@@ -1,0 +1,6 @@
+{
+  "watch": ["src"],
+  "ext": "js,mjs,cjs,json",
+  "ignore": ["src/qb-state.json", "qb-state.json"],
+  "exec": "node src/server.js"
+}

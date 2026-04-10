@@ -1,0 +1,20 @@
+{
+  "realmId": "9341456678107570",
+  "accessToken": "eyJhbGciOiJkaXIiLCJlbmMiOiJBMTI4Q0JDLUhTMjU2IiwieC5vcmciOiJIMCJ9..XzxJks-Yxl4WDo_KhE_78A.pEezVN3g9hxzwRoxhiVbIJ-9qHvxpwk4i3dhoGX_iiGoEF5iLDGZxFS41XJk6MkxNK0eX80ytMVdjYVOd2ESP2It9-fPHFxen5jXLb3mYMQ7gXbDACOerCq5pe5oOyaFikLbH8bCuS0Jwl1Df1roqRYKCGujogLIGTLXfqnrgrgu_2KFBth8znDvDkVMuD03IH8SX2T9Onw4mLnmcydN1WLNTIvA_x0-N8EfeGOzA8zxbsriucZHj6d5IrpNArorbd1rKwjXTx18KYlEiqD0Z9033Z4MlTtxeaLAX4lEBHPme1zvFwwm1ldn5JD-WuwyFx5fovyUse9GYE7qir8lyF-G-mMCiEnSnuPCGnw3hwYimAMZXyTgyVbw1ealviGukAMnmURRnwMy0DqFZUTvJKGA9Cr17Qkv-x0yV9F9A8CXZYPUDZs1CHjrGUII3kcy63YH55XLcdE4ox2rNAstAGsOeN2ihS9iLVUf3sQMT4o.XPpmzzNDs87b8WnjH7Ebvg",
+  "refreshToken": "RT1-64-H0-17845361357v6wmmh48guote8gtkq6",
+  "basicToken": "QUJ4MjJDYWUyYmd3WHpMbGo1Q0szNng2bWRBdGxGN3BRd21yNEpTWEJZcXZpY2wxSnE6cFlGSTQyVzRzNEs0YUVLd1diNXlrcjF5Qktia2JUVzJWN2VPeXYwOQ==",
+  "companyName": "Advanced Sandbox Company US d42e",
+  "companyId": "9341456678107570",
+  "environment": "sandbox",
+  "connectedAt": "2026-04-10T08:28:55.295Z",
+  "lastSynced": "2026-04-10T08:28:55.295Z",
+  "tokenExpiresAt": "2026-04-10T09:28:55.295Z",
+  "syncedEntities": [
+    "Customers",
+    "Invoices",
+    "Balance Sheet",
+    "General Ledger",
+    "Profit and Loss"
+  ],
+  "disconnected": false
+}

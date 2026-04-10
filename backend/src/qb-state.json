@@ -1,0 +1,20 @@
+{
+  "realmId": "9341456678107570",
+  "accessToken": "eyJhbGciOiJkaXIiLCJlbmMiOiJBMTI4Q0JDLUhTMjU2IiwieC5vcmciOiJIMCJ9..HHDb7NQhIYgNIlEXb70Q-Q.XPX8oqMyyiWR95Ck2oM8BoSbQ_Wub59oiwxi1GncnVQ0TxUxoFr47tUYvVhzHcyrylZDyTtw1P3lLRVt8s0l994ODb0BTE3UWiV4LFNC2dJS89vC86XSE47QfY9ZJ7I0gHJzLDiQtWofPq3DrybAsUjAl_g28jmTw0OAXnmWax3V0rGFxHQcnpGDoB10Y9GDJ9wDA7Cd-rml4h6wYT6CrIiEnTSXO56Q59Q1oBkbAwRU497Cxa3CX5XPgo-dijwgdcnJzF8Tnzt-Kn5BiT_CV4Z9SXgr8AKRKe36WKZ3FcKw0u101rhiXL_9zxrV-JWOOVGVTScbuakyolSXCd1tMLl3u_glvUtT61bfxg_T1v-qUJ-zpjDoE7nWppjNmasiWy-RLLVwaOPuf-F_Q5lmAhsJIsuMM3qBiHCV13mn17thR1xK8n3uXbb7-9sH5HzH-JCQjpAtb14aRP0b7N_awzN92DYNEiMJIcvcQe3FXXI.eAXoS-nkgQWnmyMCUlBgsw",
+  "refreshToken": "RT1-254-H0-17843905014tw3veixx5r0kpg1hu9k",
+  "basicToken": "QUJ4MjJDYWUyYmd3WHpMbGo1Q0szNng2bWRBdGxGN3BRd21yNEpTWEJZcXZpY2wxSnE6cFlGSTQyVzRzNEs0YUVLd1diNXlrcjF5Qktia2JUVzJWN2VPeXYwOQ==",
+  "companyName": null,
+  "companyId": "9341456678107570",
+  "environment": "sandbox",
+  "connectedAt": "2026-04-08T16:01:41.382Z",
+  "lastSynced": "2026-04-08T16:01:41.382Z",
+  "tokenExpiresAt": "2026-04-08T17:01:41.382Z",
+  "syncedEntities": [
+    "Customers",
+    "Invoices",
+    "Balance Sheet",
+    "General Ledger",
+    "Profit and Loss"
+  ],
+  "disconnected": false
+}

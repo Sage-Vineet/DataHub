@@ -1,0 +1,210 @@
+{\rtf1\ansi\deff0
+{\fonttbl{\f0 Arial;}}
+\fs24
+\b Backend Specification (PostgreSQL + REST)\b0\par
+\par
+\b 1. Database Tables\b0\par
+\par
+\b users\b0\par
+- id (uuid, PK)\par
+- name (text)\par
+- email (text, unique)\par
+- phone (text, nullable)\par
+- password_hash (text)\par
+- role (enum: admin, broker, buyer)\par
+- company_id (uuid, FK -> companies.id, nullable)\par
+- status (enum: active, inactive)\par
+- created_at (timestamptz)\par
+- updated_at (timestamptz)\par
+\par
+\b companies\b0\par
+- id (uuid, PK)\par
+- name (text)\par
+- industry (text)\par
+- status (enum: active, inactive)\par
+- since (date)\par
+- logo (text, nullable)\par
+- contact_name (text)\par
+- contact_email (text)\par
+- contact_phone (text)\par
+- created_at (timestamptz)\par
+- updated_at (timestamptz)\par
+\par
+\b buyer_groups\b0\par
+- id (uuid, PK)\par
+- company_id (uuid, FK -> companies.id)\par
+- name (text)\par
+- created_at (timestamptz)\par
+\par
+\b buyer_group_members\b0\par
+- group_id (uuid, FK -> buyer_groups.id)\par
+- user_id (uuid, FK -> users.id)\par
+- created_at (timestamptz)\par
+(PK: group_id, user_id)\par
+\par
+\b requests\b0\par
+- id (uuid, PK)\par
+- company_id (uuid, FK -> companies.id)\par
+- title (text)\par
+- sub_label (text, nullable)\par
+- description (text)\par
+- category (enum: Finance, Legal, Compliance, HR, Tax, M&A, Other)\par
+- response_type (enum: Upload, Narrative, Both)\par
+- priority (enum: high, medium, low, critical)\par
+- status (enum: pending, in-review, completed, blocked)\par
+- due_date (date)\par
+- assigned_to (uuid, FK -> users.id, nullable)\par
+- visible (boolean)\par
+- created_by (uuid, FK -> users.id)\par
+- created_at (timestamptz)\par
+- updated_at (timestamptz)\par
+\par
+\b request_documents\b0\par
+- id (uuid, PK)\par
+- request_id (uuid, FK -> requests.id)\par
+- document_id (uuid, FK -> documents.id)\par
+- visible (boolean)\par
+- created_at (timestamptz)\par
+\par
+\b request_narratives\b0\par
+- id (uuid, PK)\par
+- request_id (uuid, FK -> requests.id)\par
+- content (text)\par
+- updated_by (uuid, FK -> users.id)\par
+- updated_at (timestamptz)\par
+\par
+\b request_reminders\b0\par
+- id (uuid, PK)\par
+- request_id (uuid, FK -> requests.id)\par
+- sent_by (uuid, FK -> users.id)\par
+- sent_at (timestamptz)\par
+\par
+\b folders\b0\par
+- id (uuid, PK)\par
+- company_id (uuid, FK -> companies.id)\par
+- parent_id (uuid, FK -> folders.id, nullable)\par
+- name (text)\par
+- color (text, nullable)\par
+- created_by (uuid, FK -> users.id)\par
+- created_at (timestamptz)\par
+\par
+\b documents\b0\par
+- id (uuid, PK)\par
+- company_id (uuid, FK -> companies.id)\par
+- folder_id (uuid, FK -> folders.id)\par
+- name (text)\par
+- file_url (text)\par
+- size (text)\par
+- ext (text)\par
+- status (enum: verified, under-review, rejected)\par
+- uploaded_by (uuid, FK -> users.id)\par
+- uploaded_at (timestamptz)\par
+\par
+\b folder_access\b0\par
+- id (uuid, PK)\par
+- folder_id (uuid, FK -> folders.id)\par
+- user_id (uuid, FK -> users.id, nullable)\par
+- group_id (uuid, FK -> buyer_groups.id, nullable)\par
+- can_read (boolean)\par
+- can_write (boolean)\par
+- can_download (boolean)\par
+- created_by (uuid, FK -> users.id)\par
+- created_at (timestamptz)\par
+(Constraint: either user_id or group_id must be set)\par
+\par
+\b reminders\b0\par
+- id (uuid, PK)\par
+- company_id (uuid, FK -> companies.id)\par
+- title (text)\par
+- due_date (date)\par
+- status (enum: active, done)\par
+- created_by (uuid, FK -> users.id)\par
+\par
+\b activity_log\b0\par
+- id (uuid, PK)\par
+- company_id (uuid, FK -> companies.id)\par
+- type (enum: upload, request, approved, reminder)\par
+- message (text)\par
+- created_by (uuid, FK -> users.id)\par
+- created_at (timestamptz)\par
+\par
+\b 2. REST API Endpoints\b0\par
+\par
+\b Auth\b0\par
+POST /auth/login\par
+POST /auth/logout\par
+GET /auth/me\par
+\par
+\b Users\b0\par
+GET /users\par
+POST /users\par
+GET /users/:id\par
+PATCH /users/:id\par
+DELETE /users/:id\par
+\par
+\b Companies\b0\par
+GET /companies\par
+POST /companies\par
+GET /companies/:id\par
+PATCH /companies/:id\par
+\par
+\b Buyer Groups\b0\par
+GET /companies/:id/groups\par
+POST /companies/:id/groups\par
+PATCH /groups/:id\par
+DELETE /groups/:id\par
+POST /groups/:id/members\par
+DELETE /groups/:id/members/:userId\par
+\par
+\b Requests\b0\par
+GET /companies/:id/requests\par
+POST /companies/:id/requests\par
+GET /requests/:id\par
+PATCH /requests/:id\par
+DELETE /requests/:id\par
+POST /requests/:id/reminders\par
+GET /requests/:id/documents\par
+POST /requests/:id/documents\par
+PATCH /requests/:id/narrative\par
+\par
+\b Documents & Folders\b0\par
+GET /companies/:id/folders\par
+POST /companies/:id/folders\par
+PATCH /folders/:id\par
+DELETE /folders/:id\par
+POST /folders/:id/move\par
+GET /folders/:id/documents\par
+POST /folders/:id/documents\par
+DELETE /documents/:id\par
+\par
+\b Folder Access (Sharing)\b0\par
+GET /folders/:id/access\par
+POST /folders/:id/access\par
+PATCH /folder-access/:id\par
+DELETE /folder-access/:id\par
+\par
+\b Reminders\b0\par
+GET /companies/:id/reminders\par
+POST /companies/:id/reminders\par
+PATCH /reminders/:id\par
+DELETE /reminders/:id\par
+\par
+\b Activity Log\b0\par
+GET /companies/:id/activity\par
+\par
+\b 3. Permissions Logic\b0\par
+- Admin: full access\par
+- Broker: full access within company\par
+- Buyer: only folders granted by folder_access (inherit from parent)\par
+- Stop notifications when status = completed\par
+\par
+\b 4. Recommended Indexes\b0\par
+- requests(company_id)\par
+- documents(folder_id)\par
+- folders(company_id, parent_id)\par
+- folder_access(folder_id)\par
+- folder_access(user_id)\par
+- folder_access(group_id)\par
+- activity_log(company_id)\par
+- reminders(company_id)\par
+}
