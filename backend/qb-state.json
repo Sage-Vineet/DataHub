@@ -1,0 +1,42 @@
+{
+  "basicToken": "QUJ4MjJDYWUyYmd3WHpMbGo1Q0szNng2bWRBdGxGN3BRd21yNEpTWEJZcXZpY2wxSnE6cFlGSTQyVzRzNEs0YUVLd1diNXlrcjF5Qktia2JUVzJWN2VPeXYwOQ==",
+  "disconnected": false,
+  "a18aa3b2-14fd-4e2f-9fde-5b8234015469": {
+    "realmId": "9341456764520549",
+    "accessToken": "eyJhbGciOiJkaXIiLCJlbmMiOiJBMTI4Q0JDLUhTMjU2IiwieC5vcmciOiJIMCJ9..qLv_ilfHow_E2-buNU1Yag.TeIMEaRwwDYVtBJPPtt_5SACWZkcAJFSQa1M1Lh6ZxviuM4VTsj3hyG7_--UFd2JV3EldEO-6vi-Dvq6Sml1zguukt7S7gNhue-MVe_jSu9xuYrMSur6VvYoHxgOImEj7C6upHYhdU3YPVL2TE4COfhiT5svGtX7QeDPv3xkN01OjqWNOkekHexoBxDtOCmmqrpJEK5DuNH8OUYGdzL_4mtRdD-BCBXfkvZw44wukvpdS74lzNH_AjnwCNNBpeU6g5Mqh8r9xopSFctL08ArLD4qlFUbNmU5Ny6yCnei1-_VRAUAoCfI_qHz4Vp8kCF_xgWKxX7bG_4IbC1nQG1UKYdETPXzAijaVt3Usk5yD1gpg3c3OOnUNgoUHo13njbziEEVwUM1-dmIRnUW1Jy7vSPUBdXwQE-MwSGLdKlsmSFRMDeG-XyOgrQro9lTk-PUU_16iBcRjm2uK_6JciD1W2quKh2ho_VevI85pt9IuyY.aHaSK_wUCt2YF9QjRl5sSQ",
+    "refreshToken": "RT1-35-H0-1784536419a9j30ltbjb6fkx10fjel",
+    "basicToken": "QUJ4MjJDYWUyYmd3WHpMbGo1Q0szNng2bWRBdGxGN3BRd21yNEpTWEJZcXZpY2wxSnE6cFlGSTQyVzRzNEs0YUVLd1diNXlrcjF5Qktia2JUVzJWN2VPeXYwOQ==",
+    "companyId": "9341456764520549",
+    "connectedAt": "2026-04-10T08:33:39.262Z",
+    "lastSynced": "2026-04-10T08:33:39.262Z",
+    "tokenExpiresAt": "2026-04-10T09:33:39.262Z",
+    "environment": "sandbox",
+    "syncedEntities": [
+      "Customers",
+      "Invoices",
+      "Balance Sheet",
+      "General Ledger",
+      "Profit and Loss"
+    ],
+    "companyName": "Sandbox Company US 0cc6"
+  },
+  "47964ffa-bef2-479b-8258-5568f7926cae": {
+    "realmId": "9341456678107570",
+    "accessToken": "eyJhbGciOiJkaXIiLCJlbmMiOiJBMTI4Q0JDLUhTMjU2IiwieC5vcmciOiJIMCJ9..xD133h83h0s2W5-xPehU_w.uBUFeMJHfpexk2kfLJ3xIdI7buwyHUPZ9sH9l6TETSeXC3T5yFBGzpnGT8pKrJkeo1cSRzq-a_1r2t5Cmkd3HMzXUi-U8Gs78GKYizWP-RBKuDDDv_7DkjJDwfM8FwQzf8Wi0J1tBoexi7jO97BwO-sWs0DW8chKBEOQd9Oip_WonGzw-argH4Ni_vnDtedn-o1KTyA_iiSt7JZRTAWboCffs42TST6eHaQk6fCmlRxaLGNP6YS1zc7xYdGOT8R-uzNcfmMxxWhrkTQwP-RrkIxmC4PUjHZnS1KI-KzWx3v6fqSMwFsOYSB0COekTiP1XrWsFPZIhW72cmhI6289PMqyCVatkiToqnRCEY_ccSBUtzr8R09UZG6kpxENSvt3QimEgOqvW2Bbxp7wVphSOEMd4WiZsOQXHF6b5tSPED1o7F_bhocfNev7vq_rkfBOgVRXSSOS7bHBkOlL6yIVvd25V2mYMK7tgQtSn79Yzck.ZjVMBBhjNglQPTIluWXjNQ",
+    "refreshToken": "RT1-39-H0-1784546321nv27b32vniaa4eox0ya3",
+    "basicToken": "QUJ4MjJDYWUyYmd3WHpMbGo1Q0szNng2bWRBdGxGN3BRd21yNEpTWEJZcXZpY2wxSnE6cFlGSTQyVzRzNEs0YUVLd1diNXlrcjF5Qktia2JUVzJWN2VPeXYwOQ==",
+    "companyId": "9341456678107570",
+    "connectedAt": "2026-04-10T11:18:41.257Z",
+    "lastSynced": "2026-04-10T11:18:41.257Z",
+    "tokenExpiresAt": "2026-04-10T12:18:41.257Z",
+    "environment": "sandbox",
+    "syncedEntities": [
+      "Customers",
+      "Invoices",
+      "Balance Sheet",
+      "General Ledger",
+      "Profit and Loss"
+    ],
+    "companyName": "Advanced Sandbox Company US d42e"
+  }
+}
