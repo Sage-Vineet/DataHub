@@ -3,7 +3,7 @@ import { NavLink, useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
   ArrowLeft,
   Bell,
-  Briefcase,
+
   Building2,
   ChevronDown,
   ChevronRight,
@@ -24,6 +24,8 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { listCompaniesRequest } from '../../lib/api';
+import datahublogo from '../../assets/datahublogo.png';
+
 
 function companyLogo(name = '') {
   return name
@@ -68,22 +70,19 @@ function WorkspaceSidebar({ company, onClose }) {
       style={{ boxShadow: 'var(--shadow-sidebar)' }}
     >
       <div className="border-b border-border px-3 pb-5 pt-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-md bg-primary text-white">
-              <Briefcase size={18} />
-            </div>
-            <div>
-              <p className="text-[15px] font-semibold leading-none text-text-primary">DataRoom</p>
-              <p className="mt-1 text-[11px] leading-none text-text-muted">Company Workspace</p>
-            </div>
-          </div>
+        <div className="relative flex items-center justify-center">
+           <img src={datahublogo} alt="DataHub" className="h-10 w-auto object-contain" />
+          
           {onClose && (
-            <button onClick={onClose} className="rounded-md p-1 text-text-muted transition-colors hover:bg-bg-page hover:text-text-primary">
+            <button 
+              onClick={onClose} 
+              className="absolute -right-1 top-1/2 -translate-y-1/2 rounded-md p-1 text-text-muted transition-colors hover:bg-bg-page hover:text-text-primary"
+            >
               <X size={18} />
             </button>
           )}
         </div>
+
       </div>
 
       <div className="border-b border-border px-3 py-4">
