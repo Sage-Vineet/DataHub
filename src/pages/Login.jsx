@@ -1,6 +1,9 @@
 import { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { Briefcase, Eye, EyeOff, LogIn, ShieldCheck } from 'lucide-react';
+import { Eye, EyeOff, LogIn, ShieldCheck } from 'lucide-react';
+
+import datahublogo from '../assets/datahublogo.png';
+
 
 const demoCredentials = [
   { role: 'Broker', email: 'broker@leo.com', password: 'broker123', color: '#8BC53D', bg: '#C9E4A4' },
@@ -41,10 +44,8 @@ export default function Login() {
       <div className="relative mx-auto flex min-h-[calc(100vh-2rem)] w-full max-w-6xl items-center justify-center gap-10 py-10">
         <div className="relative w-full max-w-md animate-fadeIn">
           <div className="mb-6 text-center">
-            <div className="mb-4 inline-flex h-16 w-16 items-center justify-center rounded-2xl bg-primary shadow-card">
-            <Briefcase size={28} className="text-white" />
-          </div>
-            <h1 className="text-3xl font-bold tracking-tight text-text-primary">DataRoom</h1>
+            <img src={datahublogo} alt="DataHub" className="h-16 w-auto object-contain" />
+
             <p className="mt-1 text-sm text-secondary">Secure Document Management Platform</p>
           </div>
 
