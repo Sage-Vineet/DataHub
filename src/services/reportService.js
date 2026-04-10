@@ -22,25 +22,19 @@ const API_BASE_URL = (
   import.meta.env.VITE_API_BASE_URL || "http://localhost:4000"
 ).replace(/\/$/, "");
 
-async function request(path, options = {}) {
-  // Extract clientId from URL hash: #/broker/client/:clientId/...
-  const hash = window.location.hash || "";
-  const match = hash.match(/\/client\/([^/]+)/);
-  const clientId = match ? match[1] : null;
-
+async function request(path) {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     credentials: "include",
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(clientId ? { "X-Client-Id": clientId } : {}),
-      ...options.headers,
-    },
+    cache: "no-store",
   });
 
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new Error(payload?.message || payload?.error || `Request failed: ${response.status}`);
+    throw new Error(
+      payload?.message ||
+        payload?.error ||
+        `Request failed: ${response.status}`,
+    );
   }
 
   return payload;
@@ -48,7 +42,9 @@ async function request(path, options = {}) {
 
 function buildQuery(params = {}) {
   const search = new URLSearchParams(
-    Object.entries(params).filter(([, value]) => value !== undefined && value !== null && value !== ""),
+    Object.entries(params).filter(
+      ([, value]) => value !== undefined && value !== null && value !== "",
+    ),
   );
   return search.toString() ? `?${search.toString()}` : "";
 }
@@ -120,10 +116,7 @@ function getRowLabel(row) {
 }
 
 function getRowNumericValue(row) {
-  const candidates = [
-    ...(row?.Summary?.ColData || []),
-    ...(row?.ColData || []),
-  ]
+  const candidates = [...(row?.Summary?.ColData || []), ...(row?.ColData || [])]
     .map((item) => toNumber(item?.value))
     .filter((value) => !Number.isNaN(value));
 
@@ -203,7 +196,9 @@ function findSummaryTotal(payload, matchers = []) {
 
     if (
       normalizedMatchers.length === 0 ||
-      normalizedMatchers.some((matcher) => String(label).toLowerCase().includes(matcher))
+      normalizedMatchers.some((matcher) =>
+        String(label).toLowerCase().includes(matcher),
+      )
     ) {
       return candidates[candidates.length - 1];
     }
@@ -213,25 +208,11 @@ function findSummaryTotal(payload, matchers = []) {
 }
 
 function extractProfitAndLossTotals(payload) {
-  const revenueLabel = findValueByLabel(payload, [
-    "total income",
-    "total revenue",
-    "income",
-    "revenue",
-  ]);
-  const otherIncome = findValueByLabel(payload, ["total other income", "other income"]);
-  const revenue = revenueLabel + otherIncome;
-
-  const expenses = findValueByLabel(payload, [
-    "total expenses",
-    "expenses",
-    "total cost of goods sold",
-    "cost of goods sold",
-    "cogs",
-  ]);
-
+  const revenue = findValueByLabel(payload, ["total income", "income"]);
+  const expenses = findValueByLabel(payload, ["total expenses", "expenses"]);
   const netProfit =
-    findValueByLabel(payload, ["net income", "net profit"]) || revenue - expenses;
+    findValueByLabel(payload, ["net income", "net profit"]) ||
+    revenue - expenses;
 
   return { revenue, expenses, netProfit };
 }
@@ -265,81 +246,80 @@ function findAccountBalance(payload, matchers = []) {
   return 0;
 }
 
-function getQuarterStart(date) {
-  const month = Math.floor(date.getMonth() / 3) * 3;
-  return new Date(date.getFullYear(), month, 1);
-}
-
-function getQuarterEnd(date) {
-  const quarterStart = getQuarterStart(date);
-  return new Date(quarterStart.getFullYear(), quarterStart.getMonth() + 3, 0);
-}
-
-function createTrendBucket(bucketStart, bucketEnd, aggregationType) {
-  if (aggregationType === "quarterly") {
-    const quarter = Math.floor(bucketStart.getMonth() / 3) + 1;
-    const label = `Q${quarter} ${bucketStart.getFullYear()}`;
-
-    return {
-      name: label,
-      shortName: label,
-      fullLabel: label,
-      start: formatLocalDate(bucketStart),
-      end: formatLocalDate(bucketEnd),
-    };
-  }
-
-  const fullLabel = bucketStart.toLocaleDateString("en-US", {
-    month: "short",
-    year: "numeric",
-  });
-
-  return {
-    name: fullLabel,
-    shortName: bucketStart.toLocaleDateString("en-US", {
-      month: "short",
-    }),
-    fullLabel,
-    start: formatLocalDate(bucketStart),
-    end: formatLocalDate(bucketEnd),
-  };
-}
-
 function buildTrendBuckets(start, end, aggregationType) {
   const currentYear = new Date().getFullYear();
   const startDate = parseInputDate(start, new Date(currentYear, 0, 1));
   const endDate = parseInputDate(end, new Date(currentYear, 11, 31));
+  const isFullYearRange =
+    startDate.getFullYear() === endDate.getFullYear() &&
+    startDate.getMonth() === 0 &&
+    startDate.getDate() === 1 &&
+    endDate.getMonth() === 11 &&
+    endDate.getDate() === 31;
   const buckets = [];
+  const cursor = new Date(startDate.getFullYear(), startDate.getMonth(), 1);
 
-  if (aggregationType === "quarterly") {
-    const firstQuarterStart = getQuarterStart(startDate);
-    const lastQuarterStart = getQuarterStart(endDate);
-    const leadingQuarterStart = new Date(
-      firstQuarterStart.getFullYear(),
-      firstQuarterStart.getMonth() - 3,
-      1,
-    );
-    const cursor = new Date(leadingQuarterStart);
+  if (aggregationType === "monthly" && isFullYearRange) {
+    for (let monthIndex = 0; monthIndex < 12; monthIndex += 1) {
+      const bucketStart = new Date(startDate.getFullYear(), monthIndex, 1);
+      const bucketEnd = new Date(startDate.getFullYear(), monthIndex + 1, 0);
+      const shortName = bucketStart.toLocaleDateString("en-US", {
+        month: "short",
+      });
 
-    while (cursor <= lastQuarterStart) {
-      const bucketStart = new Date(cursor);
-      const bucketEnd = getQuarterEnd(bucketStart);
-      buckets.push(createTrendBucket(bucketStart, bucketEnd, aggregationType));
-      cursor.setMonth(cursor.getMonth() + 3);
+      buckets.push({
+        name: shortName,
+        shortName,
+        fullLabel: bucketStart.toLocaleDateString("en-US", {
+          month: "short",
+          year: "numeric",
+        }),
+        start: formatLocalDate(bucketStart),
+        end: formatLocalDate(bucketEnd),
+      });
     }
 
     return buckets;
   }
 
-  const firstMonthStart = new Date(startDate.getFullYear(), startDate.getMonth(), 1);
-  const lastMonthStart = new Date(endDate.getFullYear(), endDate.getMonth(), 1);
-  const cursor = new Date(firstMonthStart);
-
-  while (cursor <= lastMonthStart) {
+  while (cursor <= endDate) {
     const bucketStart = new Date(cursor);
-    const bucketEnd = new Date(bucketStart.getFullYear(), bucketStart.getMonth() + 1, 0);
-    buckets.push(createTrendBucket(bucketStart, bucketEnd, aggregationType));
-    cursor.setMonth(cursor.getMonth() + 1);
+    let bucketEnd;
+    let name;
+
+    if (aggregationType === "quarterly") {
+      const quarter = Math.floor(bucketStart.getMonth() / 3) + 1;
+      bucketEnd = new Date(bucketStart.getFullYear(), quarter * 3, 0);
+      name = `Q${quarter} ${bucketStart.getFullYear()}`;
+      cursor.setMonth(cursor.getMonth() + 3);
+    } else {
+      bucketEnd = new Date(
+        bucketStart.getFullYear(),
+        bucketStart.getMonth() + 1,
+        0,
+      );
+      name = bucketStart.toLocaleDateString("en-US", { month: "short" });
+      cursor.setMonth(cursor.getMonth() + 1);
+    }
+
+    if (bucketEnd > endDate) bucketEnd.setTime(endDate.getTime());
+
+    buckets.push({
+      name,
+      shortName:
+        aggregationType === "quarterly"
+          ? name
+          : bucketStart.toLocaleDateString("en-US", { month: "short" }),
+      fullLabel:
+        aggregationType === "quarterly"
+          ? name
+          : bucketStart.toLocaleDateString("en-US", {
+              month: "short",
+              year: "numeric",
+            }),
+      start: formatLocalDate(bucketStart),
+      end: formatLocalDate(bucketEnd),
+    });
   }
 
   return buckets;
@@ -349,9 +329,9 @@ export async function fetchDashboardKPIs(start, end) {
   const params =
     start || end
       ? {
-        ...(start ? { start_date: start } : {}),
-        ...(end ? { end_date: end } : {}),
-      }
+          ...(start ? { start_date: start } : {}),
+          ...(end ? { end_date: end } : {}),
+        }
       : {};
 
   const [profitAndLoss, balanceSheet, combinedReports, invoicesPayload] =
@@ -363,14 +343,14 @@ export async function fetchDashboardKPIs(start, end) {
     ]);
 
   const invoices = invoicesPayload?.QueryResponse?.Invoice || [];
-  const { revenue: reportRevenue, expenses, netProfit } =
-    extractProfitAndLossTotals(profitAndLoss || {});
-  // Only fall back to invoice sum when the P&L API itself failed (returned null).
-  // If P&L returned $0 income (empty period), we trust that $0 — not the invoice total.
+  const {
+    revenue: reportRevenue,
+    expenses,
+    netProfit,
+  } = extractProfitAndLossTotals(profitAndLoss || {});
   const revenue =
-    profitAndLoss !== null
-      ? reportRevenue
-      : invoices.reduce((sum, invoice) => sum + Number(invoice.TotalAmt || 0), 0);
+    reportRevenue ||
+    invoices.reduce((sum, invoice) => sum + Number(invoice.TotalAmt || 0), 0);
   const totalAssets =
     findValueByGroup(balanceSheet, ["TotalAssets"]) ||
     findValueByExactLabel(balanceSheet, ["TOTAL ASSETS", "Total Assets"]);
@@ -394,11 +374,12 @@ export async function fetchDashboardKPIs(start, end) {
     findValueByGroup(balanceSheet, ["BankAccounts"]) ||
     findAccountBalance(combinedReports, ["checking", "savings", "bank"]) ||
     findValueByExactLabel(balanceSheet, ["Total Bank Accounts"]);
-  const receivable = findSummaryTotal(combinedReports?.agedReceivableDetail, [
-    "total",
-    "accounts receivable",
-    "receivable",
-  ]) ||
+  const receivable =
+    findSummaryTotal(combinedReports?.agedReceivableDetail, [
+      "total",
+      "accounts receivable",
+      "receivable",
+    ]) ||
     findValueByGroup(balanceSheet, ["AR"]) ||
     findAccountBalance(combinedReports, ["accounts receivable"]) ||
     findValueByExactLabel(balanceSheet, ["Total Accounts Receivable"]) ||
@@ -526,38 +507,29 @@ export async function fetchDashboardKPIs(start, end) {
   }));
 }
 
-export async function fetchFinancialTrends(start, end, aggregationType = "monthly") {
+export async function fetchFinancialTrends(
+  start,
+  end,
+  aggregationType = "monthly",
+) {
   const buckets = buildTrendBuckets(start, end, aggregationType).slice(
     -MAX_CHART_REQUESTS,
   );
 
-  const results = await Promise.all(
-    buckets.map(async (bucket) => {
-      try {
-        const report = await fetchProfitAndLoss({
-          start_date: bucket.start,
-          end_date: bucket.end,
-        });
-        const totals = extractProfitAndLossTotals(report || {});
-        return {
-          name: bucket.fullLabel || bucket.name,
-          shortName: bucket.shortName || bucket.name,
-          fullLabel: bucket.fullLabel || bucket.name,
-          revenue: totals.revenue,
-          expenses: totals.expenses,
-        };
-      } catch (err) {
-        console.error(`Failed to fetch trends for ${bucket.fullLabel}:`, err);
-        return {
-          name: bucket.fullLabel || bucket.name,
-          shortName: bucket.shortName || bucket.name,
-          fullLabel: bucket.fullLabel || bucket.name,
-          revenue: 0,
-          expenses: 0,
-        };
-      }
-    }),
-  );
+  const results = [];
+  for (const bucket of buckets) {
+    const report = await fetchProfitAndLoss({
+      start_date: bucket.start,
+      end_date: bucket.end,
+    }).catch(() => null);
+    const totals = extractProfitAndLossTotals(report || {});
+    results.push({
+      name: bucket.shortName || bucket.name,
+      fullLabel: bucket.name,
+      revenue: totals.revenue,
+      expenses: totals.expenses,
+    });
+  }
 
   return results;
 }

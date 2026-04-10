@@ -5,15 +5,6 @@ const { getQBConfig } = require("../../../qbconfig");
 
 const router = express.Router();
 
-function normalizeAccountingMethod(accountingMethod) {
-  const normalized = accountingMethod?.trim().toLowerCase();
-
-  if (normalized === "cash") return "Cash";
-  if (normalized === "accrual") return "Accrual";
-
-  return undefined;
-}
-
 /**
  * @swagger
  * /balance-sheet-detail:
@@ -64,7 +55,7 @@ function normalizeAccountingMethod(accountingMethod) {
  *         description: Server error
  */
 router.get("/balance-sheet-detail", async (req, res) => {
-  const qb = getQBConfig(req.clientId);
+  const qb = getQBConfig();
 
   let { start_date, end_date, accounting_method, summarize_column_by } =
     req.query;
@@ -83,7 +74,7 @@ router.get("/balance-sheet-detail", async (req, res) => {
   // Clean and validate inputs
   start_date = start_date?.trim();
   end_date = end_date?.trim();
-  accounting_method = normalizeAccountingMethod(accounting_method);
+  accounting_method = accounting_method?.trim();
   summarize_column_by = summarize_column_by?.trim();
 
   const validAccountingMethods = ["Accrual", "Cash"];
@@ -179,7 +170,6 @@ router.get("/balance-sheet-detail", async (req, res) => {
   }
 });
 
-
 /**
  * @swagger
  * /all-reports:
@@ -223,11 +213,9 @@ router.get("/balance-sheet-detail", async (req, res) => {
  *         description: Failed to fetch reports
  */
 router.get("/all-reports", async (req, res) => {
-  const qb = getQBConfig(req.clientId);
+  const qb = getQBConfig();
 
-  const start_date = req.query.start_date?.trim();
-  const end_date = req.query.end_date?.trim();
-  const accounting_method = normalizeAccountingMethod(req.query.accounting_method);
+  const { start_date, end_date, accounting_method } = req.query;
 
   try {
     const headers = {
@@ -237,31 +225,27 @@ router.get("/all-reports", async (req, res) => {
 
     const base = `${qb.baseUrl}/v3/company/${qb.realmId}/reports`;
 
-    const params = new URLSearchParams();
-    if (start_date) params.set("start_date", start_date);
-    if (end_date) params.set("end_date", end_date);
-    if (accounting_method) params.set("accounting_method", accounting_method);
-    const paramsString = params.toString();
+    const params = `start_date=${start_date}&end_date=${end_date}&accounting_method=${accounting_method}`;
 
     const reportCalls = {
       accountList: axios.get(`${base}/AccountList`, { headers }),
 
-      agedPayableDetail: axios.get(`${base}/AgedPayableDetail${paramsString ? `?${paramsString}` : ""}`, {
+      agedPayableDetail: axios.get(`${base}/AgedPayableDetail?${params}`, {
         headers,
       }),
 
       agedReceivableDetail: axios.get(
-        `${base}/AgedReceivableDetail${paramsString ? `?${paramsString}` : ""}`,
+        `${base}/AgedReceivableDetail?${params}`,
         { headers },
       ),
 
-      balanceSheet: axios.get(`${base}/BalanceSheet${paramsString ? `?${paramsString}` : ""}`, { headers }),
+      balanceSheet: axios.get(`${base}/BalanceSheet?${params}`, { headers }),
 
-      cashSales: axios.get(`${base}/CashSales${paramsString ? `?${paramsString}` : ""}`, { headers }),
+      cashSales: axios.get(`${base}/CashSales?${params}`, { headers }),
 
-      generalLedger: axios.get(`${base}/GeneralLedger${paramsString ? `?${paramsString}` : ""}`, { headers }),
+      generalLedger: axios.get(`${base}/GeneralLedger?${params}`, { headers }),
 
-      trialBalance: axios.get(`${base}/TrialBalance${paramsString ? `?${paramsString}` : ""}`, { headers }),
+      trialBalance: axios.get(`${base}/TrialBalance?${params}`, { headers }),
     };
 
     const results = await Promise.allSettled(Object.values(reportCalls));

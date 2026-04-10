@@ -1,7 +1,7 @@
 import { fetchCashflow } from "../lib/quickbooks";
 import { normalizeAccountingMethod } from "../lib/report-filters";
 import {
-  parseCashflowDetailReport,
+  parseCashflowEngineDetailReport,
   parseSummaryReport,
 } from "../lib/report-parsers";
 
@@ -11,7 +11,9 @@ const API_BASE_URL = (
 
 function buildQuery(params = {}) {
   const search = new URLSearchParams(
-    Object.entries(params).filter(([, value]) => value !== undefined && value !== null && value !== ""),
+    Object.entries(params).filter(
+      ([, value]) => value !== undefined && value !== null && value !== "",
+    ),
   );
   return search.toString() ? `?${search.toString()}` : "";
 }
@@ -24,7 +26,11 @@ async function request(path) {
 
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new Error(payload?.message || payload?.error || `Request failed: ${response.status}`);
+    throw new Error(
+      payload?.message ||
+        payload?.error ||
+        `Request failed: ${response.status}`,
+    );
   }
 
   return payload;
@@ -49,14 +55,14 @@ export async function getCashflowDetail(startDate, endDate, accountingMethod) {
       ...(endDate ? { end_date: endDate } : {}),
       ...(accountingMethod
         ? { accounting_method: normalizeAccountingMethod(accountingMethod) }
-      : {}),
+        : {}),
     })}`,
   );
 
-  const detailSource = payload?.cashflow || payload;
+  const rawPayload = payload?.cashflow || payload;
 
   return {
-    ...parseCashflowDetailReport(detailSource),
-    rawPayload: detailSource,
+    ...parseCashflowEngineDetailReport(payload, endDate),
+    rawPayload,
   };
 }

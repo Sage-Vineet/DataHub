@@ -1,9 +1,9 @@
-const sqlite3 = require('sqlite3').verbose();
-const { open } = require('sqlite');
-const fs = require('fs');
-const path = require('path');
+const sqlite3 = require("sqlite3").verbose();
+const { open } = require("sqlite");
+const fs = require("fs");
+const path = require("path");
 
-const isProduction = process.env.NODE_ENV === 'production';
+const isProduction = process.env.NODE_ENV === "production";
 
 let dbPromise;
 
@@ -19,7 +19,7 @@ if (isProduction) {
   };
 } else {
   const initializeDb = async () => {
-    const dbPath = './dev-database.db';
+    const dbPath = "./dev-database.db";
     const isNewDb = !fs.existsSync(dbPath);
 
     const db = await open({
@@ -27,24 +27,25 @@ if (isProduction) {
       driver: sqlite3.Database,
     });
 
-    await db.exec('PRAGMA foreign_keys = ON');
+    await db.exec("PRAGMA foreign_keys = ON");
 
     if (isNewDb) {
-      console.log('📋 Initializing SQLite database schema...');
-      const schemaPath = path.join(__dirname, '../../sqlite-schema.sql');
-      const schema = fs.readFileSync(schemaPath, 'utf8');
+      console.log("📋 Initializing SQLite database schema...");
+      const schemaPath = path.join(__dirname, "../../sqlite-schema.sql");
+      const schema = fs.readFileSync(schemaPath, "utf8");
       await db.exec(schema);
-      console.log('✅ Database schema initialized');
+      console.log("✅ Database schema initialized");
     }
 
     try {
       const groupColumns = await db.all("PRAGMA table_info(buyer_groups)");
-      const hasDescription = groupColumns.some((col) => col.name === 'description');
+      const hasDescription = groupColumns.some(
+        (col) => col.name === "description",
+      );
       if (!hasDescription) {
         await db.exec("ALTER TABLE buyer_groups ADD COLUMN description TEXT");
       }
-    } catch (_err) {
-    }
+    } catch (_err) {}
 
     try {
       await db.exec(`
@@ -61,14 +62,19 @@ if (isProduction) {
       `);
 
       const documentColumns = await db.all("PRAGMA table_info(documents)");
-      const hasUploadId = documentColumns.some((col) => col.name === 'upload_id');
+      const hasUploadId = documentColumns.some(
+        (col) => col.name === "upload_id",
+      );
       if (!hasUploadId) {
-        await db.exec("ALTER TABLE documents ADD COLUMN upload_id TEXT REFERENCES uploads(id) ON DELETE SET NULL");
+        await db.exec(
+          "ALTER TABLE documents ADD COLUMN upload_id TEXT REFERENCES uploads(id) ON DELETE SET NULL",
+        );
       }
 
-      await db.exec("CREATE INDEX IF NOT EXISTS idx_documents_upload_id ON documents(upload_id)");
-    } catch (_err) {
-    }
+      await db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_documents_upload_id ON documents(upload_id)",
+      );
+    } catch (_err) {}
 
     try {
       await db.exec(`
@@ -94,12 +100,18 @@ if (isProduction) {
 
       // Migration check for existing tables
       const bankCols = await db.all("PRAGMA table_info(bank_transactions)");
-      if (!bankCols.some(c => c.name === 'client_id')) {
-        await db.exec("ALTER TABLE bank_transactions ADD COLUMN client_id TEXT");
+      if (!bankCols.some((c) => c.name === "client_id")) {
+        await db.exec(
+          "ALTER TABLE bank_transactions ADD COLUMN client_id TEXT",
+        );
       }
-      const bookCols = await db.all("PRAGMA table_info(reconciliation_transactions)");
-      if (!bookCols.some(c => c.name === 'client_id')) {
-        await db.exec("ALTER TABLE reconciliation_transactions ADD COLUMN client_id TEXT");
+      const bookCols = await db.all(
+        "PRAGMA table_info(reconciliation_transactions)",
+      );
+      if (!bookCols.some((c) => c.name === "client_id")) {
+        await db.exec(
+          "ALTER TABLE reconciliation_transactions ADD COLUMN client_id TEXT",
+        );
       }
     } catch (_err) {
       console.error("DB Migration Error (Reconciliation):", _err);

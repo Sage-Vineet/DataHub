@@ -5,15 +5,6 @@ const { getQBConfig } = require("../../../qbconfig");
 
 const router = express.Router();
 
-function normalizeAccountingMethod(accountingMethod) {
-  const normalized = accountingMethod?.trim().toLowerCase();
-
-  if (normalized === "cash") return "Cash";
-  if (normalized === "accrual") return "Accrual";
-
-  return undefined;
-}
-
 /**
  * @swagger
  * /profit-and-loss-statement:
@@ -60,7 +51,7 @@ function normalizeAccountingMethod(accountingMethod) {
  *         description: Server error
  */
 router.get("/profit-and-loss-statement", async (req, res) => {
-  const qb = getQBConfig(req.clientId);
+  const qb = getQBConfig();
 
   // Validate QuickBooks configuration
   if (!qb.accessToken || !qb.realmId) {
@@ -82,7 +73,7 @@ router.get("/profit-and-loss-statement", async (req, res) => {
   // Clean inputs
   start_date = start_date?.trim();
   end_date = end_date?.trim();
-  accounting_method = normalizeAccountingMethod(accounting_method);
+  accounting_method = accounting_method?.trim();
 
   // Validate accounting method
   const validAccountingMethods = ["Accrual", "Cash"];

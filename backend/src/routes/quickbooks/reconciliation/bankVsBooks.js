@@ -59,19 +59,25 @@ router.get("/bank-vs-books", async (req, res) => {
  */
 router.get("/reconciliation-data", async (req, res) => {
   try {
-    const bankData = await pool.query(`
+    const bankData = await pool.query(
+      `
       SELECT txn_date AS date, narration AS name, amount
       FROM bank_transactions
       WHERE client_id = $1
       ORDER BY txn_date
-    `, [req.clientId]);
+    `,
+      [req.clientId],
+    );
 
-    const booksData = await pool.query(`
+    const booksData = await pool.query(
+      `
       SELECT txn_date AS date, name, amount
       FROM reconciliation_transactions
       WHERE client_id = $1
       ORDER BY txn_date
-    `, [req.clientId]);
+    `,
+      [req.clientId],
+    );
 
     res.json({
       bank_transactions: bankData.rows,
@@ -93,7 +99,8 @@ router.get("/reconciliation-data", async (req, res) => {
  */
 router.get("/reconciliation-variance", async (req, res) => {
   try {
-    const result = await pool.query(`
+    const result = await pool.query(
+      `
       SELECT
         bank_total,
         books_total,
@@ -105,7 +112,9 @@ router.get("/reconciliation-variance", async (req, res) => {
           (SELECT SUM(amount) FROM bank_transactions WHERE client_id = $1) AS bank_total,
           (SELECT SUM(amount) FROM reconciliation_transactions WHERE client_id = $1) AS books_total
       ) totals
-    `, [req.clientId]);
+    `,
+      [req.clientId],
+    );
 
     res.json(result.rows[0]);
   } catch (error) {

@@ -76,8 +76,9 @@ function findRawColumnCount(rows = []) {
 }
 
 function buildRawRowValues(columns = [], columnCount, depth = 0) {
-  const values = Array.from({ length: columnCount }, (_, index) =>
-    columns[index]?.value ?? "",
+  const values = Array.from(
+    { length: columnCount },
+    (_, index) => columns[index]?.value ?? "",
   );
 
   const firstValueIndex = values.findIndex(
@@ -85,7 +86,8 @@ function buildRawRowValues(columns = [], columnCount, depth = 0) {
   );
 
   if (firstValueIndex >= 0 && depth > 0) {
-    values[firstValueIndex] = `${"\u00a0\u00a0".repeat(depth)}${values[firstValueIndex]}`;
+    values[firstValueIndex] =
+      `${"\u00a0\u00a0".repeat(depth)}${values[firstValueIndex]}`;
   }
 
   return values;
@@ -143,82 +145,155 @@ export function exportToExcel(title, subtitle, rows, fileName) {
   XLSX.writeFile(workbook, `${fileName || "report"}.xlsx`);
 }
 
-export function exportToPDF(title, subtitle, headers, rows, fileName) {
-  const tableRows = rows
-    .map(
-      (row) =>
-        `<tr>${row
-          .map((cell) => `<td>${escapeHtml(cell)}</td>`)
-          .join("")}</tr>`,
-    )
-    .join("");
+export function exportToPDF(elementId, fileName) {
+  const element = document.getElementById(elementId);
+  if (!element) {
+    console.error(`Element with id "${elementId}" not found.`);
+    return;
+  }
 
+  // Create a hidden iframe
   const iframe = document.createElement("iframe");
-  iframe.setAttribute("aria-hidden", "true");
   iframe.style.position = "fixed";
   iframe.style.right = "0";
   iframe.style.bottom = "0";
   iframe.style.width = "0";
   iframe.style.height = "0";
   iframe.style.border = "0";
+  iframe.setAttribute("aria-hidden", "true");
 
   document.body.appendChild(iframe);
 
-  const printDocument =
-    iframe.contentWindow?.document || iframe.contentDocument;
-
+  const printDocument = iframe.contentWindow?.document;
   if (!printDocument) {
     document.body.removeChild(iframe);
     throw new Error("Unable to create print document.");
   }
 
+  // Get all styles from the main document
+  const styles = Array.from(
+    document.querySelectorAll("style, link[rel='stylesheet']"),
+  )
+    .map((style) => style.outerHTML)
+    .join("\n");
+
+  // Get the content to print
+  // We use outerHTML to capture the container's own classes and styles
+  const contentHtml = element.outerHTML;
+
   printDocument.open();
   printDocument.write(`
+    <!DOCTYPE html>
     <html>
       <head>
-        <title>${escapeHtml(fileName || title)}</title>
+        <title>${fileName || "Report"}</title>
+        ${styles}
         <style>
-          @page { size: auto; margin: 16mm; }
-          body { font-family: Arial, sans-serif; padding: 24px; color: #111827; }
-          h1 { margin: 0 0 8px; font-size: 24px; }
-          p { margin: 0 0 20px; color: #6b7280; }
-          table { width: 100%; border-collapse: collapse; font-size: 12px; }
-          th, td { border: 1px solid #d1d5db; padding: 8px; text-align: left; vertical-align: top; }
-          th { background: #f3f4f6; }
+          body { 
+            background: white !important; 
+            margin: 0 !important; 
+            padding: 0 !important;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+            font-family: 'Inter', sans-serif;
+          }
+          /* Ensure the content fits the page width and looks like the preview */
+          #${elementId} {
+            width: 190mm !important; /* A4 width minus 10mm margins on both sides */
+            max-width: none !important;
+            box-shadow: none !important;
+            border: none !important;
+            border-radius: 0 !important;
+            margin: 0 auto !important;
+            padding: 0 !important;
+            background: white !important;
+            display: block !important;
+            visibility: visible !important;
+            overflow: visible !important;
+          }
+          /* Remove the outer background and padding from the report components */
+          #${elementId} > div {
+            background: transparent !important;
+            padding: 0 !important;
+            overflow: visible !important;
+            min-height: auto !important;
+          }
+          /* Ensure the card inside fits well */
+          #${elementId} .card-base, 
+          #${elementId} .max-w-4xl, 
+          #${elementId} .max-w-6xl {
+            max-width: 100% !important;
+            width: 100% !important;
+            box-shadow: none !important;
+            border: none !important;
+          }
+          /* Hide interactive elements that shouldn't be in the PDF */
+          button, .no-print, [role="button"] {
+            display: none !important;
+          }
+          /* Ensure SVGs (like Lucide icons) print correctly */
+          svg {
+            max-width: 100%;
+          }
+          /* Table optimization for PDF */
+          table {
+            width: 100% !important;
+            table-layout: auto !important;
+            border-collapse: collapse !important;
+            font-size: 10px !important;
+          }
+          th {
+            font-size: 10px !important;
+            padding: 8px 4px !important;
+            background-color: #1a1a1a !important;
+            color: white !important;
+            -webkit-print-color-adjust: exact !important;
+          }
+          td {
+            font-size: 10px !important;
+            padding: 6px 4px !important;
+            word-break: break-word !important;
+          }
+          /* Ensure specific text alignments stay intact */
+          .text-right { text-align: right !important; }
+          .text-left { text-align: left !important; }
+          .text-center { text-align: center !important; }
+          
+          /* Force page breaks if needed */
+          tr {
+            page-break-inside: avoid;
+          }
+          /* Remove large paddings for print */
+          .py-12, .p-10, .p-8 {
+            padding-top: 20px !important;
+            padding-bottom: 20px !important;
+          }
+          /* Set page size to A4 */
+          @page {
+            size: A4;
+            margin: 10mm;
+          }
         </style>
       </head>
       <body>
-        <h1>${escapeHtml(title)}</h1>
-        <p>${escapeHtml(subtitle)}</p>
-        <table>
-          <thead>
-            <tr>${headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("")}</tr>
-          </thead>
-          <tbody>${tableRows}</tbody>
-        </table>
+        ${contentHtml}
       </body>
     </html>
   `);
   printDocument.close();
 
-  const printWindow = iframe.contentWindow;
-  if (!printWindow) {
-    document.body.removeChild(iframe);
-    throw new Error("Unable to access print window.");
-  }
+  // Wait for resources (fonts, images) to load
+  iframe.contentWindow.onload = () => {
+    setTimeout(() => {
+      iframe.contentWindow.focus();
+      iframe.contentWindow.print();
 
-  const cleanup = () => {
-    window.setTimeout(() => {
-      if (iframe.parentNode) {
-        iframe.parentNode.removeChild(iframe);
-      }
-    }, 1000);
+      // Cleanup
+      setTimeout(() => {
+        if (iframe.parentNode) {
+          document.body.removeChild(iframe);
+        }
+      }, 1000);
+    }, 500);
   };
-
-  printWindow.onafterprint = cleanup;
-  window.setTimeout(() => {
-    printWindow.focus();
-    printWindow.print();
-    cleanup();
-  }, 250);
 }

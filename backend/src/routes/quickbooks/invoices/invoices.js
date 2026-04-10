@@ -247,7 +247,6 @@ router.get("/invoices/doc/:docNumber", async (req, res) => {
       success: true,
       data: invoices[0],
     });
-
   } catch (error) {
     console.error("❌ Fetch Invoice by DocNumber Error:");
     console.error(error.response?.data || error.message);
@@ -298,15 +297,26 @@ router.get("/invoices/doc/:docNumber", async (req, res) => {
  */
 router.put("/api/invoices/:id", async (req, res) => {
   // 🔹 BLOCK COMPLEX UPDATES early
-  const blockedFields = ['amount', 'balance', 'status', 'date', 'lineItems', 'Line'];
-  const hasBlockedField = blockedFields.some(field => req.body[field] !== undefined);
-  const hasStringCustomer = req.body.customer !== undefined && typeof req.body.customer === 'string';
+  const blockedFields = [
+    "amount",
+    "balance",
+    "status",
+    "date",
+    "lineItems",
+    "Line",
+  ];
+  const hasBlockedField = blockedFields.some(
+    (field) => req.body[field] !== undefined,
+  );
+  const hasStringCustomer =
+    req.body.customer !== undefined && typeof req.body.customer === "string";
 
   if (hasBlockedField || hasStringCustomer) {
     return res.status(400).json({
       success: false,
-      message: "Complex invoice updates are not allowed via API. Please edit in QuickBooks.",
-      redirectToQuickBooks: true
+      message:
+        "Complex invoice updates are not allowed via API. Please edit in QuickBooks.",
+      redirectToQuickBooks: true,
     });
   }
 
@@ -316,7 +326,7 @@ router.put("/api/invoices/:id", async (req, res) => {
     return res.status(403).json({
       success: false,
       message: "QuickBooks not connected",
-      isConnected: false
+      isConnected: false,
     });
   }
 
@@ -390,13 +400,16 @@ router.put("/api/invoices/:id", async (req, res) => {
       return res.json({
         success: true,
         message: "No actionable fields were parsed for update.",
-        data: existingInvoice
+        data: existingInvoice,
       });
     }
 
     const updateUrl = `${qb.baseUrl}/v3/company/${qb.realmId}/invoice?minorversion=75`;
-    
-    console.log("🚀 QuickBooks Update Payload:", JSON.stringify(payload, null, 2));
+
+    console.log(
+      "🚀 QuickBooks Update Payload:",
+      JSON.stringify(payload, null, 2),
+    );
 
     const updateResponse = await axios.post(updateUrl, payload, {
       headers: {
@@ -410,10 +423,9 @@ router.put("/api/invoices/:id", async (req, res) => {
       success: true,
       data: updateResponse.data.Invoice,
     });
-
   } catch (error) {
     console.error("❌ QuickBooks Update Failed!");
-    
+
     const qbError = error.response?.data?.Fault?.Error?.[0];
 
     return res.status(error.response?.status || 500).json({

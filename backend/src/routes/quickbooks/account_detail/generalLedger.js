@@ -78,7 +78,9 @@ router.get("/general-ledger", async (req, res) => {
       console.log("⚠️ Token expired, attempting to refresh...");
 
       try {
-        const newAccessToken = await tokenManager.refreshAccessToken(req.clientId);
+        const newAccessToken = await tokenManager.refreshAccessToken(
+          req.clientId,
+        );
 
         // Retry the request with new token
         const retryResponse = await axios.get(url, {

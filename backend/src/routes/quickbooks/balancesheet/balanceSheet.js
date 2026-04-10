@@ -5,15 +5,6 @@ const { getQBConfig } = require("../../../qbconfig");
 
 const router = express.Router();
 
-function normalizeAccountingMethod(accountingMethod) {
-  const normalized = accountingMethod?.trim().toLowerCase();
-
-  if (normalized === "cash") return "Cash";
-  if (normalized === "accrual") return "Accrual";
-
-  return undefined;
-}
-
 /**
  * @swagger
  * /balance-sheet:
@@ -24,10 +15,7 @@ function normalizeAccountingMethod(accountingMethod) {
  *         description: Success
  */
 router.get("/balance-sheet", async (req, res) => {
-  const qb = getQBConfig(req.clientId);
-  const start_date = req.query.start_date?.trim();
-  const end_date = req.query.end_date?.trim();
-  const accounting_method = normalizeAccountingMethod(req.query.accounting_method);
+  const qb = getQBConfig();
 
   // Validate required config
   if (!qb.accessToken || !qb.realmId) {
@@ -36,13 +24,7 @@ router.get("/balance-sheet", async (req, res) => {
     });
   }
 
-  const params = new URLSearchParams();
-  if (start_date) params.set("start_date", start_date);
-  if (end_date) params.set("end_date", end_date);
-  if (accounting_method) params.set("accounting_method", accounting_method);
-  params.set("minorversion", "75");
-
-  const url = `${qb.baseUrl}/v3/company/${qb.realmId}/reports/BalanceSheet?${params.toString()}`;
+  const url = `${qb.baseUrl}/v3/company/${qb.realmId}/reports/BalanceSheet?minorversion=75`;
 
   try {
     const response = await axios.get(url, {

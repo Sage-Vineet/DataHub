@@ -1,15 +1,29 @@
-import { useState } from 'react';
-import { useAuth } from '../context/AuthContext';
-import { Briefcase, Eye, EyeOff, LogIn, ShieldCheck } from 'lucide-react';
+import { useState } from "react";
+import { useAuth } from "../context/AuthContext";
+import { Eye, EyeOff, LogIn, ShieldCheck } from "lucide-react";
+
+import datahublogo from "../assets/datahublogo.png";
 
 const demoCredentials = [
-  { role: 'Broker', email: 'broker@leo.com', password: 'broker123', color: '#8BC53D', bg: '#C9E4A4' },
-  { role: 'Client', email: 'client@infosys.com', password: 'client123', color: '#00648F', bg: '#A7DCF7' },
+  {
+    role: "Broker",
+    email: "broker@leo.com",
+    password: "broker123",
+    color: "#8BC53D",
+    bg: "#C9E4A4",
+  },
+  {
+    role: "Client",
+    email: "client@infosys.com",
+    password: "client123",
+    color: "#00648F",
+    bg: "#A7DCF7",
+  },
 ];
 
 export default function Login() {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [showPass, setShowPass] = useState(false);
   const [loading, setLoading] = useState(false);
   const { login, error, setError } = useAuth();
@@ -17,7 +31,7 @@ export default function Login() {
   const fillDemo = (cred) => {
     setEmail(cred.email);
     setPassword(cred.password);
-    setError('');
+    setError("");
   };
 
   const handleSubmit = async (e) => {
@@ -41,17 +55,25 @@ export default function Login() {
       <div className="relative mx-auto flex min-h-[calc(100vh-2rem)] w-full max-w-6xl items-center justify-center gap-10 py-10">
         <div className="relative w-full max-w-md animate-fadeIn">
           <div className="mb-6 text-center">
-            <div className="mb-4 inline-flex h-16 w-16 items-center justify-center rounded-2xl bg-primary shadow-card">
-            <Briefcase size={28} className="text-white" />
-          </div>
-            <h1 className="text-3xl font-bold tracking-tight text-text-primary">DataRoom</h1>
-            <p className="mt-1 text-sm text-secondary">Secure Document Management Platform</p>
+            <img
+              src={datahublogo}
+              alt="DataHub"
+              className="h-16 w-auto object-contain"
+            />
+
+            <p className="mt-1 text-sm text-secondary">
+              Secure Document Management Platform
+            </p>
           </div>
 
           <div className="theme-card p-8">
             <div className="mb-6">
-              <h2 className="text-xl font-bold text-text-primary">Welcome back</h2>
-              <p className="mt-1 text-sm text-secondary">Sign in to your account to continue</p>
+              <h2 className="text-xl font-bold text-text-primary">
+                Welcome back
+              </h2>
+              <p className="mt-1 text-sm text-secondary">
+                Sign in to your account to continue
+              </p>
             </div>
 
             <div className="mb-6 grid grid-cols-2 gap-2">
@@ -70,17 +92,21 @@ export default function Login() {
 
             <div className="relative mb-5 flex items-center">
               <div className="flex-1 border-t border-border" />
-              <span className="bg-white px-3 text-xs text-text-muted">or enter credentials</span>
+              <span className="bg-white px-3 text-xs text-text-muted">
+                or enter credentials
+              </span>
               <div className="flex-1 border-t border-border" />
             </div>
 
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
-                <label className="mb-1.5 block text-sm font-medium text-text-primary">Email Address</label>
+                <label className="mb-1.5 block text-sm font-medium text-text-primary">
+                  Email Address
+                </label>
                 <input
                   type="email"
                   value={email}
-                  onChange={e => setEmail(e.target.value)}
+                  onChange={(e) => setEmail(e.target.value)}
                   required
                   placeholder="you@company.com"
                   className="theme-input h-12 rounded-xl px-4"
@@ -88,19 +114,21 @@ export default function Login() {
               </div>
 
               <div>
-                <label className="mb-1.5 block text-sm font-medium text-text-primary">Password</label>
+                <label className="mb-1.5 block text-sm font-medium text-text-primary">
+                  Password
+                </label>
                 <div className="relative">
                   <input
-                    type={showPass ? 'text' : 'password'}
+                    type={showPass ? "text" : "password"}
                     value={password}
-                    onChange={e => setPassword(e.target.value)}
+                    onChange={(e) => setPassword(e.target.value)}
                     required
                     placeholder="••••••••"
                     className="theme-input h-12 rounded-xl px-4 pr-12"
                   />
                   <button
                     type="button"
-                    onClick={() => setShowPass(v => !v)}
+                    onClick={() => setShowPass((v) => !v)}
                     className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-text-muted hover:text-secondary"
                   >
                     {showPass ? <EyeOff size={16} /> : <Eye size={16} />}

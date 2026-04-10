@@ -39,8 +39,10 @@ const allowedOrigins = Array.from(
       "http://127.0.0.1:5173",
       "http://localhost:3000",
       "http://127.0.0.1:3000",
-    ].filter(Boolean).map((origin) => origin.replace(/\/$/, ""))
-  )
+    ]
+      .filter(Boolean)
+      .map((origin) => origin.replace(/\/$/, "")),
+  ),
 );
 
 app.use(
@@ -54,7 +56,7 @@ app.use(
       return callback(new Error(`Origin ${origin} not allowed by CORS`));
     },
     credentials: true,
-  })
+  }),
 );
 app.use(express.json({ limit: "10mb" }));
 app.use(morgan("dev"));
@@ -67,11 +69,10 @@ app.use("/companies", companyRoutes);
 app.use("/", tokenRoutes);
 app.use("/", uploadRoutes);
 
-
 function checkQBAuth(req, res, next) {
   // 1. Try explicit header
   let clientId = req.headers["x-client-id"];
-  
+
   // 2. Fallback: Try query parameter
   if (!clientId && req.query.clientId) {
     clientId = req.query.clientId;
@@ -86,15 +87,17 @@ function checkQBAuth(req, res, next) {
       console.log(`🔍 Recovered Client ID from Referer: ${clientId}`);
     }
   }
-  
+
   // 4. Final Fallback: if still no clientId, log it but don't fail immediately.
   // getQBConfig will try to return a default if it can.
   if (!clientId) {
-    console.warn("⚠️ Client ID missing in request. Attempting to use default connection.");
+    console.warn(
+      "⚠️ Client ID missing in request. Attempting to use default connection.",
+    );
   }
 
   req.clientId = clientId;
-  
+
   const qb = getQBConfig(clientId);
   if (!qb || !qb.accessToken || !qb.realmId) {
     return res.status(401).json({

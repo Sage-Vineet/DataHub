@@ -5,7 +5,6 @@ const { getQBConfig } = require("../../../qbconfig");
 
 const router = express.Router();
 
-
 /**
  * @swagger
  * /customers:
@@ -48,7 +47,8 @@ router.post("/customers", async (req, res) => {
     const address = req.body.address || req.body.BillAddr?.Line1;
     const notes = req.body.notes || req.body.Notes;
 
-    if (!name) return res.status(400).json({ error: "Client name is required" });
+    if (!name)
+      return res.status(400).json({ error: "Client name is required" });
 
     const qbPayload = {
       DisplayName: name,
@@ -73,22 +73,22 @@ router.post("/customers", async (req, res) => {
     res.json({
       success: true,
       message: "Customer created successfully",
-      customer: qbResponse.data.Customer // Return the actual created object
+      customer: qbResponse.data.Customer, // Return the actual created object
     });
   } catch (error) {
     const errorDetails = error.response?.data || error.message;
     console.error("QuickBooks create customer error:", errorDetails);
-    
+
     // Check for "Duplicate Name" error (Code 6240)
     const isDuplicate = JSON.stringify(errorDetails).includes("6240");
     res.status(error.response?.status || 500).json({
-      error: isDuplicate ? "A client with this name already exists in QuickBooks" : "Failed to create customer",
+      error: isDuplicate
+        ? "A client with this name already exists in QuickBooks"
+        : "Failed to create customer",
       details: errorDetails,
     });
   }
 });
-
-
 
 /**
  * @swagger
@@ -474,11 +474,10 @@ router.put("/api/customers/:id", async (req, res) => {
       success: true,
       data: updateResponse.data.Customer,
     });
-
   } catch (error) {
     console.error(
       "❌ Update Customer Error:",
-      error.response?.data || error.message
+      error.response?.data || error.message,
     );
 
     const statusCode = error.response?.status || 500;
@@ -492,7 +491,5 @@ router.put("/api/customers/:id", async (req, res) => {
     });
   }
 });
-
-
 
 module.exports = router;

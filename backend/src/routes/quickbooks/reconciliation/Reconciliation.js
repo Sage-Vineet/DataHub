@@ -2,7 +2,6 @@ const express = require("express");
 const axios = require("axios");
 const { getQBConfig } = require("../../../qbconfig");
 const pool = require("../../../db");
-
 const router = express.Router();
 
 /**
@@ -60,7 +59,10 @@ router.get("/qb-general-ledger", async (req, res) => {
       });
     });
 
-    await pool.query("DELETE FROM reconciliation_transactions WHERE client_id = $1", [req.clientId]);
+    await pool.query(
+      "DELETE FROM reconciliation_transactions WHERE client_id = $1",
+      [req.clientId],
+    );
     for (const txn of transactions) {
       await pool.query(
         `INSERT INTO reconciliation_transactions (client_id, txn_date, amount, name, transaction_type) VALUES ($1,$2,$3,$4,$5)`,
@@ -68,7 +70,10 @@ router.get("/qb-general-ledger", async (req, res) => {
       );
     }
 
-    res.json({ message: "Data stored successfully", totalInserted: transactions.length });
+    res.json({
+      message: "Data stored successfully",
+      totalInserted: transactions.length,
+    });
   } catch (error) {
     console.error("GeneralLedger Error:", error);
     res.status(500).json({ error: "Failed to fetch General Ledger" });
@@ -86,7 +91,10 @@ router.get("/qb-general-ledger", async (req, res) => {
 router.get("/qb-reconciliation-transactions", async (req, res) => {
   const qb = getQBConfig(req.clientId);
   const base = `${qb.baseUrl}/v3/company/${qb.realmId}/query`;
-  const headers = { Authorization: `Bearer ${qb.accessToken}`, Accept: "application/json" };
+  const headers = {
+    Authorization: `Bearer ${qb.accessToken}`,
+    Accept: "application/json",
+  };
   const { start_date, end_date, max_results = 50 } = req.query;
 
   const queries = {
@@ -108,7 +116,10 @@ router.get("/qb-reconciliation-transactions", async (req, res) => {
     }
     res.json(results);
   } catch (error) {
-    console.error("Reconciliation Transactions Error:", error.response?.data || error.message);
+    console.error(
+      "Reconciliation Transactions Error:",
+      error.response?.data || error.message,
+    );
     res.status(500).json({ error: "Failed to fetch transactions" });
   }
 });
@@ -127,7 +138,10 @@ router.get("/qb-trial-balance", async (req, res) => {
     const response = await axios.get(
       `${qb.baseUrl}/v3/company/${qb.realmId}/reports/TrialBalance`,
       {
-        headers: { Authorization: `Bearer ${qb.accessToken}`, Accept: "application/json" },
+        headers: {
+          Authorization: `Bearer ${qb.accessToken}`,
+          Accept: "application/json",
+        },
         proxy: false,
         params: {
           start_date: req.query.start_date,
@@ -138,7 +152,10 @@ router.get("/qb-trial-balance", async (req, res) => {
     );
     res.json(response.data);
   } catch (error) {
-    console.error("TrialBalance API Error:", error.response?.data || error.message);
+    console.error(
+      "TrialBalance API Error:",
+      error.response?.data || error.message,
+    );
     res.status(500).json({ error: "Failed to fetch trial balance" });
   }
 });
@@ -154,18 +171,30 @@ router.get("/qb-trial-balance", async (req, res) => {
 router.get("/qb-reconciliation-engine", async (req, res) => {
   const qb = getQBConfig(req.clientId);
   const { start_date, end_date, accounting_method } = req.query;
-  const headers = { Authorization: `Bearer ${qb.accessToken}`, Accept: "application/json" };
+  const headers = {
+    Authorization: `Bearer ${qb.accessToken}`,
+    Accept: "application/json",
+  };
 
   try {
     const [ledger, accounts, trialBalance] = await Promise.all([
-      axios.get(`${qb.baseUrl}/v3/company/${qb.realmId}/reports/GeneralLedger`, {
-        headers, proxy: false, params: { start_date, end_date, accounting_method, minorversion: 75 },
-      }),
+      axios.get(
+        `${qb.baseUrl}/v3/company/${qb.realmId}/reports/GeneralLedger`,
+        {
+          headers,
+          proxy: false,
+          params: { start_date, end_date, accounting_method, minorversion: 75 },
+        },
+      ),
       axios.get(`${qb.baseUrl}/v3/company/${qb.realmId}/reports/AccountList`, {
-        headers, proxy: false, params: { minorversion: 75 },
+        headers,
+        proxy: false,
+        params: { minorversion: 75 },
       }),
       axios.get(`${qb.baseUrl}/v3/company/${qb.realmId}/reports/TrialBalance`, {
-        headers, proxy: false, params: { start_date, end_date, accounting_method, minorversion: 75 },
+        headers,
+        proxy: false,
+        params: { start_date, end_date, accounting_method, minorversion: 75 },
       }),
     ]);
 
@@ -175,7 +204,10 @@ router.get("/qb-reconciliation-engine", async (req, res) => {
       trialBalance: trialBalance.data,
     });
   } catch (error) {
-    console.error("Reconciliation Engine Error:", error.response?.data || error.message);
+    console.error(
+      "Reconciliation Engine Error:",
+      error.response?.data || error.message,
+    );
     res.status(500).json({ error: "Failed to fetch reconciliation data" });
   }
 });
@@ -189,14 +221,19 @@ router.get("/qb-reconciliation-engine", async (req, res) => {
 router.post("/bank-transactions", async (req, res) => {
   const transactions = req.body;
   try {
-    await pool.query("DELETE FROM bank_transactions WHERE client_id = $1", [req.clientId]);
+    await pool.query("DELETE FROM bank_transactions WHERE client_id = $1", [
+      req.clientId,
+    ]);
     for (const txn of transactions) {
       await pool.query(
         `INSERT INTO bank_transactions (client_id, txn_date, narration, amount) VALUES ($1,$2,$3,$4)`,
         [req.clientId, txn.date, txn.narration, txn.amount],
       );
     }
-    res.json({ message: "Bank transactions stored successfully", totalInserted: transactions.length });
+    res.json({
+      message: "Bank transactions stored successfully",
+      totalInserted: transactions.length,
+    });
   } catch (error) {
     console.error("Bank Transaction Error:", error);
     res.status(500).json({ error: "Failed to store bank transactions" });

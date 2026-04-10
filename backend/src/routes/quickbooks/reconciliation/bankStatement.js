@@ -257,14 +257,15 @@ router.post(
 
       console.log("Total Transactions Extracted:", transactions.length);
 
-      await pool.query("DELETE FROM bank_transactions WHERE client_id = $1", [req.clientId]);
+      await pool.query("DELETE FROM bank_transactions WHERE client_id = $1", [
+        req.clientId,
+      ]);
       for (const txn of transactions) {
         await pool.query(
           `INSERT INTO bank_transactions (client_id, txn_date, narration, amount) VALUES ($1, $2, $3, $4)`,
           [req.clientId, txn.date, txn.narration, txn.amount],
         );
       }
-
 
       cleanupFile(filePath);
       res.json({

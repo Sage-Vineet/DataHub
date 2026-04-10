@@ -165,13 +165,11 @@ export function BarChart({ data = [], children, margin }) {
                     tooltipValues.some((entry) => entry.value > 0) ? (
                       <div
                         className="pointer-events-none absolute top-3 z-50 w-[140px] rounded-xl border border-border bg-white px-3 py-2.5 text-left shadow-[0_8px_22px_rgba(5,5,5,0.12)]"
-                        style={isRightHalf
-                          ? { right: 0 }
-                          : { left: 0 }
-                        }
+                        style={isRightHalf ? { right: 0 } : { left: 0 }}
                       >
                         <p className="text-[11px] font-semibold text-text-secondary truncate">
-                          {item?.[xAxis?.props?.dataKey || "name"] || item?.name}
+                          {item?.[xAxis?.props?.dataKey || "name"] ||
+                            item?.name}
                         </p>
                         <div className="mt-2 space-y-1">
                           {tooltipValues.map((entry) => (
@@ -190,14 +188,19 @@ export function BarChart({ data = [], children, margin }) {
                     <div className="absolute inset-x-0 bottom-0 flex h-full items-end justify-center gap-1">
                       {bars.map((bar) => {
                         const rawValue = Number(item?.[bar.props.dataKey] ?? 0);
-                        const numericValue = Number.isFinite(rawValue) ? rawValue : 0;
-                        const heightRatio = maxValue > 0 ? (numericValue / maxValue) * 100 : 0;
-                        const height = numericValue > 0 ? `${heightRatio}%` : "0%";
+                        const numericValue = Number.isFinite(rawValue)
+                          ? rawValue
+                          : 0;
+                        const heightRatio =
+                          maxValue > 0 ? (numericValue / maxValue) * 100 : 0;
+                        const height =
+                          numericValue > 0 ? `${heightRatio}%` : "0%";
                         const propSize = Number(bar.props.barSize || 24);
                         // Only scale down slightly if there are many items to prevent overflow
-                        const safeSize = data.length > 9
-                          ? Math.max(Math.round(propSize * 0.65), 12)
-                          : propSize;
+                        const safeSize =
+                          data.length > 9
+                            ? Math.max(Math.round(propSize * 0.65), 12)
+                            : propSize;
 
                         return (
                           <div

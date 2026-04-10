@@ -6,7 +6,9 @@ function getAccessToken(clientId) {
   // If no clientId, getQBConfig will fallback to root config
   const config = getQBConfig(clientId);
   if (!config.accessToken) {
-    throw new Error(`No access token available for client ${clientId || "default"}. Please authenticate.`);
+    throw new Error(
+      `No access token available for client ${clientId || "default"}. Please authenticate.`,
+    );
   }
   return config.accessToken;
 }
@@ -16,7 +18,9 @@ async function refreshAccessToken(clientId) {
   const config = getQBConfig(clientId);
 
   if (!config.refreshToken) {
-    throw new Error(`No refresh token available for client ${clientId}. Please re-authenticate.`);
+    throw new Error(
+      `No refresh token available for client ${clientId}. Please re-authenticate.`,
+    );
   }
 
   try {
@@ -47,7 +51,7 @@ async function refreshAccessToken(clientId) {
       clientId,
       response.data.access_token,
       response.data.refresh_token,
-      response.data.expires_in
+      response.data.expires_in,
     );
 
     console.log(`✅ Token refreshed successfully for client: ${clientId}`);

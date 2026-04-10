@@ -1,5 +1,5 @@
-import ReportDetailView from "../shared/ReportDetailView";
-import ReportSummaryView from "../shared/ReportSummaryView";
+import CashflowSummary from "./CashflowSummary";
+import CashflowDetail from "./CashflowDetail";
 
 export default function CashflowReport({
   reportType,
@@ -9,27 +9,32 @@ export default function CashflowReport({
   endDate,
   accountingMethod,
   clientName = "All Clients",
+  entityName,
+  createdOn,
+  isPreview = false,
 }) {
   const subtitle = `Report Period: ${startDate || "N/A"} to ${endDate || "N/A"} | ${clientName} | ${accountingMethod} Basis`;
+  const resolvedEntityName = entityName || clientName || "Company";
 
   if (reportType === "Detail") {
     return (
-      <ReportDetailView
+      <CashflowDetail
         data={detailedData?.groups ? detailedData : { groups: [] }}
         title="Cash Flow"
         subtitle={subtitle}
-        sourceLabel="QuickBooks Cash Flow Engine"
+        entityName={resolvedEntityName}
+        isPreview={isPreview}
       />
     );
   }
 
   return (
-    <ReportSummaryView
+    <CashflowSummary
       data={Array.isArray(data) ? data : []}
       title="Cash Flow"
       subtitle={subtitle}
-      classificationLabel="Cash Flow Classification"
-      footerText="This report provides a structured view of operating, investing, and financing cash movement."
+      entityName={resolvedEntityName}
+      createdOn={createdOn}
     />
   );
 }

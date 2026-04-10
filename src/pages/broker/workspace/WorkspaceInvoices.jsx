@@ -1,4 +1,3 @@
-  
 import { useEffect, useMemo, useState } from "react";
 import Header from "../../../components/Header";
 import {
@@ -115,14 +114,20 @@ function filterInvoices(invoices, filters) {
     startDate,
     endDate,
   } = filters;
-  const term = String(searchTerm || "").trim().toLowerCase();
+  const term = String(searchTerm || "")
+    .trim()
+    .toLowerCase();
   const now = new Date();
 
   return invoices.filter((invoice) => {
     const matchesSearch =
       !term ||
-      String(invoice.invoiceNumber || "").toLowerCase().includes(term) ||
-      String(invoice.customer || "").toLowerCase().includes(term);
+      String(invoice.invoiceNumber || "")
+        .toLowerCase()
+        .includes(term) ||
+      String(invoice.customer || "")
+        .toLowerCase()
+        .includes(term);
 
     const matchesStatus =
       statusFilter === "all" || invoice.status === statusFilter;
@@ -145,7 +150,10 @@ function filterInvoices(invoices, filters) {
         validInvoiceDate.getFullYear() === lastMonthDate.getFullYear() &&
         validInvoiceDate.getMonth() === lastMonthDate.getMonth();
     } else if (dateFilter === "custom") {
-      if (startDate && (!validInvoiceDate || validInvoiceDate < new Date(startDate))) {
+      if (
+        startDate &&
+        (!validInvoiceDate || validInvoiceDate < new Date(startDate))
+      ) {
         matchesDate = false;
       }
 
@@ -376,7 +384,9 @@ function GenericEditModal({
     <div className="fixed inset-0 z-50 flex justify-end bg-black/40">
       <div className="flex h-full w-full max-w-2xl flex-col bg-white shadow-2xl">
         <div className="flex items-center justify-between border-b border-border px-6 py-4">
-          <h2 className="text-[18px] font-semibold text-text-primary">{title}</h2>
+          <h2 className="text-[18px] font-semibold text-text-primary">
+            {title}
+          </h2>
           <button
             onClick={onClose}
             className="rounded-md p-2 text-text-muted transition-colors hover:bg-bg-page hover:text-text-primary"
@@ -939,17 +949,14 @@ export default function WorkspaceInvoices() {
                                       matchingCustomer?.id ||
                                       matchingCustomer?.Id ||
                                       "",
-                                    email:
-                                      detail?.BillEmail?.Address || "N/A",
-                                    terms:
-                                      detail?.SalesTermRef?.name || "N/A",
+                                    email: detail?.BillEmail?.Address || "N/A",
+                                    terms: detail?.SalesTermRef?.name || "N/A",
                                     currency:
                                       detail?.CurrencyRef?.name || "USD",
                                     txnDate: detail?.TxnDate || invoice.date,
                                     totalAmt:
                                       detail?.TotalAmt || invoice.amount,
-                                    balance:
-                                      detail?.Balance || invoice.balance,
+                                    balance: detail?.Balance || invoice.balance,
                                     status: invoice.status,
                                   });
                                   setIsEditModalOpen(true);

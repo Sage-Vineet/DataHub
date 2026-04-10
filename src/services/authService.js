@@ -1,4 +1,2 @@
-export {
-  getConnectionStatus,
-  refreshQuickbooksToken,
-} from "../lib/quickbooks";
+export { getConnectionStatus, refreshQuickbooksToken } from "../lib/quickbooks";
+export { refreshQuickbooksToken } from "../lib/quickbooks";

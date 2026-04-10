@@ -23,9 +23,7 @@ import QBDisconnectedBanner from "../../../components/common/QBDisconnectedBanne
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
 const BANK_STATEMENT_UPLOAD_ENDPOINT = `${API_BASE_URL}/upload-bank-statement`;
-const RECONCILIATION_DATA_ENDPOINTS = [
-  `${API_BASE_URL}/reconciliation-data`,
-];
+const RECONCILIATION_DATA_ENDPOINTS = [`${API_BASE_URL}/reconciliation-data`];
 const RECONCILIATION_VARIANCE_ENDPOINTS = [
   `${API_BASE_URL}/reconciliation-variance`,
 ];
@@ -150,14 +148,16 @@ const buildReconciliationRows = (bankTransactions, quickbooksTransactions) => {
     new Set([
       ...groupedBankTransactions.keys(),
       ...groupedQuickbooksTransactions.keys(),
-    ])
+    ]),
   ).sort((left, right) => left.localeCompare(right));
 
   const rows = [];
 
   for (const dateKey of orderedDateKeys) {
     const bankItems = [...(groupedBankTransactions.get(dateKey) || [])];
-    const quickbooksItems = [...(groupedQuickbooksTransactions.get(dateKey) || [])];
+    const quickbooksItems = [
+      ...(groupedQuickbooksTransactions.get(dateKey) || []),
+    ];
     const usedQuickbooks = new Set();
 
     for (const bankTransaction of bankItems) {
@@ -839,7 +839,9 @@ export default function WorkspaceReconciliation() {
       <div className="page-content">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <h1 className="text-[24px] font-bold text-text-primary">Reconciliation</h1>
+            <h1 className="text-[24px] font-bold text-text-primary">
+              Reconciliation
+            </h1>
           </div>
         </div>
 
