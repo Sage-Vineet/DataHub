@@ -68,7 +68,14 @@ const corsOptions = {
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "x-client-id"],
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "x-client-id",
+    "Cache-Control",
+    "Pragma",
+    "Expires",
+  ],
 };
 
 app.use(cors(corsOptions));
@@ -144,7 +151,7 @@ async function checkQBAuth(req, res, next) {
       workspaceCompanyName &&
       quickbooksCompanyName &&
       normalizeCompanyName(workspaceCompanyName) !==
-        normalizeCompanyName(quickbooksCompanyName);
+      normalizeCompanyName(quickbooksCompanyName);
 
     if (isMismatch) {
       disconnectConfig(clientId);
