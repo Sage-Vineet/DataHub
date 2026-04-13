@@ -15,7 +15,7 @@ const router = express.Router();
  *         description: Success
  */
 router.get("/balance-sheet", async (req, res) => {
-  const qb = getQBConfig();
+  const qb = getQBConfig(req.clientId);
 
   // Validate required config
   if (!qb.accessToken || !qb.realmId) {
@@ -41,7 +41,9 @@ router.get("/balance-sheet", async (req, res) => {
       console.log("⚠️ Token expired, attempting to refresh...");
 
       try {
-        const newAccessToken = await tokenManager.refreshAccessToken();
+        const newAccessToken = await tokenManager.refreshAccessToken(
+          req.clientId,
+        );
 
         // Retry the request with new token
         const retryResponse = await axios.get(url, {

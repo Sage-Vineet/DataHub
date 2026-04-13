@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "../../../components/compat/NextLink";
 import Header from "../../../components/Header";
+import QBDisconnectedBanner from "../../../components/common/QBDisconnectedBanner";
 import { cn } from "../../../lib/utils";
 import {
   FileText,
@@ -31,7 +32,6 @@ import {
   fetchDashboardKPIs,
   fetchFinancialTrends,
 } from "../../../services/reportService";
-import { fetchCustomers } from "../../../services/customerService";
 import { fetchInvoices } from "../../../services/invoiceService";
 import { getProfitAndLoss } from "../../../services/profitAndLossService";
 import { refreshQuickbooksToken } from "../../../services/authService";
@@ -106,7 +106,6 @@ export default function WorkspaceDashboardDatahub() {
   const [isLoading, setIsLoading] = useState(true);
   const [isClient, setIsClient] = useState(false);
   const [dynamicStats, setDynamicStats] = useState([]);
-  const [customersData, setCustomersData] = useState([]);
   const [invoicesData, setInvoicesData] = useState([]);
   const [chartDataState, setChartDataState] = useState([]);
   const [isChartLoading, setIsChartLoading] = useState(false);
@@ -185,19 +184,10 @@ export default function WorkspaceDashboardDatahub() {
   const loadKpiData = useCallback(async (start, end) => {
     setIsLoading(true);
     try {
-      const [kpiData, custsData, invsData] = await Promise.all([
+      const [kpiData, invsData] = await Promise.all([
         fetchDashboardKPIs(start, end),
-        fetchCustomers(),
         fetchInvoices(),
       ]);
-
-      const custs = Array.isArray(custsData?.QueryResponse?.Customer)
-        ? custsData.QueryResponse.Customer
-        : Array.isArray(custsData?.data?.QueryResponse?.Customer)
-          ? custsData.data.QueryResponse.Customer
-          : Array.isArray(custsData)
-            ? custsData
-            : [];
 
       const invs = Array.isArray(invsData?.QueryResponse?.Invoice)
         ? invsData.QueryResponse.Invoice
@@ -207,7 +197,6 @@ export default function WorkspaceDashboardDatahub() {
             ? invsData
             : [];
 
-      setCustomersData(custs);
       setInvoicesData(invs);
       setDynamicStats(kpiData);
 
@@ -516,6 +505,9 @@ export default function WorkspaceDashboardDatahub() {
   return (
     <>
       <Header title="Dashboard" />
+      <div className="px-6 pt-6">
+        <QBDisconnectedBanner pageName="DataHub Dashboard" />
+      </div>
       <div className="flex-1 p-6 space-y-6">
         <div className="flex items-center justify-between flex-wrap gap-4">
           <div className="flex items-center gap-3">

@@ -1,5 +1,4 @@
 const express = require("express");
-const { requireAuth } = require("../middleware/auth");
 const {
   listFolderAccess,
   createFolderAccess,
@@ -8,7 +7,6 @@ const {
 } = require("../controllers/folderAccess");
 
 const router = express.Router();
-router.use(requireAuth);
 
 router.get("/folders/:id/access", listFolderAccess);
 router.post("/folders/:id/access", createFolderAccess);

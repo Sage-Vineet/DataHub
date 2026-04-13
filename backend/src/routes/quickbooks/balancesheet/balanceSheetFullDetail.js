@@ -55,7 +55,7 @@ const router = express.Router();
  *         description: Server error
  */
 router.get("/balance-sheet-detail", async (req, res) => {
-  const qb = getQBConfig();
+  const qb = getQBConfig(req.clientId);
 
   let { start_date, end_date, accounting_method, summarize_column_by } =
     req.query;
@@ -213,11 +213,17 @@ router.get("/balance-sheet-detail", async (req, res) => {
  *         description: Failed to fetch reports
  */
 router.get("/all-reports", async (req, res) => {
-  const qb = getQBConfig();
+  const qb = getQBConfig(req.clientId);
 
   const { start_date, end_date, accounting_method } = req.query;
 
   try {
+    if (!qb.accessToken || !qb.realmId) {
+      return res.status(400).json({
+        error: "Missing QuickBooks configuration. Please authenticate first.",
+      });
+    }
+
     const headers = {
       Authorization: `Bearer ${qb.accessToken}`,
       Accept: "application/json",
@@ -225,7 +231,11 @@ router.get("/all-reports", async (req, res) => {
 
     const base = `${qb.baseUrl}/v3/company/${qb.realmId}/reports`;
 
-    const params = `start_date=${start_date}&end_date=${end_date}&accounting_method=${accounting_method}`;
+    const params = new URLSearchParams(
+      Object.entries({ start_date, end_date, accounting_method }).filter(
+        ([, value]) => value !== undefined && value !== null && value !== "",
+      ),
+    ).toString();
 
     const reportCalls = {
       accountList: axios.get(`${base}/AccountList`, { headers }),

@@ -25,6 +25,7 @@ export default function NewRequestModal({
 }) {
   const [form, setForm] = useState(DEFAULT_FORM);
   const [errors, setErrors] = useState({});
+  const [mode, setMode] = useState('single');
   const options = useMemo(() => (
     folderOptions.length
       ? folderOptions.map((opt) => (typeof opt === 'string' ? opt : opt.name)).filter(Boolean)
@@ -36,7 +37,8 @@ export default function NewRequestModal({
     const initialCategory = options[0] || '';
     setForm({ ...DEFAULT_FORM, category: initialCategory });
     setErrors({});
-  }, [isOpen]);
+    setMode('single');
+  }, [isOpen, options]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -91,9 +93,32 @@ export default function NewRequestModal({
         </div>
 
         <form onSubmit={submit} className="p-6 grid gap-4">
-          {extraContent}
+          {extraContent && (
+            <div className="space-y-4">
+              <div className="inline-flex rounded-2xl bg-gray-100 p-1">
+                <button
+                  type="button"
+                  onClick={() => setMode('single')}
+                  className={`rounded-xl px-4 py-2 text-sm font-semibold transition-colors ${mode === 'single' ? 'bg-white text-[#050505] shadow-sm' : 'text-[#6D6E71] hover:text-[#050505]'}`}
+                >
+                  Normal Request
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMode('bulk')}
+                  className={`rounded-xl px-4 py-2 text-sm font-semibold transition-colors ${mode === 'bulk' ? 'bg-white text-[#050505] shadow-sm' : 'text-[#6D6E71] hover:text-[#050505]'}`}
+                >
+                  Bulk Upload
+                </button>
+              </div>
 
-          <div className="grid gap-4 md:grid-cols-2">
+              {mode === 'bulk' && extraContent}
+            </div>
+          )}
+
+          {mode === 'single' && (
+            <>
+              <div className="grid gap-4 md:grid-cols-2">
             <div className="space-y-1.5">
               <label className="text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Request Type *</label>
               <select
@@ -245,6 +270,20 @@ export default function NewRequestModal({
               Submit
             </button>
           </div>
+            </>
+          )}
+
+          {mode === 'bulk' && (
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-4 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-[#6D6E71] hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+            </div>
+          )}
         </form>
       </div>
     </div>

@@ -23,7 +23,6 @@ import {
   createCompanyRequestItem,
   createCompanyFolder,
   createFolderDocument,
-  createRequestReminder,
   listCompanyFolders,
   listCompanyRequests,
   listRequestDocuments,
@@ -755,7 +754,10 @@ export default function ClientRequests() {
     setError('');
     setSuccess('');
     try {
-      const payload = buildCreateRequestPayload(form);
+      const payload = {
+        ...buildCreateRequestPayload(form),
+        created_by: user?.id || null,
+      };
       await createCompanyRequestItem(companyId, payload);
       await loadRequests();
       setIsNewRequestOpen(false);

@@ -59,10 +59,11 @@ function ProtectedRoute({ children, allowedRole }) {
   const { user, loading } = useAuth();
   if (loading) return <PageLoader message="Checking session..." />;
   if (!user) return <Navigate to="/login" replace />;
-  if (allowedRole && user.role !== allowedRole)
+  const allowedRoles = allowedRole === "client" ? ["client", "user"] : allowedRole ? [allowedRole] : null;
+  if (allowedRoles && !allowedRoles.includes(user.role))
     return (
       <Navigate
-        to={user.role === "broker" ? "/broker/dashboard" : "/client/dashboard"}
+        to={user.role === "broker" ? "/broker/dashboard" : user.role === "user" ? "/client/upload" : "/client/dashboard"}
         replace
       />
     );
@@ -119,7 +120,7 @@ function ClientWorkspaceWrapper() {
               message:
                 "That company was not found. Opened the first available company instead.",
             });
-            navigate(`/broker/client/${fallbackCompany.id}/dashboard`, {
+            navigate(`/broker/client/${fallbackCompany.id}/datahub-dashboard`, {
               replace: true,
               state: { company: fallbackCompany },
             });
@@ -180,6 +181,8 @@ function AppRoutes() {
               to={
                 user.role === "broker"
                   ? "/broker/dashboard"
+                  : user.role === "user"
+                    ? "/client/upload"
                   : "/client/dashboard"
               }
               replace

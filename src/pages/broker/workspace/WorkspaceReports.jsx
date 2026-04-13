@@ -25,6 +25,7 @@ import {
 import BalanceSheetReport from "../../../components/reports/balance-sheet/BalanceSheetReport";
 import ProfitAndLossReport from "../../../components/reports/profit-loss/ProfitAndLossReport";
 import CashflowReport from "../../../components/reports/cashflow/CashflowReport";
+import QBDisconnectedBanner from "../../../components/common/QBDisconnectedBanner";
 import { refreshQuickbooksToken } from "../../../services/authService";
 import {
   normalizeAccountingMethod,
@@ -34,7 +35,6 @@ import {
   exportToExcel,
   exportToPDF,
   flattenDetailData,
-  flattenRawReportData,
   flattenSummaryData,
 } from "../../../lib/export-utils";
 
@@ -324,6 +324,8 @@ export default function WorkspaceReports() {
             {isSyncing ? "Syncing..." : "Sync"}
           </button>
         </div>
+
+        <QBDisconnectedBanner pageName="Reports" />
 
         <div className="mb-6 flex gap-6 border-b border-border pb-px">
           {REPORT_TABS.map((tab) => (

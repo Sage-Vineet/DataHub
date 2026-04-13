@@ -1,6 +1,7 @@
 const express = require("express");
 const axios = require("axios");
 const crypto = require("crypto");
+const db = require("../../db");
 const {
   getQBConfig,
   updateTokens,
@@ -60,6 +61,25 @@ function buildFrontendHashUrl(baseUrl, hashPath, searchParams = "") {
     ? hashPath
     : "/broker/companies";
   return `${baseUrl}/#${normalizedHash}${searchParams}`;
+}
+
+function normalizeCompanyName(name) {
+  return String(name || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
+async function getWorkspaceCompanyName(clientId) {
+  if (!clientId) return null;
+  try {
+    const result = await db.query("SELECT name FROM companies WHERE id = ?", [
+      clientId,
+    ]);
+    return result?.rows?.[0]?.name || null;
+  } catch (error) {
+    console.error("Failed to fetch workspace company name:", error.message);
+    return null;
+  }
 }
 
 // ────────────────────────────────────────────────────────────
@@ -198,6 +218,17 @@ router.get("/api/auth/callback", async (req, res) => {
     process.env.QB_REDIRECT_URI || `${appBaseUrl}/api/auth/callback`;
 
   try {
+    const workspaceCompanyName = await getWorkspaceCompanyName(clientId);
+    if (!workspaceCompanyName) {
+      return res.redirect(
+        buildFrontendHashUrl(
+          frontendUrl,
+          redirectHash,
+          `?qbStatus=error&qbMessage=${encodeURIComponent("Workspace company could not be identified. Please retry from the selected company connection page.")}`,
+        ),
+      );
+    }
+
     const tokenResponse = await axios.post(
       "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer",
       new URLSearchParams({
@@ -214,6 +245,55 @@ router.get("/api/auth/callback", async (req, res) => {
       },
     );
 
+    let quickbooksCompanyName = null;
+    try {
+      const companyRes = await axios.get(
+        `${qb.baseUrl}/v3/company/${realmId}/companyinfo/${realmId}?minorversion=75`,
+        {
+          headers: {
+            Authorization: `Bearer ${tokenResponse.data.access_token}`,
+            Accept: "application/json",
+          },
+        },
+      );
+
+      const info = companyRes.data.CompanyInfo;
+      if (info?.CompanyName) {
+        quickbooksCompanyName = info.CompanyName;
+      }
+    } catch (companyErr) {
+      console.warn("Could not fetch company info:", companyErr.message);
+    }
+
+    if (!quickbooksCompanyName) {
+      disconnectConfig(clientId);
+      return res.redirect(
+        buildFrontendHashUrl(
+          frontendUrl,
+          redirectHash,
+          `?qbStatus=error&qbMessage=${encodeURIComponent("Unable to verify QuickBooks company name. Connection was not established.")}`,
+        ),
+      );
+    }
+
+    const workspaceNormalized = normalizeCompanyName(workspaceCompanyName);
+    const quickbooksNormalized = normalizeCompanyName(quickbooksCompanyName);
+    const isNameMismatch =
+      workspaceNormalized &&
+      quickbooksNormalized &&
+      workspaceNormalized !== quickbooksNormalized;
+
+    if (isNameMismatch) {
+      disconnectConfig(clientId);
+      return res.redirect(
+        buildFrontendHashUrl(
+          frontendUrl,
+          redirectHash,
+          `?qbStatus=error&qbMessage=${encodeURIComponent(`Company mismatch: selected workspace "${workspaceCompanyName}" does not match QuickBooks company "${quickbooksCompanyName}". Connection blocked.`)}`,
+        ),
+      );
+    }
+
     const now = new Date().toISOString();
     const tokenExpiresAt = new Date(
       Date.now() + (tokenResponse.data.expires_in || 3600) * 1000,
@@ -225,6 +305,7 @@ router.get("/api/auth/callback", async (req, res) => {
       refreshToken: tokenResponse.data.refresh_token,
       basicToken: basicToken,
       companyId: realmId,
+      companyName: quickbooksCompanyName,
       connectedAt: now,
       lastSynced: now,
       tokenExpiresAt: tokenExpiresAt,
@@ -239,29 +320,9 @@ router.get("/api/auth/callback", async (req, res) => {
     };
 
     setQBConfig(clientId, tokenData);
-
-    // Fetch company info
-    try {
-      const companyRes = await axios.get(
-        `${qb.baseUrl}/v3/company/${realmId}/companyinfo/${realmId}?minorversion=75`,
-        {
-          headers: {
-            Authorization: `Bearer ${tokenResponse.data.access_token}`,
-            Accept: "application/json",
-          },
-        },
-      );
-
-      const info = companyRes.data.CompanyInfo;
-      if (info) {
-        setQBConfig(clientId, { companyName: info.CompanyName });
-        console.log(
-          `🏢 Connected to Company: ${info.CompanyName} for Client: ${clientId}`,
-        );
-      }
-    } catch (companyErr) {
-      console.warn("⚠️ Could not fetch company info:", companyErr.message);
-    }
+    console.log(
+      `Connected to Company: ${quickbooksCompanyName} for Client: ${clientId}`,
+    );
 
     console.log(
       `✅ QuickBooks authentication successful for Client: ${clientId}`,
@@ -287,7 +348,7 @@ router.get("/api/auth/callback", async (req, res) => {
 // ────────────────────────────────────────────────────────────
 // GET /api/auth/status — Scoped connection status
 // ────────────────────────────────────────────────────────────
-router.get("/api/auth/status", (req, res) => {
+router.get("/api/auth/status", async (req, res) => {
   const clientId = getClientId(req);
   if (!clientId) {
     return res.json({
@@ -304,10 +365,32 @@ router.get("/api/auth/status", (req, res) => {
     return res.json({ success: true, isConnected: false, syncedEntities: [] });
   }
 
+  const workspaceCompanyName = await getWorkspaceCompanyName(clientId);
+  const quickbooksCompanyName = qb.companyName || null;
+  const isNameMismatch =
+    workspaceCompanyName &&
+    quickbooksCompanyName &&
+    normalizeCompanyName(workspaceCompanyName) !==
+      normalizeCompanyName(quickbooksCompanyName);
+
+  if (isNameMismatch) {
+    disconnectConfig(clientId);
+    return res.json({
+      success: true,
+      isConnected: false,
+      isNameMismatch: true,
+      message: `Company mismatch: selected workspace "${workspaceCompanyName}" does not match QuickBooks company "${quickbooksCompanyName}".`,
+      workspaceCompanyName,
+      quickbooksCompanyName,
+      syncedEntities: [],
+    });
+  }
+
   return res.json({
     success: true,
     isConnected: true,
-    companyName: qb.companyName || null,
+    companyName: quickbooksCompanyName,
+    workspaceCompanyName: workspaceCompanyName || null,
     companyId: qb.companyId || qb.realmId,
     environment: qb.environment || "production",
     connectedAt: qb.connectedAt || null,

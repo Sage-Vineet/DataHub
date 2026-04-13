@@ -20,7 +20,7 @@ const router = express.Router();
  *         description: Server error
  */
 router.get("/profit-and-loss", async (req, res) => {
-  const qb = getQBConfig();
+  const qb = getQBConfig(req.clientId);
 
   // Build URL without any user inputs - just the basic report
   const url = `${qb.baseUrl}/v3/company/${qb.realmId}/reports/ProfitAndLoss?minorversion=75`;
@@ -43,7 +43,9 @@ router.get("/profit-and-loss", async (req, res) => {
       console.log("⚠️ Token expired, attempting to refresh...");
 
       try {
-        const newAccessToken = await tokenManager.refreshAccessToken();
+        const newAccessToken = await tokenManager.refreshAccessToken(
+          req.clientId,
+        );
 
         // Retry the request with new token
         const retryResponse = await axios.get(url, {
@@ -122,7 +124,7 @@ router.get("/profit-and-loss", async (req, res) => {
  *         description: Server error
  */
 router.get("/profit-and-loss-detail", async (req, res) => {
-  const qb = getQBConfig();
+  const qb = getQBConfig(req.clientId);
 
   // Extract query parameters
   let { start_date, end_date, accounting_method } = req.query;
@@ -219,6 +221,30 @@ router.get("/profit-and-loss-detail", async (req, res) => {
     // Return raw QuickBooks response
     return res.json(response.data);
   } catch (error) {
+    if (error.response?.status === 401) {
+      try {
+        const newAccessToken = await tokenManager.refreshAccessToken(
+          req.clientId,
+        );
+
+        const retryResponse = await axios.get(url, {
+          headers: {
+            Authorization: `Bearer ${newAccessToken}`,
+            Accept: "application/json",
+            "User-Agent": "QuickBooks-Integration/1.0",
+          },
+        });
+
+        return res.json(retryResponse.data);
+      } catch (refreshError) {
+        console.error("❌ Token refresh failed:", refreshError.message);
+        return res.status(401).json({
+          error: "Authentication failed. Please re-authenticate.",
+          details: refreshError.response?.data || refreshError.message,
+        });
+      }
+    }
+
     // Handle other errors
     console.error("❌ Profit and Loss Detail API Error:", error.message);
     const qbError = error.response?.data?.Fault?.Error?.[0];

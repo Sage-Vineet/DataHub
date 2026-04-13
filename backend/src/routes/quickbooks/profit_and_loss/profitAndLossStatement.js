@@ -51,7 +51,7 @@ const router = express.Router();
  *         description: Server error
  */
 router.get("/profit-and-loss-statement", async (req, res) => {
-  const qb = getQBConfig();
+  const qb = getQBConfig(req.clientId);
 
   // Validate QuickBooks configuration
   if (!qb.accessToken || !qb.realmId) {
@@ -167,7 +167,9 @@ router.get("/profit-and-loss-statement", async (req, res) => {
         console.log("⚠️ Token expired, attempting to refresh...");
 
         try {
-          const newAccessToken = await tokenManager.refreshAccessToken();
+          const newAccessToken = await tokenManager.refreshAccessToken(
+            req.clientId,
+          );
           console.log("✅ Token refreshed successfully!");
 
           // Build query parameters again for retry

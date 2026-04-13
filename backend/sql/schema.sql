@@ -67,6 +67,13 @@ CREATE TABLE IF NOT EXISTS users (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS user_companies (
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, company_id)
+);
+
 CREATE TABLE IF NOT EXISTS buyer_groups (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
@@ -207,6 +214,8 @@ CREATE TABLE IF NOT EXISTS reconciliation_transactions (
 );
 
 CREATE INDEX IF NOT EXISTS idx_requests_company_id ON requests(company_id);
+CREATE INDEX IF NOT EXISTS idx_user_companies_user ON user_companies(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_companies_company ON user_companies(company_id);
 CREATE INDEX IF NOT EXISTS idx_documents_folder_id ON documents(folder_id);
 CREATE INDEX IF NOT EXISTS idx_documents_upload_id ON documents(upload_id);
 CREATE INDEX IF NOT EXISTS idx_folders_company_parent ON folders(company_id, parent_id);

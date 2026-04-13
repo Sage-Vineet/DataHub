@@ -38,6 +38,23 @@ if (isProduction) {
     }
 
     try {
+      await db.exec(`
+        CREATE TABLE IF NOT EXISTS user_companies (
+          user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          PRIMARY KEY (user_id, company_id)
+        )
+      `);
+      await db.exec("CREATE INDEX IF NOT EXISTS idx_user_companies_user ON user_companies(user_id)");
+      await db.exec("CREATE INDEX IF NOT EXISTS idx_user_companies_company ON user_companies(company_id)");
+      await db.exec(`
+        INSERT OR IGNORE INTO user_companies (user_id, company_id)
+        SELECT id, company_id FROM users WHERE company_id IS NOT NULL
+      `);
+    } catch (_err) {}
+
+    try {
       const groupColumns = await db.all("PRAGMA table_info(buyer_groups)");
       const hasDescription = groupColumns.some(
         (col) => col.name === "description",

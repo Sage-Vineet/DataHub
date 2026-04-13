@@ -137,7 +137,7 @@ export default function BrokerDashboard() {
             {spotlightCompanies.map((company) => (
               <button
                 key={company.id}
-                onClick={() => navigate(`/broker/client/${company.id}/dashboard`, { state: { company } })}
+                onClick={() => navigate(`/broker/client/${company.id}/datahub-dashboard`, { state: { company } })}
                 className="flex w-full items-center justify-between px-5 py-4 text-left transition-colors hover:bg-[#FAFBF7]"
               >
                 <div className="flex items-center gap-3">

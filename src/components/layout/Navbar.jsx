@@ -10,6 +10,15 @@ export default function Navbar({ onMenuClick }) {
 
   const activeReminders = useMemo(() => reminders.filter((item) => item.status === 'active'), []);
   const unread = activeReminders.length;
+  const workspaceLabel = useMemo(() => {
+    if (!user) return 'Workspace';
+    if (user.company) return user.company;
+    if (user.role === 'user') {
+      const totalAssigned = user.assignedCompanies?.length || user.companyIds?.length || 0;
+      return totalAssigned > 0 ? `${totalAssigned} Assigned Client${totalAssigned === 1 ? '' : 's'}` : 'User Workspace';
+    }
+    return user.role || 'Workspace';
+  }, [user]);
 
   return (
     <header className="sticky top-0 z-20 border-b border-border bg-bg-card">
@@ -93,7 +102,7 @@ export default function Navbar({ onMenuClick }) {
             >
               <div className="flex items-center gap-2">
                 <Building2 size={16} />
-                <span>{user?.company || user?.role || 'Workspace'}</span>
+                <span>{workspaceLabel}</span>
               </div>
               <ChevronDown size={14} />
             </button>

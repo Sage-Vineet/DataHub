@@ -190,7 +190,7 @@ export default function BrokerClients() {
                   <td className="px-4 py-4 text-sm text-[#6D6E71]">{client.lastFinanceSync}</td>
                   <td className="px-4 py-4 text-right">
                     <button
-                      onClick={() => navigate(`/broker/client/${client.id}/dashboard`, { state: { company: client } })}
+                      onClick={() => navigate(`/broker/client/${client.id}/datahub-dashboard`, { state: { company: client } })}
                       className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-xs font-semibold text-[#050505] transition-all hover:border-[#8BC53D]/50 hover:bg-[#F8FBF1]"
                     >
                       Open Workspace
