@@ -71,6 +71,9 @@ const corsOptions = {
   allowedHeaders: [
     "Content-Type",
     "Authorization",
+    "x-auth-token",
+    "x-access-token",
+    "x-token",
     "x-client-id",
     "Cache-Control",
     "Pragma",

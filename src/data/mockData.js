@@ -1,4 +1,5 @@
-﻿// ─── Companies / Clients ────────────────────────────────────────────────────
+﻿
+// ─── Companies / Clients ────────────────────────────────────────────────────
 export const companies = [
   { id: 'co1', name: 'Infosys Ltd.', contact: 'Ananya Mehta', email: 'client@infosys.com', phone: '+91 98765 43210', industry: 'IT Services', status: 'active', since: '2024-01-15', logo: 'IN' },
   { id: 'co2', name: 'TCS Global', contact: 'Vikram Patel', email: 'vikram@tcs.com', phone: '+91 97654 32109', industry: 'IT Services', status: 'active', since: '2024-03-20', logo: 'TC' },
