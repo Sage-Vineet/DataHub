@@ -3,8 +3,8 @@
   "private": true,
   "version": "0.0.0",
   "engines": {
-  "node": "20.x"
-},
+    "node": "20.x"
+  },
   "type": "module",
   "scripts": {
     "dev": "npm run dev:full",
@@ -52,5 +52,8 @@
     "globals": "^17.4.0",
     "nodemon": "^3.1.4",
     "vite": "5.4.19"
+  },
+  "optionalDependencies": {
+    "@rollup/rollup-linux-x64-gnu": "^4.60.1"
   }
 }
