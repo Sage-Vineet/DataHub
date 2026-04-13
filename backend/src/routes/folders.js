@@ -1,5 +1,4 @@
 const express = require("express");
-const { requireAuth } = require("../middleware/auth");
 const {
   listFolders,
   listFolderTree,
@@ -13,7 +12,6 @@ const {
 } = require("../controllers/folders");
 
 const router = express.Router();
-router.use(requireAuth);
 
 router.get("/companies/:id/folders/tree", listFolderTree);
 router.get("/companies/:id/folders", listFolders);

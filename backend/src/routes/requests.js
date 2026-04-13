@@ -1,5 +1,4 @@
 const express = require("express");
-const { requireAuth } = require("../middleware/auth");
 const {
   listRequests,
   createRequest,
@@ -15,7 +14,6 @@ const {
 } = require("../controllers/requests");
 
 const router = express.Router();
-router.use(requireAuth);
 
 router.get("/companies/:id/requests", listRequests);
 router.post("/companies/:id/requests/bulk", createRequestsBulk);

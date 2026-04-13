@@ -24,6 +24,18 @@ function ensureArray(payload) {
   return [];
 }
 
+function resolveClientIdFromLocation() {
+  if (typeof window === 'undefined') return null;
+
+  const hash = window.location.hash || '';
+  const pathname = window.location.pathname || '';
+  const hashMatch = hash.match(/\/client\/([^/?#]+)/);
+  const pathMatch = pathname.match(/\/client\/([^/?#]+)/);
+  const match = hashMatch || pathMatch;
+
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
 export function getStoredToken() {
   return localStorage.getItem(TOKEN_KEY);
 }
@@ -39,14 +51,19 @@ export function setStoredToken(token) {
 
 async function request(path, options = {}) {
   const token = options.token ?? getStoredToken();
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
   const headers = {
     ...(options.body ? { 'Content-Type': 'application/json' } : {}),
     ...(options.headers || {}),
     'Cache-Control': 'no-store',
+    ...(clientId ? { 'X-Client-Id': clientId } : {}),
   };
 
   if (token) {
     headers.Authorization = `Bearer ${token}`;
+    headers['X-Access-Token'] = token;
+    headers['X-Auth-Token'] = token;
+    headers['X-Token'] = token;
   }
 
   const response = await fetch(buildUrl(path), {
@@ -210,7 +227,7 @@ export function listCompanyReminders(companyId) {
 }
 
 export function listCompanyActivity(companyId) {
-  return request(`/${companyId}/activity`).then(ensureArray);
+  return request(`/companies/${companyId}/activity`).then(ensureArray);
 }
 
 export async function uploadFile(file, options = {}) {

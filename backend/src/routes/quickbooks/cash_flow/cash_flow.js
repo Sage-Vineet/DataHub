@@ -36,7 +36,7 @@ const router = express.Router();
  *         description: End date filter
  */
 router.get("/qb-transactions", async (req, res) => {
-  const qb = getQBConfig();
+  const qb = getQBConfig(req.clientId);
 
   const headers = {
     Authorization: `Bearer ${qb.accessToken}`,
@@ -118,7 +118,7 @@ router.get("/qb-transactions", async (req, res) => {
  *         description: Accounting method (Cash or Accrual)
  */
 router.get("/qb-cashflow", async (req, res) => {
-  const qb = getQBConfig();
+  const qb = getQBConfig(req.clientId);
 
   try {
     const url = `${qb.baseUrl}/v3/company/${qb.realmId}/reports/CashFlow`;
@@ -137,8 +137,42 @@ router.get("/qb-cashflow", async (req, res) => {
 
     res.json(response.data);
   } catch (error) {
+    if (error.response?.status === 401) {
+      try {
+        const newAccessToken = await tokenManager.refreshAccessToken(
+          req.clientId,
+        );
+
+        const retryResponse = await axios.get(
+          `${qb.baseUrl}/v3/company/${qb.realmId}/reports/CashFlow`,
+          {
+            headers: {
+              Authorization: `Bearer ${newAccessToken}`,
+              Accept: "application/json",
+            },
+            params: {
+              start_date: req.query.start_date,
+              end_date: req.query.end_date,
+              accounting_method: req.query.accounting_method,
+            },
+          },
+        );
+
+        return res.json(retryResponse.data);
+      } catch (refreshError) {
+        console.error("CashFlow token refresh error:", refreshError.message);
+        return res.status(401).json({
+          error: "Authentication failed. Please re-authenticate.",
+          details: refreshError.response?.data || refreshError.message,
+        });
+      }
+    }
+
     console.error("CashFlow API Error:", error.response?.data || error.message);
-    res.status(500).json({ error: "Failed to fetch cash flow report" });
+    res.status(error.response?.status || 500).json({
+      error: "Failed to fetch cash flow report",
+      details: error.response?.data || error.message,
+    });
   }
 });
 /**
@@ -159,7 +193,7 @@ router.get("/qb-cashflow", async (req, res) => {
  */
 
 router.get("/qb-accounts", async (req, res) => {
-  const qb = getQBConfig();
+  const qb = getQBConfig(req.clientId);
 
   try {
     const createdAfter = req.query.created_after || "2014-03-31";
@@ -226,101 +260,98 @@ router.get("/qb-accounts", async (req, res) => {
  */
 
 router.get("/qb-cashflow-engine", async (req, res) => {
-  const qb = getQBConfig();
-
-  const headers = {
-    Authorization: `Bearer ${qb.accessToken}`,
-    Accept: "application/json",
-  };
+  const qb = getQBConfig(req.clientId);
 
   try {
-    const baseQuery = `${qb.baseUrl}/v3/company/${qb.realmId}/query`;
+    const { start_date, end_date, accounting_method, created_after } = req.query;
 
-    const { start_date, end_date, accounting_method, created_after } =
-      req.query;
+    async function fetchCombined(accessToken) {
+      const headers = {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: "application/json",
+      };
+      const baseQuery = `${qb.baseUrl}/v3/company/${qb.realmId}/query`;
 
-    // =============================
-    // Transactions queries
-    // =============================
+      const queries = {
+        invoices: "SELECT * FROM Invoice MAXRESULTS 50",
+        payments: "SELECT * FROM Payment MAXRESULTS 50",
+        bills: "SELECT * FROM Bill MAXRESULTS 50",
+        purchases: "SELECT * FROM Purchase MAXRESULTS 50",
+        deposits: "SELECT * FROM Deposit MAXRESULTS 50",
+      };
 
-    const queries = {
-      invoices: "SELECT * FROM Invoice MAXRESULTS 50",
-      payments: "SELECT * FROM Payment MAXRESULTS 50",
-      bills: "SELECT * FROM Bill MAXRESULTS 50",
-      purchases: "SELECT * FROM Purchase MAXRESULTS 50",
-      deposits: "SELECT * FROM Deposit MAXRESULTS 50",
-    };
+      const transactions = {};
 
-    const transactions = {};
+      for (const key in queries) {
+        const response = await axios.get(baseQuery, {
+          headers,
+          params: {
+            query: queries[key],
+            minorversion: 75,
+          },
+        });
 
-    for (const key in queries) {
-      const response = await axios.get(baseQuery, {
-        headers,
+        transactions[key] = response.data.QueryResponse || {};
+      }
+
+      const cashflowResponse = await axios.get(
+        `${qb.baseUrl}/v3/company/${qb.realmId}/reports/CashFlow`,
+        {
+          headers,
+          params: {
+            start_date,
+            end_date,
+            accounting_method,
+          },
+        },
+      );
+
+      const createdAfter = created_after || "2014-03-31";
+      const accountQuery = `select * from Account where Metadata.CreateTime > '${createdAfter}'`;
+
+      const accountsResponse = await axios.get(baseQuery, {
+        headers: {
+          ...headers,
+          "Content-Type": "text/plain",
+        },
         params: {
-          query: queries[key],
+          query: accountQuery,
           minorversion: 75,
         },
       });
 
-      transactions[key] = response.data.QueryResponse || {};
-    }
-
-    // =============================
-    // Cashflow report
-    // =============================
-
-    const cashflowResponse = await axios.get(
-      `${qb.baseUrl}/v3/company/${qb.realmId}/reports/CashFlow`,
-      {
-        headers,
-        params: {
+      return {
+        filtersUsed: {
           start_date,
           end_date,
           accounting_method,
+          created_after,
         },
-      },
-    );
+        transactions,
+        cashflow: cashflowResponse.data,
+        accounts: accountsResponse.data,
+      };
+    }
 
-    // =============================
-    // Accounts query
-    // =============================
-
-    const createdAfter = created_after || "2014-03-31";
-
-    const accountQuery = `select * from Account where Metadata.CreateTime > '${createdAfter}'`;
-
-    const accountsResponse = await axios.get(baseQuery, {
-      headers: {
-        ...headers,
-        "Content-Type": "text/plain",
-      },
-      params: {
-        query: accountQuery,
-        minorversion: 75,
-      },
-    });
-
-    // =============================
-    // Final combined response
-    // =============================
-
-    res.json({
-      filtersUsed: {
-        start_date,
-        end_date,
-        accounting_method,
-        created_after,
-      },
-
-      transactions,
-      cashflow: cashflowResponse.data,
-      accounts: accountsResponse.data,
-    });
+    try {
+      const payload = await fetchCombined(qb.accessToken);
+      return res.json(payload);
+    } catch (innerError) {
+      if (innerError.response?.status === 401) {
+        const newAccessToken = await tokenManager.refreshAccessToken(
+          req.clientId,
+        );
+        const payload = await fetchCombined(newAccessToken);
+        return res.json(payload);
+      }
+      throw innerError;
+    }
   } catch (error) {
     console.error("Combined API Error:", error.response?.data || error.message);
 
-    res.status(500).json({
+    res.status(error.response?.status || 500).json({
       error: "Failed to fetch combined QuickBooks data",
+      details: error.response?.data || error.message,
     });
   }
 });

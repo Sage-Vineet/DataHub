@@ -1,5 +1,4 @@
 const express = require("express");
-const { requireAuth } = require("../middleware/auth");
 const {
   listCompanies,
   createCompany,
@@ -13,8 +12,6 @@ const router = express.Router();
 router.get("/test", (req, res) => {
   res.json({ message: "Test endpoint works" });
 });
-
-router.use(requireAuth);
 
 router.get("/", listCompanies);
 router.post("/", createCompany);

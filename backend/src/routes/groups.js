@@ -1,5 +1,4 @@
 const express = require("express");
-const { requireAuth } = require("../middleware/auth");
 const {
   listGroups,
   createGroup,
@@ -11,7 +10,6 @@ const {
 } = require("../controllers/groups");
 
 const router = express.Router();
-router.use(requireAuth);
 
 router.get("/companies/:id/groups", listGroups);
 router.post("/companies/:id/groups", createGroup);

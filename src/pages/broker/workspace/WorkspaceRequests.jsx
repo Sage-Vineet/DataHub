@@ -851,7 +851,10 @@ export default function WorkspaceRequests() {
     setRequestState(prev => prev.map(r => (r.id === id ? { ...r, ...patch } : r)));
     try {
       if (patch.narrativeResponse !== undefined) {
-        await updateRequestNarrative(id, { content: patch.narrativeResponse });
+        await updateRequestNarrative(id, {
+          content: patch.narrativeResponse,
+          updated_by: user?.id || null,
+        });
       }
       const apiPatch = mapUiPatchToApi(patch);
       if (Object.keys(apiPatch).length > 0) {
@@ -867,7 +870,10 @@ export default function WorkspaceRequests() {
     setError('');
     setSuccess('');
     try {
-      const payload = buildCreateRequestPayload(form);
+      const payload = {
+        ...buildCreateRequestPayload(form),
+        created_by: user?.id || null,
+      };
       await createCompanyRequestItem(clientId, payload);
       await loadRequests();
       setIsNewRequestOpen(false);
@@ -913,6 +919,7 @@ export default function WorkspaceRequests() {
           due_date: `${row.due_date ?? ''}`.trim(),
           assigned_to: `${row.assigned_to ?? ''}`.trim(),
           visible: normalizeVisibleFlag(row.visible),
+          created_by: user?.id || null,
         }));
 
       if (requests.length === 0) {
@@ -939,7 +946,10 @@ export default function WorkspaceRequests() {
         request={activeRequest}
         allRequests={requestState}
         onUpdateRequest={updateRequestState}
-        onSendReminder={(id) => createRequestReminder(id, { sent_at: new Date().toISOString() }).catch(() => {})}
+        onSendReminder={(id) => createRequestReminder(id, {
+          sent_at: new Date().toISOString(),
+          sent_by: user?.id || null,
+        }).catch(() => {})}
         onAttachDocument={(id, doc) => attachRequestDocument(id, { document_id: doc.id, visible: true }).catch(() => {})}
       />
     );
@@ -1110,7 +1120,7 @@ export default function WorkspaceRequests() {
                 <button
                   type="button"
                   onClick={uploadBulkRequests}
-                  disabled={bulkUploading}
+                  disabled={bulkUploading || !bulkFile}
                   className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#05164D] px-4 py-2.5 text-xs font-semibold text-white hover:bg-[#0b2a79] disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {bulkUploading ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}

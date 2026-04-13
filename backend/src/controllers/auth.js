@@ -16,6 +16,45 @@ function ensureRows(result) {
 
 const CLIENT_STATIC_PASSWORD = process.env.CLIENT_STATIC_PASSWORD || "123456";
 
+async function syncUserCompanyAssignment(userId, companyId) {
+  if (!userId || !companyId) return;
+  await db.query(
+    "INSERT INTO user_companies (user_id, company_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
+    [userId, companyId]
+  );
+}
+
+async function attachAssignedCompanies(user) {
+  if (!user?.id) return user;
+  const companies = ensureRows(await db.query(
+    `SELECT c.id, c.name, c.industry, c.status, c.contact_email
+     FROM user_companies uc
+     JOIN companies c ON c.id = uc.company_id
+     WHERE uc.user_id = ?
+     ORDER BY c.name ASC`,
+    [user.id]
+  ));
+
+  const hasPrimary = user.company_id && companies.some((company) => String(company.id) === String(user.company_id));
+  const assignedCompanies = hasPrimary || !user.company_id
+    ? companies
+    : [{ id: user.company_id, name: user.company_name }, ...companies];
+  const normalizedEmail = String(user.email || "").trim().toLowerCase();
+  const isSeller = assignedCompanies.some((company) => (
+    String(company.contact_email || "").trim().toLowerCase() === normalizedEmail
+  ));
+  const effectiveRole = user.role === "buyer"
+    ? (isSeller ? "client" : "user")
+    : user.role;
+
+  return {
+    ...user,
+    effective_role: effectiveRole,
+    company_ids: assignedCompanies.map((company) => company.id).filter(Boolean),
+    assigned_companies: assignedCompanies,
+  };
+}
+
 const DEMO_USERS = [
   {
     email: "broker@leo.com",
@@ -159,6 +198,7 @@ const login = asyncHandler(async (req, res) => {
 
   if (demo && password === demo.password) {
     user = await ensureDemoUser(demo);
+    await syncUserCompanyAssignment(user?.id, user?.company_id);
   }
 
   if (!user) {
@@ -177,6 +217,7 @@ const login = asyncHandler(async (req, res) => {
       if (password === CLIENT_STATIC_PASSWORD) {
         user = await ensureBuyerForEmail(normalizedEmail);
         if (user) {
+          await syncUserCompanyAssignment(user.id, user.company_id);
           await ensureDefaultFolders(user.company_id, user.id);
         }
       } else {
@@ -185,6 +226,7 @@ const login = asyncHandler(async (req, res) => {
     }
 
     if (user.role === "buyer" && password === CLIENT_STATIC_PASSWORD) {
+      await syncUserCompanyAssignment(user.id, user.company_id);
       await ensureDefaultFolders(user.company_id, user.id);
     } else {
       const ok = await bcrypt.compare(password, user.password_hash);
@@ -195,7 +237,7 @@ const login = asyncHandler(async (req, res) => {
   }
 
   const token = signToken(user.id);
-  const safeUser = { ...user };
+  const safeUser = { ...(await attachAssignedCompanies(user)) };
   delete safeUser.password_hash;
 
   return res.json({ token, user: safeUser });

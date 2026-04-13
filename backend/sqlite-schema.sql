@@ -33,6 +33,13 @@ CREATE TABLE IF NOT EXISTS users (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS user_companies (
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, company_id)
+);
+
 CREATE TABLE IF NOT EXISTS buyer_groups (
   id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))),2) || '-' || substr('89ab',abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6)))),
   company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
@@ -171,6 +178,8 @@ CREATE TABLE IF NOT EXISTS reconciliation_transactions (
 
 -- Create indexes for better performance
 CREATE INDEX IF NOT EXISTS idx_requests_company_id ON requests(company_id);
+CREATE INDEX IF NOT EXISTS idx_user_companies_user ON user_companies(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_companies_company ON user_companies(company_id);
 CREATE INDEX IF NOT EXISTS idx_documents_folder_id ON documents(folder_id);
 CREATE INDEX IF NOT EXISTS idx_documents_upload_id ON documents(upload_id);
 CREATE INDEX IF NOT EXISTS idx_folders_company_parent ON folders(company_id, parent_id);

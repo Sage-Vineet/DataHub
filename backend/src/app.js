@@ -25,7 +25,8 @@ const cashflowRoutes = require("./routes/quickbooks/cash_flow/cash_flow");
 const reconciliationRoutes = require("./routes/quickbooks/reconciliation/Reconciliation");
 const bankStatementRoutes = require("./routes/quickbooks/reconciliation/bankStatement");
 const bankVsBooksRoutes = require("./routes/quickbooks/reconciliation/bankVsBooks");
-const { getQBConfig, validateConfig } = require("./qbconfig");
+const db = require("./db");
+const { getQBConfig, disconnectConfig } = require("./qbconfig");
 
 const app = express();
 
@@ -36,7 +37,11 @@ const allowedOrigins = Array.from(
       process.env.APP_URL,
       process.env.CORS_ORIGIN,
       "http://localhost:5173",
+      "http://localhost:5174",
+      "http://localhost:5175",
       "http://127.0.0.1:5173",
+      "http://127.0.0.1:5174",
+      "http://127.0.0.1:5175",
       "http://localhost:3000",
       "http://127.0.0.1:3000",
     ]
@@ -69,7 +74,13 @@ app.use("/companies", companyRoutes);
 app.use("/", tokenRoutes);
 app.use("/", uploadRoutes);
 
-function checkQBAuth(req, res, next) {
+function normalizeCompanyName(name) {
+  return String(name || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
+async function checkQBAuth(req, res, next) {
   // 1. Try explicit header
   let clientId = req.headers["x-client-id"];
 
@@ -107,20 +118,84 @@ function checkQBAuth(req, res, next) {
     });
   }
 
+  try {
+    const result = await db.query("SELECT name FROM companies WHERE id = ?", [
+      clientId,
+    ]);
+    const workspaceCompanyName = result?.rows?.[0]?.name || null;
+    const quickbooksCompanyName = qb.companyName || null;
+    const isMismatch =
+      workspaceCompanyName &&
+      quickbooksCompanyName &&
+      normalizeCompanyName(workspaceCompanyName) !==
+        normalizeCompanyName(quickbooksCompanyName);
+
+    if (isMismatch) {
+      disconnectConfig(clientId);
+      return res.status(401).json({
+        success: false,
+        isConnected: false,
+        isNameMismatch: true,
+        message: `Company mismatch: selected workspace "${workspaceCompanyName}" does not match QuickBooks company "${quickbooksCompanyName}". Connection blocked.`,
+      });
+    }
+  } catch (error) {
+    console.error("Company isolation check failed:", error.message);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to validate company connection.",
+    });
+  }
+
   next();
 }
 
-app.use("/", checkQBAuth, balanceSheetRoutes);
-app.use("/", checkQBAuth, balanceSheetDetailRoutes);
-app.use("/", checkQBAuth, generalLedgerRoutes);
-app.use("/", checkQBAuth, profitAndLossRoutes);
-app.use("/", checkQBAuth, profitAndLossStatementRoutes);
-app.use("/", checkQBAuth, customerFinanceRoutes);
-app.use("/", checkQBAuth, invoiceFinanceRoutes);
-app.use("/", checkQBAuth, cashflowRoutes);
-app.use("/", checkQBAuth, reconciliationRoutes);
-app.use("/", checkQBAuth, bankStatementRoutes);
-app.use("/", checkQBAuth, bankVsBooksRoutes);
+function isQuickBooksRoute(pathname = "") {
+  return (
+    pathname.startsWith("/balance-sheet") ||
+    pathname.startsWith("/balance-sheet-detail") ||
+    pathname.startsWith("/all-reports") ||
+    pathname.startsWith("/general-ledger") ||
+    pathname.startsWith("/profit-and-loss") ||
+    pathname.startsWith("/profit-and-loss-detail") ||
+    pathname.startsWith("/profit-and-loss-statement") ||
+    pathname.startsWith("/customers") ||
+    pathname.startsWith("/invoices") ||
+    pathname.startsWith("/api/invoices") ||
+    pathname.startsWith("/qb-transactions") ||
+    pathname.startsWith("/qb-cashflow") ||
+    pathname.startsWith("/qb-accounts") ||
+    pathname.startsWith("/qb-cashflow-engine") ||
+    pathname.startsWith("/qb-general-ledger") ||
+    pathname.startsWith("/qb-reconciliation-transactions") ||
+    pathname.startsWith("/qb-trial-balance") ||
+    pathname.startsWith("/qb-reconciliation-engine") ||
+    pathname.startsWith("/bank-transactions") ||
+    pathname.startsWith("/bank-vs-books") ||
+    pathname.startsWith("/reconciliation-data") ||
+    pathname.startsWith("/reconciliation-variance") ||
+    pathname.startsWith("/refresh-token")
+  );
+}
+
+function quickBooksAuth(req, res, next) {
+  if (!isQuickBooksRoute(req.path)) {
+    return next();
+  }
+  return checkQBAuth(req, res, next);
+}
+
+app.use("/", quickBooksAuth, balanceSheetRoutes);
+app.use("/", quickBooksAuth, balanceSheetDetailRoutes);
+app.use("/", quickBooksAuth, generalLedgerRoutes);
+app.use("/", quickBooksAuth, profitAndLossRoutes);
+app.use("/", quickBooksAuth, profitAndLossStatementRoutes);
+app.use("/", quickBooksAuth, customerFinanceRoutes);
+app.use("/", quickBooksAuth, invoiceFinanceRoutes);
+app.use("/", quickBooksAuth, cashflowRoutes);
+app.use("/", quickBooksAuth, reconciliationRoutes);
+app.use("/", quickBooksAuth, bankStatementRoutes);
+app.use("/", quickBooksAuth, bankVsBooksRoutes);
 app.use("/", groupRoutes);
 app.use("/", requestRoutes);
 app.use("/", folderRoutes);

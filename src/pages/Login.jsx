@@ -14,8 +14,8 @@ const demoCredentials = [
   },
   {
     role: "Client",
-    email: "client@infosys.com",
-    password: "client123",
+    email: "shivrajechaudhari4@gmail.com",
+    password: "123456",
     color: "#00648F",
     bg: "#A7DCF7",
   },

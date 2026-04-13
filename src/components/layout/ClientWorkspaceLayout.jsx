@@ -47,7 +47,7 @@ function WorkspaceSidebar({ company, onClose }) {
 
   const basePath = `/broker/client/${clientId}`;
   const mainNav = [
-    { label: "Dashboard", icon: LayoutDashboard, to: `${basePath}/dashboard` },
+    // { label: "Dashboard", icon: LayoutDashboard, to: `${basePath}/dashboard` },
     {
       label: "DataHub Dashboard",
       icon: TrendingUp,
@@ -361,7 +361,7 @@ function WorkspaceTopbar({ company, onMenuClick }) {
                     key={item.id}
                     onClick={() => {
                       setShowSwitch(false);
-                      navigate(`/broker/client/${item.id}/dashboard`);
+                      navigate(`/broker/client/${item.id}/datahub-dashboard`);
                     }}
                     className={`flex w-full items-center gap-2.5 px-4 py-2.5 text-left transition-colors hover:bg-bg-page ${
                       item.id === company.id ? "bg-[#EEF6E0]" : ""

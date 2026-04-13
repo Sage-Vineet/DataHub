@@ -1653,7 +1653,9 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
         const people = users
           .filter((user) => {
             const userCompanyId = user.company_id || user.companyId;
-            return userCompanyId === companyId && ['buyer', 'client'].includes((user.role || '').toLowerCase());
+            const userCompanyIds = user.company_ids || user.companyIds || [userCompanyId].filter(Boolean);
+            const effectiveRole = (user.effective_role || user.role || '').toLowerCase();
+            return userCompanyIds.some((id) => String(id) === String(companyId)) && effectiveRole === 'user';
           })
           .map((user) => ({
             id: user.id,
@@ -1677,10 +1679,11 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
 
   const currentUser = role === 'broker'
     ? null
-    : { id: 'buyer-1', groups: ['grp-finance', 'grp-legal', 'grp-hr', 'grp-tax', 'grp-compliance', 'grp-mna'] };
+    : { id: currentUserId, groups: [] };
 
   const getFolderPermissions = useCallback((folderId) => {
     if (role === 'broker') return { read: true, write: true, download: true };
+    if (role === 'client') return { read: true, write: true, download: true };
     let entries = folderAccess[folderId] || [];
     if (entries.length === 0) {
       const path = getPathTo(tree, folderId);
@@ -1696,8 +1699,9 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
     }
     const perms = { read: false, write: false, download: false };
     entries.forEach(entry => {
-      const matchesUser = entry.type === 'user' && entry.id === currentUser?.id;
-      const matchesGroup = entry.type === 'group' && currentUser?.groups?.includes(entry.id);
+      const subjectId = entry.subjectId || entry.id;
+      const matchesUser = entry.type === 'user' && subjectId === currentUser?.id;
+      const matchesGroup = entry.type === 'group' && currentUser?.groups?.includes(subjectId);
       if (matchesUser || matchesGroup) {
         perms.read = perms.read || entry.permissions.read;
         perms.write = perms.write || entry.permissions.write;

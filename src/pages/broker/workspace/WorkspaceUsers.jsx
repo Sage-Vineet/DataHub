@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useParams } from 'react-router-dom';
 import {
   Search, Filter, Plus, Eye, Pencil, Trash2, X,
@@ -26,7 +27,7 @@ const PAGE_SIZE = 8;
 const ROLE_ORDER = ['admin', 'broker', 'buyer'];
 const CREATE_ROLE_ORDER = ['buyer'];
 const STATUS_ORDER = ['active', 'inactive'];
-const EMPTY_FORM = { name: '', companyId: '', email: '', phone: '', role: 'buyer', status: 'active', password: '', profileImage: '', groupIds: [] };
+const EMPTY_FORM = { name: '', companyId: '', companyIds: [], email: '', phone: '', role: 'buyer', status: 'active', password: '', profileImage: '', groupIds: [] };
 
 function initials(name = '') {
   return name
@@ -40,15 +41,20 @@ function initials(name = '') {
 
 function formatUser(user) {
   if (!user) return null;
+  const assignedCompanies = user.assigned_companies || user.assignedCompanies || [];
+  const companyIds = user.company_ids || user.companyIds || assignedCompanies.map((company) => company.id).filter(Boolean) || [];
+  const primaryCompany = assignedCompanies.find((company) => String(company.id) === String(user.company_id)) || assignedCompanies[0] || null;
   return {
     id: user.id,
     name: user.name,
     email: user.email,
     phone: user.phone || 'N/A',
-    role: user.role,
+    role: user.effective_role || user.role,
     status: user.status,
-    companyId: user.company_id || '',
-    company: user.company_name || 'Unassigned',
+    companyId: user.company_id || primaryCompany?.id || '',
+    companyIds,
+    assignedCompanies,
+    company: user.company_name || primaryCompany?.name || (assignedCompanies.length ? assignedCompanies.map((company) => company.name).join(', ') : 'Unassigned'),
     joinedAt: user.created_at,
     profileImage: user.profile_image || user.profileImage || '',
     groupIds: user.group_ids || user.groupIds || (user.groups ? user.groups.map((g) => g.id) : []),
@@ -64,6 +70,8 @@ function statusMeta(status) {
 function roleMeta(role) {
   if (role === 'admin') return { label: 'Admin', bg: 'bg-purple-50', text: 'text-[#742982]', border: 'border-purple-200', Icon: Shield };
   if (role === 'broker') return { label: 'Broker', bg: 'bg-amber-50', text: 'text-[#b45e08]', border: 'border-orange-200', Icon: Briefcase };
+  if (role === 'client') return { label: 'Seller', bg: 'bg-blue-50', text: 'text-[#00648F]', border: 'border-blue-200', Icon: Building2 };
+  if (role === 'user') return { label: 'User', bg: 'bg-slate-50', text: 'text-slate-700', border: 'border-slate-200', Icon: ShoppingCart };
   return { label: 'Buyer', bg: 'bg-blue-50', text: 'text-[#00648F]', border: 'border-blue-200', Icon: ShoppingCart };
 }
 
@@ -186,8 +194,9 @@ function UserFormModal({ initial, companies, companyLock, groups, onSave, onClos
   const isEdit = !!initial?.id;
   const [form, setForm] = useState(() => {
     const seed = initial || EMPTY_FORM;
-    if (companyLock?.id) return { ...seed, companyId: companyLock.id };
-    return seed;
+    const seedCompanyIds = seed.companyIds?.length ? seed.companyIds : [seed.companyId].filter(Boolean);
+    if (companyLock?.id) return { ...seed, companyId: seed.companyId || companyLock.id, companyIds: Array.from(new Set([companyLock.id, ...seedCompanyIds])) };
+    return { ...seed, companyIds: seedCompanyIds };
   });
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState('');
@@ -196,12 +205,15 @@ function UserFormModal({ initial, companies, companyLock, groups, onSave, onClos
 
   useEffect(() => {
     const seed = initial || EMPTY_FORM;
-    setForm(companyLock?.id ? { ...seed, companyId: companyLock.id } : seed);
+    const seedCompanyIds = seed.companyIds?.length ? seed.companyIds : [seed.companyId].filter(Boolean);
+    setForm(companyLock?.id
+      ? { ...seed, companyId: seed.companyId || companyLock.id, companyIds: Array.from(new Set([companyLock.id, ...seedCompanyIds])) }
+      : { ...seed, companyIds: seedCompanyIds });
   }, [initial, companyLock?.id]);
 
   useEffect(() => {
     if (!companyLock?.id) return;
-    setForm((current) => ({ ...current, companyId: companyLock.id }));
+    setForm((current) => ({ ...current, companyId: current.companyId || companyLock.id, companyIds: Array.from(new Set([companyLock.id, ...(current.companyIds || [])])) }));
   }, [companyLock?.id]);
 
   const handleProfilePick = async (event) => {
@@ -226,7 +238,7 @@ function UserFormModal({ initial, companies, companyLock, groups, onSave, onClos
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-white/30 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-lg z-10 animate-fadeIn">
+      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-2xl z-10 animate-fadeIn max-h-[88vh] overflow-hidden flex flex-col">
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
           <div>
             <h2 className="text-base font-bold text-[#05164D]">{isEdit ? 'Edit User' : 'Add New User'}</h2>
@@ -237,7 +249,7 @@ function UserFormModal({ initial, companies, companyLock, groups, onSave, onClos
           </button>
         </div>
 
-        <div className="p-6 grid grid-cols-2 gap-4">
+        <div className="flex-1 overflow-y-auto p-6 grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="col-span-2">
             <label className="block text-xs font-semibold text-gray-500 mb-1.5">Full Name *</label>
             <input
@@ -252,7 +264,14 @@ function UserFormModal({ initial, companies, companyLock, groups, onSave, onClos
             <label className="block text-xs font-semibold text-gray-500 mb-1.5">Company</label>
             <select
               value={form.companyId}
-              onChange={(event) => setField({ companyId: event.target.value })}
+              onChange={(event) => {
+                const nextCompanyId = event.target.value;
+                setField({
+                  companyId: nextCompanyId,
+                  companyIds: nextCompanyId ? Array.from(new Set([...(form.companyIds || []), nextCompanyId])) : (form.companyIds || []),
+                  groupIds: [],
+                });
+              }}
               disabled={!!companyLock}
               className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] disabled:bg-gray-100 disabled:text-gray-500"
             >
@@ -267,6 +286,39 @@ function UserFormModal({ initial, companies, companyLock, groups, onSave, onClos
                 </>
               )}
             </select>
+          </div>
+
+          <div className="col-span-2">
+            <label className="block text-xs font-semibold text-gray-500 mb-1.5">Assigned Clients</label>
+            <div className="max-h-28 overflow-y-auto rounded-xl border border-gray-200 bg-gray-50 p-2">
+              {companies.length === 0 ? (
+                <p className="px-2 py-1 text-xs text-gray-400">No companies available</p>
+              ) : companies.map((company) => {
+                const active = (form.companyIds || []).some((id) => String(id) === String(company.id));
+                const locked = companyLock?.id && String(company.id) === String(companyLock.id);
+                return (
+                  <label key={company.id} className={`flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs font-semibold text-[#05164D] ${locked ? 'bg-white' : 'hover:bg-white'}`}>
+                    <input
+                      type="checkbox"
+                      checked={active}
+                      disabled={locked}
+                      onChange={(event) => {
+                        const nextIds = event.target.checked
+                          ? Array.from(new Set([...(form.companyIds || []), company.id]))
+                          : (form.companyIds || []).filter((id) => String(id) !== String(company.id));
+                        setField({
+                          companyIds: nextIds,
+                          companyId: nextIds.some((id) => String(id) === String(form.companyId)) ? form.companyId : (nextIds[0] || ''),
+                        });
+                      }}
+                      className="h-3.5 w-3.5 accent-[#8BC53D]"
+                    />
+                    {company.name}
+                  </label>
+                );
+              })}
+            </div>
+            <p className="mt-1 text-[11px] text-gray-400">A user can be assigned to multiple clients. The primary company is kept for compatibility.</p>
           </div>
 
           <div className="col-span-2 lg:col-span-1">
@@ -386,7 +438,7 @@ function UserFormModal({ initial, companies, companyLock, groups, onSave, onClos
           </div>
         </div>
 
-        <div className="px-6 pb-6 flex gap-3">
+        <div className="px-6 py-4 border-t border-gray-100 bg-white flex gap-3">
           <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-gray-600 hover:bg-gray-50 transition-colors">
             Cancel
           </button>
@@ -472,7 +524,7 @@ export default function WorkspaceUsers() {
       const selectedCompany = companiesResponse.find((entry) => String(entry.id) === String(clientId)) || null;
       setCompany(selectedCompany);
       setCompanies(selectedCompany ? [selectedCompany] : []);
-      setData(normalizedUsers.filter((user) => String(user.companyId) === String(clientId)));
+      setData(normalizedUsers.filter((user) => (user.companyIds?.length ? user.companyIds : [user.companyId]).some((id) => String(id) === String(clientId))));
       await loadGroupsWithMembers();
     } catch (err) {
       setError(err.message || 'Unable to load users.');
@@ -569,6 +621,7 @@ export default function WorkspaceUsers() {
         role: form.role,
         profile_image: form.profileImage.trim() || null,
         company_id: clientId || form.companyId || null,
+        company_ids: Array.from(new Set([clientId || form.companyId, ...(form.companyIds || [])].filter(Boolean))),
         status: form.status,
       });
 
@@ -600,6 +653,7 @@ export default function WorkspaceUsers() {
       role: form.role,
       profile_image: form.profileImage.trim() || null,
       company_id: clientId || form.companyId || null,
+      company_ids: Array.from(new Set([clientId || form.companyId, ...(form.companyIds || [])].filter(Boolean))),
       status: form.status,
     };
 
@@ -1175,15 +1229,16 @@ export default function WorkspaceUsers() {
         />
       )}
 
-      {editingGroup && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      {editingGroup && createPortal(
+        <div className="fixed inset-0 z-50 flex items-center justify-center overflow-hidden p-4 sm:p-6">
           <div className="absolute inset-0 bg-white/30 backdrop-blur-sm" onClick={closeEditGroup} />
-          <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-y-auto p-8 z-10">
-            <div className="flex items-center justify-between mb-4">
+          <div className="relative z-10 flex max-h-[calc(100vh-2rem)] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl sm:max-h-[calc(100vh-3rem)]">
+            <div className="flex items-center justify-between px-8 pt-8 pb-4">
               <h3 className="text-base font-bold text-[#05164D]">{editingGroup?.isNew ? 'Create Group' : 'Manage Group'}</h3>
               <button onClick={closeEditGroup} className="text-gray-400 hover:text-gray-600">✕</button>
             </div>
-            <div className="space-y-4">
+            <div className="flex-1 overflow-y-auto px-8 pb-6">
+              <div className="space-y-4">
               <div>
                 <label className="block text-xs font-semibold text-gray-500 mb-1.5">Group Name</label>
                 <input
@@ -1204,14 +1259,14 @@ export default function WorkspaceUsers() {
               <div>
                 <label className="block text-xs font-semibold text-gray-500 mb-1.5">Members</label>
                 {(() => {
-                  const buyers = data.filter((u) => u.role === 'buyer');
+                  const users = data.filter((u) => u.role === 'user');
                   const selectedSet = new Set(groupMembersDraft);
-                  const available = buyers.filter((u) => !selectedSet.has(u.id) && (
+                  const available = users.filter((u) => !selectedSet.has(u.id) && (
                     !memberSearch.trim()
                     || u.name.toLowerCase().includes(memberSearch.toLowerCase())
                     || u.email.toLowerCase().includes(memberSearch.toLowerCase())
                   ));
-                  const selected = buyers.filter((u) => selectedSet.has(u.id) && (
+                  const selected = users.filter((u) => selectedSet.has(u.id) && (
                     !selectedSearch.trim()
                     || u.name.toLowerCase().includes(selectedSearch.toLowerCase())
                     || u.email.toLowerCase().includes(selectedSearch.toLowerCase())
@@ -1221,7 +1276,7 @@ export default function WorkspaceUsers() {
                     <div className="grid md:grid-cols-[1fr_auto_1fr] gap-4">
                       <div className="border border-gray-200 rounded-2xl p-4 bg-[#F8FAFC] min-h-[320px]">
                         <div className="flex items-center justify-between mb-2">
-                          <p className="text-xs font-semibold text-[#6D6E71]">Available Buyers</p>
+                          <p className="text-xs font-semibold text-[#6D6E71]">Available Users</p>
                           <span className="text-[10px] text-gray-400">{available.length}</span>
                         </div>
                         <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-xl px-3 py-2 mb-2">
@@ -1229,13 +1284,13 @@ export default function WorkspaceUsers() {
                           <input
                             value={memberSearch}
                             onChange={(e) => setMemberSearch(e.target.value)}
-                            placeholder="Search buyers..."
+                            placeholder="Search users..."
                             className="text-xs outline-none bg-transparent w-full"
                           />
                         </div>
                         <div className="max-h-64 overflow-y-auto space-y-1">
                           {available.length === 0 ? (
-                            <p className="text-xs text-gray-400 px-2 py-2">No buyers found.</p>
+                            <p className="text-xs text-gray-400 px-2 py-2">No users found.</p>
                           ) : available.map((user) => (
                             <button
                               key={user.id}
@@ -1311,7 +1366,8 @@ export default function WorkspaceUsers() {
                 })()}
               </div>
             </div>
-            <div className="mt-5 flex gap-3">
+            </div>
+            <div className="flex gap-3 px-8 pb-8 pt-5">
               <button
                 onClick={closeEditGroup}
                 className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-gray-600 hover:bg-gray-50 transition-colors"
@@ -1327,7 +1383,8 @@ export default function WorkspaceUsers() {
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
       {deleteUser && (

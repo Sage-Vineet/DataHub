@@ -28,6 +28,7 @@ export default function Sidebar({ onClose }) {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const nav = user?.role === "broker" ? brokerNav : clientNav;
+  const accountLabel = user?.role === "broker" ? "Administrator" : user?.role === "user" ? "User" : "Seller";
 
   const handleLogout = () => {
     logout();
@@ -106,7 +107,7 @@ export default function Sidebar({ onClose }) {
               {user?.name}
             </p>
             <p className="mt-1 truncate text-[12px] leading-none text-text-muted">
-              {user?.role === "broker" ? "Administrator" : user?.company}
+              {user?.role === "broker" ? accountLabel : `${accountLabel}${user?.company ? ` · ${user.company}` : ""}`}
             </p>
           </div>
           <button className="text-text-muted transition-colors hover:text-text-primary">

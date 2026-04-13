@@ -1,5 +1,4 @@
 const express = require("express");
-const { requireAuth } = require("../middleware/auth");
 const {
   listReminders,
   createReminder,
@@ -8,7 +7,6 @@ const {
 } = require("../controllers/reminders");
 
 const router = express.Router();
-router.use(requireAuth);
 
 router.get("/companies/:id/reminders", listReminders);
 router.post("/companies/:id/reminders", createReminder);

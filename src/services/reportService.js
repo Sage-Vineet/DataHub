@@ -22,10 +22,27 @@ const API_BASE_URL = (
   import.meta.env.VITE_API_BASE_URL || "http://localhost:4000"
 ).replace(/\/$/, "");
 
+function resolveClientIdFromLocation() {
+  if (typeof window === "undefined") return null;
+
+  const hash = window.location.hash || "";
+  const pathname = window.location.pathname || "";
+  const hashMatch = hash.match(/\/client\/([^/?#]+)/);
+  const pathMatch = pathname.match(/\/client\/([^/?#]+)/);
+  const match = hashMatch || pathMatch;
+
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
 async function request(path) {
+  const clientId = resolveClientIdFromLocation();
+
   const response = await fetch(`${API_BASE_URL}${path}`, {
     credentials: "include",
     cache: "no-store",
+    headers: {
+      ...(clientId ? { "X-Client-Id": clientId } : {}),
+    },
   });
 
   const payload = await response.json().catch(() => null);
@@ -49,10 +66,25 @@ function buildQuery(params = {}) {
   return search.toString() ? `?${search.toString()}` : "";
 }
 
+function parseNumeric(value) {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  if (typeof value !== "string") return null;
+
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  const negativeByParens = trimmed.includes("(") && trimmed.includes(")");
+  const numeric = Number(trimmed.replace(/[^0-9.-]/g, ""));
+  if (!Number.isFinite(numeric)) return null;
+
+  return negativeByParens ? -Math.abs(numeric) : numeric;
+}
+
 function toNumber(value) {
-  if (typeof value === "number") return value;
-  if (typeof value !== "string") return 0;
-  return Number(value.replace(/,/g, "").replace(/[^\d.-]/g, "")) || 0;
+  return parseNumeric(value) ?? 0;
 }
 
 function formatMoney(value) {
@@ -117,34 +149,27 @@ function getRowLabel(row) {
 
 function getRowNumericValue(row) {
   const candidates = [...(row?.Summary?.ColData || []), ...(row?.ColData || [])]
-    .map((item) => toNumber(item?.value))
-    .filter((value) => !Number.isNaN(value));
+    .map((item) => parseNumeric(item?.value))
+    .filter((value) => value !== null);
 
-  return candidates.length ? candidates[candidates.length - 1] : 0;
+  return candidates.length ? candidates[candidates.length - 1] : null;
 }
 
 function findValueByLabel(payload, matchers = []) {
-  const rows = flattenRows(getRows(payload));
-  const normalizedMatchers = matchers.map((matcher) => matcher.toLowerCase());
+  const rows = flattenRows(getRows(payload)).reverse();
+  const normalizedMatchers = matchers.map((matcher) => normalizeLabel(matcher));
 
   for (const row of rows) {
-    const label =
-      row?.Header?.ColData?.[0]?.value ||
-      row?.Summary?.ColData?.[0]?.value ||
-      row?.ColData?.[0]?.value ||
-      "";
-    const value =
-      row?.Summary?.ColData?.[1]?.value ||
-      row?.ColData?.[1]?.value ||
-      row?.ColData?.[0]?.value;
-    const lowerLabel = String(label).toLowerCase();
+    const label = normalizeLabel(getRowLabel(row));
+    const value = getRowNumericValue(row);
+    if (value === null) continue;
 
-    if (normalizedMatchers.some((matcher) => lowerLabel.includes(matcher))) {
-      return toNumber(value);
+    if (normalizedMatchers.some((matcher) => label.includes(matcher))) {
+      return value;
     }
   }
 
-  return 0;
+  return null;
 }
 
 function findValueByExactLabel(payload, labels = []) {
@@ -153,12 +178,13 @@ function findValueByExactLabel(payload, labels = []) {
 
   for (const row of rows) {
     const label = normalizeLabel(getRowLabel(row));
-    if (targets.includes(label)) {
-      return getRowNumericValue(row);
-    }
+    if (!targets.includes(label)) continue;
+
+    const value = getRowNumericValue(row);
+    if (value !== null) return value;
   }
 
-  return 0;
+  return null;
 }
 
 function findValueByGroup(payload, groups = []) {
@@ -167,54 +193,79 @@ function findValueByGroup(payload, groups = []) {
 
   for (const row of rows) {
     const group = String(row?.group || "").toLowerCase();
-    if (targets.includes(group)) {
-      return getRowNumericValue(row);
-    }
+    if (!targets.includes(group)) continue;
+
+    const value = getRowNumericValue(row);
+    if (value !== null) return value;
   }
 
-  return 0;
+  return null;
 }
 
 function findSummaryTotal(payload, matchers = []) {
   const rows = flattenRows(getRows(payload)).reverse();
-  const normalizedMatchers = matchers.map((matcher) => matcher.toLowerCase());
+  const normalizedMatchers = matchers.map((matcher) => normalizeLabel(matcher));
 
   for (const row of rows) {
-    const label =
-      row?.Summary?.ColData?.[0]?.value ||
-      row?.Header?.ColData?.[0]?.value ||
-      row?.ColData?.[0]?.value ||
-      "";
+    const label = normalizeLabel(getRowLabel(row));
     const candidates = [
       ...(row?.Summary?.ColData || []),
       ...(row?.ColData || []),
     ]
-      .map((item) => toNumber(item?.value))
-      .filter((value) => value !== 0);
+      .map((item) => parseNumeric(item?.value))
+      .filter((value) => value !== null);
 
     if (candidates.length === 0) continue;
 
     if (
       normalizedMatchers.length === 0 ||
       normalizedMatchers.some((matcher) =>
-        String(label).toLowerCase().includes(matcher),
+        label.includes(matcher),
       )
     ) {
       return candidates[candidates.length - 1];
     }
   }
 
-  return 0;
+  return null;
 }
 
 function extractProfitAndLossTotals(payload) {
-  const revenue = findValueByLabel(payload, ["total income", "income"]);
-  const expenses = findValueByLabel(payload, ["total expenses", "expenses"]);
+  const revenue =
+    findValueByExactLabel(payload, [
+      "Total Income",
+      "Total Revenue",
+      "Total Income and Other Income",
+    ]) ??
+    findValueByLabel(payload, [
+      "total income",
+      "total revenue",
+      "income and other income",
+    ]);
+  const expenses =
+    findValueByExactLabel(payload, ["Total Expenses"]) ??
+    findValueByLabel(payload, ["total expenses"]);
   const netProfit =
-    findValueByLabel(payload, ["net income", "net profit"]) ||
-    revenue - expenses;
+    findValueByExactLabel(payload, [
+      "Net Income",
+      "Net Profit",
+      "Net Operating Income",
+    ]) ??
+    findValueByLabel(payload, ["net income", "net profit", "net operating income"]);
 
-  return { revenue, expenses, netProfit };
+  const safeRevenue = revenue ?? 0;
+  const safeExpenses = expenses ?? 0;
+  const safeNetProfit =
+    netProfit ?? (safeRevenue !== 0 || safeExpenses !== 0 ? safeRevenue - safeExpenses : 0);
+
+  return {
+    revenue: safeRevenue,
+    expenses: safeExpenses,
+    netProfit: safeNetProfit,
+    hasRevenue: revenue !== null,
+    hasExpenses: expenses !== null,
+    hasNetProfit: netProfit !== null,
+  };
 }
 
 async function fetchCombinedReports(params = {}) {
@@ -224,7 +275,7 @@ async function fetchCombinedReports(params = {}) {
 const MAX_CHART_REQUESTS = 12;
 
 function getAccountListRows(payload) {
-  return payload?.accountList?.Rows?.Row || [];
+  return payload?.accountList?.Rows?.Row || payload?.AccountList?.Rows?.Row || [];
 }
 
 function findAccountBalance(payload, matchers = []) {
@@ -243,6 +294,15 @@ function findAccountBalance(payload, matchers = []) {
     }
   }
 
+  return null;
+}
+
+function pickFirstNumber(...values) {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+  }
   return 0;
 }
 
@@ -342,61 +402,101 @@ export async function fetchDashboardKPIs(start, end) {
       fetchQuickbooksInvoices().catch(() => null),
     ]);
 
-  const invoices = invoicesPayload?.QueryResponse?.Invoice || [];
+  const invoices =
+    invoicesPayload?.QueryResponse?.Invoice ||
+    invoicesPayload?.data?.QueryResponse?.Invoice ||
+    [];
+  const balanceSheetPayload =
+    balanceSheet ||
+    combinedReports?.balanceSheet ||
+    combinedReports?.BalanceSheet ||
+    null;
+
   const {
     revenue: reportRevenue,
     expenses,
     netProfit,
+    hasRevenue,
+    hasExpenses,
+    hasNetProfit,
   } = extractProfitAndLossTotals(profitAndLoss || {});
-  const revenue =
-    reportRevenue ||
-    invoices.reduce((sum, invoice) => sum + Number(invoice.TotalAmt || 0), 0);
-  const totalAssets =
-    findValueByGroup(balanceSheet, ["TotalAssets"]) ||
-    findValueByExactLabel(balanceSheet, ["TOTAL ASSETS", "Total Assets"]);
-  const totalLiabilities =
-    findValueByGroup(balanceSheet, ["Liabilities"]) ||
-    findValueByExactLabel(balanceSheet, ["Total Liabilities"]);
-  const totalEquity =
-    findValueByGroup(balanceSheet, ["Equity"]) ||
-    findValueByExactLabel(balanceSheet, ["Total Equity"]);
-  const currentAssets =
-    findValueByGroup(balanceSheet, ["CurrentAssets"]) ||
-    findValueByExactLabel(balanceSheet, ["Total Current Assets"]);
-  const currentLiabilities =
-    findValueByGroup(balanceSheet, ["CurrentLiabilities"]) ||
-    findValueByExactLabel(balanceSheet, ["Total Current Liabilities"]);
-  const payable =
-    findValueByGroup(balanceSheet, ["AP"]) ||
-    findAccountBalance(combinedReports, ["accounts payable"]) ||
-    findValueByExactLabel(balanceSheet, ["Total Accounts Payable"]);
-  const cashBank =
-    findValueByGroup(balanceSheet, ["BankAccounts"]) ||
-    findAccountBalance(combinedReports, ["checking", "savings", "bank"]) ||
-    findValueByExactLabel(balanceSheet, ["Total Bank Accounts"]);
-  const receivable =
+  const invoiceRevenue = invoices.reduce(
+    (sum, invoice) => sum + Number(invoice.TotalAmt || 0),
+    0,
+  );
+  const revenue = hasRevenue ? reportRevenue : invoiceRevenue;
+  const safeExpenses = hasExpenses ? expenses : 0;
+  const safeNetProfit = hasNetProfit ? netProfit : revenue - safeExpenses;
+
+  const totalAssets = pickFirstNumber(
+    findValueByGroup(balanceSheetPayload, ["TotalAssets"]),
+    findValueByExactLabel(balanceSheetPayload, ["TOTAL ASSETS", "Total Assets"]),
+  );
+  const totalLiabilities = pickFirstNumber(
+    findValueByGroup(balanceSheetPayload, ["Liabilities"]),
+    findValueByExactLabel(balanceSheetPayload, ["Total Liabilities"]),
+  );
+  const totalEquity = pickFirstNumber(
+    findValueByGroup(balanceSheetPayload, ["Equity"]),
+    findValueByExactLabel(balanceSheetPayload, ["Total Equity"]),
+  );
+  const currentAssets = pickFirstNumber(
+    findValueByGroup(balanceSheetPayload, ["CurrentAssets"]),
+    findValueByExactLabel(balanceSheetPayload, ["Total Current Assets"]),
+  );
+  const currentLiabilities = pickFirstNumber(
+    findValueByGroup(balanceSheetPayload, ["CurrentLiabilities"]),
+    findValueByExactLabel(balanceSheetPayload, ["Total Current Liabilities"]),
+  );
+  const payable = pickFirstNumber(
+    findValueByGroup(balanceSheetPayload, ["AP"]),
+    findAccountBalance(combinedReports, ["accounts payable"]),
+    findValueByExactLabel(balanceSheetPayload, [
+      "Total Accounts Payable",
+      "Total Accounts Payable (A/P)",
+    ]),
+  );
+  const cashBank = pickFirstNumber(
+    findValueByGroup(balanceSheetPayload, ["BankAccounts"]),
+    findAccountBalance(combinedReports, ["checking", "savings", "bank", "cash"]),
+    findValueByExactLabel(balanceSheetPayload, [
+      "Total Bank Accounts",
+      "Total Cash and cash equivalents",
+      "Total Cash and Cash Equivalents",
+    ]),
+  );
+  const receivable = pickFirstNumber(
     findSummaryTotal(combinedReports?.agedReceivableDetail, [
       "total",
       "accounts receivable",
       "receivable",
-    ]) ||
-    findValueByGroup(balanceSheet, ["AR"]) ||
-    findAccountBalance(combinedReports, ["accounts receivable"]) ||
-    findValueByExactLabel(balanceSheet, ["Total Accounts Receivable"]) ||
-    invoices.reduce((sum, invoice) => sum + Number(invoice.Balance || 0), 0);
-  const inventoryValue =
-    findAccountBalance(combinedReports, ["inventory"]) ||
-    findValueByLabel(balanceSheet, ["inventory asset", "inventory"]);
+    ]),
+    findValueByGroup(balanceSheetPayload, ["AR"]),
+    findAccountBalance(combinedReports, ["accounts receivable"]),
+    findValueByExactLabel(balanceSheetPayload, [
+      "Total Accounts Receivable",
+      "Total Accounts Receivable (A/R)",
+    ]),
+    invoices.reduce((sum, invoice) => sum + Number(invoice.Balance || 0), 0),
+  );
+  const inventoryValue = pickFirstNumber(
+    findAccountBalance(combinedReports, ["inventory"]),
+    findValueByLabel(balanceSheetPayload, ["inventory asset", "inventory"]),
+  );
   const agedPayable = findSummaryTotal(combinedReports?.agedPayableDetail, [
     "total",
     "accounts payable",
     "payable",
   ]);
-  const longTermDebt =
-    findValueByGroup(balanceSheet, ["LongTermLiabilities"]) ||
-    findAccountBalance(combinedReports, ["notes payable", "long term"]) ||
-    findValueByExactLabel(balanceSheet, ["Total Long-Term Liabilities"]);
-  const accountPayable = agedPayable || payable;
+  const longTermDebt = pickFirstNumber(
+    findValueByGroup(balanceSheetPayload, ["LongTermLiabilities"]),
+    findAccountBalance(combinedReports, ["notes payable", "long term"]),
+    findValueByExactLabel(balanceSheetPayload, [
+      "Total Long-Term Liabilities",
+      "Total Long Term Liabilities",
+    ]),
+  );
+  const accountPayable = pickFirstNumber(agedPayable, payable);
   const workingCapital =
     currentAssets && currentLiabilities
       ? currentAssets - currentLiabilities
@@ -413,16 +513,16 @@ export async function fetchDashboardKPIs(start, end) {
     },
     {
       label: "Total Expenses",
-      value: formatMoney(expenses),
-      rawValue: expenses,
+      value: formatMoney(safeExpenses),
+      rawValue: safeExpenses,
       desc: "Total operating costs",
       color: "#C62026",
       icon: CreditCard,
     },
     {
       label: "Net Profit",
-      value: formatMoney(netProfit),
-      rawValue: netProfit,
+      value: formatMoney(safeNetProfit),
+      rawValue: safeNetProfit,
       desc: "Bottom-line earnings",
       color: "#00648F",
       icon: TrendingUp,

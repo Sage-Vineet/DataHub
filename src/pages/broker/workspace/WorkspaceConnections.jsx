@@ -119,21 +119,14 @@ export default function WorkspaceConnections() {
         const data = await getConnectionStatus();
         setConnection(data);
 
-        // Isolation Check: Compare workspace name with QuickBooks name
-        const workspaceName = company?.name?.trim().toLowerCase();
-        const quickbooksName = data.companyName?.trim().toLowerCase();
-        const isMismatch =
-          data.isConnected &&
-          workspaceName &&
-          quickbooksName &&
-          workspaceName !== quickbooksName;
-
-        if (isMismatch) {
-          // Log mismatch but do not block fetching, as requested by user
-          console.warn("Company Name Mismatch detected:", {
-            workspaceName,
-            quickbooksName,
-          });
+        if (data?.isNameMismatch) {
+          setDynamicEntities(null);
+          setPageState("disconnected");
+          setErrorMessage(
+            data.message ||
+              "The selected workspace company does not match the connected QuickBooks company.",
+          );
+          return;
         }
 
         setPageState(data.isConnected ? "connected" : "disconnected");
