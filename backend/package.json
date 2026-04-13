@@ -1,6 +1,9 @@
 {
   "name": "leo-backend",
   "version": "1.0.0",
+  "engines": {
+  "node": "20.x"
+},
   "description": "Express + PostgreSQL REST API scaffold for Leo",
   "main": "src/server.js",
   "type": "commonjs",
