@@ -2,8 +2,8 @@
   "name": "leo-backend",
   "version": "1.0.0",
   "engines": {
-  "node": "20.x"
-},
+    "node": "20.x"
+  },
   "description": "Express + PostgreSQL REST API scaffold for Leo",
   "main": "src/server.js",
   "type": "commonjs",
@@ -23,7 +23,7 @@
     "multer": "^2.0.2",
     "pg": "^8.12.0",
     "sqlite": "^5.1.1",
-    "sqlite3": "^6.0.1"
+    "sqlite3": "5.1.7"
   },
   "devDependencies": {
     "nodemon": "^3.1.4"
