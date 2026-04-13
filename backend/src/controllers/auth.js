@@ -171,15 +171,17 @@ async function ensureBuyerForEmail(email) {
 
 async function ensureDefaultFolders(companyId, createdBy) {
   if (!companyId || !createdBy) return;
+
   const existing = ensureRows(
-    await db.query("SELECT id FROM folders WHERE company_id = $1 LIMIT 1", [companyId])
+    await db.query("SELECT id FROM folders WHERE company_id = ? LIMIT 1", [companyId])
   );
   if (existing[0]) return;
 
   const defaults = ["Finance", "Legal", "Compliance", "HR", "Tax", "M&A", "Other"];
+
   for (const name of defaults) {
     await db.query(
-      "INSERT INTO folders (company_id, parent_id, name, color, created_by) VALUES ($1, $2, $3, $4, $5)",
+      "INSERT INTO folders (company_id, parent_id, name, color, created_by) VALUES (?, ?, ?, ?, ?)",
       [companyId, null, name, null, createdBy]
     );
   }
