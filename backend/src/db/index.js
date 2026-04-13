@@ -52,7 +52,7 @@ if (isProduction) {
         INSERT OR IGNORE INTO user_companies (user_id, company_id)
         SELECT id, company_id FROM users WHERE company_id IS NOT NULL
       `);
-    } catch (_err) {}
+    } catch (_err) { }
 
     try {
       const groupColumns = await db.all("PRAGMA table_info(buyer_groups)");
@@ -62,7 +62,7 @@ if (isProduction) {
       if (!hasDescription) {
         await db.exec("ALTER TABLE buyer_groups ADD COLUMN description TEXT");
       }
-    } catch (_err) {}
+    } catch (_err) { }
 
     try {
       await db.exec(`
@@ -91,7 +91,7 @@ if (isProduction) {
       await db.exec(
         "CREATE INDEX IF NOT EXISTS idx_documents_upload_id ON documents(upload_id)",
       );
-    } catch (_err) {}
+    } catch (_err) { }
 
     try {
       await db.exec(`
