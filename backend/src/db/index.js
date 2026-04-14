@@ -2,147 +2,123 @@ const sqlite3 = require("sqlite3").verbose();
 const { open } = require("sqlite");
 const fs = require("fs");
 const path = require("path");
+const { Pool } = require("pg");
+const { normalizeCommonSql } = require("./sqlCompat");
+
+const hasDatabaseUrl = Boolean(process.env.DATABASE_URL);
+const usePostgres = hasDatabaseUrl && process.env.DISABLE_POSTGRES !== "true";
+
+console.log("====================================");
+console.log("🧠 DATABASE MODE CHECK");
+console.log("DATABASE_URL:", process.env.DATABASE_URL ? "FOUND" : "NOT FOUND");
+console.log("USE POSTGRES:", usePostgres ? "YES (SUPABASE)" : "NO (SQLITE)");
+console.log("====================================");
 
 let dbPromise;
 
-const initializeDb = async () => {
-  const dbPath = "./dev-database.db";
-  const isNewDb = !fs.existsSync(dbPath);
+function buildPgConfig() {
+  const connectionString = process.env.DATABASE_URL;
+  const explicitSsl = String(process.env.DATABASE_SSL || "").toLowerCase();
 
-  const db = await open({
-    filename: dbPath,
-    driver: sqlite3.Database,
+  const shouldUseSsl =
+    explicitSsl === "true" ||
+    (/supabase\.(co|in|com)/i.test(connectionString || "") && explicitSsl !== "false") ||
+    (/sslmode=require/i.test(connectionString || "") && explicitSsl !== "false");
+
+  if (usePostgres) {
+    console.log("🔒 SSL MODE:", shouldUseSsl ? "ENABLED" : "DISABLED");
+  }
+
+  return {
+    connectionString,
+    ssl: shouldUseSsl ? { rejectUnauthorized: false } : false,
+    max: 10,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 15000,
+    keepAlive: true,
+  };
+}
+
+if (usePostgres) {
+  console.log("🚀 Connecting to SUPABASE POSTGRES...");
+
+  const pool = new Pool(buildPgConfig());
+
+  pool.on("error", (err) => {
+    console.error("❌ Unexpected PostgreSQL pool error:", err.message);
   });
 
-  await db.exec("PRAGMA foreign_keys = ON");
-
-  if (isNewDb) {
-    console.log("📋 Initializing SQLite database schema...");
-    const schemaPath = path.join(__dirname, "../../sqlite-schema.sql");
-    const schema = fs.readFileSync(schemaPath, "utf8");
-    await db.exec(schema);
-    console.log("✅ Database schema initialized");
-  }
-
-  try {
-    await db.exec(`
-      CREATE TABLE IF NOT EXISTS user_companies (
-        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
-        created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        PRIMARY KEY (user_id, company_id)
-      )
-    `);
-    await db.exec("CREATE INDEX IF NOT EXISTS idx_user_companies_user ON user_companies(user_id)");
-    await db.exec("CREATE INDEX IF NOT EXISTS idx_user_companies_company ON user_companies(company_id)");
-    await db.exec(`
-      INSERT OR IGNORE INTO user_companies (user_id, company_id)
-      SELECT id, company_id FROM users WHERE company_id IS NOT NULL
-    `);
-  } catch (_err) { }
-
-  try {
-    const groupColumns = await db.all("PRAGMA table_info(buyer_groups)");
-    const hasDescription = groupColumns.some(
-      (col) => col.name === "description",
-    );
-    if (!hasDescription) {
-      await db.exec("ALTER TABLE buyer_groups ADD COLUMN description TEXT");
+  const testConnection = async () => {
+    try {
+      const client = await pool.connect();
+      try {
+        await client.query("SELECT NOW()");
+        console.log("✅ SUPABASE CONNECTED SUCCESSFULLY");
+      } finally {
+        client.release();
+      }
+    } catch (err) {
+      console.error("❌ SUPABASE CONNECTION FAILED:", err.message);
     }
-  } catch (_err) { }
+  };
 
-  try {
-    await db.exec(`
-      CREATE TABLE IF NOT EXISTS uploads (
-        id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))),2) || '-' || substr('89ab',abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6)))),
-        file_name TEXT NOT NULL,
-        content_type TEXT NOT NULL,
-        size_bytes INTEGER NOT NULL,
-        data BLOB NOT NULL,
-        prefix TEXT,
-        uploaded_by TEXT REFERENCES users(id) ON DELETE SET NULL,
-        created_at TEXT NOT NULL DEFAULT (datetime('now'))
-      )
-    `);
+  testConnection();
 
-    const documentColumns = await db.all("PRAGMA table_info(documents)");
-    const hasUploadId = documentColumns.some(
-      (col) => col.name === "upload_id",
-    );
-    if (!hasUploadId) {
-      await db.exec(
-        "ALTER TABLE documents ADD COLUMN upload_id TEXT REFERENCES uploads(id) ON DELETE SET NULL",
-      );
+  module.exports = {
+    query: async (text, params = []) => {
+      const normalizedText = normalizeCommonSql(text, "postgres");
+      return pool.query(normalizedText, params);
+    },
+    pool,
+    engine: "postgres",
+  };
+} else {
+  console.log("⚠️ USING SQLITE (NOT SUPABASE)");
+
+  const initializeDb = async () => {
+    const dbPath = "./dev-database.db";
+    const isNewDb = !fs.existsSync(dbPath);
+
+    const db = await open({
+      filename: dbPath,
+      driver: sqlite3.Database,
+    });
+
+    await db.exec("PRAGMA foreign_keys = ON");
+
+    if (isNewDb) {
+      console.log("📋 Initializing SQLite database schema...");
+      const schemaPath = path.join(__dirname, "../../sqlite-schema.sql");
+      const schema = fs.readFileSync(schemaPath, "utf8");
+      await db.exec(schema);
+      console.log("✅ SQLite schema initialized");
     }
 
-    await db.exec(
-      "CREATE INDEX IF NOT EXISTS idx_documents_upload_id ON documents(upload_id)",
-    );
-  } catch (_err) { }
+    return db;
+  };
 
-  try {
-    await db.exec(`
-      CREATE TABLE IF NOT EXISTS bank_transactions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        client_id TEXT,
-        txn_date TEXT NOT NULL,
-        narration TEXT,
-        amount REAL NOT NULL
-      )
-    `);
+  dbPromise = initializeDb();
 
-    await db.exec(`
-      CREATE TABLE IF NOT EXISTS reconciliation_transactions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        client_id TEXT,
-        txn_date TEXT NOT NULL,
-        amount REAL NOT NULL,
-        name TEXT,
-        transaction_type TEXT
-      )
-    `);
+  module.exports = {
+    query: async (text, params = []) => {
+      const db = await dbPromise;
+      const normalizedText = normalizeCommonSql(text, "sqlite");
+      const normalized = normalizedText.trim().toUpperCase();
 
-    const bankCols = await db.all("PRAGMA table_info(bank_transactions)");
-    if (!bankCols.some((c) => c.name === "client_id")) {
-      await db.exec(
-        "ALTER TABLE bank_transactions ADD COLUMN client_id TEXT",
-      );
-    }
+      const isRead =
+        normalized.startsWith("SELECT") ||
+        normalized.startsWith("WITH") ||
+        normalized.startsWith("PRAGMA");
 
-    const bookCols = await db.all(
-      "PRAGMA table_info(reconciliation_transactions)",
-    );
-    if (!bookCols.some((c) => c.name === "client_id")) {
-      await db.exec(
-        "ALTER TABLE reconciliation_transactions ADD COLUMN client_id TEXT",
-      );
-    }
-  } catch (_err) {
-    console.error("DB Migration Error (Reconciliation):", _err);
-  }
+      if (isRead) {
+        const rows = await db.all(normalizedText, params);
+        return { rows, rowCount: rows.length };
+      }
 
-  return db;
-};
-
-dbPromise = initializeDb();
-
-module.exports = {
-  query: async (text, params = []) => {
-    const db = await dbPromise;
-    const normalized = text.trim().toUpperCase();
-    const hasReturning = normalized.includes(" RETURNING ");
-    const isRead =
-      normalized.startsWith("SELECT") ||
-      normalized.startsWith("WITH") ||
-      normalized.startsWith("PRAGMA");
-
-    if (isRead || hasReturning) {
-      const rows = await db.all(text, params);
-      return { rows };
-    }
-
-    const result = await db.run(text, params);
-    return { rows: [], rowCount: result.changes || 0 };
-  },
-  pool: null,
-};
+      const result = await db.run(normalizedText, params);
+      return { rows: [], rowCount: result.changes || 0 };
+    },
+    pool: null,
+    engine: "sqlite",
+  };
+}

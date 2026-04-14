@@ -36,7 +36,6 @@ const allowedOrigins = Array.from(
       process.env.FRONTEND_URL,
       process.env.APP_URL,
       process.env.CORS_ORIGIN,
-      "https://datahub-final-v1.vercel.app",
       "http://localhost:5173",
       "http://localhost:5174",
       "http://localhost:5175",
@@ -51,49 +50,23 @@ const allowedOrigins = Array.from(
   ),
 );
 
-const corsOptions = {
-  origin(origin, callback) {
-    if (!origin) {
-      return callback(null, true);
-    }
-
-    const normalizedOrigin = origin.replace(/\/$/, "");
-
-    if (allowedOrigins.includes(normalizedOrigin)) {
-      return callback(null, true);
-    }
-
-    console.error(`CORS blocked origin: ${origin}`);
-    return callback(new Error(`Origin ${origin} not allowed by CORS`));
-  },
-  credentials: true,
-  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: [
-    "Content-Type",
-    "Authorization",
-    "x-auth-token",
-    "x-access-token",
-    "x-token",
-    "x-client-id",
-    "Cache-Control",
-    "Pragma",
-    "Expires",
-  ],
-};
-
-app.use(cors(corsOptions));
-app.options("*", cors(corsOptions));
-
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin) return callback(null, true);
+      const normalizedOrigin = origin.replace(/\/$/, "");
+      if (allowedOrigins.includes(normalizedOrigin)) {
+        return callback(null, true);
+      }
+      return callback(new Error(`Origin ${origin} not allowed by CORS`));
+    },
+    credentials: true,
+  }),
+);
 app.use(express.json({ limit: "10mb" }));
-app.use(express.urlencoded({ extended: true }));
 app.use(morgan("dev"));
 
-app.get("/health", (req, res) => {
-  res.status(200).json({
-    ok: true,
-    message: "Backend is running",
-  });
-});
+app.get("/health", (req, res) => res.json({ ok: true }));
 
 app.use("/auth", authRoutes);
 app.use("/users", userRoutes);
@@ -108,32 +81,35 @@ function normalizeCompanyName(name) {
 }
 
 async function checkQBAuth(req, res, next) {
+  // 1. Try explicit header
   let clientId = req.headers["x-client-id"];
 
+  // 2. Fallback: Try query parameter
   if (!clientId && req.query.clientId) {
     clientId = req.query.clientId;
   }
 
+  // 3. Fallback: Try to extract from Referer (useful when header injection fails)
   if (!clientId && req.headers.referer) {
     const referer = req.headers.referer;
     const match = referer.match(/\/client\/([^/]+)/);
-
     if (match) {
       clientId = match[1];
-      console.log(`Recovered Client ID from Referer: ${clientId}`);
+      console.log(`🔍 Recovered Client ID from Referer: ${clientId}`);
     }
   }
 
+  // 4. Final Fallback: if still no clientId, log it but don't fail immediately.
+  // getQBConfig will try to return a default if it can.
   if (!clientId) {
     console.warn(
-      "Client ID missing in request. Attempting to use default connection.",
+      "⚠️ Client ID missing in request. Attempting to use default connection.",
     );
   }
 
   req.clientId = clientId;
 
   const qb = getQBConfig(clientId);
-
   if (!qb || !qb.accessToken || !qb.realmId) {
     return res.status(401).json({
       success: false,
@@ -146,19 +122,16 @@ async function checkQBAuth(req, res, next) {
     const result = await db.query("SELECT name FROM companies WHERE id = ?", [
       clientId,
     ]);
-
     const workspaceCompanyName = result?.rows?.[0]?.name || null;
     const quickbooksCompanyName = qb.companyName || null;
-
     const isMismatch =
       workspaceCompanyName &&
       quickbooksCompanyName &&
       normalizeCompanyName(workspaceCompanyName) !==
-      normalizeCompanyName(quickbooksCompanyName);
+        normalizeCompanyName(quickbooksCompanyName);
 
     if (isMismatch) {
       disconnectConfig(clientId);
-
       return res.status(401).json({
         success: false,
         isConnected: false,
@@ -168,7 +141,6 @@ async function checkQBAuth(req, res, next) {
     }
   } catch (error) {
     console.error("Company isolation check failed:", error.message);
-
     return res.status(500).json({
       success: false,
       message: "Unable to validate company connection.",
@@ -210,7 +182,6 @@ function quickBooksAuth(req, res, next) {
   if (!isQuickBooksRoute(req.path)) {
     return next();
   }
-
   return checkQBAuth(req, res, next);
 }
 

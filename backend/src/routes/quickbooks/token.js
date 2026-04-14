@@ -276,23 +276,7 @@ router.get("/api/auth/callback", async (req, res) => {
       );
     }
 
-    const workspaceNormalized = normalizeCompanyName(workspaceCompanyName);
-    const quickbooksNormalized = normalizeCompanyName(quickbooksCompanyName);
-    const isNameMismatch =
-      workspaceNormalized &&
-      quickbooksNormalized &&
-      workspaceNormalized !== quickbooksNormalized;
-
-    if (isNameMismatch) {
-      disconnectConfig(clientId);
-      return res.redirect(
-        buildFrontendHashUrl(
-          frontendUrl,
-          redirectHash,
-          `?qbStatus=error&qbMessage=${encodeURIComponent(`Company mismatch: selected workspace "${workspaceCompanyName}" does not match QuickBooks company "${quickbooksCompanyName}". Connection blocked.`)}`,
-        ),
-      );
-    }
+    // Company mismatch check has been removed to allow sandbox testing with different names
 
     const now = new Date().toISOString();
     const tokenExpiresAt = new Date(
@@ -367,24 +351,7 @@ router.get("/api/auth/status", async (req, res) => {
 
   const workspaceCompanyName = await getWorkspaceCompanyName(clientId);
   const quickbooksCompanyName = qb.companyName || null;
-  const isNameMismatch =
-    workspaceCompanyName &&
-    quickbooksCompanyName &&
-    normalizeCompanyName(workspaceCompanyName) !==
-      normalizeCompanyName(quickbooksCompanyName);
-
-  if (isNameMismatch) {
-    disconnectConfig(clientId);
-    return res.json({
-      success: true,
-      isConnected: false,
-      isNameMismatch: true,
-      message: `Company mismatch: selected workspace "${workspaceCompanyName}" does not match QuickBooks company "${quickbooksCompanyName}".`,
-      workspaceCompanyName,
-      quickbooksCompanyName,
-      syncedEntities: [],
-    });
-  }
+  // Company mismatch check removed for flexibility in sandbox testing.
 
   return res.json({
     success: true,

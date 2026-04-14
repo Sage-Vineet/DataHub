@@ -1,18 +1,38 @@
-# React + Vite
+# DataHub V1
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+This is a single application with two runtime parts:
 
-Currently, two official plugins are available:
+- `src/` + Vite = frontend
+- `backend/` + Express = backend API
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## Run locally
 
-## React Compiler
+### 1) Frontend env
+Create `.env` from `.env.example`:
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+```env
+VITE_API_BASE_URL=http://localhost:4000
+```
 
-## Expanding the ESLint configuration
+### 2) Backend env
+Create `backend/.env` from `backend/.env.example`.
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+- If `DATABASE_URL` is set, the backend uses PostgreSQL/Supabase.
+- If `DATABASE_URL` is empty, the backend falls back to local SQLite for development.
 
-# datahub-test-env
+### 3) Install
+```bash
+npm install
+cd backend && npm install
+```
+
+### 4) Start both
+```bash
+npm run dev
+```
+
+## Notes
+
+- QuickBooks credentials and AWS credentials must stay only in `backend/.env`.
+- The integrated version keeps the current UI and route structure unchanged.
+- `supabase/schema.sql` is provided so you can create the same tables inside Supabase.
