@@ -1,5 +1,3 @@
-const sqlite3 = require("sqlite3").verbose();
-const { open } = require("sqlite");
 const fs = require("fs");
 const path = require("path");
 const { Pool } = require("pg");
@@ -76,6 +74,8 @@ if (usePostgres) {
   console.log("⚠️ USING SQLITE (NOT SUPABASE)");
 
   const initializeDb = async () => {
+    const sqlite3 = require("sqlite3").verbose();
+    const { open } = require("sqlite");
     const dbPath = "./dev-database.db";
     const isNewDb = !fs.existsSync(dbPath);
 
