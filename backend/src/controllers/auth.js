@@ -14,7 +14,7 @@ function ensureRows(result) {
   return Array.isArray(result) ? result : result.rows || [];
 }
 
-const CLIENT_STATIC_PASSWORD = process.env.CLIENT_STATIC_PASSWORD || "123456";
+const CLIENT_STATIC_PASSWORD = process.env.CLIENT_STATIC_PASSWORD || "Password@123";
 
 async function syncUserCompanyAssignment(userId, companyId) {
   if (!userId || !companyId) return;
@@ -57,14 +57,14 @@ async function attachAssignedCompanies(user) {
 
 const DEMO_USERS = [
   {
-    email: "broker@leo.com",
-    password: "broker123",
+    email: "broker@datahub.com",
+    password: "Password@123",
     name: "Rajesh Sharma",
     role: "broker",
     companyName: "Dataroom",
   },
   {
-    email: "client@infosys.com",
+    email: "buyer2@datahub.com",
     password: CLIENT_STATIC_PASSWORD,
     name: "Ananya Mehta",
     role: "buyer",
@@ -171,17 +171,15 @@ async function ensureBuyerForEmail(email) {
 
 async function ensureDefaultFolders(companyId, createdBy) {
   if (!companyId || !createdBy) return;
-
   const existing = ensureRows(
-    await db.query("SELECT id FROM folders WHERE company_id = ? LIMIT 1", [companyId])
+    await db.query("SELECT id FROM folders WHERE company_id = $1 LIMIT 1", [companyId])
   );
   if (existing[0]) return;
 
   const defaults = ["Finance", "Legal", "Compliance", "HR", "Tax", "M&A", "Other"];
-
   for (const name of defaults) {
     await db.query(
-      "INSERT INTO folders (company_id, parent_id, name, color, created_by) VALUES (?, ?, ?, ?, ?)",
+      "INSERT INTO folders (company_id, parent_id, name, color, created_by) VALUES ($1, $2, $3, $4, $5)",
       [companyId, null, name, null, createdBy]
     );
   }

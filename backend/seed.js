@@ -14,14 +14,14 @@ async function seedDatabase() {
         name: 'Dataroom',
         industry: 'Financial Services',
         contact_name: 'Rajesh Sharma',
-        contact_email: 'broker@leo.com',
+        contact_email: 'broker@datahub.com',
         contact_phone: '+91-9876543210'
       },
       {
         name: 'Infosys Ltd.',
         industry: 'Technology',
         contact_name: 'Ananya Mehta',
-        contact_email: 'client@infosys.com',
+        contact_email: 'buyer2@datahub.com',
         contact_phone: '+91-9876543211'
       },
       {
@@ -51,15 +51,15 @@ async function seedDatabase() {
     const users = [
       {
         name: 'Rajesh Sharma',
-        email: 'broker@leo.com',
-        password: 'broker123',
+        email: 'broker@datahub.com',
+        password: 'Password@123',
         role: 'broker',
         company_name: 'Dataroom'
       },
       {
         name: 'Ananya Mehta',
-        email: 'client@infosys.com',
-        password: 'client123',
+        email: 'buyer2@datahub.com',
+        password: 'Password@123',
         role: 'buyer',
         company_name: 'Infosys Ltd.'
       },
@@ -94,8 +94,8 @@ async function seedDatabase() {
 
     console.log('✅ Database seeded successfully!');
     console.log('\n📋 Test Credentials:');
-    console.log('Broker: broker@leo.com / broker123');
-    console.log('Client: client@infosys.com / client123');
+    console.log('Broker: broker@datahub.com / Password@123');
+    console.log('Client: buyer2@datahub.com / Password@123');
     console.log('Client: vikram@tcs.com / vikram123');
 
   } catch (error) {

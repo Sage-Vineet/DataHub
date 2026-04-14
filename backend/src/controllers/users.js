@@ -120,7 +120,7 @@ const createUser = asyncHandler(async (req, res) => {
   const passwordHash = await bcrypt.hash(password, 10);
   await db.query(
     `INSERT INTO users (name, email, phone, password_hash, role, company_id, status)
-     VALUES (?, ?, ?, ?, ?, ?, COALESCE(?, 'active'))`,
+     VALUES (?, ?, ?, ?, CAST(? AS user_role), ?, CAST(COALESCE(?, 'active') AS user_status))`,
     [name, email, phone || null, passwordHash, role, primaryCompanyId, status || null]
   );
 
@@ -147,9 +147,9 @@ const updateUser = asyncHandler(async (req, res) => {
   if (name !== undefined) { fields.push(`name = ?`); values.push(name); }
   if (email !== undefined) { fields.push(`email = ?`); values.push(email); }
   if (phone !== undefined) { fields.push(`phone = ?`); values.push(phone); }
-  if (role !== undefined) { fields.push(`role = ?`); values.push(role); }
+  if (role !== undefined) { fields.push(`role = CAST(? AS user_role)`); values.push(role); }
   if (hasCompanyAssignments) { fields.push(`company_id = ?`); values.push(company_id || assignedCompanyIds[0] || null); }
-  if (status !== undefined) { fields.push(`status = ?`); values.push(status); }
+  if (status !== undefined) { fields.push(`status = CAST(? AS user_status)`); values.push(status); }
   if (password !== undefined) {
     const passwordHash = await bcrypt.hash(password, 10);
     fields.push(`password_hash = ?`);

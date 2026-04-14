@@ -62,7 +62,7 @@ const createCompany = asyncHandler(async (req, res) => {
 
   const { rows } = await db.query(
     `INSERT INTO companies (name, industry, status, since, logo, contact_name, contact_email, contact_phone)
-     VALUES (?, ?, COALESCE(?, 'active'), ?, ?, ?, ?, ?)
+     VALUES (?, ?, CAST(COALESCE(?, 'active') AS company_status), ?, ?, ?, ?, ?)
      RETURNING *`,
     [name, industry, status || null, since || null, logo || null, contact_name, contact_email, contact_phone]
   );
@@ -100,7 +100,11 @@ const updateCompany = asyncHandler(async (req, res) => {
   const body = req.body || {};
 
   Object.keys(body).forEach((key) => {
-    fields.push(`${key} = ?`);
+    if (key === 'status') {
+      fields.push(`${key} = CAST(? AS company_status)`);
+    } else {
+      fields.push(`${key} = ?`);
+    }
     values.push(body[key]);
   });
 

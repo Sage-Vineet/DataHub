@@ -168,6 +168,20 @@ export default function Companies() {
     setShowAdd(true);
   };
 
+  const handlePhoneChange = (event) => {
+    let value = event.target.value.replace(/\D/g, ''); // Keep only numbers
+    if (value.length > 10) value = value.slice(0, 10);
+    
+    let formatted = value;
+    if (value.length > 6) {
+      formatted = `${value.slice(0, 3)}-${value.slice(3, 6)}-${value.slice(6)}`;
+    } else if (value.length > 3) {
+      formatted = `${value.slice(0, 3)}-${value.slice(3)}`;
+    }
+    
+    setForm((current) => ({ ...current, phone: formatted }));
+  };
+
   const handleSaveCompany = async () => {
     if (!form.name.trim() || !form.contact.trim() || !form.email.trim() || !form.phone.trim() || !form.industry.trim()) {
       setError('Please fill in all company fields.');
@@ -523,7 +537,7 @@ export default function Companies() {
             { label: 'Company Name', key: 'name', placeholder: 'e.g. Accenture India' },
             { label: 'Contact Person', key: 'contact', placeholder: 'Full name' },
             { label: 'Email Address', key: 'email', placeholder: 'contact@company.com', type: 'email' },
-            { label: 'Phone Number', key: 'phone', placeholder: '+91 98765 43210' },
+            { label: 'Phone Number', key: 'phone', placeholder: '555-555-5555' },
             { label: 'Industry', key: 'industry', placeholder: 'e.g. IT Services' },
           ].map((field) => (
             <div key={field.key}>
@@ -531,7 +545,13 @@ export default function Companies() {
               <input
                 type={field.type || 'text'}
                 value={form[field.key]}
-                onChange={(event) => setForm((current) => ({ ...current, [field.key]: event.target.value }))}
+                onChange={(event) => {
+                  if (field.key === 'phone') {
+                    handlePhoneChange(event);
+                  } else {
+                    setForm((current) => ({ ...current, [field.key]: event.target.value }));
+                  }
+                }}
                 placeholder={field.placeholder}
                 className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all placeholder-[#A5A5A5]"
               />
