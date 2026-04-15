@@ -15,10 +15,17 @@ import {
   LoaderCircle,
   Upload,
   X,
-  Search,
-  Filter,
+  BrainCircuit,
+  Building2,
 } from "lucide-react";
 import QBDisconnectedBanner from "../../../components/common/QBDisconnectedBanner";
+import { parseDetailReport } from "../../../lib/report-parsers";
+import {
+  parseAllSections,
+  detectBankName,
+  readExcelFile,
+} from "./Bankstatementparser.JS";
+import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
@@ -28,17 +35,17 @@ const RECONCILIATION_VARIANCE_ENDPOINTS = [
   `${API_BASE_URL}/reconciliation-variance`,
 ];
 const QB_GENERAL_LEDGER_ENDPOINT = `${API_BASE_URL}/qb-general-ledger`;
+const QB_FINANCIAL_REPORTS_ENDPOINT = `${API_BASE_URL}/qb-financial-reports-for-reconciliation`;
 
 const ACCEPTED_FILE_TYPES = [
   "application/pdf",
   "application/vnd.ms-excel",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 ];
-
 const ACCEPTED_EXTENSIONS = [".pdf", ".xls", ".xlsx"];
-const STATUS_FILTERS = ["All", "Match", "Partially match", "Not match"];
+const STATUS_FILTERS = ["All", "Match", "Not match"];
 
-// --- Helpers ---
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const formatFileSize = (size) => {
   if (size < 1024) return `${size} B`;
@@ -68,12 +75,10 @@ const normalizeName = (value) =>
 
 const normalizeDate = (value) => {
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-
+  if (Number.isNaN(date.getTime())) return String(value || "");
   const day = String(date.getUTCDate()).padStart(2, "0");
   const month = String(date.getUTCMonth() + 1).padStart(2, "0");
   const year = date.getUTCFullYear();
-
   return `${day}/${month}/${year}`;
 };
 
@@ -102,128 +107,77 @@ const formatPercentageValue = (value) => {
 };
 
 const areNamesClose = (left, right) => {
-  const leftNormalized = normalizeName(left);
-  const rightNormalized = normalizeName(right);
-
-  if (!leftNormalized || !rightNormalized) return false;
-
-  if (
-    leftNormalized === rightNormalized ||
-    leftNormalized.includes(rightNormalized) ||
-    rightNormalized.includes(leftNormalized)
-  ) {
-    return true;
-  }
-
-  const leftWords = new Set(leftNormalized.split(" "));
-  const rightWords = new Set(rightNormalized.split(" "));
+  const l = normalizeName(left);
+  const r = normalizeName(right);
+  if (!l || !r) return false;
+  if (l === r || l.includes(r) || r.includes(l)) return true;
+  const lw = new Set(l.split(" "));
+  const rw = new Set(r.split(" "));
   let overlap = 0;
-
-  for (const word of leftWords) {
-    if (rightWords.has(word)) overlap += 1;
-  }
-
-  return overlap >= Math.min(2, leftWords.size, rightWords.size);
+  for (const w of lw) if (rw.has(w)) overlap++;
+  return overlap >= Math.min(2, lw.size, rw.size);
 };
 
 const buildReconciliationRows = (bankTransactions, quickbooksTransactions) => {
-  const groupedBankTransactions = new Map();
-  const groupedQuickbooksTransactions = new Map();
-
-  for (const transaction of bankTransactions) {
-    const dateKey = toDateKey(transaction.date || transaction.txn_date);
-    const existing = groupedBankTransactions.get(dateKey) || [];
-    existing.push(transaction);
-    groupedBankTransactions.set(dateKey, existing);
+  const groupedBank = new Map();
+  const groupedQB = new Map();
+  for (const txn of bankTransactions) {
+    const key = toDateKey(txn.date || txn.txn_date);
+    const arr = groupedBank.get(key) || [];
+    arr.push(txn);
+    groupedBank.set(key, arr);
   }
-
-  for (const transaction of quickbooksTransactions) {
-    const dateKey = toDateKey(transaction.date || transaction.txn_date);
-    const existing = groupedQuickbooksTransactions.get(dateKey) || [];
-    existing.push(transaction);
-    groupedQuickbooksTransactions.set(dateKey, existing);
+  for (const txn of quickbooksTransactions) {
+    const key = toDateKey(txn.date || txn.txn_date);
+    const arr = groupedQB.get(key) || [];
+    arr.push(txn);
+    groupedQB.set(key, arr);
   }
-
-  const orderedDateKeys = Array.from(
-    new Set([
-      ...groupedBankTransactions.keys(),
-      ...groupedQuickbooksTransactions.keys(),
-    ]),
-  ).sort((left, right) => left.localeCompare(right));
-
+  const dateKeys = Array.from(
+    new Set([...groupedBank.keys(), ...groupedQB.keys()]),
+  ).sort((a, b) => a.localeCompare(b));
   const rows = [];
-
-  for (const dateKey of orderedDateKeys) {
-    const bankItems = [...(groupedBankTransactions.get(dateKey) || [])];
-    const quickbooksItems = [
-      ...(groupedQuickbooksTransactions.get(dateKey) || []),
-    ];
-    const usedQuickbooks = new Set();
-
-    for (const bankTransaction of bankItems) {
-      const bankAmount = normalizeAmountValue(bankTransaction.amount);
-
-      const exactMatchIndex = quickbooksItems.findIndex(
-        (quickbooksTxn, index) => {
-          if (usedQuickbooks.has(index)) {
-            return false;
-          }
-
-          return (
-            normalizeAmountValue(quickbooksTxn.amount) === bankAmount &&
-            areNamesClose(bankTransaction.name, quickbooksTxn.name)
-          );
-        },
-      );
-
-      if (exactMatchIndex !== -1) {
-        usedQuickbooks.add(exactMatchIndex);
+  for (const dateKey of dateKeys) {
+    const bankItems = [...(groupedBank.get(dateKey) || [])];
+    const qbItems = [...(groupedQB.get(dateKey) || [])];
+    const usedQB = new Set();
+    for (const bankTxn of bankItems) {
+      const bankAmt = normalizeAmountValue(bankTxn.amount);
+      const exactIdx = qbItems.findIndex((qb, i) => {
+        if (usedQB.has(i)) return false;
+        return (
+          normalizeAmountValue(qb.amount) === bankAmt &&
+          areNamesClose(bankTxn.name, qb.name)
+        );
+      });
+      if (exactIdx !== -1) {
+        usedQB.add(exactIdx);
         rows.push({
-          bank: bankTransaction,
-          quickbooks: quickbooksItems[exactMatchIndex],
+          bank: bankTxn,
+          quickbooks: qbItems[exactIdx],
           status: "Match",
         });
         continue;
       }
-
-      const partialMatchIndex = quickbooksItems.findIndex(
-        (quickbooksTxn, index) => {
-          if (usedQuickbooks.has(index)) {
-            return false;
-          }
-
-          return normalizeAmountValue(quickbooksTxn.amount) === bankAmount;
-        },
-      );
-
-      if (partialMatchIndex !== -1) {
-        usedQuickbooks.add(partialMatchIndex);
+      const partialIdx = qbItems.findIndex((qb, i) => {
+        if (usedQB.has(i)) return false;
+        return normalizeAmountValue(qb.amount) === bankAmt;
+      });
+      if (partialIdx !== -1) {
+        usedQB.add(partialIdx);
         rows.push({
-          bank: bankTransaction,
-          quickbooks: quickbooksItems[partialMatchIndex],
+          bank: bankTxn,
+          quickbooks: qbItems[partialIdx],
           status: "Partially match",
         });
         continue;
       }
-
-      rows.push({
-        bank: bankTransaction,
-        status: "Not match",
-      });
+      rows.push({ bank: bankTxn, status: "Not match" });
     }
-
-    quickbooksItems.forEach((quickbooksTxn, index) => {
-      if (usedQuickbooks.has(index)) {
-        return;
-      }
-
-      rows.push({
-        quickbooks: quickbooksTxn,
-        status: "Not match",
-      });
+    qbItems.forEach((qb, i) => {
+      if (!usedQB.has(i)) rows.push({ quickbooks: qb, status: "Not match" });
     });
   }
-
   return rows;
 };
 
@@ -233,126 +187,79 @@ const getRowDateLabel = (row) =>
   normalizeDate(row.bank?.date || row.quickbooks?.date || "");
 
 const isExcelPasswordError = (error) => {
-  const message = getErrorMessage(error).toLowerCase();
+  const msg = getErrorMessage(error).toLowerCase();
   return (
-    message.includes("password") ||
-    message.includes("encrypted") ||
-    message.includes("decrypt")
+    msg.includes("password") ||
+    msg.includes("encrypted") ||
+    msg.includes("decrypt")
   );
 };
 
-const isPdfTextItem = (item) => {
-  if (!item || typeof item !== "object") {
-    return false;
-  }
+const isPdfTextItem = (item) =>
+  item &&
+  typeof item === "object" &&
+  typeof item.str === "string" &&
+  Array.isArray(item.transform) &&
+  typeof item.width === "number" &&
+  typeof item.hasEOL === "boolean";
 
-  return (
-    typeof item.str === "string" &&
-    Array.isArray(item.transform) &&
-    typeof item.width === "number" &&
-    typeof item.hasEOL === "boolean"
+const isReconciliationApiResponse = (p) =>
+  p &&
+  typeof p === "object" &&
+  "bank_transactions" in p &&
+  "reconciliation_transactions" in p;
+
+const isReconciliationVarianceResponse = (p) =>
+  p &&
+  typeof p === "object" &&
+  "bank_total" in p &&
+  "books_total" in p &&
+  "variance_amount" in p &&
+  "variance_percentage" in p;
+
+const countProfitLossTransactions = (groups = []) =>
+  groups.reduce(
+    (groupTotal, group) =>
+      groupTotal +
+      (group?.accounts || []).reduce(
+        (accountTotal, account) =>
+          accountTotal + (account?.transactions || []).length,
+        0,
+      ),
+    0,
   );
-};
-
-const isReconciliationApiResponse = (payload) =>
-  payload &&
-  typeof payload === "object" &&
-  "bank_transactions" in payload &&
-  "reconciliation_transactions" in payload;
-
-const isReconciliationVarianceResponse = (payload) =>
-  payload &&
-  typeof payload === "object" &&
-  "bank_total" in payload &&
-  "books_total" in payload &&
-  "variance_amount" in payload &&
-  "variance_percentage" in payload;
 
 const getRouteNotFoundMessage = (payload) => {
-  if (!payload || typeof payload !== "object") {
-    return "";
-  }
-
-  if ("error" in payload && typeof payload.error === "string") {
-    return payload.error;
-  }
-
-  if ("message" in payload && typeof payload.message === "string") {
-    return payload.message;
-  }
-
+  if (!payload || typeof payload !== "object") return "";
+  if (typeof payload.error === "string") return payload.error;
+  if (typeof payload.message === "string") return payload.message;
   return "";
 };
 
 const fetchFirstAvailableJson = async (endpoints, headers = {}) => {
   let lastResponse = null;
   let lastPayload = null;
-
   for (const endpoint of endpoints) {
     const response = await fetch(endpoint, {
       cache: "no-store",
-      headers: {
-        ...headers,
-        "Cache-Control": "no-store",
-      },
+      headers: { ...headers, "Cache-Control": "no-store" },
     });
     const payload = await response.json();
-
-    if (response.ok) {
-      return { response, payload };
-    }
-
+    if (response.ok) return { response, payload };
     lastResponse = response;
     lastPayload = payload;
-
-    const routeMessage = getRouteNotFoundMessage(payload).toLowerCase();
-    const isRouteNotFound =
-      response.status === 404 || routeMessage.includes("route not found");
-
-    if (!isRouteNotFound) {
-      break;
-    }
+    const msg = getRouteNotFoundMessage(payload).toLowerCase();
+    if (!(response.status === 404 || msg.includes("route not found"))) break;
   }
-
-  if (!lastResponse || !lastPayload) {
-    throw new Error("No reconciliation endpoint could be reached.");
-  }
-
+  if (!lastResponse || !lastPayload)
+    throw new Error("No endpoint could be reached.");
   return { response: lastResponse, payload: lastPayload };
 };
 
-const readExcelFile = async (file, password) => {
-  const XLSX = await import("xlsx");
-  const buffer = await file.arrayBuffer();
-  const workbook = XLSX.read(buffer, { type: "array", password });
-
-  return workbook.SheetNames.map((sheetName) => {
-    const sheet = workbook.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json(sheet, {
-      header: 1,
-      defval: "",
-    });
-    const previewRows = rows.slice(0, 50);
-    const previewText = previewRows
-      .map((row) =>
-        row
-          .map((cell) => String(cell ?? "").trim())
-          .filter(Boolean)
-          .join(" | "),
-      )
-      .filter(Boolean)
-      .join("\n");
-
-    return {
-      title: sheetName,
-      text: previewText || "No readable rows found in this sheet.",
-      rowCount: rows.length,
-    };
-  });
-};
+// ─── PDF reader ───────────────────────────────────────────────────────────────
 
 const buildPdfPageText = (items) => {
-  const positionedItems = items
+  const positioned = items
     .map((item) => ({
       text: item.str,
       x: item.transform[4] ?? 0,
@@ -361,15 +268,11 @@ const buildPdfPageText = (items) => {
       hasEOL: item.hasEOL,
     }))
     .filter((item) => item.text.trim().length > 0)
-    .sort((left, right) =>
-      Math.abs(left.y - right.y) > 2 ? right.y - left.y : left.x - right.x,
-    );
-
+    .sort((a, b) => (Math.abs(a.y - b.y) > 2 ? b.y - a.y : a.x - b.x));
   const lines = [];
-
-  for (const item of positionedItems) {
-    const currentLine = lines.at(-1);
-    if (!currentLine || Math.abs(currentLine.y - item.y) > 4) {
+  for (const item of positioned) {
+    const cur = lines.at(-1);
+    if (!cur || Math.abs(cur.y - item.y) > 4) {
       lines.push({
         y: item.y,
         parts: [
@@ -383,89 +286,81 @@ const buildPdfPageText = (items) => {
       });
       continue;
     }
-
-    currentLine.parts.push({
+    cur.parts.push({
       text: item.text,
       x: item.x,
       width: item.width,
       hasEOL: item.hasEOL,
     });
   }
-
   return (
     lines
       .map((line) => {
-        const sorted = [...line.parts].sort((left, right) => left.x - right.x);
+        const sorted = [...line.parts].sort((a, b) => a.x - b.x);
         let cursorX = 0;
         let content = "";
-
         for (const part of sorted) {
           const gap = part.x - cursorX;
-          if (content.length > 0) {
+          if (content.length > 0)
             content += gap > 24 ? "    " : gap > 6 ? " " : "";
-          }
           content += part.text;
           cursorX = part.x + part.width;
           if (part.hasEOL) break;
         }
-
         return content.trimEnd();
       })
       .join("\n")
-      .trim() || "No extractable text found on this page."
+      .trim() || "No extractable text on this page."
   );
 };
 
 const readPdfFile = async (file, password, requestPassword) => {
   const pdfjs = await import("pdfjs-dist");
-  pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-    "pdfjs-dist/build/pdf.worker.min.mjs",
-    import.meta.url,
-  ).toString();
-
+  pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
   const buffer = await file.arrayBuffer();
   const loadingTask = pdfjs.getDocument({ data: buffer, password });
-
   if (requestPassword) {
     loadingTask.onPassword = async (updatePassword, reason) => {
-      const passwordValue = await requestPassword(
-        reason === 1 ? "need" : "incorrect",
-      );
-      if (passwordValue === null) {
+      const pw = await requestPassword(reason === 1 ? "need" : "incorrect");
+      if (pw === null) {
         loadingTask.destroy();
         return;
       }
-      updatePassword(passwordValue);
+      updatePassword(pw);
     };
   }
-
   const pdf = await loadingTask.promise;
   const sections = [];
-
-  for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
-    const page = await pdf.getPage(pageNumber);
+  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+    const page = await pdf.getPage(pageNum);
     const textContent = await page.getTextContent();
-    const pageItems = textContent.items.filter(isPdfTextItem);
-    sections.push({
-      title: `Page ${pageNumber}`,
-      text: buildPdfPageText(pageItems),
-    });
+    const items = textContent.items.filter(isPdfTextItem);
+    sections.push({ title: `Page ${pageNum}`, text: buildPdfPageText(items) });
   }
-
   return sections;
 };
+
+// ─── Component ────────────────────────────────────────────────────────────────
 
 export default function WorkspaceReconciliation() {
   const { clientId } = useParams();
   const fileInputRef = useRef(null);
   const passwordResolverRef = useRef(null);
+
   const [selectedFile, setSelectedFile] = useState(null);
   const [errorMessage, setErrorMessage] = useState("");
   const [isReading, setIsReading] = useState(false);
   const [isContentVisible, setIsContentVisible] = useState(false);
   const [fileSections, setFileSections] = useState([]);
+
   const [reconciliationRows, setReconciliationRows] = useState([]);
   const [varianceData, setVarianceData] = useState(null);
+  const [statusFilter, setStatusFilter] = useState("All");
+  const [isLoadingReconciliation, setIsLoadingReconciliation] = useState(false);
+  const [isLoadingVariance, setIsLoadingVariance] = useState(false);
+  const [reconciliationError, setReconciliationError] = useState("");
+  const [varianceError, setVarianceError] = useState("");
+
   const [ledgerStartDate, setLedgerStartDate] = useState("2026-01-01");
   const [ledgerEndDate, setLedgerEndDate] = useState("2026-03-31");
   const [ledgerAccountingMethod, setLedgerAccountingMethod] =
@@ -474,11 +369,16 @@ export default function WorkspaceReconciliation() {
     status: "idle",
     message: "",
   });
-  const [statusFilter, setStatusFilter] = useState("All");
-  const [isLoadingReconciliation, setIsLoadingReconciliation] = useState(false);
-  const [isLoadingVariance, setIsLoadingVariance] = useState(false);
-  const [reconciliationError, setReconciliationError] = useState("");
-  const [varianceError, setVarianceError] = useState("");
+  const [balanceSheetStartDate, setBalanceSheetStartDate] =
+    useState("2026-01-01");
+  const [balanceSheetEndDate, setBalanceSheetEndDate] = useState("2026-03-31");
+  const [balanceSheetAccountingMethod, setBalanceSheetAccountingMethod] =
+    useState("Accrual");
+  const [financialReportsSync, setFinancialReportsSync] = useState({
+    status: "idle",
+    message: "",
+  });
+
   const [backendUpload, setBackendUpload] = useState({
     status: "idle",
     message: "",
@@ -488,14 +388,20 @@ export default function WorkspaceReconciliation() {
     message: "",
     password: "",
   });
+  const [aiParsing, setAiParsing] = useState({
+    status: "idle",
+    message: "",
+    bankName: "",
+    transactionCount: 0,
+  });
 
   const getHeaders = () => {
     const headers = {};
-    if (clientId) {
-      headers["X-Client-Id"] = clientId;
-    }
+    if (clientId) headers["X-Client-Id"] = clientId;
     return headers;
   };
+
+  // ─── Password modal ───────────────────────────────────────────────────────
 
   const handleOpenPicker = () => fileInputRef.current?.click();
 
@@ -506,7 +412,7 @@ export default function WorkspaceReconciliation() {
         isOpen: true,
         message:
           reason === "incorrect"
-            ? "That password was incorrect. Enter the correct password to open the file."
+            ? "That password was incorrect. Please enter the correct password."
             : "This file is password protected. Enter the password to open it.",
         password: "",
       });
@@ -522,28 +428,22 @@ export default function WorkspaceReconciliation() {
     resolver?.(password);
   };
 
+  // ─── Data loaders ─────────────────────────────────────────────────────────
+
   const loadReconciliationData = async () => {
     setIsLoadingReconciliation(true);
     setReconciliationError("");
-
     try {
       const { response, payload } = await fetchFirstAvailableJson(
         RECONCILIATION_DATA_ENDPOINTS,
         getHeaders(),
       );
-
-      if (!response.ok) {
+      if (!response.ok)
         throw new Error(
-          payload && payload.error
-            ? payload.error
-            : "Failed to load reconciliation data.",
+          payload?.error || "Failed to load reconciliation data.",
         );
-      }
-
-      if (!isReconciliationApiResponse(payload)) {
+      if (!isReconciliationApiResponse(payload))
         throw new Error("Invalid reconciliation data response.");
-      }
-
       setReconciliationRows(
         buildReconciliationRows(
           payload.bank_transactions,
@@ -551,7 +451,7 @@ export default function WorkspaceReconciliation() {
         ),
       );
     } catch (error) {
-      console.error("Failed to load reconciliation data:", error);
+      console.error("Reconciliation load error:", error);
       setReconciliationError(getErrorMessage(error));
       setReconciliationRows([]);
     } finally {
@@ -562,28 +462,18 @@ export default function WorkspaceReconciliation() {
   const loadVarianceData = async () => {
     setIsLoadingVariance(true);
     setVarianceError("");
-
     try {
       const { response, payload } = await fetchFirstAvailableJson(
         RECONCILIATION_VARIANCE_ENDPOINTS,
         getHeaders(),
       );
-
-      if (!response.ok) {
-        throw new Error(
-          payload && payload.error
-            ? payload.error
-            : "Failed to load reconciliation variance.",
-        );
-      }
-
-      if (!isReconciliationVarianceResponse(payload)) {
-        throw new Error("Invalid reconciliation variance response.");
-      }
-
+      if (!response.ok)
+        throw new Error(payload?.error || "Failed to load variance.");
+      if (!isReconciliationVarianceResponse(payload))
+        throw new Error("Invalid variance response.");
       setVarianceData(payload);
     } catch (error) {
-      console.error("Failed to load reconciliation variance:", error);
+      console.error("Variance load error:", error);
       setVarianceError(getErrorMessage(error));
       setVarianceData(null);
     } finally {
@@ -599,28 +489,21 @@ export default function WorkspaceReconciliation() {
   const loadGeneralLedger = async () => {
     setGeneralLedgerSync({
       status: "loading",
-      message: "Fetching QuickBooks general ledger data...",
+      message: "Fetching QuickBooks general ledger...",
     });
-
     try {
-      const params = new URLSearchParams();
-      params.set("start_date", ledgerStartDate);
-      params.set("end_date", ledgerEndDate);
-      params.set("accounting_method", ledgerAccountingMethod);
-
-      const response = await fetch(
-        `${QB_GENERAL_LEDGER_ENDPOINT}?${params.toString()}`,
-        {
-          cache: "no-store",
-          headers: getHeaders(),
-        },
-      );
+      const params = new URLSearchParams({
+        start_date: ledgerStartDate,
+        end_date: ledgerEndDate,
+        accounting_method: ledgerAccountingMethod,
+      });
+      const response = await fetch(`${QB_GENERAL_LEDGER_ENDPOINT}?${params}`, {
+        cache: "no-store",
+        headers: getHeaders(),
+      });
       const payload = await response.json();
-
-      if (!response.ok) {
+      if (!response.ok)
         throw new Error(payload.error || "Failed to fetch general ledger.");
-      }
-
       setGeneralLedgerSync({
         status: "success",
         message:
@@ -628,11 +511,10 @@ export default function WorkspaceReconciliation() {
             ? `${payload.message} (${payload.totalInserted} records)`
             : payload.message || "General ledger fetched successfully.",
       });
-
       await loadReconciliationData();
       await loadVarianceData();
     } catch (error) {
-      console.error("Failed to fetch general ledger:", error);
+      console.error("General ledger error:", error);
       setGeneralLedgerSync({
         status: "error",
         message: getErrorMessage(error),
@@ -640,82 +522,202 @@ export default function WorkspaceReconciliation() {
     }
   };
 
-  const filteredReconciliationRows =
-    statusFilter === "All"
-      ? reconciliationRows
-      : reconciliationRows.filter((row) => row.status === statusFilter);
+  const loadFinancialReports = async () => {
+    setFinancialReportsSync({
+      status: "loading",
+      message: "Fetching Profit & Loss Detail and Balance Sheet...",
+    });
+    try {
+      const params = new URLSearchParams({
+        start_date: balanceSheetStartDate,
+        end_date: balanceSheetEndDate,
+        accounting_method: balanceSheetAccountingMethod,
+      });
+      const response = await fetch(
+        `${QB_FINANCIAL_REPORTS_ENDPOINT}?${params}`,
+        { cache: "no-store", headers: getHeaders() },
+      );
+      const payload = await response.json().catch(() => null);
+      if (!response.ok)
+        throw new Error(
+          payload?.error ||
+            payload?.message ||
+            "Failed to fetch financial reports.",
+        );
+      const parsedProfitLoss = parseDetailReport(
+        payload?.profit_and_loss ?? {},
+      );
+      const profitLossTransactions = countProfitLossTransactions(
+        parsedProfitLoss.groups,
+      );
+      setFinancialReportsSync({
+        status: "success",
+        message:
+          profitLossTransactions > 0
+            ? `Loaded ${profitLossTransactions} Profit & Loss Detail transactions and the Balance Sheet.`
+            : "Loaded Profit & Loss Detail and Balance Sheet successfully.",
+      });
+    } catch (error) {
+      console.error("Financial reports error:", error);
+      setFinancialReportsSync({
+        status: "error",
+        message: getErrorMessage(error),
+      });
+    }
+  };
 
-  const groupedReconciliationRows = filteredReconciliationRows.reduce(
-    (groups, row) => {
-      const dateKey = getRowDateKey(row);
-      const dateLabel = getRowDateLabel(row);
-      const previousGroup = groups.at(-1);
+  // ─── Upload to backend ────────────────────────────────────────────────────
+  //
+  // KEY CHANGE: for XLS/XLSX files, sections may already carry `transactions`
+  // (directlyParsed === true). We use those directly and SKIP the AI call.
+  // For PDFs and unrecognized XLS formats, we fall through to AI parsing.
 
-      if (!previousGroup || previousGroup.dateKey !== dateKey) {
-        groups.push({
-          dateKey,
-          dateLabel,
-          rows: [row],
+  const uploadToBackend = async (file, sections) => {
+    const fullText = sections.map((s) => s.text).join("\n");
+
+    // ── Fast path: XLS/XLSX was directly parsed (no AI needed) ─────────────
+    const directTransactions = sections
+      .filter((s) => s.directlyParsed && Array.isArray(s.transactions))
+      .flatMap((s) => s.transactions);
+
+    const detectedBank =
+      sections.find((s) => s.bankFormat)?.bankFormat ||
+      detectBankName(fullText);
+
+    let normalizedTransactions = [];
+    let finalBankName = detectedBank;
+
+    if (directTransactions.length > 0) {
+      normalizedTransactions = directTransactions;
+      setAiParsing({
+        status: "success",
+        message: `${finalBankName || "Bank"} statement parsed directly — ${normalizedTransactions.length} transaction${normalizedTransactions.length !== 1 ? "s" : ""} found (no AI needed).`,
+        bankName: finalBankName,
+        transactionCount: normalizedTransactions.length,
+      });
+    } else {
+      // ── AI path: PDF or unrecognized XLS format ─────────────────────────
+      setAiParsing({
+        status: "parsing",
+        message: detectedBank
+          ? `Detected ${detectedBank} — parsing all transactions with AI...`
+          : "Detecting bank format and parsing all transactions with AI...",
+        bankName: detectedBank,
+        transactionCount: 0,
+      });
+
+      try {
+        const result = await parseAllSections(
+          sections,
+          (progressMessage) => {
+            setAiParsing((prev) => ({ ...prev, message: progressMessage }));
+          },
+          getHeaders(),
+        );
+        normalizedTransactions = result.transactions;
+        finalBankName = result.bankName || detectedBank;
+        if (
+          normalizedTransactions.length === 0 &&
+          result.parseErrors.length > 0
+        ) {
+          throw new Error(
+            "AI could not extract transactions: " +
+              result.parseErrors.join("; "),
+          );
+        }
+        setAiParsing({
+          status: "success",
+          message: `${finalBankName || "Bank"} statement parsed — ${normalizedTransactions.length} transaction${normalizedTransactions.length !== 1 ? "s" : ""} found.`,
+          bankName: finalBankName,
+          transactionCount: normalizedTransactions.length,
         });
-        return groups;
+      } catch (aiError) {
+        console.error("AI parsing failed:", aiError);
+        setAiParsing({
+          status: "error",
+          message: `AI parsing failed: ${aiError.message}. Uploading raw file as fallback.`,
+          bankName: finalBankName,
+          transactionCount: 0,
+        });
       }
+    }
 
-      previousGroup.rows.push(row);
-      return groups;
-    },
-    [],
-  );
-
-  const uploadToBackend = async (file, sections, password) => {
+    // ── Step 2: Upload to backend ─────────────────────────────────────────
     setBackendUpload({
       status: "uploading",
       message: "Sending to backend for processing...",
     });
+    try {
+      let response;
+      const headers = getHeaders();
 
-    let response;
+      if (normalizedTransactions.length > 0) {
+        response = await fetch(BANK_STATEMENT_UPLOAD_ENDPOINT, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...headers },
+          body: JSON.stringify({
+            type: "normalized",
+            fileName: file.name,
+            bankName: finalBankName || "Unknown",
+            transactions: normalizedTransactions,
+            rawText: fullText.slice(0, 5000),
+          }),
+        });
+      } else {
+        if (isPdfFile(file)) {
+          response = await fetch(BANK_STATEMENT_UPLOAD_ENDPOINT, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...headers },
+            body: JSON.stringify({
+              type: "pdf",
+              fileName: file.name,
+              text: fullText,
+            }),
+          });
+        } else {
+          // For raw Excel files: send FormData without explicit Content-Type
+          // The browser will automatically set Content-Type: multipart/form-data
+          const formData = new FormData();
+          formData.append("file", file);
 
-    if (isPdfFile(file)) {
-      const fullText = sections.map((section) => section.text).join("\n");
-      response = await fetch(BANK_STATEMENT_UPLOAD_ENDPOINT, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...getHeaders(),
-        },
-        body: JSON.stringify({
-          type: "pdf",
-          fileName: file.name,
-          text: fullText,
-        }),
-      });
-    } else {
-      const formData = new FormData();
-      formData.append("file", file);
-      if (password) {
-        formData.append("password", password);
+          // Build URL with clientId as query param for extra reliability
+          let uploadUrl = BANK_STATEMENT_UPLOAD_ENDPOINT;
+          if (clientId) {
+            uploadUrl += `?clientId=${encodeURIComponent(clientId)}`;
+          }
+
+          response = await fetch(uploadUrl, {
+            method: "POST",
+            headers: headers,
+            body: formData,
+          });
+        }
       }
-      response = await fetch(BANK_STATEMENT_UPLOAD_ENDPOINT, {
-        method: "POST",
-        headers: getHeaders(),
-        body: formData,
+
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) {
+        const errorMsg =
+          payload?.error || payload?.message || `HTTP ${response.status}`;
+        throw new Error(errorMsg);
+      }
+
+      setBackendUpload({
+        status: "success",
+        message:
+          payload?.message && payload?.totalRecords !== undefined
+            ? `${payload.message} (${payload.totalRecords} records)`
+            : payload?.message || "Uploaded successfully.",
       });
+    } catch (uploadError) {
+      setBackendUpload({
+        status: "error",
+        message: getErrorMessage(uploadError),
+      });
+      throw uploadError;
     }
-
-    const payload = await response.json().catch(() => null);
-    if (!response.ok) {
-      throw new Error(
-        payload?.error || payload?.message || "Failed to upload to backend.",
-      );
-    }
-
-    setBackendUpload({
-      status: "success",
-      message:
-        payload?.message && payload?.totalRecords !== undefined
-          ? `${payload.message} (${payload.totalRecords} records)`
-          : payload?.message || "Uploaded successfully.",
-    });
   };
+
+  // ─── File processing ──────────────────────────────────────────────────────
 
   const processFile = async (file) => {
     setSelectedFile(file);
@@ -723,26 +725,29 @@ export default function WorkspaceReconciliation() {
     setFileSections([]);
     setIsContentVisible(false);
     setBackendUpload({ status: "idle", message: "" });
+    setAiParsing({
+      status: "idle",
+      message: "",
+      bankName: "",
+      transactionCount: 0,
+    });
     setIsReading(true);
-    let unlockedPassword = "";
 
-    const requestPasswordForFile = async (reason) => {
-      const password = await requestPassword(reason);
-      if (password) {
-        unlockedPassword = password;
-      }
-      return password;
+    const requestPasswordForFile = async (reason) =>
+      await requestPassword(reason);
+
+    const tryProcess = async (password) => {
+      const sections = isPdfFile(file)
+        ? await readPdfFile(file, password, requestPasswordForFile)
+        : await readExcelFile(file, password);
+      setFileSections(sections);
+      await uploadToBackend(file, sections);
+      await loadReconciliationData();
+      await loadVarianceData();
     };
 
     try {
-      const sections = isPdfFile(file)
-        ? await readPdfFile(file, undefined, requestPasswordForFile)
-        : await readExcelFile(file);
-
-      setFileSections(sections);
-      await uploadToBackend(file, sections, unlockedPassword || undefined);
-      await loadReconciliationData();
-      await loadVarianceData();
+      await tryProcess(undefined);
     } catch (error) {
       if (!isPdfFile(file) && isExcelPasswordError(error)) {
         const password = await requestPasswordForFile("need");
@@ -751,40 +756,34 @@ export default function WorkspaceReconciliation() {
           setIsReading(false);
           return;
         }
-
         try {
-          const sections = await readExcelFile(file, password);
-          setFileSections(sections);
-          setErrorMessage("");
-          await uploadToBackend(file, sections, password);
-          await loadReconciliationData();
-          await loadVarianceData();
+          await tryProcess(password);
           setIsReading(false);
           return;
-        } catch (passwordError) {
-          if (isExcelPasswordError(passwordError)) {
-            const retryPassword = await requestPasswordForFile("incorrect");
-            if (retryPassword === null) {
+        } catch (pwError) {
+          if (isExcelPasswordError(pwError)) {
+            const retryPw = await requestPasswordForFile("incorrect");
+            if (retryPw === null) {
               setErrorMessage("Password entry was cancelled.");
               setIsReading(false);
               return;
             }
-
-            const sections = await readExcelFile(file, retryPassword);
-            setFileSections(sections);
-            setErrorMessage("");
-            await uploadToBackend(file, sections, retryPassword);
-            await loadReconciliationData();
-            await loadVarianceData();
-            setIsReading(false);
-            return;
+            try {
+              await tryProcess(retryPw);
+              setIsReading(false);
+              return;
+            } catch (retryErr) {
+              setErrorMessage(
+                getErrorMessage(retryErr) || "Incorrect password.",
+              );
+              setIsReading(false);
+              return;
+            }
           }
-
-          throw passwordError;
+          throw pwError;
         }
       }
-
-      console.error("Failed to read file:", error);
+      console.error("File processing error:", error);
       setFileSections([]);
       setErrorMessage(
         getErrorMessage(error) || "The selected file could not be read.",
@@ -798,7 +797,6 @@ export default function WorkspaceReconciliation() {
   const handleFileChange = async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
-
     if (!isAcceptedFile(file)) {
       setSelectedFile(null);
       setFileSections([]);
@@ -806,7 +804,6 @@ export default function WorkspaceReconciliation() {
       event.target.value = "";
       return;
     }
-
     await processFile(file);
   };
 
@@ -815,47 +812,64 @@ export default function WorkspaceReconciliation() {
       passwordResolverRef.current(null);
       passwordResolverRef.current = null;
     }
-
     setSelectedFile(null);
     setErrorMessage("");
     setFileSections([]);
     setIsContentVisible(false);
     setIsReading(false);
     setBackendUpload({ status: "idle", message: "" });
+    setAiParsing({
+      status: "idle",
+      message: "",
+      bankName: "",
+      transactionCount: 0,
+    });
     closePasswordPrompt();
-
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
-    }
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
+
+  // ─── Derived state ────────────────────────────────────────────────────────
+
+  const filteredRows =
+    statusFilter === "All"
+      ? reconciliationRows
+      : reconciliationRows.filter((r) => r.status === statusFilter);
+
+  const groupedRows = filteredRows.reduce((groups, row) => {
+    const dateKey = getRowDateKey(row);
+    const dateLabel = getRowDateLabel(row);
+    const prev = groups.at(-1);
+    if (!prev || prev.dateKey !== dateKey) {
+      groups.push({ dateKey, dateLabel, rows: [row] });
+    } else {
+      prev.rows.push(row);
+    }
+    return groups;
+  }, []);
 
   const SelectedFileIcon = selectedFile?.name.toLowerCase().endsWith(".pdf")
     ? FileText
     : FileSpreadsheet;
+
+  // ─── Render ───────────────────────────────────────────────────────────────
 
   return (
     <>
       <Header title="Reconciliation" />
       <div className="page-content">
         <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <h1 className="text-[24px] font-bold text-text-primary">
-              Reconciliation
-            </h1>
-          </div>
+          <h1 className="text-[24px] font-bold text-text-primary">
+            Reconciliation
+          </h1>
         </div>
 
         <QBDisconnectedBanner pageName="Reconciliation" />
 
+        {/* ── QuickBooks General Ledger ── */}
         <section className="card-base w-full p-5">
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div>
-              <h2 className="text-[18px] font-semibold text-text-primary">
-                QuickBooks General Ledger
-              </h2>
-            </div>
-          </div>
-
+          <h2 className="text-[18px] font-semibold text-text-primary">
+            QuickBooks General Ledger
+          </h2>
           <div className="mt-4 grid gap-3 lg:grid-cols-[1fr_1fr_220px_auto]">
             <div>
               <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
@@ -864,11 +878,10 @@ export default function WorkspaceReconciliation() {
               <input
                 type="date"
                 value={ledgerStartDate}
-                onChange={(event) => setLedgerStartDate(event.target.value)}
+                onChange={(e) => setLedgerStartDate(e.target.value)}
                 className="input-base h-10"
               />
             </div>
-
             <div>
               <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
                 End Date
@@ -876,27 +889,23 @@ export default function WorkspaceReconciliation() {
               <input
                 type="date"
                 value={ledgerEndDate}
-                onChange={(event) => setLedgerEndDate(event.target.value)}
+                onChange={(e) => setLedgerEndDate(e.target.value)}
                 className="input-base h-10"
               />
             </div>
-
             <div>
               <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
                 Accounting Type
               </label>
               <select
                 value={ledgerAccountingMethod}
-                onChange={(event) =>
-                  setLedgerAccountingMethod(event.target.value)
-                }
+                onChange={(e) => setLedgerAccountingMethod(e.target.value)}
                 className="input-base h-10"
               >
                 <option value="Accrual">Accrual</option>
                 <option value="Cash">Cash</option>
               </select>
             </div>
-
             <div className="flex items-end">
               <button
                 type="button"
@@ -913,8 +922,7 @@ export default function WorkspaceReconciliation() {
               </button>
             </div>
           </div>
-
-          {generalLedgerSync.status !== "idle" ? (
+          {generalLedgerSync.status !== "idle" && (
             <div
               className={cn(
                 "mt-3 flex items-center gap-2 rounded-lg border bg-white px-4 py-2.5 text-[13px]",
@@ -934,9 +942,96 @@ export default function WorkspaceReconciliation() {
               )}
               {generalLedgerSync.message}
             </div>
-          ) : null}
+          )}
         </section>
 
+        {/* ── Reconciliation Financial Reports ── */}
+        <section className="card-base w-full p-5">
+          <h2 className="text-[18px] font-semibold text-text-primary">
+            Reconciliation Financial Reports
+          </h2>
+          <p className="mt-1 text-[13px] text-text-secondary">
+            Fetch Profit & Loss Detail and Balance Sheet together for the same
+            period.
+          </p>
+          <div className="mt-4 grid gap-3 lg:grid-cols-[1fr_1fr_220px_auto]">
+            <div>
+              <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
+                Start Date
+              </label>
+              <input
+                type="date"
+                value={balanceSheetStartDate}
+                onChange={(e) => setBalanceSheetStartDate(e.target.value)}
+                className="input-base h-10"
+              />
+            </div>
+            <div>
+              <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
+                End Date
+              </label>
+              <input
+                type="date"
+                value={balanceSheetEndDate}
+                onChange={(e) => setBalanceSheetEndDate(e.target.value)}
+                className="input-base h-10"
+              />
+            </div>
+            <div>
+              <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
+                Accounting Type
+              </label>
+              <select
+                value={balanceSheetAccountingMethod}
+                onChange={(e) =>
+                  setBalanceSheetAccountingMethod(e.target.value)
+                }
+                className="input-base h-10"
+              >
+                <option value="Accrual">Accrual</option>
+                <option value="Cash">Cash</option>
+              </select>
+            </div>
+            <div className="flex items-end">
+              <button
+                type="button"
+                className="btn-primary w-full"
+                onClick={() => void loadFinancialReports()}
+                disabled={financialReportsSync.status === "loading"}
+              >
+                {financialReportsSync.status === "loading" ? (
+                  <LoaderCircle size={16} className="animate-spin" />
+                ) : (
+                  <RefreshCw size={16} />
+                )}
+                Fetch Financial Reports
+              </button>
+            </div>
+          </div>
+          {financialReportsSync.status !== "idle" && (
+            <div
+              className={cn(
+                "mt-3 flex items-center gap-2 rounded-lg border bg-white px-4 py-2.5 text-[13px]",
+                financialReportsSync.status === "error"
+                  ? "border-negative/20 text-negative"
+                  : financialReportsSync.status === "success"
+                    ? "border-primary/20 text-primary"
+                    : "border-border text-text-secondary",
+              )}
+            >
+              {financialReportsSync.status === "loading" ? (
+                <LoaderCircle size={16} className="animate-spin" />
+              ) : financialReportsSync.status === "error" ? (
+                <AlertCircle size={16} />
+              ) : (
+                <CheckCircle2 size={16} />
+              )}
+              {financialReportsSync.message}
+            </div>
+          )}
+        </section>
+
+        {/* ── File Upload ── */}
         <section className="card-base card-p w-full">
           <div className="grid gap-6 xl:grid-cols-[420px_minmax(0,1fr)]">
             <div
@@ -954,57 +1049,76 @@ export default function WorkspaceReconciliation() {
                 className="hidden"
                 onChange={handleFileChange}
               />
-
               <div className="flex flex-col items-start gap-4">
                 <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
                   <Upload size={24} />
                 </div>
-
-                <div className="space-y-2">
+                <div className="space-y-1">
                   <h2 className="text-[20px] font-semibold text-text-primary">
                     Choose a PDF or Excel file
                   </h2>
+                  {/* <p className="text-[13px] text-text-muted">
+                    Works with any bank — SBI, HDFC, ICICI, Axis, Kotak, Chase,
+                    HSBC and more. Structured Excel files are parsed instantly;
+                    PDFs use AI.
+                  </p> */}
                 </div>
-
                 <div className="flex flex-wrap items-center gap-3">
                   <button onClick={handleOpenPicker} className="btn-primary">
                     <Upload size={16} />
                     Select File
                   </button>
-
-                  {fileSections.length > 0 ? (
+                  {fileSections.length > 0 && (
                     <button
-                      onClick={() => setIsContentVisible((current) => !current)}
+                      onClick={() => setIsContentVisible((v) => !v)}
                       className="btn-secondary"
                     >
                       <FileText size={16} />
                       {isContentVisible ? "Hide Content" : "View Content"}
                     </button>
-                  ) : null}
-
-                  {selectedFile ? (
+                  )}
+                  {selectedFile && (
                     <button onClick={handleClearFile} className="btn-secondary">
                       <X size={16} />
                       Remove File
                     </button>
-                  ) : null}
+                  )}
                 </div>
 
-                {errorMessage ? (
+                {errorMessage && (
                   <div className="flex items-center gap-2 rounded-lg border border-negative/20 bg-white px-4 py-3 text-[14px] text-negative">
                     <AlertCircle size={16} />
                     {errorMessage}
                   </div>
-                ) : null}
-
-                {isReading ? (
+                )}
+                {isReading && (
                   <div className="flex items-center gap-2 rounded-lg border border-border bg-white px-4 py-3 text-[14px] text-text-secondary">
                     <LoaderCircle size={16} className="animate-spin" />
-                    Reading file content...
+                    Reading file — extracting all pages/rows...
                   </div>
-                ) : null}
-
-                {backendUpload.status !== "idle" ? (
+                )}
+                {aiParsing.status !== "idle" && (
+                  <div
+                    className={cn(
+                      "flex items-center gap-2 rounded-lg border bg-white px-4 py-3 text-[14px]",
+                      aiParsing.status === "error"
+                        ? "border-negative/20 text-negative"
+                        : aiParsing.status === "success"
+                          ? "border-primary/20 text-primary"
+                          : "border-border text-text-secondary",
+                    )}
+                  >
+                    {aiParsing.status === "parsing" ? (
+                      <LoaderCircle size={16} className="animate-spin" />
+                    ) : aiParsing.status === "error" ? (
+                      <AlertCircle size={16} />
+                    ) : (
+                      <BrainCircuit size={16} />
+                    )}
+                    {aiParsing.message}
+                  </div>
+                )}
+                {backendUpload.status !== "idle" && (
                   <div
                     className={cn(
                       "flex items-center gap-2 rounded-lg border bg-white px-4 py-3 text-[14px]",
@@ -1024,15 +1138,15 @@ export default function WorkspaceReconciliation() {
                     )}
                     {backendUpload.message}
                   </div>
-                ) : null}
+                )}
               </div>
             </div>
 
+            {/* Summary panel */}
             <div className="flex h-full flex-col rounded-2xl border border-border bg-bg-page/60 p-6">
               <h3 className="text-[16px] font-semibold text-text-primary">
                 Upload Summary
               </h3>
-
               {selectedFile ? (
                 <div className="mt-5 space-y-4">
                   <div className="flex items-start gap-3 rounded-xl bg-bg-card p-4 shadow-sm">
@@ -1048,39 +1162,76 @@ export default function WorkspaceReconciliation() {
                       </p>
                     </div>
                   </div>
-
                   <div className="space-y-3 text-[14px] text-text-secondary">
                     <div className="flex items-center justify-between gap-3">
                       <span>Detected type</span>
                       <span className="font-medium text-text-primary">
-                        {selectedFile.name.toLowerCase().endsWith(".pdf")
+                        {isPdfFile(selectedFile)
                           ? "PDF Document"
                           : "Excel Workbook"}
                       </span>
                     </div>
-
+                    {aiParsing.bankName && (
+                      <div className="flex items-center justify-between gap-3">
+                        <span>Detected bank</span>
+                        <span className="flex items-center gap-1.5 font-medium text-text-primary">
+                          <Building2 size={14} />
+                          {aiParsing.bankName}
+                        </span>
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between gap-3">
+                      <span>Parse method</span>
+                      <span className="font-medium text-text-primary">
+                        {fileSections.some((s) => s.directlyParsed)
+                          ? "Direct (no AI)"
+                          : isPdfFile(selectedFile)
+                            ? "AI (PDF)"
+                            : "AI (fallback)"}
+                      </span>
+                    </div>
                     <div className="flex items-center justify-between gap-3">
                       <span>Status</span>
                       <span className="font-medium text-primary">
                         {isReading
-                          ? "Reading content"
-                          : backendUpload.status === "uploading"
-                            ? "Uploading to backend"
-                            : backendUpload.status === "success"
-                              ? "Uploaded to backend"
-                              : "Content extracted"}
+                          ? "Reading all content..."
+                          : aiParsing.status === "parsing"
+                            ? "AI parsing transactions..."
+                            : backendUpload.status === "uploading"
+                              ? "Uploading to backend"
+                              : backendUpload.status === "success"
+                                ? "Uploaded to backend"
+                                : "Content extracted"}
                       </span>
                     </div>
-
                     <div className="flex items-center justify-between gap-3">
-                      <span>Sections found</span>
+                      <span>Sections / pages</span>
                       <span className="font-medium text-text-primary">
                         {fileSections.length}
                       </span>
                     </div>
+                    {fileSections.length > 0 && (
+                      <div className="flex items-center justify-between gap-3">
+                        <span>Total rows in file</span>
+                        <span className="font-medium text-text-primary">
+                          {fileSections.reduce(
+                            (sum, s) => sum + (s.rowCount ?? 0),
+                            0,
+                          ) || "—"}
+                        </span>
+                      </div>
+                    )}
+                    {aiParsing.status === "success" &&
+                      aiParsing.transactionCount > 0 && (
+                        <div className="flex items-center justify-between gap-3">
+                          <span>Transactions parsed</span>
+                          <span className="font-bold text-primary">
+                            {aiParsing.transactionCount}
+                          </span>
+                        </div>
+                      )}
                   </div>
-
-                  {isContentVisible && fileSections.length > 0 ? (
+                  {isContentVisible && fileSections.length > 0 && (
                     <div className="max-h-[420px] space-y-3 overflow-y-auto pr-1">
                       {fileSections.map((section, index) => (
                         <div
@@ -1091,11 +1242,11 @@ export default function WorkspaceReconciliation() {
                             <h4 className="text-[14px] font-semibold text-text-primary">
                               {section.title}
                             </h4>
-                            {section.rowCount !== undefined ? (
+                            {section.rowCount !== undefined && (
                               <span className="text-[12px] text-text-muted">
                                 {section.rowCount} rows
                               </span>
-                            ) : null}
+                            )}
                           </div>
                           <pre className="mt-3 whitespace-pre-wrap break-words font-sans text-[12px] leading-5 text-text-secondary">
                             {section.text}
@@ -1103,18 +1254,19 @@ export default function WorkspaceReconciliation() {
                         </div>
                       ))}
                     </div>
-                  ) : null}
+                  )}
                 </div>
               ) : (
                 <p className="mt-5 text-[14px] text-text-muted">
-                  No file selected yet. Use the button to attach a PDF or Excel
-                  file for reconciliation.
+                  No file selected yet. Attach a PDF or Excel bank statement —
+                  any bank format is supported.
                 </p>
               )}
             </div>
           </div>
         </section>
 
+        {/* ── Variance Summary ── */}
         <section className="card-base card-p w-full">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
@@ -1125,7 +1277,6 @@ export default function WorkspaceReconciliation() {
                 Bank versus books totals and current variance percentage.
               </p>
             </div>
-
             <button
               type="button"
               className="btn-secondary"
@@ -1140,14 +1291,12 @@ export default function WorkspaceReconciliation() {
               Refresh Variance
             </button>
           </div>
-
-          {varianceError ? (
+          {varianceError && (
             <div className="mt-6 flex items-center gap-2 rounded-lg border border-negative/20 bg-white px-4 py-3 text-[14px] text-negative">
               <AlertCircle size={16} />
               {varianceError}
             </div>
-          ) : null}
-
+          )}
           {isLoadingVariance ? (
             <div className="mt-6 flex items-center gap-2 rounded-lg border border-border bg-bg-page/40 px-4 py-5 text-[14px] text-text-secondary">
               <LoaderCircle size={16} className="animate-spin" />
@@ -1155,41 +1304,38 @@ export default function WorkspaceReconciliation() {
             </div>
           ) : varianceData ? (
             <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-              <div className="rounded-2xl border border-border bg-bg-card p-5">
-                <p className="text-[13px] font-medium text-text-secondary">
-                  Bank Total
-                </p>
-                <p className="mt-2 text-[28px] font-bold text-text-primary">
-                  {formatCurrencyValue(varianceData.bank_total)}
-                </p>
-              </div>
-
-              <div className="rounded-2xl border border-border bg-bg-card p-5">
-                <p className="text-[13px] font-medium text-text-secondary">
-                  Books Total
-                </p>
-                <p className="mt-2 text-[28px] font-bold text-text-primary">
-                  {formatCurrencyValue(varianceData.books_total)}
-                </p>
-              </div>
-
-              <div className="rounded-2xl border border-border bg-bg-card p-5">
-                <p className="text-[13px] font-medium text-text-secondary">
-                  Variance Amount
-                </p>
-                <p className="mt-2 text-[28px] font-bold text-text-primary">
-                  {formatCurrencyValue(varianceData.variance_amount)}
-                </p>
-              </div>
-
-              <div className="rounded-2xl border border-border bg-bg-card p-5">
-                <p className="text-[13px] font-medium text-text-secondary">
-                  Variance %
-                </p>
-                <p className="mt-2 text-[28px] font-bold text-text-primary">
-                  {formatPercentageValue(varianceData.variance_percentage)}
-                </p>
-              </div>
+              {[
+                {
+                  label: "Bank Statement Total",
+                  value: formatCurrencyValue(varianceData.bank_total),
+                },
+                {
+                  label: "QuickBooks General Ledger Total",
+                  value: formatCurrencyValue(varianceData.books_total),
+                },
+                {
+                  label: "Variance Amount",
+                  value: formatCurrencyValue(varianceData.variance_amount),
+                },
+                {
+                  label: "Variance %",
+                  value: formatPercentageValue(
+                    varianceData.variance_percentage,
+                  ),
+                },
+              ].map(({ label, value }) => (
+                <div
+                  key={label}
+                  className="rounded-2xl border border-border bg-bg-card p-5"
+                >
+                  <p className="text-[13px] font-medium text-text-secondary">
+                    {label}
+                  </p>
+                  <p className="mt-2 text-[28px] font-bold text-text-primary">
+                    {value}
+                  </p>
+                </div>
+              ))}
             </div>
           ) : (
             <div className="mt-6 rounded-2xl border border-dashed border-border bg-bg-page/40 p-6 text-[14px] text-text-muted">
@@ -1198,6 +1344,7 @@ export default function WorkspaceReconciliation() {
           )}
         </section>
 
+        {/* ── Reconciliation Table ── */}
         <section className="card-base card-p w-full">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
@@ -1209,7 +1356,6 @@ export default function WorkspaceReconciliation() {
                 transactions.
               </p>
             </div>
-
             <button
               type="button"
               className="btn-secondary"
@@ -1229,7 +1375,6 @@ export default function WorkspaceReconciliation() {
             <span className="text-[14px] font-medium text-text-secondary">
               Status Filter
             </span>
-
             {STATUS_FILTERS.map((filter) => (
               <button
                 key={filter}
@@ -1247,12 +1392,12 @@ export default function WorkspaceReconciliation() {
             ))}
           </div>
 
-          {reconciliationError ? (
+          {reconciliationError && (
             <div className="mt-6 flex items-center gap-2 rounded-lg border border-negative/20 bg-white px-4 py-3 text-[14px] text-negative">
               <AlertCircle size={16} />
               {reconciliationError}
             </div>
-          ) : null}
+          )}
 
           <div className="mt-6 overflow-x-auto rounded-xl border border-border bg-bg-card">
             <table className="min-w-full border-collapse">
@@ -1281,30 +1426,27 @@ export default function WorkspaceReconciliation() {
                   </th>
                 </tr>
                 <tr className="bg-bg-page/40">
-                  <th className="border-b border-r border-border px-3 py-3 text-left text-[14px] font-semibold text-text-primary">
-                    Date
-                  </th>
-                  <th className="border-b border-r border-border px-3 py-3 text-left text-[14px] font-semibold text-text-primary">
-                    Name
-                  </th>
-                  <th className="border-b border-r border-border px-3 py-3 text-left text-[14px] font-semibold text-text-primary">
-                    Amount
-                  </th>
-                  <th className="border-b border-r border-border px-3 py-3 text-left text-[14px] font-semibold text-text-primary">
-                    Date
-                  </th>
-                  <th className="border-b border-r border-border px-3 py-3 text-left text-[14px] font-semibold text-text-primary">
-                    Name
-                  </th>
-                  <th className="border-b border-r border-border px-3 py-3 text-left text-[14px] font-semibold text-text-primary">
-                    Amount
-                  </th>
-                  <th className="border-b border-border px-3 py-3 text-left text-[14px] font-semibold text-text-primary">
-                    Status
-                  </th>
+                  {[
+                    "Date",
+                    "Name",
+                    "Amount",
+                    "Date",
+                    "Name",
+                    "Amount",
+                    "Status",
+                  ].map((h, i) => (
+                    <th
+                      key={`${h}-${i}`}
+                      className={cn(
+                        "border-b border-border px-3 py-3 text-left text-[14px] font-semibold text-text-primary",
+                        i < 6 ? "border-r" : "",
+                      )}
+                    >
+                      {h}
+                    </th>
+                  ))}
                 </tr>
               </thead>
-
               <tbody>
                 {isLoadingReconciliation ? (
                   <tr>
@@ -1315,18 +1457,18 @@ export default function WorkspaceReconciliation() {
                       Loading reconciliation data...
                     </td>
                   </tr>
-                ) : groupedReconciliationRows.length > 0 ? (
-                  groupedReconciliationRows.map((group, groupIndex) =>
+                ) : groupedRows.length > 0 ? (
+                  groupedRows.map((group, groupIndex) =>
                     group.rows.map((row, rowIndex) => (
                       <tr
-                        key={`${group.dateKey}-${row.bank?.date || "bank"}-${row.quickbooks?.date || "qb"}-${rowIndex}`}
+                        key={`${group.dateKey}-${rowIndex}`}
                         className={cn(
                           groupIndex % 2 === 0
                             ? "bg-primary/5"
                             : "bg-slate-100/60",
                         )}
                       >
-                        {rowIndex === 0 ? (
+                        {rowIndex === 0 && (
                           <td
                             rowSpan={group.rows.length}
                             className={cn(
@@ -1340,8 +1482,7 @@ export default function WorkspaceReconciliation() {
                               {group.dateLabel}
                             </div>
                           </td>
-                        ) : null}
-
+                        )}
                         <td className="border-b border-r border-border px-3 py-3 align-top text-[14px] text-text-primary">
                           {row.bank ? normalizeDate(row.bank.date) : ""}
                         </td>
@@ -1351,7 +1492,9 @@ export default function WorkspaceReconciliation() {
                           </div>
                         </td>
                         <td className="border-b border-r border-border px-3 py-3 align-top text-[14px] font-medium text-text-primary">
-                          {row.bank?.amount || ""}
+                          {row.bank?.amount !== undefined
+                            ? row.bank.amount
+                            : ""}
                         </td>
                         <td className="border-b border-r border-border px-3 py-3 align-top text-[14px] text-text-primary">
                           {row.quickbooks
@@ -1364,7 +1507,9 @@ export default function WorkspaceReconciliation() {
                           </div>
                         </td>
                         <td className="border-b border-r border-border px-3 py-3 align-top text-[14px] font-medium text-text-primary">
-                          {row.quickbooks?.amount || ""}
+                          {row.quickbooks?.amount !== undefined
+                            ? row.quickbooks.amount
+                            : ""}
                         </td>
                         <td className="border-b border-border px-3 py-3 align-top">
                           <span
@@ -1394,8 +1539,7 @@ export default function WorkspaceReconciliation() {
                       colSpan={8}
                       className="px-4 py-8 text-center text-[14px] text-text-secondary"
                     >
-                      No reconciliation rows available for the selected status
-                      filter.
+                      No reconciliation rows for the selected filter.
                     </td>
                   </tr>
                 )}
@@ -1405,7 +1549,8 @@ export default function WorkspaceReconciliation() {
         </section>
       </div>
 
-      {passwordPrompt.isOpen ? (
+      {/* ── Password Modal ── */}
+      {passwordPrompt.isOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="w-full max-w-md rounded-2xl border border-border bg-bg-card p-6 shadow-2xl">
             <div className="flex items-start gap-3">
@@ -1421,28 +1566,25 @@ export default function WorkspaceReconciliation() {
                 </p>
               </div>
             </div>
-
             <div className="mt-5">
               <input
                 type="password"
                 value={passwordPrompt.password}
                 autoFocus
-                onChange={(event) =>
-                  setPasswordPrompt((current) => ({
-                    ...current,
-                    password: event.target.value,
+                onChange={(e) =>
+                  setPasswordPrompt((cur) => ({
+                    ...cur,
+                    password: e.target.value,
                   }))
                 }
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
+                onKeyDown={(e) => {
+                  if (e.key === "Enter")
                     resolvePasswordPrompt(passwordPrompt.password);
-                  }
                 }}
                 placeholder="Enter password"
                 className="input-base"
               />
             </div>
-
             <div className="mt-6 flex justify-end gap-3">
               <button
                 type="button"
@@ -1461,7 +1603,7 @@ export default function WorkspaceReconciliation() {
             </div>
           </div>
         </div>
-      ) : null}
+      )}
     </>
   );
 }
