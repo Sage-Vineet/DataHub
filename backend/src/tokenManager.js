@@ -1,13 +1,17 @@
 const axios = require("axios");
-const { getQBConfig, updateTokens } = require("./qbconfig");
+const { getQBConfig, loadQBConfig, updateTokens } = require("./qbconfig");
+const { logQuickBooksDebug, maskValue } = require("./quickbooksLogger");
 
 // Get access token for a specific client
 function getAccessToken(clientId) {
-  // If no clientId, getQBConfig will fallback to root config
+  if (!clientId) {
+    throw new Error("Client ID is required to resolve a QuickBooks access token.");
+  }
+
   const config = getQBConfig(clientId);
   if (!config.accessToken) {
     throw new Error(
-      `No access token available for client ${clientId || "default"}. Please authenticate.`,
+      `No access token available for client ${clientId}. Please authenticate.`,
     );
   }
   return config.accessToken;
@@ -15,6 +19,13 @@ function getAccessToken(clientId) {
 
 // Refresh access token for a specific client
 async function refreshAccessToken(clientId) {
+  if (!clientId) {
+    throw new Error(
+      "Client ID is required to refresh a QuickBooks access token.",
+    );
+  }
+
+  await loadQBConfig(clientId);
   const config = getQBConfig(clientId);
 
   if (!config.refreshToken) {
@@ -25,6 +36,13 @@ async function refreshAccessToken(clientId) {
 
   try {
     console.log(`🔄 Attempting to refresh token for client: ${clientId}...`);
+    logQuickBooksDebug("token_refresh_started", {
+      clientId,
+      realmId: config.realmId || null,
+      oauthClientId: config.oauthClientId
+        ? maskValue(config.oauthClientId)
+        : null,
+    });
 
     const response = await axios.post(
       "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer",
@@ -47,12 +65,20 @@ async function refreshAccessToken(clientId) {
     }
 
     // Update tokens for THIS specific client
-    updateTokens(
+    await updateTokens(
       clientId,
       response.data.access_token,
       response.data.refresh_token,
       response.data.expires_in,
     );
+
+    logQuickBooksDebug("token_refresh_completed", {
+      clientId,
+      realmId: config.realmId || null,
+      accessToken: maskValue(response.data.access_token),
+      refreshToken: maskValue(response.data.refresh_token),
+      expiresIn: response.data.expires_in,
+    });
 
     console.log(`✅ Token refreshed successfully for client: ${clientId}`);
     return response.data.access_token;

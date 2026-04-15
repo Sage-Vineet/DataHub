@@ -1,15 +1,50 @@
 const express = require("express");
 const axios = require("axios");
-const crypto = require("crypto");
 const db = require("../../db");
 const {
   getQBConfig,
+  loadQBConfig,
   updateTokens,
   setQBConfig,
   disconnectConfig,
 } = require("../../qbconfig");
+const { logQuickBooksDebug, maskValue } = require("../../quickbooksLogger");
 
 const router = express.Router();
+
+function parseOAuthState(rawState) {
+  if (!rawState) return {};
+
+  const candidates = [String(rawState)];
+
+  try {
+    const decoded = decodeURIComponent(String(rawState));
+    if (!candidates.includes(decoded)) {
+      candidates.unshift(decoded);
+    }
+  } catch (_) {
+    // Ignore malformed values and fall back to the raw state.
+  }
+
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate);
+    } catch (_) {
+      // Keep trying.
+    }
+  }
+
+  return { redirect: String(rawState) };
+}
+
+function buildOAuthState(redirectHash, clientId) {
+  return encodeURIComponent(
+    JSON.stringify({
+      redirect: redirectHash || "/broker/companies",
+      clientId,
+    }),
+  );
+}
 
 /**
  * Extract Client ID from headers
@@ -17,21 +52,32 @@ const router = express.Router();
 function getClientId(req) {
   let clientId = req.headers["x-client-id"] || req.query.clientId;
 
-  // If still missing, try to extract from state (common in redirects)
   if (!clientId && req.query.state) {
-    const rawState = decodeURIComponent(req.query.state);
-    // Try JSON format first
-    try {
-      const parsed = JSON.parse(rawState);
-      clientId = parsed.clientId;
-    } catch (e) {
-      // Try extracting from path string (e.g. /broker/client/UUID/...)
-      const match = rawState.match(/\/client\/([^/]+)/);
+    const parsedState = parseOAuthState(req.query.state);
+    clientId = parsedState.clientId;
+
+    if (!clientId && parsedState.redirect) {
+      const match = parsedState.redirect.match(/\/client\/([^/]+)/);
       if (match) clientId = match[1];
     }
   }
 
   return clientId;
+}
+
+function resolveRequestedRedirect(req, clientId) {
+  if (typeof req.query.redirect === "string" && req.query.redirect) {
+    return req.query.redirect;
+  }
+
+  const parsedState = parseOAuthState(req.query.state);
+  if (typeof parsedState.redirect === "string" && parsedState.redirect) {
+    return parsedState.redirect;
+  }
+
+  return clientId
+    ? `/broker/client/${clientId}/connections`
+    : "/broker/companies";
 }
 
 function getAppBaseUrl(req) {
@@ -63,14 +109,9 @@ function buildFrontendHashUrl(baseUrl, hashPath, searchParams = "") {
   return `${baseUrl}/#${normalizedHash}${searchParams}`;
 }
 
-function normalizeCompanyName(name) {
-  return String(name || "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, "");
-}
-
 async function getWorkspaceCompanyName(clientId) {
   if (!clientId) return null;
+
   try {
     const result = await db.query("SELECT name FROM companies WHERE id = ?", [
       clientId,
@@ -82,15 +123,14 @@ async function getWorkspaceCompanyName(clientId) {
   }
 }
 
-// ────────────────────────────────────────────────────────────
-// GET /refresh-token — Refresh access token for a specific client
-// ────────────────────────────────────────────────────────────
+// GET /refresh-token - Refresh access token for a specific client
 router.get("/refresh-token", async (req, res) => {
   const clientId = getClientId(req);
   if (!clientId) {
     return res.status(400).json({ error: "Missing Client ID" });
   }
 
+  await loadQBConfig(clientId);
   const qb = getQBConfig(clientId);
 
   if (!qb.refreshToken || !qb.basicToken) {
@@ -100,6 +140,12 @@ router.get("/refresh-token", async (req, res) => {
   }
 
   try {
+    logQuickBooksDebug("oauth_refresh_route_started", {
+      clientId,
+      realmId: qb.realmId || null,
+      oauthClientId: qb.oauthClientId ? maskValue(qb.oauthClientId) : null,
+    });
+
     const response = await axios.post(
       "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer",
       new URLSearchParams({
@@ -115,12 +161,20 @@ router.get("/refresh-token", async (req, res) => {
       },
     );
 
-    updateTokens(
+    await updateTokens(
       clientId,
       response.data.access_token,
       response.data.refresh_token,
       response.data.expires_in,
     );
+
+    logQuickBooksDebug("oauth_refresh_route_completed", {
+      clientId,
+      realmId: qb.realmId || null,
+      accessToken: maskValue(response.data.access_token),
+      refreshToken: maskValue(response.data.refresh_token),
+      expiresIn: response.data.expires_in,
+    });
 
     return res.json({
       success: true,
@@ -130,7 +184,7 @@ router.get("/refresh-token", async (req, res) => {
     });
   } catch (error) {
     console.error(
-      `❌ Token refresh failed for client ${clientId}:`,
+      `Token refresh failed for client ${clientId}:`,
       error.response?.data || error.message,
     );
     if (error.response)
@@ -141,9 +195,7 @@ router.get("/refresh-token", async (req, res) => {
   }
 });
 
-// ────────────────────────────────────────────────────────────
-// GET /api/auth/quickbooks — Start OAuth flow
-// ────────────────────────────────────────────────────────────
+// GET /api/auth/quickbooks - Start OAuth flow
 router.get("/api/auth/quickbooks", (req, res) => {
   const clientId = getClientId(req);
   if (!clientId) {
@@ -154,42 +206,48 @@ router.get("/api/auth/quickbooks", (req, res) => {
 
   const qb = getQBConfig(clientId);
   const qbClientId = qb.clientId || process.env.QB_CLIENT_ID;
+  const qbClientSecret = qb.clientSecret || process.env.QB_CLIENT_SECRET;
   const appBaseUrl = getAppBaseUrl(req);
   const redirectUri =
     process.env.QB_REDIRECT_URI || `${appBaseUrl}/api/auth/callback`;
   const scope = "com.intuit.quickbooks.accounting";
+  const redirectHash = resolveRequestedRedirect(req, clientId);
 
-  // The state carries both the redirect path and our internal clientId
-  const state =
-    req.query.state ||
-    encodeURIComponent(
-      JSON.stringify({ redirect: "/broker/companies", clientId }),
-    );
+  if (!qbClientId || !qbClientSecret || !redirectUri) {
+    return res.status(500).json({
+      error:
+        "QuickBooks OAuth is not configured. Check QB_CLIENT_ID, QB_CLIENT_SECRET, and QB_REDIRECT_URI.",
+    });
+  }
 
+  const state = buildOAuthState(redirectHash, clientId);
   const authUrl = `https://appcenter.intuit.com/connect/oauth2?client_id=${qbClientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${encodeURIComponent(scope)}&state=${state}`;
 
-  console.log(`🔗 Redirecting to QuickBooks OAuth for client: ${clientId}...`);
+  logQuickBooksDebug("oauth_start", {
+    clientId,
+    redirectHash,
+    redirectUri,
+    qbClientId: maskValue(qbClientId),
+    environment: qb.baseUrl?.includes("sandbox") ? "sandbox" : "production",
+  });
+  logQuickBooksDebug("oauth_redirect_created", {
+    clientId,
+    authUrl,
+  });
+
+  console.log(`Redirecting to QuickBooks OAuth for client: ${clientId}...`);
   res.redirect(authUrl);
 });
 
-// ────────────────────────────────────────────────────────────
-// GET /api/auth/callback — Handle OAuth redirect
-// ────────────────────────────────────────────────────────────
+// GET /api/auth/callback - Handle OAuth redirect
 router.get("/api/auth/callback", async (req, res) => {
   const { code, realmId, state: rawState } = req.query;
   const appBaseUrl = getAppBaseUrl(req);
   const frontendUrl = getFrontendBaseUrl(req);
-
-  let state = {};
-  try {
-    state = JSON.parse(decodeURIComponent(rawState));
-  } catch (e) {
-    state = { redirect: decodeURIComponent(rawState || "/broker/companies") };
-  }
+  const state = parseOAuthState(rawState);
 
   let clientId = state.clientId;
 
-  // If missing from JSON state, try extracting from the redirect path itself
   if (!clientId && state.redirect) {
     const match = state.redirect.match(/\/client\/([^/]+)/);
     if (match) clientId = match[1];
@@ -197,8 +255,15 @@ router.get("/api/auth/callback", async (req, res) => {
 
   const redirectHash = state.redirect || "/broker/companies";
 
+  logQuickBooksDebug("oauth_callback_received", {
+    clientId: clientId || null,
+    realmId: realmId || null,
+    redirectHash,
+    code: code ? maskValue(code) : null,
+  });
+
   if (!code || !realmId || !clientId) {
-    console.error("❌ Callback missing code, realmId, or clientId");
+    console.error("Callback missing code, realmId, or clientId");
     return res.redirect(
       buildFrontendHashUrl(
         frontendUrl,
@@ -211,6 +276,16 @@ router.get("/api/auth/callback", async (req, res) => {
   const qb = getQBConfig(clientId);
   const qbClientId = qb.clientId || process.env.QB_CLIENT_ID;
   const qbClientSecret = qb.clientSecret || process.env.QB_CLIENT_SECRET;
+  if (!qbClientId || !qbClientSecret) {
+    return res.redirect(
+      buildFrontendHashUrl(
+        frontendUrl,
+        redirectHash,
+        "?qbStatus=error&qbMessage=QuickBooks+OAuth+credentials+are+not+configured",
+      ),
+    );
+  }
+
   const basicToken = Buffer.from(`${qbClientId}:${qbClientSecret}`).toString(
     "base64",
   );
@@ -229,11 +304,18 @@ router.get("/api/auth/callback", async (req, res) => {
       );
     }
 
+    logQuickBooksDebug("oauth_token_exchange_started", {
+      clientId,
+      realmId,
+      redirectUri,
+      qbClientId: maskValue(qbClientId),
+    });
+
     const tokenResponse = await axios.post(
       "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer",
       new URLSearchParams({
         grant_type: "authorization_code",
-        code: code,
+        code,
         redirect_uri: redirectUri,
       }),
       {
@@ -244,6 +326,14 @@ router.get("/api/auth/callback", async (req, res) => {
         },
       },
     );
+
+    logQuickBooksDebug("oauth_token_exchange_completed", {
+      clientId,
+      realmId,
+      accessToken: maskValue(tokenResponse.data.access_token),
+      refreshToken: maskValue(tokenResponse.data.refresh_token),
+      expiresIn: tokenResponse.data.expires_in,
+    });
 
     let quickbooksCompanyName = null;
     try {
@@ -266,7 +356,7 @@ router.get("/api/auth/callback", async (req, res) => {
     }
 
     if (!quickbooksCompanyName) {
-      disconnectConfig(clientId);
+      await disconnectConfig(clientId);
       return res.redirect(
         buildFrontendHashUrl(
           frontendUrl,
@@ -276,23 +366,21 @@ router.get("/api/auth/callback", async (req, res) => {
       );
     }
 
-    // Company mismatch check has been removed to allow sandbox testing with different names
-
     const now = new Date().toISOString();
     const tokenExpiresAt = new Date(
       Date.now() + (tokenResponse.data.expires_in || 3600) * 1000,
     ).toISOString();
 
     const tokenData = {
-      realmId: realmId,
+      realmId,
       accessToken: tokenResponse.data.access_token,
       refreshToken: tokenResponse.data.refresh_token,
-      basicToken: basicToken,
+      basicToken,
       companyId: realmId,
       companyName: quickbooksCompanyName,
       connectedAt: now,
       lastSynced: now,
-      tokenExpiresAt: tokenExpiresAt,
+      tokenExpiresAt,
       environment: qb.baseUrl?.includes("sandbox") ? "sandbox" : "production",
       syncedEntities: [
         "Customers",
@@ -301,37 +389,55 @@ router.get("/api/auth/callback", async (req, res) => {
         "General Ledger",
         "Profit and Loss",
       ],
+      oauthClientId: qbClientId,
+      redirectUri,
     };
 
-    setQBConfig(clientId, tokenData);
+    logQuickBooksDebug("oauth_realm_storage_started", {
+      clientId,
+      realmId,
+      quickbooksCompanyName,
+      oauthClientId: maskValue(qbClientId),
+    });
+
+    await setQBConfig(clientId, tokenData);
+
+    logQuickBooksDebug("oauth_realm_storage_completed", {
+      clientId,
+      realmId,
+      quickbooksCompanyName,
+    });
+
     console.log(
       `Connected to Company: ${quickbooksCompanyName} for Client: ${clientId}`,
     );
+    console.log(`QuickBooks authentication successful for Client: ${clientId}`);
 
-    console.log(
-      `✅ QuickBooks authentication successful for Client: ${clientId}`,
-    );
     return res.redirect(
       buildFrontendHashUrl(frontendUrl, redirectHash, "?qbStatus=success"),
     );
   } catch (error) {
     console.error(
-      "❌ QuickBooks Callback Error:",
+      "QuickBooks Callback Error:",
       error.response?.data || error.message,
     );
+    const qbMessage =
+      error.code === "QB_REALM_ALREADY_LINKED"
+        ? encodeURIComponent(
+            "This QuickBooks company is already linked to another DataHub company. Disconnect the old link first or choose a different sandbox company.",
+          )
+        : "OAuth+exchange+failed";
     return res.redirect(
       buildFrontendHashUrl(
         frontendUrl,
         redirectHash,
-        "?qbStatus=error&qbMessage=OAuth+exchange+failed",
+        `?qbStatus=error&qbMessage=${qbMessage}`,
       ),
     );
   }
 });
 
-// ────────────────────────────────────────────────────────────
-// GET /api/auth/status — Scoped connection status
-// ────────────────────────────────────────────────────────────
+// GET /api/auth/status - Scoped connection status
 router.get("/api/auth/status", async (req, res) => {
   const clientId = getClientId(req);
   if (!clientId) {
@@ -342,6 +448,7 @@ router.get("/api/auth/status", async (req, res) => {
     });
   }
 
+  await loadQBConfig(clientId);
   const qb = getQBConfig(clientId);
   const isConnected = !!(qb.accessToken && qb.realmId);
 
@@ -351,30 +458,36 @@ router.get("/api/auth/status", async (req, res) => {
 
   const workspaceCompanyName = await getWorkspaceCompanyName(clientId);
   const quickbooksCompanyName = qb.companyName || null;
-  // Company mismatch check removed for flexibility in sandbox testing.
 
   return res.json({
     success: true,
     isConnected: true,
+    dataHubCompanyId: qb.dataHubCompanyId || clientId,
     companyName: quickbooksCompanyName,
     workspaceCompanyName: workspaceCompanyName || null,
     companyId: qb.companyId || qb.realmId,
+    realmId: qb.realmId || null,
     environment: qb.environment || "production",
     connectedAt: qb.connectedAt || null,
     lastSynced: qb.lastSynced || null,
     tokenExpiresAt: qb.tokenExpiresAt || null,
     syncedEntities: qb.syncedEntities || [],
+    configuredClientId: qb.clientId ? maskValue(qb.clientId) : null,
+    storedOAuthClientId: qb.oauthClientId ? maskValue(qb.oauthClientId) : null,
+    hasCredentialMismatch: Boolean(qb.hasCredentialMismatch),
   });
 });
 
-// ────────────────────────────────────────────────────────────
-// GET /api/auth/disconnect — Scoped disconnect
-// ────────────────────────────────────────────────────────────
-router.get("/api/auth/disconnect", (req, res) => {
+// GET /api/auth/disconnect - Scoped disconnect
+router.get("/api/auth/disconnect", async (req, res) => {
   const clientId = getClientId(req);
   if (!clientId) return res.status(400).json({ error: "Missing Client ID" });
 
-  disconnectConfig(clientId);
+  await disconnectConfig(clientId);
+  logQuickBooksDebug("oauth_disconnect_completed", {
+    clientId,
+  });
+
   return res.json({ success: true, message: "Disconnected successfully" });
 });
 
