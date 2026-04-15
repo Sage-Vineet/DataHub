@@ -25,8 +25,8 @@ const cashflowRoutes = require("./routes/quickbooks/cash_flow/cash_flow");
 const reconciliationRoutes = require("./routes/quickbooks/reconciliation/Reconciliation");
 const bankStatementRoutes = require("./routes/quickbooks/reconciliation/bankStatement");
 const bankVsBooksRoutes = require("./routes/quickbooks/reconciliation/bankVsBooks");
-const db = require("./db");
-const { getQBConfig, disconnectConfig } = require("./qbconfig");
+const { getQBConfig, loadQBConfig } = require("./qbconfig");
+const { logQuickBooksDebug } = require("./quickbooksLogger");
 
 const app = express();
 
@@ -74,12 +74,6 @@ app.use("/companies", companyRoutes);
 app.use("/", tokenRoutes);
 app.use("/", uploadRoutes);
 
-function normalizeCompanyName(name) {
-  return String(name || "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, "");
-}
-
 async function checkQBAuth(req, res, next) {
   // 1. Try explicit header
   let clientId = req.headers["x-client-id"];
@@ -99,51 +93,35 @@ async function checkQBAuth(req, res, next) {
     }
   }
 
-  // 4. Final Fallback: if still no clientId, log it but don't fail immediately.
-  // getQBConfig will try to return a default if it can.
+  // 4. QuickBooks requests must always be scoped to a selected DataHub company.
   if (!clientId) {
-    console.warn(
-      "⚠️ Client ID missing in request. Attempting to use default connection.",
-    );
+    return res.status(400).json({
+      success: false,
+      message:
+        "Missing Client ID. QuickBooks requests must include the selected DataHub company.",
+      isConnected: false,
+    });
   }
 
   req.clientId = clientId;
+  await loadQBConfig(clientId);
 
   const qb = getQBConfig(clientId);
+  req.qb = qb;
+
+  logQuickBooksDebug("route_qb_auth_check", {
+    path: req.path,
+    clientId,
+    realmId: qb.realmId || null,
+    hasAccessToken: Boolean(qb.accessToken),
+    hasRefreshToken: Boolean(qb.refreshToken),
+  });
+
   if (!qb || !qb.accessToken || !qb.realmId) {
     return res.status(401).json({
       success: false,
       message: `QuickBooks not connected for company ${clientId}`,
       isConnected: false,
-    });
-  }
-
-  try {
-    const result = await db.query("SELECT name FROM companies WHERE id = ?", [
-      clientId,
-    ]);
-    const workspaceCompanyName = result?.rows?.[0]?.name || null;
-    const quickbooksCompanyName = qb.companyName || null;
-    const isMismatch =
-      workspaceCompanyName &&
-      quickbooksCompanyName &&
-      normalizeCompanyName(workspaceCompanyName) !==
-        normalizeCompanyName(quickbooksCompanyName);
-
-    if (isMismatch) {
-      disconnectConfig(clientId);
-      return res.status(401).json({
-        success: false,
-        isConnected: false,
-        isNameMismatch: true,
-        message: `Company mismatch: selected workspace "${workspaceCompanyName}" does not match QuickBooks company "${quickbooksCompanyName}". Connection blocked.`,
-      });
-    }
-  } catch (error) {
-    console.error("Company isolation check failed:", error.message);
-    return res.status(500).json({
-      success: false,
-      message: "Unable to validate company connection.",
     });
   }
 

@@ -216,6 +216,23 @@ CREATE TABLE IF NOT EXISTS reconciliation_transactions (
   transaction_type text
 );
 
+CREATE TABLE IF NOT EXISTS quickbooks_connections (
+  company_id uuid PRIMARY KEY REFERENCES companies(id) ON DELETE CASCADE,
+  realm_id text NOT NULL UNIQUE,
+  company_name text,
+  access_token text NOT NULL,
+  refresh_token text NOT NULL,
+  token_expires_at timestamptz,
+  connected_at timestamptz NOT NULL DEFAULT now(),
+  last_synced timestamptz,
+  environment text NOT NULL DEFAULT 'sandbox',
+  oauth_client_id text NOT NULL,
+  redirect_uri text NOT NULL,
+  synced_entities text NOT NULL DEFAULT '[]',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE INDEX IF NOT EXISTS idx_requests_company_id ON requests(company_id);
 CREATE INDEX IF NOT EXISTS idx_user_companies_user ON user_companies(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_companies_company ON user_companies(company_id);
@@ -231,3 +248,4 @@ CREATE INDEX IF NOT EXISTS idx_reminders_company ON reminders(company_id);
 
 CREATE INDEX IF NOT EXISTS idx_bank_transactions_client_id ON bank_transactions(client_id);
 CREATE INDEX IF NOT EXISTS idx_reconciliation_transactions_client_id ON reconciliation_transactions(client_id);
+CREATE INDEX IF NOT EXISTS idx_quickbooks_connections_realm_id ON quickbooks_connections(realm_id);

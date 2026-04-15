@@ -199,7 +199,9 @@ router.get("/customers", async (req, res) => {
         console.log("⚠️ Token expired, attempting to refresh...");
 
         try {
-          const newAccessToken = await tokenManager.refreshAccessToken();
+          const newAccessToken = await tokenManager.refreshAccessToken(
+            req.clientId,
+          );
           console.log("✅ Token refreshed successfully!");
 
           const retryResponse = await axios.post(
@@ -326,7 +328,9 @@ router.post("/customers/query", async (req, res) => {
         console.log("⚠️ Token expired, attempting to refresh...");
 
         try {
-          const newAccessToken = await tokenManager.refreshAccessToken();
+          const newAccessToken = await tokenManager.refreshAccessToken(
+            req.clientId,
+          );
           console.log("✅ Token refreshed successfully!");
 
           const retryResponse = await axios.post(url, query, {
@@ -411,7 +415,9 @@ router.put("/api/customers/:id", async (req, res) => {
     } catch (error) {
       // Handle token expiry
       if (error.response?.status === 401) {
-        const newAccessToken = await tokenManager.refreshAccessToken();
+        const newAccessToken = await tokenManager.refreshAccessToken(
+          req.clientId,
+        );
 
         fetchResponse = await axios.get(fetchUrl, {
           headers: {
