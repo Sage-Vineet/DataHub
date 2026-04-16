@@ -47,7 +47,7 @@ router.get("/balance-sheet", async (req, res) => {
           req.clientId,
         );
 
-        // Retry the request with new token and original URL (params included)
+        // Retry the request with new token
         const retryResponse = await axios.get(url, {
           headers: {
             Authorization: `Bearer ${newAccessToken}`,

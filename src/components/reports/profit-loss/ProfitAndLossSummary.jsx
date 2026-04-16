@@ -7,7 +7,7 @@ import { cn } from "../../../lib/utils";
 /**
  * Formats a number using the Indian numbering system (1,23,456).
  * Negative values are shown in brackets. 
- * Note: Decimals are omitted for a cleaner summary view as per requirement.
+ * Note: Decimals are omitted for a cleaner summary vPiew as per requirement.
  */
 const formatIndianCurrency = (value) => {
   if (value === undefined || value === null || value === "" || value === 0) return "-";
@@ -197,47 +197,43 @@ export default function ProfitAndLossSummary({
           <table className="w-full border-collapse">
             <thead>
               <tr className="border-b-2 border-text-primary sticky top-0 bg-bg-card z-20">
-                <th className="pb-3 pt-2 px-4 text-left text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider min-w-[320px]">
+                <th rowSpan={2} className="pb-3 pt-2 px-4 text-left text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider min-w-[320px]">
                   Description
                 </th>
-                
-                {/* Year Columns */}
+                <th colSpan={yearCols.length + 1} className="pb-1 text-center text-[10px] font-bold text-text-muted/60 uppercase border-b border-border-light">Actuals</th>
+                {yearCols.length > 1 && (
+                   <th colSpan={2} className="pb-1 text-center text-[10px] font-bold text-text-muted/60 uppercase border-b border-border-light border-l border-border-light">
+                      {yearCols[1]?.label?.slice(-2)} Var
+                   </th>
+                )}
+                {yearCols.length > 2 && (
+                   <th colSpan={2} className="pb-1 text-center text-[10px] font-bold text-text-muted/60 uppercase border-b border-border-light border-l border-border-light">
+                      {yearCols[2]?.label?.slice(-2)} Var
+                   </th>
+                )}
+                <th colSpan={3} className="pb-1 text-right text-[10px] font-bold text-primary uppercase border-b border-border-light border-l border-border-light">YTD Analysis</th>
+              </tr>
+              <tr className="bg-bg-page/20 border-b border-border-light sticky top-[38px] z-20">
                 {yearCols.map((col, idx) => (
-                  <th key={idx} className="pb-3 pt-2 px-3 text-right text-[12px] font-medium text-text-muted uppercase">
+                  <th key={idx} className="py-2 px-3 text-right text-[12px] font-medium text-text-muted uppercase">
                     {col.label}
                   </th>
                 ))}
-                
-                {/* Current YTD */}
-                <th className="pb-3 pt-2 px-3 text-right text-[12px] font-bold text-text-primary bg-blue-50/10 uppercase">
+                <th className="py-2 px-3 text-right text-[12px] font-bold text-text-primary bg-blue-50/30">
                   {ytdComp.currentLabel || "Current YTD"}
                 </th>
 
-                {/* Variance Columns - Simplified Flat Style */}
-                <th className="pb-3 pt-2 px-3 text-right text-[11px] font-medium text-text-muted/60 uppercase">
-                  {yearCols[1]?.label?.slice(-2) || "23"} $ Δ
-                </th>
-                <th className="pb-3 pt-2 px-3 text-right text-[11px] font-medium text-text-muted/60 uppercase border-r border-border-light">
-                  {yearCols[1]?.label?.slice(-2) || "23"} % Δ
-                </th>
+                <th className="py-2 px-3 text-right text-[11px] font-medium text-text-muted">$ Δ</th>
+                <th className="py-2 px-3 text-right text-[11px] font-medium text-text-muted border-r border-border-light">% Δ</th>
 
-                <th className="pb-3 pt-2 px-3 text-right text-[11px] font-medium text-text-muted/60 uppercase">
-                  {yearCols[2]?.label?.slice(-2) || "24"} $ Δ
-                </th>
-                <th className="pb-3 pt-2 px-3 text-right text-[11px] font-medium text-text-muted/60 uppercase border-r border-border-light">
-                  {yearCols[2]?.label?.slice(-2) || "24"} % Δ
-                </th>
+                <th className="py-2 px-3 text-right text-[11px] font-medium text-text-muted">$ Δ</th>
+                <th className="py-2 px-3 text-right text-[11px] font-medium text-text-muted border-r border-border-light">% Δ</th>
 
-                {/* YTD Analysis */}
-                <th className="pb-3 pt-2 px-3 text-right text-[12px] font-medium text-text-muted uppercase">
+                <th className="py-2 px-3 text-right text-[12px] font-medium text-text-muted">
                   {ytdComp.prevLabel || "Prev YTD"}
                 </th>
-                <th className="pb-3 pt-2 px-3 text-right text-[12px] font-bold text-primary uppercase">
-                  YTD Δ ($)
-                </th>
-                <th className="pb-3 pt-2 px-4 text-right text-[12px] font-bold text-text-primary uppercase">
-                  YTD Δ (%)
-                </th>
+                <th className="py-2 px-3 text-right text-[12px] font-bold text-primary">$ Δ</th>
+                <th className="py-2 px-4 text-right text-[12px] font-bold text-text-primary">% Δ</th>
               </tr>
             </thead>
             <tbody>
