@@ -61,34 +61,38 @@ function getPNLComparativePeriods(endDateString) {
     : endDate.getMonth();
   const day = isNaN(endDate.getTime()) ? new Date().getDate() : endDate.getDate();
 
+  // We'll target 2022, 2023, 2024 as full years,
+  // 2025 as YTD (assuming current year is 2025)
+  // But let's make it relative to the endDate.
+  
   const currentYear = year;
   const periods = [
     {
-      key: "yFull3",
-      label: `FY ${currentYear - 3}`,
-      start: `${currentYear - 3}-01-01`,
-      end: `${currentYear - 3}-12-31`,
+      key: "y22",
+      label: `FY 2022`,
+      start: `2022-01-01`,
+      end: `2022-12-31`,
     },
     {
-      key: "yFull2",
-      label: `FY ${currentYear - 2}`,
-      start: `${currentYear - 2}-01-01`,
-      end: `${currentYear - 2}-12-31`,
+      key: "y23",
+      label: `FY 2023`,
+      start: `2023-01-01`,
+      end: `2023-12-31`,
     },
     {
-      key: "yFull1",
-      label: `FY ${currentYear - 1}`,
-      start: `${currentYear - 1}-01-01`,
-      end: `${currentYear - 1}-12-31`,
+      key: "y24",
+      label: `FY 2024`,
+      start: `2024-01-01`,
+      end: `2024-12-31`,
     },
     {
-      key: "yCurrentYTD",
+      key: "y25",
       label: `FY ${currentYear} YTD`,
       start: `${currentYear}-01-01`,
       end: endDateString,
     },
     {
-      key: "yPrevYTD",
+      key: "y24_ytd",
       label: `FY ${currentYear - 1} YTD`,
       start: `${currentYear - 1}-01-01`,
       end: `${currentYear - 1}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`,
@@ -97,7 +101,6 @@ function getPNLComparativePeriods(endDateString) {
 
   return periods;
 }
-
 
 async function fetchSinglePeriodPNL(startDate, endDate, accountingMethod) {
   try {
@@ -129,8 +132,8 @@ function normalizeName(name) {
 }
 
 function mergePNLPeriods(periodResults, periods) {
-  // Use yCurrentYTD or the most recent available as the base structure
-  const masterIndex = periods.findIndex((p) => p.key === "yCurrentYTD");
+  // Use y25 (Current YTD) or the most recent available as the base structure
+  const masterIndex = periods.findIndex((p) => p.key === "y25");
   const masterRows = periodResults[masterIndex] || periodResults[periodResults.length - 1] || [];
 
   if (masterRows.length === 0) return [];
@@ -183,17 +186,17 @@ export async function getProfitAndLoss(startDate, endDate, accountingMethod) {
   const rows = mergePNLPeriods(results, periods);
 
   const yearCols = periods
-    .filter((p) => !p.key.toLowerCase().includes("ytd"))
+    .filter((p) => !p.key.includes("_ytd"))
     .map((p) => ({
       key: p.key,
       label: p.label,
     }));
 
   const ytdComparison = {
-    currentKey: "yCurrentYTD",
-    prevKey: "yPrevYTD",
-    currentLabel: periods.find((p) => p.key === "yCurrentYTD")?.label,
-    prevLabel: periods.find((p) => p.key === "yPrevYTD")?.label,
+    currentKey: "y25",
+    prevKey: "y24_ytd",
+    currentLabel: periods.find((p) => p.key === "y25")?.label,
+    prevLabel: periods.find((p) => p.key === "y24_ytd")?.label,
   };
 
   return {
@@ -204,7 +207,6 @@ export async function getProfitAndLoss(startDate, endDate, accountingMethod) {
     },
   };
 }
-
 
 export async function getProfitAndLossDetail(
   startDate,
