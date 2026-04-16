@@ -24,7 +24,7 @@ router.get("/balance-sheet", async (req, res) => {
     });
   }
 
-  // Convert query params to string for QB API
+  // Forward all query parameters from frontend (start_date, end_date, accounting_method, etc.)
   const queryParams = new URLSearchParams(req.query).toString();
   const url = `${qb.baseUrl}/v3/company/${qb.realmId}/reports/BalanceSheet?minorversion=75${queryParams ? `&${queryParams}` : ""}`;
 
