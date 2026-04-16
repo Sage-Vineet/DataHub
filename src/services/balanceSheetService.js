@@ -20,13 +20,28 @@ function resolveClientIdFromLocation() {
   return match ? decodeURIComponent(match[1]) : null;
 }
 
+function getShiftedStartDate(startDateString, yearShift, monthShift) {
+  if (!startDateString) return undefined;
+  const [yrStr, moStr, daStr] = startDateString.split('-');
+  if (!yrStr || !moStr || !daStr) return undefined;
+  const d = new Date(parseInt(yrStr, 10), parseInt(moStr, 10) - 1, parseInt(daStr, 10));
+  d.setFullYear(d.getFullYear() - yearShift);
+  d.setMonth(d.getMonth() - monthShift);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 /**
  * Generates dynamic comparative periods based on a specific end date.
  * Plus an additional period for the previous month to calculate monthly delta.
  */
-function getComparativePeriods(numYears = 5, baseDateString) {
-  const baseDate = baseDateString ? new Date(baseDateString) : new Date();
-  const date = isNaN(baseDate.getTime()) ? new Date() : baseDate;
+function getComparativePeriods(numYears = 5, baseDateString, startDateString) {
+  let date = new Date();
+  if (baseDateString) {
+    const [y, m, d] = baseDateString.split('-');
+    if (y && m && d) {
+      date = new Date(parseInt(y, 10), parseInt(m, 10) - 1, parseInt(d, 10));
+    }
+  }
   
   const currentYear = date.getFullYear();
   const currentMonth = date.getMonth();
@@ -40,29 +55,32 @@ function getComparativePeriods(numYears = 5, baseDateString) {
     const year = currentYear - i;
     const lastDay = new Date(year, currentMonth + 1, 0).getDate();
     const endDate = `${year}-${String(currentMonth + 1).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
-    
+    const startDate = getShiftedStartDate(startDateString, i, 0);
+
     const index = (numYears - 1) - i + 1;
     periods.push({
       year,
       key: `y${index}`,
       label: `${monthLabel}-${String(year).slice(-2)}`,
+      startDate,
       endDate,
       type: 'yearly'
     });
   }
 
   // 2. Previous Month snapshot (for monthly delta)
-  // Calculate relative month
   const prevMonthDate = new Date(date);
   prevMonthDate.setMonth(date.getMonth() - 1);
   const pmYear = prevMonthDate.getFullYear();
   const pmMonth = prevMonthDate.getMonth();
   const pmLastDay = new Date(pmYear, pmMonth + 1, 0).getDate();
   const pmEndDate = `${pmYear}-${String(pmMonth + 1).padStart(2, "0")}-${String(pmLastDay).padStart(2, "0")}`;
+  const pmStartDate = getShiftedStartDate(startDateString, 0, 1);
 
   periods.push({
     key: 'pm',
     label: 'PROV_MONTH',
+    startDate: pmStartDate,
     endDate: pmEndDate,
     type: 'comparison'
   });
@@ -70,9 +88,10 @@ function getComparativePeriods(numYears = 5, baseDateString) {
   return periods;
 }
 
-async function fetchSinglePeriodBS(endDate, accountingMethod) {
+async function fetchSinglePeriodBS(startDate, endDate, accountingMethod) {
   try {
     const payload = await fetchBalanceSheet({
+      ...(startDate ? { start_date: startDate } : {}),
       end_date: endDate,
       ...(accountingMethod
         ? { accounting_method: normalizeAccountingMethod(accountingMethod) }
@@ -80,7 +99,7 @@ async function fetchSinglePeriodBS(endDate, accountingMethod) {
     });
     return parseSummaryReport(payload);
   } catch (err) {
-    console.warn(`⚠️ Failed to fetch Balance Sheet for ${endDate}:`, err.message);
+    console.warn(`⚠️ Failed to fetch Balance Sheet for ${startDate || 'cumulative'} to ${endDate}:`, err.message);
     return [];
   }
 }
@@ -145,10 +164,10 @@ function mergePeriods(periodResults, periods) {
 // ─── Exported Services ──────────────────────────────────────────────────────
 
 export async function getBalanceSheet(startDate, endDate, accountingMethod) {
-  const allPeriods = getComparativePeriods(5, endDate);
+  const allPeriods = getComparativePeriods(5, endDate, startDate);
 
   const results = await Promise.all(
-    allPeriods.map(p => fetchSinglePeriodBS(p.endDate, accountingMethod))
+    allPeriods.map(p => fetchSinglePeriodBS(p.startDate, p.endDate, accountingMethod))
   );
 
   const rows = mergePeriods(results, allPeriods);
