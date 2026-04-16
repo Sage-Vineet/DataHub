@@ -57,9 +57,15 @@ export default function BalanceSheetReport({
     );
   }
 
+  // Extract rows and columns from data if it's the new object structure
+  const rows = Array.isArray(data?.rows) ? data.rows : (Array.isArray(data) ? data : []);
+  const columns = data?.columns || undefined;
+
   return (
     <BalanceSheetSummary
-      data={Array.isArray(data) ? data : []}
+      data={rows}
+      columns={columns}
+      endDate={endDate}
       title="Balance Sheet"
       subtitle={subtitle}
       entityName={resolvedEntityName}

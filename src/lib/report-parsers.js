@@ -199,8 +199,9 @@ function parseSummaryRows(rows, indexOffset = 0) {
         id: sectionId,
         name: cleanName
           .replace(/-/g, " ")
-          .replace(/\\b\\w/g, (letter) => letter.toUpperCase()),
+          .replace(/\b\w/g, (letter) => letter.toUpperCase()),
         amount: totalAmount,
+        amounts: { y5: totalAmount },
         type: "header",
         children: children.length > 0 ? children : undefined,
       });
@@ -225,6 +226,7 @@ function parseSummaryRows(rows, indexOffset = 0) {
           `data-${key}-${indexOffset + index}`,
         name,
         amount: normalizedAmount,
+        amounts: { y5: normalizedAmount },
         type: isTotalLikeLabel(name) ? "total" : "data",
       });
       continue;

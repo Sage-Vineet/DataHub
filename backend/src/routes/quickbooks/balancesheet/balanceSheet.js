@@ -24,7 +24,9 @@ router.get("/balance-sheet", async (req, res) => {
     });
   }
 
-  const url = `${qb.baseUrl}/v3/company/${qb.realmId}/reports/BalanceSheet?minorversion=75`;
+  // Convert query params to string for QB API
+  const queryParams = new URLSearchParams(req.query).toString();
+  const url = `${qb.baseUrl}/v3/company/${qb.realmId}/reports/BalanceSheet?minorversion=75${queryParams ? `&${queryParams}` : ""}`;
 
   try {
     const response = await axios.get(url, {
@@ -45,7 +47,7 @@ router.get("/balance-sheet", async (req, res) => {
           req.clientId,
         );
 
-        // Retry the request with new token
+        // Retry the request with new token and original URL (params included)
         const retryResponse = await axios.get(url, {
           headers: {
             Authorization: `Bearer ${newAccessToken}`,
