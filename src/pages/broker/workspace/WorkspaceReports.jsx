@@ -197,9 +197,9 @@ export default function WorkspaceReports() {
       let detail = { groups: [] };
 
       if (selectedTab === "Balance Sheet") {
-        [summary, detail] = await Promise.all([
+        const [bsSummary, bsDetail] = await Promise.all([
           getBalanceSheet(startDate, endDate, normalizedAccountingMethod).catch(
-            () => [],
+            () => ({ rows: [], columns: {} }),
           ),
           getBalanceSheetDetail(
             startDate,
@@ -207,6 +207,8 @@ export default function WorkspaceReports() {
             normalizedAccountingMethod,
           ).catch(() => ({ groups: [] })),
         ]);
+        summary = bsSummary;
+        detail = bsDetail;
       } else if (selectedTab === "Profit & Loss") {
         [summary, detail] = await Promise.all([
           getProfitAndLoss(
@@ -261,14 +263,17 @@ export default function WorkspaceReports() {
     setIsDownloading(true);
     try {
       const currentReport = reportsData[selectedTab];
+      
+      // Handle both new {rows, columns} objects and old arrays
+      const summaryData = currentReport.summary?.rows || currentReport.summary;
       const dataToExport =
         appliedReportType === "Summary"
-          ? currentReport.summary
+          ? summaryData
           : currentReport.detail;
 
       const isEmpty =
         appliedReportType === "Summary"
-          ? dataToExport.length === 0
+          ? !dataToExport || dataToExport.length === 0
           : !(dataToExport?.groups?.length > 0);
 
       if (isEmpty) {
