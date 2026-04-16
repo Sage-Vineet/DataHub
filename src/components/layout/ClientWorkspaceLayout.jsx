@@ -49,7 +49,7 @@ function WorkspaceSidebar({ company, onClose }) {
   const mainNav = [
     // { label: "Dashboard", icon: LayoutDashboard, to: `${basePath}/dashboard` },
     {
-      label: "DataHub Dashboard",
+      label: "Dashboard",
       icon: TrendingUp,
       to: `${basePath}/datahub-dashboard`,
     },
