@@ -58,7 +58,7 @@ export default function Login() {
             <img
               src={datahublogo}
               alt="DataHub"
-              className="h-16 w-auto object-contain"
+              className="h-16 w-full object-contain"
             />
 
             <p className="mt-1 text-sm text-secondary">

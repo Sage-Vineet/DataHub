@@ -5,6 +5,7 @@ import {
   Bell,
   Briefcase,
   Building2,
+  Calculator,
   ChevronDown,
   ChevronRight,
   ClipboardList,
@@ -49,12 +50,13 @@ function WorkspaceSidebar({ company, onClose }) {
   const mainNav = [
     // { label: "Dashboard", icon: LayoutDashboard, to: `${basePath}/dashboard` },
     {
-      label: "DataHub Dashboard",
+      label: "Dashboard",
       icon: TrendingUp,
       to: `${basePath}/datahub-dashboard`,
     },
     { label: "Client Invoices", icon: Receipt, to: `${basePath}/invoices` },
     { label: "Reports", icon: BarChart3, to: `${basePath}/reports` },
+    { label: "EBITDA", icon: Calculator, to: `${basePath}/ebitda` },
     { label: "Reconciliation", icon: Scale, to: `${basePath}/reconciliation` },
     { label: "Connections", icon: Link2, to: `${basePath}/connections` },
   ];
@@ -288,6 +290,7 @@ function WorkspaceTopbar({ company, onMenuClick }) {
       return "DataHub Dashboard";
     if (location.pathname.endsWith("/invoices")) return "Client Invoices";
     if (location.pathname.endsWith("/reports")) return "Reports";
+    if (location.pathname.endsWith("/ebitda")) return "EBITDA Analysis";
     if (location.pathname.endsWith("/reconciliation")) return "Reconciliation";
     if (location.pathname.endsWith("/connections")) return "Connections";
     if (location.pathname.includes("/dataroom/requests"))
