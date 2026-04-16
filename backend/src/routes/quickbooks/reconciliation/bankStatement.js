@@ -6,6 +6,13 @@ const XLSX = require("xlsx");
 const path = require("path");
 const os = require("os");
 const pool = require("../../../db");
+const Anthropic = require("@anthropic-ai/sdk");
+const anthropicApiKey = (process.env.ANTHROPIC_API_KEY || "").trim();
+const client = anthropicApiKey
+  ? new Anthropic({ apiKey: anthropicApiKey })
+  : null;
+const ANTHROPIC_MODEL =
+  process.env.ANTHROPIC_MODEL || "claude-sonnet-4-20250514";
 
 const uploadDir = path.join(os.tmpdir(), "leo-bank-uploads");
 if (!fs.existsSync(uploadDir)) {
@@ -20,8 +27,271 @@ const normalizeAmount = (value) => {
   return Number.isNaN(parsed) ? 0 : parsed;
 };
 
+const normalizeTransactionRow = (txn) => {
+  if (!txn || typeof txn !== "object") return null;
+  const date = String(txn.date || txn.txn_date || "").trim();
+  const narration = String(
+    txn.narration || txn.name || txn.description || "",
+  ).trim();
+  const amount = normalizeAmount(txn.amount);
+  if (!date || !narration || amount === 0) return null;
+  return { date, narration, amount };
+};
+
 const cleanupFile = (filePath) => {
   if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
+};
+
+const stripParseEnvelope = (userMessage = "") => {
+  const text = String(userMessage || "");
+  const marker = "Statement text:";
+  const idx = text.indexOf(marker);
+  return idx >= 0 ? text.slice(idx + marker.length).trim() : text.trim();
+};
+
+const normalizeDatePart = (value) =>
+  String(value || "")
+    .trim()
+    .replace(/,/g, " ");
+
+const toIsoDate = (value) => {
+  const raw = normalizeDatePart(value);
+  if (!raw) return "";
+
+  const isoMatch = raw.match(/^(\d{4})[/-](\d{1,2})[/-](\d{1,2})$/);
+  if (isoMatch) {
+    const [, year, month, day] = isoMatch;
+    return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  }
+
+  const numericMatch = raw.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$/);
+  if (numericMatch) {
+    let [, first, second, year] = numericMatch;
+    if (year.length === 2) year = `20${year}`;
+    const firstNum = Number(first);
+    const secondNum = Number(second);
+    const dayFirst = firstNum > 12 || secondNum > 12 ? firstNum <= 31 : true;
+    const day = dayFirst ? firstNum : secondNum;
+    const month = dayFirst ? secondNum : firstNum;
+    return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  }
+
+  const longMonthMatch = raw.match(
+    /^(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{2,4})$|^([A-Za-z]{3,9})\s+(\d{1,2}),?\s+(\d{2,4})$/,
+  );
+  if (longMonthMatch) {
+    const monthLookup = {
+      jan: 1,
+      january: 1,
+      feb: 2,
+      february: 2,
+      mar: 3,
+      march: 3,
+      apr: 4,
+      april: 4,
+      may: 5,
+      jun: 6,
+      june: 6,
+      jul: 7,
+      july: 7,
+      aug: 8,
+      august: 8,
+      sep: 9,
+      sept: 9,
+      september: 9,
+      oct: 10,
+      october: 10,
+      nov: 11,
+      november: 11,
+      dec: 12,
+      december: 12,
+    };
+    const day = Number(longMonthMatch[1] || longMonthMatch[5]);
+    const monthName = (
+      longMonthMatch[2] ||
+      longMonthMatch[4] ||
+      ""
+    ).toLowerCase();
+    let year = String(longMonthMatch[3] || longMonthMatch[6] || "");
+    if (year.length === 2) year = `20${year}`;
+    const month = monthLookup[monthName];
+    if (month && day) {
+      return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    }
+  }
+
+  const parsed = new Date(raw);
+  if (!Number.isNaN(parsed.getTime())) {
+    return parsed.toISOString().slice(0, 10);
+  }
+
+  return "";
+};
+
+const isNoiseLine = (line) =>
+  /^(page\s*\d+|page no|statement period|opening balance|closing balance|account number|account no|branch|date\s+description|txn\s+date|downloaded on|printed on|address\s*:|customer id|ifsc|micr|currency|remarks?|s\.? no\.?)/i.test(
+    line,
+  ) || line.length < 6;
+
+const extractReference = (text) => {
+  const patterns = [
+    /\b(?:utr|upi|neft|rtgs|imps|txn|txnid|transaction id|cheque|check|ref|reference)\s*[:\-]?\s*([A-Za-z0-9/-]{4,})/i,
+    /\b(?:chq|cheque|check)\s*[:\-]?\s*([A-Za-z0-9/-]{4,})/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match?.[1]) return match[1].trim();
+  }
+
+  return "";
+};
+
+const inferTransactionType = (text, amount) => {
+  if (amount < 0) return "debit";
+  if (amount > 0) {
+    if (
+      /\b(cr|credit|deposit|received|receipt|interest|refund|salary|payout)\b/i.test(
+        text,
+      )
+    ) {
+      return "credit";
+    }
+    if (
+      /\b(dr|debit|withdraw|withdrawal|payment|paid|fee|charge|transfer|upi|imps|neft|rtgs|ecs|pos|atm)\b/i.test(
+        text,
+      )
+    ) {
+      return "debit";
+    }
+    return "credit";
+  }
+  return "debit";
+};
+
+const normalizeSignedAmount = (rawAmount, text) => {
+  const amount = Math.abs(Number(rawAmount) || 0);
+  if (amount === 0) return 0;
+  if (
+    /\b(dr|debit|withdraw|withdrawal|payment|paid|fee|charge|transfer|upi|imps|neft|rtgs|ecs|pos|atm)\b/i.test(
+      text,
+    )
+  ) {
+    return -amount;
+  }
+  if (
+    /\b(cr|credit|deposit|received|receipt|interest|refund|salary|payout)\b/i.test(
+      text,
+    )
+  ) {
+    return amount;
+  }
+  return amount;
+};
+
+const parseLocalStatement = (userMessage = "") => {
+  const text = stripParseEnvelope(userMessage);
+  if (!text) return [];
+
+  const lines = text
+    .replace(/\r/g, "\n")
+    .split(/\n+/)
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+
+  const transactions = [];
+  const datePattern =
+    /(\d{4}[/-]\d{1,2}[/-]\d{1,2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\d{1,2}\s+[A-Za-z]{3,9}\s+\d{2,4}|[A-Za-z]{3,9}\s+\d{1,2},?\s+\d{2,4})/;
+
+  for (const line of lines) {
+    if (isNoiseLine(line)) continue;
+
+    const dateMatch = line.match(datePattern);
+    if (!dateMatch || dateMatch.index == null) continue;
+
+    const date = toIsoDate(dateMatch[1]);
+    if (!date) continue;
+
+    const afterDate = line.slice(dateMatch.index + dateMatch[1].length).trim();
+    if (!afterDate) continue;
+
+    const tailMatch = afterDate.match(
+      /^(.*?)(-?\d[\d,]*(?:\.\d{1,2})?)(?:\s+(-?\d[\d,]*(?:\.\d{1,2})?))?(?:\s+(CR|DR|C|D))?\s*$/i,
+    );
+    if (!tailMatch) continue;
+
+    const narration = tailMatch[1].trim().replace(/\s{2,}/g, " ");
+    if (
+      !narration ||
+      /^(opening balance|closing balance|balance carried forward)$/i.test(
+        narration,
+      )
+    ) {
+      continue;
+    }
+
+    const firstAmount = parseFloat(String(tailMatch[2]).replace(/,/g, ""));
+    const secondAmount = tailMatch[3]
+      ? parseFloat(String(tailMatch[3]).replace(/,/g, ""))
+      : null;
+    const typeHint = (tailMatch[4] || "").toUpperCase();
+
+    let amount = normalizeSignedAmount(
+      firstAmount,
+      `${narration} ${typeHint}`.trim(),
+    );
+    if (typeHint === "CR" || typeHint === "C") amount = Math.abs(firstAmount);
+    if (typeHint === "DR" || typeHint === "D") amount = -Math.abs(firstAmount);
+
+    if (Number.isNaN(amount) || amount === 0) continue;
+
+    const reference = extractReference(narration);
+    transactions.push({
+      date,
+      name: narration,
+      amount,
+      type: inferTransactionType(narration, amount),
+      reference,
+      balance:
+        secondAmount !== null && !Number.isNaN(secondAmount)
+          ? secondAmount
+          : null,
+    });
+  }
+
+  return transactions;
+};
+
+const parseAnthropicTransactions = async (systemPrompt, userMessage) => {
+  if (!client) {
+    return parseLocalStatement(userMessage);
+  }
+
+  try {
+    const msg = await client.messages.create({
+      model: ANTHROPIC_MODEL,
+      max_tokens: 8192,
+      system: systemPrompt,
+      messages: [{ role: "user", content: userMessage }],
+    });
+    const text = msg.content
+      .filter((b) => b.type === "text")
+      .map((b) => b.text)
+      .join("");
+    const cleaned = text.replace(/^```(?:json)?\s*|```\s*$/gm, "").trim();
+    const parsed = JSON.parse(cleaned);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    const message = String(error?.message || error || "");
+    if (
+      /could not resolve authentication method|api key|auth token|not configured|invalid authentication/i.test(
+        message,
+      )
+    ) {
+      return parseLocalStatement(userMessage);
+    }
+    throw error;
+  }
 };
 
 // ✅ Catches amounts separated by any whitespace (1 or more spaces) at end of line
@@ -167,8 +437,35 @@ const parseHdfcText = (text) => {
   return transactions;
 };
 
+// Middleware to extract clientId from headers/query before processing
+const extractClientId = (req, res, next) => {
+  let clientId = req.headers["x-client-id"];
+
+  if (!clientId && req.query.clientId) {
+    clientId = req.query.clientId;
+  }
+
+  if (!clientId && req.headers.referer) {
+    const referer = req.headers.referer;
+    const match = referer.match(/\/client\/([^/]+)/);
+    if (match) {
+      clientId = match[1];
+    }
+  }
+
+  if (clientId) {
+    req.clientId = clientId;
+    console.log(`✓ Client ID extracted: ${clientId}`);
+  } else {
+    console.warn("⚠ No Client ID found in request headers/query/referer");
+  }
+
+  next();
+};
+
 router.post(
   "/upload-bank-statement",
+  extractClientId,
   (req, res, next) => {
     if (req.headers["content-type"]?.includes("application/json"))
       return next();
@@ -178,22 +475,47 @@ router.post(
     let filePath = "";
 
     try {
+      if (!req.clientId) {
+        console.error("❌ Missing Client ID in upload-bank-statement");
+        return res.status(400).json({
+          error:
+            "Missing Client ID. Please open the statement from a company workspace.",
+        });
+      }
+
+      console.log(`📤 Processing bank statement for client: ${req.clientId}`);
       let transactions = [];
 
       /* -------------------------
          PDF — text sent as JSON from frontend
       -------------------------- */
       if (req.headers["content-type"]?.includes("application/json")) {
-        const { text } = req.body;
-        if (!text)
-          return res.status(400).json({ error: "No text content provided." });
+        const {
+          type,
+          text,
+          rawText,
+          transactions: normalizedTransactions,
+        } = req.body;
+        const statementText = String(text || rawText || "").trim();
 
-        transactions = parseHdfcText(text);
-        console.log("PDF transactions parsed:", transactions.length);
-        console.log(
-          "Sample:",
-          JSON.stringify(transactions.slice(0, 5), null, 2),
-        );
+        if (type === "normalized" && Array.isArray(normalizedTransactions)) {
+          transactions = normalizedTransactions
+            .map(normalizeTransactionRow)
+            .filter(Boolean);
+          if (!transactions.length && statementText) {
+            transactions = parseHdfcText(statementText);
+          }
+        } else if (statementText) {
+          transactions = parseHdfcText(statementText);
+          console.log("PDF transactions parsed:", transactions.length);
+          console.log(
+            "Sample:",
+            JSON.stringify(transactions.slice(0, 5), null, 2),
+          );
+        } else {
+          console.warn("Bank statement upload received no parsable text.");
+          transactions = [];
+        }
       }
 
       /* -------------------------
@@ -203,6 +525,8 @@ router.post(
         filePath = req.file.path;
         const lowerFileName = req.file.originalname.toLowerCase();
         const password = req.body.password || "";
+
+        console.log(`📁 Processing Excel file: ${req.file.originalname}`);
 
         if (lowerFileName.endsWith(".xlsx") || lowerFileName.endsWith(".xls")) {
           const workbook = XLSX.readFile(filePath, {
@@ -252,6 +576,12 @@ router.post(
               });
             }
           });
+
+          console.log(
+            `✓ Excel file processed: ${transactions.length} transactions extracted`,
+          );
+        } else {
+          console.warn(`⚠ Unsupported file format: ${req.file.originalname}`);
         }
       }
 
@@ -268,6 +598,9 @@ router.post(
       }
 
       cleanupFile(filePath);
+      console.log(
+        `✓ Bank statement uploaded successfully for client ${req.clientId}: ${transactions.length} transactions`,
+      );
       res.json({
         message: "Bank statement processed successfully",
         totalRecords: transactions.length,
@@ -282,5 +615,18 @@ router.post(
     }
   },
 );
+
+router.post("/parse-bank-statement", async (req, res) => {
+  try {
+    const { systemPrompt, userMessage } = req.body;
+    const transactions = await parseAnthropicTransactions(
+      systemPrompt,
+      userMessage,
+    );
+    res.json({ transactions });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 module.exports = router;

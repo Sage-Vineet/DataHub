@@ -240,4 +240,202 @@ router.post("/bank-transactions", async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /qb-profit-loss-detail:
+ *   get:
+ *     tags:
+ *       - Reconciliation
+ *     summary: Fetch Profit and Loss Detail report
+ */
+router.get("/qb-profit-loss-detail", async (req, res) => {
+  const qb = getQBConfig(req.clientId);
+  const { start_date, end_date, accounting_method } = req.query;
+
+  try {
+    const response = await axios.get(
+      `${qb.baseUrl}/v3/company/${qb.realmId}/reports/ProfitAndLossDetail`,
+      {
+        headers: {
+          Authorization: `Bearer ${qb.accessToken}`,
+          Accept: "application/json",
+        },
+        proxy: false,
+        params: {
+          start_date,
+          end_date,
+          accounting_method,
+          minorversion: 75,
+        },
+      },
+    );
+
+    res.json(response.data);
+  } catch (error) {
+    console.error(
+      "ProfitAndLossDetail API Error:",
+      error.response?.data || error.message,
+    );
+    res.status(500).json({ error: "Failed to fetch Profit & Loss Detail" });
+  }
+});
+
+/**
+ * @swagger
+ * /qb-balance-sheet:
+ *   get:
+ *     tags:
+ *       - Reconciliation
+ *     summary: Fetch Balance Sheet report
+ */
+router.get("/qb-balance-sheet", async (req, res) => {
+  const qb = getQBConfig(req.clientId);
+  const { start_date, end_date, accounting_method } = req.query;
+
+  if (!qb.accessToken || !qb.realmId) {
+    return res.status(400).json({
+      error: "Missing QuickBooks configuration. Please authenticate first.",
+    });
+  }
+
+  const url = `${qb.baseUrl}/v3/company/${qb.realmId}/reports/BalanceSheet`;
+
+  try {
+    const fetchBalanceSheet = (accessToken) =>
+      axios.get(url, {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          Accept: "application/json",
+        },
+        proxy: false,
+        params: {
+          start_date,
+          end_date,
+          accounting_method,
+          minorversion: 75,
+        },
+      });
+
+    try {
+      const response = await fetchBalanceSheet(qb.accessToken);
+      return res.json({ success: true, data: response.data });
+    } catch (error) {
+      if (error.response?.status !== 401) {
+        throw error;
+      }
+
+      console.log("⚠️ Balance Sheet token expired, attempting refresh...");
+      const refreshedToken = await tokenManager.refreshAccessToken(
+        req.clientId,
+      );
+      const retryResponse = await fetchBalanceSheet(refreshedToken);
+      return res.json({
+        success: true,
+        data: retryResponse.data,
+        refreshed: true,
+      });
+    }
+  } catch (error) {
+    console.error(
+      "BalanceSheet API Error:",
+      error.response?.data || error.message,
+    );
+    return res.status(error.response?.status || 500).json({
+      error: "Failed to fetch Balance Sheet",
+      details: error.response?.data || error.message,
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /qb-financial-reports:
+ *   get:
+ *     tags:
+ *       - Reconciliation
+ *     summary: Fetch Profit & Loss Detail and Balance Sheet reports
+ */
+router.get("/qb-financial-reports-for-reconciliation", async (req, res) => {
+  const qb = getQBConfig(req.clientId);
+  const { start_date, end_date, accounting_method } = req.query;
+
+  if (!qb.accessToken || !qb.realmId) {
+    return res.status(400).json({
+      error: "Missing QuickBooks configuration. Please authenticate first.",
+    });
+  }
+
+  const headers = {
+    Authorization: `Bearer ${qb.accessToken}`,
+    Accept: "application/json",
+  };
+
+  const params = {
+    start_date,
+    end_date,
+    accounting_method,
+    minorversion: 75,
+  };
+
+  const profitLossUrl = `${qb.baseUrl}/v3/company/${qb.realmId}/reports/ProfitAndLossDetail`;
+  const balanceSheetUrl = `${qb.baseUrl}/v3/company/${qb.realmId}/reports/BalanceSheet`;
+
+  try {
+    const fetchReports = (accessToken) =>
+      Promise.all([
+        axios.get(profitLossUrl, {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            Accept: "application/json",
+          },
+          proxy: false,
+          params,
+        }),
+        axios.get(balanceSheetUrl, {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            Accept: "application/json",
+          },
+          proxy: false,
+          params,
+        }),
+      ]);
+
+    try {
+      const [profitLoss, balanceSheet] = await fetchReports(qb.accessToken);
+
+      return res.json({
+        success: true,
+        profit_and_loss: profitLoss.data,
+        balance_sheet: balanceSheet.data,
+      });
+    } catch (error) {
+      if (error.response?.status !== 401) throw error;
+
+      console.log("⚠️ Token expired, refreshing...");
+
+      const refreshedToken = await tokenManager.refreshAccessToken(
+        req.clientId,
+      );
+      const [profitLoss, balanceSheet] = await fetchReports(refreshedToken);
+
+      return res.json({
+        success: true,
+        refreshed: true,
+        profit_and_loss: profitLoss.data,
+        balance_sheet: balanceSheet.data,
+      });
+    }
+  } catch (error) {
+    console.error(
+      "Financial Reports API Error:",
+      error.response?.data || error.message,
+    );
+
+    return res.status(error.response?.status || 500).json({
+      error: "Failed to fetch financial reports",
+      details: error.response?.data || error.message,
+    });
+  }
+});
 module.exports = router;
