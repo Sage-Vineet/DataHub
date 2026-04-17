@@ -5,7 +5,53 @@ const {
 } = require("./services/quickbooksConnectionStore");
 const { logQuickBooksDebug, maskValue } = require("./quickbooksLogger");
 
+const fs = require("fs");
+const path = require("path");
+
+// On Vercel, env vars are injected natively. dotenv is only needed locally.
+try {
+  require("dotenv").config({ path: path.join(__dirname, "..", ".env") });
+} catch (_) {
+  // dotenv file may not exist in all environments.
+}
+
+const IS_VERCEL = process.env.VERCEL === "1";
+const STATE_FILE =
+  process.env.QB_STATE_FILE ||
+  (IS_VERCEL
+    ? path.join("/tmp", "qb-state.json")
+    : path.join(__dirname, "..", "qb-state.json"));
+
+/**
+ * Multi-tenant QuickBooks config store.
+ * Structure: { [clientId]: { realmId, accessToken, refreshToken, ... } }
+ */
 let qbStates = {};
+
+function loadStates() {
+  try {
+    if (fs.existsSync(STATE_FILE)) {
+      const data = fs.readFileSync(STATE_FILE, "utf8");
+      qbStates = JSON.parse(data) || {};
+      console.log(
+        `Loaded QuickBooks states for ${Object.keys(qbStates).length} companies.`,
+      );
+    }
+  } catch (error) {
+    console.warn("Error loading qb-state.json:", error.message);
+    qbStates = {};
+  }
+}
+
+function saveStates() {
+  try {
+    fs.writeFileSync(STATE_FILE, JSON.stringify(qbStates, null, 2));
+  } catch (error) {
+    console.error("Error saving qb-state.json:", error.message);
+  }
+}
+
+loadStates();
 
 const isSandbox =
   process.env.NODE_ENV !== "production" ||
@@ -172,14 +218,33 @@ async function updateTokens(clientId, accessToken, refreshToken, expiresIn) {
   });
 }
 
-async function disconnectConfig(clientId) {
-  if (!clientId) {
-    throw new Error("disconnectConfig called without clientId.");
+function disconnectConfig(clientId) {
+  if (clientId && qbStates[clientId]) {
+    delete qbStates[clientId];
+    console.log(`QuickBooks connection cleared for client: ${clientId}`);
+  } else {
+    // Clear root-level legacy/default connection keys.
+    const keysToClear = [
+      "accessToken",
+      "refreshToken",
+      "realmId",
+      "companyName",
+      "companyId",
+      "tokenExpiresAt",
+      "lastSynced",
+      "connectedAt",
+      "environment",
+      "syncedEntities",
+    ];
+
+    keysToClear.forEach((key) => {
+      delete qbStates[key];
+    });
+
+    console.log("Default QuickBooks connection cleared from root configuration.");
   }
 
-  delete qbStates[clientId];
-  await deleteQuickBooksConnection(clientId);
-  console.log(`QuickBooks connection cleared for client: ${clientId}`);
+  saveStates();
 }
 
 function isConnected(clientId) {

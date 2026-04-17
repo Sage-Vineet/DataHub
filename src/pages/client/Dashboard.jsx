@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom';
-import { ClipboardList, Upload, Bell, Clock, AlertCircle, ArrowRight, Building2, TrendingUp } from 'lucide-react';
+import { ClipboardList, Upload, Bell, AlertCircle, ArrowRight, TrendingUp, Clock } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { requests, reminders, documents } from '../../data/mockData';
 import StatusBadge from '../../components/common/StatusBadge';
@@ -72,13 +72,13 @@ export default function ClientDashboard() {
 
       {/* Alert: next due */}
       {nextDue && (
-        <div className="flex items-center gap-3 px-4 py-3 bg-[#FAC086]/40 border border-[#F68C1F]/30 rounded-2xl">
-          <AlertCircle size={18} className="text-[#b45e08] flex-shrink-0" />
-          <p className="text-sm text-[#b45e08] font-medium flex-1">
-            You have a pending request: <strong>"{nextDue.name}"</strong> — due <strong>{nextDue.dueDate}</strong>
+        <div className="flex items-center gap-3 px-4 py-3 bg-[#FEF3C7] border border-[#8BC53D]/30 rounded-2xl">
+          <AlertCircle size={18} className="text-[#8BC53D] flex-shrink-0" />
+          <p className="text-sm text-[#476E2C] font-medium flex-1">
+            Pending: <strong>"{nextDue.name}"</strong> due <strong>{nextDue.dueDate}</strong>
           </p>
-          <button onClick={() => navigate('/client/requests')} className="text-xs font-semibold text-[#b45e08] hover:underline whitespace-nowrap">
-            Upload Now
+          <button onClick={() => navigate('/client/requests')} className="text-xs font-semibold text-[#8BC53D] hover:text-[#476E2C] hover:underline whitespace-nowrap">
+            Upload
           </button>
         </div>
       )}
@@ -100,56 +100,25 @@ export default function ClientDashboard() {
         ))}
       </div>
 
-      {/* Quick Info + Progress */}
-      <div className="grid lg:grid-cols-2 gap-5">
-        {/* Quick Info */}
-        <div className="bg-white rounded-2xl shadow-card overflow-hidden">
-          <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
-            <h2 className="font-semibold text-[#050505]">Quick Info</h2>
-            <button onClick={() => navigate('/client/requests')} className="flex items-center gap-1 text-xs text-[#8BC53D] font-semibold hover:underline">
-              My requests <ArrowRight size={12} />
-            </button>
-          </div>
-          <div className="p-4 space-y-3">
-            {[ 
-              { label: 'Company', value: user?.company || 'Infosys Ltd.', icon: Building2 },
-              { label: 'Total Requests', value: myRequests.length, icon: ClipboardList },
-              { label: 'Pending Requests', value: pendingCount, icon: AlertCircle },
-              { label: 'Latest Due Date', value: nextDue?.dueDate || 'No pending due dates', icon: Clock },
-            ].map(item => (
-              <div key={item.label} className="flex items-center gap-3 px-3 py-3 rounded-xl bg-gray-50">
-                <div className="w-8 h-8 rounded-lg bg-[#A7DCF7]/40 flex items-center justify-center">
-                  <item.icon size={14} className="text-[#00648F]" />
-                </div>
-                <div>
-                  <p className="text-[11px] text-[#A5A5A5]">{item.label}</p>
-                  <p className="text-sm font-semibold text-[#050505]">{item.value}</p>
-                </div>
-              </div>
-            ))}
-          </div>
+      {/* Progress by Category */}
+      <div className="bg-white rounded-2xl shadow-card overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+          <h2 className="font-semibold text-[#050505]">Progress by Category</h2>
+          <TrendingUp size={15} className="text-[#8BC53D]" />
         </div>
-
-        {/* Progress by Category */}
-        <div className="bg-white rounded-2xl shadow-card overflow-hidden">
-          <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
-            <h2 className="font-semibold text-[#050505]">Progress by Category</h2>
-            <TrendingUp size={15} className="text-[#8BC53D]" />
-          </div>
-          <div className="space-y-4 p-4">
-            {progressCards.map(cat => (
-              <div key={cat.key}>
-                <div className="flex items-center justify-between mb-1.5">
-                  <p className="text-sm font-semibold text-[#050505]">{cat.key}</p>
-                  <p className="text-xs font-bold" style={{ color: cat.color }}>{cat.pct}%</p>
-                </div>
-                <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
-                  <div className="h-full rounded-full transition-all" style={{ width: `${cat.pct}%`, background: cat.color }} />
-                </div>
-                <p className="text-[11px] text-[#A5A5A5] mt-1">{cat.total} request(s)</p>
+        <div className="space-y-4 p-4">
+          {progressCards.map(cat => (
+            <div key={cat.key}>
+              <div className="flex items-center justify-between mb-1.5">
+                <p className="text-sm font-semibold text-[#050505]">{cat.key}</p>
+                <p className="text-xs font-bold" style={{ color: cat.color }}>{cat.pct}%</p>
               </div>
-            ))}
-          </div>
+              <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+                <div className="h-full rounded-full transition-all" style={{ width: `${cat.pct}%`, background: cat.color }} />
+              </div>
+              <p className="text-[11px] text-[#A5A5A5] mt-1">{cat.total} request(s)</p>
+            </div>
+          ))}
         </div>
       </div>
 

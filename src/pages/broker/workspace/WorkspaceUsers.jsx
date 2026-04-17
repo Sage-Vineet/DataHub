@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useParams } from 'react-router-dom';
 import {
@@ -24,10 +24,10 @@ import {
 } from '../../../lib/api';
 
 const PAGE_SIZE = 8;
-const ROLE_ORDER = ['admin', 'broker', 'buyer'];
-const CREATE_ROLE_ORDER = ['buyer'];
+const ROLE_ORDER = ['admin', 'broker', 'client', 'user'];
+const CREATE_ROLE_ORDER = ['user'];
 const STATUS_ORDER = ['active', 'inactive'];
-const EMPTY_FORM = { name: '', companyId: '', companyIds: [], email: '', phone: '', role: 'buyer', status: 'active', password: '', profileImage: '', groupIds: [] };
+const EMPTY_FORM = { name: '', companyId: '', companyIds: [], email: '', phone: '', role: 'user', status: 'active', password: '', profileImage: '', groupIds: [] };
 
 function initials(name = '') {
   return name
@@ -42,7 +42,12 @@ function initials(name = '') {
 function formatUser(user) {
   if (!user) return null;
   const assignedCompanies = user.assigned_companies || user.assignedCompanies || [];
-  const companyIds = user.company_ids || user.companyIds || assignedCompanies.map((company) => company.id).filter(Boolean) || [];
+  const companyIds = Array.from(new Set([
+    ...(user.company_ids || user.companyIds || []),
+    ...assignedCompanies.map((company) => company.id).filter(Boolean),
+    user.company_id,
+    user.companyId,
+  ].filter(Boolean)));
   const primaryCompany = assignedCompanies.find((company) => String(company.id) === String(user.company_id)) || assignedCompanies[0] || null;
   return {
     id: user.id,
@@ -200,6 +205,9 @@ function UserFormModal({ initial, companies, companyLock, groups, onSave, onClos
   });
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState('');
+  const [companiesSearchQuery, setCompaniesSearchQuery] = useState('');
+  const [companiesDropdownOpen, setCompaniesDropdownOpen] = useState(false);
+  const companiesDropdownRef = useRef(null);
   const setField = (patch) => setForm((current) => ({ ...current, ...patch }));
   const valid = form.name.trim() && form.email.trim() && form.role && form.status && (isEdit || form.password.trim());
 
@@ -215,6 +223,25 @@ function UserFormModal({ initial, companies, companyLock, groups, onSave, onClos
     if (!companyLock?.id) return;
     setForm((current) => ({ ...current, companyId: current.companyId || companyLock.id, companyIds: Array.from(new Set([companyLock.id, ...(current.companyIds || [])])) }));
   }, [companyLock?.id]);
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (companiesDropdownRef.current && !companiesDropdownRef.current.contains(event.target)) {
+        setCompaniesDropdownOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const filteredCompanies = companies.filter((company) =>
+    company.name.toLowerCase().includes(companiesSearchQuery.toLowerCase())
+  );
+
+  const selectedCompanies = companies.filter((company) =>
+    (form.companyIds || []).some((id) => String(id) === String(company.id))
+  );
 
   const handleProfilePick = async (event) => {
     const file = event.target.files?.[0];
@@ -260,66 +287,107 @@ function UserFormModal({ initial, companies, companyLock, groups, onSave, onClos
             />
           </div>
 
-          <div className="col-span-2 lg:col-span-1">
-            <label className="block text-xs font-semibold text-gray-500 mb-1.5">Company</label>
-            <select
-              value={form.companyId}
-              onChange={(event) => {
-                const nextCompanyId = event.target.value;
-                setField({
-                  companyId: nextCompanyId,
-                  companyIds: nextCompanyId ? Array.from(new Set([...(form.companyIds || []), nextCompanyId])) : (form.companyIds || []),
-                  groupIds: [],
-                });
-              }}
-              disabled={!!companyLock}
-              className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] disabled:bg-gray-100 disabled:text-gray-500"
-            >
-              {companyLock ? (
-                <option value={companyLock.id}>{companyLock.name}</option>
-              ) : (
-                <>
-                  <option value="">Unassigned</option>
-                  {companies.map((company) => (
-                    <option key={company.id} value={company.id}>{company.name}</option>
-                  ))}
-                </>
-              )}
-            </select>
-          </div>
-
           <div className="col-span-2">
             <label className="block text-xs font-semibold text-gray-500 mb-1.5">Assigned Clients</label>
-            <div className="max-h-28 overflow-y-auto rounded-xl border border-gray-200 bg-gray-50 p-2">
-              {companies.length === 0 ? (
-                <p className="px-2 py-1 text-xs text-gray-400">No companies available</p>
-              ) : companies.map((company) => {
-                const active = (form.companyIds || []).some((id) => String(id) === String(company.id));
-                const locked = companyLock?.id && String(company.id) === String(companyLock.id);
-                return (
-                  <label key={company.id} className={`flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs font-semibold text-[#05164D] ${locked ? 'bg-white' : 'hover:bg-white'}`}>
-                    <input
-                      type="checkbox"
-                      checked={active}
-                      disabled={locked}
-                      onChange={(event) => {
-                        const nextIds = event.target.checked
-                          ? Array.from(new Set([...(form.companyIds || []), company.id]))
-                          : (form.companyIds || []).filter((id) => String(id) !== String(company.id));
-                        setField({
-                          companyIds: nextIds,
-                          companyId: nextIds.some((id) => String(id) === String(form.companyId)) ? form.companyId : (nextIds[0] || ''),
-                        });
-                      }}
-                      className="h-3.5 w-3.5 accent-[#8BC53D]"
-                    />
-                    {company.name}
-                  </label>
-                );
-              })}
+            <div className="relative" ref={companiesDropdownRef}>
+              <button
+                type="button"
+                onClick={() => setCompaniesDropdownOpen((open) => !open)}
+                className="flex w-full items-center justify-between rounded-xl border border-gray-200 bg-white px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]"
+              >
+                <span className="text-left text-[#05164D]">
+                  {selectedCompanies.length === 0 ? 'Select clients...' : `${selectedCompanies.length} client${selectedCompanies.length === 1 ? '' : 's'} selected`}
+                </span>
+                <ChevronDown size={16} className={`text-gray-400 transition-transform ${companiesDropdownOpen ? 'rotate-180' : ''}`} />
+              </button>
+
+              {companiesDropdownOpen && (
+                <div className="absolute top-full left-0 right-0 z-10 mt-1 max-h-64 overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-lg">
+                  <div className="sticky top-0 border-b border-gray-100 bg-white p-3">
+                    <div className="relative">
+                      <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                      <input
+                        type="text"
+                        placeholder="Search clients..."
+                        value={companiesSearchQuery}
+                        onChange={(event) => setCompaniesSearchQuery(event.target.value)}
+                        className="w-full rounded-lg border border-gray-200 py-2 pl-9 pr-3 text-xs focus:outline-none focus:border-[#8BC53D]"
+                        autoFocus
+                      />
+                    </div>
+                  </div>
+
+                  <div className="p-2">
+                    {filteredCompanies.length === 0 ? (
+                      <div className="px-3 py-6 text-center text-xs text-gray-400">No clients found</div>
+                    ) : filteredCompanies.map((company) => {
+                      const active = (form.companyIds || []).some((id) => String(id) === String(company.id));
+                      const locked = companyLock?.id && String(company.id) === String(companyLock.id);
+                      return (
+                        <button
+                          key={company.id}
+                          type="button"
+                          onClick={() => {
+                            if (locked) return;
+                            const nextIds = active
+                              ? (form.companyIds || []).filter((id) => String(id) !== String(company.id))
+                              : Array.from(new Set([...(form.companyIds || []), company.id]));
+                            setField({
+                              companyIds: nextIds,
+                              companyId: nextIds.some((id) => String(id) === String(form.companyId)) ? form.companyId : (nextIds[0] || ''),
+                              groupIds: [],
+                            });
+                          }}
+                          className={`flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left text-sm transition-colors ${
+                            active ? 'bg-[#E6F3D3] text-[#8BC53D]' : 'text-gray-700 hover:bg-gray-100'
+                          } ${locked ? 'cursor-not-allowed opacity-70' : ''}`}
+                        >
+                          <div className={`flex h-4 w-4 items-center justify-center rounded border transition-all ${
+                            active ? 'border-[#8BC53D] bg-[#8BC53D]' : 'border-gray-300'
+                          }`}>
+                            {active && <Check size={12} className="text-white" />}
+                          </div>
+                          <span className="flex-1">{company.name}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
             <p className="mt-1 text-[11px] text-gray-400">A user can be assigned to multiple clients. The primary company is kept for compatibility.</p>
           </div>
+
+          {selectedCompanies.length > 0 && (
+            <div className="col-span-2">
+              <div className="flex flex-wrap gap-2">
+                {selectedCompanies.map((company) => {
+                  const locked = companyLock?.id && String(company.id) === String(companyLock.id);
+                  return (
+                    <div key={company.id} className="flex items-center gap-2 rounded-full bg-[#E6F3D3] px-3 py-1.5 text-xs font-semibold text-[#476E2C]">
+                      <span>{company.name}</span>
+                      {!locked && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const nextIds = (form.companyIds || []).filter((id) => String(id) !== String(company.id));
+                            setField({
+                              companyIds: nextIds,
+                              companyId: nextIds.some((id) => String(id) === String(form.companyId)) ? form.companyId : (nextIds[0] || ''),
+                              groupIds: [],
+                            });
+                          }}
+                          className="transition-opacity hover:opacity-70"
+                        >
+                          <X size={12} />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           <div className="col-span-2 lg:col-span-1">
             <label className="block text-xs font-semibold text-gray-500 mb-1.5">Phone No.</label>
@@ -523,7 +591,7 @@ export default function WorkspaceUsers() {
       const normalizedUsers = usersResponse.map(formatUser).filter(Boolean);
       const selectedCompany = companiesResponse.find((entry) => String(entry.id) === String(clientId)) || null;
       setCompany(selectedCompany);
-      setCompanies(selectedCompany ? [selectedCompany] : []);
+      setCompanies(companiesResponse || []);
       setData(normalizedUsers.filter((user) => (user.companyIds?.length ? user.companyIds : [user.companyId]).some((id) => String(id) === String(clientId))));
       await loadGroupsWithMembers();
     } catch (err) {
@@ -618,7 +686,7 @@ export default function WorkspaceUsers() {
         email: form.email.trim(),
         phone: form.phone.trim() || null,
         password: form.password,
-        role: form.role,
+        role: ['user', 'client'].includes(form.role) ? 'buyer' : form.role,
         profile_image: form.profileImage.trim() || null,
         company_id: clientId || form.companyId || null,
         company_ids: Array.from(new Set([clientId || form.companyId, ...(form.companyIds || [])].filter(Boolean))),
@@ -650,7 +718,7 @@ export default function WorkspaceUsers() {
       name: form.name.trim(),
       email: form.email.trim(),
       phone: form.phone.trim() || null,
-      role: form.role,
+      role: ['user', 'client'].includes(form.role) ? 'buyer' : form.role,
       profile_image: form.profileImage.trim() || null,
       company_id: clientId || form.companyId || null,
       company_ids: Array.from(new Set([clientId || form.companyId, ...(form.companyIds || [])].filter(Boolean))),
@@ -724,8 +792,8 @@ export default function WorkspaceUsers() {
   };
 
   const stats = useMemo(() => ({
-    activeBuyers: data.filter((user) => user.role === 'buyer' && user.status === 'active').length,
-    totalBuyers: data.filter((user) => user.role === 'buyer').length,
+    activeUsers: data.filter((user) => user.role === 'user' && user.status === 'active').length,
+    totalUsers: data.filter((user) => user.role === 'user').length,
     totalGroups: groups.length,
   }), [data, groups]);
 

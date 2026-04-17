@@ -9,22 +9,23 @@ import {
   ClipboardList,
   X,
   MoreHorizontal,
-  LifeBuoy,
+  FileText,
+  MessageSquare,
 } from "lucide-react";
 import datahublogo from "../../assets/datahublogo.png";
 
 const brokerNav = [
   { label: "Dashboard", icon: LayoutDashboard, to: "/broker/dashboard" },
   { label: "Companies", icon: Building2, to: "/broker/companies" },
-  { label: "Help & Support", icon: LifeBuoy, to: "/support" },
 ];
 
 const clientNav = [
   { label: "Dashboard", icon: LayoutDashboard, to: "/client/dashboard" },
   { label: "My Requests", icon: ClipboardList, to: "/client/requests" },
+  { label: "Documents", icon: FileText, to: "/client/documents" },
+  { label: "Messages", icon: MessageSquare, to: "/client/messages" },
   { label: "Upload Documents", icon: Upload, to: "/client/upload" },
   { label: "Reminders", icon: Bell, to: "/client/reminders" },
-  { label: "Help & Support", icon: LifeBuoy, to: "/support" },
 ];
 
 export default function Sidebar({ onClose }) {

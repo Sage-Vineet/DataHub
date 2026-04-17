@@ -13,6 +13,7 @@ const folderAccessRoutes = require("./routes/folderAccess");
 const reminderRoutes = require("./routes/reminders");
 const activityRoutes = require("./routes/activity");
 const uploadRoutes = require("./routes/uploads");
+const messageRoutes = require("./routes/messages");
 const balanceSheetRoutes = require("./routes/quickbooks/balancesheet/balanceSheet");
 const balanceSheetDetailRoutes = require("./routes/quickbooks/balancesheet/balanceSheetFullDetail");
 const tokenRoutes = require("./routes/quickbooks/token");
@@ -25,8 +26,9 @@ const cashflowRoutes = require("./routes/quickbooks/cash_flow/cash_flow");
 const reconciliationRoutes = require("./routes/quickbooks/reconciliation/Reconciliation");
 const bankStatementRoutes = require("./routes/quickbooks/reconciliation/bankStatement");
 const bankVsBooksRoutes = require("./routes/quickbooks/reconciliation/bankVsBooks");
-const { getQBConfig, loadQBConfig } = require("./qbconfig");
+const { getQBConfig, loadQBConfig, disconnectConfig } = require("./qbconfig");
 const { logQuickBooksDebug } = require("./quickbooksLogger");
+const db = require("./db");
 
 const app = express();
 
@@ -73,6 +75,12 @@ app.use("/users", userRoutes);
 app.use("/companies", companyRoutes);
 app.use("/", tokenRoutes);
 app.use("/", uploadRoutes);
+
+function normalizeCompanyName(name) {
+  return String(name || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
 
 async function checkQBAuth(req, res, next) {
   // 1. Try explicit header
@@ -122,6 +130,35 @@ async function checkQBAuth(req, res, next) {
       success: false,
       message: `QuickBooks not connected for company ${clientId}`,
       isConnected: false,
+    });
+  }
+
+  try {
+    const result = await db.query("SELECT name FROM companies WHERE id = ?", [
+      clientId,
+    ]);
+    const workspaceCompanyName = result?.rows?.[0]?.name || null;
+    const quickbooksCompanyName = qb.companyName || null;
+    const isMismatch =
+      workspaceCompanyName &&
+      quickbooksCompanyName &&
+      normalizeCompanyName(workspaceCompanyName) !==
+        normalizeCompanyName(quickbooksCompanyName);
+
+    if (isMismatch) {
+      disconnectConfig(clientId);
+      return res.status(401).json({
+        success: false,
+        isConnected: false,
+        isNameMismatch: true,
+        message: `Company mismatch: selected workspace "${workspaceCompanyName}" does not match QuickBooks company "${quickbooksCompanyName}". Connection blocked.`,
+      });
+    }
+  } catch (error) {
+    console.error("Company isolation check failed:", error.message);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to validate company connection.",
     });
   }
 
@@ -180,6 +217,7 @@ app.use("/", folderRoutes);
 app.use("/", folderAccessRoutes);
 app.use("/", reminderRoutes);
 app.use("/", activityRoutes);
+app.use("/", messageRoutes);
 
 app.use(errorHandler);
 

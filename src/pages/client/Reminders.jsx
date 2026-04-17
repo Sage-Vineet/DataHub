@@ -21,11 +21,11 @@ export default function ClientReminders() {
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
         {[
-          { label: 'Active', value: active.length, icon: Bell, color: '#742982', bg: '#DAAAE4' },
+          { label: 'Active', value: active.length, icon: Bell, color: '#8BC53D', bg: '#E6F3D3' },
           { label: 'Overdue', value: active.filter(r => isOverdue(r.dueDate)).length, icon: AlertCircle, color: '#C62026', bg: '#FEE2E2' },
-          { label: 'Completed', value: dismissed.length, icon: CheckCircle, color: '#476E2C', bg: '#C9E4A4' },
+          { label: 'Resolved', value: dismissed.length, icon: CheckCircle, color: '#476E2C', bg: '#C9E4A4' },
         ].map(s => (
           <div key={s.label} className="bg-white rounded-2xl p-4 shadow-card flex items-center gap-3">
             <div className="w-11 h-11 rounded-xl flex items-center justify-center" style={{ background: s.bg }}>

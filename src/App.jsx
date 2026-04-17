@@ -14,6 +14,7 @@ import { ToastProvider, useToast } from "./context/ToastContext";
 import ErrorBoundary from "./components/common/ErrorBoundary";
 import Layout from "./components/layout/Layout";
 import ClientWorkspaceLayout from "./components/layout/ClientWorkspaceLayout";
+import UserLayout from "./components/layout/UserLayout";
 import Login from "./pages/Login";
 import BrokerDashboard from "./pages/broker/Dashboard";
 import BrokerCompanies from "./pages/broker/Companies";
@@ -24,10 +25,17 @@ import ClientDashboard from "./pages/client/Dashboard";
 import ClientRequests from "./pages/client/Requests";
 import ClientUpload from "./pages/client/Upload";
 import ClientReminders from "./pages/client/Reminders";
+import ClientDocuments from "./pages/client/Documents";
+import ClientMessages from "./pages/client/Messages";
+import UserPortalDashboard from "./pages/user/PortalDashboard";
+import UserCompanyDetails from "./pages/user/CompanyDetails";
+import UserDocuments from "./pages/user/Documents";
+import UserMessages from "./pages/user/Messages";
 import WorkspaceDashboard from "./pages/broker/workspace/WorkspaceDashboard";
 import WorkspaceDashboardDatahub from "./pages/broker/workspace/WorkspaceDashboardDatahub";
 import WorkspaceRequests from "./pages/broker/workspace/WorkspaceRequests";
 import WorkspaceDocuments from "./pages/broker/workspace/WorkspaceDocuments";
+import WorkspaceMessages from "./pages/broker/workspace/WorkspaceMessages";
 import WorkspaceReminders from "./pages/broker/workspace/WorkspaceReminders";
 import WorkspaceActivity from "./pages/broker/workspace/WorkspaceActivity";
 import WorkspaceUsers from "./pages/broker/workspace/WorkspaceUsers";
@@ -38,6 +46,13 @@ import WorkspaceConnections from "./pages/broker/workspace/WorkspaceConnections"
 import Support from "./pages/Support";
 import WorkspaceEbitda from "./pages/broker/workspace/WorkspaceEbitda";
 import { getCompanyRequest, listCompaniesRequest } from "./lib/api";
+
+function getHomeRoute(role) {
+  if (role === "broker") return "/broker/dashboard";
+  if (role === "user") return "/user/portal-dashboard";
+  if (role === "client") return "/client/dashboard";
+  return "/login";
+}
 
 function companyLogo(name = "") {
   return name
@@ -57,28 +72,29 @@ function PageLoader({ message = "Loading..." }) {
   );
 }
 
-function ProtectedRoute({ children, allowedRole }) {
+function ProtectedRoute({ children, allowedRole, allowedRoles }) {
   const { user, loading } = useAuth();
+
   if (loading) return <PageLoader message="Checking session..." />;
   if (!user) return <Navigate to="/login" replace />;
-  const allowedRoles = allowedRole === "client" ? ["client", "user"] : allowedRole ? [allowedRole] : null;
-  if (allowedRoles && !allowedRoles.includes(user.role))
-    return (
-      <Navigate
-        to={user.role === "broker" ? "/broker/dashboard" : user.role === "user" ? "/client/upload" : "/client/dashboard"}
-        replace
-      />
-    );
+
+  const permittedRoles = allowedRoles || (allowedRole ? [allowedRole] : null);
+
+  if (permittedRoles && !permittedRoles.includes(user.role)) {
+    return <Navigate to={getHomeRoute(user.role)} replace />;
+  }
+
+  if (user.role === "user") return <UserLayout>{children}</UserLayout>;
   return <Layout>{children}</Layout>;
 }
 
-// Wrapper for client workspace — handles auth + company resolution
 function ClientWorkspaceWrapper() {
   const { user, loading: authLoading } = useAuth();
   const { showToast } = useToast();
   const navigate = useNavigate();
   const location = useLocation();
   const { clientId } = useParams();
+
   const [company, setCompany] = useState(location.state?.company ?? null);
   const [loading, setLoading] = useState(!location.state?.company);
   const [error, setError] = useState("");
@@ -99,13 +115,15 @@ function ClientWorkspaceWrapper() {
       })
       .catch(async () => {
         if (cancelled) return;
+
         try {
           const companies = await listCompaniesRequest();
           if (cancelled) return;
 
           const activeCompany = companies.find(
-            (entry) => String(entry.id) === String(clientId),
+            (entry) => String(entry.id) === String(clientId)
           );
+
           if (activeCompany) {
             setCompany({
               ...activeCompany,
@@ -116,21 +134,22 @@ function ClientWorkspaceWrapper() {
 
           if (companies.length > 0) {
             const fallbackCompany = companies[0];
+
             showToast({
               type: "info",
               title: "Workspace Updated",
               message:
                 "That company was not found. Opened the first available company instead.",
             });
+
             navigate(`/broker/client/${fallbackCompany.id}/datahub-dashboard`, {
               replace: true,
               state: { company: fallbackCompany },
             });
+
             return;
           }
-        } catch {
-          // fallback to default error path below
-        }
+        } catch {}
 
         if (!cancelled) {
           setError("Unable to load company details.");
@@ -148,6 +167,7 @@ function ClientWorkspaceWrapper() {
 
   useEffect(() => {
     if (!error) return;
+
     showToast({
       type: "error",
       title: "Workspace Notice",
@@ -158,7 +178,7 @@ function ClientWorkspaceWrapper() {
   if (authLoading) return <PageLoader message="Checking session..." />;
   if (!user) return <Navigate to="/login" replace />;
   if (user.role !== "broker")
-    return <Navigate to="/client/dashboard" replace />;
+    return <Navigate to={getHomeRoute(user.role)} replace />;
   if (loading) return <PageLoader message="Loading company workspace..." />;
   if (!company) return <Navigate to="/broker/companies" replace />;
 
@@ -171,6 +191,7 @@ function ClientWorkspaceWrapper() {
 
 function AppRoutes() {
   const { user, loading } = useAuth();
+
   return (
     <Routes>
       <Route
@@ -179,23 +200,14 @@ function AppRoutes() {
           loading ? (
             <PageLoader message="Checking session..." />
           ) : user ? (
-            <Navigate
-              to={
-                user.role === "broker"
-                  ? "/broker/dashboard"
-                  : user.role === "user"
-                    ? "/client/upload"
-                  : "/client/dashboard"
-              }
-              replace
-            />
+            <Navigate to={getHomeRoute(user.role)} replace />
           ) : (
             <Login />
           )
         }
       />
 
-      {/* Broker global pages */}
+      {/* Broker */}
       <Route
         path="/broker/dashboard"
         element={
@@ -212,73 +224,15 @@ function AppRoutes() {
           </ProtectedRoute>
         }
       />
-      <Route
-        path="/broker/requests"
-        element={
-          <ProtectedRoute allowedRole="broker">
-            <BrokerRequests />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/broker/documents"
-        element={
-          <ProtectedRoute allowedRole="broker">
-            <BrokerDocuments />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/broker/reminders"
-        element={
-          <ProtectedRoute allowedRole="broker">
-            <BrokerReminders />
-          </ProtectedRoute>
-        }
-      />
 
-      {/* Client workspace — scoped to a specific client */}
-      <Route
-        path="/broker/client/:clientId"
-        element={<ClientWorkspaceWrapper />}
-      >
+      {/* Client Workspace */}
+      <Route path="/broker/client/:clientId" element={<ClientWorkspaceWrapper />}>
         <Route index element={<Navigate to="dashboard" replace />} />
         <Route path="dashboard" element={<WorkspaceDashboard />} />
         <Route path="datahub-dashboard" element={<WorkspaceDashboardDatahub />} />
-        <Route path="invoices" element={<WorkspaceInvoices />} />
-        <Route path="reports" element={<WorkspaceReports />} />
-        <Route path="reconciliation" element={<WorkspaceReconciliation />} />
-        <Route path="connections" element={<WorkspaceConnections />} />
-        <Route path="ebitda" element={<WorkspaceEbitda />} />
-        <Route path="dataroom" element={<Navigate to="requests" replace />} />
-        <Route path="dataroom/requests" element={<WorkspaceRequests />} />
-        <Route path="dataroom/documents" element={<WorkspaceDocuments />} />
-        <Route path="dataroom/reminders" element={<WorkspaceReminders />} />
-        <Route path="dataroom/activity" element={<WorkspaceActivity />} />
-        <Route path="dataroom/users" element={<WorkspaceUsers />} />
-        <Route
-          path="requests"
-          element={<Navigate to="../dataroom/requests" replace />}
-        />
-        <Route
-          path="documents"
-          element={<Navigate to="../dataroom/documents" replace />}
-        />
-        <Route
-          path="reminders"
-          element={<Navigate to="../dataroom/reminders" replace />}
-        />
-        <Route
-          path="activity"
-          element={<Navigate to="../dataroom/activity" replace />}
-        />
-        <Route
-          path="users"
-          element={<Navigate to="../dataroom/users" replace />}
-        />
       </Route>
 
-      {/* Client portal pages */}
+      {/* Client */}
       <Route
         path="/client/dashboard"
         element={
@@ -287,31 +241,8 @@ function AppRoutes() {
           </ProtectedRoute>
         }
       />
-      <Route
-        path="/client/requests"
-        element={
-          <ProtectedRoute allowedRole="client">
-            <ClientRequests />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/client/upload"
-        element={
-          <ProtectedRoute allowedRole="client">
-            <ClientUpload />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/client/reminders"
-        element={
-          <ProtectedRoute allowedRole="client">
-            <ClientReminders />
-          </ProtectedRoute>
-        }
-      />
 
+      {/* ✅ FIXED HERE */}
       <Route
         path="/support"
         element={
@@ -321,7 +252,16 @@ function AppRoutes() {
         }
       />
 
-      <Route path="/" element={<Navigate to="/login" replace />} />
+      {/* User */}
+      <Route
+        path="/user/portal-dashboard"
+        element={
+          <ProtectedRoute allowedRole="user">
+            <UserPortalDashboard />
+          </ProtectedRoute>
+        }
+      />
+
       <Route path="*" element={<Navigate to="/login" replace />} />
     </Routes>
   );

@@ -458,6 +458,24 @@ router.get("/api/auth/status", async (req, res) => {
 
   const workspaceCompanyName = await getWorkspaceCompanyName(clientId);
   const quickbooksCompanyName = qb.companyName || null;
+  const isNameMismatch =
+    workspaceCompanyName &&
+    quickbooksCompanyName &&
+    normalizeCompanyName(workspaceCompanyName) !==
+      normalizeCompanyName(quickbooksCompanyName);
+
+  if (isNameMismatch) {
+    disconnectConfig(clientId);
+    return res.json({
+      success: true,
+      isConnected: false,
+      isNameMismatch: true,
+      message: `Company mismatch: selected workspace "${workspaceCompanyName}" does not match QuickBooks company "${quickbooksCompanyName}".`,
+      workspaceCompanyName,
+      quickbooksCompanyName,
+      syncedEntities: [],
+    });
+  }
 
   return res.json({
     success: true,

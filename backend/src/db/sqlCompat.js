@@ -43,7 +43,6 @@ function normalizeCommonSql(sql, target) {
   }
 
   normalized = replacePgParamsWithQuestionMarks(normalized);
-  normalized = normalized.replace(/CURRENT_TIMESTAMP/gi, "datetime('now')");
   return normalized;
 }
 

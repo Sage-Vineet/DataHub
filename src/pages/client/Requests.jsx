@@ -23,7 +23,7 @@ import {
   createCompanyRequestItem,
   createCompanyFolder,
   createFolderDocument,
-  listCompanyFolders,
+  listFolderTree,
   listCompanyRequests,
   listRequestDocuments,
   uploadFile,
@@ -31,21 +31,22 @@ import {
   updateRequestNarrative,
 } from '../../lib/api';
 import NewRequestModal from '../../components/NewRequestModal';
+import { buildFolderMapFromTree, buildFolderOptionsFromTree } from '../../lib/folderOptions';
 
 const CATEGORY_META = {
-  Finance: { icon: TrendingUp, color: '#00648F', bg: '#A7DCF7' },
-  Legal: { icon: Scale, color: '#742982', bg: '#EBD5F0' },
+  Finance: { icon: TrendingUp, color: '#476E2C', bg: '#E6F3D3' },
+  Legal: { icon: Scale, color: '#8BC53D', bg: '#E6F3D3' },
   Compliance: { icon: ShieldCheck, color: '#8BC53D', bg: '#E6F3D3' },
-  HR: { icon: ShieldCheck, color: '#F68C1F', bg: '#FDE7D2' },
-  Tax: { icon: TrendingUp, color: '#476E2C', bg: '#E6F3D3' },
-  'M&A': { icon: Scale, color: '#05164D', bg: '#E8ECF7' },
+  HR: { icon: ShieldCheck, color: '#476E2C', bg: '#C9E4A4' },
+  Tax: { icon: TrendingUp, color: '#8BC53D', bg: '#E6F3D3' },
+  'M&A': { icon: Scale, color: '#476E2C', bg: '#C9E4A4' },
   Other: { icon: ShieldCheck, color: '#6D6E71', bg: '#F3F4F6' },
 };
 
 const STATUS_META = {
-  pending: { label: 'Pending', bg: '#F3F4F6', color: '#6D6E71', icon: Clock },
-  'in-review': { label: 'In Review', bg: '#DBEAFE', color: '#2563EB', icon: Loader2 },
-  completed: { label: 'Completed', bg: '#DCFCE7', color: '#166534', icon: CheckCircle2 },
+  pending: { label: 'Pending', bg: '#FEF3C7', color: '#A86F0B', icon: Clock },
+  'in-review': { label: 'In Review', bg: '#E6F3D3', color: '#8BC53D', icon: Loader2 },
+  completed: { label: 'Completed', bg: '#C9E4A4', color: '#476E2C', icon: CheckCircle2 },
   overdue: { label: 'Overdue', bg: '#FEE2E2', color: '#B91C1C', icon: XCircle },
   blocked: { label: 'Blocked', bg: '#FEE2E2', color: '#991B1B', icon: AlertTriangle },
 };
@@ -246,7 +247,7 @@ function RequestRow({ item, onView }) {
       <td className="px-4 py-3 text-center">
         <button
           onClick={() => onView(item)}
-          className="px-3 py-1.5 rounded-lg bg-[#05164D] text-white text-xs font-semibold hover:bg-[#0b2a79] transition-colors"
+          className="px-3 py-1.5 rounded-lg bg-[#8BC53D] text-white text-xs font-semibold hover:bg-[#476E2C] transition-colors"
         >
           View
         </button>
@@ -540,7 +541,7 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onUp
                           });
                           if (ok) onBack();
                         }}
-                        className="px-3 py-1.5 rounded-lg bg-[#05164D] text-white text-xs font-semibold hover:bg-[#0b2a79] transition-colors"
+                        className="px-3 py-1.5 rounded-lg bg-[#8BC53D] text-white text-xs font-semibold hover:bg-[#476E2C] transition-colors"
                       >
                         Save
                       </button>
@@ -611,18 +612,10 @@ export default function ClientRequests() {
     if (!companyId) return;
     loadRequests();
     setFoldersLoading(true);
-    listCompanyFolders(companyId)
-      .then((folders) => {
-        const map = {};
-        const options = [];
-        folders.forEach((f) => {
-          if (f?.name) {
-            map[f.name.toLowerCase()] = f.id;
-            options.push({ id: f.id, name: f.name });
-          }
-        });
-        setFolderMap(map);
-        setFolderOptions(options);
+    listFolderTree(companyId)
+      .then((tree) => {
+        setFolderMap(buildFolderMapFromTree(tree));
+        setFolderOptions(buildFolderOptionsFromTree(tree));
       })
       .catch(() => {
         setFolderMap({});

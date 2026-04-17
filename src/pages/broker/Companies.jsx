@@ -8,10 +8,11 @@ import { useNavigate } from 'react-router-dom';
 import { useClientStore } from '../../store/clientStore';
 import StatusBadge from '../../components/common/StatusBadge';
 import Modal from '../../components/common/Modal';
-import { createCompanyRequest, listCompaniesRequest, updateCompanyRequest } from '../../lib/api';
+import { createCompanyFolder, createCompanyRequest, listCompaniesRequest, listFolderTree, updateCompanyRequest } from '../../lib/api';
 
 const PAGE_SIZE = 10;
 const EMPTY_FORM = { name: '', contact: '', email: '', phone: '', industry: '' };
+const DEFAULT_COMPANY_FOLDERS = ['Finance', 'Legal', 'Compliance', 'HR', 'Tax', 'M&A'];
 
 function getInitials(name = '') {
   return name
@@ -39,6 +40,32 @@ function formatCompany(company) {
     pendingCount: company.pending_request_count || 0,
     completedCount: company.completed_request_count || 0,
   };
+}
+
+async function ensureDefaultCompanyFolders(companyId) {
+  if (!companyId) return;
+
+  const existingTree = await listFolderTree(companyId).catch(() => []);
+  const existingNames = new Set(
+    (existingTree || [])
+      .map((folder) => folder?.name?.trim().toLowerCase())
+      .filter(Boolean)
+  );
+
+  const missingFolders = DEFAULT_COMPANY_FOLDERS.filter(
+    (name) => !existingNames.has(name.toLowerCase())
+  );
+
+  if (!missingFolders.length) return;
+
+  const results = await Promise.allSettled(
+    missingFolders.map((name) => createCompanyFolder(companyId, { name }))
+  );
+
+  const failed = results.filter((result) => result.status === 'rejected');
+  if (failed.length) {
+    throw new Error('Company was created, but some default folders could not be created.');
+  }
 }
 
 export default function Companies() {
@@ -222,6 +249,7 @@ export default function Companies() {
       } else {
         const created = await createCompanyRequest(payload);
         if (created?.id) {
+          await ensureDefaultCompanyFolders(created.id);
           setCompanies((current) => [formatCompany(created), ...current].filter(Boolean));
           setPage(1);
         }

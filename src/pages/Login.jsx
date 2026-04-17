@@ -9,15 +9,22 @@ const demoCredentials = [
     role: "Broker",
     email: "broker@leo.com",
     password: "broker123",
-    color: "#8BC53D",
-    bg: "#C9E4A4",
+    color: "#FFFFFF",
+    bg: "#8BC53D",
   },
   {
     role: "Client",
-    email: "shivrajechaudhari4@gmail.com",
+    email: "toyota.info@yopmail.com",
     password: "123456",
-    color: "#00648F",
-    bg: "#A7DCF7",
+    color: "#FFFFFF",
+    bg: "#8BC53D",
+  },
+  {
+    role: "User",
+    email: "yamada.taro@yopmail.com",
+    password: "123456",
+    color: "#FFFFFF",
+    bg: "#8BC53D",
   },
 ];
 
@@ -58,7 +65,7 @@ export default function Login() {
             <img
               src={datahublogo}
               alt="DataHub"
-              className="h-16 w-full object-contain"
+              className="h-16 w-auto object-contain"
             />
 
             <p className="mt-1 text-sm text-secondary">
@@ -76,7 +83,7 @@ export default function Login() {
               </p>
             </div>
 
-            <div className="mb-6 grid grid-cols-2 gap-2">
+            <div className="mb-6 grid grid-cols-3 gap-1">
               {demoCredentials.map((cred) => (
                 <button
                   key={cred.role}

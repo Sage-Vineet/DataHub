@@ -28,13 +28,14 @@ import {
   createCompanyRequestItem,
   createRequestReminder,
   getCompanyRequest,
-  listCompanyFolders,
+  listFolderTree,
   listCompanyRequests,
   listRequestDocuments,
   updateRequest,
   updateRequestNarrative,
 } from '../../../lib/api';
 import NewRequestModal from '../../../components/NewRequestModal';
+import { buildFolderOptionsFromTree } from '../../../lib/folderOptions';
 
 const CATEGORY_META = {
   Finance: { icon: TrendingUp, color: '#00648F', bg: '#A7DCF7' },
@@ -764,13 +765,9 @@ export default function WorkspaceRequests() {
     if (!clientId) return;
     loadRequests();
     setFoldersLoading(true);
-    listCompanyFolders(clientId)
-      .then((folders) => {
-        const topLevel = folders.filter((f) => !f.parent_id);
-        const options = (topLevel.length ? topLevel : folders)
-          .map((f) => ({ id: f.id, name: f.name }))
-          .filter((f) => f.name);
-        setFolderOptions(options);
+    listFolderTree(clientId)
+      .then((tree) => {
+        setFolderOptions(buildFolderOptionsFromTree(tree));
       })
       .catch(() => setFolderOptions([]))
       .finally(() => setFoldersLoading(false));
@@ -1137,51 +1134,3 @@ export default function WorkspaceRequests() {
     </div>
   );
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

@@ -4,7 +4,8 @@ import { requests as initRequests, companies, priorityOptions } from '../../data
 import StatusBadge from '../../components/common/StatusBadge';
 import Modal from '../../components/common/Modal';
 import NewRequestModal from '../../components/NewRequestModal';
-import { listCompanyFolders } from '../../lib/api';
+import { listFolderTree } from '../../lib/api';
+import { buildFolderOptionsFromTree } from '../../lib/folderOptions';
 
 const STATUS_FILTERS = ['all', 'pending', 'received', 'under-review', 'approved', 'rejected'];
 
@@ -33,13 +34,9 @@ export default function BrokerRequests() {
     }
 
     setFoldersLoading(true);
-    listCompanyFolders(selectedCompanyId)
-      .then((folders) => {
-        const topLevel = folders.filter((folder) => !folder.parent_id);
-        const options = (topLevel.length ? topLevel : folders)
-          .map((folder) => ({ id: folder.id, name: folder.name }))
-          .filter((folder) => folder.name);
-        setFolderOptions(options);
+    listFolderTree(selectedCompanyId)
+      .then((tree) => {
+        setFolderOptions(buildFolderOptionsFromTree(tree));
       })
       .catch(() => setFolderOptions([]))
       .finally(() => setFoldersLoading(false));
@@ -74,7 +71,6 @@ export default function BrokerRequests() {
     setRequests(r => [newReq, ...r]);
     setShowCreate(false);
   };
-
   const statusCounts = {
     all: requests.length,
     pending: requests.filter(r => r.status === 'pending').length,

@@ -112,6 +112,13 @@ function countFiles(node) {
   return files;
 }
 
+function collectFolderIds(node, ids = []) {
+  if (!node) return ids;
+  if (node.type === 'folder' && node.id !== 'root') ids.push(node.id);
+  (node.children || []).forEach((child) => collectFolderIds(child, ids));
+  return ids;
+}
+
 // ── FolderTreeNode ───────────────────────────────────────────────────────────
 function FolderTreeNode({ node, depth = 0, canAccessFolder, requestCountsByFolderName }) {
   const {
@@ -1672,6 +1679,31 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
     if (!currentUserId) return;
     setCreatedBy(currentUserId);
   }, [currentUserId, setCreatedBy]);
+
+  useEffect(() => {
+    if (role === 'broker' || !companyId) return;
+
+    const folderIds = collectFolderIds(tree);
+    if (!folderIds.length) return;
+
+    let cancelled = false;
+
+    Promise.all(folderIds.map(async (folderId) => {
+      const entries = await loadFolderAccessFromApi(folderId);
+      return [folderId, entries];
+    }))
+      .then((results) => {
+        if (cancelled) return;
+        results.forEach(([folderId, entries]) => {
+          setFolderAccess(folderId, entries);
+        });
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, [companyId, role, tree, loadFolderAccessFromApi, setFolderAccess]);
 
   const currentFolderId = currentPath[currentPath.length - 1];
   const currentFolder = findById(tree, currentFolderId) || tree;

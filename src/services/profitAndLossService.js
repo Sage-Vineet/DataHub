@@ -236,4 +236,3 @@ export async function getProfitAndLossDetail(
     rawPayload: payload,
   };
 }
-

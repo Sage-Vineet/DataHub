@@ -5,9 +5,14 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const pool = require("../../../db");
-const Anthropic = require("@anthropic-ai/sdk");
+let Anthropic = null;
+try {
+  Anthropic = require("@anthropic-ai/sdk");
+} catch (error) {
+  console.warn("Anthropic SDK not installed; bank statement parsing will use local fallback.");
+}
 const anthropicApiKey = (process.env.ANTHROPIC_API_KEY || "").trim();
-const client = anthropicApiKey
+const client = Anthropic && anthropicApiKey
   ? new Anthropic({ apiKey: anthropicApiKey })
   : null;
 const ANTHROPIC_MODEL =

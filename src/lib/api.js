@@ -34,6 +34,20 @@ function resolveClientIdFromLocation() {
   const match = hashMatch || pathMatch;
 
   return match ? decodeURIComponent(match[1]) : null;
+  const candidates = [
+    (window.location.hash || '').replace(/^#/, ''),
+    window.location.pathname || '',
+  ];
+
+  for (const candidate of candidates) {
+    if (!candidate.startsWith('/client/')) continue;
+    const match = candidate.match(/^\/client\/([^/?#]+)/);
+    if (match) {
+      return decodeURIComponent(match[1]);
+    }
+  }
+
+  return null;
 }
 
 export function getStoredToken() {
@@ -156,6 +170,18 @@ export function deleteUserRequest(userId) {
 
 export function listCompanyRequests(companyId) {
   return request(`/companies/${companyId}/requests`).then(ensureArray);
+}
+
+export function listMessageThreadsRequest() {
+  return request("/messages/threads").then(ensureArray);
+}
+
+export function getCompanyMessagesRequest(companyId) {
+  return request(`/companies/${companyId}/messages`);
+}
+
+export function createCompanyMessageRequest(companyId, payload) {
+  return request(`/companies/${companyId}/messages`, { method: "POST", body: payload }).then(unwrapPayload);
 }
 
 export function createCompanyRequestItem(companyId, payload) {
