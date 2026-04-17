@@ -64,7 +64,7 @@ function getPNLComparativePeriods(endDateString) {
   // We'll target 2022, 2023, 2024 as full years,
   // 2025 as YTD (assuming current year is 2025)
   // But let's make it relative to the endDate.
-  
+
   const currentYear = year;
   const periods = [
     {
@@ -176,7 +176,7 @@ function mergePNLPeriods(periodResults, periods) {
 export async function getProfitAndLoss(startDate, endDate, accountingMethod) {
   // If we are looking for a simple summary (single period), we can still support it,
   // but the ProfitAndLossSummary component now expects a comparative structure.
-  
+
   const periods = getPNLComparativePeriods(endDate);
 
   const results = await Promise.all(

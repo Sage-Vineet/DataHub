@@ -26,29 +26,29 @@ function calculateChange(current, previous) {
 }
 
 const generateDefaultColumns = (baseDate) => {
-    const date = baseDate ? new Date(baseDate) : new Date();
-    const resolvedDate = isNaN(date.getTime()) ? new Date() : date;
-    
-    const year = resolvedDate.getFullYear();
-    const month = resolvedDate.toLocaleString('default', { month: 'short' }).toUpperCase();
-    
-    return {
-      yearCols: [
-        { key: "y1", label: `${month}-${String(year - 4).slice(-2)}` },
-        { key: "y2", label: `${month}-${String(year - 3).slice(-2)}` },
-        { key: "y3", label: `${month}-${String(year - 2).slice(-2)}` },
-        { key: "y4", label: `${month}-${String(year - 1).slice(-2)}` },
-        { key: "y5", label: `${month}-${String(year).slice(-2)}`, isCurrent: true },
-      ],
-      changeCols: [
-        { key: "c1", label: `'${String(year - 3).slice(-2)} CHANGE`, from: "y1", to: "y2" },
-        { key: "c2", label: `'${String(year - 2).slice(-2)} CHANGE`, from: "y2", to: "y3" },
-        { key: "c3", label: `'${String(year - 1).slice(-2)} CHANGE`, from: "y3", to: "y4" },
-        { key: "c4", label: `'${String(year).slice(-2)} YTD CHANGE`, from: "y4", to: "y5" },
-      ],
-      currentMonth: `${month}-${String(year).slice(-2)}`
-    };
+  const date = baseDate ? new Date(baseDate) : new Date();
+  const resolvedDate = isNaN(date.getTime()) ? new Date() : date;
+
+  const year = resolvedDate.getFullYear();
+  const month = resolvedDate.toLocaleString('default', { month: 'short' }).toUpperCase();
+
+  return {
+    yearCols: [
+      { key: "y1", label: `${month}-${String(year - 4).slice(-2)}` },
+      { key: "y2", label: `${month}-${String(year - 3).slice(-2)}` },
+      { key: "y3", label: `${month}-${String(year - 2).slice(-2)}` },
+      { key: "y4", label: `${month}-${String(year - 1).slice(-2)}` },
+      { key: "y5", label: `${month}-${String(year).slice(-2)}`, isCurrent: true },
+    ],
+    changeCols: [
+      { key: "c1", label: `'${String(year - 3).slice(-2)} CHANGE`, from: "y1", to: "y2" },
+      { key: "c2", label: `'${String(year - 2).slice(-2)} CHANGE`, from: "y2", to: "y3" },
+      { key: "c3", label: `'${String(year - 1).slice(-2)} CHANGE`, from: "y3", to: "y4" },
+      { key: "c4", label: `'${String(year).slice(-2)} YTD CHANGE`, from: "y4", to: "y5" },
+    ],
+    currentMonth: `${month}-${String(year).slice(-2)}`
   };
+};
 
 function flattenRows(items, depth = 0) {
   const result = [];
@@ -81,6 +81,13 @@ function BSRow({ row, isCollapsed, onToggle, columns }) {
   const { name, amounts, depth, hasChildren, isTotal, isHeader } = row;
   const { yearCols, changeCols } = columns;
 
+  const nameLower = (name || "").toLowerCase();
+  const isBold = [
+    "total current assets", "total fixed assets", "total assets",
+    "total current liabilities", "total long term liabilities", "total liabilities",
+    "total equity", "total liabilities and equity", "assets", "liabilities and equity"
+  ].includes(nameLower);
+
   return (
     <tr
       onClick={hasChildren ? () => onToggle(row.id) : undefined}
@@ -88,7 +95,7 @@ function BSRow({ row, isCollapsed, onToggle, columns }) {
         "group transition-colors border-b border-border-light",
         hasChildren && "cursor-pointer hover:bg-bg-page/50",
         !hasChildren && "hover:bg-bg-page/30",
-        isTotal && "bg-bg-page/60 font-semibold border-b-2 border-text-primary table-row-total",
+        (isTotal || isBold) && "bg-bg-page/60 font-semibold border-b-2 border-text-primary table-row-total",
         isHeader && depth === 0 && "bg-bg-page/30 border-t border-border"
       )}
     >
@@ -100,7 +107,7 @@ function BSRow({ row, isCollapsed, onToggle, columns }) {
               <div key={index} className="w-6 h-5 border-r border-border-light mr-[-1px]" />
             ))}
           </div>
-          
+
           <div className="flex items-center gap-1">
             <div className="w-5 flex items-center justify-center shrink-0">
               {hasChildren ? (
@@ -156,7 +163,7 @@ export default function BalanceSheetSummary({
   entityName = "Dataroom",
 }) {
   const [collapsedSections, setCollapsedSections] = useState(new Set());
-  
+
   const columns = useMemo(() => {
     if (propColumns && propColumns.yearCols) return propColumns;
     return generateDefaultColumns(endDate);
@@ -183,7 +190,7 @@ export default function BalanceSheetSummary({
           break;
         }
       }
-      
+
       if (parent && (collapsedSections.has(parent.id) || hidden.has(parent.id))) {
         hidden.add(row.id);
       }
@@ -191,10 +198,19 @@ export default function BalanceSheetSummary({
     return flatData.filter(r => !hidden.has(r.id));
   }, [flatData, collapsedSections]);
 
+  if (!data || data.length === 0) {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center p-20 bg-bg-page/50 min-h-[500px]">
+        <div className="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin mb-4" />
+        <p className="text-text-muted font-medium italic">Preparing Balance Sheet...</p>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex-1 overflow-y-auto bg-bg-page/50 p-10 lg:p-16 font-inter">
+    <div className="flex-1 overflow-y-auto bg-bg-page/50 p-10 lg:p-16 animate-in fade-in duration-700 font-inter">
       <div className="max-w-[1400px] mx-auto card-base p-10 min-h-[1000px] flex flex-col rounded-sm">
-        
+
         {/* Header Section Matches P&L Style */}
         <div className="flex flex-col items-center mb-12 relative">
           <div className="w-12 h-1 bg-primary rounded-full mb-6" />
@@ -222,14 +238,17 @@ export default function BalanceSheetSummary({
                     {col.label}
                   </th>
                 ))}
-                {columns.changeCols.map((col) => (
-                  <th key={col.key} className="pb-3 pt-2 px-3 text-right text-[12px] font-medium text-text-muted">
+                {columns.changeCols && columns.changeCols.length > 0 && columns.changeCols.map((col) => (
+                  <th key={col.key} className="pb-3 pt-2 px-3 text-right text-[12px] font-medium text-text-muted whitespace-nowrap">
                     {col.label}
                   </th>
                 ))}
-                <th className="pb-3 pt-2 px-4 text-right text-[12px] font-bold text-primary">
-                  MONTHLY Δ
-                </th>
+                {columns.changeCols && columns.changeCols.length > 0 && (
+                  <th className="pb-3 pt-2 px-4 text-right text-[12px] font-bold text-primary flex flex-col items-end">
+                    <span className="text-[10px] uppercase font-medium text-text-muted leading-none mb-0.5">Monthly Change</span>
+                    <span className="leading-none">{columns.currentMonth}</span>
+                  </th>
+                )}
               </tr>
             </thead>
             <tbody className="">

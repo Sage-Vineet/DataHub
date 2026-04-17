@@ -42,7 +42,7 @@ function getComparativePeriods(numYears = 5, baseDateString, startDateString) {
       date = new Date(parseInt(y, 10), parseInt(m, 10) - 1, parseInt(d, 10));
     }
   }
-  
+
   const currentYear = date.getFullYear();
   const currentMonth = date.getMonth();
   const periods = [];
@@ -106,9 +106,18 @@ async function fetchSinglePeriodBS(startDate, endDate, accountingMethod) {
 
 function normalizeName(name) {
   if (!name) return "";
-  return String(name)
-    .toLowerCase()
+  let norm = String(name).toLowerCase();
+  
+  // Handle colon-delimited names (Account: Subaccount)
+  if (norm.includes(":")) {
+    const parts = norm.split(":");
+    norm = parts[parts.length - 1];
+  }
+
+  return norm
     .replace(/^total\s+/i, "") // Remove leading "Total "
+    .replace(/^account:\s*/i, "") // Remove "Account: "
+    .replace(/\s*\(\d+\)$/, "") // Remove trailing account numbers like (1001)
     .replace(/[^a-z0-9]+/g, " ") // Replace non-alphanumeric with spaces
     .replace(/\s+/g, " ") // Collapse multiple spaces
     .trim();
@@ -118,7 +127,7 @@ function mergePeriods(periodResults, periods) {
   // Use y5 (Current Year) as the base structure
   const masterIndex = periods.findIndex(p => p.key === "y5");
   const masterRows = periodResults[masterIndex] || [];
-  
+
   if (masterRows.length === 0) return [];
 
   // Create lookup maps for all periods for fast retrieval
@@ -158,7 +167,126 @@ function mergePeriods(periodResults, periods) {
     };
   };
 
-  return masterRows.map(enrich);
+function restructureGAAPTree(tree) {
+  function extractAllNodes(nodes, nameTargets, collected = []) {
+    if (!nodes) return collected;
+    for (let i = nodes.length - 1; i >= 0; i--) {
+        const norm = normalizeName(nodes[i].name);
+        if (nameTargets.includes(norm)) {
+            collected.push(nodes.splice(i, 1)[0]);
+        } else if (nodes[i].children) {
+            extractAllNodes(nodes[i].children, nameTargets, collected);
+        }
+    }
+    return collected;
+  }
+
+  function findSection(nodes, nameTargets) {
+    if (!nodes) return null;
+    for (let i = 0; i < nodes.length; i++) {
+      const norm = normalizeName(nodes[i].name);
+      if (nameTargets.includes(norm)) {
+        return nodes[i];
+      }
+      if (nodes[i].children) {
+        const found = findSection(nodes[i].children, nameTargets);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+
+  const moves = [
+    { target: ["accounts receivable", "accounts receivable a r", "account receivable", "a r", "account receviable", "accounts receviable"], dest: ["current assets", "total current assets"], parentFallback: ["assets", "total assets"] },
+    { target: ["bank accounts", "bank account", "total cash", "cash"], dest: ["current assets", "total current assets"], parentFallback: ["assets", "total assets"] },
+    { target: ["other current assets", "other current asset"], dest: ["current assets", "total current assets"], parentFallback: ["assets", "total assets"] },
+    { target: ["fixed assets", "fixed asset"], dest: ["assets", "total assets"] },
+    { target: ["accounts payable", "accounts payable a p", "account payable", "a p"], dest: ["current liabilities", "total current liabilities"], parentFallback: ["liabilities", "total liabilities", "liabilities and equity"] },
+    { target: ["credit cards", "credit card"], dest: ["current liabilities", "total current liabilities"], parentFallback: ["liabilities", "total liabilities", "liabilities and equity"] },
+    { target: ["other current liabilities", "other current liability"], dest: ["current liabilities", "total current liabilities"], parentFallback: ["liabilities", "total liabilities", "liabilities and equity"] },
+    { target: ["long term liabilities", "long term liability"], dest: ["liabilities", "total liabilities", "liabilities and equity"] },
+    { target: ["equity", "total equity"], dest: ["liabilities and equity", "total liabilities and equity"] }
+  ];
+
+  let structureChanged = false;
+
+  for (const move of moves) {
+    const extracted = extractAllNodes(tree, move.target);
+    // Reverse extracted array to preserve original relative ordering when unshifting
+    extracted.reverse();
+    for (const nodeToMove of extracted) {
+      let destNode = findSection(tree, move.dest);
+      if (destNode && destNode.children) {
+        destNode.children.unshift(nodeToMove);
+        structureChanged = true;
+      } else {
+        let parentNode = findSection(tree, move.parentFallback);
+        if (parentNode && parentNode.children) {
+          // Create the missing destination section
+          const newSectionName = move.dest[0].split(" ").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+          const newDestNode = {
+            id: "created-section-" + move.dest[0].replace(/\s+/g, '-'),
+            name: newSectionName,
+            type: "header",
+            children: [
+              nodeToMove,
+              {
+                id: "total-created-" + move.dest[0].replace(/\s+/g, '-'),
+                name: "Total " + newSectionName,
+                type: "total",
+                amounts: {}
+              }
+            ],
+            amounts: {}
+          };
+          parentNode.children.unshift(newDestNode);
+          structureChanged = true;
+        } else {
+          tree.unshift(nodeToMove); 
+          structureChanged = true;
+        }
+      }
+    }
+  }
+
+  if (!structureChanged) return tree;
+
+  function recompute(node) {
+    if (!node.children || node.children.length === 0) return;
+
+    node.children.forEach(child => {
+      if (child.type === 'header' || child.children) {
+        recompute(child);
+      }
+    });
+
+    const totalNode = node.children.find(c => c.type === 'total');
+    
+    const newAmounts = {};
+    node.children.forEach(child => {
+      if (child.type !== 'total') {
+        Object.entries(child.amounts || {}).forEach(([key, val]) => {
+          newAmounts[key] = (newAmounts[key] || 0) + val;
+        });
+      }
+    });
+
+    if (newAmounts.y5 !== undefined && newAmounts.pm !== undefined) {
+      newAmounts.monthlyChange = (newAmounts.y5 || 0) - (newAmounts.pm || 0);
+    }
+
+    node.amounts = { ...node.amounts, ...newAmounts };
+    if (totalNode) {
+      totalNode.amounts = { ...totalNode.amounts, ...newAmounts };
+    }
+  }
+
+  tree.forEach(recompute);
+  return tree;
+}
+
+  const enrichedRows = masterRows.map(enrich);
+  return restructureGAAPTree(enrichedRows);
 }
 
 // ─── Exported Services ──────────────────────────────────────────────────────
