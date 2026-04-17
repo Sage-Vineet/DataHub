@@ -50,7 +50,7 @@ const PNLRow = ({ line, depth = 0, columns }) => {
   const amounts = line.amounts || {};
   const yearCols = columns?.yearCols || [];
   const ytdComp = columns?.ytdComparison || {};
-  
+
   // Dynamic column mapping based on service response
   const yearValues = yearCols.map(col => amounts[col.key] || 0);
   const currentYTD = amounts[ytdComp.currentKey] || 0;
@@ -59,7 +59,7 @@ const PNLRow = ({ line, depth = 0, columns }) => {
   // Variances
   const v23Var = calculateChange(yearValues[1], yearValues[0]);
   const v23Pct = calculatePctChange(yearValues[1], yearValues[0]);
-  
+
   const v24Var = calculateChange(yearValues[2], yearValues[1]);
   const v24Pct = calculatePctChange(yearValues[2], yearValues[1]);
 
@@ -91,7 +91,7 @@ const PNLRow = ({ line, depth = 0, columns }) => {
                 <div key={index} className="w-6 h-5 border-r border-border-light mr-[-1px]" />
               ))}
             </div>
-            
+
             <div className="flex items-center gap-1">
               <div className="w-5 flex items-center justify-center shrink-0">
                 {hasChildren ? (
@@ -128,7 +128,7 @@ const PNLRow = ({ line, depth = 0, columns }) => {
         {/* Variances */}
         <td className="py-2.5 px-3 text-right tabular-nums text-[14px] text-text-muted">{formatIndianCurrency(v23Var)}</td>
         <td className="py-2.5 px-3 text-right tabular-nums text-[13px] text-text-muted border-r border-border-light">{formatPercentage(v23Pct)}</td>
-        
+
         <td className="py-2.5 px-3 text-right tabular-nums text-[14px] text-text-muted">{formatIndianCurrency(v24Var)}</td>
         <td className="py-2.5 px-3 text-right tabular-nums text-[13px] text-text-muted border-r border-border-light">{formatPercentage(v24Pct)}</td>
 
@@ -178,7 +178,7 @@ export default function ProfitAndLossSummary({
   return (
     <div className="flex-1 overflow-y-auto bg-bg-page/50 p-10 lg:p-16 font-inter">
       <div className="max-w-[1500px] mx-auto card-base p-10 min-h-[1000px] flex flex-col rounded-sm shadow-xl">
-        
+
         {/* Header Section */}
         <div className="flex flex-col items-center mb-12 relative">
           <div className="w-12 h-1 bg-primary rounded-full mb-6" />
@@ -202,14 +202,14 @@ export default function ProfitAndLossSummary({
                 </th>
                 <th colSpan={yearCols.length + 1} className="pb-1 text-center text-[10px] font-bold text-text-muted/60 uppercase border-b border-border-light">Actuals</th>
                 {yearCols.length > 1 && (
-                   <th colSpan={2} className="pb-1 text-center text-[10px] font-bold text-text-muted/60 uppercase border-b border-border-light border-l border-border-light">
-                      {yearCols[1]?.label?.slice(-2)} Var
-                   </th>
+                  <th colSpan={2} className="pb-1 text-center text-[10px] font-bold text-text-muted/60 uppercase border-b border-border-light border-l border-border-light">
+                    {yearCols[1]?.label?.slice(-2)} Var
+                  </th>
                 )}
                 {yearCols.length > 2 && (
-                   <th colSpan={2} className="pb-1 text-center text-[10px] font-bold text-text-muted/60 uppercase border-b border-border-light border-l border-border-light">
-                      {yearCols[2]?.label?.slice(-2)} Var
-                   </th>
+                  <th colSpan={2} className="pb-1 text-center text-[10px] font-bold text-text-muted/60 uppercase border-b border-border-light border-l border-border-light">
+                    {yearCols[2]?.label?.slice(-2)} Var
+                  </th>
                 )}
                 <th colSpan={3} className="pb-1 text-right text-[10px] font-bold text-primary uppercase border-b border-border-light border-l border-border-light">YTD Analysis</th>
               </tr>
@@ -247,9 +247,9 @@ export default function ProfitAndLossSummary({
               ))}
               {rows.length === 0 && (
                 <tr>
-                   <td colSpan={12} className="py-20 text-center text-text-muted italic">
-                      No matching records found for the selected criteria.
-                   </td>
+                  <td colSpan={12} className="py-20 text-center text-text-muted italic">
+                    No matching records found for the selected criteria.
+                  </td>
                 </tr>
               )}
             </tbody>
