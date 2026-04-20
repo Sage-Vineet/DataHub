@@ -504,6 +504,7 @@ export const useFileExplorerStore = create(
               status: 'under-review',
               uploaded_by: get().createdBy || null,
             });
+            const destinationFolderId = createdDoc.folder_id || parentId;
             const fileNode = {
               id: createdDoc.id,
               name: createdDoc.name,
@@ -515,7 +516,20 @@ export const useFileExplorerStore = create(
               ext: createdDoc.ext || fileItem.ext,
               fileUrl: createdDoc.file_url || uploaded.fileUrl,
             };
-            set(s => ({ tree: insertChild(s.tree, parentId, fileNode) }));
+            set((s) => {
+              let nextTree = s.tree;
+              if (destinationFolderId !== 'root' && !findById(nextTree, destinationFolderId)) {
+                nextTree = insertChild(nextTree, 'root', {
+                  id: destinationFolderId,
+                  name: createdDoc.folder_name || 'General Uploads',
+                  type: 'folder',
+                  createdAt: createdDoc.uploaded_at ? createdDoc.uploaded_at.slice(0, 10) : new Date().toISOString().split('T')[0],
+                  color: '#6D6E71',
+                  children: [],
+                });
+              }
+              return { tree: insertChild(nextTree, destinationFolderId, fileNode) };
+            });
           } catch (err) {
             failedUploads.push({ name: fileItem.name, error: err?.message || 'Unknown error' });
             console.error('File upload failed:', fileItem.name, err);

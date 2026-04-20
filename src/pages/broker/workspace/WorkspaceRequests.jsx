@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import {
   attachRequestDocument,
+  approveRequest,
   createCompanyBulkRequestItems,
   createCompanyRequestItem,
   createRequestReminder,
@@ -206,8 +207,18 @@ function getDisplayStatus(workflowStatus, dueDate) {
 }
 
 function normalizePriority(priority) {
-  if (priority === 'critical' || priority === 'high' || priority === 'medium' || priority === 'low') return priority;
-  return 'medium';
+  const normalized = `${priority ?? ''}`.trim();
+  return normalized || 'medium';
+}
+
+function getPriorityMeta(priority) {
+  const normalized = `${priority ?? ''}`.trim().toLowerCase();
+  if (PRIORITY_META[normalized]) return PRIORITY_META[normalized];
+  return {
+    label: `${priority || 'Custom'}`,
+    bg: '#DBEAFE',
+    color: '#1D4ED8',
+  };
 }
 
 function normalizeType(item) {
@@ -261,10 +272,17 @@ function mapApiRequestToUi(request) {
     updatedAt: request.updated_at ? request.updated_at.slice(0, 10) : (request.created_at ? request.created_at.slice(0, 10) : formatToday()),
     assignedTo: request.assigned_to || 'Unassigned',
     visible: request.visible !== false,
+    approvalStatus: request.approval_status || 'approved',
+    submissionSource: request.submission_source || 'broker',
+    requestedBy: request.created_by_name || 'Unknown user',
+    approvedBy: request.approved_by_name || '',
     narrativeResponse: '',
     linkedDocuments: [],
     reminderHistory: [],
-    notificationFrequency: request.priority === 'high' ? 'daily' : request.priority === 'medium' ? 'every 2 days' : 'weekly',
+    reminderFrequencyDays: Number.parseInt(request.reminder_frequency_days, 10) || (request.priority === 'critical' || request.priority === 'high' ? 1 : request.priority === 'medium' ? 2 : 7),
+    notificationFrequency: (Number.parseInt(request.reminder_frequency_days, 10) || (request.priority === 'critical' || request.priority === 'high' ? 1 : request.priority === 'medium' ? 2 : 7)) === 1
+      ? 'daily'
+      : `every ${Number.parseInt(request.reminder_frequency_days, 10) || (request.priority === 'medium' ? 2 : 7)} days`,
   };
 }
 
@@ -296,7 +314,10 @@ function buildCreateRequestPayload(form) {
     description: form.description.trim(),
     category: resolvedCategory,
     response_type: responseType,
-    priority: normalizePriority(form.priority),
+    priority: form.priority === 'custom' ? form.customPriorityLabel.trim() : normalizePriority(form.priority),
+    reminder_frequency_days: form.priority === 'custom'
+      ? Number.parseInt(form.customReminderDays, 10)
+      : (form.priority === 'critical' || form.priority === 'high' ? 1 : form.priority === 'medium' ? 2 : 7),
     status: form.status,
     due_date: form.dueDate,
     assigned_to: null,
@@ -344,14 +365,27 @@ function CategoryCard({ category, requestsInCategory, onClick }) {
   );
 }
 
-function RequestRow({ item, onView }) {
-  const priority = PRIORITY_META[item.priority];
+function RequestRow({ item, onView, onApprove, approving }) {
+  const priority = getPriorityMeta(item.priority);
+  const canApprove = item.submissionSource === 'user' && item.approvalStatus === 'pending';
   return (
     <tr className="border-b border-gray-50 hover:bg-gray-50/70 transition-colors">
       <td className="px-4 py-3 text-xs font-bold text-[#6D6E71] font-mono">{item.id}</td>
       <td className="px-4 py-3">
         <p className="font-semibold text-[#050505] leading-tight">{item.name}</p>
         {item.subLabel && <p className="text-xs text-[#A5A5A5] mt-0.5">{item.subLabel}</p>}
+        {item.submissionSource === 'user' && (
+          <div className="mt-1 flex flex-wrap items-center gap-2">
+            <span className="text-[11px] text-[#6D6E71]">Requested by {item.requestedBy}</span>
+            <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+              item.approvalStatus === 'pending'
+                ? 'bg-[#FEF3C7] text-[#A86F0B]'
+                : 'bg-[#E6F3D3] text-[#476E2C]'
+            }`}>
+              {item.approvalStatus === 'pending' ? 'Awaiting Approval' : 'Approved'}
+            </span>
+          </div>
+        )}
       </td>
       <td className="px-4 py-3">
         <span className="text-xs px-2.5 py-1 rounded-full bg-gray-100 text-[#6D6E71] font-semibold">{item.responseType}</span>
@@ -369,18 +403,29 @@ function RequestRow({ item, onView }) {
         </span>
       </td>
       <td className="px-4 py-3 text-center">
-        <button
-          onClick={() => onView(item)}
-          className="px-3 py-1.5 rounded-lg bg-[#05164D] text-white text-xs font-semibold hover:bg-[#0b2a79] transition-colors"
-        >
-          View
-        </button>
+        <div className="flex items-center justify-center gap-2">
+          {canApprove && (
+            <button
+              onClick={() => onApprove(item)}
+              disabled={approving}
+              className="px-3 py-1.5 rounded-lg bg-[#8BC53D] text-white text-xs font-semibold hover:bg-[#476E2C] disabled:cursor-not-allowed disabled:opacity-60 transition-colors"
+            >
+              {approving ? 'Approving...' : 'Approve'}
+            </button>
+          )}
+          <button
+            onClick={() => onView(item)}
+            className="px-3 py-1.5 rounded-lg bg-[#05164D] text-white text-xs font-semibold hover:bg-[#0b2a79] transition-colors"
+          >
+            View
+          </button>
+        </div>
       </td>
     </tr>
   );
 }
 
-function RequestTable({ rows, onView }) {
+function RequestTable({ rows, onView, onApprove, approvingRequestId }) {
   return (
     <div className="bg-white rounded-2xl shadow-card overflow-x-auto">
       <table className="w-full min-w-[980px]">
@@ -397,14 +442,22 @@ function RequestTable({ rows, onView }) {
           </tr>
         </thead>
         <tbody>
-          {rows.map(r => <RequestRow key={r.id} item={r} onView={onView} />)}
+          {rows.map(r => (
+            <RequestRow
+              key={r.id}
+              item={r}
+              onView={onView}
+              onApprove={onApprove}
+              approving={approvingRequestId === r.id}
+            />
+          ))}
         </tbody>
       </table>
     </div>
   );
 }
 
-function CategoryGroupedTable({ grouped, onView }) {
+function CategoryGroupedTable({ grouped, onView, onApprove, approvingRequestId }) {
   return (
     <div className="bg-white rounded-2xl shadow-card overflow-x-auto">
       <table className="w-full min-w-[980px]">
@@ -443,7 +496,15 @@ function CategoryGroupedTable({ grouped, onView }) {
                 </tr>
                 {rows.length === 0 ? (
                   <tr><td colSpan={8} className="px-4 py-4 text-center text-xs text-[#A5A5A5]">No requests in this category</td></tr>
-                ) : rows.map(r => <RequestRow key={r.id} item={r} onView={onView} />)}
+                ) : rows.map(r => (
+                  <RequestRow
+                    key={r.id}
+                    item={r}
+                    onView={onView}
+                    onApprove={onApprove}
+                    approving={approvingRequestId === r.id}
+                  />
+                ))}
               </Fragment>
             );
           })}
@@ -503,7 +564,7 @@ function FileUpload({ onAddFiles, duplicateNames }) {
   );
 }
 
-function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSendReminder, onAttachDocument }) {
+function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSendReminder, onAttachDocument, onApproveRequest, approvingRequestId }) {
   const [duplicateWarning, setDuplicateWarning] = useState([]);
   const [narrativeDraft, setNarrativeDraft] = useState(request?.narrativeResponse || '');
 
@@ -513,7 +574,7 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
 
   if (!request) return null;
 
-  const priority = PRIORITY_META[request.priority];
+  const priority = getPriorityMeta(request.priority);
   const due = new Date(request.dueDate);
   const isOverdue = due < new Date() && request.workflowStatus !== 'completed' && request.workflowStatus !== 'blocked';
   const currentStatus = getDisplayStatus(request.workflowStatus, request.dueDate);
@@ -522,6 +583,7 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
     ? ['blocked']
     : STATUS_FLOW.slice(Math.max(0, statusIdx), Math.min(statusIdx + 2, STATUS_FLOW.length));
   const CategoryIcon = CATEGORY_META[request.category].icon;
+  const needsApproval = request.submissionSource === 'user' && request.approvalStatus === 'pending';
 
   const allLinkedNames = allRequests.flatMap(r => r.linkedDocuments.map(d => d.name.toLowerCase()));
 
@@ -688,6 +750,37 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
               </p>
             </div>
 
+            <div className="bg-white rounded-2xl shadow-card p-5">
+              <h3 className="font-semibold text-[#050505] mb-3">Approval Workflow</h3>
+              <div className="space-y-3 text-xs">
+                <div>
+                  <p className="text-[#A5A5A5]">Submission Source</p>
+                  <p className="font-semibold capitalize text-[#050505]">{request.submissionSource}</p>
+                </div>
+                <div>
+                  <p className="text-[#A5A5A5]">Approval Status</p>
+                  <p className="font-semibold text-[#050505]">
+                    {request.approvalStatus === 'pending' ? 'Awaiting broker approval' : 'Approved and available for client delivery'}
+                  </p>
+                </div>
+                {!!request.approvedBy && (
+                  <div>
+                    <p className="text-[#A5A5A5]">Approved By</p>
+                    <p className="font-semibold text-[#050505]">{request.approvedBy}</p>
+                  </div>
+                )}
+              </div>
+              {needsApproval && (
+                <button
+                  onClick={() => onApproveRequest(request.id)}
+                  disabled={approvingRequestId === request.id}
+                  className="mt-4 w-full rounded-xl bg-[#8BC53D] py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#476E2C] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {approvingRequestId === request.id ? 'Approving...' : 'Approve And Send To Client'}
+                </button>
+              )}
+            </div>
+
             <div className="bg-white rounded-2xl shadow-card p-5 space-y-2">
               <button
                 onClick={sendReminder}
@@ -746,6 +839,7 @@ export default function WorkspaceRequests() {
   const [foldersLoading, setFoldersLoading] = useState(false);
   const [bulkFile, setBulkFile] = useState(null);
   const [bulkUploading, setBulkUploading] = useState(false);
+  const [approvingRequestId, setApprovingRequestId] = useState(null);
 
   const loadRequests = async () => {
     if (!clientId) return;
@@ -827,6 +921,11 @@ export default function WorkspaceRequests() {
     })).filter(g => g.items.length > 0);
   }, [requestState]);
 
+  const priorityFilterOptions = useMemo(() => ([
+    'all',
+    ...Array.from(new Set(requestState.map((request) => request.priority).filter(Boolean))),
+  ]), [requestState]);
+
   const rowsForCategory = useMemo(() => {
     if (!selectedCategory) return [];
     return requestState
@@ -877,6 +976,26 @@ export default function WorkspaceRequests() {
       setSuccess('Request created successfully.');
     } catch (err) {
       setError(err.message || 'Unable to create request.');
+    }
+  };
+
+  const handleApproveRequest = async (requestOrId) => {
+    const requestId = typeof requestOrId === 'object' ? requestOrId?.id : requestOrId;
+    if (!requestId) return;
+
+    setApprovingRequestId(requestId);
+    setError('');
+    setSuccess('');
+
+    try {
+      const approved = await approveRequest(requestId);
+      const normalized = mapApiRequestToUi(approved);
+      setRequestState((prev) => prev.map((item) => (item.id === requestId ? { ...item, ...normalized } : item)));
+      setSuccess('Request approved and sent to the client portal.');
+    } catch (err) {
+      setError(err.message || 'Unable to approve request.');
+    } finally {
+      setApprovingRequestId(null);
     }
   };
 
@@ -943,6 +1062,8 @@ export default function WorkspaceRequests() {
         request={activeRequest}
         allRequests={requestState}
         onUpdateRequest={updateRequestState}
+        onApproveRequest={handleApproveRequest}
+        approvingRequestId={approvingRequestId}
         onSendReminder={(id) => createRequestReminder(id, {
           sent_at: new Date().toISOString(),
           sent_by: user?.id || null,
@@ -1003,6 +1124,10 @@ export default function WorkspaceRequests() {
           <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-5">
             {loading ? (
               <div className="col-span-full text-center text-sm text-[#A5A5A5] py-10">Loading requests...</div>
+            ) : grouped.length === 0 ? (
+              <div className="col-span-full rounded-2xl border border-dashed border-gray-200 bg-white px-6 py-14 text-center text-sm text-[#6D6E71]">
+                No requests available for this company yet. Create a request to start reminder tracking.
+              </div>
             ) : grouped.map(g => (
               <CategoryCard
                 key={g.category}
@@ -1015,8 +1140,17 @@ export default function WorkspaceRequests() {
         ) : (
           loading ? (
             <div className="text-center text-sm text-[#A5A5A5] py-10">Loading requests...</div>
+          ) : grouped.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-gray-200 bg-white px-6 py-14 text-center text-sm text-[#6D6E71]">
+              No requests available for this company yet. Create a request to start reminder tracking.
+            </div>
           ) : (
-            <CategoryGroupedTable grouped={grouped} onView={(r) => setActiveRequestId(r.id)} />
+            <CategoryGroupedTable
+              grouped={grouped}
+              onView={(r) => setActiveRequestId(r.id)}
+              onApprove={handleApproveRequest}
+              approvingRequestId={approvingRequestId}
+            />
           )
         )
       ) : (
@@ -1055,11 +1189,11 @@ export default function WorkspaceRequests() {
                 onChange={(e) => setPriorityFilter(e.target.value)}
                 className="px-3 py-2 rounded-xl border border-gray-200 bg-white text-sm text-[#050505]"
               >
-                <option value="all">All Priorities</option>
-                <option value="critical">Critical</option>
-                <option value="high">High</option>
-                <option value="medium">Medium</option>
-                <option value="low">Low</option>
+                {priorityFilterOptions.map((option) => (
+                  <option key={option} value={option}>
+                    {option === 'all' ? 'All Priorities' : option}
+                  </option>
+                ))}
               </select>
               <button
                 onClick={() => {
@@ -1076,8 +1210,17 @@ export default function WorkspaceRequests() {
 
           {loading ? (
             <div className="text-center text-sm text-[#A5A5A5] py-10">Loading requests...</div>
+          ) : rowsForCategory.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-gray-200 bg-white px-6 py-14 text-center text-sm text-[#6D6E71]">
+              No requests matched this category and filter combination.
+            </div>
           ) : (
-            <RequestTable rows={rowsForCategory} onView={(r) => setActiveRequestId(r.id)} />
+            <RequestTable
+              rows={rowsForCategory}
+              onView={(r) => setActiveRequestId(r.id)}
+              onApprove={handleApproveRequest}
+              approvingRequestId={approvingRequestId}
+            />
           )}
         </div>
       )}
@@ -1088,6 +1231,7 @@ export default function WorkspaceRequests() {
         onCreate={createRequest}
         folderOptions={folderOptions}
         foldersLoading={foldersLoading}
+        allowCustomPriority
         extraContent={(
           <div className="rounded-2xl border border-[#BFDBFE] bg-[#EFF6FF] p-4 space-y-3">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -1134,3 +1278,4 @@ export default function WorkspaceRequests() {
     </div>
   );
 }
+

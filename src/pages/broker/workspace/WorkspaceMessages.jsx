@@ -1,14 +1,16 @@
 import { useParams } from "react-router-dom";
-import MessagesWorkspace from "../../../components/messages/MessagesWorkspace";
+import CompanyDirectMessagesWorkspace from "../../../components/messages/CompanyDirectMessagesWorkspace";
 
 export default function WorkspaceMessages() {
   const { clientId } = useParams();
 
   return (
-    <MessagesWorkspace
+    <CompanyDirectMessagesWorkspace
       fixedCompanyId={clientId}
       title="Messages"
-      description="Collaborate with the broker team, assigned users, and the client contact for this company."
+      description="Message the assigned users and client contact for this company in separate one-to-one conversations."
+      contactLabel="Assigned Contacts"
+      contactEmptyState="No assigned users or client contact are available for this company."
     />
   );
 }

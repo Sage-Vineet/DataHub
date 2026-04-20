@@ -125,50 +125,6 @@ async function ensureDemoUser(demo) {
   return created[0] || null;
 }
 
-async function ensureCompanyForEmail(email) {
-  const normalizedEmail = String(email).trim().toLowerCase();
-  const existing = ensureRows(
-    await db.query("SELECT id, name FROM companies WHERE contact_email = ?", [normalizedEmail])
-  );
-  if (existing[0]) return existing[0];
-
-  const domain = normalizedEmail.split("@")[1] || "Client Company";
-  const companyName = domain.split(".")[0]
-    ? domain.split(".")[0].replace(/[-_]/g, " ").replace(/\b\w/g, (m) => m.toUpperCase())
-    : "Client Company";
-
-  await db.query(
-    `INSERT INTO companies (name, industry, contact_name, contact_email, contact_phone)
-     VALUES (?, ?, ?, ?, ?)`,
-    [companyName, "Technology", "Client Admin", normalizedEmail, "+91-9000000000"]
-  );
-  const created = ensureRows(
-    await db.query("SELECT id, name FROM companies WHERE contact_email = ?", [normalizedEmail])
-  );
-  return created[0] || null;
-}
-
-async function ensureBuyerForEmail(email) {
-  const company = await ensureCompanyForEmail(email);
-  const passwordHash = await bcrypt.hash(CLIENT_STATIC_PASSWORD, 10);
-  const name = email.split("@")[0] || "Client User";
-  await db.query(
-    `INSERT INTO users (name, email, password_hash, role, company_id, status)
-     VALUES (?, ?, ?, ?, ?, 'active')`,
-    [name, email, passwordHash, "buyer", company?.id || null]
-  );
-  const created = ensureRows(
-    await db.query(
-      `SELECT u.id, u.name, u.email, u.password_hash, u.role, u.company_id, u.status, c.name AS company_name
-       FROM users u
-       LEFT JOIN companies c ON c.id = u.company_id
-       WHERE u.email = ?`,
-      [email]
-    )
-  );
-  return created[0] || null;
-}
-
 async function ensureDefaultFolders(companyId, createdBy) {
   if (!companyId || !createdBy) return;
   const existing = ensureRows(
@@ -214,15 +170,7 @@ const login = asyncHandler(async (req, res) => {
 
     user = users[0];
     if (!user) {
-      if (password === CLIENT_STATIC_PASSWORD) {
-        user = await ensureBuyerForEmail(normalizedEmail);
-        if (user) {
-          await syncUserCompanyAssignment(user.id, user.company_id);
-          await ensureDefaultFolders(user.company_id, user.id);
-        }
-      } else {
-        return res.status(401).json({ error: "Invalid credentials" });
-      }
+      return res.status(401).json({ error: "Invalid credentials" });
     }
 
     if (user.role === "buyer" && password === CLIENT_STATIC_PASSWORD) {

@@ -184,6 +184,21 @@ export function createCompanyMessageRequest(companyId, payload) {
   return request(`/companies/${companyId}/messages`, { method: "POST", body: payload }).then(unwrapPayload);
 }
 
+export function listCompanyDirectMessageContactsRequest(companyId) {
+  return request(`/companies/${companyId}/direct-messages/contacts`);
+}
+
+export function getCompanyDirectMessagesRequest(companyId, recipientId) {
+  return request(`/companies/${companyId}/direct-messages/${recipientId}`);
+}
+
+export function createCompanyDirectMessageRequest(companyId, recipientId, payload) {
+  return request(`/companies/${companyId}/direct-messages/${recipientId}`, {
+    method: "POST",
+    body: payload,
+  }).then(unwrapPayload);
+}
+
 export function createCompanyRequestItem(companyId, payload) {
   return request(`/companies/${companyId}/requests`, { method: 'POST', body: payload }).then(unwrapPayload);
 }
@@ -226,6 +241,10 @@ export function getRequestById(requestId) {
 
 export function updateRequest(requestId, payload) {
   return request(`/requests/${requestId}`, { method: 'PATCH', body: payload }).then(unwrapPayload);
+}
+
+export function approveRequest(requestId) {
+  return request(`/requests/${requestId}/approve`, { method: 'POST' }).then(unwrapPayload);
 }
 
 export function deleteRequest(requestId) {

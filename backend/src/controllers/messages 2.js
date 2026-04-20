@@ -72,13 +72,6 @@ async function getConversationParticipants(company) {
   }));
 }
 
-function buildParticipantMap(participants) {
-  return participants.reduce((map, participant) => {
-    map[participant.id] = participant;
-    return map;
-  }, {});
-}
-
 async function getMessageRows(companyId) {
   return rowsOf(await db.query(
     `SELECT
@@ -107,7 +100,10 @@ async function serializeConversation(companyId) {
     getMessageRows(companyId),
   ]);
 
-  const participantById = buildParticipantMap(participants);
+  const participantById = participants.reduce((map, participant) => {
+    map[participant.id] = participant;
+    return map;
+  }, {});
 
   return {
     company,
@@ -126,61 +122,6 @@ async function serializeConversation(companyId) {
       },
     })),
   };
-}
-
-async function resolveDirectMessagingContext(user, companyId) {
-  if (!canAccessCompany(user, companyId)) {
-    return { error: { status: 403, body: { error: "Forbidden" } } };
-  }
-
-  const company = await getCompany(companyId);
-  if (!company) {
-    return { error: { status: 404, body: { error: "Company not found" } } };
-  }
-
-  const participants = await getConversationParticipants(company);
-  const selfParticipant = participants.find((participant) => String(participant.id) === String(user.id));
-
-  if (!selfParticipant) {
-    return { error: { status: 403, body: { error: "Forbidden" } } };
-  }
-
-  const contacts = participants.filter((participant) => {
-    if (String(participant.id) === String(user.id)) return false;
-    if (isBroker(user)) return ["user", "client"].includes(participant.role);
-    return participant.role === "broker";
-  });
-
-  return {
-    company,
-    contacts,
-    participantById: buildParticipantMap(participants),
-    selfParticipant,
-  };
-}
-
-async function getDirectMessageRows(companyId, currentUserId, recipientId) {
-  return rowsOf(await db.query(
-    `SELECT
-       dm.id,
-       dm.company_id,
-       dm.sender_id,
-       dm.recipient_id,
-       dm.body,
-       dm.created_at,
-       u.name AS sender_name,
-       u.email AS sender_email,
-       u.role AS sender_role
-     FROM direct_messages dm
-     JOIN users u ON u.id = dm.sender_id
-     WHERE dm.company_id = ?
-       AND (
-         (dm.sender_id = ? AND dm.recipient_id = ?)
-         OR (dm.sender_id = ? AND dm.recipient_id = ?)
-       )
-     ORDER BY datetime(dm.created_at) ASC, dm.rowid ASC`,
-    [companyId, currentUserId, recipientId, recipientId, currentUserId],
-  ));
 }
 
 const listThreads = asyncHandler(async (req, res) => {
@@ -300,7 +241,10 @@ const createMessage = asyncHandler(async (req, res) => {
     [companyId, req.user.id, body],
   ));
 
-  const participantById = buildParticipantMap(participants);
+  const participantById = participants.reduce((map, participant) => {
+    map[participant.id] = participant;
+    return map;
+  }, {});
 
   return res.status(201).json({
     ...inserted[0],
@@ -313,149 +257,8 @@ const createMessage = asyncHandler(async (req, res) => {
   });
 });
 
-const listDirectContacts = asyncHandler(async (req, res) => {
-  const companyId = req.params.id;
-  const context = await resolveDirectMessagingContext(req.user, companyId);
-
-  if (context.error) {
-    return res.status(context.error.status).json(context.error.body);
-  }
-
-  const { company, contacts } = context;
-  const contactIds = contacts.map((contact) => contact.id);
-  const latestByContact = {};
-
-  if (contactIds.length) {
-    const placeholders = contactIds.map(() => "?").join(",");
-    const params = [companyId, req.user.id, ...contactIds, req.user.id, ...contactIds];
-    const rows = rowsOf(await db.query(
-      `SELECT
-         dm.id,
-         dm.sender_id,
-         dm.recipient_id,
-         dm.body,
-         dm.created_at
-       FROM direct_messages dm
-       WHERE dm.company_id = ?
-         AND (
-           (dm.sender_id = ? AND dm.recipient_id IN (${placeholders}))
-           OR (dm.recipient_id = ? AND dm.sender_id IN (${placeholders}))
-         )
-       ORDER BY datetime(dm.created_at) DESC, dm.rowid DESC`,
-      params,
-    ));
-
-    rows.forEach((message) => {
-      const contactId = String(message.sender_id) === String(req.user.id)
-        ? String(message.recipient_id)
-        : String(message.sender_id);
-      if (!latestByContact[contactId]) {
-        latestByContact[contactId] = {
-          id: message.id,
-          body: message.body,
-          created_at: message.created_at,
-          sender_id: message.sender_id,
-        };
-      }
-    });
-  }
-
-  const sortedContacts = contacts
-    .map((contact) => ({
-      ...contact,
-      last_message: latestByContact[String(contact.id)] || null,
-    }))
-    .sort((a, b) => {
-      const aDate = a.last_message?.created_at || "";
-      const bDate = b.last_message?.created_at || "";
-      if (aDate && bDate && aDate !== bDate) {
-        return String(bDate).localeCompare(String(aDate));
-      }
-      if (aDate && !bDate) return -1;
-      if (!aDate && bDate) return 1;
-      return String(a.name || "").localeCompare(String(b.name || ""));
-    });
-
-  return res.json({
-    company,
-    contacts: sortedContacts,
-  });
-});
-
-const getDirectConversation = asyncHandler(async (req, res) => {
-  const companyId = req.params.id;
-  const recipientId = req.params.recipientId;
-  const context = await resolveDirectMessagingContext(req.user, companyId);
-
-  if (context.error) {
-    return res.status(context.error.status).json(context.error.body);
-  }
-
-  const participant = context.contacts.find((contact) => String(contact.id) === String(recipientId));
-  if (!participant) {
-    return res.status(403).json({ error: "Forbidden" });
-  }
-
-  const messages = await getDirectMessageRows(companyId, req.user.id, recipientId);
-
-  return res.json({
-    company: context.company,
-    participant,
-    messages: messages.map((message) => ({
-      id: message.id,
-      company_id: message.company_id,
-      sender_id: message.sender_id,
-      recipient_id: message.recipient_id,
-      body: message.body,
-      created_at: message.created_at,
-      sender: context.participantById[message.sender_id] || {
-        id: message.sender_id,
-        name: message.sender_name,
-        email: message.sender_email,
-        role: message.sender_role,
-      },
-    })),
-  });
-});
-
-const createDirectMessage = asyncHandler(async (req, res) => {
-  const companyId = req.params.id;
-  const recipientId = req.params.recipientId;
-  const body = String(req.body?.body || "").trim();
-  const context = await resolveDirectMessagingContext(req.user, companyId);
-
-  if (context.error) {
-    return res.status(context.error.status).json(context.error.body);
-  }
-
-  if (!body) {
-    return res.status(400).json({ error: "Message body is required" });
-  }
-
-  const participant = context.contacts.find((contact) => String(contact.id) === String(recipientId));
-  if (!participant) {
-    return res.status(403).json({ error: "Forbidden" });
-  }
-
-  const inserted = rowsOf(await db.query(
-    `INSERT INTO direct_messages (company_id, sender_id, recipient_id, body)
-     VALUES (?, ?, ?, ?)
-     RETURNING id, company_id, sender_id, recipient_id, body, created_at`,
-    [companyId, req.user.id, recipientId, body],
-  ));
-
-  return res.status(201).json({
-    ...inserted[0],
-    sender: context.participantById[req.user.id] || context.selfParticipant,
-    participant,
-  });
-});
-
 module.exports = {
   listThreads,
   getConversation,
   createMessage,
-  listDirectContacts,
-  getDirectConversation,
-  createDirectMessage,
 };

@@ -1,11 +1,68 @@
 const db = require("../db");
 const asyncHandler = require("../utils");
 const { buildAppBaseUrl } = require("../utils/uploadStorage");
+const {
+  buildReminderFrequencyLabel,
+  resolveReminderFrequencyDays,
+  addDays,
+  isRequestResolved,
+} = require("../utils/requestReminders");
 
 const REQUEST_CATEGORIES = ["Finance", "Legal", "Compliance", "HR", "Tax", "M&A", "Other"];
 const RESPONSE_TYPES = ["Upload", "Narrative", "Both"];
-const REQUEST_PRIORITIES = ["critical", "high", "medium", "low"];
 const REQUEST_STATUSES = ["pending", "in-review", "completed", "blocked"];
+const APPROVAL_STATUSES = ["pending", "approved"];
+
+function rowsOf(result) {
+  if (!result) return [];
+  return Array.isArray(result) ? result : result.rows || [];
+}
+
+function isBroker(user) {
+  return ["broker", "admin"].includes(user?.role);
+}
+
+function normalizeCompanyIds(user) {
+  return Array.from(
+    new Set(
+      [
+        ...(user?.company_ids || []),
+        ...((user?.assigned_companies || []).map((company) => company.id)),
+        user?.company_id,
+      ].filter(Boolean).map(String),
+    ),
+  );
+}
+
+function canAccessCompany(user, companyId) {
+  if (!user || !companyId) return false;
+  if (isBroker(user)) return true;
+  return normalizeCompanyIds(user).includes(String(companyId));
+}
+
+function canAccessRequest(user, request) {
+  if (!user || !request) return false;
+  if (!canAccessCompany(user, request.company_id)) return false;
+  if (isBroker(user)) return true;
+  if (user?.effective_role === "client") {
+    return request.approval_status === "approved" && request.visible !== false && request.visible !== 0;
+  }
+  return request.approval_status === "approved" || String(request.created_by) === String(user.id);
+}
+
+function filterRequestsForUser(user, requests) {
+  if (isBroker(user)) return requests;
+
+  if (user?.effective_role === "client") {
+    return requests.filter(
+      (request) => request.approval_status === "approved" && request.visible !== false && request.visible !== 0,
+    );
+  }
+
+  return requests.filter(
+    (request) => request.approval_status === "approved" || String(request.created_by) === String(user?.id),
+  );
+}
 
 function isValidDate(value) {
   if (!value || typeof value !== "string") return false;
@@ -26,21 +83,38 @@ function normalizeBoolean(value, fallback = true) {
   return fallback;
 }
 
-function normalizeRequestInput(input = {}, fallbackCreatedBy) {
+async function createRequestReminderEvent(requestId, sentBy, sentAt = null) {
+  if (!requestId || !sentBy) return null;
+  const reminderSentAt = sentAt || new Date().toISOString();
+  const rows = rowsOf(await db.query(
+    "INSERT INTO request_reminders (request_id, sent_by, sent_at) VALUES ($1, $2, $3) RETURNING *",
+    [requestId, sentBy, reminderSentAt],
+  ));
+  return rows[0] || null;
+}
+
+function normalizeRequestInput(input = {}, fallbackCreatedBy, options = {}) {
   const title = typeof input.title === "string" ? input.title.trim() : "";
   const subLabelValue = typeof input.sub_label === "string" ? input.sub_label.trim() : "";
   const description = typeof input.description === "string" ? input.description.trim() : "";
   const category = typeof input.category === "string" ? input.category.trim() : "";
   const responseType = typeof input.response_type === "string" ? input.response_type.trim() : "";
-  const priority = typeof input.priority === "string" ? input.priority.trim().toLowerCase() : "";
+  const priority = typeof input.priority === "string" ? input.priority.trim() : "";
   const status = typeof input.status === "string" ? input.status.trim().toLowerCase() : "";
   const dueDate = typeof input.due_date === "string" ? input.due_date.trim() : "";
+  const reminderFrequencyDays = resolveReminderFrequencyDays(priority, input.reminder_frequency_days);
   const assignedTo = typeof input.assigned_to === "string" && input.assigned_to.trim()
     ? input.assigned_to.trim()
     : null;
   const createdBy = typeof input.created_by === "string" && input.created_by.trim()
     ? input.created_by.trim()
     : fallbackCreatedBy;
+  const submissionSource = typeof input.submission_source === "string" && input.submission_source.trim()
+    ? input.submission_source.trim().toLowerCase()
+    : options.submissionSource || "broker";
+  const approvalStatus = typeof input.approval_status === "string" && input.approval_status.trim()
+    ? input.approval_status.trim().toLowerCase()
+    : options.approvalStatus || "approved";
 
   const errors = [];
 
@@ -52,9 +126,7 @@ function normalizeRequestInput(input = {}, fallbackCreatedBy) {
   if (!RESPONSE_TYPES.includes(responseType)) {
     errors.push(`response_type must be one of: ${RESPONSE_TYPES.join(", ")}`);
   }
-  if (!REQUEST_PRIORITIES.includes(priority)) {
-    errors.push(`priority must be one of: ${REQUEST_PRIORITIES.join(", ")}`);
-  }
+  if (!priority) errors.push("priority is required");
   if (!REQUEST_STATUSES.includes(status)) {
     errors.push(`status must be one of: ${REQUEST_STATUSES.join(", ")}`);
   }
@@ -62,6 +134,12 @@ function normalizeRequestInput(input = {}, fallbackCreatedBy) {
     errors.push("due_date must be in YYYY-MM-DD format");
   }
   if (!createdBy) errors.push("created_by is required");
+  if (!["broker", "user", "client"].includes(submissionSource)) {
+    errors.push("submission_source is invalid");
+  }
+  if (!APPROVAL_STATUSES.includes(approvalStatus)) {
+    errors.push("approval_status is invalid");
+  }
 
   return {
     errors,
@@ -74,17 +152,22 @@ function normalizeRequestInput(input = {}, fallbackCreatedBy) {
       priority,
       status,
       due_date: dueDate,
+      reminder_frequency_days: reminderFrequencyDays,
       assigned_to: assignedTo,
       visible: normalizeBoolean(input.visible, true),
       created_by: createdBy,
+      submission_source: submissionSource,
+      approval_status: approvalStatus,
+      approved_by: approvalStatus === "approved" ? (options.approvedBy || createdBy) : null,
+      approved_at: approvalStatus === "approved" ? new Date().toISOString() : null,
     },
   };
 }
 
 async function insertRequest(companyId, payload) {
   const { rows } = await db.query(
-    `INSERT INTO requests (company_id, title, sub_label, description, category, response_type, priority, status, due_date, assigned_to, visible, created_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, true), $12)
+    `INSERT INTO requests (company_id, title, sub_label, description, category, response_type, priority, status, due_date, assigned_to, visible, created_by, reminder_frequency_days, submission_source, approval_status, approved_by, approved_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, true), $12, $13, $14, $15, $16, $17)
      RETURNING *`,
     [
       companyId,
@@ -99,38 +182,99 @@ async function insertRequest(companyId, payload) {
       payload.assigned_to,
       payload.visible,
       payload.created_by,
+      payload.reminder_frequency_days,
+      payload.submission_source,
+      payload.approval_status,
+      payload.approved_by,
+      payload.approved_at,
     ]
   );
 
   return rows[0];
 }
 
+async function getRequestById(requestId) {
+  const rows = rowsOf(await db.query(
+    `SELECT
+       r.*,
+       u.name AS created_by_name,
+       u.email AS created_by_email,
+       approver.name AS approved_by_name
+     FROM requests r
+     LEFT JOIN users u ON u.id = r.created_by
+     LEFT JOIN users approver ON approver.id = r.approved_by
+     WHERE r.id = $1`,
+    [requestId],
+  ));
+  return rows[0] || null;
+}
+
 const listRequests = asyncHandler(async (req, res) => {
-  const { rows } = await db.query(
-    "SELECT * FROM requests WHERE company_id = $1 ORDER BY created_at DESC",
+  if (!canAccessCompany(req.user, req.params.id)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+
+  const rows = rowsOf(await db.query(
+    `SELECT
+       r.*,
+       u.name AS created_by_name,
+       u.email AS created_by_email,
+       approver.name AS approved_by_name
+     FROM requests r
+     LEFT JOIN users u ON u.id = r.created_by
+     LEFT JOIN users approver ON approver.id = r.approved_by
+     WHERE r.company_id = $1
+     ORDER BY r.created_at DESC`,
     [req.params.id]
-  );
-  res.json(rows);
+  ));
+
+  res.json(filterRequestsForUser(req.user, rows));
 });
 
 const createRequest = asyncHandler(async (req, res) => {
-  const normalized = normalizeRequestInput(req.body || {}, req.user?.id);
+  if (!canAccessCompany(req.user, req.params.id)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+
+  const submissionSource = req.user?.effective_role === "user"
+    ? "user"
+    : req.user?.effective_role === "client"
+    ? "client"
+    : "broker";
+  const approvalStatus = submissionSource === "user" ? "pending" : "approved";
+
+  const normalized = normalizeRequestInput(req.body || {}, req.user?.id, {
+    submissionSource,
+    approvalStatus,
+    approvedBy: approvalStatus === "approved" ? req.user?.id : null,
+  });
   if (normalized.errors.length > 0) {
     return res.status(400).json({ error: normalized.errors.join("; ") });
   }
 
   const created = await insertRequest(req.params.id, normalized.value);
-  res.status(201).json(created);
+  if (normalized.value.approval_status === "approved") {
+    await createRequestReminderEvent(created.id, req.user?.id || normalized.value.approved_by || normalized.value.created_by);
+  }
+  res.status(201).json(await getRequestById(created.id));
 });
 
 const createRequestsBulk = asyncHandler(async (req, res) => {
+  if (!canAccessCompany(req.user, req.params.id) || !isBroker(req.user)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+
   const items = Array.isArray(req.body?.requests) ? req.body.requests : [];
   if (items.length === 0) {
     return res.status(400).json({ error: "requests array is required" });
   }
 
   const normalizedItems = items.map((item, index) => {
-    const normalized = normalizeRequestInput(item, req.user?.id);
+    const normalized = normalizeRequestInput(item, req.user?.id, {
+      submissionSource: "broker",
+      approvalStatus: "approved",
+      approvedBy: req.user?.id,
+    });
     return {
       index,
       ...normalized,
@@ -158,7 +302,8 @@ const createRequestsBulk = asyncHandler(async (req, res) => {
   const created = [];
   for (const item of normalizedItems) {
     const request = await insertRequest(req.params.id, item.value);
-    created.push(request);
+    await createRequestReminderEvent(request.id, req.user?.id || item.value.approved_by || item.value.created_by);
+    created.push(await getRequestById(request.id));
   }
 
   res.status(201).json({
@@ -168,72 +313,147 @@ const createRequestsBulk = asyncHandler(async (req, res) => {
 });
 
 const getRequest = asyncHandler(async (req, res) => {
-  const { rows } = await db.query("SELECT * FROM requests WHERE id = $1", [req.params.id]);
-  if (!rows[0]) return res.status(404).json({ error: "Not found" });
-  res.json(rows[0]);
+  const request = await getRequestById(req.params.id);
+  if (!request) return res.status(404).json({ error: "Not found" });
+  if (!canAccessRequest(req.user, request)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  res.json(request);
 });
 
 const updateRequest = asyncHandler(async (req, res) => {
+  const current = await getRequestById(req.params.id);
+  if (!current) return res.status(404).json({ error: "Not found" });
+  if (!canAccessRequest(req.user, current)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  if (!isBroker(req.user)) {
+    const forbiddenKeys = ["visible", "approval_status", "approved_by", "approved_at", "submission_source"];
+    const attemptedForbiddenKey = forbiddenKeys.find((key) => Object.prototype.hasOwnProperty.call(req.body || {}, key));
+    if (attemptedForbiddenKey) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+  }
+
   const fields = [];
   const values = [];
   let idx = 1;
   const body = req.body || {};
+  const updateBody = { ...body };
 
-  Object.keys(body).forEach((key) => {
+  if (
+    Object.prototype.hasOwnProperty.call(updateBody, "priority")
+    && !Object.prototype.hasOwnProperty.call(updateBody, "reminder_frequency_days")
+  ) {
+    updateBody.reminder_frequency_days = resolveReminderFrequencyDays(
+      updateBody.priority,
+      current.reminder_frequency_days,
+    );
+  }
+
+  Object.keys(updateBody).forEach((key) => {
     fields.push(`${key} = $${idx++}`);
-    values.push(body[key]);
+    values.push(updateBody[key]);
   });
 
   if (fields.length === 0) return res.status(400).json({ error: "No updates" });
 
   values.push(req.params.id);
-  const { rows } = await db.query(
+  const rows = rowsOf(await db.query(
     `UPDATE requests SET ${fields.join(", ")}, updated_at = datetime('now') WHERE id = $${idx} RETURNING *`,
     values
-  );
+  ));
   if (!rows[0]) return res.status(404).json({ error: "Not found" });
-  res.json(rows[0]);
+  res.json(await getRequestById(req.params.id));
+});
+
+const approveRequest = asyncHandler(async (req, res) => {
+  const current = await getRequestById(req.params.id);
+  if (!current) return res.status(404).json({ error: "Not found" });
+  if (!isBroker(req.user) || !canAccessCompany(req.user, current.company_id)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+
+  const rows = rowsOf(await db.query(
+    `UPDATE requests
+     SET approval_status = 'approved',
+         approved_by = $1,
+         reminder_frequency_days = COALESCE(reminder_frequency_days, 2),
+         approved_at = datetime('now'),
+         updated_at = datetime('now')
+     WHERE id = $2
+     RETURNING *`,
+    [req.user.id, req.params.id],
+  ));
+  if (!rows[0]) return res.status(404).json({ error: "Not found" });
+  await createRequestReminderEvent(req.params.id, req.user.id);
+  res.json(await getRequestById(req.params.id));
 });
 
 const deleteRequest = asyncHandler(async (req, res) => {
-  const { rowCount } = await db.query("DELETE FROM requests WHERE id = $1", [req.params.id]);
+  const current = await getRequestById(req.params.id);
+  if (!current) return res.status(404).json({ error: "Not found" });
+  if (!isBroker(req.user) || !canAccessCompany(req.user, current.company_id)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+
+  const result = await db.query("DELETE FROM requests WHERE id = $1", [req.params.id]);
+  const rowCount = result?.rowCount ?? result?.changes ?? 0;
   if (!rowCount) return res.status(404).json({ error: "Not found" });
   res.status(204).send();
 });
 
 const addRequestReminder = asyncHandler(async (req, res) => {
-  const { sent_by } = req.body || {};
-  if (!sent_by) return res.status(400).json({ error: "sent_by required" });
+  const current = await getRequestById(req.params.id);
+  if (!current) return res.status(404).json({ error: "Not found" });
+  if (!isBroker(req.user) || !canAccessCompany(req.user, current.company_id)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  if (isRequestResolved(current.status)) {
+    return res.status(400).json({ error: "Resolved requests do not need reminders." });
+  }
 
-  const { rows } = await db.query(
-    "INSERT INTO request_reminders (request_id, sent_by) VALUES ($1, $2) RETURNING *",
-    [req.params.id, sent_by]
-  );
-  res.status(201).json(rows[0]);
+  const sentBy = req.body?.sent_by || req.user?.id;
+  const sentAt = req.body?.sent_at || new Date().toISOString();
+  if (!sentBy) return res.status(400).json({ error: "sent_by required" });
+
+  const reminder = await createRequestReminderEvent(req.params.id, sentBy, sentAt);
+  res.status(201).json(reminder);
 });
 
 const listRequestDocuments = asyncHandler(async (req, res) => {
-  const { rows } = await db.query(
+  const current = await getRequestById(req.params.id);
+  if (!current) return res.status(404).json({ error: "Not found" });
+  if (!canAccessRequest(req.user, current)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+
+  const rows = rowsOf(await db.query(
     `SELECT rd.*, d.name, d.file_url, d.status, d.upload_id
      FROM request_documents rd
      JOIN documents d ON d.id = rd.document_id
      WHERE rd.request_id = $1
      ORDER BY rd.created_at DESC`,
     [req.params.id]
-  );
+  ));
   res.json(rows);
 });
 
 const addRequestDocument = asyncHandler(async (req, res) => {
+  const current = await getRequestById(req.params.id);
+  if (!current) return res.status(404).json({ error: "Not found" });
+  if (!canAccessRequest(req.user, current)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+
   const { document_id, visible } = req.body || {};
   if (!document_id) return res.status(400).json({ error: "document_id required" });
 
-  const { rows } = await db.query(
+  const rows = rowsOf(await db.query(
     "INSERT INTO request_documents (request_id, document_id, visible) VALUES ($1, $2, COALESCE($3, true)) RETURNING *",
     [req.params.id, document_id, visible]
-  );
+  ));
 
-  // Persist status change so it doesn't revert after refresh.
   await db.query(
     "UPDATE requests SET status = $1, updated_at = datetime('now') WHERE id = $2 AND status = 'pending'",
     ["in-review", req.params.id]
@@ -243,45 +463,45 @@ const addRequestDocument = asyncHandler(async (req, res) => {
 });
 
 const updateNarrative = asyncHandler(async (req, res) => {
+  const current = await getRequestById(req.params.id);
+  if (!current) return res.status(404).json({ error: "Not found" });
+  if (!canAccessRequest(req.user, current)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+
   const { content, updated_by } = req.body || {};
   const resolvedUpdatedBy = updated_by || req.user?.id;
   if (!content || !resolvedUpdatedBy) {
     return res.status(400).json({ error: "content and updated_by required" });
   }
 
-  const { rows } = await db.query(
+  const rows = rowsOf(await db.query(
     `INSERT INTO request_narratives (request_id, content, updated_by)
      VALUES ($1, $2, $3)
      ON CONFLICT (request_id) DO UPDATE SET content = EXCLUDED.content, updated_by = EXCLUDED.updated_by, updated_at = datetime('now')
      RETURNING *`,
     [req.params.id, content, resolvedUpdatedBy]
-  );
+  ));
 
-  // Move request into review once a narrative response is saved.
   await db.query(
     "UPDATE requests SET status = $1, updated_at = datetime('now') WHERE id = $2 AND status != $1",
     ["in-review", req.params.id]
   );
-  
-  // Ensure a narrative text document is visible in the request's folder.
-  const reqRows = await db.query(
-    "SELECT id, title, category, sub_label, company_id FROM requests WHERE id = $1",
-    [req.params.id]
-  );
-  const request = reqRows.rows?.[0];
+
+  const request = current;
   if (request?.company_id) {
     const folderName = request.category || request.sub_label || "Other";
-    let folderRow = (await db.query(
+    let folderRow = rowsOf(await db.query(
       "SELECT id, name FROM folders WHERE company_id = $1 AND lower(name) = lower($2) LIMIT 1",
       [request.company_id, folderName]
-    )).rows?.[0];
+    ))[0];
 
     if (!folderRow) {
-      const createdFolder = await db.query(
+      const createdFolder = rowsOf(await db.query(
         "INSERT INTO folders (company_id, parent_id, name, color, created_by) VALUES ($1, $2, $3, $4, $5) RETURNING *",
         [request.company_id, null, folderName, null, resolvedUpdatedBy]
-      );
-      folderRow = createdFolder.rows?.[0];
+      ));
+      folderRow = createdFolder[0];
     }
 
     if (folderRow?.id) {
@@ -289,10 +509,10 @@ const updateNarrative = asyncHandler(async (req, res) => {
       const fileUrl = `${buildAppBaseUrl(req)}/requests/${request.id}/narrative/file`;
       const size = Buffer.byteLength(content || "", "utf8").toString();
 
-      const existingDoc = (await db.query(
+      const existingDoc = rowsOf(await db.query(
         "SELECT id FROM documents WHERE folder_id = $1 AND name = $2 LIMIT 1",
         [folderRow.id, docName]
-      )).rows?.[0];
+      ))[0];
 
       let documentId = existingDoc?.id;
       if (existingDoc?.id) {
@@ -301,20 +521,20 @@ const updateNarrative = asyncHandler(async (req, res) => {
           [fileUrl, null, size, "under-review", resolvedUpdatedBy, existingDoc.id]
         );
       } else {
-        const createdDoc = await db.query(
+        const createdDoc = rowsOf(await db.query(
           `INSERT INTO documents (company_id, folder_id, name, file_url, upload_id, size, ext, status, uploaded_by)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
            RETURNING *`,
           [request.company_id, folderRow.id, docName, fileUrl, null, size, "txt", "under-review", resolvedUpdatedBy]
-        );
-        documentId = createdDoc.rows?.[0]?.id;
+        ));
+        documentId = createdDoc[0]?.id;
       }
 
       if (documentId) {
-        const link = (await db.query(
+        const link = rowsOf(await db.query(
           "SELECT id FROM request_documents WHERE request_id = $1 AND document_id = $2 LIMIT 1",
           [request.id, documentId]
-        )).rows?.[0];
+        ))[0];
         if (!link) {
           await db.query(
             "INSERT INTO request_documents (request_id, document_id, visible) VALUES ($1, $2, true)",
@@ -328,10 +548,16 @@ const updateNarrative = asyncHandler(async (req, res) => {
 });
 
 const getNarrativeFile = asyncHandler(async (req, res) => {
-  const { rows } = await db.query(
+  const current = await getRequestById(req.params.id);
+  if (!current) return res.status(404).send("Not found");
+  if (!canAccessRequest(req.user, current)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+
+  const rows = rowsOf(await db.query(
     "SELECT content FROM request_narratives WHERE request_id = $1",
     [req.params.id]
-  );
+  ));
   if (!rows[0]) return res.status(404).send("Not found");
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
   res.send(rows[0].content || "");
@@ -343,6 +569,7 @@ module.exports = {
   createRequestsBulk,
   getRequest,
   updateRequest,
+  approveRequest,
   deleteRequest,
   addRequestReminder,
   listRequestDocuments,

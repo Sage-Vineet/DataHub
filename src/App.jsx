@@ -25,12 +25,12 @@ import ClientDashboard from "./pages/client/Dashboard";
 import ClientRequests from "./pages/client/Requests";
 import ClientUpload from "./pages/client/Upload";
 import ClientReminders from "./pages/client/Reminders";
-import ClientDocuments from "./pages/client/Documents";
 import ClientMessages from "./pages/client/Messages";
 import UserPortalDashboard from "./pages/user/PortalDashboard";
 import UserCompanyDetails from "./pages/user/CompanyDetails";
 import UserDocuments from "./pages/user/Documents";
 import UserMessages from "./pages/user/Messages";
+import UserRequests from "./pages/user/Requests";
 import WorkspaceDashboard from "./pages/broker/workspace/WorkspaceDashboard";
 import WorkspaceDashboardDatahub from "./pages/broker/workspace/WorkspaceDashboardDatahub";
 import WorkspaceRequests from "./pages/broker/workspace/WorkspaceRequests";
@@ -246,8 +246,40 @@ function AppRoutes() {
       <Route
         path="/support"
         element={
-          <ProtectedRoute>
-            <Support />
+          <ProtectedRoute allowedRole="client">
+            <ClientRequests />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/client/upload"
+        element={
+          <ProtectedRoute allowedRole="client">
+            <ClientUpload />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/client/documents"
+        element={
+          <ProtectedRoute allowedRole="client">
+            <Navigate to="/client/upload" replace />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/client/messages"
+        element={
+          <ProtectedRoute allowedRole="client">
+            <ClientMessages />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/client/reminders"
+        element={
+          <ProtectedRoute allowedRole="client">
+            <ClientReminders />
           </ProtectedRoute>
         }
       />
@@ -258,6 +290,38 @@ function AppRoutes() {
         element={
           <ProtectedRoute allowedRole="user">
             <UserPortalDashboard />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/user/company/:clientId"
+        element={
+          <ProtectedRoute allowedRole="user">
+            <UserCompanyDetails />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/user/documents"
+        element={
+          <ProtectedRoute allowedRole="user">
+            <UserDocuments />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/user/requests"
+        element={
+          <ProtectedRoute allowedRole="user">
+            <UserRequests />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/user/messages"
+        element={
+          <ProtectedRoute allowedRole="user">
+            <UserMessages />
           </ProtectedRoute>
         }
       />

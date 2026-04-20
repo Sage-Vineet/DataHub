@@ -1,15 +1,17 @@
 import { useAuth } from "../../context/AuthContext";
-import MessagesWorkspace from "../../components/messages/MessagesWorkspace";
+import CompanyDirectMessagesWorkspace from "../../components/messages/CompanyDirectMessagesWorkspace";
 
 export default function ClientMessages() {
   const { user } = useAuth();
   const companyId = user?.company_id || user?.companyId || user?.company_ids?.[0] || user?.companyIds?.[0] || "";
 
   return (
-    <MessagesWorkspace
+    <CompanyDirectMessagesWorkspace
       fixedCompanyId={companyId}
       title="Messages"
-      description="Coordinate with your broker and assigned users for this company."
+      description="Message your broker directly for this company."
+      contactLabel="Broker"
+      contactEmptyState="No broker is available for this company right now."
     />
   );
 }

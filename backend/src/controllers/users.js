@@ -101,6 +101,73 @@ async function getUserByEmail(email) {
   return enriched[0] || null;
 }
 
+async function resolveReplacementUserId(preferredUserId, userToDelete) {
+  if (preferredUserId && String(preferredUserId) !== String(userToDelete?.id)) {
+    return preferredUserId;
+  }
+
+  const candidateParams = [];
+  const companyFilters = [];
+  const companyIds = Array.from(new Set([
+    userToDelete?.company_id,
+    ...(userToDelete?.company_ids || []),
+  ].filter(Boolean).map(String)));
+
+  if (companyIds.length) {
+    const placeholders = companyIds.map(() => "?").join(",");
+    companyFilters.push(`
+      u.company_id IN (${placeholders})
+      OR EXISTS (
+        SELECT 1
+        FROM user_companies uc
+        WHERE uc.user_id = u.id
+          AND uc.company_id IN (${placeholders})
+      )
+    `);
+    candidateParams.push(...companyIds, ...companyIds);
+  }
+
+  const companyScopedCandidates = rowsOf(await db.query(
+    `SELECT u.id
+     FROM users u
+     WHERE u.id != ?
+       AND u.role IN ('broker', 'admin')
+       ${companyFilters.length ? `AND (${companyFilters.join(" OR ")})` : ""}
+     ORDER BY CASE WHEN u.role = 'admin' THEN 0 ELSE 1 END, u.created_at ASC
+     LIMIT 1`,
+    [userToDelete?.id, ...candidateParams],
+  ));
+  if (companyScopedCandidates[0]?.id) return companyScopedCandidates[0].id;
+
+  const globalCandidates = rowsOf(await db.query(
+    `SELECT id
+     FROM users
+     WHERE id != ?
+       AND role IN ('broker', 'admin')
+     ORDER BY CASE WHEN role = 'admin' THEN 0 ELSE 1 END, created_at ASC
+     LIMIT 1`,
+    [userToDelete?.id],
+  ));
+  return globalCandidates[0]?.id || null;
+}
+
+async function reassignRestrictedUserReferences(userId, replacementUserId) {
+  const statements = [
+    ["UPDATE requests SET created_by = ? WHERE created_by = ?", [replacementUserId, userId]],
+    ["UPDATE folders SET created_by = ? WHERE created_by = ?", [replacementUserId, userId]],
+    ["UPDATE documents SET uploaded_by = ? WHERE uploaded_by = ?", [replacementUserId, userId]],
+    ["UPDATE request_narratives SET updated_by = ? WHERE updated_by = ?", [replacementUserId, userId]],
+    ["UPDATE request_reminders SET sent_by = ? WHERE sent_by = ?", [replacementUserId, userId]],
+    ["UPDATE folder_access SET created_by = ? WHERE created_by = ?", [replacementUserId, userId]],
+    ["UPDATE reminders SET created_by = ? WHERE created_by = ?", [replacementUserId, userId]],
+    ["UPDATE activity_log SET created_by = ? WHERE created_by = ?", [replacementUserId, userId]],
+  ];
+
+  for (const [sql, params] of statements) {
+    await db.query(sql, params);
+  }
+}
+
 const listUsers = asyncHandler(async (req, res) => {
   const users = rowsOf(await db.query(
     `${userSelect}
@@ -180,9 +247,15 @@ const updateUser = asyncHandler(async (req, res) => {
 });
 
 const deleteUser = asyncHandler(async (req, res) => {
-  const result = rowsOf(await db.query("SELECT id FROM users WHERE id = ?", [req.params.id]));
-  if (result.length === 0) return res.status(404).json({ error: "Not found" });
+  const user = await getUserById(req.params.id);
+  if (!user) return res.status(404).json({ error: "Not found" });
 
+  const replacementUserId = await resolveReplacementUserId(req.user?.id, user);
+  if (!replacementUserId) {
+    return res.status(400).json({ error: "Unable to delete user because no replacement owner is available for their records." });
+  }
+
+  await reassignRestrictedUserReferences(user.id, replacementUserId);
   await db.query("DELETE FROM users WHERE id = ?", [req.params.id]);
   res.status(204).send();
 });

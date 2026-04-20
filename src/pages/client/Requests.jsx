@@ -9,7 +9,6 @@ import {
   Loader2,
   Scale,
   Search,
-  Send,
   ShieldCheck,
   TrendingUp,
   Upload,
@@ -20,7 +19,6 @@ import {
 import { useAuth } from '../../context/AuthContext';
 import {
   attachRequestDocument,
-  createCompanyRequestItem,
   createCompanyFolder,
   createFolderDocument,
   listFolderTree,
@@ -30,8 +28,7 @@ import {
   updateRequest,
   updateRequestNarrative,
 } from '../../lib/api';
-import NewRequestModal from '../../components/NewRequestModal';
-import { buildFolderMapFromTree, buildFolderOptionsFromTree } from '../../lib/folderOptions';
+import { buildFolderMapFromTree } from '../../lib/folderOptions';
 
 const CATEGORY_META = {
   Finance: { icon: TrendingUp, color: '#476E2C', bg: '#E6F3D3' },
@@ -92,8 +89,18 @@ function getDisplayStatus(workflowStatus, dueDate) {
 }
 
 function normalizePriority(priority) {
-  if (priority === 'critical' || priority === 'high' || priority === 'medium' || priority === 'low') return priority;
-  return 'medium';
+  const normalized = `${priority ?? ''}`.trim();
+  return normalized || 'medium';
+}
+
+function getPriorityMeta(priority) {
+  const normalized = `${priority ?? ''}`.trim().toLowerCase();
+  if (PRIORITY_META[normalized]) return PRIORITY_META[normalized];
+  return {
+    label: `${priority || 'Custom'}`,
+    bg: '#DBEAFE',
+    color: '#1D4ED8',
+  };
 }
 
 function normalizeType(item) {
@@ -167,30 +174,6 @@ function mapUiPatchToApi(patch) {
   return apiPatch;
 }
 
-function buildCreateRequestPayload(form) {
-  const folderLabel = form.requestType === 'Information' ? '' : (form.category || '').trim();
-  const resolvedCategory = mapToCategory({
-    name: form.name?.trim() || '',
-    subLabel: folderLabel,
-    description: form.description?.trim() || '',
-    category: folderLabel,
-  });
-  const responseType = form.requestType === 'Information' ? 'Narrative' : 'Both';
-
-  return {
-    title: form.name.trim(),
-    sub_label: folderLabel,
-    description: form.description?.trim() || '',
-    category: resolvedCategory,
-    response_type: responseType,
-    priority: normalizePriority(form.priority),
-    status: form.status,
-    due_date: form.dueDate || null,
-    assigned_to: null,
-    visible: true,
-  };
-}
-
 function CategoryCard({ category, requestsInCategory, onClick }) {
   const meta = CATEGORY_META[category];
   const Icon = meta.icon;
@@ -221,7 +204,7 @@ function CategoryCard({ category, requestsInCategory, onClick }) {
 }
 
 function RequestRow({ item, onView }) {
-  const priority = PRIORITY_META[item.priority];
+  const priority = getPriorityMeta(item.priority);
   return (
     <tr className="border-b border-gray-50 hover:bg-gray-50/70 transition-colors">
       <td className="px-4 py-3 text-xs font-bold text-[#6D6E71] font-mono">{item.id}</td>
@@ -391,7 +374,7 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onUp
 
   if (!request) return null;
 
-  const priority = PRIORITY_META[request.priority];
+  const priority = getPriorityMeta(request.priority);
   const due = new Date(request.dueDate);
   const isOverdue = due < new Date() && request.workflowStatus !== 'completed' && request.workflowStatus !== 'blocked';
   const currentStatus = getDisplayStatus(request.workflowStatus, request.dueDate);
@@ -584,15 +567,12 @@ export default function ClientRequests() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [folderMap, setFolderMap] = useState({});
-  const [folderOptions, setFolderOptions] = useState([]);
-  const [foldersLoading, setFoldersLoading] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState(null);
   const [categoryView, setCategoryView] = useState('table');
   const [statusFilter, setStatusFilter] = useState('all');
   const [priorityFilter, setPriorityFilter] = useState('all');
   const [search, setSearch] = useState('');
   const [activeRequestId, setActiveRequestId] = useState(null);
-  const [isNewRequestOpen, setIsNewRequestOpen] = useState(false);
 
   const loadRequests = async () => {
     if (!companyId) return;
@@ -611,17 +591,13 @@ export default function ClientRequests() {
   useEffect(() => {
     if (!companyId) return;
     loadRequests();
-    setFoldersLoading(true);
     listFolderTree(companyId)
       .then((tree) => {
         setFolderMap(buildFolderMapFromTree(tree));
-        setFolderOptions(buildFolderOptionsFromTree(tree));
       })
       .catch(() => {
         setFolderMap({});
-        setFolderOptions([]);
-      })
-      .finally(() => setFoldersLoading(false));
+      });
   }, [companyId]);
 
   useEffect(() => {
@@ -742,24 +718,6 @@ export default function ClientRequests() {
     }
   };
 
-  const createRequest = async (form) => {
-    if (!companyId) return;
-    setError('');
-    setSuccess('');
-    try {
-      const payload = {
-        ...buildCreateRequestPayload(form),
-        created_by: user?.id || null,
-      };
-      await createCompanyRequestItem(companyId, payload);
-      await loadRequests();
-      setIsNewRequestOpen(false);
-      setSuccess('Request created successfully.');
-    } catch (err) {
-      setError(err.message || 'Unable to create request.');
-    }
-  };
-
   const visibleRequests = requestState.filter(r => r.visible);
   const grouped = useMemo(() => {
     const categories = Array.from(new Set(visibleRequests.map(r => r.category)))
@@ -773,6 +731,11 @@ export default function ClientRequests() {
       items: visibleRequests.filter(r => r.category === cat),
     })).filter(g => g.items.length > 0);
   }, [visibleRequests]);
+
+  const priorityFilterOptions = useMemo(() => ([
+    'all',
+    ...Array.from(new Set(visibleRequests.map((request) => request.priority).filter(Boolean))),
+  ]), [visibleRequests]);
 
   const rowsForCategory = useMemo(() => {
     if (!selectedCategory) return [];
@@ -832,14 +795,6 @@ export default function ClientRequests() {
                 <List size={13} /> Table
               </button>
             </div>
-            <button
-              type="button"
-              onClick={() => setIsNewRequestOpen(true)}
-              className="flex items-center gap-2 px-4 py-2.5 bg-[#8BC53D] hover:bg-[#476E2C] text-white rounded-xl text-xs sm:text-sm font-semibold transition-all duration-200 hover:scale-[1.02] shadow-md"
-            >
-              <Send size={15} />
-              New Request
-            </button>
           </div>
         )}
       </div>
@@ -847,7 +802,11 @@ export default function ClientRequests() {
       {loading ? (
         <div className="text-center text-sm text-[#A5A5A5] py-10">Loading requests...</div>
       ) : (!selectedCategory ? (
-        categoryView === 'cards' ? (
+        grouped.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-gray-200 bg-white px-6 py-14 text-center text-sm text-[#6D6E71]">
+            No requests have been shared with the client portal yet.
+          </div>
+        ) : categoryView === 'cards' ? (
           <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-5">
             {grouped.map(g => (
               <CategoryCard
@@ -897,11 +856,11 @@ export default function ClientRequests() {
                 onChange={(e) => setPriorityFilter(e.target.value)}
                 className="px-3 py-2 rounded-xl border border-gray-200 bg-white text-sm text-[#050505]"
               >
-                <option value="all">All Priorities</option>
-                <option value="critical">Critical</option>
-                <option value="high">High</option>
-                <option value="medium">Medium</option>
-                <option value="low">Low</option>
+                {priorityFilterOptions.map((option) => (
+                  <option key={option} value={option}>
+                    {option === 'all' ? 'All Priorities' : option}
+                  </option>
+                ))}
               </select>
               <button
                 onClick={() => {
@@ -916,17 +875,15 @@ export default function ClientRequests() {
             </div>
           </div>
 
-          <CategoryTable rows={rowsForCategory} onView={(r) => setActiveRequestId(r.id)} />
+          {rowsForCategory.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-gray-200 bg-white px-6 py-14 text-center text-sm text-[#6D6E71]">
+              No requests matched this category and filter combination.
+            </div>
+          ) : (
+            <CategoryTable rows={rowsForCategory} onView={(r) => setActiveRequestId(r.id)} />
+          )}
         </div>
       ))}
-
-      <NewRequestModal
-        isOpen={isNewRequestOpen}
-        onClose={() => setIsNewRequestOpen(false)}
-        onCreate={createRequest}
-        folderOptions={folderOptions}
-        foldersLoading={foldersLoading}
-      />
     </div>
   );
 }

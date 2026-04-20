@@ -5,7 +5,6 @@ import {
   Building2,
   Bell,
   LogOut,
-  Upload,
   ClipboardList,
   X,
   MoreHorizontal,
@@ -22,9 +21,8 @@ const brokerNav = [
 const clientNav = [
   { label: "Dashboard", icon: LayoutDashboard, to: "/client/dashboard" },
   { label: "My Requests", icon: ClipboardList, to: "/client/requests" },
-  { label: "Documents", icon: FileText, to: "/client/documents" },
+  { label: "Documents", icon: FileText, to: "/client/upload" },
   { label: "Messages", icon: MessageSquare, to: "/client/messages" },
-  { label: "Upload Documents", icon: Upload, to: "/client/upload" },
   { label: "Reminders", icon: Bell, to: "/client/reminders" },
 ];
 

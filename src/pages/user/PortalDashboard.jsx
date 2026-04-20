@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowRight, Building2, Briefcase, Mail, Phone, FolderKanban, BarChart3, FileText, Eye, TrendingUp } from 'lucide-react';
+import { ArrowRight, Building2, Briefcase, Mail, Phone, FolderKanban, BarChart3, FileText, Eye, TrendingUp, ClipboardList } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { listCompanyRequests, listCompanyFolders, listRequestDocuments } from '../../lib/api';
 import { getAssignedCompanies } from './portalUtils';
@@ -117,6 +117,14 @@ export default function UserPortalDashboard() {
             <div>
               <p className="text-xs text-[#A5A5A5]">Due Diligence</p>
               <p className="mt-2 text-3xl font-bold text-[#05164D]">{stats.totalRequests}</p>
+              <button
+                type="button"
+                onClick={() => navigate('/user/requests')}
+                className="mt-3 inline-flex items-center gap-1 text-xs font-semibold text-[#8BC53D] hover:text-[#476E2C]"
+              >
+                <ClipboardList size={13} />
+                View request status
+              </button>
             </div>
             <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-[#C9E4A4]">
               <TrendingUp size={24} className="text-[#476E2C]" />

@@ -1,33 +1,104 @@
 const db = require("../db");
+const bcrypt = require("bcryptjs");
 const asyncHandler = require("../utils");
+const { ensureCompanyDefaultFolders } = require("../utils/defaultFolders");
+const CLIENT_STATIC_PASSWORD = process.env.CLIENT_STATIC_PASSWORD || "123456";
 
-const DEFAULT_FOLDER_STRUCTURE = [
-  { name: "Finance", children: ["Q3 Reports"] },
-  { name: "Legal", children: ["Contracts"] },
-  { name: "HR & People" },
-  { name: "Tax" },
-  { name: "M&A" },
-  { name: "Compliance" },
-];
+function rowsOf(result) {
+  if (!result) return [];
+  return Array.isArray(result) ? result : result.rows || [];
+}
 
-const createDefaultFolders = async (companyId, createdBy) => {
-  for (const folder of DEFAULT_FOLDER_STRUCTURE) {
-    const { rows: parentRows } = await db.query(
-      "INSERT INTO folders (company_id, parent_id, name, color, created_by) VALUES (?, ?, ?, ?, ?) RETURNING *",
-      [companyId, null, folder.name, null, createdBy]
+async function syncCompanyClientRepresentative(company, previousCompany = null) {
+  if (!company?.id || !company.contact_email || !company.contact_name) return;
+
+  const normalizedEmail = String(company.contact_email).trim().toLowerCase();
+  if (!normalizedEmail) return;
+
+  const previousNormalizedEmail = String(previousCompany?.contact_email || "").trim().toLowerCase();
+
+  let existingUser = null;
+
+  if (
+    previousCompany?.id
+    && previousNormalizedEmail
+    && previousNormalizedEmail !== normalizedEmail
+  ) {
+    const previousContactUsers = rowsOf(await db.query(
+      `SELECT id, role
+       FROM users
+       WHERE company_id = ?
+         AND role = 'buyer'
+         AND lower(email) = ?
+       LIMIT 1`,
+      [previousCompany.id, previousNormalizedEmail],
+    ));
+
+    existingUser = previousContactUsers[0] || null;
+  }
+
+  if (!existingUser) {
+    const existingUsers = rowsOf(await db.query(
+      `SELECT id, role
+       FROM users
+       WHERE lower(email) = ?
+       LIMIT 1`,
+      [normalizedEmail],
+    ));
+
+    existingUser = existingUsers[0] || null;
+  }
+
+  if (existingUser && existingUser.role !== "buyer") {
+    return existingUser.id;
+  }
+
+  if (existingUser) {
+    await db.query(
+      `UPDATE users
+       SET name = ?, email = ?, phone = ?, company_id = ?, status = 'active', updated_at = ?
+       WHERE id = ?`,
+      [
+        company.contact_name,
+        normalizedEmail,
+        company.contact_phone || null,
+        company.id,
+        new Date().toISOString(),
+        existingUser.id,
+      ],
     );
 
-    const parent = parentRows[0];
-    if (folder.children && folder.children.length) {
-      for (const childName of folder.children) {
-        await db.query(
-          "INSERT INTO folders (company_id, parent_id, name, color, created_by) VALUES (?, ?, ?, ?, ?) RETURNING *",
-          [companyId, parent.id, childName, null, createdBy]
-        );
-      }
-    }
+    await db.query(
+      "INSERT INTO user_companies (user_id, company_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
+      [existingUser.id, company.id],
+    );
+    return;
   }
-};
+
+  const passwordHash = await bcrypt.hash(CLIENT_STATIC_PASSWORD, 10);
+  const inserted = rowsOf(await db.query(
+    `INSERT INTO users (name, email, phone, password_hash, role, company_id, status)
+     VALUES (?, ?, ?, ?, 'buyer', ?, 'active')
+     RETURNING id`,
+    [
+      company.contact_name,
+      normalizedEmail,
+      company.contact_phone || null,
+      passwordHash,
+      company.id,
+    ],
+  ));
+
+  const createdUserId = inserted[0]?.id;
+  if (createdUserId) {
+    await db.query(
+      "INSERT INTO user_companies (user_id, company_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
+      [createdUserId, company.id],
+    );
+  }
+
+  return createdUserId || null;
+}
 
 const listCompanies = asyncHandler(async (req, res) => {
   const { rows } = await db.query(
@@ -68,9 +139,9 @@ const createCompany = asyncHandler(async (req, res) => {
   );
 
   const inserted = rows[0];
-  const createdBy = req.user?.id;
-  if (inserted && createdBy) {
-    await createDefaultFolders(inserted.id, createdBy);
+  const clientRepresentativeId = inserted ? await syncCompanyClientRepresentative(inserted) : null;
+  if (inserted) {
+    await ensureCompanyDefaultFolders(inserted.id, req.user?.id || clientRepresentativeId || null);
   }
 
   res.status(201).json(inserted);
@@ -96,8 +167,11 @@ const getCompany = asyncHandler(async (req, res) => {
 const updateCompany = asyncHandler(async (req, res) => {
   const fields = [];
   const values = [];
-  let idx = 1;
   const body = req.body || {};
+
+  const currentRows = rowsOf(await db.query("SELECT * FROM companies WHERE id = ?", [req.params.id]));
+  const existingCompany = currentRows[0];
+  if (!existingCompany) return res.status(404).json({ error: "Not found" });
 
   Object.keys(body).forEach((key) => {
     if (key === 'status') {
@@ -121,6 +195,8 @@ const updateCompany = asyncHandler(async (req, res) => {
   // Get updated company
   const { rows } = await db.query("SELECT * FROM companies WHERE id = ?", [req.params.id]);
   if (!rows[0]) return res.status(404).json({ error: "Not found" });
+  const clientRepresentativeId = await syncCompanyClientRepresentative(rows[0], existingCompany);
+  await ensureCompanyDefaultFolders(rows[0].id, req.user?.id || clientRepresentativeId || null);
   res.json(rows[0]);
 });
 

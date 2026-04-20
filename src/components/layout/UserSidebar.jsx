@@ -1,10 +1,11 @@
 import { NavLink, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, Building2, FolderOpen, LogOut, X, MoreHorizontal, MessageSquare } from 'lucide-react';
+import { LayoutDashboard, Building2, FolderOpen, LogOut, X, MoreHorizontal, MessageSquare, ClipboardList } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import datahublogo from '../../assets/datahublogo.png';
 
 const userNav = [
   { label: 'Company List', icon: LayoutDashboard, to: '/user/portal-dashboard' },
+  { label: 'Requests', icon: ClipboardList, to: '/user/requests' },
   { label: 'Documents', icon: FolderOpen, to: '/user/documents' },
   { label: 'Messages', icon: MessageSquare, to: '/user/messages' },
 ];

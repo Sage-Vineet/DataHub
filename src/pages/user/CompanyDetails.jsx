@@ -1,9 +1,50 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Briefcase, Building2, CheckCircle2, Mail, Phone, ShieldCheck, FileText, BarChart3, Folder, TrendingUp, DollarSign, Calendar } from 'lucide-react';
+import { ArrowLeft, Briefcase, Building2, CheckCircle2, Mail, Phone, ShieldCheck, FileText, BarChart3, Folder, TrendingUp, Send } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
-import { getCompanyRequest, listCompaniesRequest, listCompanyRequests, listCompanyFolders, listRequestDocuments } from '../../lib/api';
+import { createCompanyRequestItem, getCompanyRequest, listCompaniesRequest, listCompanyRequests, listCompanyFolders, listFolderTree, listRequestDocuments } from '../../lib/api';
 import { getAssignedCompanies, normalizeAssignedCompany } from './portalUtils';
+import NewRequestModal from '../../components/NewRequestModal';
+import { buildFolderOptionsFromTree } from '../../lib/folderOptions';
+
+function mapToCategory(item) {
+  const text = `${item.name} ${item.subLabel || ''} ${item.description || ''}`.toLowerCase();
+  if (text.includes('revenue recognition') || text.includes('trial balance')) return 'Finance';
+  if (text.includes('litigation') || text.includes('arbitration')) return 'Legal';
+  if (text.includes('tax') || text.includes('regulatory') || text.includes('compliance') || text.includes('gst')) return 'Compliance';
+  if (text.includes('hr') || text.includes('people') || text.includes('employment')) return 'HR';
+  if (text.includes('m&a') || text.includes('merger') || text.includes('acquisition')) return 'M&A';
+  if ((item.category || '').toLowerCase().includes('finance')) return 'Finance';
+  if ((item.category || '').toLowerCase().includes('legal')) return 'Legal';
+  if ((item.category || '').toLowerCase().includes('tax')) return 'Tax';
+  if ((item.category || '').toLowerCase().includes('hr')) return 'HR';
+  if ((item.category || '').toLowerCase().includes('m&a')) return 'M&A';
+  if ((item.category || '').toLowerCase().includes('compliance')) return 'Compliance';
+  return 'Other';
+}
+
+function buildCreateRequestPayload(form) {
+  const folderLabel = form.requestType === 'Information' ? '' : (form.category || '').trim();
+  const resolvedCategory = mapToCategory({
+    name: form.name?.trim() || '',
+    subLabel: folderLabel,
+    description: form.description?.trim() || '',
+    category: folderLabel,
+  });
+
+  return {
+    title: form.name.trim(),
+    sub_label: folderLabel,
+    description: form.description.trim(),
+    category: resolvedCategory,
+    response_type: form.requestType === 'Information' ? 'Narrative' : 'Both',
+    priority: form.priority,
+    status: 'pending',
+    due_date: form.dueDate,
+    assigned_to: null,
+    visible: true,
+  };
+}
 
 export default function UserCompanyDetails() {
   const { user } = useAuth();
@@ -17,6 +58,10 @@ export default function UserCompanyDetails() {
   const [company, setCompany] = useState(assignedCompany);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [requestModalOpen, setRequestModalOpen] = useState(false);
+  const [folderOptions, setFolderOptions] = useState([]);
+  const [foldersLoading, setFoldersLoading] = useState(false);
   const [companyData, setCompanyData] = useState({
     requests: [],
     folders: [],
@@ -99,6 +144,42 @@ export default function UserCompanyDetails() {
     };
   }, [clientId, assignedCompany]);
 
+  useEffect(() => {
+    if (!clientId) return;
+    setFoldersLoading(true);
+    listFolderTree(clientId)
+      .then((tree) => setFolderOptions(buildFolderOptionsFromTree(tree)))
+      .catch(() => setFolderOptions([]))
+      .finally(() => setFoldersLoading(false));
+  }, [clientId]);
+
+  useEffect(() => {
+    if (!success) return undefined;
+    const timer = setTimeout(() => setSuccess(''), 3000);
+    return () => clearTimeout(timer);
+  }, [success]);
+
+  const submitNewRequest = async (form) => {
+    if (!clientId) return;
+    setError('');
+    setSuccess('');
+    try {
+      await createCompanyRequestItem(clientId, {
+        ...buildCreateRequestPayload(form),
+        created_by: user?.id || null,
+      });
+      const updatedRequests = await listCompanyRequests(clientId).catch(() => []);
+      setCompanyData((current) => ({
+        ...current,
+        requests: updatedRequests,
+      }));
+      setRequestModalOpen(false);
+      setSuccess('Request submitted to the broker for approval.');
+    } catch (err) {
+      setError(err.message || 'Unable to submit request.');
+    }
+  };
+
   if (!loading && !assignedCompany) {
     return (
       <div className="rounded-3xl border border-[#E5E7EF] bg-white p-10 text-center shadow-sm">
@@ -130,6 +211,22 @@ export default function UserCompanyDetails() {
           {error}
         </div>
       )}
+      {success && (
+        <div className="rounded-2xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
+          {success}
+        </div>
+      )}
+
+      <div className="flex justify-end">
+        <button
+          type="button"
+          onClick={() => setRequestModalOpen(true)}
+          className="inline-flex items-center gap-2 rounded-xl bg-[#8BC53D] px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#476E2C]"
+        >
+          <Send size={15} />
+          New Request
+        </button>
+      </div>
 
       <div className="grid gap-5 lg:grid-cols-[1.1fr_0.9fr]">
         <div className="rounded-3xl bg-white p-6 shadow-sm">
@@ -302,6 +399,32 @@ export default function UserCompanyDetails() {
         </div>
       )}
 
+      {companyData.requests.length > 0 && (
+        <div className="rounded-3xl bg-white p-6 shadow-sm">
+          <h2 className="text-lg font-bold text-[#05164D]">Recent Requests</h2>
+          <div className="mt-5 space-y-3">
+            {companyData.requests.slice(0, 6).map((request) => {
+              const isPendingApproval = request.approval_status === 'pending';
+              return (
+                <div key={request.id} className="flex items-start justify-between gap-3 rounded-2xl border border-[#E5E7EF] p-4">
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-[#05164D]">{request.title}</p>
+                    <p className="mt-1 text-xs text-[#6D6E71]">{request.description}</p>
+                  </div>
+                  <span className={`shrink-0 rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                    isPendingApproval
+                      ? 'bg-[#FEF3C7] text-[#A86F0B]'
+                      : 'bg-[#E6F3D3] text-[#476E2C]'
+                  }`}>
+                    {isPendingApproval ? 'Pending Broker Approval' : 'Approved'}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Empty State */}
       {companyData.documents.length === 0 && companyData.folders.length === 0 && !loading && (
         <div className="rounded-3xl border border-[#E5E7EF] bg-white p-8 text-center">
@@ -312,6 +435,14 @@ export default function UserCompanyDetails() {
           </p>
         </div>
       )}
+
+      <NewRequestModal
+        isOpen={requestModalOpen}
+        onClose={() => setRequestModalOpen(false)}
+        onCreate={submitNewRequest}
+        folderOptions={folderOptions}
+        foldersLoading={foldersLoading}
+      />
     </div>
   );
 }

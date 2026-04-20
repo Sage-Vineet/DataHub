@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { useAuth } from "../context/AuthContext";
 import { Eye, EyeOff, LogIn, ShieldCheck } from "lucide-react";
-
 import datahublogo from "../assets/datahublogo.png";
 
 const demoCredentials = [
@@ -14,14 +13,14 @@ const demoCredentials = [
   },
   {
     role: "Client",
-    email: "toyota.info@yopmail.com",
+    email: "avi@yopmai.com",
     password: "123456",
     color: "#FFFFFF",
     bg: "#8BC53D",
   },
   {
     role: "User",
-    email: "yamada.taro@yopmail.com",
+    email: "david@yopmail.com",
     password: "123456",
     color: "#FFFFFF",
     bg: "#8BC53D",

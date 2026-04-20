@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
   Folder, FolderOpen, File, FileText, Search, Download, Eye, Upload,
   ChevronRight, ChevronDown, Trash2, Home, Archive, X, ArrowLeft, Check,
@@ -6,7 +6,7 @@ import {
   ArrowUpDown, ArrowUp, ArrowDown, CheckCircle, Clock, Share2, Users, Loader2,
 } from 'lucide-react';
 import { useFileExplorerStore, findById, getPathTo } from '../../store/fileExplorerStore';
-import { fetchProtectedFileBlob, listCompanyRequests, listUsersRequest } from '../../lib/api';
+import { fetchProtectedFileBlob, listCompanyGroups, listCompanyRequests, listUsersRequest } from '../../lib/api';
 
 // ── File Type Helpers ────────────────────────────────────────────────────────
 function getMimeIcon(ext) {
@@ -980,6 +980,10 @@ function FolderActionMenu({ onShareAccess, onRename, onMove, onDelete, className
   );
 }
 
+function getAccessSubjectKey(subject) {
+  return `${subject.type || 'user'}:${subject.subjectId || subject.id}`;
+}
+
 function ShareAccessModal({ isOpen, folder, entries, people, onSave, onClose }) {
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState([]);
@@ -987,14 +991,16 @@ function ShareAccessModal({ isOpen, folder, entries, people, onSave, onClose }) 
 
   useEffect(() => {
     if (!isOpen) return;
-    const directory = new Map((people || []).map((person) => [person.id, person]));
+    const directory = new Map((people || []).map((person) => [getAccessSubjectKey(person), person]));
     setSelected(entries.map((entry) => {
-      const person = directory.get(entry.subjectId || entry.id);
+      const subjectType = entry.type || 'user';
+      const subjectId = entry.subjectId || entry.id;
+      const person = directory.get(getAccessSubjectKey({ type: subjectType, subjectId }));
       return {
         ...entry,
-        id: entry.subjectId || entry.id,
-        subjectId: entry.subjectId || entry.id,
-        type: 'user',
+        id: subjectId,
+        subjectId,
+        type: subjectType,
         name: person?.name || entry.name,
         meta: person?.meta || entry.meta || '',
         accessType: permissionsToAccessType(entry.permissions),
@@ -1011,16 +1017,17 @@ function ShareAccessModal({ isOpen, folder, entries, people, onSave, onClose }) 
     t.name.toLowerCase().includes(search.toLowerCase()) || (t.meta || '').toLowerCase().includes(search.toLowerCase())
   );
 
-  const isSelected = (target) => selected.some(s => s.id === target.id);
+  const isSelected = (target) => selected.some(s => getAccessSubjectKey(s) === getAccessSubjectKey(target));
   const toggleTarget = (target) => {
     setSelected(prev => {
-      if (prev.some(s => s.id === target.id)) {
-        return prev.filter(s => s.id !== target.id);
+      const targetKey = getAccessSubjectKey(target);
+      if (prev.some(s => getAccessSubjectKey(s) === targetKey)) {
+        return prev.filter(s => getAccessSubjectKey(s) !== targetKey);
       }
       return [...prev, {
         ...target,
         subjectId: target.id,
-        type: 'user',
+        type: target.type || 'user',
         accessType: 'read',
         permissions: accessTypeToPermissions('read'),
       }];
@@ -1029,7 +1036,7 @@ function ShareAccessModal({ isOpen, folder, entries, people, onSave, onClose }) 
 
   const updateAccessType = (targetId, accessType) => {
     setSelected(prev => prev.map(s => (
-      s.id === targetId ? { ...s, accessType, permissions: accessTypeToPermissions(accessType) } : s
+      getAccessSubjectKey(s) === targetId ? { ...s, accessType, permissions: accessTypeToPermissions(accessType) } : s
     )));
   };
 
@@ -1059,20 +1066,20 @@ function ShareAccessModal({ isOpen, folder, entries, people, onSave, onClose }) 
 
         <div className="p-5 space-y-5">
           <div>
-            <h4 className="text-sm font-semibold text-[#050505] mb-2">Select Persons</h4>
+            <h4 className="text-sm font-semibold text-[#050505] mb-2">Select Users or Groups</h4>
             <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 mb-3">
               <Search size={14} className="text-[#A5A5A5]" />
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search persons..."
+                placeholder="Search users or groups..."
                 className="bg-transparent text-sm outline-none w-full"
               />
             </div>
             <div className="grid sm:grid-cols-2 gap-2 max-h-44 overflow-y-auto pr-1">
               {filtered.map(target => (
                 <button
-                  key={target.id}
+                  key={getAccessSubjectKey(target)}
                   onClick={() => toggleTarget(target)}
                   className={`flex items-center gap-3 px-3 py-2 rounded-xl border text-left transition-colors ${
                     isSelected(target) ? 'border-[#8BC53D] bg-[#E6F3D3]/40' : 'border-gray-200 hover:bg-gray-50'
@@ -1093,18 +1100,23 @@ function ShareAccessModal({ isOpen, folder, entries, people, onSave, onClose }) 
           <div>
             <h4 className="text-sm font-semibold text-[#050505] mb-2">Access Type</h4>
             {selected.length === 0 ? (
-              <p className="text-sm text-[#A5A5A5]">Select persons to assign access.</p>
+              <p className="text-sm text-[#A5A5A5]">Select users or groups to assign access.</p>
             ) : (
               <div className="space-y-2">
                 {selected.map(target => (
-                  <div key={target.id} className="flex flex-wrap items-center gap-3 px-3 py-2 bg-gray-50 rounded-xl">
-                    <span className="text-sm font-semibold text-[#050505] min-w-[160px]">{target.name}</span>
+                  <div key={getAccessSubjectKey(target)} className="flex flex-wrap items-center gap-3 px-3 py-2 bg-gray-50 rounded-xl">
+                    <span className="text-sm font-semibold text-[#050505] min-w-[160px]">
+                      {target.name}
+                      <span className="ml-2 rounded-full bg-white px-2 py-0.5 text-[10px] font-bold uppercase text-[#A5A5A5]">
+                        {target.type === 'group' ? 'Group' : 'User'}
+                      </span>
+                    </span>
                     <div className="flex flex-wrap items-center gap-2">
                       {ACCESS_TYPE_OPTIONS.map((option) => (
                         <button
                           key={option.key}
                           type="button"
-                          onClick={() => updateAccessType(target.id, option.key)}
+                          onClick={() => updateAccessType(getAccessSubjectKey(target), option.key)}
                           className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${
                             target.accessType === option.key
                               ? 'bg-[#8BC53D] text-white'
@@ -1128,8 +1140,13 @@ function ShareAccessModal({ isOpen, folder, entries, people, onSave, onClose }) 
             ) : (
               <div className="flex flex-col gap-2">
                 {selected.map(target => (
-                  <div key={target.id} className="flex items-center justify-between px-3 py-2 border border-gray-200 rounded-xl">
-                    <span className="text-sm font-semibold text-[#050505]">{target.name}</span>
+                  <div key={getAccessSubjectKey(target)} className="flex items-center justify-between gap-3 px-3 py-2 border border-gray-200 rounded-xl">
+                    <div className="min-w-0">
+                      <span className="text-sm font-semibold text-[#050505]">{target.name}</span>
+                      <span className="ml-2 text-[10px] font-bold uppercase text-[#A5A5A5]">
+                        {target.type === 'group' ? 'Group' : 'User'}
+                      </span>
+                    </div>
                     <span className="text-[10px] px-2.5 py-1 rounded-full bg-[#E6F3D3] text-[#476E2C] font-semibold uppercase">
                       {target.accessType}
                     </span>
@@ -1620,6 +1637,7 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
   const [moveModal, setMoveModal] = useState(null);
   const [requestCountsByFolderName, setRequestCountsByFolderName] = useState({});
   const [sharePeople, setSharePeople] = useState([]);
+  const [currentUserGroupIds, setCurrentUserGroupIds] = useState([]);
 
   useEffect(() => {
     if (!companyId) return;
@@ -1651,12 +1669,26 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
 
   useEffect(() => {
     if (!companyId) {
-      setSharePeople([]);
-      return;
+      let cancelled = false;
+      Promise.resolve().then(() => {
+        if (!cancelled) {
+          setSharePeople([]);
+          setCurrentUserGroupIds([]);
+        }
+      });
+      return () => {
+        cancelled = true;
+      };
     }
 
-    listUsersRequest()
-      .then((users) => {
+    let cancelled = false;
+
+    Promise.all([
+      listUsersRequest().catch(() => []),
+      listCompanyGroups(companyId).catch(() => []),
+    ])
+      .then(([users, groups]) => {
+        if (cancelled) return;
         const people = users
           .filter((user) => {
             const userCompanyId = user.company_id || user.companyId;
@@ -1670,10 +1702,31 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
             meta: user.email || user.phone || 'Client user',
             type: 'user',
           }));
-        setSharePeople(people);
+        const groupTargets = groups.map((group) => ({
+          id: group.id,
+          name: group.name || 'Unnamed group',
+          meta: `${group.member_count || group.member_ids?.length || 0} members`,
+          type: 'group',
+        }));
+        const memberGroupIds = currentUserId
+          ? groups
+              .filter((group) => (group.member_ids || []).some((userId) => String(userId) === String(currentUserId)))
+              .map((group) => group.id)
+          : [];
+        setSharePeople([...people, ...groupTargets]);
+        setCurrentUserGroupIds(memberGroupIds);
       })
-      .catch(() => setSharePeople([]));
-  }, [companyId]);
+      .catch(() => {
+        if (!cancelled) {
+          setSharePeople([]);
+          setCurrentUserGroupIds([]);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [companyId, currentUserId]);
 
   useEffect(() => {
     if (!currentUserId) return;
@@ -1709,9 +1762,11 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
   const currentFolder = findById(tree, currentFolderId) || tree;
   const canManageAccess = role === 'broker';
 
-  const currentUser = role === 'broker'
-    ? null
-    : { id: currentUserId, groups: [] };
+  const currentUser = useMemo(() => (
+    role === 'broker'
+      ? null
+      : { id: currentUserId, groups: currentUserGroupIds }
+  ), [currentUserGroupIds, currentUserId, role]);
 
   const getFolderPermissions = useCallback((folderId) => {
     if (role === 'broker') return { read: true, write: true, download: true };
@@ -1747,7 +1802,7 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
     const entries = folderAccess[folderId] || [];
     const count = entries.length;
     return count > 0
-      ? { count, tooltip: `Shared with ${count} user${count === 1 ? '' : 's'}` }
+      ? { count, tooltip: `Shared with ${count} user/group${count === 1 ? '' : 's'}` }
       : { count: 0, tooltip: '' };
   }, [folderAccess]);
 
@@ -1859,7 +1914,7 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
     if (!shareFolder) return;
     const normalizedEntries = entries.map((entry) => ({
       ...entry,
-      type: 'user',
+      type: entry.type || 'user',
       subjectId: entry.subjectId || entry.id,
       permissions: accessTypeToPermissions(entry.accessType || permissionsToAccessType(entry.permissions)),
     }));

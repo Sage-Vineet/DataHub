@@ -8,11 +8,10 @@ import { useNavigate } from 'react-router-dom';
 import { useClientStore } from '../../store/clientStore';
 import StatusBadge from '../../components/common/StatusBadge';
 import Modal from '../../components/common/Modal';
-import { createCompanyFolder, createCompanyRequest, listCompaniesRequest, listFolderTree, updateCompanyRequest } from '../../lib/api';
+import { createCompanyRequest, listCompaniesRequest, updateCompanyRequest } from '../../lib/api';
 
 const PAGE_SIZE = 10;
 const EMPTY_FORM = { name: '', contact: '', email: '', phone: '', industry: '' };
-const DEFAULT_COMPANY_FOLDERS = ['Finance', 'Legal', 'Compliance', 'HR', 'Tax', 'M&A'];
 
 function getInitials(name = '') {
   return name
@@ -42,39 +41,14 @@ function formatCompany(company) {
   };
 }
 
-async function ensureDefaultCompanyFolders(companyId) {
-  if (!companyId) return;
-
-  const existingTree = await listFolderTree(companyId).catch(() => []);
-  const existingNames = new Set(
-    (existingTree || [])
-      .map((folder) => folder?.name?.trim().toLowerCase())
-      .filter(Boolean)
-  );
-
-  const missingFolders = DEFAULT_COMPANY_FOLDERS.filter(
-    (name) => !existingNames.has(name.toLowerCase())
-  );
-
-  if (!missingFolders.length) return;
-
-  const results = await Promise.allSettled(
-    missingFolders.map((name) => createCompanyFolder(companyId, { name }))
-  );
-
-  const failed = results.filter((result) => result.status === 'rejected');
-  if (failed.length) {
-    throw new Error('Company was created, but some default folders could not be created.');
-  }
-}
-
 export default function Companies() {
   const navigate = useNavigate();
   const { setSelectedClient } = useClientStore();
   const [companies, setCompanies] = useState([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState('');
+  const [pageError, setPageError] = useState('');
+  const [formError, setFormError] = useState('');
   const [success, setSuccess] = useState('');
   const [search, setSearch] = useState('');
   const [industryFilter, setIndustryFilter] = useState('All Industries');
@@ -87,12 +61,12 @@ export default function Companies() {
 
   const loadCompanies = async () => {
     setLoading(true);
-    setError('');
+    setPageError('');
     try {
       const data = await listCompaniesRequest();
       setCompanies(data.map(formatCompany).filter(Boolean));
     } catch (err) {
-      setError(err.message || 'Unable to load companies.');
+      setPageError(err.message || 'Unable to load companies.');
     } finally {
       setLoading(false);
     }
@@ -173,17 +147,18 @@ export default function Companies() {
     setShowAdd(false);
     setEditing(null);
     setForm(EMPTY_FORM);
+    setFormError('');
   };
 
   const openAddModal = () => {
-    setError('');
+    setFormError('');
     setEditing(null);
     setForm(EMPTY_FORM);
     setShowAdd(true);
   };
 
   const openEditModal = (company) => {
-    setError('');
+    setFormError('');
     setEditing(company);
     setForm({
       name: company.name || '',
@@ -211,12 +186,12 @@ export default function Companies() {
 
   const handleSaveCompany = async () => {
     if (!form.name.trim() || !form.contact.trim() || !form.email.trim() || !form.phone.trim() || !form.industry.trim()) {
-      setError('Please fill in all company fields.');
+      setFormError('Please fill in all company fields.');
       return;
     }
 
     setSubmitting(true);
-    setError('');
+    setFormError('');
     setSuccess('');
 
     const payload = {
@@ -232,16 +207,18 @@ export default function Companies() {
       if (editing) {
         const updated = await updateCompanyRequest(editing.id, payload);
         if (updated?.id) {
+          const formatted = formatCompany({
+            ...updated,
+            request_count: editing.requestCount,
+            pending_request_count: editing.pendingCount,
+            completed_request_count: editing.completedCount,
+          });
+
           setCompanies((current) => current.map((company) => {
             if (company.id !== editing.id) return company;
-            const hydrated = {
-              ...updated,
-              request_count: company.requestCount,
-              pending_request_count: company.pendingCount,
-              completed_request_count: company.completedCount,
-            };
-            return formatCompany(hydrated);
+            return formatted;
           }));
+          setSelected((current) => (current?.id === editing.id ? formatted : current));
         } else {
           await loadCompanies();
         }
@@ -249,17 +226,23 @@ export default function Companies() {
       } else {
         const created = await createCompanyRequest(payload);
         if (created?.id) {
-          await ensureDefaultCompanyFolders(created.id);
-          setCompanies((current) => [formatCompany(created), ...current].filter(Boolean));
+          const formatted = formatCompany({
+            ...created,
+            request_count: created.request_count || 0,
+            pending_request_count: created.pending_request_count || 0,
+            completed_request_count: created.completed_request_count || 0,
+          });
+          setCompanies((current) => [formatted, ...current].filter(Boolean));
           setPage(1);
+        } else {
+          await loadCompanies();
         }
-        await loadCompanies();
         setSuccess('Company created successfully.');
       }
 
       closeFormModal();
     } catch (err) {
-      setError(err.message || `Unable to ${editing ? 'update' : 'create'} company.`);
+      setFormError(err.message || `Unable to ${editing ? 'update' : 'create'} company.`);
     } finally {
       setSubmitting(false);
     }
@@ -291,9 +274,9 @@ export default function Companies() {
         </div>
       </div>
 
-      {error && (
+      {pageError && (
         <div className="px-4 py-3 bg-red-50 rounded-2xl border border-red-100 text-sm text-[#C62026]">
-          {error}
+          {pageError}
         </div>
       )}
       {success && (
@@ -561,6 +544,11 @@ export default function Companies() {
 
       <Modal isOpen={showAdd} onClose={closeFormModal} title={editing ? 'Edit Company' : 'Add New Company'}>
         <div className="space-y-4">
+          {formError && (
+            <div className="px-4 py-3 bg-red-50 rounded-2xl border border-red-100 text-sm text-[#C62026]">
+              {formError}
+            </div>
+          )}
           {[
             { label: 'Company Name', key: 'name', placeholder: 'e.g. Accenture India' },
             { label: 'Contact Person', key: 'contact', placeholder: 'Full name' },
