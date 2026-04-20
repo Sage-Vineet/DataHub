@@ -9,12 +9,14 @@ import {
   ClipboardList,
   X,
   MoreHorizontal,
+  LifeBuoy,
 } from "lucide-react";
 import datahublogo from "../../assets/datahublogo.png";
 
 const brokerNav = [
   { label: "Dashboard", icon: LayoutDashboard, to: "/broker/dashboard" },
   { label: "Companies", icon: Building2, to: "/broker/companies" },
+  { label: "Help & Support", icon: LifeBuoy, to: "/support" },
 ];
 
 const clientNav = [
@@ -22,6 +24,7 @@ const clientNav = [
   { label: "My Requests", icon: ClipboardList, to: "/client/requests" },
   { label: "Upload Documents", icon: Upload, to: "/client/upload" },
   { label: "Reminders", icon: Bell, to: "/client/reminders" },
+  { label: "Help & Support", icon: LifeBuoy, to: "/support" },
 ];
 
 export default function Sidebar({ onClose }) {

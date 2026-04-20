@@ -30,7 +30,7 @@ export default function ProfitAndLossReport({
 
   return (
     <ProfitAndLossSummary
-      data={Array.isArray(data) ? data : []}
+      data={data || []}
       title="Profit & Loss"
       subtitle={subtitle}
       entityName={resolvedEntityName}
