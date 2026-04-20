@@ -44,6 +44,7 @@ const allowedOrigins = Array.from(
       "http://127.0.0.1:5175",
       "http://localhost:3000",
       "http://127.0.0.1:3000",
+      "https://data-hub-fawn.vercel.app/#/login",
     ]
       .filter(Boolean)
       .map((origin) => origin.replace(/\/$/, "")),
