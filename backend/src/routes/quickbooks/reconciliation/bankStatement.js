@@ -13,32 +13,11 @@ const client = anthropicApiKey
 const ANTHROPIC_MODEL =
   process.env.ANTHROPIC_MODEL || "claude-sonnet-4-20250514";
 
-const uploadDir = path.join(os.tmpdir(), "leo-bank-uploads");
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
-const upload = multer({ dest: uploadDir });
-
 const normalizeAmount = (value) => {
   if (value === undefined || value === null || value === "") return 0;
   if (typeof value === "number") return value;
   const parsed = parseFloat(String(value).replace(/,/g, "").trim());
   return Number.isNaN(parsed) ? 0 : parsed;
-};
-
-const normalizeTransactionRow = (txn) => {
-  if (!txn || typeof txn !== "object") return null;
-  const date = String(txn.date || txn.txn_date || "").trim();
-  const narration = String(
-    txn.narration || txn.name || txn.description || "",
-  ).trim();
-  const amount = normalizeAmount(txn.amount);
-  if (!date || !narration || amount === 0) return null;
-  return { date, narration, amount };
-};
-
-const cleanupFile = (filePath) => {
-  if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
 };
 
 const stripParseEnvelope = (userMessage = "") => {
