@@ -137,28 +137,32 @@ export default function WorkspaceReports() {
     let startDate;
     let endDate;
 
+    const now = new Date();
+    const todayStr = formatDateForInput(now);
+
+
     if (dateRange === "Custom Range") {
       startDate = customRange.start;
       endDate = customRange.end;
+
+      // Safety check: Clamp custom endDate to today
+      if (endDate > todayStr) {
+        endDate = todayStr;
+      }
     } else {
-      const now = new Date();
-      const year = now.getFullYear();
-      const month = String(now.getMonth() + 1).padStart(2, "0");
-      const day = String(now.getDate()).padStart(2, "0");
-      endDate = `${year}-${month}-${day}`;
+      endDate = todayStr;
 
       if (dateRange === "Today") {
-        startDate = `${year}-${month}-${day}`;
+        startDate = todayStr;
       } else if (dateRange === "This Month") {
-        startDate = `${year}-${month}-01`;
+        startDate = `${todayStr.slice(0, 7)}-01`;
       } else if (dateRange === "This Quarter") {
-        const quarterMonth = String(
-          Math.floor(now.getMonth() / 3) * 3 + 1,
-        ).padStart(2, "0");
-        startDate = `${year}-${quarterMonth}-01`;
+        const monthNum = now.getMonth();
+        const quarterStartMonth = Math.floor(monthNum / 3) * 3 + 1;
+        startDate = `${now.getFullYear()}-${String(quarterStartMonth).padStart(2, "0")}-01`;
       } else if (dateRange === "Previous Quarter") {
         const currentQuarterStartMonth = Math.floor(now.getMonth() / 3) * 3;
-        const previousQuarterEnd = new Date(year, currentQuarterStartMonth, 0);
+        const previousQuarterEnd = new Date(now.getFullYear(), currentQuarterStartMonth, 0);
         const previousQuarterStart = new Date(
           previousQuarterEnd.getFullYear(),
           Math.floor(previousQuarterEnd.getMonth() / 3) * 3,
@@ -168,12 +172,13 @@ export default function WorkspaceReports() {
         startDate = formatDateForInput(previousQuarterStart);
         endDate = formatDateForInput(previousQuarterEnd);
       } else if (dateRange === "This Year") {
-        startDate = `${year}-01-01`;
+        startDate = `${now.getFullYear()}-01-01`;
       }
     }
 
     return { startDate, endDate };
   };
+
 
   const handleGenerateReport = async () => {
     setIsLoading(true);
@@ -263,7 +268,7 @@ export default function WorkspaceReports() {
     setIsDownloading(true);
     try {
       const currentReport = reportsData[selectedTab];
-      
+
       // Handle both new {rows, columns} objects and old arrays
       const summaryData = currentReport.summary?.rows || currentReport.summary;
       const dataToExport =
@@ -462,6 +467,7 @@ export default function WorkspaceReports() {
                             </span>
                             <input
                               type="date"
+                              max={todayString}
                               value={customRange.start}
                               onChange={(event) =>
                                 setCustomRange((previous) => ({
@@ -471,6 +477,7 @@ export default function WorkspaceReports() {
                               }
                               className="h-10 rounded-md border border-border-input bg-bg-card px-3 text-[14px] text-text-primary focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
                             />
+
                           </div>
                           <div className="flex flex-1 flex-col gap-1.5">
                             <span className="text-[12px] text-text-muted">
@@ -478,6 +485,7 @@ export default function WorkspaceReports() {
                             </span>
                             <input
                               type="date"
+                              max={todayString}
                               value={customRange.end}
                               onChange={(event) =>
                                 setCustomRange((previous) => ({
@@ -487,6 +495,7 @@ export default function WorkspaceReports() {
                               }
                               className="h-10 rounded-md border border-border-input bg-bg-card px-3 text-[14px] text-text-primary focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
                             />
+
                           </div>
                         </div>
                       ) : null}

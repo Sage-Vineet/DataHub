@@ -232,7 +232,7 @@ export default function BalanceSheetSummary({
                 </th>
                 {columns.yearCols.map((col) => (
                   <th key={col.key} className={cn(
-                    "pb-3 pt-2 px-3 text-right text-[12px] font-medium",
+                    "pb-3 pt-2 px-3 text-right text-[12px] font-medium whitespace-nowrap",
                     col.isCurrent ? "text-text-primary font-bold" : "text-text-muted"
                   )}>
                     {col.label}
@@ -244,11 +244,12 @@ export default function BalanceSheetSummary({
                   </th>
                 ))}
                 {columns.changeCols && columns.changeCols.length > 0 && (
-                  <th className="pb-3 pt-2 px-4 text-right text-[12px] font-bold text-primary flex flex-col items-end">
-                    <span className="text-[10px] uppercase font-medium text-text-muted leading-none mb-0.5">Monthly Change</span>
-                    <span className="leading-none">{columns.currentMonth}</span>
+                  <th className="pb-3 pt-2 px-4 text-right text-[12px] font-bold text-primary whitespace-nowrap">
+                    <span className="text-[10px] uppercase font-medium text-text-muted mr-1.5 align-middle">MONTHLY CHG:</span>
+                    <span className="align-middle">{columns.currentMonth}</span>
                   </th>
                 )}
+
               </tr>
             </thead>
             <tbody className="">
