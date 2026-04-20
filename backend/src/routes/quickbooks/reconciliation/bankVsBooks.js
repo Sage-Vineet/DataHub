@@ -2,6 +2,25 @@ const express = require("express");
 const router = express.Router();
 const pool = require("../../../db");
 
+// Middleware to extract clientId with multiple fallbacks
+const extractClientId = (req, res, next) => {
+  let clientId = req.clientId;
+  if (!clientId && req.query.clientId) {
+    clientId = req.query.clientId;
+  }
+  if (!clientId && req.headers.referer) {
+    const referer = req.headers.referer;
+    const match = referer.match(/\/client\/([^/]+)/);
+    if (match) {
+      clientId = match[1];
+    }
+  }
+  if (clientId) {
+    req.clientId = clientId;
+  }
+  next();
+};
+
 /**
  * @swagger
  * tags:
@@ -17,8 +36,11 @@ const pool = require("../../../db");
  *       - Reconciliation
  *     summary: Bank vs Books transaction matching
  */
-router.get("/bank-vs-books", async (req, res) => {
+router.get("/bank-vs-books", extractClientId, async (req, res) => {
   try {
+    if (!req.clientId) {
+      return res.status(400).json({ error: "Missing Client ID" });
+    }
     const query = `
       SELECT
         b.txn_date AS bank_date,
@@ -57,8 +79,11 @@ router.get("/bank-vs-books", async (req, res) => {
  *       - Reconciliation
  *     summary: Fetch bank and books transactions
  */
-router.get("/reconciliation-data", async (req, res) => {
+router.get("/reconciliation-data", extractClientId, async (req, res) => {
   try {
+    if (!req.clientId) {
+      return res.status(400).json({ error: "Missing Client ID" });
+    }
     const bankData = await pool.query(
       `
       SELECT txn_date AS date, narration AS name, amount
@@ -97,8 +122,11 @@ router.get("/reconciliation-data", async (req, res) => {
  *       - Reconciliation
  *     summary: Calculate variance between bank and books
  */
-router.get("/reconciliation-variance", async (req, res) => {
+router.get("/reconciliation-variance", extractClientId, async (req, res) => {
   try {
+    if (!req.clientId) {
+      return res.status(400).json({ error: "Missing Client ID" });
+    }
     const result = await pool.query(
       `
       SELECT

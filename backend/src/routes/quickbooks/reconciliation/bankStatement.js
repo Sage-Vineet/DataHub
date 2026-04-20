@@ -1,11 +1,5 @@
 const express = require("express");
 const router = express.Router();
-const multer = require("multer");
-const fs = require("fs");
-const XLSX = require("xlsx");
-const path = require("path");
-const os = require("os");
-const pool = require("../../../db");
 const Anthropic = require("@anthropic-ai/sdk");
 const anthropicApiKey = (process.env.ANTHROPIC_API_KEY || "").trim();
 const client = anthropicApiKey
@@ -14,32 +8,11 @@ const client = anthropicApiKey
 const ANTHROPIC_MODEL =
   process.env.ANTHROPIC_MODEL || "claude-sonnet-4-20250514";
 
-const uploadDir = path.join(os.tmpdir(), "leo-bank-uploads");
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
-const upload = multer({ dest: uploadDir });
-
 const normalizeAmount = (value) => {
   if (value === undefined || value === null || value === "") return 0;
   if (typeof value === "number") return value;
   const parsed = parseFloat(String(value).replace(/,/g, "").trim());
   return Number.isNaN(parsed) ? 0 : parsed;
-};
-
-const normalizeTransactionRow = (txn) => {
-  if (!txn || typeof txn !== "object") return null;
-  const date = String(txn.date || txn.txn_date || "").trim();
-  const narration = String(
-    txn.narration || txn.name || txn.description || "",
-  ).trim();
-  const amount = normalizeAmount(txn.amount);
-  if (!date || !narration || amount === 0) return null;
-  return { date, narration, amount };
-};
-
-const cleanupFile = (filePath) => {
-  if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
 };
 
 const stripParseEnvelope = (userMessage = "") => {
@@ -438,184 +411,6 @@ const parseHdfcText = (text) => {
 };
 
 // Middleware to extract clientId from headers/query before processing
-const extractClientId = (req, res, next) => {
-  let clientId = req.headers["x-client-id"];
-
-  if (!clientId && req.query.clientId) {
-    clientId = req.query.clientId;
-  }
-
-  if (!clientId && req.headers.referer) {
-    const referer = req.headers.referer;
-    const match = referer.match(/\/client\/([^/]+)/);
-    if (match) {
-      clientId = match[1];
-    }
-  }
-
-  if (clientId) {
-    req.clientId = clientId;
-    console.log(`✓ Client ID extracted: ${clientId}`);
-  } else {
-    console.warn("⚠ No Client ID found in request headers/query/referer");
-  }
-
-  next();
-};
-
-router.post(
-  "/upload-bank-statement",
-  extractClientId,
-  (req, res, next) => {
-    if (req.headers["content-type"]?.includes("application/json"))
-      return next();
-    upload.single("file")(req, res, next);
-  },
-  async (req, res) => {
-    let filePath = "";
-
-    try {
-      if (!req.clientId) {
-        console.error("❌ Missing Client ID in upload-bank-statement");
-        return res.status(400).json({
-          error:
-            "Missing Client ID. Please open the statement from a company workspace.",
-        });
-      }
-
-      console.log(`📤 Processing bank statement for client: ${req.clientId}`);
-      let transactions = [];
-
-      /* -------------------------
-         PDF — text sent as JSON from frontend
-      -------------------------- */
-      if (req.headers["content-type"]?.includes("application/json")) {
-        const {
-          type,
-          text,
-          rawText,
-          transactions: normalizedTransactions,
-        } = req.body;
-        const statementText = String(text || rawText || "").trim();
-
-        if (type === "normalized" && Array.isArray(normalizedTransactions)) {
-          transactions = normalizedTransactions
-            .map(normalizeTransactionRow)
-            .filter(Boolean);
-          if (!transactions.length && statementText) {
-            transactions = parseHdfcText(statementText);
-          }
-        } else if (statementText) {
-          transactions = parseHdfcText(statementText);
-          console.log("PDF transactions parsed:", transactions.length);
-          console.log(
-            "Sample:",
-            JSON.stringify(transactions.slice(0, 5), null, 2),
-          );
-        } else {
-          console.warn("Bank statement upload received no parsable text.");
-          transactions = [];
-        }
-      }
-
-      /* -------------------------
-         EXCEL — raw file via FormData
-      -------------------------- */
-      if (req.file) {
-        filePath = req.file.path;
-        const lowerFileName = req.file.originalname.toLowerCase();
-        const password = req.body.password || "";
-
-        console.log(`📁 Processing Excel file: ${req.file.originalname}`);
-
-        if (lowerFileName.endsWith(".xlsx") || lowerFileName.endsWith(".xls")) {
-          const workbook = XLSX.readFile(filePath, {
-            password: password || undefined,
-          });
-          const sheet = workbook.Sheets[workbook.SheetNames[0]];
-          const rows = XLSX.utils.sheet_to_json(sheet, {
-            header: 1,
-            defval: "",
-          });
-
-          let dateCol = 0,
-            narrationCol = 1,
-            withdrawCol = 4,
-            depositCol = 5;
-          const headerRow = rows.find((r) =>
-            r.some((c) => String(c).toLowerCase().includes("date")),
-          );
-          if (headerRow) {
-            headerRow.forEach((cell, idx) => {
-              const c = String(cell).toLowerCase();
-              if (c.includes("date") && !c.includes("value")) dateCol = idx;
-              if (c.includes("narration") || c.includes("description"))
-                narrationCol = idx;
-              if (c.includes("withdrawal") || c.includes("debit"))
-                withdrawCol = idx;
-              if (c.includes("deposit") || c.includes("credit"))
-                depositCol = idx;
-            });
-          }
-
-          rows.forEach((row) => {
-            const date = row[dateCol];
-            const narration = row[narrationCol];
-            const withdraw = normalizeAmount(row[withdrawCol]);
-            const deposit = normalizeAmount(row[depositCol]);
-
-            let amount = 0;
-            if (withdraw) amount = -withdraw;
-            if (deposit) amount = deposit;
-
-            if (date && narration && amount !== 0) {
-              transactions.push({
-                date,
-                narration: String(narration).trim(),
-                amount,
-              });
-            }
-          });
-
-          console.log(
-            `✓ Excel file processed: ${transactions.length} transactions extracted`,
-          );
-        } else {
-          console.warn(`⚠ Unsupported file format: ${req.file.originalname}`);
-        }
-      }
-
-      console.log("Total Transactions Extracted:", transactions.length);
-
-      await pool.query("DELETE FROM bank_transactions WHERE client_id = $1", [
-        req.clientId,
-      ]);
-      for (const txn of transactions) {
-        await pool.query(
-          `INSERT INTO bank_transactions (client_id, txn_date, narration, amount) VALUES ($1, $2, $3, $4)`,
-          [req.clientId, txn.date, txn.narration, txn.amount],
-        );
-      }
-
-      cleanupFile(filePath);
-      console.log(
-        `✓ Bank statement uploaded successfully for client ${req.clientId}: ${transactions.length} transactions`,
-      );
-      res.json({
-        message: "Bank statement processed successfully",
-        totalRecords: transactions.length,
-      });
-    } catch (error) {
-      console.error("Bank Statement Error:", error);
-      cleanupFile(filePath);
-      res.status(500).json({
-        error: "Failed to process bank statement",
-        details: error.message,
-      });
-    }
-  },
-);
-
 router.post("/parse-bank-statement", async (req, res) => {
   try {
     const { systemPrompt, userMessage } = req.body;

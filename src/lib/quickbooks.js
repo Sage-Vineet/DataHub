@@ -102,23 +102,6 @@ export function fetchBankVsBooks() {
   return request("/bank-vs-books");
 }
 
-export function fetchReconciliationData() {
-  return request("/reconciliation-data");
-}
-
-export function fetchReconciliationVariance() {
-  return request("/reconciliation-variance");
-}
-
-export function uploadBankStatement(file) {
-  const form = new FormData();
-  form.append("file", file);
-  return request("/upload-bank-statement", {
-    method: "POST",
-    body: form,
-  });
-}
-
 export function formatCurrency(amount) {
   return new Intl.NumberFormat("en-US", {
     style: "currency",
