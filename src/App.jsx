@@ -35,6 +35,8 @@ import WorkspaceInvoices from "./pages/broker/workspace/WorkspaceInvoices";
 import WorkspaceReports from "./pages/broker/workspace/WorkspaceReports";
 import WorkspaceReconciliation from "./pages/broker/workspace/WorkspaceReconciliation";
 import WorkspaceConnections from "./pages/broker/workspace/WorkspaceConnections";
+import Support from "./pages/Support";
+import WorkspaceEbitda from "./pages/broker/workspace/WorkspaceEbitda";
 import { getCompanyRequest, listCompaniesRequest } from "./lib/api";
 
 function companyLogo(name = "") {
@@ -247,6 +249,7 @@ function AppRoutes() {
         <Route path="reports" element={<WorkspaceReports />} />
         <Route path="reconciliation" element={<WorkspaceReconciliation />} />
         <Route path="connections" element={<WorkspaceConnections />} />
+        <Route path="ebitda" element={<WorkspaceEbitda />} />
         <Route path="dataroom" element={<Navigate to="requests" replace />} />
         <Route path="dataroom/requests" element={<WorkspaceRequests />} />
         <Route path="dataroom/documents" element={<WorkspaceDocuments />} />
@@ -305,6 +308,15 @@ function AppRoutes() {
         element={
           <ProtectedRoute allowedRole="client">
             <ClientReminders />
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/support"
+        element={
+          <ProtectedRoute>
+            <Support />
           </ProtectedRoute>
         }
       />
