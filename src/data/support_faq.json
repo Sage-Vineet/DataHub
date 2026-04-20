@@ -1,0 +1,82 @@
+[
+  {
+    "category": "General",
+    "items": [
+      {
+        "id": "gen-1",
+        "question": "What is DataHub?",
+        "answer": "DataHub is a specialized financial data management platform designed for brokers and their clients. it streamlines document collection, financial reporting, and compliance management in one secure location."
+      },
+      {
+        "id": "gen-2",
+        "question": "How secure is my data on DataHub?",
+        "answer": "We take security seriously. All data is encrypted at rest and in transit using industry-standard AES-256 encryption. We also support Multi-Factor Authentication (MFA) to ensure your account remains protected."
+      },
+      {
+        "id": "gen-3",
+        "question": "Can I access DataHub on my mobile device?",
+        "answer": "Yes, DataHub is fully responsive and can be accessed through any modern mobile browser. We also have a dedicated mobile application available for iOS and Android."
+      }
+    ]
+  },
+  {
+    "category": "Account",
+    "items": [
+      {
+        "id": "acc-1",
+        "question": "How do I reset my password?",
+        "answer": "To reset your password, click on the 'Forgot Password' link on the login page. Follow the instructions sent to your registered email address to create a new password."
+      },
+      {
+        "id": "acc-2",
+        "question": "Can I add multiple users to my workspace?",
+        "answer": "Yes, depending on your subscription plan, you can invite team members to your workspace. Administrators can manage user roles and permissions from the 'Users' section in settings."
+      },
+      {
+        "id": "acc-3",
+        "question": "How do I change my profile information?",
+        "answer": "Navigate to your profile settings by clicking on your avatar in the top right corner. From there, you can update your name, contact details, and notification preferences."
+      }
+    ]
+  },
+  {
+    "category": "Billing",
+    "items": [
+      {
+        "id": "bil-1",
+        "question": "What payment methods do you accept?",
+        "answer": "We accept all major credit cards (Visa, MasterCard, American Express), as well as bank transfers for enterprise customers."
+      },
+      {
+        "id": "bil-2",
+        "question": "How can I download my invoices?",
+        "answer": "You can view and download all your past invoices from the 'Billing' section in your workspace dashboard. Invoices are generated at the beginning of each billing cycle."
+      },
+      {
+        "id": "bil-3",
+        "question": "Can I cancel my subscription at any time?",
+        "answer": "Yes, you can cancel your subscription at any time. Your access will remain active until the end of your current billing period, after which your account will transition to a free tier or be deactivated."
+      }
+    ]
+  },
+  {
+    "category": "Technical Issues",
+    "items": [
+      {
+        "id": "tech-1",
+        "question": "The application is running slowly. What should I do?",
+        "answer": "First, ensure you have a stable internet connection. If the issue persists, try clear your browser cache or opening DataHub in an Incognito/Private window. If it still doesn't resolve, please contact our support team."
+      },
+      {
+        "id": "tech-2",
+        "question": "How do I report a bug?",
+        "answer": "You can report bugs through the Help & Support form on this page. Please include as much detail as possible, including steps to reproduce the issue and your browser/OS version."
+      },
+      {
+        "id": "tech-3",
+        "question": "Do you have an API for integration?",
+        "answer": "Yes, we offer a comprehensive REST API for enterprise customers. You can find the API documentation in the 'Developer' section of our main website."
+      }
+    ]
+  }
+]

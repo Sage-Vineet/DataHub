@@ -6,21 +6,36 @@ export function normalizeAccountingMethod(value) {
 }
 
 export function sanitizeDateRange(startDate, endDate) {
-  if (!startDate && !endDate) {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  const todayStr = `${year}-${month}-${day}`;
+
+  let s = startDate || "";
+  let e = endDate || "";
+
+  // Clamp endDate to today
+  if (e > todayStr) {
+    e = todayStr;
+  }
+
+  if (!s && !e) {
     return { startDate: "", endDate: "" };
   }
 
-  if (!startDate) {
-    return { startDate: endDate || "", endDate: endDate || "" };
+  if (!s) {
+    return { startDate: e, endDate: e };
   }
 
-  if (!endDate) {
-    return { startDate, endDate: startDate };
+  if (!e) {
+    return { startDate: s, endDate: s };
   }
 
-  if (startDate <= endDate) {
-    return { startDate, endDate };
+  if (s <= e) {
+    return { startDate: s, endDate: e };
   }
 
-  return { startDate: endDate, endDate: startDate };
+  return { startDate: e, endDate: s };
 }
+

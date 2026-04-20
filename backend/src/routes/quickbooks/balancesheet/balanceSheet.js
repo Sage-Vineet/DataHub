@@ -24,7 +24,9 @@ router.get("/balance-sheet", async (req, res) => {
     });
   }
 
-  const url = `${qb.baseUrl}/v3/company/${qb.realmId}/reports/BalanceSheet?minorversion=75`;
+  // Forward all query parameters from frontend (start_date, end_date, accounting_method, etc.)
+  const queryParams = new URLSearchParams(req.query).toString();
+  const url = `${qb.baseUrl}/v3/company/${qb.realmId}/reports/BalanceSheet?minorversion=75${queryParams ? `&${queryParams}` : ""}`;
 
   try {
     const response = await axios.get(url, {

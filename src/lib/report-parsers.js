@@ -199,8 +199,9 @@ function parseSummaryRows(rows, indexOffset = 0) {
         id: sectionId,
         name: cleanName
           .replace(/-/g, " ")
-          .replace(/\\b\\w/g, (letter) => letter.toUpperCase()),
+          .replace(/\b\w/g, (letter) => letter.toUpperCase()),
         amount: totalAmount,
+        amounts: { y5: totalAmount },
         type: "header",
         children: children.length > 0 ? children : undefined,
       });
@@ -225,6 +226,7 @@ function parseSummaryRows(rows, indexOffset = 0) {
           `data-${key}-${indexOffset + index}`,
         name,
         amount: normalizedAmount,
+        amounts: { y5: normalizedAmount },
         type: isTotalLikeLabel(name) ? "total" : "data",
       });
       continue;
@@ -425,8 +427,8 @@ function parseDetailRows(rows, reportDate = "N/A", columnsMetadata = []) {
           {
             id: String(
               row?.Header?.ColData?.[0]?.id ||
-                row?.id ||
-                `acc-${normalizeKey(groupName)}`,
+              row?.id ||
+              `acc-${normalizeKey(groupName)}`,
             ),
             name: groupName,
             total,
@@ -635,18 +637,18 @@ export function parseBalanceSheetDetailFromAllReports(
             transactions.length > 0
               ? transactions
               : [
-                  {
-                    id: `summary-${id || normalizeKey(name)}-${Math.random().toString(36).slice(2, 5)}`,
-                    date: reportDate,
-                    type: "Balance",
-                    num: "",
-                    name: "",
-                    memo: "Ending Balance",
-                    split: "",
-                    amount: total,
-                    balance: total,
-                  },
-                ];
+                {
+                  id: `summary-${id || normalizeKey(name)}-${Math.random().toString(36).slice(2, 5)}`,
+                  date: reportDate,
+                  type: "Balance",
+                  num: "",
+                  name: "",
+                  memo: "Ending Balance",
+                  split: "",
+                  amount: total,
+                  balance: total,
+                },
+              ];
 
           accounts_ptr.push({
             id: id || `acc-${normalizeKey(name)}`,
@@ -764,9 +766,9 @@ function cashflowGetReportDate(payload, fallback) {
 function cashflowGetRowName(row) {
   return String(
     row?.Header?.ColData?.[0]?.value ||
-      row?.Summary?.ColData?.[0]?.value ||
-      row?.ColData?.[0]?.value ||
-      "Cash Flow Item",
+    row?.Summary?.ColData?.[0]?.value ||
+    row?.ColData?.[0]?.value ||
+    "Cash Flow Item",
   );
 }
 
@@ -779,10 +781,10 @@ function cashflowGetRowTotal(row) {
 function cashflowLineDescription(line) {
   return String(
     line?.Description ||
-      line?.AccountBasedExpenseLineDetail?.AccountRef?.name ||
-      line?.ItemBasedExpenseLineDetail?.ItemRef?.name ||
-      line?.SalesItemLineDetail?.ItemRef?.name ||
-      "Line Item",
+    line?.AccountBasedExpenseLineDetail?.AccountRef?.name ||
+    line?.ItemBasedExpenseLineDetail?.ItemRef?.name ||
+    line?.SalesItemLineDetail?.ItemRef?.name ||
+    "Line Item",
   );
 }
 
@@ -974,8 +976,8 @@ function cashflowCollectAccounts(rows, reportDate, transactionMap) {
       accounts.push({
         id: String(
           accountId ||
-            row?.group ||
-            cashflowCreateStableId("cashflow-account", accountName, index),
+          row?.group ||
+          cashflowCreateStableId("cashflow-account", accountName, index),
         ),
         name: accountName,
         total,
@@ -1004,7 +1006,7 @@ function cashflowCollectAccounts(rows, reportDate, transactionMap) {
       accounts.push({
         id: String(
           row?.group ||
-            cashflowCreateStableId("cashflow-account", accountName, index),
+          cashflowCreateStableId("cashflow-account", accountName, index),
         ),
         name: accountName,
         total,
@@ -1032,32 +1034,32 @@ export function parseCashflowEngineDetailReport(payload, fallbackDate) {
     const total = cashflowGetRowTotal(row);
     const accounts = row?.Rows?.Row
       ? cashflowCollectAccounts(
-          asArray(row.Rows.Row),
-          reportDate,
-          transactionMap,
-        )
+        asArray(row.Rows.Row),
+        reportDate,
+        transactionMap,
+      )
       : [
-          {
-            id: String(
-              row?.group ||
-                cashflowCreateStableId("cashflow-account", groupName, index),
-            ),
-            name: groupName,
+        {
+          id: String(
+            row?.group ||
+            cashflowCreateStableId("cashflow-account", groupName, index),
+          ),
+          name: groupName,
+          total,
+          transactions: cashflowGetAccountTransactions(
+            undefined,
+            groupName,
             total,
-            transactions: cashflowGetAccountTransactions(
-              undefined,
-              groupName,
-              total,
-              reportDate,
-              transactionMap,
-            ),
-          },
-        ];
+            reportDate,
+            transactionMap,
+          ),
+        },
+      ];
 
     return {
       id: String(
         row?.group ||
-          cashflowCreateStableId("cashflow-group", groupName, index),
+        cashflowCreateStableId("cashflow-group", groupName, index),
       ),
       name: groupName,
       total,
