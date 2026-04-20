@@ -52,14 +52,21 @@ async function request(path) {
  * 3. YTD for Previous Year (e.g., 2024 YTD) for comparison
  */
 function getPNLComparativePeriods(endDateString) {
+  const now = new Date();
+  const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+
   const endDate = endDateString ? new Date(endDateString) : new Date();
   const year = isNaN(endDate.getTime())
-    ? new Date().getFullYear()
+    ? now.getFullYear()
     : endDate.getFullYear();
   const month = isNaN(endDate.getTime())
-    ? new Date().getMonth()
+    ? now.getMonth()
     : endDate.getMonth();
-  const day = isNaN(endDate.getTime()) ? new Date().getDate() : endDate.getDate();
+  const day = isNaN(endDate.getTime()) ? now.getDate() : endDate.getDate();
+
+  // Clamp the input endDate for safety
+  const finalEndDateStr = (endDateString && endDateString < todayStr) ? endDateString : todayStr;
+
 
   // We'll target 2022, 2023, 2024 as full years,
   // 2025 as YTD (assuming current year is 2025)
@@ -89,14 +96,15 @@ function getPNLComparativePeriods(endDateString) {
       key: "y25",
       label: `FY ${currentYear} YTD`,
       start: `${currentYear}-01-01`,
-      end: endDateString,
+      end: finalEndDateStr,
     },
     {
       key: "y24_ytd",
       label: `FY ${currentYear - 1} YTD`,
       start: `${currentYear - 1}-01-01`,
-      end: `${currentYear - 1}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`,
+      end: `${currentYear - 1}-${finalEndDateStr.slice(5)}`,
     },
+
   ];
 
   return periods;
