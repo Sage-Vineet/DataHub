@@ -85,39 +85,40 @@ function TrendChart({ data, isLoading }) {
       <div className="flex h-[320px] items-center justify-center rounded-xl border border-dashed border-border bg-white p-8">
         <div className="text-center">
           <BarChart3 size={40} className="mx-auto mb-3 text-border" />
-          <p className="text-[14px] font-medium text-text-muted">
-            No trend data available for this company
-          </p>
-          <p className="text-[12px] text-text-muted/70">
-            Ensure QuickBooks has historical P&L data
-          </p>
+          <p className="text-[14px] font-medium text-text-muted">No trend data available</p>
         </div>
       </div>
     );
   }
 
   const values = data.map((d) => d.ebitda);
-  const maxEbitda = Math.max(...values, 0);
-  const minEbitda = Math.min(...values, 0);
-  const absMax = Math.max(Math.abs(maxEbitda), Math.abs(minEbitda), 1000);
+  const adjValues = data.map((d) => d.adjustedEbitda);
+  const allVals = [...values, ...adjValues];
   
-  // Padding for visual clarity
-  const yLimit = absMax * 1.25;
+  const maxVal = Math.max(...allVals, 0);
+  const minVal = Math.min(...allVals, 0);
+  const absMax = Math.max(Math.abs(maxVal), Math.abs(minVal), 1000);
+  const yLimit = absMax * 1.3;
   
   const chartHeight = 220;
   const chartWidth = 700;
   const margin = { top: 20, right: 20, bottom: 40, left: 70 };
   
-  const getY = (val) => {
-    return chartHeight / 2 - (val / yLimit) * (chartHeight / 2);
-  };
-
+  const getY = (val) => chartHeight / 2 - (val / yLimit) * (chartHeight / 2);
   const zeroY = getY(0);
   const barSpacing = chartWidth / data.length;
-  const barWidth = Math.min(32, barSpacing * 0.7);
+  const barWidth = Math.min(24, barSpacing * 0.4);
 
-  // Generate Y-axis grid marks
   const gridMarks = [yLimit * 0.8, yLimit * 0.4, 0, -yLimit * 0.4, -yLimit * 0.8];
+
+  // Helper for path generation
+  const generatePath = (vals) => {
+    return vals.map((v, i) => {
+      const x = i * barSpacing + barSpacing / 2;
+      const y = getY(v) + margin.top;
+      return `${i === 0 ? "M" : "L"} ${x} ${y}`;
+    }).join(" ");
+  };
 
   return (
     <div className="rounded-2xl border border-border bg-white p-6 shadow-sm">
@@ -126,32 +127,26 @@ function TrendChart({ data, isLoading }) {
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
             <BarChart3 size={16} className="text-primary" />
           </div>
-          <div>
-            <h3 className="text-[14px] font-bold text-text-primary">
-              Monthly EBITDA Trend
-            </h3>
-            <p className="text-[11px] text-text-muted">Trailing 12-month earnings analysis</p>
-          </div>
+          <h3 className="text-[16px] font-bold text-text-primary">EBITDA Performance Trend</h3>
         </div>
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-1.5">
-            <div className="h-2 w-2 rounded-full bg-primary" />
-            <span className="text-[11px] font-medium text-text-muted">Positive</span>
+            <div className="h-3 w-3 rounded bg-primary" />
+            <span className="text-[11px] font-bold text-text-muted">EBITDA</span>
           </div>
           <div className="flex items-center gap-1.5">
-            <div className="h-2 w-2 rounded-full bg-red-500" />
-            <span className="text-[11px] font-medium text-text-muted">Negative</span>
+            <div className="h-[2px] w-4 bg-orange-500" />
+            <span className="text-[11px] font-bold text-text-muted">Adjusted EBITDA</span>
           </div>
         </div>
       </div>
 
       <div className="relative">
-        {/* Y-axis labels and grid lines */}
         <div className="absolute left-0 top-0 h-full w-[60px] pr-2">
           {gridMarks.map((mark, i) => (
             <div
               key={i}
-              className="absolute w-full border-t border-dashed border-gray-100 transition-all"
+              className="absolute w-full border-t border-dashed border-gray-100"
               style={{ top: getY(mark) + margin.top, right: -640 }}
             >
               <span className="absolute -left-16 -top-2.5 w-14 text-right text-[10px] font-bold text-text-muted">
@@ -161,98 +156,44 @@ function TrendChart({ data, isLoading }) {
           ))}
         </div>
 
-        {/* Plot Area */}
         <div className="ml-[70px] overflow-x-auto scrollbar-hide">
-          <svg
-            width={chartWidth}
-            height={chartHeight + margin.top + margin.bottom}
-            className="overflow-visible"
-          >
-            {/* Zero Baseline */}
-            <line
-              x1="0"
-              y1={zeroY + margin.top}
-              x2={chartWidth}
-              y2={zeroY + margin.top}
-              stroke="#cbd5e1"
-              strokeWidth="2"
-              strokeDasharray="4 2"
-            />
+          <svg width={chartWidth} height={chartHeight + margin.top + margin.bottom} className="overflow-visible">
+            <line x1="0" y1={zeroY + margin.top} x2={chartWidth} y2={zeroY + margin.top} stroke="#cbd5e1" strokeWidth="2" strokeDasharray="4 2" />
 
             {data.map((item, index) => {
               const xPos = index * barSpacing + barSpacing / 2;
               const yPos = getY(item.ebitda) + margin.top;
-              const barHeight = Math.abs(zeroY + margin.top - yPos);
               const isPositive = item.ebitda >= 0;
-              const tooltipId = `tooltip-${index}`;
 
               return (
                 <g key={index} className="group cursor-pointer">
-                  {/* Invisible hover area */}
-                  <rect
-                    x={xPos - barSpacing / 2}
-                    y={margin.top}
-                    width={barSpacing}
-                    height={chartHeight}
-                    fill="transparent"
-                  />
-
-                  {/* Bar */}
+                  <rect x={xPos - barSpacing / 2} y={margin.top} width={barSpacing} height={chartHeight} fill="transparent" />
                   <rect
                     x={xPos - barWidth / 2}
                     y={isPositive ? yPos : zeroY + margin.top}
                     width={barWidth}
-                    height={Math.max(barHeight, 2)}
+                    height={Math.max(Math.abs(zeroY + margin.top - yPos), 2)}
                     rx={4}
-                    className={cn(
-                      "transition-all duration-300 group-hover:filter group-hover:brightness-95",
-                      isPositive
-                        ? "fill-primary"
-                        : "fill-red-500",
-                    )}
+                    className={cn("transition-all duration-300", isPositive ? "fill-primary" : "fill-red-500", "group-hover:opacity-80")}
                   />
-
-                  {/* X-axis Label (Month) */}
-                  <text
-                    x={xPos}
-                    y={chartHeight + margin.top + 25}
-                    textAnchor="middle"
-                    className="fill-text-muted text-[10px] font-bold"
-                  >
-                    {item.month.split(" ")[0]}
-                  </text>
-
-                  {/* Tooltip on hover */}
-                  <foreignObject
-                    x={xPos - 60}
-                    y={yPos - 55}
-                    width="120"
-                    height="50"
-                    className="pointer-events-none opacity-0 transition-opacity duration-200 group-hover:opacity-100"
-                  >
-                    <div className="rounded-lg border border-border bg-white p-2 shadow-xl ring-1 ring-black/5">
-                      <p className="text-center text-[11px] font-extrabold text-text-primary">
-                        {formatCurrency(item.ebitda)}
-                      </p>
-                      <p className="text-center text-[9px] font-bold uppercase tracking-wider text-text-muted">
-                        {item.month}
-                      </p>
+                  <text x={xPos} y={chartHeight + margin.top + 25} textAnchor="middle" className="fill-text-muted text-[10px] font-bold">{item.month.split(" ")[0]}</text>
+                  
+                  <foreignObject x={xPos - 60} y={yPos - 65} width="120" height="60" className="pointer-events-none opacity-0 transition-opacity group-hover:opacity-100">
+                    <div className="rounded-lg border border-border bg-white p-2 shadow-xl">
+                      <p className="text-center text-[10px] font-bold text-primary">{formatCurrency(item.ebitda)}</p>
+                      <p className="text-center text-[10px] font-bold text-orange-600">Adj: {formatCurrency(item.adjustedEbitda)}</p>
                     </div>
                   </foreignObject>
                 </g>
               );
             })}
+
+            {/* Trend Line for Adjusted EBITDA */}
+            <path d={generatePath(adjValues)} fill="none" stroke="#f97316" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="opacity-80" />
+            {data.map((item, i) => (
+               <circle key={`dot-${i}`} cx={i * barSpacing + barSpacing / 2} cy={getY(item.adjustedEbitda) + margin.top} r="4" fill="#f97316" />
+            ))}
           </svg>
-        </div>
-      </div>
-      <div className="mt-4 flex items-center justify-center gap-8 border-t border-border pt-4">
-        <div className="flex flex-col items-center">
-            <span className="text-[10px] uppercase tracking-wider text-text-muted">Time Period</span>
-            <span className="text-[12px] font-bold text-text-primary">Monthly</span>
-        </div>
-        <div className="flex flex-col items-center">
-            <span className="text-[10px] uppercase tracking-wider text-text-muted">Y-Axis</span>
-            <span className="text-[12px] font-bold text-text-primary">EBITDA Value ($)</span>
         </div>
       </div>
     </div>
@@ -330,77 +271,69 @@ function ComparisonCard({ current, previous, label }) {
 /*  Sub-components                                                    */
 /* ------------------------------------------------------------------ */
 
-function EbitdaHeroCard({ ebitda, isPositive, reportPeriod, previousEbitda }) {
-  const diff =
-    previousEbitda !== null && previousEbitda !== undefined
-      ? ebitda - previousEbitda
-      : null;
-  const pctChange =
-    diff !== null && previousEbitda !== 0
-      ? ((ebitda - previousEbitda) / Math.abs(previousEbitda)) * 100
-      : null;
+function EbitdaHeroCard({ ebitda, adjEbitda, revenue, opex, previousEbitda, reportPeriod }) {
+  const diff = previousEbitda !== null ? ebitda - previousEbitda : null;
+  const pctChange = diff !== null && previousEbitda !== 0 ? (diff / Math.abs(previousEbitda)) * 100 : null;
 
   return (
-    <div className="relative overflow-hidden rounded-2xl border border-border bg-white p-8 shadow-sm">
-      <div className="relative">
-        <div className="mb-1 flex items-center gap-2">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gray-100">
-            <TrendingUp size={20} className="text-gray-500" />
-          </div>
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+      {/* Main EBITDA Card */}
+      <div className="col-span-1 overflow-hidden rounded-2xl border border-border bg-white p-6 shadow-sm lg:col-span-2">
+        <div className="flex items-start justify-between">
           <div>
-            <p className="text-[12px] font-semibold uppercase tracking-wider text-text-muted">
-              EBITDA
-            </p>
-            <p className="text-[11px] text-text-muted">
-              Earnings Before Interest, Taxes, Depreciation & Amortization
-            </p>
+            <p className="text-[11px] font-bold uppercase tracking-widest text-text-muted">Current EBITDA</p>
+            <h2 className="mt-2 text-4xl font-extrabold text-text-primary">{formatCurrency(ebitda)}</h2>
+            {pctChange !== null && (
+              <div className={cn("mt-2 flex items-center gap-1.5 text-[13px] font-bold", pctChange >= 0 ? "text-green-600" : "text-red-500")}>
+                {pctChange >= 0 ? <ArrowUpRight size={16} /> : <ArrowDownRight size={16} />}
+                {formatPercent(pctChange)} vs previous period
+              </div>
+            )}
+          </div>
+          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
+            <TrendingUp size={24} className="text-primary" />
           </div>
         </div>
-
-        <div className="mt-5 flex items-end gap-3">
-          <h2 className="text-4xl font-extrabold tracking-tight text-text-primary">
-            {formatCurrency(ebitda)}
-          </h2>
-          <div
-            className={cn(
-              "mb-1 flex items-center gap-1 rounded-full px-2.5 py-1 text-[12px] font-bold",
-              isPositive
-                ? "bg-green-100 text-green-700"
-                : "bg-red-100 text-red-600",
-            )}
-          >
-            {isPositive ? (
-              <ArrowUpRight size={13} />
-            ) : (
-              <ArrowDownRight size={13} />
-            )}
-            {isPositive ? "Positive" : "Negative"}
+        <div className="mt-6 flex items-center gap-6 border-t border-border pt-4">
+          <div>
+            <p className="text-[10px] font-bold uppercase text-text-muted">Revenue</p>
+            <p className="text-[15px] font-bold text-text-primary">{formatCurrency(revenue)}</p>
           </div>
-          {pctChange !== null && Number.isFinite(pctChange) && (
-            <div
-              className={cn(
-                "mb-1 flex items-center gap-1 rounded-full px-2.5 py-1 text-[12px] font-bold",
-                pctChange >= 0
-                  ? "bg-blue-100 text-blue-700"
-                  : "bg-orange-100 text-orange-600",
-              )}
-            >
-              {pctChange >= 0 ? (
-                <TrendingUp size={13} />
-              ) : (
-                <TrendingDown size={13} />
-              )}
-              {formatPercent(pctChange)} vs prev
+          <div className="h-8 border-l border-border" />
+          <div>
+            <p className="text-[10px] font-bold uppercase text-text-muted">Adjusted EBITDA</p>
+            <p className="text-[15px] font-bold text-orange-600">{formatCurrency(adjEbitda)}</p>
+          </div>
+          <div className="h-8 border-l border-border" />
+          <div>
+            <p className="text-[10px] font-bold uppercase text-text-muted">OpEx</p>
+            <p className="text-[15px] font-bold text-text-primary">{formatCurrency(opex)}</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Adjustments Summary Card */}
+      <div className="rounded-2xl border border-border bg-gradient-to-br from-orange-50 to-white p-6 shadow-sm">
+        <div className="flex items-center gap-2">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-orange-100">
+             <Calculator size={16} className="text-orange-600" />
+          </div>
+          <p className="text-[12px] font-bold uppercase tracking-wider text-orange-800">Add-backs</p>
+        </div>
+        <div className="mt-4">
+          <p className="text-[11px] text-orange-700/70">Total identified adjustments</p>
+          <p className="mt-1 text-2xl font-extrabold text-orange-600">{formatCurrency(adjEbitda - ebitda)}</p>
+        </div>
+        <div className="mt-4 space-y-2">
+            <div className="flex items-center justify-between text-[11px]">
+                <span className="text-text-muted">EBITDA Margin</span>
+                <span className="font-bold text-text-primary">{revenue > 0 ? ((ebitda / revenue) * 100).toFixed(1) : 0}%</span>
             </div>
-          )}
+            <div className="flex items-center justify-between text-[11px]">
+                <span className="text-text-muted">Adjusted Margin</span>
+                <span className="font-bold text-orange-600">{revenue > 0 ? ((adjEbitda / revenue) * 100).toFixed(1) : 0}%</span>
+            </div>
         </div>
-
-        {reportPeriod?.startDate && (
-          <p className="mt-3 text-[12px] font-medium text-text-muted">
-            {reportPeriod.startDate} — {reportPeriod.endDate} ·{" "}
-            {reportPeriod.reportBasis} Basis
-          </p>
-        )}
       </div>
     </div>
   );
@@ -493,56 +426,41 @@ function FormulaBar({ components }) {
     { key: "taxes", symbol: "+", color: "#C62026" },
     { key: "depreciation", symbol: "+", color: "#742982" },
     { key: "amortization", symbol: "+", color: "#00B0F0" },
+    { key: "adjustments", symbol: "+", color: "#f97316" },
   ];
 
   return (
     <div className="rounded-xl border border-border bg-gradient-to-r from-slate-50 to-white p-5">
-      <div className="mb-3 flex items-center gap-2">
+      <div className="mb-4 flex items-center gap-2">
         <Calculator size={16} className="text-text-muted" />
         <p className="text-[12px] font-bold uppercase tracking-wider text-text-muted">
-          EBITDA Formula Breakdown
+          Adjusted EBITDA Bridge
         </p>
       </div>
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-y-4">
         {items.map((item) => {
           const comp = components[item.key];
           return (
             <div key={item.key} className="flex items-center gap-2">
-              {item.symbol && (
-                <span className="text-lg font-bold text-text-muted">
-                  {item.symbol}
-                </span>
-              )}
-              <div
-                className="rounded-lg border px-3 py-1.5"
-                style={{
-                  borderColor: `${item.color}30`,
-                  backgroundColor: `${item.color}08`,
-                }}
-              >
-                <span
-                  className="text-[11px] font-medium"
-                  style={{ color: item.color }}
-                >
-                  {comp?.label}
-                </span>
-                <span className="ml-2 text-[13px] font-bold text-text-primary">
-                  {formatCurrency(comp?.value || 0)}
-                </span>
+              {item.symbol && <span className="text-lg font-bold text-text-muted">{item.symbol}</span>}
+              <div className="rounded-lg border px-3 py-1.5" style={{ borderColor: `${item.color}30`, backgroundColor: `${item.color}08` }}>
+                <span className="text-[11px] font-medium" style={{ color: item.color }}>{comp?.label}</span>
+                <span className="ml-2 text-[13px] font-bold text-text-primary">{formatCurrency(comp?.value || 0)}</span>
               </div>
             </div>
           );
         })}
-        <span className="text-lg font-bold text-text-muted">=</span>
-        <div className="rounded-lg border border-primary/30 bg-primary/5 px-4 py-1.5">
-          <span className="text-[11px] font-medium text-primary">EBITDA</span>
-          <span className="ml-2 text-[14px] font-extrabold text-primary-dark">
+        <span className="mx-2 text-lg font-bold text-text-muted">=</span>
+        <div className="rounded-lg border border-orange-500/30 bg-orange-500/5 px-4 py-1.5">
+          <span className="text-[11px] font-bold text-orange-600">Adj. EBITDA</span>
+          <span className="ml-2 text-[14px] font-extrabold text-orange-700">
             {formatCurrency(
               (components.netIncome?.value || 0) +
                 (components.interest?.value || 0) +
                 (components.taxes?.value || 0) +
                 (components.depreciation?.value || 0) +
-                (components.amortization?.value || 0),
+                (components.amortization?.value || 0) +
+                (components.adjustments?.value || 0),
             )}
           </span>
         </div>
@@ -811,6 +729,13 @@ export default function WorkspaceEbitda() {
       value: components.amortization?.value || 0,
       matchedAccounts: components.amortization?.matchedAccounts || [],
     },
+    {
+      icon: Calculator,
+      color: "#f97316",
+      label: "Adjustments (Add-backs)",
+      value: components.adjustments?.value || 0,
+      matchedAccounts: components.adjustments?.matchedAccounts || [],
+    },
   ];
 
   return (
@@ -968,10 +893,39 @@ export default function WorkspaceEbitda() {
             {/* Hero EBITDA card */}
             <EbitdaHeroCard
               ebitda={ebitdaResult.ebitda}
-              isPositive={isPositive}
-              reportPeriod={ebitdaResult.reportPeriod}
+              adjEbitda={ebitdaResult.adjustedEbitda}
+              revenue={ebitdaResult.revenue}
+              opex={ebitdaResult.opex}
               previousEbitda={previousEbitda}
+              reportPeriod={ebitdaResult.reportPeriod}
             />
+
+            {/* AI Insights Card */}
+            <div className="rounded-xl border border-blue-100 bg-blue-50/30 p-5">
+                <div className="flex items-center gap-2 mb-3">
+                    <Info size={16} className="text-blue-600" />
+                    <h4 className="text-[13px] font-bold text-blue-900 uppercase tracking-widest">Financial Insights</h4>
+                </div>
+                <div className="space-y-4">
+                    <p className="text-[14px] text-blue-800 leading-relaxed font-medium">
+                        EBITDA is currently <span className="font-extrabold">{formatCurrency(ebitdaResult.ebitda)}</span>. 
+                        {ebitdaResult.adjustedEbitda > ebitdaResult.ebitda && (
+                            <> After identifying <span className="font-extrabold">{formatCurrency(ebitdaResult.adjustedEbitda - ebitdaResult.ebitda)}</span> in discretionary add-backs, your 
+                            Adjusted EBITDA improves to <span className="font-extrabold text-orange-700">{formatCurrency(ebitdaResult.adjustedEbitda)}</span>. </>
+                        )}
+                    </p>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="rounded-lg bg-white/60 p-3 border border-blue-100">
+                             <p className="text-[11px] text-blue-600 font-bold uppercase">Efficiency</p>
+                             <p className="text-[13px] text-blue-900 mt-1">For every $1 of Revenue, you generate <span className="font-bold">{(ebitdaResult.ebitda / (ebitdaResult.revenue || 1) * 100).toFixed(1)}¢</span> in EBITDA.</p>
+                        </div>
+                        <div className="rounded-lg bg-white/60 p-3 border border-blue-100">
+                             <p className="text-[11px] text-blue-600 font-bold uppercase">OpEx Load</p>
+                             <p className="text-[13px] text-blue-900 mt-1">Operating expenses consume <span className="font-bold">{(ebitdaResult.opex / (ebitdaResult.revenue || 1) * 100).toFixed(1)}%</span> of your total revenue.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
 
             {/* Period comparison */}
             {previousEbitda !== null && (

@@ -233,6 +233,39 @@ const NET_INCOME_PATTERNS = [
   "net operating income",
 ];
 
+const ADJUSTMENT_PATTERNS = [
+  "officer compensation",
+  "owner salary",
+  "management fee",
+  "non recurring",
+  "one time",
+  "legal fee",
+  "professional fee",
+  "charitable contribution",
+  "auto expense",
+  "travel and entertainment",
+  "meals and entertainment",
+  "miscellaneous",
+  "other expense",
+  "non operating",
+];
+
+const ADJ_EXCLUDE = [
+  "operating",
+  "payroll",
+];
+
+const REVENUE_PATTERNS = [
+  "total income",
+  "total revenue",
+  "gross profit",
+];
+
+const OPEX_PATTERNS = [
+  "total expenses",
+  "total operating expenses",
+];
+
 function normalize(label) {
   return String(label || "")
     .trim()
@@ -402,11 +435,15 @@ export async function getEbitdaMonthlyTrend(accountingMethod) {
         startDate: m.startDate,
         endDate: m.endDate,
         ebitda: result.ebitda,
+        adjustedEbitda: result.adjustedEbitda || result.ebitda,
+        revenue: result.revenue || 0,
+        opex: result.opex || 0,
         netIncome: result.components.netIncome.value,
         interest: result.components.interest.value,
         taxes: result.components.taxes.value,
         depreciation: result.components.depreciation.value,
         amortization: result.components.amortization.value,
+        adjustments: result.components.adjustments.value,
       });
     } catch {
       results.push({
@@ -414,11 +451,15 @@ export async function getEbitdaMonthlyTrend(accountingMethod) {
         startDate: m.startDate,
         endDate: m.endDate,
         ebitda: 0,
+        adjustedEbitda: 0,
+        revenue: 0,
+        opex: 0,
         netIncome: 0,
         interest: 0,
         taxes: 0,
         depreciation: 0,
         amortization: 0,
+        adjustments: 0,
         error: true,
       });
     }
@@ -478,6 +519,17 @@ export async function getEbitdaData(startDate, endDate, accountingMethod) {
     );
     const amortization = extractComponent(flatRows, AMORTIZATION_PATTERNS);
 
+    // New: Adjustments (Add-backs)
+    const adjustments = extractComponent(
+      flatRows,
+      ADJUSTMENT_PATTERNS,
+      ADJ_EXCLUDE,
+    );
+
+    // New: Revenue & OpEx for breakdown
+    const revenue = extractComponent(flatRows, REVENUE_PATTERNS);
+    const opex = extractComponent(flatRows, OPEX_PATTERNS);
+
     // To prevent double-counting (e.g. a row matched by both depreciation and amortization)
     // we track the unique row signatures added to the final EBITDA sum.
     const addBackRows = [
@@ -501,8 +553,14 @@ export async function getEbitdaData(startDate, endDate, accountingMethod) {
     // EBITDA = Net Income + Unique Add-Backs
     const ebitda = netIncomeMatch.value + uniqueAddBackTotal;
 
+    // Adjusted EBITDA = EBITDA + Adjustments
+    const adjustedEbitda = ebitda + adjustments.total;
+
     return {
       ebitda,
+      adjustedEbitda,
+      revenue: revenue.total,
+      opex: opex.total,
       components: {
         netIncome: {
           label: netIncomeMatch.label || "Net Income",
@@ -528,6 +586,11 @@ export async function getEbitdaData(startDate, endDate, accountingMethod) {
           label: "Amortization",
           value: amortization.total,
           matchedAccounts: amortization.items,
+        },
+        adjustments: {
+          label: "Add-backs & Adjustments",
+          value: adjustments.total,
+          matchedAccounts: adjustments.items,
         },
       },
       reportPeriod,
