@@ -71,10 +71,10 @@ function formatPercent(value) {
 function TrendChart({ data, isLoading }) {
   if (isLoading) {
     return (
-      <div className="flex h-[260px] items-center justify-center rounded-xl border border-border bg-white">
-        <div className="flex flex-col items-center gap-2">
-          <div className="h-8 w-8 animate-spin rounded-full border-3 border-border border-t-primary" />
-          <p className="text-[12px] text-text-muted">Loading trend data…</p>
+      <div className="flex h-[320px] items-center justify-center rounded-xl border border-border bg-white shadow-sm">
+        <div className="flex flex-col items-center gap-3">
+          <div className="h-10 w-10 animate-spin rounded-full border-4 border-border border-t-primary" />
+          <p className="text-[13px] font-medium text-text-muted">Analyzing 12-month performance…</p>
         </div>
       </div>
     );
@@ -82,72 +82,178 @@ function TrendChart({ data, isLoading }) {
 
   if (!data || data.length === 0) {
     return (
-      <div className="flex h-[260px] items-center justify-center rounded-xl border border-border bg-white">
-        <p className="text-[13px] text-text-muted">
-          Generate EBITDA to view monthly trend
-        </p>
+      <div className="flex h-[320px] items-center justify-center rounded-xl border border-dashed border-border bg-white p-8">
+        <div className="text-center">
+          <BarChart3 size={40} className="mx-auto mb-3 text-border" />
+          <p className="text-[14px] font-medium text-text-muted">
+            No trend data available for this company
+          </p>
+          <p className="text-[12px] text-text-muted/70">
+            Ensure QuickBooks has historical P&L data
+          </p>
+        </div>
       </div>
     );
   }
 
   const values = data.map((d) => d.ebitda);
-  const maxVal = Math.max(...values.map(Math.abs), 1);
-  const chartHeight = 180;
-  const barWidth = Math.min(40, Math.floor(600 / data.length) - 8);
+  const maxEbitda = Math.max(...values, 0);
+  const minEbitda = Math.min(...values, 0);
+  const absMax = Math.max(Math.abs(maxEbitda), Math.abs(minEbitda), 1000);
+  
+  // Padding for visual clarity
+  const yLimit = absMax * 1.25;
+  
+  const chartHeight = 220;
+  const chartWidth = 700;
+  const margin = { top: 20, right: 20, bottom: 40, left: 70 };
+  
+  const getY = (val) => {
+    return chartHeight / 2 - (val / yLimit) * (chartHeight / 2);
+  };
+
+  const zeroY = getY(0);
+  const barSpacing = chartWidth / data.length;
+  const barWidth = Math.min(32, barSpacing * 0.7);
+
+  // Generate Y-axis grid marks
+  const gridMarks = [yLimit * 0.8, yLimit * 0.4, 0, -yLimit * 0.4, -yLimit * 0.8];
 
   return (
-    <div className="rounded-xl border border-border bg-white p-5">
-      <div className="mb-4 flex items-center gap-2">
-        <BarChart3 size={16} className="text-primary" />
-        <h3 className="text-[13px] font-bold uppercase tracking-wider text-text-muted">
-          Monthly EBITDA Trend (Last 12 Months)
-        </h3>
+    <div className="rounded-2xl border border-border bg-white p-6 shadow-sm">
+      <div className="mb-6 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
+            <BarChart3 size={16} className="text-primary" />
+          </div>
+          <div>
+            <h3 className="text-[14px] font-bold text-text-primary">
+              Monthly EBITDA Trend
+            </h3>
+            <p className="text-[11px] text-text-muted">Trailing 12-month earnings analysis</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-1.5">
+            <div className="h-2 w-2 rounded-full bg-primary" />
+            <span className="text-[11px] font-medium text-text-muted">Positive</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <div className="h-2 w-2 rounded-full bg-red-500" />
+            <span className="text-[11px] font-medium text-text-muted">Negative</span>
+          </div>
+        </div>
       </div>
 
-      <div className="flex items-end justify-center gap-1 overflow-x-auto pb-2">
-        {data.map((item, index) => {
-          const absVal = Math.abs(item.ebitda);
-          const heightPx = Math.max((absVal / maxVal) * chartHeight, 4);
-          const isPositive = item.ebitda >= 0;
-
-          return (
+      <div className="relative">
+        {/* Y-axis labels and grid lines */}
+        <div className="absolute left-0 top-0 h-full w-[60px] pr-2">
+          {gridMarks.map((mark, i) => (
             <div
-              key={index}
-              className="group relative flex flex-col items-center"
-              style={{ minWidth: barWidth + 4 }}
+              key={i}
+              className="absolute w-full border-t border-dashed border-gray-100 transition-all"
+              style={{ top: getY(mark) + margin.top, right: -640 }}
             >
-              {/* Tooltip */}
-              <div className="pointer-events-none absolute -top-14 z-10 hidden rounded-lg border border-border bg-white px-3 py-1.5 shadow-lg group-hover:block">
-                <p className="whitespace-nowrap text-[11px] font-bold text-text-primary">
-                  {formatCurrency(item.ebitda)}
-                </p>
-                <p className="whitespace-nowrap text-[10px] text-text-muted">
-                  {item.month}
-                </p>
-              </div>
-
-              {/* Bar */}
-              <div
-                className={cn(
-                  "rounded-t-md transition-all duration-300 group-hover:opacity-80",
-                  isPositive
-                    ? "bg-gradient-to-t from-primary/70 to-primary"
-                    : "bg-gradient-to-t from-red-400 to-red-500",
-                  item.error && "bg-gray-300",
-                )}
-                style={{
-                  width: barWidth,
-                  height: heightPx,
-                }}
-              />
-
-              {/* Month label */}
-              <p className="mt-1.5 text-[9px] font-medium text-text-muted">
-                {item.month.replace(" ", "\n").split("\n")[0]}
-              </p>
+              <span className="absolute -left-16 -top-2.5 w-14 text-right text-[10px] font-bold text-text-muted">
+                {mark >= 1000 ? `${(mark / 1000).toFixed(0)}k` : mark <= -1000 ? `${(mark / 1000).toFixed(0)}k` : mark.toFixed(0)}
+              </span>
             </div>
-          );
-        })}
+          ))}
+        </div>
+
+        {/* Plot Area */}
+        <div className="ml-[70px] overflow-x-auto scrollbar-hide">
+          <svg
+            width={chartWidth}
+            height={chartHeight + margin.top + margin.bottom}
+            className="overflow-visible"
+          >
+            {/* Zero Baseline */}
+            <line
+              x1="0"
+              y1={zeroY + margin.top}
+              x2={chartWidth}
+              y2={zeroY + margin.top}
+              stroke="#cbd5e1"
+              strokeWidth="2"
+              strokeDasharray="4 2"
+            />
+
+            {data.map((item, index) => {
+              const xPos = index * barSpacing + barSpacing / 2;
+              const yPos = getY(item.ebitda) + margin.top;
+              const barHeight = Math.abs(zeroY + margin.top - yPos);
+              const isPositive = item.ebitda >= 0;
+              const tooltipId = `tooltip-${index}`;
+
+              return (
+                <g key={index} className="group cursor-pointer">
+                  {/* Invisible hover area */}
+                  <rect
+                    x={xPos - barSpacing / 2}
+                    y={margin.top}
+                    width={barSpacing}
+                    height={chartHeight}
+                    fill="transparent"
+                  />
+
+                  {/* Bar */}
+                  <rect
+                    x={xPos - barWidth / 2}
+                    y={isPositive ? yPos : zeroY + margin.top}
+                    width={barWidth}
+                    height={Math.max(barHeight, 2)}
+                    rx={4}
+                    className={cn(
+                      "transition-all duration-300 group-hover:filter group-hover:brightness-95",
+                      isPositive
+                        ? "fill-primary"
+                        : "fill-red-500",
+                    )}
+                  />
+
+                  {/* X-axis Label (Month) */}
+                  <text
+                    x={xPos}
+                    y={chartHeight + margin.top + 25}
+                    textAnchor="middle"
+                    className="fill-text-muted text-[10px] font-bold"
+                  >
+                    {item.month.split(" ")[0]}
+                  </text>
+
+                  {/* Tooltip on hover */}
+                  <foreignObject
+                    x={xPos - 60}
+                    y={yPos - 55}
+                    width="120"
+                    height="50"
+                    className="pointer-events-none opacity-0 transition-opacity duration-200 group-hover:opacity-100"
+                  >
+                    <div className="rounded-lg border border-border bg-white p-2 shadow-xl ring-1 ring-black/5">
+                      <p className="text-center text-[11px] font-extrabold text-text-primary">
+                        {formatCurrency(item.ebitda)}
+                      </p>
+                      <p className="text-center text-[9px] font-bold uppercase tracking-wider text-text-muted">
+                        {item.month}
+                      </p>
+                    </div>
+                  </foreignObject>
+                </g>
+              );
+            })}
+          </svg>
+        </div>
+      </div>
+      <div className="mt-4 flex items-center justify-center gap-8 border-t border-border pt-4">
+        <div className="flex flex-col items-center">
+            <span className="text-[10px] uppercase tracking-wider text-text-muted">Time Period</span>
+            <span className="text-[12px] font-bold text-text-primary">Monthly</span>
+        </div>
+        <div className="flex flex-col items-center">
+            <span className="text-[10px] uppercase tracking-wider text-text-muted">Y-Axis</span>
+            <span className="text-[12px] font-bold text-text-primary">EBITDA Value ($)</span>
+        </div>
       </div>
     </div>
   );
