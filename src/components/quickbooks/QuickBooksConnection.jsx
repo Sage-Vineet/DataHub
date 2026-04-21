@@ -15,8 +15,11 @@ import {
 import {
   connectQuickbooks,
   disconnectQuickbooks,
+  fetchBalanceSheet,
+  fetchProfitAndLoss,
   getConnectionStatus,
   refreshQuickbooksToken,
+  syncGeneralLedger,
 } from "../../lib/quickbooks";
 import { useToast } from "../../context/ToastContext";
 import { fetchCustomers } from "../../services/customerService";
@@ -124,7 +127,10 @@ export default function QuickBooksConnection({ company }) {
           Promise.all([
             fetchCustomers().catch(() => ({})),
             fetchInvoices().catch(() => ({})),
-          ]).then(([customersRes, invoicesRes]) => {
+            fetchBalanceSheet().catch(() => ({})),
+            fetchProfitAndLoss().catch(() => ({})),
+            syncGeneralLedger().catch(() => ({})),
+          ]).then(([customersRes, invoicesRes, bsRes, pnlRes, glRes]) => {
             const custs = Array.isArray(customersRes?.QueryResponse?.Customer)
               ? customersRes.QueryResponse.Customer
               : Array.isArray(customersRes?.data?.QueryResponse?.Customer)
@@ -141,6 +147,12 @@ export default function QuickBooksConnection({ company }) {
                   ? invoicesRes
                   : [];
 
+            // Helper to count rows in QB reports
+            const countReportRows = (res) => {
+              const rows = res?.Rows?.Row || res?.data?.Rows?.Row || res?.data?.data?.Rows?.Row || [];
+              return Array.isArray(rows) ? rows.length : 0;
+            };
+
             setDynamicEntities([
               {
                 name: "Customers",
@@ -151,6 +163,24 @@ export default function QuickBooksConnection({ company }) {
               {
                 name: "Invoices",
                 count: invs.length,
+                lastSync: data.lastSynced,
+                status: "synced",
+              },
+              {
+                name: "Profit and Loss",
+                count: countReportRows(pnlRes),
+                lastSync: data.lastSynced,
+                status: "synced",
+              },
+              {
+                name: "Balance Sheet",
+                count: countReportRows(bsRes),
+                lastSync: data.lastSynced,
+                status: "synced",
+              },
+              {
+                name: "General Ledger",
+                count: glRes?.totalInserted || glRes?.data?.totalInserted || 0,
                 lastSync: data.lastSynced,
                 status: "synced",
               },
