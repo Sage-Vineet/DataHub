@@ -25,11 +25,16 @@ export default function QBDisconnectedBanner({ pageName = 'this page' }) {
 
   useEffect(() => {
     let cancelled = false;
-    
+
+    // Only fetch company data if we have a real clientId (broker workspace)
+    const companyPromise = clientId
+      ? getCompanyRequest(clientId).catch(() => null)
+      : Promise.resolve(null);
+
     // Check both status and current company info to verify isolation
     Promise.all([
       getConnectionStatus().catch(() => ({ isConnected: false })),
-      getCompanyRequest(clientId).catch(() => null)
+      companyPromise
     ])
       .then(([qbData, wpData]) => {
         if (cancelled) return;
@@ -73,7 +78,7 @@ export default function QBDisconnectedBanner({ pageName = 'this page' }) {
       role="alert"
       className={cn(
         "flex items-start gap-4 px-5 py-4 rounded-xl border shadow-sm animate-in fade-in slide-in-from-top-2 duration-300",
-        isMismatch 
+        isMismatch
           ? "border-red-300/60 bg-red-50 text-red-800"
           : "border-amber-300/70 bg-amber-50 text-amber-800"
       )}
@@ -91,7 +96,7 @@ export default function QBDisconnectedBanner({ pageName = 'this page' }) {
         <p className={cn("mt-1 text-[13px] leading-relaxed", isMismatch ? "text-red-700" : "text-amber-700")}>
           {isMismatch ? (
             <>
-              The connected QuickBooks account (<span className="font-bold underline">{qbCompanyName}</span>) does not match the current workspace (<span className="font-bold underline">{companyName}</span>). 
+              The connected QuickBooks account (<span className="font-bold underline">{qbCompanyName}</span>) does not match the current workspace (<span className="font-bold underline">{companyName}</span>).
               <span className="block mt-1">Please switch to the correct company or reconnect to ensure data integrity.</span>
             </>
           ) : (

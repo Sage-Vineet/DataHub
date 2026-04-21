@@ -29,11 +29,19 @@ function resolveClientIdFromLocation() {
 
   const hash = window.location.hash || '';
   const pathname = window.location.pathname || '';
-  const hashMatch = hash.match(/\/client\/([^/?#]+)/);
-  const pathMatch = pathname.match(/\/client\/([^/?#]+)/);
-  const match = hashMatch || pathMatch;
+  
+  // We only want to extract an ID if it's explicitly under the broker's client workspace
+  const brokerMatch = hash.match(/\/broker\/client\/([^/?#]+)/) || pathname.match(/\/broker\/client\/([^/?#]+)/);
+  
+  if (brokerMatch) {
+    const id = decodeURIComponent(brokerMatch[1]);
+    // Safety: ensure it looks like a database ID (UUID) and not a static route
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(id)) return null;
+    return id;
+  }
 
-  return match ? decodeURIComponent(match[1]) : null;
+  return null;
 }
 
 export function getStoredToken() {
