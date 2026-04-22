@@ -109,21 +109,21 @@ export default function WorkspaceEbitda() {
   const getValueFromPL = useCallback((year, label) => {
     const flatRows = multiYearData[year]?._debug?.flatRows;
     if (!flatRows || !label) return null;
-    
+
     const searchLabel = label.toLowerCase().trim();
     // Match label dynamically using row names from API
-    const match = flatRows.find(row => 
+    const match = flatRows.find(row =>
       row.label?.toLowerCase().trim() === searchLabel ||
       row.AccountName?.toLowerCase().trim() === searchLabel
     );
-    
+
     return match ? (match.value || 0) : null;
   }, [multiYearData]);
 
   const calculateBaseEbitda = useCallback((year) => {
     const comps = multiYearData[year]?.components;
     if (!comps) return 0;
-    return (comps.netIncome?.value || 0) 
+    return (comps.netIncome?.value || 0)
       - (comps.interestIncome?.value || 0)
       + (comps.interestExpense?.value || 0)
       + (comps.taxes?.value || 0)
@@ -162,17 +162,17 @@ export default function WorkspaceEbitda() {
           const sy = `${year}-01-01`;
           // Current year uses today; previous years use full year (Dec 31)
           const ey = year === currentYear ? todayStr : `${year}-12-31`;
-          
+
           console.log(`[EBITDA] Fetching data for ${year}: Range ${sy} to ${ey}`);
-          
+
           try {
             const data = await getEbitdaData(sy, ey, accountingMethod);
             console.log(`[EBITDA] Received data for ${year}:`, data);
-            
+
             if (!data || !data.hasData) {
               console.warn(`[EBITDA] Year ${year} has no data or returned null`);
             }
-            
+
             results[year] = data;
           } catch (err) {
             console.error(`[EBITDA] Failed to fetch data for ${year}:`, err);
@@ -207,7 +207,7 @@ export default function WorkspaceEbitda() {
       try {
         const parsed = JSON.parse(saved);
         const savedAddbacks = Array.isArray(parsed) ? parsed : (parsed.addbacks || []);
-        
+
         // Step 6: Multi-Year Handling - Store per-year apiValue
         const initialized = savedAddbacks.map(ab => {
           const vals = {};
@@ -256,7 +256,7 @@ export default function WorkspaceEbitda() {
   const handleAddAddback = () => {
     const newId = `custom_${Date.now()}`;
     const newVals = {};
-    
+
     // Step 5: Dynamic Row Creation
     years.forEach(year => {
       newVals[year] = {
@@ -278,12 +278,12 @@ export default function WorkspaceEbitda() {
       if (ab.id === id) {
         return {
           ...ab,
-          values: { 
-            ...ab.values, 
-            [year]: { 
-              ...ab.values[year], 
-              userValue: value === "" ? null : Number(value) 
-            } 
+          values: {
+            ...ab.values,
+            [year]: {
+              ...ab.values[year],
+              userValue: value === "" ? null : Number(value)
+            }
           }
         };
       }
@@ -469,7 +469,7 @@ export default function WorkspaceEbitda() {
                           </td>
                           {years.map((year) => {
                             const { apiValue, userValue } = row.values[year] || { apiValue: null, userValue: null };
-                            
+
                             // Step 3: Display Logic - valueToShow = userValue !== null ? userValue : apiValue
                             const val = userValue !== null ? userValue : apiValue;
                             const isEdited = userValue !== null;
@@ -554,8 +554,6 @@ export default function WorkspaceEbitda() {
                       className="w-full bg-transparent border-none focus:ring-0 text-[13px] px-3 placeholder:italic text-slate-600"
                     />
                   </div>
-
-                  {/* Spacer removed */}
 
                   {/* EBITDA Adj Comments */}
                   {[
