@@ -346,6 +346,12 @@ function matchesPatterns(label, patterns, excludePatterns = []) {
  * Prefers leaf "data" rows over "summary" totals to avoid double-counting.
  * If both a parent summary and its children match, keeps only the children.
  */
+/**
+ * Extract matched accounts for a component.
+ * Prefers summary totals from QuickBooks to ensure accuracy, but falls back to 
+ * individual data rows if no summary is present. Handles de-duplication to 
+ * prevent double-counting of parent/child relationships.
+ */
 function extractComponent(flatRows, patterns, excludePatterns = []) {
   const matched = [];
 
@@ -357,36 +363,41 @@ function extractComponent(flatRows, patterns, excludePatterns = []) {
 
   if (matched.length === 0) return { items: [], total: 0 };
 
-  // De-duplicate: if we have data rows AND a summary row for the same section,
-  // prefer the summary (it's the accurate total from QB).
+  // De-duplicate: If we have multiple matches, we must avoid adding both a parent 
+  // summary and its constituent child rows.
   const summaryRows = matched.filter((r) => r.source === "summary");
   const dataRows = matched.filter((r) => r.source === "data");
 
-  if (summaryRows.length === 1 && dataRows.length > 0) {
-    const isParentOfAny = dataRows.some(
-      (d) => normalize(d.parentLabel) === normalize(summaryRows[0].label),
+  // Strategy:
+  // 1. If there are summary rows, they are usually the most reliable totals from QB.
+  // 2. We sort summaries by depth to find the most "senior" (top-level) totals.
+  // 3. We only include a summary if it's not a child of another already-included summary.
+  // 4. We only include data rows if they aren't already represented by an included summary.
+
+  const finalItems = [];
+  const sortedSummaries = [...summaryRows].sort((a, b) => a.depth - b.depth);
+
+  for (const s of sortedSummaries) {
+    const isRedundant = finalItems.some(
+      (item) => normalize(s.parentLabel) === normalize(item.label)
     );
-    if (isParentOfAny) {
-      return {
-        items: dataRows.map((r) => ({ label: r.label, value: r.value })),
-        total: summaryRows[0].value,
-      };
+    if (!isRedundant) {
+      finalItems.push(s);
     }
   }
 
-  const seen = new Set();
-  const uniqueItems = [];
-  for (const row of matched) {
-    const key = `${normalize(row.label)}:${row.value}:${row.parentLabel}`;
-    if (!seen.has(key)) {
-      seen.add(key);
-      uniqueItems.push({ label: row.label, value: row.value });
+  for (const d of dataRows) {
+    const isRedundant = finalItems.some(
+      (item) => normalize(d.parentLabel) === normalize(item.label) || normalize(d.label) === normalize(item.label)
+    );
+    if (!isRedundant) {
+      finalItems.push(d);
     }
   }
 
   return {
-    items: uniqueItems,
-    total: uniqueItems.reduce((sum, i) => sum + i.value, 0),
+    items: finalItems.map((r) => ({ label: r.label, value: r.value })),
+    total: finalItems.reduce((sum, i) => sum + i.value, 0),
   };
 }
 
@@ -542,61 +553,72 @@ export async function getEbitdaData(startDate, endDate, accountingMethod) {
         netIncome: {
           label: netIncomeMatch.label || "Net Income",
           value: netIncomeMatch.value,
+          total: netIncomeMatch.value, // Normalized property
           matchedAccounts: [netIncomeMatch],
         },
         interestIncome: {
           label: "Total Interest Income",
           value: interestIncome.total,
+          total: interestIncome.total, // Normalized property
           matchedAccounts: interestIncome.items,
         },
         interestExpense: {
           label: "Total Interest Expense",
           value: interestExpense.total,
+          total: interestExpense.total, // Normalized property
           matchedAccounts: interestExpense.items,
         },
         taxes: {
           label: "Total Income Tax Expense",
           value: taxes.total,
+          total: taxes.total, // Normalized property
           matchedAccounts: taxes.items,
         },
         depreciation: {
           label: "Depreciation",
           value: depreciation.total,
+          total: depreciation.total, // Normalized property
           matchedAccounts: depreciation.items,
         },
         amortization: {
           label: "Amortization Expense",
           value: amortization.total,
+          total: amortization.total, // Normalized property
           matchedAccounts: amortization.items,
         },
         officerWages: {
           label: "Officer Wages",
           value: officerWages.total,
+          total: officerWages.total, // Normalized property
           matchedAccounts: officerWages.items,
         },
         officerPayrollTax: {
           label: "Officer Payroll Taxes",
           value: officerPayrollTax.total,
+          total: officerPayrollTax.total, // Normalized property
           matchedAccounts: officerPayrollTax.items,
         },
         realEstateTax: {
           label: "Real Estate Taxes",
           value: realEstateTax.total,
+          total: realEstateTax.total, // Normalized property
           matchedAccounts: realEstateTax.items,
         },
         gainLossAssets: {
           label: "Gain on Sale of Assets",
           value: gainLossAssets.total,
+          total: gainLossAssets.total, // Normalized property
           matchedAccounts: gainLossAssets.items,
         },
         adjustments: {
           label: "Other Add-backs",
           value: adjustments.total,
+          total: adjustments.total, // Normalized property
           matchedAccounts: adjustments.items,
         },
       },
       reportPeriod,
-      hasData: rows.length > 0,
+      hasData: rows.length > 0 || flatRows.length > 0,
       _debug: {
         totalFlatRows: flatRows.length,
         topLevelRows: rows.length,

@@ -9,9 +9,10 @@ async function request(path, options = {}) {
   // Matches /broker/client/:id, /client/:id/dashboard, or /client/:id/...
   const hash = window.location.hash || "";
   const brokerMatch = hash.match(/\/broker\/client\/([^/?#]+)/);
+  const workspaceMatch = hash.match(/\/broker\/workspace\/([^/?#]+)/);
   const clientMatch = hash.match(/\/client\/([^/?#]+)/);
   
-  let clientId = brokerMatch ? brokerMatch[1] : (clientMatch ? clientMatch[1] : null);
+  let clientId = brokerMatch ? brokerMatch[1] : (workspaceMatch ? workspaceMatch[1] : (clientMatch ? clientMatch[1] : null));
 
   // Safety: ensure it looks like a database ID (UUID) and not a static route like 'connections'
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -57,9 +58,10 @@ export function connectQuickbooks(redirectHash, explicitClientId = null) {
   // 2. Try broker path
   // 3. Try client path
   const brokerMatch = hash.match(/\/broker\/client\/([^/?#]+)/);
+  const workspaceMatch = hash.match(/\/broker\/workspace\/([^/?#]+)/);
   const clientMatch = hash.match(/\/client\/([^/?#]+)/);
   
-  let clientId = explicitClientId || (brokerMatch ? brokerMatch[1] : (clientMatch ? clientMatch[1] : null));
+  let clientId = explicitClientId || (brokerMatch ? brokerMatch[1] : (workspaceMatch ? workspaceMatch[1] : (clientMatch ? clientMatch[1] : null)));
 
   // Validate UUID format
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

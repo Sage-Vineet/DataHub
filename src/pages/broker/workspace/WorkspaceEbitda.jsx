@@ -149,10 +149,9 @@ export default function WorkspaceEbitda() {
     setIsLoading(true);
     setError("");
     try {
-      const targetYear = new Date().getFullYear();
-      const targetMonthDay = `${String(new Date().getMonth() + 1).padStart(2, "0")}-${String(new Date().getDate()).padStart(2, "0")}`;
-
-      const yearList = [targetYear, targetYear - 1, targetYear - 2, targetYear - 3];
+      const currentYear = new Date().getFullYear();
+      const todayStr = new Date().toISOString().split('T')[0];
+      const yearList = [currentYear, currentYear - 1, currentYear - 2, currentYear - 3];
       setYears(yearList);
 
       const results = {};
@@ -161,12 +160,22 @@ export default function WorkspaceEbitda() {
       await Promise.all(
         yearList.map(async (year) => {
           const sy = `${year}-01-01`;
-          const ey = `${year}-${targetMonthDay}`;
+          // Current year uses today; previous years use full year (Dec 31)
+          const ey = year === currentYear ? todayStr : `${year}-12-31`;
+          
+          console.log(`[EBITDA] Fetching data for ${year}: Range ${sy} to ${ey}`);
+          
           try {
             const data = await getEbitdaData(sy, ey, accountingMethod);
+            console.log(`[EBITDA] Received data for ${year}:`, data);
+            
+            if (!data || !data.hasData) {
+              console.warn(`[EBITDA] Year ${year} has no data or returned null`);
+            }
+            
             results[year] = data;
           } catch (err) {
-            console.error(`Failed to fetch data for ${year}:`, err);
+            console.error(`[EBITDA] Failed to fetch data for ${year}:`, err);
             results[year] = null;
           }
         })
@@ -390,7 +399,7 @@ export default function WorkspaceEbitda() {
                         <td className="p-3 font-bold text-[#050505]">Net Income</td>
                         {years.map(year => (
                           <td key={year} className="p-3 text-right font-bold text-[#050505]">
-                            {formatCurrency(multiYearData[year]?.components.netIncome.value)}
+                            {formatCurrency(multiYearData[year]?.components?.netIncome?.value)}
                           </td>
                         ))}
                       </tr>
@@ -407,7 +416,7 @@ export default function WorkspaceEbitda() {
                           <td className="p-3 pl-8 text-text-primary">{row.label}</td>
                           {years.map(year => (
                             <td key={year} className="p-3 text-right text-text-primary">
-                              {formatCurrency(multiYearData[year]?.components[row.key]?.value)}
+                              {formatCurrency(multiYearData[year]?.components?.[row.key]?.value)}
                             </td>
                           ))}
                         </tr>
@@ -514,7 +523,8 @@ export default function WorkspaceEbitda() {
                             return sum + val;
                           }, 0);
                           const finalSde = baseEbitda + addbacksSum;
-                          const sdePct = data?.revenue > 0 ? (finalSde / data.revenue) * 100 : 0;
+                          const revenue = multiYearData[year]?.revenue || 0;
+                          const sdePct = revenue > 0 ? (finalSde / revenue) * 100 : 0;
 
                           return (
                             <td key={year} className="p-3 text-right font-bold text-text-primary">
@@ -535,9 +545,6 @@ export default function WorkspaceEbitda() {
                 </div>
 
                 <div className="flex-1 flex flex-col space-y-0">
-                  {/* Sync Header height */}
-                  <div className="h-[45px] bg-[#8bc53d] border-b border-[#cbd5e1]" />
-
                   {/* Net Income Comment */}
                   <div className="h-[46px] border-b border-[#cbd5e1] bg-gray-50 p-1 flex items-center">
                     <input
