@@ -158,6 +158,13 @@ function flattenAllRows(rows, depth = 0, parentLabel = "") {
 /*  Pattern matching – case-insensitive, partial, handles QB variants  */
 /* ------------------------------------------------------------------ */
 
+const INTEREST_INCOME_PATTERNS = [
+  "interest income",
+  "interest earned",
+  "interest revenue",
+  "dividend income",
+];
+
 const INTEREST_PATTERNS = [
   "interest",
   "interest expense",
@@ -248,6 +255,34 @@ const ADJUSTMENT_PATTERNS = [
   "miscellaneous",
   "other expense",
   "non operating",
+];
+
+const OFFICER_WAGES_PATTERNS = [
+  "officer wages",
+  "officer compensation",
+  "owner salary",
+  "owners compensation",
+  "officers compensation",
+];
+
+const OFFICER_PAYROLL_TAX_PATTERNS = [
+  "officer payroll tax",
+  "owners payroll tax",
+  "officers payroll tax",
+  "employer taxes officer",
+];
+
+const REAL_ESTATE_TAX_PATTERNS = [
+  "real estate tax",
+  "property tax",
+  "real estate taxes",
+];
+
+const GAIN_LOSS_ASSETS_PATTERNS = [
+  "gain on sale of assets",
+  "loss on sale of assets",
+  "gain/loss on sale",
+  "disposal of assets",
 ];
 
 const ADJ_EXCLUDE = [
@@ -394,79 +429,6 @@ function findNetIncome(rows, flatRows) {
   return { label: "Net Income", value: 0 };
 }
 
-/* ------------------------------------------------------------------ */
-/*  Monthly EBITDA for trend chart (last 12 months)                   */
-/* ------------------------------------------------------------------ */
-
-/**
- * Fetches P&L for each of the last 12 months and computes EBITDA per month.
- */
-export async function getEbitdaMonthlyTrend(accountingMethod) {
-  const today = new Date();
-  const months = [];
-
-  for (let i = 11; i >= 0; i--) {
-    const d = new Date(today.getFullYear(), today.getMonth() - i, 1);
-    const year = d.getFullYear();
-    const month = d.getMonth();
-    const startDate = `${year}-${String(month + 1).padStart(2, "0")}-01`;
-    const lastDay = new Date(year, month + 1, 0).getDate();
-    const endDate = `${year}-${String(month + 1).padStart(2, "0")}-${String(
-      lastDay,
-    ).padStart(2, "0")}`;
-    const label = d.toLocaleDateString("en-US", {
-      month: "short",
-      year: "numeric",
-    });
-    months.push({ startDate, endDate, label });
-  }
-
-  const results = [];
-
-  for (const m of months) {
-    try {
-      const result = await getEbitdaData(
-        m.startDate,
-        m.endDate,
-        accountingMethod,
-      );
-      results.push({
-        month: m.label,
-        startDate: m.startDate,
-        endDate: m.endDate,
-        ebitda: result.ebitda,
-        adjustedEbitda: result.adjustedEbitda || result.ebitda,
-        revenue: result.revenue || 0,
-        opex: result.opex || 0,
-        netIncome: result.components.netIncome.value,
-        interest: result.components.interest.value,
-        taxes: result.components.taxes.value,
-        depreciation: result.components.depreciation.value,
-        amortization: result.components.amortization.value,
-        adjustments: result.components.adjustments.value,
-      });
-    } catch {
-      results.push({
-        month: m.label,
-        startDate: m.startDate,
-        endDate: m.endDate,
-        ebitda: 0,
-        adjustedEbitda: 0,
-        revenue: 0,
-        opex: 0,
-        netIncome: 0,
-        interest: 0,
-        taxes: 0,
-        depreciation: 0,
-        amortization: 0,
-        adjustments: 0,
-        error: true,
-      });
-    }
-  }
-
-  return results;
-}
 
 /* ------------------------------------------------------------------ */
 /*  Public API                                                        */
@@ -506,7 +468,9 @@ export async function getEbitdaData(startDate, endDate, accountingMethod) {
 
     // Extract each component
     const netIncomeMatch = findNetIncome(rows, flatRows);
-    const interest = extractComponent(
+    
+    const interestIncome = extractComponent(flatRows, INTEREST_INCOME_PATTERNS);
+    const interestExpense = extractComponent(
       flatRows,
       INTEREST_PATTERNS,
       INTEREST_EXCLUDE,
@@ -519,11 +483,17 @@ export async function getEbitdaData(startDate, endDate, accountingMethod) {
     );
     const amortization = extractComponent(flatRows, AMORTIZATION_PATTERNS);
 
-    // New: Adjustments (Add-backs)
+    // Specific Addbacks
+    const officerWages = extractComponent(flatRows, OFFICER_WAGES_PATTERNS);
+    const officerPayrollTax = extractComponent(flatRows, OFFICER_PAYROLL_TAX_PATTERNS);
+    const realEstateTax = extractComponent(flatRows, REAL_ESTATE_TAX_PATTERNS);
+    const gainLossAssets = extractComponent(flatRows, GAIN_LOSS_ASSETS_PATTERNS);
+
+    // Generic Adjustments (Add-backs)
     const adjustments = extractComponent(
       flatRows,
       ADJUSTMENT_PATTERNS,
-      ADJ_EXCLUDE,
+      [...ADJ_EXCLUDE, ...OFFICER_WAGES_PATTERNS],
     );
 
     // New: Revenue & OpEx for breakdown
@@ -533,10 +503,14 @@ export async function getEbitdaData(startDate, endDate, accountingMethod) {
     // To prevent double-counting (e.g. a row matched by both depreciation and amortization)
     // we track the unique row signatures added to the final EBITDA sum.
     const addBackRows = [
-      ...interest.items,
+      ...interestExpense.items,
       ...taxes.items,
       ...depreciation.items,
       ...amortization.items,
+      ...officerWages.items,
+      ...officerPayrollTax.items,
+      ...realEstateTax.items,
+      ...gainLossAssets.items,
     ];
 
     const uniqueAddBackKeys = new Set();
@@ -550,6 +524,9 @@ export async function getEbitdaData(startDate, endDate, accountingMethod) {
       }
     });
 
+    // Interest Income is usually an adjustment (subtracted if it's income)
+    // We'll treat it separately in the SDE calculation
+    
     // EBITDA = Net Income + Unique Add-Backs
     const ebitda = netIncomeMatch.value + uniqueAddBackTotal;
 
@@ -567,13 +544,18 @@ export async function getEbitdaData(startDate, endDate, accountingMethod) {
           value: netIncomeMatch.value,
           matchedAccounts: [netIncomeMatch],
         },
-        interest: {
-          label: "Interest Expense",
-          value: interest.total,
-          matchedAccounts: interest.items,
+        interestIncome: {
+          label: "Total Interest Income",
+          value: interestIncome.total,
+          matchedAccounts: interestIncome.items,
+        },
+        interestExpense: {
+          label: "Total Interest Expense",
+          value: interestExpense.total,
+          matchedAccounts: interestExpense.items,
         },
         taxes: {
-          label: "Tax Expense",
+          label: "Total Income Tax Expense",
           value: taxes.total,
           matchedAccounts: taxes.items,
         },
@@ -583,12 +565,32 @@ export async function getEbitdaData(startDate, endDate, accountingMethod) {
           matchedAccounts: depreciation.items,
         },
         amortization: {
-          label: "Amortization",
+          label: "Amortization Expense",
           value: amortization.total,
           matchedAccounts: amortization.items,
         },
+        officerWages: {
+          label: "Officer Wages",
+          value: officerWages.total,
+          matchedAccounts: officerWages.items,
+        },
+        officerPayrollTax: {
+          label: "Officer Payroll Taxes",
+          value: officerPayrollTax.total,
+          matchedAccounts: officerPayrollTax.items,
+        },
+        realEstateTax: {
+          label: "Real Estate Taxes",
+          value: realEstateTax.total,
+          matchedAccounts: realEstateTax.items,
+        },
+        gainLossAssets: {
+          label: "Gain on Sale of Assets",
+          value: gainLossAssets.total,
+          matchedAccounts: gainLossAssets.items,
+        },
         adjustments: {
-          label: "Add-backs & Adjustments",
+          label: "Other Add-backs",
           value: adjustments.total,
           matchedAccounts: adjustments.items,
         },
@@ -599,6 +601,7 @@ export async function getEbitdaData(startDate, endDate, accountingMethod) {
         totalFlatRows: flatRows.length,
         topLevelRows: rows.length,
         uniqueAddBackTotal,
+        flatRows, // Expose for dynamic lookups
       },
     };
   } catch (error) {

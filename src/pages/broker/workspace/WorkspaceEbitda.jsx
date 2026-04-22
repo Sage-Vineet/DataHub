@@ -1,473 +1,37 @@
-import { useEffect, useMemo, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useParams } from "react-router-dom";
 import {
-  ChevronDown,
   RefreshCw,
   TrendingUp,
-  TrendingDown,
-  DollarSign,
-  Percent,
   AlertCircle,
-  ArrowUpRight,
-  ArrowDownRight,
-  Calculator,
-  Info,
-  FileCheck,
-  BarChart3,
-  CalendarDays,
+  Plus,
+  Trash2,
 } from "lucide-react";
 import { cn } from "../../../lib/utils";
 import { getCompanyRequest } from "../../../lib/api";
 import {
   getEbitdaData,
-  getEbitdaMonthlyTrend,
 } from "../../../services/ebitdaService";
 import { refreshQuickbooksToken } from "../../../lib/quickbooks";
-import {
-  normalizeAccountingMethod,
-  sanitizeDateRange,
-} from "../../../lib/report-filters";
 import QBDisconnectedBanner from "../../../components/common/QBDisconnectedBanner";
 
-/* ------------------------------------------------------------------ */
-/*  Utilities                                                         */
-/* ------------------------------------------------------------------ */
-
-function formatDateForInput(date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
 
 function formatCurrency(amount) {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
+  if (amount === 0 || amount === null || amount === undefined) return "-";
+  const num = Number(amount);
+  const formatted = new Intl.NumberFormat("en-US", {
     minimumFractionDigits: 0,
     maximumFractionDigits: 0,
-  }).format(Number(amount || 0));
-}
+  }).format(Math.abs(num));
 
-function formatCurrencyDetailed(amount) {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(Number(amount || 0));
+  return num < 0 ? `(${formatted})` : formatted;
 }
 
 function formatPercent(value) {
-  if (!Number.isFinite(value)) return "N/A";
-  const sign = value >= 0 ? "+" : "";
-  return `${sign}${value.toFixed(1)}%`;
+  if (!Number.isFinite(value)) return "-";
+  return `${value.toFixed(1)}%`;
 }
 
-/* ------------------------------------------------------------------ */
-/*  Trend Chart (pure CSS/SVG – no library dependency)                */
-/* ------------------------------------------------------------------ */
-
-function TrendChart({ data, isLoading }) {
-  if (isLoading) {
-    return (
-      <div className="flex h-[320px] items-center justify-center rounded-xl border border-border bg-white shadow-sm">
-        <div className="flex flex-col items-center gap-3">
-          <div className="h-10 w-10 animate-spin rounded-full border-4 border-border border-t-primary" />
-          <p className="text-[13px] font-medium text-text-muted">Analyzing 12-month performance…</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (!data || data.length === 0) {
-    return (
-      <div className="flex h-[320px] items-center justify-center rounded-xl border border-dashed border-border bg-white p-8">
-        <div className="text-center">
-          <BarChart3 size={40} className="mx-auto mb-3 text-border" />
-          <p className="text-[14px] font-medium text-text-muted">No trend data available</p>
-        </div>
-      </div>
-    );
-  }
-
-  const values = data.map((d) => d.ebitda);
-  const adjValues = data.map((d) => d.adjustedEbitda);
-  const allVals = [...values, ...adjValues];
-  
-  const maxVal = Math.max(...allVals, 0);
-  const minVal = Math.min(...allVals, 0);
-  const absMax = Math.max(Math.abs(maxVal), Math.abs(minVal), 1000);
-  const yLimit = absMax * 1.3;
-  
-  const chartHeight = 220;
-  const chartWidth = 700;
-  const margin = { top: 20, right: 20, bottom: 40, left: 70 };
-  
-  const getY = (val) => chartHeight / 2 - (val / yLimit) * (chartHeight / 2);
-  const zeroY = getY(0);
-  const barSpacing = chartWidth / data.length;
-  const barWidth = Math.min(24, barSpacing * 0.4);
-
-  const gridMarks = [yLimit * 0.8, yLimit * 0.4, 0, -yLimit * 0.4, -yLimit * 0.8];
-
-  // Helper for path generation
-  const generatePath = (vals) => {
-    return vals.map((v, i) => {
-      const x = i * barSpacing + barSpacing / 2;
-      const y = getY(v) + margin.top;
-      return `${i === 0 ? "M" : "L"} ${x} ${y}`;
-    }).join(" ");
-  };
-
-  return (
-    <div className="rounded-2xl border border-border bg-white p-6 shadow-sm">
-      <div className="mb-6 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
-            <BarChart3 size={16} className="text-primary" />
-          </div>
-          <h3 className="text-[16px] font-bold text-text-primary">EBITDA Performance Trend</h3>
-        </div>
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-1.5">
-            <div className="h-3 w-3 rounded bg-primary" />
-            <span className="text-[11px] font-bold text-text-muted">EBITDA</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <div className="h-[2px] w-4 bg-orange-500" />
-            <span className="text-[11px] font-bold text-text-muted">Adjusted EBITDA</span>
-          </div>
-        </div>
-      </div>
-
-      <div className="relative">
-        <div className="absolute left-0 top-0 h-full w-[60px] pr-2">
-          {gridMarks.map((mark, i) => (
-            <div
-              key={i}
-              className="absolute w-full border-t border-dashed border-gray-100"
-              style={{ top: getY(mark) + margin.top, right: -640 }}
-            >
-              <span className="absolute -left-16 -top-2.5 w-14 text-right text-[10px] font-bold text-text-muted">
-                {mark >= 1000 ? `${(mark / 1000).toFixed(0)}k` : mark <= -1000 ? `${(mark / 1000).toFixed(0)}k` : mark.toFixed(0)}
-              </span>
-            </div>
-          ))}
-        </div>
-
-        <div className="ml-[70px] overflow-x-auto scrollbar-hide">
-          <svg width={chartWidth} height={chartHeight + margin.top + margin.bottom} className="overflow-visible">
-            <line x1="0" y1={zeroY + margin.top} x2={chartWidth} y2={zeroY + margin.top} stroke="#cbd5e1" strokeWidth="2" strokeDasharray="4 2" />
-
-            {data.map((item, index) => {
-              const xPos = index * barSpacing + barSpacing / 2;
-              const yPos = getY(item.ebitda) + margin.top;
-              const isPositive = item.ebitda >= 0;
-
-              return (
-                <g key={index} className="group cursor-pointer">
-                  <rect x={xPos - barSpacing / 2} y={margin.top} width={barSpacing} height={chartHeight} fill="transparent" />
-                  <rect
-                    x={xPos - barWidth / 2}
-                    y={isPositive ? yPos : zeroY + margin.top}
-                    width={barWidth}
-                    height={Math.max(Math.abs(zeroY + margin.top - yPos), 2)}
-                    rx={4}
-                    className={cn("transition-all duration-300", isPositive ? "fill-primary" : "fill-red-500", "group-hover:opacity-80")}
-                  />
-                  <text x={xPos} y={chartHeight + margin.top + 25} textAnchor="middle" className="fill-text-muted text-[10px] font-bold">{item.month.split(" ")[0]}</text>
-                  
-                  <foreignObject x={xPos - 60} y={yPos - 65} width="120" height="60" className="pointer-events-none opacity-0 transition-opacity group-hover:opacity-100">
-                    <div className="rounded-lg border border-border bg-white p-2 shadow-xl">
-                      <p className="text-center text-[10px] font-bold text-primary">{formatCurrency(item.ebitda)}</p>
-                      <p className="text-center text-[10px] font-bold text-orange-600">Adj: {formatCurrency(item.adjustedEbitda)}</p>
-                    </div>
-                  </foreignObject>
-                </g>
-              );
-            })}
-
-            {/* Trend Line for Adjusted EBITDA */}
-            <path d={generatePath(adjValues)} fill="none" stroke="#f97316" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="opacity-80" />
-            {data.map((item, i) => (
-               <circle key={`dot-${i}`} cx={i * barSpacing + barSpacing / 2} cy={getY(item.adjustedEbitda) + margin.top} r="4" fill="#f97316" />
-            ))}
-          </svg>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  Period Comparison Card                                             */
-/* ------------------------------------------------------------------ */
-
-function ComparisonCard({ current, previous, label }) {
-  if (!previous) return null;
-
-  const diff = current - previous;
-  const percentChange =
-    previous !== 0 ? ((current - previous) / Math.abs(previous)) * 100 : 0;
-  const isPositive = diff >= 0;
-
-  return (
-    <div className="rounded-xl border border-border bg-white p-5">
-      <div className="mb-3 flex items-center gap-2">
-        <CalendarDays size={16} className="text-text-muted" />
-        <h3 className="text-[12px] font-bold uppercase tracking-wider text-text-muted">
-          {label}
-        </h3>
-      </div>
-
-      <div className="grid grid-cols-3 gap-4">
-        <div>
-          <p className="text-[11px] text-text-muted">Current Period</p>
-          <p className="mt-1 text-lg font-bold text-text-primary">
-            {formatCurrency(current)}
-          </p>
-        </div>
-        <div>
-          <p className="text-[11px] text-text-muted">Previous Period</p>
-          <p className="mt-1 text-lg font-bold text-text-primary">
-            {formatCurrency(previous)}
-          </p>
-        </div>
-        <div>
-          <p className="text-[11px] text-text-muted">Growth</p>
-          <div className="mt-1 flex items-center gap-1.5">
-            <span
-              className={cn(
-                "text-lg font-bold",
-                isPositive ? "text-green-600" : "text-red-500",
-              )}
-            >
-              {formatCurrency(diff)}
-            </span>
-            <span
-              className={cn(
-                "flex items-center gap-0.5 rounded-full px-2 py-0.5 text-[11px] font-bold",
-                isPositive
-                  ? "bg-green-100 text-green-700"
-                  : "bg-red-100 text-red-600",
-              )}
-            >
-              {isPositive ? (
-                <ArrowUpRight size={11} />
-              ) : (
-                <ArrowDownRight size={11} />
-              )}
-              {formatPercent(percentChange)}
-            </span>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  Sub-components                                                    */
-/* ------------------------------------------------------------------ */
-
-function EbitdaHeroCard({ ebitda, adjEbitda, revenue, opex, previousEbitda, reportPeriod }) {
-  const diff = previousEbitda !== null ? ebitda - previousEbitda : null;
-  const pctChange = diff !== null && previousEbitda !== 0 ? (diff / Math.abs(previousEbitda)) * 100 : null;
-
-  return (
-    <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-      {/* Main EBITDA Card */}
-      <div className="col-span-1 overflow-hidden rounded-2xl border border-border bg-white p-6 shadow-sm lg:col-span-2">
-        <div className="flex items-start justify-between">
-          <div>
-            <p className="text-[11px] font-bold uppercase tracking-widest text-text-muted">Current EBITDA</p>
-            <h2 className="mt-2 text-4xl font-extrabold text-text-primary">{formatCurrency(ebitda)}</h2>
-            {pctChange !== null && (
-              <div className={cn("mt-2 flex items-center gap-1.5 text-[13px] font-bold", pctChange >= 0 ? "text-green-600" : "text-red-500")}>
-                {pctChange >= 0 ? <ArrowUpRight size={16} /> : <ArrowDownRight size={16} />}
-                {formatPercent(pctChange)} vs previous period
-              </div>
-            )}
-          </div>
-          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
-            <TrendingUp size={24} className="text-primary" />
-          </div>
-        </div>
-        <div className="mt-6 flex items-center gap-6 border-t border-border pt-4">
-          <div>
-            <p className="text-[10px] font-bold uppercase text-text-muted">Revenue</p>
-            <p className="text-[15px] font-bold text-text-primary">{formatCurrency(revenue)}</p>
-          </div>
-          <div className="h-8 border-l border-border" />
-          <div>
-            <p className="text-[10px] font-bold uppercase text-text-muted">Adjusted EBITDA</p>
-            <p className="text-[15px] font-bold text-orange-600">{formatCurrency(adjEbitda)}</p>
-          </div>
-          <div className="h-8 border-l border-border" />
-          <div>
-            <p className="text-[10px] font-bold uppercase text-text-muted">OpEx</p>
-            <p className="text-[15px] font-bold text-text-primary">{formatCurrency(opex)}</p>
-          </div>
-        </div>
-      </div>
-
-      {/* Adjustments Summary Card */}
-      <div className="rounded-2xl border border-border bg-gradient-to-br from-orange-50 to-white p-6 shadow-sm">
-        <div className="flex items-center gap-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-orange-100">
-             <Calculator size={16} className="text-orange-600" />
-          </div>
-          <p className="text-[12px] font-bold uppercase tracking-wider text-orange-800">Add-backs</p>
-        </div>
-        <div className="mt-4">
-          <p className="text-[11px] text-orange-700/70">Total identified adjustments</p>
-          <p className="mt-1 text-2xl font-extrabold text-orange-600">{formatCurrency(adjEbitda - ebitda)}</p>
-        </div>
-        <div className="mt-4 space-y-2">
-            <div className="flex items-center justify-between text-[11px]">
-                <span className="text-text-muted">EBITDA Margin</span>
-                <span className="font-bold text-text-primary">{revenue > 0 ? ((ebitda / revenue) * 100).toFixed(1) : 0}%</span>
-            </div>
-            <div className="flex items-center justify-between text-[11px]">
-                <span className="text-text-muted">Adjusted Margin</span>
-                <span className="font-bold text-orange-600">{revenue > 0 ? ((adjEbitda / revenue) * 100).toFixed(1) : 0}%</span>
-            </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ComponentCard({ icon: Icon, label, value, color, matchedAccounts }) {
-  const [expanded, setExpanded] = useState(false);
-  const hasDetails = matchedAccounts && matchedAccounts.length > 0;
-  const hasNonZero = value !== 0;
-
-  return (
-    <div
-      className={cn(
-        "group relative overflow-hidden rounded-xl border border-border bg-white p-5 transition-all duration-200 hover:shadow-md",
-        hasDetails && "cursor-pointer",
-        !hasNonZero && "opacity-60",
-      )}
-      onClick={() => hasDetails && setExpanded(!expanded)}
-    >
-      <div className="flex items-start justify-between">
-        <div className="flex items-center gap-3">
-          <div
-            className="flex h-10 w-10 items-center justify-center rounded-lg"
-            style={{ backgroundColor: `${color}15` }}
-          >
-            <Icon size={18} style={{ color }} />
-          </div>
-          <div>
-            <p className="text-[12px] font-medium uppercase tracking-wide text-text-muted">
-              {label}
-            </p>
-            <p className="mt-0.5 text-xl font-bold text-text-primary">
-              {formatCurrencyDetailed(value)}
-            </p>
-          </div>
-        </div>
-
-        {hasDetails && (
-          <ChevronDown
-            size={16}
-            className={cn(
-              "mt-1 text-text-muted transition-transform",
-              expanded && "rotate-180",
-            )}
-          />
-        )}
-      </div>
-
-      {!hasNonZero && (
-        <p className="mt-2 text-[11px] italic text-text-muted">
-          No matching accounts found in this period
-        </p>
-      )}
-
-      {/* Matched accounts detail */}
-      {expanded && hasDetails && (
-        <div className="mt-4 space-y-2 border-t border-border pt-3">
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-text-muted">
-            Matched Accounts ({matchedAccounts.length})
-          </p>
-          {matchedAccounts.map((account, index) => (
-            <div
-              key={`${account.label}-${index}`}
-              className="flex items-center justify-between rounded-lg bg-bg-page px-3 py-2"
-            >
-              <span className="text-[13px] font-medium text-text-primary">
-                {account.label || "Account"}
-              </span>
-              <span className="text-[13px] font-semibold text-text-primary">
-                {formatCurrencyDetailed(account.value)}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Bottom accent line */}
-      <div
-        className="absolute bottom-0 left-0 h-[3px] w-full opacity-0 transition-opacity group-hover:opacity-100"
-        style={{ backgroundColor: color }}
-      />
-    </div>
-  );
-}
-
-function FormulaBar({ components }) {
-  const items = [
-    { key: "netIncome", symbol: "", color: "#2d6a0f" },
-    { key: "interest", symbol: "+", color: "#F68C1F" },
-    { key: "taxes", symbol: "+", color: "#C62026" },
-    { key: "depreciation", symbol: "+", color: "#742982" },
-    { key: "amortization", symbol: "+", color: "#00B0F0" },
-    { key: "adjustments", symbol: "+", color: "#f97316" },
-  ];
-
-  return (
-    <div className="rounded-xl border border-border bg-gradient-to-r from-slate-50 to-white p-5">
-      <div className="mb-4 flex items-center gap-2">
-        <Calculator size={16} className="text-text-muted" />
-        <p className="text-[12px] font-bold uppercase tracking-wider text-text-muted">
-          Adjusted EBITDA Bridge
-        </p>
-      </div>
-      <div className="flex flex-wrap items-center gap-y-4">
-        {items.map((item) => {
-          const comp = components[item.key];
-          return (
-            <div key={item.key} className="flex items-center gap-2">
-              {item.symbol && <span className="text-lg font-bold text-text-muted">{item.symbol}</span>}
-              <div className="rounded-lg border px-3 py-1.5" style={{ borderColor: `${item.color}30`, backgroundColor: `${item.color}08` }}>
-                <span className="text-[11px] font-medium" style={{ color: item.color }}>{comp?.label}</span>
-                <span className="ml-2 text-[13px] font-bold text-text-primary">{formatCurrency(comp?.value || 0)}</span>
-              </div>
-            </div>
-          );
-        })}
-        <span className="mx-2 text-lg font-bold text-text-muted">=</span>
-        <div className="rounded-lg border border-orange-500/30 bg-orange-500/5 px-4 py-1.5">
-          <span className="text-[11px] font-bold text-orange-600">Adj. EBITDA</span>
-          <span className="ml-2 text-[14px] font-extrabold text-orange-700">
-            {formatCurrency(
-              (components.netIncome?.value || 0) +
-                (components.interest?.value || 0) +
-                (components.taxes?.value || 0) +
-                (components.depreciation?.value || 0) +
-                (components.amortization?.value || 0) +
-                (components.adjustments?.value || 0),
-            )}
-          </span>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 function EmptyState() {
   return (
@@ -479,9 +43,8 @@ function EmptyState() {
         Generate EBITDA Analysis
       </h3>
       <p className="mt-1.5 max-w-sm text-center text-[13px] text-text-muted">
-        Select a date range and accounting method, then click{" "}
-        <strong>Generate</strong> to calculate EBITDA from your Profit & Loss
-        data.
+        No financial data was found for the current workspace.
+        Please ensure your QuickBooks connection is active.
       </p>
     </div>
   );
@@ -520,22 +83,6 @@ function LoadingState() {
   );
 }
 
-/* ------------------------------------------------------------------ */
-/*  Previous period date calculator                                   */
-/* ------------------------------------------------------------------ */
-
-function getPreviousPeriodDates(startDate, endDate) {
-  if (!startDate || !endDate) return null;
-  const start = new Date(startDate);
-  const end = new Date(endDate);
-  const diffMs = end.getTime() - start.getTime();
-  const prevEnd = new Date(start.getTime() - 1);
-  const prevStart = new Date(prevEnd.getTime() - diffMs);
-  return {
-    startDate: formatDateForInput(prevStart),
-    endDate: formatDateForInput(prevEnd),
-  };
-}
 
 /* ------------------------------------------------------------------ */
 /*  Main Component                                                    */
@@ -543,27 +90,46 @@ function getPreviousPeriodDates(startDate, endDate) {
 
 export default function WorkspaceEbitda() {
   const { clientId } = useParams();
-  const today = new Date();
-  const todayString = formatDateForInput(today);
 
-  // Filter state
-  const [dateRange, setDateRange] = useState("This Year");
-  const [customRange, setCustomRange] = useState({
-    start: `${today.getFullYear()}-01-01`,
-    end: todayString,
-  });
-  const [accountingMethod, setAccountingMethod] = useState("Accrual");
+  const accountingMethod = "Accrual";
 
   // Data state
-  const [ebitdaResult, setEbitdaResult] = useState(null);
-  const [previousEbitda, setPreviousEbitda] = useState(null);
-  const [trendData, setTrendData] = useState([]);
+  const [multiYearData, setMultiYearData] = useState(null);
+  const [years, setYears] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [isTrendLoading, setIsTrendLoading] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [error, setError] = useState("");
   const [company, setCompany] = useState(null);
-  const [showTrend, setShowTrend] = useState(false);
+  const [dynamicAddbacks, setDynamicAddbacks] = useState([]);
+  const [isDataInitialized, setIsDataInitialized] = useState(false);
+  const [rowComments, setRowComments] = useState({});
+  const [sdePerCim, setSdePerCim] = useState("");
+
+  // Step 1: Dynamic Extraction Function
+  const getValueFromPL = useCallback((year, label) => {
+    const flatRows = multiYearData[year]?._debug?.flatRows;
+    if (!flatRows || !label) return null;
+    
+    const searchLabel = label.toLowerCase().trim();
+    // Match label dynamically using row names from API
+    const match = flatRows.find(row => 
+      row.label?.toLowerCase().trim() === searchLabel ||
+      row.AccountName?.toLowerCase().trim() === searchLabel
+    );
+    
+    return match ? (match.value || 0) : null;
+  }, [multiYearData]);
+
+  const calculateBaseEbitda = useCallback((year) => {
+    const comps = multiYearData[year]?.components;
+    if (!comps) return 0;
+    return (comps.netIncome?.value || 0) 
+      - (comps.interestIncome?.value || 0)
+      + (comps.interestExpense?.value || 0)
+      + (comps.taxes?.value || 0)
+      + (comps.depreciation?.value || 0)
+      + (comps.amortization?.value || 0);
+  }, [multiYearData]);
 
   // Load company info
   useEffect(() => {
@@ -577,102 +143,173 @@ export default function WorkspaceEbitda() {
     };
   }, [clientId]);
 
-  const getDates = useCallback(() => {
-    if (dateRange === "Custom Range") {
-      return { startDate: customRange.start, endDate: customRange.end };
-    }
 
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = String(now.getMonth() + 1).padStart(2, "0");
-    const day = String(now.getDate()).padStart(2, "0");
-    const endDate = `${year}-${month}-${day}`;
-
-    let startDate;
-    if (dateRange === "Today") {
-      startDate = endDate;
-    } else if (dateRange === "This Month") {
-      startDate = `${year}-${month}-01`;
-    } else if (dateRange === "This Quarter") {
-      const quarterMonth = String(
-        Math.floor(now.getMonth() / 3) * 3 + 1,
-      ).padStart(2, "0");
-      startDate = `${year}-${quarterMonth}-01`;
-    } else if (dateRange === "Previous Quarter") {
-      const currentQuarterStartMonth = Math.floor(now.getMonth() / 3) * 3;
-      const previousQuarterEnd = new Date(year, currentQuarterStartMonth, 0);
-      const previousQuarterStart = new Date(
-        previousQuarterEnd.getFullYear(),
-        Math.floor(previousQuarterEnd.getMonth() / 3) * 3,
-        1,
-      );
-      startDate = formatDateForInput(previousQuarterStart);
-      return { startDate, endDate: formatDateForInput(previousQuarterEnd) };
-    } else {
-      // This Year (default)
-      startDate = `${year}-01-01`;
-    }
-
-    return { startDate, endDate };
-  }, [dateRange, customRange]);
 
   const handleGenerate = useCallback(async () => {
     setIsLoading(true);
     setError("");
     try {
-      const rawDates = getDates();
-      const { startDate, endDate } = sanitizeDateRange(
-        rawDates.startDate,
-        rawDates.endDate,
+      const targetYear = new Date().getFullYear();
+      const targetMonthDay = `${String(new Date().getMonth() + 1).padStart(2, "0")}-${String(new Date().getDate()).padStart(2, "0")}`;
+
+      const yearList = [targetYear, targetYear - 1, targetYear - 2, targetYear - 3];
+      setYears(yearList);
+
+      const results = {};
+
+      // Fetch data for each year in parallel
+      await Promise.all(
+        yearList.map(async (year) => {
+          const sy = `${year}-01-01`;
+          const ey = `${year}-${targetMonthDay}`;
+          try {
+            const data = await getEbitdaData(sy, ey, accountingMethod);
+            results[year] = data;
+          } catch (err) {
+            console.error(`Failed to fetch data for ${year}:`, err);
+            results[year] = null;
+          }
+        })
       );
-      const method = normalizeAccountingMethod(accountingMethod);
 
-      // Fetch current period
-      const result = await getEbitdaData(startDate, endDate, method);
-      setEbitdaResult(result);
-
-      // Fetch previous period for comparison
-      try {
-        const prevDates = getPreviousPeriodDates(startDate, endDate);
-        if (prevDates) {
-          const prevResult = await getEbitdaData(
-            prevDates.startDate,
-            prevDates.endDate,
-            method,
-          );
-          setPreviousEbitda(prevResult.ebitda);
-        }
-      } catch {
-        setPreviousEbitda(null);
-      }
+      setMultiYearData(results);
     } catch (err) {
       console.error("[WorkspaceEbitda] Generation failed:", err);
-      setError(
-        err?.message || "Failed to fetch EBITDA data. Please try again.",
-      );
-      setEbitdaResult(null);
+      setError(err?.message || "Failed to fetch EBITDA data. Please try again.");
+      setMultiYearData(null);
     } finally {
       setIsLoading(false);
     }
-  }, [getDates, accountingMethod]);
+  }, []);
 
-  const handleLoadTrend = useCallback(async () => {
-    if (trendData.length > 0) {
-      setShowTrend(!showTrend);
-      return;
+  // Initial load
+  useEffect(() => {
+    handleGenerate();
+  }, [handleGenerate]);
+
+  // Handle Dynamic Addbacks Initialization and Persistence
+  useEffect(() => {
+    if (!multiYearData || isDataInitialized) return;
+
+    const storageKey = `ebitda_addbacks_${clientId}`;
+    const saved = localStorage.getItem(storageKey);
+
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        const savedAddbacks = Array.isArray(parsed) ? parsed : (parsed.addbacks || []);
+        
+        // Step 6: Multi-Year Handling - Store per-year apiValue
+        const initialized = savedAddbacks.map(ab => {
+          const vals = {};
+          Object.keys(multiYearData).forEach(year => {
+            const apiVal = getValueFromPL(year, ab.label);
+            const existing = ab.values?.[year] || {};
+            vals[year] = {
+              apiValue: apiVal,
+              userValue: existing.userValue !== undefined ? existing.userValue : (existing.apiValue !== undefined ? null : null)
+            };
+            // If it was old format (just number), migrate it to userValue
+            if (typeof existing === 'number') {
+              vals[year].userValue = existing;
+            }
+          });
+          return { ...ab, values: vals };
+        });
+
+        setDynamicAddbacks(initialized);
+        if (parsed.sdePerCim) setSdePerCim(parsed.sdePerCim);
+        if (parsed.rowComments) setRowComments(parsed.rowComments);
+        setIsDataInitialized(true);
+        return;
+      } catch (e) {
+        console.error("Failed to parse saved addbacks", e);
+      }
     }
-    setIsTrendLoading(true);
-    setShowTrend(true);
-    try {
-      const method = normalizeAccountingMethod(accountingMethod);
-      const trend = await getEbitdaMonthlyTrend(method);
-      setTrendData(trend);
-    } catch (err) {
-      console.error("[WorkspaceEbitda] Trend loading failed:", err);
-    } finally {
-      setIsTrendLoading(false);
+
+    // Step 1: Core Requirement - DO NOT introduce any static/default values in code
+    // Starting with empty addbacks or previously saved ones only.
+    setDynamicAddbacks([]);
+    setIsDataInitialized(true);
+  }, [multiYearData, clientId, isDataInitialized, getValueFromPL]);
+
+  // Persistent saving
+  useEffect(() => {
+    if (isDataInitialized && clientId) {
+      localStorage.setItem(`ebitda_addbacks_${clientId}`, JSON.stringify({
+        addbacks: dynamicAddbacks,
+        sdePerCim: sdePerCim,
+        rowComments: rowComments
+      }));
     }
-  }, [accountingMethod, trendData.length, showTrend]);
+  }, [dynamicAddbacks, sdePerCim, rowComments, clientId, isDataInitialized]);
+
+  const handleAddAddback = () => {
+    const newId = `custom_${Date.now()}`;
+    const newVals = {};
+    
+    // Step 5: Dynamic Row Creation
+    years.forEach(year => {
+      newVals[year] = {
+        apiValue: null,
+        userValue: null
+      };
+    });
+
+    setDynamicAddbacks([...dynamicAddbacks, {
+      id: newId,
+      label: "New Addback",
+      values: newVals,
+      isUserAdded: true
+    }]);
+  };
+
+  const updateAddbackValue = (id, year, value) => {
+    setDynamicAddbacks(prev => prev.map(ab => {
+      if (ab.id === id) {
+        return {
+          ...ab,
+          values: { 
+            ...ab.values, 
+            [year]: { 
+              ...ab.values[year], 
+              userValue: value === "" ? null : Number(value) 
+            } 
+          }
+        };
+      }
+      return ab;
+    }));
+  };
+
+  const updateAddbackLabel = (id, label) => {
+    setDynamicAddbacks(prev => prev.map(ab => {
+      if (ab.id === id) {
+        // Step 5: Try to match this label in API when label changes
+        const newValues = { ...ab.values };
+        years.forEach(year => {
+          newValues[year] = {
+            ...newValues[year],
+            apiValue: getValueFromPL(year, label)
+          };
+        });
+        return { ...ab, label, values: newValues };
+      }
+      return ab;
+    }));
+  };
+
+  const deleteAddback = (id) => {
+    setDynamicAddbacks(prev => prev.filter(ab => ab.id !== id));
+  };
+
+  const updateRowComment = (key, value) => {
+    setRowComments(prev => ({
+      ...prev,
+      [key]: value
+    }));
+  };
+
 
   const handleSync = async () => {
     setIsSyncing(true);
@@ -687,56 +324,6 @@ export default function WorkspaceEbitda() {
     }
   };
 
-  const isPositive = (ebitdaResult?.ebitda || 0) >= 0;
-  const components = ebitdaResult?.components || {};
-
-  /* ---------------------------------------------------------------- */
-  /*  Component cards config                                          */
-  /* ---------------------------------------------------------------- */
-  const componentCards = [
-    {
-      icon: DollarSign,
-      color: "#2d6a0f",
-      label: components.netIncome?.label || "Net Income",
-      value: components.netIncome?.value || 0,
-      matchedAccounts: components.netIncome?.matchedAccounts || [],
-    },
-    {
-      icon: Percent,
-      color: "#F68C1F",
-      label: components.interest?.label || "Interest Expense",
-      value: components.interest?.value || 0,
-      matchedAccounts: components.interest?.matchedAccounts || [],
-    },
-    {
-      icon: DollarSign,
-      color: "#C62026",
-      label: components.taxes?.label || "Tax Expense",
-      value: components.taxes?.value || 0,
-      matchedAccounts: components.taxes?.matchedAccounts || [],
-    },
-    {
-      icon: TrendingUp,
-      color: "#742982",
-      label: components.depreciation?.label || "Depreciation",
-      value: components.depreciation?.value || 0,
-      matchedAccounts: components.depreciation?.matchedAccounts || [],
-    },
-    {
-      icon: TrendingUp,
-      color: "#00B0F0",
-      label: components.amortization?.label || "Amortization",
-      value: components.amortization?.value || 0,
-      matchedAccounts: components.amortization?.matchedAccounts || [],
-    },
-    {
-      icon: Calculator,
-      color: "#f97316",
-      label: "Adjustments (Add-backs)",
-      value: components.adjustments?.value || 0,
-      matchedAccounts: components.adjustments?.matchedAccounts || [],
-    },
-  ];
 
   return (
     <div className="page-container">
@@ -767,220 +354,318 @@ export default function WorkspaceEbitda() {
 
         <QBDisconnectedBanner pageName="EBITDA Analysis" />
 
-        {/* Filters */}
-        <div className="mb-6 rounded-xl border border-border bg-white p-5">
-          <div className="flex flex-wrap items-end gap-4">
-            {/* Date Range */}
-            <div className="flex min-w-[180px] flex-col gap-1.5">
-              <label className="text-[13px] font-medium text-text-primary">
-                Date Range
-              </label>
-              <div className="relative">
-                <select
-                  value={dateRange}
-                  onChange={(e) => {
-                    const value = e.target.value;
-                    setDateRange(value);
-                    if (value === "This Year") {
-                      setCustomRange({
-                        start: `${new Date().getFullYear()}-01-01`,
-                        end: todayString,
-                      });
-                    }
-                  }}
-                  className="h-10 w-full appearance-none rounded-md border border-border bg-bg-card pl-3 pr-10 text-[14px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-                >
-                  <option>Today</option>
-                  <option>This Month</option>
-                  <option>This Quarter</option>
-                  <option>Previous Quarter</option>
-                  <option>This Year</option>
-                  <option>Custom Range</option>
-                </select>
-                <ChevronDown
-                  size={16}
-                  className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-text-muted"
-                />
-              </div>
-            </div>
-
-            {/* Custom date pickers */}
-            {dateRange === "Custom Range" && (
-              <>
-                <div className="flex flex-col gap-1.5">
-                  <label className="text-[12px] text-text-muted">From</label>
-                  <input
-                    type="date"
-                    value={customRange.start}
-                    onChange={(e) =>
-                      setCustomRange((prev) => ({
-                        ...prev,
-                        start: e.target.value,
-                      }))
-                    }
-                    className="h-10 rounded-md border border-border bg-bg-card px-3 text-[14px] text-text-primary focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-                  />
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  <label className="text-[12px] text-text-muted">To</label>
-                  <input
-                    type="date"
-                    value={customRange.end}
-                    onChange={(e) =>
-                      setCustomRange((prev) => ({
-                        ...prev,
-                        end: e.target.value,
-                      }))
-                    }
-                    className="h-10 rounded-md border border-border bg-bg-card px-3 text-[14px] text-text-primary focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-                  />
-                </div>
-              </>
-            )}
-
-            {/* Accounting Method */}
-            <div className="flex min-w-[160px] flex-col gap-1.5">
-              <label className="text-[13px] font-medium text-text-primary">
-                Accounting Method
-              </label>
-              <div className="relative">
-                <select
-                  value={accountingMethod}
-                  onChange={(e) => setAccountingMethod(e.target.value)}
-                  className="h-10 w-full appearance-none rounded-md border border-border bg-bg-card pl-3 pr-10 text-[14px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-                >
-                  <option>Cash</option>
-                  <option>Accrual</option>
-                </select>
-                <ChevronDown
-                  size={16}
-                  className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-text-muted"
-                />
-              </div>
-            </div>
-
-            {/* Generate button */}
-            <button
-              onClick={handleGenerate}
-              disabled={isLoading}
-              className={cn(
-                "btn-primary h-10 px-6",
-                isLoading && "cursor-wait opacity-80",
-              )}
-            >
-              {isLoading ? (
-                <div className="flex items-center gap-2">
-                  <div className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-                  <span>Calculating…</span>
-                </div>
-              ) : (
-                <>
-                  <FileCheck size={16} />
-                  Generate
-                </>
-              )}
-            </button>
-          </div>
-        </div>
 
         {/* Content */}
         {isLoading ? (
           <LoadingState />
         ) : error ? (
           <ErrorState error={error} onRetry={handleGenerate} />
-        ) : ebitdaResult ? (
-          <div className="space-y-6 animate-in slide-in-from-bottom-2 fade-in duration-300">
-            {/* Hero EBITDA card */}
-            <EbitdaHeroCard
-              ebitda={ebitdaResult.ebitda}
-              adjEbitda={ebitdaResult.adjustedEbitda}
-              revenue={ebitdaResult.revenue}
-              opex={ebitdaResult.opex}
-              previousEbitda={previousEbitda}
-              reportPeriod={ebitdaResult.reportPeriod}
-            />
-
-            {/* AI Insights Card */}
-            <div className="rounded-xl border border-blue-100 bg-blue-50/30 p-5">
-                <div className="flex items-center gap-2 mb-3">
-                    <Info size={16} className="text-blue-600" />
-                    <h4 className="text-[13px] font-bold text-blue-900 uppercase tracking-widest">Financial Insights</h4>
+        ) : multiYearData ? (
+          <div className="animate-in slide-in-from-bottom-2 fade-in duration-300">
+            {/* Side-by-Side Layout Wrapper */}
+            <div className="flex gap-6 items-start">
+              {/* Left: Financial Report Table */}
+              <div className="flex-1 overflow-hidden rounded-xl border border-[#cbd5e1] bg-white shadow-lg">
+                <div className="bg-[#8bc53d] py-3 text-center">
+                  <h2 className="text-[18px] font-bold text-white">
+                    Recalculated Seller's Discretionary Earnings of {company?.name || "the Business"}
+                  </h2>
                 </div>
-                <div className="space-y-4">
-                    <p className="text-[14px] text-blue-800 leading-relaxed font-medium">
-                        EBITDA is currently <span className="font-extrabold">{formatCurrency(ebitdaResult.ebitda)}</span>. 
-                        {ebitdaResult.adjustedEbitda > ebitdaResult.ebitda && (
-                            <> After identifying <span className="font-extrabold">{formatCurrency(ebitdaResult.adjustedEbitda - ebitdaResult.ebitda)}</span> in discretionary add-backs, your 
-                            Adjusted EBITDA improves to <span className="font-extrabold text-orange-700">{formatCurrency(ebitdaResult.adjustedEbitda)}</span>. </>
-                        )}
-                    </p>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div className="rounded-lg bg-white/60 p-3 border border-blue-100">
-                             <p className="text-[11px] text-blue-600 font-bold uppercase">Efficiency</p>
-                             <p className="text-[13px] text-blue-900 mt-1">For every $1 of Revenue, you generate <span className="font-bold">{(ebitdaResult.ebitda / (ebitdaResult.revenue || 1) * 100).toFixed(1)}¢</span> in EBITDA.</p>
-                        </div>
-                        <div className="rounded-lg bg-white/60 p-3 border border-blue-100">
-                             <p className="text-[11px] text-blue-600 font-bold uppercase">OpEx Load</p>
-                             <p className="text-[13px] text-blue-900 mt-1">Operating expenses consume <span className="font-bold">{(ebitdaResult.opex / (ebitdaResult.revenue || 1) * 100).toFixed(1)}%</span> of your total revenue.</p>
-                        </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full border-collapse text-[14px]">
+                    <thead>
+                      <tr className="bg-[#8bc53d] text-white">
+                        <th className="border-b border-[#cbd5e1] p-3 text-left font-bold min-w-[280px]"></th>
+                        {years.map(year => (
+                          <th key={year} className="border-b border-[#cbd5e1] p-3 text-right font-bold min-w-[120px]">
+                            FY {year}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {/* Net Income Section */}
+                      <tr className="border-b border-[#cbd5e1] bg-gray-50 h-[46px]">
+                        <td className="p-3 font-bold text-[#050505]">Net Income</td>
+                        {years.map(year => (
+                          <td key={year} className="p-3 text-right font-bold text-[#050505]">
+                            {formatCurrency(multiYearData[year]?.components.netIncome.value)}
+                          </td>
+                        ))}
+                      </tr>
+
+                      {/* EBITDA Adjustments removed */}
+                      {[
+                        { key: 'interestIncome', label: 'Total Interest Income' },
+                        { key: 'interestExpense', label: 'Total Interest Expense' },
+                        { key: 'taxes', label: 'Total Income Tax Expense' },
+                        { key: 'depreciation', label: 'Depreciation' },
+                        { key: 'amortization', label: 'Amortization Expense' }
+                      ].map(row => (
+                        <tr key={row.key} className="border-b border-[#f1f5f9] hover:bg-slate-50 transition-colors h-[45px]">
+                          <td className="p-3 pl-8 text-text-primary">{row.label}</td>
+                          {years.map(year => (
+                            <td key={year} className="p-3 text-right text-text-primary">
+                              {formatCurrency(multiYearData[year]?.components[row.key]?.value)}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+
+                      {/* Calculated EBITDA row */}
+                      <tr className="bg-[#f8fafc] border-y border-[#cbd5e1] h-[45px]">
+                        <td className="p-3 pl-4 font-bold text-[#050505]">EBITDA</td>
+                        {years.map(year => {
+                          const ebitdaVal = calculateBaseEbitda(year);
+                          return (
+                            <td key={year} className="p-3 text-right font-bold text-[#050505]">
+                              {formatCurrency(ebitdaVal)}
+                            </td>
+                          );
+                        })}
+                      </tr>
+
+                      {/* Owner Addbacks Section */}
+                      <tr className="bg-white h-[45px]">
+                        <td colSpan={years.length + 1} className="p-3 px-4 flex items-center justify-between font-bold text-[#050505] bg-gray-100">
+                          <span>Addbacks</span>
+                          <button
+                            onClick={handleAddAddback}
+                            className="flex items-center gap-1.5 px-3 py-1 rounded-md bg-[#8bc53d] text-white text-[11px] font-bold hover:bg-[#78ab34] transition-colors"
+                          >
+                            <Plus size={12} strokeWidth={3} />
+                            ADD ROW
+                          </button>
+                        </td>
+                      </tr>
+                      {dynamicAddbacks.map((row) => (
+                        <tr key={row.id} className="group border-b border-[#f1f5f9] hover:bg-slate-50 transition-colors h-[45px]">
+                          <td className="p-3 pl-8 text-text-primary">
+                            <div className="flex items-center gap-2">
+                              <input
+                                value={row.label}
+                                onChange={(e) => updateAddbackLabel(row.id, e.target.value)}
+                                className="w-full bg-transparent border-b border-transparent hover:border-gray-300 focus:border-[#8bc53d] focus:outline-none transition-all py-0.5"
+                                placeholder="Enter label..."
+                              />
+                              <button
+                                onClick={() => deleteAddback(row.id)}
+                                className="opacity-0 group-hover:opacity-100 p-1 text-red-500 hover:bg-red-50 rounded transition-all"
+                                title="Delete Row"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            </div>
+                          </td>
+                          {years.map((year) => {
+                            const { apiValue, userValue } = row.values[year] || { apiValue: null, userValue: null };
+                            
+                            // Step 3: Display Logic - valueToShow = userValue !== null ? userValue : apiValue
+                            const val = userValue !== null ? userValue : apiValue;
+                            const isEdited = userValue !== null;
+                            const displayVal = val !== null ? formatCurrency(val) : "-";
+
+                            return (
+                              <td key={year} className={cn("p-1.5 text-right", isEdited && "bg-green-50")}>
+                                <input
+                                  type="text"
+                                  value={userValue !== null ? userValue : (apiValue !== null ? apiValue : "")}
+                                  onChange={(e) => updateAddbackValue(row.id, year, e.target.value)}
+                                  className={cn(
+                                    "w-full bg-transparent text-right font-medium focus:outline-none focus:ring-1 focus:ring-[#8bc53d] rounded px-2 py-1",
+                                    isEdited ? "text-[#8bc53d]" : (apiValue !== null ? "text-text-primary" : "text-gray-300")
+                                  )}
+                                  placeholder={apiValue !== null ? apiValue : "-"}
+                                />
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      ))}
+
+                      {/* Final Totals */}
+                      <tr className="border-t-2 border-[#8bc53d] bg-[#f8fafc] h-[58px]">
+                        <td className="p-4 font-bold text-[#050505] text-[15px]">Seller's Discretionary Earnings</td>
+                        {years.map(year => {
+                          const baseEbitda = calculateBaseEbitda(year);
+                          const addbacksSum = dynamicAddbacks.reduce((sum, ab) => {
+                            const { apiValue, userValue } = ab.values[year] || { apiValue: null, userValue: null };
+                            const val = userValue !== null ? userValue : (apiValue || 0);
+                            return sum + val;
+                          }, 0);
+                          const finalSde = baseEbitda + addbacksSum;
+
+                          return (
+                            <td key={year} className="p-4 text-right font-bold text-[#8bc53d] text-[16px]">
+                              {formatCurrency(finalSde)}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                      <tr className="border-b border-[#cbd5e1] bg-white h-[45px]">
+                        <td className="p-3 font-bold text-[#050505]">SDE % of Sales</td>
+                        {years.map(year => {
+                          const data = multiYearData[year];
+                          const baseEbitda = calculateBaseEbitda(year);
+                          const addbacksSum = dynamicAddbacks.reduce((sum, ab) => {
+                            const { apiValue, userValue } = ab.values[year] || { apiValue: null, userValue: null };
+                            const val = userValue !== null ? userValue : (apiValue || 0);
+                            return sum + val;
+                          }, 0);
+                          const finalSde = baseEbitda + addbacksSum;
+                          const sdePct = data?.revenue > 0 ? (finalSde / data.revenue) * 100 : 0;
+
+                          return (
+                            <td key={year} className="p-3 text-right font-bold text-text-primary">
+                              {formatPercent(sdePct)}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Right: Comments Panel */}
+              <div className="w-[380px] overflow-hidden rounded-xl border border-[#cbd5e1] bg-white shadow-lg flex flex-col">
+                <div className="bg-[#8bc53d] py-3 text-center border-b border-[#cbd5e1]">
+                  <h2 className="text-[18px] font-bold text-white">Comments</h2>
+                </div>
+
+                <div className="flex-1 flex flex-col space-y-0">
+                  {/* Sync Header height */}
+                  <div className="h-[45px] bg-[#8bc53d] border-b border-[#cbd5e1]" />
+
+                  {/* Net Income Comment */}
+                  <div className="h-[46px] border-b border-[#cbd5e1] bg-gray-50 p-1 flex items-center">
+                    <input
+                      value={rowComments['netIncome'] || ""}
+                      onChange={(e) => updateRowComment('netIncome', e.target.value)}
+                      placeholder="Net income remarks..."
+                      className="w-full bg-transparent border-none focus:ring-0 text-[13px] px-3 placeholder:italic text-slate-600"
+                    />
+                  </div>
+
+                  {/* Spacer removed */}
+
+                  {/* EBITDA Adj Comments */}
+                  {[
+                    { key: 'interestIncome', label: 'Total Interest Income' },
+                    { key: 'interestExpense', label: 'Total Interest Expense' },
+                    { key: 'taxes', label: 'Total Income Tax Expense' },
+                    { key: 'depreciation', label: 'Depreciation' },
+                    { key: 'amortization', label: 'Amortization Expense' }
+                  ].map(row => (
+                    <div key={row.key} className="h-[45px] border-b border-[#f1f5f9] p-1 flex items-center hover:bg-slate-50 transition-colors">
+                      <input
+                        value={rowComments[row.key] || ""}
+                        onChange={(e) => updateRowComment(row.key, e.target.value)}
+                        placeholder={`${row.label} remarks...`}
+                        className="w-full bg-transparent border-none focus:ring-0 text-[13px] px-3 placeholder:italic text-slate-600"
+                      />
                     </div>
-                </div>
-            </div>
+                  ))}
 
-            {/* Period comparison */}
-            {previousEbitda !== null && (
-              <ComparisonCard
-                current={ebitdaResult.ebitda}
-                previous={previousEbitda}
-                label="Period-over-Period Comparison"
-              />
-            )}
+                  {/* EBITDA Row Comment */}
+                  <div className="h-[45px] border-y border-[#cbd5e1] bg-[#f8fafc] p-1 flex items-center">
+                    <input
+                      value={rowComments['ebitda'] || ""}
+                      onChange={(e) => updateRowComment('ebitda', e.target.value)}
+                      placeholder="EBITDA remarks..."
+                      className="w-full bg-transparent border-none font-bold focus:ring-0 text-[13px] px-3 placeholder:italic placeholder:font-normal text-slate-800"
+                    />
+                  </div>
 
-            {/* Formula breakdown */}
-            <FormulaBar components={components} />
+                  {/* Owner Addbacks Section spacer */}
+                  <div className="h-[45px] bg-gray-100 border-b border-[#cbd5e1]" />
 
-            {/* Component cards grid */}
-            <div>
-              <div className="mb-3 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Info size={14} className="text-text-muted" />
-                  <p className="text-[12px] font-semibold uppercase tracking-wider text-text-muted">
-                    Component Breakdown · Click to view matched accounts
-                  </p>
+                  {/* Dynamic Addback Comments */}
+                  {dynamicAddbacks.map((row) => (
+                    <div key={row.id} className="h-[45px] border-b border-[#f1f5f9] p-1 flex items-center hover:bg-slate-50 transition-colors">
+                      <input
+                        value={rowComments[row.id] || ""}
+                        onChange={(e) => updateRowComment(row.id, e.target.value)}
+                        placeholder={`${row.label} remarks...`}
+                        className="w-full bg-transparent border-none focus:ring-0 text-[13px] px-3 placeholder:italic text-slate-600"
+                      />
+                    </div>
+                  ))}
+
+                  {/* Story of SDE Totals Comments */}
+                  <div className="h-[58px] border-t-2 border-[#8bc53d] bg-[#f8fafc] p-2 flex items-center">
+                    <textarea
+                      value={rowComments['totalSde'] || ""}
+                      onChange={(e) => updateRowComment('totalSde', e.target.value)}
+                      placeholder="Story of Seller's Discretionary Earnings..."
+                      className="w-full bg-transparent border-none focus:ring-0 text-[12px] px-2 leading-tight resize-none placeholder:italic font-semibold text-slate-800"
+                      rows={2}
+                    />
+                  </div>
+                  <div className="h-[45px] border-b border-[#cbd5e1] bg-white p-1 flex items-center">
+                    <input
+                      value={rowComments['sdePercent'] || ""}
+                      onChange={(e) => updateRowComment('sdePercent', e.target.value)}
+                      placeholder="Margin analysis..."
+                      className="w-full bg-transparent border-none focus:ring-0 text-[13px] px-3 placeholder:italic text-slate-600"
+                    />
+                  </div>
                 </div>
               </div>
-              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
-                {componentCards.map((card) => (
-                  <ComponentCard
-                    key={card.label}
-                    icon={card.icon}
-                    label={card.label}
-                    value={card.value}
-                    color={card.color}
-                    matchedAccounts={card.matchedAccounts}
-                  />
-                ))}
+            </div>
+
+            {/* Summary Analysis Box */}
+            <div className="flex justify-start mt-8 pb-12">
+              <div className="rounded-xl border border-[#cbd5e1] p-0 overflow-hidden bg-white shadow-lg max-w-md w-full">
+                <div className="border-b border-[#cbd5e1] bg-[#8bc53d] p-3 px-4 font-bold text-white text-[15px]">
+                  Summary Analysis
+                </div>
+                <div className="p-8 space-y-6">
+                  <div className="flex justify-between items-center bg-gray-50 border border-gray-100 rounded-lg p-3">
+                    <span className="font-bold text-slate-800">SDE Per CIM</span>
+                    <input
+                      type="number"
+                      value={sdePerCim}
+                      onChange={(e) => setSdePerCim(e.target.value)}
+                      placeholder="Enter value..."
+                      className="w-32 bg-white border border-gray-200 rounded px-2 py-1 text-right font-mono focus:ring-1 focus:ring-[#8bc53d] outline-none"
+                    />
+                  </div>
+
+                  {(() => {
+                    const latestYear = years[0];
+                    const baseEbitda = calculateBaseEbitda(latestYear);
+                    const addbacksSum = dynamicAddbacks.reduce((sum, ab) => {
+                      const { apiValue, userValue } = ab.values[latestYear] || { apiValue: null, userValue: null };
+                      const val = userValue !== null ? userValue : (apiValue || 0);
+                      return sum + val;
+                    }, 0);
+                    const currentSde = baseEbitda + addbacksSum;
+                    const cimVal = Number(sdePerCim) || 0;
+                    const diff = currentSde - cimVal;
+                    const pctDiff = cimVal !== 0 ? (diff / cimVal) * 100 : 0;
+
+                    return (
+                      <>
+                        <div className="flex justify-between items-center border-b border-gray-100 pb-3">
+                          <span className="font-bold text-slate-800">$ Difference</span>
+                          <span className={cn("font-mono font-bold text-[15px]", diff < 0 ? "text-red-500" : "text-green-600")}>
+                            {cimVal ? formatCurrency(diff) : "-"}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="font-bold text-slate-800">% Difference</span>
+                          <span className={cn("font-mono font-bold text-[15px]", pctDiff < 0 ? "text-red-500" : "text-green-600")}>
+                            {cimVal ? formatPercent(pctDiff) : "-"}
+                          </span>
+                        </div>
+                      </>
+                    );
+                  })()}
+                </div>
               </div>
             </div>
-
-            {/* Trend chart toggle */}
-            <div>
-              <button
-                onClick={handleLoadTrend}
-                className="btn-secondary mb-3"
-                disabled={isTrendLoading}
-              >
-                <BarChart3 size={16} />
-                {showTrend ? "Hide" : "Show"} Monthly Trend
-                {isTrendLoading && (
-                  <div className="ml-1 h-4 w-4 animate-spin rounded-full border-2 border-border border-t-primary" />
-                )}
-              </button>
-              {showTrend && (
-                <TrendChart data={trendData} isLoading={isTrendLoading} />
-              )}
-            </div>
-
           </div>
         ) : (
           <EmptyState />
