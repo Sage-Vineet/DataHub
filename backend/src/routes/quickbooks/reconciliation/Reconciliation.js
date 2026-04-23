@@ -1,6 +1,7 @@
 const express = require("express");
 const axios = require("axios");
-const { getQBConfig } = require("../../../qbconfig");
+const { getQBConfig, loadQBConfig } = require("../../../qbconfig");
+const tokenManager = require("../../../tokenManager");
 const pool = require("../../../db");
 const router = express.Router();
 
@@ -586,7 +587,7 @@ router.get("/qb-bank-activity", async (req, res) => {
   try {
     // ── 1. Fetch all bank accounts ──────────────────────────────────────────
     const accountsQR = await runQuery(
-      "SELECT * FROM Account WHERE AccountType = 'Bank' MAXRESULTS 100",
+      "SELECT * FROM Account WHERE AccountType = 'Bank' MAXRESULTS 1000",
     );
     const bankAccounts = accountsQR.Account || [];
 
@@ -888,4 +889,225 @@ function walkBSRows(rows, monthlyBalances, month, bankAccounts) {
 //   });
 //
 // ─────────────────────────────────────────────────────────────────────────────
+
+router.get("/qb-one-bank-activity", async (req, res) => {
+  try {
+    const { accountId, start_date, end_date } = req.query;
+
+    if (!accountId)
+      return res.status(400).json({ error: "accountId is required" });
+
+    if (!start_date || !end_date) {
+      return res
+        .status(400)
+        .json({ error: "start_date and end_date are required" });
+    }
+
+    let clientId = req.clientId || req.query.clientId;
+    if (!clientId && req.headers.referer) {
+      const m = req.headers.referer.match(/\/client\/([^/]+)/);
+      if (m) clientId = m[1];
+    }
+    if (!clientId) {
+      return res.status(400).json({ error: "Missing Client ID." });
+    }
+
+    await loadQBConfig(clientId);
+    const qb = getQBConfig(clientId);
+    if (!qb.accessToken || !qb.realmId) {
+      return res.status(401).json({
+        error: "QuickBooks is not connected for this company.",
+      });
+    }
+
+    const baseUrl = `${qb.baseUrl}/v3/company/${qb.realmId}/query`;
+    let accessToken = qb.accessToken;
+
+    const headers = {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: "application/json",
+    };
+
+    const runQuery = async (query) => {
+      const execute = async (token) =>
+        axios.get(baseUrl, {
+          headers: {
+            ...headers,
+            Authorization: `Bearer ${token}`,
+          },
+          proxy: false,
+          params: { query, minorversion: 75 },
+        });
+
+      try {
+        const r = await execute(accessToken);
+        return r.data?.QueryResponse || {};
+      } catch (error) {
+        if (error.response?.status !== 401) throw error;
+
+        accessToken = await tokenManager.refreshAccessToken(clientId);
+        const retry = await execute(accessToken);
+        return retry.data?.QueryResponse || {};
+      }
+    };
+
+    // ---------------------------
+    // 1️⃣ Fetch Account Info
+    // ---------------------------
+
+    const accountQR = await runQuery(
+      `SELECT * FROM Account WHERE Id='${accountId}'`,
+    );
+
+    const account = accountQR.Account?.[0];
+
+    if (!account)
+      return res.status(404).json({ error: "Bank account not found" });
+
+    // ---------------------------
+    // 2️⃣ Fetch Deposits
+    // ---------------------------
+
+    const depositQR = await runQuery(
+      `SELECT * FROM Deposit WHERE TxnDate >= '${start_date}' AND TxnDate <= '${end_date}' MAXRESULTS 1000`,
+    );
+
+    const deposits = (depositQR.Deposit || []).filter(
+      (d) => d.DepositToAccountRef?.value === accountId,
+    );
+
+    // ---------------------------
+    // 3️⃣ Fetch Purchases (withdrawals)
+    // ---------------------------
+
+    const purchaseQR = await runQuery(
+      `SELECT * FROM Purchase WHERE TxnDate >= '${start_date}' AND TxnDate <= '${end_date}' MAXRESULTS 1000`,
+    );
+
+    const purchases = (purchaseQR.Purchase || []).filter(
+      (p) => p.AccountRef?.value === accountId,
+    );
+
+    // ---------------------------
+    // 4️⃣ Fetch Transfers
+    // ---------------------------
+
+    const transferQR = await runQuery(
+      `SELECT * FROM Transfer WHERE TxnDate >= '${start_date}' AND TxnDate <= '${end_date}' MAXRESULTS 1000`,
+    );
+
+    const transfers = (transferQR.Transfer || []).filter(
+      (t) =>
+        t.FromAccountRef?.value === accountId ||
+        t.ToAccountRef?.value === accountId,
+    );
+
+    // ---------------------------
+    // 5️⃣ Build Month Range
+    // ---------------------------
+
+    const months = [];
+    const start = new Date(start_date);
+    const end = new Date(end_date);
+
+    let current = new Date(start);
+
+    while (current <= end) {
+      const month = `${current.getFullYear()}-${String(
+        current.getMonth() + 1,
+      ).padStart(2, "0")}`;
+      months.push(month);
+      current.setMonth(current.getMonth() + 1);
+    }
+
+    // ---------------------------
+    // 6️⃣ Activity Map
+    // ---------------------------
+
+    const activity = {};
+
+    const getMonth = (date) => {
+      const d = new Date(date);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    };
+
+    months.forEach((m) => {
+      activity[m] = {
+        deposits: 0,
+        withdrawals: 0,
+      };
+    });
+
+    // deposits
+    deposits.forEach((d) => {
+      const m = getMonth(d.TxnDate);
+      if (activity[m]) activity[m].deposits += parseFloat(d.TotalAmt || 0);
+    });
+
+    // purchases
+    purchases.forEach((p) => {
+      const m = getMonth(p.TxnDate);
+      if (activity[m])
+        activity[m].withdrawals += Math.abs(parseFloat(p.TotalAmt || 0));
+    });
+
+    // transfers
+    transfers.forEach((t) => {
+      const m = getMonth(t.TxnDate);
+      const amt = parseFloat(t.Amount || 0);
+
+      if (t.FromAccountRef?.value === accountId) {
+        activity[m].withdrawals += amt;
+      }
+
+      if (t.ToAccountRef?.value === accountId) {
+        activity[m].deposits += amt;
+      }
+    });
+
+    // ---------------------------
+    // 7️⃣ Build monthly table
+    // ---------------------------
+
+    let runningBalance = parseFloat(account.CurrentBalance || 0);
+
+    const monthlyData = months.map((month) => {
+      const act = activity[month];
+
+      const startingBalance = runningBalance;
+      const endingBalance = startingBalance + act.deposits - act.withdrawals;
+
+      runningBalance = endingBalance;
+
+      return {
+        month,
+        startingBalance,
+        deposits: act.deposits,
+        withdrawals: act.withdrawals,
+        endingBalance,
+      };
+    });
+
+    // ---------------------------
+    // Final Response
+    // ---------------------------
+
+    res.json({
+      success: true,
+      account: {
+        accountId: account.Id,
+        bankName: account.Name,
+        accountNumber: account.AcctNum || "",
+      },
+      monthlyData,
+    });
+  } catch (err) {
+    console.error(err.response?.data || err.message);
+
+    res.status(500).json({
+      error: "Failed to fetch bank activity",
+      details: err.response?.data || err.message,
+    });
+  }
+});
 module.exports = router;

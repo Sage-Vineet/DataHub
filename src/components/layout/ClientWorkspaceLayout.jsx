@@ -9,6 +9,7 @@ import {
   ChevronDown,
   ChevronRight,
   ClipboardList,
+  FileCheck,
   FolderOpen,
   LayoutDashboard,
   Link2,
@@ -58,6 +59,11 @@ function WorkspaceSidebar({ company, onClose }) {
     { label: "Reports", icon: BarChart3, to: `${basePath}/reports` },
     { label: "EBITDA", icon: Calculator, to: `${basePath}/ebitda` },
     { label: "Reconciliation", icon: Scale, to: `${basePath}/reconciliation` },
+    {
+      label: "Tax Reconciliation",
+      icon: FileCheck,
+      to: `${basePath}/tax-reconciliation`,
+    },
     { label: "Connections", icon: Link2, to: `${basePath}/connections` },
   ];
 
@@ -292,6 +298,8 @@ function WorkspaceTopbar({ company, onMenuClick }) {
     if (location.pathname.endsWith("/reports")) return "Reports";
     if (location.pathname.endsWith("/ebitda")) return "EBITDA Analysis";
     if (location.pathname.endsWith("/reconciliation")) return "Reconciliation";
+    if (location.pathname.endsWith("/tax-reconciliation"))
+      return "Tax Reconciliation";
     if (location.pathname.endsWith("/connections")) return "Connections";
     if (location.pathname.includes("/dataroom/requests"))
       return "DataRoom / Requests";

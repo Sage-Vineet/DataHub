@@ -35,6 +35,7 @@ import WorkspaceUsers from "./pages/broker/workspace/WorkspaceUsers";
 import WorkspaceInvoices from "./pages/broker/workspace/WorkspaceInvoices";
 import WorkspaceReports from "./pages/broker/workspace/WorkspaceReports";
 import WorkspaceReconciliation from "./pages/broker/workspace/WorkspaceReconciliation";
+import WorkspaceTaxReconciliation from "./pages/broker/workspace/WorkspaceTaxReconciliation";
 import WorkspaceConnections from "./pages/broker/workspace/WorkspaceConnections";
 import Support from "./pages/Support";
 import WorkspaceEbitda from "./pages/broker/workspace/WorkspaceEbitda";
@@ -249,6 +250,10 @@ function AppRoutes() {
         <Route path="invoices" element={<WorkspaceInvoices />} />
         <Route path="reports" element={<WorkspaceReports />} />
         <Route path="reconciliation" element={<WorkspaceReconciliation />} />
+        <Route
+          path="tax-reconciliation"
+          element={<WorkspaceTaxReconciliation />}
+        />
         <Route path="connections" element={<WorkspaceConnections />} />
         <Route path="ebitda" element={<WorkspaceEbitda />} />
         <Route path="dataroom" element={<Navigate to="requests" replace />} />
