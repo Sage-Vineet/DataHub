@@ -637,11 +637,11 @@ export default function WorkspaceInvoices() {
       previous.map((invoice) =>
         invoice.id === editingInvoice.id
           ? {
-              ...invoice,
-              invoiceNumber: updatedInvoice?.DocNumber || formData.docNumber,
-              dueDate: updatedInvoice?.DueDate || formData.dueDate,
-              privateNote: updatedInvoice?.PrivateNote || formData.privateNote,
-            }
+            ...invoice,
+            invoiceNumber: updatedInvoice?.DocNumber || formData.docNumber,
+            dueDate: updatedInvoice?.DueDate || formData.dueDate,
+            privateNote: updatedInvoice?.PrivateNote || formData.privateNote,
+          }
           : invoice,
       ),
     );
@@ -856,13 +856,13 @@ export default function WorkspaceInvoices() {
                               <span className="text-[12px] text-text-muted">
                                 {invoice.date
                                   ? new Date(invoice.date).toLocaleDateString(
-                                      "en-US",
-                                      {
-                                        month: "short",
-                                        day: "numeric",
-                                        year: "numeric",
-                                      },
-                                    )
+                                    "en-US",
+                                    {
+                                      month: "short",
+                                      day: "numeric",
+                                      year: "numeric",
+                                    },
+                                  )
                                   : "N/A"}
                               </span>
                             </div>
@@ -877,17 +877,17 @@ export default function WorkspaceInvoices() {
                               className={cn(
                                 "text-[14px] text-text-secondary",
                                 invoice.status === "overdue" &&
-                                  "font-medium text-negative",
+                                "font-medium text-negative",
                               )}
                             >
                               {invoice.dueDate
                                 ? new Date(invoice.dueDate).toLocaleDateString(
-                                    "en-US",
-                                    {
-                                      month: "short",
-                                      day: "numeric",
-                                    },
-                                  )
+                                  "en-US",
+                                  {
+                                    month: "short",
+                                    day: "numeric",
+                                  },
+                                )
                                 : "N/A"}
                             </span>
                           </td>
@@ -967,7 +967,7 @@ export default function WorkspaceInvoices() {
                                   );
                                   alert(
                                     error.message ||
-                                      "Could not load invoice details.",
+                                    "Could not load invoice details.",
                                   );
                                 } finally {
                                   setIsDetailLoading(false);

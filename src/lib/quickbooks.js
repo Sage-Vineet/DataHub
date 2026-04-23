@@ -1,12 +1,26 @@
+import { getStoredToken } from "./api";
+
 const API_BASE_URL = (
   import.meta.env.VITE_API_BASE_URL || "https://datahub-sl3y.onrender.com"
 ).replace(/\/$/, "");
 
 async function request(path, options = {}) {
-  // Extract clientId from URL hash: #/broker/client/:clientId/...
+  // Extract clientId from URL hash
+  // Matches /broker/client/:id, /client/:id/dashboard, or /client/:id/...
   const hash = window.location.hash || "";
-  const match = hash.match(/\/client\/([^/]+)/);
-  const clientId = match ? match[1] : null;
+  const brokerMatch = hash.match(/\/broker\/client\/([^/?#]+)/);
+  const workspaceMatch = hash.match(/\/broker\/workspace\/([^/?#]+)/);
+  const clientMatch = hash.match(/\/client\/([^/?#]+)/);
+  
+  let clientId = brokerMatch ? brokerMatch[1] : (workspaceMatch ? workspaceMatch[1] : (clientMatch ? clientMatch[1] : null));
+
+  // Safety: ensure it looks like a database ID (UUID) and not a static route like 'connections'
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (clientId && !uuidRegex.test(clientId)) {
+    clientId = null;
+  }
+
+  const token = getStoredToken();
 
   const response = await fetch(`${API_BASE_URL}${path}`, {
     cache: "no-store",
@@ -17,6 +31,7 @@ async function request(path, options = {}) {
         ? { "Content-Type": "application/json" }
         : {}),
       ...(clientId ? { "X-Client-Id": clientId } : {}),
+      ...(token ? { "Authorization": `Bearer ${token}` } : {}),
       ...(options.headers || {}),
     },
   });
@@ -37,18 +52,38 @@ async function request(path, options = {}) {
   return payload;
 }
 
-export function connectQuickbooks(redirectHash) {
+export function connectQuickbooks(redirectHash, explicitClientId = null) {
   const hash = window.location.hash || "";
-  const match = hash.match(/\/client\/([^/]+)/);
-  const clientId = match ? match[1] : null;
+  // 1. Try explicit ID (passed from component)
+  // 2. Try broker path
+  // 3. Try client path
+  const brokerMatch = hash.match(/\/broker\/client\/([^/?#]+)/);
+  const workspaceMatch = hash.match(/\/broker\/workspace\/([^/?#]+)/);
+  const clientMatch = hash.match(/\/client\/([^/?#]+)/);
+  
+  let clientId = explicitClientId || (brokerMatch ? brokerMatch[1] : (workspaceMatch ? workspaceMatch[1] : (clientMatch ? clientMatch[1] : null)));
+
+  // Validate UUID format
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (clientId && !uuidRegex.test(clientId)) {
+    clientId = null;
+  }
+
+  const isClient = hash.includes("/client/");
+  const role = isClient ? "client" : "broker";
 
   const state = encodeURIComponent(
     JSON.stringify({
-      redirect: redirectHash || "/broker/companies",
-      clientId: clientId,
-    }),
+      redirect: redirectHash || (isClient ? "/client/connections" : "/broker/companies"),
+      companyId: clientId,
+      clientId: clientId, // backward compat
+      role: role
+    })
   );
-  window.location.href = `${API_BASE_URL}/api/auth/quickbooks?state=${state}&clientId=${clientId || ""}`;
+  
+  const token = getStoredToken();
+  const authQuery = token ? `&token=${encodeURIComponent(token)}` : "";
+  window.location.href = `${API_BASE_URL}/api/auth/quickbooks?state=${state}&clientId=${clientId || ""}${authQuery}`;
 }
 
 export function getConnectionStatus() {

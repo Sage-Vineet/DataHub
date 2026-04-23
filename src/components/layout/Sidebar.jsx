@@ -7,6 +7,7 @@ import {
   LogOut,
   Upload,
   ClipboardList,
+  Database,
   X,
   MoreHorizontal,
   LifeBuoy,
@@ -24,6 +25,7 @@ const clientNav = [
   { label: "My Requests", icon: ClipboardList, to: "/client/requests" },
   { label: "Upload Documents", icon: Upload, to: "/client/upload" },
   { label: "Reminders", icon: Bell, to: "/client/reminders" },
+  { label: "QuickBooks", icon: Database, to: "/client/connections" },
   { label: "Help & Support", icon: LifeBuoy, to: "/support" },
 ];
 
