@@ -23,6 +23,7 @@ const customerFinanceRoutes = require("./routes/quickbooks/customers/customers")
 const invoiceFinanceRoutes = require("./routes/quickbooks/invoices/invoices");
 const cashflowRoutes = require("./routes/quickbooks/cash_flow/cash_flow");
 const reconciliationRoutes = require("./routes/quickbooks/reconciliation/Reconciliation");
+const taxReconciliationRoutes = require("./routes/quickbooks/tax_reconciliation/Tax_Reconciliation");
 const bankStatementRoutes = require("./routes/quickbooks/reconciliation/bankStatement");
 const bankVsBooksRoutes = require("./routes/quickbooks/reconciliation/bankVsBooks");
 const { getQBConfig, loadQBConfig } = require("./qbconfig");
@@ -140,6 +141,7 @@ function isQuickBooksRoute(pathname = "") {
     pathname.startsWith("/customers") ||
     pathname.startsWith("/invoices") ||
     pathname.startsWith("/api/invoices") ||
+    pathname.startsWith("/api/extract-bank-pdf-records") ||
     pathname.startsWith("/qb-transactions") ||
     pathname.startsWith("/qb-cashflow") ||
     pathname.startsWith("/qb-accounts") ||
@@ -152,6 +154,7 @@ function isQuickBooksRoute(pathname = "") {
     pathname.startsWith("/bank-vs-books") ||
     pathname.startsWith("/reconciliation-data") ||
     pathname.startsWith("/reconciliation-variance") ||
+    pathname.startsWith("/tax-reconciliation") ||
     pathname.startsWith("/refresh-token")
   );
 }
@@ -172,8 +175,9 @@ app.use("/", quickBooksAuth, customerFinanceRoutes);
 app.use("/", quickBooksAuth, invoiceFinanceRoutes);
 app.use("/", quickBooksAuth, cashflowRoutes);
 app.use("/", quickBooksAuth, reconciliationRoutes);
+app.use("/", quickBooksAuth, taxReconciliationRoutes);
 app.use("/", quickBooksAuth, bankStatementRoutes);
-app.use("/", quickBooksAuth, bankVsBooksRoutes);
+app.use("/api", quickBooksAuth, bankVsBooksRoutes);
 app.use("/", groupRoutes);
 app.use("/", requestRoutes);
 app.use("/", folderRoutes);
