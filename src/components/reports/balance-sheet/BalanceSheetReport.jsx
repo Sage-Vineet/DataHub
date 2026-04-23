@@ -1,26 +1,5 @@
 import BalanceSheetSummary from "./BalanceSheetSummary";
-import BalanceSheetDetail from "./BalanceSheetDetail";
-
-function deriveReportPeriodFromPayload(rawPayload) {
-  if (!rawPayload) return { start: "", end: "" };
-
-  const candidates = [
-    rawPayload?.generalLedger,
-    rawPayload?.GeneralLedger,
-    rawPayload?.balanceSheet,
-    rawPayload?.BalanceSheet,
-    rawPayload,
-  ];
-
-  for (const report of candidates) {
-    const start = report?.Header?.StartPeriod;
-    const end = report?.Header?.EndPeriod;
-    if (start || end)
-      return { start: String(start || ""), end: String(end || "") };
-  }
-
-  return { start: "", end: "" };
-}
+import BalanceSheetQBSummary from "./BalanceSheetQBSummary";
 
 export default function BalanceSheetReport({
   reportType,
@@ -34,42 +13,34 @@ export default function BalanceSheetReport({
   createdOn,
   isPreview = false,
 }) {
-  const derivedPeriod =
-    reportType === "Detail"
-      ? deriveReportPeriodFromPayload(detailedData?.rawPayload)
-      : { start: "", end: "" };
-
-  const subtitleStart = startDate || derivedPeriod.start || "N/A";
-  const subtitleEnd = endDate || derivedPeriod.end || "N/A";
-
-  const subtitle = `Report Period: ${subtitleStart} to ${subtitleEnd} | ${clientName} | ${accountingMethod} Basis`;
+  const subtitle = `Report Period: ${startDate || "N/A"} to ${endDate || "N/A"} | ${clientName} | ${accountingMethod} Basis`;
   const resolvedEntityName = entityName || clientName || "Company";
 
   if (reportType === "Detail") {
+    // Detail View: Multi-year EBITDA/SDE analysis
+    const rows = Array.isArray(detailedData?.rows) ? detailedData.rows : (Array.isArray(detailedData) ? detailedData : []);
+    const columns = detailedData?.columns || undefined;
+
     return (
-      <BalanceSheetDetail
-        data={detailedData?.groups ? detailedData : { groups: [] }}
+      <BalanceSheetSummary
+        data={rows}
+        columns={columns}
+        endDate={endDate}
         title="Balance Sheet"
         subtitle={subtitle}
         entityName={resolvedEntityName}
-        isPreview={isPreview}
+        createdOn={createdOn}
       />
     );
   }
 
-  // Extract rows and columns from data if it's the new object structure
-  const rows = Array.isArray(data?.rows) ? data.rows : (Array.isArray(data) ? data : []);
-  const columns = data?.columns || undefined;
-
+  // Summary View: QuickBooks-style Summary report
   return (
-    <BalanceSheetSummary
-      data={rows}
-      columns={columns}
-      endDate={endDate}
+    <BalanceSheetQBSummary
+      data={data || []}
       title="Balance Sheet"
       subtitle={subtitle}
       entityName={resolvedEntityName}
-      createdOn={createdOn}
     />
   );
 }

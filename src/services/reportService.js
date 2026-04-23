@@ -17,6 +17,7 @@ import {
   fetchProfitAndLoss,
   fetchQuickbooksInvoices,
 } from "../lib/quickbooks";
+import { getStoredToken } from "../lib/api";
 
 const API_BASE_URL = (
   import.meta.env.VITE_API_BASE_URL || "http://localhost:4000"
@@ -36,12 +37,14 @@ function resolveClientIdFromLocation() {
 
 async function request(path) {
   const clientId = resolveClientIdFromLocation();
+  const token = getStoredToken();
 
   const response = await fetch(`${API_BASE_URL}${path}`, {
     credentials: "include",
     cache: "no-store",
     headers: {
       ...(clientId ? { "X-Client-Id": clientId } : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
   });
 
@@ -49,8 +52,8 @@ async function request(path) {
   if (!response.ok) {
     throw new Error(
       payload?.message ||
-        payload?.error ||
-        `Request failed: ${response.status}`,
+      payload?.error ||
+      `Request failed: ${response.status}`,
     );
   }
 
@@ -374,9 +377,9 @@ function buildTrendBuckets(start, end, aggregationType) {
         aggregationType === "quarterly"
           ? name
           : bucketStart.toLocaleDateString("en-US", {
-              month: "short",
-              year: "numeric",
-            }),
+            month: "short",
+            year: "numeric",
+          }),
       start: formatLocalDate(bucketStart),
       end: formatLocalDate(bucketEnd),
     });
@@ -389,9 +392,9 @@ export async function fetchDashboardKPIs(start, end) {
   const params =
     start || end
       ? {
-          ...(start ? { start_date: start } : {}),
-          ...(end ? { end_date: end } : {}),
-        }
+        ...(start ? { start_date: start } : {}),
+        ...(end ? { end_date: end } : {}),
+      }
       : {};
 
   const [profitAndLoss, balanceSheet, combinedReports, invoicesPayload] =

@@ -1,5 +1,5 @@
 import ProfitAndLossSummary from "./ProfitAndLossSummary";
-import ProfitAndLossDetail from "./ProfitAndLossDetail";
+import ProfitAndLossQBSummary from "./ProfitAndLossQBSummary";
 
 export default function ProfitAndLossReport({
   reportType,
@@ -17,24 +17,25 @@ export default function ProfitAndLossReport({
   const resolvedEntityName = entityName || clientName || "Company";
 
   if (reportType === "Detail") {
+    // Detail View: Multi-year EBITDA/SDE analysis
     return (
-      <ProfitAndLossDetail
-        data={detailedData?.groups ? detailedData : { groups: [] }}
+      <ProfitAndLossSummary
+        data={detailedData}
         title="Profit & Loss"
         subtitle={subtitle}
         entityName={resolvedEntityName}
-        isPreview={isPreview}
+        createdOn={createdOn}
       />
     );
   }
 
+  // Summary View: QuickBooks-style Summary report
   return (
-    <ProfitAndLossSummary
+    <ProfitAndLossQBSummary
       data={data || []}
       title="Profit & Loss"
       subtitle={subtitle}
       entityName={resolvedEntityName}
-      createdOn={createdOn}
     />
   );
 }

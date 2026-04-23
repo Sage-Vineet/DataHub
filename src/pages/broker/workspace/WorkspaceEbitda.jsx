@@ -7,25 +7,13 @@ import {
   Plus,
   Trash2,
 } from "lucide-react";
-import { cn } from "../../../lib/utils";
+import { cn, formatCurrency } from "../../../lib/utils";
 import { getCompanyRequest } from "../../../lib/api";
 import {
   getEbitdaData,
 } from "../../../services/ebitdaService";
 import { refreshQuickbooksToken } from "../../../lib/quickbooks";
 import QBDisconnectedBanner from "../../../components/common/QBDisconnectedBanner";
-
-
-function formatCurrency(amount) {
-  if (amount === 0 || amount === null || amount === undefined) return "-";
-  const num = Number(amount);
-  const formatted = new Intl.NumberFormat("en-US", {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  }).format(Math.abs(num));
-
-  return num < 0 ? `(${formatted})` : formatted;
-}
 
 function formatPercent(value) {
   if (!Number.isFinite(value)) return "-";

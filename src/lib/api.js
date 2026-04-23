@@ -1,4 +1,4 @@
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'https://datahub-sl3y.onrender.com').replace(/\/$/, '');
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000').replace(/\/$/, '');
 const TOKEN_KEY = 'leo-auth-token';
 
 function buildUrl(path) {
@@ -29,10 +29,10 @@ function resolveClientIdFromLocation() {
 
   const hash = window.location.hash || '';
   const pathname = window.location.pathname || '';
-  
+
   // We only want to extract an ID if it's explicitly under the broker's client workspace
   const brokerMatch = hash.match(/\/broker\/client\/([^/?#]+)/) || pathname.match(/\/broker\/client\/([^/?#]+)/);
-  
+
   if (brokerMatch) {
     const id = decodeURIComponent(brokerMatch[1]);
     // Safety: ensure it looks like a database ID (UUID) and not a static route

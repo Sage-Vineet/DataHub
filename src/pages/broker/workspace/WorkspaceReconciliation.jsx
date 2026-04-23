@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import Header from "../../../components/Header";
-import { cn } from "../../../lib/utils";
+import { cn, formatCurrency } from "../../../lib/utils";
 import {
   AlertCircle,
   CheckCircle2,
@@ -79,40 +79,31 @@ const getStoredWorkspaceState = (clientId) => {
     return null;
   }
 };
-const fmtAmt = (val) => {
-  if (val == null || val === 0) return "-";
-  return new Intl.NumberFormat("en-IN", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(val);
-};
-const fmtAcct = (val) => {
-  if (val == null || val === 0) return "-";
-  const abs = new Intl.NumberFormat("en-IN", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(Math.abs(val));
-  return val < 0 ? `(${abs})` : abs;
-};
+
+const fmtAmt = (val) => formatCurrency(val);
+const fmtAcct = (val) => formatCurrency(val);
+
 const fmtVarianceAmt = (val) => {
   if (val == null || val === 0)
     return { display: "-", colorClass: "text-text-muted" };
-  const abs = new Intl.NumberFormat("en-IN", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(Math.abs(val));
-  if (val < 0)
-    return { display: `-${abs}`, colorClass: "text-red-600 font-medium" };
-  return { display: `+${abs}`, colorClass: "text-green-600 font-medium" };
+  
+  const formatted = formatCurrency(val);
+  const colorClass = val < 0 ? "text-red-600 font-medium" : "text-green-600 font-medium";
+  const prefix = val > 0 ? "+" : "";
+  
+  return { display: `${prefix}${formatted}`, colorClass };
 };
+
 const fmtVariancePct = (val) => {
-  if (val == null) return { display: "-", colorClass: "text-text-muted" };
-  const fixed = parseFloat(val).toFixed(1);
-  if (parseFloat(fixed) === 0)
-    return { display: "0.0%", colorClass: "text-text-muted" };
-  if (val < 0)
-    return { display: `${fixed}%`, colorClass: "text-red-600 font-medium" };
-  return { display: `+${fixed}%`, colorClass: "text-green-600 font-medium" };
+  if (val == null || isNaN(val)) return { display: "-", colorClass: "text-text-muted" };
+  const num = Number(val);
+  if (num === 0) return { display: "0.0%", colorClass: "text-text-muted" };
+  
+  const fixed = Math.abs(num).toFixed(1);
+  const display = num < 0 ? `(${fixed}%)` : `+${fixed}%`;
+  const colorClass = num < 0 ? "text-red-600 font-medium" : "text-green-600 font-medium";
+  
+  return { display, colorClass };
 };
 const monthLabel = (ym) => {
   const [y, m] = ym.split("-");
@@ -270,9 +261,8 @@ export default function WorkspaceReconciliation() {
       setQbBankActivity(data);
       setBankActivityFetchStatus({
         status: "success",
-        message: `Loaded ${data?.months?.length ?? 0} month(s) across ${
-          data?.accounts?.length ?? 0
-        } account(s).`,
+        message: `Loaded ${data?.months?.length ?? 0} month(s) across ${data?.accounts?.length ?? 0
+          } account(s).`,
       });
     } catch (e) {
       setBankActivityError(getErrMsg(e));
