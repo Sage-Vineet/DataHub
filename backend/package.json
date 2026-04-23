@@ -1,5 +1,5 @@
 {
-  "name": "datahub",
+  "name": "leo-backend",
   "version": "1.0.0",
   "description": "Express + PostgreSQL REST API scaffold for Leo",
   "main": "src/server.js",
@@ -10,7 +10,6 @@
     "lint": "echo \"No lint configured\""
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.88.0",
     "axios": "^1.13.2",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
@@ -21,7 +20,8 @@
     "multer": "^2.0.2",
     "pg": "^8.12.0",
     "sqlite": "^5.1.1",
-    "sqlite3": "^6.0.1"
+    "sqlite3": "^5.1.7",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "nodemon": "^3.1.4"

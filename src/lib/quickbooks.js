@@ -1,7 +1,7 @@
 import { getStoredToken } from "./api";
 
 const API_BASE_URL = (
-  import.meta.env.VITE_API_BASE_URL || "http://localhost:4000"
+  import.meta.env.VITE_API_BASE_URL || "https://datahub-sl3y.onrender.com"
 ).replace(/\/$/, "");
 
 async function request(path, options = {}) {
@@ -135,23 +135,6 @@ export function syncGeneralLedger(params = {}) {
 
 export function fetchBankVsBooks() {
   return request("/bank-vs-books");
-}
-
-export function fetchReconciliationData() {
-  return request("/reconciliation-data");
-}
-
-export function fetchReconciliationVariance() {
-  return request("/reconciliation-variance");
-}
-
-export function uploadBankStatement(file) {
-  const form = new FormData();
-  form.append("file", file);
-  return request("/upload-bank-statement", {
-    method: "POST",
-    body: form,
-  });
 }
 
 export function formatCurrency(amount) {
