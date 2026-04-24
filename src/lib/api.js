@@ -1,5 +1,6 @@
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'https://datahub-sl3y.onrender.com').replace(/\/$/, '');
-const TOKEN_KEY = 'leo-auth-token';
+const LEGACY_TOKEN_KEY = 'leo-auth-token';
+const TOKEN_KEY = `leo-auth-token:${API_BASE_URL}`;
 
 function buildUrl(path) {
   return `${API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`;
@@ -29,10 +30,10 @@ function resolveClientIdFromLocation() {
 
   const hash = window.location.hash || '';
   const pathname = window.location.pathname || '';
-  
+
   // We only want to extract an ID if it's explicitly under the broker's client workspace
   const brokerMatch = hash.match(/\/broker\/client\/([^/?#]+)/) || pathname.match(/\/broker\/client\/([^/?#]+)/);
-  
+
   if (brokerMatch) {
     const id = decodeURIComponent(brokerMatch[1]);
     // Safety: ensure it looks like a database ID (UUID) and not a static route
@@ -41,19 +42,34 @@ function resolveClientIdFromLocation() {
     return id;
   }
 
+  const candidates = [
+    (window.location.hash || '').replace(/^#/, ''),
+    window.location.pathname || '',
+  ];
+
+  for (const candidate of candidates) {
+    if (!candidate.startsWith('/client/')) continue;
+    const match = candidate.match(/^\/client\/([^/?#]+)/);
+    if (match) {
+      return decodeURIComponent(match[1]);
+    }
+  }
+
   return null;
 }
 
 export function getStoredToken() {
-  return localStorage.getItem(TOKEN_KEY);
+  return localStorage.getItem(TOKEN_KEY) || localStorage.getItem(LEGACY_TOKEN_KEY);
 }
 
 export function setStoredToken(token) {
   if (token) {
     localStorage.setItem(TOKEN_KEY, token);
+    localStorage.removeItem(LEGACY_TOKEN_KEY);
     return;
   }
   localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(LEGACY_TOKEN_KEY);
 }
 
 
@@ -166,6 +182,33 @@ export function listCompanyRequests(companyId) {
   return request(`/companies/${companyId}/requests`).then(ensureArray);
 }
 
+export function listMessageThreadsRequest() {
+  return request("/messages/threads").then(ensureArray);
+}
+
+export function getCompanyMessagesRequest(companyId) {
+  return request(`/companies/${companyId}/messages`);
+}
+
+export function createCompanyMessageRequest(companyId, payload) {
+  return request(`/companies/${companyId}/messages`, { method: "POST", body: payload }).then(unwrapPayload);
+}
+
+export function listCompanyDirectMessageContactsRequest(companyId) {
+  return request(`/companies/${companyId}/direct-messages/contacts`);
+}
+
+export function getCompanyDirectMessagesRequest(companyId, recipientId) {
+  return request(`/companies/${companyId}/direct-messages/${recipientId}`);
+}
+
+export function createCompanyDirectMessageRequest(companyId, recipientId, payload) {
+  return request(`/companies/${companyId}/direct-messages/${recipientId}`, {
+    method: "POST",
+    body: payload,
+  }).then(unwrapPayload);
+}
+
 export function createCompanyRequestItem(companyId, payload) {
   return request(`/companies/${companyId}/requests`, { method: 'POST', body: payload }).then(unwrapPayload);
 }
@@ -208,6 +251,10 @@ export function getRequestById(requestId) {
 
 export function updateRequest(requestId, payload) {
   return request(`/requests/${requestId}`, { method: 'PATCH', body: payload }).then(unwrapPayload);
+}
+
+export function approveRequest(requestId) {
+  return request(`/requests/${requestId}/approve`, { method: 'POST' }).then(unwrapPayload);
 }
 
 export function deleteRequest(requestId) {

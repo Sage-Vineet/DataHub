@@ -5,11 +5,9 @@ import {
   Bell,
   Briefcase,
   Building2,
-  Calculator,
   ChevronDown,
   ChevronRight,
   ClipboardList,
-  FileCheck,
   FolderOpen,
   LayoutDashboard,
   Link2,
@@ -23,9 +21,12 @@ import {
   BarChart3,
   Activity,
   TrendingUp,
+  MessageSquare,
 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
+import { useMessageNotifications } from "../../context/MessageNotificationsContext";
 import { listCompaniesRequest } from "../../lib/api";
+import MessageNotificationsMenu from "./MessageNotificationsMenu";
 import datahublogo from "../../assets/datahublogo.png";
 
 function companyLogo(name = "") {
@@ -43,6 +44,7 @@ function WorkspaceSidebar({ company, onClose }) {
   const navigate = useNavigate();
   const location = useLocation();
   const { user, logout } = useAuth();
+  const { notifications } = useMessageNotifications();
   const [dataroomOpen, setDataroomOpen] = useState(true);
   const isDataroomRoute = location.pathname.includes("/dataroom/");
   const isDataroomExpanded = dataroomOpen || isDataroomRoute;
@@ -51,19 +53,13 @@ function WorkspaceSidebar({ company, onClose }) {
   const mainNav = [
     // { label: "Dashboard", icon: LayoutDashboard, to: `${basePath}/dashboard` },
     {
-      label: "Dashboard",
+      label: "DataHub Dashboard",
       icon: TrendingUp,
       to: `${basePath}/datahub-dashboard`,
     },
     { label: "Client Invoices", icon: Receipt, to: `${basePath}/invoices` },
     { label: "Reports", icon: BarChart3, to: `${basePath}/reports` },
-    { label: "EBITDA", icon: Calculator, to: `${basePath}/ebitda` },
     { label: "Reconciliation", icon: Scale, to: `${basePath}/reconciliation` },
-    {
-      label: "Tax Reconciliation",
-      icon: FileCheck,
-      to: `${basePath}/tax-reconciliation`,
-    },
     { label: "Connections", icon: Link2, to: `${basePath}/connections` },
   ];
 
@@ -78,10 +74,12 @@ function WorkspaceSidebar({ company, onClose }) {
       icon: FolderOpen,
       to: `${basePath}/dataroom/documents`,
     },
+    { label: "Messages", icon: MessageSquare, to: `${basePath}/dataroom/messages` },
     { label: "Users", icon: Users, to: `${basePath}/dataroom/users` },
     { label: "Reminders", icon: Bell, to: `${basePath}/dataroom/reminders` },
     { label: "Activity", icon: Activity, to: `${basePath}/dataroom/activity` },
   ];
+  const companyMessageCount = notifications.filter((item) => String(item.companyId) === String(clientId)).length;
 
   return (
     <aside
@@ -218,6 +216,11 @@ function WorkspaceSidebar({ company, onClose }) {
                           }
                         />
                         <span>{item.label}</span>
+                        {item.label === "Messages" && companyMessageCount > 0 && (
+                          <span className="ml-auto inline-flex min-w-5 items-center justify-center rounded-full bg-negative px-1.5 py-0.5 text-[10px] font-bold text-white">
+                            {companyMessageCount > 9 ? "9+" : companyMessageCount}
+                          </span>
+                        )}
                       </>
                     )}
                   </NavLink>
@@ -296,10 +299,7 @@ function WorkspaceTopbar({ company, onMenuClick }) {
       return "DataHub Dashboard";
     if (location.pathname.endsWith("/invoices")) return "Client Invoices";
     if (location.pathname.endsWith("/reports")) return "Reports";
-    if (location.pathname.endsWith("/ebitda")) return "EBITDA Analysis";
     if (location.pathname.endsWith("/reconciliation")) return "Reconciliation";
-    if (location.pathname.endsWith("/tax-reconciliation"))
-      return "Tax Reconciliation";
     if (location.pathname.endsWith("/connections")) return "Connections";
     if (location.pathname.includes("/dataroom/requests"))
       return "DataRoom / Requests";
@@ -346,6 +346,8 @@ function WorkspaceTopbar({ company, onMenuClick }) {
         </div>
 
         <div className="flex items-center gap-3">
+          <MessageNotificationsMenu portal="broker" companyId={company.id} />
+
           <div className="relative">
             <button
               onClick={() => setShowSwitch((value) => !value)}

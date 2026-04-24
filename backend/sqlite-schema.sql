@@ -69,6 +69,11 @@ CREATE TABLE IF NOT EXISTS requests (
   assigned_to TEXT REFERENCES users(id) ON DELETE SET NULL,
   visible INTEGER NOT NULL DEFAULT 1,
   created_by TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  reminder_frequency_days INTEGER NOT NULL DEFAULT 2,
+  submission_source TEXT NOT NULL DEFAULT 'broker',
+  approval_status TEXT NOT NULL DEFAULT 'approved',
+  approved_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+  approved_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -146,8 +151,15 @@ CREATE TABLE IF NOT EXISTS folder_access (
 CREATE TABLE IF NOT EXISTS reminders (
   id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))),2) || '-' || substr('89ab',abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6)))),
   company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  request_id TEXT REFERENCES requests(id) ON DELETE CASCADE,
   title TEXT NOT NULL,
+  message TEXT,
   due_date TEXT NOT NULL,
+  priority TEXT NOT NULL DEFAULT 'medium',
+  frequency_days INTEGER NOT NULL DEFAULT 2,
+  sent_count INTEGER NOT NULL DEFAULT 0,
+  last_sent_at TEXT,
+  next_due_at TEXT,
   status TEXT NOT NULL DEFAULT 'active',
   created_by TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT
 );
@@ -158,6 +170,23 @@ CREATE TABLE IF NOT EXISTS activity_log (
   type TEXT NOT NULL,
   message TEXT NOT NULL,
   created_by TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS company_messages (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))),2) || '-' || substr('89ab',abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6)))),
+  company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  sender_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  body TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS direct_messages (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))),2) || '-' || substr('89ab',abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))),2) || '-' || lower(hex(randomblob(6)))),
+  company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  sender_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  recipient_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  body TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -205,4 +234,8 @@ CREATE INDEX IF NOT EXISTS idx_folder_access_user ON folder_access(user_id);
 CREATE INDEX IF NOT EXISTS idx_folder_access_group ON folder_access(group_id);
 CREATE INDEX IF NOT EXISTS idx_activity_company ON activity_log(company_id);
 CREATE INDEX IF NOT EXISTS idx_reminders_company ON reminders(company_id);
-CREATE INDEX IF NOT EXISTS idx_quickbooks_connections_realm_id ON quickbooks_connections(realm_id);
+CREATE INDEX IF NOT EXISTS idx_company_messages_company_created ON company_messages(company_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_company_messages_sender ON company_messages(sender_id);
+CREATE INDEX IF NOT EXISTS idx_direct_messages_company_created ON direct_messages(company_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_direct_messages_sender_company ON direct_messages(sender_id, company_id);
+CREATE INDEX IF NOT EXISTS idx_direct_messages_recipient_company ON direct_messages(recipient_id, company_id);

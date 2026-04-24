@@ -1,240 +1,257 @@
-import { useState } from 'react';
-import { Bell, Plus, Clock, CheckCircle, AlertCircle, Trash2, ChevronDown } from 'lucide-react';
-import { reminders as initReminders, companies, requests } from '../../data/mockData';
-import StatusBadge from '../../components/common/StatusBadge';
-import Modal from '../../components/common/Modal';
+import { useEffect, useMemo, useState } from 'react';
+import { AlertCircle, Bell, CheckCircle2, Clock3, Loader2, Send } from 'lucide-react';
+import { createRequestReminder, listCompaniesRequest, listCompanyReminders } from '../../lib/api';
 
-const priorityColors = { high: '#C62026', medium: '#F68C1F', low: '#00648F' };
-const priorityBg = { high: '#FEE2E2', medium: '#FAC086', low: '#A7DCF7' };
+const STATUS_META = {
+  due: { label: 'Due Now', tone: '#C62026', bg: '#FEE2E2', icon: AlertCircle },
+  active: { label: 'Scheduled', tone: '#2563EB', bg: '#DBEAFE', icon: Clock3 },
+  blocked: { label: 'Blocked', tone: '#991B1B', bg: '#FEE2E2', icon: AlertCircle },
+  resolved: { label: 'Resolved', tone: '#166534', bg: '#DCFCE7', icon: CheckCircle2 },
+};
+
+function getPriorityTone(priority) {
+  const normalized = `${priority ?? ''}`.trim().toLowerCase();
+  if (normalized === 'critical') return { bg: '#FEE2E2', color: '#B91C1C' };
+  if (normalized === 'high') return { bg: '#FED7AA', color: '#C2410C' };
+  if (normalized === 'medium') return { bg: '#FEF3C7', color: '#A16207' };
+  if (normalized === 'low') return { bg: '#DCFCE7', color: '#166534' };
+  return { bg: '#DBEAFE', color: '#1D4ED8' };
+}
+
+function formatDateTime(value) {
+  if (!value) return 'Not scheduled';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Not scheduled';
+  return date.toLocaleString('en-IN', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
 
 export default function BrokerReminders() {
-  const [reminderList, setReminderList] = useState(initReminders);
-  const [showCreate, setShowCreate] = useState(false);
-  const [form, setForm] = useState({ companyId: '', requestId: '', title: '', message: '', dueDate: '', priority: 'medium' });
-  const [filter, setFilter] = useState('active');
+  const [reminders, setReminders] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [sendingId, setSendingId] = useState('');
 
-  const dismiss = (id) => {
-    setReminderList(list => list.map(r => r.id === id ? { ...r, status: 'dismissed' } : r));
+  const loadReminders = async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const companies = await listCompaniesRequest();
+      const reminderGroups = await Promise.all(
+        (companies || []).map(async (company) => (
+          listCompanyReminders(company.id).catch(() => [])
+        )),
+      );
+      setReminders(reminderGroups.flat());
+    } catch (err) {
+      setError(err.message || 'Unable to load reminders.');
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const filtered = reminderList.filter(r => filter === 'all' || r.status === filter);
-  const activeCount = reminderList.filter(r => r.status === 'active').length;
+  useEffect(() => {
+    loadReminders();
+  }, []);
 
-  const handleCreate = () => {
-    const co = companies.find(c => c.id === form.companyId);
-    if (!co || !form.title || !form.dueDate) return;
-    const newRem = {
-      id: `rem${Date.now()}`,
-      ...form,
-      companyName: co.name,
-      status: 'active',
-      createdAt: new Date().toISOString().slice(0, 10),
-    };
-    setReminderList(list => [newRem, ...list]);
-    setForm({ companyId: '', requestId: '', title: '', message: '', dueDate: '', priority: 'medium' });
-    setShowCreate(false);
+  const sendReminderNow = async (reminder) => {
+    if (!reminder?.request_id) return;
+    setSendingId(reminder.request_id);
+    setError('');
+    try {
+      await createRequestReminder(reminder.request_id, {
+        sent_at: new Date().toISOString(),
+      });
+      await loadReminders();
+    } catch (err) {
+      setError(err.message || 'Unable to send reminder.');
+    } finally {
+      setSendingId('');
+    }
   };
 
-  const relatedRequests = form.companyId
-    ? requests.filter(r => r.companyId === form.companyId)
-    : [];
-
-  const isOverdue = (date) => new Date(date) < new Date();
+  const summary = useMemo(() => ({
+    due: reminders.filter((item) => item.status === 'due').length,
+    active: reminders.filter((item) => item.status === 'active').length,
+    resolved: reminders.filter((item) => item.status === 'resolved').length,
+  }), [reminders]);
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold text-[#050505]">Reminders</h1>
-          <p className="text-sm text-[#6D6E71] mt-0.5">
-            {activeCount} active reminder{activeCount !== 1 ? 's' : ''} — never miss a follow-up
-          </p>
-        </div>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="flex items-center gap-2 px-5 py-2.5 bg-[#8BC53D] hover:bg-[#476E2C] text-white rounded-xl text-sm font-semibold transition-all duration-200 hover:scale-[1.02] shadow-md"
-        >
-          <Plus size={15} />
-          Add Reminder
-        </button>
+      <div>
+        <h1 className="text-2xl font-bold text-[#050505]">Broker Reminders</h1>
+        <p className="text-sm text-[#6D6E71] mt-0.5">
+          The first reminder is sent automatically when a request is generated. Follow-up reminders then run by priority until the request due date, and you can still send a manual reminder again before the request is completed.
+        </p>
       </div>
 
-      {/* Summary Cards */}
-      <div className="grid grid-cols-3 gap-4">
+      {error && (
+        <div className="rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-[#C62026]">{error}</div>
+      )}
+
+      <div className="grid gap-4 md:grid-cols-3">
         {[
-          { label: 'Active', value: reminderList.filter(r => r.status === 'active').length, color: '#476E2C', bg: '#C9E4A4', icon: Bell },
-          { label: 'Overdue', value: reminderList.filter(r => r.status === 'active' && isOverdue(r.dueDate)).length, color: '#C62026', bg: '#FEE2E2', icon: AlertCircle },
-          { label: 'Dismissed', value: reminderList.filter(r => r.status === 'dismissed').length, color: '#6D6E71', bg: '#f3f4f6', icon: CheckCircle },
-        ].map(s => (
-          <div key={s.label} className="bg-white rounded-2xl p-4 shadow-card flex items-center gap-4">
-            <div className="w-12 h-12 rounded-xl flex items-center justify-center" style={{ background: s.bg }}>
-              <s.icon size={22} style={{ color: s.color }} />
-            </div>
-            <div>
-              <p className="text-2xl font-bold" style={{ color: s.color }}>{s.value}</p>
-              <p className="text-xs text-[#A5A5A5]">{s.label}</p>
+          { label: 'Due Now', value: summary.due, tone: '#C62026', bg: '#FEE2E2', icon: AlertCircle },
+          { label: 'Scheduled', value: summary.active, tone: '#2563EB', bg: '#DBEAFE', icon: Clock3 },
+          { label: 'Resolved', value: summary.resolved, tone: '#166534', bg: '#DCFCE7', icon: CheckCircle2 },
+        ].map((card) => (
+          <div key={card.label} className="rounded-2xl bg-white p-5 shadow-card">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs text-[#A5A5A5]">{card.label}</p>
+                <p className="mt-2 text-3xl font-bold" style={{ color: card.tone }}>{card.value}</p>
+              </div>
+              <div className="flex h-12 w-12 items-center justify-center rounded-xl" style={{ background: card.bg }}>
+                <card.icon size={22} style={{ color: card.tone }} />
+              </div>
             </div>
           </div>
         ))}
       </div>
 
-      {/* Filters */}
-      <div className="flex gap-2">
-        {['active', 'dismissed', 'all'].map(f => (
-          <button
-            key={f}
-            onClick={() => setFilter(f)}
-            className={`px-4 py-2 rounded-xl text-xs font-semibold capitalize transition-all ${
-              filter === f ? 'bg-[#05164D] text-white' : 'bg-white text-[#6D6E71] border border-gray-200 hover:bg-gray-50'
-            }`}
-          >
-            {f}
-          </button>
-        ))}
-      </div>
-
-      {/* Reminder Cards */}
-      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        {filtered.length === 0 ? (
-          <div className="col-span-full text-center py-16 text-[#A5A5A5]">
-            <Bell size={40} className="mx-auto mb-3 opacity-30" />
-            <p className="text-sm">No reminders found.</p>
-          </div>
-        ) : filtered.map(rem => {
-          const overdue = isOverdue(rem.dueDate) && rem.status === 'active';
-          return (
-            <div
-              key={rem.id}
-              className={`bg-white rounded-2xl shadow-card p-5 border-l-4 transition-all hover:shadow-hover ${rem.status === 'dismissed' ? 'opacity-60' : ''}`}
-              style={{ borderLeftColor: rem.status === 'dismissed' ? '#A5A5A5' : priorityColors[rem.priority] }}
-            >
-              <div className="flex items-start justify-between mb-3">
-                <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 rounded-xl flex items-center justify-center" style={{ background: priorityBg[rem.priority] }}>
-                    <Bell size={15} style={{ color: priorityColors[rem.priority] }} />
-                  </div>
-                  <StatusBadge value={rem.priority} variant="priority" size="xs" />
-                </div>
-                {rem.status === 'active' && (
-                  <button
-                    onClick={() => dismiss(rem.id)}
-                    className="p-1.5 rounded-lg hover:bg-gray-100 text-[#A5A5A5] hover:text-[#6D6E71] transition-colors"
-                    title="Dismiss"
-                  >
-                    <CheckCircle size={15} />
-                  </button>
-                )}
-              </div>
-
-              <h3 className="font-semibold text-[#050505] text-sm mb-1">{rem.title}</h3>
-              <p className="text-xs text-[#6D6E71] line-clamp-2 mb-3">{rem.message}</p>
-
-              <div className="flex items-center justify-between pt-3 border-t border-gray-100">
-                <div className="flex items-center gap-1.5">
-                  <div className="w-5 h-5 rounded-full bg-[#05164D] flex items-center justify-center text-[7px] font-bold text-white">
-                    {rem.companyName.slice(0, 2).toUpperCase()}
-                  </div>
-                  <span className="text-xs text-[#6D6E71]">{rem.companyName}</span>
-                </div>
-                <div className={`flex items-center gap-1 text-xs font-medium ${overdue ? 'text-[#C62026]' : 'text-[#6D6E71]'}`}>
-                  {overdue ? <AlertCircle size={12} /> : <Clock size={12} />}
-                  {overdue ? 'Overdue' : rem.dueDate}
-                </div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Create Reminder Modal */}
-      <Modal isOpen={showCreate} onClose={() => setShowCreate(false)} title="Add New Reminder">
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-[#050505] mb-1.5">Client Company *</label>
-            <select
-              value={form.companyId}
-              onChange={e => setForm(f => ({ ...f, companyId: e.target.value, requestId: '' }))}
-              className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]"
-            >
-              <option value="">Select company...</option>
-              {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-          </div>
-
-          {relatedRequests.length > 0 && (
-            <div>
-              <label className="block text-sm font-medium text-[#050505] mb-1.5">Related Request (Optional)</label>
-              <select
-                value={form.requestId}
-                onChange={e => setForm(f => ({ ...f, requestId: e.target.value }))}
-                className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]"
-              >
-                <option value="">None</option>
-                {relatedRequests.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
-              </select>
-            </div>
-          )}
-
-          <div>
-            <label className="block text-sm font-medium text-[#050505] mb-1.5">Reminder Title *</label>
-            <input
-              value={form.title}
-              onChange={e => setForm(f => ({ ...f, title: e.target.value }))}
-              placeholder="e.g. KYC documents due soon"
-              className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] placeholder-[#A5A5A5]"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-[#050505] mb-1.5">Message</label>
-            <textarea
-              value={form.message}
-              onChange={e => setForm(f => ({ ...f, message: e.target.value }))}
-              rows={3}
-              placeholder="Reminder details..."
-              className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] resize-none placeholder-[#A5A5A5]"
-            />
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-[#050505] mb-1.5">Due Date *</label>
-              <input
-                type="date"
-                value={form.dueDate}
-                onChange={e => setForm(f => ({ ...f, dueDate: e.target.value }))}
-                className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-[#050505] mb-1.5">Priority</label>
-              <select
-                value={form.priority}
-                onChange={e => setForm(f => ({ ...f, priority: e.target.value }))}
-                className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]"
-              >
-                <option value="high">High</option>
-                <option value="medium">Medium</option>
-                <option value="low">Low</option>
-              </select>
-            </div>
-          </div>
-
-          <div className="flex gap-3 pt-1">
-            <button onClick={() => setShowCreate(false)} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-[#6D6E71] hover:bg-gray-50 transition-colors">
-              Cancel
-            </button>
-            <button
-              onClick={handleCreate}
-              className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl bg-[#742982] text-white text-sm font-semibold hover:bg-[#5a1f65] transition-colors"
-            >
-              <Bell size={14} />
-              Set Reminder
-            </button>
-          </div>
+      {loading ? (
+        <div className="rounded-2xl bg-white px-6 py-14 text-center text-sm text-[#A5A5A5] shadow-card">Loading reminders...</div>
+      ) : reminders.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-gray-200 bg-white px-6 py-14 text-center shadow-card">
+          <Bell size={36} className="mx-auto mb-3 text-gray-300" />
+          <p className="text-sm text-[#6D6E71]">No reminders available yet.</p>
+          <p className="mt-1 text-xs text-[#A5A5A5]">Create or approve requests to start broker reminder tracking.</p>
         </div>
-      </Modal>
+      ) : (
+        <div className="space-y-4">
+          {reminders.map((reminder) => {
+            const status = STATUS_META[reminder.status] || STATUS_META.active;
+            const priorityTone = getPriorityTone(reminder.priority);
+            const StatusIcon = status.icon;
+            const isSendable = reminder.status === 'due' || reminder.status === 'active';
+
+            return (
+              <div key={`${reminder.company_id}-${reminder.id}`} className="rounded-2xl bg-white p-5 shadow-card">
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h2 className="text-lg font-bold text-[#050505]">{reminder.title}</h2>
+                      <span className="rounded-full px-2.5 py-1 text-xs font-semibold" style={{ backgroundColor: status.bg, color: status.tone }}>
+                        <span className="inline-flex items-center gap-1"><StatusIcon size={12} /> {status.label}</span>
+                      </span>
+                      <span className="rounded-full px-2.5 py-1 text-xs font-semibold" style={{ backgroundColor: priorityTone.bg, color: priorityTone.color }}>
+                        {reminder.priority}
+                      </span>
+                    </div>
+                    <p className="mt-2 text-sm text-[#6D6E71]">{reminder.message}</p>
+                    <div className="mt-4 grid gap-3 text-xs text-[#6D6E71] sm:grid-cols-2 xl:grid-cols-4">
+                      <div>
+                        <p className="text-[#A5A5A5]">Company</p>
+                        <p className="mt-1 font-semibold text-[#050505]">{reminder.company_name}</p>
+                      </div>
+                      <div>
+                        <p className="text-[#A5A5A5]">Request ID</p>
+                        <p className="mt-1 font-semibold text-[#050505]">{reminder.request_id}</p>
+                      </div>
+                      <div>
+                        <p className="text-[#A5A5A5]">Workflow Status</p>
+                        <p className="mt-1 font-semibold capitalize text-[#050505]">{`${reminder.workflow_status || 'active'}`.replace('-', ' ')}</p>
+                      </div>
+                      <div>
+                        <p className="text-[#A5A5A5]">Request Due Date</p>
+                        <p className="mt-1 font-semibold text-[#050505]">{formatDateTime(reminder.due_date)}</p>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
+                      <div className="rounded-2xl border border-[#E8EDF5] bg-[#FAFCFF] p-4">
+                        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#A5A5A5]">Reminder Details</p>
+                        <div className="mt-3 grid gap-3 text-xs text-[#6D6E71] sm:grid-cols-2 xl:grid-cols-3">
+                          <div>
+                            <p className="text-[#A5A5A5]">Cadence</p>
+                            <p className="mt-1 font-semibold text-[#050505]">{reminder.frequency_label}</p>
+                          </div>
+                          <div>
+                            <p className="text-[#A5A5A5]">First Reminder</p>
+                            <p className="mt-1 font-semibold text-[#050505]">{formatDateTime(reminder.first_sent_at)}</p>
+                          </div>
+                          <div>
+                            <p className="text-[#A5A5A5]">Last Reminder</p>
+                            <p className="mt-1 font-semibold text-[#050505]">{formatDateTime(reminder.last_sent_at)}</p>
+                          </div>
+                          <div>
+                            <p className="text-[#A5A5A5]">Next Automatic Reminder</p>
+                            <p className="mt-1 font-semibold text-[#050505]">{formatDateTime(reminder.next_due_at)}</p>
+                          </div>
+                          <div>
+                            <p className="text-[#A5A5A5]">Automatic Until</p>
+                            <p className="mt-1 font-semibold text-[#050505]">{formatDateTime(reminder.automatic_until)}</p>
+                          </div>
+                          <div>
+                            <p className="text-[#A5A5A5]">Sent Count</p>
+                            <p className="mt-1 font-semibold text-[#050505]">{reminder.sent_count}</p>
+                          </div>
+                        </div>
+                        <div className="mt-4">
+                          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#A5A5A5]">Recent Reminder History</p>
+                          {reminder.history?.length ? (
+                            <div className="mt-3 space-y-2">
+                              {reminder.history.slice(0, 3).map((item) => (
+                                <div key={`${reminder.request_id}-${item.sent_at}`} className="flex items-center justify-between rounded-xl bg-white px-3 py-2 text-xs text-[#6D6E71]">
+                                  <span className="font-medium text-[#050505]">{item.sent_by_name || item.sent_by_email || 'Broker'}</span>
+                                  <span>{formatDateTime(item.sent_at)}</span>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="mt-3 text-xs text-[#6D6E71]">No reminder events recorded yet.</p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl border border-[#E8EDF5] bg-white p-4">
+                        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#A5A5A5]">Client Contact</p>
+                        <div className="mt-3 space-y-3 text-xs text-[#6D6E71]">
+                          <div>
+                            <p className="text-[#A5A5A5]">Contact Person</p>
+                            <p className="mt-1 font-semibold text-[#050505]">{reminder.company_contact_name || 'Not available'}</p>
+                          </div>
+                          <div>
+                            <p className="text-[#A5A5A5]">Email</p>
+                            <p className="mt-1 font-semibold text-[#050505]">{reminder.company_contact_email || 'Not available'}</p>
+                          </div>
+                          <div>
+                            <p className="text-[#A5A5A5]">Phone</p>
+                            <p className="mt-1 font-semibold text-[#050505]">{reminder.company_contact_phone || 'Not available'}</p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-2 lg:min-w-[180px]">
+                    <div className="rounded-xl bg-[#F8FAFC] px-4 py-3 text-xs text-[#6D6E71]">
+                      <p className="text-[#A5A5A5]">Manual Action</p>
+                      <p className="mt-1 text-sm font-semibold text-[#05164D]">Send an extra reminder outside the automatic cadence.</p>
+                    </div>
+                    {isSendable && (
+                      <button
+                        type="button"
+                        onClick={() => sendReminderNow(reminder)}
+                        disabled={sendingId === reminder.request_id}
+                        className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#8BC53D] px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#476E2C] disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {sendingId === reminder.request_id ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
+                        {sendingId === reminder.request_id ? 'Sending...' : 'Send Reminder Again'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

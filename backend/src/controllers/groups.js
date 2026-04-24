@@ -1,11 +1,45 @@
 const db = require("../db");
 const asyncHandler = require("../utils");
 
+async function hasDescriptionColumn() {
+  return db.hasColumn("buyer_groups", "description");
+}
+
+function isMissingDescriptionColumn(error) {
+  const message = String(error?.message || error || "").toLowerCase();
+  return message.includes('column "description"') && message.includes("buyer_groups");
+}
+
+async function queryGroupsWithDescriptionFallback(withDescriptionQuery, withoutDescriptionQuery, paramsWithDescription, paramsWithoutDescription = paramsWithDescription) {
+  try {
+    return await db.query(withDescriptionQuery, paramsWithDescription);
+  } catch (error) {
+    if (!isMissingDescriptionColumn(error)) throw error;
+    return db.query(withoutDescriptionQuery, paramsWithoutDescription);
+  }
+}
+
 const listGroups = asyncHandler(async (req, res) => {
-  const { rows } = await db.query(
-    "SELECT * FROM buyer_groups WHERE company_id = $1 ORDER BY created_at DESC",
-    [req.params.id]
-  );
+  const includeDescription = await hasDescriptionColumn();
+  const { rows } = includeDescription
+    ? await queryGroupsWithDescriptionFallback(
+      `SELECT id, company_id, name, description, created_at
+       FROM buyer_groups
+       WHERE company_id = $1
+       ORDER BY created_at DESC`,
+      `SELECT id, company_id, name, NULL AS description, created_at
+       FROM buyer_groups
+       WHERE company_id = $1
+       ORDER BY created_at DESC`,
+      [req.params.id],
+    )
+    : await db.query(
+      `SELECT id, company_id, name, NULL AS description, created_at
+       FROM buyer_groups
+       WHERE company_id = $1
+       ORDER BY created_at DESC`,
+      [req.params.id]
+    );
   if (!rows.length) return res.json([]);
 
   const groupIds = rows.map((g) => g.id);
@@ -33,23 +67,39 @@ const createGroup = asyncHandler(async (req, res) => {
   const { name, description } = req.body || {};
   if (!name) return res.status(400).json({ error: "name required" });
 
-  const { rows } = await db.query(
-    "INSERT INTO buyer_groups (company_id, name, description) VALUES ($1, $2, $3) RETURNING *",
-    [req.params.id, name, description || null]
-  );
-  res.status(201).json({ ...rows[0], member_ids: [], member_count: 0 });
+  const includeDescription = await hasDescriptionColumn();
+  const { rows } = includeDescription
+    ? await queryGroupsWithDescriptionFallback(
+      "INSERT INTO buyer_groups (company_id, name, description) VALUES ($1, $2, $3) RETURNING *",
+      "INSERT INTO buyer_groups (company_id, name) VALUES ($1, $2) RETURNING id, company_id, name, NULL AS description, created_at",
+      [req.params.id, name, description || null],
+      [req.params.id, name],
+    )
+    : await db.query(
+      "INSERT INTO buyer_groups (company_id, name) VALUES ($1, $2) RETURNING id, company_id, name, NULL AS description, created_at",
+      [req.params.id, name]
+    );
+  res.status(201).json({ ...rows[0], description: rows[0]?.description || null, member_ids: [], member_count: 0 });
 });
 
 const updateGroup = asyncHandler(async (req, res) => {
   const { name, description } = req.body || {};
   if (!name) return res.status(400).json({ error: "name required" });
 
-  const { rows } = await db.query(
-    "UPDATE buyer_groups SET name = $1, description = $2 WHERE id = $3 RETURNING *",
-    [name, description || null, req.params.id]
-  );
+  const includeDescription = await hasDescriptionColumn();
+  const { rows } = includeDescription
+    ? await queryGroupsWithDescriptionFallback(
+      "UPDATE buyer_groups SET name = $1, description = $2 WHERE id = $3 RETURNING *",
+      "UPDATE buyer_groups SET name = $1 WHERE id = $2 RETURNING id, company_id, name, NULL AS description, created_at",
+      [name, description || null, req.params.id],
+      [name, req.params.id],
+    )
+    : await db.query(
+      "UPDATE buyer_groups SET name = $1 WHERE id = $2 RETURNING id, company_id, name, NULL AS description, created_at",
+      [name, req.params.id]
+    );
   if (!rows[0]) return res.status(404).json({ error: "Not found" });
-  res.json(rows[0]);
+  res.json({ ...rows[0], description: rows[0]?.description || null });
 });
 
 const deleteGroup = asyncHandler(async (req, res) => {

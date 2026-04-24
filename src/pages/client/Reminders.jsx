@@ -1,116 +1,151 @@
-import { Bell, Clock, CheckCircle, AlertCircle, Info } from 'lucide-react';
-import { reminders } from '../../data/mockData';
-import StatusBadge from '../../components/common/StatusBadge';
+import { useEffect, useMemo, useState } from 'react';
+import { AlertCircle, Bell, CheckCircle2, Clock3 } from 'lucide-react';
+import { useAuth } from '../../context/AuthContext';
+import { listCompanyReminders } from '../../lib/api';
 
-const priorityColors = { high: '#C62026', medium: '#F68C1F', low: '#00648F' };
-const priorityBg = { high: '#FEE2E2', medium: '#FAC086', low: '#A7DCF7' };
+const STATUS_META = {
+  due: { label: 'Needs Attention', tone: '#C62026', bg: '#FEE2E2', icon: AlertCircle },
+  active: { label: 'Scheduled', tone: '#2563EB', bg: '#DBEAFE', icon: Clock3 },
+  blocked: { label: 'Blocked', tone: '#991B1B', bg: '#FEE2E2', icon: AlertCircle },
+  resolved: { label: 'Resolved', tone: '#166534', bg: '#DCFCE7', icon: CheckCircle2 },
+};
+
+function getPriorityTone(priority) {
+  const normalized = `${priority ?? ''}`.trim().toLowerCase();
+  if (normalized === 'critical') return { bg: '#FEE2E2', color: '#B91C1C' };
+  if (normalized === 'high') return { bg: '#FED7AA', color: '#C2410C' };
+  if (normalized === 'medium') return { bg: '#FEF3C7', color: '#A16207' };
+  if (normalized === 'low') return { bg: '#DCFCE7', color: '#166534' };
+  return { bg: '#DBEAFE', color: '#1D4ED8' };
+}
+
+function formatDateTime(value) {
+  if (!value) return 'Not scheduled';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Not scheduled';
+  return date.toLocaleString('en-IN', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
 
 export default function ClientReminders() {
-  const myReminders = reminders.filter(r => r.companyId === 'co1');
-  const active = myReminders.filter(r => r.status === 'active');
-  const dismissed = myReminders.filter(r => r.status === 'dismissed');
+  const { user } = useAuth();
+  const companyId = user?.company_id || user?.companyId || null;
+  const [reminders, setReminders] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
-  const isOverdue = (date) => new Date(date) < new Date();
+  useEffect(() => {
+    if (!companyId) {
+      setReminders([]);
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    setError('');
+    listCompanyReminders(companyId)
+      .then((payload) => setReminders(payload || []))
+      .catch((err) => setError(err.message || 'Unable to load reminders.'))
+      .finally(() => setLoading(false));
+  }, [companyId]);
+
+  const summary = useMemo(() => ({
+    due: reminders.filter((item) => item.status === 'due').length,
+    active: reminders.filter((item) => item.status === 'active').length,
+    resolved: reminders.filter((item) => item.status === 'resolved').length,
+  }), [reminders]);
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div>
         <h1 className="text-2xl font-bold text-[#050505]">Reminders</h1>
-        <p className="text-sm text-[#6D6E71] mt-0.5">Notifications and follow-ups from Dataroom</p>
+        <p className="text-sm text-[#6D6E71] mt-0.5">All incoming request reminders shared with your client portal.</p>
       </div>
 
-      {/* Stats */}
-      <div className="grid grid-cols-3 gap-4">
+      {error && (
+        <div className="rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-[#C62026]">{error}</div>
+      )}
+
+      <div className="grid gap-4 sm:grid-cols-3">
         {[
-          { label: 'Active', value: active.length, icon: Bell, color: '#742982', bg: '#DAAAE4' },
-          { label: 'Overdue', value: active.filter(r => isOverdue(r.dueDate)).length, icon: AlertCircle, color: '#C62026', bg: '#FEE2E2' },
-          { label: 'Completed', value: dismissed.length, icon: CheckCircle, color: '#476E2C', bg: '#C9E4A4' },
-        ].map(s => (
-          <div key={s.label} className="bg-white rounded-2xl p-4 shadow-card flex items-center gap-3">
-            <div className="w-11 h-11 rounded-xl flex items-center justify-center" style={{ background: s.bg }}>
-              <s.icon size={20} style={{ color: s.color }} />
-            </div>
-            <div>
-              <p className="text-2xl font-bold" style={{ color: s.color }}>{s.value}</p>
-              <p className="text-xs text-[#A5A5A5]">{s.label}</p>
+          { label: 'Needs Attention', value: summary.due, tone: '#C62026', bg: '#FEE2E2', icon: AlertCircle },
+          { label: 'Scheduled', value: summary.active, tone: '#2563EB', bg: '#DBEAFE', icon: Clock3 },
+          { label: 'Resolved', value: summary.resolved, tone: '#166534', bg: '#DCFCE7', icon: CheckCircle2 },
+        ].map((card) => (
+          <div key={card.label} className="rounded-2xl bg-white p-5 shadow-card">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs text-[#A5A5A5]">{card.label}</p>
+                <p className="mt-2 text-3xl font-bold" style={{ color: card.tone }}>{card.value}</p>
+              </div>
+              <div className="flex h-11 w-11 items-center justify-center rounded-xl" style={{ background: card.bg }}>
+                <card.icon size={20} style={{ color: card.tone }} />
+              </div>
             </div>
           </div>
         ))}
       </div>
 
-      {/* Active Reminders */}
-      {active.length > 0 && (
-        <div>
-          <h2 className="font-semibold text-[#050505] mb-3">Active Reminders ({active.length})</h2>
-          <div className="space-y-3">
-            {active.map(r => {
-              const overdue = isOverdue(r.dueDate);
-              return (
-                <div
-                  key={r.id}
-                  className="bg-white rounded-2xl shadow-card p-5 border-l-4 hover:shadow-hover transition-all duration-200"
-                  style={{ borderLeftColor: priorityColors[r.priority] }}
-                >
-                  <div className="flex items-start gap-4">
-                    <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: priorityBg[r.priority] }}>
-                      <Bell size={18} style={{ color: priorityColors[r.priority] }} />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-start justify-between gap-2">
-                        <h3 className="font-semibold text-[#050505]">{r.title}</h3>
-                        <StatusBadge value={r.priority} variant="priority" size="xs" />
-                      </div>
-                      <p className="text-sm text-[#6D6E71] mt-1">{r.message}</p>
+      {loading ? (
+        <div className="rounded-2xl bg-white px-6 py-14 text-center text-sm text-[#A5A5A5] shadow-card">Loading reminders...</div>
+      ) : reminders.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-gray-200 bg-white px-6 py-14 text-center shadow-card">
+          <Bell size={36} className="mx-auto mb-3 text-gray-300" />
+          <p className="text-sm text-[#6D6E71]">No reminders yet.</p>
+          <p className="mt-1 text-xs text-[#A5A5A5]">Your broker reminders for incoming requests will appear here automatically.</p>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {reminders.map((reminder) => {
+            const status = STATUS_META[reminder.status] || STATUS_META.active;
+            const priorityTone = getPriorityTone(reminder.priority);
+            const StatusIcon = status.icon;
 
-                      <div className="flex flex-wrap items-center gap-4 mt-3 pt-3 border-t border-gray-100">
-                        <div className={`flex items-center gap-1.5 text-xs font-medium ${overdue ? 'text-[#C62026]' : 'text-[#6D6E71]'}`}>
-                          {overdue ? <AlertCircle size={13} /> : <Clock size={13} />}
-                          {overdue ? `Overdue since ${r.dueDate}` : `Due: ${r.dueDate}`}
-                        </div>
-                        <div className="flex items-center gap-1.5 text-xs text-[#A5A5A5]">
-                          <Info size={12} />
-                          From: Dataroom
-                        </div>
+            return (
+              <div key={reminder.id} className="rounded-2xl bg-white p-5 shadow-card">
+                <div className="flex items-start gap-4">
+                  <div className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-xl" style={{ background: status.bg }}>
+                    <StatusIcon size={20} style={{ color: status.tone }} />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h2 className="text-lg font-bold text-[#050505]">{reminder.title}</h2>
+                      <span className="rounded-full px-2.5 py-1 text-xs font-semibold" style={{ backgroundColor: status.bg, color: status.tone }}>
+                        {status.label}
+                      </span>
+                      <span className="rounded-full px-2.5 py-1 text-xs font-semibold" style={{ backgroundColor: priorityTone.bg, color: priorityTone.color }}>
+                        {reminder.priority}
+                      </span>
+                    </div>
+                    <p className="mt-2 text-sm text-[#6D6E71]">{reminder.message}</p>
+                    <div className="mt-4 grid gap-3 text-xs text-[#6D6E71] sm:grid-cols-2 xl:grid-cols-4">
+                      <div>
+                        <p className="text-[#A5A5A5]">Request ID</p>
+                        <p className="mt-1 font-semibold text-[#050505]">{reminder.request_id}</p>
+                      </div>
+                      <div>
+                        <p className="text-[#A5A5A5]">Reminder Cadence</p>
+                        <p className="mt-1 font-semibold text-[#050505]">{reminder.frequency_label}</p>
+                      </div>
+                      <div>
+                        <p className="text-[#A5A5A5]">Last Reminder</p>
+                        <p className="mt-1 font-semibold text-[#050505]">{formatDateTime(reminder.last_sent_at)}</p>
+                      </div>
+                      <div>
+                        <p className="text-[#A5A5A5]">Next Reminder</p>
+                        <p className="mt-1 font-semibold text-[#050505]">{formatDateTime(reminder.next_due_at)}</p>
                       </div>
                     </div>
                   </div>
                 </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {/* Dismissed Reminders */}
-      {dismissed.length > 0 && (
-        <div>
-          <h2 className="font-semibold text-[#050505] mb-3 flex items-center gap-2">
-            Completed / Dismissed
-            <span className="text-xs text-[#A5A5A5] font-normal">({dismissed.length})</span>
-          </h2>
-          <div className="space-y-2">
-            {dismissed.map(r => (
-              <div key={r.id} className="bg-white rounded-2xl shadow-card p-4 opacity-60 hover:opacity-80 transition-opacity flex items-center gap-3">
-                <div className="w-8 h-8 rounded-xl bg-gray-100 flex items-center justify-center flex-shrink-0">
-                  <CheckCircle size={16} className="text-[#A5A5A5]" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-[#050505] line-through">{r.title}</p>
-                  <p className="text-xs text-[#A5A5A5]">Resolved · {r.dueDate}</p>
-                </div>
-                <StatusBadge value="dismissed" size="xs" />
               </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {myReminders.length === 0 && (
-        <div className="text-center py-20 text-[#A5A5A5]">
-          <Bell size={48} className="mx-auto mb-4 opacity-20" />
-          <p className="text-base font-medium">No reminders yet.</p>
-          <p className="text-sm mt-1">Your broker will send reminders for pending actions.</p>
+            );
+          })}
         </div>
       )}
     </div>

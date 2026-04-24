@@ -1,8 +1,10 @@
 const db = require("../db");
 const asyncHandler = require("../utils");
 const { buildUploadContentUrl } = require("../utils/uploadStorage");
+const { ensureCompanyDefaultFolders, ensureRootUploadFolder } = require("../utils/defaultFolders");
 
 const listFolders = asyncHandler(async (req, res) => {
+  await ensureCompanyDefaultFolders(req.params.id, req.user?.id || null);
   const { rows } = await db.query(
     "SELECT * FROM folders WHERE company_id = $1 ORDER BY created_at DESC",
     [req.params.id]
@@ -11,6 +13,7 @@ const listFolders = asyncHandler(async (req, res) => {
 });
 
 const listFolderTree = asyncHandler(async (req, res) => {
+  await ensureCompanyDefaultFolders(req.params.id, req.user?.id || null);
   const { rows } = await db.query(
     "SELECT * FROM folders WHERE company_id = $1 ORDER BY created_at ASC",
     [req.params.id]
@@ -128,13 +131,25 @@ const addFolderDocument = asyncHandler(async (req, res) => {
     return res.status(400).json({ error: "file_url or upload_id required" });
   }
 
+  let targetFolderId = req.params.id;
+  if (targetFolderId === "root") {
+    const uploadFolder = await ensureRootUploadFolder(company_id, uploaded_by || req.user?.id || null);
+    if (!uploadFolder?.id) {
+      return res.status(400).json({ error: "Unable to resolve a destination folder for root uploads" });
+    }
+    targetFolderId = uploadFolder.id;
+  }
+
   const { rows } = await db.query(
     `INSERT INTO documents (company_id, folder_id, name, file_url, upload_id, size, ext, status, uploaded_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, ${db.isPostgres ? "$8::document_status" : "$8"}, $9)
      RETURNING *`,
-    [company_id, req.params.id, name, resolvedFileUrl, resolvedUploadId, size, ext, status, uploaded_by]
+    [company_id, targetFolderId, name, resolvedFileUrl, resolvedUploadId, size, ext, status, uploaded_by]
   );
-  res.status(201).json(rows[0]);
+  res.status(201).json({
+    ...rows[0],
+    folder_name: targetFolderId === req.params.id ? null : "General Uploads",
+  });
 });
 
 const deleteDocument = asyncHandler(async (req, res) => {

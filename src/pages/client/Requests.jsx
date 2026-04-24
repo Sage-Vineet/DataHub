@@ -9,7 +9,6 @@ import {
   Loader2,
   Scale,
   Search,
-  Send,
   ShieldCheck,
   TrendingUp,
   Upload,
@@ -20,32 +19,32 @@ import {
 import { useAuth } from '../../context/AuthContext';
 import {
   attachRequestDocument,
-  createCompanyRequestItem,
   createCompanyFolder,
   createFolderDocument,
-  listCompanyFolders,
+  listFolderTree,
   listCompanyRequests,
   listRequestDocuments,
   uploadFile,
   updateRequest,
   updateRequestNarrative,
 } from '../../lib/api';
-import NewRequestModal from '../../components/NewRequestModal';
+import { buildFolderMapFromTree } from '../../lib/folderOptions';
+import RequestDocumentPreviewModal from '../../components/RequestDocumentPreviewModal';
 
 const CATEGORY_META = {
-  Finance: { icon: TrendingUp, color: '#00648F', bg: '#A7DCF7' },
-  Legal: { icon: Scale, color: '#742982', bg: '#EBD5F0' },
+  Finance: { icon: TrendingUp, color: '#476E2C', bg: '#E6F3D3' },
+  Legal: { icon: Scale, color: '#8BC53D', bg: '#E6F3D3' },
   Compliance: { icon: ShieldCheck, color: '#8BC53D', bg: '#E6F3D3' },
-  HR: { icon: ShieldCheck, color: '#F68C1F', bg: '#FDE7D2' },
-  Tax: { icon: TrendingUp, color: '#476E2C', bg: '#E6F3D3' },
-  'M&A': { icon: Scale, color: '#05164D', bg: '#E8ECF7' },
+  HR: { icon: ShieldCheck, color: '#476E2C', bg: '#C9E4A4' },
+  Tax: { icon: TrendingUp, color: '#8BC53D', bg: '#E6F3D3' },
+  'M&A': { icon: Scale, color: '#476E2C', bg: '#C9E4A4' },
   Other: { icon: ShieldCheck, color: '#6D6E71', bg: '#F3F4F6' },
 };
 
 const STATUS_META = {
-  pending: { label: 'Pending', bg: '#F3F4F6', color: '#6D6E71', icon: Clock },
-  'in-review': { label: 'In Review', bg: '#DBEAFE', color: '#2563EB', icon: Loader2 },
-  completed: { label: 'Completed', bg: '#DCFCE7', color: '#166534', icon: CheckCircle2 },
+  pending: { label: 'Pending', bg: '#FEF3C7', color: '#A86F0B', icon: Clock },
+  'in-review': { label: 'In Review', bg: '#E6F3D3', color: '#8BC53D', icon: Loader2 },
+  completed: { label: 'Completed', bg: '#C9E4A4', color: '#476E2C', icon: CheckCircle2 },
   overdue: { label: 'Overdue', bg: '#FEE2E2', color: '#B91C1C', icon: XCircle },
   blocked: { label: 'Blocked', bg: '#FEE2E2', color: '#991B1B', icon: AlertTriangle },
 };
@@ -91,8 +90,18 @@ function getDisplayStatus(workflowStatus, dueDate) {
 }
 
 function normalizePriority(priority) {
-  if (priority === 'critical' || priority === 'high' || priority === 'medium' || priority === 'low') return priority;
-  return 'medium';
+  const normalized = `${priority ?? ''}`.trim();
+  return normalized || 'medium';
+}
+
+function getPriorityMeta(priority) {
+  const normalized = `${priority ?? ''}`.trim().toLowerCase();
+  if (PRIORITY_META[normalized]) return PRIORITY_META[normalized];
+  return {
+    label: `${priority || 'Custom'}`,
+    bg: '#DBEAFE',
+    color: '#1D4ED8',
+  };
 }
 
 function normalizeType(item) {
@@ -110,6 +119,31 @@ function normalizeType(item) {
 
 function formatToday() {
   return new Date().toISOString().slice(0, 10);
+}
+
+function getDocumentExt(doc) {
+  if (doc?.ext) return `${doc.ext}`.toLowerCase();
+  const name = doc?.name || '';
+  const parts = name.split('.');
+  return parts.length > 1 ? parts.pop().toLowerCase() : '';
+}
+
+function mapRequestDocumentToUi(doc, fallbackUploadedBy = 'Client') {
+  return {
+    id: doc.id || doc.document_id,
+    name: doc.name || doc.document_id || doc.id,
+    uploadedBy: doc.uploaded_by_name || doc.uploadedBy || fallbackUploadedBy,
+    uploadedAt: doc.uploaded_at
+      ? doc.uploaded_at.slice(0, 10)
+      : doc.created_at
+      ? doc.created_at.slice(0, 10)
+      : formatToday(),
+    visible: doc.visible !== false,
+    size: doc.size || '—',
+    ext: getDocumentExt(doc),
+    status: doc.status || 'under-review',
+    fileUrl: doc.file_url || doc.fileUrl || '',
+  };
 }
 
 function StatusBadge({ status }) {
@@ -166,30 +200,6 @@ function mapUiPatchToApi(patch) {
   return apiPatch;
 }
 
-function buildCreateRequestPayload(form) {
-  const folderLabel = form.requestType === 'Information' ? '' : (form.category || '').trim();
-  const resolvedCategory = mapToCategory({
-    name: form.name?.trim() || '',
-    subLabel: folderLabel,
-    description: form.description?.trim() || '',
-    category: folderLabel,
-  });
-  const responseType = form.requestType === 'Information' ? 'Narrative' : 'Both';
-
-  return {
-    title: form.name.trim(),
-    sub_label: folderLabel,
-    description: form.description?.trim() || '',
-    category: resolvedCategory,
-    response_type: responseType,
-    priority: normalizePriority(form.priority),
-    status: form.status,
-    due_date: form.dueDate || null,
-    assigned_to: null,
-    visible: true,
-  };
-}
-
 function CategoryCard({ category, requestsInCategory, onClick }) {
   const meta = CATEGORY_META[category];
   const Icon = meta.icon;
@@ -220,7 +230,7 @@ function CategoryCard({ category, requestsInCategory, onClick }) {
 }
 
 function RequestRow({ item, onView }) {
-  const priority = PRIORITY_META[item.priority];
+  const priority = getPriorityMeta(item.priority);
   return (
     <tr className="border-b border-gray-50 hover:bg-gray-50/70 transition-colors">
       <td className="px-4 py-3 text-xs font-bold text-[#6D6E71] font-mono">{item.id}</td>
@@ -246,7 +256,7 @@ function RequestRow({ item, onView }) {
       <td className="px-4 py-3 text-center">
         <button
           onClick={() => onView(item)}
-          className="px-3 py-1.5 rounded-lg bg-[#05164D] text-white text-xs font-semibold hover:bg-[#0b2a79] transition-colors"
+          className="px-3 py-1.5 rounded-lg bg-[#8BC53D] text-white text-xs font-semibold hover:bg-[#476E2C] transition-colors"
         >
           View
         </button>
@@ -380,52 +390,61 @@ function FileUpload({ onAddFiles, duplicateNames }) {
   );
 }
 
-function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onUploadFiles, error, success }) {
+function RequestDetailPage({ onBack, request, allRequests, onSubmitResponse, error, success }) {
   const [duplicateWarning, setDuplicateWarning] = useState([]);
   const [narrativeDraft, setNarrativeDraft] = useState(request?.narrativeResponse || '');
+  const [pendingFiles, setPendingFiles] = useState([]);
+  const [submitting, setSubmitting] = useState(false);
+  const [previewDocument, setPreviewDocument] = useState(null);
 
   useEffect(() => {
     setNarrativeDraft(request?.narrativeResponse || '');
+    setPendingFiles([]);
+    setDuplicateWarning([]);
+    setPreviewDocument(null);
   }, [request?.id, request?.narrativeResponse]);
 
   if (!request) return null;
 
-  const priority = PRIORITY_META[request.priority];
+  const priority = getPriorityMeta(request.priority);
   const due = new Date(request.dueDate);
   const isOverdue = due < new Date() && request.workflowStatus !== 'completed' && request.workflowStatus !== 'blocked';
   const currentStatus = getDisplayStatus(request.workflowStatus, request.dueDate);
   const categoryIcon = CATEGORY_META[request.category].icon;
   const CategoryIcon = categoryIcon;
-  const isReadOnly = request.workflowStatus === 'in-review';
+  const isReadOnly = request.workflowStatus === 'completed' || request.workflowStatus === 'blocked';
+  const canUpload = !isReadOnly && (request.responseType === 'Upload' || request.responseType === 'Both');
+  const canNarrative = request.responseType === 'Narrative' || request.responseType === 'Both';
+  const hasNarrative = narrativeDraft.trim().length > 0;
+  const hasPendingFiles = pendingFiles.length > 0;
+  const canSave = !isReadOnly && (hasNarrative || hasPendingFiles);
 
   const allLinkedNames = allRequests.flatMap(r => r.linkedDocuments.map(d => d.name.toLowerCase()));
 
-  const addFiles = async (files) => {
+  const addFiles = (files) => {
     if (isReadOnly) return;
     const duplicates = files
       .map(f => f.name)
       .filter(name => allLinkedNames.includes(name.toLowerCase()));
 
     setDuplicateWarning(duplicates);
-    if (!onUploadFiles) return;
-    const optimisticDocs = files.map((f, idx) => ({
-      id: `temp-${request.id}-${Date.now()}-${idx}`,
-      name: f.name,
-      uploadedBy: 'Client User',
-      uploadedAt: formatToday(),
-      visible: true,
-    }));
-    onUpdateRequest(request.id, {
-      linkedDocuments: [...request.linkedDocuments, ...optimisticDocs],
-      updatedAt: formatToday(),
+    setPendingFiles((current) => [...current, ...files]);
+  };
+
+  const submitResponse = async () => {
+    if (!canSave || submitting) return;
+    setSubmitting(true);
+    const ok = await onSubmitResponse?.(request, {
+      narrative: narrativeDraft.trim(),
+      files: pendingFiles,
     });
-    const ok = await onUploadFiles(request, files);
-    if (ok) onBack();
+    if (ok) setPendingFiles([]);
+    setSubmitting(false);
   };
 
   return (
     <div className="space-y-6">
-      <div className="bg-[#F8FAFC] rounded-2xl p-5 lg:p-7">
+      <div className="bg-[#F8FAFC] rounded-2xl p-4 sm:p-5 lg:p-7">
           {error && (
             <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">{error}</div>
           )}
@@ -439,72 +458,36 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onUp
             <button onClick={onBack} className="text-[#A5A5A5] hover:text-[#050505] p-1"><X size={18} /></button>
           </div>
 
-          <div className="flex items-center gap-3 mb-2">
-            <span className="px-2.5 py-1 rounded-md bg-gray-100 text-xs font-bold text-[#6D6E71] font-mono">{request.id}</span>
-            <StatusBadge status={currentStatus} />
-          </div>
-          <h2 className="text-3xl font-bold text-[#050505] leading-tight">{request.name}</h2>
-          <p className="text-sm text-[#6D6E71] mt-1 mb-5">{request.subLabel}</p>
-
-          <div className="grid lg:grid-cols-3 gap-5">
-            <div className="lg:col-span-2 space-y-5">
-              <div className="bg-white rounded-2xl shadow-card p-5">
-                <h3 className="font-semibold text-[#050505] mb-4">Request Details</h3>
-                <div className="grid grid-cols-2 gap-4 mb-4">
-                  <div>
-                    <p className="text-[10px] uppercase tracking-wide text-[#A5A5A5] mb-1">Category</p>
-                    <span className="inline-flex items-center gap-1.5 text-sm font-semibold text-[#050505]">
-                      <CategoryIcon size={14} style={{ color: CATEGORY_META[request.category].color }} />
-                      {request.category}
-                    </span>
-                  </div>
-                  <div>
-                    <p className="text-[10px] uppercase tracking-wide text-[#A5A5A5] mb-1">Priority</p>
-                    <span className="text-xs font-bold px-2.5 py-1 rounded-full" style={{ background: priority.bg, color: priority.color }}>
-                      {priority.label}
-                    </span>
-                  </div>
-                  <div>
-                    <p className="text-[10px] uppercase tracking-wide text-[#A5A5A5] mb-1">Response Type</p>
-                    <span className="text-xs font-semibold bg-gray-100 text-[#6D6E71] px-2.5 py-1 rounded-full">{request.responseType}</span>
-                  </div>
-                  <div>
-                    <p className="text-[10px] uppercase tracking-wide text-[#A5A5A5] mb-1">Due Date</p>
-                    <span className={`text-sm font-semibold ${isOverdue ? 'text-[#B91C1C]' : 'text-[#050505]'}`}>{request.dueDate}</span>
-                  </div>
+          <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+            <div className="space-y-5">
+              <div className="rounded-2xl bg-white p-5 shadow-card">
+                <div className="mb-3 flex flex-wrap items-center gap-2">
+                  <span className="rounded-md bg-gray-100 px-2.5 py-1 font-mono text-xs font-bold text-[#6D6E71]">{request.id}</span>
+                  <StatusBadge status={currentStatus} />
                 </div>
-                <p className="text-[10px] uppercase tracking-wide text-[#A5A5A5] mb-1">Description</p>
-                <p className="text-sm text-[#6D6E71] leading-relaxed border border-gray-100 bg-gray-50 rounded-xl p-3">{request.description}</p>
-              </div>
-
-              <div className="bg-[#EFF6FF] rounded-2xl border border-[#BFDBFE] shadow-card p-5">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h3 className="font-semibold text-[#050505] mb-1">Current Status</h3>
-                    <StatusBadge status={currentStatus} />
-                  </div>
-                  <div className="text-right">
-                    <p className="text-xs text-[#6D6E71]">Status updates automatically</p>
-                    <p className="text-xs text-[#6D6E71]">after you upload documents.</p>
-                  </div>
-                </div>
+                <p className="text-xs font-semibold uppercase tracking-wide text-[#A5A5A5]">{request.subLabel || request.category}</p>
+                <h2 className="mt-2 text-2xl font-bold leading-tight text-[#050505] sm:text-3xl">{request.name}</h2>
+                <p className="mt-4 rounded-xl border border-gray-100 bg-gray-50 p-4 text-sm leading-6 text-[#4B5563]">{request.description}</p>
               </div>
 
               {isReadOnly && (
-                <div className="bg-white rounded-2xl shadow-card p-4 border border-gray-100">
+                <div className="rounded-2xl border border-gray-100 bg-white p-4 shadow-card">
                   <p className="text-sm text-[#6D6E71]">
-                    This request is currently in review. Responses are locked and view-only.
+                    This request is currently {request.workflowStatus === 'completed' ? 'completed' : 'in review'}. Responses are locked and view-only.
                   </p>
                 </div>
               )}
 
-              {!isReadOnly && (request.responseType === 'Upload' || request.responseType === 'Both') && (
+              {canUpload && (
                 <FileUpload onAddFiles={addFiles} duplicateNames={duplicateWarning} />
               )}
 
-              <div className="bg-white rounded-2xl shadow-card p-5">
+              <div className="rounded-2xl bg-white p-5 shadow-card">
                 <h3 className="font-semibold text-[#050505] mb-3">Linked Documents ({request.linkedDocuments.length})</h3>
                 <div className="space-y-2">
+                  {request.linkedDocuments.length === 0 && pendingFiles.length === 0 && (
+                    <p className="rounded-xl border border-dashed border-gray-200 px-4 py-5 text-center text-sm text-[#A5A5A5]">No documents uploaded yet.</p>
+                  )}
                   {request.linkedDocuments.map(doc => (
                     <div key={doc.id} className="flex items-center gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors">
                       <FileText size={15} className="text-[#00B0F0]" />
@@ -512,65 +495,87 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onUp
                         <p className="text-sm font-medium text-[#050505] truncate">{doc.name}</p>
                         <p className="text-xs text-[#A5A5A5]">{doc.uploadedBy} · {doc.uploadedAt}</p>
                       </div>
+                      <button
+                        type="button"
+                        onClick={() => setPreviewDocument(doc)}
+                        disabled={!doc.fileUrl}
+                        className="rounded-lg border border-[#D8E2F0] bg-white px-3 py-1.5 text-xs font-semibold text-[#05164D] transition-colors hover:bg-[#F8FAFC] disabled:cursor-not-allowed disabled:border-gray-200 disabled:bg-gray-100 disabled:text-[#A5A5A5]"
+                      >
+                        View
+                      </button>
                       <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#E6F3D3] text-[#476E2C]">Client Visible</span>
+                    </div>
+                  ))}
+                  {pendingFiles.map((file, index) => (
+                    <div key={`${file.name}-${index}`} className="flex items-center gap-3 rounded-xl bg-[#EFF6FF] p-3">
+                      <FileText size={15} className="text-[#2563EB]" />
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium text-[#050505]">{file.name}</p>
+                        <p className="text-xs text-[#6D6E71]">Ready to submit</p>
+                      </div>
                     </div>
                   ))}
                 </div>
               </div>
 
-              {(request.responseType === 'Narrative' || request.responseType === 'Both') && (
-                <div className="bg-white rounded-2xl shadow-card p-5">
+              {canNarrative && (
+                <div className="rounded-2xl bg-white p-5 shadow-card">
                   <h3 className="font-semibold text-[#050505] mb-3">Narrative Response</h3>
                   <textarea
-                    rows={5}
+                    rows={6}
                     value={narrativeDraft}
                     onChange={(e) => setNarrativeDraft(e.target.value)}
                     placeholder="Enter explanation, comments, or notes related to this request"
                     disabled={isReadOnly}
                     className={`w-full px-4 py-3 rounded-xl border text-sm resize-none ${isReadOnly ? 'bg-gray-50 text-[#6D6E71] border-gray-100' : 'border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]'}`}
                   />
-                  {!isReadOnly && (
-                    <div className="mt-3 flex justify-end">
-                      <button
-                        onClick={async () => {
-                          const ok = await onUpdateRequest(request.id, {
-                            narrativeResponse: narrativeDraft,
-                            workflowStatus: 'in-review',
-                            updatedAt: formatToday(),
-                          });
-                          if (ok) onBack();
-                        }}
-                        className="px-3 py-1.5 rounded-lg bg-[#05164D] text-white text-xs font-semibold hover:bg-[#0b2a79] transition-colors"
-                      >
-                        Save
-                      </button>
-                    </div>
-                  )}
+                </div>
+              )}
+
+              {!isReadOnly && (
+                <div className="sticky bottom-3 rounded-2xl border border-gray-200 bg-white/95 p-4 shadow-card backdrop-blur">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <p className="text-xs text-[#6D6E71]">
+                      Add a narrative response or at least one document before saving.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={submitResponse}
+                      disabled={!canSave || submitting}
+                      className="rounded-xl bg-[#8BC53D] px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#476E2C] disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-[#A5A5A5]"
+                    >
+                      {submitting ? 'Saving...' : 'Save Response'}
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
 
-            <div className="space-y-4 lg:sticky lg:top-5 h-fit">
-              <div className="bg-white rounded-2xl shadow-card p-5">
-                <h3 className="font-semibold text-[#050505] mb-3">Quick Info</h3>
-                <div className="space-y-3 text-xs">
-                  <div>
-                    <p className="text-[#A5A5A5]">Assigned To</p>
-                    <p className="font-semibold text-[#050505]">{request.assignedTo}</p>
-                  </div>
-                  <div>
-                    <p className="text-[#A5A5A5]">Created Date</p>
-                    <p className="font-semibold text-[#050505]">{request.createdAt}</p>
-                  </div>
-                  <div>
-                    <p className="text-[#A5A5A5]">Last Updated</p>
-                    <p className="font-semibold text-[#050505]">{request.updatedAt}</p>
-                  </div>
+            <aside className="space-y-4 xl:sticky xl:top-5 xl:h-fit">
+              <div className="rounded-2xl bg-white p-5 shadow-card">
+                <h3 className="mb-4 font-semibold text-[#050505]">Request Summary</h3>
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+                  {[
+                    { label: 'Current Status', value: <StatusBadge status={currentStatus} /> },
+                    { label: 'Priority', value: <span className="inline-flex rounded-full px-2.5 py-1 text-xs font-bold" style={{ background: priority.bg, color: priority.color }}>{priority.label}</span> },
+                    { label: 'Category', value: <span className="inline-flex items-center gap-1.5 font-semibold text-[#050505]"><CategoryIcon size={14} style={{ color: CATEGORY_META[request.category].color }} />{request.category}</span> },
+                    { label: 'Due Date', value: <span className={`font-semibold ${isOverdue ? 'text-[#B91C1C]' : 'text-[#050505]'}`}>{request.dueDate}</span> },
+                    { label: 'Response Type', value: <span className="font-semibold text-[#050505]">{request.responseType}</span> },
+                    { label: 'Assigned To', value: <span className="font-semibold text-[#050505]">{request.assignedTo}</span> },
+                    { label: 'Created Date', value: <span className="font-semibold text-[#050505]">{request.createdAt}</span> },
+                    { label: 'Last Updated', value: <span className="font-semibold text-[#050505]">{request.updatedAt}</span> },
+                  ].map((item) => (
+                    <div key={item.label} className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+                      <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-[#A5A5A5]">{item.label}</p>
+                      <div className="text-sm">{item.value}</div>
+                    </div>
+                  ))}
                 </div>
               </div>
-            </div>
+            </aside>
           </div>
       </div>
+      <RequestDocumentPreviewModal document={previewDocument} onClose={() => setPreviewDocument(null)} />
     </div>
   );
 }
@@ -583,15 +588,12 @@ export default function ClientRequests() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [folderMap, setFolderMap] = useState({});
-  const [folderOptions, setFolderOptions] = useState([]);
-  const [foldersLoading, setFoldersLoading] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState(null);
   const [categoryView, setCategoryView] = useState('table');
   const [statusFilter, setStatusFilter] = useState('all');
   const [priorityFilter, setPriorityFilter] = useState('all');
   const [search, setSearch] = useState('');
   const [activeRequestId, setActiveRequestId] = useState(null);
-  const [isNewRequestOpen, setIsNewRequestOpen] = useState(false);
 
   const loadRequests = async () => {
     if (!companyId) return;
@@ -610,25 +612,28 @@ export default function ClientRequests() {
   useEffect(() => {
     if (!companyId) return;
     loadRequests();
-    setFoldersLoading(true);
-    listCompanyFolders(companyId)
-      .then((folders) => {
-        const map = {};
-        const options = [];
-        folders.forEach((f) => {
-          if (f?.name) {
-            map[f.name.toLowerCase()] = f.id;
-            options.push({ id: f.id, name: f.name });
-          }
-        });
-        setFolderMap(map);
-        setFolderOptions(options);
+    listFolderTree(companyId)
+      .then((tree) => {
+        setFolderMap(buildFolderMapFromTree(tree));
       })
       .catch(() => {
         setFolderMap({});
-        setFolderOptions([]);
-      })
-      .finally(() => setFoldersLoading(false));
+      });
+  }, [companyId]);
+
+  useEffect(() => {
+    if (!companyId) return undefined;
+    const refreshOnReturn = () => {
+      if (document.visibilityState === 'visible') {
+        loadRequests();
+      }
+    };
+    window.addEventListener('focus', refreshOnReturn);
+    document.addEventListener('visibilitychange', refreshOnReturn);
+    return () => {
+      window.removeEventListener('focus', refreshOnReturn);
+      document.removeEventListener('visibilitychange', refreshOnReturn);
+    };
   }, [companyId]);
 
   useEffect(() => {
@@ -643,13 +648,7 @@ export default function ClientRequests() {
       .then((docs) => {
         setRequestState((prev) => prev.map((r) => {
           if (r.id !== activeRequestId) return r;
-          const mapped = docs.map((doc) => ({
-            id: doc.id || doc.document_id,
-            name: doc.name || doc.document_id || doc.id,
-            uploadedBy: 'Client',
-            uploadedAt: doc.created_at ? doc.created_at.slice(0, 10) : formatToday(),
-            visible: doc.visible !== false,
-          }));
+          const mapped = docs.map((doc) => mapRequestDocumentToUi(doc, 'Client'));
           return { ...r, linkedDocuments: mapped };
         }));
       })
@@ -659,12 +658,22 @@ export default function ClientRequests() {
   const updateRequestState = async (id, patch) => {
     setRequestState(prev => prev.map(r => (r.id === id ? { ...r, ...patch } : r)));
     try {
-      if (patch.narrativeResponse !== undefined) {
-        await updateRequestNarrative(id, { content: patch.narrativeResponse, updated_by: user?.id || null });
+      let canonicalRequest = null;
+      if (patch.narrativeResponse !== undefined && patch.narrativeResponse.trim()) {
+        canonicalRequest = await updateRequestNarrative(id, { content: patch.narrativeResponse.trim() });
       }
       const apiPatch = mapUiPatchToApi(patch);
       if (Object.keys(apiPatch).length > 0) {
-        await updateRequest(id, apiPatch);
+        canonicalRequest = await updateRequest(id, apiPatch);
+      }
+      if (canonicalRequest?.id) {
+        setRequestState(prev => prev.map(r => (r.id === id
+          ? {
+              ...r,
+              workflowStatus: normalizeWorkflowStatus(canonicalRequest.status),
+              updatedAt: canonicalRequest.updated_at ? canonicalRequest.updated_at.slice(0, 10) : r.updatedAt,
+            }
+          : r)));
       }
       return true;
     } catch (err) {
@@ -714,16 +723,22 @@ export default function ClientRequests() {
           status: 'under-review',
           uploaded_by: user?.id || null,
         });
-        await attachRequestDocument(request.id, { document_id: createdDoc.id, visible: true });
+        const updatedRequest = await attachRequestDocument(request.id, { document_id: createdDoc.id, visible: true });
         createdDocs.push({
           id: createdDoc.id,
           name: createdDoc.name,
           uploadedBy: user?.name || user?.email || 'Client',
           uploadedAt: createdDoc.uploaded_at ? createdDoc.uploaded_at.slice(0, 10) : formatToday(),
           visible: true,
+          size: createdDoc.size || file.size?.toString() || '—',
+          ext,
+          status: createdDoc.status || 'under-review',
+          fileUrl: createdDoc.file_url || uploaded.fileUrl || '',
+          updatedRequest,
         });
       }
       if (createdDocs.length) {
+        const canonicalRequest = createdDocs.map((doc) => doc.updatedRequest).find((item) => item?.status);
         setRequestState(prev => prev.map(r => (r.id === request.id
           ? (() => {
             const existingNames = new Set(r.linkedDocuments.map(d => d.name.toLowerCase()));
@@ -731,14 +746,13 @@ export default function ClientRequests() {
               ...r.linkedDocuments,
               ...createdDocs.filter(d => !existingNames.has(d.name.toLowerCase())),
             ];
-            return { ...r, linkedDocuments: merged };
+            return {
+              ...r,
+              linkedDocuments: merged.map(({ updatedRequest, ...doc }) => doc),
+              workflowStatus: canonicalRequest ? normalizeWorkflowStatus(canonicalRequest.status) : r.workflowStatus,
+              updatedAt: canonicalRequest?.updated_at ? canonicalRequest.updated_at.slice(0, 10) : formatToday(),
+            };
           })()
-          : r)));
-      }
-      if (request.workflowStatus !== 'in-review') {
-        await updateRequest(request.id, { status: 'in-review' });
-        setRequestState(prev => prev.map(r => (r.id === request.id
-          ? { ...r, workflowStatus: 'in-review', updatedAt: formatToday() }
           : r)));
       }
       setSuccess('Response uploaded successfully.');
@@ -749,21 +763,38 @@ export default function ClientRequests() {
     }
   };
 
-  const createRequest = async (form) => {
-    if (!companyId) return;
+  const submitRequestResponse = async (request, response) => {
+    if (!request) return false;
+    const narrative = `${response?.narrative || ''}`.trim();
+    const files = Array.isArray(response?.files) ? response.files : [];
+    if (!narrative && files.length === 0) return false;
+
     setError('');
     setSuccess('');
+
     try {
-      const payload = {
-        ...buildCreateRequestPayload(form),
-        created_by: user?.id || null,
-      };
-      await createCompanyRequestItem(companyId, payload);
-      await loadRequests();
-      setIsNewRequestOpen(false);
-      setSuccess('Request created successfully.');
+      if (narrative) {
+        const updatedRequest = await updateRequestNarrative(request.id, { content: narrative });
+        setRequestState(prev => prev.map(r => (r.id === request.id
+          ? {
+              ...r,
+              narrativeResponse: narrative,
+              workflowStatus: updatedRequest?.status ? normalizeWorkflowStatus(updatedRequest.status) : r.workflowStatus,
+              updatedAt: updatedRequest?.updated_at ? updatedRequest.updated_at.slice(0, 10) : formatToday(),
+            }
+          : r)));
+      }
+
+      if (files.length > 0) {
+        const ok = await uploadFilesForRequest(request, files);
+        if (!ok) return false;
+      }
+
+      setSuccess('Response submitted for broker review.');
+      return true;
     } catch (err) {
-      setError(err.message || 'Unable to create request.');
+      setError(err.message || 'Unable to submit response.');
+      return false;
     }
   };
 
@@ -780,6 +811,11 @@ export default function ClientRequests() {
       items: visibleRequests.filter(r => r.category === cat),
     })).filter(g => g.items.length > 0);
   }, [visibleRequests]);
+
+  const priorityFilterOptions = useMemo(() => ([
+    'all',
+    ...Array.from(new Set(visibleRequests.map((request) => request.priority).filter(Boolean))),
+  ]), [visibleRequests]);
 
   const rowsForCategory = useMemo(() => {
     if (!selectedCategory) return [];
@@ -802,8 +838,7 @@ export default function ClientRequests() {
         onBack={() => setActiveRequestId(null)}
         request={activeRequest}
         allRequests={requestState}
-        onUpdateRequest={updateRequestState}
-        onUploadFiles={uploadFilesForRequest}
+        onSubmitResponse={submitRequestResponse}
         error={error}
         success={success}
       />
@@ -839,14 +874,6 @@ export default function ClientRequests() {
                 <List size={13} /> Table
               </button>
             </div>
-            <button
-              type="button"
-              onClick={() => setIsNewRequestOpen(true)}
-              className="flex items-center gap-2 px-4 py-2.5 bg-[#8BC53D] hover:bg-[#476E2C] text-white rounded-xl text-xs sm:text-sm font-semibold transition-all duration-200 hover:scale-[1.02] shadow-md"
-            >
-              <Send size={15} />
-              New Request
-            </button>
           </div>
         )}
       </div>
@@ -854,7 +881,11 @@ export default function ClientRequests() {
       {loading ? (
         <div className="text-center text-sm text-[#A5A5A5] py-10">Loading requests...</div>
       ) : (!selectedCategory ? (
-        categoryView === 'cards' ? (
+        grouped.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-gray-200 bg-white px-6 py-14 text-center text-sm text-[#6D6E71]">
+            No requests have been shared with the client portal yet.
+          </div>
+        ) : categoryView === 'cards' ? (
           <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-5">
             {grouped.map(g => (
               <CategoryCard
@@ -904,11 +935,11 @@ export default function ClientRequests() {
                 onChange={(e) => setPriorityFilter(e.target.value)}
                 className="px-3 py-2 rounded-xl border border-gray-200 bg-white text-sm text-[#050505]"
               >
-                <option value="all">All Priorities</option>
-                <option value="critical">Critical</option>
-                <option value="high">High</option>
-                <option value="medium">Medium</option>
-                <option value="low">Low</option>
+                {priorityFilterOptions.map((option) => (
+                  <option key={option} value={option}>
+                    {option === 'all' ? 'All Priorities' : option}
+                  </option>
+                ))}
               </select>
               <button
                 onClick={() => {
@@ -923,17 +954,15 @@ export default function ClientRequests() {
             </div>
           </div>
 
-          <CategoryTable rows={rowsForCategory} onView={(r) => setActiveRequestId(r.id)} />
+          {rowsForCategory.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-gray-200 bg-white px-6 py-14 text-center text-sm text-[#6D6E71]">
+              No requests matched this category and filter combination.
+            </div>
+          ) : (
+            <CategoryTable rows={rowsForCategory} onView={(r) => setActiveRequestId(r.id)} />
+          )}
         </div>
       ))}
-
-      <NewRequestModal
-        isOpen={isNewRequestOpen}
-        onClose={() => setIsNewRequestOpen(false)}
-        onCreate={createRequest}
-        folderOptions={folderOptions}
-        foldersLoading={foldersLoading}
-      />
     </div>
   );
 }

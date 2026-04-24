@@ -1,12 +1,12 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
   Folder, FolderOpen, File, FileText, Search, Download, Eye, Upload,
   ChevronRight, ChevronDown, Trash2, Home, Archive, X, ArrowLeft, Check,
   MoreVertical, LayoutGrid, List, AlertCircle, Pencil, FolderPlus,
-  ArrowUpDown, ArrowUp, ArrowDown, CheckCircle, Clock, Share2, Users, Loader2,
+  ArrowUpDown, ArrowUp, ArrowDown, CheckCircle, Share2, Users, Loader2,
 } from 'lucide-react';
 import { useFileExplorerStore, findById, getPathTo } from '../../store/fileExplorerStore';
-import { fetchProtectedFileBlob, listCompanyRequests, listUsersRequest } from '../../lib/api';
+import { fetchProtectedFileBlob, listCompanyGroups, listUsersRequest } from '../../lib/api';
 
 // ── File Type Helpers ────────────────────────────────────────────────────────
 function getMimeIcon(ext) {
@@ -20,12 +20,6 @@ function getMimeIcon(ext) {
   if (['txt', 'md'].includes(e)) return { Icon: FileText, color: '#6D6E71', bg: '#F4F6F7' };
   return { Icon: File, color: '#95A5A6', bg: '#F2F3F4' };
 }
-
-const STATUS_META = {
-  verified:     { label: 'Verified',      color: '#476E2C', bg: '#E6F3D3', Icon: CheckCircle },
-  'under-review': { label: 'Under Review', color: '#b45e08', bg: '#FAC086', Icon: Clock },
-  rejected:     { label: 'Rejected',      color: '#C62026', bg: '#F9D6D6', Icon: AlertCircle },
-};
 
 const FOLDER_PALETTE = ['#00B0F0','#742982','#F68C1F','#8BC53D','#05164D','#b45e08','#476E2C','#00648F'];
 
@@ -92,28 +86,42 @@ function searchTree(node, query) {
   return results;
 }
 
-function countItems(node) {
-  let files = 0, folders = 0;
+function countItems(node, canAccessFolder = () => true) {
+  let files = 0;
+  let folders = 0;
   const walk = (n) => {
-    (n.children || []).forEach(c => {
-      if (c.type === 'folder') { folders++; walk(c); } else files++;
+    (n.children || []).forEach((child) => {
+      if (child.type === 'folder') {
+        if (!canAccessFolder(child.id)) return;
+        folders += 1;
+        walk(child);
+        return;
+      }
+      files += 1;
     });
   };
   walk(node);
   return { files, folders };
 }
 
-function countFiles(node) {
+function countFiles(node, canAccessFolder = () => true) {
   let files = 0;
   (node.children || []).forEach((c) => {
     if (c.type === 'file') files += 1;
-    if (c.type === 'folder') files += countFiles(c);
+    if (c.type === 'folder' && canAccessFolder(c.id)) files += countFiles(c, canAccessFolder);
   });
   return files;
 }
 
+function collectFolderIds(node, ids = []) {
+  if (!node) return ids;
+  if (node.type === 'folder' && node.id !== 'root') ids.push(node.id);
+  (node.children || []).forEach((child) => collectFolderIds(child, ids));
+  return ids;
+}
+
 // ── FolderTreeNode ───────────────────────────────────────────────────────────
-function FolderTreeNode({ node, depth = 0, canAccessFolder, requestCountsByFolderName }) {
+function FolderTreeNode({ node, depth = 0, canAccessFolder }) {
   const {
     currentPath, expandedFolders, toggleExpand, navigateTo,
     dragOver, setDragOver, draggingItems, moveItemsTo, clearDrag,
@@ -125,10 +133,7 @@ function FolderTreeNode({ node, depth = 0, canAccessFolder, requestCountsByFolde
   const isActive = currentPath[currentPath.length - 1] === node.id;
   const isDragTarget = dragOver === node.id;
   const subFolders = (node.children || []).filter(c => c.type === 'folder' && canAccessFolder(c.id));
-  const filesCount = countFiles(node);
-  const requestCount = requestCountsByFolderName
-    ? (requestCountsByFolderName[node.name?.toLowerCase?.() || ''] || 0)
-    : 0;
+  const filesCount = countFiles(node, canAccessFolder);
 
   return (
     <div>
@@ -157,14 +162,6 @@ function FolderTreeNode({ node, depth = 0, canAccessFolder, requestCountsByFolde
         </button>
         <span className="relative flex-shrink-0" style={{ color: node.color || '#6D6E71' }}>
           {isExpanded || isActive ? <FolderOpen size={15} /> : <Folder size={15} />}
-          {requestCount > 0 && (
-            <span className="absolute -top-1 -right-1 flex h-4 min-w-[16px] px-1 items-center justify-center rounded-full bg-[#8BC53D] text-[9px] font-bold text-white shadow">
-              {requestCount}
-              <span className="absolute left-full ml-1 px-1.5 py-0.5 rounded bg-[#05164D] text-white text-[9px] opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
-                Requests
-              </span>
-            </span>
-          )}
         </span>
         <span className="truncate flex-1 text-xs font-medium">{node.name}</span>
         {node.children && (
@@ -182,7 +179,6 @@ function FolderTreeNode({ node, depth = 0, canAccessFolder, requestCountsByFolde
           node={child}
           depth={depth + 1}
           canAccessFolder={canAccessFolder}
-          requestCountsByFolderName={requestCountsByFolderName}
         />
       ))}
     </div>
@@ -190,19 +186,15 @@ function FolderTreeNode({ node, depth = 0, canAccessFolder, requestCountsByFolde
 }
 
 // ── FolderTree Sidebar ────────────────────────────────────────────────────────
-function FolderTree({ tree, onUpload, role, getFolderPermissions, requestCountsByFolderName }) {
+function FolderTree({ tree, onUpload, role, getFolderPermissions }) {
   const { navigateTo, startNewFolder, currentPath, uploadFiles } = useFileExplorerStore();
-  const { files, folders } = countItems(tree);
   const fileInputRef = useRef(null);
   const [loadingTree, setLoadingTree] = useState(false);
   const [treeError, setTreeError] = useState('');
   const currentFolderId = currentPath[currentPath.length - 1];
-  const canWrite = role === 'broker' || getFolderPermissions(currentFolderId).write;
   const canAccessFolder = (id) => role === 'broker' || getFolderPermissions(id).read;
-  const showRequests = requestCountsByFolderName && Object.keys(requestCountsByFolderName).length > 0;
-  const totalRequests = showRequests
-    ? Object.values(requestCountsByFolderName).reduce((sum, value) => sum + value, 0)
-    : 0;
+  const canWrite = role === 'broker' || getFolderPermissions(currentFolderId).write;
+  const { files, folders } = useMemo(() => countItems(tree, canAccessFolder), [tree, role, getFolderPermissions]);
 
   const handleSidebarUpload = (e) => {
     if (!canWrite) return;
@@ -254,14 +246,6 @@ function FolderTree({ tree, onUpload, role, getFolderPermissions, requestCountsB
         >
           <span className="relative flex-shrink-0">
             <Home size={14} className="text-[#05164D]" />
-            {totalRequests > 0 && (
-              <span className="absolute -top-1 -right-1 flex h-4 min-w-[16px] px-1 items-center justify-center rounded-full bg-[#8BC53D] text-[9px] font-bold text-white shadow">
-                {totalRequests}
-                <span className="absolute left-full ml-1 px-1.5 py-0.5 rounded bg-[#05164D] text-white text-[9px] opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
-                  Requests
-                </span>
-              </span>
-            )}
           </span>
           <span>All Documents</span>
           <span className="text-[10px] text-[#A5A5A5] ml-auto flex-shrink-0">
@@ -274,7 +258,6 @@ function FolderTree({ tree, onUpload, role, getFolderPermissions, requestCountsB
             node={node}
             depth={0}
             canAccessFolder={canAccessFolder}
-            requestCountsByFolderName={requestCountsByFolderName}
           />
         ))}
       </div>
@@ -462,20 +445,6 @@ function NewFolderInput({ parentId }) {
   );
 }
 
-// ── StatusPill ────────────────────────────────────────────────────────────────
-function StatusPill({ status }) {
-  const m = STATUS_META[status] || STATUS_META['under-review'];
-  return (
-    <span
-      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold"
-      style={{ color: m.color, background: m.bg }}
-    >
-      <m.Icon size={9} />
-      {m.label}
-    </span>
-  );
-}
-
 // ── RenameInput ───────────────────────────────────────────────────────────────
 function RenameInput({ item }) {
   const { renameItem, stopRenaming } = useFileExplorerStore();
@@ -626,7 +595,6 @@ function FileCard({ item, role, permissions, sharedMeta, onShareAccess, onMoveFo
       {item.type === 'file' ? (
         <div className="mt-1 flex flex-col items-center gap-0.5">
           <span className="text-[10px] text-[#A5A5A5]">{item.size}</span>
-          <StatusPill status={item.status} />
         </div>
       ) : (
         <div className="mt-1 flex flex-col items-center gap-1">
@@ -778,9 +746,6 @@ function FileRow({ item, role, permissions, sharedMeta, onShareAccess, onMoveFol
         {item.size || '—'}
       </td>
       <td className="px-3 py-2.5">
-        {item.type === 'file' && <StatusPill status={item.status} />}
-      </td>
-      <td className="px-3 py-2.5">
         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
           {item.type === 'file' && (
             <>
@@ -881,13 +846,12 @@ function FileTable({
             <th className="px-2 py-2 text-left text-xs font-semibold text-[#6D6E71]">Name</th>
             <th className="px-3 py-2 text-left text-xs font-semibold text-[#6D6E71]">Modified</th>
             <th className="px-3 py-2 text-left text-xs font-semibold text-[#6D6E71]">Size</th>
-            <th className="px-3 py-2 text-left text-xs font-semibold text-[#6D6E71]">Status</th>
             <th className="px-3 py-2 text-left text-xs font-semibold text-[#6D6E71]">Actions</th>
           </tr>
         </thead>
         <tbody>
           {newFolderParentId === currentFolderId && (role === 'broker' || currentFolderPermissions.write) && (
-            <tr><td colSpan={6} className="px-4 py-2">
+            <tr><td colSpan={5} className="px-4 py-2">
               <NewFolderInput parentId={currentFolderId} />
             </td></tr>
           )}
@@ -973,6 +937,10 @@ function FolderActionMenu({ onShareAccess, onRename, onMove, onDelete, className
   );
 }
 
+function getAccessSubjectKey(subject) {
+  return `${subject.type || 'user'}:${subject.subjectId || subject.id}`;
+}
+
 function ShareAccessModal({ isOpen, folder, entries, people, onSave, onClose }) {
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState([]);
@@ -980,14 +948,16 @@ function ShareAccessModal({ isOpen, folder, entries, people, onSave, onClose }) 
 
   useEffect(() => {
     if (!isOpen) return;
-    const directory = new Map((people || []).map((person) => [person.id, person]));
+    const directory = new Map((people || []).map((person) => [getAccessSubjectKey(person), person]));
     setSelected(entries.map((entry) => {
-      const person = directory.get(entry.subjectId || entry.id);
+      const subjectType = entry.type || 'user';
+      const subjectId = entry.subjectId || entry.id;
+      const person = directory.get(getAccessSubjectKey({ type: subjectType, subjectId }));
       return {
         ...entry,
-        id: entry.subjectId || entry.id,
-        subjectId: entry.subjectId || entry.id,
-        type: 'user',
+        id: subjectId,
+        subjectId,
+        type: subjectType,
         name: person?.name || entry.name,
         meta: person?.meta || entry.meta || '',
         accessType: permissionsToAccessType(entry.permissions),
@@ -1004,16 +974,17 @@ function ShareAccessModal({ isOpen, folder, entries, people, onSave, onClose }) 
     t.name.toLowerCase().includes(search.toLowerCase()) || (t.meta || '').toLowerCase().includes(search.toLowerCase())
   );
 
-  const isSelected = (target) => selected.some(s => s.id === target.id);
+  const isSelected = (target) => selected.some(s => getAccessSubjectKey(s) === getAccessSubjectKey(target));
   const toggleTarget = (target) => {
     setSelected(prev => {
-      if (prev.some(s => s.id === target.id)) {
-        return prev.filter(s => s.id !== target.id);
+      const targetKey = getAccessSubjectKey(target);
+      if (prev.some(s => getAccessSubjectKey(s) === targetKey)) {
+        return prev.filter(s => getAccessSubjectKey(s) !== targetKey);
       }
       return [...prev, {
         ...target,
         subjectId: target.id,
-        type: 'user',
+        type: target.type || 'user',
         accessType: 'read',
         permissions: accessTypeToPermissions('read'),
       }];
@@ -1022,7 +993,7 @@ function ShareAccessModal({ isOpen, folder, entries, people, onSave, onClose }) 
 
   const updateAccessType = (targetId, accessType) => {
     setSelected(prev => prev.map(s => (
-      s.id === targetId ? { ...s, accessType, permissions: accessTypeToPermissions(accessType) } : s
+      getAccessSubjectKey(s) === targetId ? { ...s, accessType, permissions: accessTypeToPermissions(accessType) } : s
     )));
   };
 
@@ -1052,20 +1023,20 @@ function ShareAccessModal({ isOpen, folder, entries, people, onSave, onClose }) 
 
         <div className="p-5 space-y-5">
           <div>
-            <h4 className="text-sm font-semibold text-[#050505] mb-2">Select Persons</h4>
+            <h4 className="text-sm font-semibold text-[#050505] mb-2">Select Users or Groups</h4>
             <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 mb-3">
               <Search size={14} className="text-[#A5A5A5]" />
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search persons..."
+                placeholder="Search users or groups..."
                 className="bg-transparent text-sm outline-none w-full"
               />
             </div>
             <div className="grid sm:grid-cols-2 gap-2 max-h-44 overflow-y-auto pr-1">
               {filtered.map(target => (
                 <button
-                  key={target.id}
+                  key={getAccessSubjectKey(target)}
                   onClick={() => toggleTarget(target)}
                   className={`flex items-center gap-3 px-3 py-2 rounded-xl border text-left transition-colors ${
                     isSelected(target) ? 'border-[#8BC53D] bg-[#E6F3D3]/40' : 'border-gray-200 hover:bg-gray-50'
@@ -1086,18 +1057,23 @@ function ShareAccessModal({ isOpen, folder, entries, people, onSave, onClose }) 
           <div>
             <h4 className="text-sm font-semibold text-[#050505] mb-2">Access Type</h4>
             {selected.length === 0 ? (
-              <p className="text-sm text-[#A5A5A5]">Select persons to assign access.</p>
+              <p className="text-sm text-[#A5A5A5]">Select users or groups to assign access.</p>
             ) : (
               <div className="space-y-2">
                 {selected.map(target => (
-                  <div key={target.id} className="flex flex-wrap items-center gap-3 px-3 py-2 bg-gray-50 rounded-xl">
-                    <span className="text-sm font-semibold text-[#050505] min-w-[160px]">{target.name}</span>
+                  <div key={getAccessSubjectKey(target)} className="flex flex-wrap items-center gap-3 px-3 py-2 bg-gray-50 rounded-xl">
+                    <span className="text-sm font-semibold text-[#050505] min-w-[160px]">
+                      {target.name}
+                      <span className="ml-2 rounded-full bg-white px-2 py-0.5 text-[10px] font-bold uppercase text-[#A5A5A5]">
+                        {target.type === 'group' ? 'Group' : 'User'}
+                      </span>
+                    </span>
                     <div className="flex flex-wrap items-center gap-2">
                       {ACCESS_TYPE_OPTIONS.map((option) => (
                         <button
                           key={option.key}
                           type="button"
-                          onClick={() => updateAccessType(target.id, option.key)}
+                          onClick={() => updateAccessType(getAccessSubjectKey(target), option.key)}
                           className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${
                             target.accessType === option.key
                               ? 'bg-[#8BC53D] text-white'
@@ -1121,8 +1097,13 @@ function ShareAccessModal({ isOpen, folder, entries, people, onSave, onClose }) 
             ) : (
               <div className="flex flex-col gap-2">
                 {selected.map(target => (
-                  <div key={target.id} className="flex items-center justify-between px-3 py-2 border border-gray-200 rounded-xl">
-                    <span className="text-sm font-semibold text-[#050505]">{target.name}</span>
+                  <div key={getAccessSubjectKey(target)} className="flex items-center justify-between gap-3 px-3 py-2 border border-gray-200 rounded-xl">
+                    <div className="min-w-0">
+                      <span className="text-sm font-semibold text-[#050505]">{target.name}</span>
+                      <span className="ml-2 text-[10px] font-bold uppercase text-[#A5A5A5]">
+                        {target.type === 'group' ? 'Group' : 'User'}
+                      </span>
+                    </div>
                     <span className="text-[10px] px-2.5 py-1 rounded-full bg-[#E6F3D3] text-[#476E2C] font-semibold uppercase">
                       {target.accessType}
                     </span>
@@ -1308,8 +1289,6 @@ function PreviewModal() {
   const isText = ['txt', 'md', 'json'].includes(normalizedExt);
   const isWordDoc = ['doc', 'docx'].includes(normalizedExt);
   const canPreview = canInlinePreview(previewItem?.ext) && Boolean(previewItem?.fileUrl);
-  const statusMeta = STATUS_META[previewItem?.status] || STATUS_META['under-review'];
-  const StatusIcon = statusMeta.Icon;
 
   useEffect(() => {
     let revokedUrl = '';
@@ -1366,7 +1345,6 @@ function PreviewModal() {
     { label: 'Uploaded on', value: previewItem.uploadedAt || '—' },
     { label: 'Uploaded by', value: previewItem.uploadedBy || '—' },
     { label: 'File size', value: previewItem.size || '—' },
-    { label: 'Status', value: statusMeta.label },
   ];
 
   return (
@@ -1460,10 +1438,6 @@ function PreviewModal() {
                     <p className="text-sm font-bold text-[#050505] truncate">{previewItem.name}</p>
                     <p className="text-xs text-[#6D6E71]">{getFileKind(previewItem.ext)}</p>
                   </div>
-                </div>
-                <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold" style={{ color: statusMeta.color, background: statusMeta.bg }}>
-                  <StatusIcon size={12} />
-                  {statusMeta.label}
                 </div>
               </div>
 
@@ -1611,8 +1585,8 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
   const [duplicateWarnings, setDuplicateWarnings] = useState([]);
   const [shareModal, setShareModal] = useState(null);
   const [moveModal, setMoveModal] = useState(null);
-  const [requestCountsByFolderName, setRequestCountsByFolderName] = useState({});
   const [sharePeople, setSharePeople] = useState([]);
+  const [currentUserGroupIds, setCurrentUserGroupIds] = useState([]);
 
   useEffect(() => {
     if (!companyId) return;
@@ -1626,30 +1600,26 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
 
   useEffect(() => {
     if (!companyId) {
-      setRequestCountsByFolderName({});
-      return;
-    }
-    listCompanyRequests(companyId)
-      .then((list) => {
-        const counts = {};
-        list.forEach((req) => {
-          const key = (req.sub_label || req.category || '').toString().trim().toLowerCase();
-          if (!key) return;
-          counts[key] = (counts[key] || 0) + 1;
-        });
-        setRequestCountsByFolderName(counts);
-      })
-      .catch(() => setRequestCountsByFolderName({}));
-  }, [companyId]);
-
-  useEffect(() => {
-    if (!companyId) {
-      setSharePeople([]);
-      return;
+      let cancelled = false;
+      Promise.resolve().then(() => {
+        if (!cancelled) {
+          setSharePeople([]);
+          setCurrentUserGroupIds([]);
+        }
+      });
+      return () => {
+        cancelled = true;
+      };
     }
 
-    listUsersRequest()
-      .then((users) => {
+    let cancelled = false;
+
+    Promise.all([
+      listUsersRequest().catch(() => []),
+      listCompanyGroups(companyId).catch(() => []),
+    ])
+      .then(([users, groups]) => {
+        if (cancelled) return;
         const people = users
           .filter((user) => {
             const userCompanyId = user.company_id || user.companyId;
@@ -1663,23 +1633,71 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
             meta: user.email || user.phone || 'Client user',
             type: 'user',
           }));
-        setSharePeople(people);
+        const groupTargets = groups.map((group) => ({
+          id: group.id,
+          name: group.name || 'Unnamed group',
+          meta: `${group.member_count || group.member_ids?.length || 0} members`,
+          type: 'group',
+        }));
+        const memberGroupIds = currentUserId
+          ? groups
+              .filter((group) => (group.member_ids || []).some((userId) => String(userId) === String(currentUserId)))
+              .map((group) => group.id)
+          : [];
+        setSharePeople([...people, ...groupTargets]);
+        setCurrentUserGroupIds(memberGroupIds);
       })
-      .catch(() => setSharePeople([]));
-  }, [companyId]);
+      .catch(() => {
+        if (!cancelled) {
+          setSharePeople([]);
+          setCurrentUserGroupIds([]);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [companyId, currentUserId]);
 
   useEffect(() => {
     if (!currentUserId) return;
     setCreatedBy(currentUserId);
   }, [currentUserId, setCreatedBy]);
 
+  useEffect(() => {
+    if (role === 'broker' || !companyId) return;
+
+    const folderIds = collectFolderIds(tree);
+    if (!folderIds.length) return;
+
+    let cancelled = false;
+
+    Promise.all(folderIds.map(async (folderId) => {
+      const entries = await loadFolderAccessFromApi(folderId);
+      return [folderId, entries];
+    }))
+      .then((results) => {
+        if (cancelled) return;
+        results.forEach(([folderId, entries]) => {
+          setFolderAccess(folderId, entries);
+        });
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, [companyId, role, tree, loadFolderAccessFromApi, setFolderAccess]);
+
   const currentFolderId = currentPath[currentPath.length - 1];
   const currentFolder = findById(tree, currentFolderId) || tree;
   const canManageAccess = role === 'broker';
 
-  const currentUser = role === 'broker'
-    ? null
-    : { id: currentUserId, groups: [] };
+  const currentUser = useMemo(() => (
+    role === 'broker'
+      ? null
+      : { id: currentUserId, groups: currentUserGroupIds }
+  ), [currentUserGroupIds, currentUserId, role]);
 
   const getFolderPermissions = useCallback((folderId) => {
     if (role === 'broker') return { read: true, write: true, download: true };
@@ -1715,7 +1733,7 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
     const entries = folderAccess[folderId] || [];
     const count = entries.length;
     return count > 0
-      ? { count, tooltip: `Shared with ${count} user${count === 1 ? '' : 's'}` }
+      ? { count, tooltip: `Shared with ${count} user/group${count === 1 ? '' : 's'}` }
       : { count: 0, tooltip: '' };
   }, [folderAccess]);
 
@@ -1827,7 +1845,7 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
     if (!shareFolder) return;
     const normalizedEntries = entries.map((entry) => ({
       ...entry,
-      type: 'user',
+      type: entry.type || 'user',
       subjectId: entry.subjectId || entry.id,
       permissions: accessTypeToPermissions(entry.accessType || permissionsToAccessType(entry.permissions)),
     }));
@@ -1843,7 +1861,6 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
         onUpload={openUpload}
         role={role}
         getFolderPermissions={getFolderPermissions}
-        requestCountsByFolderName={requestCountsByFolderName}
       />
 
       {/* Main Content */}

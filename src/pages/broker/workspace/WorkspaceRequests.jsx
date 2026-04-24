@@ -12,10 +12,12 @@ import {
   LayoutGrid,
   List,
   Loader2,
+  Pencil,
   Scale,
   Search,
   Send,
   ShieldCheck,
+  Trash2,
   TrendingUp,
   Upload,
   AlertTriangle,
@@ -24,17 +26,21 @@ import {
 } from 'lucide-react';
 import {
   attachRequestDocument,
+  approveRequest,
   createCompanyBulkRequestItems,
   createCompanyRequestItem,
   createRequestReminder,
+  deleteRequest,
   getCompanyRequest,
-  listCompanyFolders,
+  listFolderTree,
   listCompanyRequests,
   listRequestDocuments,
   updateRequest,
   updateRequestNarrative,
 } from '../../../lib/api';
 import NewRequestModal from '../../../components/NewRequestModal';
+import RequestDocumentPreviewModal from '../../../components/RequestDocumentPreviewModal';
+import { buildFolderOptionsFromTree } from '../../../lib/folderOptions';
 
 const CATEGORY_META = {
   Finance: { icon: TrendingUp, color: '#00648F', bg: '#A7DCF7' },
@@ -61,12 +67,10 @@ const PRIORITY_META = {
   low: { label: 'Low', bg: '#8BC53D', color: '#FFFFFF' },
 };
 
-const STATUS_FLOW = ['pending', 'in-review', 'completed'];
 const CATEGORY_ORDER = ['Finance', 'Legal', 'Compliance', 'HR', 'Tax', 'M&A', 'Other'];
 const RESPONSE_TYPE_OPTIONS = ['Upload', 'Narrative', 'Both'];
 const PRIORITY_OPTIONS = ['critical', 'high', 'medium', 'low'];
-const STATUS_OPTIONS = ['pending', 'in-review', 'completed', 'blocked'];
-const BULK_TEMPLATE_HEADERS = ['title', 'sub_label', 'description', 'category', 'response_type', 'priority', 'status', 'due_date', 'assigned_to', 'visible'];
+const BULK_TEMPLATE_HEADERS = ['title', 'sub_label', 'description', 'category', 'response_type', 'priority', 'due_date', 'assigned_to', 'visible'];
 
 function normalizeVisibleFlag(value) {
   if (typeof value === 'boolean') return value;
@@ -108,8 +112,7 @@ function buildBulkTemplateWorkbook(folderOptions) {
       category: sampleCategory,
       response_type: 'Upload',
       priority: 'high',
-      status: 'pending',
-      due_date: formatToday(),
+      due_date: formatTomorrow(),
       assigned_to: '',
       visible: 'true',
     },
@@ -127,7 +130,6 @@ function buildBulkTemplateWorkbook(folderOptions) {
     ['category', 'Yes', `Use one of: ${CATEGORY_ORDER.join(', ')}`],
     ['response_type', 'Yes', `Use one of: ${RESPONSE_TYPE_OPTIONS.join(', ')}`],
     ['priority', 'Yes', `Use one of: ${PRIORITY_OPTIONS.join(', ')}`],
-    ['status', 'Yes', `Use one of: ${STATUS_OPTIONS.join(', ')}`],
     ['due_date', 'Yes', 'Format must be YYYY-MM-DD.'],
     ['assigned_to', 'No', 'Optional user id for assignment. Leave blank if unassigned.'],
     ['visible', 'No', 'Use true or false. Blank defaults to true.'],
@@ -190,7 +192,7 @@ function mapToCategory(item) {
 }
 
 function normalizeWorkflowStatus(status) {
-  if (['awaiting-review', 'in-progress', 'submitted'].includes(status)) return 'in-review';
+  if (['awaiting-review', 'in-progress', 'submitted', 'in-review'].includes(status)) return 'in-review';
   if (status === 'completed') return 'completed';
   if (status === 'blocked') return 'blocked';
   return 'pending';
@@ -205,8 +207,18 @@ function getDisplayStatus(workflowStatus, dueDate) {
 }
 
 function normalizePriority(priority) {
-  if (priority === 'critical' || priority === 'high' || priority === 'medium' || priority === 'low') return priority;
-  return 'medium';
+  const normalized = `${priority ?? ''}`.trim();
+  return normalized || 'medium';
+}
+
+function getPriorityMeta(priority) {
+  const normalized = `${priority ?? ''}`.trim().toLowerCase();
+  if (PRIORITY_META[normalized]) return PRIORITY_META[normalized];
+  return {
+    label: `${priority || 'Custom'}`,
+    bg: '#DBEAFE',
+    color: '#1D4ED8',
+  };
 }
 
 function normalizeType(item) {
@@ -224,6 +236,37 @@ function normalizeType(item) {
 
 function formatToday() {
   return new Date().toISOString().slice(0, 10);
+}
+
+function getDocumentExt(doc) {
+  if (doc?.ext) return `${doc.ext}`.toLowerCase();
+  const name = doc?.name || '';
+  const parts = name.split('.');
+  return parts.length > 1 ? parts.pop().toLowerCase() : '';
+}
+
+function mapRequestDocumentToUi(doc, fallbackUploadedBy = 'Client') {
+  return {
+    id: doc.id || doc.document_id,
+    name: doc.name || doc.document_id || doc.id,
+    uploadedBy: doc.uploaded_by_name || doc.uploadedBy || fallbackUploadedBy,
+    uploadedAt: doc.uploaded_at
+      ? doc.uploaded_at.slice(0, 10)
+      : doc.created_at
+      ? doc.created_at.slice(0, 10)
+      : formatToday(),
+    visible: doc.visible !== false,
+    size: doc.size || '—',
+    ext: getDocumentExt(doc),
+    status: doc.status || 'under-review',
+    fileUrl: doc.file_url || doc.fileUrl || '',
+  };
+}
+
+function formatTomorrow() {
+  const date = new Date();
+  date.setDate(date.getDate() + 1);
+  return date.toISOString().slice(0, 10);
 }
 
 function StatusBadge({ status }) {
@@ -260,10 +303,17 @@ function mapApiRequestToUi(request) {
     updatedAt: request.updated_at ? request.updated_at.slice(0, 10) : (request.created_at ? request.created_at.slice(0, 10) : formatToday()),
     assignedTo: request.assigned_to || 'Unassigned',
     visible: request.visible !== false,
+    approvalStatus: request.approval_status || 'approved',
+    submissionSource: request.submission_source || 'broker',
+    requestedBy: request.created_by_name || 'Unknown user',
+    approvedBy: request.approved_by_name || '',
     narrativeResponse: '',
     linkedDocuments: [],
     reminderHistory: [],
-    notificationFrequency: request.priority === 'high' ? 'daily' : request.priority === 'medium' ? 'every 2 days' : 'weekly',
+    reminderFrequencyDays: Number.parseInt(request.reminder_frequency_days, 10) || (request.priority === 'critical' || request.priority === 'high' ? 1 : request.priority === 'medium' ? 2 : 7),
+    notificationFrequency: (Number.parseInt(request.reminder_frequency_days, 10) || (request.priority === 'critical' || request.priority === 'high' ? 1 : request.priority === 'medium' ? 2 : 7)) === 1
+      ? 'daily'
+      : `every ${Number.parseInt(request.reminder_frequency_days, 10) || (request.priority === 'medium' ? 2 : 7)} days`,
   };
 }
 
@@ -291,14 +341,14 @@ function buildCreateRequestPayload(form) {
 
   return {
     title: form.name.trim(),
-    sub_label: folderLabel,
-    description: form.description.trim(),
-    category: resolvedCategory,
-    response_type: responseType,
-    priority: normalizePriority(form.priority),
-    status: form.status,
-    due_date: form.dueDate,
-    assigned_to: null,
+      sub_label: folderLabel,
+      description: form.description.trim(),
+      category: resolvedCategory,
+      response_type: responseType,
+      priority: form.priority === 'custom' ? form.customPriorityLabel.trim() : normalizePriority(form.priority),
+      status: 'pending',
+      due_date: form.dueDate,
+      assigned_to: null,
     visible: true,
   };
 }
@@ -343,14 +393,28 @@ function CategoryCard({ category, requestsInCategory, onClick }) {
   );
 }
 
-function RequestRow({ item, onView }) {
-  const priority = PRIORITY_META[item.priority];
+function RequestRow({ item, onView, onApprove, approving }) {
+  const priority = getPriorityMeta(item.priority);
+  const canApprove = item.submissionSource === 'user' && item.approvalStatus === 'pending';
+  const canReview = item.workflowStatus === 'in-review';
   return (
     <tr className="border-b border-gray-50 hover:bg-gray-50/70 transition-colors">
       <td className="px-4 py-3 text-xs font-bold text-[#6D6E71] font-mono">{item.id}</td>
       <td className="px-4 py-3">
         <p className="font-semibold text-[#050505] leading-tight">{item.name}</p>
         {item.subLabel && <p className="text-xs text-[#A5A5A5] mt-0.5">{item.subLabel}</p>}
+        {item.submissionSource === 'user' && (
+          <div className="mt-1 flex flex-wrap items-center gap-2">
+            <span className="text-[11px] text-[#6D6E71]">Requested by {item.requestedBy}</span>
+            <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+              item.approvalStatus === 'pending'
+                ? 'bg-[#FEF3C7] text-[#A86F0B]'
+                : 'bg-[#E6F3D3] text-[#476E2C]'
+            }`}>
+              {item.approvalStatus === 'pending' ? 'Awaiting Approval' : 'Approved'}
+            </span>
+          </div>
+        )}
       </td>
       <td className="px-4 py-3">
         <span className="text-xs px-2.5 py-1 rounded-full bg-gray-100 text-[#6D6E71] font-semibold">{item.responseType}</span>
@@ -368,18 +432,37 @@ function RequestRow({ item, onView }) {
         </span>
       </td>
       <td className="px-4 py-3 text-center">
-        <button
-          onClick={() => onView(item)}
-          className="px-3 py-1.5 rounded-lg bg-[#05164D] text-white text-xs font-semibold hover:bg-[#0b2a79] transition-colors"
-        >
-          View
-        </button>
+        <div className="flex items-center justify-center gap-2">
+          {canApprove && (
+            <button
+              onClick={() => onApprove(item)}
+              disabled={approving}
+              className="px-3 py-1.5 rounded-lg bg-[#8BC53D] text-white text-xs font-semibold hover:bg-[#476E2C] disabled:cursor-not-allowed disabled:opacity-60 transition-colors"
+            >
+              {approving ? 'Approving...' : 'Approve'}
+            </button>
+          )}
+          {canReview && (
+            <button
+              onClick={() => onView(item)}
+              className="px-3 py-1.5 rounded-lg bg-[#8BC53D] text-white text-xs font-semibold hover:bg-[#476E2C] transition-colors"
+            >
+              Review
+            </button>
+          )}
+          <button
+            onClick={() => onView(item)}
+            className="px-3 py-1.5 rounded-lg bg-[#05164D] text-white text-xs font-semibold hover:bg-[#0b2a79] transition-colors"
+          >
+            View
+          </button>
+        </div>
       </td>
     </tr>
   );
 }
 
-function RequestTable({ rows, onView }) {
+function RequestTable({ rows, onView, onApprove, approvingRequestId }) {
   return (
     <div className="bg-white rounded-2xl shadow-card overflow-x-auto">
       <table className="w-full min-w-[980px]">
@@ -396,14 +479,22 @@ function RequestTable({ rows, onView }) {
           </tr>
         </thead>
         <tbody>
-          {rows.map(r => <RequestRow key={r.id} item={r} onView={onView} />)}
+          {rows.map(r => (
+            <RequestRow
+              key={r.id}
+              item={r}
+              onView={onView}
+              onApprove={onApprove}
+              approving={approvingRequestId === r.id}
+            />
+          ))}
         </tbody>
       </table>
     </div>
   );
 }
 
-function CategoryGroupedTable({ grouped, onView }) {
+function CategoryGroupedTable({ grouped, onView, onApprove, approvingRequestId }) {
   return (
     <div className="bg-white rounded-2xl shadow-card overflow-x-auto">
       <table className="w-full min-w-[980px]">
@@ -442,7 +533,15 @@ function CategoryGroupedTable({ grouped, onView }) {
                 </tr>
                 {rows.length === 0 ? (
                   <tr><td colSpan={8} className="px-4 py-4 text-center text-xs text-[#A5A5A5]">No requests in this category</td></tr>
-                ) : rows.map(r => <RequestRow key={r.id} item={r} onView={onView} />)}
+                ) : rows.map(r => (
+                  <RequestRow
+                    key={r.id}
+                    item={r}
+                    onView={onView}
+                    onApprove={onApprove}
+                    approving={approvingRequestId === r.id}
+                  />
+                ))}
               </Fragment>
             );
           })}
@@ -502,29 +601,47 @@ function FileUpload({ onAddFiles, duplicateNames }) {
   );
 }
 
-function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSendReminder, onAttachDocument }) {
+function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSendReminder, onAttachDocument, onApproveRequest, approvingRequestId, onMarkReviewed, onDeleteRequest, deletingRequestId }) {
   const [duplicateWarning, setDuplicateWarning] = useState([]);
   const [narrativeDraft, setNarrativeDraft] = useState(request?.narrativeResponse || '');
+  const [previewDocument, setPreviewDocument] = useState(null);
+  const [requestDraft, setRequestDraft] = useState({
+    name: request?.name || '',
+    description: request?.description || '',
+    priority: request?.priority || 'high',
+    dueDate: request?.dueDate || formatToday(),
+  });
+  const [savingRequestDetails, setSavingRequestDetails] = useState(false);
+  const [savingNarrative, setSavingNarrative] = useState(false);
 
   useEffect(() => {
     setNarrativeDraft(request?.narrativeResponse || '');
+    setPreviewDocument(null);
+    setRequestDraft({
+      name: request?.name || '',
+      description: request?.description || '',
+      priority: request?.priority || 'high',
+      dueDate: request?.dueDate || formatToday(),
+    });
   }, [request?.id, request?.narrativeResponse]);
 
   if (!request) return null;
 
-  const priority = PRIORITY_META[request.priority];
+  const priority = getPriorityMeta(request.priority);
   const due = new Date(request.dueDate);
   const isOverdue = due < new Date() && request.workflowStatus !== 'completed' && request.workflowStatus !== 'blocked';
   const currentStatus = getDisplayStatus(request.workflowStatus, request.dueDate);
-  const statusIdx = STATUS_FLOW.indexOf(request.workflowStatus);
-  const allowedNext = request.workflowStatus === 'blocked'
-    ? ['blocked']
-    : STATUS_FLOW.slice(Math.max(0, statusIdx), Math.min(statusIdx + 2, STATUS_FLOW.length));
   const CategoryIcon = CATEGORY_META[request.category].icon;
+  const needsApproval = request.submissionSource === 'user' && request.approvalStatus === 'pending';
+  const canMarkReviewed = request.workflowStatus === 'in-review';
+  const canEditRequestDetails = request.workflowStatus === 'pending';
+  const canEditResponse = request.workflowStatus === 'in-review';
+  const isCompleted = request.workflowStatus === 'completed';
 
   const allLinkedNames = allRequests.flatMap(r => r.linkedDocuments.map(d => d.name.toLowerCase()));
 
   const addFiles = (files) => {
+    if (!canEditResponse) return;
     const duplicates = files.map(f => f.name).filter(name => allLinkedNames.includes(name.toLowerCase()));
     setDuplicateWarning(duplicates);
 
@@ -534,6 +651,10 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
       uploadedBy: 'Broker User',
       uploadedAt: formatToday(),
       visible: true,
+      size: f.size?.toString() || '—',
+      ext: getDocumentExt({ name: f.name }),
+      status: 'under-review',
+      fileUrl: '',
     }));
 
     onUpdateRequest(request.id, {
@@ -556,6 +677,29 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
     onSendReminder?.(request.id);
   };
 
+  const saveRequestDetails = async () => {
+    if (!canEditRequestDetails || savingRequestDetails) return;
+    setSavingRequestDetails(true);
+    await onUpdateRequest(request.id, {
+      name: requestDraft.name.trim(),
+      description: requestDraft.description.trim(),
+      priority: requestDraft.priority,
+      dueDate: requestDraft.dueDate,
+      updatedAt: formatToday(),
+    });
+    setSavingRequestDetails(false);
+  };
+
+  const saveNarrative = async () => {
+    if (!canEditResponse || savingNarrative) return;
+    setSavingNarrative(true);
+    await onUpdateRequest(request.id, {
+      narrativeResponse: narrativeDraft,
+      updatedAt: formatToday(),
+    });
+    setSavingNarrative(false);
+  };
+
   return (
     <div className="space-y-6">
       <div className="bg-[#F8FAFC] rounded-2xl p-5 lg:p-7">
@@ -566,61 +710,97 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
           <button onClick={onBack} className="text-[#A5A5A5] hover:text-[#050505] p-1"><X size={18} /></button>
         </div>
 
-        <div className="flex items-center gap-3 mb-2">
-          <span className="px-2.5 py-1 rounded-md bg-gray-100 text-xs font-bold text-[#6D6E71] font-mono">{request.id}</span>
-          <StatusBadge status={currentStatus} />
-        </div>
-        <h2 className="text-3xl font-bold text-[#050505] leading-tight">{request.name}</h2>
-        <p className="text-sm text-[#6D6E71] mt-1 mb-5">{request.subLabel}</p>
-
-        <div className="grid lg:grid-cols-3 gap-5">
-          <div className="lg:col-span-2 space-y-5">
-            <div className="bg-white rounded-2xl shadow-card p-5">
-              <h3 className="font-semibold text-[#050505] mb-4">Request Details</h3>
-              <div className="grid grid-cols-2 gap-4 mb-4">
-                <div>
-                  <p className="text-[10px] uppercase tracking-wide text-[#A5A5A5] mb-1">Category</p>
-                  <span className="inline-flex items-center gap-1.5 text-sm font-semibold text-[#050505]">
-                    <CategoryIcon size={14} style={{ color: CATEGORY_META[request.category].color }} />
-                    {request.category}
-                  </span>
-                </div>
-                <div>
-                  <p className="text-[10px] uppercase tracking-wide text-[#A5A5A5] mb-1">Priority</p>
-                  <span className="text-xs font-bold px-2.5 py-1 rounded-full" style={{ background: priority.bg, color: priority.color }}>
-                    {priority.label}
-                  </span>
-                </div>
-                <div>
-                  <p className="text-[10px] uppercase tracking-wide text-[#A5A5A5] mb-1">Response Type</p>
-                  <span className="text-xs font-semibold bg-gray-100 text-[#6D6E71] px-2.5 py-1 rounded-full">{request.responseType}</span>
-                </div>
-                <div>
-                  <p className="text-[10px] uppercase tracking-wide text-[#A5A5A5] mb-1">Due Date</p>
-                  <span className={`text-sm font-semibold ${isOverdue ? 'text-[#B91C1C]' : 'text-[#050505]'}`}>{request.dueDate}</span>
-                </div>
+        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+          <div className="space-y-5">
+            <div className="rounded-2xl bg-white p-5 shadow-card">
+              <div className="mb-3 flex flex-wrap items-center gap-2">
+                <span className="rounded-md bg-gray-100 px-2.5 py-1 font-mono text-xs font-bold text-[#6D6E71]">{request.id}</span>
+                <StatusBadge status={currentStatus} />
               </div>
-              <p className="text-[10px] uppercase tracking-wide text-[#A5A5A5] mb-1">Description</p>
-              <p className="text-sm text-[#6D6E71] leading-relaxed border border-gray-100 bg-gray-50 rounded-xl p-3">{request.description}</p>
+              <p className="text-xs font-semibold uppercase tracking-wide text-[#A5A5A5]">{request.subLabel || request.category}</p>
+              {canEditRequestDetails ? (
+                <div className="mt-3 space-y-4">
+                  <div>
+                    <label className="text-[11px] font-semibold uppercase tracking-wide text-[#A5A5A5]">Title</label>
+                    <input
+                      value={requestDraft.name}
+                      onChange={(event) => setRequestDraft((current) => ({ ...current, name: event.target.value }))}
+                      className="mt-1 w-full rounded-xl border border-gray-200 px-4 py-3 text-base font-semibold text-[#050505] sm:text-lg"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[11px] font-semibold uppercase tracking-wide text-[#A5A5A5]">Description</label>
+                    <textarea
+                      rows={5}
+                      value={requestDraft.description}
+                      onChange={(event) => setRequestDraft((current) => ({ ...current, description: event.target.value }))}
+                      className="mt-1 w-full resize-none rounded-xl border border-gray-200 px-4 py-3 text-sm leading-6 text-[#4B5563]"
+                    />
+                  </div>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div>
+                      <label className="text-[11px] font-semibold uppercase tracking-wide text-[#A5A5A5]">Priority</label>
+                      <select
+                        value={requestDraft.priority}
+                        onChange={(event) => setRequestDraft((current) => ({ ...current, priority: event.target.value }))}
+                        className="mt-1 w-full rounded-xl border border-gray-200 px-4 py-3 text-sm"
+                      >
+                        <option value="critical">Critical</option>
+                        <option value="high">High</option>
+                        <option value="medium">Medium</option>
+                        <option value="low">Low</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[11px] font-semibold uppercase tracking-wide text-[#A5A5A5]">Due Date</label>
+                      <input
+                        type="date"
+                        value={requestDraft.dueDate}
+                        onChange={(event) => setRequestDraft((current) => ({ ...current, dueDate: event.target.value }))}
+                        className="mt-1 w-full rounded-xl border border-gray-200 px-4 py-3 text-sm"
+                      />
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={saveRequestDetails}
+                    disabled={savingRequestDetails}
+                    className="inline-flex items-center gap-2 rounded-xl bg-[#8BC53D] px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#476E2C] disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-[#A5A5A5]"
+                  >
+                    <Pencil size={14} />
+                    {savingRequestDetails ? 'Saving...' : 'Save Request Details'}
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <h2 className="mt-2 text-2xl font-bold leading-tight text-[#050505] sm:text-3xl">{request.name}</h2>
+                  <p className="mt-4 rounded-xl border border-gray-100 bg-gray-50 p-4 text-sm leading-6 text-[#4B5563]">{request.description}</p>
+                </>
+              )}
             </div>
 
             <div className="bg-[#EFF6FF] rounded-2xl border border-[#BFDBFE] shadow-card p-5">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <h3 className="font-semibold text-[#050505] mb-1">Current Status</h3>
                   <StatusBadge status={currentStatus} />
+                  <p className="mt-2 text-xs text-[#6D6E71]">
+                    Requests move from pending to in review when the client submits files or information. Mark reviewed after broker review is complete.
+                  </p>
                 </div>
-                <select
-                  value={request.workflowStatus}
-                  onChange={(e) => onUpdateRequest(request.id, { workflowStatus: e.target.value, updatedAt: formatToday() })}
-                  className="px-3 py-2 rounded-xl border border-[#93C5FD] bg-white text-sm font-semibold text-[#1D4ED8] focus:outline-none"
-                >
-                  {allowedNext.map(s => <option key={s} value={s}>{STATUS_META[s].label}</option>)}
-                </select>
+                {canMarkReviewed && (
+                  <button
+                    type="button"
+                    onClick={() => onMarkReviewed?.(request.id)}
+                    className="rounded-xl bg-[#8BC53D] px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#476E2C]"
+                  >
+                    Mark Reviewed
+                  </button>
+                )}
               </div>
             </div>
 
-            {(request.responseType === 'Upload' || request.responseType === 'Both') && (
+            {canEditResponse && (request.responseType === 'Upload' || request.responseType === 'Both') && (
               <FileUpload onAddFiles={addFiles} duplicateNames={duplicateWarning} />
             )}
 
@@ -634,6 +814,14 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
                       <p className="text-sm font-medium text-[#050505] truncate">{doc.name}</p>
                       <p className="text-xs text-[#A5A5A5]">{doc.uploadedBy} � {doc.uploadedAt}</p>
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => setPreviewDocument(doc)}
+                      disabled={!doc.fileUrl}
+                      className="rounded-lg border border-[#D8E2F0] bg-white px-3 py-1.5 text-xs font-semibold text-[#05164D] transition-colors hover:bg-[#F8FAFC] disabled:cursor-not-allowed disabled:border-gray-200 disabled:bg-gray-100 disabled:text-[#A5A5A5]"
+                    >
+                      View
+                    </button>
                     <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#E6F3D3] text-[#476E2C]">Client Visible</span>
                   </div>
                 ))}
@@ -646,33 +834,52 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
                 <textarea
                   rows={5}
                   value={narrativeDraft}
-                  onChange={(e) => onUpdateRequest(request.id, { narrativeResponse: e.target.value, updatedAt: formatToday() })}
+                  readOnly={!canEditResponse}
+                  onChange={(event) => setNarrativeDraft(event.target.value)}
                   placeholder="Enter explanation, comments, or notes related to this request"
-                  className="w-full px-4 py-3 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] resize-none"
+                  className={`w-full resize-none rounded-xl border px-4 py-3 text-sm ${
+                    canEditResponse
+                      ? 'border-gray-200 bg-white text-[#4B5563]'
+                      : 'border-gray-100 bg-gray-50 text-[#4B5563]'
+                  }`}
                 />
+                {canEditResponse && (
+                  <button
+                    type="button"
+                    onClick={saveNarrative}
+                    disabled={savingNarrative}
+                    className="mt-3 rounded-xl bg-[#05164D] px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#0b2a79] disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-[#A5A5A5]"
+                  >
+                    {savingNarrative ? 'Saving...' : 'Save Narrative'}
+                  </button>
+                )}
               </div>
             )}
           </div>
 
-          <div className="space-y-4 lg:sticky lg:top-5 h-fit">
+          <div className="space-y-4 xl:sticky xl:top-5 h-fit">
             <div className="bg-white rounded-2xl shadow-card p-5">
-              <h3 className="font-semibold text-[#050505] mb-3">? Quick Info</h3>
-              <div className="space-y-3 text-xs">
-                <div>
-                  <p className="text-[#A5A5A5]">Assigned To</p>
-                  <p className="font-semibold text-[#050505]">{request.assignedTo}</p>
-                </div>
-                <div>
-                  <p className="text-[#A5A5A5]">Created Date</p>
-                  <p className="font-semibold text-[#050505]">{request.createdAt}</p>
-                </div>
-                <div>
-                  <p className="text-[#A5A5A5]">Last Updated</p>
-                  <p className="font-semibold text-[#050505]">{request.updatedAt}</p>
-                </div>
+              <h3 className="font-semibold text-[#050505] mb-4">Request Summary</h3>
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+                {[
+                  { label: 'Current Status', value: <StatusBadge status={currentStatus} /> },
+                  { label: 'Priority', value: <span className="inline-flex rounded-full px-2.5 py-1 text-xs font-bold" style={{ background: priority.bg, color: priority.color }}>{priority.label}</span> },
+                  { label: 'Category', value: <span className="inline-flex items-center gap-1.5 font-semibold text-[#050505]"><CategoryIcon size={14} style={{ color: CATEGORY_META[request.category].color }} />{request.category}</span> },
+                  { label: 'Due Date', value: <span className={`font-semibold ${isOverdue ? 'text-[#B91C1C]' : 'text-[#050505]'}`}>{request.dueDate}</span> },
+                  { label: 'Response Type', value: <span className="font-semibold text-[#050505]">{request.responseType}</span> },
+                  { label: 'Assigned To', value: <span className="font-semibold text-[#050505]">{request.assignedTo}</span> },
+                  { label: 'Created Date', value: <span className="font-semibold text-[#050505]">{request.createdAt}</span> },
+                  { label: 'Last Updated', value: <span className="font-semibold text-[#050505]">{request.updatedAt}</span> },
+                ].map((item) => (
+                  <div key={item.label} className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+                    <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-[#A5A5A5]">{item.label}</p>
+                    <div className="text-sm">{item.value}</div>
+                  </div>
+                ))}
               </div>
             </div>
 
+            {!isCompleted && (
             <div className="bg-white rounded-2xl shadow-card p-5">
               <h3 className="font-semibold text-[#050505] mb-3">Client Visibility</h3>
               <div className="flex items-center justify-between">
@@ -685,6 +892,38 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
               <p className="mt-2 text-xs text-[#A5A5A5]">
                 {request.visible ? 'Client can see this request.' : 'Hidden from client dashboard.'}
               </p>
+            </div>
+            )}
+
+            <div className="bg-white rounded-2xl shadow-card p-5">
+              <h3 className="font-semibold text-[#050505] mb-3">Approval Workflow</h3>
+              <div className="space-y-3 text-xs">
+                <div>
+                  <p className="text-[#A5A5A5]">Submission Source</p>
+                  <p className="font-semibold capitalize text-[#050505]">{request.submissionSource}</p>
+                </div>
+                <div>
+                  <p className="text-[#A5A5A5]">Approval Status</p>
+                  <p className="font-semibold text-[#050505]">
+                    {request.approvalStatus === 'pending' ? 'Awaiting broker approval' : 'Approved and available for client delivery'}
+                  </p>
+                </div>
+                {!!request.approvedBy && (
+                  <div>
+                    <p className="text-[#A5A5A5]">Approved By</p>
+                    <p className="font-semibold text-[#050505]">{request.approvedBy}</p>
+                  </div>
+                )}
+              </div>
+              {needsApproval && (
+                <button
+                  onClick={() => onApproveRequest(request.id)}
+                  disabled={approvingRequestId === request.id}
+                  className="mt-4 w-full rounded-xl bg-[#8BC53D] py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#476E2C] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {approvingRequestId === request.id ? 'Approving...' : 'Approve And Send To Client'}
+                </button>
+              )}
             </div>
 
             <div className="bg-white rounded-2xl shadow-card p-5 space-y-2">
@@ -709,11 +948,23 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
               >
                 <Download size={14} /> Export Request
               </button>
+              {!isCompleted && (
+                <button
+                  onClick={() => onUpdateRequest(request.id, { workflowStatus: 'blocked', updatedAt: formatToday() })}
+                  className="w-full py-2.5 rounded-xl bg-red-500 hover:bg-red-600 text-white text-sm font-semibold transition-colors"
+                >
+                  Block Request
+                </button>
+              )}
               <button
-                onClick={() => onUpdateRequest(request.id, { workflowStatus: 'blocked', updatedAt: formatToday() })}
-                className="w-full py-2.5 rounded-xl bg-red-500 hover:bg-red-600 text-white text-sm font-semibold transition-colors"
+                onClick={() => onDeleteRequest?.(request.id)}
+                disabled={deletingRequestId === request.id}
+                className="w-full rounded-xl border border-[#FECACA] bg-[#FEF2F2] py-2.5 text-sm font-semibold text-[#B91C1C] transition-colors hover:bg-[#FEE2E2] disabled:cursor-not-allowed disabled:opacity-60"
               >
-                Block Request
+                <span className="inline-flex items-center justify-center gap-2">
+                  <Trash2 size={14} />
+                  {deletingRequestId === request.id ? 'Deleting...' : 'Delete Request'}
+                </span>
               </button>
               {!!request.reminderHistory?.length && (
                 <div className="pt-2 border-t border-gray-100">
@@ -729,6 +980,7 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
           </div>
         </div>
       </div>
+      <RequestDocumentPreviewModal document={previewDocument} onClose={() => setPreviewDocument(null)} />
     </div>
   );
 }
@@ -745,6 +997,8 @@ export default function WorkspaceRequests() {
   const [foldersLoading, setFoldersLoading] = useState(false);
   const [bulkFile, setBulkFile] = useState(null);
   const [bulkUploading, setBulkUploading] = useState(false);
+  const [approvingRequestId, setApprovingRequestId] = useState(null);
+  const [deletingRequestId, setDeletingRequestId] = useState(null);
 
   const loadRequests = async () => {
     if (!clientId) return;
@@ -764,19 +1018,30 @@ export default function WorkspaceRequests() {
     if (!clientId) return;
     loadRequests();
     setFoldersLoading(true);
-    listCompanyFolders(clientId)
-      .then((folders) => {
-        const topLevel = folders.filter((f) => !f.parent_id);
-        const options = (topLevel.length ? topLevel : folders)
-          .map((f) => ({ id: f.id, name: f.name }))
-          .filter((f) => f.name);
-        setFolderOptions(options);
+    listFolderTree(clientId)
+      .then((tree) => {
+        setFolderOptions(buildFolderOptionsFromTree(tree));
       })
       .catch(() => setFolderOptions([]))
       .finally(() => setFoldersLoading(false));
     getCompanyRequest(clientId)
       .then((data) => setCompany(data))
       .catch(() => setCompany(null));
+  }, [clientId]);
+
+  useEffect(() => {
+    if (!clientId) return undefined;
+    const refreshOnReturn = () => {
+      if (document.visibilityState === 'visible') {
+        loadRequests();
+      }
+    };
+    window.addEventListener('focus', refreshOnReturn);
+    document.addEventListener('visibilitychange', refreshOnReturn);
+    return () => {
+      window.removeEventListener('focus', refreshOnReturn);
+      document.removeEventListener('visibilitychange', refreshOnReturn);
+    };
   }, [clientId]);
   useEffect(() => {
     if (!success) return undefined;
@@ -797,13 +1062,7 @@ export default function WorkspaceRequests() {
       .then((docs) => {
         setRequestState((prev) => prev.map((r) => {
           if (r.id !== activeRequestId) return r;
-          const mapped = docs.map((doc) => ({
-            id: doc.id || doc.document_id,
-            name: doc.document_id || doc.id,
-            uploadedBy: 'Client',
-            uploadedAt: doc.created_at ? doc.created_at.slice(0, 10) : formatToday(),
-            visible: doc.visible !== false,
-          }));
+          const mapped = docs.map((doc) => mapRequestDocumentToUi(doc, 'Client'));
           return { ...r, linkedDocuments: mapped };
         }));
       })
@@ -830,6 +1089,11 @@ export default function WorkspaceRequests() {
     })).filter(g => g.items.length > 0);
   }, [requestState]);
 
+  const priorityFilterOptions = useMemo(() => ([
+    'all',
+    ...Array.from(new Set(requestState.map((request) => request.priority).filter(Boolean))),
+  ]), [requestState]);
+
   const rowsForCategory = useMemo(() => {
     if (!selectedCategory) return [];
     return requestState
@@ -850,18 +1114,25 @@ export default function WorkspaceRequests() {
   const updateRequestState = async (id, patch) => {
     setRequestState(prev => prev.map(r => (r.id === id ? { ...r, ...patch } : r)));
     try {
+      let canonicalRequest = null;
       if (patch.narrativeResponse !== undefined) {
-        await updateRequestNarrative(id, {
+        canonicalRequest = await updateRequestNarrative(id, {
           content: patch.narrativeResponse,
           updated_by: user?.id || null,
         });
       }
       const apiPatch = mapUiPatchToApi(patch);
       if (Object.keys(apiPatch).length > 0) {
-        await updateRequest(id, apiPatch);
+        canonicalRequest = await updateRequest(id, apiPatch);
       }
+      if (canonicalRequest?.id) {
+        const normalized = mapApiRequestToUi(canonicalRequest);
+        setRequestState(prev => prev.map(r => (r.id === id ? { ...r, ...normalized } : r)));
+      }
+      return true;
     } catch (err) {
       setError(err.message || 'Unable to update request.');
+      return false;
     }
   };
 
@@ -880,6 +1151,54 @@ export default function WorkspaceRequests() {
       setSuccess('Request created successfully.');
     } catch (err) {
       setError(err.message || 'Unable to create request.');
+    }
+  };
+
+  const handleApproveRequest = async (requestOrId) => {
+    const requestId = typeof requestOrId === 'object' ? requestOrId?.id : requestOrId;
+    if (!requestId) return;
+
+    setApprovingRequestId(requestId);
+    setError('');
+    setSuccess('');
+
+    try {
+      const approved = await approveRequest(requestId);
+      const normalized = mapApiRequestToUi(approved);
+      setRequestState((prev) => prev.map((item) => (item.id === requestId ? { ...item, ...normalized } : item)));
+      setSuccess('Request approved and sent to the client portal.');
+    } catch (err) {
+      setError(err.message || 'Unable to approve request.');
+    } finally {
+      setApprovingRequestId(null);
+    }
+  };
+
+  const handleMarkReviewed = async (requestId) => {
+    if (!requestId) return;
+    const ok = await updateRequestState(requestId, {
+      workflowStatus: 'completed',
+      updatedAt: formatToday(),
+    });
+    if (ok) setSuccess('Request marked reviewed and completed.');
+  };
+
+  const handleDeleteRequest = async (requestId) => {
+    if (!requestId) return;
+    if (!window.confirm('Delete this request from the broker portal?')) return;
+
+    setDeletingRequestId(requestId);
+    setError('');
+    setSuccess('');
+    try {
+      await deleteRequest(requestId);
+      setRequestState((prev) => prev.filter((item) => item.id !== requestId));
+      if (activeRequestId === requestId) setActiveRequestId(null);
+      setSuccess('Request deleted successfully.');
+    } catch (err) {
+      setError(err.message || 'Unable to delete request.');
+    } finally {
+      setDeletingRequestId(null);
     }
   };
 
@@ -915,7 +1234,7 @@ export default function WorkspaceRequests() {
           category: `${row.category ?? ''}`.trim(),
           response_type: `${row.response_type ?? ''}`.trim(),
           priority: `${row.priority ?? ''}`.trim().toLowerCase(),
-          status: `${row.status ?? ''}`.trim().toLowerCase(),
+          status: 'pending',
           due_date: `${row.due_date ?? ''}`.trim(),
           assigned_to: `${row.assigned_to ?? ''}`.trim(),
           visible: normalizeVisibleFlag(row.visible),
@@ -946,6 +1265,11 @@ export default function WorkspaceRequests() {
         request={activeRequest}
         allRequests={requestState}
         onUpdateRequest={updateRequestState}
+        onApproveRequest={handleApproveRequest}
+        approvingRequestId={approvingRequestId}
+        onMarkReviewed={handleMarkReviewed}
+        onDeleteRequest={handleDeleteRequest}
+        deletingRequestId={deletingRequestId}
         onSendReminder={(id) => createRequestReminder(id, {
           sent_at: new Date().toISOString(),
           sent_by: user?.id || null,
@@ -1006,6 +1330,10 @@ export default function WorkspaceRequests() {
           <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-5">
             {loading ? (
               <div className="col-span-full text-center text-sm text-[#A5A5A5] py-10">Loading requests...</div>
+            ) : grouped.length === 0 ? (
+              <div className="col-span-full rounded-2xl border border-dashed border-gray-200 bg-white px-6 py-14 text-center text-sm text-[#6D6E71]">
+                No requests available for this company yet. Create a request to start reminder tracking.
+              </div>
             ) : grouped.map(g => (
               <CategoryCard
                 key={g.category}
@@ -1018,8 +1346,17 @@ export default function WorkspaceRequests() {
         ) : (
           loading ? (
             <div className="text-center text-sm text-[#A5A5A5] py-10">Loading requests...</div>
+          ) : grouped.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-gray-200 bg-white px-6 py-14 text-center text-sm text-[#6D6E71]">
+              No requests available for this company yet. Create a request to start reminder tracking.
+            </div>
           ) : (
-            <CategoryGroupedTable grouped={grouped} onView={(r) => setActiveRequestId(r.id)} />
+            <CategoryGroupedTable
+              grouped={grouped}
+              onView={(r) => setActiveRequestId(r.id)}
+              onApprove={handleApproveRequest}
+              approvingRequestId={approvingRequestId}
+            />
           )
         )
       ) : (
@@ -1058,11 +1395,11 @@ export default function WorkspaceRequests() {
                 onChange={(e) => setPriorityFilter(e.target.value)}
                 className="px-3 py-2 rounded-xl border border-gray-200 bg-white text-sm text-[#050505]"
               >
-                <option value="all">All Priorities</option>
-                <option value="critical">Critical</option>
-                <option value="high">High</option>
-                <option value="medium">Medium</option>
-                <option value="low">Low</option>
+                {priorityFilterOptions.map((option) => (
+                  <option key={option} value={option}>
+                    {option === 'all' ? 'All Priorities' : option}
+                  </option>
+                ))}
               </select>
               <button
                 onClick={() => {
@@ -1079,8 +1416,17 @@ export default function WorkspaceRequests() {
 
           {loading ? (
             <div className="text-center text-sm text-[#A5A5A5] py-10">Loading requests...</div>
+          ) : rowsForCategory.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-gray-200 bg-white px-6 py-14 text-center text-sm text-[#6D6E71]">
+              No requests matched this category and filter combination.
+            </div>
           ) : (
-            <RequestTable rows={rowsForCategory} onView={(r) => setActiveRequestId(r.id)} />
+            <RequestTable
+              rows={rowsForCategory}
+              onView={(r) => setActiveRequestId(r.id)}
+              onApprove={handleApproveRequest}
+              approvingRequestId={approvingRequestId}
+            />
           )}
         </div>
       )}
@@ -1091,6 +1437,7 @@ export default function WorkspaceRequests() {
         onCreate={createRequest}
         folderOptions={folderOptions}
         foldersLoading={foldersLoading}
+        allowCustomPriority
         extraContent={(
           <div className="rounded-2xl border border-[#BFDBFE] bg-[#EFF6FF] p-4 space-y-3">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -1137,51 +1484,3 @@ export default function WorkspaceRequests() {
     </div>
   );
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
