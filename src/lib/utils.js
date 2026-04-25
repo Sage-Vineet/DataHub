@@ -2,23 +2,34 @@ export function cn(...values) {
   return values.flat(Infinity).filter(Boolean).join(" ");
 }
 
+/**
+ * Standardized Financial Number Formatter
+ * 0, null, undefined -> "-"
+ * Positive -> "1,234.56"
+ * Negative -> "(1,234.56)"
+ */
 export function formatCurrency(amount) {
-  const numeric =
-    typeof amount === "string"
-      ? Number(amount.replace(/,/g, "").replace(/[^\d().-]/g, "")) || 0
-      : Number(amount || 0);
+  if (amount === null || amount === undefined || amount === "" || Number(amount) === 0) {
+    return "-";
+  }
 
-  const normalized =
-    typeof amount === "string" && amount.includes("(") && amount.includes(")")
-      ? -Math.abs(numeric)
-      : numeric;
+  const numeric = typeof amount === "string"
+    ? Number(amount.replace(/,/g, "").replace(/[^\d.-]/g, ""))
+    : Number(amount);
 
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
+  if (isNaN(numeric) || numeric === 0) {
+    return "-";
+  }
+
+  const formatter = new Intl.NumberFormat("en-US", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
-  }).format(normalized);
+  });
+
+  const absValue = Math.abs(numeric);
+  const formatted = formatter.format(absValue);
+
+  return numeric < 0 ? `(${formatted})` : formatted;
 }
 
 export function formatDate(dateStr) {

@@ -1,6 +1,5 @@
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'https://datahub-sl3y.onrender.com').replace(/\/$/, '');
-const LEGACY_TOKEN_KEY = 'leo-auth-token';
-const TOKEN_KEY = `leo-auth-token:${API_BASE_URL}`;
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000').replace(/\/$/, '');
+const TOKEN_KEY = 'leo-auth-token';
 
 function buildUrl(path) {
   return `${API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`;

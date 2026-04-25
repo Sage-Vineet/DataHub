@@ -1,48 +1,7 @@
 import { fetchProfitAndLoss } from "../lib/quickbooks";
 import { normalizeAccountingMethod } from "../lib/report-filters";
-import { parseDetailReport, parseSummaryReport } from "../lib/report-parsers";
+import { parseSummaryReport } from "../lib/report-parsers";
 
-const API_BASE_URL = (
-  import.meta.env.VITE_API_BASE_URL || "http://localhost:4000"
-).replace(/\/$/, "");
-
-function resolveClientIdFromLocation() {
-  if (typeof window === "undefined") return null;
-
-  const hash = window.location.hash || "";
-  const pathname = window.location.pathname || "";
-  const hashMatch = hash.match(/\/client\/([^/?#]+)/);
-  const pathMatch = pathname.match(/\/client\/([^/?#]+)/);
-  const match = hashMatch || pathMatch;
-
-  return match ? decodeURIComponent(match[1]) : null;
-}
-
-function buildQuery(params = {}) {
-  const search = new URLSearchParams(
-    Object.entries(params).filter(([, value]) => value !== undefined && value !== null && value !== ""),
-  );
-  return search.toString() ? `?${search.toString()}` : "";
-}
-
-async function request(path) {
-  const clientId = resolveClientIdFromLocation();
-
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    credentials: "include",
-    cache: "no-store",
-    headers: {
-      ...(clientId ? { "X-Client-Id": clientId } : {}),
-    },
-  });
-
-  const payload = await response.json().catch(() => null);
-  if (!response.ok) {
-    throw new Error(payload?.message || payload?.error || `Request failed: ${response.status}`);
-  }
-
-  return payload;
-}
 
 /**
  * Generates periods for Profit & Loss Comparative Summary.
@@ -51,66 +10,53 @@ async function request(path) {
  * 2. YTD for Current Year (e.g., 2025 YTD)
  * 3. YTD for Previous Year (e.g., 2024 YTD) for comparison
  */
-function getPNLComparativePeriods(endDateString) {
+function getPNLComparativePeriods(numYears = 4) {
   const now = new Date();
-  const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth();
+  const currentDay = now.getDate();
+  const todayStr = `${currentYear}-${String(currentMonth + 1).padStart(2, "0")}-${String(currentDay).padStart(2, "0")}`;
 
-  const endDate = endDateString ? new Date(endDateString) : new Date();
-  const year = isNaN(endDate.getTime())
-    ? now.getFullYear()
-    : endDate.getFullYear();
-  const month = isNaN(endDate.getTime())
-    ? now.getMonth()
-    : endDate.getMonth();
-  const day = isNaN(endDate.getTime()) ? now.getDate() : endDate.getDate();
+  const periods = [];
 
-  // Clamp the input endDate for safety
-  const finalEndDateStr = (endDateString && endDateString < todayStr) ? endDateString : todayStr;
+  // Full previous years (dynamic)
+  for (let i = numYears - 1; i >= 1; i--) {
+    const year = currentYear - i;
+    periods.push({
+      key: `y${year}`,
+      label: `FY ${year}`,
+      start: `${year}-01-01`,
+      end: `${year}-12-31`,
+    });
+  }
 
+  // Current year YTD
+  const currentYearKey = `y${currentYear}`;
+  periods.push({
+    key: currentYearKey,
+    label: `FY ${currentYear} YTD`,
+    start: `${currentYear}-01-01`,
+    end: todayStr,
+  });
 
-  // We'll target 2022, 2023, 2024 as full years,
-  // 2025 as YTD (assuming current year is 2025)
-  // But let's make it relative to the endDate.
-
-  const currentYear = year;
-  const periods = [
-    {
-      key: "y22",
-      label: `FY 2022`,
-      start: `2022-01-01`,
-      end: `2022-12-31`,
-    },
-    {
-      key: "y23",
-      label: `FY 2023`,
-      start: `2023-01-01`,
-      end: `2023-12-31`,
-    },
-    {
-      key: "y24",
-      label: `FY 2024`,
-      start: `2024-01-01`,
-      end: `2024-12-31`,
-    },
-    {
-      key: "y25",
-      label: `FY ${currentYear} YTD`,
-      start: `${currentYear}-01-01`,
-      end: finalEndDateStr,
-    },
-    {
-      key: "y24_ytd",
-      label: `FY ${currentYear - 1} YTD`,
-      start: `${currentYear - 1}-01-01`,
-      end: `${currentYear - 1}-${finalEndDateStr.slice(5)}`,
-    },
-
-  ];
+  // Previous year YTD (same period for comparison)
+  const prevYear = currentYear - 1;
+  const prevYtdKey = `y${prevYear}_ytd`;
+  periods.push({
+    key: prevYtdKey,
+    label: `FY ${prevYear} YTD`,
+    start: `${prevYear}-01-01`,
+    end: `${prevYear}-${String(currentMonth + 1).padStart(2, "0")}-${String(currentDay).padStart(2, "0")}`,
+  });
 
   return periods;
 }
 
-async function fetchSinglePeriodPNL(startDate, endDate, accountingMethod) {
+async function fetchSinglePeriodPNL(
+  startDate,
+  endDate,
+  accountingMethod,
+) {
   try {
     const payload = await fetchProfitAndLoss({
       start_date: startDate,
@@ -140,8 +86,11 @@ function normalizeName(name) {
 }
 
 function mergePNLPeriods(periodResults, periods) {
-  // Use y25 (Current YTD) or the most recent available as the base structure
-  const masterIndex = periods.findIndex((p) => p.key === "y25");
+  // Find the current-year YTD period (the one without _ytd suffix that's most recent)
+  const currentYearKey = periods
+    .filter((p) => !p.key.includes("_ytd"))
+    .pop()?.key;
+  const masterIndex = periods.findIndex((p) => p.key === currentYearKey);
   const masterRows = periodResults[masterIndex] || periodResults[periodResults.length - 1] || [];
 
   if (masterRows.length === 0) return [];
@@ -181,11 +130,27 @@ function mergePNLPeriods(periodResults, periods) {
   return masterRows.map(enrich);
 }
 
-export async function getProfitAndLoss(startDate, endDate, accountingMethod) {
-  // If we are looking for a simple summary (single period), we can still support it,
-  // but the ProfitAndLossSummary component now expects a comparative structure.
+export async function getProfitAndLoss(
+  startDate,
+  endDate,
+  accountingMethod,
+) {
+  // Summary now uses user-selected filters (QuickBooks-style Summary report)
+  const rows = await fetchSinglePeriodPNL(
+    startDate,
+    endDate,
+    accountingMethod,
+  );
+  return rows;
+}
 
-  const periods = getPNLComparativePeriods(endDate);
+export async function getProfitAndLossDetail(
+  startDate,
+  endDate,
+  accountingMethod,
+) {
+  // Detail now uses system-defined multi-year comparison (EBITDA analysis)
+  const periods = getPNLComparativePeriods(4);
 
   const results = await Promise.all(
     periods.map((p) => fetchSinglePeriodPNL(p.start, p.end, accountingMethod)),
@@ -200,11 +165,16 @@ export async function getProfitAndLoss(startDate, endDate, accountingMethod) {
       label: p.label,
     }));
 
+  const currentYearKey = periods
+    .filter((p) => !p.key.includes("_ytd"))
+    .pop()?.key;
+  const prevYtdKey = periods.find((p) => p.key.includes("_ytd"))?.key;
+
   const ytdComparison = {
-    currentKey: "y25",
-    prevKey: "y24_ytd",
-    currentLabel: periods.find((p) => p.key === "y25")?.label,
-    prevLabel: periods.find((p) => p.key === "y24_ytd")?.label,
+    currentKey: currentYearKey,
+    prevKey: prevYtdKey,
+    currentLabel: periods.find((p) => p.key === currentYearKey)?.label,
+    prevLabel: periods.find((p) => p.key === prevYtdKey)?.label,
   };
 
   return {

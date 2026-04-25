@@ -1,9 +1,8 @@
-"use client";
-
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import Header from "../../../components/Header";
 import ExtractedBankRecords from "../../../components/ExtractedBankRecords";
+import { getStoredToken } from "../../../lib/api";
 import { cn } from "../../../lib/utils";
 import {
   AlertCircle,
@@ -266,7 +265,20 @@ export default function WorkspaceReconciliation() {
     });
 
   const getHeaders = useCallback(
-    () => (clientId ? { "X-Client-Id": clientId } : {}),
+    () => {
+      const token = getStoredToken();
+      return {
+        ...(token
+          ? {
+            Authorization: `Bearer ${token}`,
+            "X-Access-Token": token,
+            "X-Auth-Token": token,
+            "X-Token": token,
+          }
+          : {}),
+        ...(clientId ? { "X-Client-Id": clientId } : {}),
+      };
+    },
     [clientId],
   );
 
@@ -377,9 +389,8 @@ export default function WorkspaceReconciliation() {
       setQbBankActivity(data);
       setBankActivityFetchStatus({
         status: "success",
-        message: `Loaded ${data?.months?.length ?? 0} month(s) across ${
-          data?.accounts?.length ?? 0
-        } account(s).`,
+        message: `Loaded ${data?.months?.length ?? 0} month(s) across ${data?.accounts?.length ?? 0
+          } account(s).`,
       });
     } catch (e) {
       setBankActivityError(getErrMsg(e));
@@ -429,9 +440,8 @@ export default function WorkspaceReconciliation() {
       setQbOneBankActivity(data);
       setOneBankActivityFetchStatus({
         status: "success",
-        message: `Loaded ${data?.monthlyData?.length ?? 0} month(s) for ${
-          data?.account?.bankName || "selected account"
-        }.`,
+        message: `Loaded ${data?.monthlyData?.length ?? 0} month(s) for ${data?.account?.bankName || "selected account"
+          }.`,
       });
     } catch (e) {
       setOneBankActivityError(getErrMsg(e));
@@ -465,9 +475,8 @@ export default function WorkspaceReconciliation() {
       setExtractedBankPdfData(normalized);
       setExtractedBankPdfFetchStatus({
         status: "success",
-        message: `Loaded ${normalized?.banks?.length ?? 0} bank(s) across ${
-          normalized?.months?.length ?? 0
-        } month(s).`,
+        message: `Loaded ${normalized?.banks?.length ?? 0} bank(s) across ${normalized?.months?.length ?? 0
+          } month(s).`,
       });
     } catch (e) {
       setExtractedBankPdfError(getErrMsg(e));
@@ -508,9 +517,8 @@ export default function WorkspaceReconciliation() {
       )
       .map((account) => ({
         value: account.accountId,
-        label: `${account.accountName}${
-          account.accountNumber ? ` (${account.accountNumber})` : ""
-        }`,
+        label: `${account.accountName}${account.accountNumber ? ` (${account.accountNumber})` : ""
+          }`,
       }));
   }, [qbBankActivity]);
 
@@ -645,8 +653,8 @@ export default function WorkspaceReconciliation() {
 
   const visibleBalanceAccounts = selectedBalanceBankId
     ? qbBankActivity?.accounts?.filter(
-        (account) => account.accountId === selectedBalanceBankId,
-      ) || []
+      (account) => account.accountId === selectedBalanceBankId,
+    ) || []
     : qbBankActivity?.accounts || [];
   const allBankMonthlyMaps =
     qbBankActivity?.accounts?.map((account) =>
@@ -772,8 +780,8 @@ export default function WorkspaceReconciliation() {
       depositsPctVar:
         acc.salesPerFinancials + r.salesPerFinancials !== 0
           ? ((acc.depositsDollarVar + r.depositsDollarVar) /
-              (acc.salesPerFinancials + r.salesPerFinancials)) *
-            100
+            (acc.salesPerFinancials + r.salesPerFinancials)) *
+          100
           : 0,
       changeInAR: acc.changeInAR + r.changeInAR,
       changeInARRetentions:
@@ -785,8 +793,8 @@ export default function WorkspaceReconciliation() {
       depositsUnreconciledPct:
         acc.salesPerFinancials + r.salesPerFinancials !== 0
           ? ((acc.depositsUnreconciledDollar + r.depositsUnreconciledDollar) /
-              (acc.salesPerFinancials + r.salesPerFinancials)) *
-            100
+            (acc.salesPerFinancials + r.salesPerFinancials)) *
+          100
           : 0,
       totalWithdrawals: acc.totalWithdrawals + r.totalWithdrawals,
       withdrawIntercompanyTransfers:
@@ -798,8 +806,8 @@ export default function WorkspaceReconciliation() {
       withdrawsPctVar:
         acc.expensesPerFinancials + r.expensesPerFinancials !== 0
           ? ((acc.withdrawsDollarVar + r.withdrawsDollarVar) /
-              (acc.expensesPerFinancials + r.expensesPerFinancials)) *
-            100
+            (acc.expensesPerFinancials + r.expensesPerFinancials)) *
+          100
           : 0,
       ownerWithdraws: acc.ownerWithdraws + r.ownerWithdraws,
       changeInCurrentLiabilities:
@@ -817,8 +825,8 @@ export default function WorkspaceReconciliation() {
       withdrawsUnreconciledPct:
         acc.expensesPerFinancials + r.expensesPerFinancials !== 0
           ? ((acc.withdrawsUnreconciledDollar + r.withdrawsUnreconciledDollar) /
-              (acc.expensesPerFinancials + r.expensesPerFinancials)) *
-            100
+            (acc.expensesPerFinancials + r.expensesPerFinancials)) *
+          100
           : 0,
     }),
     buildEmptyActivityReviewRow(),

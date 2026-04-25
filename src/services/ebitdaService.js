@@ -41,28 +41,28 @@ function asArray(value) {
 function extractRows(payload) {
   return asArray(
     payload?.Rows?.Row ||
-      payload?.data?.Rows?.Row ||
-      payload?.data?.data?.Rows?.Row ||
-      payload?.data?.data?.data?.Rows?.Row ||
-      [],
+    payload?.data?.Rows?.Row ||
+    payload?.data?.data?.Rows?.Row ||
+    payload?.data?.data?.data?.Rows?.Row ||
+    [],
   );
 }
 
 function extractHeader(payload) {
   return (
     payload?.Header ||
-      payload?.data?.Header ||
-      payload?.data?.data?.Header ||
-      {}
+    payload?.data?.Header ||
+    payload?.data?.data?.Header ||
+    {}
   );
 }
 
 function getRowLabel(row, fallback = "") {
   return (
     row?.Header?.ColData?.[0]?.value ||
-      row?.Summary?.ColData?.[0]?.value ||
-      row?.ColData?.[0]?.value ||
-      fallback
+    row?.Summary?.ColData?.[0]?.value ||
+    row?.ColData?.[0]?.value ||
+    fallback
   );
 }
 
@@ -479,7 +479,7 @@ export async function getEbitdaData(startDate, endDate, accountingMethod) {
 
     // Extract each component
     const netIncomeMatch = findNetIncome(rows, flatRows);
-    
+
     const interestIncome = extractComponent(flatRows, INTEREST_INCOME_PATTERNS);
     const interestExpense = extractComponent(
       flatRows,
@@ -537,7 +537,7 @@ export async function getEbitdaData(startDate, endDate, accountingMethod) {
 
     // Interest Income is usually an adjustment (subtracted if it's income)
     // We'll treat it separately in the SDE calculation
-    
+
     // EBITDA = Net Income + Unique Add-Backs
     const ebitda = netIncomeMatch.value + uniqueAddBackTotal;
 

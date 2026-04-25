@@ -15,6 +15,7 @@ const reminderRoutes = require("./routes/reminders");
 const activityRoutes = require("./routes/activity");
 const uploadRoutes = require("./routes/uploads");
 const messageRoutes = require("./routes/messages");
+const workspacePageStateRoutes = require("./routes/workspacePageState");
 const balanceSheetRoutes = require("./routes/quickbooks/balancesheet/balanceSheet");
 const balanceSheetDetailRoutes = require("./routes/quickbooks/balancesheet/balanceSheetFullDetail");
 const tokenRoutes = require("./routes/quickbooks/token");
@@ -26,6 +27,7 @@ const invoiceFinanceRoutes = require("./routes/quickbooks/invoices/invoices");
 const cashflowRoutes = require("./routes/quickbooks/cash_flow/cash_flow");
 const reconciliationRoutes = require("./routes/quickbooks/reconciliation/Reconciliation");
 const taxReconciliationRoutes = require("./routes/quickbooks/tax_reconciliation/Tax_Reconciliation");
+const geminipdf = require("./routes/quickbooks/tax_reconciliation/geminiPdf");
 const bankStatementRoutes = require("./routes/quickbooks/reconciliation/bankStatement");
 const bankVsBooksRoutes = require("./routes/quickbooks/reconciliation/bankVsBooks");
 const db = require("./db");
@@ -84,7 +86,6 @@ const allowedOrigins = Array.from(
       "http://127.0.0.1:5175",
       "http://localhost:3000",
       "http://127.0.0.1:3000",
-      "https://data-hub-fawn.vercel.app",
     ]
     //   .filter(Boolean)
     //   .map((origin) => origin.replace(/\/$/, "")),
@@ -124,6 +125,8 @@ app.use("/users", userRoutes);
 app.use("/companies", companyRoutes);
 app.use("/", tokenRoutes);
 app.use("/", uploadRoutes);
+app.use("/", geminipdf);
+app.use("/", workspacePageStateRoutes);
 
 function normalizeCompanyName(name) {
   return String(name || "")

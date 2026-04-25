@@ -18,7 +18,8 @@ import {
   Users,
 } from 'lucide-react';
 import { getCompanyRequest, listCompanyActivity, listCompanyReminders, listCompanyRequests } from '../../../lib/api';
-import { fetchQuickbooksInvoices, formatCurrency, getConnectionStatus } from '../../../lib/quickbooks';
+import { fetchQuickbooksInvoices, getConnectionStatus } from '../../../lib/quickbooks';
+import { formatCurrency } from '../../../lib/utils';
 import StatusBadge from '../../../components/common/StatusBadge';
 import { useToast } from '../../../context/ToastContext';
 

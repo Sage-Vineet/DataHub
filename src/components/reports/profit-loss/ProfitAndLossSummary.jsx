@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useCallback } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { cn } from "../../../lib/utils";
+import { cn, formatCurrency } from "../../../lib/utils";
 
 // ─── Utility Functions ───────────────────────────────────────────────────────
 
@@ -9,14 +9,8 @@ import { cn } from "../../../lib/utils";
  * Negative values are shown in brackets. 
  * Note: Decimals are omitted for a cleaner summary vPiew as per requirement.
  */
-const formatIndianCurrency = (value) => {
-  if (value === undefined || value === null || value === "" || value === 0) return "-";
-  const num = typeof value === "string" ? parseFloat(value.replace(/,/g, "")) : Number(value);
-  if (!Number.isFinite(num) || num === 0) return "-";
-
-  const absVal = Math.round(Math.abs(num));
-  const formatted = absVal.toLocaleString("en-IN");
-  return num < 0 ? `(${formatted})` : formatted;
+const formatValue = (value) => {
+  return formatCurrency(value);
 };
 
 const formatPercentage = (value) => {
@@ -115,27 +109,87 @@ const PNLRow = ({ line, depth = 0, columns }) => {
 
         {/* Dynamic Year Columns */}
         {yearValues.map((val, idx) => (
-          <td key={idx} className="py-2.5 px-3 text-right tabular-nums text-[14px] text-text-secondary">
-            {formatIndianCurrency(val)}
+          <td
+            key={idx}
+            className={cn(
+              "py-2.5 px-3 text-right tabular-nums text-[14px]",
+              val < 0 ? "text-status-error font-semibold" : "text-text-secondary",
+            )}
+          >
+            {formatValue(val)}
           </td>
         ))}
 
         {/* Current YTD Highlight */}
-        <td className="py-2.5 px-3 text-right tabular-nums text-[14px] font-semibold text-text-primary bg-blue-50/20">
-          {formatIndianCurrency(currentYTD)}
+        <td
+          className={cn(
+            "py-2.5 px-3 text-right tabular-nums text-[14px] font-semibold bg-blue-50/20",
+            currentYTD < 0 ? "text-status-error" : "text-text-primary",
+          )}
+        >
+          {formatValue(currentYTD)}
         </td>
 
         {/* Variances */}
-        <td className="py-2.5 px-3 text-right tabular-nums text-[14px] text-text-muted">{formatIndianCurrency(v23Var)}</td>
-        <td className="py-2.5 px-3 text-right tabular-nums text-[13px] text-text-muted border-r border-border-light">{formatPercentage(v23Pct)}</td>
+        <td
+          className={cn(
+            "py-2.5 px-3 text-right tabular-nums text-[14px]",
+            v23Var < 0 ? "text-status-error font-semibold" : "text-text-muted",
+          )}
+        >
+          {formatValue(v23Var)}
+        </td>
+        <td
+          className={cn(
+            "py-2.5 px-3 text-right tabular-nums text-[13px] border-r border-border-light",
+            v23Pct < 0 ? "text-status-error" : "text-text-muted",
+          )}
+        >
+          {formatPercentage(v23Pct)}
+        </td>
 
-        <td className="py-2.5 px-3 text-right tabular-nums text-[14px] text-text-muted">{formatIndianCurrency(v24Var)}</td>
-        <td className="py-2.5 px-3 text-right tabular-nums text-[13px] text-text-muted border-r border-border-light">{formatPercentage(v24Pct)}</td>
+        <td
+          className={cn(
+            "py-2.5 px-3 text-right tabular-nums text-[14px]",
+            v24Var < 0 ? "text-status-error font-semibold" : "text-text-muted",
+          )}
+        >
+          {formatValue(v24Var)}
+        </td>
+        <td
+          className={cn(
+            "py-2.5 px-3 text-right tabular-nums text-[13px] border-r border-border-light",
+            v24Pct < 0 ? "text-status-error" : "text-text-muted",
+          )}
+        >
+          {formatPercentage(v24Pct)}
+        </td>
 
         {/* YTD Analysis */}
-        <td className="py-2.5 px-3 text-right tabular-nums text-[14px] text-text-secondary">{formatIndianCurrency(prevYTD)}</td>
-        <td className="py-2.5 px-3 text-right tabular-nums text-[14px] font-semibold text-primary">{formatIndianCurrency(ytdVar)}</td>
-        <td className="py-2.5 px-4 text-right tabular-nums text-[13px] font-bold text-text-primary">{formatPercentage(ytdPct)}</td>
+        <td
+          className={cn(
+            "py-2.5 px-3 text-right tabular-nums text-[14px]",
+            prevYTD < 0 ? "text-status-error font-semibold" : "text-text-secondary",
+          )}
+        >
+          {formatValue(prevYTD)}
+        </td>
+        <td
+          className={cn(
+            "py-2.5 px-3 text-right tabular-nums text-[14px] font-semibold",
+            ytdVar < 0 ? "text-status-error" : "text-primary",
+          )}
+        >
+          {formatValue(ytdVar)}
+        </td>
+        <td
+          className={cn(
+            "py-2.5 px-4 text-right tabular-nums text-[13px] font-bold",
+            ytdPct < 0 ? "text-status-error" : "text-text-primary",
+          )}
+        >
+          {formatPercentage(ytdPct)}
+        </td>
       </tr>
 
       {hasChildren && isOpen && (
