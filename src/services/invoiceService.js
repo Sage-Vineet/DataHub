@@ -1,10 +1,12 @@
 import { fetchQuickbooksInvoices } from "../lib/quickbooks";
+import { getStoredToken } from "../lib/api";
 
 const API_BASE_URL = (
   import.meta.env.VITE_API_BASE_URL || "http://localhost:4000"
 ).replace(/\/$/, "");
 
 async function request(path, options = {}) {
+  const token = getStoredToken();
   const response = await fetch(`${API_BASE_URL}${path}`, {
     cache: "no-store",
     credentials: "include",
@@ -12,6 +14,14 @@ async function request(path, options = {}) {
     headers: {
       ...(options.body && !(options.body instanceof FormData)
         ? { "Content-Type": "application/json" }
+        : {}),
+      ...(token
+        ? {
+            Authorization: `Bearer ${token}`,
+            "X-Access-Token": token,
+            "X-Auth-Token": token,
+            "X-Token": token,
+          }
         : {}),
       ...(options.headers || {}),
     },

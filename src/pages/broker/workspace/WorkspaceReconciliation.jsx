@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import Header from "../../../components/Header";
 import ExtractedBankRecords from "../../../components/ExtractedBankRecords";
+import { getStoredToken } from "../../../lib/api";
 import { cn } from "../../../lib/utils";
 import {
   AlertCircle,
@@ -266,7 +267,20 @@ export default function WorkspaceReconciliation() {
     });
 
   const getHeaders = useCallback(
-    () => (clientId ? { "X-Client-Id": clientId } : {}),
+    () => {
+      const token = getStoredToken();
+      return {
+        ...(token
+          ? {
+              Authorization: `Bearer ${token}`,
+              "X-Access-Token": token,
+              "X-Auth-Token": token,
+              "X-Token": token,
+            }
+          : {}),
+        ...(clientId ? { "X-Client-Id": clientId } : {}),
+      };
+    },
     [clientId],
   );
 

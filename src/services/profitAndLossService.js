@@ -1,4 +1,5 @@
 import { fetchProfitAndLoss } from "../lib/quickbooks";
+import { getStoredToken } from "../lib/api";
 import { normalizeAccountingMethod } from "../lib/report-filters";
 import { parseDetailReport, parseSummaryReport } from "../lib/report-parsers";
 
@@ -27,11 +28,20 @@ function buildQuery(params = {}) {
 
 async function request(path) {
   const clientId = resolveClientIdFromLocation();
+  const token = getStoredToken();
 
   const response = await fetch(`${API_BASE_URL}${path}`, {
     credentials: "include",
     cache: "no-store",
     headers: {
+      ...(token
+        ? {
+            Authorization: `Bearer ${token}`,
+            "X-Access-Token": token,
+            "X-Auth-Token": token,
+            "X-Token": token,
+          }
+        : {}),
       ...(clientId ? { "X-Client-Id": clientId } : {}),
     },
   });

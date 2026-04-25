@@ -1,4 +1,5 @@
 import { fetchBalanceSheet } from "../lib/quickbooks";
+import { getStoredToken } from "../lib/api";
 import { normalizeAccountingMethod } from "../lib/report-filters";
 import {
   parseBalanceSheetDetailFromAllReports,
@@ -340,6 +341,7 @@ export async function getBalanceSheet(startDate, endDate, accountingMethod) {
 
 export async function getBalanceSheetDetail(startDate, endDate, accountingMethod) {
   const clientId = resolveClientIdFromLocation();
+  const token = getStoredToken();
   const search = new URLSearchParams({
     ...(startDate ? { start_date: startDate } : {}),
     ...(endDate ? { end_date: endDate } : {}),
@@ -348,7 +350,17 @@ export async function getBalanceSheetDetail(startDate, endDate, accountingMethod
 
   const response = await fetch(`${API_BASE_URL}/all-reports${search ? `?${search}` : ""}`, {
     credentials: "include",
-    headers: { ...(clientId ? { "X-Client-Id": clientId } : {}) },
+    headers: {
+      ...(token
+        ? {
+            Authorization: `Bearer ${token}`,
+            "X-Access-Token": token,
+            "X-Auth-Token": token,
+            "X-Token": token,
+          }
+        : {}),
+      ...(clientId ? { "X-Client-Id": clientId } : {}),
+    },
   });
 
   const payload = await response.json();

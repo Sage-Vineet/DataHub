@@ -55,10 +55,14 @@ function WorkspaceSidebar({ company, onClose }) {
       icon: TrendingUp,
       to: `${basePath}/datahub-dashboard`,
     },
-    { label: "Client Invoices", icon: Receipt, to: `${basePath}/invoices` },
+    { label: "Invoices", icon: Receipt, to: `${basePath}/invoices` },
     { label: "Reports", icon: BarChart3, to: `${basePath}/reports` },
     { label: "EBITDA", icon: Calculator, to: `${basePath}/ebitda` },
-    { label: "Reconciliation", icon: Scale, to: `${basePath}/reconciliation` },
+    {
+      label: "Bank Reconciliation",
+      icon: Scale,
+      to: `${basePath}/reconciliation`,
+    },
     {
       label: "Tax Reconciliation",
       icon: FileCheck,

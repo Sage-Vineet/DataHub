@@ -2,11 +2,17 @@ const API_BASE_URL = (
   import.meta.env.VITE_API_BASE_URL || "http://localhost:4000"
 ).replace(/\/$/, "");
 
+function getStoredToken() {
+  if (typeof window === "undefined") return null;
+  return window.localStorage.getItem("leo-auth-token");
+}
+
 async function request(path, options = {}) {
   // Extract clientId from URL hash: #/broker/client/:clientId/...
   const hash = window.location.hash || "";
   const match = hash.match(/\/client\/([^/]+)/);
   const clientId = match ? match[1] : null;
+  const token = getStoredToken();
 
   const response = await fetch(`${API_BASE_URL}${path}`, {
     cache: "no-store",
@@ -15,6 +21,14 @@ async function request(path, options = {}) {
     headers: {
       ...(options.body && !(options.body instanceof FormData)
         ? { "Content-Type": "application/json" }
+        : {}),
+      ...(token
+        ? {
+            Authorization: `Bearer ${token}`,
+            "X-Access-Token": token,
+            "X-Auth-Token": token,
+            "X-Token": token,
+          }
         : {}),
       ...(clientId ? { "X-Client-Id": clientId } : {}),
       ...(options.headers || {}),
