@@ -1,5 +1,3 @@
-"use client";
-
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import Header from "../../../components/Header";

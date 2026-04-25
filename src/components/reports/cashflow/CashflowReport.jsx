@@ -1,5 +1,4 @@
-import CashflowSummary from "./CashflowSummary";
-import CashflowDetail from "./CashflowDetail";
+import CashflowQBSummary from "./CashflowQBSummary";
 
 export default function CashflowReport({
   reportType,
@@ -10,7 +9,6 @@ export default function CashflowReport({
   accountingMethod,
   clientName = "All Clients",
   entityName,
-  createdOn,
   isPreview = false,
 }) {
   const subtitle = `Report Period: ${startDate || "N/A"} to ${endDate || "N/A"} | ${clientName} | ${accountingMethod} Basis`;
@@ -19,22 +17,20 @@ export default function CashflowReport({
   if (reportType === "Detail") {
     return (
       <CashflowDetail
-        data={detailedData?.groups ? detailedData : { groups: [] }}
+        data={detailedData}
         title="Cash Flow"
-        subtitle={subtitle}
+        subtitle="System-defined Multi-Year Comparison"
         entityName={resolvedEntityName}
-        isPreview={isPreview}
       />
     );
   }
 
   return (
-    <CashflowSummary
+    <CashflowQBSummary
       data={Array.isArray(data) ? data : []}
       title="Cash Flow"
       subtitle={subtitle}
       entityName={resolvedEntityName}
-      createdOn={createdOn}
     />
   );
 }
