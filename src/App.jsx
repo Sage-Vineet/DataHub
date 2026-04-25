@@ -24,6 +24,7 @@ import ClientDashboard from "./pages/client/Dashboard";
 import ClientRequests from "./pages/client/Requests";
 import ClientUpload from "./pages/client/Upload";
 import ClientReminders from "./pages/client/Reminders";
+import ClientConnections from "./pages/client/Connections";
 import WorkspaceDashboard from "./pages/broker/workspace/WorkspaceDashboard";
 import WorkspaceDashboardDatahub from "./pages/broker/workspace/WorkspaceDashboardDatahub";
 import WorkspaceRequests from "./pages/broker/workspace/WorkspaceRequests";
@@ -186,7 +187,7 @@ function AppRoutes() {
                   ? "/broker/dashboard"
                   : user.role === "user"
                     ? "/client/upload"
-                  : "/client/dashboard"
+                    : "/client/dashboard"
               }
               replace
             />
@@ -313,6 +314,14 @@ function AppRoutes() {
         element={
           <ProtectedRoute allowedRole="client">
             <ClientReminders />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/client/connections"
+        element={
+          <ProtectedRoute allowedRole="client">
+            <ClientConnections />
           </ProtectedRoute>
         }
       />

@@ -17,11 +17,11 @@ async function request(path, options = {}) {
         : {}),
       ...(token
         ? {
-            Authorization: `Bearer ${token}`,
-            "X-Access-Token": token,
-            "X-Auth-Token": token,
-            "X-Token": token,
-          }
+          Authorization: `Bearer ${token}`,
+          "X-Access-Token": token,
+          "X-Auth-Token": token,
+          "X-Token": token,
+        }
         : {}),
       ...(options.headers || {}),
     },

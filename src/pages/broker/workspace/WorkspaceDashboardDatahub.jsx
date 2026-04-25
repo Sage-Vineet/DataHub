@@ -209,7 +209,7 @@ function deriveFilterStateFromRange(start, end, fallbackYear) {
     year: startDate.getFullYear(),
     month:
       startDate.getFullYear() === endDate.getFullYear() &&
-      startDate.getMonth() === endDate.getMonth()
+        startDate.getMonth() === endDate.getMonth()
         ? String(startDate.getMonth() + 1)
         : "",
   };
@@ -286,11 +286,11 @@ export default function WorkspaceDashboardDatahub() {
       return {
         ...(token
           ? {
-              Authorization: `Bearer ${token}`,
-              "X-Access-Token": token,
-              "X-Auth-Token": token,
-              "X-Token": token,
-            }
+            Authorization: `Bearer ${token}`,
+            "X-Access-Token": token,
+            "X-Auth-Token": token,
+            "X-Token": token,
+          }
           : {}),
         ...(clientId ? { "X-Client-Id": clientId } : {}),
         ...(includeJson ? { "Content-Type": "application/json" } : {}),
@@ -390,7 +390,7 @@ export default function WorkspaceDashboardDatahub() {
     const hydratedStats = hydrateDashboardStats(snapshot.dynamicStats || []);
     const restoredKpiLabels =
       Array.isArray(snapshot.selectedKpiLabels) &&
-      snapshot.selectedKpiLabels.length > 0
+        snapshot.selectedKpiLabels.length > 0
         ? snapshot.selectedKpiLabels
         : hydratedStats.map((stat) => stat.label);
 
@@ -574,13 +574,13 @@ export default function WorkspaceDashboardDatahub() {
           current.length
             ? current
             : [
-                {
-                  label: "Profit & Loss",
-                  value: "Connected",
-                  color: "#8bc53d",
-                  desc: "Profit and loss report is available",
-                },
-              ],
+              {
+                label: "Profit & Loss",
+                value: "Connected",
+                color: "#8bc53d",
+                desc: "Profit and loss report is available",
+              },
+            ],
         );
       }
     } finally {
@@ -1347,19 +1347,19 @@ export default function WorkspaceDashboardDatahub() {
                       dy={10}
                       angle={
                         aggregationType === "monthly" &&
-                        chartDataState.length > 6
+                          chartDataState.length > 6
                           ? -45
                           : 0
                       }
                       textAnchor={
                         aggregationType === "monthly" &&
-                        chartDataState.length > 6
+                          chartDataState.length > 6
                           ? "end"
                           : "middle"
                       }
                       height={
                         aggregationType === "monthly" &&
-                        chartDataState.length > 6
+                          chartDataState.length > 6
                           ? 60
                           : 30
                       }
@@ -1525,120 +1525,120 @@ export default function WorkspaceDashboardDatahub() {
                 <tbody className="divide-y divide-border">
                   {isLoading
                     ? Array.from({ length: 5 }).map((_, i) => (
-                        <tr key={i}>
-                          <td colSpan={6} className="py-4 px-4">
-                            <div className="skeleton h-8 w-full rounded-md" />
-                          </td>
-                        </tr>
-                      ))
+                      <tr key={i}>
+                        <td colSpan={6} className="py-4 px-4">
+                          <div className="skeleton h-8 w-full rounded-md" />
+                        </td>
+                      </tr>
+                    ))
                     : invoicesData
-                        .filter((inv) => {
-                          const s = searchTerm.toLowerCase();
-                          return (
-                            (inv.DocNumber || inv.id || "")
-                              .toLowerCase()
-                              .includes(s) ||
-                            (inv.CustomerRef?.name || inv.customer || "")
-                              .toLowerCase()
-                              .includes(s)
-                          );
-                        })
-                        .slice(0, 5)
-                        .map((inv, i) => {
-                          const amount = inv.TotalAmt || inv.amount || 0;
-                          const balance = inv.Balance || inv.balance || 0;
+                      .filter((inv) => {
+                        const s = searchTerm.toLowerCase();
+                        return (
+                          (inv.DocNumber || inv.id || "")
+                            .toLowerCase()
+                            .includes(s) ||
+                          (inv.CustomerRef?.name || inv.customer || "")
+                            .toLowerCase()
+                            .includes(s)
+                        );
+                      })
+                      .slice(0, 5)
+                      .map((inv, i) => {
+                        const amount = inv.TotalAmt || inv.amount || 0;
+                        const balance = inv.Balance || inv.balance || 0;
 
-                          let status = "open";
-                          if (balance === 0) status = "paid";
-                          else if (
-                            inv.DueDate &&
-                            new Date(inv.DueDate) < new Date()
-                          )
-                            status = "overdue";
+                        let status = "open";
+                        if (balance === 0) status = "paid";
+                        else if (
+                          inv.DueDate &&
+                          new Date(inv.DueDate) < new Date()
+                        )
+                          status = "overdue";
 
-                          const STATUS_CFG = {
-                            paid: {
-                              label: "Paid",
-                              icon: CheckCircle2,
-                              color: "bg-[#8bc53d] text-white",
-                            },
-                            open: {
-                              label: "Open",
-                              icon: Clock,
-                              color: "bg-[#00648F] text-white",
-                            },
-                            overdue: {
-                              label: "Overdue",
-                              icon: AlertCircle,
-                              color: "bg-[#C62026] text-white",
-                            },
-                            draft: {
-                              label: "Draft",
-                              icon: FileText,
-                              color: "bg-[#6D6E71] text-white",
-                            },
-                          };
-                          const config = STATUS_CFG[status] || STATUS_CFG.open;
+                        const STATUS_CFG = {
+                          paid: {
+                            label: "Paid",
+                            icon: CheckCircle2,
+                            color: "bg-[#8bc53d] text-white",
+                          },
+                          open: {
+                            label: "Open",
+                            icon: Clock,
+                            color: "bg-[#00648F] text-white",
+                          },
+                          overdue: {
+                            label: "Overdue",
+                            icon: AlertCircle,
+                            color: "bg-[#C62026] text-white",
+                          },
+                          draft: {
+                            label: "Draft",
+                            icon: FileText,
+                            color: "bg-[#6D6E71] text-white",
+                          },
+                        };
+                        const config = STATUS_CFG[status] || STATUS_CFG.open;
 
-                          return (
-                            <tr
-                              key={inv.id || i}
-                              className="group hover:bg-bg-page/50 transition-colors"
-                            >
-                              <td className="py-3 px-6">
-                                <div className="flex flex-col">
-                                  <span className="text-[14px] font-medium text-text-primary">
-                                    #
-                                    {inv.DocNumber ||
-                                      inv.id ||
-                                      `INV-00${i + 1}`}
-                                  </span>
-                                  <span className="text-[12px] text-text-muted">
-                                    {new Date(
-                                      inv.MetaData?.CreateTime ||
-                                        inv.date ||
-                                        Date.now(),
-                                    ).toLocaleDateString("en-US", {
-                                      month: "short",
-                                      day: "numeric",
-                                      year: "numeric",
-                                    })}
-                                  </span>
-                                </div>
-                              </td>
-                              <td className="py-3 px-4 text-[14px] text-text-secondary">
-                                {inv.CustomerRef?.name ||
-                                  inv.customer ||
-                                  "Unknown Client"}
-                              </td>
-                              <td className="py-3 px-4 text-[14px] text-text-secondary">
-                                {inv.DueDate || inv.dueDate || "N/A"}
-                              </td>
-                              <td className="py-3 px-4 text-right text-[14px] font-semibold text-text-primary tabular-nums">
-                                $
-                                {Number(amount).toLocaleString("en-US", {
-                                  minimumFractionDigits: 2,
-                                })}
-                              </td>
-                              <td className="py-3 px-4 text-right text-[14px] font-medium text-text-primary tabular-nums">
-                                $
-                                {Number(balance).toLocaleString("en-US", {
-                                  minimumFractionDigits: 2,
-                                })}
-                              </td>
-                              <td className="py-3 px-4 text-center">
-                                <div
-                                  className={cn(
-                                    "inline-flex items-center justify-center px-4 py-1.5 rounded-full text-[12px] font-bold capitalize min-w-[80px]",
-                                    config.color,
-                                  )}
-                                >
-                                  {config.label}
-                                </div>
-                              </td>
-                            </tr>
-                          );
-                        })}
+                        return (
+                          <tr
+                            key={inv.id || i}
+                            className="group hover:bg-bg-page/50 transition-colors"
+                          >
+                            <td className="py-3 px-6">
+                              <div className="flex flex-col">
+                                <span className="text-[14px] font-medium text-text-primary">
+                                  #
+                                  {inv.DocNumber ||
+                                    inv.id ||
+                                    `INV-00${i + 1}`}
+                                </span>
+                                <span className="text-[12px] text-text-muted">
+                                  {new Date(
+                                    inv.MetaData?.CreateTime ||
+                                    inv.date ||
+                                    Date.now(),
+                                  ).toLocaleDateString("en-US", {
+                                    month: "short",
+                                    day: "numeric",
+                                    year: "numeric",
+                                  })}
+                                </span>
+                              </div>
+                            </td>
+                            <td className="py-3 px-4 text-[14px] text-text-secondary">
+                              {inv.CustomerRef?.name ||
+                                inv.customer ||
+                                "Unknown Client"}
+                            </td>
+                            <td className="py-3 px-4 text-[14px] text-text-secondary">
+                              {inv.DueDate || inv.dueDate || "N/A"}
+                            </td>
+                            <td className="py-3 px-4 text-right text-[14px] font-semibold text-text-primary tabular-nums">
+                              $
+                              {Number(amount).toLocaleString("en-US", {
+                                minimumFractionDigits: 2,
+                              })}
+                            </td>
+                            <td className="py-3 px-4 text-right text-[14px] font-medium text-text-primary tabular-nums">
+                              $
+                              {Number(balance).toLocaleString("en-US", {
+                                minimumFractionDigits: 2,
+                              })}
+                            </td>
+                            <td className="py-3 px-4 text-center">
+                              <div
+                                className={cn(
+                                  "inline-flex items-center justify-center px-4 py-1.5 rounded-full text-[12px] font-bold capitalize min-w-[80px]",
+                                  config.color,
+                                )}
+                              >
+                                {config.label}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
                 </tbody>
               </table>
             </div>

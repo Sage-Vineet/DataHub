@@ -208,10 +208,10 @@ function SyncStatus({ sync }) {
       className={cn(
         "inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-[12px] font-medium",
         sync.status === "loading" &&
-          "border-primary/20 bg-primary/5 text-primary",
+        "border-primary/20 bg-primary/5 text-primary",
         sync.status === "error" && "border-red-200 bg-red-50 text-red-700",
         sync.status === "success" &&
-          "border-emerald-200 bg-emerald-50 text-emerald-700",
+        "border-emerald-200 bg-emerald-50 text-emerald-700",
         sync.status === "idle" && "border-border bg-white text-text-secondary",
       )}
     >
@@ -261,11 +261,11 @@ export default function WorkspaceTaxReconciliation() {
     return {
       ...(token
         ? {
-            Authorization: `Bearer ${token}`,
-            "X-Access-Token": token,
-            "X-Auth-Token": token,
-            "X-Token": token,
-          }
+          Authorization: `Bearer ${token}`,
+          "X-Access-Token": token,
+          "X-Auth-Token": token,
+          "X-Token": token,
+        }
         : {}),
       ...(clientId ? { "X-Client-Id": clientId } : {}),
     };

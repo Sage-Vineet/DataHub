@@ -1075,3 +1075,4 @@ export function parseCashflowEngineDetailReport(payload, fallbackDate) {
     ),
   };
 }
+

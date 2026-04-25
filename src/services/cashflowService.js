@@ -1,5 +1,4 @@
 import { fetchCashflow } from "../lib/quickbooks";
-import { getStoredToken } from "../lib/api";
 import { normalizeAccountingMethod } from "../lib/report-filters";
 import {
   parseCashflowEngineDetailReport,
@@ -33,20 +32,11 @@ function buildQuery(params = {}) {
 
 async function request(path) {
   const clientId = resolveClientIdFromLocation();
-  const token = getStoredToken();
 
   const response = await fetch(`${API_BASE_URL}${path}`, {
     credentials: "include",
     cache: "no-store",
     headers: {
-      ...(token
-        ? {
-            Authorization: `Bearer ${token}`,
-            "X-Access-Token": token,
-            "X-Auth-Token": token,
-            "X-Token": token,
-          }
-        : {}),
       ...(clientId ? { "X-Client-Id": clientId } : {}),
     },
   });
@@ -55,8 +45,8 @@ async function request(path) {
   if (!response.ok) {
     throw new Error(
       payload?.message ||
-        payload?.error ||
-        `Request failed: ${response.status}`,
+      payload?.error ||
+      `Request failed: ${response.status}`,
     );
   }
 

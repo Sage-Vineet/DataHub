@@ -7,6 +7,7 @@ import {
   LogOut,
   Upload,
   ClipboardList,
+  Database,
   X,
   MoreHorizontal,
   LifeBuoy,
@@ -24,6 +25,7 @@ const clientNav = [
   { label: "My Requests", icon: ClipboardList, to: "/client/requests" },
   { label: "Upload Documents", icon: Upload, to: "/client/upload" },
   { label: "Reminders", icon: Bell, to: "/client/reminders" },
+  { label: "QuickBooks", icon: Database, to: "/client/connections" },
   { label: "Help & Support", icon: LifeBuoy, to: "/support" },
 ];
 
@@ -76,10 +78,9 @@ export default function Sidebar({ onClose }) {
               to={item.to}
               onClick={onClose}
               className={({ isActive }) =>
-                `relative flex items-center gap-3 rounded-md px-3 py-2.5 text-[14px] font-medium transition-all duration-200 ${
-                  isActive
-                    ? "bg-[#EEF6E0] text-primary font-semibold"
-                    : "text-secondary hover:bg-[#F0F7E6] hover:text-text-primary"
+                `relative flex items-center gap-3 rounded-md px-3 py-2.5 text-[14px] font-medium transition-all duration-200 ${isActive
+                  ? "bg-[#EEF6E0] text-primary font-semibold"
+                  : "text-secondary hover:bg-[#F0F7E6] hover:text-text-primary"
                 }`
               }
             >

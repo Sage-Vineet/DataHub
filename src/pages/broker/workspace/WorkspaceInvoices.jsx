@@ -161,9 +161,9 @@ function getInvoiceLineItems(invoice) {
 function getDiscountAmount(invoice) {
   return Array.isArray(invoice?.Line)
     ? invoice.Line.reduce((total, line) => {
-        if (line?.DetailType !== "DiscountLineDetail") return total;
-        return total + Number(line?.Amount || 0);
-      }, 0)
+      if (line?.DetailType !== "DiscountLineDetail") return total;
+      return total + Number(line?.Amount || 0);
+    }, 0)
     : 0;
 }
 
@@ -831,9 +831,9 @@ export default function WorkspaceInvoices() {
   const weightedServicePercent =
     annualSummary.invoiceAmount > 0
       ? monthRows.reduce(
-          (total, row) => total + row.servicePercent * row.invoiceAmount,
-          0,
-        ) / annualSummary.invoiceAmount
+        (total, row) => total + row.servicePercent * row.invoiceAmount,
+        0,
+      ) / annualSummary.invoiceAmount
       : 0;
 
   const isComplexUpdate = (original, data) =>
@@ -897,13 +897,13 @@ export default function WorkspaceInvoices() {
       previous.map((invoice) =>
         invoice.id === editingInvoice.id
           ? normalizeInvoice({
-              ...invoice.raw,
-              ...updatedInvoice,
-              DocNumber: updatedInvoice?.DocNumber || formData.docNumber,
-              DueDate: updatedInvoice?.DueDate || formData.dueDate,
-              PrivateNote:
-                updatedInvoice?.PrivateNote || formData.privateNote || "",
-            })
+            ...invoice.raw,
+            ...updatedInvoice,
+            DocNumber: updatedInvoice?.DocNumber || formData.docNumber,
+            DueDate: updatedInvoice?.DueDate || formData.dueDate,
+            PrivateNote:
+              updatedInvoice?.PrivateNote || formData.privateNote || "",
+          })
           : invoice,
       ),
     );
@@ -1272,7 +1272,7 @@ export default function WorkspaceInvoices() {
                         {formatCurrency(
                           annualSummary.totalInvoices > 0
                             ? annualSummary.invoiceAmount /
-                                annualSummary.totalInvoices
+                            annualSummary.totalInvoices
                             : 0,
                         )}
                       </td>
@@ -1283,7 +1283,7 @@ export default function WorkspaceInvoices() {
                         {formatCurrency(
                           annualSummary.totalPaidInvoices > 0
                             ? annualSummary.totalPostedAmount /
-                                annualSummary.totalPaidInvoices
+                            annualSummary.totalPaidInvoices
                             : 0,
                         )}
                       </td>

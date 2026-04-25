@@ -10,7 +10,17 @@ const {
 } = require("../../qbconfig");
 const { logQuickBooksDebug, maskValue } = require("../../quickbooksLogger");
 
+const { requireAuth } = require("../../middleware/auth");
 const router = express.Router();
+
+// Public callback (OAuth redirect)
+// router.get("/api/auth/callback", ...) -> defined later
+
+// Protected routes
+// router.get("/api/auth/quickbooks", requireAuth, ...)
+// router.get("/api/auth/status", requireAuth, ...)
+// router.get("/api/auth/disconnect", requireAuth, ...)
+// router.get("/refresh-token", requireAuth, ...)
 
 function parseOAuthState(rawState) {
   if (!rawState) return {};
@@ -28,7 +38,11 @@ function parseOAuthState(rawState) {
 
   for (const candidate of candidates) {
     try {
-      return JSON.parse(candidate);
+      const parsed = JSON.parse(candidate);
+      // Support both clientId and companyId for backward compatibility
+      if (parsed.companyId && !parsed.clientId) parsed.clientId = parsed.companyId;
+      if (parsed.clientId && !parsed.companyId) parsed.companyId = parsed.clientId;
+      return parsed;
     } catch (_) {
       // Keep trying.
     }
@@ -37,11 +51,14 @@ function parseOAuthState(rawState) {
   return { redirect: String(rawState) };
 }
 
-function buildOAuthState(redirectHash, clientId) {
+function buildOAuthState(redirectHash, companyId, role = "broker", userId = null) {
   return encodeURIComponent(
     JSON.stringify({
       redirect: redirectHash || "/broker/companies",
-      clientId,
+      companyId,
+      clientId: companyId, // for backward compat
+      role,
+      userId,
     }),
   );
 }
@@ -52,14 +69,30 @@ function buildOAuthState(redirectHash, clientId) {
 function getClientId(req) {
   let clientId = req.headers["x-client-id"] || req.query.clientId;
 
+  // Fallback 1: Authenticated user's company
+  if (!clientId && req.user) {
+    clientId = req.user.company_id || (req.user.company_ids && req.user.company_ids[0]);
+  }
+
+  // Fallback 2: OAuth State
   if (!clientId && req.query.state) {
     const parsedState = parseOAuthState(req.query.state);
     clientId = parsedState.clientId;
 
     if (!clientId && parsedState.redirect) {
       const match = parsedState.redirect.match(/\/client\/([^/]+)/);
-      if (match) clientId = match[1];
+      // Skip if the segment is a known UI route like 'connections'
+      if (match && match[1] !== 'connections' && match[1] !== 'dashboard') {
+        clientId = match[1];
+      }
     }
+  }
+
+  // Final Validation: Ensure it's a valid UUID
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (clientId && !uuidRegex.test(clientId)) {
+    console.warn(`[getClientId] Rejected invalid UUID: ${clientId}`);
+    return null;
   }
 
   return clientId;
@@ -124,7 +157,7 @@ async function getWorkspaceCompanyName(clientId) {
 }
 
 // GET /refresh-token - Refresh access token for a specific client
-router.get("/refresh-token", async (req, res) => {
+router.get("/refresh-token", requireAuth, async (req, res) => {
   const clientId = getClientId(req);
   if (!clientId) {
     return res.status(400).json({ error: "Missing Client ID" });
@@ -196,12 +229,47 @@ router.get("/refresh-token", async (req, res) => {
 });
 
 // GET /api/auth/quickbooks - Start OAuth flow
-router.get("/api/auth/quickbooks", (req, res) => {
-  const clientId = getClientId(req);
+router.get("/api/auth/quickbooks", requireAuth, async (req, res) => {
+  let clientId = getClientId(req);
+
+  // Proactive Identification: If no clientId, try to find or create one for the user
+  if (!clientId && req.user) {
+    try {
+      const userRes = await db.query("SELECT email, company_id FROM users WHERE id = ?", [req.user.id]);
+      const user = userRes?.rows?.[0];
+
+      if (user?.company_id) {
+        clientId = user.company_id;
+      } else if (user?.email) {
+        // Try finding by email
+        const existingComp = await db.query("SELECT id FROM companies WHERE contact_email = ? LIMIT 1", [user.email]);
+        if (existingComp?.rows?.[0]) {
+          clientId = existingComp.rows[0].id;
+        } else {
+          // Create a placeholder company
+          const name = (req.user.name || user.email.split('@')[0]) + "'s Company";
+          console.log(`[OAuth Start] Provisioning temporary company: ${name}`);
+          await db.query(
+            "INSERT INTO companies (name, industry, contact_name, contact_email, contact_phone) VALUES (?, ?, ?, ?, ?)",
+            [name, "Financial Services", req.user.name || "Client", user.email, ""]
+          );
+          const fetchComp = await db.query("SELECT id FROM companies WHERE contact_email = ? ORDER BY created_at DESC LIMIT 1", [user.email]);
+          clientId = fetchComp?.rows?.[0]?.id;
+        }
+
+        if (clientId) {
+          await db.query("UPDATE users SET company_id = ? WHERE id = ?", [clientId, req.user.id]);
+          await db.query("INSERT INTO user_companies (user_id, company_id) VALUES (?, ?) ON CONFLICT DO NOTHING", [req.user.id, clientId]);
+          req.user.company_id = clientId; // Update local session object
+        }
+      }
+    } catch (err) {
+      console.warn("[OAuth Start] Proactive company creation failed:", err.message);
+    }
+  }
+
   if (!clientId) {
-    return res
-      .status(400)
-      .json({ error: "Cannot start OAuth without Client ID" });
+    console.log(`[OAuth Start] Proceeding with null clientId. Dynamic provisioning will continue at callback.`);
   }
 
   const qb = getQBConfig(clientId);
@@ -220,7 +288,12 @@ router.get("/api/auth/quickbooks", (req, res) => {
     });
   }
 
-  const state = buildOAuthState(redirectHash, clientId);
+  const state = buildOAuthState(
+    redirectHash,
+    clientId,
+    req.user?.role === "buyer" ? "client" : req.user?.role || "broker",
+    req.user?.id
+  );
   const authUrl = `https://appcenter.intuit.com/connect/oauth2?client_id=${qbClientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${encodeURIComponent(scope)}&state=${state}`;
 
   logQuickBooksDebug("oauth_start", {
@@ -246,7 +319,8 @@ router.get("/api/auth/callback", async (req, res) => {
   const frontendUrl = getFrontendBaseUrl(req);
   const state = parseOAuthState(rawState);
 
-  let clientId = state.clientId;
+  let clientId = state.companyId || state.clientId;
+  const userId = state.userId;
 
   if (!clientId && state.redirect) {
     const match = state.redirect.match(/\/client\/([^/]+)/);
@@ -293,17 +367,6 @@ router.get("/api/auth/callback", async (req, res) => {
     process.env.QB_REDIRECT_URI || `${appBaseUrl}/api/auth/callback`;
 
   try {
-    const workspaceCompanyName = await getWorkspaceCompanyName(clientId);
-    if (!workspaceCompanyName) {
-      return res.redirect(
-        buildFrontendHashUrl(
-          frontendUrl,
-          redirectHash,
-          `?qbStatus=error&qbMessage=${encodeURIComponent("Workspace company could not be identified. Please retry from the selected company connection page.")}`,
-        ),
-      );
-    }
-
     logQuickBooksDebug("oauth_token_exchange_started", {
       clientId,
       realmId,
@@ -335,6 +398,16 @@ router.get("/api/auth/callback", async (req, res) => {
       expiresIn: tokenResponse.data.expires_in,
     });
 
+    // 1. Recovery: If clientId is missing, check if this realm is already linked to a company
+    if (!clientId && realmId) {
+      const { getQuickBooksConnectionByRealmId } = require("../../services/quickbooksConnectionStore");
+      const existing = await getQuickBooksConnectionByRealmId(realmId);
+      if (existing) {
+        clientId = existing.dataHubCompanyId;
+        console.log(`[OAuth Callback] Recovered clientId ${clientId} from existing realm link for ${realmId}`);
+      }
+    }
+
     let quickbooksCompanyName = null;
     try {
       const companyRes = await axios.get(
@@ -353,6 +426,70 @@ router.get("/api/auth/callback", async (req, res) => {
       }
     } catch (companyErr) {
       console.warn("Could not fetch company info:", companyErr.message);
+    }
+
+    // 2. Recovery: Dynamic Company Creation (For new sellers/clients)
+    if (!clientId && userId) {
+      console.log(`[OAuth Callback] No clientId found for user ${userId}. Attempting dynamic provisioning...`);
+      try {
+        const userRes = await db.query("SELECT email, company_id FROM users WHERE id = ?", [userId]);
+        const user = userRes?.rows?.[0];
+
+        if (user) {
+          if (user.company_id) {
+            clientId = user.company_id;
+            console.log(`[OAuth Callback] Found existing company_id ${clientId} on user profile.`);
+          } else {
+            // Check if a company with this email already exists
+            const existingComp = await db.query("SELECT id FROM companies WHERE contact_email = ? LIMIT 1", [user.email]);
+            if (existingComp?.rows?.[0]) {
+              clientId = existingComp.rows[0].id;
+              console.log(`[OAuth Callback] Re-using existing company ${clientId} found by email.`);
+            } else {
+              const finalCompanyName = quickbooksCompanyName || "Connected Company";
+              console.log(`[OAuth Callback] Creating new company: ${finalCompanyName}`);
+              await db.query(
+                "INSERT INTO companies (name, industry, contact_name, contact_email, contact_phone) VALUES (?, ?, ?, ?, ?)",
+                [finalCompanyName, "Financial Services", "Client", user.email, ""]
+              );
+
+              const fetchNewCompany = await db.query("SELECT id FROM companies WHERE contact_email = ? ORDER BY created_at DESC LIMIT 1", [user.email]);
+              clientId = fetchNewCompany?.rows?.[0]?.id;
+            }
+
+            if (clientId) {
+              await db.query("UPDATE users SET company_id = ? WHERE id = ?", [clientId, userId]);
+              await db.query("INSERT INTO user_companies (user_id, company_id) VALUES (?, ?) ON CONFLICT DO NOTHING", [userId, clientId]);
+              console.log(`[OAuth Callback] Successfully provisioned company ${clientId} for user ${userId}`);
+            }
+          }
+        }
+      } catch (err) {
+        console.error("[OAuth Callback] Dynamic company creation failed:", err.message);
+      }
+    }
+    // -------------------------------------------------------
+
+    if (!clientId) {
+      console.error("Callback missing clientId after attempt to recover.");
+      return res.redirect(
+        buildFrontendHashUrl(
+          frontendUrl,
+          redirectHash,
+          "?qbStatus=error&qbMessage=Company+identification+failed",
+        ),
+      );
+    }
+
+    const workspaceCompanyName = await getWorkspaceCompanyName(clientId);
+    if (!workspaceCompanyName) {
+      return res.redirect(
+        buildFrontendHashUrl(
+          frontendUrl,
+          redirectHash,
+          `?qbStatus=error&qbMessage=${encodeURIComponent("Workspace company could not be identified. Please retry from the selected company connection page.")}`,
+        ),
+      );
     }
 
     if (!quickbooksCompanyName) {
@@ -424,8 +561,8 @@ router.get("/api/auth/callback", async (req, res) => {
     const qbMessage =
       error.code === "QB_REALM_ALREADY_LINKED"
         ? encodeURIComponent(
-            "This QuickBooks company is already linked to another DataHub company. Disconnect the old link first or choose a different sandbox company.",
-          )
+          "This QuickBooks company is already linked to another DataHub company. Disconnect the old link first or choose a different sandbox company.",
+        )
         : "OAuth+exchange+failed";
     return res.redirect(
       buildFrontendHashUrl(
@@ -438,48 +575,59 @@ router.get("/api/auth/callback", async (req, res) => {
 });
 
 // GET /api/auth/status - Scoped connection status
-router.get("/api/auth/status", async (req, res) => {
-  const clientId = getClientId(req);
-  if (!clientId) {
+router.get("/api/auth/status", requireAuth, async (req, res) => {
+  try {
+    const clientId = getClientId(req);
+    if (!clientId) {
+      return res.json({
+        success: true,
+        isConnected: false,
+        message: "No Client ID provided",
+      });
+    }
+
+    await loadQBConfig(clientId);
+    const qb = getQBConfig(clientId);
+    const isConnected = !!(qb.accessToken && qb.realmId);
+
+    if (!isConnected) {
+      return res.json({ success: true, isConnected: false, syncedEntities: [] });
+    }
+
+    const workspaceCompanyName = await getWorkspaceCompanyName(clientId);
+    const quickbooksCompanyName = qb.companyName || null;
+
     return res.json({
       success: true,
+      isConnected: true,
+      dataHubCompanyId: qb.dataHubCompanyId || clientId,
+      companyName: quickbooksCompanyName,
+      workspaceCompanyName: workspaceCompanyName || null,
+      companyId: qb.companyId || qb.realmId,
+      realmId: qb.realmId || null,
+      environment: qb.environment || "production",
+      connectedAt: qb.connectedAt || null,
+      lastSynced: qb.lastSynced || null,
+      tokenExpiresAt: qb.tokenExpiresAt || null,
+      syncedEntities: qb.syncedEntities || [],
+      configuredClientId: qb.clientId ? maskValue(qb.clientId) : null,
+      storedOAuthClientId: qb.oauthClientId ? maskValue(qb.oauthClientId) : null,
+      hasCredentialMismatch: Boolean(qb.hasCredentialMismatch),
+    });
+  } catch (error) {
+    console.error("Failed to fetch connection status:", error.message);
+    // Return a safe error response instead of crashing the server
+    return res.status(error.code === '22P02' ? 400 : 500).json({
+      success: false,
       isConnected: false,
-      message: "No Client ID provided",
+      error: "Status check failed",
+      message: error.message
     });
   }
-
-  await loadQBConfig(clientId);
-  const qb = getQBConfig(clientId);
-  const isConnected = !!(qb.accessToken && qb.realmId);
-
-  if (!isConnected) {
-    return res.json({ success: true, isConnected: false, syncedEntities: [] });
-  }
-
-  const workspaceCompanyName = await getWorkspaceCompanyName(clientId);
-  const quickbooksCompanyName = qb.companyName || null;
-
-  return res.json({
-    success: true,
-    isConnected: true,
-    dataHubCompanyId: qb.dataHubCompanyId || clientId,
-    companyName: quickbooksCompanyName,
-    workspaceCompanyName: workspaceCompanyName || null,
-    companyId: qb.companyId || qb.realmId,
-    realmId: qb.realmId || null,
-    environment: qb.environment || "production",
-    connectedAt: qb.connectedAt || null,
-    lastSynced: qb.lastSynced || null,
-    tokenExpiresAt: qb.tokenExpiresAt || null,
-    syncedEntities: qb.syncedEntities || [],
-    configuredClientId: qb.clientId ? maskValue(qb.clientId) : null,
-    storedOAuthClientId: qb.oauthClientId ? maskValue(qb.oauthClientId) : null,
-    hasCredentialMismatch: Boolean(qb.hasCredentialMismatch),
-  });
 });
 
 // GET /api/auth/disconnect - Scoped disconnect
-router.get("/api/auth/disconnect", async (req, res) => {
+router.get("/api/auth/disconnect", requireAuth, async (req, res) => {
   const clientId = getClientId(req);
   if (!clientId) return res.status(400).json({ error: "Missing Client ID" });
 

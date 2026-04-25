@@ -78,11 +78,11 @@ async function parseChunkViaBackend(text, bankHint, headers = {}) {
       "Content-Type": "application/json",
       ...(token
         ? {
-            Authorization: `Bearer ${token}`,
-            "X-Access-Token": token,
-            "X-Auth-Token": token,
-            "X-Token": token,
-          }
+          Authorization: `Bearer ${token}`,
+          "X-Access-Token": token,
+          "X-Auth-Token": token,
+          "X-Token": token,
+        }
         : {}),
       ...headers,
     },
@@ -837,14 +837,14 @@ export const readExcelFile = async (file, password) => {
       genericIdx >= 0
         ? rowsToLabeledText(rows, genericIdx)
         : rows
-            .map((row) =>
-              row
-                .map((c) => String(c ?? "").trim())
-                .filter(Boolean)
-                .join(" | "),
-            )
-            .filter(Boolean)
-            .join("\n");
+          .map((row) =>
+            row
+              .map((c) => String(c ?? "").trim())
+              .filter(Boolean)
+              .join(" | "),
+          )
+          .filter(Boolean)
+          .join("\n");
 
     return {
       title: sheetName,

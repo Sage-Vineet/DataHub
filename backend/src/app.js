@@ -4,6 +4,7 @@ const morgan = require("morgan");
 const { errorHandler } = require("./middleware/error");
 
 const authRoutes = require("./routes/auth");
+const { requireAuth } = require("./middleware/auth");
 const userRoutes = require("./routes/users");
 const companyRoutes = require("./routes/companies");
 const groupRoutes = require("./routes/groups");
@@ -88,7 +89,12 @@ async function checkQBAuth(req, res, next) {
     clientId = req.query.clientId;
   }
 
-  // 3. Fallback: Try to extract from Referer (useful when header injection fails)
+  // 3. Fallback: Try authenticated user's company
+  if (!clientId && req.user) {
+    clientId = req.user.company_id || (req.user.company_ids && req.user.company_ids[0]);
+  }
+
+  // 4. Fallback: Try to extract from Referer
   if (!clientId && req.headers.referer) {
     const referer = req.headers.referer;
     const match = referer.match(/\/client\/([^/]+)/);
@@ -98,7 +104,14 @@ async function checkQBAuth(req, res, next) {
     }
   }
 
-  // 4. QuickBooks requests must always be scoped to a selected DataHub company.
+  // Final Validation: Ensure it's a valid UUID
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (clientId && !uuidRegex.test(clientId)) {
+    console.warn(`[checkQBAuth] Rejected invalid UUID: ${clientId}`);
+    clientId = null;
+  }
+
+  // 5. QuickBooks requests must always be scoped to a selected DataHub company.
   if (!clientId) {
     return res.status(400).json({
       success: false,
@@ -167,7 +180,8 @@ function quickBooksAuth(req, res, next) {
   if (!isQuickBooksRoute(req.path)) {
     return next();
   }
-  return checkQBAuth(req, res, next);
+  // All QuickBooks routes require a valid user session
+  return requireAuth(req, res, () => checkQBAuth(req, res, next));
 }
 
 app.use("/", quickBooksAuth, balanceSheetRoutes);

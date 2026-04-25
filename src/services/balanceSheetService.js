@@ -1,5 +1,4 @@
 import { fetchBalanceSheet } from "../lib/quickbooks";
-import { getStoredToken } from "../lib/api";
 import { normalizeAccountingMethod } from "../lib/report-filters";
 import {
   parseBalanceSheetDetailFromAllReports,
@@ -34,39 +33,39 @@ function getShiftedStartDate(startDateString, yearShift, monthShift) {
  * Generates dynamic comparative periods based on a specific end date.
  * Plus an additional period for the previous month to calculate monthly delta.
  */
-function getComparativePeriods(numYears = 5, baseDateString, startDateString) {
+function getComparativePeriods(numYears = 4) {
   let date = new Date();
-  if (baseDateString) {
-    const [y, m, d] = baseDateString.split('-');
-    if (y && m && d) {
-      date = new Date(parseInt(y, 10), parseInt(m, 10) - 1, parseInt(d, 10));
-    }
-  }
 
   const currentYear = date.getFullYear();
   const currentMonth = date.getMonth();
   const periods = [];
 
-  const monthNames = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
-  const monthLabel = monthNames[currentMonth];
-
+  const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const targetDay = date.getDate();
 
   // 1. Yearly snapshots
   for (let i = numYears - 1; i >= 0; i--) {
     const year = currentYear - i;
-    // Ensure the day is valid for the target month/year (clamping to last day if 31st vs 30th)
-    const maxDayInMonth = new Date(year, currentMonth + 1, 0).getDate();
-    const day = Math.min(targetDay, maxDayInMonth);
+    const isCurrentYear = i === 0;
 
-    const endDate = `${year}-${String(currentMonth + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-    const startDate = getShiftedStartDate(startDateString, i, 0);
+    let startDate, endDate, label;
+
+    if (isCurrentYear) {
+      startDate = `${year}-01-01`;
+      endDate = `${year}-${String(currentMonth + 1).padStart(2, "0")}-${String(targetDay).padStart(2, "0")}`;
+      const capitalizedMonth = monthNames[currentMonth];
+      label = `${capitalizedMonth} ${String(year).slice(-2)}`;
+    } else {
+      startDate = `${year}-01-01`;
+      endDate = `${year}-12-31`;
+      label = `Dec ${String(year).slice(-2)}`;
+    }
 
     const index = (numYears - 1) - i + 1;
     periods.push({
       year,
       key: `y${index}`,
-      label: `${monthLabel}-${String(year).slice(-2)}`,
+      label: label,
       startDate,
       endDate,
       type: 'yearly'
@@ -81,7 +80,7 @@ function getComparativePeriods(numYears = 5, baseDateString, startDateString) {
   const pmMonth = prevMonthDate.getMonth();
   const pmLastDay = new Date(pmYear, pmMonth + 1, 0).getDate();
   const pmEndDate = `${pmYear}-${String(pmMonth + 1).padStart(2, "0")}-${String(pmLastDay).padStart(2, "0")}`;
-  const pmStartDate = getShiftedStartDate(startDateString, 0, 1);
+  const pmStartDate = `${pmYear}-01-01`;
 
   periods.push({
     key: 'pm',
@@ -130,8 +129,9 @@ function normalizeName(name) {
 }
 
 function mergePeriods(periodResults, periods) {
-  // Use y5 (Current Year) as the base structure
-  const masterIndex = periods.findIndex(p => p.key === "y5");
+  const yearlyPeriods = periods.filter(p => p.type === 'yearly');
+  const currentYearKey = yearlyPeriods[yearlyPeriods.length - 1]?.key || "y1";
+  const masterIndex = periods.findIndex(p => p.key === currentYearKey);
   const masterRows = periodResults[masterIndex] || [];
 
   if (masterRows.length === 0) return [];
@@ -162,7 +162,7 @@ function mergePeriods(periodResults, periods) {
       amounts[period.key] = periodMaps[i].get(normName) || 0;
     });
 
-    const currentVal = amounts.y5 || 0;
+    const currentVal = amounts[currentYearKey] || 0;
     const prevMonthVal = amounts.pm || 0;
     amounts.monthlyChange = currentVal - prevMonthVal;
 
@@ -277,8 +277,8 @@ function mergePeriods(periodResults, periods) {
         }
       });
 
-      if (newAmounts.y5 !== undefined && newAmounts.pm !== undefined) {
-        newAmounts.monthlyChange = (newAmounts.y5 || 0) - (newAmounts.pm || 0);
+      if (newAmounts[currentYearKey] !== undefined && newAmounts.pm !== undefined) {
+        newAmounts.monthlyChange = (newAmounts[currentYearKey] || 0) - (newAmounts.pm || 0);
       }
 
       node.amounts = { ...node.amounts, ...newAmounts };
@@ -298,7 +298,7 @@ function mergePeriods(periodResults, periods) {
 // ─── Exported Services ──────────────────────────────────────────────────────
 
 export async function getBalanceSheet(startDate, endDate, accountingMethod) {
-  const allPeriods = getComparativePeriods(5, endDate, startDate);
+  const allPeriods = getComparativePeriods(4, endDate, startDate);
 
   const results = await Promise.all(
     allPeriods.map(p => fetchSinglePeriodBS(p.startDate, p.endDate, accountingMethod))
@@ -311,7 +311,7 @@ export async function getBalanceSheet(startDate, endDate, accountingMethod) {
     .map(p => ({
       key: p.key,
       label: p.label,
-      isCurrent: p.key === "y5"
+      isCurrent: p.key === allPeriods.filter(x => x.type === 'yearly').pop().key
     }));
 
   const changeCols = [];
@@ -341,7 +341,6 @@ export async function getBalanceSheet(startDate, endDate, accountingMethod) {
 
 export async function getBalanceSheetDetail(startDate, endDate, accountingMethod) {
   const clientId = resolveClientIdFromLocation();
-  const token = getStoredToken();
   const search = new URLSearchParams({
     ...(startDate ? { start_date: startDate } : {}),
     ...(endDate ? { end_date: endDate } : {}),
@@ -350,17 +349,7 @@ export async function getBalanceSheetDetail(startDate, endDate, accountingMethod
 
   const response = await fetch(`${API_BASE_URL}/all-reports${search ? `?${search}` : ""}`, {
     credentials: "include",
-    headers: {
-      ...(token
-        ? {
-            Authorization: `Bearer ${token}`,
-            "X-Access-Token": token,
-            "X-Auth-Token": token,
-            "X-Token": token,
-          }
-        : {}),
-      ...(clientId ? { "X-Client-Id": clientId } : {}),
-    },
+    headers: { ...(clientId ? { "X-Client-Id": clientId } : {}) },
   });
 
   const payload = await response.json();

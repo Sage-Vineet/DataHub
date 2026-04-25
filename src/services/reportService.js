@@ -43,15 +43,8 @@ async function request(path) {
     credentials: "include",
     cache: "no-store",
     headers: {
-      ...(token
-        ? {
-            Authorization: `Bearer ${token}`,
-            "X-Access-Token": token,
-            "X-Auth-Token": token,
-            "X-Token": token,
-          }
-        : {}),
       ...(clientId ? { "X-Client-Id": clientId } : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
   });
 
@@ -59,8 +52,8 @@ async function request(path) {
   if (!response.ok) {
     throw new Error(
       payload?.message ||
-        payload?.error ||
-        `Request failed: ${response.status}`,
+      payload?.error ||
+      `Request failed: ${response.status}`,
     );
   }
 
@@ -240,97 +233,6 @@ function findSummaryTotal(payload, matchers = []) {
   return null;
 }
 
-function getReportColumns(payload) {
-  return payload?.Columns?.Column || payload?.data?.Columns?.Column || [];
-}
-
-function findSummaryRow(payload, rowMatchers = []) {
-  const rows = flattenRows(getRows(payload)).reverse();
-  const normalizedMatchers = rowMatchers.map((matcher) => normalizeLabel(matcher));
-
-  const preferredRows = rows.filter((row) => {
-    const candidates = [
-      ...(row?.Summary?.ColData || []),
-      ...(row?.ColData || []),
-    ]
-      .map((item) => parseNumeric(item?.value))
-      .filter((value) => value !== null);
-
-    return candidates.length > 1;
-  });
-
-  const fallbackRows = preferredRows.length ? preferredRows : rows;
-
-  if (normalizedMatchers.length) {
-    const matchingRow = fallbackRows.find((row) => {
-      const label = normalizeLabel(getRowLabel(row));
-      return normalizedMatchers.some(
-        (matcher) => label === matcher || label.includes(matcher),
-      );
-    });
-
-    if (matchingRow) return matchingRow;
-  }
-
-  return (
-    fallbackRows.find((row) => normalizeLabel(getRowLabel(row)) === "total") ||
-    fallbackRows[0] ||
-    null
-  );
-}
-
-function findSummaryColumnValue(payload, columnMatchers = [], rowMatchers = []) {
-  const row = findSummaryRow(payload, rowMatchers);
-  if (!row) return null;
-
-  const columns = getReportColumns(payload);
-  const values = row?.Summary?.ColData || row?.ColData || [];
-  const normalizedMatchers = columnMatchers.map((matcher) => normalizeLabel(matcher));
-
-  for (let index = 0; index < values.length; index += 1) {
-    const title = normalizeLabel(
-      columns[index]?.ColTitle ||
-        columns[index]?.ColType ||
-        values[index]?.id ||
-        "",
-    );
-
-    if (!title) continue;
-
-    if (normalizedMatchers.some((matcher) => title.includes(matcher))) {
-      const parsed = parseNumeric(values[index]?.value);
-      if (parsed !== null) return parsed;
-    }
-  }
-
-  return null;
-}
-
-function formatRatio(value) {
-  return Number(value || 0).toLocaleString("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-}
-
-function createKpiCard({
-  label,
-  rawValue,
-  desc,
-  color,
-  icon,
-  formatter = formatMoney,
-}) {
-  return {
-    label,
-    value: formatter(rawValue),
-    rawValue: Number(rawValue || 0),
-    desc,
-    color,
-    icon,
-  };
-}
-
 function extractProfitAndLossTotals(payload) {
   const revenue =
     findValueByExactLabel(payload, [
@@ -475,9 +377,9 @@ function buildTrendBuckets(start, end, aggregationType) {
         aggregationType === "quarterly"
           ? name
           : bucketStart.toLocaleDateString("en-US", {
-              month: "short",
-              year: "numeric",
-            }),
+            month: "short",
+            year: "numeric",
+          }),
       start: formatLocalDate(bucketStart),
       end: formatLocalDate(bucketEnd),
     });
@@ -490,9 +392,9 @@ export async function fetchDashboardKPIs(start, end) {
   const params =
     start || end
       ? {
-          ...(start ? { start_date: start } : {}),
-          ...(end ? { end_date: end } : {}),
-        }
+        ...(start ? { start_date: start } : {}),
+        ...(end ? { end_date: end } : {}),
+      }
       : {};
 
   const [profitAndLoss, balanceSheet, combinedReports, invoicesPayload] =
@@ -521,23 +423,6 @@ export async function fetchDashboardKPIs(start, end) {
     hasExpenses,
     hasNetProfit,
   } = extractProfitAndLossTotals(profitAndLoss || {});
-  const netOperatingIncome = pickFirstNumber(
-    findValueByExactLabel(profitAndLoss, ["Net Operating Income"]),
-    findValueByLabel(profitAndLoss, ["net operating income"]),
-    netProfit,
-  );
-  const totalCostOfGoodsSold = pickFirstNumber(
-    findValueByExactLabel(profitAndLoss, [
-      "Total Cost of Goods Sold",
-      "Cost of Goods Sold",
-      "Total Cost of Sales",
-    ]),
-    findValueByLabel(profitAndLoss, [
-      "total cost of goods sold",
-      "cost of goods sold",
-      "total cost of sales",
-    ]),
-  );
   const invoiceRevenue = invoices.reduce(
     (sum, invoice) => sum + Number(invoice.TotalAmt || 0),
     0,
@@ -545,11 +430,6 @@ export async function fetchDashboardKPIs(start, end) {
   const revenue = hasRevenue ? reportRevenue : invoiceRevenue;
   const safeExpenses = hasExpenses ? expenses : 0;
   const safeNetProfit = hasNetProfit ? netProfit : revenue - safeExpenses;
-  const grossProfit = pickFirstNumber(
-    findValueByExactLabel(profitAndLoss, ["Gross Profit"]),
-    findValueByLabel(profitAndLoss, ["gross profit"]),
-    revenue - totalCostOfGoodsSold,
-  );
 
   const totalAssets = pickFirstNumber(
     findValueByGroup(balanceSheetPayload, ["TotalAssets"]),
@@ -566,15 +446,6 @@ export async function fetchDashboardKPIs(start, end) {
   const currentAssets = pickFirstNumber(
     findValueByGroup(balanceSheetPayload, ["CurrentAssets"]),
     findValueByExactLabel(balanceSheetPayload, ["Total Current Assets"]),
-  );
-  const totalFixedAssets = pickFirstNumber(
-    findValueByGroup(balanceSheetPayload, ["FixedAssets"]),
-    findValueByExactLabel(balanceSheetPayload, [
-      "Total Fixed Assets",
-      "Total Fixed Asset",
-      "Fixed Assets",
-    ]),
-    Math.max(totalAssets - currentAssets, 0),
   );
   const currentLiabilities = pickFirstNumber(
     findValueByGroup(balanceSheetPayload, ["CurrentLiabilities"]),
@@ -597,14 +468,6 @@ export async function fetchDashboardKPIs(start, end) {
       "Total Cash and Cash Equivalents",
     ]),
   );
-  const checkingAccount = pickFirstNumber(
-    findAccountBalance(combinedReports, ["checking"]),
-    findValueByLabel(balanceSheetPayload, ["checking"]),
-  );
-  const savingsAccount = pickFirstNumber(
-    findAccountBalance(combinedReports, ["savings"]),
-    findValueByLabel(balanceSheetPayload, ["savings"]),
-  );
   const receivable = pickFirstNumber(
     findSummaryTotal(combinedReports?.agedReceivableDetail, [
       "total",
@@ -623,323 +486,128 @@ export async function fetchDashboardKPIs(start, end) {
     findAccountBalance(combinedReports, ["inventory"]),
     findValueByLabel(balanceSheetPayload, ["inventory asset", "inventory"]),
   );
-  const undepositedFunds = pickFirstNumber(
-    findAccountBalance(combinedReports, ["undeposited funds"]),
-    findValueByLabel(balanceSheetPayload, ["undeposited funds"]),
-  );
   const agedPayable = findSummaryTotal(combinedReports?.agedPayableDetail, [
     "total",
     "accounts payable",
     "payable",
   ]);
-  const totalLongTermLiabilities = pickFirstNumber(
+  const longTermDebt = pickFirstNumber(
     findValueByGroup(balanceSheetPayload, ["LongTermLiabilities"]),
     findAccountBalance(combinedReports, ["notes payable", "long term"]),
     findValueByExactLabel(balanceSheetPayload, [
       "Total Long-Term Liabilities",
       "Total Long Term Liabilities",
     ]),
-    Math.max(totalLiabilities - currentLiabilities, 0),
-  );
-  const creditCardBalance = pickFirstNumber(
-    findValueByGroup(balanceSheetPayload, ["CCard"]),
-    findAccountBalance(combinedReports, ["credit card"]),
-    findValueByExactLabel(balanceSheetPayload, [
-      "Total Credit Cards",
-      "Credit Cards",
-    ]),
-  );
-  const otherCurrentLiabilities = pickFirstNumber(
-    findValueByExactLabel(balanceSheetPayload, [
-      "Total Other Current Liabilities",
-      "Other Current Liabilities",
-    ]),
-    findValueByLabel(balanceSheetPayload, ["other current liabilities"]),
-    Math.max(currentLiabilities - agedPayable - creditCardBalance, 0),
   );
   const accountPayable = pickFirstNumber(agedPayable, payable);
-  const agedReceivablesTotal = pickFirstNumber(
-    findSummaryColumnValue(
-      combinedReports?.agedReceivableDetail,
-      ["total"],
-      ["total", "accounts receivable", "receivable"],
-    ),
-    receivable,
-  );
-  const agedReceivables1To30 = pickFirstNumber(
-    findSummaryColumnValue(combinedReports?.agedReceivableDetail, [
-      "1 30",
-      "1-30",
-      "1 through 30",
-    ]),
-  );
-  const agedReceivables31To60 = pickFirstNumber(
-    findSummaryColumnValue(combinedReports?.agedReceivableDetail, [
-      "31 60",
-      "31-60",
-      "31 through 60",
-    ]),
-  );
-  const agedReceivables61To90 = pickFirstNumber(
-    findSummaryColumnValue(combinedReports?.agedReceivableDetail, [
-      "61 90",
-      "61-90",
-      "61 through 90",
-    ]),
-  );
-  const agedPayablesTotal = pickFirstNumber(
-    findSummaryColumnValue(
-      combinedReports?.agedPayableDetail,
-      ["total"],
-      ["total", "accounts payable", "payable"],
-    ),
-    accountPayable,
-  );
-  const agedPayables1To30 = pickFirstNumber(
-    findSummaryColumnValue(combinedReports?.agedPayableDetail, [
-      "1 30",
-      "1-30",
-      "1 through 30",
-    ]),
-  );
-  const agedPayables31To60 = pickFirstNumber(
-    findSummaryColumnValue(combinedReports?.agedPayableDetail, [
-      "31 60",
-      "31-60",
-      "31 through 60",
-    ]),
-  );
   const workingCapital =
     currentAssets && currentLiabilities
       ? currentAssets - currentLiabilities
       : cashBank + receivable + inventoryValue - accountPayable;
-  const currentRatio =
-    currentLiabilities > 0 ? currentAssets / currentLiabilities : 0;
-  const cashRatio = currentLiabilities > 0 ? cashBank / currentLiabilities : 0;
 
   const cards = [
-    createKpiCard({
+    {
       label: "Total Revenue",
+      value: formatMoney(revenue),
       rawValue: revenue,
-      desc: "Top-line income",
+      desc: "Total gross income",
       color: "#8bc53d",
       icon: CircleDollarSign,
-    }),
-    createKpiCard({
+    },
+    {
       label: "Total Expenses",
+      value: formatMoney(safeExpenses),
       rawValue: safeExpenses,
       desc: "Total operating costs",
       color: "#C62026",
       icon: CreditCard,
-    }),
-    createKpiCard({
+    },
+    {
       label: "Net Profit",
+      value: formatMoney(safeNetProfit),
       rawValue: safeNetProfit,
       desc: "Bottom-line earnings",
       color: "#00648F",
       icon: TrendingUp,
-    }),
-    createKpiCard({
-      label: "Net Operating Income",
-      rawValue: netOperatingIncome,
-      desc: "Operating income after expenses",
-      color: "#00648F",
-      icon: TrendingUp,
-    }),
-    createKpiCard({
-      label: "Gross Profit",
-      rawValue: grossProfit,
-      desc: "Revenue minus cost of goods sold",
-      color: "#8bc53d",
-      icon: CircleDollarSign,
-    }),
-    createKpiCard({
+    },
+    {
       label: "Total Assets",
+      value: formatMoney(totalAssets),
       rawValue: totalAssets,
-      desc: "Overall asset position",
+      desc: "Company's total valuation",
       color: "#8bc53d",
       icon: Building2,
-    }),
-    createKpiCard({
-      label: "Total Current Assets",
-      rawValue: currentAssets,
-      desc: "Short-term assets",
-      color: "#8bc53d",
-      icon: Building2,
-    }),
-    createKpiCard({
-      label: "Total Fixed Assets",
-      rawValue: totalFixedAssets,
-      desc: "Long-lived business assets",
-      color: "#8bc53d",
-      icon: Building2,
-    }),
-    createKpiCard({
+    },
+    {
       label: "Total Liabilities",
+      value: formatMoney(totalLiabilities),
       rawValue: totalLiabilities,
-      desc: "Overall obligations",
+      desc: "Current total obligations",
       color: "#F68C1F",
       icon: Wallet,
-    }),
-    createKpiCard({
-      label: "Total Current Liabilities",
-      rawValue: currentLiabilities,
-      desc: "Short-term obligations",
-      color: "#F68C1F",
-      icon: Wallet,
-    }),
-    createKpiCard({
-      label: "Total Long-Term Liabilities",
-      rawValue: totalLongTermLiabilities,
-      desc: "Long-term obligations",
-      color: "#DC2626",
-      icon: Landmark,
-    }),
-    createKpiCard({
+    },
+    {
       label: "Total Equity",
+      value: formatMoney(totalEquity),
       rawValue: totalEquity,
-      desc: "Net worth after liabilities",
+      desc: "Net asset value",
       color: "#00648F",
       icon: Scale,
-    }),
-    createKpiCard({
+    },
+    {
+      label: "Working Capital",
+      value: formatMoney(workingCapital),
+      rawValue: workingCapital,
+      desc: "Available operating liquidity",
+      color: "#8bc53d",
+      icon: RefreshCw,
+    },
+    {
       label: "Cash & Bank Balance",
+      value: formatMoney(cashBank),
       rawValue: cashBank,
       desc: "Liquid funds available",
       color: "#8bc53d",
       icon: PiggyBank,
-    }),
-    createKpiCard({
-      label: "Checking Account",
-      rawValue: checkingAccount,
-      desc: "Checking balance",
-      color: "#00648F",
-      icon: PiggyBank,
-    }),
-    createKpiCard({
-      label: "Savings Account",
-      rawValue: savingsAccount,
-      desc: "Savings balance",
-      color: "#8bc53d",
-      icon: PiggyBank,
-    }),
-    createKpiCard({
-      label: "Accounts Receivable",
+    },
+    {
+      label: "Account Receivable",
+      value: formatMoney(receivable),
       rawValue: receivable,
-      desc: "Outstanding customer balances",
+      desc: "Unpaid client invoices",
       color: "#00A3FF",
       icon: ArrowDownToLine,
-    }),
-    createKpiCard({
+    },
+    {
       label: "Inventory Value",
+      value: formatMoney(inventoryValue),
       rawValue: inventoryValue,
-      desc: "Inventory on hand",
+      desc: "Current stock valuation",
       color: "#6D6E71",
       icon: Package,
-    }),
-    createKpiCard({
-      label: "Undeposited Funds",
-      rawValue: undepositedFunds,
-      desc: "Funds pending deposit",
-      color: "#00A3FF",
-      icon: PiggyBank,
-    }),
-    createKpiCard({
-      label: "Accounts Payable",
+    },
+    {
+      label: "Account Payable",
+      value: formatMoney(accountPayable),
       rawValue: accountPayable,
       desc: "Outstanding vendor bills",
       color: "#EF4444",
       icon: ArrowUpToLine,
-    }),
-    createKpiCard({
-      label: "Credit Card Balance",
-      rawValue: creditCardBalance,
-      desc: "Credit card obligations",
-      color: "#EF4444",
-      icon: CreditCard,
-    }),
-    createKpiCard({
-      label: "Other Current Liabilities",
-      rawValue: otherCurrentLiabilities,
-      desc: "Other short-term obligations",
-      color: "#F68C1F",
-      icon: Wallet,
-    }),
-    createKpiCard({
-      label: "Working Capital",
-      rawValue: workingCapital,
-      desc: "Current assets minus current liabilities",
-      color: "#8bc53d",
-      icon: RefreshCw,
-    }),
-    createKpiCard({
-      label: "Aged Receivables (Total)",
-      rawValue: agedReceivablesTotal,
-      desc: "All open receivables",
-      color: "#00A3FF",
-      icon: ArrowDownToLine,
-    }),
-    createKpiCard({
-      label: "Aged Receivables (1-30 days)",
-      rawValue: agedReceivables1To30,
-      desc: "Receivables aged 1-30 days",
-      color: "#00A3FF",
-      icon: ArrowDownToLine,
-    }),
-    createKpiCard({
-      label: "Aged Receivables (31-60 days)",
-      rawValue: agedReceivables31To60,
-      desc: "Receivables aged 31-60 days",
-      color: "#00A3FF",
-      icon: ArrowDownToLine,
-    }),
-    createKpiCard({
-      label: "Aged Receivables (61-90 days)",
-      rawValue: agedReceivables61To90,
-      desc: "Receivables aged 61-90 days",
-      color: "#00A3FF",
-      icon: ArrowDownToLine,
-    }),
-    createKpiCard({
-      label: "Aged Payables (Total)",
-      rawValue: agedPayablesTotal,
-      desc: "All open payables",
-      color: "#EF4444",
-      icon: ArrowUpToLine,
-    }),
-    createKpiCard({
-      label: "Aged Payables (1-30 days)",
-      rawValue: agedPayables1To30,
-      desc: "Payables aged 1-30 days",
-      color: "#EF4444",
-      icon: ArrowUpToLine,
-    }),
-    createKpiCard({
-      label: "Aged Payables (31-60 days)",
-      rawValue: agedPayables31To60,
-      desc: "Payables aged 31-60 days",
-      color: "#EF4444",
-      icon: ArrowUpToLine,
-    }),
-    createKpiCard({
-      label: "Current Ratio",
-      rawValue: currentRatio,
-      desc: "Current assets divided by current liabilities",
-      color: "#00648F",
-      icon: Scale,
-      formatter: formatRatio,
-    }),
-    createKpiCard({
-      label: "Cash Ratio",
-      rawValue: cashRatio,
-      desc: "Cash divided by current liabilities",
-      color: "#00648F",
-      icon: Scale,
-      formatter: formatRatio,
-    }),
+    },
+    {
+      label: "Long-Term Debt",
+      value: formatMoney(longTermDebt),
+      rawValue: longTermDebt,
+      desc: "Non-current liabilities",
+      color: "#DC2626",
+      icon: Landmark,
+    },
   ];
 
-  return cards;
+  return cards.map((card) => ({
+    ...card,
+    rawValue: Number(card.rawValue || 0),
+  }));
 }
 
 export async function fetchFinancialTrends(

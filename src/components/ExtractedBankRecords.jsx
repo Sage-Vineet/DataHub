@@ -48,11 +48,11 @@ export default function ExtractedBankRecords({ clientId }) {
         const headers = {
           ...(token
             ? {
-                Authorization: `Bearer ${token}`,
-                "X-Access-Token": token,
-                "X-Auth-Token": token,
-                "X-Token": token,
-              }
+              Authorization: `Bearer ${token}`,
+              "X-Access-Token": token,
+              "X-Auth-Token": token,
+              "X-Token": token,
+            }
             : {}),
           ...(clientId ? { "X-Client-Id": clientId } : {}),
         };
