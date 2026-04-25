@@ -1,8 +1,8 @@
-// const express = require("express");
-// const axios = require("axios");
-// const tokenManager = require("../../../tokenManager");
+const express = require("express");
+const axios = require("axios");
+const tokenManager = require("../../../tokenManager");
 
-// const router = express.Router();
+const router = express.Router();
 
 // async function runQBGet(clientId, qb, url) {
 //   let headers = {
@@ -65,4 +65,4 @@
 //   }
 // });
 
-// module.exports = router;
+module.exports = router;
