@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { useParams } from "react-router-dom";
 import {
   RefreshCw,
@@ -6,6 +6,7 @@ import {
   AlertCircle,
   Plus,
   Trash2,
+  ChevronDown,
 } from "lucide-react";
 import { cn, formatCurrency } from "../../../lib/utils";
 import { getCompanyRequest } from "../../../lib/api";
@@ -92,6 +93,30 @@ export default function WorkspaceEbitda() {
   const [isDataInitialized, setIsDataInitialized] = useState(false);
   const [rowComments, setRowComments] = useState({});
   const [sdePerCim, setSdePerCim] = useState("");
+
+  // Extract unique P&L account names for the addback dropdown
+  const plAccountNames = useMemo(() => {
+    if (!multiYearData) return [];
+    const nameSet = new Set();
+    // Walk flatRows from the first year that has data
+    Object.values(multiYearData).forEach((yearData) => {
+      const flatRows = yearData?._debug?.flatRows;
+      if (!flatRows) return;
+      flatRows.forEach((row) => {
+        const label = (row.label || "").trim();
+        if (
+          label &&
+          label.toLowerCase() !== "net income" &&
+          !label.toLowerCase().startsWith("total ") // skip summary totals
+        ) {
+          nameSet.add(label);
+        }
+      });
+    });
+    return Array.from(nameSet).sort((a, b) =>
+      a.localeCompare(b, undefined, { sensitivity: "base" })
+    );
+  }, [multiYearData]);
 
   // Step 1: Dynamic Extraction Function
   const getValueFromPL = useCallback((year, label) => {
@@ -241,23 +266,26 @@ export default function WorkspaceEbitda() {
     }
   }, [dynamicAddbacks, sdePerCim, rowComments, clientId, isDataInitialized]);
 
-  const handleAddAddback = () => {
+  const handleAddAddback = (selectedAccount = null) => {
     const newId = `custom_${Date.now()}`;
     const newVals = {};
+    const isLinked = selectedAccount !== null && selectedAccount !== "__custom__";
+    const label = isLinked ? selectedAccount : "New Addback";
 
-    // Step 5: Dynamic Row Creation
     years.forEach(year => {
+      const apiVal = isLinked ? getValueFromPL(year, label) : null;
       newVals[year] = {
-        apiValue: null,
+        apiValue: apiVal,
         userValue: null
       };
     });
 
     setDynamicAddbacks([...dynamicAddbacks, {
       id: newId,
-      label: "New Addback",
+      label,
       values: newVals,
-      isUserAdded: true
+      isUserAdded: true,
+      linkedToPL: isLinked
     }]);
   };
 
@@ -282,18 +310,52 @@ export default function WorkspaceEbitda() {
   const updateAddbackLabel = (id, label) => {
     setDynamicAddbacks(prev => prev.map(ab => {
       if (ab.id === id) {
-        // Step 5: Try to match this label in API when label changes
         const newValues = { ...ab.values };
+        const apiMatch = getValueFromPL(years[0], label);
+        const isLinked = apiMatch !== null;
         years.forEach(year => {
           newValues[year] = {
             ...newValues[year],
             apiValue: getValueFromPL(year, label)
           };
         });
-        return { ...ab, label, values: newValues };
+        return { ...ab, label, values: newValues, linkedToPL: isLinked };
       }
       return ab;
     }));
+  };
+
+  // Handle switching a row between P&L-linked and custom via dropdown
+  const handleAccountSelection = (id, selectedValue) => {
+    if (selectedValue === "__custom__") {
+      // Switch to custom mode — clear API values, let user type
+      setDynamicAddbacks(prev => prev.map(ab => {
+        if (ab.id === id) {
+          const newValues = { ...ab.values };
+          years.forEach(year => {
+            newValues[year] = { ...newValues[year], apiValue: null };
+          });
+          return { ...ab, label: "", linkedToPL: false, values: newValues };
+        }
+        return ab;
+      }));
+    } else {
+      // Link to a P&L account
+      setDynamicAddbacks(prev => prev.map(ab => {
+        if (ab.id === id) {
+          const newValues = { ...ab.values };
+          years.forEach(year => {
+            newValues[year] = {
+              ...newValues[year],
+              apiValue: getValueFromPL(year, selectedValue),
+              userValue: null // reset user override when switching accounts
+            };
+          });
+          return { ...ab, label: selectedValue, linkedToPL: true, values: newValues };
+        }
+        return ab;
+      }));
+    }
   };
 
   const deleteAddback = (id) => {
@@ -425,30 +487,75 @@ export default function WorkspaceEbitda() {
 
                       {/* Owner Addbacks Section */}
                       <tr className="bg-white h-[45px]">
-                        <td colSpan={years.length + 1} className="p-3 px-4 flex items-center justify-between font-bold text-[#050505] bg-gray-100">
+                        <td colSpan={years.length + 1} className="p-0 bg-gray-100">
+                          <div className="flex items-center justify-between px-4 py-3 font-bold text-[#050505]">
                           <span>Addbacks</span>
-                          <button
-                            onClick={handleAddAddback}
-                            className="flex items-center gap-1.5 px-3 py-1 rounded-md bg-[#8bc53d] text-white text-[11px] font-bold hover:bg-[#78ab34] transition-colors"
-                          >
-                            <Plus size={12} strokeWidth={3} />
-                            ADD ROW
-                          </button>
+                          <div className="flex items-center gap-2">
+                            <div className="relative">
+                              <select
+                                id="addback-account-select"
+                                defaultValue=""
+                                onChange={(e) => {
+                                  if (e.target.value) {
+                                    handleAddAddback(e.target.value);
+                                    e.target.value = ""; // reset after selection
+                                  }
+                                }}
+                                className="appearance-none bg-white border border-gray-300 text-[11px] font-semibold text-slate-700 rounded-md pl-3 pr-7 py-1.5 focus:ring-1 focus:ring-[#8bc53d] focus:border-[#8bc53d] outline-none cursor-pointer hover:border-[#8bc53d] transition-colors"
+                              >
+                                <option value="" disabled>Select Account…</option>
+                                <optgroup label="P&L Accounts">
+                                  {plAccountNames.map(name => (
+                                    <option key={name} value={name}>{name}</option>
+                                  ))}
+                                </optgroup>
+                              </select>
+                              <ChevronDown size={12} className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-slate-400" />
+                            </div>
+                            <button
+                              onClick={() => handleAddAddback()}
+                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#8bc53d] text-white text-[11px] font-bold hover:bg-[#78ab34] transition-colors"
+                            >
+                              <Plus size={12} strokeWidth={3} />
+                              ADD ROW
+                            </button>
+                          </div>
+                          </div>
                         </td>
                       </tr>
                       {dynamicAddbacks.map((row) => (
                         <tr key={row.id} className="group border-b border-[#f1f5f9] hover:bg-slate-50 transition-colors h-[45px]">
-                          <td className="p-3 pl-8 text-text-primary">
+                          <td className="p-3 pl-6 text-text-primary">
                             <div className="flex items-center gap-2">
-                              <input
-                                value={row.label}
-                                onChange={(e) => updateAddbackLabel(row.id, e.target.value)}
-                                className="w-full bg-transparent border-b border-transparent hover:border-gray-300 focus:border-[#8bc53d] focus:outline-none transition-all py-0.5"
-                                placeholder="Enter label..."
-                              />
+                              {/* P&L linked indicator */}
+                              {row.linkedToPL && (
+                                <span className="text-[#8bc53d] font-bold text-[15px] leading-none" title="Linked to P&L account">*</span>
+                              )}
+                              {/* Account selector or custom label */}
+                              {row.linkedToPL ? (
+                                <div className="relative flex-1">
+                                  <select
+                                    value={row.label}
+                                    onChange={(e) => handleAccountSelection(row.id, e.target.value)}
+                                    className="appearance-none w-full bg-transparent border-b border-transparent hover:border-gray-300 focus:border-[#8bc53d] focus:outline-none transition-all py-0.5 pr-5 text-[13px] cursor-pointer"
+                                  >
+                                    {plAccountNames.map(name => (
+                                      <option key={name} value={name}>{name}</option>
+                                    ))}
+                                  </select>
+                                  <ChevronDown size={11} className="pointer-events-none absolute right-0 top-1/2 -translate-y-1/2 text-slate-400" />
+                                </div>
+                              ) : (
+                                <input
+                                  value={row.label}
+                                  onChange={(e) => updateAddbackLabel(row.id, e.target.value)}
+                                  className="flex-1 bg-transparent border-b border-transparent hover:border-gray-300 focus:border-[#8bc53d] focus:outline-none transition-all py-0.5 text-[13px]"
+                                  placeholder="Enter label…"
+                                />
+                              )}
                               <button
                                 onClick={() => deleteAddback(row.id)}
-                                className="opacity-0 group-hover:opacity-100 p-1 text-red-500 hover:bg-red-50 rounded transition-all"
+                                className="opacity-0 group-hover:opacity-100 p-1 text-red-500 hover:bg-red-50 rounded transition-all flex-shrink-0"
                                 title="Delete Row"
                               >
                                 <Trash2 size={14} />
@@ -457,11 +564,8 @@ export default function WorkspaceEbitda() {
                           </td>
                           {years.map((year) => {
                             const { apiValue, userValue } = row.values[year] || { apiValue: null, userValue: null };
-
-                            // Step 3: Display Logic - valueToShow = userValue !== null ? userValue : apiValue
                             const val = userValue !== null ? userValue : apiValue;
                             const isEdited = userValue !== null;
-                            const displayVal = val !== null ? formatCurrency(val) : "-";
 
                             return (
                               <td key={year} className={cn("p-1.5 text-right", isEdited && "bg-green-50")}>
@@ -473,7 +577,7 @@ export default function WorkspaceEbitda() {
                                     "w-full bg-transparent text-right font-medium focus:outline-none focus:ring-1 focus:ring-[#8bc53d] rounded px-2 py-1",
                                     isEdited ? "text-[#8bc53d]" : (apiValue !== null ? "text-text-primary" : "text-gray-300")
                                   )}
-                                  placeholder={apiValue !== null ? apiValue : "-"}
+                                  placeholder={apiValue !== null ? String(apiValue) : "-"}
                                 />
                               </td>
                             );
