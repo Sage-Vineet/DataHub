@@ -144,7 +144,6 @@ export default function WorkspaceEbitda() {
   }, [clientId]);
 
 
-
   const handleGenerate = useCallback(async () => {
     setIsLoading(true);
     setError("");

@@ -187,7 +187,7 @@ function AppRoutes() {
                   ? "/broker/dashboard"
                   : user.role === "user"
                     ? "/client/upload"
-                  : "/client/dashboard"
+                    : "/client/dashboard"
               }
               replace
             />

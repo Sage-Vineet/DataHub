@@ -1,7 +1,7 @@
 import { getStoredToken } from "./api";
 
 const API_BASE_URL = (
-  import.meta.env.VITE_API_BASE_URL || "https://datahub-sl3y.onrender.com"
+  import.meta.env.VITE_API_BASE_URL || "http://localhost:4000"
 ).replace(/\/$/, "");
 
 async function request(path, options = {}) {
@@ -11,7 +11,7 @@ async function request(path, options = {}) {
   const brokerMatch = hash.match(/\/broker\/client\/([^/?#]+)/);
   const workspaceMatch = hash.match(/\/broker\/workspace\/([^/?#]+)/);
   const clientMatch = hash.match(/\/client\/([^/?#]+)/);
-  
+
   let clientId = brokerMatch ? brokerMatch[1] : (workspaceMatch ? workspaceMatch[1] : (clientMatch ? clientMatch[1] : null));
 
   // Safety: ensure it looks like a database ID (UUID) and not a static route like 'connections'
@@ -60,7 +60,7 @@ export function connectQuickbooks(redirectHash, explicitClientId = null) {
   const brokerMatch = hash.match(/\/broker\/client\/([^/?#]+)/);
   const workspaceMatch = hash.match(/\/broker\/workspace\/([^/?#]+)/);
   const clientMatch = hash.match(/\/client\/([^/?#]+)/);
-  
+
   let clientId = explicitClientId || (brokerMatch ? brokerMatch[1] : (workspaceMatch ? workspaceMatch[1] : (clientMatch ? clientMatch[1] : null)));
 
   // Validate UUID format
@@ -80,7 +80,7 @@ export function connectQuickbooks(redirectHash, explicitClientId = null) {
       role: role
     })
   );
-  
+
   const token = getStoredToken();
   const authQuery = token ? `&token=${encodeURIComponent(token)}` : "";
   window.location.href = `${API_BASE_URL}/api/auth/quickbooks?state=${state}&clientId=${clientId || ""}${authQuery}`;

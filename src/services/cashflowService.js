@@ -45,8 +45,8 @@ async function request(path) {
   if (!response.ok) {
     throw new Error(
       payload?.message ||
-        payload?.error ||
-        `Request failed: ${response.status}`,
+      payload?.error ||
+      `Request failed: ${response.status}`,
     );
   }
 
