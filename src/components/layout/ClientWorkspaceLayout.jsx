@@ -55,10 +55,14 @@ function WorkspaceSidebar({ company, onClose }) {
       icon: TrendingUp,
       to: `${basePath}/datahub-dashboard`,
     },
-    { label: "Client Invoices", icon: Receipt, to: `${basePath}/invoices` },
+    { label: "Invoices", icon: Receipt, to: `${basePath}/invoices` },
     { label: "Reports", icon: BarChart3, to: `${basePath}/reports` },
     { label: "EBITDA", icon: Calculator, to: `${basePath}/ebitda` },
-    { label: "Reconciliation", icon: Scale, to: `${basePath}/reconciliation` },
+    {
+      label: "Bank Reconciliation",
+      icon: Scale,
+      to: `${basePath}/reconciliation`,
+    },
     {
       label: "Tax Reconciliation",
       icon: FileCheck,
@@ -143,10 +147,9 @@ function WorkspaceSidebar({ company, onClose }) {
                 to={item.to}
                 onClick={onClose}
                 className={({ isActive }) =>
-                  `relative flex items-center gap-3 rounded-md px-3 py-2.5 text-[14px] font-medium transition-all duration-200 ${
-                    isActive
-                      ? "bg-[#EEF6E0] text-primary font-semibold"
-                      : "text-secondary hover:bg-[#F0F7E6] hover:text-text-primary"
+                  `relative flex items-center gap-3 rounded-md px-3 py-2.5 text-[14px] font-medium transition-all duration-200 ${isActive
+                    ? "bg-[#EEF6E0] text-primary font-semibold"
+                    : "text-secondary hover:bg-[#F0F7E6] hover:text-text-primary"
                   }`
                 }
               >
@@ -170,11 +173,10 @@ function WorkspaceSidebar({ company, onClose }) {
         <div className="mt-5">
           <button
             onClick={() => setDataroomOpen((value) => !value)}
-            className={`flex w-full items-center justify-between rounded-md px-3 py-2.5 text-[14px] font-semibold transition-all ${
-              isDataroomRoute
+            className={`flex w-full items-center justify-between rounded-md px-3 py-2.5 text-[14px] font-semibold transition-all ${isDataroomRoute
                 ? "bg-[#EEF6E0] text-primary"
                 : "text-text-primary hover:bg-bg-page"
-            }`}
+              }`}
           >
             <span className="flex items-center gap-3">
               <FolderOpen
@@ -199,10 +201,9 @@ function WorkspaceSidebar({ company, onClose }) {
                     to={item.to}
                     onClick={onClose}
                     className={({ isActive }) =>
-                      `relative flex items-center gap-3 rounded-md px-3 py-2.5 text-[13px] font-medium transition-all duration-200 ${
-                        isActive
-                          ? "bg-[#EEF6E0] text-primary font-semibold"
-                          : "text-secondary hover:bg-[#F0F7E6] hover:text-text-primary"
+                      `relative flex items-center gap-3 rounded-md px-3 py-2.5 text-[13px] font-medium transition-all duration-200 ${isActive
+                        ? "bg-[#EEF6E0] text-primary font-semibold"
+                        : "text-secondary hover:bg-[#F0F7E6] hover:text-text-primary"
                       }`
                     }
                   >
@@ -374,9 +375,8 @@ function WorkspaceTopbar({ company, onMenuClick }) {
                       setShowSwitch(false);
                       navigate(`/broker/client/${item.id}/datahub-dashboard`);
                     }}
-                    className={`flex w-full items-center gap-2.5 px-4 py-2.5 text-left transition-colors hover:bg-bg-page ${
-                      item.id === company.id ? "bg-[#EEF6E0]" : ""
-                    }`}
+                    className={`flex w-full items-center gap-2.5 px-4 py-2.5 text-left transition-colors hover:bg-bg-page ${item.id === company.id ? "bg-[#EEF6E0]" : ""
+                      }`}
                   >
                     <div className="flex h-7 w-7 items-center justify-center rounded-md bg-primary text-[9px] font-semibold text-white">
                       {item.logo}

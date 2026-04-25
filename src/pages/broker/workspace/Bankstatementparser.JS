@@ -42,6 +42,11 @@ const API_BASE_URL =
 
 const PARSE_ENDPOINT = `${API_BASE_URL}/parse-bank-statement`;
 
+function getStoredToken() {
+  if (typeof window === "undefined") return null;
+  return window.localStorage.getItem("leo-auth-token");
+}
+
 const PAGES_PER_CHUNK = 6;
 const PAGE_OVERLAP = 1;
 const SINGLE_REQUEST_MAX_LINES = 500;
@@ -66,9 +71,21 @@ CRITICAL — READ THIS CAREFULLY:
 
 async function parseChunkViaBackend(text, bankHint, headers = {}) {
   const userMessage = bankHint ? `Bank: ${bankHint}\n\n${text}` : text;
+  const token = getStoredToken();
   const response = await fetch(PARSE_ENDPOINT, {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...headers },
+    headers: {
+      "Content-Type": "application/json",
+      ...(token
+        ? {
+          Authorization: `Bearer ${token}`,
+          "X-Access-Token": token,
+          "X-Auth-Token": token,
+          "X-Token": token,
+        }
+        : {}),
+      ...headers,
+    },
     body: JSON.stringify({ systemPrompt: SYSTEM_PROMPT, userMessage }),
   });
   if (!response.ok) {

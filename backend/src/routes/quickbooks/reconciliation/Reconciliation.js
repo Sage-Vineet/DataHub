@@ -569,22 +569,22 @@ router.get("/qb-bank-activity", async (req, res) => {
       .json({ error: "start_date and end_date are required." });
 
   const baseUrl = `${qb.baseUrl}/v3/company/${qb.realmId}/query`;
-  const headers = {
-    Authorization: `Bearer ${qb.accessToken}`,
-    Accept: "application/json",
-  };
+  const performFetch = async () => {
+    const headers = {
+      Authorization: `Bearer ${qb.accessToken}`,
+      Accept: "application/json",
+    };
 
-  // ── helper: run a QBO query ─────────────────────────────────────────────────
-  const runQuery = async (query) => {
-    const r = await axios.get(baseUrl, {
-      headers,
-      proxy: false,
-      params: { query, minorversion: 75 },
-    });
-    return r.data?.QueryResponse || {};
-  };
+    // ── helper: run a QBO query ─────────────────────────────────────────────────
+    const runQuery = async (query) => {
+      const r = await axios.get(baseUrl, {
+        headers,
+        proxy: false,
+        params: { query, minorversion: 75 },
+      });
+      return r.data?.QueryResponse || {};
+    };
 
-  try {
     // ── 1. Fetch all bank accounts ──────────────────────────────────────────
     const accountsQR = await runQuery(
       "SELECT * FROM Account WHERE AccountType = 'Bank' MAXRESULTS 1000",
@@ -801,7 +801,20 @@ router.get("/qb-bank-activity", async (req, res) => {
       };
     });
 
-    return res.json({ success: true, accounts: result, months });
+    return { success: true, accounts: result, months };
+  };
+
+  try {
+    try {
+      const data = await performFetch();
+      return res.json(data);
+    } catch (err) {
+      if (err.response?.status !== 401) throw err;
+      console.log("⚠️ /qb-bank-activity token expired, refreshing...");
+      qb.accessToken = await tokenManager.refreshAccessToken(clientId);
+      const retryData = await performFetch();
+      return res.json(retryData);
+    }
   } catch (error) {
     console.error(
       "QB Bank Activity Error:",

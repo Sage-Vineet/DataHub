@@ -7,6 +7,7 @@ import {
   ChevronDown,
   ChevronRight,
 } from "lucide-react";
+import { getStoredToken } from "../lib/api";
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
@@ -43,7 +44,18 @@ export default function ExtractedBankRecords({ clientId }) {
       setIsLoading(true);
       setError("");
       try {
-        const headers = clientId ? { "X-Client-Id": clientId } : {};
+        const token = getStoredToken();
+        const headers = {
+          ...(token
+            ? {
+              Authorization: `Bearer ${token}`,
+              "X-Access-Token": token,
+              "X-Auth-Token": token,
+              "X-Token": token,
+            }
+            : {}),
+          ...(clientId ? { "X-Client-Id": clientId } : {}),
+        };
         console.log("Fetching with headers:", headers);
 
         const resp = await fetch(EXTRACT_BANK_PDF_RECORDS_ENDPOINT, {
