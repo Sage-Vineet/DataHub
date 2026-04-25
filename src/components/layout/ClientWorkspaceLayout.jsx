@@ -22,6 +22,8 @@ import {
   Activity,
   TrendingUp,
   MessageSquare,
+  Calculator,
+  FileCheck,
 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 import { useMessageNotifications } from "../../context/MessageNotificationsContext";
@@ -53,7 +55,7 @@ function WorkspaceSidebar({ company, onClose }) {
   const mainNav = [
     // { label: "Dashboard", icon: LayoutDashboard, to: `${basePath}/dashboard` },
     {
-      label: "DataHub Dashboard",
+      label: "Dashboard",
       icon: TrendingUp,
       to: `${basePath}/datahub-dashboard`,
     },
@@ -178,8 +180,8 @@ function WorkspaceSidebar({ company, onClose }) {
           <button
             onClick={() => setDataroomOpen((value) => !value)}
             className={`flex w-full items-center justify-between rounded-md px-3 py-2.5 text-[14px] font-semibold transition-all ${isDataroomRoute
-                ? "bg-[#EEF6E0] text-primary"
-                : "text-text-primary hover:bg-bg-page"
+              ? "bg-[#EEF6E0] text-primary"
+              : "text-text-primary hover:bg-bg-page"
               }`}
           >
             <span className="flex items-center gap-3">

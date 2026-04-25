@@ -93,8 +93,15 @@ async function refreshAccessToken(clientId) {
 }
 
 // Check if token is about to expire
-function isTokenExpiring(expiresIn) {
-  return false;
+function isTokenExpiring(tokenExpiresAt) {
+  if (!tokenExpiresAt) return true; // Assume expired if no date
+  
+  const expiry = new Date(tokenExpiresAt);
+  const now = new Date();
+  
+  // Refresh if expired or expiring in the next 5 minutes
+  const bufferTime = 5 * 60 * 1000;
+  return expiry.getTime() - now.getTime() < bufferTime;
 }
 
 module.exports = {

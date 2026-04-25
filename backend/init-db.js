@@ -12,6 +12,10 @@ async function initDb() {
   // Enable foreign keys
   await db.exec('PRAGMA foreign_keys = ON');
 
+  // Drop reconciliation tables to ensure schema update
+  await db.exec('DROP TABLE IF EXISTS reconciliation_transactions');
+  await db.exec('DROP TABLE IF EXISTS bank_transactions');
+
   // Run schema
   const schemaPath = path.join(__dirname, 'sqlite-schema.sql');
   const schema = fs.readFileSync(schemaPath, 'utf8');

@@ -33,6 +33,7 @@ const bankVsBooksRoutes = require("./routes/quickbooks/reconciliation/bankVsBook
 const db = require("./db");
 const { getQBConfig, loadQBConfig, disconnectConfig } = require("./qbconfig");
 const { logQuickBooksDebug } = require("./quickbooksLogger");
+const tokenManager = require("./tokenManager");
 
 const app = express();
 
@@ -135,8 +136,8 @@ function normalizeCompanyName(name) {
 }
 
 async function checkQBAuth(req, res, next) {
-  // 1. Try explicit header
-  let clientId = req.headers["x-client-id"];
+  // 1. Try existing req.clientId (from quickBooksAuth path extraction) or explicit header
+  let clientId = req.clientId || req.headers["x-client-id"];
 
   // 2. Fallback: Try query parameter
   if (!clientId && req.query.clientId) {
@@ -207,16 +208,31 @@ async function checkQBAuth(req, res, next) {
       workspaceCompanyName &&
       quickbooksCompanyName &&
       normalizeCompanyName(workspaceCompanyName) !==
-        normalizeCompanyName(quickbooksCompanyName);
+      normalizeCompanyName(quickbooksCompanyName);
 
     if (isMismatch) {
-      disconnectConfig(clientId);
-      return res.status(401).json({
-        success: false,
-        isConnected: false,
-        isNameMismatch: true,
-        message: `Company mismatch: selected workspace "${workspaceCompanyName}" does not match QuickBooks company "${quickbooksCompanyName}". Connection blocked.`,
-      });
+      console.warn(`[checkQBAuth] Company name mismatch detected (ignoring): Workspace "${workspaceCompanyName}" vs QuickBooks "${quickbooksCompanyName}"`);
+    }
+
+    // Proactive Token Refresh
+    if (tokenManager.isTokenExpiring(qb.tokenExpiresAt)) {
+      console.log(`[checkQBAuth] Token expiring for ${clientId}, refreshing...`);
+      try {
+        const newAccessToken = await tokenManager.refreshAccessToken(clientId);
+        // Refresh local qb reference
+        req.qb = getQBConfig(clientId);
+        console.log(`[checkQBAuth] Token refreshed successfully for ${clientId}`);
+      } catch (refreshError) {
+        console.error(`[checkQBAuth] Proactive refresh failed for ${clientId}:`, refreshError.message);
+        // If refresh fails, we might still have a partially valid token, but 401 is likely.
+        // We'll let the request proceed and fail at the API level if needed, 
+        // OR we can block it here. Blocking is safer.
+        return res.status(401).json({
+          success: false,
+          message: "QuickBooks session expired and could not be refreshed. Please re-connect.",
+          isConnected: false
+        });
+      }
     }
   } catch (error) {
     console.error("Company isolation check failed:", error.message);
@@ -230,38 +246,57 @@ async function checkQBAuth(req, res, next) {
 }
 
 function isQuickBooksRoute(pathname = "") {
-  return (
-    pathname.startsWith("/balance-sheet") ||
-    pathname.startsWith("/balance-sheet-detail") ||
-    pathname.startsWith("/all-reports") ||
-    pathname.startsWith("/general-ledger") ||
-    pathname.startsWith("/profit-and-loss") ||
-    pathname.startsWith("/profit-and-loss-detail") ||
-    pathname.startsWith("/profit-and-loss-statement") ||
-    pathname.startsWith("/customers") ||
-    pathname.startsWith("/invoices") ||
-    pathname.startsWith("/api/invoices") ||
-    pathname.startsWith("/qb-transactions") ||
-    pathname.startsWith("/qb-cashflow") ||
-    pathname.startsWith("/qb-accounts") ||
-    pathname.startsWith("/qb-cashflow-engine") ||
-    pathname.startsWith("/qb-general-ledger") ||
-    pathname.startsWith("/qb-reconciliation-transactions") ||
-    pathname.startsWith("/qb-trial-balance") ||
-    pathname.startsWith("/qb-reconciliation-engine") ||
-    pathname.startsWith("/bank-transactions") ||
-    pathname.startsWith("/bank-vs-books") ||
-    pathname.startsWith("/reconciliation-data") ||
-    pathname.startsWith("/reconciliation-variance") ||
-    pathname.startsWith("/tax-reconciliation") ||
-    pathname.startsWith("/refresh-token")
-  );
+  // Handle paths like /companies/uuid/qb-endpoint
+  const normalizedPath = pathname.replace(/^\/companies\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i, "");
+  
+  const qbPaths = [
+    "/balance-sheet",
+    "/balance-sheet-detail",
+    "/all-reports",
+    "/general-ledger",
+    "/profit-and-loss",
+    "/profit-and-loss-detail",
+    "/profit-and-loss-statement",
+    "/customers",
+    "/invoices",
+    "/api/invoices",
+    "/qb-transactions",
+    "/qb-cashflow",
+    "/qb-accounts",
+    "/qb-cashflow-engine",
+    "/qb-general-ledger",
+    "/qb-reconciliation-transactions",
+    "/qb-trial-balance",
+    "/qb-reconciliation-engine",
+    "/bank-transactions",
+    "/bank-vs-books",
+    "/reconciliation-data",
+    "/reconciliation-variance",
+    "/tax-reconciliation",
+    "/refresh-token",
+    "/qb-bank-accounts",
+    "/qb-bank-activity",
+    "/qb-one-bank-activity",
+    "/api/extract-bank-pdf-records"
+  ];
+
+  return qbPaths.some(p => normalizedPath.startsWith(p) || pathname.startsWith(p));
 }
 
 function quickBooksAuth(req, res, next) {
   if (!isQuickBooksRoute(req.path)) {
     return next();
   }
+
+  // Strip company prefix if present to allow standard route matching
+  const prefixRegex = /^\/companies\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
+  const match = req.url.match(prefixRegex);
+  if (match) {
+    req.clientId = match[0].split("/")[2];
+    req.url = req.url.replace(prefixRegex, "");
+    if (req.url === "") req.url = "/";
+  }
+
   // All QuickBooks routes require a valid user session
   return requireAuth(req, res, () => checkQBAuth(req, res, next));
 }

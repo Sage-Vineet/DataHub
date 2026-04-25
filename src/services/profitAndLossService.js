@@ -186,23 +186,3 @@ export async function getProfitAndLossDetail(
   };
 }
 
-export async function getProfitAndLossDetail(
-  startDate,
-  endDate,
-  accountingMethod,
-) {
-  const payload = await request(
-    `/profit-and-loss-detail${buildQuery({
-      ...(startDate ? { start_date: startDate } : {}),
-      ...(endDate ? { end_date: endDate } : {}),
-      ...(accountingMethod
-        ? { accounting_method: normalizeAccountingMethod(accountingMethod) }
-        : {}),
-    })}`,
-  );
-
-  return {
-    ...parseDetailReport(payload),
-    rawPayload: payload,
-  };
-}

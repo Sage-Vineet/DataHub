@@ -123,6 +123,7 @@ function getAppBaseUrl(req) {
     "",
   );
 }
+
 function getFrontendBaseUrl(req) {
   if (process.env.FRONTEND_URL)
     return process.env.FRONTEND_URL.replace(/\/$/, "");
@@ -133,6 +134,7 @@ function getFrontendBaseUrl(req) {
     "",
   );
 }
+
 function buildFrontendHashUrl(baseUrl, hashPath, searchParams = "") {
   const normalizedHash = hashPath?.startsWith("/")
     ? hashPath

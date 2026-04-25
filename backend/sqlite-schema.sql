@@ -192,6 +192,7 @@ CREATE TABLE IF NOT EXISTS direct_messages (
 
 CREATE TABLE IF NOT EXISTS bank_transactions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  client_id TEXT NOT NULL,
   txn_date TEXT NOT NULL,
   narration TEXT,
   amount REAL NOT NULL
@@ -199,6 +200,7 @@ CREATE TABLE IF NOT EXISTS bank_transactions (
 
 CREATE TABLE IF NOT EXISTS reconciliation_transactions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  client_id TEXT NOT NULL,
   txn_date TEXT NOT NULL,
   amount REAL NOT NULL,
   name TEXT,
