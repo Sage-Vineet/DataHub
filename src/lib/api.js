@@ -6,6 +6,36 @@ function buildUrl(path) {
   return `${API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`;
 }
 
+function resolveProtectedFileUrl(fileUrl) {
+  const raw = String(fileUrl || '').trim();
+  if (!raw) return '';
+  if (raw.startsWith('blob:')) return raw;
+
+  const hasProtocol = /^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(raw);
+  if (!hasProtocol) {
+    return buildUrl(raw);
+  }
+
+  if (typeof window === 'undefined') {
+    return raw;
+  }
+
+  try {
+    const parsed = new URL(raw, window.location.origin);
+    const apiOrigin = new URL(API_BASE_URL, window.location.origin).origin;
+    const isUploadPath = /^\/uploads\/[^/]+\/content\/?$/.test(parsed.pathname || '');
+
+    // Historical data can contain app-domain upload URLs; force those to API host.
+    if (isUploadPath && parsed.origin !== apiOrigin) {
+      return `${API_BASE_URL}${parsed.pathname}${parsed.search}${parsed.hash}`;
+    }
+
+    return parsed.toString();
+  } catch (_error) {
+    return raw;
+  }
+}
+
 function unwrapPayload(payload) {
   if (!payload || typeof payload !== 'object') return payload;
   if (Object.prototype.hasOwnProperty.call(payload, 'data')) return payload.data;
@@ -328,17 +358,23 @@ export async function fetchProtectedFileBlob(fileUrl, options = {}) {
     throw new Error('Missing file URL');
   }
 
+  const resolvedUrl = resolveProtectedFileUrl(fileUrl);
   const token = options.token ?? getStoredToken();
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
   const headers = {
     'Cache-Control': 'no-store',
     ...(options.headers || {}),
+    ...(clientId ? { 'X-Client-Id': clientId } : {}),
   };
 
   if (token) {
     headers.Authorization = `Bearer ${token}`;
+    headers['X-Access-Token'] = token;
+    headers['X-Auth-Token'] = token;
+    headers['X-Token'] = token;
   }
 
-  const response = await fetch(fileUrl, {
+  const response = await fetch(resolvedUrl, {
     method: 'GET',
     headers,
     cache: 'no-store',
