@@ -1,4 +1,4 @@
-const db = require("../db");
+const { supabase } = require("../db");
 const asyncHandler = require("../utils");
 const { buildUploadContentUrl } = require("../utils/uploadStorage");
 
@@ -18,14 +18,24 @@ const createUpload = asyncHandler(async (req, res) => {
     return res.status(400).json({ error: "Upload body is required" });
   }
 
-  const { rows } = await db.query(
-    `INSERT INTO uploads (file_name, content_type, size_bytes, data, prefix, uploaded_by)
-     VALUES ($1, $2, $3, $4, $5, $6)
-     RETURNING id, file_name, content_type, size_bytes, prefix, uploaded_by, created_at`,
-    [fileName, contentType || "application/octet-stream", body.length, body, prefix || "uploads", req.user?.id || null]
-  );
+  // NOTE: Supabase JS SDK handles Buffer/Uint8Array by base64 encoding them for the JSON payload.
+  // PostgREST handles the decoding into a bytea column if the database schema is correct.
+  const { data, error } = await supabase
+    .from("uploads")
+    .insert({
+      file_name: fileName,
+      content_type: contentType || "application/octet-stream",
+      size_bytes: body.length,
+      data: body,
+      prefix: prefix || "uploads",
+      uploaded_by: req.user?.id || null
+    })
+    .select("id, file_name, content_type, size_bytes, prefix, uploaded_by, created_at")
+    .single();
 
-  const upload = rows[0];
+  if (error) return res.status(500).json({ error: error.message });
+
+  const upload = data;
   res.status(201).json({
     id: upload.id,
     fileName: upload.file_name,
@@ -38,21 +48,28 @@ const createUpload = asyncHandler(async (req, res) => {
 });
 
 const getUploadContent = asyncHandler(async (req, res) => {
-  const { rows } = await db.query(
-    "SELECT id, file_name, content_type, data FROM uploads WHERE id = $1",
-    [req.params.id]
-  );
+  const { data, error } = await supabase
+    .from("uploads")
+    .select("id, file_name, content_type, data")
+    .eq("id", req.params.id)
+    .maybeSingle();
 
-  const upload = rows[0];
-  if (!upload) {
-    return res.status(404).json({ error: "Not found" });
-  }
+  if (error) return res.status(500).json({ error: error.message });
+  if (!data) return res.status(404).json({ error: "Not found" });
 
+  const upload = data;
   const fileName = upload.file_name || "download";
   const encodedName = encodeURIComponent(fileName).replace(/['()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+  
+  let content = upload.data;
+  // If it's a base64 string from Supabase (sometimes SDK returns it as such if not auto-converted)
+  if (typeof content === "string") {
+    content = Buffer.from(content, "base64");
+  }
+
   res.setHeader("Content-Type", upload.content_type || "application/octet-stream");
   res.setHeader("Content-Disposition", `inline; filename*=UTF-8''${encodedName}`);
-  res.send(upload.data);
+  res.send(content);
 });
 
 const legacyPresignUpload = asyncHandler(async (_req, res) => {

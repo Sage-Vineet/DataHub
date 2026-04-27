@@ -1,17 +1,8 @@
-const db = require("../db");
+const { supabase } = require("../db");
 const bcrypt = require("bcryptjs");
 const asyncHandler = require("../utils");
 const { ensureCompanyDefaultFolders } = require("../utils/defaultFolders");
 const CLIENT_STATIC_PASSWORD = process.env.CLIENT_STATIC_PASSWORD || "123456";
-
-function rowsOf(result) {
-  if (!result) return [];
-  return Array.isArray(result) ? result : result.rows || [];
-}
-
-function enumAssignment(column, typeName) {
-  return db.isPostgres ? `${column} = ?::${typeName}` : `${column} = ?`;
-}
 
 async function syncCompanyClientRepresentative(company, previousCompany = null) {
   if (!company?.id || !company.contact_email || !company.contact_name) return;
@@ -28,29 +19,25 @@ async function syncCompanyClientRepresentative(company, previousCompany = null) 
     && previousNormalizedEmail
     && previousNormalizedEmail !== normalizedEmail
   ) {
-    const previousContactUsers = rowsOf(await db.query(
-      `SELECT id, role
-       FROM users
-       WHERE company_id = ?
-         AND role = 'buyer'
-         AND lower(email) = ?
-       LIMIT 1`,
-      [previousCompany.id, previousNormalizedEmail],
-    ));
+    const { data: previousContactUsers } = await supabase
+      .from("users")
+      .select("id, role")
+      .eq("company_id", previousCompany.id)
+      .eq("role", "buyer")
+      .ilike("email", previousNormalizedEmail)
+      .maybeSingle();
 
-    existingUser = previousContactUsers[0] || null;
+    existingUser = previousContactUsers || null;
   }
 
   if (!existingUser) {
-    const existingUsers = rowsOf(await db.query(
-      `SELECT id, role
-       FROM users
-       WHERE lower(email) = ?
-       LIMIT 1`,
-      [normalizedEmail],
-    ));
+    const { data: users } = await supabase
+      .from("users")
+      .select("id, role")
+      .ilike("email", normalizedEmail)
+      .maybeSingle();
 
-    existingUser = existingUsers[0] || null;
+    existingUser = users || null;
   }
 
   if (existingUser && existingUser.role !== "buyer") {
@@ -58,66 +45,84 @@ async function syncCompanyClientRepresentative(company, previousCompany = null) 
   }
 
   if (existingUser) {
-    await db.query(
-      `UPDATE users
-       SET name = ?, email = ?, phone = ?, company_id = ?, status = 'active', updated_at = ?
-       WHERE id = ?`,
-      [
-        company.contact_name,
-        normalizedEmail,
-        company.contact_phone || null,
-        company.id,
-        new Date().toISOString(),
-        existingUser.id,
-      ],
-    );
+    await supabase
+      .from("users")
+      .update({
+        name: company.contact_name,
+        email: normalizedEmail,
+        phone: company.contact_phone || null,
+        company_id: company.id,
+        status: "active",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", existingUser.id);
 
-    await db.query(
-      "INSERT INTO user_companies (user_id, company_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
-      [existingUser.id, company.id],
-    );
-    return;
+    await supabase
+      .from("user_companies")
+      .upsert({ user_id: existingUser.id, company_id: company.id }, { onConflict: "user_id,company_id" });
+    
+    return existingUser.id;
   }
 
   const passwordHash = await bcrypt.hash(CLIENT_STATIC_PASSWORD, 10);
-  const inserted = rowsOf(await db.query(
-    `INSERT INTO users (name, email, phone, password_hash, role, company_id, status)
-     VALUES (?, ?, ?, ?, ${db.isPostgres ? "'buyer'::user_role" : "'buyer'"}, ?, ${db.isPostgres ? "'active'::user_status" : "'active'"})
-     RETURNING id`,
-    [
-      company.contact_name,
-      normalizedEmail,
-      company.contact_phone || null,
-      passwordHash,
-      company.id,
-    ],
-  ));
+  const { data: createdUser, error: insertError } = await supabase
+    .from("users")
+    .insert({
+      name: company.contact_name,
+      email: normalizedEmail,
+      phone: company.contact_phone || null,
+      password_hash: passwordHash,
+      role: "buyer",
+      company_id: company.id,
+      status: "active"
+    })
+    .select("id")
+    .single();
 
-  const createdUserId = inserted[0]?.id;
-  if (createdUserId) {
-    await db.query(
-      "INSERT INTO user_companies (user_id, company_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
-      [createdUserId, company.id],
-    );
+  if (insertError) {
+    console.error("❌ Error creating company representative:", insertError.message);
+    return null;
   }
 
-  return createdUserId || null;
+  if (createdUser) {
+    await supabase
+      .from("user_companies")
+      .upsert({ user_id: createdUser.id, company_id: company.id }, { onConflict: "user_id,company_id" });
+  }
+
+  return createdUser?.id || null;
 }
 
 const listCompanies = asyncHandler(async (req, res) => {
-  const { rows } = await db.query(
-    `SELECT
-       c.*,
-       COUNT(r.id) AS request_count,
-       COUNT(CASE WHEN r.status = 'pending' THEN 1 END) AS pending_request_count,
-       COUNT(CASE WHEN r.status = 'completed' THEN 1 END) AS completed_request_count
-     FROM companies c
-     LEFT JOIN requests r ON r.company_id = c.id
-     GROUP BY c.id
-     ORDER BY c.created_at DESC`
-  );
-  res.json(rows);
+  // Fetch all companies
+  const { data: companies, error: companiesError } = await supabase
+    .from("companies")
+    .select("*")
+    .order("created_at", { ascending: false });
+
+  if (companiesError) return res.status(500).json({ error: companiesError.message });
+
+  // Fetch counts from requests table
+  const { data: counts, error: countsError } = await supabase
+    .from("requests")
+    .select("company_id, status");
+
+  if (countsError) return res.status(500).json({ error: countsError.message });
+
+  // Aggregate counts in JS
+  const companyMap = (companies || []).map(company => {
+    const companyRequests = counts.filter(r => String(r.company_id) === String(company.id));
+    return {
+      ...company,
+      request_count: companyRequests.length,
+      pending_request_count: companyRequests.filter(r => r.status === 'pending').length,
+      completed_request_count: companyRequests.filter(r => r.status === 'completed').length,
+    };
+  });
+
+  res.json(companyMap);
 });
+
 
 const createCompany = asyncHandler(async (req, res) => {
   const {
@@ -135,14 +140,23 @@ const createCompany = asyncHandler(async (req, res) => {
     return res.status(400).json({ error: "Missing required fields" });
   }
 
-  const { rows } = await db.query(
-    `INSERT INTO companies (name, industry, status, since, logo, contact_name, contact_email, contact_phone)
-     VALUES (?, ?, ${db.isPostgres ? "?::company_status" : "?"}, ?, ?, ?, ?, ?)
-     RETURNING *`,
-    [name, industry, status || "active", since || null, logo || null, contact_name, contact_email, contact_phone]
-  );
+  const { data: inserted, error } = await supabase
+    .from("companies")
+    .insert({
+      name,
+      industry,
+      status: status || "active",
+      since: since || null,
+      logo: logo || null,
+      contact_name,
+      contact_email,
+      contact_phone
+    })
+    .select("*")
+    .single();
 
-  const inserted = rows[0];
+  if (error) return res.status(500).json({ error: error.message });
+
   const clientRepresentativeId = inserted ? await syncCompanyClientRepresentative(inserted) : null;
   if (inserted) {
     await ensureCompanyDefaultFolders(inserted.id, req.user?.id || clientRepresentativeId || null);
@@ -152,56 +166,59 @@ const createCompany = asyncHandler(async (req, res) => {
 });
 
 const getCompany = asyncHandler(async (req, res) => {
-  const { rows } = await db.query(
-    `SELECT
-       c.*,
-       COUNT(r.id) AS request_count,
-       COUNT(CASE WHEN r.status = 'pending' THEN 1 END) AS pending_request_count,
-       COUNT(CASE WHEN r.status = 'completed' THEN 1 END) AS completed_request_count
-     FROM companies c
-     LEFT JOIN requests r ON r.company_id = c.id
-     WHERE c.id = ?
-     GROUP BY c.id`,
-    [req.params.id]
-  );
-  if (!rows[0]) return res.status(404).json({ error: "Not found" });
-  res.json(rows[0]);
+  const { data: company, error: companyError } = await supabase
+    .from("companies")
+    .select("*")
+    .eq("id", req.params.id)
+    .maybeSingle();
+
+  if (companyError) return res.status(500).json({ error: companyError.message });
+  if (!company) return res.status(404).json({ error: "Not found" });
+
+  // Fetch counts for this company
+  const { data: counts, error: countsError } = await supabase
+    .from("requests")
+    .select("status")
+    .eq("company_id", req.params.id);
+
+  if (countsError) return res.status(500).json({ error: countsError.message });
+
+  const result = {
+    ...company,
+    request_count: (counts || []).length,
+    pending_request_count: (counts || []).filter(r => r.status === 'pending').length,
+    completed_request_count: (counts || []).filter(r => r.status === 'completed').length,
+  };
+
+  res.json(result);
 });
 
+
 const updateCompany = asyncHandler(async (req, res) => {
-  const fields = [];
-  const values = [];
   const body = req.body || {};
 
-  const currentRows = rowsOf(await db.query("SELECT * FROM companies WHERE id = ?", [req.params.id]));
-  const existingCompany = currentRows[0];
-  if (!existingCompany) return res.status(404).json({ error: "Not found" });
+  const { data: existingCompany, error: findError } = await supabase
+    .from("companies")
+    .select("*")
+    .eq("id", req.params.id)
+    .maybeSingle();
 
-  Object.keys(body).forEach((key) => {
-    if (key === "status") {
-      fields.push(enumAssignment(key, "company_status"));
-    } else {
-      fields.push(`${key} = ?`);
-    }
-    values.push(body[key]);
-  });
+  if (findError || !existingCompany) return res.status(404).json({ error: "Not found" });
 
-  if (fields.length === 0) return res.status(400).json({ error: "No updates" });
+  const updates = { ...body, updated_at: new Date().toISOString() };
+  
+  const { data: updated, error } = await supabase
+    .from("companies")
+    .update(updates)
+    .eq("id", req.params.id)
+    .select("*")
+    .single();
 
-  values.push(new Date().toISOString());
-  values.push(req.params.id);
+  if (error) return res.status(500).json({ error: error.message });
 
-  await db.query(
-    `UPDATE companies SET ${fields.join(", ")}, updated_at = ? WHERE id = ?`,
-    values
-  );
-
-  // Get updated company
-  const { rows } = await db.query("SELECT * FROM companies WHERE id = ?", [req.params.id]);
-  if (!rows[0]) return res.status(404).json({ error: "Not found" });
-  const clientRepresentativeId = await syncCompanyClientRepresentative(rows[0], existingCompany);
-  await ensureCompanyDefaultFolders(rows[0].id, req.user?.id || clientRepresentativeId || null);
-  res.json(rows[0]);
+  const clientRepresentativeId = await syncCompanyClientRepresentative(updated, existingCompany);
+  await ensureCompanyDefaultFolders(updated.id, req.user?.id || clientRepresentativeId || null);
+  res.json(updated);
 });
 
 module.exports = { listCompanies, createCompany, getCompany, updateCompany };

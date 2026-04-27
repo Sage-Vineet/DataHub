@@ -1,4 +1,4 @@
-const db = require("../db");
+const { supabase } = require("../db");
 
 const DEFAULT_FOLDER_STRUCTURE = [
   { name: "Finance" },
@@ -10,102 +10,131 @@ const DEFAULT_FOLDER_STRUCTURE = [
   { name: "Other" },
 ];
 
-function rowsOf(result) {
-  if (!result) return [];
-  return Array.isArray(result) ? result : result.rows || [];
-}
-
 async function userExists(userId) {
   if (!userId) return false;
-  const rows = rowsOf(await db.query("SELECT id FROM users WHERE id = ? LIMIT 1", [userId]));
-  return !!rows[0];
+  const { data, error } = await supabase
+    .from("users")
+    .select("id")
+    .eq("id", userId)
+    .maybeSingle();
+  return !!data && !error;
 }
 
 async function resolveFolderCreatorId(companyId, preferredCreatedBy) {
   if (await userExists(preferredCreatedBy)) return preferredCreatedBy;
 
-  const companyUser = rowsOf(await db.query(
-    `SELECT id
-     FROM users
-     WHERE company_id = ?
-     ORDER BY created_at ASC
-     LIMIT 1`,
-    [companyId],
-  ))[0];
+  const { data: companyUser } = await supabase
+    .from("users")
+    .select("id")
+    .eq("company_id", companyId)
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
   if (companyUser?.id) return companyUser.id;
 
-  const assignedUser = rowsOf(await db.query(
-    `SELECT uc.user_id AS id
-     FROM user_companies uc
-     WHERE uc.company_id = ?
-     ORDER BY uc.created_at ASC
-     LIMIT 1`,
-    [companyId],
-  ))[0];
-  if (assignedUser?.id) return assignedUser.id;
+  const { data: assignedUser } = await supabase
+    .from("user_companies")
+    .select("user_id")
+    .eq("company_id", companyId)
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
 
-  const brokerUser = rowsOf(await db.query(
-    `SELECT id
-     FROM users
-     WHERE role IN ('admin', 'broker')
-     ORDER BY created_at ASC
-     LIMIT 1`,
-  ))[0];
+  if (assignedUser?.user_id) return assignedUser.user_id;
+
+  const { data: brokerUser } = await supabase
+    .from("users")
+    .select("id")
+    .in("role", ["admin", "broker"])
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
   return brokerUser?.id || null;
 }
 
 async function ensureCompanyDefaultFolders(companyId, preferredCreatedBy) {
   if (!companyId) return [];
 
-  const existingRows = rowsOf(await db.query(
-    "SELECT * FROM folders WHERE company_id = ? ORDER BY created_at ASC",
-    [companyId],
-  ));
-  if (existingRows.length > 0) return existingRows;
+  const { data: existingRows, error: findError } = await supabase
+    .from("folders")
+    .select("*")
+    .eq("company_id", companyId)
+    .order("created_at", { ascending: true });
+
+  if (findError) return [];
+  if (existingRows && existingRows.length > 0) return existingRows;
 
   const creatorId = await resolveFolderCreatorId(companyId, preferredCreatedBy);
   if (!creatorId) return [];
 
   for (const folder of DEFAULT_FOLDER_STRUCTURE) {
-    const parentRows = rowsOf(await db.query(
-      "INSERT INTO folders (company_id, parent_id, name, color, created_by) VALUES (?, ?, ?, ?, ?) RETURNING *",
-      [companyId, null, folder.name, null, creatorId],
-    ));
-    const parent = parentRows[0];
+    const { data: parent, error: insertError } = await supabase
+      .from("folders")
+      .insert({
+        company_id: companyId,
+        parent_id: null,
+        name: folder.name,
+        color: null,
+        created_by: creatorId
+      })
+      .select("*")
+      .single();
+
+    if (insertError) {
+      console.error("❌ Error creating folder:", insertError.message);
+      continue;
+    }
 
     if (parent && Array.isArray(folder.children)) {
-      for (const childName of folder.children) {
-        await db.query(
-          "INSERT INTO folders (company_id, parent_id, name, color, created_by) VALUES (?, ?, ?, ?, ?)",
-          [companyId, parent.id, childName, null, creatorId],
-        );
-      }
+      const children = folder.children.map(childName => ({
+        company_id: companyId,
+        parent_id: parent.id,
+        name: childName,
+        color: null,
+        created_by: creatorId
+      }));
+      await supabase.from("folders").insert(children);
     }
   }
 
-  return rowsOf(await db.query(
-    "SELECT * FROM folders WHERE company_id = ? ORDER BY created_at ASC",
-    [companyId],
-  ));
+  const { data: finalFolders } = await supabase
+    .from("folders")
+    .select("*")
+    .eq("company_id", companyId)
+    .order("created_at", { ascending: true });
+
+  return finalFolders || [];
 }
 
 async function ensureRootUploadFolder(companyId, preferredCreatedBy) {
-  const existing = rowsOf(await db.query(
-    `SELECT *
-     FROM folders
-     WHERE company_id = ? AND parent_id IS NULL AND lower(name) = lower(?)
-     LIMIT 1`,
-    [companyId, "General Uploads"],
-  ))[0];
+  const { data: existing, error: findError } = await supabase
+    .from("folders")
+    .select("*")
+    .eq("company_id", companyId)
+    .is("parent_id", null)
+    .ilike("name", "General Uploads")
+    .maybeSingle();
+
   if (existing) return existing;
 
   const creatorId = await resolveFolderCreatorId(companyId, preferredCreatedBy);
   if (!creatorId) return null;
 
-  const created = rowsOf(await db.query(
-    "INSERT INTO folders (company_id, parent_id, name, color, created_by) VALUES (?, ?, ?, ?, ?) RETURNING *",
-    [companyId, null, "General Uploads", null, creatorId],
-  ))[0];
+  const { data: created, error: insertError } = await supabase
+    .from("folders")
+    .insert({
+      company_id: companyId,
+      parent_id: null,
+      name: "General Uploads",
+      color: null,
+      created_by: creatorId
+    })
+    .select("*")
+    .single();
+
+  if (insertError) console.error("❌ Error creating root upload folder:", insertError.message);
   return created || null;
 }
 
@@ -114,3 +143,4 @@ module.exports = {
   ensureRootUploadFolder,
   resolveFolderCreatorId,
 };
+

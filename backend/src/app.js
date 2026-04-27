@@ -199,10 +199,12 @@ async function checkQBAuth(req, res, next) {
   }
 
   try {
-    const result = await db.query("SELECT name FROM companies WHERE id = ?", [
-      clientId,
-    ]);
-    const workspaceCompanyName = result?.rows?.[0]?.name || null;
+    const { data: companyData } = await db.supabase
+      .from("companies")
+      .select("name")
+      .eq("id", clientId)
+      .maybeSingle();
+    const workspaceCompanyName = companyData?.name || null;
     const quickbooksCompanyName = qb.companyName || null;
     const isMismatch =
       workspaceCompanyName &&

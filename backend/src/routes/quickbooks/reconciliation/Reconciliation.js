@@ -2,7 +2,7 @@ const express = require("express");
 const axios = require("axios");
 const { getQBConfig, loadQBConfig } = require("../../../qbconfig");
 const tokenManager = require("../../../tokenManager");
-const pool = require("../../../db");
+const { supabase } = require("../../../db");
 const router = express.Router();
 
 /**
@@ -60,16 +60,27 @@ router.get("/qb-general-ledger", async (req, res) => {
       });
     });
 
-    await pool.query(
-      "DELETE FROM reconciliation_transactions WHERE client_id = $1",
-      [req.clientId],
-    );
-    for (const txn of transactions) {
-      await pool.query(
-        `INSERT INTO reconciliation_transactions (client_id, txn_date, amount, name, transaction_type) VALUES ($1,$2,$3,$4,$5)`,
-        [req.clientId, txn.date, txn.amount, txn.name, txn.type],
-      );
+    await supabase
+      .from("reconciliation_transactions")
+      .delete()
+      .eq("client_id", req.clientId);
+
+    if (transactions.length > 0) {
+      const toInsert = transactions.map((txn) => ({
+        client_id: req.clientId,
+        txn_date: txn.date,
+        amount: txn.amount,
+        name: txn.name,
+        transaction_type: txn.type,
+      }));
+      
+      const { error: insertError } = await supabase
+        .from("reconciliation_transactions")
+        .insert(toInsert);
+      
+      if (insertError) throw insertError;
     }
+
 
     res.json({
       message: "Data stored successfully",
@@ -222,15 +233,26 @@ router.get("/qb-reconciliation-engine", async (req, res) => {
 router.post("/bank-transactions", async (req, res) => {
   const transactions = req.body;
   try {
-    await pool.query("DELETE FROM bank_transactions WHERE client_id = $1", [
-      req.clientId,
-    ]);
-    for (const txn of transactions) {
-      await pool.query(
-        `INSERT INTO bank_transactions (client_id, txn_date, narration, amount) VALUES ($1,$2,$3,$4)`,
-        [req.clientId, txn.date, txn.narration, txn.amount],
-      );
+    await supabase
+      .from("bank_transactions")
+      .delete()
+      .eq("client_id", req.clientId);
+
+    if (transactions.length > 0) {
+      const toInsert = transactions.map((txn) => ({
+        client_id: req.clientId,
+        txn_date: txn.date,
+        narration: txn.narration,
+        amount: txn.amount,
+      }));
+
+      const { error: insertError } = await supabase
+        .from("bank_transactions")
+        .insert(toInsert);
+
+      if (insertError) throw insertError;
     }
+
     res.json({
       message: "Bank transactions stored successfully",
       totalInserted: transactions.length,

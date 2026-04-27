@@ -193,13 +193,13 @@ export default function Companies() {
     setSuccess('');
 
     const payload = {
-        name: form.name.trim(),
-        industry: form.industry.trim(),
-        contact_name: form.contact.trim(),
-        contact_email: form.email.trim(),
-        contact_phone: form.phone.trim(),
-        logo: getInitials(form.name),
-      };
+      name: form.name.trim(),
+      industry: form.industry.trim(),
+      contact_name: form.contact.trim(),
+      contact_email: form.email.trim(),
+      contact_phone: form.phone.trim(),
+      logo: getInitials(form.name),
+    };
 
     try {
       if (editing) {
@@ -449,11 +449,10 @@ export default function Companies() {
                 <button
                   key={pageNumber}
                   onClick={() => setPage(pageNumber)}
-                  className={`w-8 h-8 rounded-lg text-xs font-semibold transition-colors border ${
-                    pageNumber === safePage
-                      ? 'bg-[#05164D] text-white border-[#05164D]'
-                      : 'border-gray-200 text-[#6D6E71] hover:bg-white'
-                  }`}
+                  className={`w-8 h-8 rounded-lg text-xs font-semibold transition-colors border ${pageNumber === safePage
+                    ? 'bg-[#05164D] text-white border-[#05164D]'
+                    : 'border-gray-200 text-[#6D6E71] hover:bg-white'
+                    }`}
                 >
                   {pageNumber}
                 </button>

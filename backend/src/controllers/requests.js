@@ -1,4 +1,4 @@
-const db = require("../db");
+const { supabase } = require("../db");
 const asyncHandler = require("../utils");
 const { buildAppBaseUrl } = require("../utils/uploadStorage");
 const {
@@ -12,17 +12,6 @@ const REQUEST_CATEGORIES = ["Finance", "Legal", "Compliance", "HR", "Tax", "M&A"
 const RESPONSE_TYPES = ["Upload", "Narrative", "Both"];
 const REQUEST_STATUSES = ["pending", "in-review", "completed", "blocked"];
 const APPROVAL_STATUSES = ["pending", "approved"];
-
-function rowsOf(result) {
-  if (!result) return [];
-  return Array.isArray(result) ? result : result.rows || [];
-}
-
-function enumAssignment(column, placeholderIndex, typeName) {
-  return db.isPostgres
-    ? `${column} = $${placeholderIndex}::${typeName}`
-    : `${column} = $${placeholderIndex}`;
-}
 
 function isBroker(user) {
   return ["broker", "admin"].includes(user?.role);
@@ -108,11 +97,12 @@ function normalizeBoolean(value, fallback = true) {
 async function createRequestReminderEvent(requestId, sentBy, sentAt = null) {
   if (!requestId || !sentBy) return null;
   const reminderSentAt = sentAt || new Date().toISOString();
-  const rows = rowsOf(await db.query(
-    "INSERT INTO request_reminders (request_id, sent_by, sent_at) VALUES ($1, $2, $3) RETURNING *",
-    [requestId, sentBy, reminderSentAt],
-  ));
-  return rows[0] || null;
+  const { data, error } = await supabase
+    .from("request_reminders")
+    .insert({ request_id: requestId, sent_by: sentBy, sent_at: reminderSentAt })
+    .select("*")
+    .single();
+  return data || null;
 }
 
 function normalizeRequestInput(input = {}, fallbackCreatedBy, options = {}) {
@@ -187,78 +177,37 @@ function normalizeRequestInput(input = {}, fallbackCreatedBy, options = {}) {
 }
 
 async function insertRequest(companyId, payload) {
-  const columns = [
-    "company_id",
-    "title",
-    "sub_label",
-    "description",
-    "category",
-    "response_type",
-    "priority",
-    "status",
-    "due_date",
-    "assigned_to",
-    "visible",
-    "created_by",
-    "submission_source",
-    "approval_status",
-    "approved_by",
-    "approved_at",
-  ];
-  const values = [
-    companyId,
-    payload.title,
-    payload.sub_label,
-    payload.description,
-    payload.category,
-    payload.response_type,
-    payload.priority,
-    payload.status,
-    payload.due_date,
-    payload.assigned_to,
-    payload.visible,
-    payload.created_by,
-    payload.submission_source,
-    payload.approval_status,
-    payload.approved_by,
-    payload.approved_at,
-  ];
+  const { data, error } = await supabase
+    .from("requests")
+    .insert({
+      company_id: companyId,
+      ...payload
+    })
+    .select("*")
+    .single();
 
-  const placeholders = columns.map((_, index) => {
-    const position = index + 1;
-    const column = columns[index];
-    if (column === "category" && db.isPostgres) return `$${position}::request_category`;
-    if (column === "response_type" && db.isPostgres) return `$${position}::response_type`;
-    if (column === "priority" && db.isPostgres) return `$${position}::request_priority`;
-    if (column === "status" && db.isPostgres) return `$${position}::request_status`;
-    if (column === "visible") return `COALESCE($${position}, true)`;
-    return `$${position}`;
-  });
-
-  const { rows } = await db.query(
-    `INSERT INTO requests (${columns.join(", ")})
-     VALUES (${placeholders.join(", ")})
-     RETURNING *`,
-    values
-  );
-
-  return rows[0];
+  if (error) throw new Error(error.message);
+  return data;
 }
 
 async function getRequestById(requestId) {
-  const rows = rowsOf(await db.query(
-    `SELECT
-       r.*,
-       u.name AS created_by_name,
-       u.email AS created_by_email,
-       approver.name AS approved_by_name
-     FROM requests r
-     LEFT JOIN users u ON u.id = r.created_by
-     LEFT JOIN users approver ON approver.id = r.approved_by
-     WHERE r.id = $1`,
-    [requestId],
-  ));
-  return rows[0] || null;
+  const { data, error } = await supabase
+    .from("requests")
+    .select(`
+      *,
+      created_by_user:users!requests_created_by_fkey(name, email),
+      approved_by_user:users!requests_approved_by_fkey(name)
+    `)
+    .eq("id", requestId)
+    .maybeSingle();
+
+  if (error || !data) return null;
+  return {
+    ...data,
+    created_by_name: data.created_by_user?.name,
+    created_by_email: data.created_by_user?.email,
+    approved_by_name: data.approved_by_user?.name
+  };
 }
 
 const listRequests = asyncHandler(async (req, res) => {
@@ -266,21 +215,26 @@ const listRequests = asyncHandler(async (req, res) => {
     return res.status(403).json({ error: "Forbidden" });
   }
 
-  const rows = rowsOf(await db.query(
-    `SELECT
-       r.*,
-       u.name AS created_by_name,
-       u.email AS created_by_email,
-       approver.name AS approved_by_name
-     FROM requests r
-     LEFT JOIN users u ON u.id = r.created_by
-     LEFT JOIN users approver ON approver.id = r.approved_by
-     WHERE r.company_id = $1
-     ORDER BY r.created_at DESC`,
-    [req.params.id]
-  ));
+  const { data, error } = await supabase
+    .from("requests")
+    .select(`
+      *,
+      created_by_user:users!requests_created_by_fkey(name, email),
+      approved_by_user:users!requests_approved_by_fkey(name)
+    `)
+    .eq("company_id", req.params.id)
+    .order("created_at", { ascending: false });
 
-  res.json(filterRequestsForUser(req.user, rows));
+  if (error) return res.status(500).json({ error: error.message });
+
+  const mapped = (data || []).map(r => ({
+    ...r,
+    created_by_name: r.created_by_user?.name,
+    created_by_email: r.created_by_user?.email,
+    approved_by_name: r.approved_by_user?.name
+  }));
+
+  res.json(filterRequestsForUser(req.user, mapped));
 });
 
 const createRequest = asyncHandler(async (req, res) => {
@@ -405,36 +359,19 @@ const updateRequest = asyncHandler(async (req, res) => {
     }
   }
 
-  const fields = [];
-  const values = [];
-  let idx = 1;
-  const updateBody = { ...body };
-  delete updateBody.reminder_frequency_days;
+  const updates = { ...body, updated_at: new Date().toISOString() };
+  delete updates.reminder_frequency_days;
 
-  Object.keys(updateBody).forEach((key) => {
-    const placeholderIndex = idx++;
-    if (key === "category") {
-      fields.push(enumAssignment(key, placeholderIndex, "request_category"));
-    } else if (key === "response_type") {
-      fields.push(enumAssignment(key, placeholderIndex, "response_type"));
-    } else if (key === "priority") {
-      fields.push(enumAssignment(key, placeholderIndex, "request_priority"));
-    } else if (key === "status") {
-      fields.push(enumAssignment(key, placeholderIndex, "request_status"));
-    } else {
-      fields.push(`${key} = $${placeholderIndex}`);
-    }
-    values.push(updateBody[key]);
-  });
+  if (Object.keys(updates).length <= 1) return res.status(400).json({ error: "No updates" });
 
-  if (fields.length === 0) return res.status(400).json({ error: "No updates" });
+  const { data, error } = await supabase
+    .from("requests")
+    .update(updates)
+    .eq("id", req.params.id)
+    .select("*")
+    .single();
 
-  values.push(req.params.id);
-  const rows = rowsOf(await db.query(
-    `UPDATE requests SET ${fields.join(", ")}, updated_at = datetime('now') WHERE id = $${idx} RETURNING *`,
-    values
-  ));
-  if (!rows[0]) return res.status(404).json({ error: "Not found" });
+  if (error) return res.status(404).json({ error: error.message });
   res.json(await getRequestById(req.params.id));
 });
 
@@ -445,21 +382,19 @@ const approveRequest = asyncHandler(async (req, res) => {
     return res.status(403).json({ error: "Forbidden" });
   }
 
-  const setClauses = [
-    "approval_status = 'approved'",
-    "approved_by = $1",
-    "approved_at = datetime('now')",
-    "updated_at = datetime('now')",
-  ];
+  const { data, error } = await supabase
+    .from("requests")
+    .update({
+      approval_status: "approved",
+      approved_by: req.user.id,
+      approved_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    })
+    .eq("id", req.params.id)
+    .select("*")
+    .single();
 
-  const rows = rowsOf(await db.query(
-    `UPDATE requests
-     SET ${setClauses.join(", ")}
-     WHERE id = $2
-     RETURNING *`,
-    [req.user.id, req.params.id],
-  ));
-  if (!rows[0]) return res.status(404).json({ error: "Not found" });
+  if (error) return res.status(404).json({ error: error.message });
   await createRequestReminderEvent(req.params.id, req.user.id);
   res.json(await getRequestById(req.params.id));
 });
@@ -471,9 +406,8 @@ const deleteRequest = asyncHandler(async (req, res) => {
     return res.status(403).json({ error: "Forbidden" });
   }
 
-  const result = await db.query("DELETE FROM requests WHERE id = $1", [req.params.id]);
-  const rowCount = result?.rowCount ?? result?.changes ?? 0;
-  if (!rowCount) return res.status(404).json({ error: "Not found" });
+  const { error } = await supabase.from("requests").delete().eq("id", req.params.id);
+  if (error) return res.status(404).json({ error: error.message });
   res.status(204).send();
 });
 
@@ -502,15 +436,26 @@ const listRequestDocuments = asyncHandler(async (req, res) => {
     return res.status(403).json({ error: "Forbidden" });
   }
 
-  const rows = rowsOf(await db.query(
-    `SELECT rd.*, d.name, d.file_url, d.status, d.upload_id
-     FROM request_documents rd
-     JOIN documents d ON d.id = rd.document_id
-     WHERE rd.request_id = $1
-     ORDER BY rd.created_at DESC`,
-    [req.params.id]
-  ));
-  res.json(rows);
+  const { data, error } = await supabase
+    .from("request_documents")
+    .select(`
+      id, request_id, document_id, visible, created_at,
+      document:documents!request_documents_document_id_fkey(name, file_url, status, upload_id)
+    `)
+    .eq("request_id", req.params.id)
+    .order("created_at", { ascending: false });
+
+  if (error) return res.status(500).json({ error: error.message });
+
+  const mapped = (data || []).map(rd => ({
+    ...rd,
+    name: rd.document?.name,
+    file_url: rd.document?.file_url,
+    status: rd.document?.status,
+    upload_id: rd.document?.upload_id
+  }));
+
+  res.json(mapped);
 });
 
 const addRequestDocument = asyncHandler(async (req, res) => {
@@ -526,20 +471,27 @@ const addRequestDocument = asyncHandler(async (req, res) => {
   const { document_id, visible } = req.body || {};
   if (!document_id) return res.status(400).json({ error: "document_id required" });
 
-  const rows = rowsOf(await db.query(
-    "INSERT INTO request_documents (request_id, document_id, visible) VALUES ($1, $2, COALESCE($3, true)) RETURNING *",
-    [req.params.id, document_id, visible]
-  ));
+  const { data, error } = await supabase
+    .from("request_documents")
+    .insert({
+      request_id: req.params.id,
+      document_id,
+      visible: normalizeBoolean(visible, true)
+    })
+    .select("*")
+    .single();
 
-  await db.query(
-    `UPDATE requests
-     SET status = ${db.isPostgres ? "$1::request_status" : "$1"}, updated_at = datetime('now')
-     WHERE id = $2 AND status = 'pending'`,
-    ["in-review", req.params.id]
-  );
+  if (error) return res.status(500).json({ error: error.message });
+
+  if (current.status === "pending") {
+    await supabase
+      .from("requests")
+      .update({ status: "in-review", updated_at: new Date().toISOString() })
+      .eq("id", req.params.id);
+  }
 
   const updatedRequest = await getRequestById(req.params.id);
-  res.status(201).json(updatedRequest || rows[0]);
+  res.status(201).json(updatedRequest || data);
 });
 
 const updateNarrative = asyncHandler(async (req, res) => {
@@ -558,35 +510,49 @@ const updateNarrative = asyncHandler(async (req, res) => {
     return res.status(400).json({ error: "content and updated_by required" });
   }
 
-  const rows = rowsOf(await db.query(
-    `INSERT INTO request_narratives (request_id, content, updated_by)
-     VALUES ($1, $2, $3)
-     ON CONFLICT (request_id) DO UPDATE SET content = EXCLUDED.content, updated_by = EXCLUDED.updated_by, updated_at = datetime('now')
-     RETURNING *`,
-    [req.params.id, content, resolvedUpdatedBy]
-  ));
+  const { data, error } = await supabase
+    .from("request_narratives")
+    .upsert({
+      request_id: req.params.id,
+      content,
+      updated_by: resolvedUpdatedBy,
+      updated_at: new Date().toISOString()
+    }, { onConflict: "request_id" })
+    .select("*")
+    .single();
 
-  await db.query(
-    `UPDATE requests
-     SET status = ${db.isPostgres ? "$1::request_status" : "$1"}, updated_at = datetime('now')
-     WHERE id = $2 AND status = 'pending'`,
-    ["in-review", req.params.id]
-  );
+  if (error) return res.status(500).json({ error: error.message });
+
+  if (current.status === "pending") {
+    await supabase
+      .from("requests")
+      .update({ status: "in-review", updated_at: new Date().toISOString() })
+      .eq("id", req.params.id);
+  }
 
   const request = current;
   if (request?.company_id) {
     const folderName = request.category || request.sub_label || "Other";
-    let folderRow = rowsOf(await db.query(
-      "SELECT id, name FROM folders WHERE company_id = $1 AND lower(name) = lower($2) LIMIT 1",
-      [request.company_id, folderName]
-    ))[0];
+    let { data: folderRow } = await supabase
+      .from("folders")
+      .select("id, name")
+      .eq("company_id", request.company_id)
+      .ilike("name", folderName)
+      .maybeSingle();
 
     if (!folderRow) {
-      const createdFolder = rowsOf(await db.query(
-        "INSERT INTO folders (company_id, parent_id, name, color, created_by) VALUES ($1, $2, $3, $4, $5) RETURNING *",
-        [request.company_id, null, folderName, null, resolvedUpdatedBy]
-      ));
-      folderRow = createdFolder[0];
+      const { data: createdFolder } = await supabase
+        .from("folders")
+        .insert({
+          company_id: request.company_id,
+          parent_id: null,
+          name: folderName,
+          color: null,
+          created_by: resolvedUpdatedBy
+        })
+        .select("*")
+        .single();
+      folderRow = createdFolder;
     }
 
     if (folderRow?.id) {
@@ -594,50 +560,66 @@ const updateNarrative = asyncHandler(async (req, res) => {
       const fileUrl = `${buildAppBaseUrl(req)}/requests/${request.id}/narrative/file`;
       const size = Buffer.byteLength(content || "", "utf8").toString();
 
-      const existingDoc = rowsOf(await db.query(
-        "SELECT id FROM documents WHERE folder_id = $1 AND name = $2 LIMIT 1",
-        [folderRow.id, docName]
-      ))[0];
+      const { data: existingDoc } = await supabase
+        .from("documents")
+        .select("id")
+        .eq("folder_id", folderRow.id)
+        .eq("name", docName)
+        .maybeSingle();
 
       let documentId = existingDoc?.id;
       if (existingDoc?.id) {
-        await db.query(
-          `UPDATE documents
-           SET file_url = $1,
-               upload_id = $2,
-               size = $3,
-               status = ${db.isPostgres ? "$4::document_status" : "$4"},
-               uploaded_by = $5,
-               uploaded_at = datetime('now')
-           WHERE id = $6`,
-          [fileUrl, null, size, "under-review", resolvedUpdatedBy, existingDoc.id]
-        );
+        await supabase
+          .from("documents")
+          .update({
+            file_url: fileUrl,
+            upload_id: null,
+            size: size,
+            status: "under-review",
+            uploaded_by: resolvedUpdatedBy,
+            uploaded_at: new Date().toISOString()
+          })
+          .eq("id", existingDoc.id);
       } else {
-        const createdDoc = rowsOf(await db.query(
-          `INSERT INTO documents (company_id, folder_id, name, file_url, upload_id, size, ext, status, uploaded_by)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, ${db.isPostgres ? "$8::document_status" : "$8"}, $9)
-           RETURNING *`,
-          [request.company_id, folderRow.id, docName, fileUrl, null, size, "txt", "under-review", resolvedUpdatedBy]
-        ));
-        documentId = createdDoc[0]?.id;
+        const { data: createdDoc } = await supabase
+          .from("documents")
+          .insert({
+            company_id: request.company_id,
+            folder_id: folderRow.id,
+            name: docName,
+            file_url: fileUrl,
+            upload_id: null,
+            size: size,
+            ext: "txt",
+            status: "under-review",
+            uploaded_by: resolvedUpdatedBy
+          })
+          .select("*")
+          .single();
+        documentId = createdDoc?.id;
       }
 
       if (documentId) {
-        const link = rowsOf(await db.query(
-          "SELECT id FROM request_documents WHERE request_id = $1 AND document_id = $2 LIMIT 1",
-          [request.id, documentId]
-        ))[0];
+        const { data: link } = await supabase
+          .from("request_documents")
+          .select("id")
+          .eq("request_id", request.id)
+          .eq("document_id", documentId)
+          .maybeSingle();
         if (!link) {
-          await db.query(
-            "INSERT INTO request_documents (request_id, document_id, visible) VALUES ($1, $2, true)",
-            [request.id, documentId]
-          );
+          await supabase
+            .from("request_documents")
+            .insert({
+              request_id: request.id,
+              document_id: documentId,
+              visible: true
+            });
         }
       }
     }
   }
   const updatedRequest = await getRequestById(req.params.id);
-  res.json(updatedRequest || rows[0]);
+  res.json(updatedRequest || data);
 });
 
 const getNarrativeFile = asyncHandler(async (req, res) => {
@@ -647,13 +629,15 @@ const getNarrativeFile = asyncHandler(async (req, res) => {
     return res.status(403).json({ error: "Forbidden" });
   }
 
-  const rows = rowsOf(await db.query(
-    "SELECT content FROM request_narratives WHERE request_id = $1",
-    [req.params.id]
-  ));
-  if (!rows[0]) return res.status(404).send("Not found");
+  const { data, error } = await supabase
+    .from("request_narratives")
+    .select("content")
+    .eq("request_id", req.params.id)
+    .maybeSingle();
+
+  if (error || !data) return res.status(404).send("Not found");
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
-  res.send(rows[0].content || "");
+  res.send(data.content || "");
 });
 
 module.exports = {
@@ -670,3 +654,4 @@ module.exports = {
   updateNarrative,
   getNarrativeFile,
 };
+

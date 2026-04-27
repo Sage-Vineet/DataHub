@@ -1,9 +1,8 @@
-const db = require("../db");
-
-let ensureTablePromise = null;
+const { supabase } = require("../db");
 
 function parsePayload(value) {
   if (!value) return null;
+  if (typeof value === "object") return value;
 
   try {
     return JSON.parse(value);
@@ -12,53 +11,24 @@ function parsePayload(value) {
   }
 }
 
-async function ensureWorkspacePageStateTable() {
-  if (ensureTablePromise) {
-    return ensureTablePromise;
-  }
-
-  ensureTablePromise = (async () => {
-    await db.query(`
-      CREATE TABLE IF NOT EXISTS workspace_page_state (
-        company_id text NOT NULL,
-        page_key text NOT NULL,
-        payload text NOT NULL,
-        created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (company_id, page_key)
-      )
-    `);
-  })().catch((error) => {
-    ensureTablePromise = null;
-    throw error;
-  });
-
-  return ensureTablePromise;
-}
-
 async function getWorkspacePageState(companyId, pageKey) {
   if (!companyId || !pageKey) return null;
 
-  await ensureWorkspacePageStateTable();
+  const { data, error } = await supabase
+    .from("workspace_page_state")
+    .select("company_id, page_key, payload, created_at, updated_at")
+    .eq("company_id", companyId)
+    .eq("page_key", pageKey)
+    .maybeSingle();
 
-  const result = await db.query(
-    `
-      SELECT company_id, page_key, payload, created_at, updated_at
-      FROM workspace_page_state
-      WHERE company_id = ? AND page_key = ?
-    `,
-    [companyId, pageKey],
-  );
-
-  const row = result?.rows?.[0];
-  if (!row) return null;
+  if (error || !data) return null;
 
   return {
-    companyId: row.company_id,
-    pageKey: row.page_key,
-    payload: parsePayload(row.payload),
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    companyId: data.company_id,
+    pageKey: data.page_key,
+    payload: parsePayload(data.payload),
+    createdAt: data.created_at,
+    updatedAt: data.updated_at,
   };
 }
 
@@ -67,48 +37,50 @@ async function replaceWorkspacePageState(companyId, pageKey, payload) {
     throw new Error("Missing companyId or pageKey while saving workspace state.");
   }
 
-  await ensureWorkspacePageStateTable();
+  const { data, error } = await supabase
+    .from("workspace_page_state")
+    .upsert({
+      company_id: companyId,
+      page_key: pageKey,
+      payload: payload ?? {},
+      updated_at: new Date().toISOString()
+    }, { onConflict: "company_id,page_key" })
+    .select("*")
+    .single();
 
-  await db.query(
-    `DELETE FROM workspace_page_state WHERE company_id = ? AND page_key = ?`,
-    [companyId, pageKey],
-  );
+  if (error) {
+    throw new Error(`Workspace state save failed: ${error.message}`);
+  }
 
-  await db.query(
-    `
-      INSERT INTO workspace_page_state (
-        company_id,
-        page_key,
-        payload,
-        created_at,
-        updated_at
-      )
-      VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-    `,
-    [companyId, pageKey, JSON.stringify(payload ?? {})],
-  );
-
-  return getWorkspacePageState(companyId, pageKey);
+  return {
+    companyId: data.company_id,
+    pageKey: data.page_key,
+    payload: parsePayload(data.payload),
+    createdAt: data.created_at,
+    updatedAt: data.updated_at,
+  };
 }
 
 async function deleteWorkspacePageState(companyId, pageKey) {
   if (!companyId || !pageKey) return false;
 
-  await ensureWorkspacePageStateTable();
+  const { error } = await supabase
+    .from("workspace_page_state")
+    .delete()
+    .eq("company_id", companyId)
+    .eq("page_key", pageKey);
 
-  const existing = await getWorkspacePageState(companyId, pageKey);
+  if (error) {
+    console.error("Error deleting workspace state:", error.message);
+    return false;
+  }
 
-  await db.query(
-    `DELETE FROM workspace_page_state WHERE company_id = ? AND page_key = ?`,
-    [companyId, pageKey],
-  );
-
-  return Boolean(existing);
+  return true;
 }
 
 module.exports = {
-  ensureWorkspacePageStateTable,
   getWorkspacePageState,
   replaceWorkspacePageState,
   deleteWorkspacePageState,
 };
+

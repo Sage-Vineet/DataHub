@@ -1,10 +1,5 @@
 const jwt = require("jsonwebtoken");
-const db = require("../db");
-
-function rowsOf(result) {
-  if (!result) return [];
-  return Array.isArray(result) ? result : result.rows || [];
-}
+const { supabase } = require("../db");
 
 function extractToken(req) {
   const authorization = req.headers.authorization || "";
@@ -31,21 +26,33 @@ function extractToken(req) {
 
 async function attachAssignedCompanies(user) {
   if (!user?.id) return user;
-  const companies = rowsOf(await db.query(
-    `SELECT c.id, c.name, c.industry, c.status, c.contact_email
-     FROM user_companies uc
-     JOIN companies c ON c.id = uc.company_id
-     WHERE uc.user_id = ?
-     ORDER BY c.name ASC`,
-    [user.id]
-  ));
 
-  const hasPrimary = user.company_id && companies.some((company) => String(company.id) === String(user.company_id));
-  const assignedCompanies = hasPrimary || !user.company_id
-    ? companies
-    : [{ id: user.company_id, name: user.company_name }, ...companies];
+  const { data: companies, error } = await supabase
+    .from("user_companies")
+    .select(`
+      company_id,
+      companies:company_id (
+        id, name, industry, status, contact_email
+      )
+    `)
+    .eq("user_id", user.id)
+    .order("company_id", { ascending: true });
+
+  if (error) {
+    console.error("❌ Error fetching assigned companies:", error.message);
+    return user;
+  }
+
+  // Flatten the result to match existing structure
+  const assignedCompanies = (companies || []).map(uc => uc.companies).filter(Boolean);
+
+  const hasPrimary = user.company_id && assignedCompanies.some((company) => String(company.id) === String(user.company_id));
+  const finalCompanies = hasPrimary || !user.company_id
+    ? assignedCompanies
+    : [{ id: user.company_id, name: user.company_name }, ...assignedCompanies];
+
   const normalizedEmail = String(user.email || "").trim().toLowerCase();
-  const isSeller = assignedCompanies.some((company) => (
+  const isSeller = finalCompanies.some((company) => (
     String(company.contact_email || "").trim().toLowerCase() === normalizedEmail
   ));
   const effectiveRole = user.role === "buyer"
@@ -55,8 +62,8 @@ async function attachAssignedCompanies(user) {
   return {
     ...user,
     effective_role: effectiveRole,
-    company_ids: assignedCompanies.map((company) => company.id).filter(Boolean),
-    assigned_companies: assignedCompanies,
+    company_ids: finalCompanies.map((company) => company.id).filter(Boolean),
+    assigned_companies: finalCompanies,
   };
 }
 
@@ -69,19 +76,28 @@ async function requireAuth(req, res, next) {
 
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET || "change_me");
-    const { rows } = await db.query(
-      `SELECT u.id, u.name, u.email, u.role, u.company_id, u.status, c.name AS company_name
-       FROM users u
-       LEFT JOIN companies c ON c.id = u.company_id
-       WHERE u.id = ?`,
-      [payload.sub]
-    );
+    
+    const { data: user, error } = await supabase
+      .from("users")
+      .select(`
+        id, name, email, role, company_id, status,
+        companies:company_id ( name )
+      `)
+      .eq("id", payload.sub)
+      .maybeSingle();
 
-    if (!rows || rows.length === 0) {
+    if (error || !user) {
       return res.status(401).json({ error: "Invalid token" });
     }
 
-    req.user = await attachAssignedCompanies(rows[0]);
+    // Flatten company name
+    const flattenedUser = {
+      ...user,
+      company_name: user.companies?.name
+    };
+    delete flattenedUser.companies;
+
+    req.user = await attachAssignedCompanies(flattenedUser);
     return next();
   } catch (err) {
     return res.status(401).json({ error: "Invalid token" });
@@ -101,3 +117,4 @@ function requireRole(roles) {
 }
 
 module.exports = { requireAuth, requireRole };
+

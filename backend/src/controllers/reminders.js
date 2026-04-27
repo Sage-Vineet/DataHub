@@ -1,4 +1,4 @@
-const db = require("../db");
+const { supabase } = require("../db");
 const asyncHandler = require("../utils");
 const {
   buildReminderFrequencyLabel,
@@ -7,11 +7,6 @@ const {
   resolveNextReminderAt,
   isRequestResolved,
 } = require("../utils/requestReminders");
-
-function rowsOf(result) {
-  if (!result) return [];
-  return Array.isArray(result) ? result : result.rows || [];
-}
 
 function isBroker(user) {
   return ["broker", "admin"].includes(user?.role);
@@ -67,42 +62,56 @@ const listReminders = asyncHandler(async (req, res) => {
     return res.status(403).json({ error: "Forbidden" });
   }
 
-  const requests = rowsOf(await db.query(
-    `SELECT
-       r.*,
-       c.name AS company_name,
-       c.contact_name AS company_contact_name,
-       c.contact_email AS company_contact_email,
-       c.contact_phone AS company_contact_phone
-     FROM requests r
-     JOIN companies c ON c.id = r.company_id
-     WHERE r.company_id = $1
-     ORDER BY r.created_at DESC`,
-    [req.params.id],
-  )).filter((request) => canAccessReminder(req.user, request));
+  const { data: requests, error: requestsError } = await supabase
+    .from("requests")
+    .select(`
+      *,
+      company:companies(name, contact_name, contact_email, contact_phone)
+    `)
+    .eq("company_id", req.params.id)
+    .order("created_at", { ascending: false });
 
-  if (!requests.length) {
+  if (requestsError) return res.status(500).json({ error: requestsError.message });
+
+  const filteredRequests = (requests || [])
+    .map(r => ({
+      ...r,
+      company_name: r.company?.name,
+      company_contact_name: r.company?.contact_name,
+      company_contact_email: r.company?.contact_email,
+      company_contact_phone: r.company?.contact_phone
+    }))
+    .filter((request) => canAccessReminder(req.user, request));
+
+  if (!filteredRequests.length) {
     return res.json([]);
   }
 
-  const requestIds = requests.map((request) => request.id);
-  const placeholders = requestIds.map((_, index) => `$${index + 1}`).join(", ");
-  const history = rowsOf(await db.query(
-    `SELECT rr.request_id, rr.sent_by, rr.sent_at, u.name AS sent_by_name, u.email AS sent_by_email
-     FROM request_reminders rr
-     LEFT JOIN users u ON u.id = rr.sent_by
-     WHERE rr.request_id IN (${placeholders})
-     ORDER BY rr.sent_at DESC`,
-    requestIds,
-  ));
+  const requestIds = filteredRequests.map((request) => request.id);
+  const { data: history, error: historyError } = await supabase
+    .from("request_reminders")
+    .select(`
+      request_id, sent_by, sent_at,
+      user:users!request_reminders_sent_by_fkey(name, email)
+    `)
+    .in("request_id", requestIds)
+    .order("sent_at", { ascending: false });
 
-  const reminderHistoryByRequestId = history.reduce((acc, item) => {
+  if (historyError) return res.status(500).json({ error: historyError.message });
+
+  const historyMapped = (history || []).map(h => ({
+    ...h,
+    sent_by_name: h.user?.name,
+    sent_by_email: h.user?.email
+  }));
+
+  const reminderHistoryByRequestId = historyMapped.reduce((acc, item) => {
     if (!acc[item.request_id]) acc[item.request_id] = [];
     acc[item.request_id].push(item);
     return acc;
   }, {});
 
-  const reminders = requests.map((request) => {
+  const reminders = filteredRequests.map((request) => {
     const reminderHistory = reminderHistoryByRequestId[request.id] || [];
     const lastReminder = reminderHistory[0] || null;
     const firstReminder = reminderHistory[reminderHistory.length - 1] || null;
@@ -171,3 +180,4 @@ const deleteReminder = asyncHandler(async (_req, res) => {
 });
 
 module.exports = { listReminders, createReminder, updateReminder, deleteReminder };
+

@@ -1,10 +1,5 @@
-const db = require("../db");
+const { supabase } = require("../db");
 const asyncHandler = require("../utils");
-
-function rowsOf(result) {
-  if (!result) return [];
-  return Array.isArray(result) ? result : result.rows || [];
-}
 
 function isBroker(user) {
   return ["broker", "admin"].includes(String(user?.role || "").toLowerCase());
@@ -50,7 +45,7 @@ function compareTimestampAsc(a, b) {
   const aTime = new Date(a?.created_at || 0).getTime();
   const bTime = new Date(b?.created_at || 0).getTime();
   if (aTime !== bTime) return aTime - bTime;
-  return String(a?.id || "").localeCompare(String(b?.id || ""));
+  return String(a?.id || "").localeCompare(String(a?.id || ""));
 }
 
 function compareTimestampDesc(a, b) {
@@ -93,38 +88,38 @@ function mapConversationMessage(message, participantById) {
 }
 
 async function getCompany(companyId) {
-  const rows = rowsOf(await db.query(
-    `SELECT id, name, industry, logo, contact_name, contact_email, status, created_at
-     FROM companies
-     WHERE id = ?`,
-    [companyId],
-  ));
-  return rows[0] || null;
+  const { data, error } = await supabase
+    .from("companies")
+    .select("id, name, industry, logo, contact_name, contact_email, status, created_at")
+    .eq("id", companyId)
+    .maybeSingle();
+
+  if (error) return null;
+  return data;
 }
 
 async function getCompanyParticipants(company) {
-  const rows = rowsOf(await db.query(
-    `SELECT DISTINCT
-       u.id,
-       u.name,
-       u.email,
-       u.role,
-       u.status
-     FROM users u
-     LEFT JOIN user_companies uc
-       ON uc.user_id = u.id
-      AND uc.company_id = ?
-     WHERE u.status = 'active'
-       AND (
-         u.role IN ('broker', 'admin')
-         OR u.company_id = ?
-         OR uc.company_id IS NOT NULL
-       )
-     ORDER BY u.name ASC, u.id ASC`,
-    [company.id, company.id],
-  ));
+  // Complex query: users active and (broker OR company_id OR user_companies)
+  // We'll do it in stages or use a filter
+  const { data: users, error } = await supabase
+    .from("users")
+    .select(`
+      id, name, email, role, status,
+      user_companies!left(company_id)
+    `)
+    .eq("status", "active")
+    .order("name", { ascending: true });
 
-  return rows.map((row) => ({
+  if (error) return [];
+
+  const participants = users.filter(u => {
+    if (["broker", "admin"].includes(u.role)) return true;
+    if (u.company_id === company.id) return true;
+    if (u.user_companies && u.user_companies.some(uc => uc.company_id === company.id)) return true;
+    return false;
+  });
+
+  return participants.map((row) => ({
     id: row.id,
     name: row.name,
     email: row.email,
@@ -134,64 +129,63 @@ async function getCompanyParticipants(company) {
 }
 
 async function getCompanyMessageRows(companyId) {
-  const rows = rowsOf(await db.query(
-    `SELECT
-       cm.id,
-       cm.company_id,
-       cm.sender_id,
-       cm.body,
-       cm.created_at,
-       u.name AS sender_name,
-       u.email AS sender_email,
-       u.role AS sender_role
-     FROM company_messages cm
-     JOIN users u ON u.id = cm.sender_id
-     WHERE cm.company_id = ?`,
-    [companyId],
-  ));
+  const { data, error } = await supabase
+    .from("company_messages")
+    .select(`
+      id, company_id, sender_id, body, created_at,
+      sender:users!company_messages_sender_id_fkey(name, email, role)
+    `)
+    .eq("company_id", companyId);
+
+  if (error) return [];
+
+  const rows = (data || []).map(m => ({
+    ...m,
+    sender_name: m.sender?.name,
+    sender_email: m.sender?.email,
+    sender_role: m.sender?.role
+  }));
 
   return rows.sort(compareTimestampAsc);
 }
 
 async function getAccessibleCompanies(user) {
   if (isBroker(user)) {
-    return rowsOf(await db.query(
-      `SELECT id, name, industry, logo, contact_name, contact_email, status, created_at
-       FROM companies
-       ORDER BY name ASC, id ASC`,
-    ));
+    const { data } = await supabase
+      .from("companies")
+      .select("id, name, industry, logo, contact_name, contact_email, status, created_at")
+      .order("name", { ascending: true });
+    return data || [];
   }
 
   const companyIds = normalizeCompanyIds(user);
   if (!companyIds.length) return [];
 
-  const placeholders = companyIds.map(() => "?").join(",");
-  return rowsOf(await db.query(
-    `SELECT id, name, industry, logo, contact_name, contact_email, status, created_at
-     FROM companies
-     WHERE id IN (${placeholders})
-     ORDER BY name ASC, id ASC`,
-    companyIds,
-  ));
+  const { data } = await supabase
+    .from("companies")
+    .select("id, name, industry, logo, contact_name, contact_email, status, created_at")
+    .in("id", companyIds)
+    .order("name", { ascending: true });
+  return data || [];
 }
 
 async function getLatestCompanyMessages(companyIds) {
   if (!companyIds.length) return {};
 
-  const placeholders = companyIds.map(() => "?").join(",");
-  const rows = rowsOf(await db.query(
-    `SELECT
-       cm.company_id,
-       cm.id,
-       cm.body,
-       cm.created_at,
-       cm.sender_id,
-       u.name AS sender_name
-     FROM company_messages cm
-     JOIN users u ON u.id = cm.sender_id
-     WHERE cm.company_id IN (${placeholders})`,
-    companyIds,
-  )).sort(compareTimestampDesc);
+  const { data, error } = await supabase
+    .from("company_messages")
+    .select(`
+      company_id, id, body, created_at, sender_id,
+      sender:users!company_messages_sender_id_fkey(name)
+    `)
+    .in("company_id", companyIds);
+
+  if (error) return {};
+
+  const rows = (data || []).map(m => ({
+    ...m,
+    sender_name: m.sender?.name
+  })).sort(compareTimestampDesc);
 
   return rows.reduce((map, row) => {
     const key = String(row.company_id);
@@ -243,26 +237,23 @@ async function resolveDirectMessagingContext(user, companyId) {
 }
 
 async function getDirectMessageRows(companyId, currentUserId, recipientId) {
-  const rows = rowsOf(await db.query(
-    `SELECT
-       dm.id,
-       dm.company_id,
-       dm.sender_id,
-       dm.recipient_id,
-       dm.body,
-       dm.created_at,
-       u.name AS sender_name,
-       u.email AS sender_email,
-       u.role AS sender_role
-     FROM direct_messages dm
-     JOIN users u ON u.id = dm.sender_id
-     WHERE dm.company_id = ?
-       AND (
-         (dm.sender_id = ? AND dm.recipient_id = ?)
-         OR (dm.sender_id = ? AND dm.recipient_id = ?)
-       )`,
-    [companyId, currentUserId, recipientId, recipientId, currentUserId],
-  ));
+  const { data, error } = await supabase
+    .from("direct_messages")
+    .select(`
+      id, company_id, sender_id, recipient_id, body, created_at,
+      sender:users!direct_messages_sender_id_fkey(name, email, role)
+    `)
+    .eq("company_id", companyId)
+    .or(`and(sender_id.eq.${currentUserId},recipient_id.eq.${recipientId}),and(sender_id.eq.${recipientId},recipient_id.eq.${currentUserId})`);
+
+  if (error) return [];
+
+  const rows = (data || []).map(m => ({
+    ...m,
+    sender_name: m.sender?.name,
+    sender_email: m.sender?.email,
+    sender_role: m.sender?.role
+  }));
 
   return rows.sort(compareTimestampAsc);
 }
@@ -270,23 +261,15 @@ async function getDirectMessageRows(companyId, currentUserId, recipientId) {
 async function getLatestDirectMessagesByContact(companyId, selfUserId, contactIds) {
   if (!contactIds.length) return {};
 
-  const placeholders = contactIds.map(() => "?").join(",");
-  const params = [companyId, selfUserId, ...contactIds, selfUserId, ...contactIds];
-  const rows = rowsOf(await db.query(
-    `SELECT
-       dm.id,
-       dm.sender_id,
-       dm.recipient_id,
-       dm.body,
-       dm.created_at
-     FROM direct_messages dm
-     WHERE dm.company_id = ?
-       AND (
-         (dm.sender_id = ? AND dm.recipient_id IN (${placeholders}))
-         OR (dm.recipient_id = ? AND dm.sender_id IN (${placeholders}))
-       )`,
-    params,
-  )).sort(compareTimestampDesc);
+  const { data, error } = await supabase
+    .from("direct_messages")
+    .select("id, sender_id, recipient_id, body, created_at")
+    .eq("company_id", companyId)
+    .or(`and(sender_id.eq.${selfUserId},recipient_id.in.(${contactIds.join(',')})),and(recipient_id.eq.${selfUserId},sender_id.in.(${contactIds.join(',')}))`);
+
+  if (error) return {};
+
+  const rows = (data || []).sort(compareTimestampDesc);
 
   return rows.reduce((map, row) => {
     const contactId = String(row.sender_id) === String(selfUserId)
@@ -373,16 +356,20 @@ const createMessage = asyncHandler(async (req, res) => {
     return res.status(403).json({ error: "Forbidden" });
   }
 
-  const insertedRows = rowsOf(await db.query(
-    `INSERT INTO company_messages (company_id, sender_id, body)
-     VALUES (?, ?, ?)
-     RETURNING id, company_id, sender_id, body, created_at`,
-    [companyId, req.user.id, body],
-  ));
+  const { data, error } = await supabase
+    .from("company_messages")
+    .insert({
+      company_id: companyId,
+      sender_id: req.user.id,
+      body
+    })
+    .select("id, company_id, sender_id, body, created_at")
+    .single();
 
-  const inserted = insertedRows[0];
+  if (error) return res.status(500).json({ error: error.message });
+
   return res.status(201).json({
-    ...inserted,
+    ...data,
     sender: participantById[String(req.user.id)] || {
       id: req.user.id,
       name: req.user.name,
@@ -464,16 +451,21 @@ const createDirectMessage = asyncHandler(async (req, res) => {
     return res.status(403).json({ error: "Forbidden" });
   }
 
-  const insertedRows = rowsOf(await db.query(
-    `INSERT INTO direct_messages (company_id, sender_id, recipient_id, body)
-     VALUES (?, ?, ?, ?)
-     RETURNING id, company_id, sender_id, recipient_id, body, created_at`,
-    [companyId, req.user.id, recipientId, body],
-  ));
+  const { data, error } = await supabase
+    .from("direct_messages")
+    .insert({
+      company_id: companyId,
+      sender_id: req.user.id,
+      recipient_id: recipientId,
+      body
+    })
+    .select("id, company_id, sender_id, recipient_id, body, created_at")
+    .single();
 
-  const inserted = insertedRows[0];
+  if (error) return res.status(500).json({ error: error.message });
+
   return res.status(201).json({
-    ...inserted,
+    ...data,
     sender: context.participantById[String(req.user.id)] || context.selfParticipant,
     participant,
   });
@@ -487,3 +479,4 @@ module.exports = {
   getDirectConversation,
   createDirectMessage,
 };
+

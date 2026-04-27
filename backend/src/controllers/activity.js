@@ -1,12 +1,16 @@
-const db = require("../db");
+const { supabase } = require("../db");
 const asyncHandler = require("../utils");
 
 const listActivity = asyncHandler(async (req, res) => {
-  const { rows } = await db.query(
-    "SELECT * FROM activity_log WHERE company_id = $1 ORDER BY created_at DESC",
-    [req.params.id]
-  );
-  res.json(rows);
+  const { data, error } = await supabase
+    .from("activity_log")
+    .select("*")
+    .eq("company_id", req.params.id)
+    .order("created_at", { ascending: false });
+
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data || []);
 });
 
 module.exports = { listActivity };
+

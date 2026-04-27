@@ -1,6 +1,6 @@
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
-const db = require("../db");
+const { supabase } = require("../db");
 const asyncHandler = require("../utils");
 
 function signToken(userId) {
@@ -9,38 +9,46 @@ function signToken(userId) {
   });
 }
 
-function ensureRows(result) {
-  if (!result) return [];
-  return Array.isArray(result) ? result : result.rows || [];
-}
-
 const CLIENT_STATIC_PASSWORD = process.env.CLIENT_STATIC_PASSWORD || "123456";
 
 async function syncUserCompanyAssignment(userId, companyId) {
   if (!userId || !companyId) return;
-  await db.query(
-    "INSERT INTO user_companies (user_id, company_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
-    [userId, companyId]
-  );
+  const { error } = await supabase
+    .from("user_companies")
+    .upsert({ user_id: userId, company_id: companyId }, { onConflict: "user_id,company_id" });
+  
+  if (error) console.error("❌ Error syncing user company assignment:", error.message);
 }
 
 async function attachAssignedCompanies(user) {
   if (!user?.id) return user;
-  const companies = ensureRows(await db.query(
-    `SELECT c.id, c.name, c.industry, c.status, c.contact_email
-     FROM user_companies uc
-     JOIN companies c ON c.id = uc.company_id
-     WHERE uc.user_id = ?
-     ORDER BY c.name ASC`,
-    [user.id]
-  ));
 
-  const hasPrimary = user.company_id && companies.some((company) => String(company.id) === String(user.company_id));
-  const assignedCompanies = hasPrimary || !user.company_id
-    ? companies
-    : [{ id: user.company_id, name: user.company_name }, ...companies];
+  const { data: companies, error } = await supabase
+    .from("user_companies")
+    .select(`
+      company_id,
+      companies:company_id (
+        id, name, industry, status, contact_email
+      )
+    `)
+    .eq("user_id", user.id)
+    .order("company_id", { ascending: true });
+
+  if (error) {
+    console.error("❌ Error fetching assigned companies:", error.message);
+    return user;
+  }
+
+  // Flatten the result to match existing structure
+  const assignedCompanies = (companies || []).map(uc => uc.companies).filter(Boolean);
+
+  const hasPrimary = user.company_id && assignedCompanies.some((company) => String(company.id) === String(user.company_id));
+  const finalCompanies = hasPrimary || !user.company_id
+    ? assignedCompanies
+    : [{ id: user.company_id, name: user.company_name }, ...assignedCompanies];
+
   const normalizedEmail = String(user.email || "").trim().toLowerCase();
-  const isSeller = assignedCompanies.some((company) => (
+  const isSeller = finalCompanies.some((company) => (
     String(company.contact_email || "").trim().toLowerCase() === normalizedEmail
   ));
   const effectiveRole = user.role === "buyer"
@@ -50,8 +58,8 @@ async function attachAssignedCompanies(user) {
   return {
     ...user,
     effective_role: effectiveRole,
-    company_ids: assignedCompanies.map((company) => company.id).filter(Boolean),
-    assigned_companies: assignedCompanies,
+    company_ids: finalCompanies.map((company) => company.id).filter(Boolean),
+    assigned_companies: finalCompanies,
   };
 }
 
@@ -74,71 +82,100 @@ const DEMO_USERS = [
 
 async function ensureCompany(companyName) {
   if (!companyName) return null;
-  const existing = ensureRows(
-    await db.query("SELECT id, name FROM companies WHERE name = ?", [companyName])
-  );
-  if (existing[0]) return existing[0];
 
-  await db.query(
-    `INSERT INTO companies (name, industry, contact_name, contact_email, contact_phone)
-     VALUES (?, ?, ?, ?, ?)`,
-    [companyName, "Technology", "Demo Contact", "demo@leo.com", "+91-9000000000"]
-  );
-  const created = ensureRows(
-    await db.query("SELECT id, name FROM companies WHERE name = ?", [companyName])
-  );
-  return created[0] || null;
+  const { data: existing, error: findError } = await supabase
+    .from("companies")
+    .select("id, name")
+    .eq("name", companyName)
+    .maybeSingle();
+
+  if (findError) console.error("❌ Error finding company:", findError.message);
+  if (existing) return existing;
+
+  const { data: created, error: insertError } = await supabase
+    .from("companies")
+    .insert({
+      name: companyName,
+      industry: "Technology",
+      contact_name: "Demo Contact",
+      contact_email: "demo@leo.com",
+      contact_phone: "+91-9000000000"
+    })
+    .select("id, name")
+    .single();
+
+  if (insertError) {
+    console.error("❌ Error creating company:", insertError.message);
+    return null;
+  }
+  return created;
 }
 
 async function ensureDemoUser(demo) {
-  const existing = ensureRows(
-    await db.query(
-      `SELECT u.id, u.name, u.email, u.password_hash, u.role, u.company_id, u.status, c.name AS company_name
-       FROM users u
-       LEFT JOIN companies c ON c.id = u.company_id
-       WHERE u.email = ?`,
-      [demo.email]
-    )
-  );
+  const { data: existing, error: findError } = await supabase
+    .from("users")
+    .select(`
+      id, name, email, password_hash, role, company_id, status,
+      companies:company_id ( name )
+    `)
+    .eq("email", demo.email)
+    .maybeSingle();
 
-  if (existing[0]) return existing[0];
+  if (findError) console.error("❌ Error finding demo user:", findError.message);
+  if (existing) {
+    // Flatten company name
+    return { ...existing, company_name: existing.companies?.name };
+  }
 
   const company = await ensureCompany(demo.companyName);
   const passwordHash = await bcrypt.hash(demo.password, 10);
 
-  await db.query(
-    `INSERT INTO users (name, email, password_hash, role, company_id, status)
-     VALUES (?, ?, ?, ${db.isPostgres ? "?::user_role" : "?"}, ?, ${db.isPostgres ? "'active'::user_status" : "'active'"})`,
-    [demo.name, demo.email, passwordHash, demo.role, company?.id || null]
-  );
+  const { data: created, error: insertError } = await supabase
+    .from("users")
+    .insert({
+      name: demo.name,
+      email: demo.email,
+      password_hash: passwordHash,
+      role: demo.role,
+      company_id: company?.id || null,
+      status: "active"
+    })
+    .select(`
+      id, name, email, password_hash, role, company_id, status,
+      companies:company_id ( name )
+    `)
+    .single();
 
-  const created = ensureRows(
-    await db.query(
-      `SELECT u.id, u.name, u.email, u.password_hash, u.role, u.company_id, u.status, c.name AS company_name
-       FROM users u
-       LEFT JOIN companies c ON c.id = u.company_id
-       WHERE u.email = ?`,
-      [demo.email]
-    )
-  );
+  if (insertError) {
+    console.error("❌ Error creating demo user:", insertError.message);
+    return null;
+  }
 
-  return created[0] || null;
+  return { ...created, company_name: created.companies?.name };
 }
 
 async function ensureDefaultFolders(companyId, createdBy) {
   if (!companyId || !createdBy) return;
-  const existing = ensureRows(
-    await db.query("SELECT id FROM folders WHERE company_id = $1 LIMIT 1", [companyId])
-  );
-  if (existing[0]) return;
+
+  const { data: existing, error: findError } = await supabase
+    .from("folders")
+    .select("id")
+    .eq("company_id", companyId)
+    .limit(1);
+
+  if (findError || (existing && existing.length > 0)) return;
 
   const defaults = ["Finance", "Compliance", "HR", "Legal", "M&A", "Tax", "Other"];
-  for (const name of defaults) {
-    await db.query(
-      "INSERT INTO folders (company_id, parent_id, name, color, created_by) VALUES ($1, $2, $3, $4, $5)",
-      [companyId, null, name, null, createdBy]
-    );
-  }
+  const folders = defaults.map(name => ({
+    company_id: companyId,
+    parent_id: null,
+    name,
+    color: null,
+    created_by: createdBy
+  }));
+
+  const { error: insertError } = await supabase.from("folders").insert(folders);
+  if (insertError) console.error("❌ Error creating default folders:", insertError.message);
 }
 
 const login = asyncHandler(async (req, res) => {
@@ -154,21 +191,27 @@ const login = asyncHandler(async (req, res) => {
 
   if (demo && password === demo.password) {
     user = await ensureDemoUser(demo);
-    await syncUserCompanyAssignment(user?.id, user?.company_id);
+    if (user) {
+      await syncUserCompanyAssignment(user.id, user.company_id);
+    }
   }
 
   if (!user) {
-    const users = ensureRows(
-      await db.query(
-        `SELECT u.id, u.name, u.email, u.password_hash, u.role, u.company_id, u.status, c.name AS company_name
-         FROM users u
-         LEFT JOIN companies c ON c.id = u.company_id
-         WHERE u.email = ?`,
-        [normalizedEmail]
-      )
-    );
+    const { data: users, error: findError } = await supabase
+      .from("users")
+      .select(`
+        id, name, email, password_hash, role, company_id, status,
+        companies:company_id ( name )
+      `)
+      .eq("email", normalizedEmail);
 
-    user = users[0];
+    if (findError) console.error("❌ Error finding user:", findError.message);
+    
+    user = (users || [])[0];
+    if (user) {
+      user.company_name = user.companies?.name;
+    }
+
     if (!user) {
       return res.status(401).json({ error: "Invalid credentials" });
     }
@@ -187,12 +230,12 @@ const login = asyncHandler(async (req, res) => {
   const token = signToken(user.id);
   const safeUser = { ...(await attachAssignedCompanies(user)) };
   delete safeUser.password_hash;
+  delete safeUser.companies; // Cleanup flattened field
 
   return res.json({ token, user: safeUser });
 });
 
 const logout = asyncHandler(async (req, res) => {
-  // Stateless JWT: client deletes token.
   return res.status(204).send();
 });
 

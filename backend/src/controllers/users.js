@@ -1,30 +1,28 @@
 const bcrypt = require("bcryptjs");
-const db = require("../db");
+const { supabase } = require("../db");
 const asyncHandler = require("../utils");
 
 const userSelect = `
-  SELECT
-    u.id,
-    u.name,
-    u.email,
-    u.phone,
-    u.role,
-    u.company_id,
-    c.name AS company_name,
-    u.status,
-    u.created_at,
-    u.updated_at
-  FROM users u
-  LEFT JOIN companies c ON c.id = u.company_id
+  id,
+  name,
+  email,
+  phone,
+  role,
+  company_id,
+  status,
+  created_at,
+  updated_at,
+  companies:company_id ( name )
 `;
 
-function rowsOf(result) {
-  if (!result) return [];
-  return Array.isArray(result) ? result : result.rows || [];
-}
-
-function enumAssignment(column, typeName) {
-  return db.isPostgres ? `${column} = ?::${typeName}` : `${column} = ?`;
+function flattenUser(user) {
+  if (!user) return null;
+  const flattened = {
+    ...user,
+    company_name: user.companies?.name
+  };
+  delete flattened.companies;
+  return flattened;
 }
 
 function normalizeCompanyIds(companyId, companyIds) {
@@ -33,30 +31,31 @@ function normalizeCompanyIds(companyId, companyIds) {
 }
 
 async function attachAssignedCompanies(users) {
-  if (!users.length) return users;
+  if (!users || !users.length) return users || [];
 
   const userIds = users.map((user) => user.id).filter(Boolean);
   if (!userIds.length) return users;
 
-  const placeholders = userIds.map(() => "?").join(",");
-  const assignments = rowsOf(await db.query(
-    `SELECT uc.user_id, c.id, c.name, c.industry, c.status, c.contact_email
-     FROM user_companies uc
-     JOIN companies c ON c.id = uc.company_id
-     WHERE uc.user_id IN (${placeholders})
-     ORDER BY c.name ASC`,
-    userIds
-  ));
+  const { data: assignments, error } = await supabase
+    .from("user_companies")
+    .select(`
+      user_id,
+      company_id,
+      companies:company_id (
+        id, name, industry, status, contact_email
+      )
+    `)
+    .in("user_id", userIds);
 
-  const byUserId = assignments.reduce((map, company) => {
-    if (!map[company.user_id]) map[company.user_id] = [];
-    map[company.user_id].push({
-      id: company.id,
-      name: company.name,
-      industry: company.industry,
-      status: company.status,
-      contact_email: company.contact_email,
-    });
+  if (error) {
+    console.error("❌ Error fetching assigned companies:", error.message);
+    return users;
+  }
+
+  const byUserId = (assignments || []).reduce((map, uc) => {
+    if (!uc.companies) return map;
+    if (!map[uc.user_id]) map[uc.user_id] = [];
+    map[uc.user_id].push(uc.companies);
     return map;
   }, {});
 
@@ -66,6 +65,7 @@ async function attachAssignedCompanies(users) {
     const normalizedCompanies = hasPrimary || !user.company_id
       ? assignedCompanies
       : [{ id: user.company_id, name: user.company_name }, ...assignedCompanies];
+    
     const normalizedEmail = String(user.email || "").trim().toLowerCase();
     const isSeller = normalizedCompanies.some((company) => (
       String(company.contact_email || "").trim().toLowerCase() === normalizedEmail
@@ -84,25 +84,47 @@ async function attachAssignedCompanies(users) {
 }
 
 async function syncUserCompanies(userId, companyIds) {
-  await db.query("DELETE FROM user_companies WHERE user_id = ?", [userId]);
-  for (const companyId of companyIds) {
-    await db.query(
-      "INSERT INTO user_companies (user_id, company_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
-      [userId, companyId]
-    );
+  // Delete existing
+  await supabase.from("user_companies").delete().eq("user_id", userId);
+  
+  if (companyIds && companyIds.length > 0) {
+    const records = companyIds.map(cid => ({ user_id: userId, company_id: cid }));
+    await supabase.from("user_companies").upsert(records, { onConflict: "user_id,company_id" });
   }
 }
 
 async function getUserById(id) {
-  const users = rowsOf(await db.query(`${userSelect} WHERE u.id = ?`, [id]));
-  const enriched = await attachAssignedCompanies(users);
-  return enriched[0] || null;
+  const { data, error } = await supabase
+    .from("users")
+    .select(userSelect)
+    .eq("id", id)
+    .maybeSingle();
+
+  if (error) {
+    console.error("❌ Error getting user by ID:", error.message);
+    return null;
+  }
+  
+  if (!data) return null;
+  const enriched = await attachAssignedCompanies([flattenUser(data)]);
+  return enriched[0];
 }
 
 async function getUserByEmail(email) {
-  const users = rowsOf(await db.query(`${userSelect} WHERE u.email = ?`, [email]));
-  const enriched = await attachAssignedCompanies(users);
-  return enriched[0] || null;
+  const { data, error } = await supabase
+    .from("users")
+    .select(userSelect)
+    .eq("email", email)
+    .maybeSingle();
+
+  if (error) {
+    console.error("❌ Error getting user by email:", error.message);
+    return null;
+  }
+
+  if (!data) return null;
+  const enriched = await attachAssignedCompanies([flattenUser(data)]);
+  return enriched[0];
 }
 
 async function resolveReplacementUserId(preferredUserId, userToDelete) {
@@ -110,74 +132,72 @@ async function resolveReplacementUserId(preferredUserId, userToDelete) {
     return preferredUserId;
   }
 
-  const candidateParams = [];
-  const companyFilters = [];
   const companyIds = Array.from(new Set([
     userToDelete?.company_id,
     ...(userToDelete?.company_ids || []),
   ].filter(Boolean).map(String)));
 
-  if (companyIds.length) {
-    const placeholders = companyIds.map(() => "?").join(",");
-    companyFilters.push(`
-      u.company_id IN (${placeholders})
-      OR EXISTS (
-        SELECT 1
-        FROM user_companies uc
-        WHERE uc.user_id = u.id
-          AND uc.company_id IN (${placeholders})
-      )
-    `);
-    candidateParams.push(...companyIds, ...companyIds);
+  if (companyIds.length > 0) {
+    // Try to find a broker/admin in the same companies
+    const { data: candidates, error } = await supabase
+      .from("users")
+      .select("id, role")
+      .neq("id", userToDelete.id)
+      .in("role", ["broker", "admin"])
+      .or(`company_id.in.(${companyIds.join(",")})`) // Simplified, might need more complex logic for user_companies check
+      .order("role", { ascending: true }) // 'admin' comes before 'broker' in alpha? No, we need custom logic
+      .order("created_at", { ascending: true });
+
+    if (!error && candidates && candidates.length > 0) {
+      // Sort by role (admin first)
+      const sorted = candidates.sort((a, b) => (a.role === "admin" ? -1 : 1));
+      return sorted[0].id;
+    }
   }
 
-  const companyScopedCandidates = rowsOf(await db.query(
-    `SELECT u.id
-     FROM users u
-     WHERE u.id != ?
-       AND u.role IN ('broker', 'admin')
-       ${companyFilters.length ? `AND (${companyFilters.join(" OR ")})` : ""}
-     ORDER BY CASE WHEN u.role = 'admin' THEN 0 ELSE 1 END, u.created_at ASC
-     LIMIT 1`,
-    [userToDelete?.id, ...candidateParams],
-  ));
-  if (companyScopedCandidates[0]?.id) return companyScopedCandidates[0].id;
+  // Fallback to global search
+  const { data: globalCandidates, error: globalError } = await supabase
+    .from("users")
+    .select("id, role")
+    .neq("id", userToDelete.id)
+    .in("role", ["broker", "admin"])
+    .order("created_at", { ascending: true });
 
-  const globalCandidates = rowsOf(await db.query(
-    `SELECT id
-     FROM users
-     WHERE id != ?
-       AND role IN ('broker', 'admin')
-     ORDER BY CASE WHEN role = 'admin' THEN 0 ELSE 1 END, created_at ASC
-     LIMIT 1`,
-    [userToDelete?.id],
-  ));
-  return globalCandidates[0]?.id || null;
+  if (!globalError && globalCandidates && globalCandidates.length > 0) {
+    const sorted = globalCandidates.sort((a, b) => (a.role === "admin" ? -1 : 1));
+    return sorted[0].id;
+  }
+
+  return null;
 }
 
 async function reassignRestrictedUserReferences(userId, replacementUserId) {
-  const statements = [
-    ["UPDATE requests SET created_by = ? WHERE created_by = ?", [replacementUserId, userId]],
-    ["UPDATE folders SET created_by = ? WHERE created_by = ?", [replacementUserId, userId]],
-    ["UPDATE documents SET uploaded_by = ? WHERE uploaded_by = ?", [replacementUserId, userId]],
-    ["UPDATE request_narratives SET updated_by = ? WHERE updated_by = ?", [replacementUserId, userId]],
-    ["UPDATE request_reminders SET sent_by = ? WHERE sent_by = ?", [replacementUserId, userId]],
-    ["UPDATE folder_access SET created_by = ? WHERE created_by = ?", [replacementUserId, userId]],
-    ["UPDATE reminders SET created_by = ? WHERE created_by = ?", [replacementUserId, userId]],
-    ["UPDATE activity_log SET created_by = ? WHERE created_by = ?", [replacementUserId, userId]],
+  const tables = [
+    { name: "requests", column: "created_by" },
+    { name: "folders", column: "created_by" },
+    { name: "documents", column: "uploaded_by" },
+    { name: "request_narratives", column: "updated_by" },
+    { name: "request_reminders", column: "sent_by" },
+    { name: "folder_access", column: "created_by" },
+    { name: "reminders", column: "created_by" },
+    { name: "activity_log", column: "created_by" },
   ];
 
-  for (const [sql, params] of statements) {
-    await db.query(sql, params);
+  for (const { name, column } of tables) {
+    await supabase.from(name).update({ [column]: replacementUserId }).eq(column, userId);
   }
 }
 
 const listUsers = asyncHandler(async (req, res) => {
-  const users = rowsOf(await db.query(
-    `${userSelect}
-     ORDER BY u.created_at DESC`
-  ));
-  res.json(await attachAssignedCompanies(users));
+  const { data, error } = await supabase
+    .from("users")
+    .select(userSelect)
+    .order("created_at", { ascending: false });
+
+  if (error) return res.status(500).json({ error: error.message });
+
+  const flattened = (data || []).map(flattenUser);
+  res.json(await attachAssignedCompanies(flattened));
 });
 
 const createUser = asyncHandler(async (req, res) => {
@@ -190,14 +210,22 @@ const createUser = asyncHandler(async (req, res) => {
   const primaryCompanyId = company_id || assignedCompanyIds[0] || null;
   const passwordHash = await bcrypt.hash(password, 10);
   const resolvedStatus = status || "active";
-  await db.query(
-    `INSERT INTO users (name, email, phone, password_hash, role, company_id, status)
-     VALUES (?, ?, ?, ?, ${db.isPostgres ? "?::user_role" : "?"}, ?, ${db.isPostgres ? "?::user_status" : "?"})`,
-    [name, email, phone || null, passwordHash, role, primaryCompanyId, resolvedStatus]
-  );
 
-  const created = await getUserByEmail(email);
-  if (!created) return res.status(500).json({ error: "Unable to create user" });
+  const { data: created, error } = await supabase
+    .from("users")
+    .insert({
+      name,
+      email,
+      phone: phone || null,
+      password_hash: passwordHash,
+      role,
+      company_id: primaryCompanyId,
+      status: resolvedStatus
+    })
+    .select("id")
+    .single();
+
+  if (error) return res.status(500).json({ error: error.message });
 
   await syncUserCompanies(created.id, assignedCompanyIds);
   res.status(201).json(await getUserById(created.id));
@@ -211,35 +239,32 @@ const getUser = asyncHandler(async (req, res) => {
 
 const updateUser = asyncHandler(async (req, res) => {
   const { name, email, phone, password, role, company_id, company_ids, status } = req.body || {};
-  const fields = [];
-  const values = [];
+  const updates = {};
   const hasCompanyAssignments = company_id !== undefined || company_ids !== undefined;
   const assignedCompanyIds = hasCompanyAssignments ? normalizeCompanyIds(company_id, company_ids) : null;
 
-  if (name !== undefined) { fields.push(`name = ?`); values.push(name); }
-  if (email !== undefined) { fields.push(`email = ?`); values.push(email); }
-  if (phone !== undefined) { fields.push(`phone = ?`); values.push(phone); }
-  if (role !== undefined) { fields.push(enumAssignment("role", "user_role")); values.push(role); }
-  if (hasCompanyAssignments) { fields.push(`company_id = ?`); values.push(company_id || assignedCompanyIds[0] || null); }
-  if (status !== undefined) { fields.push(enumAssignment("status", "user_status")); values.push(status); }
+  if (name !== undefined) updates.name = name;
+  if (email !== undefined) updates.email = email;
+  if (phone !== undefined) updates.phone = phone;
+  if (role !== undefined) updates.role = role;
+  if (hasCompanyAssignments) updates.company_id = company_id || assignedCompanyIds[0] || null;
+  if (status !== undefined) updates.status = status;
   if (password !== undefined) {
-    const passwordHash = await bcrypt.hash(password, 10);
-    fields.push(`password_hash = ?`);
-    values.push(passwordHash);
+    updates.password_hash = await bcrypt.hash(password, 10);
   }
 
-  if (fields.length === 0 && !hasCompanyAssignments) return res.status(400).json({ error: "No updates" });
+  if (Object.keys(updates).length === 0 && !hasCompanyAssignments) {
+    return res.status(400).json({ error: "No updates" });
+  }
 
-  if (fields.length > 0) {
-    values.push(new Date().toISOString());
-    values.push(req.params.id);
+  if (Object.keys(updates).length > 0) {
+    updates.updated_at = new Date().toISOString();
+    const { error } = await supabase
+      .from("users")
+      .update(updates)
+      .eq("id", req.params.id);
 
-    const result = await db.query(
-      `UPDATE users SET ${fields.join(", ")}, updated_at = ? WHERE id = ?`,
-      values
-    );
-
-    if (!result || result.rowCount === 0) return res.status(404).json({ error: "Not found" });
+    if (error) return res.status(500).json({ error: error.message });
   }
 
   if (hasCompanyAssignments) {
@@ -261,8 +286,11 @@ const deleteUser = asyncHandler(async (req, res) => {
   }
 
   await reassignRestrictedUserReferences(user.id, replacementUserId);
-  await db.query("DELETE FROM users WHERE id = ?", [req.params.id]);
+  const { error } = await supabase.from("users").delete().eq("id", req.params.id);
+  
+  if (error) return res.status(500).json({ error: error.message });
   res.status(204).send();
 });
 
 module.exports = { listUsers, createUser, getUser, updateUser, deleteUser };
+

@@ -1,26 +1,32 @@
-const db = require("../db");
+const { supabase } = require("../db");
 const asyncHandler = require("../utils");
 const { buildUploadContentUrl } = require("../utils/uploadStorage");
 const { ensureCompanyDefaultFolders, ensureRootUploadFolder } = require("../utils/defaultFolders");
 
 const listFolders = asyncHandler(async (req, res) => {
   await ensureCompanyDefaultFolders(req.params.id, req.user?.id || null);
-  const { rows } = await db.query(
-    "SELECT * FROM folders WHERE company_id = $1 ORDER BY created_at DESC",
-    [req.params.id]
-  );
-  res.json(rows);
+  const { data, error } = await supabase
+    .from("folders")
+    .select("*")
+    .eq("company_id", req.params.id)
+    .order("created_at", { ascending: false });
+
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
 });
 
 const listFolderTree = asyncHandler(async (req, res) => {
   await ensureCompanyDefaultFolders(req.params.id, req.user?.id || null);
-  const { rows } = await db.query(
-    "SELECT * FROM folders WHERE company_id = $1 ORDER BY created_at ASC",
-    [req.params.id]
-  );
+  const { data: rows, error } = await supabase
+    .from("folders")
+    .select("*")
+    .eq("company_id", req.params.id)
+    .order("created_at", { ascending: true });
+
+  if (error) return res.status(500).json({ error: error.message });
 
   const byId = new Map();
-  for (const row of rows) {
+  for (const row of (rows || [])) {
     byId.set(row.id, { ...row, children: [] });
   }
 
@@ -46,55 +52,69 @@ const createFolder = asyncHandler(async (req, res) => {
   const { parent_id, name, color, created_by } = req.body || {};
   if (!name || !created_by) return res.status(400).json({ error: "name and created_by required" });
 
-  const { rows } = await db.query(
-    "INSERT INTO folders (company_id, parent_id, name, color, created_by) VALUES ($1, $2, $3, $4, $5) RETURNING *",
-    [req.params.id, parent_id || null, name, color || null, created_by]
-  );
-  res.status(201).json(rows[0]);
+  const { data, error } = await supabase
+    .from("folders")
+    .insert({
+      company_id: req.params.id,
+      parent_id: parent_id || null,
+      name,
+      color: color || null,
+      created_by
+    })
+    .select("*")
+    .single();
+
+  if (error) return res.status(500).json({ error: error.message });
+  res.status(201).json(data);
 });
 
 const updateFolder = asyncHandler(async (req, res) => {
   const { name, color } = req.body || {};
-  const fields = [];
-  const values = [];
-  let idx = 1;
+  const updates = {};
+  if (name !== undefined) updates.name = name;
+  if (color !== undefined) updates.color = color;
 
-  if (name !== undefined) { fields.push(`name = $${idx++}`); values.push(name); }
-  if (color !== undefined) { fields.push(`color = $${idx++}`); values.push(color); }
+  if (Object.keys(updates).length === 0) return res.status(400).json({ error: "No updates" });
 
-  if (fields.length === 0) return res.status(400).json({ error: "No updates" });
+  const { data, error } = await supabase
+    .from("folders")
+    .update(updates)
+    .eq("id", req.params.id)
+    .select("*")
+    .single();
 
-  values.push(req.params.id);
-  const { rows } = await db.query(
-    `UPDATE folders SET ${fields.join(", ")} WHERE id = $${idx} RETURNING *`,
-    values
-  );
-  if (!rows[0]) return res.status(404).json({ error: "Not found" });
-  res.json(rows[0]);
+  if (error) return res.status(404).json({ error: "Not found" });
+  res.json(data);
 });
 
 const deleteFolder = asyncHandler(async (req, res) => {
-  const { rowCount } = await db.query("DELETE FROM folders WHERE id = $1", [req.params.id]);
-  if (!rowCount) return res.status(404).json({ error: "Not found" });
+  const { error } = await supabase.from("folders").delete().eq("id", req.params.id);
+  if (error) return res.status(404).json({ error: "Not found" });
   res.status(204).send();
 });
 
 const moveFolder = asyncHandler(async (req, res) => {
   const { parent_id } = req.body || {};
-  const { rows } = await db.query(
-    "UPDATE folders SET parent_id = $1 WHERE id = $2 RETURNING *",
-    [parent_id || null, req.params.id]
-  );
-  if (!rows[0]) return res.status(404).json({ error: "Not found" });
-  res.json(rows[0]);
+  const { data, error } = await supabase
+    .from("folders")
+    .update({ parent_id: parent_id || null })
+    .eq("id", req.params.id)
+    .select("*")
+    .single();
+
+  if (error) return res.status(404).json({ error: "Not found" });
+  res.json(data);
 });
 
 const listFolderDocuments = asyncHandler(async (req, res) => {
-  const { rows } = await db.query(
-    "SELECT * FROM documents WHERE folder_id = $1 ORDER BY uploaded_at DESC",
-    [req.params.id]
-  );
-  res.json(rows);
+  const { data, error } = await supabase
+    .from("documents")
+    .select("*")
+    .eq("folder_id", req.params.id)
+    .order("uploaded_at", { ascending: false });
+
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
 });
 
 const addFolderDocument = asyncHandler(async (req, res) => {
@@ -117,11 +137,13 @@ const addFolderDocument = asyncHandler(async (req, res) => {
   let resolvedFileUrl = file_url || null;
 
   if (resolvedUploadId) {
-    const uploadLookup = await db.query(
-      "SELECT id FROM uploads WHERE id = $1",
-      [resolvedUploadId]
-    );
-    if (!uploadLookup.rows?.[0]) {
+    const { data: uploadLookup } = await supabase
+      .from("uploads")
+      .select("id")
+      .eq("id", resolvedUploadId)
+      .maybeSingle();
+
+    if (!uploadLookup) {
       return res.status(400).json({ error: "upload_id is invalid" });
     }
     resolvedFileUrl = resolvedFileUrl || buildUploadContentUrl(req, resolvedUploadId);
@@ -140,29 +162,50 @@ const addFolderDocument = asyncHandler(async (req, res) => {
     targetFolderId = uploadFolder.id;
   }
 
-  const { rows } = await db.query(
-    `INSERT INTO documents (company_id, folder_id, name, file_url, upload_id, size, ext, status, uploaded_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, ${db.isPostgres ? "$8::document_status" : "$8"}, $9)
-     RETURNING *`,
-    [company_id, targetFolderId, name, resolvedFileUrl, resolvedUploadId, size, ext, status, uploaded_by]
-  );
+  const { data, error } = await supabase
+    .from("documents")
+    .insert({
+      company_id,
+      folder_id: targetFolderId,
+      name,
+      file_url: resolvedFileUrl,
+      upload_id: resolvedUploadId,
+      size,
+      ext,
+      status,
+      uploaded_by
+    })
+    .select("*")
+    .single();
+
+  if (error) return res.status(500).json({ error: error.message });
   res.status(201).json({
-    ...rows[0],
+    ...data,
     folder_name: targetFolderId === req.params.id ? null : "General Uploads",
   });
 });
 
 const deleteDocument = asyncHandler(async (req, res) => {
-  const existing = await db.query("SELECT upload_id FROM documents WHERE id = $1", [req.params.id]);
-  const document = existing.rows?.[0];
-  if (!document) return res.status(404).json({ error: "Not found" });
+  const { data: document, error: findError } = await supabase
+    .from("documents")
+    .select("upload_id")
+    .eq("id", req.params.id)
+    .maybeSingle();
 
-  await db.query("DELETE FROM documents WHERE id = $1", [req.params.id]);
+  if (findError || !document) return res.status(404).json({ error: "Not found" });
+
+  await supabase.from("documents").delete().eq("id", req.params.id);
 
   if (document.upload_id) {
-    const linked = await db.query("SELECT id FROM documents WHERE upload_id = $1 LIMIT 1", [document.upload_id]);
-    if (!linked.rows?.[0]) {
-      await db.query("DELETE FROM uploads WHERE id = $1", [document.upload_id]);
+    const { data: linked } = await supabase
+      .from("documents")
+      .select("id")
+      .eq("upload_id", document.upload_id)
+      .limit(1)
+      .maybeSingle();
+
+    if (!linked) {
+      await supabase.from("uploads").delete().eq("id", document.upload_id);
     }
   }
 
@@ -180,3 +223,4 @@ module.exports = {
   deleteDocument,
   listFolderTree,
 };
+
