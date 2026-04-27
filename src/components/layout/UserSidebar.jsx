@@ -27,10 +27,6 @@ export default function UserSidebar({ onClose }) {
         <div className="flex items-center justify-between gap-3">
           <button onClick={() => navigate('/user/portal-dashboard')} className="flex items-center gap-3 text-left">
             <img src={datahublogo} alt="DataHub" className="h-10 w-auto object-contain" />
-            <div>
-              <p className="text-sm font-bold text-[#05164D]">User Portal</p>
-              <p className="text-[11px] text-[#6D6E71]">Assigned companies</p>
-            </div>
           </button>
           {onClose && (
             <button onClick={onClose} className="rounded-md p-1 text-[#6D6E71] transition-colors hover:bg-[#F4F6FA] hover:text-[#05164D]">
@@ -49,21 +45,20 @@ export default function UserSidebar({ onClose }) {
               to={item.to}
               onClick={onClose}
               className={({ isActive }) =>
-                `flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-semibold transition-all ${
-                  isActive
-                    ? 'bg-[#EEF6E0] text-[#05164D]'
-                    : 'text-[#6D6E71] hover:bg-[#F4F6FA] hover:text-[#05164D]'
+                `flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-semibold transition-all ${isActive
+                  ? 'bg-[#EEF6E0] text-[#05164D]'
+                  : 'text-[#6D6E71] hover:bg-[#F4F6FA] hover:text-[#05164D]'
                 }`
               }
-              >
-                <Icon size={18} />
-                <span>{item.label}</span>
-                {item.label === 'Messages' && unreadCount > 0 && (
-                  <span className="ml-auto inline-flex min-w-5 items-center justify-center rounded-full bg-[#C62026] px-1.5 py-0.5 text-[10px] font-bold text-white">
-                    {unreadCount > 9 ? '9+' : unreadCount}
-                  </span>
-                )}
-              </NavLink>
+            >
+              <Icon size={18} />
+              <span>{item.label}</span>
+              {item.label === 'Messages' && unreadCount > 0 && (
+                <span className="ml-auto inline-flex min-w-5 items-center justify-center rounded-full bg-[#C62026] px-1.5 py-0.5 text-[10px] font-bold text-white">
+                  {unreadCount > 9 ? '9+' : unreadCount}
+                </span>
+              )}
+            </NavLink>
           );
         })}
       </nav>

@@ -172,6 +172,63 @@ async function getAssignedBrokerIdsForUserCompany(companyId, userId) {
   return uniqueBrokerIds.length ? [uniqueBrokerIds[0]] : [];
 }
 
+async function getAssignedBrokerIdsForUser(userId) {
+  const brokerIds = [];
+
+  for (const columnName of USER_COMPANY_BROKER_COLUMN_CANDIDATES) {
+    const { data, error } = await supabase
+      .from("user_companies")
+      .select(columnName)
+      .eq("user_id", userId)
+      .limit(1000);
+
+    if (error) continue;
+    for (const row of data || []) {
+      if (row?.[columnName]) brokerIds.push(row[columnName]);
+    }
+  }
+
+  return uniqueIds(brokerIds);
+}
+
+async function getHistoricalBrokerIdsForUserCompany(companyId, userId) {
+  const { data, error } = await supabase
+    .from("direct_messages")
+    .select("sender_id, recipient_id, created_at")
+    .eq("company_id", companyId)
+    .or(`sender_id.eq.${userId},recipient_id.eq.${userId}`)
+    .order("created_at", { ascending: false })
+    .limit(500);
+
+  if (error) return [];
+
+  const counterpartyIds = uniqueIds(
+    (data || []).map((row) => {
+      const senderId = String(row.sender_id || "");
+      const recipientId = String(row.recipient_id || "");
+      return senderId === String(userId) ? recipientId : senderId;
+    }),
+  );
+
+  if (!counterpartyIds.length) return [];
+
+  const { data: users, error: usersError } = await supabase
+    .from("users")
+    .select("id, role, status")
+    .in("id", counterpartyIds)
+    .eq("status", "active");
+
+  if (usersError) return [];
+
+  const brokerIdSet = new Set(
+    (users || [])
+      .filter((row) => ["broker", "admin"].includes(String(row.role || "").toLowerCase()))
+      .map((row) => String(row.id)),
+  );
+
+  return counterpartyIds.filter((id) => brokerIdSet.has(String(id)));
+}
+
 async function getCompanyAssignmentBrokerIds(companyId) {
   const brokerIds = [];
 
@@ -198,6 +255,30 @@ async function getRelevantBrokerIdsForCompany(companyId) {
   ]);
 
   return uniqueIds([...onboardingIds, ...assignmentIds]);
+}
+
+async function getRelevantBrokerIdsForUser(user) {
+  const companyIds = getUserCompanyIds(user);
+  if (!companyIds.length) return [];
+
+  const brokerIdLists = await Promise.all(
+    companyIds.map((companyId) => getRelevantBrokerIdsForCompany(companyId)),
+  );
+
+  return uniqueIds(brokerIdLists.flat());
+}
+
+async function getAnyActiveBrokerIds() {
+  const { data, error } = await supabase
+    .from("users")
+    .select("id, role, status")
+    .in("role", ["broker", "admin"])
+    .eq("status", "active")
+    .order("created_at", { ascending: true })
+    .limit(25);
+
+  if (error) return [];
+  return uniqueIds((data || []).map((row) => row.id));
 }
 
 
@@ -417,9 +498,35 @@ async function resolveDirectMessagingContext(user, companyId) {
   if (messagingRole === "client") {
     brokerIds = await getOnboardingBrokerIdsForCompany(companyId);
   } else if (messagingRole === "user") {
-    brokerIds = await getAssignedBrokerIdsForUserCompany(companyId, user.id);
+    const [
+      assignedBrokerIds,
+      userLevelAssignedBrokerIds,
+      onboardingBrokerIds,
+      historicalBrokerIds,
+      userRelevantBrokerIds,
+    ] = await Promise.all([
+      getAssignedBrokerIdsForUserCompany(companyId, user.id),
+      getAssignedBrokerIdsForUser(user.id),
+      getOnboardingBrokerIdsForCompany(companyId),
+      getHistoricalBrokerIdsForUserCompany(companyId, user.id),
+      getRelevantBrokerIdsForUser(user),
+    ]);
+    brokerIds = uniqueIds([
+      ...assignedBrokerIds,
+      ...userLevelAssignedBrokerIds,
+      ...onboardingBrokerIds,
+      ...historicalBrokerIds,
+      ...userRelevantBrokerIds,
+    ]);
   } else {
     brokerIds = await getRelevantBrokerIdsForCompany(companyId);
+  }
+
+  if (!brokerIds.length && messagingRole !== "broker") {
+    brokerIds = await getRelevantBrokerIdsForCompany(companyId);
+  }
+  if (!brokerIds.length && messagingRole === "user") {
+    brokerIds = await getAnyActiveBrokerIds();
   }
 
   const brokerParticipants = await getBrokerParticipantsByIds(company, brokerIds);

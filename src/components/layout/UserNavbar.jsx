@@ -23,7 +23,6 @@ export default function UserNavbar({ onMenuClick }) {
             <Menu size={18} />
           </button>
           <div className="hidden items-center gap-3 sm:flex">
-            <span className="text-sm font-bold text-[#05164D]">User Portal</span>
             <span className="text-xs text-[#A5A5A5]">
               {new Date().toLocaleDateString('en-IN', { month: 'short', day: 'numeric', year: 'numeric' })}
             </span>

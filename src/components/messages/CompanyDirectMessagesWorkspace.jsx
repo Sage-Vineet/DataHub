@@ -225,7 +225,12 @@ export default function CompanyDirectMessagesWorkspace({
     try {
       const entries = await Promise.all(
         companyOptions.map(async (company) => {
-          const nextContacts = await fetchContacts(company.id);
+          let nextContacts = [];
+          try {
+            nextContacts = await fetchContacts(company.id);
+          } catch (_error) {
+            nextContacts = [];
+          }
           return [company.id, nextContacts];
         }),
       );
@@ -253,12 +258,6 @@ export default function CompanyDirectMessagesWorkspace({
         return nextContacts[0]?.id || "";
       });
       setError("");
-    } catch (err) {
-      setContactsByCompany({});
-      setContacts([]);
-      setSelectedRecipientId("");
-      setConversation(null);
-      setError(err.message || "Unable to load message contacts.");
     } finally {
       if (showLoader) {
         setContactsLoading(false);
@@ -300,13 +299,14 @@ export default function CompanyDirectMessagesWorkspace({
   }, [fixedCompanyId, companyOptions]);
 
   useEffect(() => {
-    if (singleListMode) {
-      loadSingleListContacts();
-      return;
-    }
-
+    if (singleListMode) return;
     loadContacts(activeCompanyId);
-  }, [activeCompanyId, companyOptionsKey, singleListMode]);
+  }, [activeCompanyId, singleListMode]);
+
+  useEffect(() => {
+    if (!singleListMode) return;
+    loadSingleListContacts();
+  }, [companyOptionsKey, singleListMode]);
 
   useEffect(() => {
     loadConversation(activeCompanyId, selectedRecipientId);
