@@ -334,7 +334,8 @@ export default function WorkspaceEbitda() {
   const updateAddbackValue = (id, year, value) => {
     setDynamicAddbacks(prev => prev.map(ab => {
       if (ab.id === id) {
-        const numericValue = value === "" ? null : Number(value);
+        const normalizedInput = typeof value === "string" ? value.replace(/\*/g, "").trim() : value;
+        const numericValue = normalizedInput === "" ? null : Number(normalizedInput);
         const latestYear = years[0];
         const nextValues = {
           ...ab.values,
@@ -541,17 +542,22 @@ export default function WorkspaceEbitda() {
                       {/* Owner Addbacks Section */}
                       <tr className="bg-white h-[45px]">
                         <td colSpan={years.length + 1} className="p-0 bg-gray-100">
-                          <div className="flex items-center justify-between px-4 py-3 font-bold text-[#050505]">
-                          <span>Addbacks</span>
-                          <div className="flex items-center gap-2">
-                            <button
-                              onClick={() => setIsTypeDialogOpen(true)}
-                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#8bc53d] text-white text-[11px] font-bold hover:bg-[#78ab34] transition-colors"
-                            >
-                              <Plus size={12} strokeWidth={3} />
-                              ADD ROW
-                            </button>
-                          </div>
+                          <div className="px-4 py-3">
+                            <div className="flex items-center justify-between font-bold text-[#050505]">
+                              <span>Addbacks</span>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  onClick={() => setIsTypeDialogOpen(true)}
+                                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#8bc53d] text-white text-[11px] font-bold hover:bg-[#78ab34] transition-colors"
+                                >
+                                  <Plus size={12} strokeWidth={3} />
+                                  ADD ROW
+                                </button>
+                              </div>
+                            </div>
+                            <p className="mt-1 text-[11px] text-slate-500">
+                              * Values marked with an asterisk (*) are automatically fetched from the Profit &amp; Loss statement. Values without (*) are manually added.
+                            </p>
                           </div>
                         </td>
                       </tr>
@@ -559,10 +565,6 @@ export default function WorkspaceEbitda() {
                         <tr key={row.id} className="group border-b border-[#f1f5f9] hover:bg-slate-50 transition-colors h-[45px]">
                           <td className="p-3 pl-6 text-text-primary">
                             <div className="flex items-center gap-2">
-                              {/* P&L linked indicator */}
-                              {row.type === "PL" && (
-                                <span className="text-[#8bc53d] font-bold text-[15px] leading-none" title="Linked to P&L account">*</span>
-                              )}
                               {/* Account selector or custom label */}
                               {row.type === "PL" ? (
                                 <div className="relative flex-1">
@@ -597,17 +599,28 @@ export default function WorkspaceEbitda() {
                           </td>
                           {years.map((year) => {
                             const { apiValue, userValue } = row.values[year] || { apiValue: null, userValue: null };
-                            const isEdited = userValue !== null;
+                            const rawDisplayValue = userValue !== null ? String(userValue) : (apiValue !== null ? String(apiValue) : "");
+                            const showPLAsterisk = Boolean(
+                              row.isFromPL &&
+                              row.linkedToPL &&
+                              userValue === null &&
+                              apiValue !== null
+                            );
+                            const displayValue =
+                              showPLAsterisk && rawDisplayValue && !rawDisplayValue.startsWith("*")
+                                ? `*${rawDisplayValue}`
+                                : rawDisplayValue;
 
                             return (
-                              <td key={year} className={cn("p-1.5 text-right", isEdited && "bg-green-50")}>
+                              <td key={year} className="p-1.5 text-right">
                                 <input
                                   type="text"
-                                  value={userValue !== null ? userValue : (apiValue !== null ? apiValue : "")}
+                                  value={displayValue}
                                   onChange={(e) => updateAddbackValue(row.id, year, e.target.value)}
+                                  title={showPLAsterisk ? "This value is sourced from Profit & Loss" : undefined}
                                   className={cn(
                                     "w-full bg-transparent text-right font-medium focus:outline-none focus:ring-1 focus:ring-[#8bc53d] rounded px-2 py-1",
-                                    isEdited ? "text-[#8bc53d]" : (apiValue !== null ? "text-text-primary" : "text-gray-300")
+                                    (userValue !== null || apiValue !== null) ? "text-text-primary" : "text-gray-300"
                                   )}
                                   placeholder={apiValue !== null ? String(apiValue) : "-"}
                                 />
