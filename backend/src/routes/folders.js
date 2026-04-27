@@ -11,7 +11,10 @@ const {
   deleteDocument,
 } = require("../controllers/folders");
 
+const { requireAuth } = require("../middleware/auth");
 const router = express.Router();
+
+router.use(requireAuth);
 
 router.get("/companies/:id/folders/tree", listFolderTree);
 router.get("/companies/:id/folders", listFolders);

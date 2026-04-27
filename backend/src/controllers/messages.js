@@ -1,26 +1,11 @@
 const { supabase } = require("../db");
 const asyncHandler = require("../utils");
+const { getUserCompanyIds, canAccessCompany } = require("../services/userService");
 
 function isBroker(user) {
   return ["broker", "admin"].includes(String(user?.role || "").toLowerCase());
 }
 
-function uniqueStrings(values) {
-  return Array.from(new Set((values || []).filter(Boolean).map((value) => String(value))));
-}
-
-function normalizeCompanyIds(user) {
-  return uniqueStrings([
-    ...(user?.company_ids || []),
-    ...((user?.assigned_companies || []).map((company) => company.id)),
-    user?.company_id,
-  ]);
-}
-
-function canAccessCompany(user, companyId) {
-  if (isBroker(user)) return true;
-  return normalizeCompanyIds(user).includes(String(companyId));
-}
 
 function normalizeParticipantRole(userRow, company) {
   const normalizedRole = String(userRow?.role || "").toLowerCase();

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowRight, BadgeDollarSign, Building2, Download, Search, ShieldCheck, Users } from 'lucide-react';
-import { companies as mockCompanies } from '../../data/mockData';
+
 import { buildClientLedger, formatUsd } from '../../lib/dataHub';
 import { listCompaniesRequest } from '../../lib/api';
 
@@ -23,7 +23,7 @@ function normalizeCompany(company) {
 export default function BrokerClients() {
   const navigate = useNavigate();
   const [search, setSearch] = useState('');
-  const [clients, setClients] = useState(buildClientLedger(mockCompanies.map(normalizeCompany)));
+  const [clients, setClients] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -36,7 +36,7 @@ export default function BrokerClients() {
       })
       .catch(() => {
         if (!cancelled) {
-          setClients(buildClientLedger(mockCompanies.map(normalizeCompany)));
+          setClients([]);
         }
       })
       .finally(() => {

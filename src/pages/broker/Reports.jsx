@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { Download, FileSpreadsheet, FileText, Layers3 } from 'lucide-react';
-import { companies as mockCompanies } from '../../data/mockData';
+
 import { buildClientLedger, buildInvoiceLedger, buildReportLibrary, summarizeInvoices } from '../../lib/dataHub';
 import { listCompaniesRequest } from '../../lib/api';
 
@@ -19,7 +19,7 @@ function normalizeCompany(company) {
 }
 
 export default function BrokerReports() {
-  const [clients, setClients] = useState(buildClientLedger(mockCompanies.map(normalizeCompany)));
+  const [clients, setClients] = useState([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -32,7 +32,7 @@ export default function BrokerReports() {
       })
       .catch(() => {
         if (!cancelled) {
-          setClients(buildClientLedger(mockCompanies.map(normalizeCompany)));
+          setClients([]);
         }
       });
 

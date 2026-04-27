@@ -139,88 +139,16 @@ function insertDocs(root, folderId, docs) {
   return { ...root, children: root.children.map((c) => insertDocs(c, folderId, docs)) };
 }
 
-// ── Initial Tree (seeded from mockData structure) ────────────────────────────
+// ── Initial Tree ────────────────────────────
 const INITIAL_TREE = {
   id: 'root',
   name: 'Documents',
   type: 'folder',
-  createdAt: '2026-01-01',
-  children: [
-    {
-      id: 'fdr-finance',
-      name: 'Finance',
-      type: 'folder',
-      createdAt: '2026-01-15',
-      color: '#00B0F0',
-      children: [
-        { id: 'doc1', name: 'Trial_Balance_Q3_2024.xlsx', type: 'file', size: '1.2 MB', uploadedBy: 'Finance Team', uploadedAt: '2026-03-25', status: 'verified', ext: 'xlsx' },
-        { id: 'doc2', name: 'FS_Mapping_2024.pdf', type: 'file', size: '0.8 MB', uploadedBy: 'Controller', uploadedAt: '2026-03-25', status: 'verified', ext: 'pdf' },
-        { id: 'doc4', name: 'EBITDA_Bridge_FY25.xlsx', type: 'file', size: '2.1 MB', uploadedBy: 'Controller', uploadedAt: '2026-03-25', status: 'verified', ext: 'xlsx' },
-        { id: 'doc3', name: 'Revenue_Recognition_Memo.pdf', type: 'file', size: '1.5 MB', uploadedBy: 'Finance Team', uploadedAt: '2026-03-24', status: 'under-review', ext: 'pdf' },
-        { id: 'fdr-fin-q3', name: 'Q3 Reports', type: 'folder', createdAt: '2026-02-01', color: '#00B0F0', children: [] },
-      ],
-    },
-    {
-      id: 'fdr-legal',
-      name: 'Legal',
-      type: 'folder',
-      createdAt: '2026-01-20',
-      color: '#742982',
-      children: [
-        { id: 'doc5', name: 'Board_Resolutions_2025.pdf', type: 'file', size: '3.4 MB', uploadedBy: 'Legal Team', uploadedAt: '2026-03-22', status: 'verified', ext: 'pdf' },
-        { id: 'doc7', name: 'Litigation_Log_Mar2026.pdf', type: 'file', size: '0.9 MB', uploadedBy: 'Legal Counsel', uploadedAt: '2026-03-20', status: 'verified', ext: 'pdf' },
-        { id: 'doc8', name: 'Employment_Agreements_CSuite.pdf', type: 'file', size: '4.2 MB', uploadedBy: 'HR / Legal', uploadedAt: '2026-03-26', status: 'under-review', ext: 'pdf' },
-        { id: 'doc9', name: 'Compliance_Certificates_FY25.zip', type: 'file', size: '5.1 MB', uploadedBy: 'Compliance Team', uploadedAt: '2026-03-25', status: 'under-review', ext: 'zip' },
-        { id: 'fdr-leg-contracts', name: 'Contracts', type: 'folder', createdAt: '2026-02-10', color: '#742982', children: [] },
-      ],
-    },
-    {
-      id: 'fdr-hr',
-      name: 'HR & People',
-      type: 'folder',
-      createdAt: '2026-02-01',
-      color: '#F68C1F',
-      children: [
-        { id: 'doc10', name: 'Total_Comp_Summary_FY25.xlsx', type: 'file', size: '0.7 MB', uploadedBy: 'HR Team', uploadedAt: '2026-03-24', status: 'under-review', ext: 'xlsx' },
-        { id: 'doc6', name: 'CapTable_FullyDiluted.xlsx', type: 'file', size: '0.6 MB', uploadedBy: 'CFO Office', uploadedAt: '2026-03-26', status: 'under-review', ext: 'xlsx' },
-      ],
-    },
-    {
-      id: 'fdr-tax',
-      name: 'Tax',
-      type: 'folder',
-      createdAt: '2026-02-15',
-      color: '#8BC53D',
-      children: [
-        { id: 'doc11', name: 'Tax_Residency_Certificate.pdf', type: 'file', size: '0.4 MB', uploadedBy: 'Tax Team', uploadedAt: '2026-02-18', status: 'verified', ext: 'pdf' },
-      ],
-    },
-    { id: 'fdr-mna', name: 'M&A', type: 'folder', createdAt: '2026-03-01', color: '#05164D', children: [] },
-    { id: 'fdr-compliance', name: 'Compliance', type: 'folder', createdAt: '2026-03-05', color: '#b45e08', children: [] },
-  ],
+  createdAt: new Date().toISOString().slice(0, 10),
+  children: [],
 };
 
-const INITIAL_FOLDER_ACCESS = {
-  'fdr-finance': [
-    { id: 'buyer-1', type: 'user', name: 'Ananya Mehta', permissions: { read: true, write: true, download: true } },
-    { id: 'grp-finance', type: 'group', name: 'Finance Buyers', permissions: { read: true, write: false, download: true } },
-  ],
-  'fdr-legal': [
-    { id: 'buyer-2', type: 'user', name: 'Rahul Sharma', permissions: { read: true, write: false, download: true } },
-  ],
-  'fdr-hr': [
-    { id: 'grp-hr', type: 'group', name: 'HR Buyers', permissions: { read: true, write: true, download: false } },
-  ],
-  'fdr-tax': [
-    { id: 'buyer-3', type: 'user', name: 'Zara Khan', permissions: { read: true, write: false, download: true } },
-  ],
-  'fdr-mna': [
-    { id: 'grp-mna', type: 'group', name: 'M&A Committee', permissions: { read: true, write: false, download: false } },
-  ],
-  'fdr-compliance': [
-    { id: 'grp-compliance', type: 'group', name: 'Compliance Reviewers', permissions: { read: true, write: true, download: true } },
-  ],
-};
+const INITIAL_FOLDER_ACCESS = {};
 
 // ── Store ────────────────────────────────────────────────────────────────────
 export const useFileExplorerStore = create(

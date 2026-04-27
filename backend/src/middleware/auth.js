@@ -1,5 +1,5 @@
 const jwt = require("jsonwebtoken");
-const { supabase } = require("../db");
+const { getUserById } = require("../services/userService");
 
 function extractToken(req) {
   const authorization = req.headers.authorization || "";
@@ -24,49 +24,6 @@ function extractToken(req) {
   return null;
 }
 
-async function attachAssignedCompanies(user) {
-  if (!user?.id) return user;
-
-  const { data: companies, error } = await supabase
-    .from("user_companies")
-    .select(`
-      company_id,
-      companies:company_id (
-        id, name, industry, status, contact_email
-      )
-    `)
-    .eq("user_id", user.id)
-    .order("company_id", { ascending: true });
-
-  if (error) {
-    console.error("❌ Error fetching assigned companies:", error.message);
-    return user;
-  }
-
-  // Flatten the result to match existing structure
-  const assignedCompanies = (companies || []).map(uc => uc.companies).filter(Boolean);
-
-  const hasPrimary = user.company_id && assignedCompanies.some((company) => String(company.id) === String(user.company_id));
-  const finalCompanies = hasPrimary || !user.company_id
-    ? assignedCompanies
-    : [{ id: user.company_id, name: user.company_name }, ...assignedCompanies];
-
-  const normalizedEmail = String(user.email || "").trim().toLowerCase();
-  const isSeller = finalCompanies.some((company) => (
-    String(company.contact_email || "").trim().toLowerCase() === normalizedEmail
-  ));
-  const effectiveRole = user.role === "buyer"
-    ? (isSeller ? "client" : "user")
-    : user.role;
-
-  return {
-    ...user,
-    effective_role: effectiveRole,
-    company_ids: finalCompanies.map((company) => company.id).filter(Boolean),
-    assigned_companies: finalCompanies,
-  };
-}
-
 async function requireAuth(req, res, next) {
   const token = extractToken(req);
 
@@ -76,28 +33,13 @@ async function requireAuth(req, res, next) {
 
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET || "change_me");
-    
-    const { data: user, error } = await supabase
-      .from("users")
-      .select(`
-        id, name, email, role, company_id, status,
-        companies:company_id ( name )
-      `)
-      .eq("id", payload.sub)
-      .maybeSingle();
+    const user = await getUserById(payload.sub);
 
-    if (error || !user) {
+    if (!user) {
       return res.status(401).json({ error: "Invalid token" });
     }
 
-    // Flatten company name
-    const flattenedUser = {
-      ...user,
-      company_name: user.companies?.name
-    };
-    delete flattenedUser.companies;
-
-    req.user = await attachAssignedCompanies(flattenedUser);
+    req.user = user;
     return next();
   } catch (err) {
     return res.status(401).json({ error: "Invalid token" });
@@ -117,4 +59,3 @@ function requireRole(roles) {
 }
 
 module.exports = { requireAuth, requireRole };
-
