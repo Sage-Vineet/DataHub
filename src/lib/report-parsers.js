@@ -170,7 +170,7 @@ function parseSummaryRows(rows, indexOffset = 0) {
       childIndex += children.length;
 
       const cleanName = String(name || "")
-        .replace(/^Total\\s+/i, "")
+        .replace(/^Total\s+/i, "")
         .replace(/[^a-zA-Z0-9]/g, "-")
         .toLowerCase();
       const sectionId =
@@ -336,148 +336,8 @@ function extractTransactions(rowArray, reportDate = "", columnsMetadata = []) {
   return transactions;
 }
 
-function findAccounts(rows, reportDate, columnsMetadata = []) {
-  const accounts = [];
-  if (!rows || !Array.isArray(rows)) return accounts;
-
-  for (const row of rows) {
-    const type = String(row?.type || "").toLowerCase();
-    if (type !== "section") continue;
-
-    const headerName =
-      row?.Header?.ColData?.[0]?.value ||
-      row?.Summary?.ColData?.[0]?.value ||
-      row?.ColData?.[0]?.value ||
-      "General Account";
-
-    const summaryCols = row?.Summary?.ColData || [];
-    const total = summaryCols.length
-      ? findLastNumericValue(summaryCols)
-      : findLastNumericValue(row?.ColData);
-
-    const rowData = getChildRows(row);
-    if (rowData.length > 0) {
-      const directData = rowData.filter(
-        (child) =>
-          String(child?.type || "").toLowerCase() === "data" ||
-          Array.isArray(child?.ColData),
-      );
-
-      if (directData.length > 0) {
-        accounts.push({
-          id: String(
-            row?.id || `acc-${Math.random().toString(36).slice(2, 7)}`,
-          ),
-          name: String(headerName || "").replace(/^Total\s+/i, ""),
-          total,
-          transactions: extractTransactions(
-            directData,
-            reportDate,
-            columnsMetadata,
-          ),
-        });
-      }
-
-      accounts.push(...findAccounts(rowData, reportDate, columnsMetadata));
-    }
-  }
-
-  return accounts;
-}
-
-function parseDetailRows(rows, reportDate = "N/A", columnsMetadata = []) {
-  const groups = [];
-  if (!rows || !Array.isArray(rows)) return { groups };
-
-  for (const row of rows) {
-    const type = String(row?.type || "").toLowerCase();
-    if (type !== "section") continue;
-
-    const groupName = getRowLabel(row, "Main Section");
-    const summaryCols = row?.Summary?.ColData || [];
-    const total = summaryCols.length
-      ? findLastNumericValue(summaryCols)
-      : findLastNumericValue(row?.ColData);
-
-    const childRows = getChildRows(row);
-    const accounts = findAccounts(childRows, reportDate, columnsMetadata);
-
-    if (accounts.length > 0) {
-      groups.push({
-        id: String(row?.id || row?.group || Math.random().toString()),
-        name: groupName,
-        total,
-        accounts,
-      });
-      continue;
-    }
-
-    const directData = childRows.filter(
-      (child) =>
-        String(child?.type || "").toLowerCase() === "data" ||
-        Array.isArray(child?.ColData),
-    );
-
-    if (directData.length > 0) {
-      groups.push({
-        id: String(row?.id || row?.group || Math.random().toString()),
-        name: groupName,
-        total,
-        accounts: [
-          {
-            id: String(
-              row?.Header?.ColData?.[0]?.id ||
-              row?.id ||
-              `acc-${normalizeKey(groupName)}`,
-            ),
-            name: groupName,
-            total,
-            transactions: extractTransactions(
-              directData,
-              reportDate,
-              columnsMetadata,
-            ),
-          },
-        ],
-      });
-      continue;
-    }
-
-    if (Array.isArray(row?.Rows?.Row)) {
-      const subData = parseDetailRows(
-        row.Rows.Row,
-        reportDate,
-        columnsMetadata,
-      );
-      groups.push(...subData.groups);
-    }
-  }
-
-  return {
-    groups: groups.filter(
-      (group, index, self) =>
-        index ===
-        self.findIndex(
-          (candidate) =>
-            candidate.name === group.name &&
-            candidate.accounts.length === group.accounts.length,
-        ),
-    ),
-  };
-}
-
 export function parseSummaryReport(payload) {
   return parseSummaryRows(extractRows(payload));
-}
-
-export function parseDetailReport(payload) {
-  const columnsMetadata =
-    payload?.Columns?.Column || payload?.data?.Columns?.Column || [];
-  return parseDetailRows(
-    extractRows(payload),
-    getReportDate(payload, "") || "",
-    columnsMetadata,
-  );
 }
 
 function balanceSheetCollectAccounts(row, reportDate, ledgerIndex) {

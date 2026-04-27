@@ -4,7 +4,7 @@ const API_BASE_URL = (
   import.meta.env.VITE_API_BASE_URL || "http://localhost:4000"
 ).replace(/\/$/, "");
 
-async function request(path, options = {}) {
+export async function request(path, options = {}) {
   // Extract clientId from URL hash
   // Matches /broker/client/:id, /client/:id/dashboard, or /client/:id/...
   const hash = window.location.hash || "";
@@ -137,10 +137,3 @@ export function fetchBankVsBooks() {
   return request("/bank-vs-books");
 }
 
-export function formatCurrency(amount) {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 0,
-  }).format(Number(amount || 0));
-}

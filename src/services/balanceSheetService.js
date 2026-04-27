@@ -5,29 +5,6 @@ import {
   parseSummaryReport,
 } from "../lib/report-parsers";
 
-const API_BASE_URL = (
-  import.meta.env.VITE_API_BASE_URL || "http://localhost:4000"
-).replace(/\/$/, "");
-
-function resolveClientIdFromLocation() {
-  if (typeof window === "undefined") return null;
-  const hash = window.location.hash || "";
-  const pathname = window.location.pathname || "";
-  const hashMatch = hash.match(/\/client\/([^/?#]+)/);
-  const pathMatch = pathname.match(/\/client\/([^/?#]+)/);
-  const match = hashMatch || pathMatch;
-  return match ? decodeURIComponent(match[1]) : null;
-}
-
-function getShiftedStartDate(startDateString, yearShift, monthShift) {
-  if (!startDateString) return undefined;
-  const [yrStr, moStr, daStr] = startDateString.split('-');
-  if (!yrStr || !moStr || !daStr) return undefined;
-  const d = new Date(parseInt(yrStr, 10), parseInt(moStr, 10) - 1, parseInt(daStr, 10));
-  d.setFullYear(d.getFullYear() - yearShift);
-  d.setMonth(d.getMonth() - monthShift);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
 
 /**
  * Generates dynamic comparative periods based on a specific end date.
@@ -93,20 +70,35 @@ function getComparativePeriods(numYears = 4) {
   return periods;
 }
 
-async function fetchSinglePeriodBS(startDate, endDate, accountingMethod) {
+async function fetchSinglePeriodBS(
+  startDate,
+  endDate,
+  accountingMethod,
+) {
   try {
     const payload = await fetchBalanceSheet({
       ...(startDate ? { start_date: startDate } : {}),
-      end_date: endDate,
+      ...(endDate ? { end_date: endDate } : {}),
       ...(accountingMethod
         ? { accounting_method: normalizeAccountingMethod(accountingMethod) }
         : {}),
     });
     return parseSummaryReport(payload);
   } catch (err) {
-    console.warn(`⚠️ Failed to fetch Balance Sheet for ${startDate || 'cumulative'} to ${endDate}:`, err.message);
+    console.warn(
+      `⚠️ Failed to fetch Balance Sheet for ${startDate} - ${endDate}:`,
+      err.message,
+    );
     return [];
   }
+}
+
+// ─── Exported Services ──────────────────────────────────────────────────────
+
+export async function getBalanceSheet(startDate, endDate, accountingMethod) {
+  // Summary now uses user-selected filters (QuickBooks-style Summary report)
+  const rows = await fetchSinglePeriodBS(startDate, endDate, accountingMethod);
+  return rows;
 }
 
 function normalizeName(name) {
@@ -295,9 +287,8 @@ function mergePeriods(periodResults, periods) {
   return restructureGAAPTree(enrichedRows);
 }
 
-// ─── Exported Services ──────────────────────────────────────────────────────
-
-export async function getBalanceSheet(startDate, endDate, accountingMethod) {
+export async function getBalanceSheetDetail(startDate, endDate, accountingMethod) {
+  // Detail now uses system-defined multi-year comparison (EBITDA analysis)
   const allPeriods = getComparativePeriods(4, endDate, startDate);
 
   const results = await Promise.all(
@@ -336,25 +327,5 @@ export async function getBalanceSheet(startDate, endDate, accountingMethod) {
       changeCols,
       currentMonth: currentPeriodLabel
     }
-  };
-}
-
-export async function getBalanceSheetDetail(startDate, endDate, accountingMethod) {
-  const clientId = resolveClientIdFromLocation();
-  const search = new URLSearchParams({
-    ...(startDate ? { start_date: startDate } : {}),
-    ...(endDate ? { end_date: endDate } : {}),
-    ...(accountingMethod ? { accounting_method: normalizeAccountingMethod(accountingMethod) } : {}),
-  }).toString();
-
-  const response = await fetch(`${API_BASE_URL}/all-reports${search ? `?${search}` : ""}`, {
-    credentials: "include",
-    headers: { ...(clientId ? { "X-Client-Id": clientId } : {}) },
-  });
-
-  const payload = await response.json();
-  return {
-    ...parseBalanceSheetDetailFromAllReports(payload, endDate),
-    rawPayload: payload,
   };
 }
