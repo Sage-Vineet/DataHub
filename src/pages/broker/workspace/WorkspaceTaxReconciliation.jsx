@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
   AlertCircle,
@@ -14,25 +14,19 @@ import QBDisconnectedBanner from "../../../components/common/QBDisconnectedBanne
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
-const PL_ENDPOINT = `${API_BASE_URL}/tax-profit-and-loss`;
-const EXTRACT_ENDPOINT = `${API_BASE_URL}/extract`;
-const TAX_RECONCILIATION_STORAGE_PREFIX = "workspace-tax-reconciliation";
-const DEFAULT_START_DATE = "2023-01-01";
-const DEFAULT_END_DATE = "2023-12-31";
-const DEFAULT_ACCOUNTING_METHOD = "Cash";
+
+const STORAGE_PREFIX = "workspace-tax-reconciliation-v3";
 
 // ── Session-storage helpers ────────────────────────────────────────────────
 
-function getTaxReconciliationStorageKey(clientId) {
-  return `${TAX_RECONCILIATION_STORAGE_PREFIX}:${clientId || "default"}`;
+function getStorageKey(clientId) {
+  return `${STORAGE_PREFIX}:${clientId || "default"}`;
 }
 
-function getStoredTaxReconciliationState(clientId) {
+function getStoredState(clientId) {
   if (typeof window === "undefined") return null;
   try {
-    const raw = window.sessionStorage.getItem(
-      getTaxReconciliationStorageKey(clientId),
-    );
+    const raw = window.sessionStorage.getItem(getStorageKey(clientId));
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     return parsed && typeof parsed === "object" ? parsed : null;
@@ -44,8 +38,9 @@ function getStoredTaxReconciliationState(clientId) {
 // ── Formatting ─────────────────────────────────────────────────────────────
 
 function formatAmount(value) {
-  if (value == null || Number(value) === 0) return "-";
+  if (value == null || value === "") return "-";
   const numericValue = Number(value);
+  if (isNaN(numericValue) || numericValue === 0) return "-";
   const abs = new Intl.NumberFormat("en-US", {
     minimumFractionDigits: 0,
     maximumFractionDigits: 0,
@@ -53,150 +48,10 @@ function formatAmount(value) {
   return numericValue < 0 ? `(${abs})` : abs;
 }
 
-function getVarianceTextClass(value) {
-  const numericValue = Number(value || 0);
-  if (!numericValue) return "text-text-muted";
-  return numericValue < 0 ? "text-red-600" : "text-green-600";
-}
-
-// ── Parse QB P&L response → P&L column ────────────────────────────────────
-//
-// The QB ProfitAndLoss report uses the same nested Row/ColData structure
-// as the BalanceSheet. We walk all rows recursively and match on the
-// account label in ColData[0].value.
-
-function extractQBValue(rows, labelHint) {
-  if (!Array.isArray(rows)) return null;
-  for (const row of rows) {
-    // Summary rows carry the rolled-up total we usually want
-    const summaryVal = row?.Summary?.ColData;
-    if (summaryVal) {
-      const label = summaryVal[0]?.value?.toLowerCase() || "";
-      if (label.includes(labelHint.toLowerCase())) {
-        const v = parseFloat(summaryVal[1]?.value);
-        return isNaN(v) ? null : v;
-      }
-    }
-    // Data rows
-    const colData = row?.ColData;
-    if (colData) {
-      const label = colData[0]?.value?.toLowerCase() || "";
-      if (label.includes(labelHint.toLowerCase())) {
-        const v = parseFloat(colData[1]?.value);
-        return isNaN(v) ? null : v;
-      }
-    }
-    // Recurse into nested Rows
-    const nested = row?.Rows?.Row;
-    if (nested) {
-      const found = extractQBValue(nested, labelHint);
-      if (found !== null) return found;
-    }
-  }
-  return null;
-}
-
-function parseQBPLResponse(payload) {
-  try {
-    const rows = payload?.data?.Rows?.Row || [];
-
-    return {
-      totalRevenue:
-        extractQBValue(rows, "total income") ??
-        extractQBValue(rows, "total revenue"),
-      totalCostOfGoodsSold:
-        extractQBValue(rows, "total cost of goods sold") ??
-        extractQBValue(rows, "total cogs"),
-      grossProfit: extractQBValue(rows, "gross profit"),
-      officerWages:
-        extractQBValue(rows, "officer") ??
-        extractQBValue(rows, "officer wages"),
-      depreciationExpense: extractQBValue(rows, "depreciation"),
-      amortizationExpense: extractQBValue(rows, "amortization"),
-      totalInterestExpense: extractQBValue(rows, "interest expense"),
-      totalInterestIncome: extractQBValue(rows, "interest income"),
-      allOtherExpenses:
-        extractQBValue(rows, "other expenses") ??
-        extractQBValue(rows, "all other"),
-      netIncome: extractQBValue(rows, "net income"),
-    };
-  } catch (err) {
-    console.error("QB P&L parse error:", err);
-    return null;
-  }
-}
-
-// ── Parse /extract markdown response → Tax Return column ──────────────────
-//
-// Response shape (markdown bullet list):
-//   "* **Total Revenue**: $2,570,511\n* **Net Income**: $353,311\n..."
-//
-// Strategy: find each known label with a regex, strip $ and commas.
-
-function parseBulletValue(text, label) {
-  // Matches:  * **Label**: $1,234,567  or  * **Label**: 1234
-  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const re = new RegExp(
-    `\\*\\*${escaped}\\*\\*[^\\$\\d]*(\\$?[\\d,]+(?:\\.\\d+)?)`,
-    "i",
-  );
-  const match = text.match(re);
-  if (!match) return null;
-  const v = parseFloat(match[1].replace(/[$,]/g, ""));
-  return isNaN(v) ? null : v;
-}
-
-function parseExtractResponse(rawPayload) {
-  try {
-    const text = typeof rawPayload?.data === "string" ? rawPayload.data : "";
-    if (!text) return null;
-
-    return {
-      totalRevenue: parseBulletValue(text, "Total Revenue"),
-      totalCostOfGoodsSold: parseBulletValue(text, "Total Cost of Goods Sold"),
-      grossProfit: parseBulletValue(text, "Gross Profit"),
-      officerWages: parseBulletValue(text, "Officer Wages"),
-      depreciationExpense: parseBulletValue(text, "Depreciation Expense"),
-      amortizationExpense: parseBulletValue(text, "Amortization Expense"),
-      totalInterestExpense: parseBulletValue(text, "Total Interest Expense"),
-      totalInterestIncome: parseBulletValue(text, "Total Interest Income"),
-      allOtherExpenses: parseBulletValue(text, "All Other Expenses"),
-      netIncome: parseBulletValue(text, "Net Income"),
-    };
-  } catch (err) {
-    console.error("Extract parse error:", err);
-    return null;
-  }
-}
-
-// ── Table builder ──────────────────────────────────────────────────────────
-
-function deriveRowValues(pl = 0, taxReturn = 0) {
-  return { pl, taxReturn, trVariance: taxReturn - pl };
-}
-
-// plData and taxReturnData are both flat objects with the same keys
-function buildTableRows(plData, taxReturnData) {
-  const pl = plData || {};
-  const tr = taxReturnData || {};
-
-  const rows = [
-    { label: "Total Revenue", key: "totalRevenue" },
-    { label: "Total Cost of Goods Sold", key: "totalCostOfGoodsSold" },
-    { label: "Gross Profit", key: "grossProfit", strong: true },
-    { label: "Officer Wages", key: "officerWages" },
-    { label: "Depreciation Expense", key: "depreciationExpense" },
-    { label: "Amortization Expense", key: "amortizationExpense" },
-    { label: "Total Interest Expense", key: "totalInterestExpense" },
-    { label: "Total Interest Income", key: "totalInterestIncome" },
-    { label: "All Other Expenses", key: "allOtherExpenses" },
-    { label: "Net Income", key: "netIncome", strong: true },
-  ];
-
-  return rows.map((r) => ({
-    ...r,
-    values: [deriveRowValues(pl[r.key] ?? 0, tr[r.key] ?? 0)],
-  }));
+function getVarianceClass(value) {
+  const n = Number(value || 0);
+  if (!n) return "text-text-primary";
+  return n < 0 ? "text-red-600" : "text-green-600";
 }
 
 // ── SyncStatus badge ───────────────────────────────────────────────────────
@@ -207,11 +62,9 @@ function SyncStatus({ sync }) {
     <div
       className={cn(
         "inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-[12px] font-medium",
-        sync.status === "loading" &&
-        "border-primary/20 bg-primary/5 text-primary",
+        sync.status === "loading" && "border-primary/20 bg-primary/5 text-primary",
         sync.status === "error" && "border-red-200 bg-red-50 text-red-700",
-        sync.status === "success" &&
-        "border-emerald-200 bg-emerald-50 text-emerald-700",
+        sync.status === "success" && "border-emerald-200 bg-emerald-50 text-emerald-700",
         sync.status === "idle" && "border-border bg-white text-text-secondary",
       )}
     >
@@ -227,242 +80,323 @@ function SyncStatus({ sync }) {
   );
 }
 
+// ── Constants ──────────────────────────────────────────────────────────────
+
+/**
+ * MAIN_LINE_ITEMS — Page 1 of Form 1120-S.
+ *
+ * NOTE: "Total Interest Income" is intentionally removed from this list.
+ * Interest income (Schedule K Line 4) is a pass-through item that does NOT
+ * appear on Page 1 of the 1120-S — it belongs in the Tax-to-Book
+ * Reconciling Items section (Schedule K rows), where it will appear
+ * dynamically from the PDF extraction.
+ */
+const MAIN_LINE_ITEMS = [
+  { label: "Total Revenue", isHighlight: false },
+  { label: "Total Cost of Goods Sold", isHighlight: false },
+  { label: "Gross Profit", isHighlight: true },
+  { label: "Officer Wages", isHighlight: false },
+  { label: "Depreciation Expense", isHighlight: false },
+  { label: "Amortization Expense", isHighlight: false },
+  { label: "Total Interest Expense", isHighlight: false },
+  { label: "All Other Expenses", isHighlight: false },
+  { label: "All Other Income", isHighlight: false },
+  { label: "Net Income", isHighlight: true },
+];
+
 // ── Main component ─────────────────────────────────────────────────────────
 
 export default function WorkspaceTaxReconciliation() {
   const { clientId } = useParams();
-  const storedState = getStoredTaxReconciliationState(clientId);
+  const storedState = useMemo(() => getStoredState(clientId), [clientId]);
+
+  const currentYear = new Date().getFullYear();
+  const YEAR_OPTIONS = Array.from({ length: 6 }, (_, i) => currentYear - i);
 
   const [company, setCompany] = useState(null);
-  const [startDate, setStartDate] = useState(
-    storedState?.startDate || DEFAULT_START_DATE,
-  );
-  const [endDate, setEndDate] = useState(
-    storedState?.endDate || DEFAULT_END_DATE,
-  );
-  const [accountingMethod, setAccountingMethod] = useState(
-    storedState?.accountingMethod || DEFAULT_ACCOUNTING_METHOD,
-  );
-  const [plData, setPlData] = useState(storedState?.plData || null);
-  const [extractData, setExtractData] = useState(
-    storedState?.extractData || null,
-  );
-  const [extractError, setExtractError] = useState("");
+  const [startYear, setStartYear] = useState(storedState?.startYear ?? String(currentYear - 2));
+  const [endYear, setEndYear] = useState(storedState?.endYear ?? String(currentYear));
+  const [accountingMethod, setAccountingMethod] = useState(storedState?.accountingMethod ?? "Cash");
+  const [matrixData, setMatrixData] = useState(storedState?.matrixData ?? {});
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState(storedState?.error || "");
+  const [error, setError] = useState(storedState?.error ?? "");
+  const [warnings, setWarnings] = useState(storedState?.warnings ?? []);
   const [isQBDisconnected, setIsQBDisconnected] = useState(false);
-  const [syncStatus, setSyncStatus] = useState({
-    status: storedState?.plData ? "success" : "idle",
-    message: storedState?.plData ? "Restored saved data." : "",
-  });
+  const [syncStatus, setSyncStatus] = useState(() => ({
+    status: Object.keys(storedState?.matrixData ?? {}).length > 0 ? "success" : "idle",
+    message: Object.keys(storedState?.matrixData ?? {}).length > 0 ? "Restored saved data." : "",
+  }));
+
+  const selectedYears = useMemo(() => {
+    const s = parseInt(startYear, 10);
+    const e = parseInt(endYear, 10);
+    const lo = Math.min(s, e);
+    const hi = Math.max(s, e);
+    return Array.from({ length: hi - lo + 1 }, (_, i) => lo + i);
+  }, [startYear, endYear]);
 
   const getHeaders = useCallback(() => {
     const token = getStoredToken();
     return {
-      ...(token
-        ? {
-          Authorization: `Bearer ${token}`,
-          "X-Access-Token": token,
-          "X-Auth-Token": token,
-          "X-Token": token,
-        }
-        : {}),
+      ...(token ? {
+        Authorization: `Bearer ${token}`,
+        "X-Access-Token": token,
+        "X-Auth-Token": token,
+        "X-Token": token,
+      } : {}),
       ...(clientId ? { "X-Client-Id": clientId } : {}),
     };
   }, [clientId]);
 
-  // ── Company name ─────────────────────────────────────────────────────
+  // ── Company ───────────────────────────────────────────────────────────
 
   useEffect(() => {
     let active = true;
-    if (!clientId) {
-      setCompany(null);
-      return () => {
-        active = false;
-      };
-    }
+    if (!clientId) { setCompany(null); return () => { active = false; }; }
     getCompanyRequest(clientId)
-      .then((p) => {
-        if (active) setCompany(p);
-      })
-      .catch(() => {
-        if (active) setCompany(null);
-      });
-    return () => {
-      active = false;
-    };
+      .then((p) => { if (active) setCompany(p); })
+      .catch(() => { if (active) setCompany(null); });
+    return () => { active = false; };
   }, [clientId]);
 
-  // ── Restore state when clientId changes ──────────────────────────────
+  // ── Restore on clientId change ────────────────────────────────────────
 
   useEffect(() => {
-    const next = getStoredTaxReconciliationState(clientId);
-    setStartDate(next?.startDate || DEFAULT_START_DATE);
-    setEndDate(next?.endDate || DEFAULT_END_DATE);
-    setAccountingMethod(next?.accountingMethod || DEFAULT_ACCOUNTING_METHOD);
-    setPlData(next?.plData || null);
-    setExtractData(next?.extractData || null);
-    setExtractError("");
-    setError(next?.error || "");
+    const next = getStoredState(clientId);
+    if (!next) return;
+    setStartYear(next.startYear ?? String(currentYear - 2));
+    setEndYear(next.endYear ?? String(currentYear));
+    setAccountingMethod(next.accountingMethod ?? "Cash");
+    setMatrixData(next.matrixData ?? {});
+    setError(next.error ?? "");
+    setWarnings(next.warnings ?? []);
     setIsQBDisconnected(false);
     setSyncStatus({
-      status: next?.plData ? "success" : "idle",
-      message: next?.plData ? "Restored saved data." : "",
+      status: Object.keys(next.matrixData ?? {}).length > 0 ? "success" : "idle",
+      message: Object.keys(next.matrixData ?? {}).length > 0 ? "Restored saved data." : "",
     });
-  }, [clientId]);
+  }, [clientId, currentYear]);
 
-  // ── Persist to sessionStorage ────────────────────────────────────────
+  // ── Persist ───────────────────────────────────────────────────────────
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
       window.sessionStorage.setItem(
-        getTaxReconciliationStorageKey(clientId),
-        JSON.stringify({
-          startDate,
-          endDate,
-          accountingMethod,
-          plData,
-          extractData,
-          error,
-        }),
+        getStorageKey(clientId),
+        JSON.stringify({ startYear, endYear, accountingMethod, matrixData, error, warnings }),
       );
-    } catch {
-      /* ignore */
-    }
-  }, [
-    clientId,
-    startDate,
-    endDate,
-    accountingMethod,
-    plData,
-    extractData,
-    error,
-  ]);
+    } catch { /* ignore */ }
+  }, [clientId, startYear, endYear, accountingMethod, matrixData, error, warnings]);
 
-  // ── Main loader ───────────────────────────────────────────────────────
+  // ── Loader ────────────────────────────────────────────────────────────
+  //
+  // Uses two separate endpoints:
+  //   GET /quickbooks-pl  → fast QB P&L data
+  //   GET /tax-data       → slow Gemini PDF extraction
+  //
+  // Both are fetched in parallel per year, then merged.
 
   const loadData = useCallback(async () => {
     setIsLoading(true);
     setError("");
     setIsQBDisconnected(false);
-    setSyncStatus({ status: "loading", message: "Fetching data..." });
+    setSyncStatus({ status: "loading", message: "Fetching P&L & Tax Data…" });
 
     try {
-      const params = new URLSearchParams({
-        start_date: startDate,
-        end_date: endDate,
-        accounting_method: accountingMethod,
-      });
-      if (clientId) params.append("clientId", clientId);
+      const allWarnings = new Set();
+      const results = {};
 
-      const [plResp, extractResp] = await Promise.all([
-        fetch(`${PL_ENDPOINT}?${params.toString()}`, {
-          cache: "no-store",
-          headers: getHeaders(),
-        }),
-        fetch(EXTRACT_ENDPOINT, {
-          cache: "no-store",
-          headers: getHeaders(),
-        }),
-      ]);
+      await Promise.all(
+        selectedYears.map(async (year) => {
+          const plUrl = `${API_BASE_URL}/quickbooks-pl?start_date=${year}-01-01&end_date=${year}-12-31&accounting_method=${accountingMethod}&clientId=${clientId || ""}`;
+          const taxUrl = `${API_BASE_URL}/tax-data?start_date=${year}-01-01&clientId=${clientId || ""}`;
 
-      // ── P&L (left column) ─────────────────────────────────────────
-      const plPayload = await plResp.json();
-      if (!plResp.ok) {
-        const msg =
-          plPayload?.error || plPayload?.message || `HTTP ${plResp.status}`;
-        if (plResp.status === 401) setIsQBDisconnected(true);
-        throw new Error(msg);
-      }
-      const parsedPL = parseQBPLResponse(plPayload);
-      setPlData(parsedPL);
+          const headers = getHeaders();
 
-      // ── /extract (right column) ───────────────────────────────────
-      if (extractResp.ok) {
-        const extractPayload = await extractResp.json();
-        const parsed = parseExtractResponse(extractPayload);
-        setExtractData(parsed);
-        setExtractError("");
-      } else {
-        const extractPayload = await extractResp.json().catch(() => null);
-        const extractMsg =
-          extractPayload?.error ||
-          extractPayload?.message ||
-          `HTTP ${extractResp.status}`;
-        console.warn(
-          `/extract ${extractResp.status} — Tax Return column will show dashes.`,
-        );
-        setExtractData(null);
-        setExtractError(extractMsg);
-      }
+          const [plRes, taxRes] = await Promise.all([
+            fetch(plUrl, { headers }).then((r) => r.json()).catch(() => ({ success: false })),
+            fetch(taxUrl, { headers }).then((r) => r.json()).catch(() => ({ success: false })),
+          ]);
 
-      setSyncStatus({
-        status: "success",
-        message: "Data loaded successfully.",
-      });
+          // QB disconnected?
+          if (plRes.success === false && (plRes.error || "").includes("QB not connected")) {
+            setIsQBDisconnected(true);
+          }
+
+          // ── Merge: start from P&L labels, overlay tax return values ──
+          const mergedMap = new Map();
+
+          // 1. P&L rows
+          if (plRes.success && Array.isArray(plRes.data)) {
+            plRes.data.forEach((item) => {
+              mergedMap.set(item.label, {
+                label: item.label,
+                pl: Number(item.pl || 0),
+                taxReturn: 0,
+                isReconcilingItem: false,
+              });
+            });
+          }
+
+          // 2. Tax return rows (both Page 1 fixed rows and Schedule K dynamic rows)
+          if (taxRes.success && Array.isArray(taxRes.data)) {
+            taxRes.data.forEach((item) => {
+              if (mergedMap.has(item.label)) {
+                // Existing P&L row — overlay tax return value
+                mergedMap.get(item.label).taxReturn = Number(item.taxReturn || 0);
+              } else {
+                // New row (Schedule K reconciling item or any label not in P&L)
+                mergedMap.set(item.label, {
+                  label: item.label,
+                  pl: 0,
+                  taxReturn: Number(item.taxReturn || 0),
+                  isReconcilingItem: !!item.isReconcilingItem,
+                });
+              }
+            });
+          }
+
+          // 3. Compute variance for every row
+          const finalData = Array.from(mergedMap.values()).map((row) => ({
+            ...row,
+            variance: (row.taxReturn || 0) - (row.pl || 0),
+          }));
+
+          results[year] = {
+            success: true,
+            taxYear: taxRes.success ? taxRes.year : year,
+            data: finalData,
+            warnings: [
+              ...(plRes.warnings || []),
+              ...(taxRes.warning ? [taxRes.warning] : []),
+              ...(taxRes.warnings || []),
+            ],
+          };
+
+          (results[year].warnings || []).forEach((w) => allWarnings.add(w));
+        })
+      );
+
+      setMatrixData(results);
+      setWarnings(Array.from(allWarnings));
+      setSyncStatus({ status: "success", message: `Refreshed ${selectedYears.length} year(s).` });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setError(msg);
-      setPlData(null);
-      setSyncStatus({ status: "error", message: msg });
+      console.error("Load Error:", err);
+      setError(err instanceof Error ? err.message : "Failed to load data");
+      setSyncStatus({ status: "error", message: "Failed to refresh" });
     } finally {
       setIsLoading(false);
     }
-  }, [startDate, endDate, accountingMethod, clientId, getHeaders]);
+  }, [selectedYears, accountingMethod, clientId, getHeaders]);
 
-  // Auto-load on first visit
+  const hasStoredData = Object.keys(storedState?.matrixData ?? {}).length > 0;
   useEffect(() => {
-    if (storedState?.plData) return;
+    if (hasStoredData) return;
     void loadData();
-  }, [loadData, storedState?.plData]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  const rows = useMemo(
-    () => buildTableRows(plData, extractData),
-    [plData, extractData],
+  // ── Data helpers ──────────────────────────────────────────────────────
+
+  const getTaxPayload = useCallback(
+    (year) =>
+      Object.values(matrixData).find(
+        (p) => p != null && Number(p.taxYear) === Number(year),
+      ) ?? null,
+    [matrixData],
   );
-  const reportTitle = plData ? company?.name || "Your Company" : "Your Company";
+
+  const getMainRow = useCallback(
+    (year, label) => {
+      const row = matrixData[year]?.data?.find((r) => r?.label === label);
+      const pl = Number(row?.pl ?? 0);
+      const taxReturn = Number(row?.taxReturn ?? 0);
+      return { pl, taxReturn, variance: taxReturn - pl };
+    },
+    [matrixData],
+  );
+
+  /**
+   * Collect all unique reconciling-item labels across all years,
+   * sorted consistently (alphabetical, except keep well-known items first).
+   */
+  const dynamicReconcilingItems = useMemo(() => {
+    const labels = new Set();
+    Object.values(matrixData).forEach((yearData) => {
+      yearData?.data?.forEach((row) => {
+        if (row.isReconcilingItem) labels.add(row.label);
+      });
+    });
+    return Array.from(labels).sort((a, b) => a.localeCompare(b));
+  }, [matrixData]);
+
+  const getReconValue = useCallback(
+    (year, label) => {
+      const row = matrixData[year]?.data?.find((r) => r?.label === label);
+      return Number(row?.taxReturn ?? 0);
+    },
+    [matrixData],
+  );
+
+  /**
+   * Check = Tax Net Income − Book Net Income − Sum(reconciling items)
+   * Should be 0 when fully reconciled.
+   */
+  const getReconCheck = useCallback(
+    (year) => {
+      const { pl: plNet, taxReturn: taxNet } = getMainRow(year, "Net Income");
+      const itemsSum = dynamicReconcilingItems.reduce(
+        (acc, lbl) => acc + getReconValue(year, lbl),
+        0,
+      );
+      return taxNet - plNet - itemsSum;
+    },
+    [getMainRow, getReconValue, dynamicReconcilingItems],
+  );
+
+  // Right-border divider between year groups
+  const yrDiv = (idx) =>
+    idx < selectedYears.length - 1 ? "border-r-2 border-r-primary/25" : "";
+
+  const hasMatrixData = Object.keys(matrixData).length > 0;
+  const reportTitle = company?.name || "Your Company";
 
   // ── Render ────────────────────────────────────────────────────────────
 
   return (
     <div className="space-y-6">
-      {isQBDisconnected && (
-        <QBDisconnectedBanner pageName="Tax Reconciliation" />
-      )}
+      {isQBDisconnected && <QBDisconnectedBanner pageName="Tax Reconciliation" />}
 
       {/* Controls */}
       <section className="rounded-[var(--radius-card)] border border-border bg-white p-5 shadow-[0_10px_30px_rgba(15,23,42,0.04)] lg:p-6">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div>
-            <h1 className="text-[20px] font-semibold text-text-primary">
-              Tax Reconciliation
-            </h1>
+            <h1 className="text-[20px] font-semibold text-text-primary">Tax Reconciliation</h1>
             <p className="mt-1 text-[14px] text-text-secondary">
               QuickBooks tax-to-book and SDE reconciliation for {reportTitle}.
             </p>
           </div>
 
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-            <label className="flex min-w-[140px] flex-col gap-1.5 text-[13px] font-medium text-text-primary">
-              Start Date
-              <input
-                type="date"
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
-                className="h-11 rounded-xl border border-border bg-white px-3 text-[14px] text-text-primary outline-none transition focus:border-primary"
-              />
-            </label>
-
-            <label className="flex min-w-[140px] flex-col gap-1.5 text-[13px] font-medium text-text-primary">
-              End Date
-              <input
-                type="date"
-                value={endDate}
-                onChange={(e) => setEndDate(e.target.value)}
-                className="h-11 rounded-xl border border-border bg-white px-3 text-[14px] text-text-primary outline-none transition focus:border-primary"
-              />
-            </label>
+            {[
+              { label: "Start Year", value: startYear, set: setStartYear },
+              { label: "End Year", value: endYear, set: setEndYear },
+            ].map(({ label, value, set }) => (
+              <label
+                key={label}
+                className="flex min-w-[120px] flex-col gap-1.5 text-[13px] font-medium text-text-primary"
+              >
+                {label}
+                <select
+                  value={value}
+                  onChange={(e) => set(e.target.value)}
+                  className="h-11 rounded-xl border border-border bg-white px-3 text-[14px] text-text-primary outline-none transition focus:border-primary"
+                >
+                  {YEAR_OPTIONS.map((y) => <option key={y} value={y}>{y}</option>)}
+                </select>
+              </label>
+            ))}
 
             <label className="flex min-w-[140px] flex-col gap-1.5 text-[13px] font-medium text-text-primary">
               Accounting Method
@@ -482,10 +416,7 @@ export default function WorkspaceTaxReconciliation() {
               disabled={isLoading}
               className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-primary px-4 text-[14px] font-semibold text-white transition hover:bg-primary-dark disabled:cursor-not-allowed disabled:opacity-70"
             >
-              <RefreshCw
-                size={16}
-                className={cn(isLoading && "animate-spin")}
-              />
+              <RefreshCw size={16} className={cn(isLoading && "animate-spin")} />
               Refresh
             </button>
           </div>
@@ -493,19 +424,19 @@ export default function WorkspaceTaxReconciliation() {
 
         <div className="mt-4 flex flex-wrap items-center gap-3">
           <SyncStatus sync={syncStatus} />
-          {extractData && (
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-medium text-emerald-700">
-              <CheckCircle2 size={11} />
-              Tax Return values from extract API
-            </span>
-          )}
         </div>
 
-        {extractError && (
-          <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-[13px] text-amber-800">
-            Tax Return column unavailable: {extractError}
+        {warnings.length > 0 && !error && (
+          <div className="mt-4 space-y-1 rounded-xl border border-yellow-200 bg-yellow-50 px-4 py-3 text-[13px] text-yellow-800">
+            {warnings.map((w, i) => (
+              <div key={i} className="flex items-start gap-2">
+                <AlertCircle size={15} className="mt-0.5 shrink-0 text-yellow-600" />
+                <span>{w}</span>
+              </div>
+            ))}
           </div>
         )}
+
         {error && !isQBDisconnected && (
           <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-[13px] text-red-700">
             {error}
@@ -513,73 +444,206 @@ export default function WorkspaceTaxReconciliation() {
         )}
       </section>
 
-      {/* Reconciliation matrix */}
+      {/* ── Single unified table ── */}
       <section className="rounded-[var(--radius-card)] border border-border bg-white shadow-[0_10px_30px_rgba(15,23,42,0.04)]">
         <div className="border-b border-border px-5 py-4">
-          <h2 className="text-[16px] font-semibold text-text-primary">
-            Reconciliation Matrix
-          </h2>
+          <h2 className="text-[16px] font-semibold text-text-primary">Data Source Reconciliation</h2>
           <p className="mt-1 text-[13px] text-text-secondary">
-            Compare P&amp;L, tax return, and variance columns.
+            Compare P&amp;L, tax return, and variance columns for {startYear}–{endYear}.
           </p>
         </div>
 
-        <div className="overflow-x-auto p-4">
-          <table className="min-w-[600px] table-auto border-separate border-spacing-0 overflow-hidden rounded-xl border border-border bg-white text-[13px]">
+        <div className="overflow-x-auto">
+          <table className="w-full table-fixed border-collapse text-[13px]">
+            <colgroup>
+              <col style={{ width: "220px" }} />
+              {selectedYears.map((y) => (
+                <Fragment key={y}>
+                  <col style={{ width: "110px" }} />
+                  <col style={{ width: "110px" }} />
+                  <col style={{ width: "110px" }} />
+                </Fragment>
+              ))}
+            </colgroup>
+
             <thead>
-              <tr className="bg-[#FCFDF8] text-text-secondary">
-                <th className="min-w-[280px] border-b border-r border-border px-4 py-3 text-left text-[12px] font-semibold uppercase tracking-wide">
-                  Line Item
+              {/* FY year headers */}
+              <tr className="border-b border-border bg-[#F8FBF1] text-primary">
+                <th
+                  rowSpan={2}
+                  className="border-r border-border px-5 py-3 text-left text-[12px] font-semibold uppercase tracking-wide align-bottom"
+                >
+                  Source
                 </th>
-                <th className="border-b border-border px-3 py-3 text-center text-[12px] font-semibold uppercase tracking-wide">
-                  P&amp;L
-                </th>
-                <th className="border-b border-border px-3 py-3 text-center text-[12px] font-semibold uppercase tracking-wide">
-                  Tax Return
-                </th>
-                <th className="border-b border-border px-3 py-3 text-center text-[12px] font-semibold uppercase tracking-wide">
-                  TR Variance
-                </th>
+                {selectedYears.map((year, idx) => (
+                  <th
+                    key={year}
+                    colSpan={3}
+                    className={cn("px-4 py-2.5 text-center text-[13px] font-bold", yrDiv(idx))}
+                  >
+                    FY {year}
+                  </th>
+                ))}
+              </tr>
+
+              {/* Column sub-headers */}
+              <tr className="border-b-2 border-border bg-[#F8FBF1]/70 text-primary/80">
+                {selectedYears.map((year, idx) => (
+                  <Fragment key={year}>
+                    <th className="px-4 py-2 text-right text-[11px] font-semibold uppercase tracking-wide">
+                      P&amp;L
+                    </th>
+                    <th className="px-4 py-2 text-right text-[11px] font-semibold uppercase tracking-wide">
+                      Tax Return
+                    </th>
+                    <th className={cn("px-4 py-2 text-right text-[11px] font-semibold uppercase tracking-wide", yrDiv(idx))}>
+                      TR Variance
+                    </th>
+                  </Fragment>
+                ))}
               </tr>
             </thead>
+
             <tbody>
-              {rows.map((row, rowIndex) => {
-                const v = row.values[0];
+
+              {/* ── Part 1: Page 1 P&L vs Tax Return ── */}
+
+              {MAIN_LINE_ITEMS.map((item, rowIdx) => {
+                const hl = item.isHighlight;
                 return (
                   <tr
-                    key={row.label}
+                    key={item.label}
                     className={cn(
-                      rowIndex % 2 === 0 ? "bg-white" : "bg-[#FCFDF8]",
-                      row.strong && "bg-[#FAFBF7] font-semibold",
+                      "border-b border-[#f1f5f9] transition-colors hover:bg-slate-50",
+                      hl ? "bg-[#FAFBF7]" : rowIdx % 2 === 0 ? "bg-white" : "bg-[#FCFDF8]",
                     )}
                   >
-                    <td className="border-b border-r border-border px-4 py-3 text-left text-[13px] text-text-primary">
-                      {row.label}
+                    <td className={cn(
+                      "border-r border-border px-5 py-3 text-left text-[13px]",
+                      hl ? "font-semibold text-text-primary" : "font-medium text-text-secondary",
+                    )}>
+                      {item.label}
                     </td>
-                    <td className="border-b border-border px-3 py-3 text-right tabular-nums text-text-primary">
-                      {formatAmount(v.pl)}
-                    </td>
-                    <td className="border-b border-border px-3 py-3 text-right tabular-nums text-text-primary">
-                      {formatAmount(v.taxReturn)}
-                    </td>
-                    <td
-                      className={cn(
-                        "border-b border-border px-3 py-3 text-right tabular-nums font-medium",
-                        getVarianceTextClass(v.trVariance),
-                      )}
-                    >
-                      {formatAmount(v.trVariance)}
-                    </td>
+
+                    {selectedYears.map((year, idx) => {
+                      const { pl, taxReturn, variance } = getMainRow(year, item.label);
+                      return (
+                        <Fragment key={year}>
+                          <td className={cn("px-4 py-3 text-right tabular-nums", hl ? "font-semibold text-text-primary" : "text-text-secondary")}>
+                            {formatAmount(pl)}
+                          </td>
+                          <td className={cn("px-4 py-3 text-right tabular-nums", hl ? "font-semibold" : "font-medium", taxReturn !== 0 ? "bg-primary/5 text-primary" : "text-text-secondary")}>
+                            {formatAmount(taxReturn)}
+                          </td>
+                          <td className={cn("px-4 py-3 text-right tabular-nums", yrDiv(idx), hl ? "font-semibold" : "font-medium", getVarianceClass(variance))}>
+                            {formatAmount(variance)}
+                          </td>
+                        </Fragment>
+                      );
+                    })}
                   </tr>
                 );
               })}
+
+              {/* ── Part 2: Section divider ── */}
+
+              <tr className="border-y-2 border-primary/20 bg-[#EEF6E0]">
+                <td className="border-r border-border px-5 py-3 text-left text-[12px] font-bold uppercase tracking-wide text-primary">
+                  Tax to Book Reconciling Items (Schedule K)
+                </td>
+                {selectedYears.map((year, idx) => (
+                  <Fragment key={year}>
+                    <td className="px-4 py-2 text-right text-[11px] font-semibold uppercase tracking-wide text-primary/50">
+                      P&amp;L
+                    </td>
+                    <td className="px-4 py-2 text-right text-[11px] font-semibold uppercase tracking-wide text-primary/70">
+                      Tax Return
+                    </td>
+                    <td className={cn("px-4 py-2", yrDiv(idx))} />
+                  </Fragment>
+                ))}
+              </tr>
+
+              {/* ── Part 2 rows: ALL Schedule K items extracted dynamically ── */}
+
+              {dynamicReconcilingItems.length > 0 ? (
+                dynamicReconcilingItems.map((label, rowIdx) => (
+                  <tr
+                    key={label}
+                    className={cn(
+                      "border-b border-[#f1f5f9] transition-colors hover:bg-slate-50",
+                      rowIdx % 2 === 0 ? "bg-white" : "bg-[#FCFDF8]",
+                    )}
+                  >
+                    <td className="border-r border-border px-5 py-3 text-left text-[13px] font-medium text-text-secondary">
+                      {label}
+                    </td>
+                    {selectedYears.map((year, idx) => {
+                      const val = getReconValue(year, label);
+                      return (
+                        <Fragment key={year}>
+                          <td className="px-4 py-3 text-right text-text-muted">—</td>
+                          <td className={cn("px-4 py-3 text-right tabular-nums font-medium", val !== 0 ? "bg-primary/5 text-primary" : "text-text-secondary")}>
+                            {formatAmount(val)}
+                          </td>
+                          <td className={cn("px-4 py-3 text-right text-text-muted", yrDiv(idx))}>—</td>
+                        </Fragment>
+                      );
+                    })}
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={1 + selectedYears.length * 3} className="px-5 py-6 text-center text-text-muted italic">
+                    No reconciling items found in tax returns.
+                  </td>
+                </tr>
+              )}
+
+              {/* ── Part 3: Reconciliation check row ── */}
+
+              <tr className="border-t-2 border-primary/20 bg-[#FAFBF7]">
+                <td className="border-r border-border px-5 py-3.5 text-left text-[13px] font-bold text-text-primary">
+                  Tax to Book Reconciliation Check
+                </td>
+                {selectedYears.map((year, idx) => {
+                  const check = getReconCheck(year);
+                  return (
+                    <Fragment key={year}>
+                      <td className="px-4 py-3.5" />
+                      <td className={cn("px-4 py-3.5 text-right tabular-nums font-bold", getVarianceClass(check))}>
+                        {formatAmount(check)}
+                      </td>
+                      <td className={cn("px-4 py-3.5", yrDiv(idx))} />
+                    </Fragment>
+                  );
+                })}
+              </tr>
+
+              {/* ── Part 3: Unreconciled % ── */}
+
+              <tr className="bg-[#FCFDF8]">
+                <td className="border-r border-border px-5 py-3 text-left text-[13px] font-semibold text-text-secondary">
+                  Unreconciled % of SDE
+                </td>
+                {selectedYears.map((year, idx) => (
+                  <Fragment key={year}>
+                    <td className="px-4 py-3" />
+                    <td className="px-4 py-3 text-right tabular-nums font-semibold text-text-primary">
+                      0.0%
+                    </td>
+                    <td className={cn("px-4 py-3", yrDiv(idx))} />
+                  </Fragment>
+                ))}
+              </tr>
+
             </tbody>
           </table>
         </div>
 
-        {!isLoading && !plData && !error && (
-          <div className="border-t border-border px-4 py-6 text-[13px] text-text-muted">
-            No P&amp;L data was returned for this company.
+        {!isLoading && !hasMatrixData && !error && (
+          <div className="border-t border-border px-5 py-6 text-[13px] text-text-muted">
+            No data returned. Click <strong>Refresh</strong> to load.
           </div>
         )}
       </section>
