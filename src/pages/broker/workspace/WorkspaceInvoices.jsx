@@ -1128,10 +1128,10 @@ export default function WorkspaceInvoices() {
                 </p>
               </div>
 
-              <div className="overflow-x-auto">
-                <table className="min-w-[1120px] w-full border-collapse">
-                  <thead>
-                    <tr className="border-b border-[#E8ECF2] bg-[#F4F6F8]">
+              <div className="overflow-x-auto overflow-y-auto max-h-[520px]">
+                <table className="min-w-[1120px] w-full border-separate border-spacing-0">
+                  <thead className="sticky top-0 z-10">
+                    <tr className="border-b border-[#E8ECF2] bg-[#F4F6F8] shadow-[0_1px_4px_rgba(15,23,42,0.08)]">
                       <th className="px-4 py-4 text-left text-[13px] font-semibold text-[#344054]">
                         Month
                       </th>
