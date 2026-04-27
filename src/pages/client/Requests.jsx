@@ -959,7 +959,7 @@ export default function ClientRequests() {
               No requests matched this category and filter combination.
             </div>
           ) : (
-            <CategoryTable rows={rowsForCategory} onView={(r) => setActiveRequestId(r.id)} />
+            <RequestTable rows={rowsForCategory} onView={(r) => setActiveRequestId(r.id)} />
           )}
         </div>
       ))}
