@@ -15,6 +15,7 @@ import {
 } from "../../../services/ebitdaService";
 import { refreshQuickbooksToken } from "../../../lib/quickbooks";
 import QBDisconnectedBanner from "../../../components/common/QBDisconnectedBanner";
+import Modal from "../../../components/common/Modal";
 
 function formatPercent(value) {
   if (!Number.isFinite(value)) return "-";
@@ -93,12 +94,12 @@ export default function WorkspaceEbitda() {
   const [isDataInitialized, setIsDataInitialized] = useState(false);
   const [rowComments, setRowComments] = useState({});
   const [sdePerCim, setSdePerCim] = useState("");
+  const [isTypeDialogOpen, setIsTypeDialogOpen] = useState(false);
 
-  // Extract unique P&L account names for the addback dropdown
-  const plAccountNames = useMemo(() => {
+  // Extract unique P&L accounts for addback dropdown (dynamic from API data)
+  const plAccountOptions = useMemo(() => {
     if (!multiYearData) return [];
-    const nameSet = new Set();
-    // Walk flatRows from the first year that has data
+    const accountMap = new Map();
     Object.values(multiYearData).forEach((yearData) => {
       const flatRows = yearData?._debug?.flatRows;
       if (!flatRows) return;
@@ -109,14 +110,35 @@ export default function WorkspaceEbitda() {
           label.toLowerCase() !== "net income" &&
           !label.toLowerCase().startsWith("total ") // skip summary totals
         ) {
-          nameSet.add(label);
+          const accountId =
+            row.accountId ||
+            row.AccountId ||
+            row.id ||
+            row.Id ||
+            `pl:${label.toLowerCase()}`;
+          if (!accountMap.has(label)) {
+            accountMap.set(label, { label, accountId: String(accountId) });
+          }
         }
       });
     });
-    return Array.from(nameSet).sort((a, b) =>
-      a.localeCompare(b, undefined, { sensitivity: "base" })
+    return Array.from(accountMap.values()).sort((a, b) =>
+      a.label.localeCompare(b.label, undefined, { sensitivity: "base" })
     );
   }, [multiYearData]);
+
+  const plAccountNames = useMemo(
+    () => plAccountOptions.map((option) => option.label),
+    [plAccountOptions]
+  );
+
+  const getAccountIdByLabel = useCallback(
+    (label) => {
+      const match = plAccountOptions.find((option) => option.label === label);
+      return match?.accountId || null;
+    },
+    [plAccountOptions]
+  );
 
   // Step 1: Dynamic Extraction Function
   const getValueFromPL = useCallback((year, label) => {
@@ -222,9 +244,12 @@ export default function WorkspaceEbitda() {
 
         // Step 6: Multi-Year Handling - Store per-year apiValue
         const initialized = savedAddbacks.map(ab => {
+          const inferredType = ab.type || (ab.linkedToPL ? "PL" : "RECAST");
+          const isFromPL = inferredType === "PL";
+          const normalizedLabel = (ab.label || "").trim();
           const vals = {};
           Object.keys(multiYearData).forEach(year => {
-            const apiVal = getValueFromPL(year, ab.label);
+            const apiVal = isFromPL ? getValueFromPL(year, normalizedLabel) : null;
             const existing = ab.values?.[year] || {};
             vals[year] = {
               apiValue: apiVal,
@@ -235,7 +260,18 @@ export default function WorkspaceEbitda() {
               vals[year].userValue = existing;
             }
           });
-          return { ...ab, values: vals };
+          const latestYear = years[0] || Object.keys(multiYearData)[0];
+          const latestVals = vals[latestYear] || { apiValue: null, userValue: null };
+          return {
+            ...ab,
+            type: inferredType,
+            label: normalizedLabel,
+            isFromPL,
+            accountId: ab.accountId || (isFromPL ? getAccountIdByLabel(normalizedLabel) : null),
+            linkedToPL: isFromPL,
+            value: latestVals.userValue !== null ? latestVals.userValue : latestVals.apiValue,
+            values: vals,
+          };
         });
 
         setDynamicAddbacks(initialized);
@@ -252,7 +288,7 @@ export default function WorkspaceEbitda() {
     // Starting with empty addbacks or previously saved ones only.
     setDynamicAddbacks([]);
     setIsDataInitialized(true);
-  }, [multiYearData, clientId, isDataInitialized, getValueFromPL]);
+  }, [multiYearData, clientId, isDataInitialized, getValueFromPL, years, getAccountIdByLabel]);
 
   // Persistent saving
   useEffect(() => {
@@ -265,41 +301,53 @@ export default function WorkspaceEbitda() {
     }
   }, [dynamicAddbacks, sdePerCim, rowComments, clientId, isDataInitialized]);
 
-  const handleAddAddback = (selectedAccount = null) => {
+  const handleAddAddback = ({ type, accountLabel = "" } = {}) => {
     const newId = `custom_${Date.now()}`;
     const newVals = {};
-    const isLinked = selectedAccount !== null && selectedAccount !== "__custom__";
-    const label = isLinked ? selectedAccount : "New Addback";
+    const isPL = type === "PL";
+    const label = isPL ? accountLabel : "";
 
     years.forEach(year => {
-      const apiVal = isLinked ? getValueFromPL(year, label) : null;
+      const apiVal = isPL && label ? getValueFromPL(year, label) : null;
       newVals[year] = {
         apiValue: apiVal,
         userValue: null
       };
     });
 
+    const latestYear = years[0];
+    const latestVals = newVals[latestYear] || { apiValue: null, userValue: null };
+
     setDynamicAddbacks([...dynamicAddbacks, {
       id: newId,
+      type: isPL ? "PL" : "RECAST",
       label,
+      value: latestVals.userValue !== null ? latestVals.userValue : latestVals.apiValue,
+      isFromPL: isPL,
+      accountId: isPL && label ? getAccountIdByLabel(label) : null,
       values: newVals,
       isUserAdded: true,
-      linkedToPL: isLinked
+      linkedToPL: isPL
     }]);
   };
 
   const updateAddbackValue = (id, year, value) => {
     setDynamicAddbacks(prev => prev.map(ab => {
       if (ab.id === id) {
+        const numericValue = value === "" ? null : Number(value);
+        const latestYear = years[0];
+        const nextValues = {
+          ...ab.values,
+          [year]: {
+            ...ab.values[year],
+            userValue: numericValue
+          }
+        };
+        const latestVals = nextValues[latestYear] || { apiValue: null, userValue: null };
         return {
           ...ab,
-          values: {
-            ...ab.values,
-            [year]: {
-              ...ab.values[year],
-              userValue: value === "" ? null : Number(value)
-            }
-          }
+          value: latestVals.userValue !== null ? latestVals.userValue : latestVals.apiValue,
+          values: nextValues
         };
       }
       return ab;
@@ -318,43 +366,49 @@ export default function WorkspaceEbitda() {
             apiValue: getValueFromPL(year, label)
           };
         });
-        return { ...ab, label, values: newValues, linkedToPL: isLinked };
+        const latestYear = years[0];
+        const latestVals = newValues[latestYear] || { apiValue: null, userValue: null };
+        return {
+          ...ab,
+          label,
+          type: isLinked ? "PL" : "RECAST",
+          isFromPL: isLinked,
+          accountId: isLinked ? getAccountIdByLabel(label) : null,
+          value: latestVals.userValue !== null ? latestVals.userValue : latestVals.apiValue,
+          values: newValues,
+          linkedToPL: isLinked,
+        };
       }
       return ab;
     }));
   };
 
-  // Handle switching a row between P&L-linked and custom via dropdown
   const handleAccountSelection = (id, selectedValue) => {
-    if (selectedValue === "__custom__") {
-      // Switch to custom mode — clear API values, let user type
-      setDynamicAddbacks(prev => prev.map(ab => {
-        if (ab.id === id) {
-          const newValues = { ...ab.values };
-          years.forEach(year => {
-            newValues[year] = { ...newValues[year], apiValue: null };
-          });
-          return { ...ab, label: "", linkedToPL: false, values: newValues };
-        }
-        return ab;
-      }));
-    } else {
-      // Link to a P&L account
-      setDynamicAddbacks(prev => prev.map(ab => {
-        if (ab.id === id) {
-          const newValues = { ...ab.values };
-          years.forEach(year => {
-            newValues[year] = {
-              ...newValues[year],
-              apiValue: getValueFromPL(year, selectedValue),
-              userValue: null // reset user override when switching accounts
-            };
-          });
-          return { ...ab, label: selectedValue, linkedToPL: true, values: newValues };
-        }
-        return ab;
-      }));
-    }
+    setDynamicAddbacks(prev => prev.map(ab => {
+      if (ab.id === id) {
+        const newValues = { ...ab.values };
+        years.forEach(year => {
+          newValues[year] = {
+            ...newValues[year],
+            apiValue: getValueFromPL(year, selectedValue),
+            userValue: null
+          };
+        });
+        const latestYear = years[0];
+        const latestVals = newValues[latestYear] || { apiValue: null, userValue: null };
+        return {
+          ...ab,
+          type: "PL",
+          label: selectedValue,
+          isFromPL: true,
+          accountId: getAccountIdByLabel(selectedValue),
+          value: latestVals.userValue !== null ? latestVals.userValue : latestVals.apiValue,
+          linkedToPL: true,
+          values: newValues,
+        };
+      }
+      return ab;
+    }));
   };
 
   const deleteAddback = (id) => {
@@ -490,29 +544,8 @@ export default function WorkspaceEbitda() {
                           <div className="flex items-center justify-between px-4 py-3 font-bold text-[#050505]">
                           <span>Addbacks</span>
                           <div className="flex items-center gap-2">
-                            <div className="relative">
-                              <select
-                                id="addback-account-select"
-                                defaultValue=""
-                                onChange={(e) => {
-                                  if (e.target.value) {
-                                    handleAddAddback(e.target.value);
-                                    e.target.value = ""; // reset after selection
-                                  }
-                                }}
-                                className="appearance-none bg-white border border-gray-300 text-[11px] font-semibold text-slate-700 rounded-md pl-3 pr-7 py-1.5 focus:ring-1 focus:ring-[#8bc53d] focus:border-[#8bc53d] outline-none cursor-pointer hover:border-[#8bc53d] transition-colors"
-                              >
-                                <option value="" disabled>Select Account…</option>
-                                <optgroup label="P&L Accounts">
-                                  {plAccountNames.map(name => (
-                                    <option key={name} value={name}>{name}</option>
-                                  ))}
-                                </optgroup>
-                              </select>
-                              <ChevronDown size={12} className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-slate-400" />
-                            </div>
                             <button
-                              onClick={() => handleAddAddback()}
+                              onClick={() => setIsTypeDialogOpen(true)}
                               className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#8bc53d] text-white text-[11px] font-bold hover:bg-[#78ab34] transition-colors"
                             >
                               <Plus size={12} strokeWidth={3} />
@@ -527,17 +560,18 @@ export default function WorkspaceEbitda() {
                           <td className="p-3 pl-6 text-text-primary">
                             <div className="flex items-center gap-2">
                               {/* P&L linked indicator */}
-                              {row.linkedToPL && (
+                              {row.type === "PL" && (
                                 <span className="text-[#8bc53d] font-bold text-[15px] leading-none" title="Linked to P&L account">*</span>
                               )}
                               {/* Account selector or custom label */}
-                              {row.linkedToPL ? (
+                              {row.type === "PL" ? (
                                 <div className="relative flex-1">
                                   <select
                                     value={row.label}
                                     onChange={(e) => handleAccountSelection(row.id, e.target.value)}
                                     className="appearance-none w-full bg-transparent border-b border-transparent hover:border-gray-300 focus:border-[#8bc53d] focus:outline-none transition-all py-0.5 pr-5 text-[13px] cursor-pointer"
                                   >
+                                    <option value="" disabled>Select account...</option>
                                     {plAccountNames.map(name => (
                                       <option key={name} value={name}>{name}</option>
                                     ))}
@@ -563,7 +597,6 @@ export default function WorkspaceEbitda() {
                           </td>
                           {years.map((year) => {
                             const { apiValue, userValue } = row.values[year] || { apiValue: null, userValue: null };
-                            const val = userValue !== null ? userValue : apiValue;
                             const isEdited = userValue !== null;
 
                             return (
@@ -606,7 +639,6 @@ export default function WorkspaceEbitda() {
                       <tr className="border-b border-[#cbd5e1] bg-white h-[45px]">
                         <td className="p-3 font-bold text-[#050505]">SDE % of Sales</td>
                         {years.map(year => {
-                          const data = multiYearData[year];
                           const baseEbitda = calculateBaseEbitda(year);
                           const addbacksSum = dynamicAddbacks.reduce((sum, ab) => {
                             const { apiValue, userValue } = ab.values[year] || { apiValue: null, userValue: null };
@@ -766,7 +798,49 @@ export default function WorkspaceEbitda() {
         ) : (
           <EmptyState />
         )}
+
+        <Modal
+          isOpen={isTypeDialogOpen}
+          onClose={() => setIsTypeDialogOpen(false)}
+          title="Select Addback Type"
+          size="sm"
+        >
+          <div className="space-y-2">
+            <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-border px-4 py-3 text-[13px] font-semibold text-text-primary hover:bg-bg-page transition-colors">
+              <input
+                type="radio"
+                name="addback-type"
+                className="h-4 w-4 accent-[#8bc53d]"
+                disabled={plAccountNames.length === 0}
+                onChange={() => {
+                  handleAddAddback({ type: "PL" });
+                  setIsTypeDialogOpen(false);
+                }}
+              />
+              Profit &amp; Loss
+            </label>
+            <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-border px-4 py-3 text-[13px] font-semibold text-text-primary hover:bg-bg-page transition-colors">
+              <input
+                type="radio"
+                name="addback-type"
+                className="h-4 w-4 accent-[#8bc53d]"
+                onChange={() => {
+                  handleAddAddback({ type: "RECAST" });
+                  setIsTypeDialogOpen(false);
+                }}
+              />
+              Recast Addback
+            </label>
+            {plAccountNames.length === 0 && (
+              <p className="text-[12px] text-text-muted">
+                Profit &amp; Loss accounts are unavailable for the selected range.
+              </p>
+            )}
+          </div>
+        </Modal>
       </div>
     </div>
   );
 }
+
+
