@@ -168,8 +168,8 @@ export function loginRequest(credentials) {
   });
 }
 
-export function logoutRequest() {
-  return request('/auth/logout', { method: 'POST' });
+export function logoutRequest(options = {}) {
+  return request('/auth/logout', { method: 'POST', ...options });
 }
 
 export function meRequest() {

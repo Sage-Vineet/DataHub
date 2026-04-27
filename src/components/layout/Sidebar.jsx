@@ -34,9 +34,9 @@ export default function Sidebar({ onClose }) {
   const nav = user?.role === "broker" ? brokerNav : clientNav;
   const accountLabel = user?.role === "broker" ? "Administrator" : user?.role === "user" ? "User" : "Client";
 
-  const handleLogout = () => {
-    logout();
-    navigate("/login");
+  const handleLogout = async () => {
+    await logout();
+    navigate("/login", { replace: true });
   };
 
   return (

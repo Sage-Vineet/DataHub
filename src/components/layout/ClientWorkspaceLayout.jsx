@@ -258,9 +258,9 @@ function WorkspaceSidebar({ company, onClose }) {
           </button>
         </div>
         <button
-          onClick={() => {
-            logout();
-            navigate("/login");
+          onClick={async () => {
+            await logout();
+            navigate("/login", { replace: true });
           }}
           className="flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-[14px] font-medium text-secondary transition-colors hover:bg-red-50 hover:text-negative"
         >

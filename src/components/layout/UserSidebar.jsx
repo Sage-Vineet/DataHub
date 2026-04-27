@@ -16,9 +16,9 @@ export default function UserSidebar({ onClose }) {
   const { unreadCount } = useMessageNotifications();
   const navigate = useNavigate();
 
-  const handleLogout = () => {
-    logout();
-    navigate('/login');
+  const handleLogout = async () => {
+    await logout();
+    navigate('/login', { replace: true });
   };
 
   return (
