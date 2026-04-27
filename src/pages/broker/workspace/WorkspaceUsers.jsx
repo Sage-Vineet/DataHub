@@ -796,11 +796,15 @@ export default function WorkspaceUsers() {
     }
   };
 
-  const stats = useMemo(() => ({
-    activeUsers: data.filter((user) => user.role === 'user' && user.status === 'active').length,
-    totalUsers: data.filter((user) => user.role === 'user').length,
-    totalGroups: groups.length,
-  }), [data, groups]);
+  const stats = useMemo(() => {
+    const isBuyer = (user) => ['user', 'buyer'].includes(String(user.role || '').toLowerCase());
+    return {
+      total: data.length,
+      activeBuyers: data.filter((user) => isBuyer(user) && String(user.status || '').toLowerCase() === 'active').length,
+      totalBuyers: data.filter((user) => isBuyer(user)).length,
+      totalGroups: groups.length,
+    };
+  }, [data, groups]);
 
   const resetFilters = () => {
     setSearch('');
