@@ -13,7 +13,7 @@ const demoCredentials = [
   },
   {
     role: "Client",
-    email: "kk@yopmail.com",
+    email: "kkk@yopmail.com",
     password: "123456",
     color: "#FFFFFF",
     bg: "#8BC53D",
