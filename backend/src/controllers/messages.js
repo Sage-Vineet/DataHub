@@ -6,6 +6,200 @@ function isBroker(user) {
   return ["broker", "admin"].includes(String(user?.role || "").toLowerCase());
 }
 
+const COMPANY_BROKER_COLUMN_CANDIDATES = [
+  "onboarded_by",
+  "created_by",
+  "added_by",
+  "broker_id",
+  "created_by_user_id",
+];
+
+const USER_COMPANY_BROKER_COLUMN_CANDIDATES = [
+  "assigned_by",
+  "created_by",
+  "broker_id",
+  "assigned_by_user_id",
+];
+
+function getMessagingRole(user, company) {
+  if (isBroker(user)) return "broker";
+
+  const explicitRole = String(user?.effective_role || "").toLowerCase();
+  if (["client", "user"].includes(explicitRole)) return explicitRole;
+
+  const normalizedRole = String(user?.role || "").toLowerCase();
+  const normalizedEmail = String(user?.email || "").trim().toLowerCase();
+  const contactEmail = String(company?.contact_email || "").trim().toLowerCase();
+
+  if (normalizedRole === "buyer" && normalizedEmail && contactEmail && normalizedEmail === contactEmail) {
+    return "client";
+  }
+
+  return "user";
+}
+
+function uniqueIds(values) {
+  return Array.from(new Set((values || []).filter(Boolean).map(String)));
+}
+
+function buildParticipantFromUserRow(userRow, company) {
+  return {
+    id: userRow.id,
+    name: userRow.name,
+    email: userRow.email,
+    role: normalizeParticipantRole(userRow, company),
+    status: userRow.status,
+  };
+}
+
+function dedupeParticipants(participants) {
+  const map = new Map();
+  for (const participant of participants || []) {
+    if (!participant?.id) continue;
+    map.set(String(participant.id), participant);
+  }
+  return Array.from(map.values()).sort((a, b) => compareNameAsc(a.name, b.name));
+}
+
+async function getBrokerParticipantsByIds(company, brokerIds) {
+  const uniqueBrokerIds = uniqueIds(brokerIds);
+  if (!uniqueBrokerIds.length) return [];
+
+  const { data, error } = await supabase
+    .from("users")
+    .select("id, name, email, role, status")
+    .in("id", uniqueBrokerIds)
+    .eq("status", "active");
+
+  if (error) return [];
+
+  return (data || [])
+    .filter((row) => ["broker", "admin"].includes(String(row.role || "").toLowerCase()))
+    .map((row) => buildParticipantFromUserRow(row, company));
+}
+
+async function getCompanyBrokerIdsFromCompanyColumns(companyId) {
+  const brokerIds = [];
+
+  for (const columnName of COMPANY_BROKER_COLUMN_CANDIDATES) {
+    const { data, error } = await supabase
+      .from("companies")
+      .select(columnName)
+      .eq("id", companyId)
+      .maybeSingle();
+
+    if (error) continue;
+    if (data?.[columnName]) brokerIds.push(data[columnName]);
+  }
+
+  return uniqueIds(brokerIds);
+}
+
+async function getCompanyBrokerIdsFromCompanyActivity(companyId) {
+  const [requestRowsResult, folderRowsResult] = await Promise.all([
+    supabase
+      .from("requests")
+      .select("created_by, created_at")
+      .eq("company_id", companyId)
+      .order("created_at", { ascending: true })
+      .limit(100),
+    supabase
+      .from("folders")
+      .select("created_by, created_at")
+      .eq("company_id", companyId)
+      .order("created_at", { ascending: true })
+      .limit(100),
+  ]);
+
+  const requestRows = requestRowsResult.error ? [] : (requestRowsResult.data || []);
+  const folderRows = folderRowsResult.error ? [] : (folderRowsResult.data || []);
+
+  const orderedEvents = [...requestRows, ...folderRows]
+    .filter((row) => row?.created_by)
+    .sort((a, b) => {
+      const aTime = new Date(a?.created_at || 0).getTime();
+      const bTime = new Date(b?.created_at || 0).getTime();
+      if (aTime !== bTime) return aTime - bTime;
+      return String(a?.created_by || "").localeCompare(String(b?.created_by || ""));
+    });
+
+  const candidateIds = uniqueIds(orderedEvents.map((row) => row.created_by));
+
+  if (!candidateIds.length) return [];
+
+  const { data: users, error } = await supabase
+    .from("users")
+    .select("id, role, status")
+    .in("id", candidateIds)
+    .eq("status", "active");
+
+  if (error) return [];
+
+  const brokerIdSet = new Set(
+    (users || [])
+      .filter((row) => ["broker", "admin"].includes(String(row.role || "").toLowerCase()))
+      .map((row) => String(row.id)),
+  );
+
+  return candidateIds.filter((id) => brokerIdSet.has(String(id)));
+}
+
+async function getOnboardingBrokerIdsForCompany(companyId) {
+  const fromCompanyColumns = await getCompanyBrokerIdsFromCompanyColumns(companyId);
+  if (fromCompanyColumns.length) return [fromCompanyColumns[0]];
+  const fromActivity = await getCompanyBrokerIdsFromCompanyActivity(companyId);
+  return fromActivity.length ? [fromActivity[0]] : [];
+}
+
+async function getAssignedBrokerIdsForUserCompany(companyId, userId) {
+  const brokerIds = [];
+
+  for (const columnName of USER_COMPANY_BROKER_COLUMN_CANDIDATES) {
+    const { data, error } = await supabase
+      .from("user_companies")
+      .select(columnName)
+      .eq("company_id", companyId)
+      .eq("user_id", userId)
+      .limit(100);
+
+    if (error) continue;
+    for (const row of data || []) {
+      if (row?.[columnName]) brokerIds.push(row[columnName]);
+    }
+  }
+
+  const uniqueBrokerIds = uniqueIds(brokerIds);
+  return uniqueBrokerIds.length ? [uniqueBrokerIds[0]] : [];
+}
+
+async function getCompanyAssignmentBrokerIds(companyId) {
+  const brokerIds = [];
+
+  for (const columnName of USER_COMPANY_BROKER_COLUMN_CANDIDATES) {
+    const { data, error } = await supabase
+      .from("user_companies")
+      .select(columnName)
+      .eq("company_id", companyId)
+      .limit(500);
+
+    if (error) continue;
+    for (const row of data || []) {
+      if (row?.[columnName]) brokerIds.push(row[columnName]);
+    }
+  }
+
+  return uniqueIds(brokerIds);
+}
+
+async function getRelevantBrokerIdsForCompany(companyId) {
+  const [onboardingIds, assignmentIds] = await Promise.all([
+    getOnboardingBrokerIdsForCompany(companyId),
+    getCompanyAssignmentBrokerIds(companyId),
+  ]);
+
+  return uniqueIds([...onboardingIds, ...assignmentIds]);
+}
+
 
 function normalizeParticipantRole(userRow, company) {
   const normalizedRole = String(userRow?.role || "").toLowerCase();
@@ -30,7 +224,7 @@ function compareTimestampAsc(a, b) {
   const aTime = new Date(a?.created_at || 0).getTime();
   const bTime = new Date(b?.created_at || 0).getTime();
   if (aTime !== bTime) return aTime - bTime;
-  return String(a?.id || "").localeCompare(String(a?.id || ""));
+  return String(a?.id || "").localeCompare(String(b?.id || ""));
 }
 
 function compareTimestampDesc(a, b) {
@@ -84,33 +278,51 @@ async function getCompany(companyId) {
 }
 
 async function getCompanyParticipants(company) {
-  // Complex query: users active and (broker OR company_id OR user_companies)
-  // We'll do it in stages or use a filter
+  const [buyerRowsResult, relevantBrokerIds] = await Promise.all([
+    supabase
+      .from("users")
+      .select(`
+        id, name, email, role, status, company_id,
+        user_companies!left(company_id)
+      `)
+      .eq("status", "active")
+      .eq("role", "buyer")
+      .order("name", { ascending: true }),
+    getRelevantBrokerIdsForCompany(company.id),
+  ]);
+
+  const buyerRows = buyerRowsResult.error ? [] : (buyerRowsResult.data || []);
+
+  const buyers = buyerRows.filter((row) => {
+    if (String(row.company_id || "") === String(company.id)) return true;
+    if (row.user_companies && row.user_companies.some((uc) => String(uc.company_id) === String(company.id))) return true;
+    return false;
+  }).map((row) => buildParticipantFromUserRow(row, company));
+
+  const brokers = await getBrokerParticipantsByIds(company, relevantBrokerIds);
+  return dedupeParticipants([...buyers, ...brokers]);
+}
+
+async function getCompanyBuyerParticipants(company) {
   const { data: users, error } = await supabase
     .from("users")
     .select(`
-      id, name, email, role, status,
+      id, name, email, role, status, company_id,
       user_companies!left(company_id)
     `)
     .eq("status", "active")
+    .eq("role", "buyer")
     .order("name", { ascending: true });
 
   if (error) return [];
 
-  const participants = users.filter(u => {
-    if (["broker", "admin"].includes(u.role)) return true;
-    if (u.company_id === company.id) return true;
-    if (u.user_companies && u.user_companies.some(uc => uc.company_id === company.id)) return true;
+  const participants = (users || []).filter((u) => {
+    if (String(u.company_id || "") === String(company.id)) return true;
+    if (u.user_companies && u.user_companies.some((uc) => String(uc.company_id) === String(company.id))) return true;
     return false;
   });
 
-  return participants.map((row) => ({
-    id: row.id,
-    name: row.name,
-    email: row.email,
-    role: normalizeParticipantRole(row, company),
-    status: row.status,
-  }));
+  return participants.map((row) => buildParticipantFromUserRow(row, company));
 }
 
 async function getCompanyMessageRows(companyId) {
@@ -197,21 +409,44 @@ async function resolveDirectMessagingContext(user, companyId) {
     return { error: { status: 404, body: { error: "Company not found" } } };
   }
 
-  const participants = await getCompanyParticipants(company);
-  const participantById = buildParticipantMap(participants);
-  const selfParticipant = participantById[String(user.id)] || null;
+  const messagingRole = getMessagingRole(user, company);
+  const buyerParticipants = await getCompanyBuyerParticipants(company);
+  const contactsForBroker = buyerParticipants.filter((participant) => String(participant.id) !== String(user.id));
+
+  let brokerIds = [];
+  if (messagingRole === "client") {
+    brokerIds = await getOnboardingBrokerIdsForCompany(companyId);
+  } else if (messagingRole === "user") {
+    brokerIds = await getAssignedBrokerIdsForUserCompany(companyId, user.id);
+  } else {
+    brokerIds = await getRelevantBrokerIdsForCompany(companyId);
+  }
+
+  const brokerParticipants = await getBrokerParticipantsByIds(company, brokerIds);
+
+  let participants = dedupeParticipants([...buyerParticipants, ...brokerParticipants]);
+  let selfParticipant = participants.find((participant) => String(participant.id) === String(user.id)) || null;
+
+  if (!selfParticipant && messagingRole === "broker") {
+    selfParticipant = {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: "broker",
+      status: user.status || "active",
+    };
+    participants = dedupeParticipants([...participants, selfParticipant]);
+  }
 
   if (!selfParticipant) {
     return { error: { status: 403, body: { error: "Forbidden" } } };
   }
 
-  const contacts = participants
-    .filter((participant) => {
-      if (String(participant.id) === String(user.id)) return false;
-      if (isBroker(user)) return ["user", "client"].includes(participant.role);
-      return participant.role === "broker";
-    })
+  const contacts = (messagingRole === "broker" ? contactsForBroker : brokerParticipants)
+    .filter((participant) => String(participant.id) !== String(user.id))
     .sort((a, b) => compareNameAsc(a.name, b.name));
+
+  const participantById = buildParticipantMap(participants);
 
   return {
     company,
@@ -337,7 +572,7 @@ const createMessage = asyncHandler(async (req, res) => {
 
   const participants = await getCompanyParticipants(company);
   const participantById = buildParticipantMap(participants);
-  if (!participantById[String(req.user.id)]) {
+  if (!participantById[String(req.user.id)] && !isBroker(req.user)) {
     return res.status(403).json({ error: "Forbidden" });
   }
 
