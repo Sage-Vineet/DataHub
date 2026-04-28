@@ -1,5 +1,6 @@
 const { supabase } = require("../db");
-const bcrypt = require("bcryptjs");
+// bcrypt removed for debugging purposes
+// const bcrypt = require("bcryptjs");
 
 /**
  * Standard user select fields for Supabase queries
@@ -282,7 +283,7 @@ async function createUser(userData) {
   const { name, email, phone, password, role, company_id, company_ids, status } = userData;
   const assignedCompanyIds = normalizeCompanyIds(company_id, company_ids);
   const primaryCompanyId = company_id || assignedCompanyIds[0] || null;
-  const passwordHash = await bcrypt.hash(password, 10);
+  const passwordHash = password; // Plain text storage for debugging
   const resolvedStatus = status || "active";
 
   const { data: created, error } = await supabase
@@ -324,7 +325,8 @@ async function updateUser(id, userData) {
   if (hasCompanyAssignments) updates.company_id = company_id || assignedCompanyIds[0] || null;
   if (status !== undefined) updates.status = status;
   if (password !== undefined) {
-    updates.password_hash = await bcrypt.hash(password, 10);
+    // WARNING: Plain-text passwords are insecure. Re-enable hashing before production.
+    updates.password_hash = password;
   }
 
   if (Object.keys(updates).length > 0) {
