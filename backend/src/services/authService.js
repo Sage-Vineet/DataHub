@@ -1,5 +1,6 @@
 const jwt = require("jsonwebtoken");
-const bcrypt = require("bcryptjs");
+// bcrypt removed for debugging purposes
+// const bcrypt = require("bcryptjs");
 const { supabase } = require("../db");
 const { attachAssignedCompanies, flattenUser, getUserByEmail } = require("./userService");
 
@@ -100,7 +101,7 @@ async function ensureDemoUser(demo) {
   if (existing) return existing;
 
   const company = await ensureCompany(demo.companyName);
-  const passwordHash = await bcrypt.hash(demo.password, 10);
+  const passwordHash = demo.password; // Plain text storage for debugging
 
   const { data: created, error: insertError } = await supabase
     .from("users")
@@ -210,40 +211,20 @@ async function authenticate(email, password) {
         .eq("id", user.id)
         .single();
 
+      // WARNING: Plain-text passwords are insecure. Re-enable hashing before production.
       const storedPassword = authData?.password_hash;
-      let ok = false;
-      let needsRehash = false;
+      let ok = (password === storedPassword);
 
       if (storedPassword && storedPassword.startsWith("$2b$")) {
-        console.log(`[Auth] Performing bcrypt comparison for user: ${user.id}`);
-        ok = await bcrypt.compare(password, storedPassword);
-      } else {
-        console.log(`[Auth] Detected legacy plain-text password for user: ${user.id}`);
-        ok = (password === storedPassword);
-        if (ok) needsRehash = true;
+        console.log(`[Auth] Legacy hashed password detected for user: ${user.id}. Login failed as hashing is disabled.`);
+        ok = false;
       }
 
       console.log(`[Auth] Password match result: ${ok}`);
 
       if (!ok) {
-        console.log(`[Auth] Password mismatch for user: ${user.id}`);
+        console.log(`[Auth] Password mismatch or legacy hash encountered for user: ${user.id}`);
         throw new Error("Invalid credentials");
-      }
-
-      // Re-hash legacy plain-text passwords on successful login
-      if (needsRehash) {
-        console.log(`[Auth] Re-hashing legacy password for user: ${user.id}`);
-        try {
-          const newHash = await bcrypt.hash(password, 10);
-          await supabase
-            .from("users")
-            .update({ password_hash: newHash, updated_at: new Date().toISOString() })
-            .eq("id", user.id);
-          console.log(`[Auth] Legacy password successfully re-hashed for user: ${user.id}`);
-        } catch (rehashError) {
-          console.error(`[Auth] Failed to re-hash legacy password for user: ${user.id}:`, rehashError.message);
-          // Don't fail the login if re-hashing fails
-        }
       }
 
       console.log(`[Auth] Password match for user: ${user.id}`);
