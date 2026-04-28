@@ -28,6 +28,14 @@ async function refreshAccessToken(clientId) {
   await loadQBConfig(clientId);
   const config = getQBConfig(clientId);
 
+  // Guard: do NOT attempt refresh if connection is disconnected
+  if (!config.realmId) {
+    console.log(`[QB Token] Skipping refresh — no active connection for client: ${clientId}`);
+    throw new Error(
+      `QuickBooks is disconnected for client ${clientId}. Cannot refresh tokens.`,
+    );
+  }
+
   if (!config.refreshToken) {
     throw new Error(
       `No refresh token available for client ${clientId}. Please re-authenticate.`,

@@ -37,6 +37,7 @@ function mapRowToConnection(row) {
     oauthClientId: row.oauth_client_id,
     redirectUri: row.redirect_uri,
     syncedEntities: parseSyncedEntities(row.synced_entities),
+    isConnected: row.is_connected !== false, // defaults true for backward compat
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -146,6 +147,7 @@ async function upsertQuickBooksConnection(connection) {
       oauth_client_id: oauthClientId,
       redirect_uri: redirectUri,
       synced_entities: syncedEntitiesData,
+      is_connected: true,
       updated_at: new Date().toISOString()
     }, { onConflict: "company_id" })
     .select("*")
@@ -190,8 +192,44 @@ async function deleteQuickBooksConnection(companyId) {
   return true;
 }
 
+/**
+ * Soft-disconnect: sets is_connected = false and nulls ALL auth fields.
+ * The DB row is kept so cached reports remain accessible for offline fallback.
+ * realm_id is preserved for potential reconnect identification.
+ */
+async function softDisconnectQuickBooks(companyId) {
+  if (!companyId) return false;
+
+  const now = new Date().toISOString();
+
+  const { error } = await supabase
+    .from("quickbooks_connections")
+    .update({
+      is_connected: false,
+      access_token: "",
+      refresh_token: "",
+      updated_at: now,
+    })
+    .eq("company_id", companyId);
+
+  if (error) {
+    console.error("[QB Disconnect] DB update failed:", error.message);
+    return false;
+  }
+
+  console.log(`[QB Disconnect] ✅ DB updated: is_connected=false, tokens cleared for company=${companyId}`);
+  logQuickBooksDebug("db_connection_soft_disconnect", {
+    companyId,
+    disconnectedAt: now,
+    tokensCleared: true,
+  });
+
+  return true;
+}
+
 module.exports = {
   deleteQuickBooksConnection,
+  softDisconnectQuickBooks,
   getQuickBooksConnectionByCompanyId,
   getQuickBooksConnectionByRealmId,
   upsertQuickBooksConnection,

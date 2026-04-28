@@ -640,10 +640,35 @@ router.get("/api/auth/status", requireAuth, async (req, res) => {
 
     await loadQBConfig(clientId);
     const qb = getQBConfig(clientId);
-    const isConnected = !!(qb.accessToken && qb.realmId);
+
+    // DB flag is source of truth; token presence is secondary
+    const hasTokens = !!(qb.accessToken && qb.realmId);
+    const isConnected = hasTokens;
+
+    console.log(`[QB Status] client=${clientId} | hasTokens=${hasTokens} | isConnected=${isConnected} | realmId=${qb.realmId || 'null'} | accessToken=${qb.accessToken ? 'present' : 'null'}`);
+
+    // Always fetch sync status (available even when disconnected)
+    let syncStatus = null;
+    try {
+      const { getSyncStatus } = require("../../services/quickbooksReportService");
+      syncStatus = await getSyncStatus(clientId);
+    } catch (syncErr) {
+      console.warn("Failed to fetch sync status:", syncErr.message);
+    }
 
     if (!isConnected) {
-      return res.json({ success: true, isConnected: false, syncedEntities: [] });
+      // Edge case: if tokens exist but DB says disconnected, clean them
+      if (qb.accessToken || qb.refreshToken) {
+        console.warn(`[QB Status] Edge case: stale tokens found for disconnected client=${clientId}, ignoring them`);
+      }
+      return res.json({
+        success: true,
+        isConnected: false,
+        syncedEntities: [],
+        hasCachedData: syncStatus ? syncStatus.totalCachedReports > 0 : false,
+        cachedReports: syncStatus ? syncStatus.reports : [],
+        lastSyncedAt: syncStatus ? syncStatus.lastSyncedAt : null,
+      });
     }
 
     const workspaceCompanyName = await getWorkspaceCompanyName(clientId);
@@ -665,6 +690,10 @@ router.get("/api/auth/status", requireAuth, async (req, res) => {
       configuredClientId: qb.clientId ? maskValue(qb.clientId) : null,
       storedOAuthClientId: qb.oauthClientId ? maskValue(qb.oauthClientId) : null,
       hasCredentialMismatch: Boolean(qb.hasCredentialMismatch),
+      // Sync cache info
+      hasCachedData: syncStatus ? syncStatus.totalCachedReports > 0 : false,
+      cachedReports: syncStatus ? syncStatus.reports : [],
+      lastCacheSyncedAt: syncStatus ? syncStatus.lastSyncedAt : null,
     });
   } catch (error) {
     console.error("Failed to fetch connection status:", error.message);
@@ -683,12 +712,20 @@ router.get("/api/auth/disconnect", requireAuth, async (req, res) => {
   const clientId = getClientId(req);
   if (!clientId) return res.status(400).json({ error: "Missing Client ID" });
 
-  await disconnectConfig(clientId);
-  logQuickBooksDebug("oauth_disconnect_completed", {
-    clientId,
-  });
+  console.log(`[QB Disconnect] API called for client: ${clientId}`);
 
-  return res.json({ success: true, message: "Disconnected successfully" });
+  try {
+    await disconnectConfig(clientId);
+    logQuickBooksDebug("oauth_disconnect_completed", {
+      clientId,
+    });
+
+    console.log(`[QB Disconnect] API response: success=true for client: ${clientId}`);
+    return res.json({ success: true, message: "Disconnected successfully", isConnected: false });
+  } catch (err) {
+    console.error(`[QB Disconnect] API error for client ${clientId}:`, err.message);
+    return res.status(500).json({ success: false, error: "Disconnect failed", message: err.message });
+  }
 });
 
 module.exports = router;

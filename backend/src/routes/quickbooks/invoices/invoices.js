@@ -48,6 +48,26 @@ const router = express.Router();
  *         description: Server error
  */
 router.get("/invoices", async (req, res) => {
+  // If QB is disconnected, serve cached data
+  if (req.qbDisconnected) {
+    try {
+      const { serveCachedReport } = require("../../../services/quickbooksReportService");
+      const cached = await serveCachedReport(req.clientId, "invoices");
+      if (cached) {
+        return res.json({
+          ...cached.data,
+          _meta: { source: "cache", lastSyncedAt: cached.lastSyncedAt, isDisconnected: true },
+        });
+      }
+      return res.status(404).json({
+        error: "QuickBooks is disconnected and no cached invoice data is available.",
+        isDisconnected: true,
+      });
+    } catch (cacheError) {
+      return res.status(500).json({ error: "Failed to retrieve cached data." });
+    }
+  }
+
   const qb = getQBConfig(req.clientId);
 
   let { startposition, maxresults, status } = req.query;
@@ -118,6 +138,15 @@ router.get("/invoices", async (req, res) => {
         console.log(`💰 Total Amount: $${totalAmount.toFixed(2)}`);
       }
     }
+
+    // Cache the response for offline access
+    const { upsertSyncedReport } = require("../../../services/quickbooksSyncStore");
+    upsertSyncedReport({
+      companyId: req.clientId,
+      reportType: "invoices",
+      reportParams: { startposition: startPos, maxresults: maxRes, status },
+      data: response.data,
+    }).catch(err => console.error("[Invoices] Cache failed:", err.message));
 
     // Return raw QuickBooks response
     return res.json(response.data);

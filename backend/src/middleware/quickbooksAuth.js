@@ -62,11 +62,14 @@ async function checkQBAuth(req, res, next) {
   });
 
   if (!qb || !qb.accessToken || !qb.realmId) {
-    return res.status(401).json({
-      success: false,
-      message: `QuickBooks not connected for company ${clientId}`,
-      isConnected: false,
+    // QB not connected — mark as disconnected and let route handle fallback
+    req.qbDisconnected = true;
+    logQuickBooksDebug("route_qb_disconnected_fallback", {
+      path: req.path,
+      clientId,
+      message: "QB not connected, route will attempt cached data fallback",
     });
+    return next();
   }
 
   try {
@@ -76,11 +79,14 @@ async function checkQBAuth(req, res, next) {
         await tokenManager.refreshAccessToken(clientId);
         req.qb = getQBConfig(clientId);
       } catch (refreshError) {
-        return res.status(401).json({
-          success: false,
-          message: "QuickBooks session expired and could not be refreshed. Please re-connect.",
-          isConnected: false
+        // Token refresh failed — mark as disconnected for fallback
+        req.qbDisconnected = true;
+        logQuickBooksDebug("route_qb_token_refresh_failed_fallback", {
+          path: req.path,
+          clientId,
+          message: "Token refresh failed, route will attempt cached data fallback",
         });
+        return next();
       }
     }
   } catch (error) {
@@ -90,6 +96,7 @@ async function checkQBAuth(req, res, next) {
     });
   }
 
+  req.qbDisconnected = false;
   next();
 }
 
@@ -124,7 +131,9 @@ function isQuickBooksRoute(pathname = "") {
     "/qb-bank-accounts",
     "/qb-bank-activity",
     "/qb-one-bank-activity",
-    "/api/extract-bank-pdf-records"
+    "/api/extract-bank-pdf-records",
+    "/api/quickbooks/sync",
+    "/api/quickbooks/sync-status"
   ];
 
   return qbPaths.some(p => normalizedPath.startsWith(p) || pathname.startsWith(p));
