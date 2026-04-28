@@ -1,5 +1,6 @@
 const {
   deleteQuickBooksConnection,
+  softDisconnectQuickBooks,
   getQuickBooksConnectionByCompanyId,
   upsertQuickBooksConnection,
 } = require("./services/quickbooksConnectionStore");
@@ -78,6 +79,14 @@ async function loadQBConfig(clientId) {
   const connection = await getQuickBooksConnectionByCompanyId(clientId);
 
   if (!connection) {
+    delete qbStates[clientId];
+    return mergeWithDefault();
+  }
+
+  // If the connection was soft-disconnected, treat it as non-existent
+  // so the status endpoint correctly reports isConnected = false.
+  if (connection.isConnected === false) {
+    console.log(`[QB Config] DB says is_connected=false for client=${clientId} — treating as disconnected`);
     delete qbStates[clientId];
     return mergeWithDefault();
   }
@@ -177,9 +186,18 @@ async function disconnectConfig(clientId) {
     throw new Error("disconnectConfig called without clientId.");
   }
 
+  // 1. Clear in-memory state FIRST
   delete qbStates[clientId];
-  await deleteQuickBooksConnection(clientId);
-  console.log(`QuickBooks connection cleared for client: ${clientId}`);
+  console.log(`[QB Disconnect] In-memory state cleared for client: ${clientId}`);
+
+  // 2. Persist to DB: set is_connected=false, null all tokens
+  const success = await softDisconnectQuickBooks(clientId);
+  if (!success) {
+    console.error(`[QB Disconnect] ❌ DB persist FAILED for client: ${clientId} — state may be inconsistent`);
+    throw new Error("Failed to persist QuickBooks disconnect to database.");
+  }
+
+  console.log(`[QB Disconnect] ✅ Complete for client: ${clientId} — memory cleared, DB updated`);
 }
 
 function isConnected(clientId) {

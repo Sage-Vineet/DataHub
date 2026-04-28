@@ -225,9 +225,6 @@ export default function QuickBooksConnection({ company }) {
         title: "Disconnected",
         message: "QuickBooks disconnected successfully.",
       });
-
-      // Refresh status just in case
-      await fetchStatus(false);
     } catch (err) {
       console.error("Disconnect failed:", err);
       setErrorMessage("Failed to disconnect. Please try again.");
@@ -283,7 +280,6 @@ export default function QuickBooksConnection({ company }) {
   // ────────────────────────────────────────────────────────
   return (
     <div className="space-y-5">
-      <QBDisconnectedBanner pageName="Connections" />
 
       {/* Error Banner */}
       {errorMessage && pageState !== "loading" && (
@@ -449,23 +445,48 @@ export default function QuickBooksConnection({ company }) {
 
           {/* Disconnected */}
           {pageState === "disconnected" && (
-            <div className="text-center py-8">
-              <div className="w-16 h-16 rounded-xl bg-bg-page mx-auto mb-4 flex items-center justify-center text-text-muted">
-                <Link2Off size={32} />
+            <div className="py-6">
+              <div className="flex items-start gap-5">
+                <div className="w-12 h-12 rounded-lg flex items-center justify-center bg-gray-100 text-gray-400 font-bold text-xl shrink-0">
+                  QB
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h3 className="text-[18px] font-semibold text-text-primary mb-1">
+                    QuickBooks Online
+                  </h3>
+                  <p className="text-[14px] text-text-secondary mb-4">
+                    {company?.name || "Your company"} is currently disconnected from QuickBooks.
+                  </p>
+
+                  {/* Cached data info */}
+                  {connection?.hasCachedData && (
+                    <div className="flex items-start gap-3 mb-5 px-4 py-3 rounded-lg border border-blue-200/60 bg-blue-50/50">
+                      <Database size={16} className="shrink-0 text-blue-500 mt-0.5" />
+                      <div>
+                        <p className="text-[13px] font-semibold text-blue-900">
+                          Cached data is available
+                        </p>
+                        <p className="text-[12px] text-blue-700 mt-0.5">
+                          Financial reports are being served from your last sync
+                          {connection.lastSyncedAt && (
+                            <> ({timeAgo(connection.lastSyncedAt)})</>
+                          )}
+                          . This data may not reflect recent changes.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={handleConnect}
+                      className="btn-primary h-10 px-6 shadow-md"
+                    >
+                      <Zap size={16} /> Connect to QuickBooks
+                    </button>
+                  </div>
+                </div>
               </div>
-              <h3 className="text-[18px] font-semibold text-text-primary mb-2">
-                No active connection
-              </h3>
-              <p className="text-[14px] text-text-secondary mb-6 max-w-sm mx-auto">
-                Connect your QuickBooks account to start syncing your
-                financial data automatically.
-              </p>
-              <button
-                onClick={handleConnect}
-                className="btn-primary h-11 px-8 shadow-md mx-auto"
-              >
-                <Zap size={16} /> Connect to QuickBooks
-              </button>
             </div>
           )}
 

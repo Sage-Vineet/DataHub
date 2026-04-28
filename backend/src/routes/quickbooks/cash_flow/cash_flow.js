@@ -2,6 +2,8 @@ const express = require("express");
 const axios = require("axios");
 const tokenManager = require("../../../tokenManager");
 const { getQBConfig } = require("../../../qbconfig");
+const { fetchAndCacheReport, fetchAndCacheQuery, serveCachedReport, REPORT_TYPES } = require("../../../services/quickbooksReportService");
+
 const router = express.Router();
 
 /**
@@ -36,8 +38,28 @@ const router = express.Router();
  *         description: End date filter
  */
 router.get("/qb-transactions", async (req, res) => {
-  const qb = getQBConfig(req.clientId);
+  const clientId = req.clientId;
 
+  // If QB is disconnected, serve cached data
+  if (req.qbDisconnected) {
+    try {
+      const cached = await serveCachedReport(clientId, "transactions");
+      if (cached) {
+        return res.json({
+          ...cached.data,
+          _meta: { source: "cache", lastSyncedAt: cached.lastSyncedAt, isDisconnected: true },
+        });
+      }
+      return res.status(404).json({
+        error: "QuickBooks is disconnected and no cached transaction data is available.",
+        isDisconnected: true,
+      });
+    } catch (cacheError) {
+      return res.status(500).json({ error: "Failed to retrieve cached data." });
+    }
+  }
+
+  const qb = getQBConfig(clientId);
   const headers = {
     Authorization: `Bearer ${qb.accessToken}`,
     Accept: "application/json",
@@ -75,6 +97,15 @@ router.get("/qb-transactions", async (req, res) => {
         };
       }
     }
+
+    // Cache the combined transaction results
+    const { upsertSyncedReport } = require("../../../services/quickbooksSyncStore");
+    upsertSyncedReport({
+      companyId: clientId,
+      reportType: "transactions",
+      reportParams: {},
+      data: results,
+    }).catch(err => console.error("[CashFlow] Transaction cache failed:", err.message));
 
     res.json(results);
   } catch (error) {
@@ -118,56 +149,42 @@ router.get("/qb-transactions", async (req, res) => {
  *         description: Accounting method (Cash or Accrual)
  */
 router.get("/qb-cashflow", async (req, res) => {
-  const qb = getQBConfig(req.clientId);
+  const clientId = req.clientId;
+  const { start_date, end_date, accounting_method } = req.query;
 
-  try {
-    const url = `${qb.baseUrl}/v3/company/${qb.realmId}/reports/CashFlow`;
-
-    const response = await axios.get(url, {
-      headers: {
-        Authorization: `Bearer ${qb.accessToken}`,
-        Accept: "application/json",
-      },
-      params: {
-        start_date: req.query.start_date,
-        end_date: req.query.end_date,
-        accounting_method: req.query.accounting_method,
-      },
-    });
-
-    res.json(response.data);
-  } catch (error) {
-    if (error.response?.status === 401) {
-      try {
-        const newAccessToken = await tokenManager.refreshAccessToken(
-          req.clientId,
-        );
-
-        const retryResponse = await axios.get(
-          `${qb.baseUrl}/v3/company/${qb.realmId}/reports/CashFlow`,
-          {
-            headers: {
-              Authorization: `Bearer ${newAccessToken}`,
-              Accept: "application/json",
-            },
-            params: {
-              start_date: req.query.start_date,
-              end_date: req.query.end_date,
-              accounting_method: req.query.accounting_method,
-            },
-          },
-        );
-
-        return res.json(retryResponse.data);
-      } catch (refreshError) {
-        console.error("CashFlow token refresh error:", refreshError.message);
-        return res.status(401).json({
-          error: "Authentication failed. Please re-authenticate.",
-          details: refreshError.response?.data || refreshError.message,
+  // If QB is disconnected, serve cached data
+  if (req.qbDisconnected) {
+    try {
+      const cached = await serveCachedReport(
+        clientId,
+        REPORT_TYPES.CASH_FLOW,
+        { start_date, end_date, accounting_method }
+      );
+      if (cached) {
+        return res.json({
+          ...cached.data,
+          _meta: { source: "cache", lastSyncedAt: cached.lastSyncedAt, isDisconnected: true },
         });
       }
+      return res.status(404).json({
+        error: "QuickBooks is disconnected and no cached cash flow data is available.",
+        isDisconnected: true,
+      });
+    } catch (cacheError) {
+      return res.status(500).json({ error: "Failed to retrieve cached data." });
     }
+  }
 
+  try {
+    const result = await fetchAndCacheReport(
+      clientId,
+      REPORT_TYPES.CASH_FLOW,
+      "CashFlow",
+      { start_date, end_date, accounting_method }
+    );
+
+    res.json(result.data);
+  } catch (error) {
     console.error("CashFlow API Error:", error.response?.data || error.message);
     res.status(error.response?.status || 500).json({
       error: "Failed to fetch cash flow report",
@@ -175,6 +192,7 @@ router.get("/qb-cashflow", async (req, res) => {
     });
   }
 });
+
 /**
  * @swagger
  * /qb-accounts:
@@ -193,28 +211,35 @@ router.get("/qb-cashflow", async (req, res) => {
  */
 
 router.get("/qb-accounts", async (req, res) => {
-  const qb = getQBConfig(req.clientId);
+  const clientId = req.clientId;
+
+  // If QB is disconnected, serve cached data
+  if (req.qbDisconnected) {
+    try {
+      const cached = await serveCachedReport(clientId, "accounts");
+      if (cached) {
+        return res.json({
+          ...cached.data,
+          _meta: { source: "cache", lastSyncedAt: cached.lastSyncedAt, isDisconnected: true },
+        });
+      }
+      return res.status(404).json({
+        error: "QuickBooks is disconnected and no cached accounts data is available.",
+        isDisconnected: true,
+      });
+    } catch (cacheError) {
+      return res.status(500).json({ error: "Failed to retrieve cached data." });
+    }
+  }
 
   try {
-    const createdAfter = req.query.created_after || "2014-03-31";
+    const result = await fetchAndCacheQuery(
+      clientId,
+      "accounts",
+      `select * from Account where Metadata.CreateTime > '${req.query.created_after || "2014-03-31"}'`
+    );
 
-    const query = `select * from Account where Metadata.CreateTime > '${createdAfter}'`;
-
-    const url = `${qb.baseUrl}/v3/company/${qb.realmId}/query`;
-
-    const response = await axios.get(url, {
-      headers: {
-        Authorization: `Bearer ${qb.accessToken}`,
-        Accept: "application/json",
-        "Content-Type": "text/plain",
-      },
-      params: {
-        query,
-        minorversion: 75,
-      },
-    });
-
-    res.json(response.data);
+    res.json(result.data);
   } catch (error) {
     console.error(
       "Accounts API Error:",
@@ -260,7 +285,28 @@ router.get("/qb-accounts", async (req, res) => {
  */
 
 router.get("/qb-cashflow-engine", async (req, res) => {
-  const qb = getQBConfig(req.clientId);
+  const clientId = req.clientId;
+
+  // If QB is disconnected, serve cached data
+  if (req.qbDisconnected) {
+    try {
+      const cached = await serveCachedReport(clientId, "cashflow_engine");
+      if (cached) {
+        return res.json({
+          ...cached.data,
+          _meta: { source: "cache", lastSyncedAt: cached.lastSyncedAt, isDisconnected: true },
+        });
+      }
+      return res.status(404).json({
+        error: "QuickBooks is disconnected and no cached engine data is available.",
+        isDisconnected: true,
+      });
+    } catch (cacheError) {
+      return res.status(500).json({ error: "Failed to retrieve cached data." });
+    }
+  }
+
+  const qb = getQBConfig(clientId);
 
   try {
     const { start_date, end_date, accounting_method, created_after } = req.query;
@@ -333,19 +379,28 @@ router.get("/qb-cashflow-engine", async (req, res) => {
       };
     }
 
+    let payload;
     try {
-      const payload = await fetchCombined(qb.accessToken);
-      return res.json(payload);
+      payload = await fetchCombined(qb.accessToken);
     } catch (innerError) {
       if (innerError.response?.status === 401) {
-        const newAccessToken = await tokenManager.refreshAccessToken(
-          req.clientId,
-        );
-        const payload = await fetchCombined(newAccessToken);
-        return res.json(payload);
+        const newAccessToken = await tokenManager.refreshAccessToken(clientId);
+        payload = await fetchCombined(newAccessToken);
+      } else {
+        throw innerError;
       }
-      throw innerError;
     }
+
+    // Cache the combined result
+    const { upsertSyncedReport } = require("../../../services/quickbooksSyncStore");
+    upsertSyncedReport({
+      companyId: clientId,
+      reportType: "cashflow_engine",
+      reportParams: { start_date, end_date, accounting_method, created_after },
+      data: payload,
+    }).catch(err => console.error("[CashFlow] Engine cache failed:", err.message));
+
+    return res.json(payload);
   } catch (error) {
     console.error("Combined API Error:", error.response?.data || error.message);
 
@@ -355,4 +410,5 @@ router.get("/qb-cashflow-engine", async (req, res) => {
     });
   }
 });
+
 module.exports = router;
