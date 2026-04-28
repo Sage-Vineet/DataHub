@@ -210,16 +210,42 @@ async function authenticate(email, password) {
         .eq("id", user.id)
         .single();
 
-      if (!authData?.password_hash) {
-        console.log(`[Auth] No password hash for user: ${user.id}`);
-        throw new Error("Invalid credentials");
+      const storedPassword = authData?.password_hash;
+      let ok = false;
+      let needsRehash = false;
+
+      if (storedPassword && storedPassword.startsWith("$2b$")) {
+        console.log(`[Auth] Performing bcrypt comparison for user: ${user.id}`);
+        ok = await bcrypt.compare(password, storedPassword);
+      } else {
+        console.log(`[Auth] Detected legacy plain-text password for user: ${user.id}`);
+        ok = (password === storedPassword);
+        if (ok) needsRehash = true;
       }
 
-      const ok = await bcrypt.compare(password, authData.password_hash);
+      console.log(`[Auth] Password match result: ${ok}`);
+
       if (!ok) {
         console.log(`[Auth] Password mismatch for user: ${user.id}`);
         throw new Error("Invalid credentials");
       }
+
+      // Re-hash legacy plain-text passwords on successful login
+      if (needsRehash) {
+        console.log(`[Auth] Re-hashing legacy password for user: ${user.id}`);
+        try {
+          const newHash = await bcrypt.hash(password, 10);
+          await supabase
+            .from("users")
+            .update({ password_hash: newHash, updated_at: new Date().toISOString() })
+            .eq("id", user.id);
+          console.log(`[Auth] Legacy password successfully re-hashed for user: ${user.id}`);
+        } catch (rehashError) {
+          console.error(`[Auth] Failed to re-hash legacy password for user: ${user.id}:`, rehashError.message);
+          // Don't fail the login if re-hashing fails
+        }
+      }
+
       console.log(`[Auth] Password match for user: ${user.id}`);
     }
   }
