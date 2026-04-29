@@ -9,6 +9,8 @@ const {
   listFolderDocuments,
   addFolderDocument,
   deleteDocument,
+  recordDocumentActivity,
+  getDocumentActivity,
 } = require("../controllers/folders");
 
 const { requireAuth } = require("../middleware/auth");
@@ -25,5 +27,8 @@ router.post("/folders/:id/move", moveFolder);
 router.get("/folders/:id/documents", listFolderDocuments);
 router.post("/folders/:id/documents", addFolderDocument);
 router.delete("/documents/:id", deleteDocument);
+
+router.post("/documents/:id/activity", recordDocumentActivity);
+router.get("/documents/:id/activity", getDocumentActivity);
 
 module.exports = router;

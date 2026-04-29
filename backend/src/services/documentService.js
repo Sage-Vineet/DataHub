@@ -81,9 +81,48 @@ async function validateUpload(uploadId) {
   return !!data;
 }
 
+/**
+ * Records a document activity (view or download)
+ */
+async function recordDocumentActivity(documentId, userId, activityType) {
+  const { data, error } = await supabase
+    .from("document_activity")
+    .insert({
+      document_id: documentId,
+      user_id: userId,
+      activity_type: activityType
+    })
+    .select("*")
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
+/**
+ * Gets the activity log for a document
+ */
+async function getDocumentActivity(documentId) {
+  const { data, error } = await supabase
+    .from("document_activity")
+    .select(`
+      id,
+      activity_type,
+      created_at,
+      users ( id, name, email, role )
+    `)
+    .eq("document_id", documentId)
+    .order("created_at", { ascending: false });
+
+  if (error) throw error;
+  return data || [];
+}
+
 module.exports = {
   listDocumentsByFolder,
   createDocument,
   deleteDocument,
-  validateUpload
+  validateUpload,
+  recordDocumentActivity,
+  getDocumentActivity
 };

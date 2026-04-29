@@ -40,6 +40,10 @@ DO $$ BEGIN
   CREATE TYPE activity_type AS ENUM ('upload', 'request', 'approved', 'reminder');
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
+DO $$ BEGIN
+  CREATE TYPE document_activity_type AS ENUM ('view', 'download');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
 CREATE TABLE IF NOT EXISTS companies (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   name text NOT NULL,
@@ -211,6 +215,14 @@ CREATE TABLE IF NOT EXISTS activity_log (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS document_activity (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  document_id uuid NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  activity_type document_activity_type NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS company_messages (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
@@ -264,3 +276,4 @@ CREATE INDEX IF NOT EXISTS idx_company_messages_sender ON company_messages(sende
 CREATE INDEX IF NOT EXISTS idx_direct_messages_company_created ON direct_messages(company_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_direct_messages_sender_company ON direct_messages(sender_id, company_id);
 CREATE INDEX IF NOT EXISTS idx_direct_messages_recipient_company ON direct_messages(recipient_id, company_id);
+CREATE INDEX IF NOT EXISTS idx_document_activity_document ON document_activity(document_id);

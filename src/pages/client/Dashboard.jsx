@@ -584,7 +584,7 @@ export default function ClientDashboard() {
                     <div className="mt-4 grid gap-3 sm:grid-cols-2">
                       <div>
                         <p className="text-[11px] font-semibold uppercase tracking-wide text-[#A5A5A5]">Next Reminder</p>
-                        <p className="mt-1 text-sm font-semibold text-[#050505]">{formatDateTime(topReminder.next_due_at)}</p>
+                        <p className="mt-1 text-sm font-semibold text-[#050505]">{formatDateTime(topReminder.next_reminder_at || topReminder.next_due_at)}</p>
                       </div>
                       <div>
                         <p className="text-[11px] font-semibold uppercase tracking-wide text-[#A5A5A5]">Cadence</p>

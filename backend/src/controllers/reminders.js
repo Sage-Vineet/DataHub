@@ -5,6 +5,7 @@ const {
   resolveReminderFrequencyDays,
   getReminderDeadline,
   resolveNextReminderAt,
+  resolveScheduledReminderAt,
   isRequestResolved,
 } = require("../utils/requestReminders");
 
@@ -38,14 +39,6 @@ function canAccessReminder(user, request) {
     return request.approval_status === "approved" && request.visible !== false && request.visible !== 0;
   }
   return request.approval_status === "approved" || String(request.created_by) === String(user?.id);
-}
-
-function buildReminderMessage(request, reminderFrequencyLabel, nextReminderAt) {
-  const dueDate = request.due_date ? String(request.due_date).slice(0, 10) : "Not set";
-  const followUpText = nextReminderAt
-    ? `Next automatic reminder: ${String(nextReminderAt).slice(0, 10)}.`
-    : "Automatic reminders stop at the due date; send manually from the broker portal if needed.";
-  return `The first reminder was sent when this request was generated. Follow-ups run ${reminderFrequencyLabel.toLowerCase()} until ${dueDate}. ${followUpText}`;
 }
 
 function buildReminderStatus(request, nextReminderAt) {
@@ -124,6 +117,11 @@ const listReminders = asyncHandler(async (req, res) => {
       request.reminder_frequency_days,
       request.due_date,
     );
+    const nextScheduledReminderAt = resolveScheduledReminderAt(
+      reminderBaseTime,
+      request.priority,
+      request.reminder_frequency_days,
+    );
     const status = buildReminderStatus(request, nextReminderAt);
     const sentCount = reminderHistory.length;
     const automaticUntil = getReminderDeadline(request.due_date);
@@ -134,7 +132,7 @@ const listReminders = asyncHandler(async (req, res) => {
       company_id: request.company_id,
       company_name: request.company_name,
       title: request.title,
-      message: buildReminderMessage(request, reminderFrequencyLabel, nextReminderAt),
+      message: null,
       due_date: request.due_date,
       priority: request.priority,
       frequency_days: frequencyDays,
@@ -143,6 +141,7 @@ const listReminders = asyncHandler(async (req, res) => {
       first_sent_at: firstReminder?.sent_at || request.approved_at || request.created_at || null,
       last_sent_at: lastReminder?.sent_at || request.approved_at || request.created_at || null,
       next_due_at: nextReminderAt,
+      next_reminder_at: nextScheduledReminderAt,
       automatic_until: automaticUntil,
       status,
       workflow_status: request.status,
@@ -161,7 +160,7 @@ const listReminders = asyncHandler(async (req, res) => {
     const priorityOrder = { due: 0, active: 1, blocked: 2, resolved: 3 };
     const statusDiff = (priorityOrder[a.status] ?? 9) - (priorityOrder[b.status] ?? 9);
     if (statusDiff !== 0) return statusDiff;
-    return String(a.next_due_at || "").localeCompare(String(b.next_due_at || ""));
+    return String(a.next_reminder_at || a.next_due_at || "").localeCompare(String(b.next_reminder_at || b.next_due_at || ""));
   });
 
   res.json(reminders);
@@ -180,4 +179,3 @@ const deleteReminder = asyncHandler(async (_req, res) => {
 });
 
 module.exports = { listReminders, createReminder, updateReminder, deleteReminder };
-

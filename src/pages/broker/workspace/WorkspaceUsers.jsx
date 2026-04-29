@@ -20,7 +20,6 @@ import {
   updateUserRequest,
   updateGroup,
   deleteGroup,
-  uploadFile,
 } from '../../../lib/api';
 
 const PAGE_SIZE = 8;
@@ -202,8 +201,6 @@ function UserFormModal({ initial, companies, companyLock, groups, onSave, onClos
     if (companyLock?.id) return { ...seed, companyId: seed.companyId || companyLock.id, companyIds: Array.from(new Set([companyLock.id, ...seedCompanyIds])) };
     return { ...seed, companyIds: seedCompanyIds };
   });
-  const [uploading, setUploading] = useState(false);
-  const [uploadError, setUploadError] = useState('');
   const [companiesSearchQuery, setCompaniesSearchQuery] = useState('');
   const [companiesDropdownOpen, setCompaniesDropdownOpen] = useState(false);
   const companiesDropdownRef = useRef(null);
@@ -241,25 +238,6 @@ function UserFormModal({ initial, companies, companyLock, groups, onSave, onClos
   const selectedCompanies = companies.filter((company) =>
     (form.companyIds || []).some((id) => String(id) === String(company.id))
   );
-
-  const handleProfilePick = async (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    setUploading(true);
-    setUploadError('');
-    try {
-      const uploaded = await uploadFile(file, {
-        fileName: file.name,
-        prefix: 'profile-images',
-      });
-      setField({ profileImage: uploaded.fileUrl });
-    } catch (err) {
-      setUploadError(err.message || 'Unable to upload profile image.');
-    } finally {
-      setUploading(false);
-      event.target.value = '';
-    }
-  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -408,26 +386,6 @@ function UserFormModal({ initial, companies, companyLock, groups, onSave, onClos
               className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]"
             />
           </div>
-
-          {isEdit && (
-            <div className="col-span-2">
-              <label className="block text-xs font-semibold text-gray-500 mb-1.5">Profile Image</label>
-              <div className="rounded-xl border border-dashed border-gray-200 p-3 bg-gray-50">
-                <input
-                  type="file"
-                  accept=".jpg,.jpeg,.png,.webp"
-                  onChange={handleProfilePick}
-                  disabled={uploading}
-                  className="w-full text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-white file:px-3 file:py-2 file:text-xs file:font-semibold file:text-[#05164D] hover:file:bg-gray-100 disabled:opacity-60"
-                />
-                {form.profileImage && (
-                  <p className="text-xs text-[#6D6E71] mt-2 truncate">{form.profileImage}</p>
-                )}
-                {uploadError && <p className="text-xs text-red-500 mt-2">{uploadError}</p>}
-                <p className="text-[11px] text-[#A5A5A5] mt-1">Uploads JPG, PNG, WEBP</p>
-              </div>
-            </div>
-          )}
 
           <div className="col-span-2">
             <label className="block text-xs font-semibold text-gray-500 mb-1.5">Groups</label>
@@ -946,7 +904,6 @@ export default function WorkspaceUsers() {
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
             <h1 className="text-2xl font-bold text-[#05164D]">Users</h1>
-            <p className="text-sm text-gray-500 mt-0.5">{stats.total} registered users for {company?.name ?? 'this client'}</p>
           </div>
           <div className="flex items-center gap-2">
             <button

@@ -6,7 +6,13 @@ import {
   ArrowUpDown, ArrowUp, ArrowDown, CheckCircle, Share2, Users, Loader2,
 } from 'lucide-react';
 import { useFileExplorerStore, findById, getPathTo } from '../../store/fileExplorerStore';
-import { fetchProtectedFileBlob, listCompanyGroups, listUsersRequest } from '../../lib/api';
+import {
+  fetchProtectedFileBlob,
+  listCompanyGroups,
+  listDocumentActivity,
+  listUsersRequest,
+  recordDocumentActivity,
+} from '../../lib/api';
 
 // ── File Type Helpers ────────────────────────────────────────────────────────
 function getMimeIcon(ext) {
@@ -475,11 +481,11 @@ function RenameInput({ item }) {
 }
 
 // ── FileCard (grid) ────────────────────────────────────────────────────────────
-function FileCard({ item, role, permissions, sharedMeta, onShareAccess, onMoveFolder }) {
+function FileCard({ item, role, permissions, sharedMeta, onShareAccess, onMoveFolder, onPreviewFile, onDownloadFile, onOpenActivity }) {
   const {
     selectedItems, selectItem, renamingId, draggingItems, setDraggingItems,
     dragOver, setDragOver, moveItemsTo, clearDrag, navigateTo,
-    showContextMenu, showPreview, startRenaming,
+    showContextMenu, startRenaming,
   } = useFileExplorerStore();
 
   const isSelected = selectedItems.includes(item.id);
@@ -502,7 +508,7 @@ function FileCard({ item, role, permissions, sharedMeta, onShareAccess, onMoveFo
   const handleDoubleClick = (e) => {
     e.stopPropagation();
     if (item.type === 'folder') navigateTo(item.id);
-    else showPreview(item);
+    else onPreviewFile(item);
   };
 
   const handleDragStart = (e) => {
@@ -533,8 +539,7 @@ function FileCard({ item, role, permissions, sharedMeta, onShareAccess, onMoveFo
   const handleDownload = (e) => {
     e.stopPropagation();
     if (!canDownload) return;
-    const a = document.createElement('a');
-    a.href = '#'; a.download = item.name; a.click();
+    onDownloadFile(item);
   };
 
   return (
@@ -615,16 +620,27 @@ function FileCard({ item, role, permissions, sharedMeta, onShareAccess, onMoveFo
       {item.type === 'file' && (
         <div className="absolute top-2 right-2 hidden group-hover:flex gap-1">
           <button
-            onClick={e => { e.stopPropagation(); if (canRead) showPreview(item); }}
+            onClick={e => { e.stopPropagation(); if (canRead) onPreviewFile(item); }}
             disabled={!canRead}
             className={`w-6 h-6 rounded-lg bg-white shadow border border-gray-100 flex items-center justify-center ${canRead ? 'hover:bg-gray-50' : 'opacity-40 cursor-not-allowed'}`}
+            title="Preview"
           >
             <Eye size={11} className="text-[#6D6E71]" />
           </button>
+          {role === 'broker' && (
+            <button
+              onClick={e => { e.stopPropagation(); onOpenActivity(item); }}
+              className="w-6 h-6 rounded-lg bg-white shadow border border-gray-100 flex items-center justify-center hover:bg-gray-50"
+              title="View activity"
+            >
+              <Users size={11} className="text-[#6D6E71]" />
+            </button>
+          )}
           <button
             onClick={handleDownload}
             disabled={!canDownload}
             className={`w-6 h-6 rounded-lg bg-white shadow border border-gray-100 flex items-center justify-center ${canDownload ? 'hover:bg-gray-50' : 'opacity-40 cursor-not-allowed'}`}
+            title="Download"
           >
             <Download size={11} className="text-[#6D6E71]" />
           </button>
@@ -644,11 +660,11 @@ function FileCard({ item, role, permissions, sharedMeta, onShareAccess, onMoveFo
 }
 
 // ── FileRow (list) ─────────────────────────────────────────────────────────────
-function FileRow({ item, role, permissions, sharedMeta, onShareAccess, onMoveFolder }) {
+function FileRow({ item, role, permissions, sharedMeta, onShareAccess, onMoveFolder, onPreviewFile, onDownloadFile, onOpenActivity }) {
   const {
     selectedItems, selectItem, renamingId, draggingItems, setDraggingItems,
     dragOver, setDragOver, moveItemsTo, clearDrag, navigateTo,
-    showContextMenu, showPreview, startRenaming,
+    showContextMenu, startRenaming,
   } = useFileExplorerStore();
 
   const isSelected = selectedItems.includes(item.id);
@@ -665,8 +681,7 @@ function FileRow({ item, role, permissions, sharedMeta, onShareAccess, onMoveFol
   const handleDownload = (e) => {
     e.stopPropagation();
     if (!canDownload) return;
-    const a = document.createElement('a');
-    a.href = '#'; a.download = item.name; a.click();
+    onDownloadFile(item);
   };
 
   return (
@@ -696,7 +711,7 @@ function FileRow({ item, role, permissions, sharedMeta, onShareAccess, onMoveFol
         if (e.ctrlKey || e.metaKey) selectItem(item.id, true);
         else selectItem(item.id, false);
       }}
-      onDoubleClick={() => item.type === 'folder' ? navigateTo(item.id) : showPreview(item)}
+      onDoubleClick={() => item.type === 'folder' ? navigateTo(item.id) : onPreviewFile(item)}
       onContextMenu={e => { e.preventDefault(); if (canManage) showContextMenu(e.clientX, e.clientY, item.id); }}
       className={`group cursor-pointer transition-all duration-100 select-none
         ${isSelected ? 'bg-[#05164D]/5' : 'hover:bg-gray-50'}
@@ -750,14 +765,23 @@ function FileRow({ item, role, permissions, sharedMeta, onShareAccess, onMoveFol
           {item.type === 'file' && (
             <>
               <button
-                onClick={e => { e.stopPropagation(); if (canRead) showPreview(item); }}
+                onClick={e => { e.stopPropagation(); if (canRead) onPreviewFile(item); }}
                 disabled={!canRead}
                 className={`p-1 rounded-lg ${canRead ? 'hover:bg-gray-100 text-[#6D6E71]' : 'text-[#C0C4CC] cursor-not-allowed'}`}
+                title="Preview"
               ><Eye size={13} /></button>
+              {role === 'broker' && (
+                <button
+                  onClick={e => { e.stopPropagation(); onOpenActivity(item); }}
+                  className="p-1 rounded-lg hover:bg-gray-100 text-[#6D6E71]"
+                  title="View activity"
+                ><Users size={13} /></button>
+              )}
               <button
                 onClick={handleDownload}
                 disabled={!canDownload}
                 className={`p-1 rounded-lg ${canDownload ? 'hover:bg-gray-100 text-[#6D6E71]' : 'text-[#C0C4CC] cursor-not-allowed'}`}
+                title="Download"
               ><Download size={13} /></button>
             </>
           )}
@@ -797,6 +821,9 @@ function FileGrid({
   getSharedMeta,
   onShareAccess,
   onMoveFolder,
+  onPreviewFile,
+  onDownloadFile,
+  onOpenActivity,
   currentFolderPermissions,
 }) {
   const { newFolderParentId } = useFileExplorerStore();
@@ -819,6 +846,9 @@ function FileGrid({
             sharedMeta={sharedMeta}
             onShareAccess={onShareAccess}
             onMoveFolder={onMoveFolder}
+            onPreviewFile={onPreviewFile}
+            onDownloadFile={onDownloadFile}
+            onOpenActivity={onOpenActivity}
           />
         );
       })}
@@ -834,6 +864,9 @@ function FileTable({
   getSharedMeta,
   onShareAccess,
   onMoveFolder,
+  onPreviewFile,
+  onDownloadFile,
+  onOpenActivity,
   currentFolderPermissions,
 }) {
   const { newFolderParentId } = useFileExplorerStore();
@@ -869,6 +902,9 @@ function FileTable({
                 sharedMeta={sharedMeta}
                 onShareAccess={onShareAccess}
                 onMoveFolder={onMoveFolder}
+                onPreviewFile={onPreviewFile}
+                onDownloadFile={onDownloadFile}
+                onOpenActivity={onOpenActivity}
               />
             );
           })}
@@ -1201,9 +1237,9 @@ function MoveFolderModal({ isOpen, folder, tree, onMove, onClose }) {
 }
 
 // ── ContextMenu ───────────────────────────────────────────────────────────────
-function ContextMenu({ tree }) {
+function ContextMenu({ tree, onPreviewFile, onDownloadFile, onOpenActivity }) {
   const {
-    contextMenu, hideContextMenu, deleteItems, startRenaming, showPreview,
+    contextMenu, hideContextMenu, deleteItems, startRenaming,
     startNewFolder, navigateTo, selectedItems, moveItemsTo, tree: storeTree,
   } = useFileExplorerStore();
 
@@ -1255,12 +1291,13 @@ function ContextMenu({ tree }) {
           <MenuItem icon={FolderOpen} label="Open" onClick={() => navigateTo(item.id)} />
         )}
         {item.type === 'file' && (
-          <MenuItem icon={Eye} label="Preview" onClick={() => showPreview(item)} />
+          <MenuItem icon={Eye} label="Preview" onClick={() => onPreviewFile(item)} />
         )}
         {item.type === 'file' && (
-          <MenuItem icon={Download} label="Download" onClick={() => {
-            const a = document.createElement('a'); a.href = '#'; a.download = item.name; a.click();
-          }} />
+          <MenuItem icon={Download} label="Download" onClick={() => onDownloadFile(item)} />
+        )}
+        {item.type === 'file' && (
+          <MenuItem icon={Users} label="View Activity" onClick={() => onOpenActivity(item)} />
         )}
         {ids.length === 1 && (
           <MenuItem icon={Pencil} label="Rename" onClick={() => startRenaming(item.id)} />
@@ -1275,8 +1312,138 @@ function ContextMenu({ tree }) {
   );
 }
 
+function formatActivityDate(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return date.toLocaleString('en-IN', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
+function getActivityUser(activity) {
+  const user = activity.user || activity.users || {};
+  return {
+    id: user.id || activity.user_id || activity.id,
+    name: user.name || user.email || 'Unknown user',
+    email: user.email || '',
+    role: user.role || '',
+    createdAt: activity.created_at,
+  };
+}
+
+function uniqueActivityUsers(activity, type) {
+  const seen = new Set();
+  return (activity || [])
+    .filter((item) => item.activity_type === type)
+    .map(getActivityUser)
+    .filter((user) => {
+      const key = user.id || user.email || user.name;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function ActivityList({ title, icon: Icon, people, emptyText }) {
+  return (
+    <div className="min-h-[260px] rounded-2xl border border-gray-100 bg-[#FBFCFE] p-4">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-[#E6F3D3] text-[#476E2C]">
+            <Icon size={15} />
+          </div>
+          <h4 className="text-sm font-bold text-[#050505]">{title}</h4>
+        </div>
+        <span className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-[#6D6E71]">{people.length}</span>
+      </div>
+      {people.length ? (
+        <div className="space-y-2">
+          {people.map((person) => (
+            <div key={`${title}-${person.id || person.email || person.name}`} className="rounded-xl bg-white px-3 py-2.5 shadow-sm">
+              <p className="text-sm font-semibold text-[#050505]">{person.name}</p>
+              <p className="mt-0.5 text-xs text-[#A5A5A5]">{person.email || person.role || 'Portal user'}</p>
+              <p className="mt-1 text-[11px] text-[#6D6E71]">{formatActivityDate(person.createdAt)}</p>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="flex h-44 items-center justify-center rounded-xl border border-dashed border-gray-200 bg-white px-4 text-center text-sm text-[#A5A5A5]">
+          {emptyText}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DocumentActivityModal({ document: activityDocument, onClose }) {
+  const [activity, setActivity] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!activityDocument?.id) return;
+    let cancelled = false;
+    setLoading(true);
+    setError('');
+    listDocumentActivity(activityDocument.id)
+      .then((rows) => {
+        if (!cancelled) setActivity(rows || []);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err.message || 'Unable to load document activity.');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activityDocument?.id]);
+
+  if (!activityDocument) return null;
+
+  const viewers = uniqueActivityUsers(activity, 'view');
+  const downloaders = uniqueActivityUsers(activity, 'download');
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/35 p-4 backdrop-blur-sm animate-fadeIn" onClick={onClose}>
+      <div className="w-full max-w-4xl overflow-hidden rounded-3xl bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between border-b border-gray-100 p-5">
+          <div className="min-w-0">
+            <p className="text-xs uppercase tracking-wide text-[#A5A5A5]">Document Activity</p>
+            <h3 className="truncate text-xl font-bold text-[#050505]">{activityDocument.name}</h3>
+          </div>
+          <button onClick={onClose} className="rounded-xl p-2 text-[#6D6E71] hover:bg-gray-100">
+            <X size={18} />
+          </button>
+        </div>
+        <div className="p-5">
+          {loading ? (
+            <div className="flex items-center justify-center gap-2 rounded-2xl border border-gray-100 px-6 py-16 text-sm text-[#6D6E71]">
+              <Loader2 size={18} className="animate-spin" />
+              Loading activity...
+            </div>
+          ) : error ? (
+            <div className="rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-[#C62026]">{error}</div>
+          ) : (
+            <div className="grid gap-4 md:grid-cols-2">
+              <ActivityList title="Viewers" icon={Eye} people={viewers} emptyText="No users have viewed this document yet." />
+              <ActivityList title="Downloaders" icon={Download} people={downloaders} emptyText="No users have downloaded this document yet." />
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── PreviewModal ───────────────────────────────────────────────────────────────
-function PreviewModal() {
+function PreviewModal({ onDownloadFile }) {
   const { previewItem, hidePreview } = useFileExplorerStore();
   const [blobUrl, setBlobUrl] = useState('');
   const [textPreview, setTextPreview] = useState('');
@@ -1332,11 +1499,8 @@ function PreviewModal() {
   if (!previewItem) return null;
 
   const handleDownload = () => {
-    if (!blobUrl) return;
-    const a = document.createElement('a');
-    a.href = blobUrl;
-    a.download = previewItem.name;
-    a.click();
+    if (!previewItem) return;
+    onDownloadFile(previewItem, blobUrl);
   };
 
   const metaItems = [
@@ -1463,8 +1627,8 @@ function PreviewModal() {
         <div className="flex gap-3 p-5 border-t border-gray-100 bg-white">
           <button
             onClick={handleDownload}
-            disabled={!blobUrl}
-            className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold transition-colors ${blobUrl ? 'bg-[#05164D] text-white hover:bg-[#041240]' : 'bg-gray-200 text-[#A5A5A5] cursor-not-allowed'}`}
+            disabled={!previewItem.fileUrl}
+            className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold transition-colors ${previewItem.fileUrl ? 'bg-[#05164D] text-white hover:bg-[#041240]' : 'bg-gray-200 text-[#A5A5A5] cursor-not-allowed'}`}
           >
             <Download size={15} /> Download
           </button>
@@ -1576,6 +1740,7 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
     clearSelection, hideContextMenu, uploadFiles, dragOver, draggingItems,
     setDragOver, moveItemsTo, clearDrag, newFolderParentId, folderAccess, setFolderAccess,
     hydrateFromApi, setCompanyId, setCreatedBy, loadFolderAccessFromApi, syncFolderAccessToApi,
+    showPreview,
   } = useFileExplorerStore();
 
   const fileInputRef = useRef(null);
@@ -1585,6 +1750,7 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
   const [duplicateWarnings, setDuplicateWarnings] = useState([]);
   const [shareModal, setShareModal] = useState(null);
   const [moveModal, setMoveModal] = useState(null);
+  const [activityModal, setActivityModal] = useState(null);
   const [sharePeople, setSharePeople] = useState([]);
   const [currentUserGroupIds, setCurrentUserGroupIds] = useState([]);
 
@@ -1841,6 +2007,43 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
     setMoveModal({ folderId: folder.id });
   };
 
+  const recordActivity = useCallback((documentId, activityType) => {
+    if (role === 'broker' || !documentId) return;
+    recordDocumentActivity(documentId, activityType).catch(() => {});
+  }, [role]);
+
+  const previewFile = useCallback((item) => {
+    if (!item || item.type !== 'file') return;
+    recordActivity(item.id, 'view');
+    showPreview(item);
+  }, [recordActivity, showPreview]);
+
+  const downloadFile = useCallback(async (item, existingBlobUrl = '') => {
+    if (!item || item.type !== 'file' || !item.fileUrl) return;
+    try {
+      let objectUrl = existingBlobUrl;
+      let shouldRevoke = false;
+      if (!objectUrl) {
+        const blob = await fetchProtectedFileBlob(item.fileUrl);
+        objectUrl = URL.createObjectURL(blob);
+        shouldRevoke = true;
+      }
+      const a = document.createElement('a');
+      a.href = objectUrl;
+      a.download = item.name || 'document';
+      a.click();
+      recordActivity(item.id, 'download');
+      if (shouldRevoke) setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    } catch (err) {
+      setTreeError(err.message || 'Unable to download document.');
+    }
+  }, [recordActivity]);
+
+  const openActivity = useCallback((item) => {
+    if (role !== 'broker' || item?.type !== 'file') return;
+    setActivityModal(item);
+  }, [role]);
+
   const saveFolderAccess = async (entries) => {
     if (!shareFolder) return;
     const normalizedEntries = entries.map((entry) => ({
@@ -1921,6 +2124,9 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
               getSharedMeta={getSharedMeta}
               onShareAccess={openShareAccess}
               onMoveFolder={openMoveFolder}
+              onPreviewFile={previewFile}
+              onDownloadFile={downloadFile}
+              onOpenActivity={openActivity}
               currentFolderPermissions={currentFolderPermissions}
             />
           ) : (
@@ -1933,6 +2139,9 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
                 getSharedMeta={getSharedMeta}
                 onShareAccess={openShareAccess}
                 onMoveFolder={openMoveFolder}
+                onPreviewFile={previewFile}
+                onDownloadFile={downloadFile}
+                onOpenActivity={openActivity}
                 currentFolderPermissions={currentFolderPermissions}
               />
             </div>
@@ -1941,10 +2150,23 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
       </div>
 
       {/* Context Menu */}
-      {role === 'broker' && <ContextMenu tree={tree} />}
+      {role === 'broker' && (
+        <ContextMenu
+          tree={tree}
+          onPreviewFile={previewFile}
+          onDownloadFile={downloadFile}
+          onOpenActivity={openActivity}
+        />
+      )}
 
       {/* Preview Modal */}
-      <PreviewModal />
+      <PreviewModal onDownloadFile={downloadFile} />
+
+      {/* Document Activity Modal */}
+      <DocumentActivityModal
+        document={activityModal}
+        onClose={() => setActivityModal(null)}
+      />
 
       {/* Share Access Modal */}
       <ShareAccessModal
@@ -1982,8 +2204,3 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
     </div>
   );
 }
-
-
-
-
-

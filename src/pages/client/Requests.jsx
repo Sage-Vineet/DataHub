@@ -94,6 +94,13 @@ function normalizePriority(priority) {
   return normalized || 'medium';
 }
 
+function getReminderFrequencyLabel(priority) {
+  const normalized = `${priority ?? ''}`.trim().toLowerCase();
+  if (normalized === 'critical' || normalized === 'high') return 'daily';
+  if (normalized === 'medium') return 'every 2 days';
+  return 'weekly';
+}
+
 function getPriorityMeta(priority) {
   const normalized = `${priority ?? ''}`.trim().toLowerCase();
   if (PRIORITY_META[normalized]) return PRIORITY_META[normalized];
@@ -184,7 +191,7 @@ function mapApiRequestToUi(request) {
     narrativeResponse: '',
     linkedDocuments: [],
     reminderHistory: [],
-    notificationFrequency: request.priority === 'high' ? 'daily' : request.priority === 'medium' ? 'every 2 days' : 'weekly',
+    notificationFrequency: getReminderFrequencyLabel(request.priority),
   };
 }
 
@@ -438,7 +445,12 @@ function RequestDetailPage({ onBack, request, allRequests, onSubmitResponse, err
       narrative: narrativeDraft.trim(),
       files: pendingFiles,
     });
-    if (ok) setPendingFiles([]);
+    if (ok) {
+      setPendingFiles([]);
+      setSubmitting(false);
+      onBack?.();
+      return;
+    }
     setSubmitting(false);
   };
 
@@ -856,7 +868,6 @@ export default function ClientRequests() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-[#050505]">Request Categories</h1>
-          <p className="text-sm text-[#6D6E71] mt-0.5">Enterprise workflow grouped by Finance, Legal and Compliance.</p>
         </div>
         {!selectedCategory && (
           <div className="flex items-center gap-3">

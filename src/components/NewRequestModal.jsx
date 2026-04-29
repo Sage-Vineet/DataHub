@@ -18,8 +18,6 @@ const DEFAULT_FORM = {
   description: '',
   file: null,
   priority: 'high',
-  customPriorityLabel: '',
-  customReminderDays: '3',
   dueDate: '',
 };
 
@@ -30,7 +28,6 @@ export default function NewRequestModal({
   folderOptions = [],
   foldersLoading = false,
   extraContent = null,
-  allowCustomPriority = false,
 }) {
   const [form, setForm] = useState(DEFAULT_FORM);
   const [errors, setErrors] = useState({});
@@ -78,11 +75,6 @@ export default function NewRequestModal({
       nextErrors.description = 'Description is required';
     }
     if (!form.priority) nextErrors.priority = 'Priority is required';
-    if (form.priority === 'custom') {
-      if (!form.customPriorityLabel.trim()) nextErrors.customPriorityLabel = 'Custom priority label is required';
-      const days = Number.parseInt(form.customReminderDays, 10);
-      if (!Number.isFinite(days) || days <= 0) nextErrors.customReminderDays = 'Reminder frequency must be at least 1 day';
-    }
     const minDueDate = getTomorrowDate();
     if (!form.dueDate) nextErrors.dueDate = 'Due date is required';
     if (form.dueDate && form.dueDate < minDueDate) nextErrors.dueDate = 'Select a future due date.';
@@ -208,37 +200,10 @@ export default function NewRequestModal({
                 <option value="high">High</option>
                 <option value="medium">Medium</option>
                 <option value="low">Low</option>
-                {allowCustomPriority && <option value="custom">Custom</option>}
               </select>
               {errors.priority && <p className="text-xs text-red-500">{errors.priority}</p>}
             </div>
           </div>
-
-          {allowCustomPriority && form.priority === 'custom' && (
-            <div className="grid gap-4 rounded-2xl border border-[#BFDBFE] bg-[#EFF6FF] p-4 md:grid-cols-2">
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Custom Priority Label *</label>
-                <input
-                  value={form.customPriorityLabel}
-                  onChange={(e) => setForm((s) => ({ ...s, customPriorityLabel: e.target.value }))}
-                  placeholder="e.g. Follow Up Soon"
-                  className={`w-full px-3 py-2.5 rounded-xl border text-sm ${errors.customPriorityLabel ? 'border-red-400' : 'border-gray-200'}`}
-                />
-                {errors.customPriorityLabel && <p className="text-xs text-red-500">{errors.customPriorityLabel}</p>}
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Reminder Every (Days) *</label>
-                <input
-                  type="number"
-                  min="1"
-                  value={form.customReminderDays}
-                  onChange={(e) => setForm((s) => ({ ...s, customReminderDays: e.target.value }))}
-                  className={`w-full px-3 py-2.5 rounded-xl border text-sm ${errors.customReminderDays ? 'border-red-400' : 'border-gray-200'}`}
-                />
-                {errors.customReminderDays && <p className="text-xs text-red-500">{errors.customReminderDays}</p>}
-              </div>
-            </div>
-          )}
 
           <div className="space-y-1.5">
             <label className="text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Due Date *</label>
@@ -289,15 +254,6 @@ export default function NewRequestModal({
                 <div>
                   <p className="font-semibold text-[#050505]">Send immediate reminder, then weekly follow-ups</p>
                   <p>Low urgency cadence</p>
-                </div>
-              </div>
-            )}
-            {allowCustomPriority && form.priority === 'custom' && (
-              <div className="flex items-start gap-2 text-xs text-[#6D6E71]">
-                <span className="mt-0.5 px-2 py-0.5 rounded-full bg-blue-100 text-blue-600 text-[10px] font-bold">Custom</span>
-                <div>
-                  <p className="font-semibold text-[#050505]">Send immediate reminder, then every {form.customReminderDays || '0'} day(s)</p>
-                  <p>Uses your broker-defined priority label and cadence</p>
                 </div>
               </div>
             )}

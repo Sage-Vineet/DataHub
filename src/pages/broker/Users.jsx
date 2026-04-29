@@ -14,7 +14,6 @@ import {
   removeGroupMember,
   listUsersRequest,
   updateUserRequest,
-  uploadFile,
 } from '../../lib/api';
 
 const PAGE_SIZE = 8;
@@ -194,8 +193,6 @@ function UserFormModal({ initial, companies, groups, onCompanyChange, onSave, on
     const seed = initial || EMPTY_FORM;
     return { ...seed, companyIds: seed.companyIds?.length ? seed.companyIds : [seed.companyId].filter(Boolean) };
   });
-  const [uploading, setUploading] = useState(false);
-  const [uploadError, setUploadError] = useState('');
   const [companiesSearchQuery, setCompaniesSearchQuery] = useState('');
   const [companiesDropdownOpen, setCompaniesDropdownOpen] = useState(false);
   const companiesDropdownRef = useRef(null);
@@ -230,25 +227,6 @@ function UserFormModal({ initial, companies, groups, onCompanyChange, onSave, on
   );
 
   const selectedCompanies = companies.filter(c => (form.companyIds || []).some(id => String(id) === String(c.id)));
-
-  const handleProfilePick = async (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    setUploading(true);
-    setUploadError('');
-    try {
-      const uploaded = await uploadFile(file, {
-        fileName: file.name,
-        prefix: 'profile-images',
-      });
-      setField({ profileImage: uploaded.fileUrl });
-    } catch (err) {
-      setUploadError(err.message || 'Unable to upload profile image.');
-    } finally {
-      setUploading(false);
-      event.target.value = '';
-    }
-  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -396,26 +374,6 @@ function UserFormModal({ initial, companies, groups, onCompanyChange, onSave, on
               className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]"
             />
           </div>
-
-          {isEdit && (
-            <div className="col-span-2">
-              <label className="block text-xs font-semibold text-gray-500 mb-1.5">Profile Image</label>
-              <div className="rounded-xl border border-dashed border-gray-200 p-3 bg-gray-50">
-                <input
-                  type="file"
-                  accept=".jpg,.jpeg,.png,.webp"
-                  onChange={handleProfilePick}
-                  disabled={uploading}
-                  className="w-full text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-white file:px-3 file:py-2 file:text-xs file:font-semibold file:text-[#05164D] hover:file:bg-gray-100 disabled:opacity-60"
-                />
-                {form.profileImage && (
-                  <p className="text-xs text-[#6D6E71] mt-2 truncate">{form.profileImage}</p>
-                )}
-                {uploadError && <p className="text-xs text-red-500 mt-2">{uploadError}</p>}
-                <p className="text-[11px] text-[#A5A5A5] mt-1">Uploads JPG, PNG, WEBP</p>
-              </div>
-            </div>
-          )}
 
           <div className="col-span-2">
             <label className="block text-xs font-semibold text-gray-500 mb-1.5">Groups {form.companyId && `(for ${companies.find(c => String(c.id) === String(form.companyId))?.name})`}</label>

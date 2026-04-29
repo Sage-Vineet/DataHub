@@ -421,6 +421,17 @@ export function deleteDocument(documentId) {
   return request(`/documents/${documentId}`, { method: 'DELETE' });
 }
 
+export function recordDocumentActivity(documentId, activityType) {
+  return request(`/documents/${documentId}/activity`, {
+    method: 'POST',
+    body: { activity_type: activityType },
+  }).then(unwrapPayload);
+}
+
+export function listDocumentActivity(documentId) {
+  return request(`/documents/${documentId}/activity`).then(ensureArray);
+}
+
 export function listFolderAccess(folderId) {
   return request(`/folders/${folderId}/access`).then(ensureArray);
 }

@@ -11,12 +11,15 @@ function normalizePriorityValue(priority) {
 
 function resolveReminderFrequencyDays(priority, explicitDays) {
   const parsedExplicit = Number.parseInt(explicitDays, 10);
+  const normalizedPriority = normalizePriorityValue(priority).toLowerCase();
+  const priorityFrequency = DEFAULT_REMINDER_FREQUENCIES[normalizedPriority] || 7;
+
   if (Number.isFinite(parsedExplicit) && parsedExplicit > 0) {
-    return parsedExplicit;
+    const isLegacySchemaDefault = parsedExplicit === 2 && normalizedPriority !== "medium";
+    return isLegacySchemaDefault ? priorityFrequency : parsedExplicit;
   }
 
-  const normalizedPriority = normalizePriorityValue(priority).toLowerCase();
-  return DEFAULT_REMINDER_FREQUENCIES[normalizedPriority] || 7;
+  return priorityFrequency;
 }
 
 function buildReminderFrequencyLabel(priority, explicitDays) {
@@ -52,8 +55,7 @@ function getReminderDeadline(dueDate) {
 }
 
 function resolveNextReminderAt(baseTime, priority, explicitDays, dueDate) {
-  const frequencyDays = resolveReminderFrequencyDays(priority, explicitDays);
-  const nextReminderAt = addDays(baseTime, frequencyDays);
+  const nextReminderAt = resolveScheduledReminderAt(baseTime, priority, explicitDays);
   if (!nextReminderAt) return null;
 
   const deadline = getReminderDeadline(dueDate);
@@ -62,6 +64,11 @@ function resolveNextReminderAt(baseTime, priority, explicitDays, dueDate) {
   }
 
   return nextReminderAt;
+}
+
+function resolveScheduledReminderAt(baseTime, priority, explicitDays) {
+  const frequencyDays = resolveReminderFrequencyDays(priority, explicitDays);
+  return addDays(baseTime, frequencyDays);
 }
 
 function isRequestResolved(status) {
@@ -76,5 +83,6 @@ module.exports = {
   addDays,
   getReminderDeadline,
   resolveNextReminderAt,
+  resolveScheduledReminderAt,
   isRequestResolved,
 };

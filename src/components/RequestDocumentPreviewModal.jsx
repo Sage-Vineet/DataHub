@@ -1,25 +1,33 @@
 import { useEffect, useState } from 'react';
 import { Archive, Download, Eye, File, FileText, Loader2, X, AlertCircle, CheckCircle, Clock } from 'lucide-react';
-import { fetchProtectedFileBlob } from '../lib/api';
+import * as XLSX from 'xlsx';
+import { useAuth } from '../context/AuthContext';
+import { fetchProtectedFileBlob, recordDocumentActivity } from '../lib/api';
+
+const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp'];
+const TEXT_EXTENSIONS = ['txt', 'md', 'json', 'log', 'xml', 'html', 'htm', 'yaml', 'yml'];
+const DELIMITED_EXTENSIONS = ['csv', 'tsv'];
+const SPREADSHEET_EXTENSIONS = ['xlsx', 'xls', 'xlsm', 'xlsb', 'ods'];
 
 function getMimeIcon(ext) {
   const normalized = (ext || '').toLowerCase();
   if (normalized === 'pdf') return { Icon: FileText, color: '#E74C3C', bg: '#FDECEA' };
-  if (['xlsx', 'xls', 'csv'].includes(normalized)) return { Icon: FileText, color: '#27AE60', bg: '#E8F8F0' };
+  if ([...SPREADSHEET_EXTENSIONS, ...DELIMITED_EXTENSIONS].includes(normalized)) return { Icon: FileText, color: '#27AE60', bg: '#E8F8F0' };
   if (['doc', 'docx'].includes(normalized)) return { Icon: FileText, color: '#2980B9', bg: '#EBF5FB' };
   if (['ppt', 'pptx'].includes(normalized)) return { Icon: FileText, color: '#E67E22', bg: '#FEF5E7' };
-  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'].includes(normalized)) return { Icon: Eye, color: '#9B59B6', bg: '#F5EEF8' };
+  if (IMAGE_EXTENSIONS.includes(normalized)) return { Icon: Eye, color: '#9B59B6', bg: '#F5EEF8' };
   if (['zip', 'rar', '7z', 'tar', 'gz'].includes(normalized)) return { Icon: Archive, color: '#7F8C8D', bg: '#F2F3F4' };
-  if (['txt', 'md', 'json'].includes(normalized)) return { Icon: FileText, color: '#6D6E71', bg: '#F4F6F7' };
+  if (TEXT_EXTENSIONS.includes(normalized)) return { Icon: FileText, color: '#6D6E71', bg: '#F4F6F7' };
   return { Icon: File, color: '#95A5A6', bg: '#F2F3F4' };
 }
 
 function getFileKind(ext) {
   const normalized = (ext || '').toLowerCase();
   if (normalized === 'pdf') return 'PDF Document';
-  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'].includes(normalized)) return 'Image File';
-  if (['txt', 'md', 'json'].includes(normalized)) return 'Text Document';
-  if (['xlsx', 'xls', 'csv'].includes(normalized)) return 'Spreadsheet';
+  if (IMAGE_EXTENSIONS.includes(normalized)) return 'Image File';
+  if (DELIMITED_EXTENSIONS.includes(normalized)) return 'Delimited Spreadsheet';
+  if (TEXT_EXTENSIONS.includes(normalized)) return 'Text Document';
+  if (SPREADSHEET_EXTENSIONS.includes(normalized)) return 'Spreadsheet';
   if (['doc', 'docx'].includes(normalized)) return 'Word Document';
   if (['ppt', 'pptx'].includes(normalized)) return 'Presentation';
   return normalized ? `${normalized.toUpperCase()} File` : 'Document';
@@ -27,7 +35,7 @@ function getFileKind(ext) {
 
 function canInlinePreview(ext) {
   const normalized = (ext || '').toLowerCase();
-  return ['pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'txt', 'md', 'json'].includes(normalized);
+  return ['pdf', ...IMAGE_EXTENSIONS, ...TEXT_EXTENSIONS, ...SPREADSHEET_EXTENSIONS, ...DELIMITED_EXTENSIONS].includes(normalized);
 }
 
 const STATUS_META = {
@@ -40,27 +48,67 @@ function getStatusMeta(status) {
   return STATUS_META[status] || STATUS_META['under-review'];
 }
 
+function buildSpreadsheetPreview(workbook) {
+  const sheetNames = workbook.SheetNames || [];
+  return sheetNames
+    .map((name) => {
+      const sheet = workbook.Sheets[name];
+      const rows = XLSX.utils.sheet_to_json(sheet, {
+        header: 1,
+        blankrows: false,
+        defval: '',
+        raw: false,
+      });
+      const width = rows.reduce((max, row) => Math.max(max, row.length), 0);
+      const normalizedRows = rows.slice(0, 101).map((row) =>
+        Array.from({ length: Math.min(width, 16) }, (_, index) => row[index] ?? '')
+      );
+      return {
+        name,
+        totalRows: rows.length,
+        totalColumns: width,
+        rows: normalizedRows,
+        truncated: rows.length > 101 || width > 16,
+      };
+    })
+    .filter((sheet) => sheet.rows.length > 0);
+}
+
 export default function RequestDocumentPreviewModal({ document: previewDocument, onClose }) {
+  const { user } = useAuth();
   const [blobUrl, setBlobUrl] = useState('');
   const [textPreview, setTextPreview] = useState('');
+  const [spreadsheetPreview, setSpreadsheetPreview] = useState([]);
+  const [activeSheetIndex, setActiveSheetIndex] = useState(0);
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [previewError, setPreviewError] = useState('');
 
   const normalizedExt = (previewDocument?.ext || '').toLowerCase();
   const { Icon, color, bg } = getMimeIcon(previewDocument?.ext);
-  const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'].includes(normalizedExt);
+  const isImage = IMAGE_EXTENSIONS.includes(normalizedExt);
   const isPdf = normalizedExt === 'pdf';
-  const isText = ['txt', 'md', 'json'].includes(normalizedExt);
+  const isText = TEXT_EXTENSIONS.includes(normalizedExt);
+  const isSpreadsheet = [...SPREADSHEET_EXTENSIONS, ...DELIMITED_EXTENSIONS].includes(normalizedExt);
   const canPreview = canInlinePreview(previewDocument?.ext) && Boolean(previewDocument?.fileUrl);
   const statusMeta = getStatusMeta(previewDocument?.status);
   const StatusIcon = statusMeta.Icon;
+  const activeSheet = spreadsheetPreview[activeSheetIndex] || spreadsheetPreview[0];
+  const shouldRecordActivity = !['broker', 'admin'].includes(`${user?.role || user?.effective_role || ''}`.toLowerCase());
+
+  useEffect(() => {
+    if (!previewDocument?.id || !shouldRecordActivity) return;
+    recordDocumentActivity(previewDocument.id, 'view').catch(() => {});
+  }, [previewDocument?.id, shouldRecordActivity]);
 
   useEffect(() => {
     let revokedUrl = '';
     let active = true;
 
+    /* eslint-disable react-hooks/set-state-in-effect -- This effect owns the external file fetch lifecycle and resets stale preview state before loading the next file. */
     setBlobUrl('');
     setTextPreview('');
+    setSpreadsheetPreview([]);
+    setActiveSheetIndex(0);
     setPreviewError('');
 
     if (!previewDocument?.fileUrl || !canPreview) {
@@ -68,6 +116,7 @@ export default function RequestDocumentPreviewModal({ document: previewDocument,
     }
 
     setLoadingPreview(true);
+    /* eslint-enable react-hooks/set-state-in-effect */
     fetchProtectedFileBlob(previewDocument.fileUrl)
       .then(async (blob) => {
         if (!active) return;
@@ -78,6 +127,15 @@ export default function RequestDocumentPreviewModal({ document: previewDocument,
           const text = await blob.text();
           if (!active) return;
           setTextPreview(text);
+        }
+        if (isSpreadsheet) {
+          const workbook = DELIMITED_EXTENSIONS.includes(normalizedExt)
+            ? XLSX.read(await blob.text(), { type: 'string', FS: normalizedExt === 'tsv' ? '\t' : ',' })
+            : XLSX.read(await blob.arrayBuffer(), { type: 'array', cellDates: true });
+          if (!active) return;
+          const sheets = buildSpreadsheetPreview(workbook);
+          setSpreadsheetPreview(sheets);
+          if (!sheets.length) setPreviewError('No readable sheets were found in this spreadsheet.');
         }
       })
       .catch((err) => {
@@ -92,7 +150,7 @@ export default function RequestDocumentPreviewModal({ document: previewDocument,
       active = false;
       if (revokedUrl) URL.revokeObjectURL(revokedUrl);
     };
-  }, [previewDocument?.id, previewDocument?.fileUrl, canPreview, isText]);
+  }, [previewDocument?.id, previewDocument?.fileUrl, canPreview, isText, isSpreadsheet, normalizedExt]);
 
   useEffect(() => {
     if (!previewDocument) return undefined;
@@ -105,12 +163,23 @@ export default function RequestDocumentPreviewModal({ document: previewDocument,
 
   if (!previewDocument) return null;
 
-  const handleDownload = () => {
-    if (!blobUrl) return;
+  const handleDownload = async () => {
+    if (!previewDocument?.fileUrl) return;
+    let objectUrl = blobUrl;
+    let shouldRevoke = false;
+    if (!objectUrl) {
+      const blob = await fetchProtectedFileBlob(previewDocument.fileUrl);
+      objectUrl = URL.createObjectURL(blob);
+      shouldRevoke = true;
+    }
     const link = document.createElement('a');
-    link.href = blobUrl;
+    link.href = objectUrl;
     link.download = previewDocument.name || 'document';
     link.click();
+    if (shouldRecordActivity) {
+      recordDocumentActivity(previewDocument.id, 'download').catch(() => {});
+    }
+    if (shouldRevoke) setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
   };
 
   const metaItems = [
@@ -164,6 +233,53 @@ export default function RequestDocumentPreviewModal({ document: previewDocument,
                 </div>
               ) : isPdf && blobUrl ? (
                 <iframe title={previewDocument.name} src={`${blobUrl}#toolbar=0&navpanes=0&scrollbar=1`} className="h-full w-full bg-white" />
+              ) : isSpreadsheet && activeSheet ? (
+                <div className="flex h-full flex-col bg-white">
+                  <div className="flex flex-wrap items-center gap-2 border-b border-gray-100 bg-[#FCFCFD] p-3">
+                    {spreadsheetPreview.map((sheet, index) => (
+                      <button
+                        type="button"
+                        key={sheet.name}
+                        onClick={() => setActiveSheetIndex(index)}
+                        className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
+                          index === activeSheetIndex
+                            ? 'bg-[#05164D] text-white'
+                            : 'bg-white text-[#6D6E71] ring-1 ring-gray-200 hover:bg-gray-50'
+                        }`}
+                      >
+                        {sheet.name}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="border-b border-gray-100 px-4 py-2 text-xs font-medium text-[#6D6E71]">
+                    Showing up to 100 rows and 16 columns from {activeSheet.totalRows} rows x {activeSheet.totalColumns} columns.
+                  </div>
+                  <div className="min-h-0 flex-1 overflow-auto">
+                    <table className="min-w-full border-separate border-spacing-0 text-left text-sm">
+                      <tbody>
+                        {activeSheet.rows.map((row, rowIndex) => (
+                          <tr key={`row-${rowIndex}`} className={rowIndex === 0 ? 'bg-[#F8FAFC]' : 'bg-white'}>
+                            {row.map((cell, cellIndex) => (
+                              <td
+                                key={`cell-${rowIndex}-${cellIndex}`}
+                                className={`max-w-[260px] whitespace-nowrap border-b border-r border-gray-100 px-3 py-2 text-[#2B2F38] ${
+                                  rowIndex === 0 ? 'font-semibold text-[#050505]' : ''
+                                }`}
+                              >
+                                <span className="block overflow-hidden text-ellipsis">{String(cell || '')}</span>
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {activeSheet.truncated ? (
+                    <div className="border-t border-gray-100 bg-[#FCFCFD] px-4 py-2 text-xs text-[#6D6E71]">
+                      Preview trimmed for performance. Download the file to view the full workbook.
+                    </div>
+                  ) : null}
+                </div>
               ) : isText ? (
                 <div className="h-full overflow-auto bg-[#FCFCFD] p-6">
                   <pre className="whitespace-pre-wrap break-words font-mono text-sm leading-6 text-[#2B2F38]">
@@ -208,7 +324,7 @@ export default function RequestDocumentPreviewModal({ document: previewDocument,
               <button
                 type="button"
                 onClick={handleDownload}
-                disabled={!blobUrl}
+                disabled={!previewDocument.fileUrl}
                 className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#05164D] px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-[#0b2a79] disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-[#A5A5A5]"
               >
                 <Download size={15} />

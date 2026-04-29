@@ -1,4 +1,5 @@
 const { supabase } = require("../db");
+const { resolveReminderFrequencyDays } = require("../utils/requestReminders");
 
 const REQUEST_CATEGORIES = ["Finance", "Legal", "Compliance", "HR", "Tax", "M&A", "Other"];
 const RESPONSE_TYPES = ["Upload", "Narrative", "Both"];
@@ -68,6 +69,7 @@ function validateAndNormalizeRequest(input = {}, fallbackCreatedBy, options = {}
       category,
       response_type: responseType,
       priority,
+      reminder_frequency_days: resolveReminderFrequencyDays(priority, input.reminder_frequency_days),
       status,
       due_date: dueDate,
       assigned_to: assignedTo,

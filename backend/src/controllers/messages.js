@@ -571,7 +571,9 @@ async function getDirectMessageRows(companyId, currentUserId, recipientId) {
       sender:users!direct_messages_sender_id_fkey(name, email, role)
     `)
     .eq("company_id", companyId)
-    .or(`and(sender_id.eq.${currentUserId},recipient_id.eq.${recipientId}),and(sender_id.eq.${recipientId},recipient_id.eq.${currentUserId})`);
+    .or(`and(sender_id.eq.${currentUserId},recipient_id.eq.${recipientId}),and(sender_id.eq.${recipientId},recipient_id.eq.${currentUserId})`)
+    .order('created_at', { ascending: false })
+    .limit(100);
 
   if (error) return [];
 
@@ -582,7 +584,7 @@ async function getDirectMessageRows(companyId, currentUserId, recipientId) {
     sender_role: m.sender?.role
   }));
 
-  return rows.sort(compareTimestampAsc);
+  return rows.reverse(); // since we ordered desc, reverse to asc
 }
 
 async function getLatestDirectMessagesByContact(companyId, selfUserId, contactIds) {

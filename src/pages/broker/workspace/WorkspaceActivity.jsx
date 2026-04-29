@@ -6,14 +6,17 @@ import {
   Clock,
   Filter,
   FileUp,
+  FileText,
   FolderPlus,
+  KeyRound,
+  MessageSquare,
   Search,
   Send,
   Upload,
   UserPlus,
   Users,
 } from 'lucide-react';
-import { getCompanyRequest, listCompanyActivity } from '../../../lib/api';
+import { listCompanyActivity } from '../../../lib/api';
 
 const EVENT_META = {
   request_created: {
@@ -28,11 +31,35 @@ const EVENT_META = {
     bg: '#DCFCE7',
     color: '#476E2C',
   },
+  request_updated: {
+    label: 'Request Updated',
+    icon: Send,
+    bg: '#E0F2FE',
+    color: '#0369A1',
+  },
+  request_document_linked: {
+    label: 'Request Document',
+    icon: FileText,
+    bg: '#ECFDF5',
+    color: '#047857',
+  },
+  request_narrative_updated: {
+    label: 'Narrative',
+    icon: FileText,
+    bg: '#F0F9FF',
+    color: '#0284C7',
+  },
   user_added: {
     label: 'User',
     icon: UserPlus,
     bg: '#DBEAFE',
     color: '#2563EB',
+  },
+  user_assigned: {
+    label: 'User Assigned',
+    icon: UserPlus,
+    bg: '#E0E7FF',
+    color: '#4F46E5',
   },
   group_created: {
     label: 'Group',
@@ -46,11 +73,23 @@ const EVENT_META = {
     bg: '#EDE9FE',
     color: '#6D28D9',
   },
+  folder_access_granted: {
+    label: 'Folder Access',
+    icon: KeyRound,
+    bg: '#FEF9C3',
+    color: '#A16207',
+  },
   document_uploaded: {
     label: 'Upload',
     icon: Upload,
     bg: '#DBEAFE',
     color: '#00648F',
+  },
+  document_status_changed: {
+    label: 'Document Status',
+    icon: CheckCircle,
+    bg: '#DCFCE7',
+    color: '#15803D',
   },
   folder_created: {
     label: 'Folder',
@@ -63,6 +102,24 @@ const EVENT_META = {
     icon: Bell,
     bg: '#FCE7F3',
     color: '#BE185D',
+  },
+  reminder_sent: {
+    label: 'Reminder Sent',
+    icon: Bell,
+    bg: '#FCE7F3',
+    color: '#BE185D',
+  },
+  message_sent: {
+    label: 'Message',
+    icon: MessageSquare,
+    bg: '#F3E8FF',
+    color: '#7E22CE',
+  },
+  direct_message_sent: {
+    label: 'Direct Message',
+    icon: MessageSquare,
+    bg: '#EDE9FE',
+    color: '#6D28D9',
   },
   upload: {
     label: 'Upload',
@@ -119,7 +176,6 @@ function getEventFilterOptions(timeline) {
 
 export default function WorkspaceActivity() {
   const { clientId } = useParams();
-  const [company, setCompany] = useState(null);
   const [timeline, setTimeline] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -135,13 +191,9 @@ export default function WorkspaceActivity() {
     const loadActivity = async ({ isInitial = false } = {}) => {
       if (isInitial) setLoading(true);
       try {
-        const [companyResponse, activityResponse] = await Promise.all([
-          getCompanyRequest(clientId).catch(() => null),
-          listCompanyActivity(clientId),
-        ]);
+        const activityResponse = await listCompanyActivity(clientId);
 
         if (cancelled) return;
-        setCompany(companyResponse);
         setTimeline(Array.isArray(activityResponse) ? activityResponse : []);
         setError('');
       } catch (err) {
@@ -155,7 +207,7 @@ export default function WorkspaceActivity() {
     loadActivity({ isInitial: true });
     intervalId = window.setInterval(() => {
       loadActivity();
-    }, 15000);
+    }, 60000);
 
     return () => {
       cancelled = true;
@@ -188,10 +240,10 @@ export default function WorkspaceActivity() {
   const filterOptions = useMemo(() => getEventFilterOptions(timeline), [timeline]);
 
   const summary = useMemo(() => {
-    const uploads = filteredTimeline.filter((item) => item.type === 'document_uploaded' || item.type === 'upload').length;
-    const requests = filteredTimeline.filter((item) => item.type === 'request_created' || item.type === 'request').length;
-    const users = filteredTimeline.filter((item) => item.type === 'user_added').length;
-    const groups = filteredTimeline.filter((item) => item.type === 'group_created' || item.type === 'group_member_added').length;
+    const uploads = filteredTimeline.filter((item) => ['document_uploaded', 'document_status_changed', 'upload'].includes(item.type)).length;
+    const requests = filteredTimeline.filter((item) => item.type?.startsWith('request_') || item.type === 'request').length;
+    const users = filteredTimeline.filter((item) => ['user_added', 'user_assigned'].includes(item.type)).length;
+    const groups = filteredTimeline.filter((item) => ['group_created', 'group_member_added', 'folder_access_granted'].includes(item.type)).length;
     return { uploads, requests, users, groups };
   }, [filteredTimeline]);
 
@@ -199,7 +251,6 @@ export default function WorkspaceActivity() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-[#050505]">Activity Log</h1>
-        <p className="mt-0.5 text-sm text-[#6D6E71]">Live workspace activity for {company?.name || 'this client'}</p>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -317,7 +368,7 @@ export default function WorkspaceActivity() {
 
         <div className="border-t border-gray-100 bg-gray-50/30 px-5 py-3">
           <p className="text-xs text-[#A5A5A5]">
-            {filteredTimeline.length} shown of {timeline.length} total events · refreshes every 15 seconds
+            {filteredTimeline.length} shown of {timeline.length} total events · refreshes every 60 seconds
           </p>
         </div>
       </div>

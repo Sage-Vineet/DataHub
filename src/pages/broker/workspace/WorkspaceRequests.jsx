@@ -211,6 +211,22 @@ function normalizePriority(priority) {
   return normalized || 'medium';
 }
 
+function getReminderFrequencyDays(priority, explicitDays) {
+  const normalized = `${priority ?? ''}`.trim().toLowerCase();
+  const priorityDays = normalized === 'critical' || normalized === 'high' ? 1 : normalized === 'medium' ? 2 : 7;
+  const parsed = Number.parseInt(explicitDays, 10);
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return parsed === 2 && normalized !== 'medium' ? priorityDays : parsed;
+  }
+  return priorityDays;
+}
+
+function getReminderFrequencyLabel(days) {
+  if (days === 1) return 'daily';
+  if (days === 7) return 'weekly';
+  return `every ${days} days`;
+}
+
 function getPriorityMeta(priority) {
   const normalized = `${priority ?? ''}`.trim().toLowerCase();
   if (PRIORITY_META[normalized]) return PRIORITY_META[normalized];
@@ -286,6 +302,7 @@ function mapApiRequestToUi(request) {
     subLabel: request.sub_label || '',
     description: request.description || '',
   });
+  const reminderFrequencyDays = getReminderFrequencyDays(request.priority, request.reminder_frequency_days);
   return {
     id: request.id,
     name: request.title || 'Untitled Request',
@@ -310,10 +327,8 @@ function mapApiRequestToUi(request) {
     narrativeResponse: '',
     linkedDocuments: [],
     reminderHistory: [],
-    reminderFrequencyDays: Number.parseInt(request.reminder_frequency_days, 10) || (request.priority === 'critical' || request.priority === 'high' ? 1 : request.priority === 'medium' ? 2 : 7),
-    notificationFrequency: (Number.parseInt(request.reminder_frequency_days, 10) || (request.priority === 'critical' || request.priority === 'high' ? 1 : request.priority === 'medium' ? 2 : 7)) === 1
-      ? 'daily'
-      : `every ${Number.parseInt(request.reminder_frequency_days, 10) || (request.priority === 'medium' ? 2 : 7)} days`,
+    reminderFrequencyDays,
+    notificationFrequency: getReminderFrequencyLabel(reminderFrequencyDays),
   };
 }
 
@@ -345,7 +360,7 @@ function buildCreateRequestPayload(form) {
       description: form.description.trim(),
       category: resolvedCategory,
       response_type: responseType,
-      priority: form.priority === 'custom' ? form.customPriorityLabel.trim() : normalizePriority(form.priority),
+      priority: normalizePriority(form.priority),
       status: 'pending',
       due_date: form.dueDate,
       assigned_to: null,
@@ -1284,7 +1299,6 @@ export default function WorkspaceRequests() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-[#050505]">{company?.name || 'Client'} Request Categories</h1>
-          <p className="text-sm text-[#6D6E71] mt-0.5">Enterprise workflow grouped by Finance, Legal and Compliance.</p>
         </div>
         {!selectedCategory && (
           <div className="flex items-center gap-3">
@@ -1437,7 +1451,6 @@ export default function WorkspaceRequests() {
         onCreate={createRequest}
         folderOptions={folderOptions}
         foldersLoading={foldersLoading}
-        allowCustomPriority
         extraContent={(
           <div className="rounded-2xl border border-[#BFDBFE] bg-[#EFF6FF] p-4 space-y-3">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">

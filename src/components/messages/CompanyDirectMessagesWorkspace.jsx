@@ -325,22 +325,19 @@ export default function CompanyDirectMessagesWorkspace({
       }
 
       if (singleListMode) {
-        loadSingleListContacts({ showLoader: false });
         if (selectedCompanyId && selectedRecipientId) {
           loadConversation(selectedCompanyId, selectedRecipientId);
         }
         return;
       }
 
-      if (!activeCompanyId) return;
-      loadContacts(activeCompanyId, { showLoader: false });
       if (selectedRecipientId) {
         loadConversation(activeCompanyId, selectedRecipientId);
       }
-    }, 10000);
+    }, 30000);
 
     return () => window.clearInterval(interval);
-  }, [activeCompanyId, companyOptionsKey, selectedCompanyId, selectedRecipientId, singleListMode]);
+  }, [activeCompanyId, selectedCompanyId, selectedRecipientId, singleListMode]);
 
   useEffect(() => {
     if (!messagesRef.current) return;

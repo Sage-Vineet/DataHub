@@ -101,6 +101,26 @@ const deleteDocument = asyncHandler(async (req, res) => {
   res.status(204).send();
 });
 
+const recordDocumentActivity = asyncHandler(async (req, res) => {
+  const { activity_type } = req.body;
+  if (!activity_type || !['view', 'download'].includes(activity_type)) {
+    return res.status(400).json({ error: "Invalid activity_type. Must be 'view' or 'download'" });
+  }
+  
+  const userId = req.user?.id;
+  if (!userId) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  const activity = await documentService.recordDocumentActivity(req.params.id, userId, activity_type);
+  res.status(201).json(activity);
+});
+
+const getDocumentActivity = asyncHandler(async (req, res) => {
+  const activity = await documentService.getDocumentActivity(req.params.id);
+  res.json(activity);
+});
+
 module.exports = {
   listFolders,
   createFolder,
@@ -111,5 +131,7 @@ module.exports = {
   addFolderDocument,
   deleteDocument,
   listFolderTree,
+  recordDocumentActivity,
+  getDocumentActivity,
 };
 
