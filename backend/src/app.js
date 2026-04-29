@@ -5,6 +5,7 @@ const { errorHandler } = require("./middleware/error");
 
 // Routes
 const authRoutes = require("./routes/auth");
+const publicRoutes = require("./routes/public");
 const { requireAuth } = require("./middleware/auth");
 const { quickBooksAuth } = require("./middleware/quickbooksAuth");
 const userRoutes = require("./routes/users");
@@ -111,6 +112,7 @@ app.get("/health", (req, res) => res.json({ ok: true }));
 
 // Standard Routes
 app.use("/auth", authRoutes);
+app.use("/public", publicRoutes);
 app.use("/users", userRoutes);
 app.use("/companies", companyRoutes);
 app.use("/", tokenRoutes);

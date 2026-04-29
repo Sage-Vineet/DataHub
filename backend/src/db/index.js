@@ -1,6 +1,7 @@
-const { supabase } = require("../lib/supabaseClient");
+const { supabase, hasSupabaseCredentials } = require("../lib/supabaseClient");
 
 module.exports = {
   supabase,
-  engine: "supabase"
+  engine: hasSupabaseCredentials ? "supabase" : "unconfigured",
+  ready: Promise.resolve(),
 };

@@ -8,12 +8,18 @@ if (!supabaseUrl || !supabaseKey) {
   console.warn("⚠️ Supabase credentials missing or SUPABASE_SERVICE_ROLE_KEY is not set. Falling back to ANON key which will fail RLS policies.");
 }
 
-const supabase = createClient(supabaseUrl, supabaseKey || process.env.SUPABASE_ANON_KEY, {
-  auth: {
-    persistSession: false,
-  },
-});
+const hasSupabaseCredentials = !!(supabaseUrl && (supabaseKey || process.env.SUPABASE_ANON_KEY));
 
-console.log("⚡ Supabase Client Initialized");
+const supabase = hasSupabaseCredentials
+  ? createClient(supabaseUrl, supabaseKey || process.env.SUPABASE_ANON_KEY, {
+      auth: {
+        persistSession: false,
+      },
+    })
+  : null;
 
-module.exports = { supabase };
+if (hasSupabaseCredentials) {
+  console.log("Supabase client initialized");
+}
+
+module.exports = { supabase, hasSupabaseCredentials, supabaseUrl };
