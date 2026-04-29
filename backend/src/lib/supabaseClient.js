@@ -71,4 +71,4 @@ if (hasSupabaseCredentials) {
   console.log("Supabase client initialized");
 }
 
-module.exports = { supabase, hasSupabaseCredentials };
+module.exports = { supabase, hasSupabaseCredentials, supabaseUrl };
