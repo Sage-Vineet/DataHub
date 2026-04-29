@@ -1,4 +1,5 @@
 import CashflowQBSummary from "./CashflowQBSummary";
+import CashflowSummary from "./CashflowSummary";
 
 export default function CashflowReport({
   reportType,
@@ -15,9 +16,13 @@ export default function CashflowReport({
   const resolvedEntityName = entityName || clientName || "Company";
 
   if (reportType === "Detail") {
+    const rows = Array.isArray(detailedData?.rows) ? detailedData.rows : (Array.isArray(detailedData) ? detailedData : []);
+    const columns = detailedData?.columns || undefined;
+
     return (
-      <CashflowDetail
-        data={detailedData}
+      <CashflowSummary
+        data={rows}
+        columns={columns}
         title="Cash Flow"
         subtitle="System-defined Multi-Year Comparison"
         entityName={resolvedEntityName}
