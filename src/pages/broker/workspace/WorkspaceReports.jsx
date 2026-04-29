@@ -694,28 +694,28 @@ export default function WorkspaceReports() {
                     </div>
                   </div>
                 )}
-
-                <div className="flex flex-col gap-1.5">
-                  <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
-                    Accounting Method
-                  </label>
-                  <div className="relative min-w-[120px]">
-                    <select
-                      value={accountingMethod}
-                      onChange={(event) => setAccountingMethod(event.target.value)}
-                      className="h-9 w-full appearance-none rounded-md border border-border-input bg-bg-card pl-3 pr-9 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-                    >
-                      <option>Cash</option>
-                      <option>Accrual</option>
-                    </select>
-                    <ChevronDown
-                      size={14}
-                      className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-text-muted"
-                    />
-                  </div>
-                </div>
               </>
             )}
+
+            <div className="flex flex-col gap-1.5">
+              <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
+                Accounting Method
+              </label>
+              <div className="relative min-w-[120px]">
+                <select
+                  value={accountingMethod}
+                  onChange={(event) => setAccountingMethod(event.target.value)}
+                  className="h-9 w-full appearance-none rounded-md border border-border-input bg-bg-card pl-3 pr-9 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                >
+                  <option>Cash</option>
+                  <option>Accrual</option>
+                </select>
+                <ChevronDown
+                  size={14}
+                  className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-text-muted"
+                />
+              </div>
+            </div>
 
             <div className="ml-auto flex items-end gap-3 self-end">
               <div className="flex flex-col gap-1.5">
