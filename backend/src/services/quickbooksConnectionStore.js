@@ -91,6 +91,7 @@ async function getQuickBooksConnectionByRealmId(realmId) {
 async function upsertQuickBooksConnection(connection) {
   const {
     companyId,
+    userId,
     realmId,
     companyName,
     accessToken,
@@ -132,24 +133,32 @@ async function upsertQuickBooksConnection(connection) {
   const syncedEntitiesData = serializeSyncedEntities(syncedEntities);
   const normalizedConnectedAt = connectedAt || new Date().toISOString();
 
+  const payload = {
+    company_id: companyId,
+    realm_id: realmId,
+    company_name: companyName || null,
+    access_token: accessToken,
+    refresh_token: refreshToken,
+    token_expires_at: tokenExpiresAt || null,
+    connected_at: normalizedConnectedAt,
+    last_synced: lastSynced || null,
+    environment: environment || "sandbox",
+    oauth_client_id: oauthClientId,
+    redirect_uri: redirectUri,
+    synced_entities: syncedEntitiesData,
+    is_connected: true,
+    updated_at: new Date().toISOString()
+  };
+
+  if (userId) {
+    payload.user_id = userId;
+  }
+
+  console.log("DEBUG UPSERT - user_id:", userId, "company_id:", companyId, "payload:", payload);
+
   const { data, error } = await supabase
     .from("quickbooks_connections")
-    .upsert({
-      company_id: companyId,
-      realm_id: realmId,
-      company_name: companyName || null,
-      access_token: accessToken,
-      refresh_token: refreshToken,
-      token_expires_at: tokenExpiresAt || null,
-      connected_at: normalizedConnectedAt,
-      last_synced: lastSynced || null,
-      environment: environment || "sandbox",
-      oauth_client_id: oauthClientId,
-      redirect_uri: redirectUri,
-      synced_entities: syncedEntitiesData,
-      is_connected: true,
-      updated_at: new Date().toISOString()
-    }, { onConflict: "company_id" })
+    .upsert(payload, { onConflict: "company_id" })
     .select("*")
     .single();
 

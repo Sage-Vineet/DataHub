@@ -1,5 +1,4 @@
 const {
-  deleteQuickBooksConnection,
   softDisconnectQuickBooks,
   getQuickBooksConnectionByCompanyId,
   upsertQuickBooksConnection,
@@ -9,7 +8,7 @@ const { logQuickBooksDebug, maskValue } = require("./quickbooksLogger");
 let qbStates = {};
 
 const isSandbox =
-  process.env.NODE_ENV !== "production" ||
+  process.env.QB_ENVIRONMENT !== "production" ||
   process.env.QB_ENVIRONMENT === "sandbox";
 const QB_BASE_URL =
   process.env.QB_BASE_URL ||
@@ -135,6 +134,7 @@ async function setQBConfig(clientId, newConfig) {
 
   const persistedState = await upsertQuickBooksConnection({
     companyId: clientId,
+    userId: nextState.userId || null,
     realmId: nextState.realmId,
     companyName: nextState.companyName || null,
     accessToken: nextState.accessToken,

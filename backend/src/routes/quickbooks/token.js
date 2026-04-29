@@ -347,7 +347,7 @@ router.get("/api/auth/callback", async (req, res) => {
   const state = parseOAuthState(rawState);
 
   let clientId = state.companyId || state.clientId;
-  const userId = state.userId;
+  const userId = state.userId || req.user?.id;
 
   if (!clientId && state.redirect) {
     const match = state.redirect.match(/\/client\/([^/]+)/);
@@ -556,6 +556,7 @@ router.get("/api/auth/callback", async (req, res) => {
     ).toISOString();
 
     const tokenData = {
+      userId,
       realmId,
       accessToken: tokenResponse.data.access_token,
       refreshToken: tokenResponse.data.refresh_token,

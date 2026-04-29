@@ -2,70 +2,21 @@ const { createClient } = require("@supabase/supabase-js");
 require("dotenv").config();
 
 const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
-const hasSupabaseCredentials = Boolean(supabaseUrl && supabaseKey);
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-if (!hasSupabaseCredentials) {
-  console.warn("Supabase credentials missing in environment variables. Starting backend without Supabase.");
+if (!supabaseUrl || !supabaseKey) {
+  console.warn("⚠️ Supabase credentials missing or SUPABASE_SERVICE_ROLE_KEY is not set. Falling back to ANON key which will fail RLS policies.");
 }
 
-function createUnavailableResponse() {
-  const error = new Error(
-    "Database is not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_ANON_KEY).",
-  );
-  return Promise.resolve({ data: null, error });
-}
-
-function createUnavailableQueryBuilder() {
-  return new Proxy(
-    {},
-    {
-      get(_target, prop) {
-        if (prop === "then") {
-          return (resolve) => resolve({
-            data: null,
-            error: new Error(
-              "Database is not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_ANON_KEY).",
-            ),
-          });
-        }
-        return () => createUnavailableQueryBuilder();
-      },
-    },
-  );
-}
-
-const unavailableSupabase = new Proxy(
-  {},
-  {
-    get(_target, prop) {
-      if (prop === "from" || prop === "rpc" || prop === "schema") {
-        return () => createUnavailableQueryBuilder();
-      }
-
-      if (prop === "auth" || prop === "storage" || prop === "functions") {
-        return new Proxy(
-          {},
-          {
-            get() {
-              return () => createUnavailableResponse();
-            },
-          },
-        );
-      }
-
-      return undefined;
-    },
-  },
-);
+const hasSupabaseCredentials = !!(supabaseUrl && (supabaseKey || process.env.SUPABASE_ANON_KEY));
 
 const supabase = hasSupabaseCredentials
-  ? createClient(supabaseUrl, supabaseKey, {
+  ? createClient(supabaseUrl, supabaseKey || process.env.SUPABASE_ANON_KEY, {
       auth: {
         persistSession: false,
       },
     })
-  : unavailableSupabase;
+  : null;
 
 if (hasSupabaseCredentials) {
   console.log("Supabase client initialized");
