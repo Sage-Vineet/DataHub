@@ -3,7 +3,7 @@ const { listPublicUsers, getPublicUser } = require("../controllers/users");
 
 const router = express.Router();
 
-router.get("/public/users", listPublicUsers);
-router.get("/public/users/:id", getPublicUser);
+router.get("/users", listPublicUsers);
+router.get("/users/:id", getPublicUser);
 
 module.exports = router;

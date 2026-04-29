@@ -112,7 +112,7 @@ app.get("/health", (req, res) => res.json({ ok: true }));
 
 // Standard Routes
 app.use("/auth", authRoutes);
-app.use("/", publicRoutes);
+app.use("/public", publicRoutes);
 app.use("/users", userRoutes);
 app.use("/companies", companyRoutes);
 app.use("/", tokenRoutes);
