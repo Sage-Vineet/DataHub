@@ -58,7 +58,11 @@ function findLastNumericValue(columns) {
   const list = Array.isArray(columns) ? columns : [];
   for (let index = list.length - 1; index >= 0; index -= 1) {
     const raw = list[index]?.value;
-    if (raw === undefined || raw === null || raw === "") continue;
+    if (raw === undefined || raw === null || String(raw).trim() === "") continue;
+    
+    // Skip columns that don't contain any numbers (e.g., text labels)
+    if (!/[0-9]/.test(String(raw))) continue;
+
     const parsed = toNumber(String(raw));
     if (!Number.isNaN(parsed)) return parsed;
   }
@@ -147,38 +151,26 @@ function parseSummaryRows(rows, indexOffset = 0) {
   let childIndex = indexOffset;
   for (let index = 0; index < rows.length; index += 1) {
     const row = rows[index];
-    const type = String(row?.type || "").toLowerCase();
     const childRows = getChildRows(row);
+    const hasChildren = childRows.length > 0;
 
-    if (
-      type === "section" ||
-      (childRows.length > 0 &&
-        (row?.Header?.ColData?.length ||
-          row?.Summary?.ColData?.length ||
-          row?.ColData?.length))
-    ) {
+    // Case 1: Section Row (has Header)
+    if (row.Header) {
       const name = getRowLabel(row, "Section");
-      const summaryCols = row?.Summary?.ColData || [];
-      const totalAmount = summaryCols.length
-        ? findLastNumericValue(summaryCols)
-        : findLastNumericValue(row?.ColData);
-
+      const cleanName = String(name).replace(/^Total\s+/i, "").replace(/[^a-zA-Z0-9]/g, "-").toLowerCase();
+      const sectionId = row.group || row.id || `section-${cleanName}-${indexOffset + index}`;
+      
       const children = [];
-      if (childRows.length > 0) {
+      if (hasChildren) {
         children.push(...parseSummaryRows(childRows, childIndex));
+        childIndex += children.length;
       }
-      childIndex += children.length;
 
-      const cleanName = String(name || "")
-        .replace(/^Total\s+/i, "")
-        .replace(/[^a-zA-Z0-9]/g, "-")
-        .toLowerCase();
-      const sectionId =
-        row?.group || row?.id || `section-${cleanName}-${indexOffset + index}`;
+      const totalAmount = row.Summary ? findLastNumericValue(row.Summary.ColData) : findLastNumericValue(row.Header.ColData);
 
-      if (row?.Summary && children.length > 0) {
-        const summaryName =
-          row?.Summary?.ColData?.[0]?.value || `Total ${cleanName}`;
+      // Case 4: Summary Row -> Render AFTER children
+      if (row.Summary && row.Summary.ColData) {
+        const summaryName = row.Summary.ColData[0]?.value || `Total ${name}`;
         const lastChild = children[children.length - 1];
         const alreadyHasTotal =
           lastChild &&
@@ -190,6 +182,7 @@ function parseSummaryRows(rows, indexOffset = 0) {
             id: `total-${cleanName}-${indexOffset + index}`,
             name: summaryName,
             amount: totalAmount,
+            amounts: { y5: totalAmount },
             type: "total",
           });
         }
@@ -197,54 +190,110 @@ function parseSummaryRows(rows, indexOffset = 0) {
 
       result.push({
         id: sectionId,
-        name: cleanName
-          .replace(/-/g, " ")
-          .replace(/\b\w/g, (letter) => letter.toUpperCase()),
+        name: name,
         amount: totalAmount,
         amounts: { y5: totalAmount },
         type: "header",
         children: children.length > 0 ? children : undefined,
       });
-      continue;
-    }
-
-    if (type === "data" || Array.isArray(row?.ColData)) {
+    } 
+    // Case 2 & 3: Data Row (has ColData)
+    else if (row.ColData) {
       const name = getRowLabel(row, "Unknown");
-      const amount = findLastNumericValue(row?.ColData);
-      const raw = String(row?.ColData?.[row?.ColData?.length - 1]?.value || "");
-      const normalizedAmount =
-        raw.includes("(") && raw.includes(")") ? -Math.abs(amount) : amount;
-
-      const key = String(name || "")
-        .replace(/[^a-zA-Z0-9]/g, "-")
-        .toLowerCase();
-
-      result.push({
-        id:
-          row?.ColData?.[0]?.id ||
-          row?.id ||
-          `data-${key}-${indexOffset + index}`,
-        name,
+      const amount = findLastNumericValue(row.ColData);
+      const raw = String(row.ColData[row.ColData.length - 1]?.value || "");
+      const normalizedAmount = raw.includes("(") && raw.includes(")") ? -Math.abs(amount) : amount;
+      
+      const key = String(name).replace(/[^a-zA-Z0-9]/g, "-").toLowerCase();
+      
+      const node = {
+        id: row.ColData[0]?.id || row.id || `data-${key}-${indexOffset + index}`,
+        name: name,
         amount: normalizedAmount,
         amounts: { y5: normalizedAmount },
         type: isTotalLikeLabel(name) ? "total" : "data",
-      });
-      continue;
+      };
+
+      if (hasChildren) {
+        const children = parseSummaryRows(childRows, childIndex);
+        childIndex += children.length;
+        
+        if (row.Summary && row.Summary.ColData) {
+           const summaryName = row.Summary.ColData[0]?.value || `Total ${name}`;
+           const totalAmount = findLastNumericValue(row.Summary.ColData);
+           
+           const lastChild = children[children.length - 1];
+           const alreadyHasTotal =
+             lastChild &&
+             lastChild.type === "total" &&
+             String(lastChild.name || "") === String(summaryName || "");
+
+           if (!alreadyHasTotal) {
+             children.push({
+               id: `total-${key}-${indexOffset + index}`,
+               name: summaryName,
+               amount: totalAmount,
+               amounts: { y5: totalAmount },
+               type: "total",
+             });
+           }
+        }
+        node.children = children.length > 0 ? children : undefined;
+      }
+      
+      result.push(node);
     }
+    // Case 5: Row without type field, no Header, no ColData but might have children or summary
+    else {
+      if (hasChildren) {
+        const children = parseSummaryRows(childRows, childIndex);
+        childIndex += children.length;
+        
+        const sectionId = row.id || `section-unknown-${indexOffset + index}`;
+        const node = {
+          id: sectionId,
+          name: "Other",
+          amount: 0,
+          type: "header",
+          children: children.length > 0 ? children : undefined,
+        };
 
-    if (Array.isArray(row?.Summary?.ColData)) {
-      const name = row?.Summary?.ColData?.[0]?.value || "Total";
-      const amount = findLastNumericValue(row.Summary.ColData);
-      const key = String(name || "")
-        .replace(/[^a-zA-Z0-9]/g, "-")
-        .toLowerCase();
+        if (row.Summary && row.Summary.ColData) {
+          const summaryName = row.Summary.ColData[0]?.value || "Total Other";
+          const totalAmount = findLastNumericValue(row.Summary.ColData);
+          node.amount = totalAmount;
+          node.amounts = { y5: totalAmount };
+          
+          const lastChild = children[children.length - 1];
+          const alreadyHasTotal =
+            lastChild &&
+            lastChild.type === "total" &&
+            String(lastChild.name || "") === String(summaryName || "");
 
-      result.push({
-        id: row?.id || `summary-${key}-${indexOffset + index}`,
-        name,
-        amount,
-        type: "total",
-      });
+          if (!alreadyHasTotal) {
+            if (!node.children) node.children = [];
+            node.children.push({
+               id: `total-unknown-${indexOffset + index}`,
+               name: summaryName,
+               amount: totalAmount,
+               amounts: { y5: totalAmount },
+               type: "total",
+            });
+          }
+        }
+        
+        result.push(node);
+      } else if (row.Summary && row.Summary.ColData) {
+        const summaryName = row.Summary.ColData[0]?.value || "Total";
+        const totalAmount = findLastNumericValue(row.Summary.ColData);
+        result.push({
+          id: row.id || `summary-standalone-${indexOffset + index}`,
+          name: summaryName,
+          amount: totalAmount,
+          amounts: { y5: totalAmount },
+          type: "total",
+        });
+      }
     }
   }
 
@@ -634,8 +683,7 @@ function cashflowGetRowName(row) {
 
 function cashflowGetRowTotal(row) {
   const colData = row?.Summary?.ColData || row?.ColData || [];
-  const lastValue = colData[colData.length - 1]?.value;
-  return toNumber(String(lastValue ?? ""));
+  return findLastNumericValue(colData);
 }
 
 function cashflowLineDescription(line) {
