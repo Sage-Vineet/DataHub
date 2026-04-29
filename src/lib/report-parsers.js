@@ -683,8 +683,7 @@ function cashflowGetRowName(row) {
 
 function cashflowGetRowTotal(row) {
   const colData = row?.Summary?.ColData || row?.ColData || [];
-  const lastValue = colData[colData.length - 1]?.value;
-  return toNumber(String(lastValue ?? ""));
+  return findLastNumericValue(colData);
 }
 
 function cashflowLineDescription(line) {
