@@ -2,6 +2,7 @@ const {
   softDisconnectQuickBooks,
   getQuickBooksConnectionByCompanyId,
   upsertQuickBooksConnection,
+  deleteQuickBooksConnection,
 } = require("./services/quickbooksConnectionStore");
 const { logQuickBooksDebug, maskValue } = require("./quickbooksLogger");
 
@@ -186,18 +187,45 @@ async function disconnectConfig(clientId) {
     throw new Error("disconnectConfig called without clientId.");
   }
 
+  // Attempt to revoke the token from Intuit
+  const currentState = qbStates[clientId] || (await loadQBConfig(clientId));
+  if (currentState && (currentState.refreshToken || currentState.accessToken)) {
+    try {
+      const basicToken = currentState.basicToken || buildBasicToken(currentState.clientId || DEFAULT_CONFIG.clientId, currentState.clientSecret || DEFAULT_CONFIG.clientSecret);
+      const tokenToRevoke = currentState.refreshToken || currentState.accessToken;
+      const axios = require("axios");
+      
+      if (tokenToRevoke) {
+        await axios.post(
+          "https://developer.api.intuit.com/v2/oauth2/tokens/revoke",
+          new URLSearchParams({ token: tokenToRevoke }),
+          {
+            headers: {
+              Authorization: `Basic ${basicToken}`,
+              "Content-Type": "application/x-www-form-urlencoded",
+              Accept: "application/json",
+            },
+          }
+        );
+        console.log(`[QB Disconnect] Intuit token revoked for client: ${clientId}`);
+      }
+    } catch (revokeErr) {
+      console.warn(`[QB Disconnect] Intuit token revocation failed (may be expired):`, revokeErr.response?.data || revokeErr.message);
+    }
+  }
+
   // 1. Clear in-memory state FIRST
   delete qbStates[clientId];
   console.log(`[QB Disconnect] In-memory state cleared for client: ${clientId}`);
 
-  // 2. Persist to DB: set is_connected=false, null all tokens
-  const success = await softDisconnectQuickBooks(clientId);
+  // 2. Persist to DB: HARD DELETE connection instead of soft disconnect
+  const success = await deleteQuickBooksConnection(clientId);
   if (!success) {
-    console.error(`[QB Disconnect] ❌ DB persist FAILED for client: ${clientId} — state may be inconsistent`);
-    throw new Error("Failed to persist QuickBooks disconnect to database.");
+    console.error(`[QB Disconnect] ❌ DB delete FAILED for client: ${clientId}`);
+    throw new Error("Failed to delete QuickBooks connection from database.");
   }
 
-  console.log(`[QB Disconnect] ✅ Complete for client: ${clientId} — memory cleared, DB updated`);
+  console.log(`[QB Disconnect] ✅ Complete for client: ${clientId} — memory cleared, DB connection deleted`);
 }
 
 function isConnected(clientId) {

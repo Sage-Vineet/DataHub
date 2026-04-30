@@ -1,5 +1,6 @@
 const express = require("express");
 const axios = require("axios");
+const crypto = require("crypto");
 const { supabase } = require("../../db");
 const {
   getQBConfig,
@@ -59,6 +60,7 @@ function buildOAuthState(redirectHash, companyId, role = "broker", userId = null
       clientId: companyId, // for backward compat
       role,
       userId,
+      nonce: crypto.randomBytes(16).toString("hex"),
     }),
   );
 }
@@ -321,7 +323,7 @@ router.get("/api/auth/quickbooks", requireAuth, async (req, res) => {
     req.user?.role === "buyer" ? "client" : req.user?.role || "broker",
     req.user?.id
   );
-  const authUrl = `https://appcenter.intuit.com/connect/oauth2?client_id=${qbClientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${encodeURIComponent(scope)}&state=${state}`;
+  const authUrl = `https://appcenter.intuit.com/connect/oauth2?client_id=${qbClientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${encodeURIComponent(scope)}&state=${state}&prompt=consent`;
 
   logQuickBooksDebug("oauth_start", {
     clientId,
