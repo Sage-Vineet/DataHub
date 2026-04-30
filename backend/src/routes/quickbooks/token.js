@@ -323,7 +323,12 @@ router.get("/api/auth/quickbooks", requireAuth, async (req, res) => {
     req.user?.role === "buyer" ? "client" : req.user?.role || "broker",
     req.user?.id
   );
-  const authUrl = `https://appcenter.intuit.com/connect/oauth2?client_id=${qbClientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${encodeURIComponent(scope)}&state=${state}&prompt=login%20consent`;
+  
+  // Force company selection screen: 
+  // 'consent' ensures the user sees the permissions screen
+  // 'login' forces re-authentication if session is stale
+  // 'select_company' is a known (if semi-undocumented) param to force realm picker
+  const authUrl = `https://appcenter.intuit.com/connect/oauth2?client_id=${qbClientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${encodeURIComponent(scope)}&state=${state}&prompt=login%20consent%20select_company`;
 
   logQuickBooksDebug("oauth_start", {
     clientId,
@@ -334,10 +339,10 @@ router.get("/api/auth/quickbooks", requireAuth, async (req, res) => {
   });
   logQuickBooksDebug("oauth_redirect_created", {
     clientId,
-    authUrl,
+    authUrl: authUrl.split('&state=')[0] + '&state=...' // Log URL without sensitive state
   });
 
-  console.log(`Redirecting to QuickBooks OAuth for client: ${clientId}...`);
+  console.log(`[OAuth Start] Redirecting to QuickBooks for client ${clientId} with prompt=login consent select_company`);
   res.redirect(authUrl);
 });
 
