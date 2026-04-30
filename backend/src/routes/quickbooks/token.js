@@ -323,7 +323,7 @@ router.get("/api/auth/quickbooks", requireAuth, async (req, res) => {
     req.user?.role === "buyer" ? "client" : req.user?.role || "broker",
     req.user?.id
   );
-  const authUrl = `https://appcenter.intuit.com/connect/oauth2?client_id=${qbClientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${encodeURIComponent(scope)}&state=${state}&prompt=consent`;
+  const authUrl = `https://appcenter.intuit.com/connect/oauth2?client_id=${qbClientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${encodeURIComponent(scope)}&state=${state}&prompt=login%20consent`;
 
   logQuickBooksDebug("oauth_start", {
     clientId,
