@@ -328,7 +328,13 @@ router.get("/api/auth/quickbooks", requireAuth, async (req, res) => {
   // 'consent' ensures the user sees the permissions screen
   // 'login' forces re-authentication if session is stale
   // 'select_company' is a known (if semi-undocumented) param to force realm picker
-  const authUrl = `https://appcenter.intuit.com/connect/oauth2?client_id=${qbClientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=${encodeURIComponent(scope)}&state=${state}&prompt=login%20consent%20select_company`;
+const authUrl = `https://appcenter.intuit.com/connect/oauth2
+?client_id=${qbClientId}
+&redirect_uri=${encodeURIComponent(redirectUri)}
+&response_type=code
+&scope=${encodeURIComponent(scope)}
+&state=${state}
+&prompt=login consent`;
 
   logQuickBooksDebug("oauth_start", {
     clientId,
