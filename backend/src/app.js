@@ -77,7 +77,6 @@ app.use("/users", userRoutes);
 app.use("/companies", companyRoutes);
 app.use("/", tokenRoutes);
 app.use("/", uploadRoutes);
-app.use("/", geminipdf);
 app.use("/", workspacePageStateRoutes);
 
 async function checkQBAuth(req, res, next) {
@@ -172,7 +171,10 @@ function isQuickBooksRoute(pathname = "") {
     pathname.startsWith("/reconciliation-data") ||
     pathname.startsWith("/reconciliation-variance") ||
     pathname.startsWith("/tax-reconciliation") ||
-    pathname.startsWith("/refresh-token")
+    pathname.startsWith("/reconciliation-matrix") ||
+    pathname.startsWith("/pl-data") ||
+    pathname.startsWith("/quickbooks-pl") ||
+    pathname.startsWith("/tax-data")
   );
 }
 
@@ -194,6 +196,7 @@ app.use("/", quickBooksAuth, invoiceFinanceRoutes);
 app.use("/", quickBooksAuth, cashflowRoutes);
 app.use("/", quickBooksAuth, reconciliationRoutes);
 app.use("/", quickBooksAuth, taxReconciliationRoutes);
+app.use("/", quickBooksAuth, geminipdf);
 app.use("/", quickBooksAuth, bankStatementRoutes);
 app.use("/api", quickBooksAuth, bankVsBooksRoutes);
 app.use("/", groupRoutes);

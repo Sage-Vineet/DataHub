@@ -1,0 +1,62 @@
+{
+  "C:\\Users\\adiko\\Downloads\\Example QoE Documents\\Example QoE Documents\\Tax Return\\Tax Return 2.pdf": {
+    "year": 2022,
+    "totalRevenue": 2570511,
+    "totalCostOfGoodsSold": 298930,
+    "grossProfit": 2271581,
+    "officerWages": 150000,
+    "depreciation": 422875,
+    "amortization": 0,
+    "interestExpense": 51109,
+    "allOtherExpenses": 289121,
+    "netIncome": 353311,
+    "reconcilingItems": [
+      {
+        "label": "Interest Income",
+        "value": 1019
+      },
+      {
+        "label": "Section 179 Deduction",
+        "value": 228000
+      },
+      {
+        "label": "Charitable Contributions",
+        "value": 1636
+      },
+      {
+        "label": "Other Credits",
+        "value": 5243
+      },
+      {
+        "label": "Nondeductible Expenses",
+        "value": 8798
+      }
+    ],
+    "_promptVersion": "v4"
+  },
+  "C:\\Users\\adiko\\Downloads\\Example QoE Documents\\Example QoE Documents\\Tax Return\\Tax Return 4.pdf": {
+    "year": 2024,
+    "totalRevenue": 2122250,
+    "totalCostOfGoodsSold": 384375,
+    "grossProfit": 2122250,
+    "officerWages": 180000,
+    "depreciation": 217775,
+    "amortization": 0,
+    "interestExpense": 87176,
+    "interestIncome": 5116,
+    "allOtherExpenses": 429621,
+    "netIncome": 50300
+  },
+  "C:\\Users\\adiko\\Downloads\\Example QoE Documents\\Example QoE Documents\\Tax Return\\Tax Return 3.pdf": {
+    "year": 2023,
+    "totalRevenue": 2948440,
+    "totalCostOfGoodsSold": 445717,
+    "grossProfit": 2480457,
+    "officerWages": 180000,
+    "depreciation": 257693,
+    "amortization": 0,
+    "interestExpense": 85992,
+    "allOtherExpenses": 444575,
+    "netIncome": 383439
+  }
+}

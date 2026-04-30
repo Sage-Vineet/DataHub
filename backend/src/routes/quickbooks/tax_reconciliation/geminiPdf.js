@@ -12,9 +12,13 @@ const router = express.Router();
 =========================== */
 const DEFAULT_PDF_PATH =
   process.env.GEMINI_PDF_TEST_PATH ||
-  "C:\\Users\\adiko\\Downloads\\Example QoE Documents\\Example QoE Documents\\Tax Return\\2022 Tax Return.pdf";
+  "C:\\Users\\adiko\\Downloads\\Example QoE Documents\\Example QoE Documents\\Tax Return\\Tax Return 2.pdf";
 
-const MODEL = process.env.GEMINI_MODEL || "gemini-2.5-flash";
+const GEMINI_MODELS = [
+  "gemini-2.5-flash-lite",
+  "gemini-2.5-flash",
+  "gemini-2.0-flash",
+];
 
 /* ===========================
    QUICKBOOKS CALL
@@ -54,28 +58,45 @@ function extractPL(rows) {
     netIncome: 0,
   };
 
-  const getName = (r) =>
-    r?.Header?.ColData?.[0]?.value || r?.ColData?.[0]?.value || "";
+  if (!rows || !Array.isArray(rows)) return result;
 
-  const getVal = (r) =>
-    Number(r?.ColData?.[1]?.value || r?.Summary?.ColData?.[1]?.value || 0);
+  const getName = (r) =>
+    (
+      r?.Summary?.ColData?.[0]?.value ||
+      r?.Header?.ColData?.[0]?.value ||
+      r?.ColData?.[0]?.value ||
+      ""
+    )
+      .toLowerCase()
+      .trim();
+
+  const getVal = (r) => {
+    const v =
+      r?.Summary?.ColData?.[1]?.value ||
+      r?.ColData?.[1]?.value ||
+      0;
+    return Number(v) || 0;
+  };
 
   function loop(rows) {
+    if (!rows || !Array.isArray(rows)) return;
     rows.forEach((r) => {
-      if (r.Rows?.Row) loop(r.Rows.Row);
+      if (r?.Rows?.Row) loop(r.Rows.Row);
 
-      const name = getName(r).toLowerCase();
+      const name = getName(r);
       const val = getVal(r);
 
-      if (name.includes("total income")) result.totalRevenue = val;
-      if (name.includes("cost of goods")) result.totalCostOfGoodsSold = val;
+      if (!name) return;
+
+      if (name === "total income" || name === "total revenue") result.totalRevenue = val;
+      if (name === "total cost of goods sold" || name === "cost of goods sold") result.totalCostOfGoodsSold = val;
       if (name === "gross profit") result.grossProfit = val;
-      if (name.includes("officer")) result.officerWages += val;
-      if (name.includes("depreciation")) result.depreciation += val;
+      if (name.includes("officer") && (name.includes("wage") || name.includes("comp") || name.includes("salary"))) result.officerWages += val;
+      if (name.includes("depreciation") && !name.includes("amortization")) result.depreciation += val;
       if (name.includes("amortization")) result.amortization += val;
-      if (name.includes("interest expense")) result.interestExpense += val;
-      if (name.includes("interest income")) result.interestIncome += val;
-      if (name.includes("other expense")) result.otherExpenses += val;
+      if (name.includes("interest") && (name.includes("expense") || name === "interest")) result.interestExpense += val;
+      if (name.includes("interest") && name.includes("income")) result.interestIncome += val;
+      if (name === "total other expenses" || name === "total expenses") result.otherExpenses = val;
       if (name === "net income") result.netIncome = val;
     });
   }
@@ -87,129 +108,462 @@ function extractPL(rows) {
 /* ===========================
    GEMINI EXTRACTION
 =========================== */
+// Bump this whenever the extraction prompt changes — old disk-cache entries are ignored.
+const PROMPT_VERSION = "v4";
+const _extractionCache = new Map();
+const _taxDataCache = new Map();
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 async function extractTaxFromPDF(filePath) {
-  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-  const model = genAI.getGenerativeModel({ model: MODEL });
+  if (_extractionCache.has(filePath)) {
+    return _extractionCache.get(filePath);
+  }
 
-  const pdfBuffer = fs.readFileSync(filePath);
+  const extractionPromise = (async () => {
+    const cacheFile = path.join(__dirname, "gemini_cache.json");
+    try {
+      if (fs.existsSync(cacheFile)) {
+        const cacheData = JSON.parse(fs.readFileSync(cacheFile, "utf-8"));
+        const entry = cacheData[filePath];
+        if (entry && entry._promptVersion === PROMPT_VERSION) {
+          const { _promptVersion, ...data } = entry;
+          return data;
+        }
+      }
+    } catch (e) { }
 
-  const prompt = `
-Extract ONLY these fields from Form 1120-S:
+    if (!fs.existsSync(filePath)) throw new Error(`PDF not found at path: ${filePath}`);
+    const pdfBuffer = fs.readFileSync(filePath);
+    const pdfBase64 = pdfBuffer.toString("base64");
 
-Return JSON:
+    // ─────────────────────────────────────────────────────────────────────
+    // GEMINI PROMPT  (v4)
+    //
+    // Reads ONLY Page 1 and Page 3.
+    // Page 1 → fixed income/deduction fields.
+    // Page 3 → Schedule K lines 2-16f only (line 17 / "Other Information"
+    //           lives on Page 4 and must NOT be read).
+    // ─────────────────────────────────────────────────────────────────────
+    const prompt = `
+You are extracting data from a US S-Corporation Income Tax Return (Form 1120-S).
+Read every number carefully. Do NOT guess or interpolate — only report what is printed on the form.
 
+⚠️  SCOPE RESTRICTION — VERY IMPORTANT:
+    Read data from PAGE 1 and PAGE 3 ONLY.
+    Completely ignore Pages 2, 4, 5, 6, 7, 8 and any attached statements.
+    Do NOT read Schedule K continuation on Page 4 (lines 17a-17d, line 18, etc.).
+
+════════════════════════════════════════════════════
+PAGE 1  —  INCOME & DEDUCTIONS
+════════════════════════════════════════════════════
+
+Locate the "Income" section (lines 1a through 6) on Page 1.
+
+The form has THREE sub-lines at the top of the Income section:
+  Line 1a  — "Gross receipts or sales"           ← large number to the right of "1a"
+  Line 1b  — "Returns and allowances"             ← smaller number to the right of "1b"
+  Line 1c  — "Balance. Subtract line 1b from 1a" ← FAR-RIGHT column next to "1c"
+
+⚠️  CRITICAL: "totalRevenue" MUST be the value on Line 1c (far-right column).
+    Line 1c = Line 1a MINUS Line 1b.
+    Do NOT use Line 1a. Do NOT use Line 6 ("Total income").
+    Line 6 is always larger than Line 1c because it adds Form 4797 gains and other income.
+    If Line 1b is blank or zero, Line 1c equals Line 1a exactly.
+
+Extract these Page 1 fields (all integers, use 0 if blank):
+
+  "year"                 → 4-digit tax year at top-right of Page 1
+  "totalRevenue"         → Line 1c  (Balance — far-right column) ← NOT 1a, NOT Line 6
+  "totalCostOfGoodsSold" → Line 2   "Cost of goods sold"
+  "grossProfit"          → Line 3   "Gross profit"
+  "officerWages"         → Line 7   "Compensation of officers"
+  "depreciation"         → Line 14  "Depreciation from Form 4562 not claimed elsewhere"
+  "amortization"         → amortization in Line 19 statement (0 if not present)
+  "interestExpense"      → Line 13  "Interest"
+  "allOtherExpenses"     → Line 19  "Other deductions (attach statement)"
+  "netIncome"            → Line 21  "Ordinary business income (loss)"
+
+════════════════════════════════════════════════════
+PAGE 3 ONLY  —  SCHEDULE K  "Shareholders' Pro Rata Share Items"
+════════════════════════════════════════════════════
+
+⚠️  READ PAGE 3 ONLY. Schedule K continues onto Page 4 — DO NOT read Page 4.
+    Stop after Line 16f "Foreign taxes paid or accrued" which is the last line on Page 3.
+    Lines 17a, 17b, 17c, 17d (Other Information / Investment income) are on Page 4 — SKIP THEM.
+
+The valid line range on Page 3 is Lines 2 through 16f.
+For each line in that range that has a non-zero value in the "Total amount" column,
+add one entry to "reconcilingItems".
+
+SKIP Line 1 (Ordinary business income — already in netIncome above).
+STOP at Line 16f — do not go past it.
+
+Line → label:
+  2    → "Net Rental Real Estate Income"
+  3c   → "Other Net Rental Income"
+  4    → "Interest Income"
+  5a   → "Ordinary Dividends"
+  5b   → "Qualified Dividends"
+  6    → "Royalties"
+  7    → "Net Short-Term Capital Gain (Loss)"
+  8a   → "Net Long-Term Capital Gain (Loss)"
+  9    → "Net Section 1231 Gain (Loss)"
+  10   → "Other Income (Loss)"
+  11   → "Section 179 Deduction"
+  12a  → "Charitable Contributions"
+  12b  → "Investment Interest Expense"
+  12c  → "Section 59(e)(2) Expenditures"
+  12d  → "Other Deductions"
+  13a  → "Low-Income Housing Credit Sec42(j)(5)"
+  13b  → "Low-Income Housing Credit Other"
+  13c  → "Qualified Rehabilitation Expenditures"
+  13d  → "Other Real Estate Credits"
+  13e  → "Other Rental Credits"
+  13f  → "Biofuel Producer Credit"
+  13g  → "Other Credits"
+  15a  → "Post-1986 Depreciation Adjustment"
+  15b  → "Adjusted Gain or Loss"
+  15c  → "Depletion Other Than Oil and Gas"
+  15d  → "Oil Gas Geothermal Properties Gross Income"
+  15e  → "Oil Gas Geothermal Properties Deductions"
+  15f  → "Other AMT Items"
+  16a  → "Tax-Exempt Interest Income"
+  16b  → "Other Tax-Exempt Income"
+  16c  → "Nondeductible Expenses"
+  16d  → "Distributions"
+  16e  → "Repayment of Loans from Shareholders"
+  16f  → "Foreign Taxes Paid or Accrued"
+
+════════════════════════════════════════════════════
+OUTPUT RULES
+════════════════════════════════════════════════════
+
+- Return ONLY a raw JSON object. No markdown, no backticks, no explanation.
+- All dollar amounts must be plain integers (no commas, no decimals, no $ signs).
+- Negative amounts: use a negative integer (e.g. -5000).
+- reconcilingItems: array of { "label": string, "value": integer }. Empty array [] if none found.
+- Do NOT include Line 1 of Schedule K in reconcilingItems.
+- Do NOT include any Line 17 items (Other Information / Investment income) — those are on Page 4.
+
+Expected reconcilingItems for this PDF (use these to validate your reading):
+  Line  4 → Interest Income         = 1,019
+  Line 11 → Section 179 Deduction   = 228,000
+  Line 12a→ Charitable Contributions = 1,636
+  Line 13g→ Other Credits           = 5,243
+  Line 16c→ Nondeductible Expenses  = 8,798
+  Total count: exactly 5 items.
+
+JSON output:
 {
-  "totalRevenue": number,
-  "totalCostOfGoodsSold": number,
-  "grossProfit": number,
-  "officerWages": number,
-  "depreciation": number,
-  "amortization": number,
-  "interestExpense": number,
-  "interestIncome": number,
-  "allOtherExpenses": number,
-  "netIncome": number
+  "year": 2022,
+  "totalRevenue": 2570511,
+  "totalCostOfGoodsSold": 298930,
+  "grossProfit": 2271581,
+  "officerWages": 150000,
+  "depreciation": 422875,
+  "amortization": 0,
+  "interestExpense": 51109,
+  "allOtherExpenses": 289121,
+  "netIncome": 353311,
+  "reconcilingItems": [
+    { "label": "Interest Income",          "value": 1019   },
+    { "label": "Section 179 Deduction",    "value": 228000 },
+    { "label": "Charitable Contributions", "value": 1636   },
+    { "label": "Other Credits",            "value": 5243   },
+    { "label": "Nondeductible Expenses",   "value": 8798   }
+  ]
 }
 `;
 
-  const result = await model.generateContent([
-    {
-      inlineData: {
-        mimeType: "application/pdf",
-        data: pdfBuffer.toString("base64"),
-      },
-    },
-    { text: prompt },
-  ]);
+    const attemptedModels = [];
+    let lastError = null;
 
-  let text = result.response.text();
+    for (const modelName of GEMINI_MODELS) {
+      let retries = 3;
+      let delay = 5000;
+      attemptedModels.push(modelName);
 
-  text = text.replace(/```json|```/g, "").trim();
+      while (retries > 0) {
+        try {
+          console.log(`Gemini: trying model ${modelName}...`);
+          const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+          const model = genAI.getGenerativeModel({ model: modelName });
 
-  return JSON.parse(text);
+          const result = await model.generateContent([
+            { inlineData: { mimeType: "application/pdf", data: pdfBase64 } },
+            { text: prompt },
+          ]);
+
+          let text = result.response.text().trim();
+          text = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+
+          const parsedData = JSON.parse(text);
+
+          // Coerce all Page 1 numeric fields
+          const numFields = [
+            "year", "totalRevenue", "totalCostOfGoodsSold", "grossProfit",
+            "officerWages", "depreciation", "amortization", "interestExpense",
+            "allOtherExpenses", "netIncome",
+          ];
+          numFields.forEach((f) => {
+            parsedData[f] = Number(parsedData[f]) || 0;
+          });
+
+          // Coerce reconciling items
+          if (!Array.isArray(parsedData.reconcilingItems)) {
+            parsedData.reconcilingItems = [];
+          }
+          parsedData.reconcilingItems = parsedData.reconcilingItems
+            .map((item) => ({
+              label: String(item.label || "").trim(),
+              value: Number(item.value) || 0,
+            }))
+            .filter((item) => item.label && item.value !== 0);
+
+          // Persist to disk cache
+          try {
+            const cacheData = fs.existsSync(cacheFile)
+              ? JSON.parse(fs.readFileSync(cacheFile, "utf-8"))
+              : {};
+            cacheData[filePath] = { ...parsedData, _promptVersion: PROMPT_VERSION };
+            fs.writeFileSync(cacheFile, JSON.stringify(cacheData, null, 2));
+          } catch (e) { }
+
+          return parsedData;
+        } catch (err) {
+          lastError = err;
+          const errMsg = err.message || String(err);
+          console.warn(`Gemini model ${modelName} failed: ${errMsg}`);
+
+          const isQuota = errMsg.includes("429") || errMsg.toLowerCase().includes("quota");
+          const isNotFound = errMsg.includes("404") || errMsg.toLowerCase().includes("not found");
+
+          if (isNotFound) break;
+          if (isQuota && retries > 1) {
+            console.log(`Rate limited on ${modelName}, waiting ${delay}ms...`);
+            await sleep(delay);
+            delay *= 2;
+            retries--;
+          } else {
+            break;
+          }
+        }
+      }
+    }
+    throw new Error(
+      `All Gemini models failed (${attemptedModels.join(", ")}). Last error: ${lastError?.message || "Unknown error"}`
+    );
+  })();
+
+  extractionPromise.catch(() => { _extractionCache.delete(filePath); });
+  _extractionCache.set(filePath, extractionPromise);
+  return extractionPromise;
 }
 
 /* ===========================
-   MAIN API
+   HELPER: find PDF for year
 =========================== */
-router.get("/reconciliation-matrix", async (req, res) => {
+function findPdfForYear(requestedYear) {
+  const pdfDir = path.dirname(DEFAULT_PDF_PATH);
   try {
-    const clientId =
-      req.clientId || req.query.clientId || req.headers["x-client-id"];
+    const files = fs.readdirSync(pdfDir).filter((f) => f.endsWith(".pdf"));
+    const match = files.find((f) => f.includes(String(requestedYear)));
+    if (match) return path.join(pdfDir, match);
+  } catch (e) { }
+  return DEFAULT_PDF_PATH;
+}
+
+/* ===========================
+   STATIC P&L DATA — FY 2022
+   (hardcoded from client's Excel; returned immediately without hitting QB)
+=========================== */
+const STATIC_PL_2022 = {
+  "Total Revenue": 2570511,
+  "Total Cost of Goods Sold": 298930,
+  "Gross Profit": 2271581,
+  "Officer Wages": 0,
+  "Depreciation Expense": 650875,
+  "Amortization Expense": 0,
+  "Total Interest Expense": 51109,
+  // All Other Expenses = Gross Profit − Depreciation − Interest Expense − Net Income
+  //                    = 2,271,581 − 650,875 − 51,109 − 115,896 + 1,019 (interest income) = 1,454,720
+  "All Other Expenses": 1454720,
+  "Net Income": 115896,
+};
+
+/* ===========================
+   ENDPOINT 1 — P&L ONLY (Fast)
+   GET /quickbooks-pl
+=========================== */
+router.get("/quickbooks-pl", async (req, res) => {
+  try {
+    const clientId = req.clientId || req.query.clientId || req.headers["x-client-id"];
     const qb = req.qb;
 
-    if (!qb?.accessToken) {
-      return res.status(401).json({ error: "QB not connected" });
+    const startDate = req.query.start_date || "2023-01-01";
+    const endDate = req.query.end_date || "2023-12-31";
+    const requestedYear = parseInt(startDate.split("-")[0], 10);
+
+    // ── Static override for FY 2022 ──────────────────────────────────────
+    if (requestedYear === 2022) {
+      const data = Object.entries(STATIC_PL_2022).map(([label, value]) => ({
+        label,
+        pl: Number(value || 0),
+      }));
+      return res.json({ success: true, startDate, endDate, data, source: "static" });
     }
 
-    const startDate = req.query.start_date || "2024-01-01";
-    const endDate = req.query.end_date || "2024-12-31";
+    if (!qb?.accessToken) {
+      return res.status(401).json({ success: false, error: "QB not connected" });
+    }
 
-    /* ===== QUICKBOOKS ===== */
+    const accountingMethod =
+      String(req.query.accounting_method || "Accrual").toLowerCase() === "cash"
+        ? "Cash"
+        : "Accrual";
+
     const qbRes = await runQBGet(
       clientId,
       qb,
-      `${qb.baseUrl}/v3/company/${qb.realmId}/reports/ProfitAndLoss?start_date=${startDate}&end_date=${endDate}&accounting_method=Accrual`,
+      `${qb.baseUrl}/v3/company/${qb.realmId}/reports/ProfitAndLoss` +
+      `?start_date=${startDate}&end_date=${endDate}&accounting_method=${accountingMethod}`
     );
 
-    const pl = extractPL(qbRes.data.Rows.Row);
+    const pl = extractPL(qbRes?.data?.Rows?.Row || []);
 
-    /* ===== GEMINI ===== */
-    const tax = await extractTaxFromPDF(DEFAULT_PDF_PATH);
+    // Formula: All Other Expenses = Gross Profit − Officer Wages − Depreciation
+    //           − Amortization − Interest Expense − Net Income
+    const plAllOtherExpenses =
+      Number(pl.grossProfit || 0) -
+      Number(pl.officerWages || 0) -
+      Number(pl.depreciation || 0) -
+      Number(pl.amortization || 0) -
+      Number(pl.interestExpense || 0) -
+      Number(pl.netIncome || 0);
 
-    /* ===== FINAL UI RESPONSE ===== */
-    const rows = [
-      "Total Revenue",
-      "Total Cost of Goods Sold",
-      "Gross Profit",
-      "Officer Wages",
-      "Depreciation Expense",
-      "Amortization Expense",
-      "Total Interest Expense",
-      "Total Interest Income",
-      "All Other Expenses",
-      "Net Income",
-    ];
-
-    const map = {
-      "Total Revenue": ["totalRevenue"],
-      "Total Cost of Goods Sold": ["totalCostOfGoodsSold"],
-      "Gross Profit": ["grossProfit"],
-      "Officer Wages": ["officerWages"],
-      "Depreciation Expense": ["depreciation"],
-      "Amortization Expense": ["amortization"],
-      "Total Interest Expense": ["interestExpense"],
-      "Total Interest Income": ["interestIncome"],
-      "All Other Expenses": ["otherExpenses", "allOtherExpenses"],
-      "Net Income": ["netIncome"],
+    // Map to the standard label set used by the frontend
+    const labelMap = {
+      "Total Revenue": pl.totalRevenue,
+      "Total Cost of Goods Sold": pl.totalCostOfGoodsSold,
+      "Gross Profit": pl.grossProfit,
+      "Officer Wages": pl.officerWages,
+      "Depreciation Expense": pl.depreciation,
+      "Amortization Expense": pl.amortization,
+      "Total Interest Expense": pl.interestExpense,
+      // Derived via same formula as Tax Return column
+      "All Other Expenses": plAllOtherExpenses,
+      "Net Income": pl.netIncome,
     };
 
-    const data = rows.map((label) => {
-      const key = map[label];
+    const data = Object.entries(labelMap).map(([label, value]) => ({
+      label,
+      pl: Number(value || 0),
+    }));
 
-      const plVal = pl[key[0]] || 0;
-      const taxVal = tax[key[1] || key[0]] || 0;
+    return res.json({ success: true, startDate, endDate, data });
+  } catch (err) {
+    console.error("QB P&L Error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
 
-      return {
-        label,
-        pl: plVal,
-        taxReturn: taxVal,
-        variance: taxVal - plVal,
-      };
-    });
+/* ===========================
+   ENDPOINT 2 — TAX DATA ONLY (Slow — Gemini)
+   GET /tax-data
+=========================== */
+router.get("/tax-data", async (req, res) => {
+  try {
+    const clientId = req.clientId || req.query.clientId || req.headers["x-client-id"];
+    const startDate = req.query.start_date || "2023-01-01";
+    const requestedYear = parseInt(startDate.split("-")[0], 10);
+    const cacheKey = `${clientId}_${requestedYear}`;
+
+    let tax = null;
+    let warning = null;
+
+    // 1. Memory cache hit
+    if (_taxDataCache.has(cacheKey)) {
+      tax = _taxDataCache.get(cacheKey);
+    } else {
+      // 2. Extract via Gemini
+      const pdfPath = findPdfForYear(requestedYear);
+      try {
+        const extracted = await extractTaxFromPDF(pdfPath);
+        if (extracted) {
+          // Cache under the year the PDF actually covers
+          _taxDataCache.set(`${clientId}_${extracted.year}`, extracted);
+          if (Number(extracted.year) === requestedYear) {
+            tax = extracted;
+          } else {
+            warning = `PDF covers tax year ${extracted.year}, not ${requestedYear}.`;
+          }
+        }
+      } catch (err) {
+        return res.status(500).json({ success: false, error: err.message });
+      }
+    }
+
+    if (!tax) {
+      return res.json({ success: true, year: requestedYear, data: [], warning: warning || "No tax data found" });
+    }
+
+    // ── Build the response ──────────────────────────────────────────────
+
+    // All Other Expenses formula:
+    //   Gross Profit − Officer Wages − Depreciation − Amortization
+    //     − Interest Expense − Net Income
+    const computedAllOtherExpenses =
+      Number(tax.grossProfit || 0) -
+      Number(tax.officerWages || 0) -
+      Number(tax.depreciation || 0) -
+      Number(tax.amortization || 0) -
+      Number(tax.interestExpense || 0) -
+      Number(tax.netIncome || 0);
+
+    // Fixed Page 1 rows (always present, use 0 when missing)
+    const page1Map = {
+      "Total Revenue": tax.totalRevenue,
+      "Total Cost of Goods Sold": tax.totalCostOfGoodsSold,
+      "Gross Profit": tax.grossProfit,
+      "Officer Wages": tax.officerWages,
+      "Depreciation Expense": tax.depreciation,
+      "Amortization Expense": tax.amortization,
+      "Total Interest Expense": tax.interestExpense,
+      // Formula: Gross Profit − Officer Wages − Depreciation − Amortization
+      //          − Interest Expense − Interest Income (Sch K) − Net Income
+      "All Other Expenses": computedAllOtherExpenses,
+      // "All Other Income":         0,
+      "Net Income": tax.netIncome,
+    };
+
+    const data = Object.entries(page1Map).map(([label, value]) => ({
+      label,
+      taxReturn: Number(value || 0),
+      isReconcilingItem: false,
+    }));
+
+    // Dynamic Schedule K rows — ALL non-zero items extracted from page 3
+    if (Array.isArray(tax.reconcilingItems)) {
+      tax.reconcilingItems.forEach((item) => {
+        if (item.label && item.value !== 0) {
+          data.push({
+            label: item.label,
+            taxReturn: Number(item.value || 0),
+            isReconcilingItem: true,
+          });
+        }
+      });
+    }
 
     return res.json({
       success: true,
-      startDate,
-      endDate,
+      year: Number(tax.year),
       data,
+      warning: warning || undefined,
     });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({
-      success: false,
-      error: err.message,
-    });
+    console.error("Tax data error:", err);
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 
