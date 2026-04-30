@@ -123,11 +123,16 @@ async function upsertQuickBooksConnection(connection) {
 
   const existingByRealm = await getQuickBooksConnectionByRealmId(realmId);
   if (existingByRealm && existingByRealm.dataHubCompanyId !== companyId) {
+    console.error(`[QB Store] ❌ Realm conflict detected! Realm ${realmId} is already linked to company ${existingByRealm.dataHubCompanyId}. Cannot link to ${companyId}.`);
     const realmConflictError = new Error(
-      `QuickBooks realm ${realmId} is already linked to DataHub company ${existingByRealm.dataHubCompanyId}.`,
+      `QuickBooks realm ${realmId} is already linked to another DataHub company.`,
     );
     realmConflictError.code = "QB_REALM_ALREADY_LINKED";
     throw realmConflictError;
+  }
+
+  if (existingByRealm) {
+    console.log(`[QB Store] Re-linking existing realm ${realmId} to company ${companyId}`);
   }
 
   const syncedEntitiesData = serializeSyncedEntities(syncedEntities);
