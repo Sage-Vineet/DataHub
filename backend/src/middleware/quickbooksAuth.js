@@ -131,7 +131,13 @@ function isQuickBooksRoute(pathname = "") {
     "/qb-bank-accounts",
     "/qb-bank-activity",
     "/qb-one-bank-activity",
-    "/api/extract-bank-pdf-records",
+    "/extract-bank-pdf-records",
+    "/quickbooks-pl",
+    "/tax-data",
+    "/qb-profit-loss-detail",
+    "/qb-balance-sheet",
+    "/qb-financial-reports-for-reconciliation",
+    "/parse-bank-statement",
     "/api/quickbooks/sync",
     "/api/quickbooks/sync-status"
   ];

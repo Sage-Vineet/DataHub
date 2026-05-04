@@ -373,28 +373,6 @@ function findPdfForYear(requestedYear) {
   return DEFAULT_PDF_PATH;
 }
 
-/* ===========================
-   STATIC P&L DATA — FY 2022
-   (hardcoded from client's Excel; returned immediately without hitting QB)
-=========================== */
-const STATIC_PL_2022 = {
-  "Total Revenue": 2570511,
-  "Total Cost of Goods Sold": 298930,
-  "Gross Profit": 2271581,
-  "Officer Wages": 0,
-  "Depreciation Expense": 650875,
-  "Amortization Expense": 0,
-  "Total Interest Expense": 51109,
-  // All Other Expenses = Gross Profit − Depreciation − Interest Expense − Net Income
-  //                    = 2,271,581 − 650,875 − 51,109 − 115,896 + 1,019 (interest income) = 1,454,720
-  "All Other Expenses": 1454720,
-  "Net Income": 115896,
-};
-
-/* ===========================
-   ENDPOINT 1 — P&L ONLY (Fast)
-   GET /quickbooks-pl
-=========================== */
 router.get("/quickbooks-pl", async (req, res) => {
   try {
     const clientId = req.clientId || req.query.clientId || req.headers["x-client-id"];
@@ -403,15 +381,6 @@ router.get("/quickbooks-pl", async (req, res) => {
     const startDate = req.query.start_date || "2023-01-01";
     const endDate = req.query.end_date || "2023-12-31";
     const requestedYear = parseInt(startDate.split("-")[0], 10);
-
-    // ── Static override for FY 2022 ──────────────────────────────────────
-    if (requestedYear === 2022) {
-      const data = Object.entries(STATIC_PL_2022).map(([label, value]) => ({
-        label,
-        pl: Number(value || 0),
-      }));
-      return res.json({ success: true, startDate, endDate, data, source: "static" });
-    }
 
     if (!qb?.accessToken) {
       return res.status(401).json({ success: false, error: "QB not connected" });
