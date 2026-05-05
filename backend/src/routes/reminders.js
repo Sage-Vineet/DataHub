@@ -1,4 +1,5 @@
 const express = require("express");
+const { requireAuth } = require("../middleware/auth");
 const {
   listReminders,
   createReminder,
@@ -8,9 +9,9 @@ const {
 
 const router = express.Router();
 
-router.get("/companies/:id/reminders", listReminders);
-router.post("/companies/:id/reminders", createReminder);
-router.patch("/reminders/:id", updateReminder);
-router.delete("/reminders/:id", deleteReminder);
+router.get("/companies/:id/reminders", requireAuth, listReminders);
+router.post("/companies/:id/reminders", requireAuth, createReminder);
+router.patch("/reminders/:id", requireAuth, updateReminder);
+router.delete("/reminders/:id", requireAuth, deleteReminder);
 
 module.exports = router;

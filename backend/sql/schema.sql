@@ -40,6 +40,10 @@ DO $$ BEGIN
   CREATE TYPE activity_type AS ENUM ('upload', 'request', 'approved', 'reminder');
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
+DO $$ BEGIN
+  CREATE TYPE document_activity_type AS ENUM ('view', 'download');
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
 CREATE TABLE IF NOT EXISTS companies (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   name text NOT NULL,
@@ -103,6 +107,11 @@ CREATE TABLE IF NOT EXISTS requests (
   assigned_to uuid REFERENCES users(id) ON DELETE SET NULL,
   visible boolean NOT NULL DEFAULT true,
   created_by uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+  reminder_frequency_days integer NOT NULL DEFAULT 2,
+  submission_source text NOT NULL DEFAULT 'broker',
+  approval_status text NOT NULL DEFAULT 'approved',
+  approved_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  approved_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
@@ -184,8 +193,15 @@ CREATE TABLE IF NOT EXISTS folder_access (
 CREATE TABLE IF NOT EXISTS reminders (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  request_id uuid REFERENCES requests(id) ON DELETE CASCADE,
   title text NOT NULL,
+  message text,
   due_date date NOT NULL,
+  priority text NOT NULL DEFAULT 'medium',
+  frequency_days integer NOT NULL DEFAULT 2,
+  sent_count integer NOT NULL DEFAULT 0,
+  last_sent_at timestamptz,
+  next_due_at timestamptz,
   status reminder_status NOT NULL DEFAULT 'active',
   created_by uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT
 );
@@ -199,9 +215,33 @@ CREATE TABLE IF NOT EXISTS activity_log (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS document_activity (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  document_id uuid NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  activity_type document_activity_type NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS company_messages (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  sender_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  body text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS direct_messages (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  sender_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  recipient_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  body text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS bank_transactions (
   id bigserial PRIMARY KEY,
-  client_id uuid,
   txn_date date NOT NULL,
   narration text,
   amount numeric(14, 2) NOT NULL
@@ -209,8 +249,8 @@ CREATE TABLE IF NOT EXISTS bank_transactions (
 
 CREATE TABLE IF NOT EXISTS reconciliation_transactions (
   id bigserial PRIMARY KEY,
-  client_id uuid,
   txn_date date NOT NULL,
+  client_id uuid,
   amount numeric(14, 2) NOT NULL,
   name text,
   transaction_type text
@@ -231,3 +271,9 @@ CREATE INDEX IF NOT EXISTS idx_reminders_company ON reminders(company_id);
 
 CREATE INDEX IF NOT EXISTS idx_bank_transactions_client_id ON bank_transactions(client_id);
 CREATE INDEX IF NOT EXISTS idx_reconciliation_transactions_client_id ON reconciliation_transactions(client_id);
+CREATE INDEX IF NOT EXISTS idx_company_messages_company_created ON company_messages(company_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_company_messages_sender ON company_messages(sender_id);
+CREATE INDEX IF NOT EXISTS idx_direct_messages_company_created ON direct_messages(company_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_direct_messages_sender_company ON direct_messages(sender_id, company_id);
+CREATE INDEX IF NOT EXISTS idx_direct_messages_recipient_company ON direct_messages(recipient_id, company_id);
+CREATE INDEX IF NOT EXISTS idx_document_activity_document ON document_activity(document_id);

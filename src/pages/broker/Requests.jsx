@@ -1,30 +1,35 @@
-﻿import { useEffect, useMemo, useState } from 'react';
-import { Plus, Search, Filter, Send, Clock, ChevronDown } from 'lucide-react';
-import { requests as initRequests, companies, priorityOptions } from '../../data/mockData';
+import { useEffect, useState } from 'react';
 import StatusBadge from '../../components/common/StatusBadge';
 import Modal from '../../components/common/Modal';
 import NewRequestModal from '../../components/NewRequestModal';
-import { listCompanyFolders } from '../../lib/api';
-
-const STATUS_FILTERS = ['all', 'pending', 'received', 'under-review', 'approved', 'rejected'];
+import { listFolderTree, listCompaniesRequest } from '../../lib/api';
+import { buildFolderOptionsFromTree } from '../../lib/folderOptions';
 
 export default function BrokerRequests() {
-  const [requests, setRequests] = useState(initRequests);
-  const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState('all');
-  const [priorityFilter, setPriorityFilter] = useState('all');
-  const [companyFilter, setCompanyFilter] = useState('all');
+  const [companies, setCompanies] = useState([]);
+  const [selectedCompanyId, setSelectedCompanyId] = useState(null);
   const [folderOptions, setFolderOptions] = useState([]);
   const [foldersLoading, setFoldersLoading] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [selected, setSelected] = useState(null);
+  
   const openCreate = () => { setShowCreate(true); };
   const closeCreate = () => { setShowCreate(false); };
 
-  const selectedCompanyId = useMemo(
-    () => (companyFilter !== 'all' ? companyFilter : (companies[0]?.id ?? '')),
-    [companyFilter]
-  );
+  useEffect(() => {
+    let cancelled = false;
+    listCompaniesRequest()
+      .then((payload) => {
+        if (cancelled) return;
+        const list = Array.isArray(payload) ? payload : [];
+        setCompanies(list);
+        if (list.length > 0 && !selectedCompanyId) {
+          setSelectedCompanyId(list[0].id);
+        }
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [selectedCompanyId]);
 
   useEffect(() => {
     if (!selectedCompanyId) {
@@ -33,55 +38,17 @@ export default function BrokerRequests() {
     }
 
     setFoldersLoading(true);
-    listCompanyFolders(selectedCompanyId)
-      .then((folders) => {
-        const topLevel = folders.filter((folder) => !folder.parent_id);
-        const options = (topLevel.length ? topLevel : folders)
-          .map((folder) => ({ id: folder.id, name: folder.name }))
-          .filter((folder) => folder.name);
-        setFolderOptions(options);
+    listFolderTree(selectedCompanyId)
+      .then((tree) => {
+        setFolderOptions(buildFolderOptionsFromTree(tree));
       })
       .catch(() => setFolderOptions([]))
       .finally(() => setFoldersLoading(false));
   }, [selectedCompanyId]);
 
-  const filtered = requests.filter(r => {
-    const q = search.toLowerCase();
-    const matchQ = r.name.toLowerCase().includes(q) || r.companyName.toLowerCase().includes(q) || r.type.toLowerCase().includes(q);
-    const matchS = statusFilter === 'all' || r.status === statusFilter;
-    const matchP = priorityFilter === 'all' || r.priority === priorityFilter;
-    const matchC = companyFilter === 'all' || r.companyId === companyFilter;
-    return matchQ && matchS && matchP && matchC;
-  });
-
   const handleCreate = (form) => {
-    const co = companies.find(c => c.id === selectedCompanyId);
-    if (!co || !form.name) return;
-    const statusMap = { pending: 'pending', 'in-review': 'under-review', completed: 'approved' };
-    const newReq = {
-      id: `req${Date.now()}`,
-      companyId: co.id,
-      name: form.name,
-      type: form.category,
-      priority: form.priority,
-      dueDate: form.dueDate || new Date().toISOString().slice(0, 10),
-      notes: form.description || '',
-      companyName: co.name,
-      status: statusMap[form.status] ?? 'pending',
-      createdAt: new Date().toISOString().slice(0, 10),
-      documents: form.file ? [form.file.name] : [],
-    };
-    setRequests(r => [newReq, ...r]);
+    // Currently no UI for listing requests, so just close the modal
     setShowCreate(false);
-  };
-
-  const statusCounts = {
-    all: requests.length,
-    pending: requests.filter(r => r.status === 'pending').length,
-    received: requests.filter(r => r.status === 'received').length,
-    'under-review': requests.filter(r => r.status === 'under-review').length,
-    approved: requests.filter(r => r.status === 'approved').length,
-    rejected: requests.filter(r => r.status === 'rejected').length,
   };
 
   return (

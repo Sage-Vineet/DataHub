@@ -1,8 +1,39 @@
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000').replace(/\/$/, '');
 const TOKEN_KEY = 'leo-auth-token';
+const LEGACY_TOKEN_KEY = 'leo-token';
 
 function buildUrl(path) {
   return `${API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`;
+}
+
+function resolveProtectedFileUrl(fileUrl) {
+  const raw = String(fileUrl || '').trim();
+  if (!raw) return '';
+  if (raw.startsWith('blob:')) return raw;
+
+  const hasProtocol = /^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(raw);
+  if (!hasProtocol) {
+    return buildUrl(raw);
+  }
+
+  if (typeof window === 'undefined') {
+    return raw;
+  }
+
+  try {
+    const parsed = new URL(raw, window.location.origin);
+    const apiOrigin = new URL(API_BASE_URL, window.location.origin).origin;
+    const isUploadPath = /^\/uploads\/[^/]+\/content\/?$/.test(parsed.pathname || '');
+
+    // Historical data can contain app-domain upload URLs; force those to API host.
+    if (isUploadPath && parsed.origin !== apiOrigin) {
+      return `${API_BASE_URL}${parsed.pathname}${parsed.search}${parsed.hash}`;
+    }
+
+    return parsed.toString();
+  } catch (_error) {
+    return raw;
+  }
 }
 
 function unwrapPayload(payload) {
@@ -41,19 +72,34 @@ function resolveClientIdFromLocation() {
     return id;
   }
 
+  const candidates = [
+    (window.location.hash || '').replace(/^#/, ''),
+    window.location.pathname || '',
+  ];
+
+  for (const candidate of candidates) {
+    if (!candidate.startsWith('/client/')) continue;
+    const match = candidate.match(/^\/client\/([^/?#]+)/);
+    if (match) {
+      return decodeURIComponent(match[1]);
+    }
+  }
+
   return null;
 }
 
 export function getStoredToken() {
-  return localStorage.getItem(TOKEN_KEY);
+  return localStorage.getItem(TOKEN_KEY) || localStorage.getItem(LEGACY_TOKEN_KEY);
 }
 
 export function setStoredToken(token) {
   if (token) {
     localStorage.setItem(TOKEN_KEY, token);
+    localStorage.removeItem(LEGACY_TOKEN_KEY);
     return;
   }
   localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(LEGACY_TOKEN_KEY);
 }
 
 
@@ -122,8 +168,8 @@ export function loginRequest(credentials) {
   });
 }
 
-export function logoutRequest() {
-  return request('/auth/logout', { method: 'POST' });
+export function logoutRequest(options = {}) {
+  return request('/auth/logout', { method: 'POST', ...options });
 }
 
 export function meRequest() {
@@ -164,6 +210,33 @@ export function deleteUserRequest(userId) {
 
 export function listCompanyRequests(companyId) {
   return request(`/companies/${companyId}/requests`).then(ensureArray);
+}
+
+export function listMessageThreadsRequest() {
+  return request("/messages/threads").then(ensureArray);
+}
+
+export function getCompanyMessagesRequest(companyId) {
+  return request(`/companies/${companyId}/messages`);
+}
+
+export function createCompanyMessageRequest(companyId, payload) {
+  return request(`/companies/${companyId}/messages`, { method: "POST", body: payload }).then(unwrapPayload);
+}
+
+export function listCompanyDirectMessageContactsRequest(companyId) {
+  return request(`/companies/${companyId}/direct-messages/contacts`);
+}
+
+export function getCompanyDirectMessagesRequest(companyId, recipientId) {
+  return request(`/companies/${companyId}/direct-messages/${recipientId}`);
+}
+
+export function createCompanyDirectMessageRequest(companyId, recipientId, payload) {
+  return request(`/companies/${companyId}/direct-messages/${recipientId}`, {
+    method: "POST",
+    body: payload,
+  }).then(unwrapPayload);
 }
 
 export function createCompanyRequestItem(companyId, payload) {
@@ -208,6 +281,10 @@ export function getRequestById(requestId) {
 
 export function updateRequest(requestId, payload) {
   return request(`/requests/${requestId}`, { method: 'PATCH', body: payload }).then(unwrapPayload);
+}
+
+export function approveRequest(requestId) {
+  return request(`/requests/${requestId}/approve`, { method: 'POST' }).then(unwrapPayload);
 }
 
 export function deleteRequest(requestId) {
@@ -281,17 +358,23 @@ export async function fetchProtectedFileBlob(fileUrl, options = {}) {
     throw new Error('Missing file URL');
   }
 
+  const resolvedUrl = resolveProtectedFileUrl(fileUrl);
   const token = options.token ?? getStoredToken();
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
   const headers = {
     'Cache-Control': 'no-store',
     ...(options.headers || {}),
+    ...(clientId ? { 'X-Client-Id': clientId } : {}),
   };
 
   if (token) {
     headers.Authorization = `Bearer ${token}`;
+    headers['X-Access-Token'] = token;
+    headers['X-Auth-Token'] = token;
+    headers['X-Token'] = token;
   }
 
-  const response = await fetch(fileUrl, {
+  const response = await fetch(resolvedUrl, {
     method: 'GET',
     headers,
     cache: 'no-store',
@@ -336,6 +419,17 @@ export function listFolderDocuments(folderId) {
 
 export function deleteDocument(documentId) {
   return request(`/documents/${documentId}`, { method: 'DELETE' });
+}
+
+export function recordDocumentActivity(documentId, activityType) {
+  return request(`/documents/${documentId}/activity`, {
+    method: 'POST',
+    body: { activity_type: activityType },
+  }).then(unwrapPayload);
+}
+
+export function listDocumentActivity(documentId) {
+  return request(`/documents/${documentId}/activity`).then(ensureArray);
 }
 
 export function listFolderAccess(folderId) {

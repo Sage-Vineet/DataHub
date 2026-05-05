@@ -1,6 +1,54 @@
-const db = require("../db");
+const { supabase } = require("../db");
 const asyncHandler = require("../utils");
 const { buildUploadContentUrl } = require("../utils/uploadStorage");
+
+function normalizeUploadBinary(data) {
+  if (!data) return Buffer.alloc(0);
+  if (Buffer.isBuffer(data)) return data;
+  if (data instanceof Uint8Array) return Buffer.from(data);
+  if (Array.isArray(data)) return Buffer.from(data);
+
+  const decodeSerializedBufferJson = (buffer) => {
+    if (!buffer || buffer.length < 2) return null;
+    const text = buffer.toString("utf8").trim();
+    if (!text.startsWith("{") || !text.includes('"type":"Buffer"')) return null;
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed?.type === "Buffer" && Array.isArray(parsed.data)) {
+        return Buffer.from(parsed.data);
+      }
+    } catch (_error) {
+      return null;
+    }
+    return null;
+  };
+
+  // Supabase/PostgREST may return bytea as "\\x<hex>" text.
+  if (typeof data === "string") {
+    const value = data.trim();
+    if (!value) return Buffer.alloc(0);
+
+    if (/^\\x[0-9a-f]+$/i.test(value)) {
+      const decoded = Buffer.from(value.slice(2), "hex");
+      return decodeSerializedBufferJson(decoded) || decoded;
+    }
+
+    if (/^0x[0-9a-f]+$/i.test(value)) {
+      const decoded = Buffer.from(value.slice(2), "hex");
+      return decodeSerializedBufferJson(decoded) || decoded;
+    }
+
+    const base64Decoded = Buffer.from(value, "base64");
+    return decodeSerializedBufferJson(base64Decoded) || base64Decoded;
+  }
+
+  // Sometimes binary can come back as a serialized Buffer object.
+  if (typeof data === "object" && data.type === "Buffer" && Array.isArray(data.data)) {
+    return Buffer.from(data.data);
+  }
+
+  return Buffer.from(String(data));
+}
 
 const createUpload = asyncHandler(async (req, res) => {
   const fileNameHeader = req.headers["x-file-name"];
@@ -18,14 +66,26 @@ const createUpload = asyncHandler(async (req, res) => {
     return res.status(400).json({ error: "Upload body is required" });
   }
 
-  const { rows } = await db.query(
-    `INSERT INTO uploads (file_name, content_type, size_bytes, data, prefix, uploaded_by)
-     VALUES ($1, $2, $3, $4, $5, $6)
-     RETURNING id, file_name, content_type, size_bytes, prefix, uploaded_by, created_at`,
-    [fileName, contentType || "application/octet-stream", body.length, body, prefix || "uploads", req.user?.id || null]
-  );
+  // NOTE: Supabase JS SDK handles Buffer/Uint8Array by base64 encoding them for the JSON payload.
+  // PostgREST handles the decoding into a bytea column if the database schema is correct.
+  const byteaLiteral = `\\x${body.toString("hex")}`;
 
-  const upload = rows[0];
+  const { data, error } = await supabase
+    .from("uploads")
+    .insert({
+      file_name: fileName,
+      content_type: contentType || "application/octet-stream",
+      size_bytes: body.length,
+      data: byteaLiteral,
+      prefix: prefix || "uploads",
+      uploaded_by: req.user?.id || null
+    })
+    .select("id, file_name, content_type, size_bytes, prefix, uploaded_by, created_at")
+    .single();
+
+  if (error) return res.status(500).json({ error: error.message });
+
+  const upload = data;
   res.status(201).json({
     id: upload.id,
     fileName: upload.file_name,
@@ -38,21 +98,24 @@ const createUpload = asyncHandler(async (req, res) => {
 });
 
 const getUploadContent = asyncHandler(async (req, res) => {
-  const { rows } = await db.query(
-    "SELECT id, file_name, content_type, data FROM uploads WHERE id = $1",
-    [req.params.id]
-  );
+  const { data, error } = await supabase
+    .from("uploads")
+    .select("id, file_name, content_type, data")
+    .eq("id", req.params.id)
+    .maybeSingle();
 
-  const upload = rows[0];
-  if (!upload) {
-    return res.status(404).json({ error: "Not found" });
-  }
+  if (error) return res.status(500).json({ error: error.message });
+  if (!data) return res.status(404).json({ error: "Not found" });
 
+  const upload = data;
   const fileName = upload.file_name || "download";
   const encodedName = encodeURIComponent(fileName).replace(/['()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+  
+  const content = normalizeUploadBinary(upload.data);
+
   res.setHeader("Content-Type", upload.content_type || "application/octet-stream");
   res.setHeader("Content-Disposition", `inline; filename*=UTF-8''${encodedName}`);
-  res.send(upload.data);
+  res.send(content);
 });
 
 const legacyPresignUpload = asyncHandler(async (_req, res) => {

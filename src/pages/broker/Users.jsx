@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Search, Filter, Plus, Eye, Pencil, Trash2, X,
   ChevronLeft, ChevronRight, Users as UsersIcon,
@@ -14,14 +14,12 @@ import {
   removeGroupMember,
   listUsersRequest,
   updateUserRequest,
-  uploadFile,
 } from '../../lib/api';
 
 const PAGE_SIZE = 8;
-const ROLE_ORDER = ['admin', 'broker', 'buyer'];
-const CREATE_ROLE_ORDER = ['buyer'];
+const ROLE_ORDER = ['admin', 'broker', 'client', 'user'];
 const STATUS_ORDER = ['active', 'inactive'];
-const EMPTY_FORM = { name: '', companyId: '', companyIds: [], email: '', phone: '', role: 'buyer', status: 'active', password: '', profileImage: '', groupIds: [] };
+const EMPTY_FORM = { name: '', companyId: '', companyIds: [], email: '', phone: '', role: 'user', status: 'active', password: '', profileImage: '', groupIds: [] };
 
 function initials(name = '') {
   return name
@@ -36,7 +34,12 @@ function initials(name = '') {
 function formatUser(user) {
   if (!user) return null;
   const assignedCompanies = user.assigned_companies || user.assignedCompanies || [];
-  const companyIds = user.company_ids || user.companyIds || assignedCompanies.map((company) => company.id).filter(Boolean) || [];
+  const companyIds = Array.from(new Set([
+    ...(user.company_ids || user.companyIds || []),
+    ...assignedCompanies.map((company) => company.id).filter(Boolean),
+    user.company_id,
+    user.companyId,
+  ].filter(Boolean)));
   const primaryCompany = assignedCompanies.find((company) => String(company.id) === String(user.company_id)) || assignedCompanies[0] || null;
   return {
     id: user.id,
@@ -190,34 +193,40 @@ function UserFormModal({ initial, companies, groups, onCompanyChange, onSave, on
     const seed = initial || EMPTY_FORM;
     return { ...seed, companyIds: seed.companyIds?.length ? seed.companyIds : [seed.companyId].filter(Boolean) };
   });
-  const [uploading, setUploading] = useState(false);
-  const [uploadError, setUploadError] = useState('');
+  const [companiesSearchQuery, setCompaniesSearchQuery] = useState('');
+  const [companiesDropdownOpen, setCompaniesDropdownOpen] = useState(false);
+  const companiesDropdownRef = useRef(null);
+  
   const setField = (patch) => setForm((current) => ({ ...current, ...patch }));
-  const valid = form.name.trim() && form.email.trim() && form.role && form.status && (isEdit || form.password.trim());
+  const valid = form.name.trim() && form.email.trim() && (isEdit ? form.role && form.status : true) && (form.companyIds?.length > 0) && (isEdit || form.password.trim());
 
   useEffect(() => {
     const seed = initial || EMPTY_FORM;
     setForm({ ...seed, companyIds: seed.companyIds?.length ? seed.companyIds : [seed.companyId].filter(Boolean) });
   }, [initial]);
 
-  const handleProfilePick = async (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    setUploading(true);
-    setUploadError('');
-    try {
-      const uploaded = await uploadFile(file, {
-        fileName: file.name,
-        prefix: 'profile-images',
-      });
-      setField({ profileImage: uploaded.fileUrl });
-    } catch (err) {
-      setUploadError(err.message || 'Unable to upload profile image.');
-    } finally {
-      setUploading(false);
-      event.target.value = '';
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (companiesDropdownRef.current && !companiesDropdownRef.current.contains(event.target)) {
+        setCompaniesDropdownOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  useEffect(() => {
+    if (form.companyId) {
+      onCompanyChange?.(form.companyId);
     }
-  };
+  }, [form.companyId, onCompanyChange]);
+
+  const filteredCompanies = companies.filter((company) =>
+    company.name.toLowerCase().includes(companiesSearchQuery.toLowerCase())
+  );
+
+  const selectedCompanies = companies.filter(c => (form.companyIds || []).some(id => String(id) === String(c.id)));
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -244,58 +253,106 @@ function UserFormModal({ initial, companies, groups, onCompanyChange, onSave, on
             />
           </div>
 
-          <div className="col-span-2 lg:col-span-1">
-            <label className="block text-xs font-semibold text-gray-500 mb-1.5">Company</label>
-            <select
-              value={form.companyId}
-              onChange={(event) => {
-                const nextCompanyId = event.target.value;
-                setField({
-                  companyId: nextCompanyId,
-                  companyIds: nextCompanyId ? Array.from(new Set([...(form.companyIds || []), nextCompanyId])) : (form.companyIds || []),
-                  groupIds: [],
-                });
-                onCompanyChange?.(nextCompanyId);
-              }}
-              className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]"
-            >
-              <option value="">Unassigned</option>
-              {companies.map((company) => (
-                <option key={company.id} value={company.id}>{company.name}</option>
-              ))}
-            </select>
+          {/* Searchable Multiselect Dropdown for Companies */}
+          <div className="col-span-2">
+            <label className="block text-xs font-semibold text-gray-500 mb-1.5">Assign Companies *</label>
+            <div className="relative" ref={companiesDropdownRef}>
+              <button
+                type="button"
+                onClick={() => setCompaniesDropdownOpen(!companiesDropdownOpen)}
+                className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]"
+              >
+                <span className="text-left">
+                  {selectedCompanies.length === 0 ? 'Select companies...' : `${selectedCompanies.length} compan${selectedCompanies.length === 1 ? 'y' : 'ies'} selected`}
+                </span>
+                <ChevronDown size={16} className={`text-gray-400 transition-transform ${companiesDropdownOpen ? 'rotate-180' : ''}`} />
+              </button>
+
+              {companiesDropdownOpen && (
+                <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-xl shadow-lg z-10 max-h-56 overflow-y-auto">
+                  {/* Search Input */}
+                  <div className="sticky top-0 bg-white border-b border-gray-100 p-3">
+                    <div className="relative">
+                      <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                      <input
+                        type="text"
+                        placeholder="Search companies..."
+                        value={companiesSearchQuery}
+                        onChange={(e) => setCompaniesSearchQuery(e.target.value)}
+                        className="w-full pl-9 pr-3 py-2 rounded-lg border border-gray-200 text-xs focus:outline-none focus:border-[#8BC53D]"
+                        autoFocus
+                      />
+                    </div>
+                  </div>
+
+                  {/* Company Options */}
+                  <div className="p-2">
+                    {filteredCompanies.length > 0 ? (
+                      filteredCompanies.map((company) => {
+                        const isSelected = (form.companyIds || []).some(id => String(id) === String(company.id));
+                        return (
+                          <button
+                            key={company.id}
+                            type="button"
+                            onClick={() => {
+                              const nextIds = isSelected
+                                ? (form.companyIds || []).filter(id => String(id) !== String(company.id))
+                                : Array.from(new Set([...(form.companyIds || []), company.id]));
+                              setField({
+                                companyIds: nextIds,
+                                companyId: nextIds.some(id => String(id) === String(form.companyId)) ? form.companyId : (nextIds[0] || ''),
+                              });
+                            }}
+                            className={`w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm text-left transition-colors ${
+                              isSelected ? 'bg-[#E6F3D3] text-[#8BC53D]' : 'text-gray-700 hover:bg-gray-100'
+                            }`}
+                          >
+                            <div className={`w-4 h-4 rounded border flex items-center justify-center transition-all ${
+                              isSelected ? 'bg-[#8BC53D] border-[#8BC53D]' : 'border-gray-300'
+                            }`}>
+                              {isSelected && <Check size={12} className="text-white" />}
+                            </div>
+                            <span className="flex-1">{company.name}</span>
+                          </button>
+                        );
+                      })
+                    ) : (
+                      <div className="px-3 py-6 text-center text-xs text-gray-400">
+                        No companies found
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+            <p className="mt-1 text-[11px] text-gray-400">Users can be assigned to multiple companies</p>
           </div>
 
-          <div className="col-span-2">
-            <label className="block text-xs font-semibold text-gray-500 mb-1.5">Assigned Clients</label>
-            <div className="max-h-28 overflow-y-auto rounded-xl border border-gray-200 bg-gray-50 p-2">
-              {companies.length === 0 ? (
-                <p className="px-2 py-1 text-xs text-gray-400">No companies available</p>
-              ) : companies.map((company) => {
-                const active = (form.companyIds || []).some((id) => String(id) === String(company.id));
-                return (
-                  <label key={company.id} className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs font-semibold text-[#05164D] hover:bg-white">
-                    <input
-                      type="checkbox"
-                      checked={active}
-                      onChange={(event) => {
-                        const nextIds = event.target.checked
-                          ? Array.from(new Set([...(form.companyIds || []), company.id]))
-                          : (form.companyIds || []).filter((id) => String(id) !== String(company.id));
+          {/* Selected Companies Tags */}
+          {selectedCompanies.length > 0 && (
+            <div className="col-span-2">
+              <div className="flex flex-wrap gap-2">
+                {selectedCompanies.map(company => (
+                  <div key={company.id} className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#E6F3D3] text-[#8BC53D] text-xs font-semibold">
+                    <span>{company.name}</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const nextIds = (form.companyIds || []).filter(id => String(id) !== String(company.id));
                         setField({
                           companyIds: nextIds,
-                          companyId: nextIds.some((id) => String(id) === String(form.companyId)) ? form.companyId : (nextIds[0] || ''),
+                          companyId: nextIds.some(id => String(id) === String(form.companyId)) ? form.companyId : (nextIds[0] || ''),
                         });
                       }}
-                      className="h-3.5 w-3.5 accent-[#8BC53D]"
-                    />
-                    {company.name}
-                  </label>
-                );
-              })}
+                      className="hover:opacity-70 transition-opacity"
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                ))}
+              </div>
             </div>
-            <p className="mt-1 text-[11px] text-gray-400">A user can be assigned to multiple clients. The primary company is kept for compatibility.</p>
-          </div>
+          )}
 
           <div className="col-span-2 lg:col-span-1">
             <label className="block text-xs font-semibold text-gray-500 mb-1.5">Phone No.</label>
@@ -319,28 +376,10 @@ function UserFormModal({ initial, companies, groups, onCompanyChange, onSave, on
           </div>
 
           <div className="col-span-2">
-            <label className="block text-xs font-semibold text-gray-500 mb-1.5">Profile Image</label>
-            <div className="rounded-xl border border-dashed border-gray-200 p-3 bg-gray-50">
-              <input
-                type="file"
-                accept=".jpg,.jpeg,.png,.webp"
-                onChange={handleProfilePick}
-                disabled={uploading}
-                className="w-full text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-white file:px-3 file:py-2 file:text-xs file:font-semibold file:text-[#05164D] hover:file:bg-gray-100 disabled:opacity-60"
-              />
-              {form.profileImage && (
-                <p className="text-xs text-[#6D6E71] mt-2 truncate">{form.profileImage}</p>
-              )}
-              {uploadError && <p className="text-xs text-red-500 mt-2">{uploadError}</p>}
-              <p className="text-[11px] text-[#A5A5A5] mt-1">Uploads JPG, PNG, WEBP</p>
-            </div>
-          </div>
-
-          <div className="col-span-2">
-            <label className="block text-xs font-semibold text-gray-500 mb-1.5">Groups</label>
+            <label className="block text-xs font-semibold text-gray-500 mb-1.5">Groups {form.companyId && `(for ${companies.find(c => String(c.id) === String(form.companyId))?.name})`}</label>
             <div className="flex flex-wrap gap-2">
               {groups.length === 0 ? (
-                <span className="text-xs text-gray-400">Select a company to load groups</span>
+                <span className="text-xs text-gray-400">{form.companyId ? 'No groups available for this company' : 'Select at least one company to view groups'}</span>
               ) : groups.map((group) => {
                 const active = form.groupIds.includes(group.id);
                 return (
@@ -376,42 +415,46 @@ function UserFormModal({ initial, companies, groups, onCompanyChange, onSave, on
             />
           </div>
 
-          <div>
-            <label className="block text-xs font-semibold text-gray-500 mb-1.5">Role *</label>
-            <div className="flex gap-2">
-              {(isEdit ? ROLE_ORDER : CREATE_ROLE_ORDER).map((role) => {
-                const meta = roleMeta(role);
-                return (
-                  <button
-                    key={role}
-                    type="button"
-                    onClick={() => setField({ role })}
-                    className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl border text-xs font-semibold transition-all ${
-                      form.role === role
-                        ? 'bg-[#05164D] text-white border-[#05164D]'
-                        : 'bg-gray-50 text-gray-500 border-gray-200 hover:border-gray-300'
-                    }`}
-                  >
-                    <meta.Icon size={12} />
-                    {meta.label}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+          {isEdit && (
+            <>
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 mb-1.5">Role *</label>
+                <div className="flex gap-2">
+                  {ROLE_ORDER.map((role) => {
+                    const meta = roleMeta(role);
+                    return (
+                      <button
+                        key={role}
+                        type="button"
+                        onClick={() => setField({ role })}
+                        className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl border text-xs font-semibold transition-all ${
+                          form.role === role
+                            ? 'bg-[#05164D] text-white border-[#05164D]'
+                            : 'bg-gray-50 text-gray-500 border-gray-200 hover:border-gray-300'
+                        }`}
+                      >
+                        <meta.Icon size={12} />
+                        {meta.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
 
-          <div>
-            <label className="block text-xs font-semibold text-gray-500 mb-1.5">Status *</label>
-            <select
-              value={form.status}
-              onChange={(event) => setField({ status: event.target.value })}
-              className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]"
-            >
-              {STATUS_ORDER.map((status) => (
-                <option key={status} value={status}>{statusMeta(status).label}</option>
-              ))}
-            </select>
-          </div>
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 mb-1.5">Status *</label>
+                <select
+                  value={form.status}
+                  onChange={(event) => setField({ status: event.target.value })}
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]"
+                >
+                  {STATUS_ORDER.map((status) => (
+                    <option key={status} value={status}>{statusMeta(status).label}</option>
+                  ))}
+                </select>
+              </div>
+            </>
+          )}
         </div>
 
         <div className="px-6 py-4 border-t border-gray-100 bg-white flex gap-3">
@@ -571,11 +614,11 @@ export default function BrokerUsers() {
         email: form.email.trim(),
         phone: form.phone.trim() || null,
         password: form.password,
-        role: form.role,
-        profile_image: form.profileImage.trim() || null,
+        role: 'buyer',
+        profile_image: null,
         company_id: form.companyId || null,
         company_ids: Array.from(new Set([form.companyId, ...(form.companyIds || [])].filter(Boolean))),
-        status: form.status,
+        status: 'active',
       });
 
       if (created?.id) {
@@ -603,7 +646,7 @@ export default function BrokerUsers() {
       name: form.name.trim(),
       email: form.email.trim(),
       phone: form.phone.trim() || null,
-      role: form.role,
+      role: ['user', 'client'].includes(form.role) ? 'buyer' : form.role,
       profile_image: form.profileImage.trim() || null,
       company_id: form.companyId || null,
       company_ids: Array.from(new Set([form.companyId, ...(form.companyIds || [])].filter(Boolean))),
@@ -679,7 +722,7 @@ export default function BrokerUsers() {
   const stats = useMemo(() => ({
     total: data.length,
     active: data.filter((user) => user.status === 'active').length,
-    buyers: data.filter((user) => user.role === 'buyer').length,
+    users: data.filter((user) => user.role === 'user').length,
   }), [data]);
 
   const resetFilters = () => {

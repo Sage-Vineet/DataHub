@@ -1,14 +1,15 @@
 const {
-  deleteQuickBooksConnection,
+  softDisconnectQuickBooks,
   getQuickBooksConnectionByCompanyId,
   upsertQuickBooksConnection,
+  deleteQuickBooksConnection,
 } = require("./services/quickbooksConnectionStore");
 const { logQuickBooksDebug, maskValue } = require("./quickbooksLogger");
 
 let qbStates = {};
 
 const isSandbox =
-  process.env.NODE_ENV !== "production" ||
+  process.env.QB_ENVIRONMENT !== "production" ||
   process.env.QB_ENVIRONMENT === "sandbox";
 const QB_BASE_URL =
   process.env.QB_BASE_URL ||
@@ -82,6 +83,14 @@ async function loadQBConfig(clientId) {
     return mergeWithDefault();
   }
 
+  // If the connection was soft-disconnected, treat it as non-existent
+  // so the status endpoint correctly reports isConnected = false.
+  if (connection.isConnected === false) {
+    console.log(`[QB Config] DB says is_connected=false for client=${clientId} — treating as disconnected`);
+    delete qbStates[clientId];
+    return mergeWithDefault();
+  }
+
   qbStates[clientId] = {
     ...(qbStates[clientId] || {}),
     ...connection,
@@ -126,6 +135,7 @@ async function setQBConfig(clientId, newConfig) {
 
   const persistedState = await upsertQuickBooksConnection({
     companyId: clientId,
+    userId: nextState.userId || null,
     realmId: nextState.realmId,
     companyName: nextState.companyName || null,
     accessToken: nextState.accessToken,
@@ -177,9 +187,45 @@ async function disconnectConfig(clientId) {
     throw new Error("disconnectConfig called without clientId.");
   }
 
+  // Attempt to revoke the token from Intuit
+  const currentState = qbStates[clientId] || (await loadQBConfig(clientId));
+  if (currentState && (currentState.refreshToken || currentState.accessToken)) {
+    try {
+      const basicToken = currentState.basicToken || buildBasicToken(currentState.clientId || DEFAULT_CONFIG.clientId, currentState.clientSecret || DEFAULT_CONFIG.clientSecret);
+      const tokenToRevoke = currentState.refreshToken || currentState.accessToken;
+      const axios = require("axios");
+      
+      if (tokenToRevoke) {
+        await axios.post(
+          "https://developer.api.intuit.com/v2/oauth2/tokens/revoke",
+          new URLSearchParams({ token: tokenToRevoke }),
+          {
+            headers: {
+              Authorization: `Basic ${basicToken}`,
+              "Content-Type": "application/x-www-form-urlencoded",
+              Accept: "application/json",
+            },
+          }
+        );
+        console.log(`[QB Disconnect] Intuit token revoked for client: ${clientId}`);
+      }
+    } catch (revokeErr) {
+      console.warn(`[QB Disconnect] Intuit token revocation failed (may be expired):`, revokeErr.response?.data || revokeErr.message);
+    }
+  }
+
+  // 1. Clear in-memory state FIRST
   delete qbStates[clientId];
-  await deleteQuickBooksConnection(clientId);
-  console.log(`QuickBooks connection cleared for client: ${clientId}`);
+  console.log(`[QB Disconnect] In-memory state cleared for client: ${clientId}`);
+
+  // 2. Persist to DB: HARD DELETE connection instead of soft disconnect
+  const success = await deleteQuickBooksConnection(clientId);
+  if (!success) {
+    console.error(`[QB Disconnect] ❌ DB delete FAILED for client: ${clientId}`);
+    throw new Error("Failed to delete QuickBooks connection from database.");
+  }
+
+  console.log(`[QB Disconnect] ✅ Complete for client: ${clientId} — memory cleared, DB connection deleted`);
 }
 
 function isConnected(clientId) {

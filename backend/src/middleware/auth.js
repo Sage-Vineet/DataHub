@@ -1,10 +1,5 @@
 const jwt = require("jsonwebtoken");
-const db = require("../db");
-
-function rowsOf(result) {
-  if (!result) return [];
-  return Array.isArray(result) ? result : result.rows || [];
-}
+const { getUserById } = require("../services/userService");
 
 function extractToken(req) {
   const authorization = req.headers.authorization || "";
@@ -29,37 +24,6 @@ function extractToken(req) {
   return null;
 }
 
-async function attachAssignedCompanies(user) {
-  if (!user?.id) return user;
-  const companies = rowsOf(await db.query(
-    `SELECT c.id, c.name, c.industry, c.status, c.contact_email
-     FROM user_companies uc
-     JOIN companies c ON c.id = uc.company_id
-     WHERE uc.user_id = ?
-     ORDER BY c.name ASC`,
-    [user.id]
-  ));
-
-  const hasPrimary = user.company_id && companies.some((company) => String(company.id) === String(user.company_id));
-  const assignedCompanies = hasPrimary || !user.company_id
-    ? companies
-    : [{ id: user.company_id, name: user.company_name }, ...companies];
-  const normalizedEmail = String(user.email || "").trim().toLowerCase();
-  const isSeller = assignedCompanies.some((company) => (
-    String(company.contact_email || "").trim().toLowerCase() === normalizedEmail
-  ));
-  const effectiveRole = user.role === "buyer"
-    ? (isSeller ? "client" : "user")
-    : user.role;
-
-  return {
-    ...user,
-    effective_role: effectiveRole,
-    company_ids: assignedCompanies.map((company) => company.id).filter(Boolean),
-    assigned_companies: assignedCompanies,
-  };
-}
-
 async function requireAuth(req, res, next) {
   const token = extractToken(req);
 
@@ -69,19 +33,13 @@ async function requireAuth(req, res, next) {
 
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET || "change_me");
-    const { rows } = await db.query(
-      `SELECT u.id, u.name, u.email, u.role, u.company_id, u.status, c.name AS company_name
-       FROM users u
-       LEFT JOIN companies c ON c.id = u.company_id
-       WHERE u.id = ?`,
-      [payload.sub]
-    );
+    const user = await getUserById(payload.sub);
 
-    if (!rows || rows.length === 0) {
+    if (!user) {
       return res.status(401).json({ error: "Invalid token" });
     }
 
-    req.user = await attachAssignedCompanies(rows[0]);
+    req.user = user;
     return next();
   } catch (err) {
     return res.status(401).json({ error: "Invalid token" });

@@ -1,22 +1,23 @@
-const db = require("../db");
+const { supabase } = require("../db");
 const { logQuickBooksDebug, maskValue } = require("../quickbooksLogger");
-
-let ensureTablePromise = null;
 
 function parseSyncedEntities(value) {
   if (Array.isArray(value)) return value;
   if (!value) return [];
 
-  try {
-    const parsed = JSON.parse(value);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (_) {
-    return [];
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (_) {
+      return [];
+    }
   }
+  return [];
 }
 
 function serializeSyncedEntities(value) {
-  return JSON.stringify(Array.isArray(value) ? value : []);
+  return Array.isArray(value) ? value : [];
 }
 
 function mapRowToConnection(row) {
@@ -36,81 +37,27 @@ function mapRowToConnection(row) {
     oauthClientId: row.oauth_client_id,
     redirectUri: row.redirect_uri,
     syncedEntities: parseSyncedEntities(row.synced_entities),
+    isConnected: row.is_connected !== false, // defaults true for backward compat
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
 }
 
-async function ensureConnectionTable() {
-  if (ensureTablePromise) {
-    return ensureTablePromise;
-  }
-
-  ensureTablePromise = (async () => {
-    await db.query(`
-      CREATE TABLE IF NOT EXISTS quickbooks_connections (
-        company_id uuid PRIMARY KEY REFERENCES companies(id) ON DELETE CASCADE,
-        realm_id text NOT NULL UNIQUE,
-        company_name text,
-        access_token text NOT NULL,
-        refresh_token text NOT NULL,
-        token_expires_at timestamptz,
-        connected_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        last_synced timestamptz,
-        environment text NOT NULL DEFAULT 'sandbox',
-        oauth_client_id text NOT NULL,
-        redirect_uri text NOT NULL,
-        synced_entities text NOT NULL DEFAULT '[]',
-        created_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        updated_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    await db.query(`
-      CREATE INDEX IF NOT EXISTS idx_quickbooks_connections_realm_id
-      ON quickbooks_connections(realm_id)
-    `);
-
-    logQuickBooksDebug("db_connection_table_ready", {
-      engine: db.engine,
-    });
-  })().catch((error) => {
-    ensureTablePromise = null;
-    throw error;
-  });
-
-  return ensureTablePromise;
-}
-
 async function getQuickBooksConnectionByCompanyId(companyId) {
   if (!companyId) return null;
 
-  await ensureConnectionTable();
+  const { data, error } = await supabase
+    .from("quickbooks_connections")
+    .select("*")
+    .eq("company_id", companyId)
+    .maybeSingle();
 
-  const result = await db.query(
-    `
-      SELECT
-        company_id,
-        realm_id,
-        company_name,
-        access_token,
-        refresh_token,
-        token_expires_at,
-        connected_at,
-        last_synced,
-        environment,
-        oauth_client_id,
-        redirect_uri,
-        synced_entities,
-        created_at,
-        updated_at
-      FROM quickbooks_connections
-      WHERE company_id = ?
-    `,
-    [companyId],
-  );
+  if (error) {
+    console.error("Error loading QB connection:", error.message);
+    return null;
+  }
 
-  const connection = mapRowToConnection(result?.rows?.[0]);
+  const connection = mapRowToConnection(data);
 
   logQuickBooksDebug("db_connection_load", {
     companyId,
@@ -127,37 +74,24 @@ async function getQuickBooksConnectionByCompanyId(companyId) {
 async function getQuickBooksConnectionByRealmId(realmId) {
   if (!realmId) return null;
 
-  await ensureConnectionTable();
+  const { data, error } = await supabase
+    .from("quickbooks_connections")
+    .select("*")
+    .eq("realm_id", realmId)
+    .maybeSingle();
 
-  const result = await db.query(
-    `
-      SELECT
-        company_id,
-        realm_id,
-        company_name,
-        access_token,
-        refresh_token,
-        token_expires_at,
-        connected_at,
-        last_synced,
-        environment,
-        oauth_client_id,
-        redirect_uri,
-        synced_entities,
-        created_at,
-        updated_at
-      FROM quickbooks_connections
-      WHERE realm_id = ?
-    `,
-    [realmId],
-  );
+  if (error) {
+    console.error("Error loading QB connection by realm:", error.message);
+    return null;
+  }
 
-  return mapRowToConnection(result?.rows?.[0]);
+  return mapRowToConnection(data);
 }
 
 async function upsertQuickBooksConnection(connection) {
   const {
     companyId,
+    userId,
     realmId,
     companyName,
     accessToken,
@@ -187,98 +121,59 @@ async function upsertQuickBooksConnection(connection) {
     );
   }
 
-  await ensureConnectionTable();
-
   const existingByRealm = await getQuickBooksConnectionByRealmId(realmId);
   if (existingByRealm && existingByRealm.dataHubCompanyId !== companyId) {
+    console.error(`[QB Store] ❌ Realm conflict detected! Realm ${realmId} is already linked to company ${existingByRealm.dataHubCompanyId}. Cannot link to ${companyId}.`);
     const realmConflictError = new Error(
-      `QuickBooks realm ${realmId} is already linked to DataHub company ${existingByRealm.dataHubCompanyId}.`,
+      `QuickBooks realm ${realmId} is already linked to another DataHub company.`,
     );
     realmConflictError.code = "QB_REALM_ALREADY_LINKED";
     throw realmConflictError;
   }
 
-  const existingByCompany = await getQuickBooksConnectionByCompanyId(companyId);
-  const syncedEntitiesJson = serializeSyncedEntities(syncedEntities);
-  const normalizedConnectedAt = connectedAt || new Date().toISOString();
-  const action = existingByCompany ? "update" : "insert";
-
-  if (existingByCompany) {
-    await db.query(
-      `
-        UPDATE quickbooks_connections
-        SET
-          realm_id = ?,
-          company_name = ?,
-          access_token = ?,
-          refresh_token = ?,
-          token_expires_at = ?,
-          connected_at = ?,
-          last_synced = ?,
-          environment = ?,
-          oauth_client_id = ?,
-          redirect_uri = ?,
-          synced_entities = ?,
-          updated_at = CURRENT_TIMESTAMP
-        WHERE company_id = ?
-      `,
-      [
-        realmId,
-        companyName || null,
-        accessToken,
-        refreshToken,
-        tokenExpiresAt || null,
-        normalizedConnectedAt,
-        lastSynced || null,
-        environment || "sandbox",
-        oauthClientId,
-        redirectUri,
-        syncedEntitiesJson,
-        companyId,
-      ],
-    );
-  } else {
-    await db.query(
-      `
-        INSERT INTO quickbooks_connections (
-          company_id,
-          realm_id,
-          company_name,
-          access_token,
-          refresh_token,
-          token_expires_at,
-          connected_at,
-          last_synced,
-          environment,
-          oauth_client_id,
-          redirect_uri,
-          synced_entities,
-          created_at,
-          updated_at
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-      `,
-      [
-        companyId,
-        realmId,
-        companyName || null,
-        accessToken,
-        refreshToken,
-        tokenExpiresAt || null,
-        normalizedConnectedAt,
-        lastSynced || null,
-        environment || "sandbox",
-        oauthClientId,
-        redirectUri,
-        syncedEntitiesJson,
-      ],
-    );
+  if (existingByRealm) {
+    console.log(`[QB Store] Re-linking existing realm ${realmId} to company ${companyId}`);
   }
 
-  const savedConnection = await getQuickBooksConnectionByCompanyId(companyId);
+  const syncedEntitiesData = serializeSyncedEntities(syncedEntities);
+  const normalizedConnectedAt = connectedAt || new Date().toISOString();
+
+  const payload = {
+    company_id: companyId,
+    realm_id: realmId,
+    company_name: companyName || null,
+    access_token: accessToken,
+    refresh_token: refreshToken,
+    token_expires_at: tokenExpiresAt || null,
+    connected_at: normalizedConnectedAt,
+    last_synced: lastSynced || null,
+    environment: environment || "sandbox",
+    oauth_client_id: oauthClientId,
+    redirect_uri: redirectUri,
+    synced_entities: syncedEntitiesData,
+    is_connected: true,
+    updated_at: new Date().toISOString()
+  };
+
+  if (userId) {
+    payload.user_id = userId;
+  }
+
+  console.log("DEBUG UPSERT - user_id:", userId, "company_id:", companyId, "payload:", payload);
+
+  const { data, error } = await supabase
+    .from("quickbooks_connections")
+    .upsert(payload, { onConflict: "company_id" })
+    .select("*")
+    .single();
+
+  if (error) {
+    throw new Error(`QuickBooks connection save failed: ${error.message}`);
+  }
+
+  const savedConnection = mapRowToConnection(data);
 
   logQuickBooksDebug("db_connection_upsert", {
-    action,
     companyId,
     realmId,
     companyName: savedConnection?.companyName || null,
@@ -294,26 +189,63 @@ async function upsertQuickBooksConnection(connection) {
 async function deleteQuickBooksConnection(companyId) {
   if (!companyId) return false;
 
-  await ensureConnectionTable();
+  const { error } = await supabase
+    .from("quickbooks_connections")
+    .delete()
+    .eq("company_id", companyId);
 
-  const existing = await getQuickBooksConnectionByCompanyId(companyId);
-
-  await db.query("DELETE FROM quickbooks_connections WHERE company_id = ?", [
-    companyId,
-  ]);
+  if (error) {
+    console.error("Error deleting QB connection:", error.message);
+    return false;
+  }
 
   logQuickBooksDebug("db_connection_delete", {
-    companyId,
-    realmId: existing?.realmId || null,
+    companyId
   });
 
-  return Boolean(existing);
+  return true;
+}
+
+/**
+ * Soft-disconnect: sets is_connected = false and nulls ALL auth fields.
+ * The DB row is kept so cached reports remain accessible for offline fallback.
+ * realm_id is preserved for potential reconnect identification.
+ */
+async function softDisconnectQuickBooks(companyId) {
+  if (!companyId) return false;
+
+  const now = new Date().toISOString();
+
+  const { error } = await supabase
+    .from("quickbooks_connections")
+    .update({
+      is_connected: false,
+      access_token: "",
+      refresh_token: "",
+      updated_at: now,
+    })
+    .eq("company_id", companyId);
+
+  if (error) {
+    console.error("[QB Disconnect] DB update failed:", error.message);
+    return false;
+  }
+
+  console.log(`[QB Disconnect] ✅ DB updated: is_connected=false, tokens cleared for company=${companyId}`);
+  logQuickBooksDebug("db_connection_soft_disconnect", {
+    companyId,
+    disconnectedAt: now,
+    tokensCleared: true,
+  });
+
+  return true;
 }
 
 module.exports = {
   deleteQuickBooksConnection,
-  ensureConnectionTable,
+  softDisconnectQuickBooks,
   getQuickBooksConnectionByCompanyId,
   getQuickBooksConnectionByRealmId,
   upsertQuickBooksConnection,
 };
+

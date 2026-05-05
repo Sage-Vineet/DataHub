@@ -1,12 +1,18 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import {
   Folder, FolderOpen, File, FileText, Search, Download, Eye, Upload,
   ChevronRight, ChevronDown, Trash2, Home, Archive, X, ArrowLeft, Check,
   MoreVertical, LayoutGrid, List, AlertCircle, Pencil, FolderPlus,
-  ArrowUpDown, ArrowUp, ArrowDown, CheckCircle, Clock, Share2, Users, Loader2,
+  ArrowUpDown, ArrowUp, ArrowDown, CheckCircle, Share2, Users, Loader2,
 } from 'lucide-react';
 import { useFileExplorerStore, findById, getPathTo } from '../../store/fileExplorerStore';
-import { fetchProtectedFileBlob, listCompanyRequests, listUsersRequest } from '../../lib/api';
+import {
+  fetchProtectedFileBlob,
+  listCompanyGroups,
+  listDocumentActivity,
+  listUsersRequest,
+  recordDocumentActivity,
+} from '../../lib/api';
 
 // ── File Type Helpers ────────────────────────────────────────────────────────
 function getMimeIcon(ext) {
@@ -20,12 +26,6 @@ function getMimeIcon(ext) {
   if (['txt', 'md'].includes(e)) return { Icon: FileText, color: '#6D6E71', bg: '#F4F6F7' };
   return { Icon: File, color: '#95A5A6', bg: '#F2F3F4' };
 }
-
-const STATUS_META = {
-  verified:     { label: 'Verified',      color: '#476E2C', bg: '#E6F3D3', Icon: CheckCircle },
-  'under-review': { label: 'Under Review', color: '#b45e08', bg: '#FAC086', Icon: Clock },
-  rejected:     { label: 'Rejected',      color: '#C62026', bg: '#F9D6D6', Icon: AlertCircle },
-};
 
 const FOLDER_PALETTE = ['#00B0F0','#742982','#F68C1F','#8BC53D','#05164D','#b45e08','#476E2C','#00648F'];
 
@@ -92,28 +92,42 @@ function searchTree(node, query) {
   return results;
 }
 
-function countItems(node) {
-  let files = 0, folders = 0;
+function countItems(node, canAccessFolder = () => true) {
+  let files = 0;
+  let folders = 0;
   const walk = (n) => {
-    (n.children || []).forEach(c => {
-      if (c.type === 'folder') { folders++; walk(c); } else files++;
+    (n.children || []).forEach((child) => {
+      if (child.type === 'folder') {
+        if (!canAccessFolder(child.id)) return;
+        folders += 1;
+        walk(child);
+        return;
+      }
+      files += 1;
     });
   };
   walk(node);
   return { files, folders };
 }
 
-function countFiles(node) {
+function countFiles(node, canAccessFolder = () => true) {
   let files = 0;
   (node.children || []).forEach((c) => {
     if (c.type === 'file') files += 1;
-    if (c.type === 'folder') files += countFiles(c);
+    if (c.type === 'folder' && canAccessFolder(c.id)) files += countFiles(c, canAccessFolder);
   });
   return files;
 }
 
+function collectFolderIds(node, ids = []) {
+  if (!node) return ids;
+  if (node.type === 'folder' && node.id !== 'root') ids.push(node.id);
+  (node.children || []).forEach((child) => collectFolderIds(child, ids));
+  return ids;
+}
+
 // ── FolderTreeNode ───────────────────────────────────────────────────────────
-function FolderTreeNode({ node, depth = 0, canAccessFolder, requestCountsByFolderName }) {
+function FolderTreeNode({ node, depth = 0, canAccessFolder }) {
   const {
     currentPath, expandedFolders, toggleExpand, navigateTo,
     dragOver, setDragOver, draggingItems, moveItemsTo, clearDrag,
@@ -125,10 +139,7 @@ function FolderTreeNode({ node, depth = 0, canAccessFolder, requestCountsByFolde
   const isActive = currentPath[currentPath.length - 1] === node.id;
   const isDragTarget = dragOver === node.id;
   const subFolders = (node.children || []).filter(c => c.type === 'folder' && canAccessFolder(c.id));
-  const filesCount = countFiles(node);
-  const requestCount = requestCountsByFolderName
-    ? (requestCountsByFolderName[node.name?.toLowerCase?.() || ''] || 0)
-    : 0;
+  const filesCount = countFiles(node, canAccessFolder);
 
   return (
     <div>
@@ -157,14 +168,6 @@ function FolderTreeNode({ node, depth = 0, canAccessFolder, requestCountsByFolde
         </button>
         <span className="relative flex-shrink-0" style={{ color: node.color || '#6D6E71' }}>
           {isExpanded || isActive ? <FolderOpen size={15} /> : <Folder size={15} />}
-          {requestCount > 0 && (
-            <span className="absolute -top-1 -right-1 flex h-4 min-w-[16px] px-1 items-center justify-center rounded-full bg-[#8BC53D] text-[9px] font-bold text-white shadow">
-              {requestCount}
-              <span className="absolute left-full ml-1 px-1.5 py-0.5 rounded bg-[#05164D] text-white text-[9px] opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
-                Requests
-              </span>
-            </span>
-          )}
         </span>
         <span className="truncate flex-1 text-xs font-medium">{node.name}</span>
         {node.children && (
@@ -182,7 +185,6 @@ function FolderTreeNode({ node, depth = 0, canAccessFolder, requestCountsByFolde
           node={child}
           depth={depth + 1}
           canAccessFolder={canAccessFolder}
-          requestCountsByFolderName={requestCountsByFolderName}
         />
       ))}
     </div>
@@ -190,19 +192,15 @@ function FolderTreeNode({ node, depth = 0, canAccessFolder, requestCountsByFolde
 }
 
 // ── FolderTree Sidebar ────────────────────────────────────────────────────────
-function FolderTree({ tree, onUpload, role, getFolderPermissions, requestCountsByFolderName }) {
+function FolderTree({ tree, onUpload, role, getFolderPermissions }) {
   const { navigateTo, startNewFolder, currentPath, uploadFiles } = useFileExplorerStore();
-  const { files, folders } = countItems(tree);
   const fileInputRef = useRef(null);
   const [loadingTree, setLoadingTree] = useState(false);
   const [treeError, setTreeError] = useState('');
   const currentFolderId = currentPath[currentPath.length - 1];
-  const canWrite = role === 'broker' || getFolderPermissions(currentFolderId).write;
   const canAccessFolder = (id) => role === 'broker' || getFolderPermissions(id).read;
-  const showRequests = requestCountsByFolderName && Object.keys(requestCountsByFolderName).length > 0;
-  const totalRequests = showRequests
-    ? Object.values(requestCountsByFolderName).reduce((sum, value) => sum + value, 0)
-    : 0;
+  const canWrite = role === 'broker' || getFolderPermissions(currentFolderId).write;
+  const { files, folders } = useMemo(() => countItems(tree, canAccessFolder), [tree, role, getFolderPermissions]);
 
   const handleSidebarUpload = (e) => {
     if (!canWrite) return;
@@ -254,14 +252,6 @@ function FolderTree({ tree, onUpload, role, getFolderPermissions, requestCountsB
         >
           <span className="relative flex-shrink-0">
             <Home size={14} className="text-[#05164D]" />
-            {totalRequests > 0 && (
-              <span className="absolute -top-1 -right-1 flex h-4 min-w-[16px] px-1 items-center justify-center rounded-full bg-[#8BC53D] text-[9px] font-bold text-white shadow">
-                {totalRequests}
-                <span className="absolute left-full ml-1 px-1.5 py-0.5 rounded bg-[#05164D] text-white text-[9px] opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
-                  Requests
-                </span>
-              </span>
-            )}
           </span>
           <span>All Documents</span>
           <span className="text-[10px] text-[#A5A5A5] ml-auto flex-shrink-0">
@@ -274,7 +264,6 @@ function FolderTree({ tree, onUpload, role, getFolderPermissions, requestCountsB
             node={node}
             depth={0}
             canAccessFolder={canAccessFolder}
-            requestCountsByFolderName={requestCountsByFolderName}
           />
         ))}
       </div>
@@ -462,20 +451,6 @@ function NewFolderInput({ parentId }) {
   );
 }
 
-// ── StatusPill ────────────────────────────────────────────────────────────────
-function StatusPill({ status }) {
-  const m = STATUS_META[status] || STATUS_META['under-review'];
-  return (
-    <span
-      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold"
-      style={{ color: m.color, background: m.bg }}
-    >
-      <m.Icon size={9} />
-      {m.label}
-    </span>
-  );
-}
-
 // ── RenameInput ───────────────────────────────────────────────────────────────
 function RenameInput({ item }) {
   const { renameItem, stopRenaming } = useFileExplorerStore();
@@ -506,11 +481,11 @@ function RenameInput({ item }) {
 }
 
 // ── FileCard (grid) ────────────────────────────────────────────────────────────
-function FileCard({ item, role, permissions, sharedMeta, onShareAccess, onMoveFolder }) {
+function FileCard({ item, role, permissions, sharedMeta, onShareAccess, onMoveFolder, onPreviewFile, onDownloadFile, onOpenActivity }) {
   const {
     selectedItems, selectItem, renamingId, draggingItems, setDraggingItems,
     dragOver, setDragOver, moveItemsTo, clearDrag, navigateTo,
-    showContextMenu, showPreview, startRenaming,
+    showContextMenu, startRenaming,
   } = useFileExplorerStore();
 
   const isSelected = selectedItems.includes(item.id);
@@ -533,7 +508,7 @@ function FileCard({ item, role, permissions, sharedMeta, onShareAccess, onMoveFo
   const handleDoubleClick = (e) => {
     e.stopPropagation();
     if (item.type === 'folder') navigateTo(item.id);
-    else showPreview(item);
+    else onPreviewFile(item);
   };
 
   const handleDragStart = (e) => {
@@ -564,8 +539,7 @@ function FileCard({ item, role, permissions, sharedMeta, onShareAccess, onMoveFo
   const handleDownload = (e) => {
     e.stopPropagation();
     if (!canDownload) return;
-    const a = document.createElement('a');
-    a.href = '#'; a.download = item.name; a.click();
+    onDownloadFile(item);
   };
 
   return (
@@ -626,7 +600,6 @@ function FileCard({ item, role, permissions, sharedMeta, onShareAccess, onMoveFo
       {item.type === 'file' ? (
         <div className="mt-1 flex flex-col items-center gap-0.5">
           <span className="text-[10px] text-[#A5A5A5]">{item.size}</span>
-          <StatusPill status={item.status} />
         </div>
       ) : (
         <div className="mt-1 flex flex-col items-center gap-1">
@@ -647,16 +620,27 @@ function FileCard({ item, role, permissions, sharedMeta, onShareAccess, onMoveFo
       {item.type === 'file' && (
         <div className="absolute top-2 right-2 hidden group-hover:flex gap-1">
           <button
-            onClick={e => { e.stopPropagation(); if (canRead) showPreview(item); }}
+            onClick={e => { e.stopPropagation(); if (canRead) onPreviewFile(item); }}
             disabled={!canRead}
             className={`w-6 h-6 rounded-lg bg-white shadow border border-gray-100 flex items-center justify-center ${canRead ? 'hover:bg-gray-50' : 'opacity-40 cursor-not-allowed'}`}
+            title="Preview"
           >
             <Eye size={11} className="text-[#6D6E71]" />
           </button>
+          {role === 'broker' && (
+            <button
+              onClick={e => { e.stopPropagation(); onOpenActivity(item); }}
+              className="w-6 h-6 rounded-lg bg-white shadow border border-gray-100 flex items-center justify-center hover:bg-gray-50"
+              title="View activity"
+            >
+              <Users size={11} className="text-[#6D6E71]" />
+            </button>
+          )}
           <button
             onClick={handleDownload}
             disabled={!canDownload}
             className={`w-6 h-6 rounded-lg bg-white shadow border border-gray-100 flex items-center justify-center ${canDownload ? 'hover:bg-gray-50' : 'opacity-40 cursor-not-allowed'}`}
+            title="Download"
           >
             <Download size={11} className="text-[#6D6E71]" />
           </button>
@@ -676,11 +660,11 @@ function FileCard({ item, role, permissions, sharedMeta, onShareAccess, onMoveFo
 }
 
 // ── FileRow (list) ─────────────────────────────────────────────────────────────
-function FileRow({ item, role, permissions, sharedMeta, onShareAccess, onMoveFolder }) {
+function FileRow({ item, role, permissions, sharedMeta, onShareAccess, onMoveFolder, onPreviewFile, onDownloadFile, onOpenActivity }) {
   const {
     selectedItems, selectItem, renamingId, draggingItems, setDraggingItems,
     dragOver, setDragOver, moveItemsTo, clearDrag, navigateTo,
-    showContextMenu, showPreview, startRenaming,
+    showContextMenu, startRenaming,
   } = useFileExplorerStore();
 
   const isSelected = selectedItems.includes(item.id);
@@ -697,8 +681,7 @@ function FileRow({ item, role, permissions, sharedMeta, onShareAccess, onMoveFol
   const handleDownload = (e) => {
     e.stopPropagation();
     if (!canDownload) return;
-    const a = document.createElement('a');
-    a.href = '#'; a.download = item.name; a.click();
+    onDownloadFile(item);
   };
 
   return (
@@ -728,7 +711,7 @@ function FileRow({ item, role, permissions, sharedMeta, onShareAccess, onMoveFol
         if (e.ctrlKey || e.metaKey) selectItem(item.id, true);
         else selectItem(item.id, false);
       }}
-      onDoubleClick={() => item.type === 'folder' ? navigateTo(item.id) : showPreview(item)}
+      onDoubleClick={() => item.type === 'folder' ? navigateTo(item.id) : onPreviewFile(item)}
       onContextMenu={e => { e.preventDefault(); if (canManage) showContextMenu(e.clientX, e.clientY, item.id); }}
       className={`group cursor-pointer transition-all duration-100 select-none
         ${isSelected ? 'bg-[#05164D]/5' : 'hover:bg-gray-50'}
@@ -778,21 +761,27 @@ function FileRow({ item, role, permissions, sharedMeta, onShareAccess, onMoveFol
         {item.size || '—'}
       </td>
       <td className="px-3 py-2.5">
-        {item.type === 'file' && <StatusPill status={item.status} />}
-      </td>
-      <td className="px-3 py-2.5">
         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
           {item.type === 'file' && (
             <>
               <button
-                onClick={e => { e.stopPropagation(); if (canRead) showPreview(item); }}
+                onClick={e => { e.stopPropagation(); if (canRead) onPreviewFile(item); }}
                 disabled={!canRead}
                 className={`p-1 rounded-lg ${canRead ? 'hover:bg-gray-100 text-[#6D6E71]' : 'text-[#C0C4CC] cursor-not-allowed'}`}
+                title="Preview"
               ><Eye size={13} /></button>
+              {role === 'broker' && (
+                <button
+                  onClick={e => { e.stopPropagation(); onOpenActivity(item); }}
+                  className="p-1 rounded-lg hover:bg-gray-100 text-[#6D6E71]"
+                  title="View activity"
+                ><Users size={13} /></button>
+              )}
               <button
                 onClick={handleDownload}
                 disabled={!canDownload}
                 className={`p-1 rounded-lg ${canDownload ? 'hover:bg-gray-100 text-[#6D6E71]' : 'text-[#C0C4CC] cursor-not-allowed'}`}
+                title="Download"
               ><Download size={13} /></button>
             </>
           )}
@@ -832,6 +821,9 @@ function FileGrid({
   getSharedMeta,
   onShareAccess,
   onMoveFolder,
+  onPreviewFile,
+  onDownloadFile,
+  onOpenActivity,
   currentFolderPermissions,
 }) {
   const { newFolderParentId } = useFileExplorerStore();
@@ -854,6 +846,9 @@ function FileGrid({
             sharedMeta={sharedMeta}
             onShareAccess={onShareAccess}
             onMoveFolder={onMoveFolder}
+            onPreviewFile={onPreviewFile}
+            onDownloadFile={onDownloadFile}
+            onOpenActivity={onOpenActivity}
           />
         );
       })}
@@ -869,6 +864,9 @@ function FileTable({
   getSharedMeta,
   onShareAccess,
   onMoveFolder,
+  onPreviewFile,
+  onDownloadFile,
+  onOpenActivity,
   currentFolderPermissions,
 }) {
   const { newFolderParentId } = useFileExplorerStore();
@@ -881,13 +879,12 @@ function FileTable({
             <th className="px-2 py-2 text-left text-xs font-semibold text-[#6D6E71]">Name</th>
             <th className="px-3 py-2 text-left text-xs font-semibold text-[#6D6E71]">Modified</th>
             <th className="px-3 py-2 text-left text-xs font-semibold text-[#6D6E71]">Size</th>
-            <th className="px-3 py-2 text-left text-xs font-semibold text-[#6D6E71]">Status</th>
             <th className="px-3 py-2 text-left text-xs font-semibold text-[#6D6E71]">Actions</th>
           </tr>
         </thead>
         <tbody>
           {newFolderParentId === currentFolderId && (role === 'broker' || currentFolderPermissions.write) && (
-            <tr><td colSpan={6} className="px-4 py-2">
+            <tr><td colSpan={5} className="px-4 py-2">
               <NewFolderInput parentId={currentFolderId} />
             </td></tr>
           )}
@@ -905,6 +902,9 @@ function FileTable({
                 sharedMeta={sharedMeta}
                 onShareAccess={onShareAccess}
                 onMoveFolder={onMoveFolder}
+                onPreviewFile={onPreviewFile}
+                onDownloadFile={onDownloadFile}
+                onOpenActivity={onOpenActivity}
               />
             );
           })}
@@ -973,6 +973,10 @@ function FolderActionMenu({ onShareAccess, onRename, onMove, onDelete, className
   );
 }
 
+function getAccessSubjectKey(subject) {
+  return `${subject.type || 'user'}:${subject.subjectId || subject.id}`;
+}
+
 function ShareAccessModal({ isOpen, folder, entries, people, onSave, onClose }) {
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState([]);
@@ -980,14 +984,16 @@ function ShareAccessModal({ isOpen, folder, entries, people, onSave, onClose }) 
 
   useEffect(() => {
     if (!isOpen) return;
-    const directory = new Map((people || []).map((person) => [person.id, person]));
+    const directory = new Map((people || []).map((person) => [getAccessSubjectKey(person), person]));
     setSelected(entries.map((entry) => {
-      const person = directory.get(entry.subjectId || entry.id);
+      const subjectType = entry.type || 'user';
+      const subjectId = entry.subjectId || entry.id;
+      const person = directory.get(getAccessSubjectKey({ type: subjectType, subjectId }));
       return {
         ...entry,
-        id: entry.subjectId || entry.id,
-        subjectId: entry.subjectId || entry.id,
-        type: 'user',
+        id: subjectId,
+        subjectId,
+        type: subjectType,
         name: person?.name || entry.name,
         meta: person?.meta || entry.meta || '',
         accessType: permissionsToAccessType(entry.permissions),
@@ -1004,16 +1010,17 @@ function ShareAccessModal({ isOpen, folder, entries, people, onSave, onClose }) 
     t.name.toLowerCase().includes(search.toLowerCase()) || (t.meta || '').toLowerCase().includes(search.toLowerCase())
   );
 
-  const isSelected = (target) => selected.some(s => s.id === target.id);
+  const isSelected = (target) => selected.some(s => getAccessSubjectKey(s) === getAccessSubjectKey(target));
   const toggleTarget = (target) => {
     setSelected(prev => {
-      if (prev.some(s => s.id === target.id)) {
-        return prev.filter(s => s.id !== target.id);
+      const targetKey = getAccessSubjectKey(target);
+      if (prev.some(s => getAccessSubjectKey(s) === targetKey)) {
+        return prev.filter(s => getAccessSubjectKey(s) !== targetKey);
       }
       return [...prev, {
         ...target,
         subjectId: target.id,
-        type: 'user',
+        type: target.type || 'user',
         accessType: 'read',
         permissions: accessTypeToPermissions('read'),
       }];
@@ -1022,7 +1029,7 @@ function ShareAccessModal({ isOpen, folder, entries, people, onSave, onClose }) 
 
   const updateAccessType = (targetId, accessType) => {
     setSelected(prev => prev.map(s => (
-      s.id === targetId ? { ...s, accessType, permissions: accessTypeToPermissions(accessType) } : s
+      getAccessSubjectKey(s) === targetId ? { ...s, accessType, permissions: accessTypeToPermissions(accessType) } : s
     )));
   };
 
@@ -1052,20 +1059,20 @@ function ShareAccessModal({ isOpen, folder, entries, people, onSave, onClose }) 
 
         <div className="p-5 space-y-5">
           <div>
-            <h4 className="text-sm font-semibold text-[#050505] mb-2">Select Persons</h4>
+            <h4 className="text-sm font-semibold text-[#050505] mb-2">Select Users or Groups</h4>
             <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 mb-3">
               <Search size={14} className="text-[#A5A5A5]" />
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search persons..."
+                placeholder="Search users or groups..."
                 className="bg-transparent text-sm outline-none w-full"
               />
             </div>
             <div className="grid sm:grid-cols-2 gap-2 max-h-44 overflow-y-auto pr-1">
               {filtered.map(target => (
                 <button
-                  key={target.id}
+                  key={getAccessSubjectKey(target)}
                   onClick={() => toggleTarget(target)}
                   className={`flex items-center gap-3 px-3 py-2 rounded-xl border text-left transition-colors ${
                     isSelected(target) ? 'border-[#8BC53D] bg-[#E6F3D3]/40' : 'border-gray-200 hover:bg-gray-50'
@@ -1086,18 +1093,23 @@ function ShareAccessModal({ isOpen, folder, entries, people, onSave, onClose }) 
           <div>
             <h4 className="text-sm font-semibold text-[#050505] mb-2">Access Type</h4>
             {selected.length === 0 ? (
-              <p className="text-sm text-[#A5A5A5]">Select persons to assign access.</p>
+              <p className="text-sm text-[#A5A5A5]">Select users or groups to assign access.</p>
             ) : (
               <div className="space-y-2">
                 {selected.map(target => (
-                  <div key={target.id} className="flex flex-wrap items-center gap-3 px-3 py-2 bg-gray-50 rounded-xl">
-                    <span className="text-sm font-semibold text-[#050505] min-w-[160px]">{target.name}</span>
+                  <div key={getAccessSubjectKey(target)} className="flex flex-wrap items-center gap-3 px-3 py-2 bg-gray-50 rounded-xl">
+                    <span className="text-sm font-semibold text-[#050505] min-w-[160px]">
+                      {target.name}
+                      <span className="ml-2 rounded-full bg-white px-2 py-0.5 text-[10px] font-bold uppercase text-[#A5A5A5]">
+                        {target.type === 'group' ? 'Group' : 'User'}
+                      </span>
+                    </span>
                     <div className="flex flex-wrap items-center gap-2">
                       {ACCESS_TYPE_OPTIONS.map((option) => (
                         <button
                           key={option.key}
                           type="button"
-                          onClick={() => updateAccessType(target.id, option.key)}
+                          onClick={() => updateAccessType(getAccessSubjectKey(target), option.key)}
                           className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-colors ${
                             target.accessType === option.key
                               ? 'bg-[#8BC53D] text-white'
@@ -1121,8 +1133,13 @@ function ShareAccessModal({ isOpen, folder, entries, people, onSave, onClose }) 
             ) : (
               <div className="flex flex-col gap-2">
                 {selected.map(target => (
-                  <div key={target.id} className="flex items-center justify-between px-3 py-2 border border-gray-200 rounded-xl">
-                    <span className="text-sm font-semibold text-[#050505]">{target.name}</span>
+                  <div key={getAccessSubjectKey(target)} className="flex items-center justify-between gap-3 px-3 py-2 border border-gray-200 rounded-xl">
+                    <div className="min-w-0">
+                      <span className="text-sm font-semibold text-[#050505]">{target.name}</span>
+                      <span className="ml-2 text-[10px] font-bold uppercase text-[#A5A5A5]">
+                        {target.type === 'group' ? 'Group' : 'User'}
+                      </span>
+                    </div>
                     <span className="text-[10px] px-2.5 py-1 rounded-full bg-[#E6F3D3] text-[#476E2C] font-semibold uppercase">
                       {target.accessType}
                     </span>
@@ -1220,9 +1237,9 @@ function MoveFolderModal({ isOpen, folder, tree, onMove, onClose }) {
 }
 
 // ── ContextMenu ───────────────────────────────────────────────────────────────
-function ContextMenu({ tree }) {
+function ContextMenu({ tree, onPreviewFile, onDownloadFile, onOpenActivity }) {
   const {
-    contextMenu, hideContextMenu, deleteItems, startRenaming, showPreview,
+    contextMenu, hideContextMenu, deleteItems, startRenaming,
     startNewFolder, navigateTo, selectedItems, moveItemsTo, tree: storeTree,
   } = useFileExplorerStore();
 
@@ -1274,12 +1291,13 @@ function ContextMenu({ tree }) {
           <MenuItem icon={FolderOpen} label="Open" onClick={() => navigateTo(item.id)} />
         )}
         {item.type === 'file' && (
-          <MenuItem icon={Eye} label="Preview" onClick={() => showPreview(item)} />
+          <MenuItem icon={Eye} label="Preview" onClick={() => onPreviewFile(item)} />
         )}
         {item.type === 'file' && (
-          <MenuItem icon={Download} label="Download" onClick={() => {
-            const a = document.createElement('a'); a.href = '#'; a.download = item.name; a.click();
-          }} />
+          <MenuItem icon={Download} label="Download" onClick={() => onDownloadFile(item)} />
+        )}
+        {item.type === 'file' && (
+          <MenuItem icon={Users} label="View Activity" onClick={() => onOpenActivity(item)} />
         )}
         {ids.length === 1 && (
           <MenuItem icon={Pencil} label="Rename" onClick={() => startRenaming(item.id)} />
@@ -1294,8 +1312,138 @@ function ContextMenu({ tree }) {
   );
 }
 
+function formatActivityDate(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return date.toLocaleString('en-IN', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
+function getActivityUser(activity) {
+  const user = activity.user || activity.users || {};
+  return {
+    id: user.id || activity.user_id || activity.id,
+    name: user.name || user.email || 'Unknown user',
+    email: user.email || '',
+    role: user.role || '',
+    createdAt: activity.created_at,
+  };
+}
+
+function uniqueActivityUsers(activity, type) {
+  const seen = new Set();
+  return (activity || [])
+    .filter((item) => item.activity_type === type)
+    .map(getActivityUser)
+    .filter((user) => {
+      const key = user.id || user.email || user.name;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function ActivityList({ title, icon: Icon, people, emptyText }) {
+  return (
+    <div className="min-h-[260px] rounded-2xl border border-gray-100 bg-[#FBFCFE] p-4">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-[#E6F3D3] text-[#476E2C]">
+            <Icon size={15} />
+          </div>
+          <h4 className="text-sm font-bold text-[#050505]">{title}</h4>
+        </div>
+        <span className="rounded-full bg-white px-2.5 py-1 text-xs font-semibold text-[#6D6E71]">{people.length}</span>
+      </div>
+      {people.length ? (
+        <div className="space-y-2">
+          {people.map((person) => (
+            <div key={`${title}-${person.id || person.email || person.name}`} className="rounded-xl bg-white px-3 py-2.5 shadow-sm">
+              <p className="text-sm font-semibold text-[#050505]">{person.name}</p>
+              <p className="mt-0.5 text-xs text-[#A5A5A5]">{person.email || person.role || 'Portal user'}</p>
+              <p className="mt-1 text-[11px] text-[#6D6E71]">{formatActivityDate(person.createdAt)}</p>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="flex h-44 items-center justify-center rounded-xl border border-dashed border-gray-200 bg-white px-4 text-center text-sm text-[#A5A5A5]">
+          {emptyText}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DocumentActivityModal({ document: activityDocument, onClose }) {
+  const [activity, setActivity] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!activityDocument?.id) return;
+    let cancelled = false;
+    setLoading(true);
+    setError('');
+    listDocumentActivity(activityDocument.id)
+      .then((rows) => {
+        if (!cancelled) setActivity(rows || []);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err.message || 'Unable to load document activity.');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activityDocument?.id]);
+
+  if (!activityDocument) return null;
+
+  const viewers = uniqueActivityUsers(activity, 'view');
+  const downloaders = uniqueActivityUsers(activity, 'download');
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/35 p-4 backdrop-blur-sm animate-fadeIn" onClick={onClose}>
+      <div className="w-full max-w-4xl overflow-hidden rounded-3xl bg-white shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between border-b border-gray-100 p-5">
+          <div className="min-w-0">
+            <p className="text-xs uppercase tracking-wide text-[#A5A5A5]">Document Activity</p>
+            <h3 className="truncate text-xl font-bold text-[#050505]">{activityDocument.name}</h3>
+          </div>
+          <button onClick={onClose} className="rounded-xl p-2 text-[#6D6E71] hover:bg-gray-100">
+            <X size={18} />
+          </button>
+        </div>
+        <div className="p-5">
+          {loading ? (
+            <div className="flex items-center justify-center gap-2 rounded-2xl border border-gray-100 px-6 py-16 text-sm text-[#6D6E71]">
+              <Loader2 size={18} className="animate-spin" />
+              Loading activity...
+            </div>
+          ) : error ? (
+            <div className="rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-[#C62026]">{error}</div>
+          ) : (
+            <div className="grid gap-4 md:grid-cols-2">
+              <ActivityList title="Viewers" icon={Eye} people={viewers} emptyText="No users have viewed this document yet." />
+              <ActivityList title="Downloaders" icon={Download} people={downloaders} emptyText="No users have downloaded this document yet." />
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── PreviewModal ───────────────────────────────────────────────────────────────
-function PreviewModal() {
+function PreviewModal({ onDownloadFile }) {
   const { previewItem, hidePreview } = useFileExplorerStore();
   const [blobUrl, setBlobUrl] = useState('');
   const [textPreview, setTextPreview] = useState('');
@@ -1308,8 +1456,6 @@ function PreviewModal() {
   const isText = ['txt', 'md', 'json'].includes(normalizedExt);
   const isWordDoc = ['doc', 'docx'].includes(normalizedExt);
   const canPreview = canInlinePreview(previewItem?.ext) && Boolean(previewItem?.fileUrl);
-  const statusMeta = STATUS_META[previewItem?.status] || STATUS_META['under-review'];
-  const StatusIcon = statusMeta.Icon;
 
   useEffect(() => {
     let revokedUrl = '';
@@ -1353,11 +1499,8 @@ function PreviewModal() {
   if (!previewItem) return null;
 
   const handleDownload = () => {
-    if (!blobUrl) return;
-    const a = document.createElement('a');
-    a.href = blobUrl;
-    a.download = previewItem.name;
-    a.click();
+    if (!previewItem) return;
+    onDownloadFile(previewItem, blobUrl);
   };
 
   const metaItems = [
@@ -1366,7 +1509,6 @@ function PreviewModal() {
     { label: 'Uploaded on', value: previewItem.uploadedAt || '—' },
     { label: 'Uploaded by', value: previewItem.uploadedBy || '—' },
     { label: 'File size', value: previewItem.size || '—' },
-    { label: 'Status', value: statusMeta.label },
   ];
 
   return (
@@ -1461,10 +1603,6 @@ function PreviewModal() {
                     <p className="text-xs text-[#6D6E71]">{getFileKind(previewItem.ext)}</p>
                   </div>
                 </div>
-                <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold" style={{ color: statusMeta.color, background: statusMeta.bg }}>
-                  <StatusIcon size={12} />
-                  {statusMeta.label}
-                </div>
               </div>
 
               <div className="grid gap-3">
@@ -1489,8 +1627,8 @@ function PreviewModal() {
         <div className="flex gap-3 p-5 border-t border-gray-100 bg-white">
           <button
             onClick={handleDownload}
-            disabled={!blobUrl}
-            className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold transition-colors ${blobUrl ? 'bg-[#05164D] text-white hover:bg-[#041240]' : 'bg-gray-200 text-[#A5A5A5] cursor-not-allowed'}`}
+            disabled={!previewItem.fileUrl}
+            className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-semibold transition-colors ${previewItem.fileUrl ? 'bg-[#05164D] text-white hover:bg-[#041240]' : 'bg-gray-200 text-[#A5A5A5] cursor-not-allowed'}`}
           >
             <Download size={15} /> Download
           </button>
@@ -1602,6 +1740,7 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
     clearSelection, hideContextMenu, uploadFiles, dragOver, draggingItems,
     setDragOver, moveItemsTo, clearDrag, newFolderParentId, folderAccess, setFolderAccess,
     hydrateFromApi, setCompanyId, setCreatedBy, loadFolderAccessFromApi, syncFolderAccessToApi,
+    showPreview,
   } = useFileExplorerStore();
 
   const fileInputRef = useRef(null);
@@ -1611,8 +1750,9 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
   const [duplicateWarnings, setDuplicateWarnings] = useState([]);
   const [shareModal, setShareModal] = useState(null);
   const [moveModal, setMoveModal] = useState(null);
-  const [requestCountsByFolderName, setRequestCountsByFolderName] = useState({});
+  const [activityModal, setActivityModal] = useState(null);
   const [sharePeople, setSharePeople] = useState([]);
+  const [currentUserGroupIds, setCurrentUserGroupIds] = useState([]);
 
   useEffect(() => {
     if (!companyId) return;
@@ -1626,30 +1766,26 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
 
   useEffect(() => {
     if (!companyId) {
-      setRequestCountsByFolderName({});
-      return;
-    }
-    listCompanyRequests(companyId)
-      .then((list) => {
-        const counts = {};
-        list.forEach((req) => {
-          const key = (req.sub_label || req.category || '').toString().trim().toLowerCase();
-          if (!key) return;
-          counts[key] = (counts[key] || 0) + 1;
-        });
-        setRequestCountsByFolderName(counts);
-      })
-      .catch(() => setRequestCountsByFolderName({}));
-  }, [companyId]);
-
-  useEffect(() => {
-    if (!companyId) {
-      setSharePeople([]);
-      return;
+      let cancelled = false;
+      Promise.resolve().then(() => {
+        if (!cancelled) {
+          setSharePeople([]);
+          setCurrentUserGroupIds([]);
+        }
+      });
+      return () => {
+        cancelled = true;
+      };
     }
 
-    listUsersRequest()
-      .then((users) => {
+    let cancelled = false;
+
+    Promise.all([
+      listUsersRequest().catch(() => []),
+      listCompanyGroups(companyId).catch(() => []),
+    ])
+      .then(([users, groups]) => {
+        if (cancelled) return;
         const people = users
           .filter((user) => {
             const userCompanyId = user.company_id || user.companyId;
@@ -1663,23 +1799,71 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
             meta: user.email || user.phone || 'Client user',
             type: 'user',
           }));
-        setSharePeople(people);
+        const groupTargets = groups.map((group) => ({
+          id: group.id,
+          name: group.name || 'Unnamed group',
+          meta: `${group.member_count || group.member_ids?.length || 0} members`,
+          type: 'group',
+        }));
+        const memberGroupIds = currentUserId
+          ? groups
+              .filter((group) => (group.member_ids || []).some((userId) => String(userId) === String(currentUserId)))
+              .map((group) => group.id)
+          : [];
+        setSharePeople([...people, ...groupTargets]);
+        setCurrentUserGroupIds(memberGroupIds);
       })
-      .catch(() => setSharePeople([]));
-  }, [companyId]);
+      .catch(() => {
+        if (!cancelled) {
+          setSharePeople([]);
+          setCurrentUserGroupIds([]);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [companyId, currentUserId]);
 
   useEffect(() => {
     if (!currentUserId) return;
     setCreatedBy(currentUserId);
   }, [currentUserId, setCreatedBy]);
 
+  useEffect(() => {
+    if (role === 'broker' || !companyId) return;
+
+    const folderIds = collectFolderIds(tree);
+    if (!folderIds.length) return;
+
+    let cancelled = false;
+
+    Promise.all(folderIds.map(async (folderId) => {
+      const entries = await loadFolderAccessFromApi(folderId);
+      return [folderId, entries];
+    }))
+      .then((results) => {
+        if (cancelled) return;
+        results.forEach(([folderId, entries]) => {
+          setFolderAccess(folderId, entries);
+        });
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+    };
+  }, [companyId, role, tree, loadFolderAccessFromApi, setFolderAccess]);
+
   const currentFolderId = currentPath[currentPath.length - 1];
   const currentFolder = findById(tree, currentFolderId) || tree;
   const canManageAccess = role === 'broker';
 
-  const currentUser = role === 'broker'
-    ? null
-    : { id: currentUserId, groups: [] };
+  const currentUser = useMemo(() => (
+    role === 'broker'
+      ? null
+      : { id: currentUserId, groups: currentUserGroupIds }
+  ), [currentUserGroupIds, currentUserId, role]);
 
   const getFolderPermissions = useCallback((folderId) => {
     if (role === 'broker') return { read: true, write: true, download: true };
@@ -1715,7 +1899,7 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
     const entries = folderAccess[folderId] || [];
     const count = entries.length;
     return count > 0
-      ? { count, tooltip: `Shared with ${count} user${count === 1 ? '' : 's'}` }
+      ? { count, tooltip: `Shared with ${count} user/group${count === 1 ? '' : 's'}` }
       : { count: 0, tooltip: '' };
   }, [folderAccess]);
 
@@ -1823,11 +2007,48 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
     setMoveModal({ folderId: folder.id });
   };
 
+  const recordActivity = useCallback((documentId, activityType) => {
+    if (role === 'broker' || !documentId) return;
+    recordDocumentActivity(documentId, activityType).catch(() => {});
+  }, [role]);
+
+  const previewFile = useCallback((item) => {
+    if (!item || item.type !== 'file') return;
+    recordActivity(item.id, 'view');
+    showPreview(item);
+  }, [recordActivity, showPreview]);
+
+  const downloadFile = useCallback(async (item, existingBlobUrl = '') => {
+    if (!item || item.type !== 'file' || !item.fileUrl) return;
+    try {
+      let objectUrl = existingBlobUrl;
+      let shouldRevoke = false;
+      if (!objectUrl) {
+        const blob = await fetchProtectedFileBlob(item.fileUrl);
+        objectUrl = URL.createObjectURL(blob);
+        shouldRevoke = true;
+      }
+      const a = document.createElement('a');
+      a.href = objectUrl;
+      a.download = item.name || 'document';
+      a.click();
+      recordActivity(item.id, 'download');
+      if (shouldRevoke) setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    } catch (err) {
+      setTreeError(err.message || 'Unable to download document.');
+    }
+  }, [recordActivity]);
+
+  const openActivity = useCallback((item) => {
+    if (role !== 'broker' || item?.type !== 'file') return;
+    setActivityModal(item);
+  }, [role]);
+
   const saveFolderAccess = async (entries) => {
     if (!shareFolder) return;
     const normalizedEntries = entries.map((entry) => ({
       ...entry,
-      type: 'user',
+      type: entry.type || 'user',
       subjectId: entry.subjectId || entry.id,
       permissions: accessTypeToPermissions(entry.accessType || permissionsToAccessType(entry.permissions)),
     }));
@@ -1843,7 +2064,6 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
         onUpload={openUpload}
         role={role}
         getFolderPermissions={getFolderPermissions}
-        requestCountsByFolderName={requestCountsByFolderName}
       />
 
       {/* Main Content */}
@@ -1904,6 +2124,9 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
               getSharedMeta={getSharedMeta}
               onShareAccess={openShareAccess}
               onMoveFolder={openMoveFolder}
+              onPreviewFile={previewFile}
+              onDownloadFile={downloadFile}
+              onOpenActivity={openActivity}
               currentFolderPermissions={currentFolderPermissions}
             />
           ) : (
@@ -1916,6 +2139,9 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
                 getSharedMeta={getSharedMeta}
                 onShareAccess={openShareAccess}
                 onMoveFolder={openMoveFolder}
+                onPreviewFile={previewFile}
+                onDownloadFile={downloadFile}
+                onOpenActivity={openActivity}
                 currentFolderPermissions={currentFolderPermissions}
               />
             </div>
@@ -1924,10 +2150,23 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
       </div>
 
       {/* Context Menu */}
-      {role === 'broker' && <ContextMenu tree={tree} />}
+      {role === 'broker' && (
+        <ContextMenu
+          tree={tree}
+          onPreviewFile={previewFile}
+          onDownloadFile={downloadFile}
+          onOpenActivity={openActivity}
+        />
+      )}
 
       {/* Preview Modal */}
-      <PreviewModal />
+      <PreviewModal onDownloadFile={downloadFile} />
+
+      {/* Document Activity Modal */}
+      <DocumentActivityModal
+        document={activityModal}
+        onClose={() => setActivityModal(null)}
+      />
 
       {/* Share Access Modal */}
       <ShareAccessModal
@@ -1965,8 +2204,3 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
     </div>
   );
 }
-
-
-
-
-

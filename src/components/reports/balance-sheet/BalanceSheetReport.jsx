@@ -13,8 +13,8 @@ export default function BalanceSheetReport({
   createdOn,
   isPreview = false,
 }) {
-  const subtitle = `Report Period: ${startDate || "N/A"} to ${endDate || "N/A"} | ${clientName} | ${accountingMethod} Basis`;
   const resolvedEntityName = entityName || clientName || "Company";
+  const periodText = startDate === "1970-01-01" ? "All Dates" : `${startDate || "N/A"} to ${endDate || "N/A"}`;
 
   if (reportType === "Detail") {
     // Detail View: Multi-year EBITDA/SDE analysis
@@ -27,7 +27,7 @@ export default function BalanceSheetReport({
         columns={columns}
         endDate={endDate}
         title="Balance Sheet"
-        subtitle={subtitle}
+        subtitle={`${clientName} | ${accountingMethod} Basis`}
         entityName={resolvedEntityName}
         createdOn={createdOn}
       />
@@ -39,7 +39,7 @@ export default function BalanceSheetReport({
     <BalanceSheetQBSummary
       data={data || []}
       title="Balance Sheet"
-      subtitle={subtitle}
+      subtitle={`Report Period: ${periodText} | ${clientName} | ${accountingMethod} Basis`}
       entityName={resolvedEntityName}
     />
   );
