@@ -1,0 +1,859 @@
+import { useEffect, useState, useCallback, useMemo } from "react";
+import { useParams } from "react-router-dom";
+import {
+  RefreshCw,
+  TrendingUp,
+  AlertCircle,
+  Plus,
+  Trash2,
+  ChevronDown,
+} from "lucide-react";
+import { cn, formatCurrency } from "../../../lib/utils";
+import { getCompanyRequest } from "../../../lib/api";
+import {
+  getEbitdaData,
+} from "../../../services/ebitdaService";
+import { refreshQuickbooksToken } from "../../../lib/quickbooks";
+import QBDisconnectedBanner from "../../../components/common/QBDisconnectedBanner";
+import Modal from "../../../components/common/Modal";
+
+function formatPercent(value) {
+  if (!Number.isFinite(value)) return "-";
+  return `${value.toFixed(1)}%`;
+}
+
+
+function EmptyState() {
+  return (
+    <div className="flex flex-col items-center justify-center rounded-2xl border-2 border-dashed border-border bg-bg-page/50 py-16">
+      <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10">
+        <TrendingUp size={28} className="text-primary" />
+      </div>
+      <h3 className="text-[16px] font-semibold text-text-primary">
+        Generate EBITDA Analysis
+      </h3>
+      <p className="mt-1.5 max-w-sm text-center text-[13px] text-text-muted">
+        No financial data was found for the current workspace.
+        Please ensure your QuickBooks connection is active.
+      </p>
+    </div>
+  );
+}
+
+function ErrorState({ error, onRetry }) {
+  return (
+    <div className="flex flex-col items-center justify-center rounded-2xl border border-red-200 bg-red-50/50 py-12">
+      <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-red-100">
+        <AlertCircle size={22} className="text-red-500" />
+      </div>
+      <h3 className="text-[15px] font-semibold text-red-900">
+        Unable to Load EBITDA Data
+      </h3>
+      <p className="mt-1 max-w-sm text-center text-[13px] text-red-600">
+        {error}
+      </p>
+      <button
+        onClick={onRetry}
+        className="mt-4 rounded-lg bg-red-600 px-4 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-red-700"
+      >
+        Try Again
+      </button>
+    </div>
+  );
+}
+
+function LoadingState() {
+  return (
+    <div className="flex flex-col items-center justify-center rounded-2xl border border-border bg-bg-page/50 py-16">
+      <div className="mb-4 h-12 w-12 animate-spin rounded-full border-4 border-border border-t-primary" />
+      <p className="animate-pulse text-[13px] font-medium text-text-muted">
+        Analyzing financial data & computing EBITDA…
+      </p>
+    </div>
+  );
+}
+
+
+/* ------------------------------------------------------------------ */
+/*  Main Component                                                    */
+/* ------------------------------------------------------------------ */
+
+export default function WorkspaceEbitda() {
+  const { clientId } = useParams();
+
+  const accountingMethod = "Accrual";
+
+  // Data state
+  const [multiYearData, setMultiYearData] = useState(null);
+  const [years, setYears] = useState([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [error, setError] = useState("");
+  const [company, setCompany] = useState(null);
+  const [dynamicAddbacks, setDynamicAddbacks] = useState([]);
+  const [isDataInitialized, setIsDataInitialized] = useState(false);
+  const [rowComments, setRowComments] = useState({});
+  const [sdePerCim, setSdePerCim] = useState("");
+  const [isTypeDialogOpen, setIsTypeDialogOpen] = useState(false);
+
+  // Extract unique P&L accounts for addback dropdown (dynamic from API data)
+  const plAccountOptions = useMemo(() => {
+    if (!multiYearData) return [];
+    const accountMap = new Map();
+    Object.values(multiYearData).forEach((yearData) => {
+      const flatRows = yearData?._debug?.flatRows;
+      if (!flatRows) return;
+      flatRows.forEach((row) => {
+        const label = (row.label || "").trim();
+        if (
+          label &&
+          label.toLowerCase() !== "net income" &&
+          !label.toLowerCase().startsWith("total ") // skip summary totals
+        ) {
+          const accountId =
+            row.accountId ||
+            row.AccountId ||
+            row.id ||
+            row.Id ||
+            `pl:${label.toLowerCase()}`;
+          if (!accountMap.has(label)) {
+            accountMap.set(label, { label, accountId: String(accountId) });
+          }
+        }
+      });
+    });
+    return Array.from(accountMap.values()).sort((a, b) =>
+      a.label.localeCompare(b.label, undefined, { sensitivity: "base" })
+    );
+  }, [multiYearData]);
+
+  const plAccountNames = useMemo(
+    () => plAccountOptions.map((option) => option.label),
+    [plAccountOptions]
+  );
+
+  const getAccountIdByLabel = useCallback(
+    (label) => {
+      const match = plAccountOptions.find((option) => option.label === label);
+      return match?.accountId || null;
+    },
+    [plAccountOptions]
+  );
+
+  // Step 1: Dynamic Extraction Function
+  const getValueFromPL = useCallback((year, label) => {
+    const flatRows = multiYearData[year]?._debug?.flatRows;
+    if (!flatRows || !label) return null;
+
+    const searchLabel = label.toLowerCase().trim();
+    // Match label dynamically using row names from API
+    const match = flatRows.find(row =>
+      row.label?.toLowerCase().trim() === searchLabel ||
+      row.AccountName?.toLowerCase().trim() === searchLabel
+    );
+
+    return match ? (match.value || 0) : null;
+  }, [multiYearData]);
+
+  const calculateBaseEbitda = useCallback((year) => {
+    const comps = multiYearData[year]?.components;
+    if (!comps) return 0;
+    return (comps.netIncome?.value || 0)
+      - (comps.interestIncome?.value || 0)
+      + (comps.interestExpense?.value || 0)
+      + (comps.taxes?.value || 0)
+      + (comps.depreciation?.value || 0)
+      + (comps.amortization?.value || 0);
+  }, [multiYearData]);
+
+  // Load company info
+  useEffect(() => {
+    let active = true;
+    if (!clientId) return;
+    getCompanyRequest(clientId)
+      .then((data) => active && setCompany(data))
+      .catch(() => active && setCompany(null));
+    return () => {
+      active = false;
+    };
+  }, [clientId]);
+
+
+  const handleGenerate = useCallback(async () => {
+    setIsLoading(true);
+    setError("");
+    try {
+      const currentYear = new Date().getFullYear();
+      const todayStr = new Date().toISOString().split('T')[0];
+      const yearList = [currentYear, currentYear - 1, currentYear - 2, currentYear - 3];
+      setYears(yearList);
+
+      const results = {};
+
+      // Fetch data for each year in parallel
+      await Promise.all(
+        yearList.map(async (year) => {
+          const sy = `${year}-01-01`;
+          // Current year uses today; previous years use full year (Dec 31)
+          const ey = year === currentYear ? todayStr : `${year}-12-31`;
+
+          console.log(`[EBITDA] Fetching data for ${year}: Range ${sy} to ${ey}`);
+
+          try {
+            const data = await getEbitdaData(sy, ey, accountingMethod);
+            console.log(`[EBITDA] Received data for ${year}:`, data);
+
+            if (!data || !data.hasData) {
+              console.warn(`[EBITDA] Year ${year} has no data or returned null`);
+            }
+
+            results[year] = data;
+          } catch (err) {
+            console.error(`[EBITDA] Failed to fetch data for ${year}:`, err);
+            results[year] = null;
+          }
+        })
+      );
+
+      setMultiYearData(results);
+    } catch (err) {
+      console.error("[WorkspaceEbitda] Generation failed:", err);
+      setError(err?.message || "Failed to fetch EBITDA data. Please try again.");
+      setMultiYearData(null);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  // Initial load
+  useEffect(() => {
+    handleGenerate();
+  }, [handleGenerate]);
+
+  // Handle Dynamic Addbacks Initialization and Persistence
+  useEffect(() => {
+    if (!multiYearData || isDataInitialized) return;
+
+    const storageKey = `ebitda_addbacks_${clientId}`;
+    const saved = localStorage.getItem(storageKey);
+
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        const savedAddbacks = Array.isArray(parsed) ? parsed : (parsed.addbacks || []);
+
+        // Step 6: Multi-Year Handling - Store per-year apiValue
+        const initialized = savedAddbacks.map(ab => {
+          const inferredType = ab.type || (ab.linkedToPL ? "PL" : "RECAST");
+          const isFromPL = inferredType === "PL";
+          const normalizedLabel = (ab.label || "").trim();
+          const vals = {};
+          Object.keys(multiYearData).forEach(year => {
+            const apiVal = isFromPL ? getValueFromPL(year, normalizedLabel) : null;
+            const existing = ab.values?.[year] || {};
+            vals[year] = {
+              apiValue: apiVal,
+              userValue: existing.userValue !== undefined ? existing.userValue : (existing.apiValue !== undefined ? null : null)
+            };
+            // If it was old format (just number), migrate it to userValue
+            if (typeof existing === 'number') {
+              vals[year].userValue = existing;
+            }
+          });
+          const latestYear = years[0] || Object.keys(multiYearData)[0];
+          const latestVals = vals[latestYear] || { apiValue: null, userValue: null };
+          return {
+            ...ab,
+            type: inferredType,
+            label: normalizedLabel,
+            isFromPL,
+            accountId: ab.accountId || (isFromPL ? getAccountIdByLabel(normalizedLabel) : null),
+            linkedToPL: isFromPL,
+            value: latestVals.userValue !== null ? latestVals.userValue : latestVals.apiValue,
+            values: vals,
+          };
+        });
+
+        setDynamicAddbacks(initialized);
+        if (parsed.sdePerCim) setSdePerCim(parsed.sdePerCim);
+        if (parsed.rowComments) setRowComments(parsed.rowComments);
+        setIsDataInitialized(true);
+        return;
+      } catch (e) {
+        console.error("Failed to parse saved addbacks", e);
+      }
+    }
+
+    // Step 1: Core Requirement - DO NOT introduce any static/default values in code
+    // Starting with empty addbacks or previously saved ones only.
+    setDynamicAddbacks([]);
+    setIsDataInitialized(true);
+  }, [multiYearData, clientId, isDataInitialized, getValueFromPL, years, getAccountIdByLabel]);
+
+  // Persistent saving
+  useEffect(() => {
+    if (isDataInitialized && clientId) {
+      localStorage.setItem(`ebitda_addbacks_${clientId}`, JSON.stringify({
+        addbacks: dynamicAddbacks,
+        sdePerCim: sdePerCim,
+        rowComments: rowComments
+      }));
+    }
+  }, [dynamicAddbacks, sdePerCim, rowComments, clientId, isDataInitialized]);
+
+  const handleAddAddback = ({ type, accountLabel = "" } = {}) => {
+    const newId = `custom_${Date.now()}`;
+    const newVals = {};
+    const isPL = type === "PL";
+    const label = isPL ? accountLabel : "";
+
+    years.forEach(year => {
+      const apiVal = isPL && label ? getValueFromPL(year, label) : null;
+      newVals[year] = {
+        apiValue: apiVal,
+        userValue: null
+      };
+    });
+
+    const latestYear = years[0];
+    const latestVals = newVals[latestYear] || { apiValue: null, userValue: null };
+
+    setDynamicAddbacks([...dynamicAddbacks, {
+      id: newId,
+      type: isPL ? "PL" : "RECAST",
+      label,
+      value: latestVals.userValue !== null ? latestVals.userValue : latestVals.apiValue,
+      isFromPL: isPL,
+      accountId: isPL && label ? getAccountIdByLabel(label) : null,
+      values: newVals,
+      isUserAdded: true,
+      linkedToPL: isPL
+    }]);
+  };
+
+  const updateAddbackValue = (id, year, value) => {
+    setDynamicAddbacks(prev => prev.map(ab => {
+      if (ab.id === id) {
+        const normalizedInput = typeof value === "string" ? value.replace(/\*/g, "").trim() : value;
+        const numericValue = normalizedInput === "" ? null : Number(normalizedInput);
+        const latestYear = years[0];
+        const nextValues = {
+          ...ab.values,
+          [year]: {
+            ...ab.values[year],
+            userValue: numericValue
+          }
+        };
+        const latestVals = nextValues[latestYear] || { apiValue: null, userValue: null };
+        return {
+          ...ab,
+          value: latestVals.userValue !== null ? latestVals.userValue : latestVals.apiValue,
+          values: nextValues
+        };
+      }
+      return ab;
+    }));
+  };
+
+  const updateAddbackLabel = (id, label) => {
+    setDynamicAddbacks(prev => prev.map(ab => {
+      if (ab.id === id) {
+        const newValues = { ...ab.values };
+        const apiMatch = getValueFromPL(years[0], label);
+        const isLinked = apiMatch !== null;
+        years.forEach(year => {
+          newValues[year] = {
+            ...newValues[year],
+            apiValue: getValueFromPL(year, label)
+          };
+        });
+        const latestYear = years[0];
+        const latestVals = newValues[latestYear] || { apiValue: null, userValue: null };
+        return {
+          ...ab,
+          label,
+          type: isLinked ? "PL" : "RECAST",
+          isFromPL: isLinked,
+          accountId: isLinked ? getAccountIdByLabel(label) : null,
+          value: latestVals.userValue !== null ? latestVals.userValue : latestVals.apiValue,
+          values: newValues,
+          linkedToPL: isLinked,
+        };
+      }
+      return ab;
+    }));
+  };
+
+  const handleAccountSelection = (id, selectedValue) => {
+    setDynamicAddbacks(prev => prev.map(ab => {
+      if (ab.id === id) {
+        const newValues = { ...ab.values };
+        years.forEach(year => {
+          newValues[year] = {
+            ...newValues[year],
+            apiValue: getValueFromPL(year, selectedValue),
+            userValue: null
+          };
+        });
+        const latestYear = years[0];
+        const latestVals = newValues[latestYear] || { apiValue: null, userValue: null };
+        return {
+          ...ab,
+          type: "PL",
+          label: selectedValue,
+          isFromPL: true,
+          accountId: getAccountIdByLabel(selectedValue),
+          value: latestVals.userValue !== null ? latestVals.userValue : latestVals.apiValue,
+          linkedToPL: true,
+          values: newValues,
+        };
+      }
+      return ab;
+    }));
+  };
+
+  const deleteAddback = (id) => {
+    setDynamicAddbacks(prev => prev.filter(ab => ab.id !== id));
+  };
+
+  const updateRowComment = (key, value) => {
+    setRowComments(prev => ({
+      ...prev,
+      [key]: value
+    }));
+  };
+
+
+  const handleSync = async () => {
+    setIsSyncing(true);
+    try {
+      await refreshQuickbooksToken();
+      await handleGenerate();
+    } catch (err) {
+      console.error("Sync failed:", err);
+      setError("Sync failed. Please try again.");
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+
+  return (
+    <div className="page-container">
+      <div className="page-content">
+        {/* Header */}
+        <div className="mb-6 flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-[#050505]">
+              EBITDA Analysis
+            </h1>
+            <p className="mt-1 text-[13px] text-text-muted">
+              Dynamic earnings analysis powered by your Profit & Loss data
+              {company?.name ? ` — ${company.name}` : ""}
+            </p>
+          </div>
+          <button
+            onClick={handleSync}
+            disabled={isSyncing}
+            className="btn-secondary"
+          >
+            <RefreshCw
+              size={16}
+              className={isSyncing ? "animate-spin" : ""}
+            />
+            {isSyncing ? "Syncing..." : "Sync"}
+          </button>
+        </div>
+
+        <QBDisconnectedBanner pageName="EBITDA Analysis" />
+
+
+        {/* Content */}
+        {isLoading ? (
+          <LoadingState />
+        ) : error ? (
+          <ErrorState error={error} onRetry={handleGenerate} />
+        ) : multiYearData ? (
+          <div className="animate-in slide-in-from-bottom-2 fade-in duration-300">
+            {/* Side-by-Side Layout Wrapper */}
+            <div className="flex gap-6 items-start">
+              {/* Left: Financial Report Table */}
+              <div className="flex-1 overflow-hidden rounded-xl border border-[#cbd5e1] bg-white shadow-lg">
+                <div className="bg-[#8bc53d] py-3 text-center">
+                  <h2 className="text-[18px] font-bold text-white">
+                    Recalculated Seller's Discretionary Earnings of {company?.name || "the Business"}
+                  </h2>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full border-collapse text-[14px]">
+                    <thead>
+                      <tr className="bg-[#8bc53d] text-white">
+                        <th className="border-b border-[#cbd5e1] p-3 text-left font-bold min-w-[280px]"></th>
+                        {years.map(year => (
+                          <th key={year} className="border-b border-[#cbd5e1] p-3 text-right font-bold min-w-[120px]">
+                            FY {year}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {/* Net Income Section */}
+                      <tr className="border-b border-[#cbd5e1] bg-gray-50 h-[46px]">
+                        <td className="p-3 font-bold text-[#050505]">Net Income</td>
+                        {years.map(year => (
+                          <td key={year} className="p-3 text-right font-bold text-[#050505]">
+                            {formatCurrency(multiYearData[year]?.components?.netIncome?.value)}
+                          </td>
+                        ))}
+                      </tr>
+
+                      {/* EBITDA Adjustments removed */}
+                      {[
+                        { key: 'interestIncome', label: 'Total Interest Income' },
+                        { key: 'interestExpense', label: 'Total Interest Expense' },
+                        { key: 'taxes', label: 'Total Income Tax Expense' },
+                        { key: 'depreciation', label: 'Depreciation' },
+                        { key: 'amortization', label: 'Amortization Expense' }
+                      ].map(row => (
+                        <tr key={row.key} className="border-b border-[#f1f5f9] hover:bg-slate-50 transition-colors h-[45px]">
+                          <td className="p-3 pl-8 text-text-primary">{row.label}</td>
+                          {years.map(year => (
+                            <td key={year} className="p-3 text-right text-text-primary">
+                              {formatCurrency(multiYearData[year]?.components?.[row.key]?.value)}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+
+                      {/* Calculated EBITDA row */}
+                      <tr className="bg-[#f8fafc] border-y border-[#cbd5e1] h-[45px]">
+                        <td className="p-3 pl-4 font-bold text-[#050505]">EBITDA</td>
+                        {years.map(year => {
+                          const ebitdaVal = calculateBaseEbitda(year);
+                          return (
+                            <td key={year} className="p-3 text-right font-bold text-[#050505]">
+                              {formatCurrency(ebitdaVal)}
+                            </td>
+                          );
+                        })}
+                      </tr>
+
+                      {/* Owner Addbacks Section */}
+                      <tr className="bg-white h-[45px]">
+                        <td colSpan={years.length + 1} className="p-0 bg-gray-100">
+                          <div className="px-4 py-3">
+                            <div className="flex items-center justify-between font-bold text-[#050505]">
+                              <span>Addbacks</span>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  onClick={() => setIsTypeDialogOpen(true)}
+                                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#8bc53d] text-white text-[11px] font-bold hover:bg-[#78ab34] transition-colors"
+                                >
+                                  <Plus size={12} strokeWidth={3} />
+                                  ADD ROW
+                                </button>
+                              </div>
+                            </div>
+                            <p className="mt-1 text-[11px] text-slate-500">
+                              * Values marked with an asterisk (*) are automatically fetched from the Profit &amp; Loss statement. Values without (*) are manually added.
+                            </p>
+                          </div>
+                        </td>
+                      </tr>
+                      {dynamicAddbacks.map((row) => (
+                        <tr key={row.id} className="group border-b border-[#f1f5f9] hover:bg-slate-50 transition-colors h-[45px]">
+                          <td className="p-3 pl-6 text-text-primary">
+                            <div className="flex items-center gap-2">
+                              {/* Account selector or custom label */}
+                              {row.type === "PL" ? (
+                                <div className="relative flex-1">
+                                  <select
+                                    value={row.label}
+                                    onChange={(e) => handleAccountSelection(row.id, e.target.value)}
+                                    className="appearance-none w-full bg-transparent border-b border-transparent hover:border-gray-300 focus:border-[#8bc53d] focus:outline-none transition-all py-0.5 pr-5 text-[13px] cursor-pointer"
+                                  >
+                                    <option value="" disabled>Select account...</option>
+                                    {plAccountNames.map(name => (
+                                      <option key={name} value={name}>{name}</option>
+                                    ))}
+                                  </select>
+                                  <ChevronDown size={11} className="pointer-events-none absolute right-0 top-1/2 -translate-y-1/2 text-slate-400" />
+                                </div>
+                              ) : (
+                                <input
+                                  value={row.label}
+                                  onChange={(e) => updateAddbackLabel(row.id, e.target.value)}
+                                  className="flex-1 bg-transparent border-b border-transparent hover:border-gray-300 focus:border-[#8bc53d] focus:outline-none transition-all py-0.5 text-[13px]"
+                                  placeholder="Enter label…"
+                                />
+                              )}
+                              <button
+                                onClick={() => deleteAddback(row.id)}
+                                className="opacity-0 group-hover:opacity-100 p-1 text-red-500 hover:bg-red-50 rounded transition-all flex-shrink-0"
+                                title="Delete Row"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            </div>
+                          </td>
+                          {years.map((year) => {
+                            const { apiValue, userValue } = row.values[year] || { apiValue: null, userValue: null };
+                            const rawDisplayValue = userValue !== null ? String(userValue) : (apiValue !== null ? String(apiValue) : "");
+                            const showPLAsterisk = Boolean(
+                              row.isFromPL &&
+                              row.linkedToPL &&
+                              userValue === null &&
+                              apiValue !== null
+                            );
+                            const displayValue =
+                              showPLAsterisk && rawDisplayValue && !rawDisplayValue.startsWith("*")
+                                ? `*${rawDisplayValue}`
+                                : rawDisplayValue;
+
+                            return (
+                              <td key={year} className="p-1.5 text-right">
+                                <input
+                                  type="text"
+                                  value={displayValue}
+                                  onChange={(e) => updateAddbackValue(row.id, year, e.target.value)}
+                                  title={showPLAsterisk ? "This value is sourced from Profit & Loss" : undefined}
+                                  className={cn(
+                                    "w-full bg-transparent text-right font-medium focus:outline-none focus:ring-1 focus:ring-[#8bc53d] rounded px-2 py-1",
+                                    (userValue !== null || apiValue !== null) ? "text-text-primary" : "text-gray-300"
+                                  )}
+                                  placeholder={apiValue !== null ? String(apiValue) : "-"}
+                                />
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      ))}
+
+                      {/* Final Totals */}
+                      <tr className="border-t-2 border-[#8bc53d] bg-[#f8fafc] h-[58px]">
+                        <td className="p-4 font-bold text-[#050505] text-[15px]">Seller's Discretionary Earnings</td>
+                        {years.map(year => {
+                          const baseEbitda = calculateBaseEbitda(year);
+                          const addbacksSum = dynamicAddbacks.reduce((sum, ab) => {
+                            const { apiValue, userValue } = ab.values[year] || { apiValue: null, userValue: null };
+                            const val = userValue !== null ? userValue : (apiValue || 0);
+                            return sum + val;
+                          }, 0);
+                          const finalSde = baseEbitda + addbacksSum;
+
+                          return (
+                            <td key={year} className="p-4 text-right font-bold text-[#8bc53d] text-[16px]">
+                              {formatCurrency(finalSde)}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                      <tr className="border-b border-[#cbd5e1] bg-white h-[45px]">
+                        <td className="p-3 font-bold text-[#050505]">SDE % of Sales</td>
+                        {years.map(year => {
+                          const baseEbitda = calculateBaseEbitda(year);
+                          const addbacksSum = dynamicAddbacks.reduce((sum, ab) => {
+                            const { apiValue, userValue } = ab.values[year] || { apiValue: null, userValue: null };
+                            const val = userValue !== null ? userValue : (apiValue || 0);
+                            return sum + val;
+                          }, 0);
+                          const finalSde = baseEbitda + addbacksSum;
+                          const revenue = multiYearData[year]?.revenue || 0;
+                          const sdePct = revenue > 0 ? (finalSde / revenue) * 100 : 0;
+
+                          return (
+                            <td key={year} className="p-3 text-right font-bold text-text-primary">
+                              {formatPercent(sdePct)}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Right: Comments Panel */}
+              <div className="w-[380px] overflow-hidden rounded-xl border border-[#cbd5e1] bg-white shadow-lg flex flex-col">
+                <div className="bg-[#8bc53d] py-3 text-center border-b border-[#cbd5e1]">
+                  <h2 className="text-[18px] font-bold text-white">Comments</h2>
+                </div>
+
+                <div className="flex-1 flex flex-col space-y-0">
+                  {/* Net Income Comment */}
+                  <div className="h-[46px] border-b border-[#cbd5e1] bg-gray-50 p-1 flex items-center">
+                    <input
+                      value={rowComments['netIncome'] || ""}
+                      onChange={(e) => updateRowComment('netIncome', e.target.value)}
+                      placeholder="Net income remarks..."
+                      className="w-full bg-transparent border-none focus:ring-0 text-[13px] px-3 placeholder:italic text-slate-600"
+                    />
+                  </div>
+
+                  {/* EBITDA Adj Comments */}
+                  {[
+                    { key: 'interestIncome', label: 'Total Interest Income' },
+                    { key: 'interestExpense', label: 'Total Interest Expense' },
+                    { key: 'taxes', label: 'Total Income Tax Expense' },
+                    { key: 'depreciation', label: 'Depreciation' },
+                    { key: 'amortization', label: 'Amortization Expense' }
+                  ].map(row => (
+                    <div key={row.key} className="h-[45px] border-b border-[#f1f5f9] p-1 flex items-center hover:bg-slate-50 transition-colors">
+                      <input
+                        value={rowComments[row.key] || ""}
+                        onChange={(e) => updateRowComment(row.key, e.target.value)}
+                        placeholder={`${row.label} remarks...`}
+                        className="w-full bg-transparent border-none focus:ring-0 text-[13px] px-3 placeholder:italic text-slate-600"
+                      />
+                    </div>
+                  ))}
+
+                  {/* EBITDA Row Comment */}
+                  <div className="h-[45px] border-y border-[#cbd5e1] bg-[#f8fafc] p-1 flex items-center">
+                    <input
+                      value={rowComments['ebitda'] || ""}
+                      onChange={(e) => updateRowComment('ebitda', e.target.value)}
+                      placeholder="EBITDA remarks..."
+                      className="w-full bg-transparent border-none font-bold focus:ring-0 text-[13px] px-3 placeholder:italic placeholder:font-normal text-slate-800"
+                    />
+                  </div>
+
+                  {/* Owner Addbacks Section spacer */}
+                  <div className="h-[45px] bg-gray-100 border-b border-[#cbd5e1]" />
+
+                  {/* Dynamic Addback Comments */}
+                  {dynamicAddbacks.map((row) => (
+                    <div key={row.id} className="h-[45px] border-b border-[#f1f5f9] p-1 flex items-center hover:bg-slate-50 transition-colors">
+                      <input
+                        value={rowComments[row.id] || ""}
+                        onChange={(e) => updateRowComment(row.id, e.target.value)}
+                        placeholder={`${row.label} remarks...`}
+                        className="w-full bg-transparent border-none focus:ring-0 text-[13px] px-3 placeholder:italic text-slate-600"
+                      />
+                    </div>
+                  ))}
+
+                  {/* Story of SDE Totals Comments */}
+                  <div className="h-[58px] border-t-2 border-[#8bc53d] bg-[#f8fafc] p-2 flex items-center">
+                    <textarea
+                      value={rowComments['totalSde'] || ""}
+                      onChange={(e) => updateRowComment('totalSde', e.target.value)}
+                      placeholder="Story of Seller's Discretionary Earnings..."
+                      className="w-full bg-transparent border-none focus:ring-0 text-[12px] px-2 leading-tight resize-none placeholder:italic font-semibold text-slate-800"
+                      rows={2}
+                    />
+                  </div>
+                  <div className="h-[45px] border-b border-[#cbd5e1] bg-white p-1 flex items-center">
+                    <input
+                      value={rowComments['sdePercent'] || ""}
+                      onChange={(e) => updateRowComment('sdePercent', e.target.value)}
+                      placeholder="Margin analysis..."
+                      className="w-full bg-transparent border-none focus:ring-0 text-[13px] px-3 placeholder:italic text-slate-600"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Summary Analysis Box */}
+            <div className="flex justify-start mt-8 pb-12">
+              <div className="rounded-xl border border-[#cbd5e1] p-0 overflow-hidden bg-white shadow-lg max-w-md w-full">
+                <div className="border-b border-[#cbd5e1] bg-[#8bc53d] p-3 px-4 font-bold text-white text-[15px]">
+                  Summary Analysis
+                </div>
+                <div className="p-8 space-y-6">
+                  <div className="flex justify-between items-center bg-gray-50 border border-gray-100 rounded-lg p-3">
+                    <span className="font-bold text-slate-800">SDE Per CIM</span>
+                    <input
+                      type="number"
+                      value={sdePerCim}
+                      onChange={(e) => setSdePerCim(e.target.value)}
+                      placeholder="Enter value..."
+                      className="w-32 bg-white border border-gray-200 rounded px-2 py-1 text-right font-mono focus:ring-1 focus:ring-[#8bc53d] outline-none"
+                    />
+                  </div>
+
+                  {(() => {
+                    const latestYear = years[0];
+                    const baseEbitda = calculateBaseEbitda(latestYear);
+                    const addbacksSum = dynamicAddbacks.reduce((sum, ab) => {
+                      const { apiValue, userValue } = ab.values[latestYear] || { apiValue: null, userValue: null };
+                      const val = userValue !== null ? userValue : (apiValue || 0);
+                      return sum + val;
+                    }, 0);
+                    const currentSde = baseEbitda + addbacksSum;
+                    const cimVal = Number(sdePerCim) || 0;
+                    const diff = currentSde - cimVal;
+                    const pctDiff = cimVal !== 0 ? (diff / cimVal) * 100 : 0;
+
+                    return (
+                      <>
+                        <div className="flex justify-between items-center border-b border-gray-100 pb-3">
+                          <span className="font-bold text-slate-800">$ Difference</span>
+                          <span className={cn("font-mono font-bold text-[15px]", diff < 0 ? "text-red-500" : "text-green-600")}>
+                            {cimVal ? formatCurrency(diff) : "-"}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="font-bold text-slate-800">% Difference</span>
+                          <span className={cn("font-mono font-bold text-[15px]", pctDiff < 0 ? "text-red-500" : "text-green-600")}>
+                            {cimVal ? formatPercent(pctDiff) : "-"}
+                          </span>
+                        </div>
+                      </>
+                    );
+                  })()}
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <EmptyState />
+        )}
+
+        <Modal
+          isOpen={isTypeDialogOpen}
+          onClose={() => setIsTypeDialogOpen(false)}
+          title="Select Addback Type"
+          size="sm"
+        >
+          <div className="space-y-2">
+            <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-border px-4 py-3 text-[13px] font-semibold text-text-primary hover:bg-bg-page transition-colors">
+              <input
+                type="radio"
+                name="addback-type"
+                className="h-4 w-4 accent-[#8bc53d]"
+                disabled={plAccountNames.length === 0}
+                onChange={() => {
+                  handleAddAddback({ type: "PL" });
+                  setIsTypeDialogOpen(false);
+                }}
+              />
+              Profit &amp; Loss
+            </label>
+            <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-border px-4 py-3 text-[13px] font-semibold text-text-primary hover:bg-bg-page transition-colors">
+              <input
+                type="radio"
+                name="addback-type"
+                className="h-4 w-4 accent-[#8bc53d]"
+                onChange={() => {
+                  handleAddAddback({ type: "RECAST" });
+                  setIsTypeDialogOpen(false);
+                }}
+              />
+              Recast Addback
+            </label>
+            {plAccountNames.length === 0 && (
+              <p className="text-[12px] text-text-muted">
+                Profit &amp; Loss accounts are unavailable for the selected range.
+              </p>
+            )}
+          </div>
+        </Modal>
+      </div>
+    </div>
+  );
+}
+
+
