@@ -2,6 +2,10 @@ const axios = require("axios");
 const tokenManager = require("../tokenManager");
 const { getQBConfig } = require("../qbconfig");
 const { upsertSyncedReport, getCachedReport, getAllCachedReports } = require("./quickbooksSyncStore");
+const {
+  REPORT_SOURCE_KEYS,
+  updateReportSourceRecord,
+} = require("./reportSourceStore");
 
 /**
  * QuickBooks Report Service
@@ -62,10 +66,19 @@ async function fetchAndCacheReport(clientId, reportType, qbReportName, queryPara
       });
     }
 
+    const liveSyncedAt = new Date().toISOString();
+    updateReportSourceRecord(clientId, REPORT_SOURCE_KEYS.QUICKBOOKS, {
+      isAvailable: true,
+      isConnected: true,
+      lastSyncedAt: liveSyncedAt,
+    }).catch((syncError) => {
+      console.warn("[ReportService] Failed to refresh QuickBooks source:", syncError.message);
+    });
+
     return {
       data: response.data,
       source: "live",
-      lastSyncedAt: new Date().toISOString(),
+      lastSyncedAt: liveSyncedAt,
     };
   } catch (error) {
     console.warn(`[ReportService] Live fetch failed for ${reportType}, trying cache...`, error.message);
@@ -172,10 +185,19 @@ async function fetchAndCacheQuery(clientId, reportType, queryString, queryParams
       });
     }
 
+    const liveSyncedAt = new Date().toISOString();
+    updateReportSourceRecord(clientId, REPORT_SOURCE_KEYS.QUICKBOOKS, {
+      isAvailable: true,
+      isConnected: true,
+      lastSyncedAt: liveSyncedAt,
+    }).catch((syncError) => {
+      console.warn("[ReportService] Failed to refresh QuickBooks source:", syncError.message);
+    });
+
     return {
       data: response.data,
       source: "live",
-      lastSyncedAt: new Date().toISOString(),
+      lastSyncedAt: liveSyncedAt,
     };
   } catch (error) {
     console.warn(`[ReportService] Live query failed for ${reportType}, trying cache...`);
@@ -242,9 +264,23 @@ async function syncAllReports(clientId) {
     }
   }
 
+  const syncedAt = new Date().toISOString();
+  try {
+    await updateReportSourceRecord(clientId, REPORT_SOURCE_KEYS.QUICKBOOKS, {
+      isAvailable: true,
+      isConnected: true,
+      lastSyncedAt: syncedAt,
+      metadata: {
+        lastSyncResult: errors.length > 0 ? "partial" : "success",
+      },
+    });
+  } catch (syncError) {
+    console.warn("[ReportService] Failed to update report source after sync:", syncError.message);
+  }
+
   return {
     companyId: clientId,
-    syncedAt: new Date().toISOString(),
+    syncedAt,
     results,
     errors,
     hasErrors: errors.length > 0,

@@ -62,7 +62,11 @@ function resolveClientIdFromLocation() {
   const pathname = window.location.pathname || '';
 
   // We only want to extract an ID if it's explicitly under the broker's client workspace
-  const brokerMatch = hash.match(/\/broker\/client\/([^/?#]+)/) || pathname.match(/\/broker\/client\/([^/?#]+)/);
+  const brokerMatch =
+    hash.match(/\/broker\/client\/([^/?#]+)/) ||
+    pathname.match(/\/broker\/client\/([^/?#]+)/) ||
+    hash.match(/\/broker\/workspace\/([^/?#]+)/) ||
+    pathname.match(/\/broker\/workspace\/([^/?#]+)/);
 
   if (brokerMatch) {
     const id = decodeURIComponent(brokerMatch[1]);
@@ -529,6 +533,22 @@ export function getManualGlCashflow(options = {}) {
   const clientId = options.clientId ?? resolveClientIdFromLocation();
   const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
   return request(`/reports/cashflow${query}`, options);
+}
+
+export function getReportSources(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/report-sources${query}`, options);
+}
+
+export function setSelectedReportSource(sourceKey, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/report-sources/selected${query}`, {
+    method: "PUT",
+    body: { sourceKey },
+    ...options,
+  });
 }
 
 export function listCompanyFolders(companyId) {

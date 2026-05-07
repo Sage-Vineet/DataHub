@@ -1,5 +1,9 @@
 const { supabase } = require("../db");
 const { logQuickBooksDebug, maskValue } = require("../quickbooksLogger");
+const {
+  REPORT_SOURCE_KEYS,
+  updateReportSourceRecord,
+} = require("./reportSourceStore");
 
 function parseSyncedEntities(value) {
   if (Array.isArray(value)) return value;
@@ -183,6 +187,22 @@ async function upsertQuickBooksConnection(connection) {
       : null,
   });
 
+  try {
+    await updateReportSourceRecord(companyId, REPORT_SOURCE_KEYS.QUICKBOOKS, {
+      isAvailable: true,
+      isConnected: true,
+      lastConnectedAt: normalizedConnectedAt,
+      lastSyncedAt: lastSynced || new Date().toISOString(),
+      metadata: {
+        realmId,
+        companyName: savedConnection?.companyName || companyName || null,
+        environment: savedConnection?.environment || environment || null,
+      },
+    });
+  } catch (syncError) {
+    console.warn("[QB Store] Failed to refresh report source on upsert:", syncError.message);
+  }
+
   return savedConnection;
 }
 
@@ -202,6 +222,17 @@ async function deleteQuickBooksConnection(companyId) {
   logQuickBooksDebug("db_connection_delete", {
     companyId
   });
+
+  try {
+    await updateReportSourceRecord(companyId, REPORT_SOURCE_KEYS.QUICKBOOKS, {
+      isConnected: false,
+      metadata: {
+        disconnectedAt: new Date().toISOString(),
+      },
+    });
+  } catch (error) {
+    console.warn("[QB Store] Failed to refresh report source on delete:", error.message);
+  }
 
   return true;
 }
@@ -237,6 +268,17 @@ async function softDisconnectQuickBooks(companyId) {
     disconnectedAt: now,
     tokensCleared: true,
   });
+
+  try {
+    await updateReportSourceRecord(companyId, REPORT_SOURCE_KEYS.QUICKBOOKS, {
+      isConnected: false,
+      metadata: {
+        disconnectedAt: now,
+      },
+    });
+  } catch (syncError) {
+    console.warn("[QB Store] Failed to refresh report source on soft disconnect:", syncError.message);
+  }
 
   return true;
 }

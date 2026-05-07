@@ -16,16 +16,19 @@ import {
   connectQuickbooks,
   disconnectQuickbooks,
   fetchBalanceSheet,
+  fetchCashflow,
   fetchProfitAndLoss,
   getConnectionStatus,
-  refreshQuickbooksToken,
+  syncQuickbooksReports,
   syncGeneralLedger,
 } from "../../lib/quickbooks";
+import { setSelectedReportSource } from "../../lib/api";
 import { useToast } from "../../context/ToastContext";
 import { fetchCustomers } from "../../services/customerService";
 import { fetchInvoices } from "../../services/invoiceService";
 import { cn } from "../../lib/utils";
 import QBDisconnectedBanner from "../common/QBDisconnectedBanner";
+import { REPORT_SOURCE_KEYS } from "../../lib/report-source";
 
 // ─── Helpers ────────────────────────────────────────────
 
@@ -78,30 +81,6 @@ export default function QuickBooksConnection({ company }) {
   const [isDisconnecting, setIsDisconnecting] = useState(false);
   const [showDisconnectModal, setShowDisconnectModal] = useState(false);
 
-  // Handle OAuth callback query params
-  useEffect(() => {
-    const params = new URLSearchParams(location.search);
-    const qbStatus = params.get("qbStatus");
-    const qbMessage = params.get("qbMessage");
-    if (qbStatus === "success") {
-      showToast({
-        type: "success",
-        title: "Connection Updated",
-        message: "QuickBooks connected successfully.",
-      });
-    }
-    if (qbStatus === "error") {
-      showToast({
-        type: "error",
-        title: "Connection Notice",
-        message: qbMessage || "QuickBooks connection could not be completed.",
-      });
-      setErrorMessage(
-        qbMessage || "QuickBooks connection could not be completed.",
-      );
-    }
-  }, [location.search, showToast]);
-
   // Fetch real connection status from backend
   const fetchStatus = useCallback(
     async (showLoader = true) => {
@@ -129,8 +108,9 @@ export default function QuickBooksConnection({ company }) {
             fetchInvoices().catch(() => ({})),
             fetchBalanceSheet().catch(() => ({})),
             fetchProfitAndLoss().catch(() => ({})),
+            fetchCashflow().catch(() => ({})),
             syncGeneralLedger().catch(() => ({})),
-          ]).then(([customersRes, invoicesRes, bsRes, pnlRes, glRes]) => {
+          ]).then(([customersRes, invoicesRes, bsRes, pnlRes, cfRes, glRes]) => {
             const custs = Array.isArray(customersRes?.QueryResponse?.Customer)
               ? customersRes.QueryResponse.Customer
               : Array.isArray(customersRes?.data?.QueryResponse?.Customer)
@@ -179,6 +159,12 @@ export default function QuickBooksConnection({ company }) {
                 status: "synced",
               },
               {
+                name: "Cash Flow",
+                count: countReportRows(cfRes),
+                lastSync: data.lastSynced,
+                status: "synced",
+              },
+              {
                 name: "General Ledger",
                 count: glRes?.totalInserted || glRes?.data?.totalInserted || 0,
                 lastSync: data.lastSynced,
@@ -198,12 +184,79 @@ export default function QuickBooksConnection({ company }) {
         );
       }
     },
-    [company],
+    [],
   );
 
   useEffect(() => {
-    fetchStatus(true);
+    Promise.resolve().then(() => {
+      fetchStatus(true);
+    });
   }, [fetchStatus]);
+
+  // Handle OAuth callback query params
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const qbStatus = params.get("qbStatus");
+    const qbMessage = params.get("qbMessage");
+    if (!qbStatus) return;
+
+    const clearSearch = () => {
+      if (typeof window === "undefined") return;
+      window.history.replaceState(
+        {},
+        document.title,
+        `${window.location.pathname}${window.location.hash || ""}`,
+      );
+    };
+
+    if (qbStatus === "error") {
+      showToast({
+        type: "error",
+        title: "Connection Notice",
+        message: qbMessage || "QuickBooks connection could not be completed.",
+      });
+      Promise.resolve().then(() => {
+        setErrorMessage(
+          qbMessage || "QuickBooks connection could not be completed.",
+        );
+      });
+      clearSearch();
+      return;
+    }
+
+    if (qbStatus === "success") {
+      showToast({
+        type: "success",
+        title: "Connection Updated",
+        message: "QuickBooks connected successfully.",
+      });
+
+      (async () => {
+        try {
+          if (company?.id) {
+            await setSelectedReportSource(REPORT_SOURCE_KEYS.QUICKBOOKS, {
+              clientId: company.id,
+            }).catch(() => null);
+          }
+
+          await syncQuickbooksReports();
+          await fetchStatus(false);
+          showToast({
+            type: "success",
+            title: "Reports Ready",
+            message: "Latest QuickBooks reports have been synced.",
+          });
+        } catch (error) {
+          console.error("Post-connect sync failed:", error);
+          setErrorMessage(
+            "QuickBooks connected, but the first report sync failed. Please try Sync once.",
+          );
+        } finally {
+          clearSearch();
+        }
+      })();
+    }
+  }, [company?.id, fetchStatus, location.search, showToast]);
 
   // ── Actions ──
   const handleConnect = () => connectQuickbooks(location.pathname, company?.id);
@@ -237,11 +290,11 @@ export default function QuickBooksConnection({ company }) {
     setIsSyncing(true);
     setErrorMessage(null);
     try {
-      await refreshQuickbooksToken();
+      await syncQuickbooksReports();
       showToast({
         type: "success",
-        title: "Token Refreshed",
-        message: "QuickBooks token refreshed successfully.",
+        title: "Sync Complete",
+        message: "QuickBooks reports synced successfully.",
       });
       await fetchStatus(false);
     } catch (err) {

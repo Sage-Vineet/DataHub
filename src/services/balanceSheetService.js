@@ -138,6 +138,8 @@ function resolveSourceLabel(source) {
   if (source === "MANUAL_UPLOAD") return "Manual Balance Sheet";
   if (source === "GENERATED_FROM_GL") return "Generated from GL";
   if (source === "GENERATED_FROM_QB") return "Generated from QuickBooks";
+  if (source === "live") return "QuickBooks Online";
+  if (source === "cache") return "QuickBooks Cache";
   return null;
 }
 
@@ -210,13 +212,30 @@ async function fetchSinglePeriodBS(
   startDate,
   endDate,
   accountingMethod,
+  sourceMode = "quickbooks",
 ) {
+  const normalizedAccountingMethod = normalizeAccountingMethod(accountingMethod);
+
   try {
+    if (sourceMode === "manual") {
+      const response = await getManualGlBalanceSheet({
+        params: {
+          ...(startDate ? { start_date: startDate } : {}),
+          ...(endDate ? { end_date: endDate, as_of_date: endDate } : {}),
+          ...(normalizedAccountingMethod
+            ? { accounting_method: normalizedAccountingMethod }
+            : {}),
+        },
+      });
+
+      return parseUnifiedBalanceSheetRows(response);
+    }
+
     const payload = await fetchBalanceSheet({
       ...(startDate ? { start_date: startDate } : {}),
       ...(endDate ? { end_date: endDate } : {}),
-      ...(accountingMethod
-        ? { accounting_method: normalizeAccountingMethod(accountingMethod) }
+      ...(normalizedAccountingMethod
+        ? { accounting_method: normalizedAccountingMethod }
         : {}),
     });
     return parseSummaryReport(payload);
@@ -231,8 +250,40 @@ async function fetchSinglePeriodBS(
 
 // ─── Exported Services ──────────────────────────────────────────────────────
 
-export async function getBalanceSheet(startDate, endDate, accountingMethod) {
+export async function getBalanceSheet(startDate, endDate, accountingMethod, options = {}) {
   const normalizedAccountingMethod = normalizeAccountingMethod(accountingMethod);
+  const sourceMode = options?.sourceMode || "manual";
+
+  if (sourceMode === "quickbooks") {
+    try {
+      const payload = await fetchBalanceSheet({
+        ...(startDate ? { start_date: startDate } : {}),
+        ...(endDate ? { end_date: endDate, as_of_date: endDate } : {}),
+        ...(normalizedAccountingMethod
+          ? { accounting_method: normalizedAccountingMethod }
+          : {}),
+      });
+
+      const rows = parseUnifiedBalanceSheetRows(payload);
+      const source = payload?.source || "GENERATED_FROM_QB";
+      return {
+        rows,
+        source,
+        sourceLabel: resolveSourceLabel(source),
+        asOfDate: payload?.asOfDate || payload?.data?.Header?.EndPeriod || endDate || null,
+        noDataText: rows.length > 0 ? null : "No Balance Sheet Available",
+      };
+    } catch (error) {
+      console.warn("QuickBooks Balance Sheet fetch failed:", error.message);
+      return {
+        rows: [],
+        source: null,
+        sourceLabel: null,
+        asOfDate: endDate || null,
+        noDataText: "No Balance Sheet Available",
+      };
+    }
+  }
 
   try {
     const response = await getManualGlBalanceSheet({
@@ -457,12 +508,24 @@ function mergePeriods(periodResults, periods) {
   return restructureGAAPTree(enrichedRows);
 }
 
-export async function getBalanceSheetDetail(startDate, endDate, accountingMethod) {
+export async function getBalanceSheetDetail(
+  startDate,
+  endDate,
+  accountingMethod,
+  options = {},
+) {
   // Detail now uses system-defined multi-year comparison (EBITDA analysis)
   const allPeriods = getComparativePeriods(4, endDate, startDate);
 
   const results = await Promise.all(
-    allPeriods.map(p => fetchSinglePeriodBS(p.startDate, p.endDate, accountingMethod))
+    allPeriods.map((p) =>
+      fetchSinglePeriodBS(
+        p.startDate,
+        p.endDate,
+        accountingMethod,
+        options?.sourceMode || "quickbooks",
+      ),
+    )
   );
 
   const rows = mergePeriods(results, allPeriods);

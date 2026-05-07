@@ -1,4 +1,5 @@
 import { fetchProfitAndLoss } from "../lib/quickbooks";
+import { getManualGlProfitLoss } from "../lib/api";
 import { normalizeAccountingMethod } from "../lib/report-filters";
 import { parseSummaryReport } from "../lib/report-parsers";
 
@@ -56,8 +57,14 @@ async function fetchSinglePeriodPNL(
   startDate,
   endDate,
   accountingMethod,
+  sourceMode = "quickbooks",
 ) {
   try {
+    if (sourceMode === "manual") {
+      const payload = await getManualGlProfitLoss();
+      return parseSummaryReport(payload?.quickbooksSchema || payload?.data || payload);
+    }
+
     const payload = await fetchProfitAndLoss({
       start_date: startDate,
       end_date: endDate,
@@ -134,12 +141,14 @@ export async function getProfitAndLoss(
   startDate,
   endDate,
   accountingMethod,
+  options = {},
 ) {
   // Summary now uses user-selected filters (QuickBooks-style Summary report)
   const rows = await fetchSinglePeriodPNL(
     startDate,
     endDate,
     accountingMethod,
+    options?.sourceMode || "quickbooks",
   );
   return rows;
 }
@@ -148,12 +157,20 @@ export async function getProfitAndLossDetail(
   startDate,
   endDate,
   accountingMethod,
+  options = {},
 ) {
   // Detail now uses system-defined multi-year comparison (EBITDA analysis)
   const periods = getPNLComparativePeriods(4);
 
   const results = await Promise.all(
-    periods.map((p) => fetchSinglePeriodPNL(p.start, p.end, accountingMethod)),
+    periods.map((p) =>
+      fetchSinglePeriodPNL(
+        p.start,
+        p.end,
+        accountingMethod,
+        options?.sourceMode || "quickbooks",
+      ),
+    ),
   );
 
   const rows = mergePNLPeriods(results, periods);

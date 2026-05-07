@@ -1,9 +1,27 @@
 import React, { useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { cn, formatCurrency } from "../../../lib/utils";
+import { cn } from "../../../lib/utils";
 
-const formatValue = (value) => {
-  return formatCurrency(value);
+const formatBalanceSheetValue = (value) => {
+  if (value === null || value === undefined || value === "") {
+    return "";
+  }
+
+  const numeric = typeof value === "string"
+    ? Number(value.replace(/,/g, "").replace(/[^\d.-]/g, ""))
+    : Number(value);
+
+  if (!Number.isFinite(numeric)) {
+    return "";
+  }
+
+  const formatter = new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+
+  const formatted = formatter.format(Math.abs(numeric));
+  return numeric < 0 ? `(${formatted})` : formatted;
 };
 
 const QBRow = ({ line, depth = 0 }) => {
@@ -11,6 +29,7 @@ const QBRow = ({ line, depth = 0 }) => {
   const hasChildren = Boolean(line.children?.length);
   const isHeader = line.type === "header";
   const isTotal = line.type === "total" || line.name.toLowerCase().startsWith("total");
+  const amountText = isHeader ? "" : formatBalanceSheetValue(line.amount);
 
   const toggle = (e) => {
     if (!hasChildren) return;
@@ -59,10 +78,11 @@ const QBRow = ({ line, depth = 0 }) => {
         <td
           className={cn(
             "py-2.5 px-4 text-right tabular-nums text-[14px] font-medium",
-            Number(line.amount) < 0 ? "text-status-error" : "text-text-primary",
+            !isHeader && Number(line.amount) < 0 ? "text-status-error" : "text-text-primary",
+            isHeader && "text-transparent",
           )}
         >
-          {formatValue(line.amount)}
+          {amountText}
         </td>
       </tr>
 

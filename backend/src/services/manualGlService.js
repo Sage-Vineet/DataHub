@@ -1,4 +1,8 @@
 const { supabase } = require("../db");
+const {
+  REPORT_SOURCE_KEYS,
+  updateReportSourceRecord,
+} = require("./reportSourceStore");
 const XLSX = require("xlsx");
 
 const MANUAL_GL_REPORT_TYPE = "manual_gl_upload";
@@ -47,6 +51,82 @@ const AUTO_MAPPING_SCORE_THRESHOLD = {
   reference: 0.25,
   account_type: 0.3,
   account_number: 0.3,
+};
+const BALANCE_SHEET_DISPLAY_NAME_OVERRIDES = {
+  "loans to mtp": "Loans to MTP (Merrimack Ten Pin)",
+  "accumulated depreciation- f&f": "Accumulated Depreciation - Furniture & Fixtures",
+  "accumulated depreciation- improvements": "Accumulated Depreciation - Improvements",
+  "accumulated depreciation- m&e": "Accumulated Depreciation - Machinery & Equipment",
+  "accumulated depreciation- vehicle": "Accumulated Depreciation - Vehicle",
+  "credit card payable- bj's": "Credit Card Payable - BJ's",
+  "credit card payable- capital one": "Credit Card Payable - Capital One",
+  "credit card payable- sam's club": "Credit Card Payable - Sam's Club",
+  "loan payable- officer": "Loan Payable - Officer (Net)",
+  "government loan payable - sba": "Government Loan Payable - SBA (EIDL)",
+  "loan payable- porsche": "Loan Payable - Porsche (Vehicle)",
+  "retained earnings": "Retained Earnings (Beginning)",
+};
+const BALANCE_SHEET_GROUP_ORDERS = {
+  bank_accounts: [
+    "provident bank business checking",
+    "business checking (7454)",
+    "business money market",
+    "provident bank money market checking",
+    "space center savings",
+  ],
+  other_current_assets: [
+    "inventory",
+    "loans to mtp",
+    "due from ertc",
+    "prepaid payroll",
+  ],
+  gross_fixed_assets: [
+    "furniture & fixtures",
+    "land improvements",
+    "leasehold improvements",
+    "machinery & equipment",
+    "vehicle",
+    "construction in progress",
+  ],
+  accumulated_depreciation: [
+    "accumulated depreciation- f&f",
+    "accumulated depreciation- improvements",
+    "accumulated depreciation- m&e",
+    "accumulated depreciation- vehicle",
+    "amortization of financing costs",
+  ],
+  other_long_term_assets: [
+    "other long-term assets",
+  ],
+  credit_card_liabilities: [
+    "capital one - credit card",
+    "capital one credit card 2",
+    "chase ink credit card",
+    "credit card payable- bj's",
+    "credit card payable- capital one",
+    "credit card payable- sam's club",
+    "sam's credit card",
+    "sams club credit card",
+  ],
+  other_current_liabilities: [
+    "accrued meals tax",
+  ],
+  long_term_liabilities: [
+    "loan payable - state of nh",
+    "loan payable from mtp",
+    "loan payable- government eidl",
+    "loan payable- ppp loan",
+    "government loan payable - sba",
+    "loan payable - betson enterprises",
+    "loan payable- betson enterprises ii",
+    "loan payable- florian realty llc",
+    "loan payable- porsche",
+    "loan payable- provident bank",
+  ],
+  equity: [
+    "retained earnings",
+    "loan payable- officer",
+  ],
 };
 
 async function upsertManualGlUpload({
@@ -273,6 +353,8 @@ function parseManualGlSheet(upload, emptyRowsMessage) {
     columns: headers,
     headerRowIndex,
     rowNumbers,
+    rawRows,
+    sheetName,
   };
 }
 
@@ -370,6 +452,459 @@ function parseDateFlexible(value) {
   return null;
 }
 
+function normalizeMoney(value) {
+  const amount = roundMoney(parseAmountDetail(value).value);
+  return Math.abs(amount) < 0.005 ? 0 : amount;
+}
+
+function extractLedgerAccountSnapshots(rawRows = [], headerRowIndex = 0) {
+  if (!Array.isArray(rawRows) || rawRows.length <= headerRowIndex + 1) {
+    return [];
+  }
+
+  const snapshots = [];
+  let current = null;
+
+  const finalizeCurrent = () => {
+    if (!current?.account) return;
+
+    const endingBalance =
+      current.endingBalance !== null && current.endingBalance !== undefined
+        ? current.endingBalance
+        : current.beginningBalance !== null && current.beginningBalance !== undefined
+          ? current.beginningBalance
+          : current.netActivity;
+
+    snapshots.push({
+      index: snapshots.length,
+      account: current.account,
+      beginningBalance: normalizeMoney(current.beginningBalance),
+      endingBalance: normalizeMoney(endingBalance),
+      netActivity: normalizeMoney(current.netActivity),
+    });
+  };
+
+  for (let index = headerRowIndex + 1; index < rawRows.length; index += 1) {
+    const row = Array.isArray(rawRows[index]) ? rawRows[index] : [];
+    const columnA = String(row[0] || "").trim();
+    const distributionAccount = String(row[1] || "").trim();
+
+    if (columnA && !columnA.startsWith("Total for ")) {
+      finalizeCurrent();
+      current = {
+        account: columnA,
+        beginningBalance: null,
+        endingBalance: null,
+        netActivity: 0,
+      };
+      continue;
+    }
+
+    if (!current) continue;
+
+    if (distributionAccount === "Beginning Balance") {
+      current.beginningBalance = normalizeMoney(row[9]);
+    }
+
+    const runningBalance = parseAmountDetail(row[9]);
+    if (runningBalance.isPresent && runningBalance.isValid) {
+      current.endingBalance = normalizeMoney(runningBalance.value);
+    }
+
+    if (columnA.startsWith("Total for ")) {
+      const activity = parseAmountDetail(row[8]);
+      if (activity.isPresent && activity.isValid) {
+        current.netActivity = normalizeMoney(activity.value);
+      }
+      finalizeCurrent();
+      current = null;
+    }
+  }
+
+  finalizeCurrent();
+  return snapshots;
+}
+
+function sumBalanceItems(items = []) {
+  return roundMoney(items.reduce((sum, item) => sum + normalizeMoney(item?.balance), 0));
+}
+
+function getBalanceSheetDisplayName(accountName) {
+  const key = normalizeKey(accountName);
+  return BALANCE_SHEET_DISPLAY_NAME_OVERRIDES[key] || String(accountName || "").trim();
+}
+
+function sortBalanceSheetItems(items = [], groupKey = "") {
+  const preferred = BALANCE_SHEET_GROUP_ORDERS[groupKey] || [];
+  const rank = new Map(preferred.map((name, index) => [normalizeKey(name), index]));
+
+  return [...items].sort((left, right) => {
+    const leftRank = rank.has(normalizeKey(left?.account)) ? rank.get(normalizeKey(left?.account)) : Number.MAX_SAFE_INTEGER;
+    const rightRank = rank.has(normalizeKey(right?.account)) ? rank.get(normalizeKey(right?.account)) : Number.MAX_SAFE_INTEGER;
+    if (leftRank !== rightRank) return leftRank - rightRank;
+    return String(left?.name || left?.account || "").localeCompare(String(right?.name || right?.account || ""));
+  });
+}
+
+function classifyBalanceSheetAccount(accountName = "") {
+  const key = normalizeKey(accountName);
+  if (!key) return null;
+
+  if (
+    key.includes("credit card payment") ||
+    key.includes("credit card bill") ||
+    key.includes("charges/fees") ||
+    key.includes("bank charges & fees")
+  ) {
+    return null;
+  }
+
+  if (
+    key.includes("checking") ||
+    key.includes("money market") ||
+    key.includes("savings") ||
+    key === "cash" ||
+    key.startsWith("cash ")
+  ) {
+    return { bucket: "asset", groupKey: "bank_accounts" };
+  }
+
+  if (
+    key.includes("inventory") ||
+    key.includes("due from") ||
+    key.includes("loan to ") ||
+    key.includes("loans to ") ||
+    key.includes("prepaid") ||
+    key.includes("receivable")
+  ) {
+    return { bucket: "asset", groupKey: "other_current_assets" };
+  }
+
+  if (
+    key.includes("accumulated depreciation") ||
+    key.includes("amortization of financing costs")
+  ) {
+    return { bucket: "asset", groupKey: "accumulated_depreciation" };
+  }
+
+  if (
+    key.includes("furniture") ||
+    key.includes("fixture") ||
+    key.includes("land improvements") ||
+    key.includes("leasehold") ||
+    key.includes("machinery") ||
+    key.includes("equipment") ||
+    key === "vehicle" ||
+    key.includes("construction in progress") ||
+    key.includes("fixed asset")
+  ) {
+    return { bucket: "asset", groupKey: "gross_fixed_assets" };
+  }
+
+  if (key.includes("other long-term assets") || key.includes("other long term assets")) {
+    return { bucket: "asset", groupKey: "other_long_term_assets" };
+  }
+
+  if (
+    key.includes("credit card") ||
+    key.includes("card payable") ||
+    key.includes("chase ink")
+  ) {
+    return { bucket: "liability", groupKey: "credit_card_liabilities" };
+  }
+
+  if (
+    key.includes("retained earning") ||
+    key.includes(" equity") ||
+    key.startsWith("equity") ||
+    key.includes("shareholder") ||
+    key.includes("stockholder") ||
+    key.includes("owner") ||
+    key.includes("member capital") ||
+    key.includes("paid in capital") ||
+    (key.includes("officer") && key.includes("loan payable"))
+  ) {
+    return { bucket: "equity", groupKey: "equity" };
+  }
+
+  if (
+    key.includes("accrued") ||
+    key.includes("payroll payable") ||
+    key.includes("sales tax payable") ||
+    key.includes("meals tax payable")
+  ) {
+    return { bucket: "liability", groupKey: "other_current_liabilities" };
+  }
+
+  if (
+    key.includes("loan payable") ||
+    key.includes("government loan payable") ||
+    key.includes("note payable")
+  ) {
+    return { bucket: "liability", groupKey: "long_term_liabilities" };
+  }
+
+  return null;
+}
+
+function buildSpaceEntertainmentBalanceSheet({ rawRows = [], headerRowIndex = 0, endDate = "", netIncome = 0 } = {}) {
+  const titleText = String(rawRows?.[0]?.[0] || "").trim().toLowerCase();
+  if (!titleText.includes("general ledger")) {
+    return null;
+  }
+
+  const accountSnapshots = extractLedgerAccountSnapshots(rawRows, headerRowIndex);
+  if (!accountSnapshots.length) {
+    return null;
+  }
+
+  const snapshotMap = new Map(
+    accountSnapshots.map((snapshot) => [normalizeKey(snapshot.account), snapshot])
+  );
+  const retainedEarningsIndex = accountSnapshots.findIndex(
+    (snapshot) => normalizeKey(snapshot?.account) === "retained earnings"
+  );
+  const profitAndLossSnapshots =
+    retainedEarningsIndex >= 0
+      ? accountSnapshots.slice(retainedEarningsIndex + 1)
+      : accountSnapshots;
+
+  const incomeAndExpenseTotals = profitAndLossSnapshots.reduce(
+    (totals, snapshot) => {
+      const endingBalance = normalizeMoney(snapshot?.endingBalance);
+      const accountType = inferAccountType(snapshot?.account);
+
+      if (accountType === "income") {
+        totals.income = roundMoney(totals.income + endingBalance);
+      } else if (accountType === "expense") {
+        totals.expense = roundMoney(totals.expense + endingBalance);
+      }
+
+      return totals;
+    },
+    { income: 0, expense: 0 }
+  );
+  const hasIncomeOrExpenseActivity =
+    Math.abs(incomeAndExpenseTotals.income) > 0 || Math.abs(incomeAndExpenseTotals.expense) > 0;
+  const resolvedNetIncome = roundMoney(
+    hasIncomeOrExpenseActivity
+      ? incomeAndExpenseTotals.income - incomeAndExpenseTotals.expense
+      : netIncome
+  );
+
+  const classified = {
+    bank_accounts: [],
+    other_current_assets: [],
+    gross_fixed_assets: [],
+    accumulated_depreciation: [],
+    other_long_term_assets: [],
+    credit_card_liabilities: [],
+    other_current_liabilities: [],
+    long_term_liabilities: [],
+    equity: [],
+  };
+
+  accountSnapshots.forEach((snapshot, index) => {
+    const classification = classifyBalanceSheetAccount(snapshot.account);
+    if (!classification?.groupKey) return;
+
+    classified[classification.groupKey].push({
+      id: `${normalizeKey(snapshot.account).replace(/[^a-z0-9]+/g, "-") || "line"}-${index + 1}`,
+      account: snapshot.account,
+      name: getBalanceSheetDisplayName(snapshot.account),
+      balance: normalizeMoney(snapshot.endingBalance),
+    });
+  });
+
+  const matchedBalanceSheetAccounts = Object.values(classified).reduce(
+    (count, items) => count + items.length,
+    0
+  );
+  if (matchedBalanceSheetAccounts < 5) {
+    return null;
+  }
+
+  const bankAccounts = sortBalanceSheetItems(classified.bank_accounts, "bank_accounts");
+  const otherCurrentAssets = sortBalanceSheetItems(classified.other_current_assets, "other_current_assets");
+  const grossFixedAssets = sortBalanceSheetItems(classified.gross_fixed_assets, "gross_fixed_assets");
+  const accumulatedDepreciation = sortBalanceSheetItems(classified.accumulated_depreciation, "accumulated_depreciation");
+  const otherLongTermAssets = sortBalanceSheetItems(classified.other_long_term_assets, "other_long_term_assets");
+  const creditCardLiabilities = sortBalanceSheetItems(classified.credit_card_liabilities, "credit_card_liabilities");
+  const otherCurrentLiabilities = sortBalanceSheetItems(classified.other_current_liabilities, "other_current_liabilities");
+  const longTermLiabilities = sortBalanceSheetItems(classified.long_term_liabilities, "long_term_liabilities");
+  const equityBase = sortBalanceSheetItems(classified.equity, "equity");
+
+  const totalBankAccounts = sumBalanceItems(bankAccounts);
+  const totalOtherCurrentAssets = sumBalanceItems(otherCurrentAssets);
+  const totalCurrentAssets = roundMoney(totalBankAccounts + totalOtherCurrentAssets);
+
+  const totalGrossFixedAssets = sumBalanceItems(grossFixedAssets);
+  const totalAccumulatedDepreciation = sumBalanceItems(accumulatedDepreciation);
+  const netPropertyPlantEquipment = roundMoney(totalGrossFixedAssets + totalAccumulatedDepreciation);
+  const totalOtherLongTermAssets = sumBalanceItems(otherLongTermAssets);
+  const totalAssets = roundMoney(totalCurrentAssets + netPropertyPlantEquipment + totalOtherLongTermAssets);
+
+  const totalCreditCardLiabilities = sumBalanceItems(creditCardLiabilities);
+  const totalOtherCurrentLiabilities = sumBalanceItems(otherCurrentLiabilities);
+  const totalCurrentLiabilities = roundMoney(totalCreditCardLiabilities + totalOtherCurrentLiabilities);
+  const totalLongTermLiabilities = sumBalanceItems(longTermLiabilities);
+  const totalLiabilities = roundMoney(totalCurrentLiabilities + totalLongTermLiabilities);
+
+  const fiscalYear = endDate && /^\d{4}-\d{2}-\d{2}$/.test(String(endDate))
+    ? new Date(`${endDate}T00:00:00Z`).getUTCFullYear()
+    : "";
+  const netIncomeLabel = fiscalYear ? `Net Income (Loss) - FY${fiscalYear}` : "Net Income (Loss)";
+  const equity = [
+    ...equityBase,
+    {
+      id: `net-income-${fiscalYear || "current"}`,
+      account: netIncomeLabel,
+      name: netIncomeLabel,
+      balance: normalizeMoney(resolvedNetIncome),
+    },
+  ].filter(Boolean);
+  const totalEquity = sumBalanceItems(equity);
+  const totalLiabilitiesAndEquity = roundMoney(totalLiabilities + totalEquity);
+  const balanceCheck = roundMoney(totalAssets - totalLiabilitiesAndEquity);
+
+  const assetsLayout = [];
+  if (bankAccounts.length || otherCurrentAssets.length) {
+    const currentAssetChildren = [];
+    if (bankAccounts.length) {
+      currentAssetChildren.push({
+        name: "Bank Accounts",
+        totalAmount: totalBankAccounts,
+        totalLabel: "Total Bank Accounts",
+        children: bankAccounts.map((item) => ({ name: item.name, amount: item.balance })),
+      });
+    }
+    if (otherCurrentAssets.length) {
+      currentAssetChildren.push({
+        name: "Other Current Assets",
+        totalAmount: totalOtherCurrentAssets,
+        totalLabel: "Total Other Current Assets",
+        children: otherCurrentAssets.map((item) => ({ name: item.name, amount: item.balance })),
+      });
+    }
+    assetsLayout.push({
+      name: "Current Assets",
+      totalAmount: totalCurrentAssets,
+      totalLabel: "Total Current Assets",
+      children: currentAssetChildren,
+    });
+  }
+
+  if (grossFixedAssets.length || accumulatedDepreciation.length) {
+    const ppeChildren = [];
+    if (grossFixedAssets.length) {
+      ppeChildren.push({
+        name: "Gross Fixed Assets",
+        totalAmount: totalGrossFixedAssets,
+        totalLabel: "Total Gross Fixed Assets",
+        children: grossFixedAssets.map((item) => ({ name: item.name, amount: item.balance })),
+      });
+    }
+    if (accumulatedDepreciation.length) {
+      ppeChildren.push({
+        name: "Accumulated Depreciation & Amortization",
+        totalAmount: totalAccumulatedDepreciation,
+        totalLabel: "Total Accumulated Depreciation",
+        children: accumulatedDepreciation.map((item) => ({ name: item.name, amount: item.balance })),
+      });
+    }
+    ppeChildren.push({
+      name: "Net Property, Plant & Equipment",
+      amount: netPropertyPlantEquipment,
+    });
+    assetsLayout.push({
+      name: "Property, Plant & Equipment",
+      includeSummary: false,
+      children: ppeChildren,
+    });
+  }
+
+  if (otherLongTermAssets.length) {
+    assetsLayout.push({
+      name: "Other Long-term Assets",
+      totalAmount: totalOtherLongTermAssets,
+      totalLabel: "Total Other Long-term Assets",
+      children: otherLongTermAssets.map((item) => ({ name: item.name, amount: item.balance })),
+    });
+  }
+
+  const liabilitiesLayout = [];
+  if (creditCardLiabilities.length || otherCurrentLiabilities.length) {
+    const currentLiabilityChildren = [];
+    if (creditCardLiabilities.length) {
+      currentLiabilityChildren.push({
+        name: "Credit Card Liabilities",
+        totalAmount: totalCreditCardLiabilities,
+        totalLabel: "Total Credit Card Liabilities",
+        children: creditCardLiabilities.map((item) => ({ name: item.name, amount: item.balance })),
+      });
+    }
+    if (otherCurrentLiabilities.length) {
+      currentLiabilityChildren.push({
+        name: "Other Current Liabilities",
+        totalAmount: totalOtherCurrentLiabilities,
+        totalLabel: "Total Other Current Liabilities",
+        children: otherCurrentLiabilities.map((item) => ({ name: item.name, amount: item.balance })),
+      });
+    }
+    liabilitiesLayout.push({
+      name: "Current Liabilities",
+      totalAmount: totalCurrentLiabilities,
+      totalLabel: "Total Current Liabilities",
+      children: currentLiabilityChildren,
+    });
+  }
+
+  if (longTermLiabilities.length) {
+    liabilitiesLayout.push({
+      name: "Long-term Liabilities",
+      totalAmount: totalLongTermLiabilities,
+      totalLabel: "Total Long-term Liabilities",
+      children: longTermLiabilities.map((item) => ({ name: item.name, amount: item.balance })),
+    });
+  }
+
+  return {
+    assets: [
+      ...bankAccounts,
+      ...otherCurrentAssets,
+      ...grossFixedAssets,
+      ...accumulatedDepreciation,
+      ...otherLongTermAssets,
+    ],
+    liabilities: [
+      ...creditCardLiabilities,
+      ...otherCurrentLiabilities,
+      ...longTermLiabilities,
+    ],
+    equity,
+    totalAssets,
+    totalLiabilities,
+    totalEquity,
+    netIncome: normalizeMoney(resolvedNetIncome),
+    isBalanced: Math.abs(balanceCheck) < 0.01,
+    balanceCheck,
+    quickbooksLayout: {
+      assets: assetsLayout,
+      liabilities: liabilitiesLayout,
+      equity: {
+        name: "Equity",
+        totalAmount: totalEquity,
+        totalLabel: "Total Equity",
+        children: equity.map((item) => ({ name: item.name, amount: item.balance })),
+      },
+      totalAssetsLabel: "TOTAL ASSETS",
+      totalLiabilitiesLabel: "TOTAL LIABILITIES",
+      totalLiabilitiesAndEquityLabel: "TOTAL LIABILITIES AND EQUITY",
+      balanceCheckLabel: "Balance Check (Assets - Liabilities & Equity)",
+    },
+  };
+}
+
 function toIsoDate(dateValue) {
   const date = dateValue instanceof Date ? dateValue : parseDateFlexible(dateValue);
   if (!date || Number.isNaN(date.getTime())) return null;
@@ -412,19 +947,41 @@ function inferAccountType(accountName) {
   if (!key) return "expense";
 
   if (
+    key.includes("bank charges") ||
+    key.includes("charges/fees") ||
+    key.includes("processing fees")
+  ) return "expense";
+
+  if (
     key.includes("cash") ||
     key.includes("bank") ||
-    key.includes("asset") ||
+    key.includes("checking") ||
+    key.includes("money market") ||
+    key.includes("savings") ||
     key.includes("receivable") ||
+    key.includes("due from") ||
+    key.includes("loan to ") ||
+    key.includes("loans to ") ||
     key.includes("inventory") ||
     key.includes("prepaid") ||
-    key.includes("fixed asset")
+    key.includes("fixed asset") ||
+    key.includes("furniture") ||
+    key.includes("fixture") ||
+    key.includes("land improvements") ||
+    key.includes("leasehold") ||
+    key.includes("machinery") ||
+    key.includes("equipment") ||
+    key.includes("construction in progress") ||
+    key === "vehicle" ||
+    key.includes("other long-term assets") ||
+    key.includes("accumulated depreciation") ||
+    key.includes("amortization of financing costs")
   ) return "asset";
 
   if (
     key.includes("liabil") ||
-    key.includes("payable") ||
-    key.includes("loan") ||
+    (key.includes("payable") && !key.includes("officer")) ||
+    (key.includes("loan") && !key.includes("loan to ") && !key.includes("loans to ") && !key.includes("officer")) ||
     key.includes("credit card") ||
     key.includes("accrued")
   ) return "liability";
@@ -433,13 +990,17 @@ function inferAccountType(accountName) {
     key.includes("equity") ||
     key.includes("capital") ||
     key.includes("retained earning") ||
-    key.includes("owner")
+    key.includes("owner") ||
+    key.includes("officer")
   ) return "equity";
 
   if (
     key.includes("income") ||
     key.includes("revenue") ||
     key.includes("sales") ||
+    key.includes("discount") ||
+    key.includes("gain on sale") ||
+    key.includes("refunds to customer") ||
     key.includes("interest income") ||
     key.includes("other income")
   ) return "income";
@@ -1224,19 +1785,41 @@ function buildQuickbooksSection({ name, rows = [], total = 0, totalLabel = "" })
     type: "Section",
     group: normalizeKey(name).replace(/[^a-z0-9]+/g, "_") || "section",
     Header: { ColData: [{ value: String(name || "Section") }] },
-    Summary: {
+  };
+
+  const includeSummary = totalLabel !== false;
+  if (includeSummary) {
+    section.Summary = {
       ColData: [
         { value: totalLabel || `Total ${name}` },
         { value: formatQuickbooksMoney(total) },
       ],
-    },
-  };
+    };
+  }
 
   if (Array.isArray(rows) && rows.length > 0) {
     section.Rows = { Row: rows };
   }
 
   return section;
+}
+
+function buildQuickbooksBalanceSheetLayoutRows(nodes = []) {
+  return (Array.isArray(nodes) ? nodes : []).map((node, index) => {
+    if (Array.isArray(node?.children) && node.children.length > 0) {
+      return buildQuickbooksSection({
+        name: node.name || `Section ${index + 1}`,
+        rows: buildQuickbooksBalanceSheetLayoutRows(node.children),
+        total: node.totalAmount || 0,
+        totalLabel:
+          node.includeSummary === false
+            ? false
+            : node.totalLabel || `Total ${node.name || `Section ${index + 1}`}`,
+      });
+    }
+
+    return buildQuickbooksDataRow(node?.name || `Line ${index + 1}`, node?.amount || 0, node?.id || "");
+  });
 }
 
 function resolveGlDateRange(glEntries = []) {
@@ -1297,6 +1880,55 @@ function buildQuickbooksProfitAndLossReport(report, startDate, endDate) {
 }
 
 function buildQuickbooksBalanceSheetReport(report, startDate, endDate) {
+  const quickbooksLayout = report?.quickbooksLayout;
+  if (quickbooksLayout?.assets && quickbooksLayout?.equity) {
+    const assetRows = buildQuickbooksBalanceSheetLayoutRows(quickbooksLayout.assets);
+    const liabilityRows = buildQuickbooksBalanceSheetLayoutRows(quickbooksLayout.liabilities || []);
+    const equitySection = buildQuickbooksSection({
+      name: quickbooksLayout.equity.name || "Equity",
+      rows: buildQuickbooksBalanceSheetLayoutRows(quickbooksLayout.equity.children || []),
+      total: quickbooksLayout.equity.totalAmount || report?.totalEquity || 0,
+      totalLabel: quickbooksLayout.equity.totalLabel || "Total Equity",
+    });
+
+    const liabilitiesAndEquityRows = [
+      ...liabilityRows,
+      buildQuickbooksDataRow(
+        quickbooksLayout.totalLiabilitiesLabel || "TOTAL LIABILITIES",
+        report?.totalLiabilities || 0
+      ),
+      equitySection,
+    ];
+
+    return {
+      Header: buildQuickbooksReportHeader("BalanceSheet", startDate, endDate),
+      Columns: {
+        Column: [{ ColTitle: "Account" }, { ColTitle: "Total", ColType: "Money" }],
+      },
+      Rows: {
+        Row: [
+          buildQuickbooksSection({
+            name: "Assets",
+            rows: assetRows,
+            total: report?.totalAssets || 0,
+            totalLabel: quickbooksLayout.totalAssetsLabel || "TOTAL ASSETS",
+          }),
+          buildQuickbooksSection({
+            name: "Liabilities and Equity",
+            rows: liabilitiesAndEquityRows,
+            total: roundMoney((report?.totalLiabilities || 0) + (report?.totalEquity || 0)),
+            totalLabel:
+              quickbooksLayout.totalLiabilitiesAndEquityLabel || "TOTAL LIABILITIES AND EQUITY",
+          }),
+          buildQuickbooksDataRow(
+            quickbooksLayout.balanceCheckLabel || "Balance Check (Assets - Liabilities & Equity)",
+            report?.balanceCheck || 0
+          ),
+        ],
+      },
+    };
+  }
+
   const assetsRows = (report?.assets || []).map((item) =>
     buildQuickbooksDataRow(item.account, item.balance, item.account)
   );
@@ -1605,6 +2237,21 @@ async function persistGeneratedReports({ companyId, uploadId, mapping, reports, 
       throw new Error(`Failed to save QuickBooks-compatible ${reportType}: ${error.message}`);
     }
   }
+
+  try {
+    await updateReportSourceRecord(companyId, REPORT_SOURCE_KEYS.MANUAL_GL, {
+      isAvailable: true,
+      isConnected: false,
+      lastSyncedAt: now,
+      metadata: {
+        latestUploadId: uploadId,
+        generatedAt: now,
+        statementTypes: statements.map(([statementType]) => statementType),
+      },
+    });
+  } catch (syncError) {
+    console.warn("[ManualGL] Failed to refresh report source:", syncError.message);
+  }
 }
 
 async function loadUpload(uploadId) {
@@ -1623,6 +2270,12 @@ async function generateManualGlReports({ companyId, uploadId, mapping = {} }) {
   if (!companyId) throw new Error("companyId is required");
   if (!uploadId) throw new Error("uploadId is required");
 
+  const upload = await loadUpload(uploadId);
+  const parsedUpload = parseManualGlSheet(
+    upload,
+    "No data rows found in upload. Ensure the first sheet has tabular rows with headers."
+  );
+
   let glEntries = [];
   let resolvedMapping = null;
 
@@ -1631,11 +2284,7 @@ async function generateManualGlReports({ companyId, uploadId, mapping = {} }) {
     glEntries = existing.data.manual_gl.glEntries;
     resolvedMapping = ensureMappingShape({ ...(existing.mapping || {}), ...(mapping || {}) });
   } else {
-    const upload = await loadUpload(uploadId);
-    const { rows, columns, rowNumbers } = parseManualGlSheet(
-      upload,
-      "No data rows found in upload. Ensure the first sheet has tabular rows with headers."
-    );
+    const { rows, columns, rowNumbers } = parsedUpload;
     const autoDetection = autoDetectManualGlMapping({ columns, rows, mapping });
     resolvedMapping = ensureMappingShape(autoDetection.mapping);
     const readiness = validateMappingForAutoProcess(resolvedMapping, autoDetection.confidence);
@@ -1661,6 +2310,16 @@ async function generateManualGlReports({ companyId, uploadId, mapping = {} }) {
   }
 
   const reports = buildFinancialReportsFromGl(glEntries);
+  const { endDate } = resolveGlDateRange(glEntries);
+  const specializedBalanceSheet = buildSpaceEntertainmentBalanceSheet({
+    rawRows: parsedUpload.rawRows,
+    headerRowIndex: parsedUpload.headerRowIndex,
+    endDate,
+    netIncome: reports?.profit_and_loss?.netIncome || 0,
+  });
+  if (specializedBalanceSheet) {
+    reports.balance_sheet = specializedBalanceSheet;
+  }
   await persistGeneratedReports({ companyId, uploadId, mapping: resolvedMapping, reports, glEntries });
   await upsertManualGlUpload({ companyId, uploadId, status: "generated", mapping: resolvedMapping });
 
@@ -1723,7 +2382,8 @@ async function processManualGlData({ companyId, uploadId, mapping = {} }) {
   if (!uploadId) throw new Error("uploadId is required");
 
   const upload = await loadUpload(uploadId);
-  const { rows, columns, rowNumbers } = parseManualGlSheet(upload, "No data rows found in upload.");
+  const parsedUpload = parseManualGlSheet(upload, "No data rows found in upload.");
+  const { rows, columns, rowNumbers } = parsedUpload;
 
   const autoDetection = autoDetectManualGlMapping({ columns, rows, mapping });
   const resolvedMapping = ensureMappingShape(autoDetection.mapping);
@@ -1779,6 +2439,16 @@ async function processManualGlData({ companyId, uploadId, mapping = {} }) {
   });
 
   const reports = buildFinancialReportsFromGl(normalized.glEntries);
+  const { endDate } = resolveGlDateRange(normalized.glEntries);
+  const specializedBalanceSheet = buildSpaceEntertainmentBalanceSheet({
+    rawRows: parsedUpload.rawRows,
+    headerRowIndex: parsedUpload.headerRowIndex,
+    endDate,
+    netIncome: reports?.profit_and_loss?.netIncome || 0,
+  });
+  if (specializedBalanceSheet) {
+    reports.balance_sheet = specializedBalanceSheet;
+  }
   await persistGeneratedReports({
     companyId,
     uploadId,

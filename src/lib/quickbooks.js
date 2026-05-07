@@ -99,6 +99,16 @@ export function refreshQuickbooksToken() {
   return request("/refresh-token");
 }
 
+export function syncQuickbooksReports() {
+  return request("/api/quickbooks/sync", {
+    method: "POST",
+  });
+}
+
+export function fetchQuickbooksSyncStatus() {
+  return request("/api/quickbooks/sync-status");
+}
+
 export function fetchQuickbooksCustomers() {
   return request("/customers");
 }

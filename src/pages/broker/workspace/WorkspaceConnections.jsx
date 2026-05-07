@@ -1,10 +1,14 @@
 import { useEffect, useState, useMemo } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
-import { getCompanyRequest } from "../../../lib/api";
+import {
+  getCompanyRequest,
+  setSelectedReportSource,
+} from "../../../lib/api";
 import Header from "../../../components/Header";
 import QuickBooksConnection from "../../../components/quickbooks/QuickBooksConnection";
 import ManualGLUpload from "../../../components/manual-gl/ManualGLUpload";
 import { cn } from "../../../lib/utils";
+import { REPORT_SOURCE_KEYS } from "../../../lib/report-source";
 
 export default function WorkspaceConnections() {
   const { clientId } = useParams();
@@ -24,6 +28,18 @@ export default function WorkspaceConnections() {
   const handleTabChange = (key) => {
     setSearchParams({ source: key });
   };
+
+  useEffect(() => {
+    if (!clientId) return;
+    const sourceKey =
+      selectedTab === "manual"
+        ? REPORT_SOURCE_KEYS.MANUAL_GL
+        : REPORT_SOURCE_KEYS.QUICKBOOKS;
+
+    setSelectedReportSource(sourceKey, { clientId }).catch((error) => {
+      console.error("[WorkspaceConnections] Failed to sync report source:", error);
+    });
+  }, [clientId, selectedTab]);
 
   // Load workspace company info to pass to the connection component
   useEffect(() => {
