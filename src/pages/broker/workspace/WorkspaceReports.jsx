@@ -114,7 +114,15 @@ export default function WorkspaceReports() {
   });
   const [accountingMethod, setAccountingMethod] = useState("Accrual");
   const [reportsData, setReportsData] = useState({
-    "Balance Sheet": { summary: [], detail: { groups: [] } },
+    "Balance Sheet": {
+      summary: {
+        rows: [],
+        source: null,
+        sourceLabel: null,
+        noDataText: "No Balance Sheet Available",
+      },
+      detail: { groups: [] },
+    },
     "Profit & Loss": { summary: [], detail: { groups: [] } },
     Cashflow: { summary: [], detail: { groups: [] } },
   });
@@ -432,7 +440,12 @@ export default function WorkspaceReports() {
             resolvedStart,
             resolvedEnd,
             normalizedAccountingMethod,
-          ).catch(() => ({ rows: [], columns: {} }));
+          ).catch(() => ({
+            rows: [],
+            source: null,
+            sourceLabel: null,
+            noDataText: "No Balance Sheet Available",
+          }));
         } else {
           detail = await getBalanceSheetDetail(
             resolvedStart,

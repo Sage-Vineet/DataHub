@@ -31,7 +31,7 @@ function resolveProtectedFileUrl(fileUrl) {
     }
 
     return parsed.toString();
-  } catch (_error) {
+  } catch {
     return raw;
   }
 }
@@ -135,7 +135,11 @@ async function request(path, options = {}) {
   const data = await response.json().catch(() => null);
 
   if (!response.ok) {
-    throw new Error(data?.error || 'Request failed');
+    const error = new Error(data?.error || data?.message || 'Request failed');
+    if (data && typeof data === 'object') {
+      error.payload = data;
+    }
+    throw error;
   }
 
   return data;
@@ -387,6 +391,144 @@ export async function fetchProtectedFileBlob(fileUrl, options = {}) {
   }
 
   return response.blob();
+}
+
+export function listManualGlUploads(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/uploads${query}`, options).then((payload) => payload?.uploads || []);
+}
+
+export function createManualGlUpload(payload, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/uploads${query}`, {
+    method: "POST",
+    body: payload,
+    ...options,
+  }).then((data) => data?.upload || data);
+}
+
+export function uploadManualReport(payload, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/upload${query}`, {
+    method: "POST",
+    body: payload,
+    ...options,
+  });
+}
+
+export function continueManualReportProcessing(payload, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/continue${query}`, {
+    method: "POST",
+    body: payload,
+    ...options,
+  });
+}
+
+export function uploadGl(payload, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/upload-gl${query}`, {
+    method: "POST",
+    body: payload,
+    ...options,
+  }).then((data) => data?.upload || data);
+}
+
+export function generateManualGlReports(payload, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/reports/generate${query}`, {
+    method: "POST",
+    body: payload,
+    ...options,
+  });
+}
+
+export function getManualGlColumns(uploadId, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/columns/${encodeURIComponent(uploadId)}${query}`, options);
+}
+
+export function saveManualGlMapping(payload, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/save-mapping${query}`, {
+    method: "POST",
+    body: payload,
+    ...options,
+  });
+}
+
+export function saveGlMapping(payload, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/save-mapping${query}`, {
+    method: "POST",
+    body: payload,
+    ...options,
+  });
+}
+
+export function processManualGl(payload, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/process-gl${query}`, {
+    method: "POST",
+    body: payload,
+    ...options,
+  });
+}
+
+export function processGl(payload, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/process-gl${query}`, {
+    method: "POST",
+    body: payload,
+    ...options,
+  });
+}
+
+export function getLatestManualGlReport(statementType, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/reports/${encodeURIComponent(statementType)}/latest${query}`, options);
+}
+
+export function getManualGlProfitLoss(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/reports/pl${query}`, options);
+}
+
+export function getManualGlBalanceSheet(options = {}) {
+  const { params = {}, ...requestOptions } = options || {};
+  const clientId = requestOptions.clientId ?? resolveClientIdFromLocation();
+  const search = new URLSearchParams();
+
+  if (clientId) {
+    search.set("clientId", clientId);
+  }
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    search.set(key, String(value));
+  });
+
+  const query = search.toString();
+  return request(`/reports/balance-sheet${query ? `?${query}` : ""}`, requestOptions);
+}
+
+export function getManualGlCashflow(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/reports/cashflow${query}`, options);
 }
 
 export function listCompanyFolders(companyId) {

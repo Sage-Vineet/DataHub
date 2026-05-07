@@ -2,6 +2,7 @@ const express = require("express");
 const axios = require("axios");
 const tokenManager = require("../../../tokenManager");
 const { getQBConfig } = require("../../../qbconfig");
+const { serveCachedReport, REPORT_TYPES } = require("../../../services/quickbooksReportService");
 
 const router = express.Router();
 
@@ -51,16 +52,32 @@ const router = express.Router();
  *         description: Server error
  */
 router.get("/profit-and-loss-statement", async (req, res) => {
-  const qb = getQBConfig(req.clientId);
-
-  // Validate QuickBooks configuration
-  if (!qb.accessToken || !qb.realmId) {
-    return res.status(400).json({
-      error: "Missing QuickBooks configuration. Please authenticate first.",
-    });
-  }
+  const clientId = req.clientId;
+  const qb = getQBConfig(clientId);
 
   let { start_date, end_date, accounting_method } = req.query;
+
+  if (req.qbDisconnected || !qb.accessToken || !qb.realmId) {
+    try {
+      const cached = await serveCachedReport(clientId, REPORT_TYPES.PROFIT_AND_LOSS, {
+        start_date,
+        end_date,
+        accounting_method,
+      });
+      if (cached?.data) {
+        return res.json(cached.data);
+      }
+      return res.status(404).json({
+        error: "QuickBooks is disconnected and no cached/manual Profit and Loss report is available.",
+        isDisconnected: true,
+      });
+    } catch (cacheError) {
+      return res.status(500).json({
+        error: "Failed to retrieve cached Profit and Loss report.",
+        details: cacheError.message,
+      });
+    }
+  }
 
   console.log("=".repeat(60));
   console.log("📊 PROFIT AND LOSS REQUEST");
@@ -167,9 +184,7 @@ router.get("/profit-and-loss-statement", async (req, res) => {
         console.log("⚠️ Token expired, attempting to refresh...");
 
         try {
-          const newAccessToken = await tokenManager.refreshAccessToken(
-            req.clientId,
-          );
+          const newAccessToken = await tokenManager.refreshAccessToken(clientId);
           console.log("✅ Token refreshed successfully!");
 
           // Build query parameters again for retry

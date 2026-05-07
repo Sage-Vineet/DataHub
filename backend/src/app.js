@@ -19,6 +19,7 @@ const activityRoutes = require("./routes/activity");
 const uploadRoutes = require("./routes/uploads");
 const messageRoutes = require("./routes/messages");
 const workspacePageStateRoutes = require("./routes/workspacePageState");
+const manualGlRoutes = require("./routes/manualGl");
 const balanceSheetRoutes = require("./routes/quickbooks/balancesheet/balanceSheet");
 const balanceSheetDetailRoutes = require("./routes/quickbooks/balancesheet/balanceSheetFullDetail");
 const tokenRoutes = require("./routes/quickbooks/token");
@@ -118,6 +119,7 @@ app.use("/companies", companyRoutes);
 app.use("/", tokenRoutes);
 app.use("/", uploadRoutes);
 app.use("/", workspacePageStateRoutes);
+app.use("/", manualGlRoutes);
 
 // QuickBooks & Financial Routes (with consolidated auth)
 const financialRoutes = [
