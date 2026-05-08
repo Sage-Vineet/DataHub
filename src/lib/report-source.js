@@ -1,6 +1,7 @@
 export const REPORT_SOURCE_KEYS = {
   QUICKBOOKS: "quickbooks_online",
   MANUAL_GL: "manual_gl_upload",
+  MANUAL_UPLOAD: "manual_upload_excel_pdf",
 };
 
 export const REPORT_SOURCE_OPTIONS = [
@@ -14,18 +15,24 @@ export const REPORT_SOURCE_OPTIONS = [
     label: "Manual GL Upload",
     sourceMode: "manual",
   },
+  {
+    key: REPORT_SOURCE_KEYS.MANUAL_UPLOAD,
+    label: "Manual Upload (Excel or PDF)",
+    sourceMode: "manual_upload",
+  },
 ];
 
 export function normalizeReportSourceKey(value) {
-  return value === REPORT_SOURCE_KEYS.MANUAL_GL
-    ? REPORT_SOURCE_KEYS.MANUAL_GL
-    : REPORT_SOURCE_KEYS.QUICKBOOKS;
+  if (value === REPORT_SOURCE_KEYS.MANUAL_GL) return REPORT_SOURCE_KEYS.MANUAL_GL;
+  if (value === REPORT_SOURCE_KEYS.MANUAL_UPLOAD) return REPORT_SOURCE_KEYS.MANUAL_UPLOAD;
+  return REPORT_SOURCE_KEYS.QUICKBOOKS;
 }
 
 export function getReportSourceMode(sourceKey) {
-  return normalizeReportSourceKey(sourceKey) === REPORT_SOURCE_KEYS.MANUAL_GL
-    ? "manual"
-    : "quickbooks";
+  const normalized = normalizeReportSourceKey(sourceKey);
+  if (normalized === REPORT_SOURCE_KEYS.MANUAL_GL) return "manual";
+  if (normalized === REPORT_SOURCE_KEYS.MANUAL_UPLOAD) return "manual_upload";
+  return "quickbooks";
 }
 
 export function getReportSourceLabel(sourceKey) {

@@ -1,5 +1,5 @@
 import { fetchBalanceSheet } from "../lib/quickbooks";
-import { getManualGlBalanceSheet } from "../lib/api";
+import { getLatestManualUploadedReport, getManualGlBalanceSheet } from "../lib/api";
 import { normalizeAccountingMethod } from "../lib/report-filters";
 import {
   parseSummaryReport,
@@ -217,6 +217,11 @@ async function fetchSinglePeriodBS(
   const normalizedAccountingMethod = normalizeAccountingMethod(accountingMethod);
 
   try {
+    if (sourceMode === "manual_upload") {
+      const response = await getLatestManualUploadedReport("balance_sheet");
+      return Array.isArray(response?.data?.rows) ? response.data.rows : [];
+    }
+
     if (sourceMode === "manual") {
       const response = await getManualGlBalanceSheet({
         params: {
@@ -275,6 +280,29 @@ export async function getBalanceSheet(startDate, endDate, accountingMethod, opti
       };
     } catch (error) {
       console.warn("QuickBooks Balance Sheet fetch failed:", error.message);
+      return {
+        rows: [],
+        source: null,
+        sourceLabel: null,
+        asOfDate: endDate || null,
+        noDataText: "No Balance Sheet Available",
+      };
+    }
+  }
+
+  if (sourceMode === "manual_upload") {
+    try {
+      const response = await getLatestManualUploadedReport("balance_sheet");
+      const rows = Array.isArray(response?.data?.rows) ? response.data.rows : [];
+      return {
+        rows,
+        source: "MANUAL_UPLOAD_EXCEL_PDF",
+        sourceLabel: "Manual Upload (Excel or PDF)",
+        asOfDate: response?.data?.asOfDate || endDate || null,
+        noDataText: rows.length > 0 ? null : "No Balance Sheet Available",
+      };
+    } catch (error) {
+      console.warn("Manual uploaded Balance Sheet fetch failed:", error.message);
       return {
         rows: [],
         source: null,
@@ -363,8 +391,6 @@ function mergePeriods(periodResults, periods) {
     visit(rows);
     return map;
   });
-
-  const pmIndex = periods.findIndex(p => p.key === "pm");
 
   const enrich = (node) => {
     const amounts = {};

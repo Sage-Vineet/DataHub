@@ -535,6 +535,25 @@ export function getManualGlCashflow(options = {}) {
   return request(`/reports/cashflow${query}`, options);
 }
 
+export function syncManualReportFolder(payload, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-report-uploads/sync${query}`, {
+    method: "POST",
+    body: payload,
+    ...options,
+  });
+}
+
+export function getLatestManualUploadedReport(statementType, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(
+    `/manual-report-uploads/reports/${encodeURIComponent(statementType)}/latest${query}`,
+    options,
+  );
+}
+
 export function getReportSources(options = {}) {
   const clientId = options.clientId ?? resolveClientIdFromLocation();
   const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";

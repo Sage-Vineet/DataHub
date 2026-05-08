@@ -905,6 +905,87 @@ function buildSpaceEntertainmentBalanceSheet({ rawRows = [], headerRowIndex = 0,
   };
 }
 
+function buildSpaceEntertainmentProfitAndLoss({ rawRows = [], headerRowIndex = 0 } = {}) {
+  const titleText = String(rawRows?.[0]?.[0] || "").trim().toLowerCase();
+  if (!titleText.includes("general ledger")) {
+    return null;
+  }
+
+  const accountSnapshots = extractLedgerAccountSnapshots(rawRows, headerRowIndex);
+  if (!accountSnapshots.length) {
+    return null;
+  }
+
+  const retainedEarningsIndex = accountSnapshots.findIndex(
+    (snapshot) => normalizeKey(snapshot?.account) === "retained earnings"
+  );
+  const profitAndLossSnapshots =
+    retainedEarningsIndex >= 0
+      ? accountSnapshots.slice(retainedEarningsIndex + 1)
+      : accountSnapshots;
+
+  if (!profitAndLossSnapshots.length) {
+    return null;
+  }
+
+  const income = [];
+  const expenses = [];
+
+  profitAndLossSnapshots.forEach((snapshot, index) => {
+    const account = String(snapshot?.account || "").trim();
+    if (!account || isLikelySummaryLabel(account)) return;
+
+    const inferredType = inferAccountType(account);
+    if (inferredType !== "income" && inferredType !== "expense") {
+      return;
+    }
+
+    const amountSource =
+      Math.abs(normalizeMoney(snapshot?.netActivity)) > 0
+        ? snapshot?.netActivity
+        : snapshot?.endingBalance;
+    const amount = normalizeMoney(amountSource);
+    const row = {
+      id: `${normalizeKey(account).replace(/[^a-z0-9]+/g, "-") || "line"}-${index + 1}`,
+      account,
+      net: amount,
+      balance: amount,
+    };
+
+    if (inferredType === "income") {
+      income.push(row);
+    } else {
+      expenses.push(row);
+    }
+  });
+
+  if (!income.length && !expenses.length) {
+    return null;
+  }
+
+  income.sort((left, right) => String(left.account || "").localeCompare(String(right.account || "")));
+  expenses.sort((left, right) => String(left.account || "").localeCompare(String(right.account || "")));
+
+  const totalIncome = roundMoney(
+    income.reduce((sum, item) => sum + normalizeMoney(item?.net), 0)
+  );
+  const totalExpense = roundMoney(
+    expenses.reduce((sum, item) => sum + normalizeMoney(item?.net), 0)
+  );
+  const netIncome = roundMoney(totalIncome - totalExpense);
+
+  return {
+    income,
+    expenses,
+    totalIncome,
+    totalExpense,
+    netIncome,
+    totalRevenue: totalIncome,
+    revenue: income,
+    netProfit: netIncome,
+  };
+}
+
 function toIsoDate(dateValue) {
   const date = dateValue instanceof Date ? dateValue : parseDateFlexible(dateValue);
   if (!date || Number.isNaN(date.getTime())) return null;
@@ -2310,6 +2391,13 @@ async function generateManualGlReports({ companyId, uploadId, mapping = {} }) {
   }
 
   const reports = buildFinancialReportsFromGl(glEntries);
+  const specializedProfitAndLoss = buildSpaceEntertainmentProfitAndLoss({
+    rawRows: parsedUpload.rawRows,
+    headerRowIndex: parsedUpload.headerRowIndex,
+  });
+  if (specializedProfitAndLoss) {
+    reports.profit_and_loss = specializedProfitAndLoss;
+  }
   const { endDate } = resolveGlDateRange(glEntries);
   const specializedBalanceSheet = buildSpaceEntertainmentBalanceSheet({
     rawRows: parsedUpload.rawRows,
@@ -2439,6 +2527,13 @@ async function processManualGlData({ companyId, uploadId, mapping = {} }) {
   });
 
   const reports = buildFinancialReportsFromGl(normalized.glEntries);
+  const specializedProfitAndLoss = buildSpaceEntertainmentProfitAndLoss({
+    rawRows: parsedUpload.rawRows,
+    headerRowIndex: parsedUpload.headerRowIndex,
+  });
+  if (specializedProfitAndLoss) {
+    reports.profit_and_loss = specializedProfitAndLoss;
+  }
   const { endDate } = resolveGlDateRange(normalized.glEntries);
   const specializedBalanceSheet = buildSpaceEntertainmentBalanceSheet({
     rawRows: parsedUpload.rawRows,

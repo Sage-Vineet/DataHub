@@ -7,6 +7,7 @@ import {
 import Header from "../../../components/Header";
 import QuickBooksConnection from "../../../components/quickbooks/QuickBooksConnection";
 import ManualGLUpload from "../../../components/manual-gl/ManualGLUpload";
+import ManualFolderReportsUpload from "../../../components/manual-reports/ManualFolderReportsUpload";
 import { cn } from "../../../lib/utils";
 import { REPORT_SOURCE_KEYS } from "../../../lib/report-source";
 
@@ -19,11 +20,17 @@ export default function WorkspaceConnections() {
     () => [
       { key: "quickbooks", label: "QuickBooks Online" },
       { key: "manual", label: "Manual GL Upload" },
+      { key: "manual-reports", label: "Manual Upload (Excel or PDF)" },
+      { key: "quickbooks-manual", label: "Quickbooks (Manual Upload)" },
     ],
     []
   );
 
-  const selectedTab = searchParams.get("source") === "manual" ? "manual" : "quickbooks";
+  const selectedTab = CONNECTION_TABS.some(
+    (tab) => tab.key === searchParams.get("source"),
+  )
+    ? searchParams.get("source")
+    : "quickbooks";
 
   const handleTabChange = (key) => {
     setSearchParams({ source: key });
@@ -34,6 +41,8 @@ export default function WorkspaceConnections() {
     const sourceKey =
       selectedTab === "manual"
         ? REPORT_SOURCE_KEYS.MANUAL_GL
+        : selectedTab === "manual-reports" || selectedTab === "quickbooks-manual"
+          ? REPORT_SOURCE_KEYS.MANUAL_UPLOAD
         : REPORT_SOURCE_KEYS.QUICKBOOKS;
 
     setSelectedReportSource(sourceKey, { clientId }).catch((error) => {
@@ -83,6 +92,16 @@ export default function WorkspaceConnections() {
           )}
           {selectedTab === "manual" && (
             <ManualGLUpload companyId={clientId} />
+          )}
+          {selectedTab === "manual-reports" && (
+            <ManualFolderReportsUpload companyId={clientId} />
+          )}
+          {selectedTab === "quickbooks-manual" && (
+            <ManualFolderReportsUpload
+              companyId={clientId}
+              title="Quickbooks (Manual Upload)"
+              description="Select a Data Room folder that contains QuickBooks-exported Balance Sheet, Profit & Loss, and Cash Flow files."
+            />
           )}
         </div>
       </div>

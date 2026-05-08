@@ -1,5 +1,5 @@
 import { fetchProfitAndLoss } from "../lib/quickbooks";
-import { getManualGlProfitLoss } from "../lib/api";
+import { getLatestManualUploadedReport, getManualGlProfitLoss } from "../lib/api";
 import { normalizeAccountingMethod } from "../lib/report-filters";
 import { parseSummaryReport } from "../lib/report-parsers";
 
@@ -60,6 +60,11 @@ async function fetchSinglePeriodPNL(
   sourceMode = "quickbooks",
 ) {
   try {
+    if (sourceMode === "manual_upload") {
+      const payload = await getLatestManualUploadedReport("profit_and_loss");
+      return Array.isArray(payload?.data?.rows) ? payload.data.rows : [];
+    }
+
     if (sourceMode === "manual") {
       const payload = await getManualGlProfitLoss();
       return parseSummaryReport(payload?.quickbooksSchema || payload?.data || payload);

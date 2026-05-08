@@ -1,5 +1,5 @@
 import { fetchCashflow } from "../lib/quickbooks";
-import { getManualGlCashflow } from "../lib/api";
+import { getLatestManualUploadedReport, getManualGlCashflow } from "../lib/api";
 import { normalizeAccountingMethod } from "../lib/report-filters";
 import { parseSummaryReport } from "../lib/report-parsers";
 
@@ -54,6 +54,11 @@ function getCashflowComparativePeriods(numYears = 4) {
 
 async function fetchSinglePeriodCashflow(startDate, endDate, accountingMethod, sourceMode = "quickbooks") {
   try {
+    if (sourceMode === "manual_upload") {
+      const payload = await getLatestManualUploadedReport("cash_flow");
+      return Array.isArray(payload?.data?.rows) ? payload.data.rows : [];
+    }
+
     if (sourceMode === "manual") {
       const payload = await getManualGlCashflow();
       return parseSummaryReport(payload?.quickbooksSchema || payload?.data || payload);
