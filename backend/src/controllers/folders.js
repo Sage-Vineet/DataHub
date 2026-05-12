@@ -4,12 +4,16 @@ const asyncHandler = require("../utils");
 const { buildUploadContentUrl } = require("../utils/uploadStorage");
 
 const listFolders = asyncHandler(async (req, res) => {
-  const folders = await folderService.listFoldersByCompany(req.params.id);
+  const folders = await folderService.listFoldersByCompany(req.params.id, {
+    includeArchived: req.query.includeArchived === "true" || req.query.includeArchived === "1",
+  });
   res.json(folders);
 });
 
 const listFolderTree = asyncHandler(async (req, res) => {
-  const tree = await folderService.getFolderTree(req.params.id);
+  const tree = await folderService.getFolderTree(req.params.id, {
+    includeArchived: req.query.includeArchived === "true" || req.query.includeArchived === "1",
+  });
   res.json(tree);
 });
 
@@ -33,8 +37,20 @@ const moveFolder = asyncHandler(async (req, res) => {
   res.json(folder);
 });
 
+const archiveFolder = asyncHandler(async (req, res) => {
+  const folder = await folderService.archiveFolder(req.params.id);
+  res.json(folder);
+});
+
+const unarchiveFolder = asyncHandler(async (req, res) => {
+  const folder = await folderService.unarchiveFolder(req.params.id);
+  res.json(folder);
+});
+
 const listFolderDocuments = asyncHandler(async (req, res) => {
-  const documents = await documentService.listDocumentsByFolder(req.params.id);
+  const documents = await documentService.listDocumentsByFolder(req.params.id, {
+    includeArchived: req.query.includeArchived === "true" || req.query.includeArchived === "1",
+  });
   res.json(documents);
 });
 
@@ -101,6 +117,16 @@ const deleteDocument = asyncHandler(async (req, res) => {
   res.status(204).send();
 });
 
+const archiveDocument = asyncHandler(async (req, res) => {
+  const document = await documentService.archiveDocument(req.params.id);
+  res.json(document);
+});
+
+const unarchiveDocument = asyncHandler(async (req, res) => {
+  const document = await documentService.unarchiveDocument(req.params.id);
+  res.json(document);
+});
+
 const recordDocumentActivity = asyncHandler(async (req, res) => {
   const { activity_type } = req.body;
   if (!activity_type || !['view', 'download'].includes(activity_type)) {
@@ -127,11 +153,14 @@ module.exports = {
   updateFolder,
   deleteFolder,
   moveFolder,
+  archiveFolder,
+  unarchiveFolder,
   listFolderDocuments,
   addFolderDocument,
   deleteDocument,
+  archiveDocument,
+  unarchiveDocument,
   listFolderTree,
   recordDocumentActivity,
   getDocumentActivity,
 };
-

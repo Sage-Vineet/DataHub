@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import {
+  archiveDocument,
+  archiveFolder,
   createCompanyFolder,
   createFolderAccess,
   createFolderDocument,
@@ -12,6 +14,8 @@ import {
   listFolderTree,
   moveFolder,
   uploadFile,
+  unarchiveDocument,
+  unarchiveFolder,
   updateFolder,
   updateFolderAccess,
 } from '../lib/api';
@@ -63,6 +67,12 @@ function renameNode(node, id, newName) {
   return { ...node, children: node.children.map(c => renameNode(c, id, newName)) };
 }
 
+function setArchivedByIds(node, ids, archivedAt) {
+  const next = ids.includes(node.id) ? { ...node, archivedAt } : node;
+  if (!next.children) return next;
+  return { ...next, children: next.children.map(c => setArchivedByIds(c, ids, archivedAt)) };
+}
+
 function collectNodes(node, ids) {
   const result = [];
   if (!node.children) return result;
@@ -102,6 +112,7 @@ function mapFolderNode(node) {
     name: node.name,
     type: 'folder',
     createdAt: node.created_at ? node.created_at.slice(0, 10) : new Date().toISOString().slice(0, 10),
+    archivedAt: node.archived_at || null,
     color: node.color || '#6D6E71',
     children: (node.children || []).map(mapFolderNode),
   };
@@ -116,6 +127,7 @@ function mapDocumentNode(doc) {
     size: formatFileSize(sizeNum),
     uploadedBy: doc.uploaded_by || 'Unknown',
     uploadedAt: doc.uploaded_at ? doc.uploaded_at.slice(0, 10) : new Date().toISOString().slice(0, 10),
+    archivedAt: doc.archived_at || null,
     status: doc.status || 'under-review',
     ext: doc.ext || doc.name?.split('.').pop()?.toLowerCase() || '',
     fileUrl: doc.file_url || '',
@@ -179,13 +191,13 @@ export const useFileExplorerStore = create(
       setExpandedFolders: (expandedFolders) => set({ expandedFolders }),
       hydrateFromApi: async (companyId) => {
         if (!companyId) return;
-        const treeResponse = await listFolderTree(companyId);
+        const treeResponse = await listFolderTree(companyId, { includeArchived: true });
         const children = treeResponse.map(mapFolderNode);
         let root = { id: 'root', name: 'Documents', type: 'folder', createdAt: new Date().toISOString().slice(0, 10), children };
         const folderIds = flattenFolderIds(root);
         const docsByFolder = {};
         await Promise.all(folderIds.map(async (folderId) => {
-          const docs = await listFolderDocuments(folderId);
+          const docs = await listFolderDocuments(folderId, { includeArchived: true });
           docsByFolder[folderId] = docs.map(mapDocumentNode);
         }));
         folderIds.forEach((folderId) => {
@@ -228,6 +240,10 @@ export const useFileExplorerStore = create(
 
       // ── Navigation ──
       navigateTo: (folderId) => {
+        if (folderId === 'archive') {
+          set({ currentPath: ['archive'], selectedItems: [], searchQuery: '', contextMenu: null });
+          return;
+        }
         const path = getPathTo(get().tree, folderId);
         if (path) {
           set({
@@ -241,6 +257,10 @@ export const useFileExplorerStore = create(
 
       goBack: () => {
         const { currentPath } = get();
+        if (currentPath[0] === 'archive') {
+          set({ currentPath: ['root'], selectedItems: [], searchQuery: '' });
+          return;
+        }
         if (currentPath.length > 1) {
           set({ currentPath: currentPath.slice(0, -1), selectedItems: [], searchQuery: '' });
         }
@@ -372,6 +392,41 @@ export const useFileExplorerStore = create(
         set(s => ({
           tree: removeByIds(s.tree, ids),
           selectedItems: s.selectedItems.filter(i => !ids.includes(i)),
+          contextMenu: null,
+        }));
+      },
+
+      archiveItems: async (ids) => {
+        const tree = get().tree;
+        const archivedAt = new Date().toISOString();
+        await Promise.all(ids.map(async (id) => {
+          const node = findById(tree, id);
+          if (node?.type === 'folder') {
+            await archiveFolder(id);
+          } else if (node?.type === 'file') {
+            await archiveDocument(id);
+          }
+        }));
+        set(s => ({
+          tree: setArchivedByIds(s.tree, ids, archivedAt),
+          selectedItems: [],
+          contextMenu: null,
+        }));
+      },
+
+      unarchiveItems: async (ids) => {
+        const tree = get().tree;
+        await Promise.all(ids.map(async (id) => {
+          const node = findById(tree, id);
+          if (node?.type === 'folder') {
+            await unarchiveFolder(id);
+          } else if (node?.type === 'file') {
+            await unarchiveDocument(id);
+          }
+        }));
+        set(s => ({
+          tree: setArchivedByIds(s.tree, ids, null),
+          selectedItems: [],
           contextMenu: null,
         }));
       },
@@ -517,7 +572,6 @@ export const useFileExplorerStore = create(
     }
   )
 );
-
 
 
 

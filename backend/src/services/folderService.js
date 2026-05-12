@@ -1,4 +1,5 @@
 const { supabase } = require("../db");
+const postgres = require("../db/postgres");
 
 const DEFAULT_FOLDER_STRUCTURE = [
   { name: "Finance" },
@@ -143,12 +144,18 @@ async function ensureRootUploadFolder(companyId, preferredCreatedBy) {
  * @param {string} companyId - Company ID
  * @returns {Promise<Array>}
  */
-async function listFoldersByCompany(companyId) {
-  const { data, error } = await supabase
+async function listFoldersByCompany(companyId, options = {}) {
+  let query = supabase
     .from("folders")
     .select("*")
     .eq("company_id", companyId)
     .order("created_at", { ascending: false });
+
+  if (!options.includeArchived) {
+    query = query.is("archived_at", null);
+  }
+
+  const { data, error } = await query;
 
   if (error) throw error;
   return data || [];
@@ -159,8 +166,8 @@ async function listFoldersByCompany(companyId) {
  * @param {string} companyId - Company ID
  * @returns {Promise<Array>}
  */
-async function getFolderTree(companyId) {
-  const rows = await listFoldersByCompany(companyId);
+async function getFolderTree(companyId, options = {}) {
+  const rows = await listFoldersByCompany(companyId, options);
   
   const byId = new Map();
   for (const row of rows) {
@@ -215,6 +222,7 @@ async function updateFolder(id, folderData) {
   const updates = {};
   if (folderData.name !== undefined) updates.name = folderData.name;
   if (folderData.color !== undefined) updates.color = folderData.color;
+  if (folderData.archived_at !== undefined) updates.archived_at = folderData.archived_at;
 
   const { data, error } = await supabase
     .from("folders")
@@ -250,6 +258,28 @@ async function moveFolder(id, parentId) {
   return data;
 }
 
+/**
+ * Archives a folder without deleting it from its current location
+ */
+async function archiveFolder(id) {
+  const { rows } = await postgres.query(
+    "update folders set archived_at = now() where id = $1 returning *",
+    [id]
+  );
+  return rows[0] || null;
+}
+
+/**
+ * Restores a folder to the same parent it had before archive
+ */
+async function unarchiveFolder(id) {
+  const { rows } = await postgres.query(
+    "update folders set archived_at = null where id = $1 returning *",
+    [id]
+  );
+  return rows[0] || null;
+}
+
 module.exports = {
   ensureCompanyDefaultFolders,
   ensureRootUploadFolder,
@@ -259,5 +289,7 @@ module.exports = {
   createFolder,
   updateFolder,
   deleteFolder,
-  moveFolder
+  moveFolder,
+  archiveFolder,
+  unarchiveFolder
 };

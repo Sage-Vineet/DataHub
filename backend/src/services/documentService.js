@@ -1,14 +1,21 @@
 const { supabase } = require("../db");
+const postgres = require("../db/postgres");
 
 /**
  * Lists all documents in a folder
  */
-async function listDocumentsByFolder(folderId) {
-  const { data, error } = await supabase
+async function listDocumentsByFolder(folderId, options = {}) {
+  let query = supabase
     .from("documents")
     .select("*")
     .eq("folder_id", folderId)
     .order("uploaded_at", { ascending: false });
+
+  if (!options.includeArchived) {
+    query = query.is("archived_at", null);
+  }
+
+  const { data, error } = await query;
 
   if (error) throw error;
   return data || [];
@@ -67,6 +74,22 @@ async function deleteDocument(id) {
   }
 }
 
+async function archiveDocument(id) {
+  const { rows } = await postgres.query(
+    "update documents set archived_at = now() where id = $1 returning *",
+    [id]
+  );
+  return rows[0] || null;
+}
+
+async function unarchiveDocument(id) {
+  const { rows } = await postgres.query(
+    "update documents set archived_at = null where id = $1 returning *",
+    [id]
+  );
+  return rows[0] || null;
+}
+
 /**
  * Validates if an upload exists
  */
@@ -122,6 +145,8 @@ module.exports = {
   listDocumentsByFolder,
   createDocument,
   deleteDocument,
+  archiveDocument,
+  unarchiveDocument,
   validateUpload,
   recordDocumentActivity,
   getDocumentActivity

@@ -11,10 +11,10 @@ export default function ProfitAndLossReport({
   clientName = "All Clients",
   entityName,
   createdOn,
-  isPreview = false,
 }) {
   const resolvedEntityName = entityName || clientName || "Company";
   const periodText = startDate === "1970-01-01" ? "All Dates" : `${startDate || "N/A"} to ${endDate || "N/A"}`;
+  const summaryRows = Array.isArray(data) ? data : (Array.isArray(data?.rows) ? data.rows : []);
 
   if (reportType === "Detail") {
     // Detail View: Multi-year EBITDA/SDE analysis
@@ -32,7 +32,7 @@ export default function ProfitAndLossReport({
   // Summary View: QuickBooks-style Summary report
   return (
     <ProfitAndLossQBSummary
-      data={data || []}
+      data={summaryRows}
       title="Profit & Loss"
       subtitle={`Report Period: ${periodText} | ${clientName} | ${accountingMethod} Basis`}
       entityName={resolvedEntityName}
