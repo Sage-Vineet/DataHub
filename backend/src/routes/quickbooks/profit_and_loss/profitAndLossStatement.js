@@ -2,6 +2,7 @@ const express = require("express");
 const axios = require("axios");
 const tokenManager = require("../../../tokenManager");
 const { getQBConfig } = require("../../../qbconfig");
+const { serveCachedReport, REPORT_TYPES } = require("../../../services/quickbooksReportService");
 
 const router = express.Router();
 
@@ -51,16 +52,32 @@ const router = express.Router();
  *         description: Server error
  */
 router.get("/profit-and-loss-statement", async (req, res) => {
-  const qb = getQBConfig(req.clientId);
+  const clientId = req.clientId;
+  const qb = getQBConfig(clientId);
 
-  // Validate QuickBooks configuration
-  if (!qb.accessToken || !qb.realmId) {
-    return res.status(400).json({
-      error: "Missing QuickBooks configuration. Please authenticate first.",
-    });
+  let { start_date, end_date, accounting_method, summarize_column_by } = req.query;
+
+  if (req.qbDisconnected || !qb.accessToken || !qb.realmId) {
+    try {
+      const cached = await serveCachedReport(clientId, REPORT_TYPES.PROFIT_AND_LOSS, {
+        start_date,
+        end_date,
+        accounting_method,
+      });
+      if (cached?.data) {
+        return res.json(cached.data);
+      }
+      return res.status(404).json({
+        error: "QuickBooks is disconnected and no cached/manual Profit and Loss report is available.",
+        isDisconnected: true,
+      });
+    } catch (cacheError) {
+      return res.status(500).json({
+        error: "Failed to retrieve cached Profit and Loss report.",
+        details: cacheError.message,
+      });
+    }
   }
-
-  let { start_date, end_date, accounting_method } = req.query;
 
   console.log("=".repeat(60));
   console.log("📊 PROFIT AND LOSS REQUEST");
@@ -74,6 +91,7 @@ router.get("/profit-and-loss-statement", async (req, res) => {
   start_date = start_date?.trim();
   end_date = end_date?.trim();
   accounting_method = accounting_method?.trim();
+  summarize_column_by = summarize_column_by?.trim();
 
   // Validate accounting method
   const validAccountingMethods = ["Accrual", "Cash"];
@@ -120,6 +138,8 @@ router.get("/profit-and-loss-statement", async (req, res) => {
     if (end_date) queryParams.push(`end_date=${end_date}`);
     if (accounting_method)
       queryParams.push(`accounting_method=${accounting_method}`);
+    if (summarize_column_by)
+      queryParams.push(`summarize_column_by=${encodeURIComponent(summarize_column_by)}`);
     queryParams.push("minorversion=75");
 
     const url = `${qb.baseUrl}/v3/company/${qb.realmId}/reports/ProfitAndLoss${queryParams.length ? `?${queryParams.join("&")}` : ""}`;
@@ -167,9 +187,7 @@ router.get("/profit-and-loss-statement", async (req, res) => {
         console.log("⚠️ Token expired, attempting to refresh...");
 
         try {
-          const newAccessToken = await tokenManager.refreshAccessToken(
-            req.clientId,
-          );
+          const newAccessToken = await tokenManager.refreshAccessToken(clientId);
           console.log("✅ Token refreshed successfully!");
 
           // Build query parameters again for retry

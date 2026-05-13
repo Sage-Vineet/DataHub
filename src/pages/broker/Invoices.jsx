@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { AlertCircle, Download, FileText, Search, Wallet } from 'lucide-react';
-import { companies as mockCompanies } from '../../data/mockData';
+
 import { buildClientLedger, buildInvoiceLedger, formatUsd, summarizeInvoices } from '../../lib/dataHub';
 import { listCompaniesRequest } from '../../lib/api';
 
@@ -20,7 +20,7 @@ function normalizeCompany(company) {
 export default function BrokerInvoices() {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('All');
-  const [invoices, setInvoices] = useState(buildInvoiceLedger(buildClientLedger(mockCompanies.map(normalizeCompany))));
+  const [invoices, setInvoices] = useState([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -33,7 +33,7 @@ export default function BrokerInvoices() {
       })
       .catch(() => {
         if (!cancelled) {
-          setInvoices(buildInvoiceLedger(buildClientLedger(mockCompanies.map(normalizeCompany))));
+          setInvoices([]);
         }
       });
 

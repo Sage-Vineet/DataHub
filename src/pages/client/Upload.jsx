@@ -20,7 +20,7 @@ export default function ClientUpload() {
           <select
             value={companyId || ''}
             onChange={(event) => setSelectedCompanyId(event.target.value)}
-            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-semibold text-[#05164D]"
+            className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-semibold text-[#8BC53D] hover:border-[#8BC53D]/30"
           >
             {assignedCompanies.map((company) => (
               <option key={company.id} value={company.id}>{company.name}</option>

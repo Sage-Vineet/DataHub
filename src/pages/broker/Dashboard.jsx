@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AlertCircle, ArrowRight, Bell, Briefcase, Building2, Clock, Plus, RefreshCw, Send, TrendingUp } from 'lucide-react';
-import { activities, reminders as mockReminders } from '../../data/mockData';
 import { listCompaniesRequest } from '../../lib/api';
 
 function normalizeCompany(company) {
@@ -46,7 +45,7 @@ export default function BrokerDashboard() {
     const pendingWorkspaces = companies.filter((company) => company.pendingCount > 0).length;
     const totalPendingRequests = companies.reduce((sum, company) => sum + company.pendingCount, 0);
     const totalCompleted = companies.reduce((sum, company) => sum + company.completedCount, 0);
-    const activeReminders = mockReminders.filter((item) => item.status === 'active').length;
+    const activeReminders = 0; // TODO: Fetch active reminders when API is available
 
     return {
       activeCompanies,
@@ -188,17 +187,7 @@ export default function BrokerDashboard() {
               <h2 className="font-semibold text-[#050505]">Recent Activity</h2>
             </div>
             <div className="p-4 space-y-3">
-              {activities.slice(0, 4).map((item) => (
-                <div key={item.id} className="flex items-start gap-3">
-                  <div className="mt-0.5 flex h-8 w-8 items-center justify-center rounded-xl bg-[#EEF6E0]">
-                    <RefreshCw size={14} className="text-[#8BC53D]" />
-                  </div>
-                  <div className="min-w-0">
-                    <p className="text-xs font-medium text-[#050505]">{item.message}</p>
-                    <p className="mt-1 text-xs text-[#A5A5A5]">{item.time}</p>
-                  </div>
-                </div>
-              ))}
+              <p className="text-sm text-center text-[#A5A5A5] py-4">No recent activity</p>
             </div>
           </div>
         </div>

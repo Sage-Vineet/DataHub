@@ -2,6 +2,7 @@ const express = require("express");
 const axios = require("axios");
 const tokenManager = require("../../../tokenManager");
 const { getQBConfig } = require("../../../qbconfig");
+const { fetchAndCacheReport, serveCachedReport, REPORT_TYPES } = require("../../../services/quickbooksReportService");
 
 const router = express.Router();
 
@@ -20,57 +21,50 @@ const router = express.Router();
  *         description: Server error
  */
 router.get("/profit-and-loss", async (req, res) => {
-  const qb = getQBConfig(req.clientId);
+  const clientId = req.clientId;
 
-  // Build URL without any user inputs - just the basic report
-  const url = `${qb.baseUrl}/v3/company/${qb.realmId}/reports/ProfitAndLoss?minorversion=75`;
-
-  console.log(`📊 Fetching Profit and Loss report for company: ${qb.realmId}`);
-
-  try {
-    const response = await axios.get(url, {
-      headers: {
-        Authorization: `Bearer ${qb.accessToken}`,
-        Accept: "application/json",
-        "User-Agent": "QuickBooks-Integration/1.0",
-      },
-    });
-
-    return res.json({ success: true, data: response.data });
-  } catch (error) {
-    // Handle 401 Unauthorized - Token expired
-    if (error.response && error.response.status === 401) {
-      console.log("⚠️ Token expired, attempting to refresh...");
-
-      try {
-        const newAccessToken = await tokenManager.refreshAccessToken(
-          req.clientId,
-        );
-
-        // Retry the request with new token
-        const retryResponse = await axios.get(url, {
-          headers: {
-            Authorization: `Bearer ${newAccessToken}`,
-            Accept: "application/json",
-            "User-Agent": "QuickBooks-Integration/1.0",
-          },
-        });
-
+  // If QB is disconnected, serve cached data
+  if (req.qbDisconnected) {
+    try {
+      const cached = await serveCachedReport(clientId, REPORT_TYPES.PROFIT_AND_LOSS);
+      if (cached) {
         return res.json({
           success: true,
-          data: retryResponse.data,
-          refreshed: true,
-        });
-      } catch (refreshError) {
-        console.error("❌ Token refresh failed:", refreshError.message);
-        return res.status(401).json({
-          error: "Authentication failed. Please re-authenticate.",
-          details: refreshError.response?.data || refreshError.message,
+          data: cached.data,
+          source: "cache",
+          lastSyncedAt: cached.lastSyncedAt,
+          isDisconnected: true,
         });
       }
+      return res.status(404).json({
+        success: false,
+        message: "QuickBooks is disconnected and no cached data is available.",
+        isDisconnected: true,
+      });
+    } catch (cacheError) {
+      return res.status(500).json({
+        success: false,
+        message: "Failed to retrieve cached data.",
+        error: cacheError.message,
+      });
     }
+  }
 
-    // Handle other errors
+  // QB is connected — fetch live and cache
+  try {
+    const result = await fetchAndCacheReport(
+      clientId,
+      REPORT_TYPES.PROFIT_AND_LOSS,
+      "ProfitAndLoss"
+    );
+
+    return res.json({
+      success: true,
+      data: result.data,
+      source: result.source,
+      lastSyncedAt: result.lastSyncedAt,
+    });
+  } catch (error) {
     console.error("❌ Profit and Loss API Error:", error.message);
     const qbError = error.response?.data?.Fault?.Error?.[0];
 
@@ -82,6 +76,7 @@ router.get("/profit-and-loss", async (req, res) => {
     });
   }
 });
+
 /**
  * @swagger
  * /profit-and-loss-detail:
@@ -124,18 +119,42 @@ router.get("/profit-and-loss", async (req, res) => {
  *         description: Server error
  */
 router.get("/profit-and-loss-detail", async (req, res) => {
-  const qb = getQBConfig(req.clientId);
+  const clientId = req.clientId;
 
   // Extract query parameters
   let { start_date, end_date, accounting_method } = req.query;
 
-  console.log("=".repeat(60));
-  console.log("📊 PROFIT AND LOSS DETAIL REQUEST");
-  console.log("=".repeat(60));
-  console.log(`📅 Start Date: ${start_date || "Not specified"}`);
-  console.log(`📅 End Date: ${end_date || "Not specified"}`);
-  console.log(`📚 Accounting Method: ${accounting_method || "Not specified"}`);
-  console.log("=".repeat(60));
+  // If QB is disconnected, serve cached data
+  if (req.qbDisconnected) {
+    try {
+      const cached = await serveCachedReport(
+        clientId,
+        REPORT_TYPES.PROFIT_AND_LOSS_DETAIL,
+        { start_date, end_date, accounting_method }
+      );
+      if (cached) {
+        return res.json({
+          ...cached.data,
+          _meta: {
+            source: "cache",
+            lastSyncedAt: cached.lastSyncedAt,
+            isDisconnected: true,
+          },
+        });
+      }
+      return res.status(404).json({
+        success: false,
+        message: "QuickBooks is disconnected and no cached detail data is available.",
+        isDisconnected: true,
+      });
+    } catch (cacheError) {
+      return res.status(500).json({
+        success: false,
+        message: "Failed to retrieve cached data.",
+        error: cacheError.message,
+      });
+    }
+  }
 
   // Clean inputs
   start_date = start_date?.trim();
@@ -179,73 +198,30 @@ router.get("/profit-and-loss-detail", async (req, res) => {
     });
   }
 
-  // Build query parameters
-  const queryParams = [];
-
-  if (start_date) queryParams.push(`start_date=${start_date}`);
-  if (end_date) queryParams.push(`end_date=${end_date}`);
-  if (accounting_method)
-    queryParams.push(`accounting_method=${accounting_method}`);
-  queryParams.push("minorversion=75");
-
-  // Build URL with filters
-  const url = `${qb.baseUrl}/v3/company/${qb.realmId}/reports/ProfitAndLossDetail${queryParams.length ? `?${queryParams.join("&")}` : ""}`;
-
-  console.log(`🔗 FULL URL: ${url}`);
-  console.log("=".repeat(60));
+  // Build query parameters for QB API
+  const queryParams = {};
+  if (start_date) queryParams.start_date = start_date;
+  if (end_date) queryParams.end_date = end_date;
+  if (accounting_method) queryParams.accounting_method = accounting_method;
 
   try {
-    const response = await axios.get(url, {
-      headers: {
-        Authorization: `Bearer ${qb.accessToken}`,
-        Accept: "application/json",
-        "User-Agent": "QuickBooks-Integration/1.0",
-      },
-    });
+    const result = await fetchAndCacheReport(
+      clientId,
+      REPORT_TYPES.PROFIT_AND_LOSS_DETAIL,
+      "ProfitAndLossDetail",
+      queryParams
+    );
 
-    console.log("✅ Profit and Loss Detail fetched successfully!");
-
-    // Log report summary
-    if (response.data && response.data.Header) {
-      console.log(`📊 Report Time: ${response.data.Header.Time}`);
-      console.log(
-        `📊 Report Basis: ${response.data.Header.ReportBasis || "Not specified"}`,
-      );
-      if (response.data.Header.StartPeriod && response.data.Header.EndPeriod) {
-        console.log(
-          `📅 Period: ${response.data.Header.StartPeriod} to ${response.data.Header.EndPeriod}`,
-        );
-      }
-    }
-
-    // Return raw QuickBooks response
-    return res.json(response.data);
+    // Return raw QB response for backward compatibility
+    return res.json(result.data);
   } catch (error) {
     if (error.response?.status === 401) {
-      try {
-        const newAccessToken = await tokenManager.refreshAccessToken(
-          req.clientId,
-        );
-
-        const retryResponse = await axios.get(url, {
-          headers: {
-            Authorization: `Bearer ${newAccessToken}`,
-            Accept: "application/json",
-            "User-Agent": "QuickBooks-Integration/1.0",
-          },
-        });
-
-        return res.json(retryResponse.data);
-      } catch (refreshError) {
-        console.error("❌ Token refresh failed:", refreshError.message);
-        return res.status(401).json({
-          error: "Authentication failed. Please re-authenticate.",
-          details: refreshError.response?.data || refreshError.message,
-        });
-      }
+      return res.status(401).json({
+        error: "Authentication failed. Please re-authenticate.",
+        details: error.response?.data || error.message,
+      });
     }
 
-    // Handle other errors
     console.error("❌ Profit and Loss Detail API Error:", error.message);
     const qbError = error.response?.data?.Fault?.Error?.[0];
 
@@ -257,4 +233,5 @@ router.get("/profit-and-loss-detail", async (req, res) => {
     });
   }
 });
+
 module.exports = router;

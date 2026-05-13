@@ -1,9 +1,147 @@
 import { fetchBalanceSheet } from "../lib/quickbooks";
+import { getLatestManualUploadedReport, getManualGlBalanceSheet } from "../lib/api";
 import { normalizeAccountingMethod } from "../lib/report-filters";
 import {
-  parseBalanceSheetDetailFromAllReports,
   parseSummaryReport,
 } from "../lib/report-parsers";
+
+function toAmount(value) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  if (typeof value !== "string") return 0;
+
+  const parsed = Number(String(value).replace(/[^0-9.-]/g, ""));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function normalizeLineItems(items = [], prefix = "line") {
+  if (!Array.isArray(items)) return [];
+
+  return items
+    .map((item, index) => {
+      const name = String(item?.name || item?.account || "").trim();
+      if (!name) return null;
+      const amount = toAmount(item?.amount ?? item?.balance ?? item?.value);
+      return {
+        id: String(item?.id || `${prefix}-${index + 1}`),
+        name,
+        amount,
+        type: "data",
+      };
+    })
+    .filter(Boolean);
+}
+
+function buildSectionNode({
+  id,
+  name,
+  items = [],
+  totalLabel,
+  totalAmount = 0,
+}) {
+  const totalRow = {
+    id: `${id}-total`,
+    name: totalLabel || `Total ${name}`,
+    amount: totalAmount,
+    type: "total",
+  };
+
+  return {
+    id,
+    name,
+    amount: totalAmount,
+    type: "header",
+    children: [...items, totalRow],
+  };
+}
+
+function parseFlatBalanceSheetReport(payload = {}) {
+  if (!payload || typeof payload !== "object") return [];
+
+  const assetsItems = normalizeLineItems(payload.assets, "asset");
+  const liabilitiesItems = normalizeLineItems(payload.liabilities, "liability");
+  const equityItems = normalizeLineItems(payload.equity, "equity");
+
+  if (!assetsItems.length && !liabilitiesItems.length && !equityItems.length) {
+    return [];
+  }
+
+  const totalAssets =
+    toAmount(payload.totalAssets) ||
+    assetsItems.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const totalLiabilities =
+    toAmount(payload.totalLiabilities) ||
+    liabilitiesItems.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const totalEquity =
+    toAmount(payload.totalEquity) ||
+    equityItems.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const totalLiabilitiesAndEquity = totalLiabilities + totalEquity;
+
+  const liabilitiesSection = buildSectionNode({
+    id: "liabilities",
+    name: "Liabilities",
+    items: liabilitiesItems,
+    totalLabel: "Total Liabilities",
+    totalAmount: totalLiabilities,
+  });
+
+  const equitySection = buildSectionNode({
+    id: "equity",
+    name: "Equity",
+    items: equityItems,
+    totalLabel: "Total Equity",
+    totalAmount: totalEquity,
+  });
+
+  return [
+    buildSectionNode({
+      id: "assets",
+      name: "Assets",
+      items: assetsItems,
+      totalLabel: "Total Assets",
+      totalAmount: totalAssets,
+    }),
+    {
+      id: "liabilities-and-equity",
+      name: "Liabilities and Equity",
+      amount: totalLiabilitiesAndEquity,
+      type: "header",
+      children: [
+        liabilitiesSection,
+        equitySection,
+        {
+          id: "liabilities-and-equity-total",
+          name: "Total Liabilities and Equity",
+          amount: totalLiabilitiesAndEquity,
+          type: "total",
+        },
+      ],
+    },
+  ];
+}
+
+function parseUnifiedBalanceSheetRows(responsePayload = {}) {
+  const primary = responsePayload?.data;
+  const quickbooksFallback = responsePayload?.quickbooksSchema;
+
+  if (primary?.Rows?.Row || primary?.data?.Rows?.Row) {
+    return parseSummaryReport(primary);
+  }
+
+  if (quickbooksFallback?.Rows?.Row || quickbooksFallback?.data?.Rows?.Row) {
+    return parseSummaryReport(quickbooksFallback);
+  }
+
+  return parseFlatBalanceSheetReport(primary);
+}
+
+function resolveSourceLabel(source) {
+  if (source === "MANUAL_UPLOAD") return "Manual Balance Sheet";
+  if (source === "GENERATED_FROM_GL") return "Generated from GL";
+  if (source === "GENERATED_FROM_QB") return "Generated from QuickBooks";
+  if (source === "live") return "QuickBooks Online";
+  if (source === "cache") return "QuickBooks Cache";
+  return null;
+}
 
 
 /**
@@ -74,13 +212,35 @@ async function fetchSinglePeriodBS(
   startDate,
   endDate,
   accountingMethod,
+  sourceMode = "quickbooks",
 ) {
+  const normalizedAccountingMethod = normalizeAccountingMethod(accountingMethod);
+
   try {
+    if (sourceMode === "manual_upload") {
+      const response = await getLatestManualUploadedReport("balance_sheet");
+      return Array.isArray(response?.data?.rows) ? response.data.rows : [];
+    }
+
+    if (sourceMode === "manual") {
+      const response = await getManualGlBalanceSheet({
+        params: {
+          ...(startDate ? { start_date: startDate } : {}),
+          ...(endDate ? { end_date: endDate, as_of_date: endDate } : {}),
+          ...(normalizedAccountingMethod
+            ? { accounting_method: normalizedAccountingMethod }
+            : {}),
+        },
+      });
+
+      return parseUnifiedBalanceSheetRows(response);
+    }
+
     const payload = await fetchBalanceSheet({
       ...(startDate ? { start_date: startDate } : {}),
       ...(endDate ? { end_date: endDate } : {}),
-      ...(accountingMethod
-        ? { accounting_method: normalizeAccountingMethod(accountingMethod) }
+      ...(normalizedAccountingMethod
+        ? { accounting_method: normalizedAccountingMethod }
         : {}),
     });
     return parseSummaryReport(payload);
@@ -95,10 +255,99 @@ async function fetchSinglePeriodBS(
 
 // ─── Exported Services ──────────────────────────────────────────────────────
 
-export async function getBalanceSheet(startDate, endDate, accountingMethod) {
-  // Summary now uses user-selected filters (QuickBooks-style Summary report)
-  const rows = await fetchSinglePeriodBS(startDate, endDate, accountingMethod);
-  return rows;
+export async function getBalanceSheet(startDate, endDate, accountingMethod, options = {}) {
+  const normalizedAccountingMethod = normalizeAccountingMethod(accountingMethod);
+  const sourceMode = options?.sourceMode || "manual";
+
+  if (sourceMode === "quickbooks") {
+    try {
+      const payload = await fetchBalanceSheet({
+        ...(startDate ? { start_date: startDate } : {}),
+        ...(endDate ? { end_date: endDate, as_of_date: endDate } : {}),
+        ...(normalizedAccountingMethod
+          ? { accounting_method: normalizedAccountingMethod }
+          : {}),
+      });
+
+      const rows = parseUnifiedBalanceSheetRows(payload);
+      const source = payload?.source || "GENERATED_FROM_QB";
+      return {
+        rows,
+        source,
+        sourceLabel: resolveSourceLabel(source),
+        asOfDate: payload?.asOfDate || payload?.data?.Header?.EndPeriod || endDate || null,
+        noDataText: rows.length > 0 ? null : "No Balance Sheet Available",
+      };
+    } catch (error) {
+      console.warn("QuickBooks Balance Sheet fetch failed:", error.message);
+      return {
+        rows: [],
+        source: null,
+        sourceLabel: null,
+        asOfDate: endDate || null,
+        noDataText: "No Balance Sheet Available",
+      };
+    }
+  }
+
+  if (sourceMode === "manual_upload") {
+    try {
+      const response = await getLatestManualUploadedReport("balance_sheet");
+      const rows = Array.isArray(response?.data?.rows) ? response.data.rows : [];
+      return {
+        rows,
+        source: "MANUAL_UPLOAD_EXCEL_PDF",
+        sourceLabel: "Manual Upload (Excel or PDF)",
+        asOfDate: response?.data?.asOfDate || endDate || null,
+        noDataText: rows.length > 0 ? null : "No Balance Sheet Available",
+      };
+    } catch (error) {
+      console.warn("Manual uploaded Balance Sheet fetch failed:", error.message);
+      return {
+        rows: [],
+        source: null,
+        sourceLabel: null,
+        asOfDate: endDate || null,
+        noDataText: "No Balance Sheet Available",
+      };
+    }
+  }
+
+  try {
+    const response = await getManualGlBalanceSheet({
+      params: {
+        ...(startDate ? { start_date: startDate } : {}),
+        ...(endDate ? { end_date: endDate, as_of_date: endDate } : {}),
+        ...(normalizedAccountingMethod
+          ? { accounting_method: normalizedAccountingMethod }
+          : {}),
+      },
+    });
+
+    const rows = parseUnifiedBalanceSheetRows(response);
+    const source = response?.source || null;
+
+    if (rows.length > 0 || source) {
+      return {
+        rows,
+        source,
+        sourceLabel: resolveSourceLabel(source),
+        asOfDate: response?.asOfDate || endDate || null,
+        noDataText: rows.length > 0 ? null : "No Balance Sheet Available",
+      };
+    }
+  } catch (error) {
+    console.warn("Unified Balance Sheet fetch failed, falling back to QB:", error.message);
+  }
+
+  const fallbackRows = await fetchSinglePeriodBS(startDate, endDate, normalizedAccountingMethod);
+  return {
+    rows: fallbackRows,
+    source: fallbackRows.length > 0 ? "GENERATED_FROM_QB" : null,
+    sourceLabel: fallbackRows.length > 0 ? resolveSourceLabel("GENERATED_FROM_QB") : null,
+    asOfDate: endDate || null,
+    noDataText: fallbackRows.length > 0 ? null : "No Balance Sheet Available",
+  };
 }
 
 function normalizeName(name) {
@@ -142,8 +391,6 @@ function mergePeriods(periodResults, periods) {
     visit(rows);
     return map;
   });
-
-  const pmIndex = periods.findIndex(p => p.key === "pm");
 
   const enrich = (node) => {
     const amounts = {};
@@ -287,12 +534,24 @@ function mergePeriods(periodResults, periods) {
   return restructureGAAPTree(enrichedRows);
 }
 
-export async function getBalanceSheetDetail(startDate, endDate, accountingMethod) {
+export async function getBalanceSheetDetail(
+  startDate,
+  endDate,
+  accountingMethod,
+  options = {},
+) {
   // Detail now uses system-defined multi-year comparison (EBITDA analysis)
   const allPeriods = getComparativePeriods(4, endDate, startDate);
 
   const results = await Promise.all(
-    allPeriods.map(p => fetchSinglePeriodBS(p.startDate, p.endDate, accountingMethod))
+    allPeriods.map((p) =>
+      fetchSinglePeriodBS(
+        p.startDate,
+        p.endDate,
+        accountingMethod,
+        options?.sourceMode || "quickbooks",
+      ),
+    )
   );
 
   const rows = mergePeriods(results, allPeriods);

@@ -1,8 +1,50 @@
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000').replace(/\/$/, '');
 const TOKEN_KEY = 'leo-auth-token';
+const LEGACY_TOKEN_KEY = 'leo-token';
 
 function buildUrl(path) {
   return `${API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`;
+}
+
+function withQuery(path, params = {}) {
+  const query = new URLSearchParams();
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== false) {
+      query.set(key, value === true ? '1' : String(value));
+    }
+  });
+  const qs = query.toString();
+  return qs ? `${path}${path.includes('?') ? '&' : '?'}${qs}` : path;
+}
+
+function resolveProtectedFileUrl(fileUrl) {
+  const raw = String(fileUrl || '').trim();
+  if (!raw) return '';
+  if (raw.startsWith('blob:')) return raw;
+
+  const hasProtocol = /^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(raw);
+  if (!hasProtocol) {
+    return buildUrl(raw);
+  }
+
+  if (typeof window === 'undefined') {
+    return raw;
+  }
+
+  try {
+    const parsed = new URL(raw, window.location.origin);
+    const apiOrigin = new URL(API_BASE_URL, window.location.origin).origin;
+    const isUploadPath = /^\/uploads\/[^/]+\/content\/?$/.test(parsed.pathname || '');
+
+    // Historical data can contain app-domain upload URLs; force those to API host.
+    if (isUploadPath && parsed.origin !== apiOrigin) {
+      return `${API_BASE_URL}${parsed.pathname}${parsed.search}${parsed.hash}`;
+    }
+
+    return parsed.toString();
+  } catch {
+    return raw;
+  }
 }
 
 function unwrapPayload(payload) {
@@ -31,7 +73,11 @@ function resolveClientIdFromLocation() {
   const pathname = window.location.pathname || '';
 
   // We only want to extract an ID if it's explicitly under the broker's client workspace
-  const brokerMatch = hash.match(/\/broker\/client\/([^/?#]+)/) || pathname.match(/\/broker\/client\/([^/?#]+)/);
+  const brokerMatch =
+    hash.match(/\/broker\/client\/([^/?#]+)/) ||
+    pathname.match(/\/broker\/client\/([^/?#]+)/) ||
+    hash.match(/\/broker\/workspace\/([^/?#]+)/) ||
+    pathname.match(/\/broker\/workspace\/([^/?#]+)/);
 
   if (brokerMatch) {
     const id = decodeURIComponent(brokerMatch[1]);
@@ -41,19 +87,34 @@ function resolveClientIdFromLocation() {
     return id;
   }
 
+  const candidates = [
+    (window.location.hash || '').replace(/^#/, ''),
+    window.location.pathname || '',
+  ];
+
+  for (const candidate of candidates) {
+    if (!candidate.startsWith('/client/')) continue;
+    const match = candidate.match(/^\/client\/([^/?#]+)/);
+    if (match) {
+      return decodeURIComponent(match[1]);
+    }
+  }
+
   return null;
 }
 
 export function getStoredToken() {
-  return localStorage.getItem(TOKEN_KEY);
+  return localStorage.getItem(TOKEN_KEY) || localStorage.getItem(LEGACY_TOKEN_KEY);
 }
 
 export function setStoredToken(token) {
   if (token) {
     localStorage.setItem(TOKEN_KEY, token);
+    localStorage.removeItem(LEGACY_TOKEN_KEY);
     return;
   }
   localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(LEGACY_TOKEN_KEY);
 }
 
 
@@ -89,7 +150,11 @@ async function request(path, options = {}) {
   const data = await response.json().catch(() => null);
 
   if (!response.ok) {
-    throw new Error(data?.error || 'Request failed');
+    const error = new Error(data?.error || data?.message || 'Request failed');
+    if (data && typeof data === 'object') {
+      error.payload = data;
+    }
+    throw error;
   }
 
   return data;
@@ -122,8 +187,8 @@ export function loginRequest(credentials) {
   });
 }
 
-export function logoutRequest() {
-  return request('/auth/logout', { method: 'POST' });
+export function logoutRequest(options = {}) {
+  return request('/auth/logout', { method: 'POST', ...options });
 }
 
 export function meRequest() {
@@ -164,6 +229,33 @@ export function deleteUserRequest(userId) {
 
 export function listCompanyRequests(companyId) {
   return request(`/companies/${companyId}/requests`).then(ensureArray);
+}
+
+export function listMessageThreadsRequest() {
+  return request("/messages/threads").then(ensureArray);
+}
+
+export function getCompanyMessagesRequest(companyId) {
+  return request(`/companies/${companyId}/messages`);
+}
+
+export function createCompanyMessageRequest(companyId, payload) {
+  return request(`/companies/${companyId}/messages`, { method: "POST", body: payload }).then(unwrapPayload);
+}
+
+export function listCompanyDirectMessageContactsRequest(companyId) {
+  return request(`/companies/${companyId}/direct-messages/contacts`);
+}
+
+export function getCompanyDirectMessagesRequest(companyId, recipientId) {
+  return request(`/companies/${companyId}/direct-messages/${recipientId}`);
+}
+
+export function createCompanyDirectMessageRequest(companyId, recipientId, payload) {
+  return request(`/companies/${companyId}/direct-messages/${recipientId}`, {
+    method: "POST",
+    body: payload,
+  }).then(unwrapPayload);
 }
 
 export function createCompanyRequestItem(companyId, payload) {
@@ -208,6 +300,10 @@ export function getRequestById(requestId) {
 
 export function updateRequest(requestId, payload) {
   return request(`/requests/${requestId}`, { method: 'PATCH', body: payload }).then(unwrapPayload);
+}
+
+export function approveRequest(requestId) {
+  return request(`/requests/${requestId}/approve`, { method: 'POST' }).then(unwrapPayload);
 }
 
 export function deleteRequest(requestId) {
@@ -281,17 +377,23 @@ export async function fetchProtectedFileBlob(fileUrl, options = {}) {
     throw new Error('Missing file URL');
   }
 
+  const resolvedUrl = resolveProtectedFileUrl(fileUrl);
   const token = options.token ?? getStoredToken();
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
   const headers = {
     'Cache-Control': 'no-store',
     ...(options.headers || {}),
+    ...(clientId ? { 'X-Client-Id': clientId } : {}),
   };
 
   if (token) {
     headers.Authorization = `Bearer ${token}`;
+    headers['X-Access-Token'] = token;
+    headers['X-Auth-Token'] = token;
+    headers['X-Token'] = token;
   }
 
-  const response = await fetch(fileUrl, {
+  const response = await fetch(resolvedUrl, {
     method: 'GET',
     headers,
     cache: 'no-store',
@@ -306,12 +408,189 @@ export async function fetchProtectedFileBlob(fileUrl, options = {}) {
   return response.blob();
 }
 
-export function listCompanyFolders(companyId) {
-  return request(`/companies/${companyId}/folders`).then(ensureArray);
+export function listManualGlUploads(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/uploads${query}`, options).then((payload) => payload?.uploads || []);
 }
 
-export function listFolderTree(companyId) {
-  return request(`/companies/${companyId}/folders/tree`).then(ensureArray);
+export function createManualGlUpload(payload, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/uploads${query}`, {
+    method: "POST",
+    body: payload,
+    ...options,
+  }).then((data) => data?.upload || data);
+}
+
+export function uploadManualReport(payload, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/upload${query}`, {
+    method: "POST",
+    body: payload,
+    ...options,
+  });
+}
+
+export function continueManualReportProcessing(payload, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/continue${query}`, {
+    method: "POST",
+    body: payload,
+    ...options,
+  });
+}
+
+export function uploadGl(payload, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/upload-gl${query}`, {
+    method: "POST",
+    body: payload,
+    ...options,
+  }).then((data) => data?.upload || data);
+}
+
+export function generateManualGlReports(payload, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/reports/generate${query}`, {
+    method: "POST",
+    body: payload,
+    ...options,
+  });
+}
+
+export function getManualGlColumns(uploadId, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/columns/${encodeURIComponent(uploadId)}${query}`, options);
+}
+
+export function saveManualGlMapping(payload, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/save-mapping${query}`, {
+    method: "POST",
+    body: payload,
+    ...options,
+  });
+}
+
+export function saveGlMapping(payload, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/save-mapping${query}`, {
+    method: "POST",
+    body: payload,
+    ...options,
+  });
+}
+
+export function processManualGl(payload, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/process-gl${query}`, {
+    method: "POST",
+    body: payload,
+    ...options,
+  });
+}
+
+export function processGl(payload, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/process-gl${query}`, {
+    method: "POST",
+    body: payload,
+    ...options,
+  });
+}
+
+export function getLatestManualGlReport(statementType, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/reports/${encodeURIComponent(statementType)}/latest${query}`, options);
+}
+
+export function getManualGlProfitLoss(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/reports/pl${query}`, options);
+}
+
+export function getManualGlBalanceSheet(options = {}) {
+  const { params = {}, ...requestOptions } = options || {};
+  const clientId = requestOptions.clientId ?? resolveClientIdFromLocation();
+  const search = new URLSearchParams();
+
+  if (clientId) {
+    search.set("clientId", clientId);
+  }
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    search.set(key, String(value));
+  });
+
+  const query = search.toString();
+  return request(`/reports/balance-sheet${query ? `?${query}` : ""}`, requestOptions);
+}
+
+export function getManualGlCashflow(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/reports/cashflow${query}`, options);
+}
+
+export function syncManualReportFolder(payload, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-report-uploads/sync${query}`, {
+    method: "POST",
+    body: payload,
+    ...options,
+  });
+}
+
+export function getLatestManualUploadedReport(statementType, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(
+    `/manual-report-uploads/reports/${encodeURIComponent(statementType)}/latest${query}`,
+    options,
+  );
+}
+
+export function getReportSources(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/report-sources${query}`, options);
+}
+
+export function setSelectedReportSource(sourceKey, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/report-sources/selected${query}`, {
+    method: "PUT",
+    body: { sourceKey },
+    ...options,
+  });
+}
+
+export function listCompanyFolders(companyId, options = {}) {
+  return request(withQuery(`/companies/${companyId}/folders`, {
+    includeArchived: options.includeArchived,
+  })).then(ensureArray);
+}
+
+export function listFolderTree(companyId, options = {}) {
+  return request(withQuery(`/companies/${companyId}/folders/tree`, {
+    includeArchived: options.includeArchived,
+  })).then(ensureArray);
 }
 
 export function createCompanyFolder(companyId, payload) {
@@ -326,16 +605,45 @@ export function moveFolder(folderId, payload) {
   return request(`/folders/${folderId}/move`, { method: 'POST', body: payload }).then(unwrapPayload);
 }
 
+export function archiveFolder(folderId) {
+  return request(`/folders/${folderId}/archive`, { method: 'POST' }).then(unwrapPayload);
+}
+
+export function unarchiveFolder(folderId) {
+  return request(`/folders/${folderId}/unarchive`, { method: 'POST' }).then(unwrapPayload);
+}
+
 export function deleteFolder(folderId) {
   return request(`/folders/${folderId}`, { method: 'DELETE' });
 }
 
-export function listFolderDocuments(folderId) {
-  return request(`/folders/${folderId}/documents`).then(ensureArray);
+export function listFolderDocuments(folderId, options = {}) {
+  return request(withQuery(`/folders/${folderId}/documents`, {
+    includeArchived: options.includeArchived,
+  })).then(ensureArray);
 }
 
 export function deleteDocument(documentId) {
   return request(`/documents/${documentId}`, { method: 'DELETE' });
+}
+
+export function archiveDocument(documentId) {
+  return request(`/documents/${documentId}/archive`, { method: 'POST' }).then(unwrapPayload);
+}
+
+export function unarchiveDocument(documentId) {
+  return request(`/documents/${documentId}/unarchive`, { method: 'POST' }).then(unwrapPayload);
+}
+
+export function recordDocumentActivity(documentId, activityType) {
+  return request(`/documents/${documentId}/activity`, {
+    method: 'POST',
+    body: { activity_type: activityType },
+  }).then(unwrapPayload);
+}
+
+export function listDocumentActivity(documentId) {
+  return request(`/documents/${documentId}/activity`).then(ensureArray);
 }
 
 export function listFolderAccess(folderId) {

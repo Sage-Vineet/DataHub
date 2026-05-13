@@ -91,7 +91,7 @@ export default function QBDisconnectedBanner({ pageName = 'this page' }) {
       {/* Message */}
       <div className="flex-1 min-w-0">
         <p className={cn("font-bold text-[14px] leading-snug", isMismatch ? "text-red-900" : "text-amber-900")}>
-          {isMismatch ? 'QuickBooks Company Mismatch' : 'QuickBooks is not connected'}
+          {isMismatch ? 'QuickBooks Company Mismatch' : 'QuickBooks Disconnected — Showing Cached Data'}
         </p>
         <p className={cn("mt-1 text-[13px] leading-relaxed", isMismatch ? "text-red-700" : "text-amber-700")}>
           {isMismatch ? (
@@ -101,8 +101,8 @@ export default function QBDisconnectedBanner({ pageName = 'this page' }) {
             </>
           ) : (
             <>
-              {pageName} requires an active QuickBooks connection to load financial data.
-              Connect your account to start syncing automatically.
+              You are currently disconnected. The data shown is from your last sync and may not reflect recent changes.
+              <span className="block mt-1">To get live financial data, reconnect your QuickBooks account.</span>
             </>
           )}
         </p>

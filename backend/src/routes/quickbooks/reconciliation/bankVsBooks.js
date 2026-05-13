@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const pool = require("../../../db");
+const { supabase } = require("../../../db");
 const fs = require("fs");
 const pdfParse = require("pdf-parse");
 const multer = require("multer");
@@ -46,30 +46,56 @@ router.get("/bank-vs-books", extractClientId, async (req, res) => {
     if (!req.clientId) {
       return res.status(400).json({ error: "Missing Client ID" });
     }
-    const query = `
-      SELECT
-        b.txn_date AS bank_date,
-        b.narration AS bank_narration,
-        b.amount AS bank_amount,
-        r.txn_date AS book_date,
-        r.name AS book_name,
-        r.amount AS book_amount,
-        CASE
-          WHEN r.amount IS NULL THEN 'Unmatched (Bank)'
-          WHEN b.amount = r.amount AND b.txn_date = r.txn_date THEN 'Matched'
-          ELSE 'Amount Mismatch'
-        END AS remark
-      FROM bank_transactions b
-      LEFT JOIN reconciliation_transactions r
-      ON ABS(b.amount) = ABS(r.amount)
-      AND b.txn_date = r.txn_date
-      AND b.client_id = r.client_id
-      WHERE b.client_id = $1
-      ORDER BY b.txn_date
-    `;
 
-    const result = await pool.query(query, [req.clientId]);
-    res.json({ totalRecords: result.rows.length, data: result.rows });
+    const [bankRes, bookRes] = await Promise.all([
+      supabase
+        .from("bank_transactions")
+        .select("txn_date, narration, amount")
+        .eq("client_id", req.clientId)
+        .order("txn_date", { ascending: true }),
+      supabase
+        .from("reconciliation_transactions")
+        .select("txn_date, name, amount")
+        .eq("client_id", req.clientId)
+        .order("txn_date", { ascending: true }),
+    ]);
+
+    if (bankRes.error) throw bankRes.error;
+    if (bookRes.error) throw bookRes.error;
+
+    const bankRows = bankRes.data || [];
+    const bookRows = bookRes.data || [];
+
+    // Perform manual matching logic (replaces the SQL LEFT JOIN)
+    const reconciled = bankRows.map((b) => {
+      const match = bookRows.find(
+        (r) =>
+          Math.abs(b.amount) === Math.abs(r.amount) &&
+          b.txn_date === r.txn_date,
+      );
+
+      let remark = "Unmatched (Bank)";
+      if (match) {
+        if (b.amount === match.amount) {
+          remark = "Matched";
+        } else {
+          remark = "Amount Mismatch";
+        }
+      }
+
+      return {
+        bank_date: b.txn_date,
+        bank_narration: b.narration,
+        bank_amount: b.amount,
+        book_date: match ? match.txn_date : null,
+        book_name: match ? match.name : null,
+        book_amount: match ? match.amount : null,
+        remark: remark,
+      };
+    });
+
+    res.json({ totalRecords: reconciled.length, data: reconciled });
+
   } catch (error) {
     console.error("Reconciliation Error:", error);
     res.status(500).json({ error: "Failed to reconcile transactions" });
@@ -89,30 +115,35 @@ router.get("/reconciliation-data", extractClientId, async (req, res) => {
     if (!req.clientId) {
       return res.status(400).json({ error: "Missing Client ID" });
     }
-    const bankData = await pool.query(
-      `
-      SELECT txn_date AS date, narration AS name, amount
-      FROM bank_transactions
-      WHERE client_id = $1
-      ORDER BY txn_date
-    `,
-      [req.clientId],
-    );
+    const [bankData, booksData] = await Promise.all([
+      supabase
+        .from("bank_transactions")
+        .select("txn_date, narration, amount")
+        .eq("client_id", req.clientId)
+        .order("txn_date", { ascending: true }),
+      supabase
+        .from("reconciliation_transactions")
+        .select("txn_date, name, amount")
+        .eq("client_id", req.clientId)
+        .order("txn_date", { ascending: true }),
+    ]);
 
-    const booksData = await pool.query(
-      `
-      SELECT txn_date AS date, name, amount
-      FROM reconciliation_transactions
-      WHERE client_id = $1
-      ORDER BY txn_date
-    `,
-      [req.clientId],
-    );
+    if (bankData.error) throw bankData.error;
+    if (booksData.error) throw booksData.error;
 
     res.json({
-      bank_transactions: bankData.rows,
-      reconciliation_transactions: booksData.rows,
+      bank_transactions: (bankData.data || []).map((b) => ({
+        date: b.txn_date,
+        name: b.narration,
+        amount: b.amount,
+      })),
+      reconciliation_transactions: (booksData.data || []).map((r) => ({
+        date: r.txn_date,
+        name: r.name,
+        amount: r.amount,
+      })),
     });
+
   } catch (error) {
     console.error("Fetch Error:", error);
     res.status(500).json({ error: "Failed to fetch reconciliation data" });
@@ -132,24 +163,41 @@ router.get("/reconciliation-variance", extractClientId, async (req, res) => {
     if (!req.clientId) {
       return res.status(400).json({ error: "Missing Client ID" });
     }
-    const result = await pool.query(
-      `
-      SELECT
-        bank_total,
-        books_total,
-        (bank_total - books_total) AS variance_amount,
-        ROUND(((bank_total - books_total) / NULLIF(books_total,0)) * 100,2) AS variance_percentage
-      FROM
-      (
-        SELECT
-          (SELECT SUM(amount) FROM bank_transactions WHERE client_id = $1) AS bank_total,
-          (SELECT SUM(amount) FROM reconciliation_transactions WHERE client_id = $1) AS books_total
-      ) totals
-    `,
-      [req.clientId],
+
+    const [bankSumRes, bookSumRes] = await Promise.all([
+      supabase
+        .from("bank_transactions")
+        .select("amount")
+        .eq("client_id", req.clientId),
+      supabase
+        .from("reconciliation_transactions")
+        .select("amount")
+        .eq("client_id", req.clientId),
+    ]);
+
+    if (bankSumRes.error) throw bankSumRes.error;
+    if (bookSumRes.error) throw bookSumRes.error;
+
+    const bankTotal = (bankSumRes.data || []).reduce(
+      (sum, row) => sum + (parseFloat(row.amount) || 0),
+      0,
+    );
+    const booksTotal = (bookSumRes.data || []).reduce(
+      (sum, row) => sum + (parseFloat(row.amount) || 0),
+      0,
     );
 
-    res.json(result.rows[0]);
+    const variance_amount = bankTotal - booksTotal;
+    const variance_percentage =
+      booksTotal !== 0 ? (variance_amount / booksTotal) * 100 : 0;
+
+    res.json({
+      bank_total: bankTotal,
+      books_total: booksTotal,
+      variance_amount: variance_amount,
+      variance_percentage: parseFloat(variance_percentage.toFixed(2)),
+    });
+
   } catch (error) {
     console.error("Variance Error:", error);
     res.status(500).json({ error: "Failed to calculate variance" });

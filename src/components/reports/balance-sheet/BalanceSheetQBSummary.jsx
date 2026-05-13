@@ -1,9 +1,27 @@
 import React, { useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { cn, formatCurrency } from "../../../lib/utils";
+import { cn } from "../../../lib/utils";
 
-const formatValue = (value) => {
-  return formatCurrency(value);
+const formatBalanceSheetValue = (value) => {
+  if (value === null || value === undefined || value === "") {
+    return "";
+  }
+
+  const numeric = typeof value === "string"
+    ? Number(value.replace(/,/g, "").replace(/[^\d.-]/g, ""))
+    : Number(value);
+
+  if (!Number.isFinite(numeric)) {
+    return "";
+  }
+
+  const formatter = new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+
+  const formatted = formatter.format(Math.abs(numeric));
+  return numeric < 0 ? `(${formatted})` : formatted;
 };
 
 const QBRow = ({ line, depth = 0 }) => {
@@ -11,6 +29,7 @@ const QBRow = ({ line, depth = 0 }) => {
   const hasChildren = Boolean(line.children?.length);
   const isHeader = line.type === "header";
   const isTotal = line.type === "total" || line.name.toLowerCase().startsWith("total");
+  const amountText = isHeader ? "" : formatBalanceSheetValue(line.amount);
 
   const toggle = (e) => {
     if (!hasChildren) return;
@@ -59,10 +78,11 @@ const QBRow = ({ line, depth = 0 }) => {
         <td
           className={cn(
             "py-2.5 px-4 text-right tabular-nums text-[14px] font-medium",
-            Number(line.amount) < 0 ? "text-status-error" : "text-text-primary",
+            !isHeader && Number(line.amount) < 0 ? "text-status-error" : "text-text-primary",
+            isHeader && "text-transparent",
           )}
         >
-          {formatValue(line.amount)}
+          {amountText}
         </td>
       </tr>
 
@@ -80,7 +100,20 @@ export default function BalanceSheetQBSummary({
   title = "Balance Sheet",
   subtitle,
   entityName = "Company",
+  source = null,
+  sourceLabel = null,
+  noDataText = "No data available for the selected period.",
 }) {
+  const resolvedSourceLabel =
+    sourceLabel ||
+    (source === "MANUAL_UPLOAD"
+      ? "Manual Balance Sheet"
+      : source === "GENERATED_FROM_GL"
+        ? "Generated from GL"
+        : source === "GENERATED_FROM_QB"
+          ? "Generated from QuickBooks"
+          : null);
+
   return (
     <div className="flex-1 overflow-y-auto bg-bg-page/50 p-10 lg:p-16 font-inter">
       <div className="max-w-[1000px] mx-auto card-base p-10 min-h-[800px] flex flex-col rounded-sm shadow-xl">
@@ -95,6 +128,18 @@ export default function BalanceSheetQBSummary({
               <span>{subtitle}</span>
             </div>
           )}
+          {resolvedSourceLabel ? (
+            <div
+              className={cn(
+                "mt-3 rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-wide",
+                source === "MANUAL_UPLOAD"
+                  ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                  : "border-border bg-bg-page text-text-muted",
+              )}
+            >
+              {resolvedSourceLabel}
+            </div>
+          ) : null}
         </div>
 
         <div className="overflow-x-auto flex-1">
@@ -116,7 +161,7 @@ export default function BalanceSheetQBSummary({
               {data.length === 0 && (
                 <tr>
                   <td colSpan={2} className="py-20 text-center text-text-muted italic">
-                    No data available for the selected period.
+                    {noDataText}
                   </td>
                 </tr>
               )}

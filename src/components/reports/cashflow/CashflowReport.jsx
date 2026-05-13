@@ -1,4 +1,5 @@
 import CashflowQBSummary from "./CashflowQBSummary";
+import CashflowSummary from "./CashflowSummary";
 
 export default function CashflowReport({
   reportType,
@@ -11,15 +12,19 @@ export default function CashflowReport({
   entityName,
   isPreview = false,
 }) {
-  const subtitle = `Report Period: ${startDate || "N/A"} to ${endDate || "N/A"} | ${clientName} | ${accountingMethod} Basis`;
   const resolvedEntityName = entityName || clientName || "Company";
+  const periodText = startDate === "1970-01-01" ? "All Dates" : `${startDate || "N/A"} to ${endDate || "N/A"}`;
 
   if (reportType === "Detail") {
+    const rows = Array.isArray(detailedData?.rows) ? detailedData.rows : (Array.isArray(detailedData) ? detailedData : []);
+    const columns = detailedData?.columns || undefined;
+
     return (
-      <CashflowDetail
-        data={detailedData}
+      <CashflowSummary
+        data={rows}
+        columns={columns}
         title="Cash Flow"
-        subtitle="System-defined Multi-Year Comparison"
+        subtitle={`${clientName} | ${accountingMethod} Basis`}
         entityName={resolvedEntityName}
       />
     );
@@ -29,7 +34,7 @@ export default function CashflowReport({
     <CashflowQBSummary
       data={Array.isArray(data) ? data : []}
       title="Cash Flow"
-      subtitle={subtitle}
+      subtitle={`Report Period: ${periodText} | ${clientName} | ${accountingMethod} Basis`}
       entityName={resolvedEntityName}
     />
   );

@@ -83,7 +83,8 @@ export function connectQuickbooks(redirectHash, explicitClientId = null) {
 
   const token = getStoredToken();
   const authQuery = token ? `&token=${encodeURIComponent(token)}` : "";
-  window.location.href = `${API_BASE_URL}/api/auth/quickbooks?state=${state}&clientId=${clientId || ""}${authQuery}`;
+  const timestamp = Date.now();
+  window.location.href = `${API_BASE_URL}/api/auth/quickbooks?state=${state}&clientId=${clientId || ""}${authQuery}&t=${timestamp}`;
 }
 
 export function getConnectionStatus() {
@@ -96,6 +97,16 @@ export function disconnectQuickbooks() {
 
 export function refreshQuickbooksToken() {
   return request("/refresh-token");
+}
+
+export function syncQuickbooksReports() {
+  return request("/api/quickbooks/sync", {
+    method: "POST",
+  });
+}
+
+export function fetchQuickbooksSyncStatus() {
+  return request("/api/quickbooks/sync-status");
 }
 
 export function fetchQuickbooksCustomers() {

@@ -6,7 +6,10 @@ const {
   updateCompany,
 } = require("../controllers/companies");
 
+const { requireAuth } = require("../middleware/auth");
 const router = express.Router();
+
+router.use(requireAuth);
 
 // Test endpoint without auth
 router.get("/test", (req, res) => {

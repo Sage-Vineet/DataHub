@@ -1,43 +1,42 @@
 import { NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
+import { useMessageNotifications } from "../../context/MessageNotificationsContext";
 import {
   LayoutDashboard,
   Building2,
   Bell,
   LogOut,
-  Upload,
   ClipboardList,
-  Database,
   X,
   MoreHorizontal,
-  LifeBuoy,
+  FileText,
+  MessageSquare,
 } from "lucide-react";
 import datahublogo from "../../assets/datahublogo.png";
 
 const brokerNav = [
   { label: "Dashboard", icon: LayoutDashboard, to: "/broker/dashboard" },
   { label: "Companies", icon: Building2, to: "/broker/companies" },
-  { label: "Help & Support", icon: LifeBuoy, to: "/support" },
 ];
 
 const clientNav = [
   { label: "Dashboard", icon: LayoutDashboard, to: "/client/dashboard" },
   { label: "My Requests", icon: ClipboardList, to: "/client/requests" },
-  { label: "Upload Documents", icon: Upload, to: "/client/upload" },
+  { label: "Documents", icon: FileText, to: "/client/upload" },
+  { label: "Messages", icon: MessageSquare, to: "/client/messages" },
   { label: "Reminders", icon: Bell, to: "/client/reminders" },
-  { label: "QuickBooks", icon: Database, to: "/client/connections" },
-  { label: "Help & Support", icon: LifeBuoy, to: "/support" },
 ];
 
 export default function Sidebar({ onClose }) {
   const { user, logout } = useAuth();
+  const { unreadCount } = useMessageNotifications();
   const navigate = useNavigate();
   const nav = user?.role === "broker" ? brokerNav : clientNav;
-  const accountLabel = user?.role === "broker" ? "Administrator" : user?.role === "user" ? "User" : "Seller";
+  const accountLabel = user?.role === "broker" ? "Administrator" : user?.role === "user" ? "User" : "Client";
 
-  const handleLogout = () => {
-    logout();
-    navigate("/login");
+  const handleLogout = async () => {
+    await logout();
+    navigate("/login", { replace: true });
   };
 
   return (
@@ -78,9 +77,10 @@ export default function Sidebar({ onClose }) {
               to={item.to}
               onClick={onClose}
               className={({ isActive }) =>
-                `relative flex items-center gap-3 rounded-md px-3 py-2.5 text-[14px] font-medium transition-all duration-200 ${isActive
-                  ? "bg-[#EEF6E0] text-primary font-semibold"
-                  : "text-secondary hover:bg-[#F0F7E6] hover:text-text-primary"
+                `relative flex items-center gap-3 rounded-md px-3 py-2.5 text-[14px] font-medium transition-all duration-200 ${
+                  isActive
+                    ? "bg-[#EEF6E0] text-primary font-semibold"
+                    : "text-secondary hover:bg-[#F0F7E6] hover:text-text-primary"
                 }`
               }
             >
@@ -94,6 +94,11 @@ export default function Sidebar({ onClose }) {
                     className={isActive ? "text-primary" : "text-text-muted"}
                   />
                   <span>{item.label}</span>
+                  {item.label === "Messages" && unreadCount > 0 && (
+                    <span className="ml-auto inline-flex min-w-5 items-center justify-center rounded-full bg-negative px-1.5 py-0.5 text-[10px] font-bold text-white">
+                      {unreadCount > 9 ? '9+' : unreadCount}
+                    </span>
+                  )}
                 </>
               )}
             </NavLink>
@@ -103,7 +108,7 @@ export default function Sidebar({ onClose }) {
 
       <div className="border-t border-border px-3 pb-4 pt-4">
         <div className="mb-1 flex items-center gap-3 rounded-md px-3 py-2.5 transition-colors hover:bg-bg-page">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary text-[12px] font-semibold text-white">
+          <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary text-[12px] font-semibold text-white">
             {user?.avatar}
           </div>
           <div className="min-w-0 flex-1 text-left">

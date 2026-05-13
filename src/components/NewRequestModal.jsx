@@ -4,6 +4,13 @@ import { X } from 'lucide-react';
 const CATEGORY_OPTIONS = ['Finance', 'Legal', 'Compliance', 'HR', 'Tax', 'M&A', 'Other'];
 const REQUEST_TYPES = ['Document', 'Information'];
 
+function getTomorrowDate() {
+  const date = new Date();
+  date.setDate(date.getDate() + 1);
+  date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
+  return date.toISOString().slice(0, 10);
+}
+
 const DEFAULT_FORM = {
   requestType: 'Document',
   category: '',
@@ -11,7 +18,6 @@ const DEFAULT_FORM = {
   description: '',
   file: null,
   priority: 'high',
-  status: 'pending',
   dueDate: '',
 };
 
@@ -69,8 +75,9 @@ export default function NewRequestModal({
       nextErrors.description = 'Description is required';
     }
     if (!form.priority) nextErrors.priority = 'Priority is required';
-    if (!form.status) nextErrors.status = 'Status is required';
+    const minDueDate = getTomorrowDate();
     if (!form.dueDate) nextErrors.dueDate = 'Due date is required';
+    if (form.dueDate && form.dueDate < minDueDate) nextErrors.dueDate = 'Select a future due date.';
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) return;
     onCreate?.(form);
@@ -189,25 +196,12 @@ export default function NewRequestModal({
                 onChange={(e) => setForm(s => ({ ...s, priority: e.target.value }))}
                 className={`w-full px-3 py-2.5 rounded-xl border text-sm ${errors.priority ? 'border-red-400' : 'border-gray-200'}`}
               >
+                <option value="critical">Critical</option>
                 <option value="high">High</option>
                 <option value="medium">Medium</option>
                 <option value="low">Low</option>
               </select>
               {errors.priority && <p className="text-xs text-red-500">{errors.priority}</p>}
-            </div>
-
-            <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Status *</label>
-              <select
-                value={form.status}
-                onChange={(e) => setForm(s => ({ ...s, status: e.target.value }))}
-                className={`w-full px-3 py-2.5 rounded-xl border text-sm ${errors.status ? 'border-red-400' : 'border-gray-200'}`}
-              >
-                <option value="pending">Pending</option>
-                <option value="in-review">In Review</option>
-                <option value="completed">Completed</option>
-              </select>
-              {errors.status && <p className="text-xs text-red-500">{errors.status}</p>}
             </div>
           </div>
 
@@ -215,6 +209,7 @@ export default function NewRequestModal({
             <label className="text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Due Date *</label>
             <input
               type="date"
+              min={getTomorrowDate()}
               value={form.dueDate}
               onChange={(e) => setForm(s => ({ ...s, dueDate: e.target.value }))}
               className={`w-full px-3 py-2.5 rounded-xl border text-sm ${errors.dueDate ? 'border-red-400' : 'border-gray-200'}`}
@@ -226,12 +221,21 @@ export default function NewRequestModal({
 
           <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
             <p className="text-xs font-semibold text-[#6D6E71] uppercase tracking-wide mb-3">Priority-Based Notification Logic</p>
+            {form.priority === 'critical' && (
+              <div className="flex items-start gap-2 text-xs text-[#6D6E71]">
+                <span className="mt-0.5 px-2 py-0.5 rounded-full bg-red-100 text-red-700 text-[10px] font-bold">Critical</span>
+                <div>
+                  <p className="font-semibold text-[#050505]">Send immediate reminder, then daily follow-ups</p>
+                  <p>Highest urgency for broker and client tracking</p>
+                </div>
+              </div>
+            )}
             {form.priority === 'high' && (
               <div className="flex items-start gap-2 text-xs text-[#6D6E71]">
                 <span className="mt-0.5 px-2 py-0.5 rounded-full bg-red-100 text-red-600 text-[10px] font-bold">High</span>
                 <div>
-                  <p className="font-semibold text-[#050505]">Send notification daily</p>
-                  <p>Mark as urgent (red badge)</p>
+                  <p className="font-semibold text-[#050505]">Send immediate reminder, then daily follow-ups</p>
+                  <p>Urgent cadence for open requests</p>
                 </div>
               </div>
             )}
@@ -248,8 +252,8 @@ export default function NewRequestModal({
               <div className="flex items-start gap-2 text-xs text-[#6D6E71]">
                 <span className="mt-0.5 px-2 py-0.5 rounded-full bg-green-100 text-green-600 text-[10px] font-bold">Low</span>
                 <div>
-                  <p className="font-semibold text-[#050505]">Send notification weekly</p>
-                  <p>Low urgency (green badge)</p>
+                  <p className="font-semibold text-[#050505]">Send immediate reminder, then weekly follow-ups</p>
+                  <p>Low urgency cadence</p>
                 </div>
               </div>
             )}

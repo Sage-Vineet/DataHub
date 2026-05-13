@@ -1,4 +1,5 @@
 import { fetchCashflow } from "../lib/quickbooks";
+import { getLatestManualUploadedReport, getManualGlCashflow } from "../lib/api";
 import { normalizeAccountingMethod } from "../lib/report-filters";
 import { parseSummaryReport } from "../lib/report-parsers";
 
@@ -51,8 +52,18 @@ function getCashflowComparativePeriods(numYears = 4) {
   return periods;
 }
 
-async function fetchSinglePeriodCashflow(startDate, endDate, accountingMethod) {
+async function fetchSinglePeriodCashflow(startDate, endDate, accountingMethod, sourceMode = "quickbooks") {
   try {
+    if (sourceMode === "manual_upload") {
+      const payload = await getLatestManualUploadedReport("cash_flow");
+      return Array.isArray(payload?.data?.rows) ? payload.data.rows : [];
+    }
+
+    if (sourceMode === "manual") {
+      const payload = await getManualGlCashflow();
+      return parseSummaryReport(payload?.quickbooksSchema || payload?.data || payload);
+    }
+
     const payload = await fetchCashflow({
       start_date: startDate,
       end_date: endDate,
@@ -123,15 +134,32 @@ function mergeCashflowPeriods(periodResults, periods) {
   return masterRows.map(enrich);
 }
 
-export async function getCashflow(startDate, endDate, accountingMethod) {
-  return await fetchSinglePeriodCashflow(startDate, endDate, accountingMethod);
+export async function getCashflow(startDate, endDate, accountingMethod, options = {}) {
+  return await fetchSinglePeriodCashflow(
+    startDate,
+    endDate,
+    accountingMethod,
+    options?.sourceMode || "quickbooks"
+  );
 }
 
-export async function getCashflowDetail(startDate, endDate, accountingMethod) {
+export async function getCashflowDetail(
+  startDate,
+  endDate,
+  accountingMethod,
+  options = {},
+) {
   const periods = getCashflowComparativePeriods(4);
 
   const results = await Promise.all(
-    periods.map((p) => fetchSinglePeriodCashflow(p.start, p.end, accountingMethod)),
+    periods.map((p) =>
+      fetchSinglePeriodCashflow(
+        p.start,
+        p.end,
+        accountingMethod,
+        options?.sourceMode || "quickbooks",
+      ),
+    ),
   );
 
   const rows = mergeCashflowPeriods(results, periods);

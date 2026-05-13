@@ -133,15 +133,19 @@ export function AuthProvider({ children }) {
   };
 
   const logout = async () => {
+    const token = getStoredToken();
+
+    // Optimistically clear local auth so signout feels instant.
+    setUser(null);
+    setError('');
+    setStoredToken(null);
+
     try {
-      await logoutRequest();
+      if (token) {
+        await logoutRequest({ token });
+      }
     } catch (err) {
       console.log('Logout request failed:', err.message);
-    } finally {
-      // Always clear local state regardless of API call success
-      setUser(null);
-      setError('');
-      setStoredToken(null);
     }
   };
 
