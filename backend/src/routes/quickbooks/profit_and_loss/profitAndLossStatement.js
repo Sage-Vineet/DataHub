@@ -55,7 +55,7 @@ router.get("/profit-and-loss-statement", async (req, res) => {
   const clientId = req.clientId;
   const qb = getQBConfig(clientId);
 
-  let { start_date, end_date, accounting_method } = req.query;
+  let { start_date, end_date, accounting_method, summarize_column_by } = req.query;
 
   if (req.qbDisconnected || !qb.accessToken || !qb.realmId) {
     try {
@@ -91,6 +91,7 @@ router.get("/profit-and-loss-statement", async (req, res) => {
   start_date = start_date?.trim();
   end_date = end_date?.trim();
   accounting_method = accounting_method?.trim();
+  summarize_column_by = summarize_column_by?.trim();
 
   // Validate accounting method
   const validAccountingMethods = ["Accrual", "Cash"];
@@ -137,6 +138,8 @@ router.get("/profit-and-loss-statement", async (req, res) => {
     if (end_date) queryParams.push(`end_date=${end_date}`);
     if (accounting_method)
       queryParams.push(`accounting_method=${accounting_method}`);
+    if (summarize_column_by)
+      queryParams.push(`summarize_column_by=${encodeURIComponent(summarize_column_by)}`);
     queryParams.push("minorversion=75");
 
     const url = `${qb.baseUrl}/v3/company/${qb.realmId}/reports/ProfitAndLoss${queryParams.length ? `?${queryParams.join("&")}` : ""}`;
