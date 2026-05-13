@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import Header from "../../../components/Header";
-import ExtractedBankRecords from "../../../components/ExtractedBankRecords";
+
 import { getStoredToken } from "../../../lib/api";
 import { cn } from "../../../lib/utils";
 import {
@@ -1655,57 +1655,7 @@ export default function WorkspaceReconciliation() {
           <StatusBanner sync={bankActivityFetchStatus} />
         </section>
 
-        {/* Extracted Bank PDF Records */}
-        <section className="card-base card-p w-full">
-          <div className="mb-5 flex flex-wrap items-start justify-between gap-4">
-            <div className="min-w-0 flex-1">
-              <h2 className="text-[18px] font-semibold text-text-primary">
-                Extracted Bank PDF Records
-              </h2>
-              <p className="mt-1 text-[13px] text-text-secondary">
-                Bank summary table extracted from the PDF parser and grouped by
-                bank — showing Starting Balance, Deposits, Withdrawals, and
-                Ending Balance per month.
-              </p>
-              {extractedBankPdfError && (
-                <div className="mt-2 flex items-center gap-2 rounded-lg border border-negative/20 bg-white px-3 py-2 text-[13px] text-negative">
-                  <AlertCircle size={14} />
-                  {extractedBankPdfError}
-                </div>
-              )}
-            </div>
-            <button
-              type="button"
-              className="btn-secondary"
-              onClick={() => void loadExtractedBankPdfData()}
-              disabled={isLoadingExtractedBankPdfData}
-            >
-              {isLoadingExtractedBankPdfData ? (
-                <LoaderCircle size={16} className="animate-spin" />
-              ) : (
-                <RefreshCw size={16} />
-              )}
-              Refresh
-            </button>
-          </div>
-          <StatusBanner sync={extractedBankPdfFetchStatus} />
-          {isLoadingExtractedBankPdfData && !extractedBankPdfData ? (
-            <div className="rounded-2xl border border-dashed border-border bg-bg-page/40 p-6 text-[14px] text-text-muted">
-              Loading extracted bank PDF records...
-            </div>
-          ) : extractedBankPdfData?.banks?.length ? (
-            <div className="mt-4">{renderExtractedBankPdfTable()}</div>
-          ) : (
-            <div className="rounded-2xl border border-dashed border-border bg-bg-page/40 p-6 text-[14px] text-text-muted">
-              {isLoadingExtractedBankPdfData
-                ? "Loading extracted bank PDF records..."
-                : "Refresh to load the extracted bank PDF summary."}
-            </div>
-          )}
-        </section>
 
-        {/* Extracted Bank Records component */}
-        <ExtractedBankRecords clientId={clientId} />
 
         {/* Balance Sheet Accounts */}
         <section className="card-base card-p w-full">

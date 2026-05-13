@@ -1,11 +1,16 @@
+const path = require("path");
+const { Worker } = require("worker_threads");
 const XLSX = require("xlsx");
-const pdfParse = require("pdf-parse");
 const { supabase } = require("../db");
 const { processBalanceSheet } = require("./balanceSheetService");
 const {
   REPORT_SOURCE_KEYS,
   updateReportSourceRecord,
 } = require("./reportSourceStore");
+const { parsePdfWithGemini } = require("./geminiFinancialParser");
+
+const PDF_WORKER_PATH = path.join(__dirname, "../workers/pdfParser.js");
+const PDF_PARSE_TIMEOUT_MS = 30000;
 
 const MANUAL_REPORT_UPLOAD_SOURCE = "manual_report_upload";
 const STATEMENT_TYPES = {
@@ -70,6 +75,51 @@ function roundMoney(value) {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
+const MONTH_INDEX = {
+  january: 0, february: 1, march: 2, april: 3, may: 4, june: 5,
+  july: 6, august: 7, september: 8, october: 9, november: 10, december: 11,
+  jan: 0, feb: 1, mar: 2, apr: 3, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
+};
+
+function toIsoDate(dateStr = "") {
+  if (!dateStr) return null;
+  const s = String(dateStr).trim().replace(/,/g, "");
+
+  // "March 31 2025" / "Jan 1 2025"
+  const longMatch = s.match(/^([a-z]+)\s+(\d{1,2})\s+(\d{4})$/i);
+  if (longMatch) {
+    const month = MONTH_INDEX[longMatch[1].toLowerCase()];
+    if (month !== undefined) {
+      return `${longMatch[3]}-${String(month + 1).padStart(2, "0")}-${String(parseInt(longMatch[2], 10)).padStart(2, "0")}`;
+    }
+  }
+
+  // "January 2023" — month + year only
+  const monthYearMatch = s.match(/^([a-z]+)\s+(\d{4})$/i);
+  if (monthYearMatch) {
+    const month = MONTH_INDEX[monthYearMatch[1].toLowerCase()];
+    if (month !== undefined) {
+      return `${monthYearMatch[2]}-${String(month + 1).padStart(2, "0")}-01`;
+    }
+  }
+
+  // MM/DD/YYYY or MM-DD-YYYY
+  const numericMatch = s.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{2,4})$/);
+  if (numericMatch) {
+    let year = parseInt(numericMatch[3], 10);
+    if (year < 100) year += 2000;
+    return `${year}-${String(parseInt(numericMatch[1], 10)).padStart(2, "0")}-${String(parseInt(numericMatch[2], 10)).padStart(2, "0")}`;
+  }
+
+  // YYYY-MM-DD
+  const isoMatch = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+  if (isoMatch) {
+    return `${isoMatch[1]}-${String(parseInt(isoMatch[2], 10)).padStart(2, "0")}-${String(parseInt(isoMatch[3], 10)).padStart(2, "0")}`;
+  }
+
+  return null;
+}
+
 function firstTextCell(cells = []) {
   for (const cell of cells) {
     const text = String(cell || "").trim();
@@ -111,12 +161,81 @@ function extractRowsFromWorkbook(buffer, fileName = "", contentType = "") {
   return rawRows.filter((row) => Array.isArray(row) && row.some(hasCellValue));
 }
 
-async function extractPdfLines(buffer) {
-  const parsed = await pdfParse(buffer);
-  return String(parsed?.text || "")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
+function extractPdfLines(buffer) {
+  return new Promise((resolve, reject) => {
+    // Copy the buffer into a fresh ArrayBuffer so it can be safely transferred
+    // to the worker thread without sharing memory with the main thread pool.
+    const owned = Buffer.from(buffer);
+    const arrayBuffer = owned.buffer.slice(
+      owned.byteOffset,
+      owned.byteOffset + owned.byteLength,
+    );
+
+    const worker = new Worker(PDF_WORKER_PATH, {
+      workerData: { arrayBuffer },
+      transferList: [arrayBuffer],
+    });
+
+    const timer = setTimeout(() => {
+      worker.terminate();
+      reject(new Error("PDF parsing timed out"));
+    }, PDF_PARSE_TIMEOUT_MS);
+
+    const cleanup = () => clearTimeout(timer);
+
+    worker.once("message", (msg) => {
+      cleanup();
+      if (msg.success) {
+        resolve(
+          String(msg.text)
+            .split(/\r?\n/)
+            .map((l) => l.trim())
+            .filter(Boolean),
+        );
+      } else {
+        reject(new Error(msg.error || "PDF parsing failed"));
+      }
+    });
+
+    worker.once("error", (err) => {
+      cleanup();
+      reject(err);
+    });
+
+    worker.once("exit", (code) => {
+      cleanup();
+      if (code !== 0) reject(new Error(`PDF worker exited with code ${code}`));
+    });
+  });
+}
+
+function isStandaloneYear(str = "") {
+  return /^\d{4}$/.test(String(str).replace(/[$,()]/g, "").trim());
+}
+
+function isPageIndicatorLine(line = "") {
+  const s = String(line).trim().toLowerCase();
+  return /^page\s+\d+(\s+of\s+\d+)?$/.test(s) || /^\d+$/.test(s);
+}
+
+function extractAsOfDateFromLines(lines = []) {
+  const asOfPattern = /as\s+of\s+([a-z]+\s+\d{1,2},?\s+\d{4}|\d{1,2}[-/]\d{1,2}[-/]\d{2,4}|\d{4}[-/]\d{1,2}[-/]\d{1,2})/i;
+  for (const line of lines.slice(0, 40)) {
+    const match = line.match(asOfPattern);
+    if (match?.[1]) {
+      const date = toIsoDate(match[1].trim());
+      if (date) return date;
+    }
+  }
+  const monthPattern = /\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2},?\s+\d{4}/i;
+  for (const line of lines.slice(0, 40)) {
+    const match = line.match(monthPattern);
+    if (match) {
+      const date = toIsoDate(match[0]);
+      if (date) return date;
+    }
+  }
+  return null;
 }
 
 function detectStatementType({ fileName = "", rows = [], lines = [] }) {
@@ -149,6 +268,7 @@ function detectStatementType({ fileName = "", rows = [], lines = [] }) {
 
   if (
     haystack.includes("profit and loss") ||
+    haystack.includes("profit & loss") ||
     haystack.includes("income statement") ||
     haystack.includes("ordinary income") ||
     haystack.includes("net income")
@@ -159,13 +279,17 @@ function detectStatementType({ fileName = "", rows = [], lines = [] }) {
   return null;
 }
 
-function buildNode(name, amount, type = "data", id = "") {
-  return {
+function buildNode(name, amount, type = "data", id = "", firstPeriodAmount = null) {
+  const node = {
     id: id || `${type}-${normalizeSlug(name) || "row"}`,
     name: String(name || "").trim(),
     amount: roundMoney(Number(amount || 0)),
     type,
   };
+  if (firstPeriodAmount !== null && firstPeriodAmount !== undefined) {
+    node.firstPeriodAmount = roundMoney(Number(firstPeriodAmount));
+  }
+  return node;
 }
 
 function buildSectionNode(name, children = [], id = "") {
@@ -207,7 +331,10 @@ function isMetadataLikeLabel(label = "") {
     normalized.includes("cash basis") ||
     normalized.includes("gmt") ||
     normalized.includes("am ") ||
-    normalized.includes("pm ")
+    normalized.includes("pm ") ||
+    /\bthrough\b/.test(normalized) ||
+    /^(january|february|march|april|may|june|july|august|september|october|november|december)\b/.test(normalized) ||
+    /^page\s+\d+/.test(normalized)
   );
 }
 
@@ -215,7 +342,11 @@ function getBalanceSheetSectionLevel(label = "") {
   const normalized = normalizeSectionName(label);
   if (!normalized) return null;
 
-  if (normalized === "assets" || normalized === "liabilities and equity") {
+  if (
+    normalized === "assets" ||
+    normalized === "liabilities and equity" ||
+    normalized === "liabilities & equity"
+  ) {
     return 0;
   }
 
@@ -246,20 +377,20 @@ function getBalanceSheetSectionLevel(label = "") {
 
 function matchBalanceSheetSectionStack(stack = [], totalLabel = "") {
   const normalizedTotal = normalizeSectionName(totalLabel);
-  if (!normalizedTotal) return stack.length ? stack.length - 1 : -1;
+  if (!normalizedTotal) return -1;
 
   for (let index = stack.length - 1; index >= 0; index -= 1) {
     const sectionName = normalizeSectionName(stack[index]?.name || "");
-    if (
-      sectionName === normalizedTotal ||
-      normalizedTotal.includes(sectionName) ||
-      sectionName.includes(normalizedTotal)
-    ) {
+    // Only match exact equality OR the section name is a substring of the total label
+    // (e.g. "bank accounts" inside "total bank accounts" → normalizedTotal.includes(sectionName)).
+    // Do NOT match the reverse (sectionName.includes(normalizedTotal)) because that causes
+    // "liabilities & equity" to match "total liabilities", wiping the root from the stack.
+    if (sectionName === normalizedTotal || normalizedTotal.includes(sectionName)) {
       return index;
     }
   }
 
-  return stack.length ? stack.length - 1 : -1;
+  return -1;
 }
 
 function finalizeBalanceSheetSections(nodes = []) {
@@ -312,8 +443,15 @@ function parseBalanceSheetHierarchy(entries = []) {
 
     if (isTotal) {
       const matchedIndex = matchBalanceSheetSectionStack(stack, label);
-      while (stack.length - 1 > matchedIndex) {
-        stack.pop();
+
+      // Only pop deeper sections when we have an actual match.
+      // If matchedIndex is -1 (unrecognised total such as "TOTAL LIABILITIES" when
+      // only "LIABILITIES & EQUITY" is on the stack), we leave the stack as-is so
+      // subsequent siblings (e.g. Equity) still nest under the right parent.
+      if (matchedIndex >= 0) {
+        while (stack.length - 1 > matchedIndex) {
+          stack.pop();
+        }
       }
 
       const totalNode = buildNode(
@@ -354,18 +492,72 @@ function extractEntriesFromRows(rows = []) {
 }
 
 function extractEntriesFromLines(lines = []) {
-  return lines
-    .map((line, index) => {
-      const match = String(line).match(/^(.*?)(?:\s{2,}|\.{2,}|\t+)\(?[-$0-9,.\s]+\)?$/);
-      const label = match?.[1]?.trim() || String(line).replace(/\(?[-$0-9,.\s]+\)?$/, "").trim();
-      const amountMatch = String(line).match(/(\(?[-$]?\d[\d,]*(?:\.\d+)?\)?)\s*$/);
-      return {
-        label,
-        amount: amountMatch ? roundMoney(parseAmount(amountMatch[1]) || 0) : null,
-        index,
-      };
-    })
-    .filter((entry) => entry.label);
+  const entries = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = String(lines[i]).trim();
+
+    if (!line || isPageIndicatorLine(line)) {
+      i++;
+      continue;
+    }
+
+    // Pattern 0: Multi-column line — 2+ dollar-prefixed amounts on the same line.
+    // e.g. "Revenue  $1,000  $1,200  ...  $15,000"
+    //      "Discounts  $383.88  $479.11  ...  $-22,266.07"
+    // Label = text before the first $, firstPeriodAmount = first $ value, amount = last $ value.
+    const dollarMatches = [...line.matchAll(/\$-?\d[\d,]*(?:\.\d+)?/g)];
+    if (dollarMatches.length >= 2) {
+      const firstDollarIdx = dollarMatches[0].index;
+      const potentialLabel = line.slice(0, firstDollarIdx).replace(/[\s.\-_]+$/, "").trim();
+      if (potentialLabel) {
+        const firstPeriodAmount = roundMoney(parseAmount(dollarMatches[0][0]) || 0);
+        const totalAmount = roundMoney(parseAmount(dollarMatches[dollarMatches.length - 1][0]) || 0);
+        entries.push({ label: potentialLabel, amount: totalAmount, firstPeriodAmount, index: i });
+        i++;
+        continue;
+      }
+    }
+
+    // Pattern 1: label and amount on the same line.
+    // Handles: "Checking  12,345.00"  "Revenue  (5,000.00)"  "Retained Earnings  $-116,747.37"  "Account  -"
+    const inlineMatch = line.match(/^(.*)\s+(\$-?\d[\d,]*(?:\.\d+)?|\(?-?\$?\d[\d,]*(?:\.\d+)?\)?|-)\s*$/);
+    if (inlineMatch) {
+      const potentialLabel = inlineMatch[1].replace(/[\s.\-_]+$/, "").trim();
+      const amountStr = inlineMatch[2];
+
+      if (potentialLabel && !isStandaloneYear(amountStr)) {
+        const parsedAmt = amountStr === "-" ? 0 : (parseAmount(amountStr) || 0);
+        entries.push({ label: potentialLabel, amount: roundMoney(parsedAmt), index: i });
+        i++;
+        continue;
+      }
+    }
+
+    // Pattern 2: label on this line, standalone amount on the very next line.
+    // Handles PDFs where label and value appear on alternating lines.
+    if (i + 1 < lines.length) {
+      const nextLine = String(lines[i + 1]).trim();
+      const isNextAmount =
+        (/^\$?-?\d[\d,]*(?:\.\d+)?$/.test(nextLine) || /^\(-?\d[\d,]*(?:\.\d+)?\)$/.test(nextLine) || nextLine === "-") &&
+        !isPageIndicatorLine(nextLine) &&
+        !isStandaloneYear(nextLine);
+
+      if (isNextAmount) {
+        const parsedAmt = nextLine === "-" ? 0 : (parseAmount(nextLine) || 0);
+        entries.push({ label: line, amount: roundMoney(parsedAmt), index: i });
+        i += 2;
+        continue;
+      }
+    }
+
+    // No amount found — section header or metadata line.
+    entries.push({ label: line, amount: null, index: i });
+    i++;
+  }
+
+  return entries.filter((entry) => entry.label);
 }
 
 function normalizeSectionLabel(value = "") {
@@ -425,6 +617,7 @@ function parseSectionedStatement(entries = [], sectionDefinitions = [], options 
         entry.amount,
         type,
         `${normalizeSlug(entry.label) || "row"}-${entry.index + 1}`,
+        entry.firstPeriodAmount ?? null,
       ),
     );
   });
@@ -439,34 +632,62 @@ async function parseStoredReport(upload) {
   const fileName = String(upload?.file_name || "");
   const contentType = String(upload?.content_type || "");
   const lowerFileName = fileName.toLowerCase();
+  const isPdf = lowerFileName.endsWith(".pdf") || contentType.toLowerCase().includes("pdf");
 
+  // ── Gemini path for PDFs ────────────────────────────────────────────────
+  if (isPdf && process.env.GEMINI_API_KEY) {
+    try {
+      const geminiResult = await parsePdfWithGemini(buffer, fileName);
+      if (geminiResult?.statementType && Array.isArray(geminiResult.rows) && geminiResult.rows.length > 0) {
+        console.log(`[ManualReportUpload] Gemini parsed "${fileName}" as ${geminiResult.statementType} (${geminiResult.rows.length} top-level rows)`);
+        return {
+          statementType: geminiResult.statementType,
+          parserType: "gemini",
+          report: {
+            rows: geminiResult.rows,
+            asOfDate: geminiResult.asOfDate || null,
+          },
+        };
+      }
+    } catch (geminiError) {
+      console.warn(`[ManualReportUpload] Gemini failed for "${fileName}", falling back to text extraction: ${geminiError.message}`);
+    }
+  }
+
+  // ── Text-extraction fallback (Excel / non-Gemini PDF) ──────────────────
   let rows = [];
   let lines = [];
   let parserType = "excel";
 
-  if (lowerFileName.endsWith(".pdf") || contentType.toLowerCase().includes("pdf")) {
+  if (isPdf) {
     parserType = "pdf";
     lines = await extractPdfLines(buffer);
+    console.log(`[ManualReportUpload] PDF text fallback "${fileName}" → ${lines.length} lines`);
+    if (lines.length > 0) console.log(`[ManualReportUpload] First 10 lines:`, lines.slice(0, 10));
   } else {
     rows = extractRowsFromWorkbook(buffer, fileName, contentType);
   }
 
   const statementType = detectStatementType({ fileName, rows, lines });
+  console.log(`[ManualReportUpload] "${fileName}" detected as: ${statementType || "unknown"}`);
   if (!statementType) return null;
 
   if (statementType === STATEMENT_TYPES.BALANCE_SHEET) {
-    let structured = { asOfDate: null };
-    try {
-      structured = rows.length
-        ? processBalanceSheet({ rawRows: rows })
-        : processBalanceSheet({
-            rawRows: lines.map((line) => [line]),
-          });
-    } catch (error) {
-      console.warn(
-        `[ManualReportUpload] Balance Sheet normalization fallback engaged for ${fileName}: ${error.message}`,
-      );
+    let asOfDate = null;
+
+    if (parserType === "pdf") {
+      asOfDate = extractAsOfDateFromLines(lines);
+    } else {
+      try {
+        const structured = processBalanceSheet({ rawRows: rows });
+        asOfDate = structured.asOfDate || null;
+      } catch (error) {
+        console.warn(
+          `[ManualReportUpload] Balance Sheet normalization fallback for ${fileName}: ${error.message}`,
+        );
+      }
     }
+
     const entries = rows.length ? extractEntriesFromRows(rows) : extractEntriesFromLines(lines);
     const hierarchyRows = parseBalanceSheetHierarchy(entries);
 
@@ -475,7 +696,7 @@ async function parseStoredReport(upload) {
       parserType,
       report: {
         rows: hierarchyRows.length ? hierarchyRows : [],
-        asOfDate: structured.asOfDate || null,
+        asOfDate,
       },
     };
   }
@@ -511,15 +732,13 @@ async function parseStoredReport(upload) {
           { id: "financing", name: "Financing Activities", matches: ["financing activities"] },
         ];
 
+  const exactMatchOnly = parserType !== "pdf" && statementType === STATEMENT_TYPES.PROFIT_AND_LOSS;
+
   return {
     statementType,
     parserType,
     report: {
-      rows: parseSectionedStatement(
-        entries,
-        sectionDefinitions,
-        { exactMatchOnly: statementType === STATEMENT_TYPES.PROFIT_AND_LOSS },
-      ),
+      rows: parseSectionedStatement(entries, sectionDefinitions, { exactMatchOnly }),
     },
   };
 }
@@ -555,17 +774,15 @@ async function syncManualReportFolder({ companyId, folderId, folderName = "" }) 
   const skipped = [];
   const now = new Date().toISOString();
 
-  for (const document of documents || []) {
-    try {
+  // Process all documents in parallel — each PDF spins up its own worker thread
+  // so the main event loop stays free and multiple files don't queue behind each other.
+  const settlements = await Promise.allSettled(
+    (documents || []).map(async (document) => {
       const upload = await loadUpload(document.upload_id);
       const parsed = await parseStoredReport(upload);
+
       if (!parsed?.statementType || !parsed?.report?.rows?.length) {
-        skipped.push({
-          documentId: document.id,
-          fileName: document.name,
-          reason: "Unsupported or unreadable report",
-        });
-        continue;
+        return { skipped: true, documentId: document.id, fileName: document.name, reason: "Unsupported or unreadable report" };
       }
 
       const { error: upsertError } = await supabase
@@ -603,21 +820,24 @@ async function syncManualReportFolder({ companyId, folderId, folderName = "" }) 
           { onConflict: "company_id,report_type,report_params" },
         );
 
-      if (upsertError) {
-        throw new Error(upsertError.message);
-      }
+      if (upsertError) throw new Error(upsertError.message);
 
-      processed.push({
-        documentId: document.id,
-        fileName: document.name,
-        statementType: parsed.statementType,
-      });
-    } catch (syncError) {
-      skipped.push({
-        documentId: document.id,
-        fileName: document.name,
-        reason: syncError.message,
-      });
+      return { skipped: false, documentId: document.id, fileName: document.name, statementType: parsed.statementType };
+    }),
+  );
+
+  for (let idx = 0; idx < settlements.length; idx++) {
+    const doc = (documents || [])[idx];
+    const settlement = settlements[idx];
+    if (settlement.status === "fulfilled") {
+      const val = settlement.value;
+      if (val.skipped) {
+        skipped.push({ documentId: val.documentId, fileName: val.fileName, reason: val.reason });
+      } else {
+        processed.push({ documentId: val.documentId, fileName: val.fileName, statementType: val.statementType });
+      }
+    } else {
+      skipped.push({ documentId: doc?.id, fileName: doc?.name, reason: settlement.reason?.message || "Processing failed" });
     }
   }
 

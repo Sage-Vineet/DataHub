@@ -80,6 +80,8 @@ export default function Navbar({ onMenuClick }) {
                     setShowProfile(false);
                     if (user?.role === 'client') {
                       navigate('/client/profile');
+                    } else if (user?.role === 'broker') {
+                      navigate('/broker/profile');
                     }
                   }}
                 >

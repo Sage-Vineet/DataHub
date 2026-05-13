@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   CheckCircle2,
   FileSpreadsheet,
+  FileText,
   FolderOpen,
   Loader2,
   RefreshCw,
@@ -276,18 +277,26 @@ export default function ManualFolderReportsUpload({
                     key={doc.id}
                     className="flex items-center justify-between gap-3 border-b border-border px-4 py-3 last:border-b-0"
                   >
-                    <div className="min-w-0">
-                      <div className="truncate text-[14px] font-medium text-text-primary">
-                        {doc.name}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <div className="truncate text-[14px] font-medium text-text-primary">
+                          {doc.name}
+                        </div>
+                        {String(doc.name || "").toLowerCase().endsWith(".pdf") && (
+                          <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide bg-red-50 text-red-600 ring-1 ring-red-200">
+                            PDF
+                          </span>
+                        )}
                       </div>
                       <div className="mt-1 text-[12px] text-text-secondary">
                         {inferReportLabel(doc.name)}
                       </div>
                     </div>
-                    <FileSpreadsheet
-                      size={16}
-                      className="shrink-0 text-primary"
-                    />
+                    {String(doc.name || "").toLowerCase().endsWith(".pdf") ? (
+                      <FileText size={16} className="shrink-0 text-red-500" />
+                    ) : (
+                      <FileSpreadsheet size={16} className="shrink-0 text-primary" />
+                    )}
                   </div>
                 ))
               )}
