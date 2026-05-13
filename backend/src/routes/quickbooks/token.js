@@ -2,6 +2,8 @@ const express = require("express");
 const axios = require("axios");
 const crypto = require("crypto");
 const { supabase } = require("../../db");
+const dataSourceService = require("../../services/dataSourceService");
+const { REPORT_SOURCE_KEYS } = require("../../services/reportSourceStore");
 const {
   getQBConfig,
   loadQBConfig,
@@ -63,6 +65,10 @@ function buildOAuthState(redirectHash, companyId, role = "broker", userId = null
       nonce: crypto.randomBytes(16).toString("hex"),
     }),
   );
+}
+
+function parseBoolean(value) {
+  return value === true || value === "true" || value === 1 || value === "1";
 }
 
 /**
@@ -240,6 +246,7 @@ router.get("/refresh-token", requireAuth, async (req, res) => {
 // GET /api/auth/quickbooks - Start OAuth flow
 router.get("/api/auth/quickbooks", requireAuth, async (req, res) => {
   let clientId = getClientId(req);
+  const confirmSwitch = parseBoolean(req.query.confirmSwitch);
 
   // Proactive Identification: If no clientId, try to find or create one for the user
   if (!clientId && req.user) {
@@ -299,6 +306,46 @@ router.get("/api/auth/quickbooks", requireAuth, async (req, res) => {
 
   if (!clientId) {
     console.log(`[OAuth Start] Proceeding with null clientId. Dynamic provisioning will continue at callback.`);
+  }
+
+  if (clientId) {
+    try {
+      const sourceState = await dataSourceService.getDataSourceState(clientId);
+      const activeSource = sourceState?.activeSource || null;
+
+      if (
+        activeSource === REPORT_SOURCE_KEYS.MANUAL_GL &&
+        !confirmSwitch
+      ) {
+        return res.status(409).json({
+          success: false,
+          code: "SOURCE_CONFLICT",
+          message: "Manual Upload is currently active.",
+          requiresConfirmation: true,
+          nextAction: "switch_to_quickbooks",
+          requestedSource: REPORT_SOURCE_KEYS.QUICKBOOKS,
+          currentSource: REPORT_SOURCE_KEYS.MANUAL_GL,
+        });
+      }
+
+      if (
+        activeSource === REPORT_SOURCE_KEYS.MANUAL_GL &&
+        confirmSwitch
+      ) {
+        await dataSourceService.switchDataSource(
+          clientId,
+          REPORT_SOURCE_KEYS.QUICKBOOKS,
+          { confirmSwitch: true },
+        );
+      }
+    } catch (error) {
+      console.error("[OAuth Start] Source validation failed:", error.message);
+      return res.status(500).json({
+        success: false,
+        code: "SOURCE_VALIDATION_FAILED",
+        message: error.message || "Unable to validate active data source.",
+      });
+    }
   }
 
   const qb = getQBConfig(clientId);

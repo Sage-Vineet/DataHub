@@ -12,6 +12,7 @@ import { useEffect, useState } from "react";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { MessageNotificationsProvider } from "./context/MessageNotificationsContext";
 import { ToastProvider, useToast } from "./context/ToastContext";
+import { DataSourceProvider } from "./context/DataSourceContext";
 import ErrorBoundary from "./components/common/ErrorBoundary";
 import Layout from "./components/layout/Layout";
 import ClientWorkspaceLayout from "./components/layout/ClientWorkspaceLayout";
@@ -416,9 +417,11 @@ export default function App() {
       <AuthProvider>
         <MessageNotificationsProvider>
           <ToastProvider>
-            <ErrorBoundary>
-              <AppRoutes />
-            </ErrorBoundary>
+            <DataSourceProvider>
+              <ErrorBoundary>
+                <AppRoutes />
+              </ErrorBoundary>
+            </DataSourceProvider>
           </ToastProvider>
         </MessageNotificationsProvider>
       </AuthProvider>

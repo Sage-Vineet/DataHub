@@ -10,9 +10,9 @@ import {
 import { cn } from "../../../lib/utils";
 import {
   getCompanyRequest,
-  getReportSources,
-  setSelectedReportSource,
+  getManualStageFilterOptions,
 } from "../../../lib/api";
+import { useDataSource } from "../../../context/DataSourceContext";
 import {
   getBalanceSheet,
   getBalanceSheetDetail,
@@ -38,7 +38,6 @@ import {
   getReportSourceMode,
   normalizeReportSourceKey,
   REPORT_SOURCE_KEYS,
-  REPORT_SOURCE_OPTIONS,
 } from "../../../lib/report-source";
 import { syncQuickbooksReports } from "../../../lib/quickbooks";
 import {
@@ -151,8 +150,68 @@ const DATE_RANGE_OPTIONS = [
   "Since 30 days ago",
 ];
 
+function createDefaultManualFilters() {
+  return {
+    batchId: "",
+    fiscalYear: [],
+    startDate: "",
+    endDate: "",
+    accountName: [],
+    accountNumber: [],
+    accountType: [],
+    category: [],
+    subCategory: [],
+    department: [],
+    class: [],
+    location: [],
+    sourceFile: [],
+    reportType: [],
+    transactionType: [],
+    journalType: [],
+  };
+}
+
+function normalizeManualFilters(input = {}) {
+  const defaults = createDefaultManualFilters();
+  const next = { ...defaults, ...(input && typeof input === "object" ? input : {}) };
+
+  Object.keys(defaults).forEach((key) => {
+    if (Array.isArray(defaults[key])) {
+      const values = Array.isArray(next[key]) ? next[key] : [];
+      next[key] = values
+        .map((item) => String(item || "").trim())
+        .filter(Boolean);
+      return;
+    }
+    next[key] = String(next[key] || "").trim();
+  });
+
+  return next;
+}
+
+function buildManualFilterParams(filters) {
+  const normalized = normalizeManualFilters(filters);
+  const params = {};
+
+  Object.entries(normalized).forEach(([key, value]) => {
+    if (Array.isArray(value)) {
+      if (value.length > 0) params[key] = value;
+      return;
+    }
+    if (value) params[key] = value;
+  });
+
+  // QB date fallback intentionally removed: manual reports are filtered by
+  // fiscalYear only; QB date ranges must not pollute staged GL sub-queries.
+  return params;
+}
+
 export default function WorkspaceReports() {
   const { clientId } = useParams();
+  const {
+    activeSource: contextActiveSource,
+    quickbooksConnected: contextQbConnected,
+  } = useDataSource();
   const today = new Date();
   const todayString = formatDateForInput(today);
   const defaultCustomStart = `${todayString.slice(0, 7)}-01`;
@@ -206,12 +265,20 @@ export default function WorkspaceReports() {
   );
   const [isSyncing, setIsSyncing] = useState(false);
   const [company, setCompany] = useState(null);
-  const [reportSources, setReportSources] = useState([]);
-  const [selectedReportSource, setSelectedReportSourceState] = useState(
-    normalizeReportSourceKey(
-      storedState?.selectedReportSource || REPORT_SOURCE_KEYS.QUICKBOOKS,
-    ),
+  const selectedReportSource = useMemo(
+    () =>
+      normalizeReportSourceKey(
+        contextActiveSource || REPORT_SOURCE_KEYS.QUICKBOOKS,
+      ),
+    [contextActiveSource],
   );
+  const [manualFilters, setManualFilters] = useState(
+    normalizeManualFilters(storedState?.manualFilters),
+  );
+  const [appliedManualFilters, setAppliedManualFilters] = useState(
+    normalizeManualFilters(storedState?.appliedManualFilters),
+  );
+  const [manualFilterOptions, setManualFilterOptions] = useState({});
   const hasRestoredSessionRef = useRef(false);
 
   useEffect(() => {
@@ -238,11 +305,8 @@ export default function WorkspaceReports() {
       );
       setAppliedAccountingMethod(nextState.appliedAccountingMethod || "Accrual");
       setReportFormat(nextState.reportFormat || "PDF");
-      setSelectedReportSourceState(
-        normalizeReportSourceKey(
-          nextState.selectedReportSource || REPORT_SOURCE_KEYS.QUICKBOOKS,
-        ),
-      );
+      setManualFilters(normalizeManualFilters(nextState.manualFilters));
+      setAppliedManualFilters(normalizeManualFilters(nextState.appliedManualFilters));
       hasRestoredSessionRef.current = true;
     });
   }, [clientId, defaultCustomStart, todayString]);
@@ -272,35 +336,6 @@ export default function WorkspaceReports() {
     () => company?.name || "All Clients",
     [company?.name],
   );
-  useEffect(() => {
-    let active = true;
-
-    if (!clientId) {
-      return () => {
-        active = false;
-      };
-    }
-
-    getReportSources({ clientId })
-      .then((payload) => {
-        if (!active) return;
-        setReportSources(Array.isArray(payload?.sources) ? payload.sources : []);
-        setSelectedReportSourceState(
-          normalizeReportSourceKey(payload?.selectedSource),
-        );
-      })
-      .catch((error) => {
-        console.error("[WorkspaceReports] Failed to load report sources:", error);
-        if (active) {
-          setReportSources([]);
-          setSelectedReportSourceState(REPORT_SOURCE_KEYS.QUICKBOOKS);
-        }
-      });
-
-    return () => {
-      active = false;
-    };
-  }, [clientId]);
 
   const selectedSourceMode = useMemo(
     () => getReportSourceMode(selectedReportSource),
@@ -310,19 +345,7 @@ export default function WorkspaceReports() {
     () => getReportSourceLabel(selectedReportSource),
     [selectedReportSource],
   );
-  const sourceOptions = useMemo(() => {
-    if (Array.isArray(reportSources) && reportSources.length > 0) {
-      return reportSources.map((source) => ({
-        key: normalizeReportSourceKey(source.sourceKey),
-        label: source.sourceLabel || getReportSourceLabel(source.sourceKey),
-      }));
-    }
-
-    return REPORT_SOURCE_OPTIONS.map((option) => ({
-      key: option.key,
-      label: option.label,
-    }));
-  }, [reportSources]);
+  const isQuickBooksConnected = Boolean(contextQbConnected);
   const createdOn = useMemo(
     () =>
       new Date().toLocaleDateString("en-US", {
@@ -332,6 +355,41 @@ export default function WorkspaceReports() {
       }),
     [],
   );
+
+  useEffect(() => {
+    if (selectedSourceMode !== "manual" || !clientId) return;
+    const optionsParams = {
+      batchId: appliedManualFilters.batchId,
+    };
+
+    getManualStageFilterOptions({
+      clientId,
+      params: optionsParams,
+    })
+      .then((payload) => {
+        const options = payload?.options && typeof payload.options === "object"
+          ? payload.options
+          : {};
+        setManualFilterOptions(options);
+        const availableYears = Array.isArray(options.fiscalYear) ? options.fiscalYear : [];
+        if (availableYears.length > 0) {
+          const currentYear = manualFilters.fiscalYear?.[0];
+          const yearMatch = availableYears.find((y) => String(y) === String(currentYear));
+          if (!currentYear || !yearMatch) {
+            const sorted = [...availableYears].map(Number).filter(Number.isFinite).sort((a, b) => b - a);
+            if (sorted.length > 0) {
+              const next = { ...manualFilters, fiscalYear: [String(sorted[0])] };
+              setManualFilters(next);
+              setAppliedManualFilters(next);
+            }
+          }
+        }
+      })
+      .catch((error) => {
+        console.error("[WorkspaceReports] Failed to load manual filter options:", error);
+        setManualFilterOptions({});
+      });
+  }, [appliedManualFilters.batchId, clientId, selectedSourceMode]);
 
   useEffect(() => {
     if (!clientId || !hasRestoredSessionRef.current) return;
@@ -349,10 +407,13 @@ export default function WorkspaceReports() {
       appliedAccountingMethod,
       reportFormat,
       selectedReportSource,
+      manualFilters,
+      appliedManualFilters,
       savedAt: new Date().toISOString(),
     });
   }, [
     accountingMethod,
+    appliedManualFilters,
     appliedAccountingMethod,
     appliedEndDate,
     appliedReportType,
@@ -365,6 +426,7 @@ export default function WorkspaceReports() {
     reportsData,
     selectedReportSource,
     selectedTab,
+    manualFilters,
   ]);
 
   const handleSync = async () => {
@@ -377,26 +439,6 @@ export default function WorkspaceReports() {
       alert("Sync failed. Please try again.");
     } finally {
       setIsSyncing(false);
-    }
-  };
-
-  const handleReportSourceChange = async (sourceKey) => {
-    const normalizedSourceKey = normalizeReportSourceKey(sourceKey);
-    const previousSelected = selectedReportSource;
-    setSelectedReportSourceState(normalizedSourceKey);
-
-    try {
-      const payload = await setSelectedReportSource(normalizedSourceKey, {
-        clientId,
-      });
-      setReportSources(Array.isArray(payload?.sources) ? payload.sources : []);
-      setSelectedReportSourceState(
-        normalizeReportSourceKey(payload?.selectedSource),
-      );
-    } catch (error) {
-      console.error("[WorkspaceReports] Failed to save report source:", error);
-      setSelectedReportSourceState(previousSelected);
-      alert("Could not save the report source. Please try again.");
     }
   };
 
@@ -636,13 +678,36 @@ export default function WorkspaceReports() {
         filters: { startDate: userStart, endDate: userEnd },
       });
 
-
-      setAppliedStartDate(dateConfig.startDate || "");
-      setAppliedEndDate(dateConfig.endDate || "");
       setAppliedReportType(reportType);
       setAppliedAccountingMethod(accountingMethod);
 
       const { startDate: resolvedStart, endDate: resolvedEnd } = dateConfig;
+      const manualFilterParams =
+        selectedSourceMode === "manual"
+          ? buildManualFilterParams(appliedManualFilters)
+          : null;
+
+      // For manual mode: use the selected fiscal year to derive display dates.
+      // reportType is NOT injected — backend build-payload functions handle
+      // account classification; sending it causes sub-query filter pollution.
+      let effectiveStartDate, effectiveEndDate;
+      if (selectedSourceMode === "manual") {
+        const selectedYear = appliedManualFilters?.fiscalYear?.[0]
+          || manualFilterParams?.fiscalYear?.[0];
+        if (selectedYear) {
+          effectiveStartDate = `${selectedYear}-01-01`;
+          effectiveEndDate = `${selectedYear}-12-31`;
+        } else {
+          effectiveStartDate = resolvedStart;
+          effectiveEndDate = resolvedEnd;
+        }
+      } else {
+        effectiveStartDate = resolvedStart;
+        effectiveEndDate = resolvedEnd;
+      }
+
+      setAppliedStartDate(effectiveStartDate || "");
+      setAppliedEndDate(effectiveEndDate || "");
 
       let summary = [];
       let detail = { groups: [] };
@@ -650,10 +715,13 @@ export default function WorkspaceReports() {
       if (selectedTab === "Balance Sheet") {
         if (reportType === "Summary") {
           summary = await getBalanceSheet(
-            resolvedStart,
-            resolvedEnd,
+            effectiveStartDate,
+            effectiveEndDate,
             normalizedAccountingMethod,
-            { sourceMode: selectedSourceMode },
+            {
+              sourceMode: selectedSourceMode,
+              manualFilters: manualFilterParams,
+            },
           ).catch(() => ({
             rows: [],
             source: null,
@@ -662,42 +730,57 @@ export default function WorkspaceReports() {
           }));
         } else {
           detail = await getBalanceSheetDetail(
-            resolvedStart,
-            resolvedEnd,
+            effectiveStartDate,
+            effectiveEndDate,
             normalizedAccountingMethod,
-            { sourceMode: selectedSourceMode },
+            {
+              sourceMode: selectedSourceMode,
+              manualFilters: manualFilterParams,
+            },
           ).catch(() => ({ groups: [] }));
         }
       } else if (selectedTab === "Profit & Loss") {
         if (reportType === "Summary") {
           summary = await getProfitAndLoss(
-            resolvedStart,
-            resolvedEnd,
+            effectiveStartDate,
+            effectiveEndDate,
             normalizedAccountingMethod,
-            { sourceMode: selectedSourceMode },
+            {
+              sourceMode: selectedSourceMode,
+              manualFilters: manualFilterParams,
+            },
           ).catch(() => []);
         } else {
           detail = await getProfitAndLossDetail(
-            resolvedStart,
-            resolvedEnd,
+            effectiveStartDate,
+            effectiveEndDate,
             normalizedAccountingMethod,
-            { sourceMode: selectedSourceMode },
+            {
+              sourceMode: selectedSourceMode,
+              manualFilters: manualFilterParams,
+            },
           ).catch(() => []);
         }
       } else {
         if (reportType === "Summary") {
           summary = await getCashflow(
-            resolvedStart,
-            resolvedEnd,
+            effectiveStartDate,
+            effectiveEndDate,
             normalizedAccountingMethod,
-            { sourceMode: selectedSourceMode },
+            {
+              sourceMode: selectedSourceMode,
+              manualFilters: manualFilterParams,
+            },
           ).catch(() => []);
         } else {
           detail = await getCashflowDetail(
-            resolvedStart,
-            resolvedEnd,
+            effectiveStartDate,
+            effectiveEndDate,
             normalizedAccountingMethod,
-            { sourceMode: selectedSourceMode },
+            {
+              sourceMode: selectedSourceMode,
+              manualFilters: manualFilterParams,
+            },
           ).catch(() => ({ rows: [], columns: {} }));
         }
       }
@@ -729,6 +812,7 @@ export default function WorkspaceReports() {
     }
   }, [
     accountingMethod,
+    appliedManualFilters,
     clientId,
     customRange.end,
     customRange.start,
@@ -758,7 +842,7 @@ export default function WorkspaceReports() {
       const currentReport = reportsData[selectedTab];
       const summaryData = currentReport.summary?.rows || currentReport.summary || [];
       const detailData = currentReport.detail || { rows: [], columns: {} };
-      
+
       const isEmpty =
         appliedReportType === "Summary"
           ? !summaryData || summaryData.length === 0
@@ -802,21 +886,34 @@ export default function WorkspaceReports() {
       <Header title="Reports" />
 
       <div className="page-content">
-        <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-bold text-[#050505] mb-4">
-            Financial Reports
-          </h1>
-          <button
-            onClick={handleSync}
-            disabled={isSyncing}
-            className="btn-secondary"
-          >
-            <RefreshCw size={16} className={isSyncing ? "animate-spin" : ""} />
-            {isSyncing ? "Syncing..." : "Sync"}
-          </button>
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="text-2xl font-bold text-[#050505]">
+              Financial Reports
+            </h1>
+            <span className="rounded-full border border-border bg-bg-card px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-text-secondary">
+              Current Source: {selectedSourceLabel}
+            </span>
+          </div>
+          {selectedSourceMode === "quickbooks" ? (
+            <button
+              onClick={handleSync}
+              disabled={isSyncing}
+              className="btn-secondary"
+            >
+              <RefreshCw size={16} className={isSyncing ? "animate-spin" : ""} />
+              {isSyncing ? "Syncing..." : "Sync"}
+            </button>
+          ) : null}
         </div>
 
-        <QBDisconnectedBanner pageName="Reports" />
+        {selectedSourceMode === "quickbooks" && isQuickBooksConnected ? (
+          <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-[13px] text-amber-800">
+            QuickBooks is currently connected. Disconnect QuickBooks to use Manual Upload.
+          </div>
+        ) : null}
+
+        {selectedSourceMode !== "manual" && <QBDisconnectedBanner pageName="Reports" />}
 
         <div className="mb-6 flex gap-6 border-b border-border pb-px">
           {REPORT_TABS.map((tab) => (
@@ -868,7 +965,7 @@ export default function WorkspaceReports() {
               </div>
             </div>
 
-            {reportType === "Summary" && (
+            {reportType === "Summary" && selectedSourceMode !== "manual" && (
               <>
                 <div className="flex flex-col gap-1.5">
                   <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
@@ -948,28 +1045,41 @@ export default function WorkspaceReports() {
               </div>
             </div>
 
-            <div className="flex flex-col gap-1.5">
-              <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
-                Report Source
-              </label>
-              <div className="relative min-w-[190px]">
-                <select
-                  value={selectedReportSource}
-                  onChange={(event) => handleReportSourceChange(event.target.value)}
-                  className="h-9 w-full appearance-none rounded-md border border-border-input bg-bg-card pl-3 pr-9 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-                >
-                  {sourceOptions.map((option) => (
-                    <option key={option.key} value={option.key}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown
-                  size={14}
-                  className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-text-muted"
-                />
-              </div>
-            </div>
+            {selectedSourceMode === "manual" && (
+              <>
+
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
+                    Fiscal Year
+                  </label>
+                  <div className="relative min-w-[120px]">
+                    <select
+                      value={manualFilters.fiscalYear?.[0] || ""}
+                      onChange={(event) => {
+                        const year = event.target.value;
+                        const next = {
+                          ...manualFilters,
+                          fiscalYear: year ? [year] : [],
+                        };
+                        setManualFilters(next);
+                        setAppliedManualFilters(next);
+                      }}
+                      className="h-9 w-full appearance-none rounded-md border border-border-input bg-bg-card pl-3 pr-9 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                    >
+                      {(manualFilterOptions?.fiscalYear || []).map((year) => (
+                        <option key={year} value={year}>
+                          {year}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown
+                      size={14}
+                      className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-text-muted"
+                    />
+                  </div>
+                </div>
+              </>
+            )}
 
             <div className="ml-auto flex items-end gap-3 self-end">
               <div className="flex flex-col gap-1.5">
@@ -1041,6 +1151,7 @@ export default function WorkspaceReports() {
                       startDate={appliedStartDate}
                       endDate={appliedEndDate}
                       accountingMethod={appliedAccountingMethod}
+                      sourceMode={selectedSourceMode}
                       clientName={clientName}
                       entityName={company?.name || clientName}
                       createdOn={createdOn}
@@ -1054,6 +1165,7 @@ export default function WorkspaceReports() {
                       startDate={appliedStartDate}
                       endDate={appliedEndDate}
                       accountingMethod={appliedAccountingMethod}
+                      sourceMode={selectedSourceMode}
                       clientName={clientName}
                       entityName={company?.name || clientName}
                       createdOn={createdOn}
@@ -1067,6 +1179,7 @@ export default function WorkspaceReports() {
                       startDate={appliedStartDate}
                       endDate={appliedEndDate}
                       accountingMethod={appliedAccountingMethod}
+                      sourceMode={selectedSourceMode}
                       clientName={clientName}
                       entityName={company?.name || clientName}
                       createdOn={createdOn}
@@ -1089,6 +1202,7 @@ export default function WorkspaceReports() {
                       startDate={appliedStartDate}
                       endDate={appliedEndDate}
                       accountingMethod={appliedAccountingMethod}
+                      sourceMode={selectedSourceMode}
                       clientName={clientName}
                       entityName={company?.name || clientName}
                       createdOn={createdOn}
@@ -1102,6 +1216,7 @@ export default function WorkspaceReports() {
                       startDate={appliedStartDate}
                       endDate={appliedEndDate}
                       accountingMethod={appliedAccountingMethod}
+                      sourceMode={selectedSourceMode}
                       clientName={clientName}
                       entityName={company?.name || clientName}
                       createdOn={createdOn}
@@ -1115,6 +1230,7 @@ export default function WorkspaceReports() {
                       startDate={appliedStartDate}
                       endDate={appliedEndDate}
                       accountingMethod={appliedAccountingMethod}
+                      sourceMode={selectedSourceMode}
                       clientName={clientName}
                       entityName={company?.name || clientName}
                       createdOn={createdOn}
@@ -1127,6 +1243,7 @@ export default function WorkspaceReports() {
           </div>
         </div>
       </div>
+
     </div>
   );
 }

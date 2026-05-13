@@ -1,5 +1,6 @@
 import BalanceSheetSummary from "./BalanceSheetSummary";
 import BalanceSheetQBSummary from "./BalanceSheetQBSummary";
+import ManualBalanceSheetMonthlyDetail from "../manual/ManualBalanceSheetMonthlyDetail";
 
 export default function BalanceSheetReport({
   reportType,
@@ -8,6 +9,7 @@ export default function BalanceSheetReport({
   startDate,
   endDate,
   accountingMethod,
+  sourceMode,
   clientName = "All Clients",
   entityName,
   createdOn,
@@ -19,8 +21,24 @@ export default function BalanceSheetReport({
   const source = data?.source || null;
   const sourceLabel = data?.sourceLabel || null;
   const noDataText = data?.noDataText || null;
+  const isManualMonthlyDetail = Boolean(
+    detailedData?.source === "manual_staged" && detailedData?.reportType === "balance_sheet_monthly_detail"
+  );
+  const summarySubtitle = sourceMode === "manual"
+    ? undefined
+    : `Report Period: ${periodText} | ${clientName} | ${accountingMethod} Basis`;
 
   if (reportType === "Detail") {
+    if (isManualMonthlyDetail) {
+      return (
+        <ManualBalanceSheetMonthlyDetail
+          data={detailedData}
+          title="Balance Sheet"
+          entityName={resolvedEntityName}
+        />
+      );
+    }
+
     // Detail View: Multi-year EBITDA/SDE analysis
     const rows = Array.isArray(detailedData?.rows) ? detailedData.rows : (Array.isArray(detailedData) ? detailedData : []);
     const columns = detailedData?.columns || undefined;
@@ -43,7 +61,7 @@ export default function BalanceSheetReport({
     <BalanceSheetQBSummary
       data={summaryRows}
       title="Balance Sheet"
-      subtitle={`Report Period: ${periodText} | ${clientName} | ${accountingMethod} Basis`}
+      subtitle={summarySubtitle}
       entityName={resolvedEntityName}
       source={source}
       sourceLabel={sourceLabel}

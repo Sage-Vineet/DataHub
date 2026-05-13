@@ -46,13 +46,16 @@ export async function request(path, options = {}) {
       payload?.message ||
       payload?.error ||
       `Request failed: ${response.status}`;
-    throw new Error(errorMessage);
+    const error = new Error(errorMessage);
+    error.status = response.status;
+    error.payload = payload;
+    throw error;
   }
 
   return payload;
 }
 
-export function connectQuickbooks(redirectHash, explicitClientId = null) {
+export function connectQuickbooks(redirectHash, explicitClientId = null, options = {}) {
   const hash = window.location.hash || "";
   // 1. Try explicit ID (passed from component)
   // 2. Try broker path
@@ -84,7 +87,8 @@ export function connectQuickbooks(redirectHash, explicitClientId = null) {
   const token = getStoredToken();
   const authQuery = token ? `&token=${encodeURIComponent(token)}` : "";
   const timestamp = Date.now();
-  window.location.href = `${API_BASE_URL}/api/auth/quickbooks?state=${state}&clientId=${clientId || ""}${authQuery}&t=${timestamp}`;
+  const confirmSwitch = options?.confirmSwitch !== false;
+  window.location.href = `${API_BASE_URL}/api/auth/quickbooks?state=${state}&clientId=${clientId || ""}&confirmSwitch=${confirmSwitch ? "true" : "false"}${authQuery}&t=${timestamp}`;
 }
 
 export function getConnectionStatus() {

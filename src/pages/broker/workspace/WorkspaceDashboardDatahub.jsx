@@ -50,6 +50,13 @@ import { getProfitAndLoss } from "../../../services/profitAndLossService";
 import { refreshQuickbooksToken } from "../../../services/authService";
 import { getStoredToken } from "../../../lib/api";
 import { exportToCSV } from "../../../lib/exportCSV";
+import {
+  getReportSourceLabel,
+  getReportSourceMode,
+  normalizeReportSourceKey,
+  REPORT_SOURCE_KEYS,
+} from "../../../lib/report-source";
+import { useDataSource } from "../../../context/DataSourceContext";
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
@@ -246,6 +253,14 @@ export default function WorkspaceDashboardDatahub() {
   const [chartSelectedMonth, setChartSelectedMonth] = useState("");
   const [aggregationType, setAggregationType] = useState("monthly");
   const [isSyncing, setIsSyncing] = useState(false);
+  const {
+    activeSource: contextActiveSource,
+    quickbooksConnected: contextQbConnected,
+  } = useDataSource();
+  const [activeSourceKey, setActiveSourceKey] = useState(
+    REPORT_SOURCE_KEYS.QUICKBOOKS,
+  );
+  const [quickbooksConnected, setQuickbooksConnected] = useState(false);
 
   // Tracks the last chart request so we never fire the same one twice
   const lastChartRequestKeyRef = useRef("");
@@ -258,6 +273,15 @@ export default function WorkspaceDashboardDatahub() {
     if (!selectedKpiLabels.length) return dynamicStats;
     return dynamicStats.filter((stat) => selectedKpiLabels.includes(stat.label));
   }, [dynamicStats, selectedKpiLabels]);
+
+  const activeSourceMode = useMemo(
+    () => getReportSourceMode(activeSourceKey),
+    [activeSourceKey],
+  );
+  const activeSourceLabel = useMemo(
+    () => getReportSourceLabel(activeSourceKey),
+    [activeSourceKey],
+  );
 
   // ── Date-range calculator ──────────────────────────────────────────────
 
@@ -299,11 +323,45 @@ export default function WorkspaceDashboardDatahub() {
     [clientId],
   );
 
+  const loadSourceState = useCallback(async () => {
+    if (!clientId) {
+      setActiveSourceKey(REPORT_SOURCE_KEYS.QUICKBOOKS);
+      setQuickbooksConnected(false);
+      return REPORT_SOURCE_KEYS.QUICKBOOKS;
+    }
+
+    // Use context value when already loaded — avoids a redundant API call
+    if (contextActiveSource) {
+      const normalized = normalizeReportSourceKey(contextActiveSource);
+      setActiveSourceKey(normalized);
+      setQuickbooksConnected(contextQbConnected);
+      return normalized;
+    }
+
+    // Context hasn't resolved yet — fall back to a direct fetch
+    try {
+      const { getReportSources: _getReportSources } = await import("../../../lib/api");
+      const payload = await _getReportSources({ clientId });
+      const sourceKey = normalizeReportSourceKey(
+        payload?.selectedSource || payload?.activeSource,
+      );
+      setActiveSourceKey(sourceKey);
+      setQuickbooksConnected(Boolean(payload?.quickbooksConnected));
+      return sourceKey;
+    } catch (error) {
+      console.error("[DataHub] Failed to load active source:", error);
+      setActiveSourceKey(REPORT_SOURCE_KEYS.QUICKBOOKS);
+      setQuickbooksConnected(false);
+      return REPORT_SOURCE_KEYS.QUICKBOOKS;
+    }
+  }, [clientId, contextActiveSource, contextQbConnected]);
+
   // ── Snapshot builders ──────────────────────────────────────────────────
 
   // Everything we need to fully restore the page — stored in sessionStorage
   const buildSessionSnapshot = useCallback(
     (overrides = {}) => ({
+      sourceKey: overrides.sourceKey ?? activeSourceKey,
       startDate: overrides.startDate ?? startDate,
       endDate: overrides.endDate ?? endDate,
       selectedYear: overrides.selectedYear ?? selectedYear,
@@ -324,6 +382,7 @@ export default function WorkspaceDashboardDatahub() {
       monthlyInsights: overrides.monthlyInsights ?? monthlyInsights,
     }),
     [
+      activeSourceKey,
       aggregationType,
       chartDataState,
       chartEndDate,
@@ -346,6 +405,7 @@ export default function WorkspaceDashboardDatahub() {
   // Subset stored on the server (no UI-only fields like selectedYear/Month)
   const buildRemoteSnapshot = useCallback(
     (overrides = {}) => ({
+      sourceKey: overrides.sourceKey ?? activeSourceKey,
       startDate: overrides.startDate ?? startDate,
       endDate: overrides.endDate ?? endDate,
       filterType: overrides.filterType ?? filterType,
@@ -361,6 +421,7 @@ export default function WorkspaceDashboardDatahub() {
       monthlyInsights: overrides.monthlyInsights ?? monthlyInsights,
     }),
     [
+      activeSourceKey,
       aggregationType,
       chartDataState,
       chartEndDate,
@@ -381,8 +442,11 @@ export default function WorkspaceDashboardDatahub() {
    * Applies a saved snapshot to all state setters.
    * Returns true if the snapshot had usable data (non-empty stats/chart).
    */
-  const applyDashboardSnapshot = useCallback((snapshot) => {
+  const applyDashboardSnapshot = useCallback((snapshot, expectedSourceKey = activeSourceKey) => {
     if (!snapshot || typeof snapshot !== "object") return false;
+    const snapshotSourceKey = normalizeReportSourceKey(snapshot.sourceKey || null);
+    if (!snapshotSourceKey) return false;
+    if (snapshotSourceKey !== normalizeReportSourceKey(expectedSourceKey)) return false;
 
     // Only restore if there is actual data — otherwise fall through to fresh fetch
     const hasData =
@@ -434,11 +498,11 @@ export default function WorkspaceDashboardDatahub() {
     // Mark the chart request key so loadChartData won't re-fire for same params
     lastChartRequestKeyRef.current =
       snapshot.chartStartDate && snapshot.chartEndDate
-        ? `${snapshot.chartStartDate}|${snapshot.chartEndDate}|${snapshot.aggregationType || "monthly"}`
+        ? `${snapshot.chartStartDate}|${snapshot.chartEndDate}|${snapshot.aggregationType || "monthly"}|${getReportSourceMode(snapshotSourceKey)}`
         : "";
 
     return hasData;
-  }, []);
+  }, [activeSourceKey]);
 
   // ── Remote snapshot persistence ────────────────────────────────────────
 
@@ -485,14 +549,22 @@ export default function WorkspaceDashboardDatahub() {
 
   // ── Data fetchers ──────────────────────────────────────────────────────
 
-  const loadChartData = useCallback(async (start, end, aggType = "monthly") => {
-    const requestKey = `${start}|${end}|${aggType}`;
+  const loadChartData = useCallback(async (
+    start,
+    end,
+    aggType = "monthly",
+    sourceModeOverride = "",
+  ) => {
+    const sourceMode = sourceModeOverride || activeSourceMode;
+    const requestKey = `${start}|${end}|${aggType}|${sourceMode}`;
     if (lastChartRequestKeyRef.current === requestKey) return;
     lastChartRequestKeyRef.current = requestKey;
 
     setIsChartLoading(true);
     try {
-      const data = await fetchFinancialTrends(start, end, aggType);
+      const data = await fetchFinancialTrends(start, end, aggType, {
+        sourceMode,
+      });
       setChartDataState(data);
     } catch (err) {
       console.error("Failed to load chart data:", err);
@@ -501,14 +573,15 @@ export default function WorkspaceDashboardDatahub() {
     } finally {
       setIsChartLoading(false);
     }
-  }, []);
+  }, [activeSourceMode]);
 
-  const loadKpiData = useCallback(async (start, end) => {
+  const loadKpiData = useCallback(async (start, end, sourceModeOverride = "") => {
+    const sourceMode = sourceModeOverride || activeSourceMode;
     setIsLoading(true);
     try {
       const [kpiData, invsData] = await Promise.all([
-        fetchDashboardKPIs(start, end),
-        fetchInvoices(),
+        fetchDashboardKPIs(start, end, { sourceMode }),
+        sourceMode === "quickbooks" ? fetchInvoices() : Promise.resolve([]),
       ]);
 
       const invs = Array.isArray(invsData?.QueryResponse?.Invoice)
@@ -568,7 +641,9 @@ export default function WorkspaceDashboardDatahub() {
       ]);
     } catch (err) {
       console.error("Failed to load dashboard KPI data:", err);
-      const reportFallback = await getProfitAndLoss().catch(() => null);
+      const reportFallback = await getProfitAndLoss("", "", "", {
+        sourceMode,
+      }).catch(() => null);
       if (reportFallback) {
         setMonthlyInsights((current) =>
           current.length
@@ -586,23 +661,31 @@ export default function WorkspaceDashboardDatahub() {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [activeSourceMode]);
 
   // ── Manual sync (explicit user action — always re-fetches) ─────────────
 
   const handleSync = useCallback(async () => {
     setIsSyncing(true);
     try {
-      await refreshQuickbooksToken();
-      await loadKpiData(startDate, endDate);
+      if (activeSourceMode === "quickbooks") {
+        await refreshQuickbooksToken();
+      }
+      await loadKpiData(startDate, endDate, activeSourceMode);
       lastChartRequestKeyRef.current = "";
-      await loadChartData(chartStartDate, chartEndDate, aggregationType);
+      await loadChartData(
+        chartStartDate,
+        chartEndDate,
+        aggregationType,
+        activeSourceMode,
+      );
     } catch (err) {
       console.error("Sync failed:", err);
     } finally {
       setIsSyncing(false);
     }
   }, [
+    activeSourceMode,
     aggregationType,
     chartEndDate,
     chartStartDate,
@@ -629,10 +712,13 @@ export default function WorkspaceDashboardDatahub() {
     const currentMonth = (new Date().getMonth() + 1).toString();
 
     const bootstrap = async () => {
+      const resolvedSourceKey = await loadSourceState();
+      const resolvedSourceMode = getReportSourceMode(resolvedSourceKey);
+
       // 1. Try sessionStorage first (instant, no network)
       const sessionSnap = getStoredDashboardState(clientId, user?.id);
       if (sessionSnap) {
-        const restored = applyDashboardSnapshot(sessionSnap);
+        const restored = applyDashboardSnapshot(sessionSnap, resolvedSourceKey);
         if (restored) {
           hasRestoredRef.current = true;
           setIsLoading(false);
@@ -644,7 +730,7 @@ export default function WorkspaceDashboardDatahub() {
       // 2. Try remote snapshot (cross-session persistence)
       const remoteSnap = await fetchRemoteDashboardSnapshot();
       if (remoteSnap) {
-        const restored = applyDashboardSnapshot(remoteSnap);
+        const restored = applyDashboardSnapshot(remoteSnap, resolvedSourceKey);
         if (restored) {
           // Mirror remote snapshot into sessionStorage so subsequent navigations
           // are instant and don't need the network round-trip
@@ -679,14 +765,13 @@ export default function WorkspaceDashboardDatahub() {
       setChartStartDate(chartStart);
       setChartEndDate(chartEnd);
 
-      await loadKpiData(kpiStart, kpiEnd);
-      await loadChartData(chartStart, chartEnd, "monthly");
+      await loadKpiData(kpiStart, kpiEnd, resolvedSourceMode);
+      await loadChartData(chartStart, chartEnd, "monthly", resolvedSourceMode);
 
       hasRestoredRef.current = true;
     };
 
     bootstrap();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clientId, user?.id]); // Re-run only when the client or signed-in user changes
 
   // ── Auto-save: persist state to sessionStorage after every meaningful change
@@ -976,7 +1061,14 @@ export default function WorkspaceDashboardDatahub() {
     <>
       <Header title="Dashboard" />
       <div className="px-6 pt-6">
-        <QBDisconnectedBanner pageName="DataHub Dashboard" />
+        {activeSourceMode === "quickbooks" ? (
+          <QBDisconnectedBanner pageName="DataHub Dashboard" />
+        ) : (
+          <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-[13px] text-amber-800">
+            Current Source: {activeSourceLabel}. QuickBooks sync is disabled while Manual Upload is active.
+            {quickbooksConnected ? " QuickBooks is connected but inactive for this workspace." : ""}
+          </div>
+        )}
       </div>
       <div className="flex-1 p-6 space-y-6">
         <div className="flex items-center justify-between flex-wrap gap-4">
@@ -984,11 +1076,18 @@ export default function WorkspaceDashboardDatahub() {
             <h1 className="text-[24px] font-bold text-text-primary">
               Dashboard
             </h1>
+            <span className="rounded-full border border-border bg-bg-card px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-text-secondary">
+              Current Source: {activeSourceLabel}
+            </span>
             <button
               onClick={handleSync}
-              disabled={isSyncing}
+              disabled={isSyncing || activeSourceMode !== "quickbooks"}
               className="btn-secondary py-1.5 px-3"
-              title="Sync data"
+              title={
+                activeSourceMode === "quickbooks"
+                  ? "Sync data"
+                  : "QuickBooks sync is disabled while Manual Upload is active"
+              }
             >
               <RefreshCw
                 size={16}

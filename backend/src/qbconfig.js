@@ -46,8 +46,8 @@ function mergeWithDefault(state = {}) {
   const oauthClientId = state.oauthClientId || state.clientId || null;
   const hasCredentialMismatch = Boolean(
     oauthClientId &&
-      DEFAULT_CONFIG.clientId &&
-      oauthClientId !== DEFAULT_CONFIG.clientId,
+    DEFAULT_CONFIG.clientId &&
+    oauthClientId !== DEFAULT_CONFIG.clientId,
   );
 
   return {
@@ -194,7 +194,7 @@ async function disconnectConfig(clientId) {
       const basicToken = currentState.basicToken || buildBasicToken(currentState.clientId || DEFAULT_CONFIG.clientId, currentState.clientSecret || DEFAULT_CONFIG.clientSecret);
       const tokenToRevoke = currentState.refreshToken || currentState.accessToken;
       const axios = require("axios");
-      
+
       if (tokenToRevoke) {
         await axios.post(
           "https://developer.api.intuit.com/v2/oauth2/tokens/revoke",

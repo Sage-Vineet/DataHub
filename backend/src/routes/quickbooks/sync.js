@@ -1,6 +1,7 @@
 const express = require("express");
 const { requireAuth } = require("../../middleware/auth");
 const { checkQBAuth } = require("../../middleware/quickbooksAuth");
+const { enforceDataSource, REPORT_SOURCE_KEYS } = require("../../middleware/dataSourceIsolation");
 const { syncAllReports, getSyncStatus } = require("../../services/quickbooksReportService");
 
 const router = express.Router();
@@ -19,7 +20,12 @@ const router = express.Router();
  *       401:
  *         description: Not connected to QuickBooks
  */
-router.post("/api/quickbooks/sync", requireAuth, checkQBAuth, async (req, res) => {
+router.post(
+  "/api/quickbooks/sync",
+  requireAuth,
+  enforceDataSource(REPORT_SOURCE_KEYS.QUICKBOOKS),
+  checkQBAuth,
+  async (req, res) => {
   try {
     const clientId = req.clientId;
 

@@ -65,6 +65,7 @@ async function getCachedReport({ companyId, reportType, reportParams = null }) {
     .select("*")
     .eq("company_id", companyId)
     .eq("report_type", reportType)
+    .eq("source", "quickbooks")
     .order("last_synced_at", { ascending: false })
     .limit(1);
 
@@ -93,6 +94,7 @@ async function getAllCachedReports(companyId) {
     .from("qb_synced_reports")
     .select("id, company_id, report_type, report_params, last_synced_at, source")
     .eq("company_id", companyId)
+    .eq("source", "quickbooks")
     .order("last_synced_at", { ascending: false });
 
   if (error) {
@@ -113,7 +115,8 @@ async function deleteAllCachedReports(companyId) {
   const { error } = await supabase
     .from("qb_synced_reports")
     .delete()
-    .eq("company_id", companyId);
+    .eq("company_id", companyId)
+    .eq("source", "quickbooks");
 
   if (error) {
     console.error("[SyncStore] Failed to delete cached reports:", error.message);

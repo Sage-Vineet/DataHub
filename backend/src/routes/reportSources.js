@@ -2,9 +2,8 @@ const express = require("express");
 const { requireAuth } = require("../middleware/auth");
 const {
   REPORT_SOURCE_KEYS,
-  setSelectedReportSource,
-  syncReportSourceRecords,
 } = require("../services/reportSourceStore");
+const dataSourceService = require("../services/dataSourceService");
 
 const router = express.Router();
 
@@ -30,17 +29,24 @@ router.get("/report-sources", async (req, res) => {
       return res.status(400).json({ success: false, error: "Missing clientId." });
     }
 
-    const sources = await syncReportSourceRecords(clientId);
-    const selectedSource =
-      sources.find((source) => source.isSelected)?.sourceKey ||
-      REPORT_SOURCE_KEYS.QUICKBOOKS;
+    const state = await dataSourceService.getDataSourceState(clientId);
+    const selectedSource = state.activeSource || REPORT_SOURCE_KEYS.QUICKBOOKS;
+    const activeSource = state.activeSource || null;
 
     return res.json({
       success: true,
-      sources,
+      sources: state.sources || [],
       selectedSource,
+      activeSource,
+      quickbooksConnected: Boolean(state.quickbooksConnected),
+      manualUploadActive: Boolean(state.manualUploadActive),
+      lastSourceSwitchAt: state.lastSourceSwitchAt || null,
     });
   } catch (error) {
+    console.error("[ReportSources] GET /report-sources failed", {
+      error: error.message,
+      stack: error.stack,
+    });
     return res.status(500).json({
       success: false,
       error: error.message || "Failed to load report sources.",
@@ -49,9 +55,22 @@ router.get("/report-sources", async (req, res) => {
 });
 
 router.put("/report-sources/selected", async (req, res) => {
+  const requestStart = Date.now();
+  const clientId = resolveClientId(req);
+
   try {
-    const clientId = resolveClientId(req);
     const sourceKey = String(req.body?.sourceKey || "").trim();
+    const confirmSwitch = req.body?.confirmSwitch === true || req.body?.confirmSwitch === "true";
+    const forceDisconnectQuickbooks =
+      req.body?.forceDisconnectQuickbooks === true ||
+      req.body?.forceDisconnectQuickbooks === "true";
+
+    console.info("[ReportSources] PUT /report-sources/selected — incoming", {
+      clientId,
+      sourceKey,
+      confirmSwitch,
+      forceDisconnectQuickbooks,
+    });
 
     if (!clientId) {
       return res.status(400).json({ success: false, error: "Missing clientId." });
@@ -61,20 +80,67 @@ router.put("/report-sources/selected", async (req, res) => {
       return res.status(400).json({ success: false, error: "sourceKey is required." });
     }
 
-    const sources = await setSelectedReportSource(clientId, sourceKey);
-    const selectedSource =
-      sources.find((source) => source.isSelected)?.sourceKey ||
-      REPORT_SOURCE_KEYS.QUICKBOOKS;
+    const result = await dataSourceService.switchDataSource(clientId, sourceKey, {
+      confirmSwitch,
+      forceDisconnectQuickbooks,
+    });
+
+    const durationMs = Date.now() - requestStart;
+    console.info("[ReportSources] PUT /report-sources/selected — success", {
+      clientId,
+      activeSource: result.activeSource,
+      quickbooksConnected: result.quickbooksConnected,
+      durationMs,
+    });
 
     return res.json({
       success: true,
-      sources,
-      selectedSource,
+      sources: result.sources,
+      selectedSource: result.activeSource,
+      activeSource: result.activeSource,
+      quickbooksConnected: Boolean(result.quickbooksConnected),
     });
   } catch (error) {
-    return res.status(500).json({
+    const durationMs = Date.now() - requestStart;
+
+    const conflictCodes = new Set([
+      "SOURCE_SWITCH_CONFIRMATION_REQUIRED",
+      "QB_DISCONNECT_REQUIRED",
+      "QUICKBOOKS_SOURCE_ACTIVE",
+      "MANUAL_SOURCE_ACTIVE",
+    ]);
+    const badRequestCodes = new Set(["INVALID_SOURCE_KEY"]);
+    const status = conflictCodes.has(error.code)
+      ? 409
+      : badRequestCodes.has(error.code)
+        ? 400
+        : 500;
+
+    if (status === 500) {
+      console.error("[ReportSources] PUT /report-sources/selected — error", {
+        clientId,
+        code: error.code,
+        error: error.message,
+        stack: error.stack,
+        durationMs,
+      });
+    } else {
+      console.info("[ReportSources] PUT /report-sources/selected — confirmation required", {
+        clientId,
+        code: error.code,
+        durationMs,
+      });
+    }
+
+    return res.status(status).json({
       success: false,
+      code: error.code || "SOURCE_SWITCH_FAILED",
       error: error.message || "Failed to save report source.",
+      message: error.message || "Failed to save report source.",
+      requiresConfirmation: Boolean(error.requiresConfirmation),
+      nextAction: error.nextAction || null,
+      requestedSource: error.requestedSource || null,
+      currentSource: error.currentSource || null,
     });
   }
 });

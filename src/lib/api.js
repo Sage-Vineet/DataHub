@@ -140,6 +140,7 @@ async function request(path, options = {}) {
 
   if (!response.ok) {
     const error = new Error(data?.error || data?.message || 'Request failed');
+    error.status = response.status;
     if (data && typeof data === 'object') {
       error.payload = data;
     }
@@ -522,6 +523,11 @@ export function getManualGlBalanceSheet(options = {}) {
 
   Object.entries(params || {}).forEach(([key, value]) => {
     if (value === undefined || value === null || value === "") return;
+    if (Array.isArray(value)) {
+      if (value.length === 0) return;
+      search.set(key, value.join(","));
+      return;
+    }
     search.set(key, String(value));
   });
 
@@ -535,6 +541,186 @@ export function getManualGlCashflow(options = {}) {
   return request(`/reports/cashflow${query}`, options);
 }
 
+export function stageMultiYearManualGl(payload, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/staging/multi-year${query}`, {
+    method: "POST",
+    body: payload,
+    ...options,
+  });
+}
+
+export function getManualStageTransactions(options = {}) {
+  const {
+    clientId: clientIdOption,
+    params = {},
+    ...requestOptions
+  } = options || {};
+  const clientId = clientIdOption ?? resolveClientIdFromLocation();
+  const search = new URLSearchParams();
+  if (clientId) search.set("clientId", clientId);
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    if (Array.isArray(value)) {
+      if (value.length === 0) return;
+      search.set(key, value.join(","));
+      return;
+    }
+    search.set(key, String(value));
+  });
+
+  const query = search.toString();
+  return request(
+    `/manual-gl/staging/transactions${query ? `?${query}` : ""}`,
+    requestOptions,
+  );
+}
+
+export function getManualStageFilterOptions(options = {}) {
+  const {
+    clientId: clientIdOption,
+    params = {},
+    ...requestOptions
+  } = options || {};
+  const clientId = clientIdOption ?? resolveClientIdFromLocation();
+  const search = new URLSearchParams();
+  if (clientId) search.set("clientId", clientId);
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    if (Array.isArray(value)) {
+      if (value.length === 0) return;
+      search.set(key, value.join(","));
+      return;
+    }
+    search.set(key, String(value));
+  });
+
+  const query = search.toString();
+  return request(
+    `/manual-gl/staging/filter-options${query ? `?${query}` : ""}`,
+    requestOptions,
+  );
+}
+
+export function getManualGlBatches(options = {}) {
+  const {
+    clientId: clientIdOption,
+    ...requestOptions
+  } = options || {};
+  const clientId = clientIdOption ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/staging/batches${query}`, requestOptions);
+}
+
+export function getManualStagedProfitLossSummary(options = {}) {
+  const {
+    clientId: clientIdOption,
+    params = {},
+    ...requestOptions
+  } = options || {};
+  const clientId = clientIdOption ?? resolveClientIdFromLocation();
+  const search = new URLSearchParams();
+  if (clientId) search.set("clientId", clientId);
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    if (Array.isArray(value)) {
+      if (value.length === 0) return;
+      search.set(key, value.join(","));
+      return;
+    }
+    search.set(key, String(value));
+  });
+
+  const query = search.toString();
+  return request(`/reports/profit-loss${query ? `?${query}` : ""}`, requestOptions);
+}
+
+export function getManualStagedProfitLossDetail(options = {}) {
+  const {
+    clientId: clientIdOption,
+    params = {},
+    ...requestOptions
+  } = options || {};
+  const clientId = clientIdOption ?? resolveClientIdFromLocation();
+  const search = new URLSearchParams();
+  if (clientId) search.set("clientId", clientId);
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    if (Array.isArray(value)) {
+      if (value.length === 0) return;
+      search.set(key, value.join(","));
+      return;
+    }
+    search.set(key, String(value));
+  });
+
+  const query = search.toString();
+  return request(
+    `/reports/profit-loss/detail${query ? `?${query}` : ""}`,
+    requestOptions,
+  );
+}
+
+export function getManualStagedProfitLossMonthlyDetail(options = {}) {
+  const { clientId: clientIdOption, params = {}, ...requestOptions } = options || {};
+  const clientId = clientIdOption ?? resolveClientIdFromLocation();
+  const search = new URLSearchParams();
+  if (clientId) search.set("clientId", clientId);
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    if (Array.isArray(value)) { if (value.length === 0) return; search.set(key, value.join(",")); return; }
+    search.set(key, String(value));
+  });
+  const query = search.toString();
+  return request(`/reports/profit-loss/monthly-detail${query ? `?${query}` : ""}`, requestOptions);
+}
+
+export function getManualStagedBalanceSheetMonthlyDetail(options = {}) {
+  const { clientId: clientIdOption, params = {}, ...requestOptions } = options || {};
+  const clientId = clientIdOption ?? resolveClientIdFromLocation();
+  const search = new URLSearchParams();
+  if (clientId) search.set("clientId", clientId);
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    if (Array.isArray(value)) { if (value.length === 0) return; search.set(key, value.join(",")); return; }
+    search.set(key, String(value));
+  });
+  const query = search.toString();
+  return request(`/reports/balance-sheet/monthly-detail${query ? `?${query}` : ""}`, requestOptions);
+}
+
+export function validateManualStagedBalanceSheet(options = {}) {
+  const {
+    clientId: clientIdOption,
+    params = {},
+    ...requestOptions
+  } = options || {};
+  const clientId = clientIdOption ?? resolveClientIdFromLocation();
+  const search = new URLSearchParams();
+  if (clientId) search.set("clientId", clientId);
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    if (Array.isArray(value)) {
+      if (value.length === 0) return;
+      search.set(key, value.join(","));
+      return;
+    }
+    search.set(key, String(value));
+  });
+
+  const query = search.toString();
+  return request(
+    `/manual-gl/validation/balance-sheet${query ? `?${query}` : ""}`,
+    requestOptions,
+  );
+}
+
 export function getReportSources(options = {}) {
   const clientId = options.clientId ?? resolveClientIdFromLocation();
   const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
@@ -542,12 +728,22 @@ export function getReportSources(options = {}) {
 }
 
 export function setSelectedReportSource(sourceKey, options = {}) {
-  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const {
+    clientId: clientIdOption,
+    confirmSwitch = false,
+    forceDisconnectQuickbooks = false,
+    ...requestOptions
+  } = options || {};
+  const clientId = clientIdOption ?? resolveClientIdFromLocation();
   const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
   return request(`/report-sources/selected${query}`, {
     method: "PUT",
-    body: { sourceKey },
-    ...options,
+    body: {
+      sourceKey,
+      confirmSwitch: Boolean(confirmSwitch),
+      forceDisconnectQuickbooks: Boolean(forceDisconnectQuickbooks),
+    },
+    ...requestOptions,
   });
 }
 

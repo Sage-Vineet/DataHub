@@ -22,13 +22,10 @@ import {
   syncQuickbooksReports,
   syncGeneralLedger,
 } from "../../lib/quickbooks";
-import { setSelectedReportSource } from "../../lib/api";
 import { useToast } from "../../context/ToastContext";
 import { fetchCustomers } from "../../services/customerService";
 import { fetchInvoices } from "../../services/invoiceService";
 import { cn } from "../../lib/utils";
-import QBDisconnectedBanner from "../common/QBDisconnectedBanner";
-import { REPORT_SOURCE_KEYS } from "../../lib/report-source";
 
 // ─── Helpers ────────────────────────────────────────────
 
@@ -68,7 +65,12 @@ function getTimeLeft(dateStr) {
 
 // ─── Component ──────────────────────────────────────────
 
-export default function QuickBooksConnection({ company }) {
+export default function QuickBooksConnection({
+  company,
+  isSourceActive = true,
+  onConnectionStateChange = null,
+  onRequireSourceSwitch = null,
+}) {
   const location = useLocation();
   const { showToast } = useToast();
 
@@ -102,7 +104,7 @@ export default function QuickBooksConnection({ company }) {
 
         setPageState(data.isConnected ? "connected" : "disconnected");
 
-        if (data.isConnected) {
+        if (data.isConnected && isSourceActive) {
           Promise.all([
             fetchCustomers().catch(() => ({})),
             fetchInvoices().catch(() => ({})),
@@ -184,7 +186,7 @@ export default function QuickBooksConnection({ company }) {
         );
       }
     },
-    [],
+    [isSourceActive],
   );
 
   useEffect(() => {
@@ -233,19 +235,25 @@ export default function QuickBooksConnection({ company }) {
 
       (async () => {
         try {
-          if (company?.id) {
-            await setSelectedReportSource(REPORT_SOURCE_KEYS.QUICKBOOKS, {
-              clientId: company.id,
-            }).catch(() => null);
-          }
-
-          await syncQuickbooksReports();
           await fetchStatus(false);
-          showToast({
-            type: "success",
-            title: "Reports Ready",
-            message: "Latest QuickBooks reports have been synced.",
-          });
+          if (typeof onConnectionStateChange === "function") {
+            await onConnectionStateChange();
+          }
+          if (isSourceActive) {
+            await syncQuickbooksReports();
+            showToast({
+              type: "success",
+              title: "Reports Ready",
+              message: "Latest QuickBooks reports have been synced.",
+            });
+          } else {
+            showToast({
+              type: "warning",
+              title: "Sync Paused",
+              message:
+                "QuickBooks connected successfully, but Manual Upload is active. Switch source to QuickBooks to sync reports.",
+            });
+          }
         } catch (error) {
           console.error("Post-connect sync failed:", error);
           setErrorMessage(
@@ -256,10 +264,23 @@ export default function QuickBooksConnection({ company }) {
         }
       })();
     }
-  }, [company?.id, fetchStatus, location.search, showToast]);
+  }, [fetchStatus, isSourceActive, location.search, onConnectionStateChange, showToast]);
 
   // ── Actions ──
-  const handleConnect = () => connectQuickbooks(location.pathname, company?.id);
+  const handleConnect = () => {
+    if (!isSourceActive) {
+      if (typeof onRequireSourceSwitch === "function") {
+        onRequireSourceSwitch();
+      }
+      showToast({
+        type: "warning",
+        title: "QuickBooks Source Inactive",
+        message: "Switch the active source to QuickBooks before connecting.",
+      });
+      return;
+    }
+    connectQuickbooks(location.pathname, company?.id);
+  };
 
   const handleDisconnect = async () => {
     setIsDisconnecting(true);
@@ -278,6 +299,9 @@ export default function QuickBooksConnection({ company }) {
         title: "Disconnected",
         message: "QuickBooks disconnected successfully.",
       });
+      if (typeof onConnectionStateChange === "function") {
+        await onConnectionStateChange();
+      }
     } catch (err) {
       console.error("Disconnect failed:", err);
       setErrorMessage("Failed to disconnect. Please try again.");
@@ -287,6 +311,13 @@ export default function QuickBooksConnection({ company }) {
   };
 
   const handleSync = async () => {
+    if (!isSourceActive) {
+      setErrorMessage(
+        "Manual Upload is currently active. Switch source to QuickBooks to run sync.",
+      );
+      return;
+    }
+
     setIsSyncing(true);
     setErrorMessage(null);
     try {
@@ -377,6 +408,15 @@ export default function QuickBooksConnection({ company }) {
           >
             <Zap size={14} /> Reconnect to QuickBooks
           </button>
+        </div>
+      )}
+
+      {pageState === "connected" && !isSourceActive && (
+        <div className="flex items-center gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-[13px]">
+          <AlertCircle size={16} className="shrink-0 text-amber-700" />
+          <span className="font-medium text-amber-800">
+            Manual Upload is currently active. QuickBooks sync is disabled until you switch source to QuickBooks.
+          </span>
         </div>
       )}
 
@@ -477,7 +517,7 @@ export default function QuickBooksConnection({ company }) {
               <div className="flex items-center gap-2">
                 <button
                   onClick={handleSync}
-                  disabled={isSyncing}
+                  disabled={isSyncing || !isSourceActive}
                   className="btn-primary"
                 >
                   <RefreshCw

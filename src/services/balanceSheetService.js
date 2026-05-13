@@ -1,5 +1,5 @@
 import { fetchBalanceSheet } from "../lib/quickbooks";
-import { getManualGlBalanceSheet } from "../lib/api";
+import { getManualGlBalanceSheet, getManualStagedBalanceSheetMonthlyDetail } from "../lib/api";
 import { normalizeAccountingMethod } from "../lib/report-filters";
 import {
   parseSummaryReport,
@@ -136,6 +136,7 @@ function parseUnifiedBalanceSheetRows(responsePayload = {}) {
 
 function resolveSourceLabel(source) {
   if (source === "MANUAL_UPLOAD") return "Manual Balance Sheet";
+  if (source === "MANUAL_STAGED") return "Manual Staged Balance Sheet";
   if (source === "GENERATED_FROM_GL") return "Generated from GL";
   if (source === "GENERATED_FROM_QB") return "Generated from QuickBooks";
   if (source === "live") return "QuickBooks Online";
@@ -213,19 +214,18 @@ async function fetchSinglePeriodBS(
   endDate,
   accountingMethod,
   sourceMode = "quickbooks",
+  options = {},
 ) {
   const normalizedAccountingMethod = normalizeAccountingMethod(accountingMethod);
 
   try {
     if (sourceMode === "manual") {
+      const manualFilters =
+        options?.manualFilters && typeof options.manualFilters === "object"
+          ? options.manualFilters
+          : {};
       const response = await getManualGlBalanceSheet({
-        params: {
-          ...(startDate ? { start_date: startDate } : {}),
-          ...(endDate ? { end_date: endDate, as_of_date: endDate } : {}),
-          ...(normalizedAccountingMethod
-            ? { accounting_method: normalizedAccountingMethod }
-            : {}),
-        },
+        params: { ...manualFilters },
       });
 
       return parseUnifiedBalanceSheetRows(response);
@@ -246,6 +246,74 @@ async function fetchSinglePeriodBS(
     );
     return [];
   }
+}
+
+function convertStagedBsPayloadToRows(response) {
+  if (Array.isArray(response?.hierarchicalRows) && response.hierarchicalRows.length > 0) {
+    return response.hierarchicalRows;
+  }
+
+  if (!response?.sections) return [];
+  const years = Array.isArray(response.years) ? response.years : [];
+  const year = Number(response?.displayYear) || (years.length > 0 ? years[years.length - 1] : null);
+  const sections = response.sections;
+  const rows = [];
+
+  ["Assets", "Liabilities", "Equity"].forEach((sectionKey) => {
+    const section = sections[sectionKey];
+    if (!section) return;
+    const sectionTotal = year !== null ? (section.totalByYear?.[year] ?? 0) : 0;
+    const sectionChildren = [];
+
+    (section.categories || []).forEach((cat) => {
+      const catTotal = year !== null ? (cat.totalByYear?.[year] ?? 0) : 0;
+      const catChildren = (cat.accounts || []).map((acc, idx) => ({
+        id: `acc-${sectionKey}-${cat.label}-${idx}`,
+        name: acc.name || acc.accountName || "",
+        amount: year !== null ? (acc.balancesByYear?.[year] ?? 0) : 0,
+        type: "data",
+      }));
+      catChildren.push({
+        id: `total-cat-${sectionKey}-${cat.label}`,
+        name: `Total ${cat.label}`,
+        amount: catTotal,
+        type: "total",
+      });
+      sectionChildren.push({
+        id: `cat-${sectionKey}-${cat.label}`,
+        name: cat.label,
+        amount: catTotal,
+        type: "header",
+        children: catChildren,
+      });
+    });
+
+    sectionChildren.push({
+      id: `total-section-${sectionKey}`,
+      name: `Total ${section.label || sectionKey}`,
+      amount: sectionTotal,
+      type: "total",
+    });
+
+    rows.push({
+      id: sectionKey.toLowerCase(),
+      name: section.label || sectionKey,
+      amount: sectionTotal,
+      type: "header",
+      children: sectionChildren,
+    });
+  });
+
+  const liabTotal = year !== null ? (sections.Liabilities?.totalByYear?.[year] ?? 0) : 0;
+  const eqTotal = year !== null ? (sections.Equity?.totalByYear?.[year] ?? 0) : 0;
+  rows.push({
+    id: "total-le",
+    name: "Total Liabilities and Equity",
+    amount: liabTotal + eqTotal,
+    type: "total",
+  });
+
+  return rows;
 }
 
 // ─── Exported Services ──────────────────────────────────────────────────────
@@ -285,18 +353,23 @@ export async function getBalanceSheet(startDate, endDate, accountingMethod, opti
     }
   }
 
+  const manualFilters =
+    options?.manualFilters && typeof options.manualFilters === "object"
+      ? options.manualFilters
+      : {};
+
   try {
+    // For manual staged data, fiscal year (in manualFilters) controls filtering.
+    // QB date params (start_date, end_date, as_of_date, accounting_method) must NOT
+    // be sent — they have no meaning for staged GL data and would pollute sub-queries.
     const response = await getManualGlBalanceSheet({
-      params: {
-        ...(startDate ? { start_date: startDate } : {}),
-        ...(endDate ? { end_date: endDate, as_of_date: endDate } : {}),
-        ...(normalizedAccountingMethod
-          ? { accounting_method: normalizedAccountingMethod }
-          : {}),
-      },
+      params: { ...manualFilters },
     });
 
-    const rows = parseUnifiedBalanceSheetRows(response);
+    const isStagedFormat = response?.source === "manual_staged" && response?.sections;
+    const rows = isStagedFormat
+      ? convertStagedBsPayloadToRows(response)
+      : parseUnifiedBalanceSheetRows(response);
     const source = response?.source || null;
 
     if (rows.length > 0 || source) {
@@ -309,16 +382,15 @@ export async function getBalanceSheet(startDate, endDate, accountingMethod, opti
       };
     }
   } catch (error) {
-    console.warn("Unified Balance Sheet fetch failed, falling back to QB:", error.message);
+    console.warn("Manual staged Balance Sheet fetch failed:", error.message);
   }
 
-  const fallbackRows = await fetchSinglePeriodBS(startDate, endDate, normalizedAccountingMethod);
   return {
-    rows: fallbackRows,
-    source: fallbackRows.length > 0 ? "GENERATED_FROM_QB" : null,
-    sourceLabel: fallbackRows.length > 0 ? resolveSourceLabel("GENERATED_FROM_QB") : null,
+    rows: [],
+    source: "MANUAL_STAGED",
+    sourceLabel: resolveSourceLabel("MANUAL_STAGED"),
     asOfDate: endDate || null,
-    noDataText: fallbackRows.length > 0 ? null : "No Balance Sheet Available",
+    noDataText: "No Balance Sheet Available",
   };
 }
 
@@ -514,6 +586,16 @@ export async function getBalanceSheetDetail(
   accountingMethod,
   options = {},
 ) {
+  if ((options?.sourceMode || "quickbooks") === "manual") {
+    // Only pass manual filters (fiscal year, batch, etc.) — no QB date params
+    const params = {
+      ...((options?.manualFilters && typeof options.manualFilters === "object")
+        ? options.manualFilters
+        : {}),
+    };
+    return getManualStagedBalanceSheetMonthlyDetail({ params });
+  }
+
   // Detail now uses system-defined multi-year comparison (EBITDA analysis)
   const allPeriods = getComparativePeriods(4, endDate, startDate);
 
@@ -524,6 +606,7 @@ export async function getBalanceSheetDetail(
         p.endDate,
         accountingMethod,
         options?.sourceMode || "quickbooks",
+        options,
       ),
     )
   );
