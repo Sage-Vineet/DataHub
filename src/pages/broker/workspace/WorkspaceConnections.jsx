@@ -3,6 +3,7 @@ import { useParams, useSearchParams } from "react-router-dom";
 import {
   getCompanyRequest,
   setSelectedReportSource,
+  ensureCompanyDefaultFolders,
 } from "../../../lib/api";
 import Header from "../../../components/Header";
 import QuickBooksConnection from "../../../components/quickbooks/QuickBooksConnection";
@@ -16,6 +17,8 @@ export default function WorkspaceConnections() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [company, setCompany] = useState(null);
 
+  const SESSION_TAB_KEY = `connections-tab-${clientId}`;
+
   const CONNECTION_TABS = useMemo(
     () => [
       { key: "quickbooks", label: "QuickBooks Online" },
@@ -26,14 +29,26 @@ export default function WorkspaceConnections() {
     []
   );
 
-  const selectedTab = CONNECTION_TABS.some(
-    (tab) => tab.key === searchParams.get("source"),
-  )
+  const validKeys = useMemo(() => CONNECTION_TABS.map((t) => t.key), [CONNECTION_TABS]);
+
+  const selectedTab = validKeys.includes(searchParams.get("source"))
     ? searchParams.get("source")
     : "quickbooks";
 
+  // Restore tab from session storage when landing without a ?source= param
+  useEffect(() => {
+    if (!searchParams.get("source")) {
+      const stored = sessionStorage.getItem(SESSION_TAB_KEY);
+      if (stored && validKeys.includes(stored)) {
+        setSearchParams({ source: stored }, { replace: true });
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleTabChange = (key) => {
     setSearchParams({ source: key });
+    sessionStorage.setItem(SESSION_TAB_KEY, key);
   };
 
   useEffect(() => {
@@ -56,6 +71,13 @@ export default function WorkspaceConnections() {
       getCompanyRequest(clientId)
         .then(setCompany)
         .catch(() => setCompany(null));
+    }
+  }, [clientId]);
+
+  // Ensure default folder structure exists for this company (idempotent)
+  useEffect(() => {
+    if (clientId) {
+      ensureCompanyDefaultFolders(clientId).catch(() => {});
     }
   }, [clientId]);
 

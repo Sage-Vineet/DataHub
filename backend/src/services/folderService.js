@@ -8,6 +8,21 @@ const DEFAULT_FOLDER_STRUCTURE = [
   { name: "M&A" },
   { name: "Tax" },
   { name: "Other" },
+  {
+    name: "Manual Upload Source",
+    children: [
+      {
+        name: "Reports",
+        children: [
+          { name: "Balance Sheet" },
+          { name: "Profit & Loss" },
+          { name: "Cashflow" },
+        ],
+      },
+      { name: "Bank Statement" },
+      { name: "Tax Return" },
+    ],
+  },
 ];
 
 async function userExists(userId) {
@@ -54,49 +69,139 @@ async function resolveFolderCreatorId(companyId, preferredCreatedBy) {
   return brokerUser?.id || null;
 }
 
+// Idempotent: find-or-create a single folder, then recurse into children.
+async function ensureFolderNode(companyId, folderDef, parentId, creatorId) {
+  // Look for an existing folder with the same name under the same parent
+  let query = supabase
+    .from("folders")
+    .select("id")
+    .eq("company_id", companyId)
+    .ilike("name", folderDef.name);
+
+  if (parentId === null) {
+    query = query.is("parent_id", null);
+  } else {
+    query = query.eq("parent_id", parentId);
+  }
+
+  const { data: existing } = await query.maybeSingle();
+
+  let folderId = existing?.id || null;
+
+  if (!folderId) {
+    const { data: created, error } = await supabase
+      .from("folders")
+      .insert({
+        company_id: companyId,
+        parent_id: parentId,
+        name: folderDef.name,
+        color: null,
+        created_by: creatorId,
+      })
+      .select("id")
+      .single();
+
+    if (error) {
+      console.error("❌ Error creating folder:", folderDef.name, error.message);
+      return;
+    }
+    folderId = created?.id || null;
+  }
+
+  if (folderId && Array.isArray(folderDef.children)) {
+    for (const child of folderDef.children) {
+      await ensureFolderNode(companyId, child, folderId, creatorId);
+    }
+  }
+}
+
+// Legacy folder names that should be removed if they exist
+const LEGACY_FOLDER_NAMES = ["Datahub Reports Documents"];
+
+// Legacy Manual Upload Source child folders to remove
+const LEGACY_MANUAL_CHILD_NAMES = ["Invoices", "EBITDA"];
+
+// Legacy Manual Upload Source child folders to rename: [oldName, newName]
+const MANUAL_FOLDER_RENAMES = [
+  ["Bank Reconciliation", "Bank Statement"],
+  ["Tax Reconciliation", "Tax Return"],
+];
+
+async function removeLegacyFolders(companyId) {
+  for (const name of LEGACY_FOLDER_NAMES) {
+    const { data: found } = await supabase
+      .from("folders")
+      .select("id")
+      .eq("company_id", companyId)
+      .is("parent_id", null)
+      .ilike("name", name);
+
+    if (found?.length) {
+      const ids = found.map((f) => f.id);
+      await supabase.from("folders").delete().in("id", ids);
+    }
+  }
+}
+
+// Migrates existing companies' Manual Upload Source children:
+// - deletes Invoices and EBITDA folders
+// - renames Bank Reconciliation → Bank Statement, Tax Reconciliation → Tax Return
+async function migrateManualUploadSourceFolders(companyId) {
+  const { data: sourceFolder } = await supabase
+    .from("folders")
+    .select("id")
+    .eq("company_id", companyId)
+    .is("parent_id", null)
+    .ilike("name", "Manual Upload Source")
+    .maybeSingle();
+
+  if (!sourceFolder) return;
+
+  // Remove legacy children
+  for (const name of LEGACY_MANUAL_CHILD_NAMES) {
+    const { data: found } = await supabase
+      .from("folders")
+      .select("id")
+      .eq("company_id", companyId)
+      .eq("parent_id", sourceFolder.id)
+      .ilike("name", name);
+    if (found?.length) {
+      const ids = found.map((f) => f.id);
+      await supabase.from("folders").delete().in("id", ids);
+    }
+  }
+
+  // Rename legacy children
+  for (const [oldName, newName] of MANUAL_FOLDER_RENAMES) {
+    const { data: found } = await supabase
+      .from("folders")
+      .select("id")
+      .eq("company_id", companyId)
+      .eq("parent_id", sourceFolder.id)
+      .ilike("name", oldName)
+      .maybeSingle();
+    if (found?.id) {
+      await supabase.from("folders").update({ name: newName }).eq("id", found.id);
+    }
+  }
+}
+
 async function ensureCompanyDefaultFolders(companyId, preferredCreatedBy) {
   if (!companyId) return [];
-
-  const { data: existingRows, error: findError } = await supabase
-    .from("folders")
-    .select("*")
-    .eq("company_id", companyId)
-    .order("created_at", { ascending: true });
-
-  if (findError) return [];
-  if (existingRows && existingRows.length > 0) return existingRows;
 
   const creatorId = await resolveFolderCreatorId(companyId, preferredCreatedBy);
   if (!creatorId) return [];
 
+  // Remove any legacy root folder names
+  await removeLegacyFolders(companyId);
+
+  // Migrate Manual Upload Source children (rename/remove outdated folders)
+  await migrateManualUploadSourceFolders(companyId);
+
+  // Always run through the full structure — ensureFolderNode is idempotent
+  // so existing folders are left untouched and only missing ones are created.
   for (const folder of DEFAULT_FOLDER_STRUCTURE) {
-    const { data: parent, error: insertError } = await supabase
-      .from("folders")
-      .insert({
-        company_id: companyId,
-        parent_id: null,
-        name: folder.name,
-        color: null,
-        created_by: creatorId
-      })
-      .select("*")
-      .single();
-
-    if (insertError) {
-      console.error("❌ Error creating folder:", insertError.message);
-      continue;
-    }
-
-    if (parent && Array.isArray(folder.children)) {
-      const children = folder.children.map(childName => ({
-        company_id: companyId,
-        parent_id: parent.id,
-        name: childName,
-        color: null,
-        created_by: creatorId
-      }));
-      await supabase.from("folders").insert(children);
-    }
+    await ensureFolderNode(companyId, folder, null, creatorId);
   }
 
   const { data: finalFolders } = await supabase
@@ -148,7 +253,7 @@ async function listFoldersByCompany(companyId) {
     .from("folders")
     .select("*")
     .eq("company_id", companyId)
-    .order("created_at", { ascending: false });
+    .order("created_at", { ascending: true });
 
   if (error) throw error;
   return data || [];
@@ -160,10 +265,16 @@ async function listFoldersByCompany(companyId) {
  * @returns {Promise<Array>}
  */
 async function getFolderTree(companyId) {
-  const rows = await listFoldersByCompany(companyId);
-  
+  const { data: rows, error } = await supabase
+    .from("folders")
+    .select("*")
+    .eq("company_id", companyId)
+    .order("created_at", { ascending: true });
+
+  if (error) throw error;
+
   const byId = new Map();
-  for (const row of rows) {
+  for (const row of (rows || [])) {
     byId.set(row.id, { ...row, children: [] });
   }
 
@@ -176,12 +287,6 @@ async function getFolderTree(companyId) {
     }
   }
 
-  const sortTree = (nodes) => {
-    nodes.sort((a, b) => a.name.localeCompare(b.name));
-    for (const node of nodes) sortTree(node.children);
-  };
-
-  sortTree(roots);
   return roots;
 }
 

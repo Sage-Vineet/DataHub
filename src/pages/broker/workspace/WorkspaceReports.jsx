@@ -9,6 +9,7 @@ import { cn } from "../../../lib/utils";
 import {
   getCompanyRequest,
   getReportSources,
+  getLatestManualUploadedReport,
   setSelectedReportSource,
 } from "../../../lib/api";
 import {
@@ -602,6 +603,20 @@ export default function WorkspaceReports() {
     return { startDate, endDate };
   }, [customRange.end, customRange.start, dateRange]);
 
+  // Returns the fiscal year stored in a manual-upload report payload.
+  // Checks asOfDate → periodEnd → periodStart → filename in that order.
+  const resolveManualUploadYear = (payload) => {
+    const d = payload?.data;
+    const dateSrc = d?.asOfDate || d?.periodEnd || d?.periodStart;
+    if (dateSrc) {
+      const y = parseInt(String(dateSrc).split("-")[0], 10);
+      if (y >= 2000 && y <= new Date().getFullYear() + 1) return y;
+    }
+    const fn = payload?.reportParams?.fileName || "";
+    const m = fn.match(/\b(20\d{2})\b/);
+    return m ? parseInt(m[1], 10) : null;
+  };
+
   const handleGenerateReport = async () => {
     setIsLoading(true);
 
@@ -614,19 +629,41 @@ export default function WorkspaceReports() {
       const normalizedAccountingMethod =
         normalizeAccountingMethod(accountingMethod);
 
-      const dateConfig = getDateRange({
-        reportType: selectedTab,
-        viewType: reportType,
-        filters: { startDate: userStart, endDate: userEnd },
-      });
+      // In manual-upload mode, override the date range with the year from the
+      // uploaded file so the report header shows the correct fiscal period.
+      let resolvedStart;
+      let resolvedEnd;
+      if (selectedSourceMode === "manual_upload") {
+        const statementTypeMap = {
+          "Balance Sheet": "balance_sheet",
+          "Profit & Loss": "profit_and_loss",
+          "Cashflow": "cash_flow",
+        };
+        const stType = statementTypeMap[selectedTab] || "profit_and_loss";
+        try {
+          const manualPayload = await getLatestManualUploadedReport(stType, { clientId });
+          const year = resolveManualUploadYear(manualPayload);
+          if (year) {
+            resolvedStart = `${year}-01-01`;
+            resolvedEnd = `${year}-12-31`;
+          }
+        } catch { /* ignore — fall through to user dates */ }
+      }
 
+      if (!resolvedStart || !resolvedEnd) {
+        const dateConfig = getDateRange({
+          reportType: selectedTab,
+          viewType: reportType,
+          filters: { startDate: userStart, endDate: userEnd },
+        });
+        resolvedStart = dateConfig.startDate;
+        resolvedEnd = dateConfig.endDate;
+      }
 
-      setAppliedStartDate(dateConfig.startDate || "");
-      setAppliedEndDate(dateConfig.endDate || "");
+      setAppliedStartDate(resolvedStart || "");
+      setAppliedEndDate(resolvedEnd || "");
       setAppliedReportType(reportType);
       setAppliedAccountingMethod(accountingMethod);
-
-      const { startDate: resolvedStart, endDate: resolvedEnd } = dateConfig;
 
       let summary = [];
       let detail = { groups: [] };

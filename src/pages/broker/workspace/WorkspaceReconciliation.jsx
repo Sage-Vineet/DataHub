@@ -2,8 +2,14 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import Header from "../../../components/Header";
 
-import { getStoredToken } from "../../../lib/api";
+import { getStoredToken, getReportSources, setSelectedReportSource } from "../../../lib/api";
 import { cn } from "../../../lib/utils";
+import {
+  REPORT_SOURCE_KEYS,
+  REPORT_SOURCE_OPTIONS,
+  normalizeReportSourceKey,
+  getReportSourceLabel,
+} from "../../../lib/report-source";
 import {
   AlertCircle,
   CheckCircle2,
@@ -34,7 +40,7 @@ const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
 const QB_BANK_ACTIVITY_ENDPOINT = `${API_BASE_URL}/qb-bank-activity`;
 const QB_ONE_BANK_ACTIVITY_ENDPOINT = `${API_BASE_URL}/qb-one-bank-activity`;
-const EXTRACT_BANK_PDF_RECORDS_ENDPOINT = `${API_BASE_URL}/api/extract-bank-pdf-records`;
+const EXTRACT_BANK_PDF_RECORDS_ENDPOINT = `${API_BASE_URL}/extract-bank-pdf-records`;
 const RECONCILIATION_STORAGE_PREFIX = "workspace-reconciliation";
 
 const getErrMsg = (e) => (e instanceof Error ? e.message : String(e));
@@ -235,6 +241,7 @@ export default function WorkspaceReconciliation() {
   const [selectedBalanceBankId, setSelectedBalanceBankId] = useState(
     storedState?.selectedBalanceBankId || "",
   );
+  const [selectedManualBankName, setSelectedManualBankName] = useState("");
   const [oneBankAccountId, setOneBankAccountId] = useState(
     storedState?.oneBankAccountId || "",
   );
@@ -263,6 +270,12 @@ export default function WorkspaceReconciliation() {
         ? "Restored saved bank PDF extraction."
         : "",
     });
+  const [reportSources, setReportSources] = useState([]);
+  const [selectedReportSource, setSelectedReportSourceState] = useState(
+    normalizeReportSourceKey(
+      storedState?.selectedReportSource || REPORT_SOURCE_KEYS.QUICKBOOKS,
+    ),
+  );
 
   const getHeaders = useCallback(
     () => {
@@ -318,6 +331,11 @@ export default function WorkspaceReconciliation() {
         : "",
     });
     setExtractedBankPdfError("");
+    setSelectedReportSourceState(
+      normalizeReportSourceKey(
+        nextState?.selectedReportSource || REPORT_SOURCE_KEYS.QUICKBOOKS,
+      ),
+    );
   }, [clientId]);
 
   useEffect(() => {
@@ -340,6 +358,7 @@ export default function WorkspaceReconciliation() {
             qbOneBankActivity ?? existing.qbOneBankActivity ?? null,
           extractedBankPdfData:
             extractedBankPdfData ?? existing.extractedBankPdfData ?? null,
+          selectedReportSource,
         }),
       );
     } catch {
@@ -356,6 +375,7 @@ export default function WorkspaceReconciliation() {
     oneBankAccountId,
     qbOneBankActivity,
     extractedBankPdfData,
+    selectedReportSource,
   ]);
 
   const loadQBBankActivity = async () => {
@@ -464,7 +484,10 @@ export default function WorkspaceReconciliation() {
     });
 
     try {
-      const resp = await fetch(EXTRACT_BANK_PDF_RECORDS_ENDPOINT, {
+      const params = new URLSearchParams();
+      if (clientId) params.append("clientId", clientId);
+      const url = `${EXTRACT_BANK_PDF_RECORDS_ENDPOINT}?${params.toString()}`;
+      const resp = await fetch(url, {
         cache: "no-store",
         headers: getHeaders(),
       });
@@ -495,6 +518,55 @@ export default function WorkspaceReconciliation() {
     void loadExtractedBankPdfData();
   }, [loadExtractedBankPdfData, storedState?.extractedBankPdfData]);
 
+  useEffect(() => {
+    if (!clientId) return;
+    let active = true;
+    getReportSources({ clientId })
+      .then((payload) => {
+        if (!active) return;
+        setReportSources(Array.isArray(payload?.sources) ? payload.sources : []);
+        setSelectedReportSourceState(
+          normalizeReportSourceKey(payload?.selectedSource),
+        );
+      })
+      .catch(() => {
+        if (active) {
+          setReportSources([]);
+          setSelectedReportSourceState(REPORT_SOURCE_KEYS.QUICKBOOKS);
+        }
+      });
+    return () => { active = false; };
+  }, [clientId]);
+
+  const handleReportSourceChange = async (sourceKey) => {
+    const normalized = normalizeReportSourceKey(sourceKey);
+    const previous = selectedReportSource;
+    setSelectedReportSourceState(normalized);
+    try {
+      const payload = await setSelectedReportSource(normalized, { clientId });
+      setReportSources(Array.isArray(payload?.sources) ? payload.sources : []);
+      setSelectedReportSourceState(
+        normalizeReportSourceKey(payload?.selectedSource),
+      );
+    } catch {
+      setSelectedReportSourceState(previous);
+    }
+  };
+
+  const sourceOptions = useMemo(() => {
+    if (Array.isArray(reportSources) && reportSources.length > 0) {
+      return reportSources.map((s) => ({
+        key: normalizeReportSourceKey(s.sourceKey),
+        label: s.sourceLabel || getReportSourceLabel(s.sourceKey),
+      }));
+    }
+    return REPORT_SOURCE_OPTIONS.map((o) => ({ key: o.key, label: o.label }));
+  }, [reportSources]);
+
+  const isManualUpload = selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD;
+  const isManualGl = selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_GL;
+  const isQBOnline = selectedReportSource === REPORT_SOURCE_KEYS.QUICKBOOKS;
+
   const reportMonths = qbBankActivity?.months?.length
     ? qbBankActivity.months
     : [];
@@ -507,6 +579,17 @@ export default function WorkspaceReconciliation() {
       label: `${account.accountName} (${getLastFourDigits(account.accountNumber)})`,
     }));
   }, [qbBankActivity]);
+
+  const manualBankOptions = useMemo(
+    () => (extractedBankPdfData?.banks || []).map((b) => b.bankName),
+    [extractedBankPdfData],
+  );
+
+  useEffect(() => {
+    if (manualBankOptions.length > 0 && !manualBankOptions.includes(selectedManualBankName)) {
+      setSelectedManualBankName(manualBankOptions[0]);
+    }
+  }, [manualBankOptions, selectedManualBankName]);
   const oneBankAccountOptions = useMemo(() => {
     if (!qbBankActivity?.accounts?.length) return [];
 
@@ -1240,6 +1323,131 @@ export default function WorkspaceReconciliation() {
 
   // ── Balance account table renderer ───────────────────────────────────────
 
+  const renderManualBalanceAccountTable = (bank, label) => {
+    const pdfMonths = (extractedBankPdfData?.months || []).map((m) => m.key);
+    const monthMap = bank
+      ? Object.fromEntries((bank.months || []).map((m) => [m.monthKey, m]))
+      : {};
+    const bankLabel = label || bank?.bankName || "Bank Account";
+    const colCount = pdfMonths.length + 2;
+
+    // Build rows with all fields, compute derived values
+    const baseRows = pdfMonths.map((monthKey) => {
+      const m = monthMap[monthKey];
+      return {
+        month: monthKey,
+        startingBalance: m?.startingBalance ?? 0,
+        deposits: m?.deposits ?? 0,
+        withdrawals: m?.withdrawals ?? 0,
+        endingBalance: m?.endingBalance ?? 0,
+        intercompanyDeposits: 0,
+        intercompanyWithdraws: 0,
+        perBalanceSheet: 0,
+        outstandingChecks: 0,
+      };
+    });
+
+    const rows = baseRows.map((r, i) => {
+      const footingCheck = r.endingBalance - (r.startingBalance + r.deposits - r.withdrawals);
+      const priorMonthCheck = i === 0 ? 0 : baseRows[i - 1].endingBalance - r.startingBalance;
+      return { ...r, footingCheck, priorMonthCheck, variance: 0, unreconciledDollar: 0, unreconciledPct: 0 };
+    });
+
+    const ttmSlice = rows.slice(-12);
+    const ttm = ttmSlice.reduce(
+      (acc, r, i) => ({
+        startingBalance: i === 0 ? r.startingBalance : acc.startingBalance,
+        deposits: acc.deposits + r.deposits,
+        withdrawals: acc.withdrawals + r.withdrawals,
+        endingBalance: r.endingBalance,
+        intercompanyDeposits: 0,
+        intercompanyWithdraws: 0,
+        footingCheck: acc.footingCheck + r.footingCheck,
+        priorMonthCheck: acc.priorMonthCheck + r.priorMonthCheck,
+        perBalanceSheet: 0,
+        variance: 0,
+        outstandingChecks: 0,
+        unreconciledDollar: 0,
+        unreconciledPct: 0,
+      }),
+      buildEmptyTTM(),
+    );
+
+    const v = (f) => [...rows.map((r) => fmtAmt(r[f])), fmtAmt(ttm[f])];
+    const va = (f) => [...rows.map((r) => fmtAcct(r[f])), fmtAcct(ttm[f])];
+    const rawNums = (f) => [...rows.map((r) => r[f] ?? null), ttm[f] ?? null];
+
+    return (
+      <div className="mb-4 overflow-hidden rounded-[var(--radius-card)] border border-border bg-white shadow-[0_10px_30px_rgba(15,23,42,0.04)]">
+        <div className="flex w-full items-center justify-between border-b border-primary/15 bg-[#F8FBF1] px-4 py-3">
+          <div className="flex items-center gap-3">
+            <span className="text-[14px] font-semibold text-primary">{bankLabel}</span>
+            {bank && (
+              <span className="rounded-full bg-primary/10 px-2.5 py-0.5 text-[11px] font-medium tracking-wide text-primary">
+                {bank.bankName}
+              </span>
+            )}
+          </div>
+        </div>
+        <div className="overflow-x-auto border-t border-border bg-white">
+          {isLoadingExtractedBankPdfData ? (
+            <div className="flex items-center gap-2 px-4 py-5 text-[13px] text-text-secondary">
+              <LoaderCircle size={15} className="animate-spin" />
+              Loading bank statement data...
+            </div>
+          ) : pdfMonths.length === 0 ? (
+            <div className="px-4 py-5 text-[13px] text-text-muted">No data available.</div>
+          ) : (
+            <table className="min-w-full table-fixed border-collapse bg-white text-[13px]">
+              <TableColGroup months={pdfMonths} />
+              <thead>
+                <TableHeader label={bankLabel} months={pdfMonths} />
+              </thead>
+              <tbody>
+                <DR label="Starting Balance" values={v("startingBalance")} bold />
+                <DR label="Deposits" values={v("deposits")} />
+                <DR label="Withdrawals" values={v("withdrawals")} />
+                <DR label="Ending Balance" values={v("endingBalance")} bold />
+                <SpacerRow colCount={colCount} />
+
+                <DR label="Intercompany Deposits" values={v("intercompanyDeposits")} indent />
+                <DR label="Intercompany Withdraws" values={v("intercompanyWithdraws")} indent />
+                <SpacerRow colCount={colCount} />
+
+                <DR label="Footing Check" values={va("footingCheck")} check />
+                <DR label="Prior Month Check" values={va("priorMonthCheck")} check />
+                <SpacerRow colCount={colCount} />
+
+                <DR label="Per Balance Sheet" values={v("perBalanceSheet")} bold />
+                <DR
+                  label="Variance"
+                  values={rawNums("variance")}
+                  rawValues={rawNums("variance")}
+                  rowType="variance-amt"
+                />
+                <SpacerRow colCount={colCount} />
+
+                <DR label="Outstanding Checks" values={v("outstandingChecks")} />
+                <DR
+                  label="Unreconciled $ Variance"
+                  values={rawNums("unreconciledDollar")}
+                  rawValues={rawNums("unreconciledDollar")}
+                  rowType="variance-amt"
+                />
+                <DR
+                  label="Unreconciled % Variance"
+                  values={rawNums("unreconciledPct")}
+                  rawValues={rawNums("unreconciledPct")}
+                  rowType="variance-pct"
+                />
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   const renderBalanceAccountTable = (account) => {
     const { rows, ttm } = buildAccountBalanceDataFromQB(account);
     const isExpanded = expandedAccounts[account.accountId];
@@ -1362,25 +1570,17 @@ export default function WorkspaceReconciliation() {
 
   // ── Activity Review renderer ──────────────────────────────────────────────
 
-  const renderActivityTable = () => {
-    if (!hasData) return null;
-    const colCount = reportMonths.length + 2;
-
-    const av = (f) => [
-      ...activityRows.map((r) => fmtAmt(r[f])),
-      fmtAmt(activityTTM[f]),
-    ];
-    const avRaw = (f) => [
-      ...activityRows.map((r) => r[f] ?? null),
-      activityTTM[f] ?? null,
-    ];
+  const renderActivityTableCore = (rows, ttm, months) => {
+    const colCount = months.length + 2;
+    const av = (f) => [...rows.map((r) => fmtAmt(r[f])), fmtAmt(ttm[f])];
+    const avRaw = (f) => [...rows.map((r) => r[f] ?? null), ttm[f] ?? null];
 
     return (
       <div className="overflow-x-auto rounded-xl border border-border shadow-sm">
         <table className="min-w-full table-fixed border-collapse bg-white text-[13px]">
-          <TableColGroup months={reportMonths} />
+          <TableColGroup months={months} />
           <thead>
-            <TableHeader label="Activity Review" months={reportMonths} />
+            <TableHeader label="Activity Review" months={months} />
           </thead>
           <tbody>
             <DR label="Total Deposits" values={av("totalDeposits")} bold />
@@ -1517,6 +1717,77 @@ export default function WorkspaceReconciliation() {
     );
   };
 
+  const renderActivityTable = () => {
+    if (!hasData) return null;
+    return renderActivityTableCore(activityRows, activityTTM, reportMonths);
+  };
+
+  // Build activity rows from extracted PDF data (manual upload / manual GL)
+  const manualActivityRows = (() => {
+    if (!extractedBankPdfData?.months?.length) return [];
+    return extractedBankPdfData.months.map((monthObj) => {
+      const mk = monthObj.key;
+      const totalDeposits = (extractedBankPdfData.banks || []).reduce((sum, bank) => {
+        const m = (bank.months || []).find((x) => x.monthKey === mk);
+        return sum + (m?.deposits || 0);
+      }, 0);
+      const totalWithdrawals = (extractedBankPdfData.banks || []).reduce((sum, bank) => {
+        const m = (bank.months || []).find((x) => x.monthKey === mk);
+        return sum + (m?.withdrawals || 0);
+      }, 0);
+      const externalDeposits = totalDeposits;
+      const depositsDollarVar = -externalDeposits;
+      const depositsUnreconciledDollar = depositsDollarVar;
+      const externalWithdraws = totalWithdrawals;
+      const withdrawsDollarVar = externalWithdraws;
+      const withdrawsUnreconciledDollar = withdrawsDollarVar;
+      return {
+        month: mk,
+        totalDeposits, intercompanyTransfers: 0, externalDeposits,
+        salesPerFinancials: 0, depositsDollarVar, depositsPctVar: 0,
+        changeInAR: 0, changeInARRetentions: 0, fixedAssetDisposals: 0,
+        depositsOther: 0, depositsUnreconciledDollar, depositsUnreconciledPct: 0,
+        totalWithdrawals, withdrawIntercompanyTransfers: 0, externalWithdraws,
+        expensesPerFinancials: 0, withdrawsDollarVar, withdrawsPctVar: 0,
+        ownerWithdraws: 0, changeInCurrentLiabilities: 0, changeInLTLiabilities: 0,
+        depreciationExpense: 0, amortizationExpense: 0, badDebtExpense: 0,
+        fixedAssetPurchases: 0, withdrawsOther: 0,
+        withdrawsUnreconciledDollar, withdrawsUnreconciledPct: 0,
+      };
+    });
+  })();
+
+  const manualActivityTTM = manualActivityRows.slice(-12).reduce(
+    (acc, r) => ({
+      totalDeposits: acc.totalDeposits + r.totalDeposits,
+      intercompanyTransfers: 0,
+      externalDeposits: acc.externalDeposits + r.externalDeposits,
+      salesPerFinancials: 0,
+      depositsDollarVar: acc.depositsDollarVar + r.depositsDollarVar,
+      depositsPctVar: 0,
+      changeInAR: 0, changeInARRetentions: 0, fixedAssetDisposals: 0, depositsOther: 0,
+      depositsUnreconciledDollar: acc.depositsUnreconciledDollar + r.depositsUnreconciledDollar,
+      depositsUnreconciledPct: 0,
+      totalWithdrawals: acc.totalWithdrawals + r.totalWithdrawals,
+      withdrawIntercompanyTransfers: 0,
+      externalWithdraws: acc.externalWithdraws + r.externalWithdraws,
+      expensesPerFinancials: 0,
+      withdrawsDollarVar: acc.withdrawsDollarVar + r.withdrawsDollarVar,
+      withdrawsPctVar: 0,
+      ownerWithdraws: 0, changeInCurrentLiabilities: 0, changeInLTLiabilities: 0,
+      depreciationExpense: 0, amortizationExpense: 0, badDebtExpense: 0,
+      fixedAssetPurchases: 0, withdrawsOther: 0,
+      withdrawsUnreconciledDollar: acc.withdrawsUnreconciledDollar + r.withdrawsUnreconciledDollar,
+      withdrawsUnreconciledPct: 0,
+    }),
+    buildEmptyActivityReviewRow(),
+  );
+
+  const renderManualActivityTable = () => {
+    const months = (extractedBankPdfData?.months || []).map((m) => m.key);
+    return renderActivityTableCore(manualActivityRows, manualActivityTTM, months);
+  };
+
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
@@ -1530,7 +1801,32 @@ export default function WorkspaceReconciliation() {
         </div>
         <QBDisconnectedBanner pageName="Reconciliation" />
 
-        {/* QB Bank Activity */}
+        {/* Connection / Data Source selector */}
+        <section className="card-base w-full p-5">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <h2 className="text-[16px] font-semibold text-text-primary">Data Connection</h2>
+              <p className="mt-0.5 text-[13px] text-text-secondary">
+                Choose the source used to populate bank activity data.
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="text-[12px] font-medium text-text-secondary">Connection</label>
+              <select
+                value={selectedReportSource}
+                onChange={(e) => void handleReportSourceChange(e.target.value)}
+                className="input-base h-9 min-w-[220px]"
+              >
+                {sourceOptions.map((opt) => (
+                  <option key={opt.key} value={opt.key}>{opt.label}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </section>
+
+        {/* QB Bank Activity — only for QuickBooks Online */}
+        {isQBOnline && (
         <section className="card-base w-full p-5">
           <h2 className="text-[18px] font-semibold text-text-primary">
             QuickBooks Bank Activity
@@ -1654,10 +1950,9 @@ export default function WorkspaceReconciliation() {
           </div>
           <StatusBanner sync={bankActivityFetchStatus} />
         </section>
+        )}
 
-
-
-        {/* Balance Sheet Accounts */}
+        {/* Bank Account Balances */}
         <section className="card-base card-p w-full">
           <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
             <div>
@@ -1665,33 +1960,61 @@ export default function WorkspaceReconciliation() {
                 Bank Account Balances
               </h2>
               <p className="text-[14px] text-text-secondary">
-                Per-account balance detail from QuickBooks with reconciliation
-                checks.
+                {(isManualUpload || isManualGl)
+                  ? "Per-bank balance detail extracted from uploaded bank statement PDF files."
+                  : "Per-account balance detail from QuickBooks with reconciliation checks."}
               </p>
             </div>
             <div className="min-w-[280px]">
               <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
                 Bank Account
               </label>
-              <select
-                className="input-base h-10 w-full"
-                value={selectedBalanceBankId}
-                onChange={(e) => setSelectedBalanceBankId(e.target.value)}
-                disabled={!balanceBankOptions.length}
-              >
-                {balanceBankOptions.length ? (
-                  balanceBankOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))
-                ) : (
-                  <option value="">No bank accounts available</option>
-                )}
-              </select>
+              {(isManualUpload || isManualGl) ? (
+                <select
+                  className="input-base h-10 w-full"
+                  value={selectedManualBankName}
+                  onChange={(e) => setSelectedManualBankName(e.target.value)}
+                  disabled={!manualBankOptions.length}
+                >
+                  {manualBankOptions.length ? (
+                    manualBankOptions.map((name) => (
+                      <option key={name} value={name}>{name}</option>
+                    ))
+                  ) : (
+                    <option value="">No banks available</option>
+                  )}
+                </select>
+              ) : (
+                <select
+                  className="input-base h-10 w-full"
+                  value={selectedBalanceBankId}
+                  onChange={(e) => setSelectedBalanceBankId(e.target.value)}
+                  disabled={!balanceBankOptions.length}
+                >
+                  {balanceBankOptions.length ? (
+                    balanceBankOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))
+                  ) : (
+                    <option value="">No bank accounts available</option>
+                  )}
+                </select>
+              )}
             </div>
           </div>
-          {hasData ? (
+
+          {(isManualUpload || isManualGl) ? (
+            extractedBankPdfData ? (
+              renderManualBalanceAccountTable(
+                extractedBankPdfData.banks.find((b) => b.bankName === selectedManualBankName) ||
+                extractedBankPdfData.banks[0],
+              )
+            ) : (
+              renderManualBalanceAccountTable(null)
+            )
+          ) : hasData ? (
             visibleBalanceAccounts.map((account) =>
               renderBalanceAccountTable(account),
             )
@@ -1715,7 +2038,9 @@ export default function WorkspaceReconciliation() {
               </p>
             </div>
           </div>
-          {hasData ? (
+          {(isManualUpload || isManualGl) ? (
+            renderManualActivityTable()
+          ) : hasData ? (
             renderActivityTable()
           ) : (
             <div className="rounded-2xl border border-dashed border-border bg-bg-page/40 p-6 text-[14px] text-text-muted">

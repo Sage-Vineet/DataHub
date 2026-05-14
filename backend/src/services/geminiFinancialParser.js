@@ -355,9 +355,11 @@ async function callGemini(base64Pdf, prompt) {
     }
   }
 
-  throw new Error(
-    `All Gemini models failed (${GEMINI_MODELS.join(", ")}). Last: ${lastError?.message || "unknown"}`
-  );
+  const lastMsg = String(lastError?.message || "");
+  if (lastMsg.includes("429") || lastMsg.toLowerCase().includes("quota")) {
+    throw new Error("Gemini API quota exceeded — enable billing at ai.google.dev or wait for daily reset");
+  }
+  throw new Error(`Gemini extraction failed: ${lastMsg || "unknown error"}`);
 }
 
 // ---------------------------------------------------------------------------

@@ -121,6 +121,13 @@ const getDocumentActivity = asyncHandler(async (req, res) => {
   res.json(activity);
 });
 
+const ensureDefaultFolders = asyncHandler(async (req, res) => {
+  const companyId = req.params.id;
+  const userId = req.user?.id || null;
+  await folderService.ensureCompanyDefaultFolders(companyId, userId);
+  res.json({ success: true });
+});
+
 module.exports = {
   listFolders,
   createFolder,
@@ -133,5 +140,6 @@ module.exports = {
   listFolderTree,
   recordDocumentActivity,
   getDocumentActivity,
+  ensureDefaultFolders,
 };
 
