@@ -1,10 +1,19 @@
 const { supabase } = require("../db");
-// bcrypt removed for debugging purposes
-// const bcrypt = require("bcryptjs");
+const { DEMO_USERS } = require("../config/demoUsers");
+const bcrypt = require("bcryptjs");
+const { Pool } = require("pg");
 
-/**
- * Standard user select fields for Supabase queries
- */
+let profilePool = null;
+
+function getProfilePool() {
+  if (!process.env.DATABASE_URL) return null;
+  if (!profilePool) {
+    profilePool = new Pool({ connectionString: process.env.DATABASE_URL });
+  }
+  return profilePool;
+}
+
+// Base select — safe columns PostgREST always knows about.
 const userSelect = `
   id,
   name,
@@ -17,6 +26,75 @@ const userSelect = `
   updated_at,
   companies:company_id ( name )
 `;
+
+// Extended select with profile columns. Falls back to userSelect if the
+// columns haven't been created yet (migration not yet run).
+const userSelectWithProfile =
+  userSelect.trimEnd() + `,\n  date_of_birth,\n  occupation,\n  address\n`;
+
+async function selectUserRow(buildQuery) {
+  let result = await buildQuery(userSelectWithProfile);
+  if (result.error) result = await buildQuery(userSelect);
+  return result;
+}
+
+async function getSqlProfileByEmail(email) {
+  const normalizedEmail = String(email || "").trim();
+  const pool = normalizedEmail ? getProfilePool() : null;
+  if (!pool) return {};
+
+  try {
+    const { rows } = await pool.query(
+      `
+        select date_of_birth, occupation, address
+        from users
+        where lower(email) = lower($1)
+        limit 1
+      `,
+      [normalizedEmail]
+    );
+    return rows[0] || {};
+  } catch (err) {
+    console.warn("Profile SQL fallback read failed:", err.message);
+    return {};
+  }
+}
+
+async function mergeSqlProfile(user) {
+  if (!user?.email) return user;
+  if (user.date_of_birth !== undefined && user.occupation !== undefined && user.address !== undefined) {
+    return user;
+  }
+
+  const profile = await getSqlProfileByEmail(user.email);
+  return {
+    ...user,
+    date_of_birth: user.date_of_birth ?? profile.date_of_birth ?? null,
+    occupation: user.occupation ?? profile.occupation ?? null,
+    address: user.address ?? profile.address ?? null,
+  };
+}
+
+async function updateSqlProfileByEmail(email, profileUpdates) {
+  const normalizedEmail = String(email || "").trim();
+  const pool = normalizedEmail ? getProfilePool() : null;
+  const entries = Object.entries(profileUpdates).filter(([, value]) => value !== undefined);
+  if (!pool || entries.length === 0) return false;
+
+  const assignments = entries.map(([field], index) => `${field} = $${index + 2}`);
+  const values = entries.map(([, value]) => value);
+
+  const { rowCount } = await pool.query(
+    `
+      update users
+      set ${assignments.join(", ")}, updated_at = now()
+      where lower(email) = lower($1)
+    `,
+    [normalizedEmail, ...values]
+  );
+
+  return rowCount > 0;
+}
 
 /**
  * Flattens the user object to include company_name from the companies relation
@@ -123,6 +201,68 @@ function getUserCompanyIds(user) {
   return Array.from(new Set(ids.filter(Boolean).map(String)));
 }
 
+function normalizeOptionalText(value) {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  const trimmed = String(value).trim();
+  return trimmed || null;
+}
+
+function normalizePhone(value) {
+  const normalized = normalizeOptionalText(value);
+  if (!normalized) return normalized;
+
+  const digits = normalized.replace(/\D/g, "");
+  const validShape = /^\+?[0-9][0-9\s().-]{6,19}$/.test(normalized);
+  if (!validShape || digits.length < 7 || digits.length > 15) {
+    const err = new Error("Please enter a valid phone number.");
+    err.status = 400;
+    throw err;
+  }
+  return normalized;
+}
+
+function normalizeDateOfBirth(value) {
+  const normalized = normalizeOptionalText(value);
+  if (!normalized) return normalized;
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+    const err = new Error("Please enter a valid date of birth.");
+    err.status = 400;
+    throw err;
+  }
+
+  const date = new Date(`${normalized}T00:00:00.000Z`);
+  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== normalized) {
+    const err = new Error("Please enter a valid date of birth.");
+    err.status = 400;
+    throw err;
+  }
+
+  const today = new Date();
+  const todayUtc = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
+  if (date > todayUtc) {
+    const err = new Error("Date of birth cannot be in the future.");
+    err.status = 400;
+    throw err;
+  }
+
+  return normalized;
+}
+
+async function passwordMatches(candidate, storedPassword) {
+  if (!storedPassword) return false;
+  if (candidate === storedPassword) return true;
+  if (/^\$2[aby]\$/.test(storedPassword)) {
+    try {
+      return await bcrypt.compare(candidate, storedPassword);
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
 /**
  * Checks if a user has access to a specific company
  * @param {Object} user - Authenticated user
@@ -159,16 +299,11 @@ async function syncUserCompanies(userId, companyIds) {
  */
 async function getUserById(id) {
   if (!id) return null;
-
-  const { data, error } = await supabase
-    .from("users")
-    .select(userSelect)
-    .eq("id", id)
-    .maybeSingle();
-
+  const { data, error } = await selectUserRow((sel) =>
+    supabase.from("users").select(sel).eq("id", id).maybeSingle()
+  );
   if (error || !data) return null;
-  
-  return await attachAssignedCompanies(flattenUser(data));
+  return await attachAssignedCompanies(await mergeSqlProfile(flattenUser(data)));
 }
 
 /**
@@ -178,16 +313,11 @@ async function getUserById(id) {
  */
 async function getUserByEmail(email) {
   if (!email) return null;
-
-  const { data, error } = await supabase
-    .from("users")
-    .select(userSelect)
-    .eq("email", email)
-    .maybeSingle();
-
+  const { data, error } = await selectUserRow((sel) =>
+    supabase.from("users").select(sel).eq("email", email).maybeSingle()
+  );
   if (error || !data) return null;
-  
-  return await attachAssignedCompanies(flattenUser(data));
+  return await attachAssignedCompanies(await mergeSqlProfile(flattenUser(data)));
 }
 
 /**
@@ -263,14 +393,11 @@ async function reassignUserRecords(userId, replacementUserId) {
  * @returns {Promise<Array>}
  */
 async function listAllUsers() {
-  const { data, error } = await supabase
-    .from("users")
-    .select(userSelect)
-    .order("created_at", { ascending: false });
-
+  let result = await supabase.from("users").select(userSelectWithProfile).order("created_at", { ascending: false });
+  if (result.error) result = await supabase.from("users").select(userSelect).order("created_at", { ascending: false });
+  const { data, error } = result;
   if (error) throw error;
-  
-  const flattened = (data || []).map(flattenUser);
+  const flattened = await Promise.all((data || []).map((user) => mergeSqlProfile(flattenUser(user))));
   return await attachAssignedCompanies(flattened);
 }
 
@@ -313,26 +440,101 @@ async function createUser(userData) {
  * @returns {Promise<Object>} Updated user
  */
 async function updateUser(id, userData) {
-  const { name, email, phone, password, role, company_id, company_ids, status } = userData;
-  const updates = {};
+  const {
+    name, email, phone,
+    date_of_birth, occupation, address,
+    password, current_password,
+    role, company_id, company_ids, status,
+  } = userData;
+
   const hasCompanyAssignments = company_id !== undefined || company_ids !== undefined;
   const assignedCompanyIds = hasCompanyAssignments ? normalizeCompanyIds(company_id, company_ids) : null;
+  const now = new Date().toISOString();
+  const normalizedPhone = phone !== undefined ? normalizePhone(phone) : undefined;
+  const normalizedDob = date_of_birth !== undefined ? normalizeDateOfBirth(date_of_birth) : undefined;
+  const normalizedOccupation = occupation !== undefined ? normalizeOptionalText(occupation) : undefined;
+  const normalizedAddress = address !== undefined ? normalizeOptionalText(address) : undefined;
 
-  if (name !== undefined) updates.name = name;
-  if (email !== undefined) updates.email = email;
-  if (phone !== undefined) updates.phone = phone;
-  if (role !== undefined) updates.role = role;
-  if (hasCompanyAssignments) updates.company_id = company_id || assignedCompanyIds[0] || null;
-  if (status !== undefined) updates.status = status;
+  // ── Core updates (always-safe columns) ──────────────────────────────────
+  const coreUpdates = {};
+  if (name !== undefined) coreUpdates.name = name;
+  if (email !== undefined) coreUpdates.email = email;
+  if (phone !== undefined) coreUpdates.phone = normalizedPhone;
+  if (role !== undefined) coreUpdates.role = role;
+  if (status !== undefined) coreUpdates.status = status;
+  if (hasCompanyAssignments) coreUpdates.company_id = company_id || assignedCompanyIds[0] || null;
+
   if (password !== undefined) {
-    // WARNING: Plain-text passwords are insecure. Re-enable hashing before production.
-    updates.password_hash = password;
+    const nextPassword = String(password || "");
+    if (!nextPassword) {
+      const err = new Error("Please enter a new password.");
+      err.status = 400;
+      throw err;
+    }
+    if (nextPassword.length < 6) {
+      const err = new Error("New password must be at least 6 characters.");
+      err.status = 400;
+      throw err;
+    }
+    if (current_password !== undefined) {
+      const currentPassword = String(current_password || "");
+      if (!currentPassword) {
+        const err = new Error("Please enter your current password.");
+        err.status = 400;
+        throw err;
+      }
+
+      const { data: authData } = await supabase
+        .from("users").select("email, password_hash").eq("id", id).single();
+
+      const storedHash    = authData?.password_hash ?? "";
+      const userEmail     = String(authData?.email ?? "").trim().toLowerCase();
+      const demoEntry     = DEMO_USERS.find((d) => d.email === userEmail);
+      const matchesDb     = await passwordMatches(currentPassword, storedHash);
+      const hasCustomPassword = storedHash && storedHash !== demoEntry?.password;
+      const matchesDemo   = !hasCustomPassword && !!demoEntry && demoEntry.password === currentPassword;
+
+      if (!matchesDb && !matchesDemo) {
+        const err = new Error("Current password is incorrect.");
+        err.status = 400;
+        throw err;
+      }
+    }
+    coreUpdates.password_hash = await bcrypt.hash(nextPassword, 10);
   }
 
-  if (Object.keys(updates).length > 0) {
-    updates.updated_at = new Date().toISOString();
-    const { error } = await supabase.from("users").update(updates).eq("id", id);
+  if (Object.keys(coreUpdates).length > 0) {
+    coreUpdates.updated_at = now;
+    const { error } = await supabase.from("users").update(coreUpdates).eq("id", id);
     if (error) throw error;
+  }
+
+  // ── Profile updates via Supabase JS client ──────────────────────────────────
+  const profileUpdates = {};
+  if (date_of_birth !== undefined) profileUpdates.date_of_birth = normalizedDob;
+  if (occupation    !== undefined) profileUpdates.occupation    = normalizedOccupation;
+  if (address       !== undefined) profileUpdates.address       = normalizedAddress;
+
+  if (Object.keys(profileUpdates).length > 0) {
+    const { error: profileErr } = await supabase
+      .from("users").update({ ...profileUpdates, updated_at: now }).eq("id", id);
+    if (profileErr) {
+      const isColumnMissing = profileErr.code === "42703" || profileErr.message?.toLowerCase().includes("column");
+      if (isColumnMissing) {
+        const { data: userIdentity, error: identityErr } = await supabase
+          .from("users").select("email").eq("id", id).maybeSingle();
+        if (identityErr || !userIdentity?.email) throw profileErr;
+
+        const updated = await updateSqlProfileByEmail(userIdentity.email, profileUpdates);
+        if (!updated) {
+          const err = new Error("Profile fields could not be saved for this broker account.");
+          err.status = 500;
+          throw err;
+        }
+      } else {
+        throw profileErr;
+      }
+    }
   }
 
   if (hasCompanyAssignments) {

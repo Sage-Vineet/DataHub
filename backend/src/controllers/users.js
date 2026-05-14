@@ -143,7 +143,24 @@ const getPublicUser = asyncHandler(async (req, res) => {
 });
 
 const updateUser = asyncHandler(async (req, res) => {
-  const user = await userService.updateUser(req.params.id, req.body);
+  const requesterRole = String(req.user?.role || "").toLowerCase();
+  const isSelf = String(req.user?.id || "") === String(req.params.id);
+  const canManageUsers = ["broker", "admin"].includes(requesterRole);
+
+  if (!isSelf && !canManageUsers) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+
+  if (req.body?.current_password !== undefined && !isSelf) {
+    return res.status(403).json({ error: "Current password changes can only be made for the signed-in account." });
+  }
+
+  let user;
+  try {
+    user = await userService.updateUser(req.params.id, req.body);
+  } catch (err) {
+    return res.status(err.status || 500).json({ error: err.message });
+  }
   if (!user) return res.status(404).json({ error: "Not found" });
   res.json(user);
 });
