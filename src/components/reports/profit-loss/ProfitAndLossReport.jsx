@@ -18,8 +18,17 @@ export default function ProfitAndLossReport({
 }) {
   const resolvedEntityName = entityName || clientName || "Company";
   const periodText = startDate === "1970-01-01" ? "All Dates" : `${startDate || "N/A"} to ${endDate || "N/A"}`;
-  const isManualStagedSummary = Boolean(data && typeof data === "object" && data.source === "manual_staged");
-  const isManualStagedDetail = Boolean(detailedData && typeof detailedData === "object" && detailedData.source === "manual_staged");
+  // Backend returns source="manual_gl_staged_transactions" (not "manual_staged").
+  // Accept all known manual-staged source strings to be forward-compatible.
+  const MANUAL_STAGED_SOURCES = ["manual_staged", "manual_gl_staged_transactions", "MANUAL_STAGED"];
+  const isManualStagedSummary = Boolean(
+    data && typeof data === "object" && !Array.isArray(data) &&
+    MANUAL_STAGED_SOURCES.includes(data.source)
+  );
+  const isManualStagedDetail = Boolean(
+    detailedData && typeof detailedData === "object" && !Array.isArray(detailedData) &&
+    MANUAL_STAGED_SOURCES.includes(detailedData.source)
+  );
   const isManualMonthlyDetail = isManualStagedDetail && detailedData?.reportType === "profit_loss_monthly_detail";
   const summarySubtitle = sourceMode === "manual"
     ? undefined

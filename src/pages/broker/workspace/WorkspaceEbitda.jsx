@@ -16,6 +16,7 @@ import {
 import { refreshQuickbooksToken } from "../../../lib/quickbooks";
 import QBDisconnectedBanner from "../../../components/common/QBDisconnectedBanner";
 import Modal from "../../../components/common/Modal";
+import { useDataSource } from "../../../context/DataSourceContext";
 
 function formatPercent(value) {
   if (!Number.isFinite(value)) return "-";
@@ -80,6 +81,7 @@ function LoadingState() {
 
 export default function WorkspaceEbitda() {
   const { clientId } = useParams();
+  const { activeSourceMode } = useDataSource();
 
   const accountingMethod = "Accrual";
 
@@ -197,10 +199,10 @@ export default function WorkspaceEbitda() {
           // Current year uses today; previous years use full year (Dec 31)
           const ey = year === currentYear ? todayStr : `${year}-12-31`;
 
-          console.log(`[EBITDA] Fetching data for ${year}: Range ${sy} to ${ey}`);
+          console.log(`[EBITDA] Fetching data for ${year}: Range ${sy} to ${ey}, source: ${activeSourceMode}`);
 
           try {
-            const data = await getEbitdaData(sy, ey, accountingMethod);
+            const data = await getEbitdaData(sy, ey, accountingMethod, activeSourceMode);
             console.log(`[EBITDA] Received data for ${year}:`, data);
 
             if (!data || !data.hasData) {
@@ -223,7 +225,7 @@ export default function WorkspaceEbitda() {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [activeSourceMode]);
 
   // Initial load
   useEffect(() => {
@@ -452,17 +454,19 @@ export default function WorkspaceEbitda() {
               {company?.name ? ` — ${company.name}` : ""}
             </p>
           </div>
-          <button
-            onClick={handleSync}
-            disabled={isSyncing}
-            className="btn-secondary"
-          >
-            <RefreshCw
-              size={16}
-              className={isSyncing ? "animate-spin" : ""}
-            />
-            {isSyncing ? "Syncing..." : "Sync"}
-          </button>
+          {activeSourceMode === "quickbooks" && (
+            <button
+              onClick={handleSync}
+              disabled={isSyncing}
+              className="btn-secondary"
+            >
+              <RefreshCw
+                size={16}
+                className={isSyncing ? "animate-spin" : ""}
+              />
+              {isSyncing ? "Syncing..." : "Sync"}
+            </button>
+          )}
         </div>
 
         <QBDisconnectedBanner pageName="EBITDA Analysis" />
@@ -719,8 +723,14 @@ export default function WorkspaceEbitda() {
                     />
                   </div>
 
-                  {/* Owner Addbacks Section spacer */}
-                  <div className="h-[45px] bg-gray-100 border-b border-[#cbd5e1]" />
+                  {/* Owner Addbacks Section spacer — mirrors table header height */}
+                  <div className="bg-gray-100 border-b border-[#cbd5e1] px-4 py-3">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-[#050505] invisible" aria-hidden="true">&nbsp;</span>
+                      <span className="px-3 py-1.5 text-[11px] font-bold invisible" aria-hidden="true">ADD ROW</span>
+                    </div>
+                    <p className="mt-1 text-[11px] invisible select-none" aria-hidden="true">&nbsp;</p>
+                  </div>
 
                   {/* Dynamic Addback Comments */}
                   {dynamicAddbacks.map((row) => (

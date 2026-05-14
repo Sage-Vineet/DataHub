@@ -359,6 +359,32 @@ function scoreSheetForBalanceSheet(sheetData) {
   return score;
 }
 
+function selectBalanceSheetSheet(sheets = [], targetType = SHEET_TYPE.STARTING) {
+  if (!Array.isArray(sheets) || sheets.length === 0) return null;
+
+  const keywordSets = {
+    [SHEET_TYPE.STARTING]: ["starting", "opening", "beginning", "start"],
+    [SHEET_TYPE.ENDING]: ["ending", "closing", "end"],
+  };
+  const preferredKeywords = keywordSets[targetType] || [];
+
+  const scored = sheets
+    .map((sheet) => {
+      const baseScore = scoreSheetForBalanceSheet(sheet);
+      const nameKey = normalizeKey(sheet?.sheetName || "");
+      const keywordBonus = preferredKeywords.some((keyword) => nameKey.includes(keyword)) ? 5 : 0;
+      return {
+        sheet,
+        score: baseScore + keywordBonus,
+        baseScore,
+        keywordBonus,
+      };
+    })
+    .sort((a, b) => b.score - a.score);
+
+  return scored[0]?.sheet || null;
+}
+
 function parseWorkbook(upload) {
   const buffer = normalizeUploadBinary(upload.data);
   const fileName = String(upload.file_name || "").toLowerCase();
@@ -575,6 +601,25 @@ function buildTransactionHash(parts) {
   // Use sourceFile as a strong differentiator for multi-file staging
   const raw = parts.map((p) => String(p || "").trim().toLowerCase()).join("|");
   return crypto.createHash("sha1").update(raw).digest("hex");
+}
+
+function buildCrossFileDedupHash(tx = {}) {
+  return buildTransactionHash([
+    String(tx.fiscalYear || ""),
+    String(tx.date || ""),
+    String(tx.accountNumber || ""),
+    String(tx.accountName || ""),
+    roundMoney(Number(tx.debit || 0)).toFixed(2),
+    roundMoney(Number(tx.credit || 0)).toFixed(2),
+    roundMoney(Number(tx.netAmount || 0)).toFixed(2),
+    String(tx.class || ""),
+    String(tx.department || ""),
+    String(tx.location || ""),
+    String(tx.transactionType || ""),
+    String(tx.journalType || ""),
+    String(tx.reference || ""),
+    String(tx.description || ""),
+  ]);
 }
 
 function deriveDebitCreditFromSignedAmount(amount, accountType, accountName = "") {
@@ -1017,7 +1062,13 @@ function totalsFromBalanceSheetLines(lines = []) {
 }
 
 function normalizeAccountLabel(value) {
-  return normalizeKey(value).replace(/[^a-z0-9]+/g, " ").trim();
+  // Strip non-alphanumeric sequences to spaces, then remove conjunctions ("and", "or")
+  // so "Cash & Cash Equivalents" and "Cash and Cash Equivalents" produce the same key.
+  return normalizeKey(value)
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\band\b|\bor\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function buildAmountByAccount(lines = []) {
@@ -1574,10 +1625,7 @@ async function queryStagedTransactions(companyId, rawFilters = {}) {
       }
     }
 
-    query = query
-      .order("txn_date", { ascending: true })
-      .order("id", { ascending: true })
-      .limit(filters.limit);
+    query = query.order("id", { ascending: true });
 
     if (filters.fiscalYears.length) {
       query = query.in("fiscal_year", filters.fiscalYears);
@@ -1607,13 +1655,40 @@ async function queryStagedTransactions(companyId, rawFilters = {}) {
     return query;
   };
 
-  let { data, error } = await buildQuery(true);
+  const fetchPagedRows = async (includeSourceColumns = true) => {
+    const maxRows = Math.max(1, Number(filters.limit || DEFAULT_STAGING_LIMIT));
+    const pageSize = 1000; // Supabase/PostgREST max page size.
+    const rows = [];
+    let offset = 0;
+
+    while (rows.length < maxRows) {
+      const chunkSize = Math.min(pageSize, maxRows - rows.length);
+      const rangeEnd = offset + chunkSize - 1;
+      const query = buildQuery(includeSourceColumns).range(offset, rangeEnd);
+
+      const { data, error } = await query;
+      if (error) {
+        return { rows: [], error };
+      }
+
+      const chunk = Array.isArray(data) ? data : [];
+      if (!chunk.length) break;
+
+      rows.push(...chunk);
+      offset += chunk.length;
+
+      if (chunk.length < pageSize) break;
+    }
+
+    return { rows, error: null };
+  };
+
+  let { rows, error } = await fetchPagedRows(true);
   if (error && isMissingColumnError(error)) {
-    ({ data, error } = await buildQuery(false));
+    ({ rows, error } = await fetchPagedRows(false));
   }
   if (error) throw new Error(`Failed to load staged transactions: ${error.message}`);
 
-  let rows = data || [];
   if (Array.isArray(filters.fiscalMonths) && filters.fiscalMonths.length > 0) {
     rows = rows.filter((row) => {
       const txnDate = String(row.txn_date || "").trim();
@@ -1622,6 +1697,14 @@ async function queryStagedTransactions(companyId, rawFilters = {}) {
       return filters.fiscalMonths.includes(month);
     });
   }
+
+  // Preserve original presentation order after keyset pagination fetch.
+  rows.sort((a, b) => {
+    const aDate = String(a?.txn_date || "");
+    const bDate = String(b?.txn_date || "");
+    if (aDate !== bDate) return aDate.localeCompare(bDate);
+    return Number(a?.id || 0) - Number(b?.id || 0);
+  });
 
   return { filters, rows };
 }
@@ -2052,7 +2135,7 @@ function buildProfitLossSummaryPayload(transactions = [], filters = {}) {
   const hierarchicalRows = buildProfitLossHierarchicalRows(transactions, yearlyRows, displayYear);
 
   return {
-    source: "manual_staged",
+    source: "manual_gl_staged_transactions",
     reportType: "profit_loss_summary",
     filters,
     years: summary.years,
@@ -2113,7 +2196,7 @@ function buildProfitLossDetailPayload(transactions = [], filters = {}) {
   });
 
   return {
-    source: "manual_staged",
+    source: "manual_gl_staged_transactions",
     reportType: "profit_loss_detail",
     filters,
     years,
@@ -2597,7 +2680,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
   };
 
   return {
-    source: "manual_staged",
+    source: "manual_gl_staged_transactions",
     reportType: "balance_sheet",
     filters,
     years,
@@ -2612,28 +2695,18 @@ async function getBalanceSheetSummaryFromStage(companyId, filters = {}) {
   const effectiveBatchId =
     filters.batchId ||
     (await getLatestManualBatch(companyId, { status: "staged" }))?.id;
-  
-  // STEP 1: Get P&L to calculate Net Income for the reconciliation bridge
-  // Note: We get P&L for ALL years up to the target date for cumulative Retained Earnings
-  // reportType must be cleared so the sub-query fetches income/expense accounts,
-  // not balance-sheet account types.
-  const pnlPayload = await getProfitLossSummaryFromStage(companyId, {
-    ...filters,
-    reportType: "",   // Clear — P&L needs income/expense rows, not BS filter
-    fiscalYear: null, // Get all years for net income bridge
-    fiscalYears: [],
-    startDate: "",
-    endDate: "",
-    limit: DEFAULT_STAGING_LIMIT,
-  });
 
-  // Load starting lines
+  // Load starting + ending BS lines (needed for opening balance and query-time re-classification).
   let startingLines = [];
+  let endingLines = [];
   if (effectiveBatchId) {
-    startingLines = await loadBatchBalanceSheetLines(companyId, effectiveBatchId, SHEET_TYPE.STARTING);
+    [startingLines, endingLines] = await Promise.all([
+      loadBatchBalanceSheetLines(companyId, effectiveBatchId, SHEET_TYPE.STARTING),
+      loadBatchBalanceSheetLines(companyId, effectiveBatchId, SHEET_TYPE.ENDING),
+    ]);
   }
 
-  // STEP 2: Query Transactions CUMULATIVELY (<= selected year)
+  // STEP 2: Query all transactions for the batch (cumulative, unfiltered by year).
   const normalizedFilters = parseManualFilterQuery(filters);
   const targetYears = Array.isArray(normalizedFilters.fiscalYears)
     ? normalizedFilters.fiscalYears
@@ -2645,8 +2718,9 @@ async function getBalanceSheetSummaryFromStage(companyId, filters = {}) {
 
   const { rows } = await queryStagedTransactions(companyId, {
     ...filters,
-    reportType: "",   // Clear — let buildBalanceSheetPayload handle account type classification
-    fiscalYear: null, // We filter cumulative in memory
+    batchId: effectiveBatchId || filters.batchId || "",
+    reportType: "",
+    fiscalYear: null,
     fiscalYears: [],
     startDate: "",
     endDate: "",
@@ -2657,9 +2731,23 @@ async function getBalanceSheetSummaryFromStage(companyId, filters = {}) {
   if (maxYear) {
     cumulativeRows = rows.filter(r => Number(r.fiscal_year || 0) <= maxYear);
   }
-  const normalized = cumulativeRows.map(normalizeStagedTransactionRow);
+  let normalized = cumulativeRows.map(normalizeStagedTransactionRow);
 
-  // STEP 3: Build Reconciled Balance Sheet
+  // STEP 3: Re-classify using BS lines from DB so the BS report is accurate even
+  // for data staged before the BS-driven classification was implemented.
+  const bsLookup = buildBsLookupFromDbLines(startingLines, endingLines);
+  if (bsLookup.size > 0) {
+    normalized = reclassifyNormalizedTransactions(normalized, bsLookup);
+  }
+
+  // Build P&L once from the same normalized dataset to derive netProfitByYear
+  // for Retained Earnings / Net Income reconciliation.
+  const pnlPayload = buildProfitLossSummaryPayload(normalized, {
+    ...normalizedFilters,
+    batchId: normalizedFilters.batchId || effectiveBatchId || "",
+  });
+
+  // STEP 4: Build reconciled Balance Sheet.
   const payload = buildBalanceSheetPayload(
     normalized,
     {
@@ -2671,6 +2759,458 @@ async function getBalanceSheetSummaryFromStage(companyId, filters = {}) {
   );
 
   return payload;
+}
+
+// ─── BS-Driven Account Classification Engine ─────────────────────────────────
+
+/**
+ * Builds a normalized account-name → BS classification lookup map from
+ * one or two parsed balance sheets (starting and/or ending).
+ *
+ * Normalization: lowercase + strip non-alphanumeric → "accounts receivable"
+ * so minor formatting differences between GL and BS don't break matching.
+ *
+ * Starting sheet takes precedence when the same account appears in both.
+ */
+function buildBsLookupFromParsedSheets(startingParsed = null, endingParsed = null) {
+  const map = new Map();
+
+  function addSheet(parsed) {
+    if (!parsed) return;
+    ["assets", "liabilities", "equity"].forEach((section) => {
+      const items = parsed[section];
+      if (!Array.isArray(items)) return;
+      items.forEach((item) => {
+        const key = normalizeAccountLabel(String(item.name || ""));
+        if (!key) return;
+        if (map.has(key)) return; // first-seen wins (starting BS takes priority)
+        const accountType =
+          section === "assets"
+            ? "asset"
+            : section === "liabilities"
+              ? "liability"
+              : "equity";
+        const majorGroup = item.majorGroup || "";
+        const minorGroup = item.minorGroup || "";
+        map.set(key, {
+          accountType,
+          section,
+          majorGroup,
+          minorGroup,
+          leafCategory: item.leafCategory || minorGroup || majorGroup || "",
+          hierarchyPath: [section, majorGroup, minorGroup].filter(Boolean).join(" > "),
+        });
+      });
+    });
+  }
+
+  // Starting sheet is checked first so it wins on conflicts
+  addSheet(startingParsed);
+  addSheet(endingParsed);
+
+  console.log(`[ManualGL][BsLookup] Built lookup map with ${map.size} unique accounts.`);
+  if (map.size > 0) {
+    const sample = Array.from(map.keys()).slice(0, 10);
+    console.log("[ManualGL][BsLookup] Sample BS accounts:", sample);
+  }
+
+  return map;
+}
+
+/**
+ * Builds a BS lookup map from rows already stored in manual_gl_balance_sheet_lines.
+ * Used for query-time re-classification so reports are accurate even for data
+ * that was staged before the BS-driven classification was implemented.
+ */
+function buildBsLookupFromDbLines(startingLines = [], endingLines = []) {
+  const map = new Map();
+
+  function addLines(lines) {
+    lines.forEach((line) => {
+      const key = normalizeAccountLabel(String(line.account_name || ""));
+      if (!key || map.has(key)) return;
+      const section = String(line.section || "");
+      const accountType = section === "assets" ? "asset"
+        : section === "liabilities" ? "liability"
+        : section === "equity" ? "equity"
+        : null;
+      if (!accountType) return;
+      const metadata = line.metadata && typeof line.metadata === "object" ? line.metadata : {};
+      const majorGroup = metadata.majorGroup || "";
+      const minorGroup = metadata.minorGroup || "";
+      map.set(key, {
+        accountType,
+        section,
+        majorGroup,
+        minorGroup,
+        leafCategory: metadata.leafCategory || minorGroup || majorGroup || "",
+        hierarchyPath: [section, majorGroup, minorGroup].filter(Boolean).join(" > "),
+      });
+    });
+  }
+
+  addLines(startingLines); // Starting wins on conflict
+  addLines(endingLines);
+  return map;
+}
+
+/**
+ * Re-classifies already-normalized transaction rows (output of normalizeStagedTransactionRow)
+ * using a BS lookup map. Rows found in the BS lookup are updated to the correct BS type;
+ * rows not found keep their existing classification (no forced-to-expense fallback here,
+ * because the stored keyword-based type may already be correct for legitimate P&L accounts).
+ */
+function reclassifyNormalizedTransactions(normalizedRows = [], bsLookupMap = new Map()) {
+  if (!bsLookupMap || !bsLookupMap.size) return normalizedRows;
+
+  return normalizedRows.map((tx) => {
+    const lookupKey = normalizeAccountLabel(String(tx.accountName || ""));
+    const bsEntry = bsLookupMap.get(lookupKey);
+
+    if (bsEntry) {
+      const bsType = bsEntry.accountType; // 'asset' | 'liability' | 'equity'
+      const bsCategory = normalizeBalanceSheetCategory(bsEntry.leafCategory, tx.accountName, bsType);
+      return {
+        ...tx,
+        accountType: bsType,
+        category: bsCategory || bsEntry.leafCategory || tx.category || "",
+        subCategory: bsEntry.leafCategory || tx.subCategory || "",
+      };
+    }
+
+    // Not in BS → keep existing type intact (preserves correct keyword P&L accounts)
+    return tx;
+  });
+}
+
+/**
+ * Loads the BS lookup map for a given batch from the DB.
+ * Returns an empty Map if no BS lines exist or on error.
+ */
+async function loadBsLookupForBatch(companyId, batchId) {
+  if (!companyId || !batchId) return new Map();
+  try {
+    const [startingLines, endingLines] = await Promise.all([
+      loadBatchBalanceSheetLines(companyId, batchId, SHEET_TYPE.STARTING),
+      loadBatchBalanceSheetLines(companyId, batchId, SHEET_TYPE.ENDING),
+    ]);
+    const lookup = buildBsLookupFromDbLines(startingLines, endingLines);
+    if (lookup.size > 0) {
+      console.log(`[ManualGL][QueryClassify] Query-time BS lookup for batch ${batchId}: ${lookup.size} accounts`);
+    }
+    return lookup;
+  } catch (err) {
+    console.warn(`[ManualGL][QueryClassify] Could not load BS lookup for batch ${batchId}:`, err.message);
+    return new Map();
+  }
+}
+
+/**
+ * Classifies each GL transaction as Balance Sheet or Profit & Loss using
+ * the balance sheet lookup map.
+ *
+ * Rule (per spec):
+ *   - Account in starting OR ending BS → BALANCE_SHEET (type = asset/liability/equity)
+ *   - Account NOT in either BS         → PROFIT_LOSS   (type = income/cogs/expense)
+ *
+ * When no BS is provided (map is empty) the function returns transactions
+ * unchanged — falling back to the existing keyword-based classification.
+ */
+function classifyGlTransactionsWithBsLookup(transactions = [], bsLookupMap = new Map()) {
+  if (!bsLookupMap || !bsLookupMap.size) {
+    console.log(
+      "[ManualGL][Classify] No BS lookup map available — using keyword-based classification (fallback).",
+    );
+    return transactions;
+  }
+
+  let bsMatched = 0;
+  let plClassified = 0;
+  let ambiguous = 0;
+  const ambiguousAccounts = [];
+  const unmatchedByName = new Set();
+  // Track first-seen accounts for per-account debug log (avoid flooding for repeated transactions)
+  const debuggedAccounts = new Set();
+
+  const result = transactions.map((tx) => {
+    const lookupKey = normalizeAccountLabel(String(tx.accountName || ""));
+    const bsEntry = bsLookupMap.get(lookupKey);
+
+    // ── BALANCE SHEET account ──
+    if (bsEntry) {
+      bsMatched++;
+      const bsType = bsEntry.accountType; // 'asset' | 'liability' | 'equity'
+      const bsCategory = normalizeBalanceSheetCategory(
+        bsEntry.leafCategory,
+        tx.accountName,
+        bsType,
+      );
+
+      if (!debuggedAccounts.has(lookupKey)) {
+        debuggedAccounts.add(lookupKey);
+        console.log(
+          `[ManualGL][DistribSection] MATCHED "${tx.accountName}" → section: ${bsEntry.section}, ` +
+          `type: ${bsType}, majorGroup: "${bsEntry.majorGroup || ""}", ` +
+          `minorGroup: "${bsEntry.minorGroup || ""}", path: "${bsEntry.hierarchyPath || bsEntry.section}"`,
+        );
+      }
+
+      return {
+        ...tx,
+        accountType: bsType.charAt(0).toUpperCase() + bsType.slice(1),
+        category: bsCategory || bsEntry.leafCategory || "",
+        subCategory: bsEntry.leafCategory || bsCategory || "",
+        metadata: {
+          ...(tx.metadata || {}),
+          statementType: "BALANCE_SHEET",
+          bsSection: bsEntry.section,
+          bsMajorGroup: bsEntry.majorGroup || "",
+          bsMinorGroup: bsEntry.minorGroup || "",
+          bsLeafCategory: bsEntry.leafCategory || "",
+          bsHierarchyPath: bsEntry.hierarchyPath || bsEntry.section,
+          classifiedBy: "bs_lookup",
+        },
+      };
+    }
+
+    // ── PROFIT & LOSS account ──
+    plClassified++;
+    unmatchedByName.add(tx.accountName);
+
+    if (!debuggedAccounts.has(lookupKey)) {
+      debuggedAccounts.add(lookupKey);
+      console.log(
+        `[ManualGL][DistribSection] UNMATCHED "${tx.accountName}" — not found in starting or ending balance sheet → classified as P&L`,
+      );
+    }
+
+    // Determine P&L sub-type via keyword inference
+    const rawKeywordType =
+      normalizeAccountType(tx.accountType) ||
+      inferAccountType(tx.accountName, tx.accountNumber);
+
+    let plType = rawKeywordType;
+
+    // If keyword says this looks like a BS account but it's NOT in the BS,
+    // log it and default to expense (safest conservative assumption).
+    if (["asset", "liability", "equity"].includes(rawKeywordType)) {
+      ambiguous++;
+      ambiguousAccounts.push({
+        accountName: tx.accountName,
+        keywordType: rawKeywordType,
+      });
+      plType = "expense";
+    }
+
+    if (!["income", "cogs", "expense"].includes(plType)) {
+      plType = "expense";
+    }
+
+    const plCategory = normalizeProfitLossCategory(
+      tx.category,
+      tx.accountName,
+      plType,
+    );
+    const plSubCategory = inferProfitLossSubCategory(tx.accountName, plCategory);
+
+    return {
+      ...tx,
+      accountType:
+        plType === "income" ? "Income" : plType === "cogs" ? "Cogs" : "Expense",
+      category: plCategory || "Operating Expenses",
+      subCategory: plSubCategory || "",
+      metadata: {
+        ...(tx.metadata || {}),
+        statementType: "PROFIT_LOSS",
+        classifiedBy: "bs_lookup_miss",
+        originalKeywordType:
+          rawKeywordType !== plType ? rawKeywordType : undefined,
+      },
+    };
+  });
+
+  console.log(
+    `[ManualGL][Classify] Result: ${bsMatched} Balance Sheet, ${plClassified} P&L, ${ambiguous} ambiguous-forced-to-expense`,
+  );
+
+  if (ambiguous > 0) {
+    const uniqueAmbiguous = [
+      ...new Map(ambiguousAccounts.map((a) => [a.accountName, a])).values(),
+    ].slice(0, 30);
+    console.warn(
+      "[ManualGL][Classify] Ambiguous accounts (keyword says BS type but NOT in balance sheets — treated as P&L Expense):",
+      uniqueAmbiguous.map((a) => `"${a.accountName}" (${a.keywordType})`).join(", "),
+    );
+  }
+
+  if (unmatchedByName.size > 0) {
+    const sample = Array.from(unmatchedByName).slice(0, 20);
+    console.log(
+      `[ManualGL][Classify] ${unmatchedByName.size} unique GL accounts classified as P&L (not found in balance sheets). Sample:`,
+      sample,
+    );
+  }
+
+  return result;
+}
+
+// ─── Distribution Account Section Validation ─────────────────────────────────
+
+/**
+ * Builds a per-sheet (starting / ending) section breakdown for every account
+ * found in the balance sheets. Unlike buildBsLookupFromParsedSheets this keeps
+ * both sheets independent so cross-year inconsistencies can be detected.
+ *
+ * Returns Map<normalizedKey, { starting: entry|null, ending: entry|null }>
+ * where entry = { accountType, section, majorGroup, minorGroup, leafCategory, hierarchyPath }
+ */
+function buildDetailedBsSectionMap(startingParsed = null, endingParsed = null) {
+  const map = new Map();
+
+  function extractEntry(section, item) {
+    const accountType =
+      section === "assets" ? "asset"
+        : section === "liabilities" ? "liability"
+          : "equity";
+    const majorGroup = item.majorGroup || "";
+    const minorGroup = item.minorGroup || "";
+    return {
+      accountType,
+      section,
+      majorGroup,
+      minorGroup,
+      leafCategory: item.leafCategory || minorGroup || majorGroup || "",
+      hierarchyPath: [section, majorGroup, minorGroup].filter(Boolean).join(" > "),
+    };
+  }
+
+  function addSheet(parsed, sheetKey) {
+    if (!parsed) return;
+    ["assets", "liabilities", "equity"].forEach((section) => {
+      (parsed[section] || []).forEach((item) => {
+        const key = normalizeAccountLabel(String(item.name || ""));
+        if (!key) return;
+        if (!map.has(key)) map.set(key, { starting: null, ending: null });
+        map.get(key)[sheetKey] = extractEntry(section, item);
+      });
+    });
+  }
+
+  addSheet(startingParsed, "starting");
+  addSheet(endingParsed, "ending");
+
+  console.log(`[ManualGL][DetailedSectionMap] Built detailed section map with ${map.size} unique accounts.`);
+  return map;
+}
+
+/**
+ * Validates every unique GL distribution account against the detailed section
+ * map. Produces four buckets:
+ *   matched                — found in ≥1 sheet; logs section + hierarchy path
+ *   unmatched              — not in either balance sheet
+ *   crossYearInconsistencies — section differs between starting and ending sheet
+ *   conflicts              — keyword-inferred type contradicts BS section placement
+ *
+ * All findings are logged immediately. The returned object is stored in batch
+ * metadata so it can be surfaced to the UI or external review.
+ */
+function validateDistributionAccountSections(glAccountNames = [], detailedSectionMap) {
+  const matched = [];
+  const unmatched = [];
+  const crossYearInconsistencies = [];
+  const conflicts = [];
+
+  const seenKeys = new Set();
+
+  for (const accountName of glAccountNames) {
+    if (!accountName) continue;
+    const key = normalizeAccountLabel(accountName);
+    if (!key || seenKeys.has(key)) continue;
+    seenKeys.add(key);
+
+    const entry = detailedSectionMap ? detailedSectionMap.get(key) : null;
+    if (!entry || (!entry.starting && !entry.ending)) {
+      unmatched.push({ accountName, normalizedKey: key });
+      console.log(`[ManualGL][DistribValidate] UNMATCHED "${accountName}" — not present in starting or ending balance sheet`);
+      continue;
+    }
+
+    const { starting, ending } = entry;
+    const foundIn = [];
+    if (starting) foundIn.push("STARTING");
+    if (ending) foundIn.push("ENDING");
+
+    // Detect cross-year section inconsistency
+    if (starting && ending && starting.section !== ending.section) {
+      crossYearInconsistencies.push({
+        accountName,
+        startingSection: starting.section,
+        endingSection: ending.section,
+        startingPath: starting.hierarchyPath,
+        endingPath: ending.hierarchyPath,
+      });
+      console.warn(
+        `[ManualGL][DistribValidate] CROSS-YEAR INCONSISTENCY "${accountName}" — ` +
+        `Starting: ${starting.section} (${starting.hierarchyPath}) vs ` +
+        `Ending: ${ending.section} (${ending.hierarchyPath})`,
+      );
+    }
+
+    // Effective classification — starting sheet wins
+    const effective = starting || ending;
+
+    // Detect keyword-vs-BS-section conflicts
+    const keywordType = inferAccountType(accountName, "");
+    if (
+      keywordType &&
+      keywordType !== effective.accountType &&
+      (
+        (keywordType === "asset" && ["liability", "equity"].includes(effective.accountType)) ||
+        (keywordType === "liability" && effective.accountType === "asset") ||
+        (keywordType === "equity" && effective.accountType === "asset")
+      )
+    ) {
+      conflicts.push({
+        accountName,
+        keywordType,
+        bsSection: effective.section,
+        bsAccountType: effective.accountType,
+        hierarchyPath: effective.hierarchyPath,
+        issue: `Keyword infers "${keywordType}" but BS places account under "${effective.section}"`,
+      });
+      console.warn(
+        `[ManualGL][DistribValidate] CONFLICT "${accountName}" — ` +
+        `keyword type "${keywordType}" vs BS section "${effective.section}" (${effective.hierarchyPath})`,
+      );
+    }
+
+    matched.push({
+      accountName,
+      foundIn,
+      section: effective.section,
+      accountType: effective.accountType,
+      majorGroup: effective.majorGroup,
+      minorGroup: effective.minorGroup,
+      leafCategory: effective.leafCategory,
+      hierarchyPath: effective.hierarchyPath,
+      startingSection: starting ? starting.section : null,
+      endingSection: ending ? ending.section : null,
+    });
+
+    console.log(
+      `[ManualGL][DistribValidate] MATCHED "${accountName}" → ` +
+      `section: ${effective.section}, type: ${effective.accountType}, ` +
+      `path: "${effective.hierarchyPath}" [found in: ${foundIn.join(", ")}]`,
+    );
+  }
+
+  console.log(
+    `[ManualGL][DistribValidate] Summary — matched: ${matched.length}, ` +
+    `unmatched: ${unmatched.length}, crossYearInconsistencies: ${crossYearInconsistencies.length}, ` +
+    `conflicts: ${conflicts.length}`,
+  );
+
+  return { matched, unmatched, crossYearInconsistencies, conflicts };
 }
 
 async function stageMultiYearGlUpload({
@@ -2692,14 +3232,29 @@ async function stageMultiYearGlUpload({
   });
   if (!companyId) throw new Error("companyId is required");
 
-  const normalizedUploadIds = Array.from(new Set(
-    (Array.isArray(glUploadIds) ? glUploadIds : [])
-      .map((item) => String(item || "").trim())
-      .filter(Boolean)
-  ));
+  const normalizedUploadIds = Array.from(
+    new Set(
+      (Array.isArray(glUploadIds) ? glUploadIds : [])
+        .map((item) => String(item || "").trim())
+        .filter(Boolean),
+    ),
+  );
 
   if (!normalizedUploadIds.length) {
     throw new Error("At least one GL uploadId is required.");
+  }
+
+  if (!startingBalanceSheetUploadId) {
+    console.warn(
+      "[ManualGL][MultiYear] No Starting Balance Sheet provided — classification will fall back to keyword inference. " +
+      "Provide a Starting Balance Sheet for accurate BS vs P&L bifurcation.",
+    );
+  }
+  if (!endingBalanceSheetUploadId) {
+    console.warn(
+      "[ManualGL][MultiYear] No Ending Balance Sheet provided — classification will fall back to keyword inference. " +
+      "Provide an Ending Balance Sheet for accurate BS vs P&L bifurcation.",
+    );
   }
 
   const sourceContext = await loadCompanySourceContext(companyId);
@@ -2721,15 +3276,110 @@ async function stageMultiYearGlUpload({
   const effectiveMapping = ensureMappingShape(mapping || {});
 
   const parsingWarnings = [];
-  const allTransactions = [];
   const resolvedMappings = {};
   const filesParsed = [];
   const filesRequiringMapping = [];
 
+  // Tracks parsed BS data so we can insert lines after GL classification
+  const balanceSheetInfo = {
+    startingParsed: null,
+    endingParsed: null,
+    startingUpload: null,
+    endingUpload: null,
+    inserted: { starting: 0, ending: 0 },
+  };
+
   try {
+    // ── PHASE 1: Parse Balance Sheets FIRST ──────────────────────────────────
+    // We must know BS accounts before classifying GL transactions, so BS files
+    // are parsed here (not inserted yet — that happens after GL classification).
+
+    if (startingBalanceSheetUploadId) {
+      console.log(
+        "[ManualGL][MultiYear] Phase 1 – Parsing STARTING balance sheet:",
+        startingBalanceSheetUploadId,
+      );
+      try {
+        const startUpload = await loadUpload(String(startingBalanceSheetUploadId).trim());
+        const startSheets = parseWorkbook(startUpload);
+        const startSheet = selectBalanceSheetSheet(startSheets, SHEET_TYPE.STARTING);
+        if (startSheet) {
+          balanceSheetInfo.startingParsed = parseBalanceSheetFromSheet(startSheet);
+          balanceSheetInfo.startingUpload = startUpload;
+          console.log(
+            "[ManualGL][MultiYear] Starting BS parsed — assets:",
+            balanceSheetInfo.startingParsed.assets?.length,
+            "liabilities:",
+            balanceSheetInfo.startingParsed.liabilities?.length,
+            "equity:",
+            balanceSheetInfo.startingParsed.equity?.length,
+          );
+        }
+      } catch (bsErr) {
+        console.error("[ManualGL][MultiYear] Failed to parse STARTING balance sheet:", bsErr.message);
+      }
+    }
+
+    if (endingBalanceSheetUploadId) {
+      console.log(
+        "[ManualGL][MultiYear] Phase 1 – Parsing ENDING balance sheet:",
+        endingBalanceSheetUploadId,
+      );
+      try {
+        const endUpload = await loadUpload(String(endingBalanceSheetUploadId).trim());
+        const endSheets = parseWorkbook(endUpload);
+        const endSheet = selectBalanceSheetSheet(endSheets, SHEET_TYPE.ENDING);
+        if (endSheet) {
+          balanceSheetInfo.endingParsed = parseBalanceSheetFromSheet(endSheet);
+          balanceSheetInfo.endingUpload = endUpload;
+          console.log(
+            "[ManualGL][MultiYear] Ending BS parsed — assets:",
+            balanceSheetInfo.endingParsed.assets?.length,
+            "liabilities:",
+            balanceSheetInfo.endingParsed.liabilities?.length,
+            "equity:",
+            balanceSheetInfo.endingParsed.equity?.length,
+          );
+        }
+      } catch (bsErr) {
+        console.error("[ManualGL][MultiYear] Failed to parse ENDING balance sheet:", bsErr.message);
+      }
+    }
+
+    // ── PHASE 2: Build BS account lookup map ─────────────────────────────────
+    // Maps normalised account name → { accountType, section, majorGroup, minorGroup, leafCategory, hierarchyPath }.
+    // Empty map means no BS was provided → fall back to keyword classification.
+
+    const bsLookupMap = buildBsLookupFromParsedSheets(
+      balanceSheetInfo.startingParsed,
+      balanceSheetInfo.endingParsed,
+    );
+
+    // Separate per-sheet map used exclusively for distribution account validation
+    // (keeps starting and ending independent so cross-year inconsistencies are detectable).
+    const detailedSectionMap = buildDetailedBsSectionMap(
+      balanceSheetInfo.startingParsed,
+      balanceSheetInfo.endingParsed,
+    );
+
+    const hasBsLookup = bsLookupMap.size > 0;
+    console.log(
+      `[ManualGL][MultiYear] Phase 2 – BS lookup map: ${bsLookupMap.size} accounts (${hasBsLookup ? "data-driven classification" : "keyword-based fallback"})`,
+    );
+
+    // ── PHASE 3: Parse GL files, classify, then insert ───────────────────────
+    // Each file's transactions are classified using the BS lookup before
+    // being persisted, so account_type in the DB is always BS-driven.
+
     let totalInserted = 0;
     let totalDuplicates = 0;
+    let totalCrossFileDuplicates = 0;
     const combinedYearGroups = {};
+    const seenCrossFileHashes = new Map();
+
+    // Collect all classified transactions for in-memory validation summary
+    const allClassifiedTransactions = [];
+
     for (const uploadId of normalizedUploadIds) {
       try {
         const upload = await loadUpload(uploadId);
@@ -2744,8 +3394,9 @@ async function stageMultiYearGlUpload({
         const bestSheet = selectedSheets[0];
         const fileYearHint = inferFiscalYear({ upload, sheetData: bestSheet });
 
-        let fileTransactions = [];
+        let rawFileTransactions = [];
         let fileParsedAtLeastOne = false;
+
         for (const sheetData of selectedSheets) {
           const parsed = parseGlSheetTransactions({
             companyId,
@@ -2755,44 +3406,73 @@ async function stageMultiYearGlUpload({
             fiscalYearHint: fileYearHint,
           });
 
-          if (!parsed.success) {
-            continue; 
-          }
+          if (!parsed.success) continue;
 
           fileParsedAtLeastOne = true;
           resolvedMappings[uploadId] = parsed.mapping;
-          fileTransactions.push(...parsed.transactions);
-          allTransactions.push(...parsed.transactions); // Keep for summary/response
-          parsingWarnings.push(...parsed.warnings.map(w => ({ ...w, uploadId, fileName: upload.file_name })));
+          rawFileTransactions.push(...parsed.transactions);
+          parsingWarnings.push(
+            ...parsed.warnings.map((w) => ({ ...w, uploadId, fileName: upload.file_name })),
+          );
         }
 
-        if (fileParsedAtLeastOne && fileTransactions.length > 0) {
-          // SAVE TO DATABASE IMMEDIATELY (ONE-BY-ONE)
-          const insertStats = await insertTransactions({
-            companyId,
-            batchId: batch.id,
-            transactions: fileTransactions,
-            sourceType,
-            sourceSwitchVersion,
-            uploadSessionId,
-          });
-          totalInserted += insertStats.inserted;
-          totalDuplicates += (insertStats.duplicates || 0);
-          
-          // Merge year groups
-          Object.entries(insertStats.yearGroups || {}).forEach(([year, count]) => {
-            combinedYearGroups[year] = (combinedYearGroups[year] || 0) + count;
-          });
-          filesParsed.push(upload.file_name);
-          console.log(`[ManualGL][MultiYear] Successfully staged ${insertStats.inserted} rows from ${upload.file_name}`);
-        } else {
-          filesRequiringMapping.push({
-            uploadId,
-            fileName: upload.file_name,
-          });
+        if (!fileParsedAtLeastOne || rawFileTransactions.length === 0) {
+          filesRequiringMapping.push({ uploadId, fileName: upload.file_name });
+          continue;
         }
+
+        // Apply BS-driven classification (or keyword fallback when no BS)
+        const classifiedTransactions = classifyGlTransactionsWithBsLookup(
+          rawFileTransactions,
+          bsLookupMap,
+        );
+
+        const dedupedTransactions = [];
+        let fileCrossFileDuplicates = 0;
+        classifiedTransactions.forEach((tx) => {
+          const crossFileHash = buildCrossFileDedupHash(tx);
+          const sourceUploadId = String(tx.sourceUploadId || "");
+          const firstSeenUploadId = seenCrossFileHashes.get(crossFileHash);
+
+          // Only de-duplicate when the same business transaction appears
+          // across different uploads within the same staging batch.
+          if (firstSeenUploadId && firstSeenUploadId !== sourceUploadId) {
+            fileCrossFileDuplicates += 1;
+            return;
+          }
+
+          if (!firstSeenUploadId) {
+            seenCrossFileHashes.set(crossFileHash, sourceUploadId);
+          }
+          dedupedTransactions.push(tx);
+        });
+        totalCrossFileDuplicates += fileCrossFileDuplicates;
+
+        allClassifiedTransactions.push(...dedupedTransactions);
+
+        const insertStats = await insertTransactions({
+          companyId,
+          batchId: batch.id,
+          transactions: dedupedTransactions,
+          sourceType,
+          sourceSwitchVersion,
+          uploadSessionId,
+        });
+
+        totalInserted += insertStats.inserted;
+        totalDuplicates += insertStats.duplicates || 0;
+
+        Object.entries(insertStats.yearGroups || {}).forEach(([year, count]) => {
+          combinedYearGroups[year] = (combinedYearGroups[year] || 0) + count;
+        });
+
+        filesParsed.push(upload.file_name);
+        console.log(
+          `[ManualGL][MultiYear] Staged ${insertStats.inserted} classified rows from "${upload.file_name}" ` +
+          `(cross-file duplicates skipped: ${fileCrossFileDuplicates})`,
+        );
       } catch (fileErr) {
-        console.error(`[ManualGL][MultiYear] Error on ${uploadId}:`, fileErr);
+        console.error(`[ManualGL][MultiYear] Error processing GL file ${uploadId}:`, fileErr);
       }
     }
 
@@ -2816,96 +3496,127 @@ async function stageMultiYearGlUpload({
       };
     }
 
-    console.log(`[ManualGL][MultiYear] Staging cycle complete. Total persisted: ${totalInserted} rows.`);
+    console.log(
+      `[ManualGL][MultiYear] Phase 3 complete — ${totalInserted} classified transactions persisted.`,
+    );
 
-    const balanceSheetInfo = {
-      starting: null,
-      ending: null,
-      inserted: {
-        starting: 0,
-        ending: 0,
-      },
-    };
+    // ── PHASE 3b: Validate distribution account section classifications ───────
+    // Collect every unique GL account name, then check WHERE each appears in the
+    // balance sheet hierarchy. Detects unmatched accounts, cross-year section
+    // inconsistencies, and keyword-vs-BS conflicts. Results are stored in the
+    // batch metadata for downstream review.
+    const uniqueGlAccounts = [
+      ...new Set(
+        allClassifiedTransactions.map((tx) => tx.accountName).filter(Boolean),
+      ),
+    ];
+    console.log(
+      `[ManualGL][MultiYear] Phase 3b – validating ${uniqueGlAccounts.length} unique distribution accounts against balance sheet hierarchy...`,
+    );
+    const distributionValidation = validateDistributionAccountSections(uniqueGlAccounts, detailedSectionMap);
 
-    if (startingBalanceSheetUploadId) {
-      console.log("[ManualGL][MultiYear] Loading STARTING balance sheet:", startingBalanceSheetUploadId);
-      const startUpload = await loadUpload(String(startingBalanceSheetUploadId).trim());
-      const startSheets = parseWorkbook(startUpload);
-      const startSheet = [...startSheets]
-        .sort((a, b) => scoreSheetForBalanceSheet(b) - scoreSheetForBalanceSheet(a))[0];
-      if (startSheet) {
-        const parsed = parseBalanceSheetFromSheet(startSheet);
-        const lines = toBalanceSheetLineRows({
-          companyId,
-          batchId: batch.id,
-          upload: startUpload,
-          sheetType: SHEET_TYPE.STARTING,
-          parsed,
-          sourceType,
-          sourceSwitchVersion,
-          uploadSessionId,
-          stagedAt: stageStartedAt,
-        });
-        const result = await replaceBalanceSheetLines({
-          companyId,
-          batchId: batch.id,
-          sheetType: SHEET_TYPE.STARTING,
-          lines,
-        });
-        balanceSheetInfo.starting = parsed;
-        balanceSheetInfo.inserted.starting = result.inserted;
-      }
+    // ── PHASE 4: Insert Balance Sheet lines ──────────────────────────────────
+    // Now that GL is stored, persist the BS line data we parsed in Phase 1.
+
+    if (balanceSheetInfo.startingParsed && balanceSheetInfo.startingUpload) {
+      const lines = toBalanceSheetLineRows({
+        companyId,
+        batchId: batch.id,
+        upload: balanceSheetInfo.startingUpload,
+        sheetType: SHEET_TYPE.STARTING,
+        parsed: balanceSheetInfo.startingParsed,
+        sourceType,
+        sourceSwitchVersion,
+        uploadSessionId,
+        stagedAt: stageStartedAt,
+      });
+      const result = await replaceBalanceSheetLines({
+        companyId,
+        batchId: batch.id,
+        sheetType: SHEET_TYPE.STARTING,
+        lines,
+      });
+      balanceSheetInfo.inserted.starting = result.inserted;
+      console.log(
+        `[ManualGL][MultiYear] Phase 4 – STARTING BS lines inserted: ${result.inserted}`,
+      );
     }
 
-    if (endingBalanceSheetUploadId) {
-      console.log("[ManualGL][MultiYear] Loading ENDING balance sheet:", endingBalanceSheetUploadId);
-      const endUpload = await loadUpload(String(endingBalanceSheetUploadId).trim());
-      const endSheets = parseWorkbook(endUpload);
-      const endSheet = [...endSheets]
-        .sort((a, b) => scoreSheetForBalanceSheet(b) - scoreSheetForBalanceSheet(a))[0];
-      if (endSheet) {
-        const parsed = parseBalanceSheetFromSheet(endSheet);
-        const lines = toBalanceSheetLineRows({
-          companyId,
-          batchId: batch.id,
-          upload: endUpload,
-          sheetType: SHEET_TYPE.ENDING,
-          parsed,
-          sourceType,
-          sourceSwitchVersion,
-          uploadSessionId,
-          stagedAt: stageStartedAt,
-        });
-        const result = await replaceBalanceSheetLines({
-          companyId,
-          batchId: batch.id,
-          sheetType: SHEET_TYPE.ENDING,
-          lines,
-        });
-        balanceSheetInfo.ending = parsed;
-        balanceSheetInfo.inserted.ending = result.inserted;
-      }
+    if (balanceSheetInfo.endingParsed && balanceSheetInfo.endingUpload) {
+      const lines = toBalanceSheetLineRows({
+        companyId,
+        batchId: batch.id,
+        upload: balanceSheetInfo.endingUpload,
+        sheetType: SHEET_TYPE.ENDING,
+        parsed: balanceSheetInfo.endingParsed,
+        sourceType,
+        sourceSwitchVersion,
+        uploadSessionId,
+        stagedAt: stageStartedAt,
+      });
+      const result = await replaceBalanceSheetLines({
+        companyId,
+        batchId: batch.id,
+        sheetType: SHEET_TYPE.ENDING,
+        lines,
+      });
+      balanceSheetInfo.inserted.ending = result.inserted;
+      console.log(
+        `[ManualGL][MultiYear] Phase 4 – ENDING BS lines inserted: ${result.inserted}`,
+      );
     }
 
-    const normalizedTransactions = allTransactions
+    // ── PHASE 5: Summary, validation, batch update ───────────────────────────
+
+    const normalizedTransactions = allClassifiedTransactions
       .map(normalizeStagedTransactionRow)
       .filter(Boolean);
-    console.log("[ManualGL][MultiYear] Building P&L summary...");
+
+    console.log("[ManualGL][MultiYear] Building P&L summary from classified transactions...");
     const summaryPayload = buildProfitLossSummaryPayload(normalizedTransactions, {
       batchId: batch.id,
     });
     console.log("[ManualGL][MultiYear] P&L summary built, years:", summaryPayload.years);
 
+    // Log classification quality metrics
+    const bsAccounts = normalizedTransactions.filter((tx) =>
+      ["asset", "liability", "equity"].includes(
+        normalizeAccountType(tx.accountType) || "",
+      ),
+    ).length;
+    const plAccounts = normalizedTransactions.filter((tx) =>
+      ["income", "cogs", "expense"].includes(
+        normalizeAccountType(tx.accountType) || "",
+      ),
+    ).length;
+    console.log(
+      `[ManualGL][MultiYear] Classification audit — BS transactions: ${bsAccounts}, P&L transactions: ${plAccounts}, total: ${normalizedTransactions.length}`,
+    );
+
     let validation = null;
-    if (balanceSheetInfo.starting || balanceSheetInfo.ending) {
-      const startingLines = await loadBatchBalanceSheetLines(companyId, batch.id, SHEET_TYPE.STARTING);
-      const endingLines = await loadBatchBalanceSheetLines(companyId, batch.id, SHEET_TYPE.ENDING);
+    if (balanceSheetInfo.startingParsed || balanceSheetInfo.endingParsed) {
+      const startingLines = await loadBatchBalanceSheetLines(
+        companyId,
+        batch.id,
+        SHEET_TYPE.STARTING,
+      );
+      const endingLines = await loadBatchBalanceSheetLines(
+        companyId,
+        batch.id,
+        SHEET_TYPE.ENDING,
+      );
       validation = computeBalanceSheetRollforwardValidation({
         startingLines,
         endingLines,
         transactions: normalizedTransactions,
         profitLossSummary: summaryPayload,
       });
+      if (validation.mismatches?.length > 0) {
+        console.warn(
+          "[ManualGL][MultiYear] Balance Sheet rollforward mismatches:",
+          validation.mismatches.slice(0, 10),
+        );
+      }
     }
 
     console.log("[ManualGL][MultiYear] Updating batch to staged...");
@@ -2919,13 +3630,16 @@ async function stageMultiYearGlUpload({
         filesParsed,
         insertedTransactions: totalInserted,
         duplicateTransactionsSkipped: totalDuplicates,
+        crossFileDuplicateTransactionsSkipped: totalCrossFileDuplicates,
         warningsCount: parsingWarnings.length,
+        classificationMode: hasBsLookup ? "bs_driven" : "keyword_fallback",
+        bsLookupAccountCount: bsLookupMap.size,
         yearsDetected: Array.from(
           new Set(
             normalizedTransactions
               .map((tx) => Number(tx.fiscalYear || 0))
-              .filter((year) => Number.isInteger(year) && year > 0)
-          )
+              .filter((year) => Number.isInteger(year) && year > 0),
+          ),
         ).sort((a, b) => a - b),
         sourceType,
         sourceSwitchVersion,
@@ -2933,6 +3647,13 @@ async function stageMultiYearGlUpload({
         stageStartedAt,
         stageCompletedAt: new Date().toISOString(),
         validation,
+        distributionValidation: {
+          matchedCount: distributionValidation.matched.length,
+          unmatchedCount: distributionValidation.unmatched.length,
+          crossYearInconsistencies: distributionValidation.crossYearInconsistencies,
+          conflicts: distributionValidation.conflicts,
+          unmatched: distributionValidation.unmatched.map((u) => u.accountName),
+        },
       },
     });
 
@@ -2951,6 +3672,7 @@ async function stageMultiYearGlUpload({
           uploadSessionId,
           glUploadCount: normalizedUploadIds.length,
           insertedTransactions: totalInserted,
+          classificationMode: hasBsLookup ? "bs_driven" : "keyword_fallback",
         },
       });
     } catch (syncError) {
@@ -2963,11 +3685,13 @@ async function stageMultiYearGlUpload({
       insertedTransactions: totalInserted,
       yearGroups: combinedYearGroups,
       duplicateTransactionsSkipped: totalDuplicates,
+      crossFileDuplicateTransactionsSkipped: totalCrossFileDuplicates,
       warnings: parsingWarnings.slice(0, 500),
       mapping: effectiveMapping,
       filesParsed,
       validation,
       yearsDetected: summaryPayload.years,
+      classificationMode: hasBsLookup ? "bs_driven" : "keyword_fallback",
     };
   } catch (error) {
     console.error("[ManualGL][MultiYear] === FAILED ===", error.message, error.stack);
@@ -2991,7 +3715,6 @@ async function stageMultiYearGlUpload({
           txCleanup.error.message,
         );
       }
-
       if (bsCleanup.error) {
         console.error(
           "[ManualGL][MultiYear] Failed to rollback staged balance-sheet lines:",
@@ -3008,10 +3731,7 @@ async function stageMultiYearGlUpload({
     try {
       await updateBatch(batch.id, {
         status: "failed",
-        metadata: {
-          error: error.message,
-          rolledBack: true,
-        },
+        metadata: { error: error.message, rolledBack: true },
       });
     } catch (updateError) {
       console.error("[ManualGL][MultiYear] Failed to update batch status:", updateError.message);
@@ -3075,7 +3795,7 @@ async function getCashflowSummaryFromStage(companyId, filters = {}) {
   });
 
   return {
-    source: "manual_staged",
+    source: "manual_gl_staged_transactions",
     reportType: "cash_flow",
     filters,
     years,
@@ -3086,7 +3806,17 @@ async function getCashflowSummaryFromStage(companyId, filters = {}) {
 
 async function getProfitLossSummaryFromStage(companyId, filters = {}) {
   const { filters: normalizedFilters, rows } = await queryStagedTransactions(companyId, filters);
-  const normalized = rows.map(normalizeStagedTransactionRow).filter(Boolean);
+  let normalized = rows.map(normalizeStagedTransactionRow).filter(Boolean);
+
+  // Re-classify using BS lines from DB so reports are accurate even for data
+  // staged before the BS-driven classification was implemented.
+  if (normalizedFilters.batchId) {
+    const bsLookup = await loadBsLookupForBatch(companyId, normalizedFilters.batchId);
+    if (bsLookup.size > 0) {
+      normalized = reclassifyNormalizedTransactions(normalized, bsLookup);
+    }
+  }
+
   const summary = buildProfitLossSummaryPayload(normalized, normalizedFilters);
   return summary;
 }
@@ -3100,7 +3830,7 @@ async function getProfitLossDetailFromStage(companyId, filters = {}) {
 async function getStageTransactions(companyId, filters = {}) {
   const { filters: normalizedFilters, rows } = await queryStagedTransactions(companyId, filters);
   return {
-    source: "manual_staged",
+    source: "manual_gl_staged_transactions",
     filters: normalizedFilters,
     count: rows.length,
     rows: rows.map(normalizeStagedTransactionRow),
@@ -3166,7 +3896,7 @@ async function getStageFilterOptions(companyId, filters = {}) {
   });
 
   return {
-    source: "manual_staged",
+    source: "manual_gl_staged_transactions",
     rowCount: rows.length,
     options: Object.fromEntries(
       Object.entries(options).map(([key, set]) => [
@@ -3218,7 +3948,7 @@ async function validateBatchBalanceSheet(companyId, batchId = "") {
   });
 
   return {
-    source: "manual_staged",
+    source: "manual_gl_staged_transactions",
     batchId: effectiveBatchId,
     validation,
   };
@@ -3719,7 +4449,7 @@ function buildBalanceSheetMonthlyDetailPayload(transactions = [], year, filters 
   sections.Equity.total = roundMoney(sections.Equity.monthlyTotals?.[12] || 0);
 
   return {
-    source: "manual_staged",
+    source: "manual_gl_staged_transactions",
     reportType: "balance_sheet_monthly_detail",
     year: selectedYear,
     months,
@@ -3738,20 +4468,13 @@ async function getBalanceSheetMonthlyDetailFromStage(companyId, filters = {}) {
       ? Math.max(...normalizedFilters.fiscalYears.map((value) => Number(value)).filter((value) => Number.isInteger(value) && value > 0))
       : null;
 
-  // reportType must be cleared so income/expense accounts are fetched for Net Income calculation.
-  const pnlPayload = await getProfitLossSummaryFromStage(companyId, {
-    ...normalizedFilters,
-    reportType: "",
-    fiscalYear: null,
-    fiscalYears: [],
-    startDate: "",
-    endDate: "",
-    limit: DEFAULT_STAGING_LIMIT,
-  });
-
   let startingLines = [];
+  let endingLines = [];
   if (effectiveBatchId) {
-    startingLines = await loadBatchBalanceSheetLines(companyId, effectiveBatchId, SHEET_TYPE.STARTING);
+    [startingLines, endingLines] = await Promise.all([
+      loadBatchBalanceSheetLines(companyId, effectiveBatchId, SHEET_TYPE.STARTING),
+      loadBatchBalanceSheetLines(companyId, effectiveBatchId, SHEET_TYPE.ENDING),
+    ]);
   }
 
   // Query cumulative rows and let the payload builder create opening + monthly balances for selected year.
@@ -3766,6 +4489,16 @@ async function getBalanceSheetMonthlyDetailFromStage(companyId, filters = {}) {
   });
 
   let normalized = rows.map(normalizeStagedTransactionRow).filter(Boolean);
+  const bsLookup = buildBsLookupFromDbLines(startingLines, endingLines);
+  if (bsLookup.size > 0) {
+    normalized = reclassifyNormalizedTransactions(normalized, bsLookup);
+  }
+
+  const pnlPayload = buildProfitLossSummaryPayload(normalized, {
+    ...normalizedFilters,
+    batchId: normalizedFilters.batchId || effectiveBatchId || "",
+  });
+
   if (targetYear) {
     normalized = normalized.filter((tx) => Number(tx.fiscalYear || 0) <= targetYear);
   }

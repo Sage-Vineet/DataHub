@@ -236,11 +236,25 @@ router.get("/reports/pl", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async
 
     const filters = parseManualFilterQuery(req.query || {});
     const stagedPayload = await getProfitLossSummaryFromStage(clientId, filters);
+    const netProfitLine = Array.isArray(stagedPayload?.lines)
+      ? stagedPayload.lines.find((line) => line.label === "Net Profit")
+      : null;
+    console.log(
+      "[ManualGL][API][PL]",
+      "client=",
+      clientId,
+      "batch=",
+      stagedPayload?.filters?.batchId || filters.batchId || "",
+      "years=",
+      stagedPayload?.years || [],
+      "netProfitByYear=",
+      netProfitLine?.valuesByYear || {},
+    );
 
     return res.json({
       success: true,
-      source: "MANUAL_STAGED",
       ...stagedPayload,
+      source: "MANUAL_STAGED",
     });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message || "Failed to fetch P&L report." });
@@ -254,11 +268,22 @@ router.get("/reports/balance-sheet", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL
 
     const filters = parseManualFilterQuery(req.query || {});
     const stagedPayload = await getBalanceSheetSummaryFromStage(clientId, filters);
+    console.log(
+      "[ManualGL][API][BS]",
+      "client=",
+      clientId,
+      "batch=",
+      stagedPayload?.filters?.batchId || filters.batchId || "",
+      "years=",
+      stagedPayload?.years || [],
+      "audit=",
+      stagedPayload?.audit || [],
+    );
 
     return res.json({
       success: true,
-      source: "MANUAL_STAGED",
       ...stagedPayload,
+      source: "MANUAL_STAGED",
     });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message || "Failed to fetch Balance Sheet report." });
@@ -275,8 +300,8 @@ router.get("/reports/cashflow", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL),
 
     return res.json({
       success: true,
-      source: "MANUAL_STAGED",
       ...stagedPayload,
+      source: "MANUAL_STAGED",
     });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message || "Failed to fetch Cash Flow report." });
@@ -414,7 +439,21 @@ router.get("/reports/profit-loss", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_G
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
     const filters = parseManualFilterQuery(req.query || {});
     const payload = await getProfitLossSummaryFromStage(clientId, filters);
-    return res.json({ success: true, ...payload });
+    const netProfitLine = Array.isArray(payload?.lines)
+      ? payload.lines.find((line) => line.label === "Net Profit")
+      : null;
+    console.log(
+      "[ManualGL][API][ProfitLoss]",
+      "client=",
+      clientId,
+      "batch=",
+      payload?.filters?.batchId || filters.batchId || "",
+      "years=",
+      payload?.years || [],
+      "netProfitByYear=",
+      netProfitLine?.valuesByYear || {},
+    );
+    return res.json({ success: true, ...payload, source: "MANUAL_STAGED" });
   } catch (error) {
     return res.status(500).json({
       success: false,

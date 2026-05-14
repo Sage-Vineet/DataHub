@@ -4,12 +4,13 @@ import { AlertTriangle, ArrowRight, X, Zap } from 'lucide-react';
 import { getConnectionStatus } from '../../lib/quickbooks';
 import { getCompanyRequest } from '../../lib/api';
 import { cn } from '../../lib/utils';
+import { useDataSource } from '../../context/DataSourceContext';
 
 /**
  * QBDisconnectedBanner
  *
- * Checks the QuickBooks connection status on mount and displays a dismissible
- * amber notification banner when QuickBooks is not connected.
+ * Only renders when the active data source is QuickBooks. Shows a dismissible
+ * amber banner when QuickBooks is disconnected or company-mismatched.
  *
  * Props:
  *   pageName  (string) – friendly name of the current page shown in the message.
@@ -17,6 +18,7 @@ import { cn } from '../../lib/utils';
 export default function QBDisconnectedBanner({ pageName = 'this page' }) {
   const { clientId } = useParams();
   const navigate = useNavigate();
+  const { activeSourceMode } = useDataSource();
   const [show, setShow] = useState(false);
   const [isMismatch, setIsMismatch] = useState(false);
   const [companyName, setCompanyName] = useState('');
@@ -24,6 +26,8 @@ export default function QBDisconnectedBanner({ pageName = 'this page' }) {
   const [dismissed, setDismissed] = useState(false);
 
   useEffect(() => {
+    if (activeSourceMode !== 'quickbooks') return;
+
     let cancelled = false;
 
     // Only fetch company data if we have a real clientId (broker workspace)
@@ -60,9 +64,9 @@ export default function QBDisconnectedBanner({ pageName = 'this page' }) {
       });
 
     return () => { cancelled = true; };
-  }, [clientId]);
+  }, [clientId, activeSourceMode]);
 
-  if (!show || dismissed) return null;
+  if (!show || dismissed || activeSourceMode !== 'quickbooks') return null;
 
   const connectionsPath = clientId
     ? `/broker/client/${clientId}/connections`

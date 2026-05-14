@@ -366,11 +366,24 @@ export async function getBalanceSheet(startDate, endDate, accountingMethod, opti
       params: { ...manualFilters },
     });
 
-    const isStagedFormat = response?.source === "manual_staged" && response?.sections;
-    const rows = isStagedFormat
-      ? convertStagedBsPayloadToRows(response)
-      : parseUnifiedBalanceSheetRows(response);
+    // Prefer pre-built hierarchicalRows from the backend. If absent, reconstruct
+    // from sections. Fall back to QB-format parser only for non-staged responses.
+    // NOTE: backend returns source="manual_gl_staged_transactions" (not "manual_staged"),
+    // so we detect staged format by structure (hierarchicalRows/sections) rather than source string.
+    let rows;
+    if (Array.isArray(response?.hierarchicalRows) && response.hierarchicalRows.length > 0) {
+      rows = response.hierarchicalRows;
+      console.log("[ManualGL][BS][UI] Using hierarchicalRows from API:", rows.length, "top-level nodes");
+    } else if (response?.sections) {
+      rows = convertStagedBsPayloadToRows(response);
+      console.log("[ManualGL][BS][UI] Built rows from sections, count:", rows.length);
+    } else {
+      rows = parseUnifiedBalanceSheetRows(response);
+      console.log("[ManualGL][BS][UI] Fell back to QB parser, rows:", rows.length);
+    }
     const source = response?.source || null;
+
+    console.log("[ManualGL][BS][UI] API response source:", source, "| years:", response?.years, "| audit:", response?.audit);
 
     if (rows.length > 0 || source) {
       return {

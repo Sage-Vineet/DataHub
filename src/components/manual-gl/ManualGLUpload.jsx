@@ -175,7 +175,28 @@ export default function ManualGLUpload({
         : selectedDocumentIds.length > 0;
 
     if (!hasGlSelection) {
-      showToast({ type: "error", title: "No selection", message: "Please select at least one file to continue." });
+      showToast({ type: "error", title: "No selection", message: "Please select at least one General Ledger file to continue." });
+      return;
+    }
+
+    const startingBsSelected = sourceMode === "manual" ? !!startingBalanceSheetFile : !!selectedStartingDocumentId;
+    const endingBsSelected = sourceMode === "manual" ? !!endingBalanceSheetFile : !!selectedEndingDocumentId;
+
+    if (!startingBsSelected) {
+      showToast({
+        type: "error",
+        title: "Starting Balance Sheet required",
+        message: "A Starting Balance Sheet is required for accurate account classification. Please provide one before staging.",
+      });
+      return;
+    }
+
+    if (!endingBsSelected) {
+      showToast({
+        type: "error",
+        title: "Ending Balance Sheet required",
+        message: "An Ending Balance Sheet is required for accurate account classification. Please provide one before staging.",
+      });
       return;
     }
 
@@ -495,7 +516,9 @@ export default function ManualGLUpload({
   };
 
   const hasSelection = sourceMode === "dataroom" ? selectedDocumentIds.length > 0 : files.length > 0;
-  const isStageActionDisabled = isSubmitting || !hasSelection;
+  const hasStartingBs = sourceMode === "manual" ? !!startingBalanceSheetFile : !!selectedStartingDocumentId;
+  const hasEndingBs = sourceMode === "manual" ? !!endingBalanceSheetFile : !!selectedEndingDocumentId;
+  const isStageActionDisabled = isSubmitting || !hasSelection || !hasStartingBs || !hasEndingBs;
 
   const canProcessMapping = Boolean(
     mapping.date &&
@@ -544,7 +567,7 @@ export default function ManualGLUpload({
           <div className="min-w-0">
             <h3 className="text-[16px] font-semibold text-text-primary">Manual Financial Processing</h3>
             <p className="text-[12px] text-secondary">
-              Stage multi-year GL files with optional starting and ending balance sheets for normalized reporting.
+              Stage multi-year GL files. Starting and Ending Balance Sheets are required for accurate account classification.
             </p>
           </div>
         </div>
@@ -650,39 +673,45 @@ export default function ManualGLUpload({
                     </div>
 
                     <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
-                      <div className="rounded-md border border-border bg-bg-card p-3">
+                      <div className={`rounded-md border p-3 ${selectedStartingDocumentId ? "border-green-300 bg-green-50/40" : "border-amber-300 bg-amber-50/40"}`}>
                         <label className="block text-[11px] font-semibold uppercase tracking-wide text-secondary mb-1">
-                          Starting Balance Sheet (Optional)
+                          Starting Balance Sheet <span className="text-red-500">*</span>
                         </label>
                         <select
                           className="input-base text-[13px]"
                           value={selectedStartingDocumentId}
                           onChange={(event) => setSelectedStartingDocumentId(event.target.value)}
                         >
-                          <option value="">None</option>
+                          <option value="">-- Select document --</option>
                           {documents.map((doc) => (
                             <option key={`start-${doc.id}`} value={doc.id}>
                               {formatDocumentLabel(doc)}
                             </option>
                           ))}
                         </select>
+                        {!selectedStartingDocumentId && (
+                          <p className="mt-1 text-[11px] text-amber-700">Required for accurate account classification</p>
+                        )}
                       </div>
-                      <div className="rounded-md border border-border bg-bg-card p-3">
+                      <div className={`rounded-md border p-3 ${selectedEndingDocumentId ? "border-green-300 bg-green-50/40" : "border-amber-300 bg-amber-50/40"}`}>
                         <label className="block text-[11px] font-semibold uppercase tracking-wide text-secondary mb-1">
-                          Ending Balance Sheet (Optional)
+                          Ending Balance Sheet <span className="text-red-500">*</span>
                         </label>
                         <select
                           className="input-base text-[13px]"
                           value={selectedEndingDocumentId}
                           onChange={(event) => setSelectedEndingDocumentId(event.target.value)}
                         >
-                          <option value="">None</option>
+                          <option value="">-- Select document --</option>
                           {documents.map((doc) => (
                             <option key={`end-${doc.id}`} value={doc.id}>
                               {formatDocumentLabel(doc)}
                             </option>
                           ))}
                         </select>
+                        {!selectedEndingDocumentId && (
+                          <p className="mt-1 text-[11px] text-amber-700">Required for accurate account classification</p>
+                        )}
                       </div>
                     </div>
                   </>
@@ -726,9 +755,9 @@ export default function ManualGLUpload({
                     )}
 
                     <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
-                      <div className="rounded-md border border-border bg-bg-card p-3">
+                      <div className={`rounded-md border p-3 ${startingBalanceSheetFile ? "border-green-300 bg-green-50/40" : "border-amber-300 bg-amber-50/40"}`}>
                         <label className="block text-[11px] font-semibold uppercase tracking-wide text-secondary mb-1">
-                          Starting Balance Sheet (Optional)
+                          Starting Balance Sheet <span className="text-red-500">*</span>
                         </label>
                         <input
                           type="file"
@@ -740,14 +769,14 @@ export default function ManualGLUpload({
                           className="input-base text-[13px]"
                         />
                         {startingBalanceSheetFile ? (
-                          <p className="mt-2 text-[12px] text-text-primary truncate">
-                            {startingBalanceSheetFile.name}
-                          </p>
-                        ) : null}
+                          <p className="mt-2 text-[12px] text-green-700 truncate">{startingBalanceSheetFile.name}</p>
+                        ) : (
+                          <p className="mt-1 text-[11px] text-amber-700">Required for accurate account classification</p>
+                        )}
                       </div>
-                      <div className="rounded-md border border-border bg-bg-card p-3">
+                      <div className={`rounded-md border p-3 ${endingBalanceSheetFile ? "border-green-300 bg-green-50/40" : "border-amber-300 bg-amber-50/40"}`}>
                         <label className="block text-[11px] font-semibold uppercase tracking-wide text-secondary mb-1">
-                          Ending Balance Sheet (Optional)
+                          Ending Balance Sheet <span className="text-red-500">*</span>
                         </label>
                         <input
                           type="file"
@@ -759,10 +788,10 @@ export default function ManualGLUpload({
                           className="input-base text-[13px]"
                         />
                         {endingBalanceSheetFile ? (
-                          <p className="mt-2 text-[12px] text-text-primary truncate">
-                            {endingBalanceSheetFile.name}
-                          </p>
-                        ) : null}
+                          <p className="mt-2 text-[12px] text-green-700 truncate">{endingBalanceSheetFile.name}</p>
+                        ) : (
+                          <p className="mt-1 text-[11px] text-amber-700">Required for accurate account classification</p>
+                        )}
                       </div>
                     </div>
                   </>
@@ -771,15 +800,34 @@ export default function ManualGLUpload({
             </div>
 
             <div className="rounded-lg border border-border bg-bg-page/40 px-4 py-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="min-w-0">
+              <div className="min-w-0 space-y-1">
                 <p className="text-[12px] text-secondary truncate">
-                  Selected GL source: <span className="font-medium text-text-primary">{selectedSourceName || "None selected"}</span>
+                  GL source: <span className="font-medium text-text-primary">{selectedSourceName || "None selected"}</span>
                 </p>
-                <p className="text-[11px] text-secondary truncate">
-                  Starting BS: <span className="font-medium text-text-primary">{sourceMode === "manual" ? (startingBalanceSheetFile?.name || "Not provided") : (selectedStartingDocumentId ? (formatDocumentLabel(documents.find((doc) => doc.id === selectedStartingDocumentId)) || "Selected") : "Not provided")}</span>
-                  {" | "}
-                  Ending BS: <span className="font-medium text-text-primary">{sourceMode === "manual" ? (endingBalanceSheetFile?.name || "Not provided") : (selectedEndingDocumentId ? (formatDocumentLabel(documents.find((doc) => doc.id === selectedEndingDocumentId)) || "Selected") : "Not provided")}</span>
+                <p className="text-[11px] truncate">
+                  Starting BS:{" "}
+                  <span className={`font-medium ${hasStartingBs ? "text-green-700" : "text-amber-600"}`}>
+                    {sourceMode === "manual"
+                      ? (startingBalanceSheetFile?.name || "Not provided — required")
+                      : (selectedStartingDocumentId ? (formatDocumentLabel(documents.find((doc) => doc.id === selectedStartingDocumentId)) || "Selected") : "Not provided — required")}
+                  </span>
+                  {" · "}
+                  Ending BS:{" "}
+                  <span className={`font-medium ${hasEndingBs ? "text-green-700" : "text-amber-600"}`}>
+                    {sourceMode === "manual"
+                      ? (endingBalanceSheetFile?.name || "Not provided — required")
+                      : (selectedEndingDocumentId ? (formatDocumentLabel(documents.find((doc) => doc.id === selectedEndingDocumentId)) || "Selected") : "Not provided — required")}
+                  </span>
                 </p>
+                {isStageActionDisabled && !isSubmitting && (
+                  <p className="text-[11px] text-amber-600">
+                    {!hasSelection
+                      ? "Select at least one GL file."
+                      : !hasStartingBs
+                        ? "Provide a Starting Balance Sheet to continue."
+                        : "Provide an Ending Balance Sheet to continue."}
+                  </p>
+                )}
               </div>
               <button
                 type="button"

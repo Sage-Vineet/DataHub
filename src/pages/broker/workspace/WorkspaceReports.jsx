@@ -50,6 +50,10 @@ import {
   flattenMultiYearData,
 } from "../../../lib/export-utils";
 
+const MANUAL_REPORT_DEBUG =
+  Boolean(import.meta.env.DEV) ||
+  String(import.meta.env.VITE_MANUAL_GL_DEBUG || "").toLowerCase() === "true";
+
 function formatDateForInput(date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -280,6 +284,10 @@ export default function WorkspaceReports() {
   );
   const [manualFilterOptions, setManualFilterOptions] = useState({});
   const hasRestoredSessionRef = useRef(false);
+  const debugLog = useCallback((...args) => {
+    if (!MANUAL_REPORT_DEBUG) return;
+    console.log(...args);
+  }, []);
 
   useEffect(() => {
     const restoredState = getStoredReportsState(clientId);
@@ -371,6 +379,10 @@ export default function WorkspaceReports() {
           ? payload.options
           : {};
         setManualFilterOptions(options);
+        debugLog("[ManualGL][UI][FilterOptions]", {
+          batchId: appliedManualFilters.batchId || "",
+          fiscalYears: options?.fiscalYear || [],
+        });
         const availableYears = Array.isArray(options.fiscalYear) ? options.fiscalYear : [];
         if (availableYears.length > 0) {
           const currentYear = manualFilters.fiscalYear?.[0];
@@ -381,6 +393,9 @@ export default function WorkspaceReports() {
               const next = { ...manualFilters, fiscalYear: [String(sorted[0])] };
               setManualFilters(next);
               setAppliedManualFilters(next);
+              debugLog("[ManualGL][UI][FilterAutoSelectYear]", {
+                selectedFiscalYear: String(sorted[0]),
+              });
             }
           }
         }
@@ -686,6 +701,13 @@ export default function WorkspaceReports() {
         selectedSourceMode === "manual"
           ? buildManualFilterParams(appliedManualFilters)
           : null;
+      if (selectedSourceMode === "manual") {
+        debugLog("[ManualGL][UI][GenerateReport][Request]", {
+          selectedTab,
+          reportType,
+          manualFilterParams,
+        });
+      }
 
       // For manual mode: use the selected fiscal year to derive display dates.
       // reportType is NOT injected — backend build-payload functions handle
@@ -792,6 +814,18 @@ export default function WorkspaceReports() {
           ...(reportType === "Summary" ? { summary } : { detail }),
         },
       }));
+
+      if (selectedSourceMode === "manual" && reportType === "Summary") {
+        debugLog("[ManualGL][UI][GenerateReport][SummaryResponse]", {
+          tab: selectedTab,
+          source: summary?.source ?? (Array.isArray(summary) ? "array" : typeof summary),
+          hierarchicalRowsCount: Array.isArray(summary?.hierarchicalRows) ? summary.hierarchicalRows.length : "n/a",
+          rowsCount: Array.isArray(summary) ? summary.length : "n/a",
+          years: summary?.years || [],
+          audit: summary?.audit || [],
+          appliedFilters: manualFilterParams,
+        });
+      }
 
       console.log(
         `✅ [Reports] ${selectedTab} / ${reportType} generated successfully`,
@@ -1063,9 +1097,13 @@ export default function WorkspaceReports() {
                         };
                         setManualFilters(next);
                         setAppliedManualFilters(next);
+                        debugLog("[ManualGL][UI][FilterChange][FiscalYear]", {
+                          selectedFiscalYear: year || null,
+                        });
                       }}
                       className="h-9 w-full appearance-none rounded-md border border-border-input bg-bg-card pl-3 pr-9 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
                     >
+                      <option value="">Select year…</option>
                       {(manualFilterOptions?.fiscalYear || []).map((year) => (
                         <option key={year} value={year}>
                           {year}
