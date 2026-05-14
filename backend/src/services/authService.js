@@ -1,47 +1,16 @@
 const jwt = require("jsonwebtoken");
-// bcrypt removed for debugging purposes
-// const bcrypt = require("bcryptjs");
+const bcrypt = require("bcryptjs");
 const { supabase } = require("../db");
 const { attachAssignedCompanies, flattenUser, getUserByEmail } = require("./userService");
+const { DEMO_USERS, CLIENT_STATIC_PASSWORD } = require("../config/demoUsers");
 
-const CLIENT_STATIC_PASSWORD = process.env.CLIENT_STATIC_PASSWORD || "123456";
-
-const DEMO_USERS = [
-  {
-    email: "broker@leo.com",
-    password: "broker123",
-    name: "Rajesh Sharma",
-    role: "broker",
-    companyName: "Dataroom",
-  },
-  {
-    email: "admin@datahub.com",
-    password: "admin123",
-    name: "System Admin",
-    role: "admin",
-    companyName: "DataHub",
-  },
-  {
-    email: "admin@leo.com",
-    password: "admin123",
-    name: "System Admin",
-    role: "admin",
-    companyName: "DataHub",
-  },
-  {
-    email: "demo@leo.com",
-    password: "123456",
-    name: "Demo User",
-    role: "buyer",
-    companyName: "Demo Company",
-  },
-  {
-    email: "client@infosys.com",
-    password: CLIENT_STATIC_PASSWORD,
-    name: "Ananya Mehta",
-    role: "buyer",
-    companyName: "Infosys Ltd.",
-  },
+// Augment DEMO_USERS with full profile info for ensureDemoUser
+const DEMO_PROFILES = [
+  { email: "broker@leo.com",     name: "Rajesh Sharma", role: "broker", companyName: "Dataroom"      },
+  { email: "admin@datahub.com",  name: "System Admin",  role: "admin",  companyName: "DataHub"       },
+  { email: "admin@leo.com",      name: "System Admin",  role: "admin",  companyName: "DataHub"       },
+  { email: "demo@leo.com",       name: "Demo User",     role: "buyer",  companyName: "Demo Company"  },
+  { email: "client@infosys.com", name: "Ananya Mehta",  role: "buyer",  companyName: "Infosys Ltd."  },
 ];
 
 /**
@@ -98,7 +67,9 @@ async function ensureCompany(companyName) {
  */
 async function ensureDemoUser(demo) {
   const existing = await getUserByEmail(demo.email);
-  if (existing) return existing;
+  if (existing) {
+    return existing;
+  }
 
   const company = await ensureCompany(demo.companyName);
   const passwordHash = demo.password; // Plain text storage for debugging
@@ -174,14 +145,22 @@ async function ensureDefaultFolders(companyId, createdBy) {
  */
 async function authenticate(email, password) {
   const normalizedEmail = String(email).trim().toLowerCase();
-  const demo = DEMO_USERS.find((candidate) => candidate.email === normalizedEmail);
+  const demoAuth    = DEMO_USERS.find((d) => d.email === normalizedEmail);
+  const demoProfile = DEMO_PROFILES.find((d) => d.email === normalizedEmail);
+  const demo = demoAuth && demoProfile ? { ...demoAuth, ...demoProfile } : null;
 
   let user = null;
 
   // 1. Check Demo Logic
   if (demo && password === demo.password) {
-    user = await ensureDemoUser(demo);
-    if (user) {
+    const demoUser = await ensureDemoUser(demo);
+    const { data: authData } = demoUser
+      ? await supabase.from("users").select("password_hash").eq("id", demoUser.id).single()
+      : { data: null };
+    const hasCustomPassword = authData?.password_hash && authData.password_hash !== demo.password;
+
+    if (demoUser && !hasCustomPassword) {
+      user = demoUser;
       await syncUserCompanyAssignment(user.id, user.company_id);
     }
   }
@@ -211,13 +190,15 @@ async function authenticate(email, password) {
         .eq("id", user.id)
         .single();
 
-      // WARNING: Plain-text passwords are insecure. Re-enable hashing before production.
       const storedPassword = authData?.password_hash;
       let ok = (password === storedPassword);
 
-      if (storedPassword && storedPassword.startsWith("$2b$")) {
-        console.log(`[Auth] Legacy hashed password detected for user: ${user.id}. Login failed as hashing is disabled.`);
-        ok = false;
+      if (storedPassword && /^\$2[aby]\$/.test(storedPassword)) {
+        try {
+          ok = await bcrypt.compare(password, storedPassword);
+        } catch {
+          ok = false;
+        }
       }
 
       console.log(`[Auth] Password match result: ${ok}`);
