@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useParams } from "react-router-dom";
 import Link from "../../../components/compat/NextLink";
 import Header from "../../../components/Header";
-import QBDisconnectedBanner from "../../../components/common/QBDisconnectedBanner";
 import { useAuth } from "../../../context/AuthContext";
 import { cn } from "../../../lib/utils";
 import {
@@ -51,11 +50,9 @@ import { getProfitAndLoss } from "../../../services/profitAndLossService";
 import { refreshQuickbooksToken } from "../../../services/authService";
 import { getReportSources, setSelectedReportSource, getStoredToken } from "../../../lib/api";
 import {
-  getReportSourceLabel,
   getReportSourceMode,
   normalizeReportSourceKey,
   REPORT_SOURCE_KEYS,
-  REPORT_SOURCE_OPTIONS,
 } from "../../../lib/report-source";
 import { exportToCSV } from "../../../lib/exportCSV";
 import { useDataSource } from "../../../context/DataSourceContext";
@@ -282,11 +279,6 @@ export default function WorkspaceDashboardDatahub() {
     () => getReportSourceMode(activeSourceKey),
     [activeSourceKey],
   );
-  const activeSourceLabel = useMemo(
-    () => getReportSourceLabel(activeSourceKey),
-    [activeSourceKey],
-  );
-
   // ── Date-range calculator ──────────────────────────────────────────────
 
   const calculateDateRangeFromYearMonth = useCallback((year, month) => {
@@ -1167,64 +1159,23 @@ export default function WorkspaceDashboardDatahub() {
   return (
     <>
       <Header title="Dashboard" />
-      <div className="px-6 pt-6">
-        {activeSourceMode === "quickbooks" ? (
-          <QBDisconnectedBanner pageName="DataHub Dashboard" />
-        ) : (
-          <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-[13px] text-amber-800">
-            Current Source: {activeSourceLabel}. QuickBooks sync is disabled while Manual Upload is active.
-            {quickbooksConnected ? " QuickBooks is connected but inactive for this workspace." : ""}
-          </div>
-        )}
-      </div>
       <div className="flex-1 p-6 space-y-6">
         <div className="flex items-center justify-between flex-wrap gap-4">
           <div className="flex items-center gap-3 flex-wrap">
             <h1 className="text-[24px] font-bold text-text-primary">
               Dashboard
             </h1>
-            <span className="rounded-full border border-border bg-bg-card px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-text-secondary">
-              Current Source: {activeSourceLabel}
-            </span>
-            {isManualUploadMode && (
-              <span className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 px-2.5 py-1 text-[11px] font-semibold text-primary ring-1 ring-primary/20">
-                <FileText size={11} />
-                Manual Upload
-              </span>
-            )}
             <button
               onClick={handleSync}
               disabled={isSyncing || activeSourceMode !== "quickbooks"}
               className="btn-secondary py-1.5 px-3"
-              title={
-                activeSourceMode === "quickbooks"
-                  ? "Sync data"
-                  : "QuickBooks sync is disabled while Manual Upload is active"
-              }
+              title="Sync data"
             >
               <RefreshCw
                 size={16}
                 className={isSyncing ? "animate-spin" : ""}
               />
             </button>
-            {/* Connection source dropdown */}
-            <div className="flex items-center gap-2 rounded-lg border border-border bg-white px-3 py-1.5">
-              <Settings2 size={14} className="text-text-muted shrink-0" />
-              <label className="text-[12px] text-text-muted font-medium whitespace-nowrap">
-                Source:
-              </label>
-              <select
-                value={selectedSource}
-                onChange={(e) => handleSourceChange(e.target.value)}
-                className="text-[12px] font-medium bg-transparent border-none outline-none focus:ring-0 cursor-pointer text-text-primary"
-              >
-                {REPORT_SOURCE_OPTIONS.map((opt) => (
-                  <option key={opt.key} value={opt.key}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-            </div>
           </div>
 
           <div className="flex items-center gap-4 flex-wrap">

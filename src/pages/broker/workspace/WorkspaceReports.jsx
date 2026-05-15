@@ -27,7 +27,6 @@ import {
 import BalanceSheetReport from "../../../components/reports/balance-sheet/BalanceSheetReport";
 import ProfitAndLossReport from "../../../components/reports/profit-loss/ProfitAndLossReport";
 import CashflowReport from "../../../components/reports/cashflow/CashflowReport";
-import QBDisconnectedBanner from "../../../components/common/QBDisconnectedBanner";
 import {
   normalizeAccountingMethod,
   sanitizeDateRange,
@@ -340,7 +339,6 @@ export default function WorkspaceReports() {
     () => getReportSourceLabel(selectedReportSource),
     [selectedReportSource],
   );
-  const isQuickBooksConnected = Boolean(contextQbConnected);
   const createdOn = useMemo(
     () =>
       new Date().toLocaleDateString("en-US", {
@@ -888,9 +886,6 @@ export default function WorkspaceReports() {
             <h1 className="text-2xl font-bold text-[#050505]">
               Financial Reports
             </h1>
-            <span className="rounded-full border border-border bg-bg-card px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-text-secondary">
-              Current Source: {selectedSourceLabel}
-            </span>
           </div>
           {selectedSourceMode === "quickbooks" ? (
             <button
@@ -903,14 +898,6 @@ export default function WorkspaceReports() {
             </button>
           ) : null}
         </div>
-
-        {selectedSourceMode === "quickbooks" && isQuickBooksConnected ? (
-          <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-[13px] text-amber-800">
-            QuickBooks is currently connected. Disconnect QuickBooks to use Manual Upload.
-          </div>
-        ) : null}
-
-        {selectedSourceMode !== "manual" && <QBDisconnectedBanner pageName="Reports" />}
 
         <div className="mb-6 flex gap-6 border-b border-border pb-px">
           {REPORT_TABS.map((tab) => (

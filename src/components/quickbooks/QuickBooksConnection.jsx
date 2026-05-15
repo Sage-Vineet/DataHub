@@ -308,15 +308,6 @@ export default function QuickBooksConnection({
         </div>
       )}
 
-      {pageState === "connected" && !isSourceActive && (
-        <div className="flex items-center gap-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-[13px]">
-          <AlertCircle size={16} className="shrink-0 text-amber-700" />
-          <span className="font-medium text-amber-800">
-            Manual Upload is currently active. QuickBooks sync is disabled until you switch source to QuickBooks.
-          </span>
-        </div>
-      )}
-
       {/* ─── Main Status Card ──────────────────────────── */}
       <div className="card-base overflow-hidden">
         {/* Status Bar */}

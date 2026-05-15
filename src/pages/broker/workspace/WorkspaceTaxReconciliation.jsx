@@ -1,5 +1,3 @@
-"use client";
-
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
@@ -9,9 +7,8 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { cn } from "../../../lib/utils";
-import { getCompanyRequest, getStoredToken, getReportSources, setSelectedReportSource as apiSetSelectedReportSource } from "../../../lib/api";
-import { REPORT_SOURCE_KEYS, REPORT_SOURCE_OPTIONS, normalizeReportSourceKey, getReportSourceLabel } from "../../../lib/report-source";
-import QBDisconnectedBanner from "../../../components/common/QBDisconnectedBanner";
+import { getCompanyRequest, getStoredToken } from "../../../lib/api";
+import { useDataSource } from "../../../context/DataSourceContext";
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
@@ -162,6 +159,7 @@ const MAIN_LINE_ITEMS = [
 
 export default function WorkspaceTaxReconciliation() {
   const { clientId } = useParams();
+  const { activeSource, activeSourceMode } = useDataSource();
   const storedState = useMemo(() => getStoredState(clientId), [clientId]);
 
   const currentYear = new Date().getFullYear();
@@ -181,24 +179,7 @@ export default function WorkspaceTaxReconciliation() {
     message: Object.keys(storedState?.matrixData ?? {}).length > 0 ? "Restored saved data." : "",
   }));
 
-  // Report source state
-  const [selectedReportSource, setSelectedReportSource] = useState(
-    storedState?.selectedReportSource ? normalizeReportSourceKey(storedState.selectedReportSource) : null
-  );
-  const [reportSources, setReportSources] = useState([]);
-
-  const isManualMode = selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD ||
-    selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_GL;
-
-  const sourceOptions = useMemo(() => {
-    if (reportSources.length > 0) {
-      return reportSources.map((s) => ({
-        key: normalizeReportSourceKey(s.sourceKey),
-        label: s.sourceLabel || getReportSourceLabel(s.sourceKey),
-      }));
-    }
-    return REPORT_SOURCE_OPTIONS.map((o) => ({ key: o.key, label: o.label }));
-  }, [reportSources]);
+  const isManualMode = activeSourceMode === 'manual_upload' || activeSourceMode === 'manual';
 
   const selectedYears = useMemo(() => {
     const s = parseInt(startYear, 10);
@@ -241,40 +222,6 @@ export default function WorkspaceTaxReconciliation() {
     return () => { active = false; };
   }, [clientId]);
 
-  // ── Load report source ─────────────────────────────────────────────────
-
-  useEffect(() => {
-    if (!clientId) return;
-    let active = true;
-    getReportSources({ clientId })
-      .then((payload) => {
-        if (!active) return;
-        setReportSources(Array.isArray(payload?.sources) ? payload.sources : []);
-        const resolved = normalizeReportSourceKey(payload?.selectedSource || REPORT_SOURCE_KEYS.QUICKBOOKS);
-        setSelectedReportSource(resolved);
-      })
-      .catch(() => {
-        if (active) setSelectedReportSource(REPORT_SOURCE_KEYS.QUICKBOOKS);
-      });
-    return () => { active = false; };
-  }, [clientId]);
-
-  const handleReportSourceChange = async (sourceKey) => {
-    const normalized = normalizeReportSourceKey(sourceKey);
-    const previous = selectedReportSource;
-    setSelectedReportSource(normalized);
-    setMatrixData({});
-    setWarnings([]);
-    setError("");
-    try {
-      const payload = await apiSetSelectedReportSource(normalized, { clientId });
-      setReportSources(Array.isArray(payload?.sources) ? payload.sources : []);
-      setSelectedReportSource(normalizeReportSourceKey(payload?.selectedSource));
-    } catch {
-      setSelectedReportSource(previous);
-    }
-  };
-
   // ── Restore on clientId change ────────────────────────────────────────
 
   useEffect(() => {
@@ -300,10 +247,10 @@ export default function WorkspaceTaxReconciliation() {
     try {
       window.sessionStorage.setItem(
         getStorageKey(clientId),
-        JSON.stringify({ startYear, endYear, accountingMethod, matrixData, error, warnings, selectedReportSource }),
+        JSON.stringify({ startYear, endYear, accountingMethod, matrixData, error, warnings }),
       );
     } catch { /* ignore */ }
-  }, [clientId, startYear, endYear, accountingMethod, matrixData, error, warnings, selectedReportSource]);
+  }, [clientId, startYear, endYear, accountingMethod, matrixData, error, warnings]);
 
   // ── Loader ────────────────────────────────────────────────────────────
 
@@ -478,14 +425,12 @@ export default function WorkspaceTaxReconciliation() {
     }
   }, [selectedYears, accountingMethod, clientId, getHeaders, isManualMode]);
 
-  // Auto-load when source becomes known or changes.
-  // Use current matrixData (not storedState) so switching sources always triggers a fresh load.
   useEffect(() => {
-    if (selectedReportSource === null) return;
-    if (Object.keys(matrixData).length > 0) return; // already populated (session storage restore)
+    if (!activeSource) return;
+    if (Object.keys(matrixData).length > 0) return;
     void loadData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedReportSource]);
+  }, [activeSource]);
 
   // ── Data helpers ──────────────────────────────────────────────────────
 
@@ -539,64 +484,26 @@ export default function WorkspaceTaxReconciliation() {
 
   return (
     <div className="space-y-6">
-      {isQBDisconnected && <QBDisconnectedBanner pageName="Tax Reconciliation" />}
-
-      {/* ── Data Connection card ─────────────────────────────────────────── */}
-      <section className="card-base w-full p-5">
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div>
-            <h2 className="text-[16px] font-semibold text-text-primary">Data Connection</h2>
-            <p className="mt-0.5 text-[13px] text-text-secondary">
-              Choose the source used to populate Tax Reconciliation data.
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            {isManualMode && isLoading && (
-              <span className="inline-flex items-center gap-1.5 text-[12px] text-text-secondary">
-                <LoaderCircle size={13} className="animate-spin text-primary" />
-                Loading…
-              </span>
-            )}
-            <label className="text-[12px] font-medium text-text-secondary">Connection</label>
-            <select
-              value={selectedReportSource || ""}
-              onChange={(e) => void handleReportSourceChange(e.target.value)}
-              className="input-base h-9 min-w-[220px]"
-              disabled={selectedReportSource === null || isLoading}
-            >
-              {sourceOptions.map((opt) => (
-                <option key={opt.key} value={opt.key}>{opt.label}</option>
+      {isManualMode && (
+        <div className="space-y-3">
+          {syncStatus?.message && !isLoading && <SyncStatus sync={syncStatus} />}
+          {warnings.length > 0 && !error && (
+            <div className="space-y-1 rounded-xl border border-yellow-200 bg-yellow-50 px-4 py-3 text-[13px] text-yellow-800">
+              {warnings.map((w, i) => (
+                <div key={i} className="flex items-start gap-2">
+                  <AlertCircle size={15} className="mt-0.5 shrink-0 text-yellow-600" />
+                  <span>{w}</span>
+                </div>
               ))}
-            </select>
-          </div>
+            </div>
+          )}
+          {error && (
+            <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-[13px] text-red-700">
+              {error}
+            </div>
+          )}
         </div>
-
-        {/* Manual mode: show sync status, warnings, and errors inline */}
-        {isManualMode && (
-          <>
-            {syncStatus?.message && !isLoading && (
-              <div className="mt-3">
-                <SyncStatus sync={syncStatus} />
-              </div>
-            )}
-            {warnings.length > 0 && !error && (
-              <div className="mt-3 space-y-1 rounded-xl border border-yellow-200 bg-yellow-50 px-4 py-3 text-[13px] text-yellow-800">
-                {warnings.map((w, i) => (
-                  <div key={i} className="flex items-start gap-2">
-                    <AlertCircle size={15} className="mt-0.5 shrink-0 text-yellow-600" />
-                    <span>{w}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-            {error && (
-              <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-[13px] text-red-700">
-                {error}
-              </div>
-            )}
-          </>
-        )}
-      </section>
+      )}
 
       {/* ── Controls — QuickBooks mode only ─────────────────────────────── */}
       {!isManualMode && (
