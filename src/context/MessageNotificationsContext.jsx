@@ -125,7 +125,14 @@ export function MessageNotificationsProvider({ children }) {
       refresh();
     }, 30000);
 
-    const handleFocus = () => refresh();
+    // Prevent burst refreshes on rapid tab-switching: minimum 10 s between focus-triggered calls.
+    let lastFocusRefreshAt = 0;
+    const handleFocus = () => {
+      const now = Date.now();
+      if (now - lastFocusRefreshAt < 10_000) return;
+      lastFocusRefreshAt = now;
+      refresh();
+    };
     const handleStorage = (event) => {
       if (event.key === getStorageKey(userId)) {
         refresh();

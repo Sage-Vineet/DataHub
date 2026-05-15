@@ -7,6 +7,7 @@ import {
   deleteDocument,
   deleteFolder,
   deleteFolderAccess,
+  ensureCompanyDefaultFolders,
   listFolderAccess,
   listFolderDocuments,
   listFolderTree,
@@ -158,7 +159,7 @@ export const useFileExplorerStore = create(
       companyId: null,
       createdBy: null,
       currentPath: ['root'],
-      expandedFolders: ['root', 'fdr-finance', 'fdr-legal'],
+      expandedFolders: ['root'],
       selectedItems: [],
       view: 'grid',
       sortBy: 'name',
@@ -179,6 +180,8 @@ export const useFileExplorerStore = create(
       setExpandedFolders: (expandedFolders) => set({ expandedFolders }),
       hydrateFromApi: async (companyId) => {
         if (!companyId) return;
+        // Ensure default folder structure exists before loading the tree
+        await ensureCompanyDefaultFolders(companyId).catch(() => {});
         const treeResponse = await listFolderTree(companyId);
         const children = treeResponse.map(mapFolderNode);
         let root = { id: 'root', name: 'Documents', type: 'folder', createdAt: new Date().toISOString().slice(0, 10), children };
@@ -191,8 +194,7 @@ export const useFileExplorerStore = create(
         folderIds.forEach((folderId) => {
           root = insertDocs(root, folderId, docsByFolder[folderId] || []);
         });
-        const expanded = ['root', ...children.map((c) => c.id)];
-        set({ tree: root, companyId, currentPath: ['root'], expandedFolders: expanded });
+        set({ tree: root, companyId, currentPath: ['root'], expandedFolders: ['root'] });
       },
       loadFolderAccessFromApi: async (folderId) => {
         const entries = await listFolderAccess(folderId);

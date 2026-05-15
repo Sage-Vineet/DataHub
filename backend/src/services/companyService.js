@@ -72,7 +72,7 @@ async function createCompany(companyData) {
  */
 async function updateCompany(id, companyData) {
   const updates = { ...companyData, updated_at: new Date().toISOString() };
-  
+
   const { data: updated, error } = await supabase
     .from("companies")
     .update(updates)
@@ -152,7 +152,7 @@ async function syncCompanyClientRepresentative(company, previousCompany = null) 
     await supabase
       .from("user_companies")
       .upsert({ user_id: existingUser.id, company_id: company.id }, { onConflict: "user_id,company_id" });
-    
+
     return existingUser.id;
   }
 
@@ -194,11 +194,11 @@ async function syncCompanyClientRepresentative(company, previousCompany = null) 
 async function attachCompanyStats(companies) {
   const isSingle = !Array.isArray(companies);
   const companyList = isSingle ? [companies] : companies;
-  
+
   if (!companyList.length) return companies;
 
   const companyIds = companyList.map(c => c.id);
-  
+
   const { data: counts, error: countsError } = await supabase
     .from("requests")
     .select("company_id, status")

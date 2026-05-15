@@ -8,12 +8,16 @@ export default function CashflowReport({
   startDate,
   endDate,
   accountingMethod,
+  sourceMode,
   clientName = "All Clients",
   entityName,
   isPreview = false,
 }) {
   const resolvedEntityName = entityName || clientName || "Company";
   const periodText = startDate === "1970-01-01" ? "All Dates" : `${startDate || "N/A"} to ${endDate || "N/A"}`;
+  const summarySubtitle = sourceMode === "manual"
+    ? undefined
+    : `Report Period: ${periodText} | ${clientName} | ${accountingMethod} Basis`;
 
   if (reportType === "Detail") {
     const rows = Array.isArray(detailedData?.rows) ? detailedData.rows : (Array.isArray(detailedData) ? detailedData : []);
@@ -34,7 +38,7 @@ export default function CashflowReport({
     <CashflowQBSummary
       data={Array.isArray(data) ? data : []}
       title="Cash Flow"
-      subtitle={`Report Period: ${periodText} | ${clientName} | ${accountingMethod} Basis`}
+      subtitle={summarySubtitle}
       entityName={resolvedEntityName}
     />
   );

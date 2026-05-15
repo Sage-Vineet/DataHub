@@ -30,6 +30,7 @@ import { useMessageNotifications } from "../../context/MessageNotificationsConte
 import { listCompaniesRequest } from "../../lib/api";
 import MessageNotificationsMenu from "./MessageNotificationsMenu";
 import datahublogo from "../../assets/datahublogo.png";
+import ActiveSourceIndicator from "../common/ActiveSourceIndicator";
 
 function companyLogo(name = "") {
   return name
@@ -356,6 +357,8 @@ function WorkspaceTopbar({ company, onMenuClick }) {
 
         <div className="flex items-center gap-3">
           <MessageNotificationsMenu portal="broker" companyId={company.id} />
+
+          <ActiveSourceIndicator />
 
           <div className="relative">
             <button

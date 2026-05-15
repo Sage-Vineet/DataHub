@@ -1,10 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useLocation } from "react-router-dom";
 import {
   AlertCircle,
   CheckCircle2,
-  ChevronRight,
-  Clock,
   Database,
   Link2Off,
   Loader2,
@@ -15,20 +13,11 @@ import {
 import {
   connectQuickbooks,
   disconnectQuickbooks,
-  fetchBalanceSheet,
-  fetchCashflow,
-  fetchProfitAndLoss,
   getConnectionStatus,
   syncQuickbooksReports,
-  syncGeneralLedger,
 } from "../../lib/quickbooks";
-import { setSelectedReportSource } from "../../lib/api";
 import { useToast } from "../../context/ToastContext";
-import { fetchCustomers } from "../../services/customerService";
-import { fetchInvoices } from "../../services/invoiceService";
 import { cn } from "../../lib/utils";
-import QBDisconnectedBanner from "../common/QBDisconnectedBanner";
-import { REPORT_SOURCE_KEYS } from "../../lib/report-source";
 
 // ─── Helpers ────────────────────────────────────────────
 
@@ -68,14 +57,18 @@ function getTimeLeft(dateStr) {
 
 // ─── Component ──────────────────────────────────────────
 
-export default function QuickBooksConnection({ company }) {
+export default function QuickBooksConnection({
+  company,
+  isSourceActive = true,
+  onConnectionStateChange = null,
+  onRequireSourceSwitch = null,
+}) {
   const location = useLocation();
   const { showToast } = useToast();
 
   const [connection, setConnection] = useState(null);
   const [pageState, setPageState] = useState("loading");
   const [errorMessage, setErrorMessage] = useState(null);
-  const [dynamicEntities, setDynamicEntities] = useState(null);
 
   const [isSyncing, setIsSyncing] = useState(false);
   const [isDisconnecting, setIsDisconnecting] = useState(false);
@@ -90,92 +83,15 @@ export default function QuickBooksConnection({ company }) {
       setConnection(data);
 
       if (data?.isNameMismatch) {
-        setDynamicEntities(null);
         setPageState("disconnected");
         setErrorMessage(
           data.message ||
-            "The selected workspace company does not match the connected QuickBooks company.",
+          "The selected workspace company does not match the connected QuickBooks company.",
         );
         return;
       }
 
       setPageState(data.isConnected ? "connected" : "disconnected");
-
-      if (data.isConnected) {
-        Promise.all([
-          fetchCustomers().catch(() => ({})),
-          fetchInvoices().catch(() => ({})),
-          fetchBalanceSheet().catch(() => ({})),
-          fetchProfitAndLoss().catch(() => ({})),
-          fetchCashflow().catch(() => ({})),
-          syncGeneralLedger().catch(() => ({})),
-        ]).then(([customersRes, invoicesRes, bsRes, pnlRes, cfRes, glRes]) => {
-          const custs = Array.isArray(customersRes?.QueryResponse?.Customer)
-            ? customersRes.QueryResponse.Customer
-            : Array.isArray(customersRes?.data?.QueryResponse?.Customer)
-              ? customersRes.data.QueryResponse.Customer
-              : Array.isArray(customersRes)
-                ? customersRes
-                : [];
-
-          const invs = Array.isArray(invoicesRes?.QueryResponse?.Invoice)
-            ? invoicesRes.QueryResponse.Invoice
-            : Array.isArray(invoicesRes?.data?.QueryResponse?.Invoice)
-              ? invoicesRes.data.QueryResponse.Invoice
-              : Array.isArray(invoicesRes)
-                ? invoicesRes
-                : [];
-
-          // Helper to count rows in QB reports
-          const countReportRows = (res) => {
-            const rows =
-              res?.Rows?.Row ||
-              res?.data?.Rows?.Row ||
-              res?.data?.data?.Rows?.Row ||
-              [];
-            return Array.isArray(rows) ? rows.length : 0;
-          };
-
-          setDynamicEntities([
-            {
-              name: "Customers",
-              count: custs.length,
-              lastSync: data.lastSynced,
-              status: "synced",
-            },
-            {
-              name: "Invoices",
-              count: invs.length,
-              lastSync: data.lastSynced,
-              status: "synced",
-            },
-            {
-              name: "Profit and Loss",
-              count: countReportRows(pnlRes),
-              lastSync: data.lastSynced,
-              status: "synced",
-            },
-            {
-              name: "Balance Sheet",
-              count: countReportRows(bsRes),
-              lastSync: data.lastSynced,
-              status: "synced",
-            },
-            {
-              name: "Cash Flow",
-              count: countReportRows(cfRes),
-              lastSync: data.lastSynced,
-              status: "synced",
-            },
-            {
-              name: "General Ledger",
-              count: glRes?.totalInserted || glRes?.data?.totalInserted || 0,
-              lastSync: data.lastSynced,
-              status: "synced",
-            },
-          ]);
-        });
-      }
     } catch (err) {
       console.error("Failed to fetch connection status:", err);
       setConnection(null);
@@ -186,7 +102,7 @@ export default function QuickBooksConnection({ company }) {
           : "Could not reach the backend. Is it running?",
       );
     }
-  }, []);
+  }, [isSourceActive]);
 
   useEffect(() => {
     Promise.resolve().then(() => {
@@ -234,19 +150,25 @@ export default function QuickBooksConnection({ company }) {
 
       (async () => {
         try {
-          if (company?.id) {
-            await setSelectedReportSource(REPORT_SOURCE_KEYS.QUICKBOOKS, {
-              clientId: company.id,
-            }).catch(() => null);
-          }
-
-          await syncQuickbooksReports();
           await fetchStatus(false);
-          showToast({
-            type: "success",
-            title: "Reports Ready",
-            message: "Latest QuickBooks reports have been synced.",
-          });
+          if (typeof onConnectionStateChange === "function") {
+            await onConnectionStateChange();
+          }
+          if (isSourceActive) {
+            await syncQuickbooksReports();
+            showToast({
+              type: "success",
+              title: "Reports Ready",
+              message: "Latest QuickBooks reports have been synced.",
+            });
+          } else {
+            showToast({
+              type: "warning",
+              title: "Sync Paused",
+              message:
+                "QuickBooks connected successfully, but Manual Upload is active. Switch source to QuickBooks to sync reports.",
+            });
+          }
         } catch (error) {
           console.error("Post-connect sync failed:", error);
           setErrorMessage(
@@ -257,10 +179,23 @@ export default function QuickBooksConnection({ company }) {
         }
       })();
     }
-  }, [company?.id, fetchStatus, location.search, showToast]);
+  }, [fetchStatus, isSourceActive, location.search, onConnectionStateChange, showToast]);
 
   // ── Actions ──
-  const handleConnect = () => connectQuickbooks(location.pathname, company?.id);
+  const handleConnect = () => {
+    if (!isSourceActive) {
+      if (typeof onRequireSourceSwitch === "function") {
+        onRequireSourceSwitch();
+      }
+      showToast({
+        type: "warning",
+        title: "QuickBooks Source Inactive",
+        message: "Switch the active source to QuickBooks before connecting.",
+      });
+      return;
+    }
+    connectQuickbooks(location.pathname, company?.id);
+  };
 
   const handleDisconnect = async () => {
     setIsDisconnecting(true);
@@ -279,6 +214,9 @@ export default function QuickBooksConnection({ company }) {
         title: "Disconnected",
         message: "QuickBooks disconnected successfully.",
       });
+      if (typeof onConnectionStateChange === "function") {
+        await onConnectionStateChange();
+      }
     } catch (err) {
       console.error("Disconnect failed:", err);
       setErrorMessage("Failed to disconnect. Please try again.");
@@ -288,6 +226,13 @@ export default function QuickBooksConnection({ company }) {
   };
 
   const handleSync = async () => {
+    if (!isSourceActive) {
+      setErrorMessage(
+        "Manual Upload is currently active. Switch source to QuickBooks to run sync.",
+      );
+      return;
+    }
+
     setIsSyncing(true);
     setErrorMessage(null);
     try {
@@ -313,23 +258,6 @@ export default function QuickBooksConnection({ company }) {
     ? getTimeLeft(connection.tokenExpiresAt)
     : "—";
   const isTokenExpired = tokenTimeLeft === "Expired";
-  const activeEntities =
-    dynamicEntities ||
-    (connection?.syncedEntities || []).map((e) =>
-      typeof e === "string"
-        ? {
-            name: e,
-            count: "—",
-            lastSync: connection?.lastSynced,
-            status: "synced",
-          }
-        : e,
-    ) ||
-    [];
-  const totalSyncedRecords = useMemo(
-    () => activeEntities.reduce((sum, e) => sum + Number(e.count || 0), 0),
-    [activeEntities],
-  );
 
   // ────────────────────────────────────────────────────────
   return (
@@ -476,7 +404,7 @@ export default function QuickBooksConnection({ company }) {
               <div className="flex items-center gap-2">
                 <button
                   onClick={handleSync}
-                  disabled={isSyncing}
+                  disabled={isSyncing || !isSourceActive}
                   className="btn-primary"
                 >
                   <RefreshCw

@@ -1,5 +1,9 @@
 import { fetchProfitAndLoss } from "../lib/quickbooks";
-import { getLatestManualUploadedReport, getManualGlProfitLoss } from "../lib/api";
+import {
+  getManualStagedProfitLossSummary,
+  getManualStagedProfitLossMonthlyDetail,
+  getLatestManualUploadedReport,
+} from "../lib/api";
 import { normalizeAccountingMethod } from "../lib/report-filters";
 import { parseSummaryReport } from "../lib/report-parsers";
 
@@ -58,6 +62,7 @@ async function fetchSinglePeriodPNL(
   endDate,
   accountingMethod,
   sourceMode = "quickbooks",
+  options = {},
 ) {
   try {
     if (sourceMode === "manual_upload") {
@@ -66,8 +71,15 @@ async function fetchSinglePeriodPNL(
     }
 
     if (sourceMode === "manual") {
-      const payload = await getManualGlProfitLoss();
-      return parseSummaryReport(payload?.quickbooksSchema || payload?.data || payload);
+      const params = {
+        ...(startDate ? { startDate } : {}),
+        ...(endDate ? { endDate } : {}),
+        ...((options?.manualFilters && typeof options.manualFilters === "object")
+          ? options.manualFilters
+          : {}),
+      };
+      const payload = await getManualStagedProfitLossSummary({ params });
+      return payload;
     }
 
     const payload = await fetchProfitAndLoss({
@@ -148,22 +160,43 @@ export async function getProfitAndLoss(
   accountingMethod,
   options = {},
 ) {
+  if ((options?.sourceMode || "quickbooks") === "manual") {
+    // Only pass manual filters (fiscal year, batch, etc.) — QB date params not used
+    const params = {
+      ...((options?.manualFilters && typeof options.manualFilters === "object")
+        ? options.manualFilters
+        : {}),
+    };
+    return getManualStagedProfitLossSummary({ params });
+  }
+
   // Summary now uses user-selected filters (QuickBooks-style Summary report)
   const rows = await fetchSinglePeriodPNL(
     startDate,
     endDate,
     accountingMethod,
     options?.sourceMode || "quickbooks",
+    options,
   );
   return rows;
 }
 
 export async function getProfitAndLossDetail(
-  startDate,
-  endDate,
+  _startDate,
+  _endDate,
   accountingMethod,
   options = {},
 ) {
+  if ((options?.sourceMode || "quickbooks") === "manual") {
+    // Only pass manual filters — QB date params not used for staged GL data
+    const params = {
+      ...((options?.manualFilters && typeof options.manualFilters === "object")
+        ? options.manualFilters
+        : {}),
+    };
+    return getManualStagedProfitLossMonthlyDetail({ params });
+  }
+
   // Detail now uses system-defined multi-year comparison (EBITDA analysis)
   const periods = getPNLComparativePeriods(4);
 
@@ -174,6 +207,7 @@ export async function getProfitAndLossDetail(
         p.end,
         accountingMethod,
         options?.sourceMode || "quickbooks",
+        options,
       ),
     ),
   );

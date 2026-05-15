@@ -12,6 +12,7 @@ import { useEffect, useState } from "react";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { MessageNotificationsProvider } from "./context/MessageNotificationsContext";
 import { ToastProvider, useToast } from "./context/ToastContext";
+import { DataSourceProvider } from "./context/DataSourceContext";
 import ErrorBoundary from "./components/common/ErrorBoundary";
 import Layout from "./components/layout/Layout";
 import ClientWorkspaceLayout from "./components/layout/ClientWorkspaceLayout";
@@ -49,6 +50,7 @@ import WorkspaceTaxReconciliation from "./pages/broker/workspace/WorkspaceTaxRec
 import WorkspaceConnections from "./pages/broker/workspace/WorkspaceConnections";
 import Support from "./pages/Support";
 import WorkspaceEbitda from "./pages/broker/workspace/WorkspaceEbitda";
+import BrokerProfile from "./pages/broker/BrokerProfile";
 import { getCompanyRequest, listCompaniesRequest } from "./lib/api";
 
 function getHomeRoute(role) {
@@ -252,6 +254,14 @@ function AppRoutes() {
           </ProtectedRoute>
         }
       />
+      <Route
+        path="/broker/profile"
+        element={
+          <ProtectedRoute allowedRole="broker">
+            <BrokerProfile />
+          </ProtectedRoute>
+        }
+      />
 
       {/* Client workspace — scoped to a specific client */}
       <Route
@@ -416,9 +426,11 @@ export default function App() {
       <AuthProvider>
         <MessageNotificationsProvider>
           <ToastProvider>
-            <ErrorBoundary>
-              <AppRoutes />
-            </ErrorBoundary>
+            <DataSourceProvider>
+              <ErrorBoundary>
+                <AppRoutes />
+              </ErrorBoundary>
+            </DataSourceProvider>
           </ToastProvider>
         </MessageNotificationsProvider>
       </AuthProvider>

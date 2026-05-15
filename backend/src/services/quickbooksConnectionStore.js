@@ -5,6 +5,25 @@ const {
   updateReportSourceRecord,
 } = require("./reportSourceStore");
 
+async function markCompanyQuickBooksDisconnected(companyId, now = new Date().toISOString()) {
+  if (!companyId) return;
+
+  const { error } = await supabase
+    .from("companies")
+    .update({
+      quickbooks_connected: false,
+      updated_at: now,
+    })
+    .eq("id", companyId);
+
+  if (error) {
+    console.warn(
+      "[QB Store] Failed to update company quickbooks_connected=false on disconnect:",
+      error.message,
+    );
+  }
+}
+
 function parseSyncedEntities(value) {
   if (Array.isArray(value)) return value;
   if (!value) return [];
@@ -203,11 +222,21 @@ async function upsertQuickBooksConnection(connection) {
     console.warn("[QB Store] Failed to refresh report source on upsert:", syncError.message);
   }
 
+  try {
+    await supabase
+      .from("companies")
+      .update({ quickbooks_connected: true, updated_at: new Date().toISOString() })
+      .eq("id", companyId);
+  } catch (companyStateError) {
+    console.warn("[QB Store] Failed to update company quickbooks_connected=true:", companyStateError.message);
+  }
+
   return savedConnection;
 }
 
 async function deleteQuickBooksConnection(companyId) {
   if (!companyId) return false;
+  const now = new Date().toISOString();
 
   const { error } = await supabase
     .from("quickbooks_connections")
@@ -227,12 +256,14 @@ async function deleteQuickBooksConnection(companyId) {
     await updateReportSourceRecord(companyId, REPORT_SOURCE_KEYS.QUICKBOOKS, {
       isConnected: false,
       metadata: {
-        disconnectedAt: new Date().toISOString(),
+        disconnectedAt: now,
       },
     });
   } catch (error) {
     console.warn("[QB Store] Failed to refresh report source on delete:", error.message);
   }
+
+  await markCompanyQuickBooksDisconnected(companyId, now);
 
   return true;
 }
@@ -279,6 +310,8 @@ async function softDisconnectQuickBooks(companyId) {
   } catch (syncError) {
     console.warn("[QB Store] Failed to refresh report source on soft disconnect:", syncError.message);
   }
+
+  await markCompanyQuickBooksDisconnected(companyId, now);
 
   return true;
 }

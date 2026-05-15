@@ -14,10 +14,21 @@ const REPORT_SOURCE_LABELS = {
 
 const VALID_SOURCE_KEYS = Object.values(REPORT_SOURCE_KEYS);
 
+const SOURCE_KEY_ALIASES = new Map([
+  ["quickbooks_online", REPORT_SOURCE_KEYS.QUICKBOOKS],
+  ["quickbooks", REPORT_SOURCE_KEYS.QUICKBOOKS],
+  ["manual_gl_upload", REPORT_SOURCE_KEYS.MANUAL_GL],
+  ["manual_gl", REPORT_SOURCE_KEYS.MANUAL_GL],
+  ["manual", REPORT_SOURCE_KEYS.MANUAL_GL],
+  ["manual_upload_excel_pdf", REPORT_SOURCE_KEYS.MANUAL_UPLOAD],
+  ["manual_upload", REPORT_SOURCE_KEYS.MANUAL_UPLOAD],
+  ["manual_report_upload", REPORT_SOURCE_KEYS.MANUAL_UPLOAD],
+]);
+
 function normalizeSourceKey(value) {
-  return VALID_SOURCE_KEYS.includes(value)
-    ? value
-    : REPORT_SOURCE_KEYS.QUICKBOOKS;
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) return REPORT_SOURCE_KEYS.QUICKBOOKS;
+  return SOURCE_KEY_ALIASES.get(normalized) || REPORT_SOURCE_KEYS.QUICKBOOKS;
 }
 
 function getDefaultRows(companyId) {
@@ -71,10 +82,65 @@ function mapRow(row) {
   };
 }
 
+function sortRowsByRecency(rows = []) {
+  return [...rows].sort((left, right) => {
+    const leftTime = new Date(left.updated_at || left.created_at || 0).getTime();
+    const rightTime = new Date(right.updated_at || right.created_at || 0).getTime();
+    return rightTime - leftTime;
+  });
+}
+
+async function dedupeReportSourceRecords(companyId) {
+  const { data: rawRows, error } = await supabase
+    .from("report_source_records")
+    .select("id, source_key, updated_at, created_at")
+    .eq("company_id", companyId);
+
+  if (error) {
+    throw new Error(
+      `Failed to inspect report source records for dedupe: ${error.message}`,
+    );
+  }
+
+  const rows = Array.isArray(rawRows) ? rawRows : [];
+  if (rows.length <= 2) return;
+
+  const bySourceKey = rows.reduce((accumulator, row) => {
+    const key = String(row.source_key || "");
+    if (!accumulator.has(key)) accumulator.set(key, []);
+    accumulator.get(key).push(row);
+    return accumulator;
+  }, new Map());
+
+  const duplicateIds = [];
+  bySourceKey.forEach((entries) => {
+    if (!entries || entries.length <= 1) return;
+    const sorted = sortRowsByRecency(entries);
+    sorted.slice(1).forEach((row) => {
+      if (row?.id) duplicateIds.push(row.id);
+    });
+  });
+
+  if (!duplicateIds.length) return;
+
+  const { error: deleteError } = await supabase
+    .from("report_source_records")
+    .delete()
+    .in("id", duplicateIds);
+
+  if (deleteError) {
+    throw new Error(
+      `Failed to dedupe report source records: ${deleteError.message}`,
+    );
+  }
+}
+
 async function ensureReportSourceRecords(companyId) {
   if (!companyId) {
     throw new Error("companyId is required");
   }
+
+  await dedupeReportSourceRecords(companyId);
 
   const { data: existingRows, error: existingError } = await supabase
     .from("report_source_records")
@@ -148,6 +214,26 @@ async function getQuickBooksSnapshot(companyId) {
 }
 
 async function getManualGlSnapshot(companyId) {
+  let latestBatch = null;
+  let batchQueryError = null;
+  try {
+    const { data, error } = await supabase
+      .from("manual_gl_batches")
+      .select("id, batch_name, status, metadata, created_at, updated_at")
+      .eq("company_id", companyId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    latestBatch = data || null;
+    batchQueryError = error || null;
+  } catch (error) {
+    batchQueryError = error;
+  }
+
+  if (batchQueryError && batchQueryError.code !== "PGRST116") {
+    console.warn("[ReportSourceStore] Failed to load manual_gl_batches snapshot:", batchQueryError.message);
+  }
+
   const { data: manualReport } = await supabase
     .from("qb_synced_reports")
     .select("report_type, report_params, updated_at, last_synced_at, status")
@@ -164,13 +250,34 @@ async function getManualGlSnapshot(companyId) {
     .limit(1)
     .maybeSingle();
 
+  const manualMetadata =
+    latestBatch?.metadata && typeof latestBatch.metadata === "object"
+      ? latestBatch.metadata
+      : {};
+  const lastSyncedAt =
+    latestBatch?.updated_at ||
+    latestBatch?.created_at ||
+    manualReport?.last_synced_at ||
+    manualReport?.updated_at ||
+    null;
+
   return {
     isConnected: false,
-    isAvailable: Boolean(manualReport),
+    isAvailable: Boolean(latestBatch || manualReport),
     lastConnectedAt: null,
-    lastSyncedAt:
-      manualReport?.last_synced_at || manualReport?.updated_at || null,
+    lastSyncedAt,
     metadata: {
+      latestBatchId: latestBatch?.id || null,
+      latestBatchName: latestBatch?.batch_name || null,
+      latestBatchStatus: latestBatch?.status || null,
+      latestBatchCreatedAt: latestBatch?.created_at || null,
+      sourceSwitchVersion: manualMetadata.sourceSwitchVersion || null,
+      uploadSessionId: manualMetadata.uploadSessionId || null,
+      insertedTransactions:
+        Number(manualMetadata.insertedTransactions || 0) || null,
+      yearsDetected: Array.isArray(manualMetadata.yearsDetected)
+        ? manualMetadata.yearsDetected
+        : null,
       latestReportType: manualReport?.report_type || null,
       latestUploadId:
         manualReport?.report_params?.manualUploadId ||
@@ -216,16 +323,20 @@ async function updateReportSourceRecord(companyId, sourceKey, updates = {}) {
   const normalizedSourceKey = normalizeSourceKey(sourceKey);
   await ensureReportSourceRecords(companyId);
 
-  const { data: current, error: currentError } = await supabase
+  const { data: currentRows, error: currentError } = await supabase
     .from("report_source_records")
     .select("*")
     .eq("company_id", companyId)
     .eq("source_key", normalizedSourceKey)
-    .maybeSingle();
+    .order("updated_at", { ascending: false })
+    .limit(1);
 
   if (currentError) {
     throw new Error(`Failed to load report source record: ${currentError.message}`);
   }
+  const current = Array.isArray(currentRows) && currentRows.length
+    ? currentRows[0]
+    : null;
 
   const payload = {
     company_id: companyId,
@@ -338,6 +449,11 @@ async function setSelectedReportSource(companyId, sourceKey) {
   if (selectError) {
     throw new Error(`Failed to select report source: ${selectError.message}`);
   }
+
+  // Guard against legacy datasets where no rows match the selected source.
+  await updateReportSourceRecord(companyId, normalizedSourceKey, {
+    isSelected: true,
+  });
 
   return syncReportSourceRecords(companyId);
 }

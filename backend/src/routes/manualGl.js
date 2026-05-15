@@ -1,5 +1,6 @@
 const express = require("express");
 const { requireAuth } = require("../middleware/auth");
+const { enforceDataSource, REPORT_SOURCE_KEYS } = require("../middleware/dataSourceIsolation");
 const {
   listManualGlUploads,
   upsertManualGlUpload,
@@ -9,6 +10,20 @@ const {
   getManualGlColumns,
   processManualGlData,
 } = require("../services/manualGlService");
+const {
+  parseManualFilterQuery,
+  stageMultiYearGlUpload,
+  getStageTransactions,
+  getStageFilterOptions,
+  getProfitLossSummaryFromStage,
+  getProfitLossDetailFromStage,
+  getProfitLossMonthlyDetailFromStage,
+  getBalanceSheetSummaryFromStage,
+  getBalanceSheetMonthlyDetailFromStage,
+  getCashflowSummaryFromStage,
+  validateBatchBalanceSheet,
+  listManualGlBatches,
+} = require("../services/manualGlMultiYearService");
 const { uploadController } = require("../controllers/manualGl/uploadController");
 const { continueController } = require("../controllers/manualGl/continueController");
 
@@ -141,7 +156,7 @@ async function handleGetLatestReport(req, res, statementType) {
   });
 }
 
-router.get("/manual-gl/uploads", async (req, res) => {
+router.get("/manual-gl/uploads", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
   try {
     const clientId = resolveClientId(req);
     if (!clientId) {
@@ -155,7 +170,7 @@ router.get("/manual-gl/uploads", async (req, res) => {
   }
 });
 
-router.post("/manual-gl/uploads", async (req, res) => {
+router.post("/manual-gl/uploads", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
   try {
     return await handleCreateUpload(req, res);
   } catch (error) {
@@ -163,7 +178,7 @@ router.post("/manual-gl/uploads", async (req, res) => {
   }
 });
 
-router.post("/manual-gl/upload", async (req, res, next) => {
+router.post("/manual-gl/upload", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res, next) => {
   try {
     return await uploadController(req, res);
   } catch (error) {
@@ -171,7 +186,7 @@ router.post("/manual-gl/upload", async (req, res, next) => {
   }
 });
 
-router.post("/manual-gl/continue", async (req, res, next) => {
+router.post("/manual-gl/continue", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res, next) => {
   try {
     return await continueController(req, res);
   } catch (error) {
@@ -179,7 +194,7 @@ router.post("/manual-gl/continue", async (req, res, next) => {
   }
 });
 
-router.post("/upload-gl", async (req, res) => {
+router.post("/upload-gl", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
   try {
     return await handleCreateUpload(req, res);
   } catch (error) {
@@ -187,7 +202,7 @@ router.post("/upload-gl", async (req, res) => {
   }
 });
 
-router.post("/manual-gl/reports/generate", async (req, res) => {
+router.post("/manual-gl/reports/generate", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
   try {
     const clientId = resolveClientId(req);
     if (!clientId) return res.status(400).json({ error: "Missing clientId." });
@@ -206,7 +221,7 @@ router.post("/manual-gl/reports/generate", async (req, res) => {
   }
 });
 
-router.get("/manual-gl/reports/:statementType/latest", async (req, res) => {
+router.get("/manual-gl/reports/:statementType/latest", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
   try {
     return await handleGetLatestReport(req, res, req.params.statementType);
   } catch (error) {
@@ -214,31 +229,86 @@ router.get("/manual-gl/reports/:statementType/latest", async (req, res) => {
   }
 });
 
-router.get("/reports/pl", async (req, res) => {
+router.get("/reports/pl", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
   try {
-    return await handleGetLatestReport(req, res, "profit_and_loss");
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+
+    const filters = parseManualFilterQuery(req.query || {});
+    const stagedPayload = await getProfitLossSummaryFromStage(clientId, filters);
+    const netProfitLine = Array.isArray(stagedPayload?.lines)
+      ? stagedPayload.lines.find((line) => line.label === "Net Profit")
+      : null;
+    console.log(
+      "[ManualGL][API][PL]",
+      "client=",
+      clientId,
+      "batch=",
+      stagedPayload?.filters?.batchId || filters.batchId || "",
+      "years=",
+      stagedPayload?.years || [],
+      "netProfitByYear=",
+      netProfitLine?.valuesByYear || {},
+    );
+
+    return res.json({
+      success: true,
+      ...stagedPayload,
+      source: "MANUAL_STAGED",
+    });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message || "Failed to fetch P&L report." });
   }
 });
 
-router.get("/reports/balance-sheet", async (req, res) => {
+router.get("/reports/balance-sheet", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
   try {
-    return await handleGetLatestReport(req, res, "balance_sheet");
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+
+    const filters = parseManualFilterQuery(req.query || {});
+    const stagedPayload = await getBalanceSheetSummaryFromStage(clientId, filters);
+    console.log(
+      "[ManualGL][API][BS]",
+      "client=",
+      clientId,
+      "batch=",
+      stagedPayload?.filters?.batchId || filters.batchId || "",
+      "years=",
+      stagedPayload?.years || [],
+      "audit=",
+      stagedPayload?.audit || [],
+    );
+
+    return res.json({
+      success: true,
+      ...stagedPayload,
+      source: "MANUAL_STAGED",
+    });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message || "Failed to fetch Balance Sheet report." });
   }
 });
 
-router.get("/reports/cashflow", async (req, res) => {
+router.get("/reports/cashflow", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
   try {
-    return await handleGetLatestReport(req, res, "cash_flow");
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+
+    const filters = parseManualFilterQuery(req.query || {});
+    const stagedPayload = await getCashflowSummaryFromStage(clientId, filters);
+
+    return res.json({
+      success: true,
+      ...stagedPayload,
+      source: "MANUAL_STAGED",
+    });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message || "Failed to fetch Cash Flow report." });
   }
 });
 
-router.get("/manual-gl/columns/:uploadId", async (req, res) => {
+router.get("/manual-gl/columns/:uploadId", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
   try {
     const { uploadId } = req.params;
     if (!uploadId) return res.status(400).json({ error: "uploadId is required." });
@@ -250,7 +320,7 @@ router.get("/manual-gl/columns/:uploadId", async (req, res) => {
   }
 });
 
-router.post("/manual-gl/save-mapping", async (req, res) => {
+router.post("/manual-gl/save-mapping", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
   try {
     return await handleSaveMapping(req, res);
   } catch (error) {
@@ -258,7 +328,7 @@ router.post("/manual-gl/save-mapping", async (req, res) => {
   }
 });
 
-router.post("/save-mapping", async (req, res) => {
+router.post("/save-mapping", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
   try {
     return await handleSaveMapping(req, res);
   } catch (error) {
@@ -266,7 +336,7 @@ router.post("/save-mapping", async (req, res) => {
   }
 });
 
-router.post("/manual-gl/process-gl", async (req, res) => {
+router.post("/manual-gl/process-gl", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
   try {
     return await handleProcessGl(req, res);
   } catch (error) {
@@ -274,11 +344,223 @@ router.post("/manual-gl/process-gl", async (req, res) => {
   }
 });
 
-router.post("/process-gl", async (req, res) => {
+router.post("/process-gl", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
   try {
     return await handleProcessGl(req, res);
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message || "Failed to process GL." });
+  }
+});
+
+router.post("/manual-gl/staging/multi-year", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+
+    const {
+      glUploadIds = [],
+      startingBalanceSheetUploadId = "",
+      endingBalanceSheetUploadId = "",
+      mapping = {},
+      batchName = "",
+    } = req.body || {};
+
+    const result = await stageMultiYearGlUpload({
+      companyId: clientId,
+      glUploadIds,
+      startingBalanceSheetUploadId,
+      endingBalanceSheetUploadId,
+      mapping,
+      uploadedBy: req.user?.id || null,
+      batchName,
+    });
+
+    if (!result.success && result.requiresManualMapping) {
+      return res.status(400).json(result);
+    }
+
+    return res.status(201).json(result);
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to stage multi-year GL data.",
+    });
+  }
+});
+
+router.get("/manual-gl/staging/transactions", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+    const filters = parseManualFilterQuery(req.query || {});
+    const payload = await getStageTransactions(clientId, filters);
+    return res.json({ success: true, ...payload });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to fetch staged transactions.",
+    });
+  }
+});
+
+router.get("/manual-gl/staging/filter-options", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+    const filters = parseManualFilterQuery(req.query || {});
+    const payload = await getStageFilterOptions(clientId, filters);
+    console.log(`[ManualGL][Route] Sending filter options for client ${clientId}:`, JSON.stringify(payload.options?.fiscalYear));
+    return res.json({ success: true, ...payload });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to fetch staging filter options.",
+    });
+  }
+});
+
+router.get("/manual-gl/staging/batches", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+    const batches = await listManualGlBatches(clientId);
+    return res.json({ success: true, batches });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to list manual GL batches.",
+    });
+  }
+});
+
+router.get("/reports/profit-loss", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+    const filters = parseManualFilterQuery(req.query || {});
+    const payload = await getProfitLossSummaryFromStage(clientId, filters);
+    const netProfitLine = Array.isArray(payload?.lines)
+      ? payload.lines.find((line) => line.label === "Net Profit")
+      : null;
+    console.log(
+      "[ManualGL][API][ProfitLoss]",
+      "client=",
+      clientId,
+      "batch=",
+      payload?.filters?.batchId || filters.batchId || "",
+      "years=",
+      payload?.years || [],
+      "netProfitByYear=",
+      netProfitLine?.valuesByYear || {},
+    );
+    return res.json({ success: true, ...payload, source: "MANUAL_STAGED" });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to build staged Profit & Loss summary.",
+    });
+  }
+});
+
+router.get("/reports/profit-loss/detail", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+    const filters = parseManualFilterQuery(req.query || {});
+    const payload = await getProfitLossDetailFromStage(clientId, filters);
+    return res.json({ success: true, ...payload });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to build staged Profit & Loss detail.",
+    });
+  }
+});
+
+router.get("/reports/profit-loss/monthly-detail", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+    const filters = parseManualFilterQuery(req.query || {});
+    const payload = await getProfitLossMonthlyDetailFromStage(clientId, filters);
+    return res.json({ success: true, ...payload });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to build staged Profit & Loss monthly detail.",
+    });
+  }
+});
+
+router.get("/reports/balance-sheet/monthly-detail", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+    const filters = parseManualFilterQuery(req.query || {});
+    const payload = await getBalanceSheetMonthlyDetailFromStage(clientId, filters);
+    return res.json({ success: true, ...payload });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to build staged Balance Sheet monthly detail.",
+    });
+  }
+});
+
+router.get("/reports/profit-loss/monthly", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+    const filters = parseManualFilterQuery(req.query || {});
+    const payload = await getProfitLossSummaryFromStage(clientId, filters);
+    return res.json({
+      success: true,
+      source: payload.source,
+      reportType: "profit_loss_monthly",
+      filters: payload.filters,
+      monthlyBreakdown: payload.monthlyBreakdown || [],
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to build monthly Profit & Loss breakdown.",
+    });
+  }
+});
+
+router.get("/reports/profit-loss/year-comparison", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+    const filters = parseManualFilterQuery(req.query || {});
+    const payload = await getProfitLossSummaryFromStage(clientId, filters);
+    return res.json({
+      success: true,
+      source: payload.source,
+      reportType: "profit_loss_year_comparison",
+      filters: payload.filters,
+      yearComparison: payload.yearComparison || [],
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to build yearly Profit & Loss comparison.",
+    });
+  }
+});
+
+router.get("/manual-gl/validation/balance-sheet", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+    const batchId = String(req.query.batchId || req.query.batch_id || "").trim();
+    const payload = await validateBatchBalanceSheet(clientId, batchId);
+    return res.json({ success: true, ...payload });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to validate balance sheet rollforward.",
+    });
   }
 });
 

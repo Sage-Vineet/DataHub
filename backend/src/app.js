@@ -6,7 +6,6 @@ const { errorHandler } = require("./middleware/error");
 // Routes
 const authRoutes = require("./routes/auth");
 const publicRoutes = require("./routes/public");
-const { requireAuth } = require("./middleware/auth");
 const { quickBooksAuth } = require("./middleware/quickbooksAuth");
 const userRoutes = require("./routes/users");
 const companyRoutes = require("./routes/companies");

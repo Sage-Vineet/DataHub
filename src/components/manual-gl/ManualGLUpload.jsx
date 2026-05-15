@@ -1,31 +1,37 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Database, FileUp, Loader2, RefreshCw, CheckCircle, AlertCircle, ArrowRight, Save, Play, X, FileText } from "lucide-react";
+import { Database, FileUp, Loader2, RefreshCw, CheckCircle, AlertCircle, ArrowRight, Save, Play, X, FileText, Lock } from "lucide-react";
 import {
-  continueManualReportProcessing,
   listCompanyFolders,
   listFolderDocuments,
   listFolderTree,
   uploadFile,
   getManualGlColumns,
   saveManualGlMapping,
-  uploadManualReport,
+  stageMultiYearManualGl,
+  validateManualStagedBalanceSheet,
 } from "../../lib/api";
 import { useToast } from "../../context/ToastContext";
 
-const REPORT_TYPES = {
-  GENERAL_LEDGER: "GENERAL_LEDGER",
-  BALANCE_SHEET: "BALANCE_SHEET",
-};
-
-export default function ManualGLUpload({ companyId }) {
+export default function ManualGLUpload({
+  companyId,
+  isLocked = false,
+  lockMessage = "",
+  onStageComplete = null,
+}) {
   const { showToast } = useToast();
-  const [step, setStep] = useState(1); // 1: Stage, 2: Map, 3: Processed
+  const [step, setStep] = useState(1); // 1: Stage, 2: Map (if needed), 3: Staged
   const [sourceMode, setSourceMode] = useState("dataroom");
-  const [files, setFiles] = useState([]); // Array for manual upload
+  const [files, setFiles] = useState([]); // GL files for manual upload
+  const [startingBalanceSheetFile, setStartingBalanceSheetFile] = useState(null);
+  const [endingBalanceSheetFile, setEndingBalanceSheetFile] = useState(null);
   const [documents, setDocuments] = useState([]);
-  const [selectedDocumentIds, setSelectedDocumentIds] = useState([]); // Array for dataroom
+  const [selectedDocumentIds, setSelectedDocumentIds] = useState([]); // GL docs from dataroom
+  const [selectedStartingDocumentId, setSelectedStartingDocumentId] = useState("");
+  const [selectedEndingDocumentId, setSelectedEndingDocumentId] = useState("");
   const [activeUploadId, setActiveUploadId] = useState("");
-  
+  const [pendingStageRequest, setPendingStageRequest] = useState(null);
+  const [stageResult, setStageResult] = useState(null);
+
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoadingDocuments, setIsLoadingDocuments] = useState(true);
 
@@ -49,8 +55,6 @@ export default function ManualGLUpload({ companyId }) {
   const [isSavingMapping, setIsSavingMapping] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [validationErrors, setValidationErrors] = useState([]);
-  const [reportType, setReportType] = useState("");
-  const [balanceSheetData, setBalanceSheetData] = useState(null);
   const [balanceSheetValidation, setBalanceSheetValidation] = useState(null);
 
   const refreshDocuments = useCallback(async () => {
@@ -110,13 +114,10 @@ export default function ManualGLUpload({ companyId }) {
   }, [companyId, showToast]);
 
   useEffect(() => {
-    refreshDocuments();
-  }, [refreshDocuments]);
-
-  const selectedDocuments = useMemo(
-    () => documents.filter((doc) => selectedDocumentIds.includes(doc.id)),
-    [documents, selectedDocumentIds],
-  );
+    if (!isLocked) {
+      refreshDocuments();
+    }
+  }, [isLocked, refreshDocuments]);
 
   const formatDocumentLabel = useCallback((doc) => {
     if (!doc) return "";
@@ -150,6 +151,15 @@ export default function ManualGLUpload({ companyId }) {
   });
 
   const onSubmitStage = async () => {
+    if (isLocked) {
+      showToast({
+        type: "warning",
+        title: "Manual Upload is locked",
+        message: lockMessage || "Manual Upload is currently disabled for this workspace.",
+      });
+      return;
+    }
+
     if (!companyId) {
       showToast({
         type: "error",
@@ -159,119 +169,176 @@ export default function ManualGLUpload({ companyId }) {
       return;
     }
 
-    const itemsToProcess = sourceMode === "manual" 
-      ? files.map(f => ({ type: 'manual', file: f }))
-      : selectedDocuments.map(doc => ({ type: 'dataroom', doc }));
+    const hasGlSelection =
+      sourceMode === "manual"
+        ? files.length > 0
+        : selectedDocumentIds.length > 0;
 
-    if (itemsToProcess.length === 0) {
-      showToast({ type: "error", title: "No selection", message: "Please select at least one file to continue." });
+    if (!hasGlSelection) {
+      showToast({ type: "error", title: "No selection", message: "Please select at least one General Ledger file to continue." });
       return;
     }
 
+    const startingBsSelected = sourceMode === "manual" ? !!startingBalanceSheetFile : !!selectedStartingDocumentId;
+    const endingBsSelected = sourceMode === "manual" ? !!endingBalanceSheetFile : !!selectedEndingDocumentId;
+
+    if (!startingBsSelected) {
+      showToast({
+        type: "error",
+        title: "Starting Balance Sheet required",
+        message: "A Starting Balance Sheet is required for accurate account classification. Please provide one before staging.",
+      });
+      return;
+    }
+
+    if (!endingBsSelected) {
+      showToast({
+        type: "error",
+        title: "Ending Balance Sheet required",
+        message: "An Ending Balance Sheet is required for accurate account classification. Please provide one before staging.",
+      });
+      return;
+    }
+
+    let stagePayloadForRetry = null;
     try {
       setIsSubmitting(true);
-      setBalanceSheetData(null);
+      setActiveUploadId("");
       setBalanceSheetValidation(null);
-      
-      const stagedResults = [];
-      for (const item of itemsToProcess) {
-        let payload = null;
-        if (item.type === 'manual') {
-          const uploaded = await uploadFile(item.file, {
-            fileName: item.file.name,
-            prefix: `manual-gl/${companyId}`,
+
+      const uploadPrefix = `manual-gl/${companyId}`;
+      let glUploadIds = [];
+      let startingBalanceSheetUploadId = "";
+      let endingBalanceSheetUploadId = "";
+
+      if (sourceMode === "manual") {
+        glUploadIds = (
+          await Promise.all(
+            files.map(async (file) => {
+              const uploaded = await uploadFile(file, {
+                fileName: file.name,
+                prefix: uploadPrefix,
+              });
+              return uploaded?.id || "";
+            }),
+          )
+        ).filter(Boolean);
+
+        if (startingBalanceSheetFile) {
+          const uploaded = await uploadFile(startingBalanceSheetFile, {
+            fileName: startingBalanceSheetFile.name,
+            prefix: uploadPrefix,
           });
-          payload = {
-            uploadId: uploaded.id,
-            fileName: uploaded.fileName || item.file.name,
-            fileUrl: uploaded.fileUrl,
-          };
-        } else {
-          payload = {
-            uploadId: item.doc.uploadId,
-            fileName: item.doc.name,
-            fileUrl: item.doc.fileUrl,
-          };
+          startingBalanceSheetUploadId = uploaded?.id || "";
         }
-        
-        const staged = await uploadManualReport(payload, { clientId: companyId });
-        stagedResults.push(staged);
-      }
 
-      let firstManualMappingRequired = null;
-      let processedCount = 0;
-      let totalCount = stagedResults.length;
+        if (endingBalanceSheetFile) {
+          const uploaded = await uploadFile(endingBalanceSheetFile, {
+            fileName: endingBalanceSheetFile.name,
+            prefix: uploadPrefix,
+          });
+          endingBalanceSheetUploadId = uploaded?.id || "";
+        }
+      } else {
+        const selectedSet = new Set(selectedDocumentIds);
+        const glDocs = documents.filter((doc) => selectedSet.has(doc.id));
+        glUploadIds = glDocs.map((doc) => doc.uploadId).filter(Boolean);
 
-      for (const staged of stagedResults) {
-        const detectedType = staged?.reportType || REPORT_TYPES.GENERAL_LEDGER;
-        const stagedDataId = staged?.stagedDataId || staged.uploadId;
-
-        if (detectedType === REPORT_TYPES.BALANCE_SHEET) {
-          try {
-            const res = await continueManualReportProcessing(
-              { reportType: REPORT_TYPES.BALANCE_SHEET, stagedDataId },
-              { clientId: companyId }
-            );
-            setBalanceSheetData(res?.data || staged?.stagedData?.structuredData || null);
-            setBalanceSheetValidation(res?.validation || null);
-            processedCount++;
-          } catch (error) {
-            // Log BS error but continue
-            console.error("BS Processing failed", error);
-          }
-        } else {
-          try {
-            const autoRes = await continueManualReportProcessing(
-              { reportType: REPORT_TYPES.GENERAL_LEDGER, stagedDataId, mapping: {} },
-              { clientId: companyId }
-            );
-            if (autoRes.success) {
-              processedCount++;
-            }
-          } catch (error) {
-            if (error?.payload?.requiresManualMapping && !firstManualMappingRequired) {
-              firstManualMappingRequired = { staged, error };
-            }
-          }
+        if (selectedStartingDocumentId) {
+          const doc = documents.find((item) => item.id === selectedStartingDocumentId);
+          startingBalanceSheetUploadId = doc?.uploadId || "";
+        }
+        if (selectedEndingDocumentId) {
+          const doc = documents.find((item) => item.id === selectedEndingDocumentId);
+          endingBalanceSheetUploadId = doc?.uploadId || "";
         }
       }
+
+      const excludedUploadIds = new Set(
+        [startingBalanceSheetUploadId, endingBalanceSheetUploadId].filter(Boolean),
+      );
+      const normalizedGlUploadIds = Array.from(
+        new Set(glUploadIds.filter((id) => id && !excludedUploadIds.has(id))),
+      );
+
+      if (!normalizedGlUploadIds.length) {
+        showToast({
+          type: "error",
+          title: "No GL files",
+          message: "Please provide at least one General Ledger file.",
+        });
+        return;
+      }
+
+      const stagePayload = {
+        glUploadIds: normalizedGlUploadIds,
+        startingBalanceSheetUploadId,
+        endingBalanceSheetUploadId,
+        mapping: {},
+      };
+      stagePayloadForRetry = stagePayload;
+
+      const staged = await stageMultiYearManualGl(stagePayload, { clientId: companyId });
+      const validation =
+        staged?.validation ||
+        (staged?.batchId
+          ? (await validateManualStagedBalanceSheet({
+            clientId: companyId,
+            params: { batchId: staged.batchId },
+          }).catch(() => null))?.validation || null
+          : null);
+
+      setPendingStageRequest(stagePayload);
+      setStageResult(staged);
+      setBalanceSheetValidation(validation);
+      setValidationErrors([]);
+      setStep(3);
 
       setFiles([]);
       setSelectedDocumentIds([]);
+      setSelectedStartingDocumentId("");
+      setSelectedEndingDocumentId("");
+      setStartingBalanceSheetFile(null);
+      setEndingBalanceSheetFile(null);
 
-      if (firstManualMappingRequired) {
-        const { staged, error } = firstManualMappingRequired;
-        const stagedDataId = staged?.stagedDataId || staged.uploadId;
-        setReportType(staged?.reportType || REPORT_TYPES.GENERAL_LEDGER);
-        setActiveUploadId(stagedDataId);
-        
-        const fallbackMapping = error.payload.autoMapping && typeof error.payload.autoMapping === "object"
-          ? error.payload.autoMapping
-          : {};
-        setValidationErrors(Array.isArray(error?.payload?.errors) ? error.payload.errors : []);
+      showToast({
+        type: "success",
+        title: "Staging complete",
+        message: `Batch ${staged.batchId} staged. Inserted ${staged.insertedTransactions || 0}, skipped duplicates ${staged.duplicateTransactionsSkipped || 0}.`,
+      });
+      if (typeof onStageComplete === "function") {
+        await onStageComplete(staged);
+      }
+    } catch (error) {
+      if (error?.payload?.requiresManualMapping) {
+        const payload = error.payload;
+        setPendingStageRequest(
+          stagePayloadForRetry || {
+            glUploadIds: [],
+            startingBalanceSheetUploadId: "",
+            endingBalanceSheetUploadId: "",
+            mapping: {},
+          },
+        );
+        setActiveUploadId(payload.failedUploadId || "");
+        setValidationErrors(
+          Array.isArray(payload.missingRequired) && payload.missingRequired.length
+            ? payload.missingRequired.map((field) => ({ row: 0, message: `Missing mapping: ${field}` }))
+            : [],
+        );
         setStep(2);
-        await fetchColumns(stagedDataId, { preferredMapping: fallbackMapping });
-        
+        if (payload.failedUploadId) {
+          await fetchColumns(payload.failedUploadId, {
+            preferredMapping: payload.suggestedMapping || {},
+          });
+        }
         showToast({
           type: "warning",
           title: "Manual mapping needed",
-          message: `Staged ${totalCount} file(s). ${processedCount} auto-processed. 1 needs review.`,
+          message: payload.error || "Please review mapping and retry staging.",
         });
-      } else if (processedCount > 0) {
-        setStep(3);
-        showToast({
-          type: "success",
-          title: "Processing complete",
-          message: `Successfully processed ${processedCount} file(s).`,
-        });
-      } else {
-        showToast({
-          type: "error",
-          title: "Processing failed",
-          message: "Could not process any of the uploaded files automatically.",
-        });
+        return;
       }
-    } catch (error) {
       showToast({ type: "error", title: "Stage failed", message: error?.message || "Could not stage the documents." });
     } finally {
       setIsSubmitting(false);
@@ -315,6 +382,16 @@ export default function ManualGLUpload({ companyId }) {
   };
 
   const onSaveMapping = async () => {
+    if (isLocked) return;
+    if (!activeUploadId) {
+      showToast({
+        type: "error",
+        title: "No upload selected",
+        message: "No failed upload is available for mapping save.",
+      });
+      return;
+    }
+
     try {
       setIsSavingMapping(true);
       await saveManualGlMapping({ uploadId: activeUploadId, mapping }, { clientId: companyId });
@@ -327,15 +404,7 @@ export default function ManualGLUpload({ companyId }) {
   };
 
   const onProcessData = async () => {
-    if (reportType && reportType !== REPORT_TYPES.GENERAL_LEDGER) {
-      showToast({
-        type: "error",
-        title: "Invalid action",
-        message: "Column mapping is only required for General Ledger uploads.",
-      });
-      return;
-    }
-
+    if (isLocked) return;
     if (!mapping.date || !mapping.account_name || !((mapping.debit && mapping.credit) || mapping.split_amount)) {
       showToast({
         type: "error",
@@ -345,50 +414,72 @@ export default function ManualGLUpload({ companyId }) {
       return;
     }
 
+    if (!pendingStageRequest || !Array.isArray(pendingStageRequest.glUploadIds) || pendingStageRequest.glUploadIds.length === 0) {
+      showToast({
+        type: "error",
+        title: "Retry unavailable",
+        message: "No pending staging request was found. Please start from step 1.",
+      });
+      return;
+    }
+
     setValidationErrors([]);
     try {
       setIsProcessing(true);
-      const res = await continueManualReportProcessing(
-        {
-          reportType: REPORT_TYPES.GENERAL_LEDGER,
-          stagedDataId: activeUploadId,
-          mapping,
-        },
-        { clientId: companyId }
-      );
-      if (res.success) {
-        const skippedRows = Number(res.skippedRows || 0);
-        showToast({
-          type: skippedRows > 0 ? "warning" : "success",
-          title: skippedRows > 0 ? "Processed with warnings" : "Processing complete",
-          message: skippedRows > 0
-            ? `GL data normalized and stored. Skipped ${skippedRows} invalid row(s).`
-            : "GL data has been successfully normalized and stored.",
-        });
-        setStep(3);
+      const payload = {
+        ...pendingStageRequest,
+        mapping,
+      };
+
+      const staged = await stageMultiYearManualGl(payload, { clientId: companyId });
+      const validation =
+        staged?.validation ||
+        (staged?.batchId
+          ? (await validateManualStagedBalanceSheet({
+            clientId: companyId,
+            params: { batchId: staged.batchId },
+          }).catch(() => null))?.validation || null
+          : null);
+
+      setStageResult(staged);
+      setBalanceSheetValidation(validation);
+      setPendingStageRequest(payload);
+
+      showToast({
+        type: "success",
+        title: "Staging complete",
+        message: `Batch ${staged.batchId} staged. Inserted ${staged.insertedTransactions || 0}, skipped duplicates ${staged.duplicateTransactionsSkipped || 0}.`,
+      });
+      if (typeof onStageComplete === "function") {
+        await onStageComplete(staged);
       }
+      setStep(3);
     } catch (error) {
       if (error?.payload?.requiresManualMapping) {
-        if (error.payload.autoMapping && typeof error.payload.autoMapping === "object") {
-          setMapping((current) => ({ ...current, ...error.payload.autoMapping }));
+        const payload = error.payload;
+        if (payload.suggestedMapping && typeof payload.suggestedMapping === "object") {
+          setMapping((current) => ({ ...current, ...payload.suggestedMapping }));
         }
-        if (Array.isArray(error?.payload?.errors) && error.payload.errors.length) {
-          setValidationErrors(error.payload.errors);
+        if (Array.isArray(payload.missingRequired) && payload.missingRequired.length) {
+          setValidationErrors(payload.missingRequired.map((field) => ({
+            row: 0,
+            message: `Missing mapping: ${field}`,
+          })));
+        }
+        if (payload.failedUploadId) {
+          setActiveUploadId(payload.failedUploadId);
+          await fetchColumns(payload.failedUploadId, {
+            preferredMapping: payload.suggestedMapping || {},
+          });
         }
         showToast({
           type: "error",
           title: "Mapping needs review",
-          message: "Required columns are missing or low-confidence. Please adjust mapping and retry.",
+          message: payload.error || "Required mapping fields are missing. Please adjust and retry.",
         });
         return;
       }
-
-      if (Array.isArray(error?.payload?.errors) && error.payload.errors.length) {
-        setValidationErrors(error.payload.errors);
-        showToast({ type: "error", title: "Validation failed", message: "Please check row-wise errors below." });
-        return;
-      }
-      showToast({ type: "error", title: "Process failed", message: error?.message || "Could not process GL data." });
+      showToast({ type: "error", title: "Retry failed", message: error?.message || "Could not restage GL data." });
     } finally {
       setIsProcessing(false);
     }
@@ -397,8 +488,14 @@ export default function ManualGLUpload({ companyId }) {
   const resetFlow = () => {
     setStep(1);
     setFiles([]);
+    setStartingBalanceSheetFile(null);
+    setEndingBalanceSheetFile(null);
     setSelectedDocumentIds([]);
+    setSelectedStartingDocumentId("");
+    setSelectedEndingDocumentId("");
     setActiveUploadId("");
+    setPendingStageRequest(null);
+    setStageResult(null);
     setColumns([]);
     setPreviewData([]);
     setMapping({
@@ -415,19 +512,15 @@ export default function ManualGLUpload({ companyId }) {
       account_type: "",
     });
     setValidationErrors([]);
-    setReportType("");
-    setBalanceSheetData(null);
     setBalanceSheetValidation(null);
   };
 
-  const isGeneralLedgerFlow = !reportType || reportType === REPORT_TYPES.GENERAL_LEDGER;
-  const isBalanceSheetFlow = reportType === REPORT_TYPES.BALANCE_SHEET;
-  
   const hasSelection = sourceMode === "dataroom" ? selectedDocumentIds.length > 0 : files.length > 0;
-  const isStageActionDisabled = isSubmitting || !hasSelection;
-  
+  const hasStartingBs = sourceMode === "manual" ? !!startingBalanceSheetFile : !!selectedStartingDocumentId;
+  const hasEndingBs = sourceMode === "manual" ? !!endingBalanceSheetFile : !!selectedEndingDocumentId;
+  const isStageActionDisabled = isSubmitting || !hasSelection || !hasStartingBs || !hasEndingBs;
+
   const canProcessMapping = Boolean(
-    isGeneralLedgerFlow &&
     mapping.date &&
     mapping.account_name &&
     ((mapping.debit && mapping.credit) || mapping.split_amount)
@@ -474,11 +567,25 @@ export default function ManualGLUpload({ companyId }) {
           <div className="min-w-0">
             <h3 className="text-[16px] font-semibold text-text-primary">Manual Financial Processing</h3>
             <p className="text-[12px] text-secondary">
-              Upload a file, detect report type, then process General Ledger or Balance Sheet flow.
+              Stage multi-year GL files. Starting and Ending Balance Sheets are required for accurate account classification.
             </p>
           </div>
         </div>
-        {step === 1 && (
+        {isLocked ? (
+          <div className="rounded-xl border border-amber-300 bg-amber-50 px-5 py-4 text-amber-900">
+            <div className="flex items-start gap-3">
+              <Lock size={18} className="mt-0.5 shrink-0" />
+              <div>
+                <p className="text-[14px] font-semibold">Manual Upload is currently locked</p>
+                <p className="mt-1 text-[13px] leading-relaxed">
+                  {lockMessage || "Manual Upload is disabled for this workspace."}
+                </p>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {!isLocked && step === 1 && (
           <button
             type="button"
             onClick={refreshDocuments}
@@ -495,13 +602,13 @@ export default function ManualGLUpload({ companyId }) {
         {/* Step Indicator */}
         <div className="mb-6 grid grid-cols-1 gap-2 sm:grid-cols-3">
           <div className={`rounded-md border px-3 py-2 text-[13px] font-medium ${step >= 1 ? "border-primary bg-primary/10 text-primary" : "border-border bg-bg-page text-secondary"}`}>
-            1. Select File
+            1. Select Files
           </div>
           <div className={`rounded-md border px-3 py-2 text-[13px] font-medium ${step >= 2 ? "border-primary bg-primary/10 text-primary" : "border-border bg-bg-page text-secondary"}`}>
-            {isBalanceSheetFlow ? "2. Validate Snapshot" : "2. Map Columns"}
+            2. Map Columns (If Required)
           </div>
           <div className={`rounded-md border px-3 py-2 text-[13px] font-medium ${step >= 3 ? "border-primary bg-primary/10 text-primary" : "border-border bg-bg-page text-secondary"}`}>
-            {isBalanceSheetFlow ? "3. Saved Snapshot" : "3. Processed"}
+            3. Staged & Validated
           </div>
         </div>
 
@@ -564,6 +671,49 @@ export default function ManualGLUpload({ companyId }) {
                         ))
                       )}
                     </div>
+
+                    <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+                      <div className={`rounded-md border p-3 ${selectedStartingDocumentId ? "border-green-300 bg-green-50/40" : "border-amber-300 bg-amber-50/40"}`}>
+                        <label className="block text-[11px] font-semibold uppercase tracking-wide text-secondary mb-1">
+                          Starting Balance Sheet <span className="text-red-500">*</span>
+                        </label>
+                        <select
+                          className="input-base text-[13px]"
+                          value={selectedStartingDocumentId}
+                          onChange={(event) => setSelectedStartingDocumentId(event.target.value)}
+                        >
+                          <option value="">-- Select document --</option>
+                          {documents.map((doc) => (
+                            <option key={`start-${doc.id}`} value={doc.id}>
+                              {formatDocumentLabel(doc)}
+                            </option>
+                          ))}
+                        </select>
+                        {!selectedStartingDocumentId && (
+                          <p className="mt-1 text-[11px] text-amber-700">Required for accurate account classification</p>
+                        )}
+                      </div>
+                      <div className={`rounded-md border p-3 ${selectedEndingDocumentId ? "border-green-300 bg-green-50/40" : "border-amber-300 bg-amber-50/40"}`}>
+                        <label className="block text-[11px] font-semibold uppercase tracking-wide text-secondary mb-1">
+                          Ending Balance Sheet <span className="text-red-500">*</span>
+                        </label>
+                        <select
+                          className="input-base text-[13px]"
+                          value={selectedEndingDocumentId}
+                          onChange={(event) => setSelectedEndingDocumentId(event.target.value)}
+                        >
+                          <option value="">-- Select document --</option>
+                          {documents.map((doc) => (
+                            <option key={`end-${doc.id}`} value={doc.id}>
+                              {formatDocumentLabel(doc)}
+                            </option>
+                          ))}
+                        </select>
+                        {!selectedEndingDocumentId && (
+                          <p className="mt-1 text-[11px] text-amber-700">Required for accurate account classification</p>
+                        )}
+                      </div>
+                    </div>
                   </>
                 ) : (
                   <>
@@ -603,15 +753,82 @@ export default function ManualGLUpload({ companyId }) {
                         ))}
                       </div>
                     )}
+
+                    <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+                      <div className={`rounded-md border p-3 ${startingBalanceSheetFile ? "border-green-300 bg-green-50/40" : "border-amber-300 bg-amber-50/40"}`}>
+                        <label className="block text-[11px] font-semibold uppercase tracking-wide text-secondary mb-1">
+                          Starting Balance Sheet <span className="text-red-500">*</span>
+                        </label>
+                        <input
+                          type="file"
+                          accept=".csv,.xlsx,.xls"
+                          onChange={(event) => {
+                            const file = event.target.files?.[0] || null;
+                            setStartingBalanceSheetFile(file);
+                          }}
+                          className="input-base text-[13px]"
+                        />
+                        {startingBalanceSheetFile ? (
+                          <p className="mt-2 text-[12px] text-green-700 truncate">{startingBalanceSheetFile.name}</p>
+                        ) : (
+                          <p className="mt-1 text-[11px] text-amber-700">Required for accurate account classification</p>
+                        )}
+                      </div>
+                      <div className={`rounded-md border p-3 ${endingBalanceSheetFile ? "border-green-300 bg-green-50/40" : "border-amber-300 bg-amber-50/40"}`}>
+                        <label className="block text-[11px] font-semibold uppercase tracking-wide text-secondary mb-1">
+                          Ending Balance Sheet <span className="text-red-500">*</span>
+                        </label>
+                        <input
+                          type="file"
+                          accept=".csv,.xlsx,.xls"
+                          onChange={(event) => {
+                            const file = event.target.files?.[0] || null;
+                            setEndingBalanceSheetFile(file);
+                          }}
+                          className="input-base text-[13px]"
+                        />
+                        {endingBalanceSheetFile ? (
+                          <p className="mt-2 text-[12px] text-green-700 truncate">{endingBalanceSheetFile.name}</p>
+                        ) : (
+                          <p className="mt-1 text-[11px] text-amber-700">Required for accurate account classification</p>
+                        )}
+                      </div>
+                    </div>
                   </>
                 )}
               </div>
             </div>
 
             <div className="rounded-lg border border-border bg-bg-page/40 px-4 py-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <p className="text-[12px] text-secondary truncate">
-                Selected source: <span className="font-medium text-text-primary">{selectedSourceName || "None selected"}</span>
-              </p>
+              <div className="min-w-0 space-y-1">
+                <p className="text-[12px] text-secondary truncate">
+                  GL source: <span className="font-medium text-text-primary">{selectedSourceName || "None selected"}</span>
+                </p>
+                <p className="text-[11px] truncate">
+                  Starting BS:{" "}
+                  <span className={`font-medium ${hasStartingBs ? "text-green-700" : "text-amber-600"}`}>
+                    {sourceMode === "manual"
+                      ? (startingBalanceSheetFile?.name || "Not provided — required")
+                      : (selectedStartingDocumentId ? (formatDocumentLabel(documents.find((doc) => doc.id === selectedStartingDocumentId)) || "Selected") : "Not provided — required")}
+                  </span>
+                  {" · "}
+                  Ending BS:{" "}
+                  <span className={`font-medium ${hasEndingBs ? "text-green-700" : "text-amber-600"}`}>
+                    {sourceMode === "manual"
+                      ? (endingBalanceSheetFile?.name || "Not provided — required")
+                      : (selectedEndingDocumentId ? (formatDocumentLabel(documents.find((doc) => doc.id === selectedEndingDocumentId)) || "Selected") : "Not provided — required")}
+                  </span>
+                </p>
+                {isStageActionDisabled && !isSubmitting && (
+                  <p className="text-[11px] text-amber-600">
+                    {!hasSelection
+                      ? "Select at least one GL file."
+                      : !hasStartingBs
+                        ? "Provide a Starting Balance Sheet to continue."
+                        : "Provide an Ending Balance Sheet to continue."}
+                  </p>
+                )}
+              </div>
               <button
                 type="button"
                 onClick={onSubmitStage}
@@ -619,13 +836,13 @@ export default function ManualGLUpload({ companyId }) {
                 className="btn-primary w-full sm:w-auto disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {isSubmitting ? <Loader2 size={14} className="animate-spin" /> : <FileUp size={14} />}
-                {isSubmitting ? "Staging..." : "Stage & Continue"}
+                {isSubmitting ? "Staging..." : "Stage Multi-Year Data"}
               </button>
             </div>
           </div>
         )}
 
-        {step === 2 && isGeneralLedgerFlow && (
+        {!isLocked && step === 2 && (
           <div className="space-y-6">
             {isLoadingColumns ? (
               <div className="flex items-center justify-center p-8">
@@ -738,75 +955,50 @@ export default function ManualGLUpload({ companyId }) {
           </div>
         )}
 
-        {step === 3 && (
+        {!isLocked && step === 3 && (
           <div className="py-10 flex flex-col items-center justify-center text-center rounded-lg border border-primary/30 bg-primary/5 px-4">
             <CheckCircle className="text-primary mb-4" size={48} />
             <h3 className="text-xl font-bold text-text-primary mb-2">
-              {isBalanceSheetFlow ? "Balance Sheet Flow Complete" : "Processing Complete"}
+              Multi-year Staging Complete
             </h3>
-            {isBalanceSheetFlow ? (
-              <>
-                <p className="text-secondary max-w-md">
-                  {balanceSheetValidation?.isValid
-                    ? "Balance Sheet validated and saved as a snapshot."
-                    : "Balance Sheet uploaded, but validation failed. Review the returned data and fix the source file."}
+            <p className="text-secondary max-w-2xl">
+              Multi-year GL transactions are normalized into staged tables and ready for manual report generation.
+            </p>
+
+            {stageResult ? (
+              <div className="mt-4 w-full max-w-3xl rounded-lg border border-border bg-bg-card p-4 text-left">
+                <h4 className="text-[14px] font-semibold text-text-primary mb-2">Batch Summary</h4>
+                <div className="grid grid-cols-1 gap-1 text-[12px] text-secondary sm:grid-cols-2">
+                  <p>Batch ID: <span className="font-medium text-text-primary">{stageResult.batchId}</span></p>
+                  <p>Inserted Transactions: <span className="font-medium text-text-primary">{stageResult.insertedTransactions || 0}</span></p>
+                  <p>Duplicates Skipped: <span className="font-medium text-text-primary">{stageResult.duplicateTransactionsSkipped || 0}</span></p>
+                  <p>Warnings: <span className="font-medium text-text-primary">{Array.isArray(stageResult.warnings) ? stageResult.warnings.length : 0}</span></p>
+                  <p>GL Files Parsed: <span className="font-medium text-text-primary">{Array.isArray(stageResult.filesParsed) ? stageResult.filesParsed.length : 0}</span></p>
+                  <p>Years Detected: <span className="font-medium text-text-primary">{Array.isArray(stageResult.yearsDetected) && stageResult.yearsDetected.length ? stageResult.yearsDetected.join(", ") : "-"}</span></p>
+                </div>
+              </div>
+            ) : null}
+
+            {balanceSheetValidation ? (
+              <div className="mt-4 w-full max-w-3xl rounded-lg border border-border bg-bg-card p-4 text-left">
+                <h4 className="text-[14px] font-semibold text-text-primary mb-2">Balance Sheet Validation</h4>
+                <p className={`text-[13px] ${balanceSheetValidation.isValid ? "text-green-700" : "text-red-600"}`}>
+                  {balanceSheetValidation.isValid
+                    ? "Opening + Net Income +/- Adjustments matches Closing balance."
+                    : "Validation detected mismatches. Review details before final reporting."}
                 </p>
-
-                {balanceSheetValidation && (
-                  <div className="mt-4 w-full max-w-3xl rounded-lg border border-border bg-bg-card p-4 text-left">
-                    <h4 className="text-[14px] font-semibold text-text-primary mb-2">Validation Summary</h4>
-                    <p className={`text-[13px] ${balanceSheetValidation.isValid ? "text-green-700" : "text-red-600"}`}>
-                      {balanceSheetValidation.message}
-                    </p>
-                    {balanceSheetValidation.totals && (
-                      <div className="mt-2 grid grid-cols-1 gap-1 text-[12px] text-secondary sm:grid-cols-2">
-                        <p>Total Assets: {balanceSheetValidation.totals.totalAssets}</p>
-                        <p>Total Liabilities: {balanceSheetValidation.totals.totalLiabilities}</p>
-                        <p>Total Equity: {balanceSheetValidation.totals.totalEquity}</p>
-                        <p>Difference: {balanceSheetValidation.difference}</p>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {balanceSheetData && (
-                  <div className="mt-4 w-full max-w-3xl rounded-lg border border-border bg-bg-card p-4 text-left">
-                    <h4 className="text-[14px] font-semibold text-text-primary mb-2">Staged Balance Sheet Data</h4>
-                    <p className="text-[12px] text-secondary mb-2">
-                      As of Date: <span className="font-medium text-text-primary">{balanceSheetData.asOfDate || "Not detected"}</span>
-                    </p>
-                    <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-                      <div>
-                        <h5 className="text-[13px] font-semibold text-text-primary mb-1">Assets</h5>
-                        <ul className="text-[12px] text-secondary space-y-1 max-h-40 overflow-y-auto">
-                          {(balanceSheetData.assets || []).map((item, index) => (
-                            <li key={`asset-${index}`}>{item.name}: {item.amount}</li>
-                          ))}
-                        </ul>
-                      </div>
-                      <div>
-                        <h5 className="text-[13px] font-semibold text-text-primary mb-1">Liabilities</h5>
-                        <ul className="text-[12px] text-secondary space-y-1 max-h-40 overflow-y-auto">
-                          {(balanceSheetData.liabilities || []).map((item, index) => (
-                            <li key={`liability-${index}`}>{item.name}: {item.amount}</li>
-                          ))}
-                        </ul>
-                      </div>
-                      <div>
-                        <h5 className="text-[13px] font-semibold text-text-primary mb-1">Equity</h5>
-                        <ul className="text-[12px] text-secondary space-y-1 max-h-40 overflow-y-auto">
-                          {(balanceSheetData.equity || []).map((item, index) => (
-                            <li key={`equity-${index}`}>{item.name}: {item.amount}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </>
+                <div className="mt-2 grid grid-cols-1 gap-1 text-[12px] text-secondary sm:grid-cols-2">
+                  <p>Opening Balance: {balanceSheetValidation.openingBalance ?? 0}</p>
+                  <p>Closing Balance: {balanceSheetValidation.closingBalance ?? 0}</p>
+                  <p>Net Income: {balanceSheetValidation.netIncome ?? 0}</p>
+                  <p>Adjustments: {balanceSheetValidation.adjustments ?? 0}</p>
+                  <p>Mismatched Accounts: {Array.isArray(balanceSheetValidation.mismatches) ? balanceSheetValidation.mismatches.length : 0}</p>
+                  <p>Missing in Ending: {Array.isArray(balanceSheetValidation.missingInEnding) ? balanceSheetValidation.missingInEnding.length : 0}</p>
+                </div>
+              </div>
             ) : (
-              <p className="text-secondary max-w-md">
-                The General Ledger data has been successfully mapped, normalized, and stored into the Data Room collection. It is now ready for report generation.
+              <p className="mt-4 text-[12px] text-secondary">
+                No balance sheet validation was run because starting and ending balance sheets were not both provided.
               </p>
             )}
             <button type="button" onClick={resetFlow} className="btn-secondary mt-6">

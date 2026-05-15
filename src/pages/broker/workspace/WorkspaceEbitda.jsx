@@ -9,13 +9,16 @@ import {
   ChevronDown,
 } from "lucide-react";
 import { cn, formatCurrency } from "../../../lib/utils";
-import { getCompanyRequest } from "../../../lib/api";
+import { getStoredToken, getCompanyRequest, getReportSources, setSelectedReportSource as apiSetSelectedReportSource } from "../../../lib/api";
 import {
   getEbitdaData,
+  extractEbitdaFromManualPLRows,
 } from "../../../services/ebitdaService";
+import { REPORT_SOURCE_KEYS, REPORT_SOURCE_OPTIONS, normalizeReportSourceKey, getReportSourceLabel } from "../../../lib/report-source";
 import { refreshQuickbooksToken } from "../../../lib/quickbooks";
 import QBDisconnectedBanner from "../../../components/common/QBDisconnectedBanner";
 import Modal from "../../../components/common/Modal";
+import { useDataSource } from "../../../context/DataSourceContext";
 
 function formatPercent(value) {
   if (!Number.isFinite(value)) return "-";
@@ -78,12 +81,20 @@ function LoadingState() {
 /*  Main Component                                                    */
 /* ------------------------------------------------------------------ */
 
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
+
 export default function WorkspaceEbitda() {
   const { clientId } = useParams();
+  const { activeSource, activeSourceMode } = useDataSource();
 
   const accountingMethod = "Accrual";
 
-  // Data state
+  // Initialize from DataSourceContext immediately so the generate doesn't wait
+  // for the getReportSources round-trip to complete.
+  const [selectedReportSource, setSelectedReportSource] = useState(
+    () => activeSource ? normalizeReportSourceKey(activeSource) : null,
+  );
+  const [reportSources, setReportSources] = useState([]);
   const [multiYearData, setMultiYearData] = useState(null);
   const [years, setYears] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -173,49 +184,154 @@ export default function WorkspaceEbitda() {
     getCompanyRequest(clientId)
       .then((data) => active && setCompany(data))
       .catch(() => active && setCompany(null));
-    return () => {
-      active = false;
-    };
+    return () => { active = false; };
   }, [clientId]);
 
+  // Load full sources list for the dropdown. selectedReportSource is already
+  // initialized from DataSourceContext, so we only fill the gap (null) here.
+  useEffect(() => {
+    if (!clientId) return;
+    let active = true;
+    getReportSources({ clientId })
+      .then((payload) => {
+        if (!active) return;
+        setReportSources(Array.isArray(payload?.sources) ? payload.sources : []);
+        setSelectedReportSource((prev) =>
+          prev ?? normalizeReportSourceKey(payload?.selectedSource || REPORT_SOURCE_KEYS.QUICKBOOKS),
+        );
+      })
+      .catch(() => {
+        if (active) setSelectedReportSource((prev) => prev ?? REPORT_SOURCE_KEYS.QUICKBOOKS);
+      });
+    return () => { active = false; };
+  }, [clientId]);
 
-  const handleGenerate = useCallback(async () => {
+  const handleReportSourceChange = async (sourceKey) => {
+    const normalized = normalizeReportSourceKey(sourceKey);
+    const previous = selectedReportSource;
+    // Clear cache for the incoming source so it fetches fresh data on switch
+    try { sessionStorage.removeItem(`ebitda_data_${clientId}_${normalized}`); } catch { /* ignore */ }
+    setSelectedReportSource(normalized);
+    setMultiYearData(null);
+    setIsDataInitialized(false);
+    try {
+      const payload = await apiSetSelectedReportSource(normalized, { clientId });
+      setReportSources(Array.isArray(payload?.sources) ? payload.sources : []);
+      setSelectedReportSource(normalizeReportSourceKey(payload?.selectedSource));
+    } catch {
+      setSelectedReportSource(previous);
+    }
+  };
+
+  const sourceOptions = useMemo(() => {
+    if (reportSources.length > 0) {
+      return reportSources.map((s) => ({
+        key: normalizeReportSourceKey(s.sourceKey),
+        label: s.sourceLabel || getReportSourceLabel(s.sourceKey),
+      }));
+    }
+    return REPORT_SOURCE_OPTIONS.map((o) => ({ key: o.key, label: o.label }));
+  }, [reportSources]);
+
+
+  const isManualMode = selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD ||
+    selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_GL;
+
+  const ebitdaCacheKey = clientId && selectedReportSource
+    ? `ebitda_data_${clientId}_${selectedReportSource}`
+    : null;
+
+  const handleGenerate = useCallback(async (skipCache = false) => {
+    // Serve from session storage if available and not explicitly bypassed
+    if (!skipCache && ebitdaCacheKey) {
+      try {
+        const cached = sessionStorage.getItem(ebitdaCacheKey);
+        if (cached) {
+          const { multiYearData: cachedData, years: cachedYears } = JSON.parse(cached);
+          if (cachedData && cachedYears?.length) {
+            setMultiYearData(cachedData);
+            setYears(cachedYears);
+            setError("");
+            return;
+          }
+        }
+      } catch { /* ignore corrupt cache */ }
+    }
+
     setIsLoading(true);
     setError("");
     try {
       const currentYear = new Date().getFullYear();
-      const todayStr = new Date().toISOString().split('T')[0];
-      const yearList = [currentYear, currentYear - 1, currentYear - 2, currentYear - 3];
-      setYears(yearList);
 
-      const results = {};
+      if (isManualMode) {
+        // Manual upload: fetch the stored P&L report and extract EBITDA from it
+        const token = getStoredToken();
+        const headers = {
+          ...(token ? { Authorization: `Bearer ${token}`, "X-Access-Token": token, "X-Auth-Token": token } : {}),
+          ...(clientId ? { "X-Client-Id": clientId } : {}),
+        };
+        const url = `${API_BASE_URL}/manual-report-uploads/reports/profit_and_loss/latest?clientId=${clientId}`;
+        const resp = await fetch(url, { headers });
 
-      // Fetch data for each year in parallel
-      await Promise.all(
-        yearList.map(async (year) => {
-          const sy = `${year}-01-01`;
-          // Current year uses today; previous years use full year (Dec 31)
-          const ey = year === currentYear ? todayStr : `${year}-12-31`;
+        if (!resp.ok) {
+          const errBody = await resp.json().catch(() => ({}));
+          throw new Error(errBody?.error || "No P&L report found. Please sync your Profit & Loss file first via the Connections page.");
+        }
 
-          console.log(`[EBITDA] Fetching data for ${year}: Range ${sy} to ${ey}`);
+        const payload = await resp.json();
+        const rows = payload.data?.rows || [];
+        const asOfDate = payload.data?.asOfDate || null;
+        const periodEnd = payload.data?.periodEnd || null;
+        const periodStart = payload.data?.periodStart || null;
 
-          try {
-            const data = await getEbitdaData(sy, ey, accountingMethod);
-            console.log(`[EBITDA] Received data for ${year}:`, data);
+        if (!rows.length) {
+          throw new Error("The synced P&L report contains no data rows.");
+        }
 
-            if (!data || !data.hasData) {
-              console.warn(`[EBITDA] Year ${year} has no data or returned null`);
+        // Year detection: asOfDate → periodEnd → periodStart → filename → current year
+        let year = currentYear;
+        const dateSrc = asOfDate || periodEnd || periodStart;
+        if (dateSrc) {
+          const parsed = parseInt(String(dateSrc).split("-")[0], 10);
+          if (parsed >= 2000 && parsed <= currentYear + 1) year = parsed;
+        }
+        if (year === currentYear) {
+          const fileName = payload.reportParams?.fileName || "";
+          const yearInName = fileName.match(/\b(20\d{2})\b/);
+          if (yearInName) year = parseInt(yearInName[1], 10);
+        }
+
+        const newData = { [year]: extractEbitdaFromManualPLRows(rows, asOfDate) };
+        const newYears = [year];
+        setYears(newYears);
+        setMultiYearData(newData);
+        if (ebitdaCacheKey) {
+          try { sessionStorage.setItem(ebitdaCacheKey, JSON.stringify({ multiYearData: newData, years: newYears })); } catch { /* quota exceeded — skip cache */ }
+        }
+      } else {
+        // QuickBooks: fetch per-year as before
+        const todayStr = new Date().toISOString().split("T")[0];
+        const yearList = [currentYear, currentYear - 1, currentYear - 2, currentYear - 3];
+        setYears(yearList);
+
+        const results = {};
+        await Promise.all(
+          yearList.map(async (year) => {
+            const sy = `${year}-01-01`;
+            const ey = year === currentYear ? todayStr : `${year}-12-31`;
+            try {
+              results[year] = await getEbitdaData(sy, ey, accountingMethod);
+            } catch (err) {
+              console.error(`[EBITDA] Failed to fetch data for ${year}:`, err);
+              results[year] = null;
             }
-
-            results[year] = data;
-          } catch (err) {
-            console.error(`[EBITDA] Failed to fetch data for ${year}:`, err);
-            results[year] = null;
-          }
-        })
-      );
-
-      setMultiYearData(results);
+          })
+        );
+        setMultiYearData(results);
+        if (ebitdaCacheKey) {
+          try { sessionStorage.setItem(ebitdaCacheKey, JSON.stringify({ multiYearData: results, years: yearList })); } catch { /* quota exceeded — skip cache */ }
+        }
+      }
     } catch (err) {
       console.error("[WorkspaceEbitda] Generation failed:", err);
       setError(err?.message || "Failed to fetch EBITDA data. Please try again.");
@@ -223,12 +339,15 @@ export default function WorkspaceEbitda() {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [selectedReportSource, isManualMode, clientId, ebitdaCacheKey]);
 
-  // Initial load
+  // Generate when source is known (or changes).
+  // For manual-upload mode we always skip the session cache so that newly
+  // detected year info (asOfDate / periodEnd) is used rather than a stale
+  // "FY 2026" entry that was written before the fix.
   useEffect(() => {
-    handleGenerate();
-  }, [handleGenerate]);
+    if (selectedReportSource !== null) handleGenerate(isManualMode);
+  }, [handleGenerate, isManualMode]);
 
   // Handle Dynamic Addbacks Initialization and Persistence
   useEffect(() => {
@@ -426,9 +545,13 @@ export default function WorkspaceEbitda() {
 
   const handleSync = async () => {
     setIsSyncing(true);
+    // Clear existing cache so fresh data is stored after sync
+    if (ebitdaCacheKey) {
+      try { sessionStorage.removeItem(ebitdaCacheKey); } catch { /* ignore */ }
+    }
     try {
       await refreshQuickbooksToken();
-      await handleGenerate();
+      await handleGenerate(true); // force fresh fetch, bypass cache
     } catch (err) {
       console.error("Sync failed:", err);
       setError("Sync failed. Please try again.");
@@ -448,25 +571,52 @@ export default function WorkspaceEbitda() {
               EBITDA Analysis
             </h1>
             <p className="mt-1 text-[13px] text-text-muted">
-              Dynamic earnings analysis powered by your Profit & Loss data
-              {company?.name ? ` — ${company.name}` : ""}
+              {isManualMode
+                ? `Powered by your uploaded Profit & Loss file${company?.name ? ` — ${company.name}` : ""}`
+                : `Dynamic earnings analysis powered by your Profit & Loss data${company?.name ? ` — ${company.name}` : ""}`}
             </p>
           </div>
-          <button
-            onClick={handleSync}
-            disabled={isSyncing}
-            className="btn-secondary"
-          >
-            <RefreshCw
-              size={16}
-              className={isSyncing ? "animate-spin" : ""}
-            />
-            {isSyncing ? "Syncing..." : "Sync"}
-          </button>
+          {activeSourceMode === "quickbooks" && (
+            <button
+              onClick={handleSync}
+              disabled={isSyncing}
+              className="btn-secondary"
+            >
+              <RefreshCw
+                size={16}
+                className={isSyncing ? "animate-spin" : ""}
+              />
+              {isSyncing ? "Syncing..." : "Sync"}
+            </button>
+          )}
         </div>
 
         <QBDisconnectedBanner pageName="EBITDA Analysis" />
 
+        {/* Data Connection selector */}
+        <section className="card-base w-full p-5">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <h2 className="text-[16px] font-semibold text-text-primary">Data Connection</h2>
+              <p className="mt-0.5 text-[13px] text-text-secondary">
+                Choose the source used to populate EBITDA data.
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="text-[12px] font-medium text-text-secondary">Connection</label>
+              <select
+                value={selectedReportSource || ""}
+                onChange={(e) => void handleReportSourceChange(e.target.value)}
+                className="input-base h-9 min-w-[220px]"
+                disabled={selectedReportSource === null}
+              >
+                {sourceOptions.map((opt) => (
+                  <option key={opt.key} value={opt.key}>{opt.label}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </section>
 
         {/* Content */}
         {isLoading ? (
@@ -719,8 +869,14 @@ export default function WorkspaceEbitda() {
                     />
                   </div>
 
-                  {/* Owner Addbacks Section spacer */}
-                  <div className="h-[45px] bg-gray-100 border-b border-[#cbd5e1]" />
+                  {/* Owner Addbacks Section spacer — mirrors table header height */}
+                  <div className="bg-gray-100 border-b border-[#cbd5e1] px-4 py-3">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-[#050505] invisible" aria-hidden="true">&nbsp;</span>
+                      <span className="px-3 py-1.5 text-[11px] font-bold invisible" aria-hidden="true">ADD ROW</span>
+                    </div>
+                    <p className="mt-1 text-[11px] invisible select-none" aria-hidden="true">&nbsp;</p>
+                  </div>
 
                   {/* Dynamic Addback Comments */}
                   {dynamicAddbacks.map((row) => (
