@@ -2,8 +2,8 @@ import { fetchProfitAndLoss } from "../lib/quickbooks";
 import {
   getManualStagedProfitLossSummary,
   getManualStagedProfitLossMonthlyDetail,
+  getLatestManualUploadedReport,
 } from "../lib/api";
-import { getLatestManualUploadedReport, getManualGlProfitLoss } from "../lib/api";
 import { normalizeAccountingMethod } from "../lib/report-filters";
 import { parseSummaryReport } from "../lib/report-parsers";
 

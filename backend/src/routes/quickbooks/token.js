@@ -312,9 +312,12 @@ router.get("/api/auth/quickbooks", requireAuth, async (req, res) => {
     try {
       const sourceState = await dataSourceService.getDataSourceState(clientId);
       const activeSource = sourceState?.activeSource || null;
+      const isManualSourceActive =
+        activeSource === REPORT_SOURCE_KEYS.MANUAL_GL ||
+        activeSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD;
 
       if (
-        activeSource === REPORT_SOURCE_KEYS.MANUAL_GL &&
+        isManualSourceActive &&
         !confirmSwitch
       ) {
         return res.status(409).json({
@@ -324,12 +327,12 @@ router.get("/api/auth/quickbooks", requireAuth, async (req, res) => {
           requiresConfirmation: true,
           nextAction: "switch_to_quickbooks",
           requestedSource: REPORT_SOURCE_KEYS.QUICKBOOKS,
-          currentSource: REPORT_SOURCE_KEYS.MANUAL_GL,
+          currentSource: activeSource,
         });
       }
 
       if (
-        activeSource === REPORT_SOURCE_KEYS.MANUAL_GL &&
+        isManualSourceActive &&
         confirmSwitch
       ) {
         await dataSourceService.switchDataSource(

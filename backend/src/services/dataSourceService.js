@@ -14,6 +14,13 @@ function normalizeSourceKey(value, fallback = null) {
   return normalizeDataSourceKey(value, fallback);
 }
 
+function isManualSourceKey(sourceKey) {
+  return (
+    sourceKey === REPORT_SOURCE_KEYS.MANUAL_GL ||
+    sourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD
+  );
+}
+
 function createSourceError(message, code, extras = {}) {
   const error = new Error(message);
   error.code = code;
@@ -138,7 +145,7 @@ class DataSourceService {
       activeSource,
       quickbooksConnected:
         Boolean(company?.quickbooks_connected) || qbConnection.isConnected,
-      manualUploadActive: activeSource === REPORT_SOURCE_KEYS.MANUAL_GL,
+      manualUploadActive: isManualSourceKey(activeSource),
       lastSourceSwitchAt: company?.last_source_switch_at || null,
     };
   }
@@ -175,7 +182,7 @@ class DataSourceService {
       quickBooksConnection.isConnected ||
       company?.quickbooks_connected,
     );
-    const manualUploadActive = activeSource === REPORT_SOURCE_KEYS.MANUAL_GL;
+    const manualUploadActive = isManualSourceKey(activeSource);
 
     return {
       activeSource,
@@ -251,6 +258,8 @@ class DataSourceService {
           nextAction:
             normalizedTargetSource === REPORT_SOURCE_KEYS.MANUAL_GL
               ? "switch_to_manual"
+              : normalizedTargetSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD
+                ? "switch_to_manual_upload"
               : "switch_to_quickbooks",
           requestedSource: normalizedTargetSource,
           currentSource,
@@ -258,7 +267,7 @@ class DataSourceService {
       );
     }
 
-    if (normalizedTargetSource === REPORT_SOURCE_KEYS.MANUAL_GL) {
+    if (isManualSourceKey(normalizedTargetSource)) {
       if (currentState.quickbooksConnected && forceDisconnectQuickbooks) {
         await softDisconnectQuickBooks(companyId);
       }
@@ -274,7 +283,7 @@ class DataSourceService {
     const dbResult = await this.updateCompanySourceState(companyId, {
       data_source_type: normalizedTargetSource,
       quickbooks_connected: quickbooksStateAfterSwitch.isConnected,
-      manual_upload_active: normalizedTargetSource === REPORT_SOURCE_KEYS.MANUAL_GL,
+      manual_upload_active: isManualSourceKey(normalizedTargetSource),
       last_source_switch_at: new Date().toISOString(),
     });
 
@@ -312,11 +321,15 @@ class DataSourceService {
 
     if (!activeSource) {
       if (
-        normalizedOperationSource === REPORT_SOURCE_KEYS.MANUAL_GL &&
+        isManualSourceKey(normalizedOperationSource) &&
         state.quickbooksConnected
       ) {
+        const manualTargetLabel =
+          normalizedOperationSource === REPORT_SOURCE_KEYS.MANUAL_GL
+            ? "Manual GL Upload"
+            : "Manual Upload (Excel/PDF)";
         throw createSourceError(
-          "QuickBooks is currently connected. Disconnect QuickBooks to use Manual Upload.",
+          `QuickBooks is currently connected. Disconnect QuickBooks to use ${manualTargetLabel}.`,
           "QB_DISCONNECT_REQUIRED",
           { requiresConfirmation: true, nextAction: "disconnect_quickbooks", requestedSource: normalizedOperationSource, currentSource: activeSource },
         );
@@ -326,8 +339,12 @@ class DataSourceService {
 
     if (activeSource !== normalizedOperationSource) {
       if (normalizedOperationSource === REPORT_SOURCE_KEYS.MANUAL_GL) {
+        const message =
+          activeSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD
+            ? "Manual Upload (Excel/PDF) is currently active. Switch to Manual GL Upload first."
+            : "QuickBooks is currently the active source. Switch to Manual GL Upload first.";
         throw createSourceError(
-          "QuickBooks is currently the active source. Switch to Manual Upload first.",
+          message,
           "QUICKBOOKS_SOURCE_ACTIVE",
           {
             requiresConfirmation: true,
@@ -338,8 +355,25 @@ class DataSourceService {
         );
       }
 
+      if (normalizedOperationSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD) {
+        const message =
+          activeSource === REPORT_SOURCE_KEYS.MANUAL_GL
+            ? "Manual GL Upload is currently active. Switch to Manual Upload (Excel/PDF) first."
+            : "QuickBooks is currently the active source. Switch to Manual Upload (Excel/PDF) first.";
+        throw createSourceError(
+          message,
+          "QUICKBOOKS_SOURCE_ACTIVE",
+          {
+            requiresConfirmation: true,
+            nextAction: "switch_to_manual_upload",
+            requestedSource: normalizedOperationSource,
+            currentSource: activeSource,
+          },
+        );
+      }
+
       throw createSourceError(
-        "Manual Upload is currently active. Switch to QuickBooks to perform this action.",
+        "A manual source is currently active. Switch to QuickBooks to perform this action.",
         "MANUAL_SOURCE_ACTIVE",
         { requiresConfirmation: true, nextAction: "switch_to_quickbooks", requestedSource: normalizedOperationSource, currentSource: activeSource },
       );
