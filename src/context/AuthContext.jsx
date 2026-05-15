@@ -132,6 +132,21 @@ export function AuthProvider({ children }) {
     }
   };
 
+  const refreshUser = async () => {
+    try {
+      const payload = await meRequest();
+      const userData = unwrapUser(payload);
+      if (userData) {
+        const normalized = normalizeUser(userData);
+        setUser(normalized);
+        return normalized;
+      }
+    } catch (err) {
+      console.log('Failed to refresh user:', err.message);
+    }
+    return null;
+  };
+
   const logout = async () => {
     const token = getStoredToken();
 
@@ -150,7 +165,7 @@ export function AuthProvider({ children }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, login, logout, error, setError, loading }}>
+    <AuthContext.Provider value={{ user, login, logout, error, setError, loading, refreshUser }}>
       {children}
     </AuthContext.Provider>
   );

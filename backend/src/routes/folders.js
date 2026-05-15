@@ -11,6 +11,7 @@ const {
   deleteDocument,
   recordDocumentActivity,
   getDocumentActivity,
+  ensureDefaultFolders,
 } = require("../controllers/folders");
 
 const { requireAuth } = require("../middleware/auth");
@@ -21,6 +22,7 @@ router.use(requireAuth);
 router.get("/companies/:id/folders/tree", listFolderTree);
 router.get("/companies/:id/folders", listFolders);
 router.post("/companies/:id/folders", createFolder);
+router.post("/companies/:id/folders/ensure-defaults", ensureDefaultFolders);
 router.patch("/folders/:id", updateFolder);
 router.delete("/folders/:id", deleteFolder);
 router.post("/folders/:id/move", moveFolder);

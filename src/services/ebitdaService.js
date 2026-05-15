@@ -443,41 +443,35 @@ function findNetIncome(rows, flatRows) {
 
 
 /* ------------------------------------------------------------------ */
-/*  Manual staged P&L helpers                                         */
+/*  Manual P&L support (both staged GL and manual-upload)             */
 /* ------------------------------------------------------------------ */
 
-function flattenManualRows(rows, depth = 0, parentLabel = '') {
+function flattenManualPLRows(rows, depth = 0, parentLabel = "") {
   const results = [];
   for (const row of (rows || [])) {
-    const label = (row.name || '').trim();
-    const value = Number(row.amount || row.total || 0);
-    const children = row.children || row.items || [];
+    const label = (row.name || "").trim();
+    if (!label) continue;
+    const children = row.children || [];
+    const amount = typeof row.amount === "number" ? row.amount : 0;
+    const source = row.type === "total" ? "summary" : row.type === "header" ? "header" : "data";
+    results.push({ label, value: amount, depth, parentLabel, source });
     if (children.length > 0) {
-      results.push({ label, value, depth, parentLabel, source: 'summary' });
-      results.push(...flattenManualRows(children, depth + 1, label));
-    } else {
-      results.push({ label, value, depth, parentLabel, source: 'data' });
+      results.push(...flattenManualPLRows(children, depth + 1, label || parentLabel));
     }
   }
   return results;
 }
 
-async function getEbitdaDataManual(startDate, endDate) {
-  const payload = await getManualStagedProfitLossSummary({
-    params: {
-      ...(startDate ? { startDate } : {}),
-      ...(endDate ? { endDate } : {}),
-    },
-  });
+function buildEbitdaFromFlatRows(flatRows, periodMeta = {}) {
+  const netIncomeMatch = (() => {
+    for (let i = flatRows.length - 1; i >= 0; i--) {
+      if (matchesPatterns(flatRows[i].label, NET_INCOME_PATTERNS)) {
+        return { label: flatRows[i].label, value: flatRows[i].value };
+      }
+    }
+    return { label: "Net Income", value: 0 };
+  })();
 
-  const rawRows =
-    payload?.hierarchicalRows ||
-    payload?.data?.hierarchicalRows ||
-    payload?.rows ||
-    [];
-
-  const flatRows = flattenManualRows(rawRows);
-  const netIncomeMatch = findNetIncome([], flatRows);
   const interestIncome = extractComponent(flatRows, INTEREST_INCOME_PATTERNS);
   const interestExpense = extractComponent(flatRows, INTEREST_PATTERNS, INTEREST_EXCLUDE);
   const taxes = extractComponent(flatRows, TAX_PATTERNS, TAX_EXCLUDE);
@@ -507,30 +501,68 @@ async function getEbitdaDataManual(startDate, endDate) {
   });
 
   const ebitda = netIncomeMatch.value + uniqueAddBackTotal;
-  const adjustedEbitda = ebitda + adjustments.total;
 
   return {
     ebitda,
-    adjustedEbitda,
+    adjustedEbitda: ebitda + adjustments.total,
     revenue: revenue.total,
     opex: opex.total,
     components: {
-      netIncome: { label: netIncomeMatch.label || 'Net Income', value: netIncomeMatch.value, total: netIncomeMatch.value, matchedAccounts: [netIncomeMatch] },
-      interestIncome: { label: 'Total Interest Income', value: interestIncome.total, total: interestIncome.total, matchedAccounts: interestIncome.items },
-      interestExpense: { label: 'Total Interest Expense', value: interestExpense.total, total: interestExpense.total, matchedAccounts: interestExpense.items },
-      taxes: { label: 'Total Income Tax Expense', value: taxes.total, total: taxes.total, matchedAccounts: taxes.items },
-      depreciation: { label: 'Depreciation', value: depreciation.total, total: depreciation.total, matchedAccounts: depreciation.items },
-      amortization: { label: 'Amortization Expense', value: amortization.total, total: amortization.total, matchedAccounts: amortization.items },
-      officerWages: { label: 'Officer Wages', value: officerWages.total, total: officerWages.total, matchedAccounts: officerWages.items },
-      officerPayrollTax: { label: 'Officer Payroll Taxes', value: officerPayrollTax.total, total: officerPayrollTax.total, matchedAccounts: officerPayrollTax.items },
-      realEstateTax: { label: 'Real Estate Taxes', value: realEstateTax.total, total: realEstateTax.total, matchedAccounts: realEstateTax.items },
-      gainLossAssets: { label: 'Gain on Sale of Assets', value: gainLossAssets.total, total: gainLossAssets.total, matchedAccounts: gainLossAssets.items },
-      adjustments: { label: 'Other Add-backs', value: adjustments.total, total: adjustments.total, matchedAccounts: adjustments.items },
+      netIncome: { label: netIncomeMatch.label || "Net Income", value: netIncomeMatch.value, total: netIncomeMatch.value, matchedAccounts: [netIncomeMatch] },
+      interestIncome: { label: "Total Interest Income", value: interestIncome.total, total: interestIncome.total, matchedAccounts: interestIncome.items },
+      interestExpense: { label: "Total Interest Expense", value: interestExpense.total, total: interestExpense.total, matchedAccounts: interestExpense.items },
+      taxes: { label: "Total Income Tax Expense", value: taxes.total, total: taxes.total, matchedAccounts: taxes.items },
+      depreciation: { label: "Depreciation", value: depreciation.total, total: depreciation.total, matchedAccounts: depreciation.items },
+      amortization: { label: "Amortization Expense", value: amortization.total, total: amortization.total, matchedAccounts: amortization.items },
+      officerWages: { label: "Officer Wages", value: officerWages.total, total: officerWages.total, matchedAccounts: officerWages.items },
+      officerPayrollTax: { label: "Officer Payroll Taxes", value: officerPayrollTax.total, total: officerPayrollTax.total, matchedAccounts: officerPayrollTax.items },
+      realEstateTax: { label: "Real Estate Taxes", value: realEstateTax.total, total: realEstateTax.total, matchedAccounts: realEstateTax.items },
+      gainLossAssets: { label: "Gain on Sale of Assets", value: gainLossAssets.total, total: gainLossAssets.total, matchedAccounts: gainLossAssets.items },
+      adjustments: { label: "Other Add-backs", value: adjustments.total, total: adjustments.total, matchedAccounts: adjustments.items },
     },
-    reportPeriod: { startDate: startDate || '', endDate: endDate || '', reportBasis: 'Accrual', currency: 'USD', time: '' },
+    reportPeriod: periodMeta,
     hasData: flatRows.length > 0,
-    _debug: { totalFlatRows: flatRows.length, topLevelRows: rawRows.length, uniqueAddBackTotal, flatRows },
+    _debug: { totalFlatRows: flatRows.length, uniqueAddBackTotal, flatRows },
   };
+}
+
+async function getEbitdaDataManual(startDate, endDate) {
+  const payload = await getManualStagedProfitLossSummary({
+    params: {
+      ...(startDate ? { startDate } : {}),
+      ...(endDate ? { endDate } : {}),
+    },
+  });
+
+  const rawRows =
+    payload?.hierarchicalRows ||
+    payload?.data?.hierarchicalRows ||
+    payload?.rows ||
+    [];
+
+  const flatRows = flattenManualPLRows(rawRows);
+  return buildEbitdaFromFlatRows(flatRows, {
+    startDate: startDate || "",
+    endDate: endDate || "",
+    reportBasis: "Accrual",
+    currency: "USD",
+    time: "",
+  });
+}
+
+/**
+ * Extracts EBITDA components from a manual-upload P&L row tree.
+ * Returns the same shape as getEbitdaData so WorkspaceEbitda works unchanged.
+ */
+export function extractEbitdaFromManualPLRows(rows, asOfDate) {
+  const flatRows = flattenManualPLRows(rows);
+  return buildEbitdaFromFlatRows(flatRows, {
+    startDate: asOfDate || "",
+    endDate: asOfDate || "",
+    reportBasis: "Manual Upload",
+    currency: "USD",
+    time: "",
+  });
 }
 
 /* ------------------------------------------------------------------ */

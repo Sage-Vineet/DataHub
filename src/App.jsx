@@ -50,6 +50,7 @@ import WorkspaceTaxReconciliation from "./pages/broker/workspace/WorkspaceTaxRec
 import WorkspaceConnections from "./pages/broker/workspace/WorkspaceConnections";
 import Support from "./pages/Support";
 import WorkspaceEbitda from "./pages/broker/workspace/WorkspaceEbitda";
+import BrokerProfile from "./pages/broker/BrokerProfile";
 import { getCompanyRequest, listCompaniesRequest } from "./lib/api";
 
 function getHomeRoute(role) {
@@ -250,6 +251,14 @@ function AppRoutes() {
         element={
           <ProtectedRoute allowedRole="broker">
             <BrokerReminders />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/broker/profile"
+        element={
+          <ProtectedRoute allowedRole="broker">
+            <BrokerProfile />
           </ProtectedRoute>
         }
       />

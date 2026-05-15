@@ -852,6 +852,159 @@ export async function fetchDashboardKPIs(start, end, options = {}) {
   });
 }
 
+// ── Manual upload KPI helpers ──────────────────────────────────────────────
+
+function flattenManualRows(rows = []) {
+  const out = [];
+  function walk(items) {
+    for (const item of items) {
+      if (item && typeof item === "object") {
+        out.push(item);
+        if (Array.isArray(item.children)) walk(item.children);
+      }
+    }
+  }
+  walk(rows);
+  return out;
+}
+
+function findManualAmount(flat, namePhrases) {
+  const lc = (s) => String(s || "").toLowerCase().trim();
+
+  // 1. Exact match on type:total rows
+  for (const phrase of namePhrases) {
+    const r = flat.find((f) => f.type === "total" && lc(f.name) === lc(phrase));
+    if (r !== undefined) return parseFloat(r.amount) || 0;
+  }
+
+  // 2. Includes match on type:total rows — guard against over-matching.
+  // e.g. "total assets" must NOT match "total current assets".
+  for (const phrase of namePhrases) {
+    const lcPhrase = lc(phrase);
+    const r = flat.find((f) => {
+      if (f.type !== "total") return false;
+      const name = lc(f.name);
+      if (!name.includes(lcPhrase)) return false;
+      // The remainder after stripping the search phrase must contain no word chars
+      const extra = name.replace(lcPhrase, "").trim();
+      return !extra || !/\w/.test(extra);
+    });
+    if (r !== undefined) return parseFloat(r.amount) || 0;
+  }
+
+  // 3. Search type:header nodes — Gemini sets computed amounts on section headers.
+  // Strip "total " prefix from phrase to match the section header name.
+  for (const phrase of namePhrases) {
+    const sectionName = lc(phrase).replace(/^total\s+/, "");
+    const r = flat.find(
+      (f) => f.type === "header" && lc(f.name) === sectionName && f.amount,
+    );
+    if (r !== undefined) return parseFloat(r.amount) || 0;
+  }
+
+  // 4. Fuzzy fallback: any row type, includes match
+  for (const phrase of namePhrases) {
+    const r = flat.find((f) => lc(f.name).includes(lc(phrase)));
+    if (r !== undefined) return parseFloat(r.amount) || 0;
+  }
+
+  return 0;
+}
+
+export async function fetchDashboardKPIsFromManualUpload() {
+  const [bsRes, plRes] = await Promise.all([
+    request("/manual-report-uploads/reports/balance_sheet/latest").catch(() => null),
+    request("/manual-report-uploads/reports/profit_and_loss/latest").catch(() => null),
+  ]);
+
+  const bsFlat = flattenManualRows(bsRes?.data?.rows || []);
+  const plFlat = flattenManualRows(plRes?.data?.rows || []);
+
+  // P&L values
+  const revenue = findManualAmount(plFlat, ["total income", "total revenue", "total sales"]);
+  const rawExpenses = findManualAmount(plFlat, ["total expenses", "total expense", "total operating expenses"]);
+  const expenses = Math.abs(rawExpenses);
+  const netProfitRaw = findManualAmount(plFlat, ["net income", "net profit", "net loss"]);
+  const netProfit = netProfitRaw !== 0 ? netProfitRaw : revenue - expenses;
+
+  // Balance sheet values
+  const totalAssets = findManualAmount(bsFlat, [
+    "total assets",
+  ]);
+  const totalLiabilities = findManualAmount(bsFlat, [
+    "total liabilities",
+  ]);
+  const totalEquity = findManualAmount(bsFlat, [
+    "total equity",
+    "total stockholders equity",
+    "total stockholders' equity",
+    "total shareholders equity",
+    "total shareholders' equity",
+  ]);
+  const currentAssets = findManualAmount(bsFlat, [
+    "total current assets",
+    "current assets",
+  ]);
+  const currentLiabilities = findManualAmount(bsFlat, [
+    "total current liabilities",
+    "current liabilities",
+  ]);
+  const cashBank = findManualAmount(bsFlat, [
+    "total bank accounts",
+    "total cash and cash equivalents",
+    "total cash and bank",
+    "total cash",
+    "bank accounts",
+    "cash and cash equivalents",
+  ]);
+  const receivable = findManualAmount(bsFlat, [
+    "total accounts receivable",
+    "total accounts receivable (a/r)",
+    "accounts receivable (a/r)",
+    "accounts receivable",
+  ]);
+  const inventoryValue = findManualAmount(bsFlat, [
+    "total inventory",
+    "inventory asset",
+    "inventory",
+  ]);
+  const accountPayable = findManualAmount(bsFlat, [
+    "total accounts payable",
+    "total accounts payable (a/p)",
+    "accounts payable (a/p)",
+    "accounts payable",
+  ]);
+  const longTermDebt = findManualAmount(bsFlat, [
+    "total long-term liabilities",
+    "total long term liabilities",
+    "long-term liabilities",
+    "long term liabilities",
+    "notes payable",
+    "long-term debt",
+  ]);
+  const workingCapital =
+    currentAssets && currentLiabilities
+      ? currentAssets - currentLiabilities
+      : cashBank + receivable + inventoryValue - accountPayable;
+
+  const cards = [
+    { label: "Total Revenue",       value: formatMoney(revenue),          rawValue: revenue,          desc: "Total gross income",             color: "#8bc53d", icon: CircleDollarSign },
+    { label: "Total Expenses",      value: formatMoney(expenses),         rawValue: expenses,         desc: "Total operating costs",          color: "#C62026", icon: CreditCard },
+    { label: "Net Profit",          value: formatMoney(netProfit),        rawValue: netProfit,        desc: "Bottom-line earnings",           color: "#00648F", icon: TrendingUp },
+    { label: "Total Assets",        value: formatMoney(totalAssets),      rawValue: totalAssets,      desc: "Company's total valuation",      color: "#8bc53d", icon: Building2 },
+    { label: "Total Liabilities",   value: formatMoney(totalLiabilities), rawValue: totalLiabilities, desc: "Current total obligations",      color: "#F68C1F", icon: Wallet },
+    { label: "Total Equity",        value: formatMoney(totalEquity),      rawValue: totalEquity,      desc: "Net asset value",                color: "#00648F", icon: Scale },
+    { label: "Working Capital",     value: formatMoney(workingCapital),   rawValue: workingCapital,   desc: "Available operating liquidity",  color: "#8bc53d", icon: RefreshCw },
+    { label: "Cash & Bank Balance", value: formatMoney(cashBank),         rawValue: cashBank,         desc: "Liquid funds available",         color: "#8bc53d", icon: PiggyBank },
+    { label: "Account Receivable",  value: formatMoney(receivable),       rawValue: receivable,       desc: "Unpaid client invoices",         color: "#00A3FF", icon: ArrowDownToLine },
+    { label: "Inventory Value",     value: formatMoney(inventoryValue),   rawValue: inventoryValue,   desc: "Current stock valuation",        color: "#6D6E71", icon: Package },
+    { label: "Account Payable",     value: formatMoney(accountPayable),   rawValue: accountPayable,   desc: "Outstanding vendor bills",       color: "#EF4444", icon: ArrowUpToLine },
+    { label: "Long-Term Debt",      value: formatMoney(longTermDebt),     rawValue: longTermDebt,     desc: "Non-current liabilities",        color: "#DC2626", icon: Landmark },
+  ];
+
+  return cards.map((card) => ({ ...card, rawValue: Number(card.rawValue || 0) }));
+}
+
 export async function fetchFinancialTrends(
   start,
   end,

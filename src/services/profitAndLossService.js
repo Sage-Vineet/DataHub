@@ -3,6 +3,7 @@ import {
   getManualStagedProfitLossSummary,
   getManualStagedProfitLossMonthlyDetail,
 } from "../lib/api";
+import { getLatestManualUploadedReport, getManualGlProfitLoss } from "../lib/api";
 import { normalizeAccountingMethod } from "../lib/report-filters";
 import { parseSummaryReport } from "../lib/report-parsers";
 
@@ -64,6 +65,11 @@ async function fetchSinglePeriodPNL(
   options = {},
 ) {
   try {
+    if (sourceMode === "manual_upload") {
+      const payload = await getLatestManualUploadedReport("profit_and_loss");
+      return Array.isArray(payload?.data?.rows) ? payload.data.rows : [];
+    }
+
     if (sourceMode === "manual") {
       const params = {
         ...(startDate ? { startDate } : {}),

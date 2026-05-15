@@ -84,13 +84,12 @@ export default function QuickBooksConnection({
   const [showDisconnectModal, setShowDisconnectModal] = useState(false);
 
   // Fetch real connection status from backend
-  const fetchStatus = useCallback(
-    async (showLoader = true) => {
-      if (showLoader) setPageState("loading");
-      setErrorMessage(null);
-      try {
-        const data = await getConnectionStatus();
-        setConnection(data);
+  const fetchStatus = useCallback(async (showLoader = true) => {
+    if (showLoader) setPageState("loading");
+    setErrorMessage(null);
+    try {
+      const data = await getConnectionStatus();
+      setConnection(data);
 
         if (data?.isNameMismatch) {
           setDynamicEntities(null);
@@ -175,19 +174,17 @@ export default function QuickBooksConnection({
             ]);
           });
         }
-      } catch (err) {
-        console.error("Failed to fetch connection status:", err);
-        setConnection(null);
-        setPageState("error");
-        setErrorMessage(
-          err instanceof Error
-            ? err.message
-            : "Could not reach the backend. Is it running?",
-        );
-      }
-    },
-    [isSourceActive],
-  );
+    } catch (err) {
+      console.error("Failed to fetch connection status:", err);
+      setConnection(null);
+      setPageState("error");
+      setErrorMessage(
+        err instanceof Error
+          ? err.message
+          : "Could not reach the backend. Is it running?",
+      );
+    }
+  }, [isSourceActive]);
 
   useEffect(() => {
     Promise.resolve().then(() => {
@@ -344,17 +341,17 @@ export default function QuickBooksConnection({
     : "—";
   const isTokenExpired = tokenTimeLeft === "Expired";
   const activeEntities =
-    (dynamicEntities ||
-      (connection?.syncedEntities || []).map((e) =>
-        typeof e === "string"
-          ? {
+    dynamicEntities ||
+    (connection?.syncedEntities || []).map((e) =>
+      typeof e === "string"
+        ? {
             name: e,
             count: "—",
             lastSync: connection?.lastSynced,
             status: "synced",
           }
-          : e,
-      )) ||
+        : e,
+    ) ||
     [];
   const totalSyncedRecords = useMemo(
     () => activeEntities.reduce((sum, e) => sum + Number(e.count || 0), 0),
@@ -364,7 +361,6 @@ export default function QuickBooksConnection({
   // ────────────────────────────────────────────────────────
   return (
     <div className="space-y-5">
-
       {/* Error Banner */}
       {errorMessage && pageState !== "loading" && (
         <div className="flex items-center gap-3 px-4 py-3 rounded-lg border border-[#C62026]/30 bg-[#fef2f2] text-[#C62026] text-[13px]">
@@ -372,13 +368,13 @@ export default function QuickBooksConnection({
           <span>{errorMessage}</span>
           {(errorMessage.toLowerCase().includes("expired") ||
             errorMessage.toLowerCase().includes("disconnect")) && (
-              <button
-                onClick={handleConnect}
-                className="ml-auto flex items-center gap-1 font-bold underline hover:opacity-80 transition-opacity"
-              >
-                <Zap size={14} /> Reconnect
-              </button>
-            )}
+            <button
+              onClick={handleConnect}
+              className="ml-auto flex items-center gap-1 font-bold underline hover:opacity-80 transition-opacity"
+            >
+              <Zap size={14} /> Reconnect
+            </button>
+          )}
           <button
             onClick={() => setErrorMessage(null)}
             className={cn(
@@ -399,8 +395,8 @@ export default function QuickBooksConnection({
         <div className="flex items-center gap-3 px-4 py-3 rounded-lg border border-yellow-300/50 bg-yellow-50 text-[13px]">
           <AlertCircle size={16} className="shrink-0 text-yellow-700" />
           <span className="text-yellow-700 font-medium">
-            Your QuickBooks session has expired. Automatic sync is paused
-            until you reconnect.
+            Your QuickBooks session has expired. Automatic sync is paused until
+            you reconnect.
           </span>
           <button
             onClick={handleConnect}
@@ -459,12 +455,11 @@ export default function QuickBooksConnection({
               {pageState === "error" && "Connection Error"}
             </span>
           </div>
-          {pageState === "connected" &&
-            connection?.lastSynced && (
-              <span className="text-[12px] text-text-muted">
-                Last synced: {timeAgo(connection.lastSynced)}
-              </span>
-            )}
+          {pageState === "connected" && connection?.lastSynced && (
+            <span className="text-[12px] text-text-muted">
+              Last synced: {timeAgo(connection.lastSynced)}
+            </span>
+          )}
         </div>
 
         {/* Card Body */}
@@ -548,13 +543,17 @@ export default function QuickBooksConnection({
                     QuickBooks Online
                   </h3>
                   <p className="text-[14px] text-text-secondary mb-4">
-                    {company?.name || "Your company"} is currently disconnected from QuickBooks.
+                    {company?.name || "Your company"} is currently disconnected
+                    from QuickBooks.
                   </p>
 
                   {/* Cached data info */}
                   {connection?.hasCachedData && (
                     <div className="flex items-start gap-3 mb-5 px-4 py-3 rounded-lg border border-blue-200/60 bg-blue-50/50">
-                      <Database size={16} className="shrink-0 text-blue-500 mt-0.5" />
+                      <Database
+                        size={16}
+                        className="shrink-0 text-blue-500 mt-0.5"
+                      />
                       <div>
                         <p className="text-[13px] font-semibold text-blue-900">
                           Cached data is available
@@ -620,7 +619,7 @@ export default function QuickBooksConnection({
         <>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             {/* Access Token */}
-            <div className="card-base p-5">
+            {/* <div className="card-base p-5">
               <div className="flex items-center gap-2 mb-3 text-text-muted text-[12px] font-medium">
                 <Shield size={14} className="text-primary" /> Access Token
               </div>
@@ -630,10 +629,10 @@ export default function QuickBooksConnection({
               <p className="text-[12px] text-text-muted mt-1">
                 Refreshed automatically
               </p>
-            </div>
+            </div> */}
 
             {/* Token Expiry */}
-            <div className="card-base p-5 border-l-4 border-l-yellow-400">
+            {/* <div className="card-base p-5 border-l-4 border-l-yellow-400">
               <div className="flex items-center gap-2 mb-3 text-text-muted text-[12px] font-medium">
                 <Clock size={14} className="text-yellow-500" /> Token Expiry
               </div>
@@ -656,13 +655,12 @@ export default function QuickBooksConnection({
                   </p>
                 </>
               )}
-            </div>
+            </div> */}
 
-            {/* Records Synced */}
+            {/* Records Synced
             <div className="card-base p-5">
               <div className="flex items-center gap-2 mb-3 text-text-muted text-[12px] font-medium">
-                <Database size={14} className="text-[#00648F]" /> Records
-                Synced
+                <Database size={14} className="text-[#00648F]" /> Records Synced
               </div>
               <p className="text-[24px] font-bold text-text-primary">
                 {totalSyncedRecords > 0
@@ -674,10 +672,10 @@ export default function QuickBooksConnection({
                   ? "Total synchronized entries"
                   : "Sync data not available yet"}
               </p>
-            </div>
+            </div> */}
           </div>
 
-          {/* ─── Synced Entities Table ─────────────────── */}
+          {/* ─── Synced Entities Table ───────────────────
           {activeEntities.length > 0 && (
             <div className="card-base overflow-hidden">
               <div className="px-6 py-4 border-b border-border">
@@ -719,11 +717,11 @@ export default function QuickBooksConnection({
                         className={cn(
                           "text-[11px] font-semibold px-2.5 py-1 rounded-full",
                           entity.status === "synced" &&
-                          "bg-[#8bc53d]/20 text-[#476E2C]",
+                            "bg-[#8bc53d]/20 text-[#476E2C]",
                           entity.status === "syncing" &&
-                          "bg-yellow-50 text-yellow-700",
+                            "bg-yellow-50 text-yellow-700",
                           entity.status === "error" &&
-                          "bg-[#fef2f2] text-[#C62026]",
+                            "bg-[#fef2f2] text-[#C62026]",
                         )}
                       >
                         {entity.status === "synced" && "Synced"}
@@ -736,7 +734,7 @@ export default function QuickBooksConnection({
                 ))}
               </div>
             </div>
-          )}
+          )} */}
 
           {/* ─── Connection Details ────────────────────── */}
           <div className="card-base p-6">

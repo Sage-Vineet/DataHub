@@ -721,6 +721,42 @@ export function validateManualStagedBalanceSheet(options = {}) {
   );
 }
 
+export function getManualUploadSourceTree(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-report-uploads/source-tree${query}`, options).then(
+    (res) => res?.tree ?? null,
+  );
+}
+
+export function getManualFolderFiles(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const params = new URLSearchParams();
+  if (clientId) params.set("clientId", clientId);
+  if (options.folderId) params.set("folderId", options.folderId);
+  return request(`/manual-report-uploads/folder-files?${params}`, options).then(
+    (res) => res?.files ?? [],
+  );
+}
+
+export function syncManualUploadSource(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-report-uploads/sync-source${query}`, {
+    method: "POST",
+    ...options,
+  });
+}
+
+export function getLatestManualUploadedReport(statementType, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(
+    `/manual-report-uploads/reports/${encodeURIComponent(statementType)}/latest${query}`,
+    options,
+  );
+}
+
 export function getReportSources(options = {}) {
   const clientId = options.clientId ?? resolveClientIdFromLocation();
   const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
@@ -753,6 +789,10 @@ export function listCompanyFolders(companyId) {
 
 export function listFolderTree(companyId) {
   return request(`/companies/${companyId}/folders/tree`).then(ensureArray);
+}
+
+export function ensureCompanyDefaultFolders(companyId) {
+  return request(`/companies/${companyId}/folders/ensure-defaults`, { method: 'POST' });
 }
 
 export function createCompanyFolder(companyId, payload) {

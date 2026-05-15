@@ -3,14 +3,15 @@ import { useParams } from "react-router-dom";
 import Header from "../../../components/Header";
 import {
   ChevronDown,
-  Download,
-  FileText,
   RefreshCw,
 } from "lucide-react";
 import { cn } from "../../../lib/utils";
 import {
   getCompanyRequest,
   getManualStageFilterOptions,
+  getReportSources,
+  getLatestManualUploadedReport,
+  setSelectedReportSource,
 } from "../../../lib/api";
 import { useDataSource } from "../../../context/DataSourceContext";
 import {
@@ -43,12 +44,6 @@ import { syncQuickbooksReports } from "../../../lib/quickbooks";
 import {
   getDateRange,
 } from "../../../lib/report-date-resolver";
-import {
-  exportToExcel,
-  exportToPDF,
-  flattenSummaryData,
-  flattenMultiYearData,
-} from "../../../lib/export-utils";
 
 const MANUAL_REPORT_DEBUG =
   Boolean(import.meta.env.DEV) ||
@@ -262,11 +257,6 @@ export default function WorkspaceReports() {
   const [appliedAccountingMethod, setAppliedAccountingMethod] =
     useState(storedState?.appliedAccountingMethod || "Accrual");
   const [isLoading, setIsLoading] = useState(false);
-  const [isDownloading, setIsDownloading] = useState(false);
-  const [isDownloadingPDF, setIsDownloadingPDF] = useState(false);
-  const [reportFormat, setReportFormat] = useState(
-    storedState?.reportFormat || "PDF",
-  );
   const [isSyncing, setIsSyncing] = useState(false);
   const [company, setCompany] = useState(null);
   const selectedReportSource = useMemo(
@@ -312,7 +302,6 @@ export default function WorkspaceReports() {
         nextState.appliedReportType || nextState.reportType || "Summary",
       );
       setAppliedAccountingMethod(nextState.appliedAccountingMethod || "Accrual");
-      setReportFormat(nextState.reportFormat || "PDF");
       setManualFilters(normalizeManualFilters(nextState.manualFilters));
       setAppliedManualFilters(normalizeManualFilters(nextState.appliedManualFilters));
       hasRestoredSessionRef.current = true;
@@ -420,7 +409,6 @@ export default function WorkspaceReports() {
       appliedEndDate,
       appliedReportType,
       appliedAccountingMethod,
-      reportFormat,
       selectedReportSource,
       manualFilters,
       appliedManualFilters,
@@ -436,7 +424,6 @@ export default function WorkspaceReports() {
     clientId,
     customRange,
     dateRange,
-    reportFormat,
     reportType,
     reportsData,
     selectedReportSource,
@@ -447,7 +434,9 @@ export default function WorkspaceReports() {
   const handleSync = async () => {
     setIsSyncing(true);
     try {
-      await syncQuickbooksReports();
+      if (selectedSourceMode === "quickbooks") {
+        await syncQuickbooksReports();
+      }
       await handleGenerateReport();
     } catch (error) {
       console.error("Sync failed:", error);
@@ -675,6 +664,20 @@ export default function WorkspaceReports() {
     return { startDate, endDate };
   }, [customRange.end, customRange.start, dateRange]);
 
+  // Returns the fiscal year stored in a manual-upload report payload.
+  // Checks asOfDate → periodEnd → periodStart → filename in that order.
+  const resolveManualUploadYear = (payload) => {
+    const d = payload?.data;
+    const dateSrc = d?.asOfDate || d?.periodEnd || d?.periodStart;
+    if (dateSrc) {
+      const y = parseInt(String(dateSrc).split("-")[0], 10);
+      if (y >= 2000 && y <= new Date().getFullYear() + 1) return y;
+    }
+    const fn = payload?.reportParams?.fileName || "";
+    const m = fn.match(/\b(20\d{2})\b/);
+    return m ? parseInt(m[1], 10) : null;
+  };
+
   const handleGenerateReport = async () => {
     setIsLoading(true);
 
@@ -687,16 +690,37 @@ export default function WorkspaceReports() {
       const normalizedAccountingMethod =
         normalizeAccountingMethod(accountingMethod);
 
-      const dateConfig = getDateRange({
-        reportType: selectedTab,
-        viewType: reportType,
-        filters: { startDate: userStart, endDate: userEnd },
-      });
+      // In manual-upload mode, override the date range with the year from the
+      // uploaded file so the report header shows the correct fiscal period.
+      let resolvedStart;
+      let resolvedEnd;
+      if (selectedSourceMode === "manual_upload") {
+        const statementTypeMap = {
+          "Balance Sheet": "balance_sheet",
+          "Profit & Loss": "profit_and_loss",
+          "Cashflow": "cash_flow",
+        };
+        const stType = statementTypeMap[selectedTab] || "profit_and_loss";
+        try {
+          const manualPayload = await getLatestManualUploadedReport(stType, { clientId });
+          const year = resolveManualUploadYear(manualPayload);
+          if (year) {
+            resolvedStart = `${year}-01-01`;
+            resolvedEnd = `${year}-12-31`;
+          }
+        } catch { /* ignore — fall through to user dates */ }
+      }
 
-      setAppliedReportType(reportType);
-      setAppliedAccountingMethod(accountingMethod);
+      if (!resolvedStart || !resolvedEnd) {
+        const dateConfig = getDateRange({
+          reportType: selectedTab,
+          viewType: reportType,
+          filters: { startDate: userStart, endDate: userEnd },
+        });
+        resolvedStart = dateConfig.startDate;
+        resolvedEnd = dateConfig.endDate;
+      }
 
-      const { startDate: resolvedStart, endDate: resolvedEnd } = dateConfig;
       const manualFilterParams =
         selectedSourceMode === "manual"
           ? buildManualFilterParams(appliedManualFilters)
@@ -709,28 +733,23 @@ export default function WorkspaceReports() {
         });
       }
 
-      // For manual mode: use the selected fiscal year to derive display dates.
-      // reportType is NOT injected — backend build-payload functions handle
-      // account classification; sending it causes sub-query filter pollution.
-      let effectiveStartDate, effectiveEndDate;
+      // For manual GL mode: derive display dates from the selected fiscal year.
+      let effectiveStartDate = resolvedStart;
+      let effectiveEndDate = resolvedEnd;
       if (selectedSourceMode === "manual") {
-        const selectedYear = appliedManualFilters?.fiscalYear?.[0]
-          || manualFilterParams?.fiscalYear?.[0];
+        const selectedYear =
+          appliedManualFilters?.fiscalYear?.[0] ||
+          manualFilterParams?.fiscalYear?.[0];
         if (selectedYear) {
           effectiveStartDate = `${selectedYear}-01-01`;
           effectiveEndDate = `${selectedYear}-12-31`;
-        } else {
-          effectiveStartDate = resolvedStart;
-          effectiveEndDate = resolvedEnd;
         }
-      } else {
-        effectiveStartDate = resolvedStart;
-        effectiveEndDate = resolvedEnd;
       }
 
       setAppliedStartDate(effectiveStartDate || "");
       setAppliedEndDate(effectiveEndDate || "");
-
+      setAppliedReportType(reportType);
+      setAppliedAccountingMethod(accountingMethod);
       let summary = [];
       let detail = { groups: [] };
 
@@ -856,62 +875,6 @@ export default function WorkspaceReports() {
     selectedTab,
   ]);
 
-  const handleDownloadPDF = async () => {
-    setIsDownloadingPDF(true);
-    try {
-      const fileName = `${selectedTab.toLowerCase()}-${appliedReportType.toLowerCase()}-report`;
-      // Use 'report-content' which is the ID of the container we want to capture
-      await exportToPDF("report-content", fileName);
-    } catch (error) {
-      console.error("PDF generation failed:", error);
-      alert("Error: Could not generate dynamic PDF report.");
-    } finally {
-      setIsDownloadingPDF(false);
-    }
-  };
-
-  const generateExcel = async () => {
-    setIsDownloading(true);
-    try {
-      const currentReport = reportsData[selectedTab];
-      const summaryData = currentReport.summary?.rows || currentReport.summary || [];
-      const detailData = currentReport.detail || { rows: [], columns: {} };
-
-      const isEmpty =
-        appliedReportType === "Summary"
-          ? !summaryData || summaryData.length === 0
-          : !detailData.rows || detailData.rows.length === 0;
-
-      if (isEmpty) {
-        alert("No active report data found to export.");
-        return;
-      }
-
-      const subtitle = `Report Period: ${appliedStartDate || "N/A"} to ${appliedEndDate || "N/A"} | ${appliedAccountingMethod} Basis`;
-      const fileName = `${selectedTab.toLowerCase()}-${appliedReportType.toLowerCase()}-export`;
-
-      if (appliedReportType === "Summary") {
-        exportToExcel(
-          selectedTab,
-          subtitle,
-          flattenSummaryData(summaryData),
-          fileName,
-        );
-      } else {
-        exportToExcel(
-          `${selectedTab} Detail`,
-          subtitle,
-          flattenMultiYearData(detailData.rows, detailData.columns),
-          fileName,
-        );
-      }
-    } catch (error) {
-      console.error("Excel generation failed:", error);
-      alert("Error: Could not generate Excel report.");
-    } finally {
-      setIsDownloading(false);
-    }
-  };
 
   const currentReport = reportsData[selectedTab];
 
@@ -1119,55 +1082,6 @@ export default function WorkspaceReports() {
               </>
             )}
 
-            <div className="ml-auto flex items-end gap-3 self-end">
-              <div className="flex flex-col gap-1.5">
-                <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
-                  Format
-                </label>
-                <div className="relative min-w-[100px]">
-                  <select
-                    value={reportFormat}
-                    onChange={(event) => setReportFormat(event.target.value)}
-                    className="h-9 w-full appearance-none rounded-md border border-border-input bg-bg-card pl-3 pr-9 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-                  >
-                    <option value="PDF">PDF</option>
-                    <option value="Excel">Excel</option>
-                  </select>
-                  <ChevronDown
-                    size={14}
-                    className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-text-muted"
-                  />
-                </div>
-              </div>
-
-              {reportFormat === "Excel" ? (
-                <button
-                  onClick={generateExcel}
-                  disabled={isDownloading || isLoading}
-                  className="btn-primary h-9 px-4 shadow-sm"
-                >
-                  {isDownloading ? (
-                    <RefreshCw size={16} className="animate-spin" />
-                  ) : (
-                    <Download size={16} />
-                  )}
-                  <span>Export</span>
-                </button>
-              ) : (
-                <button
-                  onClick={handleDownloadPDF}
-                  disabled={isDownloadingPDF || isLoading}
-                  className="btn-primary h-9 px-4 shadow-sm"
-                >
-                  {isDownloadingPDF ? (
-                    <RefreshCw size={16} className="animate-spin" />
-                  ) : (
-                    <FileText size={16} />
-                  )}
-                  <span>Export</span>
-                </button>
-              )}
-            </div>
           </div>
 
           <div className="flex-1 animate-in fade-in slide-in-from-bottom-2 duration-500">
@@ -1226,56 +1140,6 @@ export default function WorkspaceReports() {
                   )}
                 </div>
 
-                <div
-                  id="report-export"
-                  className="hidden"
-                  aria-hidden="true"
-                  style={{ display: "none" }}
-                >
-                  {selectedTab === "Balance Sheet" ? (
-                    <BalanceSheetReport
-                      reportType={appliedReportType}
-                      data={currentReport.summary}
-                      detailedData={currentReport.detail}
-                      startDate={appliedStartDate}
-                      endDate={appliedEndDate}
-                      accountingMethod={appliedAccountingMethod}
-                      sourceMode={selectedSourceMode}
-                      clientName={clientName}
-                      entityName={company?.name || clientName}
-                      createdOn={createdOn}
-                      isPreview={false}
-                    />
-                  ) : selectedTab === "Profit & Loss" ? (
-                    <ProfitAndLossReport
-                      reportType={appliedReportType}
-                      data={currentReport.summary}
-                      detailedData={currentReport.detail}
-                      startDate={appliedStartDate}
-                      endDate={appliedEndDate}
-                      accountingMethod={appliedAccountingMethod}
-                      sourceMode={selectedSourceMode}
-                      clientName={clientName}
-                      entityName={company?.name || clientName}
-                      createdOn={createdOn}
-                      isPreview={false}
-                    />
-                  ) : (
-                    <CashflowReport
-                      reportType={appliedReportType}
-                      data={currentReport.summary}
-                      detailedData={currentReport.detail}
-                      startDate={appliedStartDate}
-                      endDate={appliedEndDate}
-                      accountingMethod={appliedAccountingMethod}
-                      sourceMode={selectedSourceMode}
-                      clientName={clientName}
-                      entityName={company?.name || clientName}
-                      createdOn={createdOn}
-                      isPreview={false}
-                    />
-                  )}
-                </div>
               </>
             )}
           </div>
