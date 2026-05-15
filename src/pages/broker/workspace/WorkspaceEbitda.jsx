@@ -85,12 +85,15 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000
 
 export default function WorkspaceEbitda() {
   const { clientId } = useParams();
-  const { activeSourceMode } = useDataSource();
+  const { activeSource, activeSourceMode } = useDataSource();
 
   const accountingMethod = "Accrual";
 
-  // Data state
-  const [selectedReportSource, setSelectedReportSource] = useState(null);
+  // Initialize from DataSourceContext immediately so the generate doesn't wait
+  // for the getReportSources round-trip to complete.
+  const [selectedReportSource, setSelectedReportSource] = useState(
+    () => activeSource ? normalizeReportSourceKey(activeSource) : null,
+  );
   const [reportSources, setReportSources] = useState([]);
   const [multiYearData, setMultiYearData] = useState(null);
   const [years, setYears] = useState([]);
@@ -184,7 +187,8 @@ export default function WorkspaceEbitda() {
     return () => { active = false; };
   }, [clientId]);
 
-  // Load report source
+  // Load full sources list for the dropdown. selectedReportSource is already
+  // initialized from DataSourceContext, so we only fill the gap (null) here.
   useEffect(() => {
     if (!clientId) return;
     let active = true;
@@ -192,10 +196,12 @@ export default function WorkspaceEbitda() {
       .then((payload) => {
         if (!active) return;
         setReportSources(Array.isArray(payload?.sources) ? payload.sources : []);
-        setSelectedReportSource(normalizeReportSourceKey(payload?.selectedSource || REPORT_SOURCE_KEYS.QUICKBOOKS));
+        setSelectedReportSource((prev) =>
+          prev ?? normalizeReportSourceKey(payload?.selectedSource || REPORT_SOURCE_KEYS.QUICKBOOKS),
+        );
       })
       .catch(() => {
-        if (active) setSelectedReportSource(REPORT_SOURCE_KEYS.QUICKBOOKS);
+        if (active) setSelectedReportSource((prev) => prev ?? REPORT_SOURCE_KEYS.QUICKBOOKS);
       });
     return () => { active = false; };
   }, [clientId]);

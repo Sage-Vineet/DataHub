@@ -9,9 +9,7 @@ import { cn } from "../../../lib/utils";
 import {
   getCompanyRequest,
   getManualStageFilterOptions,
-  getReportSources,
   getLatestManualUploadedReport,
-  setSelectedReportSource,
 } from "../../../lib/api";
 import { useDataSource } from "../../../context/DataSourceContext";
 import {
@@ -856,13 +854,15 @@ export default function WorkspaceReports() {
     }
   };
 
-  // Auto-generate report when dependencies change
+  // Auto-generate report when dependencies change.
+  // Debounced 80ms to prevent double-fetch when multiple state updates arrive
+  // in the same tick (e.g. session restore followed by filter auto-selection).
   useEffect(() => {
-    if (clientId) {
-      Promise.resolve().then(() => {
-        handleGenerateReport();
-      });
-    }
+    if (!clientId) return;
+    const timer = setTimeout(() => {
+      handleGenerateReport();
+    }, 80);
+    return () => clearTimeout(timer);
   }, [
     accountingMethod,
     appliedManualFilters,

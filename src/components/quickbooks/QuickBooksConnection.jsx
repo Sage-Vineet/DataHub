@@ -1,10 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useLocation } from "react-router-dom";
 import {
   AlertCircle,
   CheckCircle2,
-  ChevronRight,
-  Clock,
   Database,
   Link2Off,
   Loader2,
@@ -15,16 +13,10 @@ import {
 import {
   connectQuickbooks,
   disconnectQuickbooks,
-  fetchBalanceSheet,
-  fetchCashflow,
-  fetchProfitAndLoss,
   getConnectionStatus,
   syncQuickbooksReports,
-  syncGeneralLedger,
 } from "../../lib/quickbooks";
 import { useToast } from "../../context/ToastContext";
-import { fetchCustomers } from "../../services/customerService";
-import { fetchInvoices } from "../../services/invoiceService";
 import { cn } from "../../lib/utils";
 
 // ─── Helpers ────────────────────────────────────────────
@@ -77,7 +69,6 @@ export default function QuickBooksConnection({
   const [connection, setConnection] = useState(null);
   const [pageState, setPageState] = useState("loading");
   const [errorMessage, setErrorMessage] = useState(null);
-  const [dynamicEntities, setDynamicEntities] = useState(null);
 
   const [isSyncing, setIsSyncing] = useState(false);
   const [isDisconnecting, setIsDisconnecting] = useState(false);
@@ -91,89 +82,16 @@ export default function QuickBooksConnection({
       const data = await getConnectionStatus();
       setConnection(data);
 
-        if (data?.isNameMismatch) {
-          setDynamicEntities(null);
-          setPageState("disconnected");
-          setErrorMessage(
-            data.message ||
-            "The selected workspace company does not match the connected QuickBooks company.",
-          );
-          return;
-        }
+      if (data?.isNameMismatch) {
+        setPageState("disconnected");
+        setErrorMessage(
+          data.message ||
+          "The selected workspace company does not match the connected QuickBooks company.",
+        );
+        return;
+      }
 
-        setPageState(data.isConnected ? "connected" : "disconnected");
-
-        if (data.isConnected && isSourceActive) {
-          Promise.all([
-            fetchCustomers().catch(() => ({})),
-            fetchInvoices().catch(() => ({})),
-            fetchBalanceSheet().catch(() => ({})),
-            fetchProfitAndLoss().catch(() => ({})),
-            fetchCashflow().catch(() => ({})),
-            syncGeneralLedger().catch(() => ({})),
-          ]).then(([customersRes, invoicesRes, bsRes, pnlRes, cfRes, glRes]) => {
-            const custs = Array.isArray(customersRes?.QueryResponse?.Customer)
-              ? customersRes.QueryResponse.Customer
-              : Array.isArray(customersRes?.data?.QueryResponse?.Customer)
-                ? customersRes.data.QueryResponse.Customer
-                : Array.isArray(customersRes)
-                  ? customersRes
-                  : [];
-
-            const invs = Array.isArray(invoicesRes?.QueryResponse?.Invoice)
-              ? invoicesRes.QueryResponse.Invoice
-              : Array.isArray(invoicesRes?.data?.QueryResponse?.Invoice)
-                ? invoicesRes.data.QueryResponse.Invoice
-                : Array.isArray(invoicesRes)
-                  ? invoicesRes
-                  : [];
-
-            // Helper to count rows in QB reports
-            const countReportRows = (res) => {
-              const rows = res?.Rows?.Row || res?.data?.Rows?.Row || res?.data?.data?.Rows?.Row || [];
-              return Array.isArray(rows) ? rows.length : 0;
-            };
-
-            setDynamicEntities([
-              {
-                name: "Customers",
-                count: custs.length,
-                lastSync: data.lastSynced,
-                status: "synced",
-              },
-              {
-                name: "Invoices",
-                count: invs.length,
-                lastSync: data.lastSynced,
-                status: "synced",
-              },
-              {
-                name: "Profit and Loss",
-                count: countReportRows(pnlRes),
-                lastSync: data.lastSynced,
-                status: "synced",
-              },
-              {
-                name: "Balance Sheet",
-                count: countReportRows(bsRes),
-                lastSync: data.lastSynced,
-                status: "synced",
-              },
-              {
-                name: "Cash Flow",
-                count: countReportRows(cfRes),
-                lastSync: data.lastSynced,
-                status: "synced",
-              },
-              {
-                name: "General Ledger",
-                count: glRes?.totalInserted || glRes?.data?.totalInserted || 0,
-                lastSync: data.lastSynced,
-                status: "synced",
-              },
-            ]);
-          });
-        }
+      setPageState(data.isConnected ? "connected" : "disconnected");
     } catch (err) {
       console.error("Failed to fetch connection status:", err);
       setConnection(null);
@@ -340,23 +258,6 @@ export default function QuickBooksConnection({
     ? getTimeLeft(connection.tokenExpiresAt)
     : "—";
   const isTokenExpired = tokenTimeLeft === "Expired";
-  const activeEntities =
-    dynamicEntities ||
-    (connection?.syncedEntities || []).map((e) =>
-      typeof e === "string"
-        ? {
-            name: e,
-            count: "—",
-            lastSync: connection?.lastSynced,
-            status: "synced",
-          }
-        : e,
-    ) ||
-    [];
-  const totalSyncedRecords = useMemo(
-    () => activeEntities.reduce((sum, e) => sum + Number(e.count || 0), 0),
-    [activeEntities],
-  );
 
   // ────────────────────────────────────────────────────────
   return (
