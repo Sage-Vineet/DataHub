@@ -8,10 +8,28 @@ import { useNavigate } from 'react-router-dom';
 import { useClientStore } from '../../store/clientStore';
 import StatusBadge from '../../components/common/StatusBadge';
 import Modal from '../../components/common/Modal';
-import { createCompanyRequest, listCompaniesRequest, updateCompanyRequest } from '../../lib/api';
+import { createCompanyRequest, deleteCompanyRequest, listCompaniesRequest, updateCompanyRequest } from '../../lib/api';
 
 const PAGE_SIZE = 10;
-const EMPTY_FORM = { name: '', contact: '', email: '', phone: '', industry: '' };
+const EMPTY_FORM = { name: '', project_name: '', contact: '', email: '', phone: '', industry: '' };
+
+const INDUSTRY_OPTIONS = [
+  'Technology & Software',
+  'Healthcare & Life Sciences',
+  'Financial Services',
+  'Consumer & Retail',
+  'Industrial & Manufacturing',
+  'Real Estate & Construction',
+  'Media & Entertainment',
+  'Energy & Natural Resources',
+  'Transportation & Logistics',
+  'Business Services',
+  'Education & Training',
+  'Telecommunications',
+  'Food & Beverage',
+  'Agriculture',
+  'Government & Non-Profit',
+];
 
 function getInitials(name = '') {
   return name
@@ -40,6 +58,7 @@ function formatCompany(company) {
   return {
     id: company.id,
     name: company.name,
+    projectName: company.project_name || '',
     contact: company.contact_name,
     email: company.contact_email,
     phone: company.contact_phone,
@@ -70,6 +89,8 @@ export default function Companies() {
   const [showAdd, setShowAdd] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
   const [editing, setEditing] = useState(null);
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   const loadCompanies = async () => {
     setLoading(true);
@@ -133,8 +154,9 @@ export default function Companies() {
   const paginated = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
   const handleExport = () => {
-    const headers = ['Company Name', 'Industry', 'Contact Person', 'Email', 'Phone', 'Status', 'Since', 'Total Requests', 'Pending'];
+    const headers = ['Project Name', 'Company Name', 'Industry', 'Contact Person', 'Email', 'Phone', 'Status', 'Since', 'Total Requests', 'Pending'];
     const rows = filtered.map((company) => [
+      company.projectName,
       company.name,
       company.industry,
       company.contact,
@@ -174,6 +196,7 @@ export default function Companies() {
     setEditing(company);
     setForm({
       name: company.name || '',
+      project_name: company.projectName || '',
       contact: company.contact || '',
       email: company.email || '',
       phone: company.phone || '',
@@ -183,8 +206,8 @@ export default function Companies() {
   };
 
   const handleSaveCompany = async () => {
-    if (!form.name.trim() || !form.contact.trim() || !form.email.trim() || !form.phone.trim() || !form.industry.trim()) {
-      setFormError('Please fill in all company fields.');
+    if (!form.name.trim() || !form.project_name.trim() || !form.contact.trim() || !form.email.trim() || !form.phone.trim() || !form.industry.trim()) {
+      setFormError('Please fill in all required fields, including Project Name and Industry.');
       return;
     }
 
@@ -194,6 +217,7 @@ export default function Companies() {
 
     const payload = {
       name: form.name.trim(),
+      project_name: form.project_name.trim(),
       industry: form.industry.trim(),
       contact_name: form.contact.trim(),
       contact_email: form.email.trim(),
@@ -243,6 +267,23 @@ export default function Companies() {
       setFormError(err.message || `Unable to ${editing ? 'update' : 'create'} company.`);
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleDeleteCompany = async () => {
+    if (!confirmDelete) return;
+    setDeleting(true);
+    try {
+      await deleteCompanyRequest(confirmDelete.id);
+      setCompanies((current) => current.filter((c) => c.id !== confirmDelete.id));
+      if (selected?.id === confirmDelete.id) setSelected(null);
+      setConfirmDelete(null);
+      closeFormModal();
+      setSuccess('Company deleted successfully.');
+    } catch (err) {
+      setFormError(err.message || 'Unable to delete company.');
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -332,7 +373,9 @@ export default function Companies() {
             <thead>
               <tr className="border-b border-gray-100 bg-gray-50">
                 <th className="text-left px-5 py-3.5 text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">#</th>
+                <th className="text-left px-5 py-3.5 text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Project Name</th>
                 <th className="text-left px-5 py-3.5 text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Company</th>
+                <th className="text-left px-5 py-3.5 text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Industry</th>
                 <th className="text-left px-5 py-3.5 text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Contact Person</th>
                 <th className="text-left px-5 py-3.5 text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Email</th>
                 <th className="text-left px-5 py-3.5 text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Phone</th>
@@ -345,14 +388,14 @@ export default function Companies() {
             <tbody className="divide-y divide-gray-50">
               {loading && (
                 <tr>
-                  <td colSpan={9} className="text-center py-16 text-[#A5A5A5] text-sm">
+                  <td colSpan={11} className="text-center py-16 text-[#A5A5A5] text-sm">
                     Loading companies...
                   </td>
                 </tr>
               )}
               {!loading && paginated.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="text-center py-16 text-[#A5A5A5] text-sm">
+                  <td colSpan={11} className="text-center py-16 text-[#A5A5A5] text-sm">
                     No companies found matching your filters.
                   </td>
                 </tr>
@@ -361,6 +404,15 @@ export default function Companies() {
                 <tr key={company.id} className="hover:bg-gray-50/60 transition-colors group">
                   <td className="px-5 py-4 text-xs text-[#A5A5A5] font-medium">
                     {(safePage - 1) * PAGE_SIZE + index + 1}
+                  </td>
+                  <td className="px-5 py-4">
+                    {company.projectName ? (
+                      <span className="inline-block rounded-full bg-[#05164D]/10 px-2.5 py-1 text-xs font-semibold text-[#05164D]">
+                        {company.projectName}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-[#A5A5A5]">—</span>
+                    )}
                   </td>
                   <td className="px-5 py-4">
                     <div className="flex items-center gap-3">
@@ -374,6 +426,9 @@ export default function Companies() {
                         {company.name}
                       </button>
                     </div>
+                  </td>
+                  <td className="px-5 py-4">
+                    <span className="text-sm text-[#6D6E71]">{company.industry || '—'}</span>
                   </td>
                   <td className="px-5 py-4">
                     <div className="flex items-center gap-1.5 text-[#050505]">
@@ -483,7 +538,12 @@ export default function Companies() {
               <div className="w-16 h-16 rounded-2xl bg-[#05164D] flex items-center justify-center text-xl font-bold text-white">
                 {selected.logo}
               </div>
-              <div>
+              <div className="min-w-0">
+                {selected.projectName && (
+                  <span className="mb-1 inline-block rounded-full bg-[#05164D]/10 px-2.5 py-0.5 text-xs font-semibold text-[#05164D]">
+                    {selected.projectName}
+                  </span>
+                )}
                 <h3 className="text-lg font-bold text-[#050505]">{selected.name}</h3>
                 <p className="text-sm text-[#6D6E71]">{selected.industry}</p>
                 <StatusBadge value={selected.status} />
@@ -550,14 +610,16 @@ export default function Companies() {
             </div>
           )}
           {[
+            { label: 'Project Name', key: 'project_name', placeholder: 'e.g. Project Falcon' },
             { label: 'Company Name', key: 'name', placeholder: 'e.g. Accenture India' },
             { label: 'Contact Person', key: 'contact', placeholder: 'Full name' },
             { label: 'Email Address', key: 'email', placeholder: 'contact@company.com', type: 'email' },
             { label: 'Phone Number', key: 'phone', placeholder: '+91 98765 43210' },
-            { label: 'Industry', key: 'industry', placeholder: 'e.g. IT Services' },
           ].map((field) => (
             <div key={field.key}>
-              <label className="block text-sm font-medium text-[#050505] mb-1.5">{field.label}</label>
+              <label className="block text-sm font-medium text-[#050505] mb-1.5">
+                {field.label} <span className="text-[#C62026]">*</span>
+              </label>
               <input
                 type={field.type || 'text'}
                 value={form[field.key]}
@@ -567,7 +629,31 @@ export default function Companies() {
               />
             </div>
           ))}
+          <div>
+            <label className="block text-sm font-medium text-[#050505] mb-1.5">
+              Industry <span className="text-[#C62026]">*</span>
+            </label>
+            <select
+              value={form.industry}
+              onChange={(event) => setForm((current) => ({ ...current, industry: event.target.value }))}
+              className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all text-[#050505] bg-white"
+            >
+              <option value="">Select industry…</option>
+              {INDUSTRY_OPTIONS.map((opt) => (
+                <option key={opt} value={opt}>{opt}</option>
+              ))}
+            </select>
+          </div>
           <div className="flex gap-3 pt-2">
+            {editing && (
+              <button
+                onClick={() => setConfirmDelete(editing)}
+                disabled={submitting}
+                className="px-4 py-2.5 rounded-xl border border-red-200 text-sm font-semibold text-[#C62026] hover:bg-red-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Delete
+              </button>
+            )}
             <button
               onClick={closeFormModal}
               className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-[#6D6E71] hover:bg-gray-50 transition-colors"
@@ -583,6 +669,33 @@ export default function Companies() {
             </button>
           </div>
         </div>
+      </Modal>
+      <Modal isOpen={!!confirmDelete} onClose={() => setConfirmDelete(null)} title="Delete Company" size="sm">
+        {confirmDelete && (
+          <div className="space-y-5">
+            <p className="text-sm text-[#050505] leading-relaxed">
+              Are you sure you want to delete{' '}
+              <span className="font-semibold">{confirmDelete.name}</span>?{' '}
+              This action cannot be undone.
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setConfirmDelete(null)}
+                disabled={deleting}
+                className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-[#6D6E71] hover:bg-gray-50 transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDeleteCompany}
+                disabled={deleting}
+                className="flex-1 py-2.5 rounded-xl bg-[#C62026] text-white text-sm font-semibold hover:bg-red-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {deleting ? 'Deleting...' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        )}
       </Modal>
     </div>
   );

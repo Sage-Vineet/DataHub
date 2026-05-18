@@ -106,81 +106,49 @@ async function ensureCompanyDefaultFolders(companyId, preferredCreatedBy = null)
 }
 
 /**
- * Removes duplicate folders for a company (keeps oldest per name+parent group).
- * Runs up to 3 passes to handle cascading duplicates (e.g. duplicate parent
- * whose children get re-parented and then themselves become duplicates).
+ * Lists all folders for a company
+ * @param {string} companyId - Company ID
+ * @param {Object} options
+ * @param {boolean} [options.includeArchived] - Include archived folders
+ * @returns {Promise<Array>}
  */
-async function cleanupDuplicateFolders(companyId) {
-  let totalDeleted = 0;
+async function listFoldersByCompany(companyId, options = {}) {
+  let query = supabase
+    .from("folders")
+    .select("*")
+    .eq("company_id", companyId)
+    .order("created_at", { ascending: true });
 
-  for (let pass = 0; pass < 3; pass++) {
-    // Step 1 – re-parent children of loser folders to the winner of the same group
-    await pgQuery(`
-      WITH winners AS (
-        SELECT DISTINCT ON (lower(name), COALESCE(parent_id::text, '__root__'))
-          id,
-          lower(name) AS lname,
-          parent_id
-        FROM folders
-        WHERE company_id = $1
-        ORDER BY lower(name), COALESCE(parent_id::text, '__root__'), created_at ASC NULLS LAST
-      ),
-      losers AS (
-        SELECT f.id AS loser_id, w.id AS winner_id
-        FROM folders f
-        JOIN winners w
-          ON  w.lname = lower(f.name)
-          AND COALESCE(w.parent_id::text, '__root__') = COALESCE(f.parent_id::text, '__root__')
-        WHERE f.id != w.id
-          AND f.company_id = $1
-      )
-      UPDATE folders
-        SET parent_id = losers.winner_id
-      FROM losers
-      WHERE folders.parent_id = losers.loser_id
-    `, [companyId]);
-
-    // Step 2 – delete the losers (now safe because their children were re-parented)
-    const deleted = await pgQuery(`
-      WITH winners AS (
-        SELECT DISTINCT ON (lower(name), COALESCE(parent_id::text, '__root__'))
-          id
-        FROM folders
-        WHERE company_id = $1
-        ORDER BY lower(name), COALESCE(parent_id::text, '__root__'), created_at ASC NULLS LAST
-      )
-      DELETE FROM folders
-      WHERE company_id = $1
-        AND id NOT IN (SELECT id FROM winners)
-      RETURNING id
-    `, [companyId]);
-
-    totalDeleted += deleted.length;
-    console.log(`[folders] cleanup pass ${pass + 1}: removed ${deleted.length} duplicates for company ${companyId}`);
-    if (deleted.length === 0) break;
+  if (!options.includeArchived) {
+    query = query.is("archived_at", null);
   }
 
-  return totalDeleted;
+  const { data, error } = await query;
+  if (error) throw error;
+  return data || [];
 }
 
-async function fetchFolderRows(companyId) {
-  try {
-    return await pgQuery("SELECT * FROM folders WHERE company_id=$1 ORDER BY created_at ASC", [companyId]);
-  } catch (err) {
-    console.error("[folders] fetchFolderRows Postgres error:", err.message);
-    const { data } = await supabase.from("folders").select("*").eq("company_id", companyId).order("created_at", { ascending: true });
-    return data || [];
-  }
-}
+/**
+ * Gets a tree structure of folders for a company
+ * @param {string} companyId - Company ID
+ * @param {Object} options
+ * @param {boolean} [options.includeArchived] - Include archived folders
+ * @returns {Promise<Array>}
+ */
+async function getFolderTree(companyId, options = {}) {
+  let query = supabase
+    .from("folders")
+    .select("*")
+    .eq("company_id", companyId)
+    .order("created_at", { ascending: true });
 
-function buildTree(rows) {
-  // Deduplicate in-memory (safety net — DB cleanup should have handled this)
-  const seen = new Set();
-  const deduped = [];
-  for (const row of rows) {
-    const key = `${String(row.name || "").toLowerCase()}__${row.parent_id || "__root__"}`;
-    if (!seen.has(key)) { seen.add(key); deduped.push(row); }
+  if (!options.includeArchived) {
+    query = query.is("archived_at", null);
   }
+
+  const { data: rows, error } = await query;
+
+  if (error) throw error;
 
   const byId = new Map();
   for (const row of deduped) byId.set(row.id, { ...row, children: [] });
@@ -286,6 +254,37 @@ async function updateFolder(id, folderData) {
   }
 }
 
+/**
+ * Archives a folder (soft delete)
+ */
+async function archiveFolder(id) {
+  const { data, error } = await supabase
+    .from("folders")
+    .update({ archived_at: new Date().toISOString() })
+    .eq("id", id)
+    .select("*")
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+/**
+ * Unarchives a folder
+ */
+async function unarchiveFolder(id) {
+  const { data, error } = await supabase
+    .from("folders")
+    .update({ archived_at: null })
+    .eq("id", id)
+    .select("*")
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+/**
+ * Deletes a folder
+ */
 async function deleteFolder(id) {
   try {
     await pgQuery("DELETE FROM folders WHERE id=$1", [id]);
@@ -315,6 +314,8 @@ module.exports = {
   getFolderTree,
   createFolder,
   updateFolder,
+  archiveFolder,
+  unarchiveFolder,
   deleteFolder,
   moveFolder,
 };

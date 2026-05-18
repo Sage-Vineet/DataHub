@@ -74,8 +74,8 @@ function roleMeta(role) {
   if (role === 'admin') return { label: 'Admin', bg: 'bg-purple-50', text: 'text-[#742982]', border: 'border-purple-200', Icon: Shield };
   if (role === 'broker') return { label: 'Broker', bg: 'bg-amber-50', text: 'text-[#b45e08]', border: 'border-orange-200', Icon: Briefcase };
   if (role === 'client') return { label: 'Seller', bg: 'bg-blue-50', text: 'text-[#00648F]', border: 'border-blue-200', Icon: Building2 };
-  if (role === 'user') return { label: 'User', bg: 'bg-slate-50', text: 'text-slate-700', border: 'border-slate-200', Icon: ShoppingCart };
-  return { label: 'Buyer', bg: 'bg-blue-50', text: 'text-[#00648F]', border: 'border-blue-200', Icon: ShoppingCart };
+  if (role === 'user') return { label: 'Buyer', bg: 'bg-green-50', text: 'text-[#476E2C]', border: 'border-green-200', Icon: ShoppingCart };
+  return { label: role || 'Unknown', bg: 'bg-gray-50', text: 'text-gray-600', border: 'border-gray-200', Icon: UsersIcon };
 }
 
 function Avatar({ user, size = 9 }) {
@@ -555,7 +555,7 @@ export default function WorkspaceUsers() {
       const selectedCompany = companiesResponse.find((entry) => String(entry.id) === String(clientId)) || null;
       setCompany(selectedCompany);
       setCompanies(companiesResponse || []);
-      setData(normalizedUsers.filter((user) => (user.companyIds?.length ? user.companyIds : [user.companyId]).some((id) => String(id) === String(clientId))));
+      setData(normalizedUsers.filter((user) => user.role !== 'client' && (user.companyIds?.length ? user.companyIds : [user.companyId]).some((id) => String(id) === String(clientId))));
       await loadGroupsWithMembers();
     } catch (err) {
       setError(err.message || 'Unable to load users.');

@@ -17,8 +17,15 @@ import {
 } from '../../lib/api';
 
 const PAGE_SIZE = 8;
-const ROLE_ORDER = ['admin', 'broker', 'client', 'user'];
+// Roles visible in the user list (broker/admin are hidden — they own the data room)
+const VISIBLE_ROLES = ['client', 'user', 'provider'];
 const STATUS_ORDER = ['active', 'inactive'];
+const ROLE_FILTER_OPTIONS = [
+  { label: 'All Roles', value: 'All Roles' },
+  { label: 'Seller', value: 'client' },
+  { label: 'Buyer', value: 'user' },
+  { label: 'Third-party Provider', value: 'provider' },
+];
 const EMPTY_FORM = { name: '', companyId: '', companyIds: [], email: '', phone: '', role: 'user', status: 'active', password: '', profileImage: '', groupIds: [] };
 
 function initials(name = '') {
@@ -68,8 +75,9 @@ function roleMeta(role) {
   if (role === 'admin') return { label: 'Admin', bg: 'bg-purple-50', text: 'text-[#742982]', border: 'border-purple-200', Icon: Shield };
   if (role === 'broker') return { label: 'Broker', bg: 'bg-amber-50', text: 'text-[#b45e08]', border: 'border-orange-200', Icon: Briefcase };
   if (role === 'client') return { label: 'Seller', bg: 'bg-blue-50', text: 'text-[#00648F]', border: 'border-blue-200', Icon: Building2 };
-  if (role === 'user') return { label: 'User', bg: 'bg-slate-50', text: 'text-slate-700', border: 'border-slate-200', Icon: ShoppingCart };
-  return { label: 'Buyer', bg: 'bg-blue-50', text: 'text-[#00648F]', border: 'border-blue-200', Icon: ShoppingCart };
+  if (role === 'user') return { label: 'Buyer', bg: 'bg-green-50', text: 'text-[#476E2C]', border: 'border-green-200', Icon: ShoppingCart };
+  if (role === 'provider') return { label: 'Third-party Provider', bg: 'bg-purple-50', text: 'text-[#742982]', border: 'border-purple-200', Icon: Briefcase };
+  return { label: role || 'Unknown', bg: 'bg-gray-50', text: 'text-gray-600', border: 'border-gray-200', Icon: UsersIcon };
 }
 
 function Avatar({ user, size = 9 }) {
@@ -415,45 +423,43 @@ function UserFormModal({ initial, companies, groups, onCompanyChange, onSave, on
             />
           </div>
 
-          {isEdit && (
-            <>
-              <div>
-                <label className="block text-xs font-semibold text-gray-500 mb-1.5">Role *</label>
-                <div className="flex gap-2">
-                  {ROLE_ORDER.map((role) => {
-                    const meta = roleMeta(role);
-                    return (
-                      <button
-                        key={role}
-                        type="button"
-                        onClick={() => setField({ role })}
-                        className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl border text-xs font-semibold transition-all ${
-                          form.role === role
-                            ? 'bg-[#05164D] text-white border-[#05164D]'
-                            : 'bg-gray-50 text-gray-500 border-gray-200 hover:border-gray-300'
-                        }`}
-                      >
-                        <meta.Icon size={12} />
-                        {meta.label}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
+          <div className="col-span-2">
+            <label className="block text-xs font-semibold text-gray-500 mb-1.5">Role *</label>
+            <div className="flex gap-2">
+              {VISIBLE_ROLES.map((role) => {
+                const meta = roleMeta(role);
+                return (
+                  <button
+                    key={role}
+                    type="button"
+                    onClick={() => setField({ role })}
+                    className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl border text-xs font-semibold transition-all ${
+                      form.role === role
+                        ? 'bg-[#05164D] text-white border-[#05164D]'
+                        : 'bg-gray-50 text-gray-500 border-gray-200 hover:border-gray-300'
+                    }`}
+                  >
+                    <meta.Icon size={12} />
+                    {meta.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
 
-              <div>
-                <label className="block text-xs font-semibold text-gray-500 mb-1.5">Status *</label>
-                <select
-                  value={form.status}
-                  onChange={(event) => setField({ status: event.target.value })}
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]"
-                >
-                  {STATUS_ORDER.map((status) => (
-                    <option key={status} value={status}>{statusMeta(status).label}</option>
-                  ))}
-                </select>
-              </div>
-            </>
+          {isEdit && (
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 mb-1.5">Status *</label>
+              <select
+                value={form.status}
+                onChange={(event) => setField({ status: event.target.value })}
+                className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]"
+              >
+                {STATUS_ORDER.map((status) => (
+                  <option key={status} value={status}>{statusMeta(status).label}</option>
+                ))}
+              </select>
+            </div>
           )}
         </div>
 
@@ -515,7 +521,7 @@ export default function BrokerUsers() {
         listCompaniesRequest(),
       ]);
 
-      setData(usersResponse.map(formatUser).filter(Boolean));
+      setData(usersResponse.map(formatUser).filter(Boolean).filter((u) => VISIBLE_ROLES.includes(u.role)));
       setCompanies(companiesResponse);
     } catch (err) {
       setError(err.message || 'Unable to load users.');
@@ -543,10 +549,6 @@ export default function BrokerUsers() {
     () => ['All Companies', ...Array.from(new Set(data.map((user) => user.company))).filter(Boolean)],
     [data]
   );
-  const roleOptions = useMemo(
-    () => ['All Roles', ...Array.from(new Set(data.map((user) => user.role))).sort((a, b) => ROLE_ORDER.indexOf(a) - ROLE_ORDER.indexOf(b))],
-    [data]
-  );
   const statusOptions = useMemo(
     () => ['All Status', ...Array.from(new Set(data.map((user) => user.status))).sort((a, b) => STATUS_ORDER.indexOf(a) - STATUS_ORDER.indexOf(b))],
     [data]
@@ -555,7 +557,7 @@ export default function BrokerUsers() {
   const filtered = useMemo(() => {
     const query = search.toLowerCase();
     return data.filter((user) => {
-      const matchSearch = !query || user.name.toLowerCase().includes(query) || user.email.toLowerCase().includes(query) || user.company.toLowerCase().includes(query) || user.phone.includes(query);
+      const matchSearch = !query || user.name.toLowerCase().includes(query) || user.email.toLowerCase().includes(query) || user.company.toLowerCase().includes(query) || user.phone.includes(query) || roleMeta(user.role).label.toLowerCase().includes(query);
       const matchRole = filterRole === 'All Roles' || user.role === filterRole;
       const matchStatus = filterStatus === 'All Status' || user.status === filterStatus;
       const matchCompany = filterCompany === 'All Companies' || user.company === filterCompany;
@@ -614,7 +616,7 @@ export default function BrokerUsers() {
         email: form.email.trim(),
         phone: form.phone.trim() || null,
         password: form.password,
-        role: 'buyer',
+        role: ['user', 'client'].includes(form.role) ? 'buyer' : form.role,
         profile_image: null,
         company_id: form.companyId || null,
         company_ids: Array.from(new Set([form.companyId, ...(form.companyIds || [])].filter(Boolean))),
@@ -721,8 +723,9 @@ export default function BrokerUsers() {
 
   const stats = useMemo(() => ({
     total: data.length,
-    active: data.filter((user) => user.status === 'active').length,
-    users: data.filter((user) => user.role === 'user').length,
+    sellers: data.filter((user) => user.role === 'client').length,
+    buyers: data.filter((user) => user.role === 'user').length,
+    providers: data.filter((user) => user.role === 'provider').length,
   }), [data]);
 
   const resetFilters = () => {
@@ -740,7 +743,7 @@ export default function BrokerUsers() {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-[#05164D]">Users</h1>
-          <p className="text-sm text-gray-500 mt-0.5">{stats.total} registered users across all companies</p>
+          <p className="text-sm text-gray-500 mt-0.5">{stats.total} registered user{stats.total !== 1 ? 's' : ''} across all companies</p>
         </div>
         <button
           onClick={() => { setError(''); setEditUser({ ...EMPTY_FORM, isNew: true }); }}
@@ -765,8 +768,9 @@ export default function BrokerUsers() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {[
           { label: 'Total Users', value: stats.total, color: '#05164D', icon: UsersIcon },
-          { label: 'Active', value: stats.active, color: '#8BC53D', icon: CheckCircle },
-          { label: 'Buyers', value: stats.buyers, color: '#00648F', icon: ShoppingCart },
+          { label: 'Sellers', value: stats.sellers, color: '#00648F', icon: Building2 },
+          { label: 'Buyers', value: stats.buyers, color: '#476E2C', icon: ShoppingCart },
+          { label: 'Third-party Providers', value: stats.providers, color: '#742982', icon: Briefcase },
         ].map((item) => {
           const Icon = item.icon;
 
@@ -815,22 +819,38 @@ export default function BrokerUsers() {
 
         {showFilters && (
           <div className="px-4 pb-4 flex flex-wrap gap-3 border-b border-gray-100 pt-3">
-            {[
-              { label: 'Company', value: filterCompany, options: companyOptions, onChange: (value) => { setComp(value); setPage(1); } },
-              { label: 'Role', value: filterRole, options: roleOptions, onChange: (value) => { setRole(value); setPage(1); } },
-              { label: 'Status', value: filterStatus, options: statusOptions, onChange: (value) => { setStatus(value); setPage(1); } },
-            ].map(({ label, value, options, onChange }) => (
-              <div key={label} className="flex flex-col gap-1">
-                <span className="text-xs font-semibold text-gray-400 px-1">{label}</span>
-                <select
-                  value={value}
-                  onChange={(event) => onChange(event.target.value)}
-                  className="px-3 py-2 rounded-xl border border-gray-200 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/30 focus:border-[#8BC53D] min-w-[140px]"
-                >
-                  {options.map((option) => <option key={option}>{option}</option>)}
-                </select>
-              </div>
-            ))}
+            <div className="flex flex-col gap-1">
+              <span className="text-xs font-semibold text-gray-400 px-1">Company</span>
+              <select
+                value={filterCompany}
+                onChange={(e) => { setComp(e.target.value); setPage(1); }}
+                className="px-3 py-2 rounded-xl border border-gray-200 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/30 focus:border-[#8BC53D] min-w-[140px]"
+              >
+                {companyOptions.map((opt) => <option key={opt}>{opt}</option>)}
+              </select>
+            </div>
+            <div className="flex flex-col gap-1">
+              <span className="text-xs font-semibold text-gray-400 px-1">Role</span>
+              <select
+                value={filterRole}
+                onChange={(e) => { setRole(e.target.value); setPage(1); }}
+                className="px-3 py-2 rounded-xl border border-gray-200 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/30 focus:border-[#8BC53D] min-w-[160px]"
+              >
+                {ROLE_FILTER_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="flex flex-col gap-1">
+              <span className="text-xs font-semibold text-gray-400 px-1">Status</span>
+              <select
+                value={filterStatus}
+                onChange={(e) => { setStatus(e.target.value); setPage(1); }}
+                className="px-3 py-2 rounded-xl border border-gray-200 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/30 focus:border-[#8BC53D] min-w-[140px]"
+              >
+                {statusOptions.map((opt) => <option key={opt}>{opt}</option>)}
+              </select>
+            </div>
           </div>
         )}
 

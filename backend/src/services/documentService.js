@@ -22,14 +22,69 @@ async function pgQuery(sql, params = []) {
   return rows;
 }
 
-async function listDocumentsByFolder(folderId) {
-  try {
-    return await pgQuery(
-      "SELECT * FROM documents WHERE folder_id = $1 ORDER BY uploaded_at DESC",
-      [folderId],
-    );
-  } catch {
-    const { data, error } = await supabase
+/**
+ * Lists all documents in a folder
+ * @param {string} folderId
+ * @param {Object} options
+ * @param {boolean} [options.includeArchived] - Include archived documents
+ */
+async function listDocumentsByFolder(folderId, options = {}) {
+  let query = supabase
+    .from("documents")
+    .select("*")
+    .eq("folder_id", folderId)
+    .order("uploaded_at", { ascending: false });
+
+  if (!options.includeArchived) {
+    query = query.is("archived_at", null);
+  }
+
+  const { data, error } = await query;
+  if (error) throw error;
+  return data || [];
+}
+
+/**
+ * Creates a new document
+ */
+async function createDocument(docData) {
+  const { data, error } = await supabase
+    .from("documents")
+    .insert({
+      company_id: docData.company_id,
+      folder_id: docData.folder_id,
+      name: docData.name,
+      file_url: docData.file_url,
+      upload_id: docData.upload_id || null,
+      size: docData.size,
+      ext: docData.ext,
+      status: docData.status,
+      uploaded_by: docData.uploaded_by
+    })
+    .select("*")
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
+/**
+ * Deletes a document and its associated upload if no other documents reference it
+ */
+async function deleteDocument(id) {
+  const { data: document, error: findError } = await supabase
+    .from("documents")
+    .select("upload_id")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (findError) throw findError;
+  if (!document) return;
+
+  await supabase.from("documents").delete().eq("id", id);
+
+  if (document.upload_id) {
+    const { data: linked } = await supabase
       .from("documents")
       .select("*")
       .eq("folder_id", folderId)
@@ -125,6 +180,37 @@ async function deleteDocument(id) {
   }
 }
 
+/**
+ * Archives a document (soft delete)
+ */
+async function archiveDocument(id) {
+  const { data, error } = await supabase
+    .from("documents")
+    .update({ archived_at: new Date().toISOString() })
+    .eq("id", id)
+    .select("*")
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+/**
+ * Unarchives a document
+ */
+async function unarchiveDocument(id) {
+  const { data, error } = await supabase
+    .from("documents")
+    .update({ archived_at: null })
+    .eq("id", id)
+    .select("*")
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+/**
+ * Validates if an upload exists
+ */
 async function validateUpload(uploadId) {
   try {
     const rows = await pgQuery(
@@ -194,6 +280,8 @@ async function getDocumentActivity(documentId) {
 module.exports = {
   listDocumentsByFolder,
   createDocument,
+  archiveDocument,
+  unarchiveDocument,
   deleteDocument,
   validateUpload,
   recordDocumentActivity,

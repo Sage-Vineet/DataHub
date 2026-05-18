@@ -4,6 +4,7 @@ import {
   ChevronRight, ChevronDown, Trash2, Home, Archive, X, ArrowLeft, Check,
   MoreVertical, LayoutGrid, List, AlertCircle, Pencil, FolderPlus,
   ArrowUpDown, ArrowUp, ArrowDown, CheckCircle, Share2, Users, Loader2,
+  RotateCcw,
 } from 'lucide-react';
 import { useFileExplorerStore, findById, getPathTo } from '../../store/fileExplorerStore';
 import {
@@ -81,11 +82,39 @@ function sortItems(items, sortBy, sortDir) {
   });
 }
 
-function searchTree(node, query) {
+function isArchivedItem(item) {
+  return Boolean(item?.archivedAt);
+}
+
+function collectArchivedItems(node, results = []) {
+  (node.children || []).forEach((child) => {
+    if (isArchivedItem(child)) results.push(child);
+    collectArchivedItems(child, results);
+  });
+  return results;
+}
+
+function IconTooltipButton({ label, className = '', children, ...props }) {
+  return (
+    <button
+      type="button"
+      {...props}
+      aria-label={label}
+      className={`group/tooltip relative ${className}`}
+    >
+      {children}
+      <span className="pointer-events-none absolute left-1/2 top-full z-30 mt-2 -translate-x-1/2 whitespace-nowrap rounded-lg bg-[#050505] px-2 py-1 text-[10px] font-semibold text-white opacity-0 shadow-lg transition-opacity duration-150 group-hover/tooltip:opacity-100">
+        {label}
+      </span>
+    </button>
+  );
+}
+
+function searchTree(node, query, predicate = () => true) {
   const results = [];
   const q = query.toLowerCase();
   const search = (n) => {
-    if (n.id !== 'root' && n.name.toLowerCase().includes(q)) results.push(n);
+    if (n.id !== 'root' && n.name.toLowerCase().includes(q) && predicate(n)) results.push(n);
     if (n.children) n.children.forEach(search);
   };
   search(node);
@@ -97,6 +126,7 @@ function countItems(node, canAccessFolder = () => true) {
   let folders = 0;
   const walk = (n) => {
     (n.children || []).forEach((child) => {
+      if (isArchivedItem(child)) return;
       if (child.type === 'folder') {
         if (!canAccessFolder(child.id)) return;
         folders += 1;
@@ -113,6 +143,7 @@ function countItems(node, canAccessFolder = () => true) {
 function countFiles(node, canAccessFolder = () => true) {
   let files = 0;
   (node.children || []).forEach((c) => {
+    if (isArchivedItem(c)) return;
     if (c.type === 'file') files += 1;
     if (c.type === 'folder' && canAccessFolder(c.id)) files += countFiles(c, canAccessFolder);
   });
@@ -138,7 +169,7 @@ function FolderTreeNode({ node, depth = 0, canAccessFolder }) {
   const isExpanded = expandedFolders.includes(node.id);
   const isActive = currentPath[currentPath.length - 1] === node.id;
   const isDragTarget = dragOver === node.id;
-  const subFolders = (node.children || []).filter(c => c.type === 'folder' && canAccessFolder(c.id));
+  const subFolders = (node.children || []).filter(c => c.type === 'folder' && !isArchivedItem(c) && canAccessFolder(c.id));
   const filesCount = countFiles(node, canAccessFolder);
 
   return (
@@ -198,6 +229,7 @@ function FolderTree({ tree, onUpload, role, getFolderPermissions }) {
   const [loadingTree, setLoadingTree] = useState(false);
   const [treeError, setTreeError] = useState('');
   const currentFolderId = currentPath[currentPath.length - 1];
+  const isArchiveView = currentFolderId === 'archive';
   const canAccessFolder = (id) => role === 'broker' || getFolderPermissions(id).read;
   const canWrite = role === 'broker' || getFolderPermissions(currentFolderId).write;
   const { files, folders } = useMemo(() => countItems(tree, canAccessFolder), [tree, role, getFolderPermissions]);
@@ -258,7 +290,20 @@ function FolderTree({ tree, onUpload, role, getFolderPermissions }) {
             {files} files
           </span>
         </div>
-        {(tree.children || []).filter(c => c.type === 'folder' && canAccessFolder(c.id)).map(node => (
+        <div
+          className={`group mt-1 flex items-center gap-1.5 px-2 py-1.5 rounded-xl cursor-pointer text-xs font-medium transition-all
+            ${isArchiveView ? 'bg-[#05164D]/10 text-[#05164D] font-semibold' : 'text-[#4A4A4A] hover:bg-gray-100'}`}
+          onClick={() => navigateTo('archive')}
+        >
+          <span className="relative flex-shrink-0">
+            <Archive size={14} className="text-[#6D6E71]" />
+          </span>
+          <span>Archive</span>
+          <span className="text-[10px] text-[#A5A5A5] ml-auto flex-shrink-0">
+            {collectArchivedItems(tree).length}
+          </span>
+        </div>
+        {(tree.children || []).filter(c => c.type === 'folder' && !isArchivedItem(c) && canAccessFolder(c.id)).map(node => (
           <FolderTreeNode
             key={node.id}
             node={node}
@@ -282,19 +327,20 @@ function Breadcrumbs({ tree, currentPath }) {
       {currentPath.map((id, idx) => {
         const node = findById(tree, id);
         const isLast = idx === currentPath.length - 1;
+        const label = id === 'archive' ? 'Archive' : id === 'root' ? 'All Documents' : node?.name || id;
         return (
           <span key={id} className="flex items-center gap-0.5 min-w-0">
             {idx > 0 && <ChevronRight size={13} className="flex-shrink-0 text-[#A5A5A5]" />}
             {isLast ? (
               <span className="font-semibold text-[#050505] truncate max-w-[160px]">
-                {id === 'root' ? 'All Documents' : node?.name || id}
+                {label}
               </span>
             ) : (
               <button
                 className="text-[#6D6E71] hover:text-[#05164D] transition-colors truncate max-w-[120px] font-medium"
                 onClick={() => navigateTo(id)}
               >
-                {id === 'root' ? 'Home' : node?.name || id}
+                {id === 'root' ? 'Home' : label}
               </button>
             )}
           </span>
@@ -305,13 +351,23 @@ function Breadcrumbs({ tree, currentPath }) {
 }
 
 // ── TopBar ────────────────────────────────────────────────────────────────────
-function TopBar({ tree, currentPath, onUpload, role, currentFolderPermissions }) {
+function TopBar({ tree, currentPath, onUpload, role, currentFolderPermissions, archivedCount }) {
   const {
     view, setView, sortBy, sortDir, setSortBy, searchQuery, setSearchQuery,
-    startNewFolder, goBack, selectedItems, deleteItems,
+    startNewFolder, goBack, selectedItems, deleteItems, archiveItems, unarchiveItems,
+    navigateTo,
   } = useFileExplorerStore();
   const currentFolderId = currentPath[currentPath.length - 1];
+  const isArchiveView = currentFolderId === 'archive';
   const canWrite = role === 'broker' || currentFolderPermissions.write;
+  const canCreateHere = canWrite && !isArchiveView;
+  const runSelectedAction = (e, action) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const ids = [...selectedItems];
+    if (!ids.length) return;
+    action(ids);
+  };
 
   return (
     <div className="bg-white border-b border-gray-100 px-4 py-3 flex items-center gap-3 flex-wrap flex-shrink-0">
@@ -345,24 +401,47 @@ function TopBar({ tree, currentPath, onUpload, role, currentFolderPermissions })
       </div>
 
       {/* Action bar when items selected */}
-      {selectedItems.length > 0 && role === 'broker' && (
+      {selectedItems.length > 0 && canWrite && (
         <div className="flex items-center gap-1 px-2 py-1 bg-[#05164D]/8 rounded-xl border border-[#05164D]/15">
           <span className="text-xs font-semibold text-[#05164D]">{selectedItems.length} selected</span>
-          <button
-            onClick={() => deleteItems(selectedItems)}
-            className="ml-2 p-1 rounded-lg hover:bg-red-50 text-red-500 transition-colors"
-            title="Delete selected"
+          <IconTooltipButton
+            label={isArchiveView ? 'Unarchive' : 'Archive'}
+            onClick={(e) => runSelectedAction(e, (ids) => isArchiveView ? unarchiveItems(ids) : archiveItems(ids))}
+            className="ml-2 p-1 rounded-lg hover:bg-[#E6F3D3] text-[#476E2C] transition-colors"
           >
-            <Trash2 size={14} />
-          </button>
-          <button
-            onClick={() => useFileExplorerStore.getState().clearSelection()}
+            {isArchiveView ? <RotateCcw size={14} /> : <Archive size={14} />}
+          </IconTooltipButton>
+          {role === 'broker' && (
+            <IconTooltipButton
+              label="Delete"
+              onClick={(e) => runSelectedAction(e, deleteItems)}
+              className="p-1 rounded-lg hover:bg-red-50 text-red-500 transition-colors"
+            >
+              <Trash2 size={14} />
+            </IconTooltipButton>
+          )}
+          <IconTooltipButton
+            label="Close"
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); useFileExplorerStore.getState().clearSelection(); }}
             className="p-1 rounded-lg hover:bg-gray-100 text-[#6D6E71] transition-colors"
           >
             <X size={14} />
-          </button>
+          </IconTooltipButton>
         </div>
       )}
+
+      <button
+        onClick={() => navigateTo('archive')}
+        className={`flex items-center gap-1.5 px-3 py-2 rounded-xl border text-xs font-semibold transition-colors ${
+          isArchiveView
+            ? 'bg-[#05164D]/8 border-[#05164D]/15 text-[#05164D]'
+            : 'border-gray-200 text-[#6D6E71] hover:bg-gray-50'
+        }`}
+      >
+        <Archive size={14} />
+        Archive
+        <span className="rounded-full bg-white px-1.5 py-0.5 text-[10px] text-[#6D6E71] shadow-sm">{archivedCount}</span>
+      </button>
 
       {/* Sort */}
       <div className="flex items-center gap-1">
@@ -397,18 +476,18 @@ function TopBar({ tree, currentPath, onUpload, role, currentFolderPermissions })
 
       {/* New Folder */}
       <button
-        onClick={() => { if (canWrite) startNewFolder(currentFolderId); }}
-        disabled={!canWrite}
-        className={`flex items-center gap-1.5 px-3 py-2 rounded-xl border text-xs font-semibold transition-colors ${canWrite ? 'border-gray-200 text-[#6D6E71] hover:bg-gray-50' : 'border-gray-200 text-[#A5A5A5] bg-gray-100 cursor-not-allowed'}`}
+        onClick={() => { if (canCreateHere) startNewFolder(currentFolderId); }}
+        disabled={!canCreateHere}
+        className={`flex items-center gap-1.5 px-3 py-2 rounded-xl border text-xs font-semibold transition-colors ${canCreateHere ? 'border-gray-200 text-[#6D6E71] hover:bg-gray-50' : 'border-gray-200 text-[#A5A5A5] bg-gray-100 cursor-not-allowed'}`}
       >
         <FolderPlus size={14} /> New Folder
       </button>
 
       {/* Upload */}
       <button
-        onClick={() => { if (canWrite) onUpload(); }}
-        disabled={!canWrite}
-        className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold transition-colors shadow-sm ${canWrite ? 'bg-[#8BC53D] text-white hover:bg-[#7ab535]' : 'bg-gray-200 text-[#A5A5A5] cursor-not-allowed'}`}
+        onClick={() => { if (canCreateHere) onUpload(); }}
+        disabled={!canCreateHere}
+        className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold transition-colors shadow-sm ${canCreateHere ? 'bg-[#8BC53D] text-white hover:bg-[#7ab535]' : 'bg-gray-200 text-[#A5A5A5] cursor-not-allowed'}`}
       >
         <Upload size={14} /> Upload
       </button>
@@ -1241,6 +1320,7 @@ function ContextMenu({ tree, onPreviewFile, onDownloadFile, onOpenActivity }) {
   const {
     contextMenu, hideContextMenu, deleteItems, startRenaming,
     startNewFolder, navigateTo, selectedItems, moveItemsTo, tree: storeTree,
+    archiveItems, unarchiveItems, currentPath,
   } = useFileExplorerStore();
 
   const ref = useRef(null);
@@ -1259,6 +1339,7 @@ function ContextMenu({ tree, onPreviewFile, onDownloadFile, onOpenActivity }) {
   const ids = selectedItems.length > 1 && selectedItems.includes(contextMenu.itemId)
     ? selectedItems
     : [contextMenu.itemId];
+  const isArchiveView = currentPath[currentPath.length - 1] === 'archive';
 
   // Adjust to stay in viewport
   const menuW = 200, menuH = 280;
@@ -1287,7 +1368,7 @@ function ContextMenu({ tree, onPreviewFile, onDownloadFile, onOpenActivity }) {
         <p className="text-[10px] text-[#A5A5A5]">{item.type === 'folder' ? 'Folder' : item.ext?.toUpperCase() || 'File'}</p>
       </div>
       <div className="px-1">
-        {item.type === 'folder' && (
+        {item.type === 'folder' && !isArchiveView && (
           <MenuItem icon={FolderOpen} label="Open" onClick={() => navigateTo(item.id)} />
         )}
         {item.type === 'file' && (
@@ -1299,13 +1380,18 @@ function ContextMenu({ tree, onPreviewFile, onDownloadFile, onOpenActivity }) {
         {item.type === 'file' && (
           <MenuItem icon={Users} label="View Activity" onClick={() => onOpenActivity(item)} />
         )}
-        {ids.length === 1 && (
+        {ids.length === 1 && !isArchiveView && (
           <MenuItem icon={Pencil} label="Rename" onClick={() => startRenaming(item.id)} />
         )}
-        {item.type === 'folder' && ids.length === 1 && (
+        {item.type === 'folder' && ids.length === 1 && !isArchiveView && (
           <MenuItem icon={FolderPlus} label="New Folder Inside" onClick={() => startNewFolder(item.id)} />
         )}
         <div className="my-1 border-t border-gray-100" />
+        <MenuItem
+          icon={isArchiveView ? RotateCcw : Archive}
+          label={isArchiveView ? `Unarchive${ids.length > 1 ? ` (${ids.length})` : ''}` : `Archive${ids.length > 1 ? ` (${ids.length})` : ''}`}
+          onClick={() => isArchiveView ? unarchiveItems(ids) : archiveItems(ids)}
+        />
         <MenuItem icon={Trash2} label={`Delete${ids.length > 1 ? ` (${ids.length})` : ''}`} onClick={() => deleteItems(ids)} danger />
       </div>
     </div>
@@ -1856,7 +1942,11 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
   }, [companyId, role, tree, loadFolderAccessFromApi, setFolderAccess]);
 
   const currentFolderId = currentPath[currentPath.length - 1];
-  const currentFolder = findById(tree, currentFolderId) || tree;
+  const isArchiveView = currentFolderId === 'archive';
+  const archivedItems = useMemo(() => collectArchivedItems(tree), [tree]);
+  const currentFolder = isArchiveView
+    ? { id: 'archive', name: 'Archive', type: 'folder', children: archivedItems }
+    : findById(tree, currentFolderId) || tree;
   const canManageAccess = role === 'broker';
 
   const currentUser = useMemo(() => (
@@ -1903,14 +1993,16 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
       : { count: 0, tooltip: '' };
   }, [folderAccess]);
 
-  const currentFolderPermissions = getFolderPermissions(currentFolderId);
+  const currentFolderPermissions = isArchiveView
+    ? { read: true, write: true, download: true }
+    : getFolderPermissions(currentFolderId);
   const canWriteCurrent = currentFolderPermissions.write || role === 'broker';
   const canReadCurrent = currentFolderPermissions.read || role === 'broker' || currentFolderId === 'root';
 
   // Get items in current view
   const rawItems = searchQuery
-    ? searchTree(tree, searchQuery)
-    : sortItems(currentFolder.children || [], sortBy, sortDir);
+    ? searchTree(tree, searchQuery, (item) => isArchiveView ? isArchivedItem(item) : !isArchivedItem(item))
+    : sortItems((currentFolder.children || []).filter((item) => isArchiveView ? isArchivedItem(item) : !isArchivedItem(item)), sortBy, sortDir);
   const canReadFile = (item) => {
     const path = getPathTo(tree, item.id);
     if (path && path.length > 1) {
@@ -1948,18 +2040,18 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
     setDragCounter(0);
     setDragOver(null);
     if (e.dataTransfer.files.length > 0) {
-      if (!canWriteCurrent) return;
+      if (!canWriteCurrent || isArchiveView) return;
       const warns = uploadFiles(currentFolderId, e.dataTransfer.files);
       if (warns.length > 0) setDuplicateWarnings(warns);
     } else if (draggingItems.length > 0) {
       // drop on background = no-op (items stay where they are)
       clearDrag();
     }
-  }, [currentFolderId, uploadFiles, draggingItems, setDragOver, clearDrag, canWriteCurrent]);
+  }, [currentFolderId, uploadFiles, draggingItems, setDragOver, clearDrag, canWriteCurrent, isArchiveView]);
 
   // File input upload
   const handleFileInputChange = (e) => {
-    if (!canWriteCurrent) return;
+    if (!canWriteCurrent || isArchiveView) return;
     if (e.target.files?.length) {
       const warns = uploadFiles(currentFolderId, e.target.files);
       if (warns.length > 0) setDuplicateWarnings(warns);
@@ -1968,7 +2060,7 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
   };
 
   const openUpload = () => {
-    if (!canWriteCurrent) return;
+    if (!canWriteCurrent || isArchiveView) return;
     fileInputRef.current?.click();
   };
 
@@ -2075,6 +2167,7 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
           onUpload={openUpload}
           role={role}
           currentFolderPermissions={currentFolderPermissions}
+          archivedCount={archivedItems.length}
         />
 
         {/* Content Area */}

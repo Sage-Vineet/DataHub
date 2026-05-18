@@ -8,7 +8,7 @@ import {
   useParams,
   useNavigate,
 } from "react-router-dom";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { MessageNotificationsProvider } from "./context/MessageNotificationsContext";
 import { ToastProvider, useToast } from "./context/ToastContext";
@@ -94,6 +94,10 @@ function ProtectedRoute({ children, allowedRole, allowedRoles }) {
   return <Layout>{children}</Layout>;
 }
 
+// Module-level cache: clientId → resolved company object.
+// Survives re-renders; cleared on full page reload.
+const companyCache = {};
+
 // Wrapper for client workspace — handles auth + company resolution
 function ClientWorkspaceWrapper() {
   const { user, loading: authLoading } = useAuth();
@@ -101,26 +105,60 @@ function ClientWorkspaceWrapper() {
   const navigate = useNavigate();
   const location = useLocation();
   const { clientId } = useParams();
-  const [company, setCompany] = useState(location.state?.company ?? null);
-  const [loading, setLoading] = useState(!location.state?.company);
+
+  // Seed from navigation state (Switch Company passes the full object) or cache.
+  const seedCompany =
+    (location.state?.company?.id && String(location.state.company.id) === String(clientId))
+      ? location.state.company
+      : companyCache[clientId] ?? null;
+
+  const [company, setCompany] = useState(seedCompany ?? null);
+  const [loading, setLoading] = useState(!seedCompany);
   const [error, setError] = useState("");
+
+  // Keep a ref to the latest location.state so the effect can read it without
+  // adding location to the dependency array (which would re-run on every nav).
+  const locationStateRef = useRef(location.state);
+  locationStateRef.current = location.state;
 
   useEffect(() => {
     if (!user || user.role !== "broker" || !clientId) return;
+
+    // If navigation state carries the exact company for this clientId, use it
+    // immediately — no network round-trip needed.
+    const stateCompany = locationStateRef.current?.company;
+    if (stateCompany && String(stateCompany.id) === String(clientId)) {
+      const resolved = {
+        ...stateCompany,
+        logo: stateCompany.logo || companyLogo(stateCompany.name),
+      };
+      companyCache[clientId] = resolved;
+      setCompany(resolved);
+      setLoading(false);
+      return;
+    }
+
+    // Use cache for instant render while a background refresh runs.
+    if (companyCache[clientId]) {
+      setCompany(companyCache[clientId]);
+      setLoading(false);
+    }
 
     let cancelled = false;
 
     getCompanyRequest(clientId)
       .then((data) => {
         if (!cancelled) {
-          setCompany({
-            ...data,
-            logo: data.logo || companyLogo(data.name),
-          });
+          const resolved = { ...data, logo: data.logo || companyLogo(data.name) };
+          companyCache[clientId] = resolved;
+          setCompany(resolved);
         }
       })
       .catch(async () => {
         if (cancelled) return;
+        // Already have cached data — stay silent, no spinner needed.
+        if (companyCache[clientId]) return;
+
         try {
           const companies = await listCompaniesRequest();
           if (cancelled) return;
@@ -129,10 +167,12 @@ function ClientWorkspaceWrapper() {
             (entry) => String(entry.id) === String(clientId),
           );
           if (activeCompany) {
-            setCompany({
+            const resolved = {
               ...activeCompany,
               logo: activeCompany.logo || companyLogo(activeCompany.name),
-            });
+            };
+            companyCache[clientId] = resolved;
+            setCompany(resolved);
             return;
           }
 
@@ -166,6 +206,7 @@ function ClientWorkspaceWrapper() {
     return () => {
       cancelled = true;
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, clientId, navigate, showToast]);
 
   useEffect(() => {

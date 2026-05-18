@@ -4,6 +4,7 @@ const {
   createCompany,
   getCompany,
   updateCompany,
+  deleteCompany,
 } = require("../controllers/companies");
 
 const { requireAuth } = require("../middleware/auth");
@@ -20,5 +21,6 @@ router.get("/", listCompanies);
 router.post("/", createCompany);
 router.get("/:id", getCompany);
 router.patch("/:id", updateCompany);
+router.delete("/:id", deleteCompany);
 
 module.exports = router;

@@ -6,7 +6,7 @@ export default function UserMessages() {
   const companyOptions = (user?.assignedCompanies || user?.assigned_companies || [])
     .map((company) => ({
       id: company.id,
-      name: company.name,
+      name: company.project_name || company.name,
       industry: company.industry,
     }))
     .filter((company) => company.id);

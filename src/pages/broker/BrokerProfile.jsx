@@ -457,6 +457,14 @@ function ProfilePage({ user, onRefresh }) {
 
   const fields = [
     {
+      key: 'broker_company',
+      label: 'Company Name',
+      value: resolve('broker_company', user?.broker_company),
+      placeholder: 'Add your company name',
+      required: true,
+      title: 'Edit company name',
+    },
+    {
       key: 'name',
       label: 'Name',
       value: resolve('name', user?.name),

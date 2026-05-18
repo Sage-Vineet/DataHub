@@ -55,7 +55,9 @@ function initials(name = '') {
 function normalizeUser(userData) {
   if (!userData) return userData;
   const normalizedRole = ROLE_MAP[userData.effective_role || userData.role] || userData.effective_role || userData.role;
-  const normalizedCompany = userData.company ?? userData.company_name ?? userData.companyName ?? '';
+  const normalizedCompany =
+    (userData.role === 'broker' && userData.broker_company) ? userData.broker_company
+    : userData.company ?? userData.company_name ?? userData.companyName ?? '';
   const assignedCompanies = userData.assigned_companies ?? userData.assignedCompanies ?? [];
   const normalizedName = userData.name ?? userData.full_name ?? userData.fullName ?? '';
   const normalizedAvatar = userData.avatar ?? initials(normalizedName);

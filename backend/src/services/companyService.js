@@ -3,112 +3,83 @@ const { Pool } = require("pg");
 const bcrypt = require("bcryptjs");
 const CLIENT_STATIC_PASSWORD = process.env.CLIENT_STATIC_PASSWORD || "123456";
 
-let _pool = null;
-function getPool() {
-  if (!process.env.DATABASE_URL) return null;
-  if (!_pool) _pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
-  return _pool;
-}
-
 async function getAllCompanies() {
-  const { data: companies, error } = await supabase
+  const { data, error } = await supabase
     .from("companies")
     .select("*")
     .order("created_at", { ascending: false });
 
-  if (!error) return await attachCompanyStats(companies || []);
-
-  // Supabase quota fallback
-  const pool = getPool();
-  if (!pool) throw error;
-  const { rows } = await pool.query("SELECT * FROM companies ORDER BY created_at DESC");
-  return await attachCompanyStats(rows);
+  if (error) throw error;
+  return attachCompanyStats(data || []);
 }
 
 async function getCompanyById(id) {
-  const { data: company, error } = await supabase
+  const { data, error } = await supabase
     .from("companies")
     .select("*")
     .eq("id", id)
     .maybeSingle();
 
-  if (!error) {
-    if (!company) return null;
-    return await attachCompanyStats(company);
-  }
-
-  // Supabase quota fallback
-  const pool = getPool();
-  if (!pool) throw error;
-  const { rows } = await pool.query("SELECT * FROM companies WHERE id = $1 LIMIT 1", [id]);
-  if (!rows[0]) return null;
-  return await attachCompanyStats(rows[0]);
+  if (error) throw error;
+  if (!data) return null;
+  return attachCompanyStats(data);
 }
 
 async function createCompany(companyData) {
-  const { data: inserted, error } = await supabase
+  const { data, error } = await supabase
     .from("companies")
     .insert({
       name: companyData.name,
-      industry: companyData.industry,
+      project_name: companyData.project_name || null,
+      industry: companyData.industry || null,
       status: companyData.status || "active",
       since: companyData.since || null,
       logo: companyData.logo || null,
       contact_name: companyData.contact_name,
       contact_email: companyData.contact_email,
-      contact_phone: companyData.contact_phone,
+      contact_phone: companyData.contact_phone || null,
     })
     .select("*")
     .single();
 
-  if (!error) return inserted;
-
-  // Supabase quota fallback
-  const pool = getPool();
-  if (!pool) throw error;
-  const { rows } = await pool.query(
-    `INSERT INTO companies (name, industry, status, since, logo, contact_name, contact_email, contact_phone)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
-    [
-      companyData.name, companyData.industry, companyData.status || "active",
-      companyData.since || null, companyData.logo || null,
-      companyData.contact_name, companyData.contact_email, companyData.contact_phone,
-    ],
-  );
-  return rows[0];
+  if (error) throw error;
+  return data;
 }
 
-const ALLOWED_COMPANY_COLUMNS = new Set([
-  "name", "industry", "status", "since", "logo",
-  "contact_name", "contact_email", "contact_phone", "updated_at",
-]);
-
 async function updateCompany(id, companyData) {
-  const updates = { ...companyData, updated_at: new Date().toISOString() };
+  const now = new Date().toISOString();
 
-  const { data: updated, error } = await supabase
+  const patch = {
+    updated_at: now,
+  };
+
+  // Map only the fields present in companyData to avoid clobbering
+  // data-source columns (quickbooks_connected, etc.) managed elsewhere.
+  const mappable = {
+    name: companyData.name,
+    project_name: companyData.project_name ?? null,
+    industry: companyData.industry,
+    status: companyData.status,
+    since: companyData.since,
+    logo: companyData.logo,
+    contact_name: companyData.contact_name,
+    contact_email: companyData.contact_email,
+    contact_phone: companyData.contact_phone,
+  };
+
+  for (const [key, value] of Object.entries(mappable)) {
+    if (value !== undefined) patch[key] = value ?? null;
+  }
+
+  const { data, error } = await supabase
     .from("companies")
-    .update(updates)
+    .update(patch)
     .eq("id", id)
     .select("*")
     .single();
 
-  if (!error) return updated;
-
-  // Supabase quota fallback
-  const pool = getPool();
-  if (!pool) throw error;
-
-  const keys = Object.keys(updates).filter((k) => ALLOWED_COMPANY_COLUMNS.has(k));
-  if (!keys.length) throw new Error("No valid fields to update");
-  const setClauses = keys.map((k, i) => `"${k}" = $${i + 1}`).join(", ");
-  const values = [...keys.map((k) => updates[k]), id];
-
-  const { rows } = await pool.query(
-    `UPDATE companies SET ${setClauses} WHERE id = $${values.length} RETURNING *`,
-    values,
-  );
-  return rows[0];
+  if (error) throw error;
+  return data;
 }
 
 async function syncCompanyClientRepresentative(company, previousCompany = null) {
@@ -281,11 +252,21 @@ async function attachCompanyStats(companies) {
   return isSingle ? enriched[0] : enriched;
 }
 
+async function deleteCompany(id) {
+  const { error } = await supabase
+    .from("companies")
+    .delete()
+    .eq("id", id);
+
+  if (error) throw error;
+}
+
 module.exports = {
   getAllCompanies,
   getCompanyById,
   createCompany,
   updateCompany,
+  deleteCompany,
   syncCompanyClientRepresentative,
   attachCompanyStats,
 };

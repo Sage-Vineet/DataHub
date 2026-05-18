@@ -315,24 +315,36 @@ async function deleteRequest(requestId) {
 }
 
 async function listRequestDocuments(requestId) {
-  try {
-    const rows = await pgQuery(
-      `SELECT rd.id, rd.request_id, rd.document_id, rd.visible, rd.created_at,
-              d.name, d.file_url, d.status, d.upload_id
-       FROM request_documents rd
-       LEFT JOIN documents d ON rd.document_id = d.id
-       WHERE rd.request_id = $1
-       ORDER BY rd.created_at DESC`,
-      [requestId],
-    );
-    return rows;
-  } catch {
-    const { data, error } = await supabase.from("request_documents")
-      .select("id, request_id, document_id, visible, created_at, document:documents!request_documents_document_id_fkey(name, file_url, status, upload_id)")
-      .eq("request_id", requestId).order("created_at", { ascending: false });
-    if (error) throw error;
-    return (data || []).map(rd => ({ ...rd, name: rd.document?.name, file_url: rd.document?.file_url, status: rd.document?.status, upload_id: rd.document?.upload_id }));
-  }
+  const { data: links, error: linksError } = await supabase
+    .from("request_documents")
+    .select("id, request_id, document_id, visible, created_at")
+    .eq("request_id", requestId)
+    .order("created_at", { ascending: false });
+
+  if (linksError) throw linksError;
+  if (!links || links.length === 0) return [];
+
+  const documentIds = links.map((l) => l.document_id).filter(Boolean);
+  const { data: documents, error: docsError } = await supabase
+    .from("documents")
+    .select("id, name, file_url, status, upload_id")
+    .in("id", documentIds);
+
+  if (docsError) throw docsError;
+
+  const docMap = {};
+  (documents || []).forEach((doc) => { docMap[doc.id] = doc; });
+
+  return links.map((rd) => {
+    const doc = docMap[rd.document_id] || {};
+    return {
+      ...rd,
+      name: doc.name,
+      file_url: doc.file_url,
+      status: doc.status,
+      upload_id: doc.upload_id,
+    };
+  });
 }
 
 async function addRequestDocument(requestId, documentId, visible = true) {
