@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(node -e ' *)"
+      "Bash(node -e ' *)",
+      "Bash(cat /tmp/backend.log)",
+      "Read(//private/tmp/**)"
     ]
   }
 }

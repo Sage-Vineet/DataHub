@@ -279,24 +279,36 @@ async function deleteRequest(requestId) {
  * Lists documents linked to a request
  */
 async function listRequestDocuments(requestId) {
-  const { data, error } = await supabase
+  const { data: links, error: linksError } = await supabase
     .from("request_documents")
-    .select(`
-      id, request_id, document_id, visible, created_at,
-      document:documents!request_documents_document_id_fkey(name, file_url, status, upload_id)
-    `)
+    .select("id, request_id, document_id, visible, created_at")
     .eq("request_id", requestId)
     .order("created_at", { ascending: false });
 
-  if (error) throw error;
+  if (linksError) throw linksError;
+  if (!links || links.length === 0) return [];
 
-  return (data || []).map(rd => ({
-    ...rd,
-    name: rd.document?.name,
-    file_url: rd.document?.file_url,
-    status: rd.document?.status,
-    upload_id: rd.document?.upload_id
-  }));
+  const documentIds = links.map((l) => l.document_id).filter(Boolean);
+  const { data: documents, error: docsError } = await supabase
+    .from("documents")
+    .select("id, name, file_url, status, upload_id")
+    .in("id", documentIds);
+
+  if (docsError) throw docsError;
+
+  const docMap = {};
+  (documents || []).forEach((doc) => { docMap[doc.id] = doc; });
+
+  return links.map((rd) => {
+    const doc = docMap[rd.document_id] || {};
+    return {
+      ...rd,
+      name: doc.name,
+      file_url: doc.file_url,
+      status: doc.status,
+      upload_id: doc.upload_id,
+    };
+  });
 }
 
 /**

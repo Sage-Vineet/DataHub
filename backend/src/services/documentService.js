@@ -2,14 +2,22 @@ const { supabase } = require("../db");
 
 /**
  * Lists all documents in a folder
+ * @param {string} folderId
+ * @param {Object} options
+ * @param {boolean} [options.includeArchived] - Include archived documents
  */
-async function listDocumentsByFolder(folderId) {
-  const { data, error } = await supabase
+async function listDocumentsByFolder(folderId, options = {}) {
+  let query = supabase
     .from("documents")
     .select("*")
     .eq("folder_id", folderId)
     .order("uploaded_at", { ascending: false });
 
+  if (!options.includeArchived) {
+    query = query.is("archived_at", null);
+  }
+
+  const { data, error } = await query;
   if (error) throw error;
   return data || [];
 }
@@ -68,6 +76,34 @@ async function deleteDocument(id) {
 }
 
 /**
+ * Archives a document (soft delete)
+ */
+async function archiveDocument(id) {
+  const { data, error } = await supabase
+    .from("documents")
+    .update({ archived_at: new Date().toISOString() })
+    .eq("id", id)
+    .select("*")
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+/**
+ * Unarchives a document
+ */
+async function unarchiveDocument(id) {
+  const { data, error } = await supabase
+    .from("documents")
+    .update({ archived_at: null })
+    .eq("id", id)
+    .select("*")
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+/**
  * Validates if an upload exists
  */
 async function validateUpload(uploadId) {
@@ -121,6 +157,8 @@ async function getDocumentActivity(documentId) {
 module.exports = {
   listDocumentsByFolder,
   createDocument,
+  archiveDocument,
+  unarchiveDocument,
   deleteDocument,
   validateUpload,
   recordDocumentActivity,

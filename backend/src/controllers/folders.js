@@ -9,7 +9,8 @@ const listFolders = asyncHandler(async (req, res) => {
 });
 
 const listFolderTree = asyncHandler(async (req, res) => {
-  const tree = await folderService.getFolderTree(req.params.id);
+  const includeArchived = req.query.includeArchived === 'true';
+  const tree = await folderService.getFolderTree(req.params.id, { includeArchived });
   res.json(tree);
 });
 
@@ -34,7 +35,8 @@ const moveFolder = asyncHandler(async (req, res) => {
 });
 
 const listFolderDocuments = asyncHandler(async (req, res) => {
-  const documents = await documentService.listDocumentsByFolder(req.params.id);
+  const includeArchived = req.query.includeArchived === 'true';
+  const documents = await documentService.listDocumentsByFolder(req.params.id, { includeArchived });
   res.json(documents);
 });
 
@@ -96,6 +98,26 @@ const addFolderDocument = asyncHandler(async (req, res) => {
   });
 });
 
+const archiveFolderController = asyncHandler(async (req, res) => {
+  const folder = await folderService.archiveFolder(req.params.id);
+  res.json(folder);
+});
+
+const unarchiveFolderController = asyncHandler(async (req, res) => {
+  const folder = await folderService.unarchiveFolder(req.params.id);
+  res.json(folder);
+});
+
+const archiveDocumentController = asyncHandler(async (req, res) => {
+  const document = await documentService.archiveDocument(req.params.id);
+  res.json(document);
+});
+
+const unarchiveDocumentController = asyncHandler(async (req, res) => {
+  const document = await documentService.unarchiveDocument(req.params.id);
+  res.json(document);
+});
+
 const deleteDocument = asyncHandler(async (req, res) => {
   await documentService.deleteDocument(req.params.id);
   res.status(204).send();
@@ -134,9 +156,13 @@ module.exports = {
   updateFolder,
   deleteFolder,
   moveFolder,
+  archiveFolderController,
+  unarchiveFolderController,
   listFolderDocuments,
   addFolderDocument,
   deleteDocument,
+  archiveDocumentController,
+  unarchiveDocumentController,
   listFolderTree,
   recordDocumentActivity,
   getDocumentActivity,

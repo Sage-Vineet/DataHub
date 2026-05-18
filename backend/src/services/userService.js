@@ -30,7 +30,7 @@ const userSelect = `
 // Extended select with profile columns. Falls back to userSelect if the
 // columns haven't been created yet (migration not yet run).
 const userSelectWithProfile =
-  userSelect.trimEnd() + `,\n  date_of_birth,\n  occupation,\n  address\n`;
+  userSelect.trimEnd() + `,\n  date_of_birth,\n  occupation,\n  address,\n  broker_company\n`;
 
 async function selectUserRow(buildQuery) {
   let result = await buildQuery(userSelectWithProfile);
@@ -46,7 +46,7 @@ async function getSqlProfileByEmail(email) {
   try {
     const { rows } = await pool.query(
       `
-        select date_of_birth, occupation, address
+        select date_of_birth, occupation, address, broker_company
         from users
         where lower(email) = lower($1)
         limit 1
@@ -62,7 +62,12 @@ async function getSqlProfileByEmail(email) {
 
 async function mergeSqlProfile(user) {
   if (!user?.email) return user;
-  if (user.date_of_birth !== undefined && user.occupation !== undefined && user.address !== undefined) {
+  if (
+    user.date_of_birth !== undefined &&
+    user.occupation !== undefined &&
+    user.address !== undefined &&
+    user.broker_company !== undefined
+  ) {
     return user;
   }
 
@@ -72,6 +77,7 @@ async function mergeSqlProfile(user) {
     date_of_birth: user.date_of_birth ?? profile.date_of_birth ?? null,
     occupation: user.occupation ?? profile.occupation ?? null,
     address: user.address ?? profile.address ?? null,
+    broker_company: user.broker_company ?? profile.broker_company ?? null,
   };
 }
 
@@ -442,7 +448,7 @@ async function createUser(userData) {
 async function updateUser(id, userData) {
   const {
     name, email, phone,
-    date_of_birth, occupation, address,
+    date_of_birth, occupation, address, broker_company,
     password, current_password,
     role, company_id, company_ids, status,
   } = userData;
@@ -454,6 +460,7 @@ async function updateUser(id, userData) {
   const normalizedDob = date_of_birth !== undefined ? normalizeDateOfBirth(date_of_birth) : undefined;
   const normalizedOccupation = occupation !== undefined ? normalizeOptionalText(occupation) : undefined;
   const normalizedAddress = address !== undefined ? normalizeOptionalText(address) : undefined;
+  const normalizedBrokerCompany = broker_company !== undefined ? normalizeOptionalText(broker_company) : undefined;
 
   // ── Core updates (always-safe columns) ──────────────────────────────────
   const coreUpdates = {};
@@ -511,9 +518,10 @@ async function updateUser(id, userData) {
 
   // ── Profile updates via Supabase JS client ──────────────────────────────────
   const profileUpdates = {};
-  if (date_of_birth !== undefined) profileUpdates.date_of_birth = normalizedDob;
-  if (occupation    !== undefined) profileUpdates.occupation    = normalizedOccupation;
-  if (address       !== undefined) profileUpdates.address       = normalizedAddress;
+  if (date_of_birth   !== undefined) profileUpdates.date_of_birth   = normalizedDob;
+  if (occupation      !== undefined) profileUpdates.occupation      = normalizedOccupation;
+  if (address         !== undefined) profileUpdates.address         = normalizedAddress;
+  if (broker_company  !== undefined) profileUpdates.broker_company  = normalizedBrokerCompany;
 
   if (Object.keys(profileUpdates).length > 0) {
     const { error: profileErr } = await supabase

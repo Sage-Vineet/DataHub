@@ -246,15 +246,22 @@ async function ensureRootUploadFolder(companyId, preferredCreatedBy) {
 /**
  * Lists all folders for a company
  * @param {string} companyId - Company ID
+ * @param {Object} options
+ * @param {boolean} [options.includeArchived] - Include archived folders
  * @returns {Promise<Array>}
  */
-async function listFoldersByCompany(companyId) {
-  const { data, error } = await supabase
+async function listFoldersByCompany(companyId, options = {}) {
+  let query = supabase
     .from("folders")
     .select("*")
     .eq("company_id", companyId)
     .order("created_at", { ascending: true });
 
+  if (!options.includeArchived) {
+    query = query.is("archived_at", null);
+  }
+
+  const { data, error } = await query;
   if (error) throw error;
   return data || [];
 }
@@ -262,14 +269,22 @@ async function listFoldersByCompany(companyId) {
 /**
  * Gets a tree structure of folders for a company
  * @param {string} companyId - Company ID
+ * @param {Object} options
+ * @param {boolean} [options.includeArchived] - Include archived folders
  * @returns {Promise<Array>}
  */
-async function getFolderTree(companyId) {
-  const { data: rows, error } = await supabase
+async function getFolderTree(companyId, options = {}) {
+  let query = supabase
     .from("folders")
     .select("*")
     .eq("company_id", companyId)
     .order("created_at", { ascending: true });
+
+  if (!options.includeArchived) {
+    query = query.is("archived_at", null);
+  }
+
+  const { data: rows, error } = await query;
 
   if (error) throw error;
 
@@ -333,6 +348,34 @@ async function updateFolder(id, folderData) {
 }
 
 /**
+ * Archives a folder (soft delete)
+ */
+async function archiveFolder(id) {
+  const { data, error } = await supabase
+    .from("folders")
+    .update({ archived_at: new Date().toISOString() })
+    .eq("id", id)
+    .select("*")
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+/**
+ * Unarchives a folder
+ */
+async function unarchiveFolder(id) {
+  const { data, error } = await supabase
+    .from("folders")
+    .update({ archived_at: null })
+    .eq("id", id)
+    .select("*")
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+/**
  * Deletes a folder
  */
 async function deleteFolder(id) {
@@ -363,6 +406,8 @@ module.exports = {
   getFolderTree,
   createFolder,
   updateFolder,
+  archiveFolder,
+  unarchiveFolder,
   deleteFolder,
   moveFolder
 };

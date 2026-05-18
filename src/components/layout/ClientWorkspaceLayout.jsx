@@ -134,7 +134,7 @@ function WorkspaceSidebar({ company, onClose }) {
             </div>
             <div className="min-w-0">
               <p className="truncate text-[14px] font-semibold text-text-primary">
-                {company.name}
+                {company.project_name || company.name}
               </p>
               <p className="truncate text-[12px] text-text-muted">
                 {company.industry || "Client company"}
@@ -273,25 +273,31 @@ function WorkspaceSidebar({ company, onClose }) {
   );
 }
 
+// Module-level cache so the companies list is fetched at most once per session,
+// regardless of how many times WorkspaceTopbar mounts or the company switches.
+let cachedSwitchCompanies = null;
+
 function WorkspaceTopbar({ company, onMenuClick }) {
   const navigate = useNavigate();
   const location = useLocation();
   const { user } = useAuth();
   const [showSwitch, setShowSwitch] = useState(false);
-  const [companies, setCompanies] = useState([]);
+  const [companies, setCompanies] = useState(cachedSwitchCompanies ?? []);
 
   useEffect(() => {
+    if (cachedSwitchCompanies) return; // already populated — skip fetch
+
     let cancelled = false;
 
     listCompaniesRequest()
       .then((data) => {
         if (!cancelled) {
-          setCompanies(
-            data.map((item) => ({
-              ...item,
-              logo: item.logo || companyLogo(item.name),
-            })),
-          );
+          const mapped = data.map((item) => ({
+            ...item,
+            logo: item.logo || companyLogo(item.name),
+          }));
+          cachedSwitchCompanies = mapped;
+          setCompanies(mapped);
         }
       })
       .catch(() => {
@@ -348,7 +354,7 @@ function WorkspaceTopbar({ company, onMenuClick }) {
                 className="hidden text-text-muted sm:inline"
               />
               <span className="text-[14px] font-semibold text-text-primary">
-                {company.name}
+                {company.project_name || company.name}
               </span>
             </div>
             <p className="mt-1 text-[12px] text-text-muted">{title}</p>
@@ -386,7 +392,9 @@ function WorkspaceTopbar({ company, onMenuClick }) {
                     key={item.id}
                     onClick={() => {
                       setShowSwitch(false);
-                      navigate(`/broker/client/${item.id}/datahub-dashboard`);
+                      navigate(`/broker/client/${item.id}/datahub-dashboard`, {
+                        state: { company: item },
+                      });
                     }}
                     className={`flex w-full items-center gap-2.5 px-4 py-2.5 text-left transition-colors hover:bg-bg-page ${item.id === company.id ? "bg-[#EEF6E0]" : ""
                       }`}
@@ -396,7 +404,7 @@ function WorkspaceTopbar({ company, onMenuClick }) {
                     </div>
                     <div className="min-w-0">
                       <p className="truncate text-xs font-semibold text-text-primary">
-                        {item.name}
+                        {item.project_name || item.name}
                       </p>
                       <p className="truncate text-[10px] text-text-muted">
                         {item.industry}

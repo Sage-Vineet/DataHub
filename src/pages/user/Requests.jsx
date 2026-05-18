@@ -134,7 +134,7 @@ export default function UserRequests() {
             .map((request) => ({
             id: request.id,
             companyId: company.id,
-            companyName: company.name,
+            companyName: company.project_name || company.name,
             title: request.title || 'Untitled Request',
             description: request.description || 'No description provided.',
             category: request.category || 'Other',
@@ -370,7 +370,7 @@ export default function UserRequests() {
               <option value="all">All companies</option>
               {assignedCompanies.map((company) => (
                 <option key={company.id} value={String(company.id)}>
-                  {company.name}
+                  {company.project_name || company.name}
                 </option>
               ))}
             </select>

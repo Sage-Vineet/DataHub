@@ -8,9 +8,9 @@ const listCompanies = asyncHandler(async (req, res) => {
 });
 
 const createCompany = asyncHandler(async (req, res) => {
-  const { name, industry, contact_name, contact_email, contact_phone } = req.body || {};
+  const { name, project_name, industry, contact_name, contact_email, contact_phone } = req.body || {};
 
-  if (!name || !industry || !contact_name || !contact_email || !contact_phone) {
+  if (!name || !project_name || !industry || !contact_name || !contact_email || !contact_phone) {
     return res.status(400).json({ error: "Missing required fields" });
   }
 
@@ -40,4 +40,12 @@ const updateCompany = asyncHandler(async (req, res) => {
   res.json(updated);
 });
 
-module.exports = { listCompanies, createCompany, getCompany, updateCompany };
+const deleteCompany = asyncHandler(async (req, res) => {
+  const existing = await companyService.getCompanyById(req.params.id);
+  if (!existing) return res.status(404).json({ error: "Not found" });
+
+  await companyService.deleteCompany(req.params.id);
+  res.status(200).json({ message: "Company deleted successfully" });
+});
+
+module.exports = { listCompanies, createCompany, getCompany, updateCompany, deleteCompany };

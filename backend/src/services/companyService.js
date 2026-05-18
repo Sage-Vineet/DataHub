@@ -2,86 +2,83 @@ const { supabase } = require("../db");
 const bcrypt = require("bcryptjs");
 const CLIENT_STATIC_PASSWORD = process.env.CLIENT_STATIC_PASSWORD || "123456";
 
-/**
- * Standard company select fields
- */
-const companySelect = "*";
-
-/**
- * Gets all companies with stats
- * @returns {Promise<Array>}
- */
 async function getAllCompanies() {
-  const { data: companies, error } = await supabase
+  const { data, error } = await supabase
     .from("companies")
-    .select(companySelect)
+    .select("*")
     .order("created_at", { ascending: false });
 
   if (error) throw error;
-  return await attachCompanyStats(companies || []);
+  return attachCompanyStats(data || []);
 }
 
-/**
- * Gets a company by ID with stats
- * @param {string} id - Company ID
- * @returns {Promise<Object|null>}
- */
 async function getCompanyById(id) {
-  const { data: company, error } = await supabase
+  const { data, error } = await supabase
     .from("companies")
-    .select(companySelect)
+    .select("*")
     .eq("id", id)
     .maybeSingle();
 
   if (error) throw error;
-  if (!company) return null;
-
-  return await attachCompanyStats(company);
+  if (!data) return null;
+  return attachCompanyStats(data);
 }
 
-/**
- * Creates a new company
- * @param {Object} companyData - Company data
- * @returns {Promise<Object>} Created company
- */
 async function createCompany(companyData) {
-  const { data: inserted, error } = await supabase
+  const { data, error } = await supabase
     .from("companies")
     .insert({
       name: companyData.name,
-      industry: companyData.industry,
+      project_name: companyData.project_name || null,
+      industry: companyData.industry || null,
       status: companyData.status || "active",
       since: companyData.since || null,
       logo: companyData.logo || null,
       contact_name: companyData.contact_name,
       contact_email: companyData.contact_email,
-      contact_phone: companyData.contact_phone
+      contact_phone: companyData.contact_phone || null,
     })
     .select("*")
     .single();
 
   if (error) throw error;
-  return inserted;
+  return data;
 }
 
-/**
- * Updates an existing company
- * @param {string} id - Company ID
- * @param {Object} companyData - Update data
- * @returns {Promise<Object>} Updated company
- */
 async function updateCompany(id, companyData) {
-  const updates = { ...companyData, updated_at: new Date().toISOString() };
+  const now = new Date().toISOString();
 
-  const { data: updated, error } = await supabase
+  const patch = {
+    updated_at: now,
+  };
+
+  // Map only the fields present in companyData to avoid clobbering
+  // data-source columns (quickbooks_connected, etc.) managed elsewhere.
+  const mappable = {
+    name: companyData.name,
+    project_name: companyData.project_name ?? null,
+    industry: companyData.industry,
+    status: companyData.status,
+    since: companyData.since,
+    logo: companyData.logo,
+    contact_name: companyData.contact_name,
+    contact_email: companyData.contact_email,
+    contact_phone: companyData.contact_phone,
+  };
+
+  for (const [key, value] of Object.entries(mappable)) {
+    if (value !== undefined) patch[key] = value ?? null;
+  }
+
+  const { data, error } = await supabase
     .from("companies")
-    .update(updates)
+    .update(patch)
     .eq("id", id)
     .select("*")
     .single();
 
   if (error) throw error;
-  return updated;
+  return data;
 }
 
 /**
@@ -222,11 +219,21 @@ async function attachCompanyStats(companies) {
   return isSingle ? enriched[0] : enriched;
 }
 
+async function deleteCompany(id) {
+  const { error } = await supabase
+    .from("companies")
+    .delete()
+    .eq("id", id);
+
+  if (error) throw error;
+}
+
 module.exports = {
   getAllCompanies,
   getCompanyById,
   createCompany,
   updateCompany,
+  deleteCompany,
   syncCompanyClientRepresentative,
   attachCompanyStats
 };

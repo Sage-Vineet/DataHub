@@ -1,3 +1,4 @@
+import { useState, useRef, useEffect } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
 import { useMessageNotifications } from "../../context/MessageNotificationsContext";
@@ -11,6 +12,7 @@ import {
   MoreHorizontal,
   FileText,
   MessageSquare,
+  Settings,
 } from "lucide-react";
 import datahublogo from "../../assets/datahublogo.png";
 
@@ -31,6 +33,8 @@ export default function Sidebar({ onClose }) {
   const { user, logout } = useAuth();
   const { unreadCount } = useMessageNotifications();
   const navigate = useNavigate();
+  const [showUserMenu, setShowUserMenu] = useState(false);
+  const userMenuRef = useRef(null);
   const nav = user?.role === "broker" ? brokerNav : clientNav;
   const accountLabel = user?.role === "broker" ? "Administrator" : user?.role === "user" ? "User" : "Client";
 
@@ -38,6 +42,16 @@ export default function Sidebar({ onClose }) {
     await logout();
     navigate("/login", { replace: true });
   };
+
+  useEffect(() => {
+    function handleClickOutside(e) {
+      if (userMenuRef.current && !userMenuRef.current.contains(e.target)) {
+        setShowUserMenu(false);
+      }
+    }
+    if (showUserMenu) document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [showUserMenu]);
 
   return (
     <aside
@@ -107,20 +121,50 @@ export default function Sidebar({ onClose }) {
       </nav>
 
       <div className="border-t border-border px-3 pb-4 pt-4">
-        <div className="mb-1 flex items-center gap-3 rounded-md px-3 py-2.5 transition-colors hover:bg-bg-page">
-          <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary text-[12px] font-semibold text-white">
-            {user?.avatar}
-          </div>
-          <div className="min-w-0 flex-1 text-left">
-            <p className="truncate text-[14px] font-medium leading-none text-text-primary">
-              {user?.name}
-            </p>
-            <p className="mt-1 truncate text-[12px] leading-none text-text-muted">
-              {user?.role === "broker" ? accountLabel : `${accountLabel}${user?.company ? ` · ${user.company}` : ""}`}
-            </p>
-          </div>
-          <button className="text-text-muted transition-colors hover:text-text-primary">
-            <MoreHorizontal size={16} />
+        <div className="relative" ref={userMenuRef}>
+          {showUserMenu && (
+            <div
+              className="absolute bottom-full left-0 right-0 mb-1 rounded-[var(--radius-card)] border border-border bg-white p-2 animate-fadeIn"
+              style={{ boxShadow: "var(--shadow-dropdown)" }}
+            >
+              <div className="mb-1 border-b border-border px-3 py-2">
+                <p className="text-sm font-semibold text-text-primary">{user?.name}</p>
+                <p className="text-xs text-secondary">{user?.email}</p>
+              </div>
+              <button
+                className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-secondary transition-colors hover:bg-bg-page hover:text-text-primary"
+                onClick={() => {
+                  setShowUserMenu(false);
+                  if (onClose) onClose();
+                  if (user?.role === "client") {
+                    navigate("/client/profile");
+                  } else if (user?.role === "broker") {
+                    navigate("/broker/profile");
+                  }
+                }}
+              >
+                <Settings size={14} />
+                Profile Settings
+              </button>
+            </div>
+          )}
+
+          <button
+            onClick={() => setShowUserMenu((v) => !v)}
+            className="mb-1 flex w-full items-center gap-3 rounded-md px-3 py-2.5 transition-colors hover:bg-bg-page"
+          >
+            <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary text-[12px] font-semibold text-white">
+              {user?.avatar}
+            </div>
+            <div className="min-w-0 flex-1 text-left">
+              <p className="truncate text-[14px] font-medium leading-none text-text-primary">
+                {user?.name}
+              </p>
+              <p className="mt-1 truncate text-[12px] leading-none text-text-muted">
+                {user?.role === "broker" ? accountLabel : `${accountLabel}${user?.company ? ` · ${user.company}` : ""}`}
+              </p>
+            </div>
+            <MoreHorizontal size={16} className="shrink-0 text-text-muted" />
           </button>
         </div>
         <button
