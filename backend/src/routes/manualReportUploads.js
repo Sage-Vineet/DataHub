@@ -4,11 +4,13 @@ const {
   STATEMENT_TYPES,
   MANUAL_REPORT_UPLOAD_SOURCE,
   getLatestManualUploadedReport,
+  getAllManualUploadedReports,
   syncManualReportFolder,
   syncManualUploadSource,
   getManualUploadSourceTree,
   extractAndCacheReportAsOfDate,
   extractTaxDataFromBuffer,
+  clearTaxExtractCache,
   buildTaxReturnResponseData,
   extractPLForTax,
   buildPLForTaxData,
@@ -132,10 +134,21 @@ router.get("/manual-report-uploads/reports/:statementType/latest", async (req, r
       return res.status(400).json({ success: false, error: "Invalid statementType." });
     }
 
-    const row = await getLatestManualUploadedReport({
-      companyId: clientId,
-      statementType,
-    });
+    const rowId = String(req.query.rowId || "").trim() || null;
+
+    let row;
+    if (rowId) {
+      const { data: specificRow, error: rowErr } = await supabase
+        .from("qb_synced_reports")
+        .select("id, report_type, report_params, data, updated_at, last_synced_at")
+        .eq("id", rowId)
+        .eq("company_id", clientId)
+        .maybeSingle();
+      if (rowErr) throw new Error(rowErr.message);
+      row = specificRow;
+    } else {
+      row = await getLatestManualUploadedReport({ companyId: clientId, statementType });
+    }
 
     if (!row) {
       return res.status(404).json({
@@ -191,6 +204,58 @@ router.get("/manual-report-uploads/reports/:statementType/latest", async (req, r
 });
 
 /* ===========================
+   GET /manual-report-uploads/reports/:statementType/all
+   Returns all uploaded files for a given statement type, ordered by upload date.
+   Used to populate the file selector (Summary view) and build multi-file
+   comparative columns (Detailed view).
+=========================== */
+router.get("/manual-report-uploads/reports/:statementType/all", async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    const statementType = String(req.params.statementType || "").trim().toLowerCase();
+
+    if (!clientId) {
+      return res.status(400).json({ success: false, error: "Missing clientId." });
+    }
+
+    const validTypes = Object.values(STATEMENT_TYPES);
+    if (!validTypes.includes(statementType)) {
+      return res.status(400).json({ success: false, error: "Invalid statementType." });
+    }
+
+    const rows = await getAllManualUploadedReports({ companyId: clientId, statementType });
+
+    const files = rows.map((row) => {
+      const report = row.data?.manual_report_upload?.report || null;
+      return {
+        rowId: row.id,
+        documentId: row.report_params?.documentId || null,
+        fileName: row.report_params?.fileName || "Unknown file",
+        folderName: row.report_params?.folderName || null,
+        data: report
+          ? {
+              rows: report.rows || [],
+              asOfDate: report.asOfDate || null,
+              periodStart: report.periodStart || null,
+              periodEnd: report.periodEnd || null,
+              ...(report.periods?.length ? { periods: report.periods } : {}),
+            }
+          : null,
+        updatedAt: row.updated_at || null,
+        lastSyncedAt: row.last_synced_at || null,
+      };
+    });
+
+    return res.json({ success: true, statementType, files });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to fetch manual uploaded reports.",
+    });
+  }
+});
+
+/* ===========================
    GET /manual-report-uploads/tax-data
    Returns multi-year tax return data for manual upload mode.
    1. Checks qb_synced_reports for data stored by Sync All (fast path).
@@ -210,7 +275,9 @@ router.get("/manual-report-uploads/tax-data", async (req, res) => {
       .eq("source", MANUAL_REPORT_UPLOAD_SOURCE)
       .maybeSingle();
 
-    if (stored?.data?.tax_return?.taxYears && Object.keys(stored.data.tax_return.taxYears).length > 0) {
+    const forceRefresh = req.query.force === "1" || req.query.force === "true";
+
+    if (!forceRefresh && stored?.data?.tax_return?.taxYears && Object.keys(stored.data.tax_return.taxYears).length > 0) {
       console.log(`[TaxData] Serving ${Object.keys(stored.data.tax_return.taxYears).length} year(s) from DB cache`);
       return res.json({
         success: true,
@@ -218,6 +285,16 @@ router.get("/manual-report-uploads/tax-data", async (req, res) => {
         source: "db_cache",
         updatedAt: stored.updated_at,
       });
+    }
+
+    if (forceRefresh) {
+      console.log(`[TaxData] force=1 — clearing DB + in-memory cache for fresh extraction`);
+      clearTaxExtractCache();
+      if (stored?.id) {
+        await supabase.from("qb_synced_reports").delete()
+          .eq("company_id", clientId).eq("report_type", STATEMENT_TYPES.TAX_RETURN)
+          .eq("source", MANUAL_REPORT_UPLOAD_SOURCE);
+      }
     }
 
     // ── Slow path: real-time extraction from DataRoom ──────────────────────
@@ -362,7 +439,9 @@ router.get("/manual-report-uploads/pl-for-tax", async (req, res) => {
       .eq("source", MANUAL_REPORT_UPLOAD_SOURCE)
       .maybeSingle();
 
-    if (stored?.data?.pl_for_tax?.plYears && Object.keys(stored.data.pl_for_tax.plYears).length > 0) {
+    const forceRefreshPL = req.query.force === "1" || req.query.force === "true";
+
+    if (!forceRefreshPL && stored?.data?.pl_for_tax?.plYears && Object.keys(stored.data.pl_for_tax.plYears).length > 0) {
       console.log(`[PLForTax] Serving ${Object.keys(stored.data.pl_for_tax.plYears).length} year(s) from DB cache`);
       return res.json({
         success: true,
@@ -370,6 +449,66 @@ router.get("/manual-report-uploads/pl-for-tax", async (req, res) => {
         source: "db_cache",
         updatedAt: stored.updated_at,
       });
+    }
+
+    // ── Fast path 2: Use pre-parsed rows stored during Excel/PDF Sync ─────────
+    // Covers Excel files (.xlsx/.xls/.csv) which the Gemini slow path skips,
+    // and any PDF already synced via "Sync All".
+    const parsedFiles = await getAllManualUploadedReports({ companyId: clientId, statementType: "profit_and_loss" });
+    const validFiles = (parsedFiles || []).filter((f) => f.data?.manual_report_upload?.report?.rows?.length > 0);
+
+    if (validFiles.length > 0) {
+      const currentYear = new Date().getFullYear();
+      const yearsFromParsed = {};
+
+      for (const file of validFiles) {
+        const report = file.data.manual_report_upload.report;
+        const fileName = file.report_params?.fileName || "Unknown";
+        const periods = report.periods || [];
+
+        // Year detection: asOfDate → periodEnd → periodStart → filename
+        let year = 0;
+        const dateSrc = report.asOfDate || report.periodEnd || report.periodStart;
+        if (dateSrc) {
+          const parsed = parseInt(String(dateSrc).split("-")[0], 10);
+          if (parsed >= 2000 && parsed <= currentYear + 1) year = parsed;
+        }
+        if (!year) {
+          const m = fileName.match(/\b(20\d{2})\b/);
+          if (m) year = parseInt(m[1], 10);
+        }
+        if (!year) year = currentYear;
+
+        // For multi-period files (monthly columns): use Total col or sum months
+        const totalIdx = periods.length > 0
+          ? periods.findIndex((p) => /^total$/i.test(String(p).trim()))
+          : -1;
+        const normalizeNode = (node) => ({
+          ...node,
+          amount: Array.isArray(node.colAmounts) && node.colAmounts.length > 0
+            ? totalIdx >= 0
+              ? (node.colAmounts[totalIdx] || 0)
+              : node.colAmounts.reduce((s, v) => s + (v || 0), 0)
+            : (typeof node.amount === "number" ? node.amount : 0),
+          children: Array.isArray(node.children) ? node.children.map(normalizeNode) : undefined,
+        });
+        const normalizedRows = report.rows.map(normalizeNode);
+
+        const pl = extractPLLineItemsFromRows(normalizedRows, year);
+
+        // If two files share a year, keep the most recently updated
+        if (!yearsFromParsed[year] || new Date(file.updated_at) > new Date(yearsFromParsed[year]._updatedAt)) {
+          yearsFromParsed[year] = { year, fileName, data: buildPLForTaxData(pl), _updatedAt: file.updated_at };
+        }
+      }
+
+      // Strip internal tracking field before responding
+      Object.values(yearsFromParsed).forEach((v) => delete v._updatedAt);
+
+      if (Object.keys(yearsFromParsed).length > 0) {
+        console.log(`[PLForTax] Serving ${Object.keys(yearsFromParsed).length} year(s) from pre-parsed report rows`);
+        return res.json({ success: true, years: yearsFromParsed, source: "parsed_rows" });
+      }
     }
 
     // ── Slow path: real-time extraction from DataRoom ──────────────────────

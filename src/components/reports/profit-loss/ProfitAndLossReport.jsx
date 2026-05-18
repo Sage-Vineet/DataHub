@@ -82,7 +82,7 @@ export default function ProfitAndLossReport({
   // Summary View: QuickBooks-style Summary report
   return (
     <ProfitAndLossQBSummary
-      data={data || []}
+      data={Array.isArray(data) ? data : []}
       title="Profit & Loss"
       subtitle={summarySubtitle}
       entityName={resolvedEntityName}

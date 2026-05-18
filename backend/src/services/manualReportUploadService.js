@@ -38,45 +38,36 @@ const _taxExtractCache = new Map();
 const _taxExtractSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const TAX_EXTRACTION_PROMPT = `
-You are extracting data from a US S-Corporation Income Tax Return (Form 1120-S).
-This may be a scanned (image-based) PDF — use your vision capability to read it carefully.
+You are extracting data from a US Business Income Tax Return.
+This may be a scanned (image-based) PDF — use your vision capability to read every page carefully.
 Do NOT guess or interpolate — only report what is visually printed on the form.
 
-SCOPE RESTRICTION — VERY IMPORTANT:
-  Read data from PAGE 1 and PAGE 3 ONLY.
-  Completely ignore Pages 2, 4, 5, 6, 7, 8 and any attached statements.
-  Do NOT read Schedule K continuation on Page 4 (lines 17a-17d, line 18, etc.).
+STEP 1 — DETECT THE FORM TYPE
+Look at the very top of Page 1 for the form number:
+  - "Form 1120-S" → S-Corporation return
+  - "Form 1065"   → Partnership return
+  - "Form 1120"   → C-Corporation return
+Set "formType" to "1120-S", "1065", or "1120" accordingly. Default to "1120-S" if unclear.
 
-PAGE 1 — INCOME & DEDUCTIONS
+═══════════════════════════════════════════════════════
+FORM 1120-S (S-CORPORATION) — read PAGE 1 and PAGE 3
+═══════════════════════════════════════════════════════
 
-The Income section has THREE sub-lines at the top:
-  Line 1a  — "Gross receipts or sales"           (large number to the right of "1a")
-  Line 1b  — "Returns and allowances"             (smaller number to the right of "1b")
-  Line 1c  — "Balance. Subtract line 1b from 1a" (FAR-RIGHT column next to "1c")
+PAGE 1 — INCOME & DEDUCTIONS (Form 1120-S):
+  Line 1a  — Gross receipts or sales
+  Line 1b  — Returns and allowances
+  Line 1c  — Balance (far-right column) → "totalRevenue"
+  Line 2   — Cost of goods sold         → "totalCostOfGoodsSold"
+  Line 3   — Gross profit               → "grossProfit"
+  Line 7   — Compensation of officers   → "officerWages"
+  Line 13  — Interest                   → "interestExpense"
+  Line 14  — Depreciation               → "depreciation"
+  Line 19  — Other deductions           → "allOtherExpenses" (and check attached statement for amortization)
+  Line 21  — Ordinary business income   → "netIncome"
 
-CRITICAL: "totalRevenue" MUST be the value on Line 1c (far-right column).
-  Line 1c = Line 1a MINUS Line 1b. Do NOT use Line 1a. Do NOT use Line 6.
-  If Line 1b is blank or zero, Line 1c equals Line 1a exactly.
-
-Extract these Page 1 fields (all integers, use 0 if blank or unreadable):
-  "year"                 — 4-digit tax year printed at top-right of Page 1
-  "totalRevenue"         — Line 1c  (Balance, far-right column)
-  "totalCostOfGoodsSold" — Line 2   "Cost of goods sold"
-  "grossProfit"          — Line 3   "Gross profit"
-  "officerWages"         — Line 7   "Compensation of officers"
-  "depreciation"         — Line 14  "Depreciation not claimed elsewhere"
-  "amortization"         — amortization from Line 19 statement (0 if none)
-  "interestExpense"      — Line 13  "Interest"
-  "allOtherExpenses"     — Line 19  "Other deductions"
-  "netIncome"            — Line 21  "Ordinary business income (loss)"
-
-PAGE 3 ONLY — SCHEDULE K
-
-Read Lines 2 through 16f ONLY (stop at 16f — do NOT go to Page 4).
-For each line with a non-zero "Total amount", add one entry to "reconcilingItems".
-SKIP Line 1 (already captured as netIncome).
-
-Line to label:
+PAGE 3 ONLY — SCHEDULE K (Form 1120-S), Lines 2–16f:
+  SKIP Line 1 (= netIncome already captured).
+  For each non-zero line add to reconcilingItems:
   2->"Net Rental Real Estate Income", 3c->"Other Net Rental Income",
   4->"Interest Income", 5a->"Ordinary Dividends", 5b->"Qualified Dividends",
   6->"Royalties", 7->"Net Short-Term Capital Gain (Loss)",
@@ -86,23 +77,117 @@ Line to label:
   12c->"Section 59(e)(2) Expenditures", 12d->"Other Deductions",
   13a->"Low-Income Housing Credit Sec42(j)(5)", 13b->"Low-Income Housing Credit Other",
   13c->"Qualified Rehabilitation Expenditures", 13d->"Other Real Estate Credits",
-  13e->"Other Rental Credits", 13f->"Biofuel Producer Credit",
-  13g->"Other Credits", 15a->"Post-1986 Depreciation Adjustment",
-  15b->"Adjusted Gain or Loss", 15c->"Depletion Other Than Oil and Gas",
+  13e->"Other Rental Credits", 13f->"Biofuel Producer Credit", 13g->"Other Credits",
+  15a->"Post-1986 Depreciation Adjustment", 15b->"Adjusted Gain or Loss",
+  15c->"Depletion Other Than Oil and Gas",
   15d->"Oil Gas Geothermal Properties Gross Income",
   15e->"Oil Gas Geothermal Properties Deductions", 15f->"Other AMT Items",
   16a->"Tax-Exempt Interest Income", 16b->"Other Tax-Exempt Income",
   16c->"Nondeductible Expenses", 16d->"Distributions",
   16e->"Repayment of Loans from Shareholders", 16f->"Foreign Taxes Paid or Accrued"
 
+═══════════════════════════════════════════════════════
+FORM 1065 (PARTNERSHIP) — read PAGE 1 and ONLY the partnership-level SCHEDULE K page
+═══════════════════════════════════════════════════════
+
+⚠️ CRITICAL — SCHEDULE K-1 WARNING:
+  The PDF contains MANY pages labelled "Schedule K-1" (one per partner). These are INDIVIDUAL partner pages.
+  You MUST COMPLETELY IGNORE every page that has "Schedule K-1" anywhere in its header or title.
+  ONLY read the SINGLE page titled exactly "Schedule K  Partners' Distributive Share Items".
+  That Schedule K page has a column labelled "Total amount" (or similar) showing the WHOLE PARTNERSHIP totals.
+  ANY value from a Schedule K-1 page is WRONG. Do not use it.
+
+PAGE 1 — INCOME & DEDUCTIONS (Form 1065):
+  Line 1a  — Gross receipts or sales
+  Line 1b  — Returns and allowances
+  Line 1c  — Balance (far-right column) → "totalRevenue"
+  Line 2   — Cost of goods sold         → "totalCostOfGoodsSold"
+  Line 3   — Gross profit               → "grossProfit"
+  Line 10  — Guaranteed payments to partners → "officerWages" (use 0 if blank)
+  Line 15  — Interest                   → "interestExpense"
+  Line 16c — Net depreciation (far-right column) → "depreciation"
+             ⚠️ If the far-right column for Line 16c is blank or empty, enter 0.
+             Do NOT substitute any value from Schedule K or Schedule K-1 for this field.
+  Line 21  — Other deductions (NOT Line 22) → "allOtherExpenses"
+             ⚠️ Use ONLY Line 21 "Other deductions". Do NOT use Line 22 "Total deductions".
+             Line 22 is the sum of all deductions and will be much larger — ignore it.
+  Line 23  — Ordinary business income (loss) → "netIncome"
+
+  "amortization":
+    Look for a statement attached to Line 21 (may be labelled "Statement 1", "Statement 2", etc.)
+    If the statement lists "Amortization" or "Amortization expense" as a line item, use that amount.
+    Otherwise use 0.
+
+SCHEDULE K page — Partners' Distributive Share Items (Form 1065):
+  ⚠️ READ ONLY the page titled "Schedule K  Partners' Distributive Share Items".
+     This page shows totals for the ENTIRE PARTNERSHIP in a single column (often "Total amount").
+  ⚠️ DO NOT read any page with "Schedule K-1" in the title — those are partner-specific pages.
+  SKIP Line 1 (= netIncome already captured).
+  Only include reconcilingItems entries where the value in the "Total amount" column is non-zero.
+  For each non-zero line add to reconcilingItems:
+  2 ->"Net Rental Real Estate Income",
+  3a->"Other Gross Rental Income", 3c->"Other Net Rental Income",
+  4c->"Guaranteed Payments Total",
+  5 ->"Interest Income",
+  6a->"Ordinary Dividends", 6b->"Qualified Dividends",
+  7 ->"Royalties",
+  8 ->"Net Short-Term Capital Gain (Loss)",
+  9a->"Net Long-Term Capital Gain (Loss)", 9c->"Unrecaptured Section 1250 Gain",
+  10->"Net Section 1231 Gain (Loss)",
+  11->"Other Income (Loss)",
+  12->"Section 179 Deduction",
+  13a->"Charitable Contributions Cash", 13b->"Charitable Contributions Noncash",
+  13c->"Investment Interest Expense",
+  13d2->"Section 59(e)(2) Expenditures",
+  14a->"Net Earnings from Self-Employment",
+  14b->"Gross Farming or Fishing Income", 14c->"Gross Nonfarm Income",
+  15a->"Low-Income Housing Credit Sec42(j)(5)", 15b->"Low-Income Housing Credit Other",
+  15c->"Qualified Rehabilitation Expenditures", 15d->"Other Real Estate Credits",
+  15e->"Other Rental Credits", 15f->"Other Credits",
+  17a->"Post-1986 Depreciation Adjustment", 17b->"Adjusted Gain or Loss",
+  17c->"Depletion Other Than Oil and Gas",
+  18a->"Tax-Exempt Interest Income", 18b->"Other Tax-Exempt Income",
+  18c->"Nondeductible Expenses",
+  19a->"Distributions of Cash and Marketable Securities",
+  19b->"Distributions of Other Property",
+  20a->"Investment Income", 20b->"Investment Expenses",
+  21 ->"Total Foreign Taxes Paid or Accrued"
+
+═══════════════════════════════════════════════════════
+FORM 1120 (C-CORPORATION) — read PAGE 1 only
+═══════════════════════════════════════════════════════
+
+PAGE 1 — INCOME & DEDUCTIONS (Form 1120):
+  Line 1c  — Gross receipts balance     → "totalRevenue"
+  Line 2   — Cost of goods sold         → "totalCostOfGoodsSold"
+  Line 3   — Gross profit               → "grossProfit"
+  Line 12  — Compensation of officers   → "officerWages"
+  Line 17  — Interest                   → "interestExpense"
+  Line 20  — Depreciation               → "depreciation"
+  Line 26  — Other deductions           → "allOtherExpenses"
+  Line 28  — Taxable income before NOL  → "netIncome"
+  reconcilingItems: [] (no Schedule K for C-Corp)
+
+═══════════════════════════════════════════════════════
+COMMON RULES FOR ALL FORMS
+═══════════════════════════════════════════════════════
+
+CRITICAL — totalRevenue:
+  ALWAYS use Line 1c (the Balance/far-right column), NOT Line 1a.
+  If Line 1b is blank, Line 1c = Line 1a.
+
+"year": 4-digit tax year printed at top-right of Page 1 (e.g. 2023).
+
 OUTPUT RULES:
 - Return ONLY a raw JSON object. No markdown, no backticks, no explanation.
 - All dollar amounts: plain integers (no commas, decimals, or $ signs).
 - Negative amounts: negative integer (e.g. -5000).
 - reconcilingItems: array of { "label": string, "value": integer }. Empty [] if none.
+- Only include reconcilingItems entries where value is non-zero.
 
 JSON schema:
 {
+  "formType": "1120-S",
   "year": 0,
   "totalRevenue": 0,
   "totalCostOfGoodsSold": 0,
@@ -118,19 +203,27 @@ JSON schema:
 `.trim();
 
 function buildTaxReturnResponseData(tax) {
-  const allOtherExpenses =
-    Number(tax.grossProfit || 0) -
-    Number(tax.officerWages || 0) -
-    Number(tax.depreciation || 0) -
-    Number(tax.amortization || 0) -
-    Number(tax.interestExpense || 0) -
-    Number(tax.netIncome || 0);
+  // For Form 1065 (Partnership): allOtherExpenses comes directly from Line 21
+  // "Other deductions" — it already excludes guaranteed payments, interest, etc.
+  // For 1120-S / 1120: derive it from gross profit minus known expense lines.
+  const isPartnership = String(tax.formType || "").includes("1065");
+  const allOtherExpenses = isPartnership
+    ? Number(tax.allOtherExpenses || 0)
+    : Number(tax.grossProfit || 0) -
+      Number(tax.officerWages || 0) -
+      Number(tax.depreciation || 0) -
+      Number(tax.amortization || 0) -
+      Number(tax.interestExpense || 0) -
+      Number(tax.netIncome || 0);
+
+  // Label officer wages as "Guaranteed Payments" for partnerships
+  const officerWagesLabel = isPartnership ? "Guaranteed Payments" : "Officer Wages";
 
   const page1 = {
     "Total Revenue": tax.totalRevenue,
     "Total Cost of Goods Sold": tax.totalCostOfGoodsSold,
     "Gross Profit": tax.grossProfit,
-    "Officer Wages": tax.officerWages,
+    [officerWagesLabel]: tax.officerWages,
     "Depreciation Expense": tax.depreciation,
     "Amortization Expense": tax.amortization,
     "Total Interest Expense": tax.interestExpense,
@@ -151,6 +244,11 @@ function buildTaxReturnResponseData(tax) {
   });
 
   return data;
+}
+
+function clearTaxExtractCache(cacheKey) {
+  if (cacheKey) _taxExtractCache.delete(cacheKey);
+  else _taxExtractCache.clear();
 }
 
 async function extractTaxDataFromBuffer(pdfBuffer, cacheKey) {
@@ -178,11 +276,12 @@ async function extractTaxDataFromBuffer(pdfBuffer, cacheKey) {
           ["year","totalRevenue","totalCostOfGoodsSold","grossProfit","officerWages",
            "depreciation","amortization","interestExpense","allOtherExpenses","netIncome"]
             .forEach((f) => { parsed[f] = Number(parsed[f]) || 0; });
+          if (!parsed.formType) parsed.formType = "1120-S";
           if (!Array.isArray(parsed.reconcilingItems)) parsed.reconcilingItems = [];
           parsed.reconcilingItems = parsed.reconcilingItems
             .map((i) => ({ label: String(i.label || "").trim(), value: Number(i.value) || 0 }))
             .filter((i) => i.label && i.value !== 0);
-          console.log(`[TaxExtract] year=${parsed.year} via ${modelName}`);
+          console.log(`[TaxExtract] formType=${parsed.formType} year=${parsed.year} via ${modelName}`);
           return parsed;
         } catch (err) {
           lastError = err;
@@ -709,6 +808,43 @@ function findAmountInCells(cells = []) {
   return null;
 }
 
+const MONTH_PERIOD_RE = /^(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)[\s.\-_]*(\d{2,4})?\s*$/i;
+const MONTH_ABBR_MAP = { january:"Jan",february:"Feb",march:"Mar",april:"Apr",may:"May",june:"Jun",july:"Jul",august:"Aug",september:"Sep",october:"Oct",november:"Nov",december:"Dec" };
+
+function normalizePeriodLabel(cell) {
+  const s = String(cell || "").trim();
+  const m = s.match(/^(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)[\s.\-_]*(\d{2,4})?\s*$/i);
+  if (!m) return s;
+  const full = m[1].toLowerCase();
+  const abbr = MONTH_ABBR_MAP[full] || (full[0].toUpperCase() + full.slice(1, 3));
+  const yr = m[2] ? String(m[2]).slice(-2) : "";
+  return yr ? `${abbr} ${yr}` : abbr;
+}
+
+function detectPeriodColumns(rawRows) {
+  for (let i = 0; i < Math.min(10, rawRows.length); i++) {
+    const row = Array.isArray(rawRows[i]) ? rawRows[i] : [];
+    const periods = [];
+    for (let j = 0; j < row.length; j++) {
+      const cell = String(row[j] || "").trim();
+      if (MONTH_PERIOD_RE.test(cell)) {
+        periods.push({ label: normalizePeriodLabel(cell), colIdx: j });
+      }
+    }
+    if (periods.length >= 3) {
+      for (let j = 0; j < row.length; j++) {
+        const cell = String(row[j] || "").trim();
+        if (/^total$/i.test(cell)) {
+          periods.push({ label: "Total", colIdx: j });
+          break;
+        }
+      }
+      return { headerRowIdx: i, periods };
+    }
+  }
+  return null;
+}
+
 function extractRowsFromWorkbook(buffer, fileName = "", contentType = "") {
   let workbook;
   try {
@@ -852,7 +988,7 @@ function detectStatementType({ fileName = "", rows = [], lines = [] }) {
   return null;
 }
 
-function buildNode(name, amount, type = "data", id = "", firstPeriodAmount = null) {
+function buildNode(name, amount, type = "data", id = "", firstPeriodAmount = null, colAmounts = null) {
   const node = {
     id: id || `${type}-${normalizeSlug(name) || "row"}`,
     name: String(name || "").trim(),
@@ -861,6 +997,9 @@ function buildNode(name, amount, type = "data", id = "", firstPeriodAmount = nul
   };
   if (firstPeriodAmount !== null && firstPeriodAmount !== undefined) {
     node.firstPeriodAmount = roundMoney(Number(firstPeriodAmount));
+  }
+  if (Array.isArray(colAmounts) && colAmounts.length > 0) {
+    node.colAmounts = colAmounts;
   }
   return node;
 }
@@ -879,13 +1018,30 @@ function buildSectionNode(name, children = [], id = "") {
           .reduce((sum, child) => sum + Number(child.amount || 0), 0),
       );
 
-  return {
+  const node = {
     id: id || `section-${normalizeSlug(name) || "group"}`,
     name,
     amount: computedAmount,
     type: "header",
     children: normalizedChildren.length ? normalizedChildren : undefined,
   };
+
+  const numPeriods = (normalizedChildren.find((c) => c.colAmounts)?.colAmounts || []).length;
+  if (numPeriods > 0) {
+    if (totalRow?.colAmounts?.length === numPeriods) {
+      node.colAmounts = totalRow.colAmounts;
+    } else {
+      node.colAmounts = Array.from({ length: numPeriods }, (_, i) =>
+        roundMoney(
+          normalizedChildren
+            .filter((c) => c.type !== "total")
+            .reduce((sum, c) => sum + (c.colAmounts?.[i] || 0), 0),
+        ),
+      );
+    }
+  }
+
+  return node;
 }
 
 function normalizeSectionName(value = "") {
@@ -1032,6 +1188,8 @@ function parseBalanceSheetHierarchy(entries = []) {
         amount,
         "total",
         `total-${normalizeSlug(label) || entry.index || "row"}`,
+        null,
+        entry.colAmounts ?? null,
       );
       appendToCurrent(totalNode);
 
@@ -1047,6 +1205,8 @@ function parseBalanceSheetHierarchy(entries = []) {
         amount,
         "data",
         `${normalizeSlug(label) || "row"}-${entry.index + 1}`,
+        null,
+        entry.colAmounts ?? null,
       ),
     );
   });
@@ -1054,14 +1214,26 @@ function parseBalanceSheetHierarchy(entries = []) {
   return finalizeBalanceSheetSections(roots);
 }
 
-function extractEntriesFromRows(rows = []) {
+function extractEntriesFromRows(rows = [], periodInfo = null) {
+  const skipIdx = periodInfo?.headerRowIdx ?? -1;
   return rows
-    .map((row, index) => ({
-      label: firstTextCell(Array.isArray(row) ? row : []),
-      amount: findAmountInCells(Array.isArray(row) ? row : []),
-      index,
-    }))
-    .filter((entry) => entry.label);
+    .map((row, index) => {
+      if (index === skipIdx) return null;
+      const cells = Array.isArray(row) ? row : [];
+      const entry = {
+        label: firstTextCell(cells),
+        amount: findAmountInCells(cells),
+        index,
+      };
+      if (periodInfo?.periods?.length) {
+        entry.colAmounts = periodInfo.periods.map(({ colIdx }) => {
+          const val = parseAmount(cells[colIdx]);
+          return val !== null ? roundMoney(val) : 0;
+        });
+      }
+      return entry;
+    })
+    .filter((entry) => entry && entry.label);
 }
 
 function extractEntriesFromLines(lines = []) {
@@ -1191,6 +1363,7 @@ function parseSectionedStatement(entries = [], sectionDefinitions = [], options 
         type,
         `${normalizeSlug(entry.label) || "row"}-${entry.index + 1}`,
         entry.firstPeriodAmount ?? null,
+        entry.colAmounts ?? null,
       ),
     );
   });
@@ -1244,8 +1417,11 @@ async function parseStoredReport(upload, forcedStatementType = null) {
     rows = extractRowsFromWorkbook(buffer, fileName, contentType);
   }
 
+  // Detect monthly period columns in Excel files (e.g. "P&L by Month" with Jan 22 … Dec 25 headers)
+  const periodInfo = (!isPdf && rows.length) ? detectPeriodColumns(rows) : null;
+
   const statementType = forcedStatementType || detectStatementType({ fileName, rows, lines });
-  console.log(`[ManualReportUpload] "${fileName}" detected as: ${statementType || "unknown"}${forcedStatementType ? " (forced)" : ""}`);
+  console.log(`[ManualReportUpload] "${fileName}" detected as: ${statementType || "unknown"}${forcedStatementType ? " (forced)" : ""}${periodInfo ? ` [${periodInfo.periods.length} period columns]` : ""}`);
   if (!statementType) return null;
 
   if (statementType === STATEMENT_TYPES.BALANCE_SHEET) {
@@ -1264,7 +1440,7 @@ async function parseStoredReport(upload, forcedStatementType = null) {
       }
     }
 
-    const entries = rows.length ? extractEntriesFromRows(rows) : extractEntriesFromLines(lines);
+    const entries = rows.length ? extractEntriesFromRows(rows, periodInfo) : extractEntriesFromLines(lines);
     const hierarchyRows = parseBalanceSheetHierarchy(entries);
 
     return {
@@ -1273,11 +1449,12 @@ async function parseStoredReport(upload, forcedStatementType = null) {
       report: {
         rows: hierarchyRows.length ? hierarchyRows : [],
         asOfDate,
+        ...(periodInfo ? { periods: periodInfo.periods.map((p) => p.label) } : {}),
       },
     };
   }
 
-  const entries = rows.length ? extractEntriesFromRows(rows) : extractEntriesFromLines(lines);
+  const entries = rows.length ? extractEntriesFromRows(rows, periodInfo) : extractEntriesFromLines(lines);
   const sectionDefinitions =
     statementType === STATEMENT_TYPES.PROFIT_AND_LOSS
       ? [
@@ -1338,6 +1515,7 @@ async function parseStoredReport(upload, forcedStatementType = null) {
     report: {
       rows: parseSectionedStatement(entries, sectionDefinitions, { exactMatchOnly }),
       asOfDate: reportAsOfDate,
+      ...(periodInfo ? { periods: periodInfo.periods.map((p) => p.label) } : {}),
     },
   };
 }
@@ -1503,6 +1681,25 @@ async function getLatestManualUploadedReport({ companyId, statementType }) {
   }
 
   return data || null;
+}
+
+async function getAllManualUploadedReports({ companyId, statementType }) {
+  if (!companyId) throw new Error("companyId is required");
+  if (!statementType) throw new Error("statementType is required");
+
+  const { data, error } = await supabase
+    .from("qb_synced_reports")
+    .select("id, report_type, report_params, data, updated_at, last_synced_at")
+    .eq("company_id", companyId)
+    .eq("source", MANUAL_REPORT_UPLOAD_SOURCE)
+    .eq("report_type", statementType)
+    .order("updated_at", { ascending: true });
+
+  if (error) {
+    throw new Error(`Manual uploaded reports fetch failed: ${error.message}`);
+  }
+
+  return data || [];
 }
 
 // ── Manual Upload Source sync ─────────────────────────────────────────────────
@@ -1708,6 +1905,18 @@ async function syncManualUploadSource(companyId) {
     } else if (item.statementType) {
       foldersToSync.push({ folder: item, statementType: item.statementType });
     }
+  }
+
+  // Clear all existing manual upload records for this company so removed/renamed
+  // files don't leave stale rows behind after re-sync.
+  const { error: deleteError } = await supabase
+    .from("qb_synced_reports")
+    .delete()
+    .eq("company_id", companyId)
+    .eq("source", MANUAL_REPORT_UPLOAD_SOURCE);
+
+  if (deleteError) {
+    throw new Error(`Failed to clear existing records before sync: ${deleteError.message}`);
   }
 
   const now = new Date().toISOString();
@@ -1981,8 +2190,10 @@ module.exports = {
   syncManualUploadSource,
   getManualUploadSourceTree,
   getLatestManualUploadedReport,
+  getAllManualUploadedReports,
   extractAndCacheReportAsOfDate,
   extractTaxDataFromBuffer,
+  clearTaxExtractCache,
   buildTaxReturnResponseData,
   syncTaxReturnFolder,
   extractPLForTax,

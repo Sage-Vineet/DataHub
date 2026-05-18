@@ -750,9 +750,21 @@ export function syncManualUploadSource(options = {}) {
 
 export function getLatestManualUploadedReport(statementType, options = {}) {
   const clientId = options.clientId ?? resolveClientIdFromLocation();
-  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  const params = new URLSearchParams();
+  if (clientId) params.set("clientId", clientId);
+  if (options.rowId) params.set("rowId", options.rowId);
+  const query = params.toString() ? `?${params}` : "";
   return request(
     `/manual-report-uploads/reports/${encodeURIComponent(statementType)}/latest${query}`,
+    options,
+  );
+}
+
+export function getAllManualUploadedReports(statementType, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(
+    `/manual-report-uploads/reports/${encodeURIComponent(statementType)}/all${query}`,
     options,
   );
 }

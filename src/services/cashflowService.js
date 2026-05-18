@@ -1,5 +1,5 @@
 import { fetchCashflow } from "../lib/quickbooks";
-import { getLatestManualUploadedReport, getManualGlCashflow } from "../lib/api";
+import { getLatestManualUploadedReport, getManualGlCashflow, getAllManualUploadedReports } from "../lib/api";
 import { normalizeAccountingMethod } from "../lib/report-filters";
 import { parseSummaryReport } from "../lib/report-parsers";
 
@@ -52,11 +52,30 @@ function getCashflowComparativePeriods(numYears = 4) {
   return periods;
 }
 
-async function fetchSinglePeriodCashflow(startDate, endDate, accountingMethod, sourceMode = "quickbooks") {
+async function fetchSinglePeriodCashflow(startDate, endDate, accountingMethod, sourceMode = "quickbooks", options = {}) {
   try {
     if (sourceMode === "manual_upload") {
-      const payload = await getLatestManualUploadedReport("cash_flow");
-      return Array.isArray(payload?.data?.rows) ? payload.data.rows : [];
+      const payload = await getLatestManualUploadedReport("cash_flow", {
+        rowId: options?.manualUploadRowId,
+      });
+      const rows = Array.isArray(payload?.data?.rows) ? payload.data.rows : [];
+      const periods = payload?.data?.periods || [];
+      if (periods.length > 0 && rows.length > 0) {
+        const totalIdx = periods.findIndex((p) => /^total$/i.test(String(p).trim()));
+        const getValue = (colAmounts) => {
+          if (!Array.isArray(colAmounts) || colAmounts.length === 0) return 0;
+          return totalIdx >= 0
+            ? (colAmounts[totalIdx] || 0)
+            : colAmounts.reduce((s, v) => s + (v || 0), 0);
+        };
+        const sumNode = (node) => ({
+          ...node,
+          amount: getValue(node.colAmounts) || (node.amount || 0),
+          children: node.children ? node.children.map(sumNode) : undefined,
+        });
+        return rows.map(sumNode);
+      }
+      return rows;
     }
 
     if (sourceMode === "manual") {
@@ -89,6 +108,43 @@ function normalizeName(name) {
     .replace(/[^a-z0-9]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function mergeFileNodes(nodeArraysByFile, fileKeys) {
+  const orderedKeys = [];
+  const nodeMap = new Map();
+
+  nodeArraysByFile.forEach((nodes, fileIdx) => {
+    (nodes || []).forEach((node) => {
+      const normKey = normalizeName(node.name);
+      if (!normKey) return;
+      if (!nodeMap.has(normKey)) {
+        orderedKeys.push(normKey);
+        nodeMap.set(normKey, {
+          name: node.name,
+          type: node.type,
+          id: node.id,
+          amounts: {},
+          childrenByFile: nodeArraysByFile.map(() => []),
+        });
+      }
+      const merged = nodeMap.get(normKey);
+      merged.amounts[fileKeys[fileIdx]] = node.amount || 0;
+      merged.childrenByFile[fileIdx] = node.children || [];
+    });
+  });
+
+  return orderedKeys.map((normKey) => {
+    const merged = nodeMap.get(normKey);
+    const mergedChildren = mergeFileNodes(merged.childrenByFile, fileKeys);
+    return {
+      id: merged.id,
+      name: merged.name,
+      type: merged.type,
+      amounts: merged.amounts,
+      children: mergedChildren.length ? mergedChildren : undefined,
+    };
+  });
 }
 
 function mergeCashflowPeriods(periodResults, periods) {
@@ -139,8 +195,143 @@ export async function getCashflow(startDate, endDate, accountingMethod, options 
     startDate,
     endDate,
     accountingMethod,
-    options?.sourceMode || "quickbooks"
+    options?.sourceMode || "quickbooks",
+    options,
   );
+}
+
+function cfFileYear(file) {
+  if (file?.data?.asOfDate) {
+    const y = parseInt(file.data.asOfDate.split("-")[0], 10);
+    if (y >= 2000) return y;
+  }
+  const m = (file?.fileName || "").match(/\b(20\d{2})\b/);
+  return m ? parseInt(m[1], 10) : 0;
+}
+
+function cfFileLabel(file) {
+  const monthNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const dateStr = file?.data?.asOfDate || file?.data?.periodEnd;
+  if (dateStr) {
+    const parts = String(dateStr).split("-");
+    if (parts.length >= 2) {
+      const year = parseInt(parts[0], 10);
+      const month = parseInt(parts[1], 10) - 1;
+      if (year >= 2000 && month >= 0 && month <= 11) {
+        return `${monthNames[month]} ${String(year).slice(-2)}`;
+      }
+    }
+  }
+  const y = cfFileYear(file);
+  return y ? `FY ${y}` : "Unknown";
+}
+
+function buildCFFromPeriodColumns(sortedFiles) {
+  const allCols = [];
+  const filePeriodInfo = sortedFiles.map((file) => {
+    const periods = file.data?.periods || [];
+    const startIdx = allCols.length;
+
+    if (periods.length > 0) {
+      periods.forEach((label, i) => allCols.push({ key: `p${startIdx + i}`, label }));
+      const nameMap = new Map();
+      const visit = (items) => {
+        if (!Array.isArray(items)) return;
+        items.forEach((item) => {
+          const key = normalizeName(item.name);
+          if (key && item.colAmounts) nameMap.set(key, item.colAmounts);
+          if (item.children) visit(item.children);
+        });
+      };
+      visit(file.data.rows);
+      return { startIdx, count: periods.length, nameMap, singleCol: false };
+    } else {
+      const colKey = `p${startIdx}`;
+      allCols.push({ key: colKey, label: cfFileLabel(file) });
+      const nameMap = new Map();
+      const visit = (items) => {
+        if (!Array.isArray(items)) return;
+        items.forEach((item) => {
+          const key = normalizeName(item.name);
+          if (key) nameMap.set(key, item.amount || 0);
+          if (item.children) visit(item.children);
+        });
+      };
+      visit(file.data.rows);
+      return { startIdx, count: 1, nameMap, singleCol: true };
+    }
+  });
+
+  if (!allCols.length) return { rows: [], columns: { yearCols: [], ytdComparison: null } };
+
+  const unionStructure = mergeFileNodes(
+    sortedFiles.map((f) => f.data.rows),
+    sortedFiles.map((_, i) => `_s${i}`),
+  );
+
+  const enrich = (nodes) =>
+    nodes.map((node) => {
+      const normKey = normalizeName(node.name);
+      const amounts = {};
+      filePeriodInfo.forEach(({ startIdx, count, nameMap, singleCol }) => {
+        if (singleCol) {
+          amounts[`p${startIdx}`] = nameMap.get(normKey) || 0;
+        } else {
+          const colAmounts = nameMap.get(normKey) || [];
+          for (let i = 0; i < count; i++) {
+            amounts[`p${startIdx + i}`] = colAmounts[i] || 0;
+          }
+        }
+      });
+      return {
+        ...node,
+        amounts,
+        children: node.children ? enrich(node.children) : undefined,
+      };
+    });
+
+  return {
+    rows: enrich(unionStructure),
+    columns: { yearCols: allCols, ytdComparison: null },
+  };
+}
+
+async function buildCFMultiFileDetail() {
+  const result = await getAllManualUploadedReports("cash_flow");
+  const files = (result?.files || []).filter((f) => f.data?.rows?.length);
+  if (!files.length) return { rows: [], columns: { yearCols: [], ytdComparison: null } };
+
+  // Sort files oldest → newest
+  const sortedFiles = [...files].sort((a, b) => {
+    const ya = cfFileYear(a) || 9999;
+    const yb = cfFileYear(b) || 9999;
+    if (ya !== yb) return ya - yb;
+    return new Date(a.updatedAt || 0) - new Date(b.updatedAt || 0);
+  });
+
+  // If files have monthly period columns, expand one column per period (exact file layout)
+  if (sortedFiles.some((f) => f.data?.periods?.length > 0)) {
+    return buildCFFromPeriodColumns(sortedFiles);
+  }
+
+  // One column per file — union all rows so no data is missing
+  const filePeriods = sortedFiles.map((f, i) => ({
+    key: `f${i}`,
+    label: cfFileLabel(f),
+    rows: f.data.rows,
+  }));
+
+  const rows = mergeFileNodes(
+    filePeriods.map((p) => p.rows),
+    filePeriods.map((p) => p.key),
+  );
+
+  const yearCols = filePeriods.map((p) => ({ key: p.key, label: p.label }));
+
+  return {
+    rows,
+    columns: { yearCols, ytdComparison: null },
+  };
 }
 
 export async function getCashflowDetail(
@@ -149,6 +340,10 @@ export async function getCashflowDetail(
   accountingMethod,
   options = {},
 ) {
+  if (options?.sourceMode === "manual_upload") {
+    return buildCFMultiFileDetail();
+  }
+
   const periods = getCashflowComparativePeriods(4);
 
   const results = await Promise.all(

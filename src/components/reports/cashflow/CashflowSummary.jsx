@@ -61,7 +61,7 @@ function CashflowRow({
         {columns?.yearCols ? (
           columns.yearCols.map((col) => (
             <td key={col.key} className={cn(
-              "py-2.5 px-3 text-right tabular-nums text-[14px] font-medium",
+              "py-2.5 px-3 text-right tabular-nums text-[14px] font-medium whitespace-nowrap",
               (line.amounts?.[col.key] || 0) < 0 ? "text-status-error" : "text-text-primary"
             )}>
               {formatCurrency(line.amounts?.[col.key] || 0)}
@@ -69,7 +69,7 @@ function CashflowRow({
           ))
         ) : (
           <td className={cn(
-            "py-2.5 px-4 text-right tabular-nums text-[14px] font-medium",
+            "py-2.5 px-4 text-right tabular-nums text-[14px] font-medium whitespace-nowrap",
             (line.amount || 0) < 0 ? "text-status-error" : "text-text-primary"
           )}>
             {formatCurrency(line.amount || 0)}
@@ -102,10 +102,7 @@ export default function CashflowSummary({
 
   return (
     <div className="flex-1 overflow-y-auto bg-bg-page/50 p-10 lg:p-16 font-inter text-text-primary">
-      <div className={cn(
-        "mx-auto card-base p-10 min-h-[1000px] flex flex-col rounded-sm",
-        hasColumns ? "max-w-[1200px]" : "max-w-4xl"
-      )}>
+      <div className="mx-auto card-base p-10 min-h-[1000px] flex flex-col rounded-sm max-w-[1500px]">
         <div className="flex flex-col items-center mb-12 relative">
           <div className="w-12 h-1 bg-primary rounded-full mb-6" />
           <h1 className="text-[22px] font-bold text-text-primary tracking-tight leading-none mb-2">
@@ -118,15 +115,15 @@ export default function CashflowSummary({
         </div>
 
         <div className="overflow-x-auto flex-1">
-          <table className="w-full border-collapse">
+          <table className="min-w-max border-collapse">
             <thead>
               <tr className="border-b-2 border-text-primary sticky top-0 bg-bg-card z-20">
-                <th className="pb-3 pt-2 px-4 text-left text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider">
+                <th className="pb-3 pt-2 px-4 text-left text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider min-w-[320px]">
                   Cash Flow Classification
                 </th>
                 {hasColumns ? (
                   columns.yearCols.map((col) => (
-                    <th key={col.key} className="pb-3 pt-2 px-3 text-right text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider">
+                    <th key={col.key} className="pb-3 pt-2 px-3 text-right text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider min-w-[90px]">
                       {col.label}
                     </th>
                   ))
