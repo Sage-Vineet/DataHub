@@ -104,9 +104,12 @@ export default function ManualProfitLossMonthlyDetail({
   const year = data?.year || null;
   const months = Array.isArray(data?.months) ? data.months : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
   const sections = Array.isArray(data?.sections) ? data.sections : [];
+  const monthNames = data?.monthNames || ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
+  const firstMonth = months.length > 0 ? months[0] : 1;
+  const lastMonth = months.length > 0 ? months[months.length - 1] : 12;
   const subtitle = year
-    ? `January 1–December 31, ${year}`
+    ? `${monthNames[firstMonth - 1]} 1–${monthNames[lastMonth - 1]} ${new Date(year, lastMonth, 0).getDate()}, ${year}`
     : "All Dates";
 
   if (!sections.length) {

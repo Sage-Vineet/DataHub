@@ -103,7 +103,13 @@ export default function ManualBalanceSheetMonthlyDetail({
   const sections = data?.sections || {};
   const hasSections = Object.keys(sections).length > 0;
 
-  const subtitle = year ? `As of December 31, ${year}` : "All Dates";
+  const lastMonth = months.length > 0 ? months[months.length - 1] : 12;
+  const monthNames = data?.monthNames || ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const lastMonthName = monthNames[lastMonth - 1] || "Dec";
+  const lastDayOfMonth = year ? new Date(year, lastMonth, 0).getDate() : 31;
+  const subtitle = year
+    ? `As of ${lastMonthName} ${lastDayOfMonth}, ${year}`
+    : "All Dates";
 
   if (!hasSections) {
     return (

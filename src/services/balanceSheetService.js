@@ -636,7 +636,13 @@ export async function getBalanceSheetDetail(
         ? options.manualFilters
         : {}),
     };
-    return getManualStagedBalanceSheetMonthlyDetail({ params });
+    console.log("[DetailedReportUI][BS] Requesting monthly detail with params:", JSON.stringify(params));
+    const response = await getManualStagedBalanceSheetMonthlyDetail({ params });
+    console.log("[DetailedReportUI][BS] Received keys:", Object.keys(response || {}), "| source:", response?.source, "| reportType:", response?.reportType, "| months:", response?.months);
+    if (!response?.sections || Object.keys(response.sections).length === 0) {
+      console.warn("[DetailedReportUI][BS] WARNING: sections is empty — check fiscal year filter and staged data.");
+    }
+    return response;
   }
 
   // Detail now uses system-defined multi-year comparison (EBITDA analysis)

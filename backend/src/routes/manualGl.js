@@ -482,9 +482,15 @@ router.get("/reports/profit-loss/monthly-detail", enforceDataSource(REPORT_SOURC
     const clientId = resolveClientId(req);
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
     const filters = parseManualFilterQuery(req.query || {});
+    const year = filters.fiscalYears?.[0] || null;
+    const month = filters.fiscalMonths?.[0] || null;
+    console.log(`[DetailedReportAPI][P&L-Monthly] Year: ${year}, Month: ${month}, clientId: ${clientId}`);
     const payload = await getProfitLossMonthlyDetailFromStage(clientId, filters);
+    const plRows = Array.isArray(payload.sections) ? payload.sections.reduce((n, s) => n + (s.accounts?.length || 0), 0) : 0;
+    console.log(`[DetailedReportAPI][P&L-Monthly] Sections: ${Array.isArray(payload.sections) ? payload.sections.length : 0}, PL Accounts: ${plRows}`);
     return res.json({ success: true, ...payload });
   } catch (error) {
+    console.error("[DetailedReportAPI][P&L-Monthly] Error:", error.message);
     return res.status(500).json({
       success: false,
       error: error.message || "Failed to build staged Profit & Loss monthly detail.",
@@ -497,9 +503,17 @@ router.get("/reports/balance-sheet/monthly-detail", enforceDataSource(REPORT_SOU
     const clientId = resolveClientId(req);
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
     const filters = parseManualFilterQuery(req.query || {});
+    const year = filters.fiscalYears?.[0] || null;
+    const month = filters.fiscalMonths?.[0] || null;
+    console.log(`[DetailedReportAPI][BS-Monthly] Year: ${year}, Month: ${month}, clientId: ${clientId}`);
     const payload = await getBalanceSheetMonthlyDetailFromStage(clientId, filters);
+    const bsAccounts = payload.sections
+      ? Object.values(payload.sections).reduce((n, s) => n + (s.categories || []).reduce((m, c) => m + (c.accounts?.length || 0), 0), 0)
+      : 0;
+    console.log(`[DetailedReportAPI][BS-Monthly] Months: ${JSON.stringify(payload.months)}, BS Accounts: ${bsAccounts}`);
     return res.json({ success: true, ...payload });
   } catch (error) {
+    console.error("[DetailedReportAPI][BS-Monthly] Error:", error.message);
     return res.status(500).json({
       success: false,
       error: error.message || "Failed to build staged Balance Sheet monthly detail.",

@@ -194,7 +194,13 @@ export async function getProfitAndLossDetail(
         ? options.manualFilters
         : {}),
     };
-    return getManualStagedProfitLossMonthlyDetail({ params });
+    console.log("[DetailedReportUI][P&L] Requesting monthly detail with params:", JSON.stringify(params));
+    const response = await getManualStagedProfitLossMonthlyDetail({ params });
+    console.log("[DetailedReportUI][P&L] Received keys:", Object.keys(response || {}), "| source:", response?.source, "| reportType:", response?.reportType, "| months:", response?.months);
+    if (!Array.isArray(response?.sections) || response.sections.length === 0) {
+      console.warn("[DetailedReportUI][P&L] WARNING: sections is empty — check fiscal year filter and staged data.");
+    }
+    return response;
   }
 
   // Detail now uses system-defined multi-year comparison (EBITDA analysis)

@@ -150,6 +150,7 @@ function createDefaultManualFilters() {
   return {
     batchId: "",
     fiscalYear: [],
+    fiscalMonth: "",
     startDate: "",
     endDate: "",
     accountName: [],
@@ -166,6 +167,21 @@ function createDefaultManualFilters() {
     journalType: [],
   };
 }
+
+const MONTH_OPTIONS = [
+  { value: "1", label: "January" },
+  { value: "2", label: "February" },
+  { value: "3", label: "March" },
+  { value: "4", label: "April" },
+  { value: "5", label: "May" },
+  { value: "6", label: "June" },
+  { value: "7", label: "July" },
+  { value: "8", label: "August" },
+  { value: "9", label: "September" },
+  { value: "10", label: "October" },
+  { value: "11", label: "November" },
+  { value: "12", label: "December" },
+];
 
 function normalizeManualFilters(input = {}) {
   const defaults = createDefaultManualFilters();
@@ -721,6 +737,11 @@ export default function WorkspaceReports() {
         selectedSourceMode === "manual"
           ? buildManualFilterParams(appliedManualFilters)
           : null;
+      // Summary reports must not receive a month filter — fiscalMonths applied at the DB layer
+      // would restrict transactions to a single month, breaking multi-month aggregations.
+      const summaryFilterParams = manualFilterParams
+        ? { ...manualFilterParams, fiscalMonth: undefined }
+        : null;
       if (selectedSourceMode === "manual") {
         debugLog("[ManualGL][UI][GenerateReport][Request]", {
           selectedTab,
@@ -757,7 +778,7 @@ export default function WorkspaceReports() {
             normalizedAccountingMethod,
             {
               sourceMode: selectedSourceMode,
-              manualFilters: manualFilterParams,
+              manualFilters: summaryFilterParams,
             },
           ).catch(() => ({
             rows: [],
@@ -784,7 +805,7 @@ export default function WorkspaceReports() {
             normalizedAccountingMethod,
             {
               sourceMode: selectedSourceMode,
-              manualFilters: manualFilterParams,
+              manualFilters: summaryFilterParams,
             },
           ).catch(() => []);
         } else {
@@ -925,7 +946,14 @@ export default function WorkspaceReports() {
               </label>
               <div className="flex rounded-lg border border-border bg-bg-page p-1">
                 <button
-                  onClick={() => setReportType("Summary")}
+                  onClick={() => {
+                    setReportType("Summary");
+                    if (manualFilters.fiscalMonth) {
+                      const cleared = { ...manualFilters, fiscalMonth: "" };
+                      setManualFilters(cleared);
+                      setAppliedManualFilters(cleared);
+                    }
+                  }}
                   className={cn(
                     "rounded-md px-4 py-1.5 text-[13px] font-medium transition-all",
                     reportType === "Summary"
@@ -1044,6 +1072,7 @@ export default function WorkspaceReports() {
                         const next = {
                           ...manualFilters,
                           fiscalYear: year ? [year] : [],
+                          fiscalMonth: "",
                         };
                         setManualFilters(next);
                         setAppliedManualFilters(next);
@@ -1066,6 +1095,40 @@ export default function WorkspaceReports() {
                     />
                   </div>
                 </div>
+
+                {reportType === "Detail" && (
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
+                      Month
+                    </label>
+                    <div className="relative min-w-[130px]">
+                      <select
+                        value={manualFilters.fiscalMonth || ""}
+                        onChange={(event) => {
+                          const month = event.target.value;
+                          const next = { ...manualFilters, fiscalMonth: month };
+                          setManualFilters(next);
+                          setAppliedManualFilters(next);
+                          debugLog("[ManualGL][UI][FilterChange][FiscalMonth]", {
+                            selectedFiscalMonth: month || null,
+                          });
+                        }}
+                        className="h-9 w-full appearance-none rounded-md border border-border-input bg-bg-card pl-3 pr-9 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                      >
+                        <option value="">All months</option>
+                        {MONTH_OPTIONS.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
+                      <ChevronDown
+                        size={14}
+                        className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-text-muted"
+                      />
+                    </div>
+                  </div>
+                )}
               </>
             )}
 
