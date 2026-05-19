@@ -152,7 +152,18 @@ function mergeFileNodes(nodeArraysByFile, fileKeys) {
       }
       const merged = nodeMap.get(normKey);
       merged.amounts[fileKeys[fileIdx]] = node.amount || 0;
-      merged.childrenByFile[fileIdx] = node.children || [];
+      // Only update children if the new node has at least as many children as the existing entry.
+      // This prevents a "Total X" row (no children) from overwriting the "X" section header's
+      // children when both normalize to the same key.
+      const newChildren = node.children || [];
+      if (newChildren.length >= merged.childrenByFile[fileIdx].length) {
+        merged.childrenByFile[fileIdx] = newChildren;
+      }
+      // Use the name/type from the header occurrence when possible
+      if (merged.type !== "header" && node.type === "header") {
+        merged.name = node.name;
+        merged.type = node.type;
+      }
     });
   });
 

@@ -503,7 +503,14 @@ function mergeFileNodes(nodeArraysByFile, fileKeys) {
       }
       const merged = nodeMap.get(normKey);
       merged.amounts[fileKeys[fileIdx]] = node.amount || 0;
-      merged.childrenByFile[fileIdx] = node.children || [];
+      const newChildren = node.children || [];
+      if (newChildren.length >= merged.childrenByFile[fileIdx].length) {
+        merged.childrenByFile[fileIdx] = newChildren;
+      }
+      if (merged.type !== "header" && node.type === "header") {
+        merged.name = node.name;
+        merged.type = node.type;
+      }
     });
   });
 
