@@ -22,6 +22,17 @@ async function listDocumentsByFolder(folderId, options = {}) {
   return data || [];
 }
 
+async function getDocumentById(id) {
+  if (!id) return null;
+  const { data, error } = await supabase
+    .from("documents")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw error;
+  return data || null;
+}
+
 /**
  * Creates a new document
  */
@@ -156,6 +167,7 @@ async function getDocumentActivity(documentId) {
 
 module.exports = {
   listDocumentsByFolder,
+  getDocumentById,
   createDocument,
   archiveDocument,
   unarchiveDocument,

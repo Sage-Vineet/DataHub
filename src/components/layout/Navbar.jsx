@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { Menu, Building2 } from 'lucide-react';
+import { Menu, Search, Building2 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import MessageNotificationsMenu from './MessageNotificationsMenu';
 
@@ -28,6 +28,17 @@ export default function Navbar({ onMenuClick }) {
         </div>
 
         <div className="flex items-center gap-3">
+          {user?.role !== 'client' && (
+            <div className="relative hidden sm:block">
+              <Search size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" />
+              <input
+                type="text"
+                placeholder="Search requests, companies..."
+                className="theme-input h-10 min-w-[280px] pl-10"
+              />
+            </div>
+          )}
+
           <MessageNotificationsMenu portal={user?.role === 'broker' ? 'broker' : 'client'} />
 
           {workspaceLabel && (

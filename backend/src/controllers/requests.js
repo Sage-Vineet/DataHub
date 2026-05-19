@@ -1,10 +1,17 @@
 const requestService = require("../services/requestService");
 const permissionService = require("../services/permissionService");
+const userService = require("../services/userService");
 const folderService = require("../services/folderService");
 const documentService = require("../services/documentService");
 const asyncHandler = require("../utils");
 const { buildAppBaseUrl } = require("../utils/uploadStorage");
 const { isRequestResolved } = require("../utils/requestReminders");
+
+async function validateAssignedUserForCompany(assignedUserId, companyId) {
+  if (!assignedUserId) return true;
+  const assignedUser = await userService.getUserById(assignedUserId);
+  return Boolean(assignedUser && userService.canAccessCompany(assignedUser, companyId));
+}
 
 const listRequests = asyncHandler(async (req, res) => {
   if (!permissionService.canAccessCompany(req.user, req.params.id)) {
@@ -37,6 +44,9 @@ const createRequest = asyncHandler(async (req, res) => {
   if (normalized.errors.length > 0) {
     return res.status(400).json({ error: normalized.errors.join("; ") });
   }
+  if (!(await validateAssignedUserForCompany(normalized.value.assigned_to, req.params.id))) {
+    return res.status(400).json({ error: "Assigned user is not part of this company." });
+  }
 
   const created = await requestService.createRequest(req.params.id, normalized.value);
   if (normalized.value.approval_status === "approved") {
@@ -53,6 +63,19 @@ const createRequestsBulk = asyncHandler(async (req, res) => {
   const items = Array.isArray(req.body?.requests) ? req.body.requests : [];
   if (items.length === 0) {
     return res.status(400).json({ error: "requests array is required" });
+  }
+
+  const invalidAssignedRow = [];
+  for (let index = 0; index < items.length; index += 1) {
+    const assignedTo = typeof items[index]?.assigned_to === "string" && items[index].assigned_to.trim()
+      ? items[index].assigned_to.trim()
+      : null;
+    if (assignedTo && !(await validateAssignedUserForCompany(assignedTo, req.params.id))) {
+      invalidAssignedRow.push(index + 1);
+    }
+  }
+  if (invalidAssignedRow.length) {
+    return res.status(400).json({ error: `Assigned user is not part of this company in row(s): ${invalidAssignedRow.join(", ")}` });
   }
 
   const result = await requestService.createRequestsBulk(req.params.id, items, req.user.id);
@@ -105,6 +128,10 @@ const updateRequest = asyncHandler(async (req, res) => {
 
   const updates = { ...body, updated_at: new Date().toISOString() };
   delete updates.reminder_frequency_days;
+  delete updates.company_id;
+  if (updates.assigned_to !== undefined && !(await validateAssignedUserForCompany(updates.assigned_to, current.company_id))) {
+    return res.status(400).json({ error: "Assigned user is not part of this company." });
+  }
 
   if (Object.keys(updates).length <= 1) return res.status(400).json({ error: "No updates" });
 
@@ -176,6 +203,12 @@ const addRequestDocument = asyncHandler(async (req, res) => {
   const { document_id, visible } = req.body || {};
   if (!document_id) return res.status(400).json({ error: "document_id required" });
 
+  const document = await documentService.getDocumentById(document_id);
+  if (!document) return res.status(404).json({ error: "Document not found" });
+  if (String(document.company_id) !== String(current.company_id)) {
+    return res.status(403).json({ error: "Document is not available for this request" });
+  }
+
   const link = await requestService.addRequestDocument(req.params.id, document_id, visible);
 
   if (current.status === "pending") {
@@ -244,4 +277,3 @@ module.exports = {
   updateNarrative,
   getNarrativeFile,
 };
-

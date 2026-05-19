@@ -177,6 +177,24 @@ export function loginRequest(credentials) {
   });
 }
 
+export function brokerSignupRequest(payload) {
+  return fetch(buildUrl('/auth/broker/signup'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+    body: JSON.stringify(payload),
+    cache: 'no-store',
+    credentials: 'omit',
+  }).then(async (response) => {
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      const error = new Error(data?.error || 'Request failed');
+      error.status = response.status;
+      throw error;
+    }
+    return data;
+  });
+}
+
 export function logoutRequest(options = {}) {
   return request('/auth/logout', { method: 'POST', ...options });
 }

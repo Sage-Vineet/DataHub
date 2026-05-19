@@ -563,37 +563,61 @@ const listActivity = asyncHandler(async (req, res) => {
 
 // ── Global broker activity feed ───────────────────────────────────────────────
 
-async function buildBrokerActivity(limit) {
+async function buildBrokerActivity(user, limit) {
   const PER_SOURCE = 40;
+  const isAdmin = permissionService.isAdmin(user);
+  const allowedCompanyIds = permissionService.normalizeCompanyIds(user);
+  if (!isAdmin && !allowedCompanyIds.length) return [];
 
   const [companiesRaw, usersRaw, documentsRaw, requestsRaw, narrativesRaw, activityLogRaw] =
     await Promise.all([
       safeQuery(
-        supabase
+        (isAdmin
+          ? supabase
           .from("companies")
           .select("id, name, project_name, industry, created_at")
+          : supabase
+          .from("companies")
+          .select("id, name, project_name, industry, created_at")
+          .in("id", allowedCompanyIds))
           .order("created_at", { ascending: false })
           .limit(PER_SOURCE)
       ),
       safeQuery(
-        supabase
+        (isAdmin
+          ? supabase
           .from("users")
           .select("id, name, email, role, company_id, created_at")
           .eq("role", "buyer")
+          : supabase
+          .from("users")
+          .select("id, name, email, role, company_id, created_at")
+          .eq("role", "buyer")
+          .in("company_id", allowedCompanyIds))
           .order("created_at", { ascending: false })
           .limit(PER_SOURCE)
       ),
       safeQuery(
-        supabase
+        (isAdmin
+          ? supabase
           .from("documents")
           .select("id, name, company_id, uploaded_by, uploaded_at")
+          : supabase
+          .from("documents")
+          .select("id, name, company_id, uploaded_by, uploaded_at")
+          .in("company_id", allowedCompanyIds))
           .order("uploaded_at", { ascending: false })
           .limit(PER_SOURCE)
       ),
       safeQuery(
-        supabase
+        (isAdmin
+          ? supabase
           .from("requests")
           .select("id, title, company_id, created_by, created_at")
+          : supabase
+          .from("requests")
+          .select("id, title, company_id, created_by, created_at")
+          .in("company_id", allowedCompanyIds))
           .order("created_at", { ascending: false })
           .limit(PER_SOURCE)
       ),
@@ -605,9 +629,14 @@ async function buildBrokerActivity(limit) {
           .limit(PER_SOURCE)
       ),
       safeQuery(
-        supabase
+        (isAdmin
+          ? supabase
           .from("activity_log")
           .select("id, type, message, company_id, created_by, created_at")
+          : supabase
+          .from("activity_log")
+          .select("id, type, message, company_id, created_by, created_at")
+          .in("company_id", allowedCompanyIds))
           .order("created_at", { ascending: false })
           .limit(PER_SOURCE)
       ),
@@ -622,6 +651,7 @@ async function buildBrokerActivity(limit) {
       .select("id, title, company_id")
       .in("id", narrativeRequestIds);
     for (const r of reqRows || []) {
+      if (!isAdmin && !allowedCompanyIds.includes(String(r.company_id))) continue;
       requestTitleById.set(r.id, { title: r.title, company_id: r.company_id });
     }
   }
@@ -702,6 +732,7 @@ async function buildBrokerActivity(limit) {
 
   for (const n of narrativesRaw) {
     const req = requestTitleById.get(n.request_id);
+    if (!isAdmin && !req) continue;
     events.push({
       id: `request-answered-${n.id}`,
       type: "request_narrative_updated",
@@ -739,7 +770,7 @@ const listBrokerActivity = asyncHandler(async (req, res) => {
   if (!["broker", "admin"].includes(role)) {
     return res.status(403).json({ error: "Forbidden" });
   }
-  const activity = await buildBrokerActivity(clampLimit(req.query.limit));
+  const activity = await buildBrokerActivity(req.user, clampLimit(req.query.limit));
   res.set("Cache-Control", "private, max-age=15");
   return res.json(activity);
 });

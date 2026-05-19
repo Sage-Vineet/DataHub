@@ -1,5 +1,6 @@
 const dataSourceService = require("../services/dataSourceService");
 const { REPORT_SOURCE_KEYS } = require("../services/reportSourceStore");
+const { canAccessCompany } = require("../services/permissionService");
 
 /**
  * Middleware to enforce that a specific data source is active for the current request.
@@ -29,6 +30,10 @@ function enforceDataSource(requiredSourceKey) {
       if (!clientId) {
         // If we can't find a clientId, we let it proceed to let the actual route handle the missing param error
         return next();
+      }
+
+      if (req.user && !canAccessCompany(req.user, clientId)) {
+        return res.status(403).json({ error: "Forbidden" });
       }
 
       // 2. Validate using the service

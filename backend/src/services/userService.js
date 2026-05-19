@@ -1,5 +1,4 @@
 const { supabase } = require("../db");
-const { DEMO_USERS } = require("../config/demoUsers");
 const bcrypt = require("bcryptjs");
 const { Pool } = require("pg");
 
@@ -155,8 +154,14 @@ async function attachAssignedCompanies(users) {
     return map;
   }, {});
 
+  const historicalBrokerCompaniesByUserId = await getHistoricalBrokerCompaniesByUserId(userList);
+  for (const [userId, companies] of Object.entries(historicalBrokerCompaniesByUserId)) {
+    if (!byUserId[userId]) byUserId[userId] = [];
+    byUserId[userId].push(...companies);
+  }
+
   const enriched = userList.map((user) => {
-    const assignedCompanies = byUserId[user.id] || [];
+    const assignedCompanies = dedupeCompanies(byUserId[user.id] || []);
     const hasPrimary = user.company_id && assignedCompanies.some((company) => String(company.id) === String(user.company_id));
     const normalizedCompanies = hasPrimary || !user.company_id
       ? assignedCompanies
@@ -179,6 +184,78 @@ async function attachAssignedCompanies(users) {
   });
 
   return isSingle ? enriched[0] : enriched;
+}
+
+function dedupeCompanies(companies) {
+  const byId = new Map();
+  for (const company of companies || []) {
+    if (!company?.id) continue;
+    const existing = byId.get(String(company.id)) || {};
+    byId.set(String(company.id), { ...existing, ...company });
+  }
+  return Array.from(byId.values());
+}
+
+async function getHistoricalBrokerCompaniesByUserId(userList) {
+  const brokerIds = userList
+    .filter((user) => String(user?.role || "").toLowerCase() === "broker")
+    .map((user) => user.id)
+    .filter(Boolean);
+
+  if (!brokerIds.length) return {};
+
+  const [folderRows, requestRows, documentRows, activityRows, reminderRows] = await Promise.all([
+    getCompanyActorRows("folders", "created_by", brokerIds),
+    getCompanyActorRows("requests", "created_by", brokerIds),
+    getCompanyActorRows("documents", "uploaded_by", brokerIds),
+    getCompanyActorRows("activity_log", "created_by", brokerIds),
+    getCompanyActorRows("reminders", "created_by", brokerIds),
+  ]);
+
+  const companyIdsByUserId = {};
+  for (const row of [...folderRows, ...requestRows, ...documentRows, ...activityRows, ...reminderRows]) {
+    const userId = row.created_by || row.uploaded_by;
+    if (!userId || !row.company_id) continue;
+    if (!companyIdsByUserId[userId]) companyIdsByUserId[userId] = new Set();
+    companyIdsByUserId[userId].add(String(row.company_id));
+  }
+
+  const allCompanyIds = Array.from(new Set(
+    Object.values(companyIdsByUserId).flatMap((set) => Array.from(set)),
+  ));
+  if (!allCompanyIds.length) return {};
+
+  const { data: companies, error } = await supabase
+    .from("companies")
+    .select("id, name, industry, status, contact_email, project_name")
+    .in("id", allCompanyIds);
+
+  if (error) {
+    console.error("❌ Error fetching historical broker companies:", error.message);
+    return {};
+  }
+
+  const companyById = new Map((companies || []).map((company) => [String(company.id), company]));
+  return Object.fromEntries(
+    Object.entries(companyIdsByUserId).map(([userId, companyIds]) => [
+      userId,
+      Array.from(companyIds).map((companyId) => companyById.get(companyId)).filter(Boolean),
+    ]),
+  );
+}
+
+async function getCompanyActorRows(table, actorColumn, brokerIds) {
+  const { data, error } = await supabase
+    .from(table)
+    .select(`company_id, ${actorColumn}`)
+    .in(actorColumn, brokerIds)
+    .limit(1000);
+
+  if (error) {
+    console.error(`❌ Error fetching ${table} broker company links:`, error.message);
+    return [];
+  }
+  return data || [];
 }
 
 /**
@@ -277,8 +354,16 @@ async function passwordMatches(candidate, storedPassword) {
  */
 function canAccessCompany(user, companyId) {
   const role = String(user?.role || "").toLowerCase();
-  if (["broker", "admin"].includes(role)) return true;
+  if (role === "admin") return true;
   return getUserCompanyIds(user).includes(String(companyId));
+}
+
+function isAdmin(user) {
+  return String(user?.role || "").toLowerCase() === "admin";
+}
+
+function isBroker(user) {
+  return ["broker", "admin"].includes(String(user?.role || "").toLowerCase());
 }
 
 /**
@@ -398,13 +483,26 @@ async function reassignUserRecords(userId, replacementUserId) {
  * Lists all users with enriched company data
  * @returns {Promise<Array>}
  */
-async function listAllUsers() {
+async function listAllUsers(viewer = null) {
   let result = await supabase.from("users").select(userSelectWithProfile).order("created_at", { ascending: false });
   if (result.error) result = await supabase.from("users").select(userSelect).order("created_at", { ascending: false });
   const { data, error } = result;
   if (error) throw error;
   const flattened = await Promise.all((data || []).map((user) => mergeSqlProfile(flattenUser(user))));
-  return await attachAssignedCompanies(flattened);
+  const enriched = await attachAssignedCompanies(flattened);
+
+  if (!viewer || isAdmin(viewer)) return enriched;
+
+  const viewerCompanyIds = new Set(getUserCompanyIds(viewer).map(String));
+  if (isBroker(viewer)) {
+    return enriched.filter((user) => {
+      if (String(user.id) === String(viewer.id)) return true;
+      if (isAdmin(user)) return false;
+      return getUserCompanyIds(user).some((companyId) => viewerCompanyIds.has(String(companyId)));
+    });
+  }
+
+  return enriched.filter((user) => String(user.id) === String(viewer.id));
 }
 
 /**
@@ -413,8 +511,19 @@ async function listAllUsers() {
  * @returns {Promise<Object>} Created user
  */
 async function createUser(userData) {
-  const { name, email, phone, password, role, company_id, company_ids, status } = userData;
+  const { name, email, phone, password, role, company_id, company_ids, status, created_by } = userData;
   const assignedCompanyIds = normalizeCompanyIds(company_id, company_ids);
+
+  if (created_by && !isAdmin(created_by)) {
+    const creatorCompanyIds = new Set(getUserCompanyIds(created_by).map(String));
+    const invalidCompanyId = assignedCompanyIds.find((id) => !creatorCompanyIds.has(String(id)));
+    if (invalidCompanyId) {
+      const err = new Error("Cannot assign users to a company outside this broker account.");
+      err.status = 403;
+      throw err;
+    }
+  }
+
   const primaryCompanyId = company_id || assignedCompanyIds[0] || null;
   const passwordHash = password; // Plain text storage for debugging
   const resolvedStatus = status || "active";
@@ -494,14 +603,10 @@ async function updateUser(id, userData) {
       const { data: authData } = await supabase
         .from("users").select("email, password_hash").eq("id", id).single();
 
-      const storedHash    = authData?.password_hash ?? "";
-      const userEmail     = String(authData?.email ?? "").trim().toLowerCase();
-      const demoEntry     = DEMO_USERS.find((d) => d.email === userEmail);
-      const matchesDb     = await passwordMatches(currentPassword, storedHash);
-      const hasCustomPassword = storedHash && storedHash !== demoEntry?.password;
-      const matchesDemo   = !hasCustomPassword && !!demoEntry && demoEntry.password === currentPassword;
+      const storedHash = authData?.password_hash ?? "";
+      const matchesDb = await passwordMatches(currentPassword, storedHash);
 
-      if (!matchesDb && !matchesDemo) {
+      if (!matchesDb) {
         const err = new Error("Current password is incorrect.");
         err.status = 400;
         throw err;
@@ -560,6 +665,8 @@ module.exports = {
   normalizeCompanyIds,
   getUserCompanyIds,
   canAccessCompany,
+  isAdmin,
+  isBroker,
   syncUserCompanies,
   getUserById,
   getUserByEmail,

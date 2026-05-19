@@ -1,6 +1,7 @@
 const { supabase } = require("../db");
 const asyncHandler = require("../utils");
 const { buildUploadContentUrl } = require("../utils/uploadStorage");
+const permissionService = require("../services/permissionService");
 
 function normalizeUploadBinary(data) {
   if (!data) return Buffer.alloc(0);
@@ -100,12 +101,28 @@ const createUpload = asyncHandler(async (req, res) => {
 const getUploadContent = asyncHandler(async (req, res) => {
   const { data, error } = await supabase
     .from("uploads")
-    .select("id, file_name, content_type, data")
+    .select("id, file_name, content_type, data, uploaded_by")
     .eq("id", req.params.id)
     .maybeSingle();
 
   if (error) return res.status(500).json({ error: error.message });
   if (!data) return res.status(404).json({ error: "Not found" });
+
+  const { data: documentRows, error: documentsError } = await supabase
+    .from("documents")
+    .select("company_id")
+    .eq("upload_id", req.params.id)
+    .limit(25);
+
+  if (documentsError) return res.status(500).json({ error: documentsError.message });
+
+  const linkedCompanyIds = Array.from(new Set((documentRows || []).map((row) => row.company_id).filter(Boolean)));
+  if (linkedCompanyIds.length) {
+    const allowed = linkedCompanyIds.some((companyId) => permissionService.canAccessCompany(req.user, companyId));
+    if (!allowed) return res.status(403).json({ error: "Forbidden" });
+  } else if (data.uploaded_by && String(data.uploaded_by) !== String(req.user?.id) && !permissionService.isAdmin(req.user)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
 
   const upload = data;
   const fileName = upload.file_name || "download";

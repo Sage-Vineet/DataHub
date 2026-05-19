@@ -1,9 +1,17 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { X } from 'lucide-react';
 
 export default function Modal({ isOpen, onClose, title, children, size = 'md' }) {
+  const bodyRef = useRef(null);
+
   useEffect(() => {
-    if (isOpen) document.body.style.overflow = 'hidden';
+    if (isOpen) {
+      document.body.style.overflow = 'hidden';
+      // Scroll to top when modal opens
+      if (bodyRef.current) {
+        bodyRef.current.scrollTop = 0;
+      }
+    }
     else document.body.style.overflow = '';
     return () => { document.body.style.overflow = ''; };
   }, [isOpen]);
@@ -38,7 +46,7 @@ export default function Modal({ isOpen, onClose, title, children, size = 'md' })
           </button>
         </div>
         {/* Body */}
-        <div className="overflow-y-auto flex-1 px-6 py-5">
+        <div ref={bodyRef} className="overflow-y-auto flex-1 px-6 py-5">
           {children}
         </div>
       </div>

@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect } from 'react';
-import { loginRequest, logoutRequest, meRequest, setStoredToken, getStoredToken } from '../lib/api';
+import { brokerSignupRequest, loginRequest, logoutRequest, meRequest, setStoredToken, getStoredToken } from '../lib/api';
 
 const AuthContext = createContext(null);
 
@@ -134,6 +134,29 @@ export function AuthProvider({ children }) {
     }
   };
 
+  const signupBroker = async (payload) => {
+    try {
+      setError('');
+      const response = await brokerSignupRequest(payload);
+      const token = extractToken(response);
+      const userData = unwrapUser(response);
+
+      if (!token || !userData) {
+        throw new Error('Invalid sign up response');
+      }
+
+      setStoredToken(token);
+      const normalizedUser = normalizeUser(userData);
+      setUser(normalizedUser);
+      return normalizedUser;
+    } catch (signupError) {
+      setError(signupError?.message || 'Unable to create broker account.');
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const refreshUser = async () => {
     try {
       const payload = await meRequest();
@@ -167,7 +190,7 @@ export function AuthProvider({ children }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, login, logout, error, setError, loading, refreshUser }}>
+    <AuthContext.Provider value={{ user, login, signupBroker, logout, error, setError, loading, refreshUser }}>
       {children}
     </AuthContext.Provider>
   );

@@ -232,6 +232,23 @@ async function getHistoricalBrokerIdsForUserCompany(companyId, userId) {
 async function getCompanyAssignmentBrokerIds(companyId) {
   const brokerIds = [];
 
+  const { data: assignments } = await supabase
+    .from("user_companies")
+    .select("user_id")
+    .eq("company_id", companyId)
+    .limit(500);
+
+  const assignedUserIds = uniqueIds((assignments || []).map((row) => row.user_id));
+  if (assignedUserIds.length) {
+    const { data: brokerUsers } = await supabase
+      .from("users")
+      .select("id, role, status")
+      .in("id", assignedUserIds)
+      .in("role", ["broker", "admin"])
+      .eq("status", "active");
+    brokerIds.push(...((brokerUsers || []).map((row) => row.id)));
+  }
+
   for (const columnName of USER_COMPANY_BROKER_COLUMN_CANDIDATES) {
     const { data, error } = await supabase
       .from("user_companies")
@@ -267,20 +284,6 @@ async function getRelevantBrokerIdsForUser(user) {
 
   return uniqueIds(brokerIdLists.flat());
 }
-
-async function getAnyActiveBrokerIds() {
-  const { data, error } = await supabase
-    .from("users")
-    .select("id, role, status")
-    .in("role", ["broker", "admin"])
-    .eq("status", "active")
-    .order("created_at", { ascending: true })
-    .limit(25);
-
-  if (error) return [];
-  return uniqueIds((data || []).map((row) => row.id));
-}
-
 
 function normalizeParticipantRole(userRow, company) {
   const normalizedRole = String(userRow?.role || "").toLowerCase();
@@ -428,7 +431,7 @@ async function getCompanyMessageRows(companyId) {
 }
 
 async function getAccessibleCompanies(user) {
-  if (isBroker(user)) {
+  if (String(user?.role || "").toLowerCase() === "admin") {
     const { data } = await supabase
       .from("companies")
       .select("id, name, industry, logo, contact_name, contact_email, status, created_at")
@@ -436,7 +439,7 @@ async function getAccessibleCompanies(user) {
     return data || [];
   }
 
-  const companyIds = normalizeCompanyIds(user);
+  const companyIds = getUserCompanyIds(user);
   if (!companyIds.length) return [];
 
   const { data } = await supabase
@@ -525,10 +528,6 @@ async function resolveDirectMessagingContext(user, companyId) {
   if (!brokerIds.length && messagingRole !== "broker") {
     brokerIds = await getRelevantBrokerIdsForCompany(companyId);
   }
-  if (!brokerIds.length && messagingRole === "user") {
-    brokerIds = await getAnyActiveBrokerIds();
-  }
-
   const brokerParticipants = await getBrokerParticipantsByIds(company, brokerIds);
 
   let participants = dedupeParticipants([...buyerParticipants, ...brokerParticipants]);
@@ -808,4 +807,3 @@ module.exports = {
   getDirectConversation,
   createDirectMessage,
 };
-

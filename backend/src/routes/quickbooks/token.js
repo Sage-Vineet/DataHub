@@ -14,6 +14,7 @@ const {
 const { logQuickBooksDebug, maskValue } = require("../../quickbooksLogger");
 
 const { requireAuth } = require("../../middleware/auth");
+const { canAccessCompany } = require("../../services/permissionService");
 const router = express.Router();
 
 // Public callback (OAuth redirect)
@@ -175,6 +176,9 @@ router.get("/refresh-token", requireAuth, async (req, res) => {
   if (!clientId) {
     return res.status(400).json({ error: "Missing Client ID" });
   }
+  if (!canAccessCompany(req.user, clientId)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
 
   await loadQBConfig(clientId);
   const qb = getQBConfig(clientId);
@@ -296,6 +300,7 @@ router.get("/api/auth/quickbooks", requireAuth, async (req, res) => {
           await supabase.from("users").update({ company_id: clientId }).eq("id", req.user.id);
           await supabase.from("user_companies").upsert({ user_id: req.user.id, company_id: clientId }, { onConflict: "user_id,company_id" });
           req.user.company_id = clientId; // Update local session object
+          req.user.company_ids = Array.from(new Set([...(req.user.company_ids || []), clientId]));
         }
       }
     } catch (err) {
@@ -309,6 +314,10 @@ router.get("/api/auth/quickbooks", requireAuth, async (req, res) => {
   }
 
   if (clientId) {
+    if (!canAccessCompany(req.user, clientId)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
     try {
       const sourceState = await dataSourceService.getDataSourceState(clientId);
       const activeSource = sourceState?.activeSource || null;
@@ -586,6 +595,30 @@ router.get("/api/auth/callback", async (req, res) => {
       );
     }
 
+    if (!userId) {
+      console.error("Callback missing userId in OAuth state.");
+      return res.redirect(
+        buildFrontendHashUrl(
+          frontendUrl,
+          redirectHash,
+          "?qbStatus=error&qbMessage=User+identification+failed",
+        ),
+      );
+    }
+
+    const { getUserById } = require("../../services/userService");
+    const callbackUser = await getUserById(userId);
+    if (!callbackUser || !canAccessCompany(callbackUser, clientId)) {
+      console.error(`OAuth callback rejected: user ${userId || "unknown"} cannot access company ${clientId}`);
+      return res.redirect(
+        buildFrontendHashUrl(
+          frontendUrl,
+          redirectHash,
+          "?qbStatus=error&qbMessage=Forbidden",
+        ),
+      );
+    }
+
     const workspaceCompanyName = await getWorkspaceCompanyName(clientId);
     if (!workspaceCompanyName) {
       return res.redirect(
@@ -696,6 +729,9 @@ router.get("/api/auth/status", requireAuth, async (req, res) => {
         message: "No Client ID provided",
       });
     }
+    if (!canAccessCompany(req.user, clientId)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
 
     await loadQBConfig(clientId);
     const qb = getQBConfig(clientId);
@@ -770,6 +806,9 @@ router.get("/api/auth/status", requireAuth, async (req, res) => {
 router.get("/api/auth/disconnect", requireAuth, async (req, res) => {
   const clientId = getClientId(req);
   if (!clientId) return res.status(400).json({ error: "Missing Client ID" });
+  if (!canAccessCompany(req.user, clientId)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
 
   console.log(`[QB Disconnect] API called for client: ${clientId}`);
 

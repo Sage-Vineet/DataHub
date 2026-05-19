@@ -3,6 +3,7 @@ const { logQuickBooksDebug } = require("../quickbooksLogger");
 const tokenManager = require("../tokenManager");
 const { requireAuth } = require("./auth");
 const { supabase } = require("../db");
+const { canAccessCompany } = require("../services/permissionService");
 
 function normalizeCompanyName(name) {
   return String(name || "")
@@ -43,6 +44,14 @@ async function checkQBAuth(req, res, next) {
     return res.status(400).json({
       success: false,
       message: "Missing Client ID. QuickBooks requests must include the selected DataHub company.",
+      isConnected: false,
+    });
+  }
+
+  if (!canAccessCompany(req.user, clientId)) {
+    return res.status(403).json({
+      success: false,
+      message: "Forbidden",
       isConnected: false,
     });
   }
