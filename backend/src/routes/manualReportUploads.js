@@ -18,6 +18,7 @@ const {
 } = require("../services/manualReportUploadService");
 const { parsePdfWithGemini } = require("../services/geminiFinancialParser");
 const { supabase } = require("../db");
+const { canAccessCompany } = require("../services/permissionService");
 
 const router = express.Router();
 router.use(requireAuth);
@@ -49,6 +50,14 @@ function resolveClientId(req) {
   }
   return clientId;
 }
+
+router.use((req, res, next) => {
+  const clientId = resolveClientId(req);
+  if (clientId && !canAccessCompany(req.user, clientId)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  return next();
+});
 
 router.post("/manual-report-uploads/sync", async (req, res) => {
   try {

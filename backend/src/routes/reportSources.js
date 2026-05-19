@@ -4,6 +4,7 @@ const {
   REPORT_SOURCE_KEYS,
 } = require("../services/reportSourceStore");
 const dataSourceService = require("../services/dataSourceService");
+const { canAccessCompany } = require("../services/permissionService");
 
 const router = express.Router();
 
@@ -22,12 +23,21 @@ function resolveClientId(req) {
   return clientId;
 }
 
+function requireClientAccess(req, res, clientId) {
+  if (!canAccessCompany(req.user, clientId)) {
+    res.status(403).json({ error: "Forbidden" });
+    return false;
+  }
+  return true;
+}
+
 router.get("/report-sources", async (req, res) => {
   try {
     const clientId = resolveClientId(req);
     if (!clientId) {
       return res.status(400).json({ success: false, error: "Missing clientId." });
     }
+    if (!requireClientAccess(req, res, clientId)) return;
 
     const state = await dataSourceService.getDataSourceState(clientId);
     const selectedSource = state.activeSource || REPORT_SOURCE_KEYS.QUICKBOOKS;
@@ -75,6 +85,7 @@ router.put("/report-sources/selected", async (req, res) => {
     if (!clientId) {
       return res.status(400).json({ success: false, error: "Missing clientId." });
     }
+    if (!requireClientAccess(req, res, clientId)) return;
 
     if (!sourceKey) {
       return res.status(400).json({ success: false, error: "sourceKey is required." });

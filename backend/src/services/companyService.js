@@ -13,6 +13,30 @@ async function getAllCompanies() {
   return attachCompanyStats(data || []);
 }
 
+async function getCompaniesForUser(user) {
+  const role = String(user?.role || "").toLowerCase();
+  let query = supabase
+    .from("companies")
+    .select("*")
+    .order("created_at", { ascending: false });
+
+  if (role !== "admin") {
+    const companyIds = Array.from(
+      new Set([
+        ...(user?.company_ids || []),
+        ...((user?.assigned_companies || []).map((company) => company.id)),
+        user?.company_id,
+      ].filter(Boolean).map(String)),
+    );
+    if (!companyIds.length) return [];
+    query = query.in("id", companyIds);
+  }
+
+  const { data, error } = await query;
+  if (error) throw error;
+  return attachCompanyStats(data || []);
+}
+
 async function getCompanyById(id) {
   const { data, error } = await supabase
     .from("companies")
@@ -44,6 +68,14 @@ async function createCompany(companyData) {
 
   if (error) throw error;
   return data;
+}
+
+async function assignCompanyToUser(userId, companyId) {
+  if (!userId || !companyId) return;
+  const { error } = await supabase
+    .from("user_companies")
+    .upsert({ user_id: userId, company_id: companyId }, { onConflict: "user_id,company_id" });
+  if (error) throw error;
 }
 
 async function updateCompany(id, companyData) {
@@ -99,7 +131,7 @@ async function syncCompanyClientRepresentative(company, previousCompany = null) 
   ) {
     const { data: previousContactUsers } = await supabase
       .from("users")
-      .select("id, role")
+      .select("id, role, company_id")
       .eq("company_id", previousCompany.id)
       .eq("role", "buyer")
       .ilike("email", previousNormalizedEmail)
@@ -111,7 +143,7 @@ async function syncCompanyClientRepresentative(company, previousCompany = null) 
   if (!existingUser) {
     const { data: users } = await supabase
       .from("users")
-      .select("id, role")
+      .select("id, role, company_id")
       .ilike("email", normalizedEmail)
       .maybeSingle();
 
@@ -132,7 +164,16 @@ async function syncCompanyClientRepresentative(company, previousCompany = null) 
     }
   }
 
-  if (existingUser && existingUser.role !== "buyer") return existingUser.id;
+  if (
+    existingUser &&
+    existingUser.company_id &&
+    String(existingUser.company_id) !== String(company.id) &&
+    String(existingUser.company_id) !== String(previousCompany?.id || "")
+  ) {
+    const err = new Error("A client account with this contact email already belongs to another company.");
+    err.status = 409;
+    throw err;
+  }
 
   if (existingUser) {
     const pool = getPool();
@@ -263,8 +304,10 @@ async function deleteCompany(id) {
 
 module.exports = {
   getAllCompanies,
+  getCompaniesForUser,
   getCompanyById,
   createCompany,
+  assignCompanyToUser,
   updateCompany,
   deleteCompany,
   syncCompanyClientRepresentative,

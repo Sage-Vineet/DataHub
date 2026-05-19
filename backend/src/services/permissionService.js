@@ -1,5 +1,9 @@
 function isBroker(user) {
-  return ["broker", "admin"].includes(user?.role);
+  return ["broker", "admin"].includes(String(user?.role || "").toLowerCase());
+}
+
+function isAdmin(user) {
+  return String(user?.role || "").toLowerCase() === "admin";
 }
 
 function normalizeCompanyIds(user) {
@@ -16,7 +20,7 @@ function normalizeCompanyIds(user) {
 
 function canAccessCompany(user, companyId) {
   if (!user || !companyId) return false;
-  if (isBroker(user)) return true;
+  if (isAdmin(user)) return true;
   return normalizeCompanyIds(user).includes(String(companyId));
 }
 
@@ -33,7 +37,11 @@ function canAccessRequest(user, request) {
 }
 
 function filterRequestsForUser(user, requests) {
-  if (isBroker(user)) return requests;
+  if (isBroker(user)) {
+    const companyIds = normalizeCompanyIds(user);
+    if (isAdmin(user)) return requests;
+    return requests.filter((request) => companyIds.includes(String(request.company_id)));
+  }
 
   if (user?.effective_role === "client") {
     return requests.filter(
@@ -48,6 +56,7 @@ function filterRequestsForUser(user, requests) {
 
 module.exports = {
   isBroker,
+  isAdmin,
   normalizeCompanyIds,
   canAccessCompany,
   canAccessRequest,

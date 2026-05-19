@@ -406,7 +406,7 @@ export default function Companies() {
                 </tr>
               )}
               {!loading && paginated.map((company, index) => (
-                <tr key={company.id} className="hover:bg-gray-50/60 transition-colors group">
+                <tr key={company.id} onClick={() => handleOpenWorkspace(company)} className="hover:bg-gray-50/60 transition-colors group cursor-pointer">
                   <td className="px-5 py-4 text-xs text-[#A5A5A5] font-medium">
                     {(safePage - 1) * PAGE_SIZE + index + 1}
                   </td>
@@ -420,12 +420,9 @@ export default function Companies() {
                     )}
                   </td>
                   <td className="px-5 py-4">
-                    <button
-                      onClick={() => handleOpenWorkspace(company)}
-                      className="font-semibold text-[#050505] hover:text-[#8BC53D] hover:underline leading-tight text-left transition-colors whitespace-nowrap"
-                    >
+                    <span className="font-semibold text-[#050505] leading-tight whitespace-nowrap">
                       {company.name}
-                    </button>
+                    </span>
                   </td>
                   <td className="px-5 py-4">
                     <span className="text-sm text-[#6D6E71]">{company.industry || '—'}</span>
@@ -463,14 +460,14 @@ export default function Companies() {
                   <td className="px-5 py-4">
                     <div className="flex items-center justify-end">
                       <button
-                        onClick={() => setSelected(company)}
+                        onClick={(e) => { e.stopPropagation(); setSelected(company); }}
                         title="View details"
                         className="p-1.5 rounded-lg text-[#6D6E71] hover:bg-[#A7DCF7]/40 hover:text-[#00648F] transition-colors"
                       >
                         <Eye size={15} />
                       </button>
                       <button
-                        onClick={() => openEditModal(company)}
+                        onClick={(e) => { e.stopPropagation(); openEditModal(company); }}
                         title="Edit company"
                         className="p-1.5 rounded-lg text-[#6D6E71] hover:bg-[#C9E4A4]/60 hover:text-[#476E2C] transition-colors"
                       >
@@ -600,7 +597,7 @@ export default function Companies() {
       </Modal>
 
       <Modal isOpen={showAdd} onClose={closeFormModal} title={editing ? 'Edit Company' : 'Add New Company'}>
-        <div className="space-y-4">
+        <div className="space-y-4 pt-6">
           {formError && (
             <div className="px-4 py-3 bg-red-50 rounded-2xl border border-red-100 text-sm text-[#C62026]">
               {formError}

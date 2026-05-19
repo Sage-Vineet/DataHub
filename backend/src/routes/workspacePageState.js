@@ -5,6 +5,7 @@ const {
   deleteWorkspacePageState,
 } = require("../services/workspacePageStateStore");
 const { requireAuth } = require("../middleware/auth");
+const { canAccessCompany } = require("../services/permissionService");
 
 const router = express.Router();
 
@@ -32,6 +33,9 @@ router.get("/workspace-page-state/:pageKey", async (req, res) => {
         success: false,
         error: "Missing clientId.",
       });
+    }
+    if (!canAccessCompany(req.user, clientId)) {
+      return res.status(403).json({ error: "Forbidden" });
     }
 
     const state = await getWorkspacePageState(clientId, scopedPageKey);
@@ -63,6 +67,9 @@ router.put("/workspace-page-state/:pageKey", async (req, res) => {
         success: false,
         error: "Missing clientId.",
       });
+    }
+    if (!canAccessCompany(req.user, clientId)) {
+      return res.status(403).json({ error: "Forbidden" });
     }
 
     const saved = await replaceWorkspacePageState(
@@ -97,6 +104,9 @@ router.delete("/workspace-page-state/:pageKey", async (req, res) => {
         success: false,
         error: "Missing clientId.",
       });
+    }
+    if (!canAccessCompany(req.user, clientId)) {
+      return res.status(403).json({ error: "Forbidden" });
     }
 
     const deleted = await deleteWorkspacePageState(clientId, scopedPageKey);

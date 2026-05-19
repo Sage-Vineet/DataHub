@@ -128,6 +128,17 @@ async function listFoldersByCompany(companyId, options = {}) {
   return data || [];
 }
 
+async function getFolderById(id) {
+  if (!id) return null;
+  const { data, error } = await supabase
+    .from("folders")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw error;
+  return data || null;
+}
+
 /**
  * Gets a tree structure of folders for a company
  * @param {string} companyId - Company ID
@@ -311,6 +322,7 @@ module.exports = {
   cleanupDuplicateFolders,
   resolveFolderCreatorId: resolveCreatorId,
   listFoldersByCompany,
+  getFolderById,
   getFolderTree,
   createFolder,
   updateFolder,
