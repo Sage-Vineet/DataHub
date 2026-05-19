@@ -12,6 +12,7 @@ import { createCompanyRequest, deleteCompanyRequest, listCompaniesRequest, updat
 
 const PAGE_SIZE = 10;
 const EMPTY_FORM = { name: '', project_name: '', contact: '', email: '', phone: '', industry: '' };
+const OTHER_INDUSTRY_OPTION = 'Other';
 
 const INDUSTRY_OPTIONS = [
   'Technology & Software',
@@ -88,6 +89,7 @@ export default function Companies() {
   const [selected, setSelected] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
+  const [useCustomIndustry, setUseCustomIndustry] = useState(false);
   const [editing, setEditing] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [deleting, setDeleting] = useState(false);
@@ -181,6 +183,7 @@ export default function Companies() {
     setShowAdd(false);
     setEditing(null);
     setForm(EMPTY_FORM);
+    setUseCustomIndustry(false);
     setFormError('');
   };
 
@@ -188,19 +191,22 @@ export default function Companies() {
     setFormError('');
     setEditing(null);
     setForm(EMPTY_FORM);
+    setUseCustomIndustry(false);
     setShowAdd(true);
   };
 
   const openEditModal = (company) => {
     setFormError('');
     setEditing(company);
+    const industry = company.industry || '';
+    setUseCustomIndustry(Boolean(industry) && !INDUSTRY_OPTIONS.includes(industry));
     setForm({
       name: company.name || '',
       project_name: company.projectName || '',
       contact: company.contact || '',
       email: company.email || '',
       phone: company.phone || '',
-      industry: company.industry || '',
+      industry,
     });
     setShowAdd(true);
   };
@@ -380,7 +386,6 @@ export default function Companies() {
                 <th className="text-left px-5 py-3.5 text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Email</th>
                 <th className="text-left px-5 py-3.5 text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Phone</th>
                 <th className="text-left px-5 py-3.5 text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Status</th>
-                <th className="text-center px-5 py-3.5 text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Total Req</th>
                 <th className="text-center px-5 py-3.5 text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Pending</th>
                 <th className="text-right px-5 py-3.5 text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Actions</th>
               </tr>
@@ -388,14 +393,14 @@ export default function Companies() {
             <tbody className="divide-y divide-gray-50">
               {loading && (
                 <tr>
-                  <td colSpan={11} className="text-center py-16 text-[#A5A5A5] text-sm">
+                  <td colSpan={10} className="text-center py-16 text-[#A5A5A5] text-sm">
                     Loading companies...
                   </td>
                 </tr>
               )}
               {!loading && paginated.length === 0 && (
                 <tr>
-                  <td colSpan={11} className="text-center py-16 text-[#A5A5A5] text-sm">
+                  <td colSpan={10} className="text-center py-16 text-[#A5A5A5] text-sm">
                     No companies found matching your filters.
                   </td>
                 </tr>
@@ -407,7 +412,7 @@ export default function Companies() {
                   </td>
                   <td className="px-5 py-4">
                     {company.projectName ? (
-                      <span className="inline-block rounded-full bg-[#05164D]/10 px-2.5 py-1 text-xs font-semibold text-[#05164D]">
+                      <span className="text-sm font-semibold text-[#050505] whitespace-nowrap">
                         {company.projectName}
                       </span>
                     ) : (
@@ -415,17 +420,12 @@ export default function Companies() {
                     )}
                   </td>
                   <td className="px-5 py-4">
-                    <div className="flex items-center gap-3">
-                      <div className="w-9 h-9 rounded-xl bg-[#05164D] flex items-center justify-center text-xs font-bold text-white flex-shrink-0">
-                        {company.logo}
-                      </div>
-                      <button
-                        onClick={() => handleOpenWorkspace(company)}
-                        className="font-semibold text-[#050505] hover:text-[#8BC53D] hover:underline leading-tight text-left transition-colors"
-                      >
-                        {company.name}
-                      </button>
-                    </div>
+                    <button
+                      onClick={() => handleOpenWorkspace(company)}
+                      className="font-semibold text-[#050505] hover:text-[#8BC53D] hover:underline leading-tight text-left transition-colors whitespace-nowrap"
+                    >
+                      {company.name}
+                    </button>
                   </td>
                   <td className="px-5 py-4">
                     <span className="text-sm text-[#6D6E71]">{company.industry || '—'}</span>
@@ -450,9 +450,6 @@ export default function Companies() {
                   </td>
                   <td className="px-5 py-4">
                     <StatusBadge value={company.status} size="xs" />
-                  </td>
-                  <td className="px-5 py-4 text-center">
-                    <span className="text-base font-bold text-[#050505]">{company.requestCount}</span>
                   </td>
                   <td className="px-5 py-4 text-center">
                     {company.pendingCount > 0 ? (
@@ -634,15 +631,34 @@ export default function Companies() {
               Industry <span className="text-[#C62026]">*</span>
             </label>
             <select
-              value={form.industry}
-              onChange={(event) => setForm((current) => ({ ...current, industry: event.target.value }))}
+              value={useCustomIndustry ? OTHER_INDUSTRY_OPTION : form.industry}
+              onChange={(event) => {
+                const selectedIndustry = event.target.value;
+                if (selectedIndustry === OTHER_INDUSTRY_OPTION) {
+                  setUseCustomIndustry(true);
+                  setForm((current) => ({ ...current, industry: '' }));
+                  return;
+                }
+                setUseCustomIndustry(false);
+                setForm((current) => ({ ...current, industry: selectedIndustry }));
+              }}
               className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all text-[#050505] bg-white"
             >
               <option value="">Select industry…</option>
               {INDUSTRY_OPTIONS.map((opt) => (
                 <option key={opt} value={opt}>{opt}</option>
               ))}
+              <option value={OTHER_INDUSTRY_OPTION}>{OTHER_INDUSTRY_OPTION}</option>
             </select>
+            {useCustomIndustry && (
+              <input
+                type="text"
+                value={form.industry}
+                onChange={(event) => setForm((current) => ({ ...current, industry: event.target.value }))}
+                placeholder="Enter industry name"
+                className="mt-3 w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all placeholder-[#A5A5A5]"
+              />
+            )}
           </div>
           <div className="flex gap-3 pt-2">
             {editing && (
