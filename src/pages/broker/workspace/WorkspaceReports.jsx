@@ -852,7 +852,6 @@ export default function WorkspaceReports() {
             {
               sourceMode: selectedSourceMode,
               manualFilters: summaryFilterParams,
-              manualFilters: manualFilterParams,
               manualUploadRowId,
             },
           ).catch(() => ({
@@ -881,7 +880,6 @@ export default function WorkspaceReports() {
             {
               sourceMode: selectedSourceMode,
               manualFilters: summaryFilterParams,
-              manualFilters: manualFilterParams,
               manualUploadRowId,
             },
           ).catch(() => []);
@@ -905,7 +903,6 @@ export default function WorkspaceReports() {
             {
               sourceMode: selectedSourceMode,
               manualFilters: summaryFilterParams,
-              manualFilters: manualFilterParams,
               manualUploadRowId,
             },
           ).catch(() => []);
