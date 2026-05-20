@@ -11,6 +11,7 @@ import {
   getManualStageFilterOptions,
   getLatestManualUploadedReport,
 } from "../../../lib/api";
+import { MANUAL_GL_STAGED_EVENT } from "../../../lib/dataSourceEvents";
 import { useDataSource } from "../../../context/DataSourceContext";
 import {
   getBalanceSheet,
@@ -224,9 +225,8 @@ export default function WorkspaceReports() {
     activeSource: contextActiveSource,
     quickbooksConnected: contextQbConnected,
   } = useDataSource();
-  const today = new Date();
-  const todayString = formatDateForInput(today);
-  const defaultCustomStart = `${todayString.slice(0, 7)}-01`;
+  const todayString = useMemo(() => formatDateForInput(new Date()), []);
+  const defaultCustomStart = useMemo(() => `${todayString.slice(0, 7)}-01`, [todayString]);
   const storedState = getStoredReportsState(clientId);
   const REPORT_TABS = useMemo(
     () => [
@@ -286,13 +286,27 @@ export default function WorkspaceReports() {
     normalizeManualFilters(storedState?.appliedManualFilters),
   );
   const [manualFilterOptions, setManualFilterOptions] = useState({});
+  const [filterOptionsVersion, setFilterOptionsVersion] = useState(0);
   const hasRestoredSessionRef = useRef(false);
+  const isFirstMountRef = useRef(true);
+  // Always-fresh ref so the filter options effect doesn't capture a stale closure.
+  const manualFiltersRef = useRef(manualFilters);
+  manualFiltersRef.current = manualFilters;
   const debugLog = useCallback((...args) => {
     if (!MANUAL_REPORT_DEBUG) return;
     console.log(...args);
   }, []);
 
   useEffect(() => {
+    // On the initial mount useState already hydrated from sessionStorage, so skip
+    // the restore here to avoid 11 extra setState calls → extra report generation.
+    // On subsequent clientId changes (navigating between clients) we do need to restore.
+    if (isFirstMountRef.current) {
+      isFirstMountRef.current = false;
+      hasRestoredSessionRef.current = true;
+      return;
+    }
+
     const restoredState = getStoredReportsState(clientId);
 
     Promise.resolve().then(() => {
@@ -342,6 +356,18 @@ export default function WorkspaceReports() {
     };
   }, [clientId]);
 
+  // Increment filterOptionsVersion whenever a new manual GL batch is staged,
+  // so the filter options effect re-runs and picks up the new fiscal years.
+  useEffect(() => {
+    function handleGlStaged(event) {
+      const { clientId: eventClientId } = event.detail || {};
+      if (eventClientId && clientId && eventClientId !== clientId) return;
+      setFilterOptionsVersion((v) => v + 1);
+    }
+    window.addEventListener(MANUAL_GL_STAGED_EVENT, handleGlStaged);
+    return () => window.removeEventListener(MANUAL_GL_STAGED_EVENT, handleGlStaged);
+  }, [clientId]);
+
   const clientName = useMemo(
     () => company?.name || "All Clients",
     [company?.name],
@@ -386,12 +412,14 @@ export default function WorkspaceReports() {
         });
         const availableYears = Array.isArray(options.fiscalYear) ? options.fiscalYear : [];
         if (availableYears.length > 0) {
-          const currentYear = manualFilters.fiscalYear?.[0];
+          // Read from ref to get the latest filters without adding manualFilters to deps,
+          // which would re-run this effect on every user filter interaction.
+          const currentYear = manualFiltersRef.current.fiscalYear?.[0];
           const yearMatch = availableYears.find((y) => String(y) === String(currentYear));
           if (!currentYear || !yearMatch) {
             const sorted = [...availableYears].map(Number).filter(Number.isFinite).sort((a, b) => b - a);
             if (sorted.length > 0) {
-              const next = { ...manualFilters, fiscalYear: [String(sorted[0])] };
+              const next = { ...manualFiltersRef.current, fiscalYear: [String(sorted[0])] };
               setManualFilters(next);
               setAppliedManualFilters(next);
               debugLog("[ManualGL][UI][FilterAutoSelectYear]", {
@@ -405,7 +433,8 @@ export default function WorkspaceReports() {
         console.error("[WorkspaceReports] Failed to load manual filter options:", error);
         setManualFilterOptions({});
       });
-  }, [appliedManualFilters.batchId, clientId, selectedSourceMode]);
+  // filterOptionsVersion increments when a new GL batch is staged, forcing a re-fetch.
+  }, [appliedManualFilters.batchId, clientId, selectedSourceMode, filterOptionsVersion]);
 
   useEffect(() => {
     if (!clientId || !hasRestoredSessionRef.current) return;
@@ -690,7 +719,7 @@ export default function WorkspaceReports() {
     return m ? parseInt(m[1], 10) : null;
   };
 
-  const handleGenerateReport = async () => {
+  const handleGenerateReport = useCallback(async () => {
     setIsLoading(true);
 
     try {
@@ -827,7 +856,7 @@ export default function WorkspaceReports() {
             normalizedAccountingMethod,
             {
               sourceMode: selectedSourceMode,
-              manualFilters: manualFilterParams,
+              manualFilters: summaryFilterParams,
             },
           ).catch(() => []);
         } else {
@@ -871,28 +900,27 @@ export default function WorkspaceReports() {
     } finally {
       setIsLoading(false);
     }
-  };
-
-  // Auto-generate report when dependencies change.
-  // Debounced 80ms to prevent double-fetch when multiple state updates arrive
-  // in the same tick (e.g. session restore followed by filter auto-selection).
-  useEffect(() => {
-    if (!clientId) return;
-    const timer = setTimeout(() => {
-      handleGenerateReport();
-    }, 80);
-    return () => clearTimeout(timer);
   }, [
     accountingMethod,
     appliedManualFilters,
     clientId,
-    customRange.end,
-    customRange.start,
-    dateRange,
+    getDates,
+    debugLog,
     reportType,
     selectedSourceMode,
     selectedTab,
   ]);
+
+  // Auto-generate report when dependencies change.
+  // Debounced 80ms to prevent double-fetch when multiple state updates arrive
+  // in the same tick (e.g. session restore followed by filter auto-selection).
+  // handleGenerateReport is memoized with useCallback so this effect only fires
+  // when the underlying filter/tab/source values actually change.
+  useEffect(() => {
+    if (!clientId) return;
+    const timer = setTimeout(handleGenerateReport, 80);
+    return () => clearTimeout(timer);
+  }, [handleGenerateReport, clientId]);
 
 
   const currentReport = reportsData[selectedTab];
@@ -1144,6 +1172,12 @@ export default function WorkspaceReports() {
               </div>
             ) : (
               <>
+                {selectedTab === "Balance Sheet" && currentReport.summary?.reStageRequired && (
+                  <div className="mx-4 mb-3 rounded border border-amber-300 bg-amber-50 px-4 py-3 text-[13px] text-amber-800">
+                    <strong>Data re-staging required:</strong>{" "}
+                    {currentReport.summary.reStageWarning || "Re-run staging to fix Balance Sheet totals."}
+                  </div>
+                )}
                 <div id="report-content" className="bg-white">
                   {selectedTab === "Balance Sheet" ? (
                     <BalanceSheetReport

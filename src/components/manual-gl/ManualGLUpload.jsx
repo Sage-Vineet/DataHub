@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Database, FileUp, Loader2, RefreshCw, CheckCircle, AlertCircle, ArrowRight, Save, Play, X, FileText, Lock } from "lucide-react";
 import {
   listCompanyFolders,
@@ -10,7 +10,12 @@ import {
   stageMultiYearManualGl,
   validateManualStagedBalanceSheet,
 } from "../../lib/api";
+import { emitManualGlStaged } from "../../lib/dataSourceEvents";
 import { useToast } from "../../context/ToastContext";
+import StagingProgressModal from "../common/StagingProgressModal";
+import { useGlDocumentStore } from '../../store/glDocumentStore';
+
+const PROGRESS_IDLE = { isActive: false, stage: "upload", message: "", pct: 0, error: null };
 
 export default function ManualGLUpload({
   companyId,
@@ -24,16 +29,59 @@ export default function ManualGLUpload({
   const [files, setFiles] = useState([]); // GL files for manual upload
   const [startingBalanceSheetFile, setStartingBalanceSheetFile] = useState(null);
   const [endingBalanceSheetFile, setEndingBalanceSheetFile] = useState(null);
-  const [documents, setDocuments] = useState([]);
-  const [selectedDocumentIds, setSelectedDocumentIds] = useState([]); // GL docs from dataroom
-  const [selectedStartingDocumentId, setSelectedStartingDocumentId] = useState("");
-  const [selectedEndingDocumentId, setSelectedEndingDocumentId] = useState("");
+  const [documents, setDocuments] = useState(
+    () => useGlDocumentStore.getState().getDocuments(companyId) || []
+  );
+  const [selectedDocumentIds, setSelectedDocumentIds] = useState(
+    () => useGlDocumentStore.getState().getSelection(companyId).selectedDocumentIds
+  );
+  const [selectedStartingDocumentId, setSelectedStartingDocumentId] = useState(
+    () => useGlDocumentStore.getState().getSelection(companyId).selectedStartingDocumentId
+  );
+  const [selectedEndingDocumentId, setSelectedEndingDocumentId] = useState(
+    () => useGlDocumentStore.getState().getSelection(companyId).selectedEndingDocumentId
+  );
   const [activeUploadId, setActiveUploadId] = useState("");
   const [pendingStageRequest, setPendingStageRequest] = useState(null);
   const [stageResult, setStageResult] = useState(null);
 
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isLoadingDocuments, setIsLoadingDocuments] = useState(true);
+  const [isLoadingDocuments, setIsLoadingDocuments] = useState(
+    () => !useGlDocumentStore.getState().isFresh(companyId)
+  );
+
+  // Progress overlay state — tracks upload/staging/validation pipeline.
+  const [stagingProgress, setStagingProgress] = useState(PROGRESS_IDLE);
+  const progressCloseTimer = useRef(null);
+  const prevCompanyIdRef = useRef(companyId);
+
+  useEffect(() => {
+    return () => { if (progressCloseTimer.current) clearTimeout(progressCloseTimer.current); };
+  }, []);
+
+  // Re-initialize when broker navigates to a different client company
+  useEffect(() => {
+    if (prevCompanyIdRef.current === companyId) return;
+    prevCompanyIdRef.current = companyId;
+    const store = useGlDocumentStore.getState();
+    const cached = store.getDocuments(companyId);
+    const sel = store.getSelection(companyId);
+    setDocuments(cached || []);
+    setSelectedDocumentIds(sel.selectedDocumentIds);
+    setSelectedStartingDocumentId(sel.selectedStartingDocumentId);
+    setSelectedEndingDocumentId(sel.selectedEndingDocumentId);
+    setIsLoadingDocuments(!store.isFresh(companyId));
+  }, [companyId]);
+
+  // Persist selection state to store whenever it changes
+  useEffect(() => {
+    if (!companyId) return;
+    useGlDocumentStore.getState().setSelection(companyId, {
+      selectedDocumentIds,
+      selectedStartingDocumentId,
+      selectedEndingDocumentId,
+    });
+  }, [companyId, selectedDocumentIds, selectedStartingDocumentId, selectedEndingDocumentId]);
 
   // Step 2 State
   const [isLoadingColumns, setIsLoadingColumns] = useState(false);
@@ -57,9 +105,16 @@ export default function ManualGLUpload({
   const [validationErrors, setValidationErrors] = useState([]);
   const [balanceSheetValidation, setBalanceSheetValidation] = useState(null);
 
-  const refreshDocuments = useCallback(async () => {
+  const refreshDocuments = useCallback(async ({ force = false } = {}) => {
     if (!companyId) {
       setDocuments([]);
+      setIsLoadingDocuments(false);
+      return;
+    }
+
+    const store = useGlDocumentStore.getState();
+    if (!force && store.isFresh(companyId)) {
+      setDocuments(store.getDocuments(companyId));
       setIsLoadingDocuments(false);
       return;
     }
@@ -101,6 +156,7 @@ export default function ManualGLUpload({
       );
 
       const allDocs = docsPerFolder.flat().filter((doc) => !!doc.uploadId);
+      store.setDocuments(companyId, allDocs);
       setDocuments(allDocs);
     } catch (error) {
       showToast({
@@ -205,6 +261,7 @@ export default function ManualGLUpload({
       setIsSubmitting(true);
       setActiveUploadId("");
       setBalanceSheetValidation(null);
+      if (progressCloseTimer.current) clearTimeout(progressCloseTimer.current);
 
       const uploadPrefix = `manual-gl/${companyId}`;
       let glUploadIds = [];
@@ -212,34 +269,48 @@ export default function ManualGLUpload({
       let endingBalanceSheetUploadId = "";
 
       if (sourceMode === "manual") {
+        const totalFiles = files.length;
+        setStagingProgress({ isActive: true, stage: "upload", message: "Uploading GL files…", pct: 5, error: null });
+
         glUploadIds = (
           await Promise.all(
-            files.map(async (file) => {
+            files.map(async (file, idx) => {
               const uploaded = await uploadFile(file, {
                 fileName: file.name,
                 prefix: uploadPrefix,
               });
+              setStagingProgress((prev) => ({
+                ...prev,
+                pct: 5 + Math.round(((idx + 1) / totalFiles) * 30),
+                message: `Uploading ${file.name}…`,
+              }));
               return uploaded?.id || "";
             }),
           )
         ).filter(Boolean);
 
         if (startingBalanceSheetFile) {
+          setStagingProgress((prev) => ({ ...prev, pct: 37, message: "Uploading starting balance sheet…" }));
           const uploaded = await uploadFile(startingBalanceSheetFile, {
             fileName: startingBalanceSheetFile.name,
             prefix: uploadPrefix,
           });
           startingBalanceSheetUploadId = uploaded?.id || "";
+          setStagingProgress((prev) => ({ ...prev, pct: 40 }));
         }
 
         if (endingBalanceSheetFile) {
+          setStagingProgress((prev) => ({ ...prev, pct: 42, message: "Uploading ending balance sheet…" }));
           const uploaded = await uploadFile(endingBalanceSheetFile, {
             fileName: endingBalanceSheetFile.name,
             prefix: uploadPrefix,
           });
           endingBalanceSheetUploadId = uploaded?.id || "";
+          setStagingProgress((prev) => ({ ...prev, pct: 45 }));
         }
       } else {
+        setStagingProgress({ isActive: true, stage: "stage", message: "Preparing staged data…", pct: 15, error: null });
+
         const selectedSet = new Set(selectedDocumentIds);
         const glDocs = documents.filter((doc) => selectedSet.has(doc.id));
         glUploadIds = glDocs.map((doc) => doc.uploadId).filter(Boolean);
@@ -267,6 +338,7 @@ export default function ManualGLUpload({
           title: "No GL files",
           message: "Please provide at least one General Ledger file.",
         });
+        setStagingProgress(PROGRESS_IDLE);
         return;
       }
 
@@ -278,7 +350,16 @@ export default function ManualGLUpload({
       };
       stagePayloadForRetry = stagePayload;
 
+      setStagingProgress((prev) => ({
+        ...prev,
+        stage: "stage",
+        message: "Staging transactions…",
+        pct: sourceMode === "manual" ? 50 : 20,
+      }));
       const staged = await stageMultiYearManualGl(stagePayload, { clientId: companyId });
+      setStagingProgress((prev) => ({ ...prev, pct: 82, message: "Validating data…" }));
+
+      setStagingProgress((prev) => ({ ...prev, stage: "validate", message: "Validating balance sheet…", pct: 88 }));
       const validation =
         staged?.validation ||
         (staged?.batchId
@@ -288,11 +369,12 @@ export default function ManualGLUpload({
           }).catch(() => null))?.validation || null
           : null);
 
+      setStagingProgress((prev) => ({ ...prev, stage: "prepare", message: "Preparing reports…", pct: 95 }));
+
       setPendingStageRequest(stagePayload);
       setStageResult(staged);
       setBalanceSheetValidation(validation);
       setValidationErrors([]);
-      setStep(3);
 
       setFiles([]);
       setSelectedDocumentIds([]);
@@ -306,12 +388,20 @@ export default function ManualGLUpload({
         title: "Staging complete",
         message: `Batch ${staged.batchId} staged. Inserted ${staged.insertedTransactions || 0}, skipped duplicates ${staged.duplicateTransactionsSkipped || 0}.`,
       });
+      emitManualGlStaged({ clientId: companyId, batchId: staged.batchId });
       if (typeof onStageComplete === "function") {
         await onStageComplete(staged);
       }
+
+      setStagingProgress({ isActive: true, stage: "complete", message: "Staging complete!", pct: 100, error: null });
+      progressCloseTimer.current = setTimeout(() => {
+        setStagingProgress(PROGRESS_IDLE);
+        setStep(3);
+      }, 1500);
     } catch (error) {
       if (error?.payload?.requiresManualMapping) {
         const payload = error.payload;
+        setStagingProgress(PROGRESS_IDLE);
         setPendingStageRequest(
           stagePayloadForRetry || {
             glUploadIds: [],
@@ -339,7 +429,10 @@ export default function ManualGLUpload({
         });
         return;
       }
-      showToast({ type: "error", title: "Stage failed", message: error?.message || "Could not stage the documents." });
+      const errMsg = error?.message || "An unexpected error occurred.";
+      setStagingProgress({ isActive: true, stage: "error", message: errMsg, pct: 0, error: errMsg });
+      progressCloseTimer.current = setTimeout(() => setStagingProgress(PROGRESS_IDLE), 2000);
+      showToast({ type: "error", title: "Stage failed", message: errMsg });
     } finally {
       setIsSubmitting(false);
     }
@@ -426,12 +519,18 @@ export default function ManualGLUpload({
     setValidationErrors([]);
     try {
       setIsProcessing(true);
+      if (progressCloseTimer.current) clearTimeout(progressCloseTimer.current);
+      setStagingProgress({ isActive: true, stage: "stage", message: "Staging transactions…", pct: 20, error: null });
+
       const payload = {
         ...pendingStageRequest,
         mapping,
       };
 
       const staged = await stageMultiYearManualGl(payload, { clientId: companyId });
+      setStagingProgress((prev) => ({ ...prev, pct: 75, message: "Validating data…" }));
+
+      setStagingProgress((prev) => ({ ...prev, stage: "validate", message: "Validating balance sheet…", pct: 85 }));
       const validation =
         staged?.validation ||
         (staged?.batchId
@@ -440,6 +539,8 @@ export default function ManualGLUpload({
             params: { batchId: staged.batchId },
           }).catch(() => null))?.validation || null
           : null);
+
+      setStagingProgress((prev) => ({ ...prev, stage: "prepare", message: "Preparing reports…", pct: 95 }));
 
       setStageResult(staged);
       setBalanceSheetValidation(validation);
@@ -450,13 +551,20 @@ export default function ManualGLUpload({
         title: "Staging complete",
         message: `Batch ${staged.batchId} staged. Inserted ${staged.insertedTransactions || 0}, skipped duplicates ${staged.duplicateTransactionsSkipped || 0}.`,
       });
+      emitManualGlStaged({ clientId: companyId, batchId: staged.batchId });
       if (typeof onStageComplete === "function") {
         await onStageComplete(staged);
       }
-      setStep(3);
+
+      setStagingProgress({ isActive: true, stage: "complete", message: "Staging complete!", pct: 100, error: null });
+      progressCloseTimer.current = setTimeout(() => {
+        setStagingProgress(PROGRESS_IDLE);
+        setStep(3);
+      }, 1500);
     } catch (error) {
       if (error?.payload?.requiresManualMapping) {
         const payload = error.payload;
+        setStagingProgress(PROGRESS_IDLE);
         if (payload.suggestedMapping && typeof payload.suggestedMapping === "object") {
           setMapping((current) => ({ ...current, ...payload.suggestedMapping }));
         }
@@ -479,13 +587,19 @@ export default function ManualGLUpload({
         });
         return;
       }
-      showToast({ type: "error", title: "Retry failed", message: error?.message || "Could not restage GL data." });
+      const errMsg = error?.message || "Could not restage GL data.";
+      setStagingProgress({ isActive: true, stage: "error", message: errMsg, pct: 0, error: errMsg });
+      progressCloseTimer.current = setTimeout(() => setStagingProgress(PROGRESS_IDLE), 2000);
+      showToast({ type: "error", title: "Retry failed", message: errMsg });
     } finally {
       setIsProcessing(false);
     }
   };
 
   const resetFlow = () => {
+    if (progressCloseTimer.current) clearTimeout(progressCloseTimer.current);
+    useGlDocumentStore.getState().clearSelection(companyId);
+    setStagingProgress(PROGRESS_IDLE);
     setStep(1);
     setFiles([]);
     setStartingBalanceSheetFile(null);
@@ -560,6 +674,8 @@ export default function ManualGLUpload({
   );
 
   return (
+    <>
+    <StagingProgressModal progress={stagingProgress} />
     <div className="card-base overflow-hidden">
       <div className="px-6 py-4 border-b border-border flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2 min-w-0">
@@ -588,7 +704,7 @@ export default function ManualGLUpload({
         {!isLocked && step === 1 && (
           <button
             type="button"
-            onClick={refreshDocuments}
+            onClick={() => refreshDocuments({ force: true })}
             className="btn-secondary h-9 px-3 disabled:cursor-not-allowed disabled:opacity-60"
             disabled={isLoadingDocuments}
           >
@@ -1009,5 +1125,6 @@ export default function ManualGLUpload({
 
       </div>
     </div>
+    </>
   );
 }

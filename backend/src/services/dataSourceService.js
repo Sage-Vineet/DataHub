@@ -314,10 +314,10 @@ class DataSourceService {
       throw new Error(`Unknown operation source: ${operationSource}`);
     }
 
+    // getDataSourceState already resolves company.data_source_type into activeSource,
+    // so no second getCompanySourceState call is needed here.
     const state = await this.getDataSourceState(companyId);
-    const company = await this.getCompanySourceState(companyId);
-    const companySource = normalizeSourceKey(company?.data_source_type);
-    const activeSource = companySource || state.activeSource;
+    const activeSource = state.activeSource;
 
     if (!activeSource) {
       if (

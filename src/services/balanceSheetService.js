@@ -424,6 +424,8 @@ export async function getBalanceSheet(startDate, endDate, accountingMethod, opti
         sourceLabel: resolveSourceLabel(source),
         asOfDate: response?.asOfDate || endDate || null,
         noDataText: rows.length > 0 ? null : "No Balance Sheet Available",
+        reStageRequired: response?.reStageRequired || false,
+        reStageWarning: response?.reStageWarning || null,
       };
     }
   } catch (error) {

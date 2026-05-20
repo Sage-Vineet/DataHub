@@ -35,28 +35,71 @@ const OPTIONAL_GL_MAPPING_FIELDS = [
   "sub_category",
 ];
 
+// Column candidate lists are ordered most-specific → least-specific.
+// resolveColumn picks the first match, so longer/more-distinctive strings win
+// before short ambiguous ones like "dr", "num", "type".
 const MAPPING_CANDIDATES = {
-  date: ["transaction date", "posting date", "date"],
-  account_name: ["distribution account", "account name", "account"],
-  account_number: ["account number", "acct number", "account #", "gl code"],
-  account_type: ["account type", "type"],
-  amount: ["amount", "split amount", "signed amount", "net amount"],
-  debit: ["debit", "dr"],
-  credit: ["credit", "cr"],
-  description: ["memo/description", "description", "memo", "narration"],
-  reference: ["num", "reference", "ref", "transaction id", "document"],
-  transaction_type: ["transaction type", "entry type", "type"],
-  journal_type: ["journal type", "transaction type", "type"],
-  class: ["class"],
-  department: ["department"],
-  location: ["location"],
-  category: ["category"],
-  sub_category: ["sub category", "subcategory"],
+  date: [
+    "transaction date", "posting date", "journal date", "entry date",
+    "trx date", "txn date", "posted date", "value date", "effective date",
+    "doc date", "document date", "invoice date", "date",
+  ],
+  account_name: [
+    "distribution account", "gl account name", "account description",
+    "account title", "ledger account", "nominal account", "gl account",
+    "g/l account", "chart of accounts name", "account name", "account",
+  ],
+  account_number: [
+    "chart of accounts code", "gl account number", "account number",
+    "account no", "acct number", "acct no", "gl code", "gl number",
+    "ledger code", "ledger number", "account code", "coa code",
+    "account id", "acct #", "account #",
+  ],
+  account_type: ["account type", "acct type"],
+  amount: [
+    "split amount", "signed amount", "transaction amount", "entry amount",
+    "net amount", "amount",
+  ],
+  debit: ["debit amount", "debits", "dr amount", "debit", "dr"],
+  credit: ["credit amount", "credits", "cr amount", "credit", "cr"],
+  description: [
+    "memo/description", "transaction description", "entry description",
+    "description", "particulars", "details", "narration",
+    "remarks", "remark", "notes", "memo", "comment",
+  ],
+  reference: [
+    "transaction id", "transaction number", "document number", "doc number",
+    "voucher number", "voucher no", "check number", "check no",
+    "invoice number", "invoice no", "reference number", "batch number",
+    "batch no", "doc no", "po number", "journal number",
+    "reference", "document", "voucher", "invoice", "ref", "num",
+  ],
+  transaction_type: ["transaction type", "txn type", "entry type", "type"],
+  journal_type: ["journal entry type", "journal type", "j/e type"],
+  class: ["class code", "class"],
+  department: ["cost centre", "cost center", "dept code", "department", "dept"],
+  location: ["branch", "site", "property", "location"],
+  category: ["gl category", "category"],
+  sub_category: ["sub-category", "sub category", "subcategory", "sub cat"],
 };
 
 const BALANCE_EPSILON = 0.01;
 const DEFAULT_STAGING_LIMIT = 200000;
 const MANUAL_SOURCE_KEY = REPORT_SOURCE_KEYS.MANUAL_GL;
+// Default to calendar-year unless an explicit fiscal calendar is provided by caller.
+const DEFAULT_FISCAL_YEAR_START_MONTH = 1;
+const DEFAULT_FISCAL_YEAR_START_DAY = 1;
+const MAX_SKIP_SAMPLES = 500;
+
+// Pre-compiled account-type inference regexes.
+// Defined once at module load — NOT inside inferAccountType() — so they are
+// never recompiled during the 100K-500K transaction classification loop.
+const RE_ACCT_ASSET = /\bcash\b|\bbank\b|\bchecking\b|\bsavings\b|\breceivable\b|\ba\/r\b|\binventory\b|\basset\b|\bprepaid\b|\bfixed asset\b|\bequipment\b|\bmachinery\b|\bvehicle\b|\btruck\b|\bfurniture\b|\bfixture\b|\bcomputer\b|\bbuilding\b|\bland\b/;
+const RE_ACCT_LIABILITY = /\bpayable\b|\bloan\b|\bliability\b|\bcredit card\b|\bcc\b|\bvisa\b|\bmastercard\b|\bamex\b|\bdebt\b|\bnote payable\b|\bnotes payable\b/;
+const RE_ACCT_EQUITY = /\bequity\b|\bcapital\b|\bdraw\b|\bretained earnings\b|\bowner\b/;
+const RE_ACCT_INCOME = /\bsales\b|\brevenue\b|\bincome\b|\bfee\b/;
+const RE_ACCT_COGS = /\bcogs\b|\bcost of goods\b|\bdirect cost\b/;
+const RE_ACCT_EXPENSE = /\bexpense\b|\brent\b|\butilit\b|\bsalaries\b|\bwages\b|\btravel\b|\bmeals\b|\boffice\b/;
 
 function isMissingColumnError(error, columnName = "") {
   if (!error) return false;
@@ -93,6 +136,207 @@ function normalizeKey(val) {
 function roundMoney(value) {
   if (!Number.isFinite(value)) return 0;
   return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+// ─── Balance Normalization Engine ─────────────────────────────────────────────
+// Single source of truth for all debit/credit sign conventions.
+// Every report and aggregation MUST route through these functions.
+// DO NOT scatter inline debit-credit arithmetic outside this section.
+
+/**
+ * Computes the natural (accounting-standard) balance for an account.
+ *
+ * Normal balance rules:
+ *   Assets     (+Dr) : balance = debits − credits   → positive when Dr > Cr
+ *   Expenses   (+Dr) : balance = debits − credits   → positive when Dr > Cr
+ *   COGS       (+Dr) : balance = debits − credits   → positive when Dr > Cr
+ *   Liabilities(+Cr) : balance = credits − debits   → positive when Cr > Dr
+ *   Equity     (+Cr) : balance = credits − debits   → positive when Cr > Dr
+ *   Revenue    (+Cr) : balance = credits − debits   → positive when Cr > Dr
+ *
+ * @param {number} debit       - gross debit amount (always ≥ 0)
+ * @param {number} credit      - gross credit amount (always ≥ 0)
+ * @param {string} accountType - "asset"|"liability"|"equity"|"income"|"cogs"|"expense"
+ * @param {boolean} isContra   - true for contra accounts (reverses the normal sign)
+ * @returns {number}           - signed natural balance (positive = normal balance)
+ */
+function computeNaturalBalance(debit, credit, accountType, isContra = false) {
+  const dr = roundMoney(Math.abs(Number(debit) || 0));
+  const cr = roundMoney(Math.abs(Number(credit) || 0));
+  const type = String(accountType || "").toLowerCase();
+  const normalDebitSide = type === "asset" || type === "expense" || type === "cogs";
+  const effectiveDebitSide = isContra ? !normalDebitSide : normalDebitSide;
+  return effectiveDebitSide ? roundMoney(dr - cr) : roundMoney(cr - dr);
+}
+
+/**
+ * Computes the activity DELTA to apply to a running Balance Sheet balance.
+ * For a BS roll-forward: endingBalance = openingBalance + sum(activityDelta).
+ *
+ * A delta of +X means the balance grew by X in the natural direction for the account type.
+ * A delta of −X means the balance shrank.
+ *
+ * Internally derived from netAmount = credit − debit (the DB convention).
+ *
+ * @param {number} netAmount   - credit minus debit (from the staged transaction)
+ * @param {string} accountType - "asset"|"liability"|"equity"
+ * @param {boolean} isContra   - true for contra accounts
+ * @returns {number}
+ */
+function computeBsActivityDelta(netAmount, accountType, isContra = false) {
+  const net = roundMoney(Number(netAmount) || 0);
+  const type = String(accountType || "").toLowerCase();
+  // For assets: natural balance grows with debits → delta = −(credit−debit) = debit−credit
+  // For liabilities/equity: natural balance grows with credits → delta = credit−debit
+  const assetSide = type === "asset";
+  const effectiveAssetSide = isContra ? !assetSide : assetSide;
+  return effectiveAssetSide ? roundMoney(-net) : roundMoney(net);
+}
+
+/**
+ * Normalizes the raw amount stored in a starting/ending Balance Sheet line to
+ * the "natural balance" direction for that account section.
+ *
+ * Problem: Many accounting exports (QuickBooks, Xero, etc.) display liability
+ * and some equity accounts with parenthetical/negative signs in CSV/Excel exports
+ * because the underlying ledger stores them as credit-side entries. On the rendered
+ * Balance Sheet these are POSITIVE values (e.g., "Credit Card 206,412.44" means
+ * the company OWES $206,412). When the parser reads "(206,412.44)" it produces
+ * −206,412.44. That negative sign propagates into the opening balance and inverts
+ * every subsequent roll-forward calculation.
+ *
+ * Rules:
+ *   LIABILITY: negative → flip to positive (natural credit balance), except for
+ *     genuine debit-balance exceptions (customer deposits, advance payments).
+ *   EQUITY: negative → flip to positive unless the account name clearly represents
+ *     a reduction account (owner's draw, withdrawal, distribution, deficit, net loss).
+ *   ASSET: preserve sign as-is (assets are naturally debit-balance).
+ *
+ * @param {number} rawAmount   - signed amount as parsed from the BS file
+ * @param {string} accountType - "asset"|"liability"|"equity"
+ * @param {string} accountName - used to detect genuine sign exceptions
+ * @returns {number}           - amount in natural-balance direction
+ */
+function normalizeBsLineAmount(rawAmount, accountType, accountName = "") {
+  const amount = roundMoney(Number(rawAmount) || 0);
+  if (amount === 0) return 0;
+  const type = String(accountType || "").toLowerCase();
+  if (type === "asset") return amount; // assets are debit-balance: preserve sign as-is
+  if (amount > 0) return amount;       // already positive: no adjustment needed for any type
+
+  const name = normalizeKey(accountName);
+
+  if (type === "liability") {
+    // Negative liability → natural positive (company owes money shown as positive).
+    // Exception: genuine debit-balance accounts (e.g. overpaid vendor → asset-like).
+    const isGenuineCreditBalance =
+      /\bcustomer deposit\b|\badvance\b|\bdeposit received\b|\bprepaid revenue\b|\bdeferred revenue\b|\bdeferred income\b/.test(name);
+    return isGenuineCreditBalance ? amount : Math.abs(amount);
+  }
+
+  if (type === "equity") {
+    // Negative equity entries in BS exports:
+    //   – Owner's draw / distributions REDUCE equity → legitimately negative → preserve.
+    //   – Accumulated deficit / net loss → legitimately negative → preserve.
+    //   – Capital contributions exported with parenthetical formatting → flip to positive.
+    const isReductionAccount =
+      /\bdraw\b|\bwithdrawal\b|\bdistribution\b|\bdeficit\b|\baccum(?:ulated)?\s+loss\b/.test(name);
+    return isReductionAccount ? amount : Math.abs(amount);
+  }
+
+  return amount;
+}
+
+// ─── End Balance Normalization Engine ─────────────────────────────────────────
+
+function parseIntegerInRange(value, min, max, fallback) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed)) return fallback;
+  if (parsed < min || parsed > max) return fallback;
+  return parsed;
+}
+
+function resolveFiscalCalendarConfig(config = {}) {
+  const fiscalYearStartMonth = parseIntegerInRange(
+    config.fiscalYearStartMonth ?? process.env.MANUAL_GL_FISCAL_YEAR_START_MONTH,
+    1,
+    12,
+    DEFAULT_FISCAL_YEAR_START_MONTH,
+  );
+  const fiscalYearStartDay = parseIntegerInRange(
+    config.fiscalYearStartDay ?? process.env.MANUAL_GL_FISCAL_YEAR_START_DAY,
+    1,
+    31,
+    DEFAULT_FISCAL_YEAR_START_DAY,
+  );
+
+  return {
+    fiscalYearStartMonth,
+    fiscalYearStartDay,
+  };
+}
+
+function computeFiscalYearFromIsoDate(isoDate, fiscalCalendar = {}) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(isoDate || ""))) return null;
+  const [rawYear, rawMonth, rawDay] = String(isoDate).split("-").map((part) => Number(part));
+  if (!Number.isInteger(rawYear) || !Number.isInteger(rawMonth) || !Number.isInteger(rawDay)) {
+    return null;
+  }
+
+  const calendar = resolveFiscalCalendarConfig(fiscalCalendar);
+  if (
+    rawMonth > calendar.fiscalYearStartMonth ||
+    (rawMonth === calendar.fiscalYearStartMonth && rawDay >= calendar.fiscalYearStartDay)
+  ) {
+    return rawYear;
+  }
+
+  return rawYear - 1;
+}
+
+// Returns the END year of the fiscal period (April–March → 2023 for the year ending March 2023).
+// For January fiscal years the start and end year are identical, so this is a no-op.
+function computeFiscalYearEndLabel(isoDate, fiscalCalendar = {}) {
+  const calendar = resolveFiscalCalendarConfig(fiscalCalendar);
+  const startYear = computeFiscalYearFromIsoDate(isoDate, fiscalCalendar);
+  if (!Number.isInteger(startYear) || startYear <= 0) return startYear;
+  return calendar.fiscalYearStartMonth !== 1 ? startYear + 1 : startYear;
+}
+
+// Returns the ISO date (YYYY-MM-DD) of the last day of fiscal year `endLabel`.
+// For January fiscal (month=1): Dec 31 of `endLabel`.
+// For April fiscal (month=4): March 31 of `endLabel` (since the FY starting April of
+// endLabel-1 ends on March 31 of endLabel).
+// General: the FY ends on the day before the fiscal start month, in calendar year `endLabel`.
+function computeFiscalYearEndDate(endLabel, fiscalCalendar = {}) {
+  const calendar = resolveFiscalCalendarConfig(fiscalCalendar);
+  const year = Number(endLabel);
+  if (!Number.isInteger(year) || year <= 0) return null;
+
+  if (calendar.fiscalYearStartMonth === 1) {
+    return `${year}-12-31`;
+  }
+  // The FY ends in the month before fiscalYearStartMonth, in year `endLabel`.
+  // E.g. April start (month 4) → ends in month 3 (March) of `endLabel`.
+  const endMonth = calendar.fiscalYearStartMonth - 1; // 1-indexed month
+  const lastDay = new Date(year, endMonth, 0).getDate(); // day 0 of next month = last day of endMonth
+  return `${year}-${String(endMonth).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
+}
+
+function formatFiscalYearLabel(endYear, fiscalYearStartMonth = 1) {
+  if (!Number.isInteger(endYear) || endYear <= 0) return "";
+  return fiscalYearStartMonth !== 1 ? `${endYear - 1}-${endYear}` : `${endYear}-${endYear + 1}`;
+}
+
+// Extract unique fiscal years from staged transaction rows.
+// Uses only the stored fiscal_year column — does NOT infer from dates or filenames.
+function getAvailableFiscalYears(rows = []) {
+  const yearSet = new Set();
+  for (const row of rows) {
+    const yr = Number(row.fiscal_year ?? row.fiscalYear ?? 0);
+    if (Number.isInteger(yr) && yr > 0) yearSet.add(yr);
+  }
+  return Array.from(yearSet).sort((a, b) => a - b);
 }
 
 /**
@@ -178,6 +422,13 @@ function parseAmountDetail(value) {
     .replace(/^[=]/, "")
     .replace(/\.{2,}/g, "");
 
+  // Support trailing minus format: 123.45- => -123.45
+  if (/-$/.test(cleaned)) {
+    cleaned = `-${cleaned.replace(/-$/, "")}`;
+  }
+  // Support prefixed CR/DR tokens in exports such as "CR123.45" / "DR123.45".
+  if (/^dr/i.test(cleaned)) cleaned = `-${cleaned.replace(/^dr/i, "")}`;
+  if (/^cr/i.test(cleaned)) cleaned = cleaned.replace(/^cr/i, "");
   if (/dr$/i.test(cleaned)) cleaned = `-${cleaned.replace(/dr$/i, "")}`;
   if (/cr$/i.test(cleaned)) cleaned = cleaned.replace(/cr$/i, "");
 
@@ -191,32 +442,126 @@ function parseAmountDetail(value) {
   return { value: parsed, isPresent: true, isValid: true };
 }
 
+// Month abbreviation → 1-indexed month number. Defined once at module level.
+const MONTH_ABBR_MAP = {
+  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+  jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
+};
+
 function parseDateFlexible(value) {
   if (!value) return null;
   if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
 
   if (typeof value === "number") {
-    const excelEpoch = new Date(1899, 11, 30);
-    return new Date(excelEpoch.getTime() + value * 86400000);
+    // Excel serial dates are day offsets from 1899-12-30.
+    // Parse in UTC, then materialize a local date-only object to avoid timezone drift.
+    const excelEpochUtc = Date.UTC(1899, 11, 30);
+    const utcDate = new Date(excelEpochUtc + value * 86400000);
+    return new Date(
+      utcDate.getUTCFullYear(),
+      utcDate.getUTCMonth(),
+      utcDate.getUTCDate(),
+    );
   }
 
   const raw = String(value).trim();
   if (!raw) return null;
 
-  let parsed = new Date(raw);
+  // Strip time component from timestamps so date-only parsing handles the rest.
+  // Covers: "2024-01-15 12:30:00", "2024-01-15T00:00:00Z", "01/15/2024 08:00"
+  const dateOnly = raw
+    .replace(/[\sT][0-2]\d:[0-5]\d(:[0-5]\d)?(\.\d+)?(Z|[+-]\d{2}:?\d{2})?$/, "")
+    .trim();
+  const useRaw = dateOnly || raw;
+
+  // YYYYMMDD — no separator, exactly 8 digits (NetSuite, some ERP exports)
+  if (/^\d{8}$/.test(useRaw)) {
+    const y = Number(useRaw.slice(0, 4));
+    const m = Number(useRaw.slice(4, 6));
+    const d = Number(useRaw.slice(6, 8));
+    const date = new Date(y, m - 1, d);
+    if (!Number.isNaN(date.getTime()) && date.getMonth() === m - 1) return date;
+  }
+
+  // ISO YYYY-MM-DD — most reliable, handle explicitly before JS Date constructor
+  const isoMatch = useRaw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoMatch) {
+    const y = Number(isoMatch[1]);
+    const m = Number(isoMatch[2]);
+    const d = Number(isoMatch[3]);
+    if (Number.isInteger(y) && Number.isInteger(m) && Number.isInteger(d)) {
+      const date = new Date(y, m - 1, d);
+      if (!Number.isNaN(date.getTime())) return date;
+    }
+  }
+
+  // Named-month: DD-Mon-YYYY, D-Mon-YY, DD Mon YYYY, 1 January 2024
+  // Covers Sage, Xero, many manual exports: "15-Jan-2024", "01-Jan-24"
+  const namedMonthMatch = useRaw.match(/^(\d{1,2})[-\s\/]([A-Za-z]{3,9})[-\s\/](\d{2,4})$/);
+  if (namedMonthMatch) {
+    const day = Number(namedMonthMatch[1]);
+    const abbr = namedMonthMatch[2].toLowerCase().slice(0, 3);
+    const yearRaw = Number(namedMonthMatch[3]);
+    const year = namedMonthMatch[3].length === 2
+      ? (yearRaw >= 50 ? 1900 + yearRaw : 2000 + yearRaw)
+      : yearRaw;
+    const month = MONTH_ABBR_MAP[abbr];
+    if (month && Number.isInteger(day) && Number.isInteger(year)) {
+      const date = new Date(year, month - 1, day);
+      if (!Number.isNaN(date.getTime()) && date.getMonth() === month - 1) return date;
+    }
+  }
+
+  // Try native Date constructor — handles many locale-aware formats:
+  // "Jan 15, 2024", "January 15, 2024", "15 Jan 2024", RFC 2822, etc.
+  let parsed = new Date(useRaw);
   if (!Number.isNaN(parsed.getTime())) return parsed;
 
-  const parts = raw.split(/[\/\-]/);
+  // Separator-split: M/D/YYYY, D/M/YYYY, YYYY/MM/DD (slash), YYYY.MM.DD (dot),
+  // and two-digit year variants like M/D/YY.
+  const parts = useRaw.split(/[\/\-\.]/).map((part) => part.trim());
   if (parts.length === 3) {
-    if (parts[0].length === 4) {
-      parsed = new Date(`${parts[0]}-${parts[1]}-${parts[2]}`);
-    } else {
-      parsed = new Date(`${parts[2]}-${parts[0]}-${parts[1]}`);
-      if (Number.isNaN(parsed.getTime())) {
-        parsed = new Date(`${parts[2]}-${parts[1]}-${parts[0]}`);
+    const n1 = Number(parts[0]);
+    const n2 = Number(parts[1]);
+    const n3 = Number(parts[2]);
+
+    let year = null;
+    let month = null;
+    let day = null;
+
+    if (parts[0].length === 4 && Number.isInteger(n1)) {
+      // YYYY/MM/DD or YYYY.MM.DD
+      year = n1; month = n2; day = n3;
+    } else if (parts[2].length === 4 && Number.isInteger(n3)) {
+      // M/D/YYYY or D/M/YYYY — use >12 heuristic to disambiguate
+      year = n3;
+      if (Number.isInteger(n1) && Number.isInteger(n2)) {
+        if (n1 > 12 && n2 <= 12) { day = n1; month = n2; }
+        else if (n2 > 12 && n1 <= 12) { month = n1; day = n2; }
+        else { month = n1; day = n2; } // ambiguous → M/D convention
+      }
+    } else if (parts[2].length === 2 && Number.isInteger(n3)) {
+      // Two-digit year: M/D/YY or D/M/YY
+      // Pivot: YY < 50 → 2000s, YY >= 50 → 1900s
+      year = n3 >= 50 ? 1900 + n3 : 2000 + n3;
+      if (Number.isInteger(n1) && Number.isInteger(n2)) {
+        if (n1 > 12 && n2 <= 12) { day = n1; month = n2; }
+        else if (n2 > 12 && n1 <= 12) { month = n1; day = n2; }
+        else { month = n1; day = n2; }
       }
     }
-    if (!Number.isNaN(parsed.getTime())) return parsed;
+
+    if (Number.isInteger(year) && Number.isInteger(month) && Number.isInteger(day)) {
+      parsed = new Date(year, month - 1, day);
+      if (
+        !Number.isNaN(parsed.getTime()) &&
+        parsed.getFullYear() === year &&
+        parsed.getMonth() === month - 1 &&
+        parsed.getDate() === day
+      ) {
+        return parsed;
+      }
+    }
   }
 
   return null;
@@ -225,7 +570,10 @@ function parseDateFlexible(value) {
 function toIsoDate(value) {
   const date = value instanceof Date ? value : parseDateFlexible(value);
   if (!date || Number.isNaN(date.getTime())) return null;
-  return date.toISOString().slice(0, 10);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function detectHeaderRowIndex(rawRows) {
@@ -241,14 +589,36 @@ function detectHeaderRowIndex(rawRows) {
     if (!keys.length) continue;
 
     const uniqueCount = new Set(keys).size;
-    const hasDate = keys.some((key) => key.includes("date"));
-    const hasAccount = keys.some((key) => key.includes("account") || key.includes("distribution"));
-    const hasAmounts = keys.some((key) => key.includes("amount") || key.includes("debit") || key.includes("credit") || key.includes("balance"));
+
+    // Date-like column keywords (QuickBooks, Xero, Sage, NetSuite, Dynamics)
+    const hasDate = keys.some((key) =>
+      key.includes("date") || key.includes("posting") ||
+      key.includes("journal") || key === "period"
+    );
+    // Account-like column keywords
+    const hasAccount = keys.some((key) =>
+      key.includes("account") || key.includes("distribution") ||
+      key.includes("ledger") || key.includes("nominal") ||
+      key.includes("gl code") || key.includes("chart of")
+    );
+    // Amount-like column keywords
+    const hasAmounts = keys.some((key) =>
+      key.includes("amount") || key.includes("debit") || key.includes("credit") ||
+      key.includes("balance") || key === "dr" || key === "cr" ||
+      key.includes("value")
+    );
+    // Extra GL structural indicators (Sage, Xero: voucher, narration, particulars)
+    const hasGlIndicator = keys.some((key) =>
+      key.includes("voucher") || key.includes("narration") ||
+      key.includes("particulars") || key.includes("reference") ||
+      key.includes("transaction")
+    );
 
     let score = 0;
     if (hasDate) score += 4;
     if (hasAccount) score += 4;
     if (hasAmounts) score += 3;
+    if (hasGlIndicator) score += 1;
     score += Math.min(uniqueCount, 10) * 0.2;
     if (keys.length === 1) score -= 2;
 
@@ -450,13 +820,38 @@ function ensureMappingShape(mapping = {}) {
 
 function resolveColumn(headers = [], provided = "", candidates = []) {
   if (provided && headers.includes(provided)) return provided;
-  const normalized = headers.map((header) => ({ header, key: normalizeKey(header) }));
+  const normalized = headers.map((h) => ({ header: h, key: normalizeKey(h) }));
   for (const candidate of candidates) {
-    const found = normalized.find((item) => item.key.includes(candidate));
+    // Short candidates (≤3 chars: "dr", "cr", "num", "ref") require a word-boundary
+    // match to prevent false positives: "dr" must not match "address";
+    // "num" must not match "account number"; "cr" must not match "description".
+    const isShort = candidate.length <= 3;
+    const found = normalized.find(({ key }) => {
+      if (key === candidate) return true;
+      if (isShort) {
+        return (
+          key.startsWith(candidate + " ") ||
+          key.startsWith(candidate + "/") ||
+          key.startsWith(candidate + "-") ||
+          key.endsWith(" " + candidate) ||
+          key.endsWith("/" + candidate)
+        );
+      }
+      return key.includes(candidate);
+    });
     if (found) return found.header;
   }
   return "";
 }
+
+// Priority order for de-conflicting when two fields both resolve to the same column.
+// Earlier position = higher priority (that field keeps the column; others are cleared).
+const FIELD_DEDUP_PRIORITY = [
+  "date", "account_name", "account_number", "debit", "credit",
+  "amount", "description", "reference", "account_type",
+  "transaction_type", "journal_type", "class", "department",
+  "location", "category", "sub_category",
+];
 
 function resolveGlMapping(headers, mapping = {}) {
   const provided = ensureMappingShape(mapping);
@@ -466,8 +861,22 @@ function resolveGlMapping(headers, mapping = {}) {
     resolved[field] = resolveColumn(headers, provided[field], MAPPING_CANDIDATES[field]);
   });
 
+  // De-conflict: if two fields mapped to the same column, the higher-priority field
+  // (earlier in FIELD_DEDUP_PRIORITY) keeps it; the lower-priority one is cleared.
+  const usedColumns = new Map();
+  for (const field of FIELD_DEDUP_PRIORITY) {
+    const col = resolved[field];
+    if (!col) continue;
+    if (usedColumns.has(col)) {
+      resolved[field] = "";
+    } else {
+      usedColumns.set(col, field);
+    }
+  }
+
   const shaped = ensureMappingShape({
     ...resolved,
+    // Explicit user-provided overrides always win regardless of conflicts.
     ...Object.fromEntries(
       Object.entries(provided).filter(([, value]) => Boolean(value))
     ),
@@ -483,10 +892,60 @@ function isLikelySummaryLabel(accountName) {
     key === "beginning balance" ||
     key === "opening balance" ||
     key === "ending balance" ||
+    key === "closing balance" ||
     key === "subtotal" ||
+    key === "sub-total" ||
     key === "total" ||
-    key.startsWith("total for")
+    key === "totals" ||
+    key === "grand total" ||
+    key === "net total" ||
+    key === "carried forward" ||
+    key === "carry forward" ||
+    key === "balance c/f" ||
+    key === "balance b/f" ||
+    key === "bal c/f" ||
+    key === "bal b/f" ||
+    key === "c/f" ||
+    key === "b/f" ||
+    key.startsWith("total for ") ||
+    key.startsWith("subtotal for ") ||
+    key.startsWith("sub-total for ") ||
+    key.startsWith("total - ")
   );
+}
+
+// When no date column is found via MAPPING_CANDIDATES, scan cell values across all
+// columns and pick the one where ≥50% of sampled non-empty cells parse as a
+// plausible date (year 2000–2060). Prevents hard failures on unusual header names.
+function detectDateColumnFallback(headers, rows) {
+  const MAX_SCAN_ROWS = Math.min(rows.length, 60);
+  let bestHeader = "";
+  let bestDateCount = 0;
+
+  for (const header of headers) {
+    let dateLikeCount = 0;
+    let totalValues = 0;
+
+    for (let i = 0; i < MAX_SCAN_ROWS; i += 1) {
+      const cell = rows[i][header];
+      if (cell === null || cell === undefined || String(cell).trim() === "") continue;
+      totalValues += 1;
+      const parsedCell = parseDateFlexible(cell);
+      if (parsedCell) {
+        const yr = parsedCell.getFullYear();
+        if (yr >= 2000 && yr <= 2060) dateLikeCount += 1;
+      }
+    }
+
+    if (totalValues === 0) continue;
+    const ratio = dateLikeCount / totalValues;
+    if (ratio >= 0.5 && dateLikeCount > bestDateCount) {
+      bestDateCount = dateLikeCount;
+      bestHeader = header;
+    }
+  }
+
+  return bestHeader;
 }
 
 function normalizeAccountType(type) {
@@ -505,18 +964,13 @@ function inferAccountType(accountName, accountNumber = "") {
   const name = String(accountName || "").toLowerCase();
   const num = String(accountNumber || "");
 
-  // Bank/Asset keywords
-  if (/\bcash\b|\bbank\b|\bchecking\b|\bsavings\b|\breceivable\b|\binventory\b|\basset\b|\bprepaid\b/.test(name)) return "asset";
-  // Liability keywords
-  if (/\bpayable\b|\bloan\b|\bliability\b|\bcredit card\b|\bvisa\b|\bmastercard\b|\bamex\b|\bdebt\b/.test(name)) return "liability";
-  // Equity keywords
-  if (/\bequity\b|\bcapital\b|\bdraw\b|\bretained earnings\b|\bowner\b/.test(name)) return "equity";
-  // Income keywords
-  if (/\bsales\b|\brevenue\b|\bincome\b|\bfee\b/.test(name)) return "income";
-  // COGS keywords
-  if (/\bcogs\b|\bcost of goods\b|\bdirect cost\b/.test(name)) return "cogs";
-  // Expense keywords
-  if (/\bexpense\b|\brent\b|\butilit\b|\bsalaries\b|\bwages\b|\btravel\b|\bmeals\b|\boffice\b/.test(name)) return "expense";
+  // Use pre-compiled module-level constants (see RE_ACCT_* at top of file).
+  if (RE_ACCT_ASSET.test(name)) return "asset";
+  if (RE_ACCT_LIABILITY.test(name)) return "liability";
+  if (RE_ACCT_EQUITY.test(name)) return "equity";
+  if (RE_ACCT_INCOME.test(name)) return "income";
+  if (RE_ACCT_COGS.test(name)) return "cogs";
+  if (RE_ACCT_EXPENSE.test(name)) return "expense";
 
   // Account Number Range Heuristics (Common 1-6 range)
   if (num.startsWith("1")) return "asset";
@@ -622,6 +1076,60 @@ function buildCrossFileDedupHash(tx = {}) {
   ]);
 }
 
+function assignFiscalYearAndRefreshHash(
+  transactions = [],
+  {
+    companyId,
+    fiscalCalendar = {},
+    useFiscalYearMode = true,
+  } = {},
+) {
+  const calendar = resolveFiscalCalendarConfig(fiscalCalendar);
+
+  return transactions.map((tx) => {
+    const isoDate = String(tx.date || "");
+    const calendarYear =
+      /^\d{4}-\d{2}-\d{2}$/.test(isoDate) ? Number(isoDate.slice(0, 4)) : null;
+    const fiscalYearFromDate = computeFiscalYearEndLabel(isoDate, calendar);
+    const fiscalYear = useFiscalYearMode
+      ? (fiscalYearFromDate || calendarYear || tx.fiscalYear || null)
+      : (calendarYear || tx.fiscalYear || fiscalYearFromDate || null);
+
+    const metadata = {
+      ...(tx.metadata && typeof tx.metadata === "object" ? tx.metadata : {}),
+      calendarYear: Number.isInteger(calendarYear) ? calendarYear : null,
+      fiscalYear,
+      fiscalYearLabel: formatFiscalYearLabel(fiscalYear, calendar.fiscalYearStartMonth),
+      fiscalYearStartMonth: calendar.fiscalYearStartMonth,
+      fiscalYearStartDay: calendar.fiscalYearStartDay,
+      fiscalYearMode: useFiscalYearMode ? "fiscal" : "calendar",
+    };
+
+    const transactionHash = buildTransactionHash([
+      companyId,
+      tx.sourceUploadId || "",
+      tx.sourceFile || "",
+      String(fiscalYear || ""),
+      isoDate || "",
+      tx.accountName || "",
+      tx.accountNumber || "",
+      roundMoney(Number(tx.netAmount || 0)),
+      tx.description || "",
+      tx.reference || "",
+      tx.transactionType || "",
+      tx.journalType || "",
+      tx.rowNumber || "",
+    ]);
+
+    return {
+      ...tx,
+      fiscalYear,
+      metadata,
+      transactionHash,
+    };
+  });
+}
+
 function deriveDebitCreditFromSignedAmount(amount, accountType, accountName = "") {
   const signedAmount = roundMoney(Number(amount || 0));
   if (signedAmount === 0) {
@@ -647,8 +1155,34 @@ function parseGlSheetTransactions({
   sheetData,
   mapping,
   fiscalYearHint = null,
+  fiscalCalendar = {},
 }) {
   const resolvedMapping = resolveGlMapping(sheetData.headers, mapping);
+
+  // Fallback: if no date column matched via MAPPING_CANDIDATES, scan cell values
+  // across all columns and pick the one with the most date-like cells.
+  if (!resolvedMapping.date) {
+    const fallbackDateCol = detectDateColumnFallback(sheetData.headers, sheetData.rows);
+    if (fallbackDateCol) {
+      resolvedMapping.date = fallbackDateCol;
+      console.log(`[GLParser] Fallback date column detected via cell-scan: "${fallbackDateCol}"`);
+    }
+  }
+
+  // Structured column-detection log emitted for every GL sheet parsed.
+  console.log("[GLParser]", JSON.stringify({
+    sheetName: sheetData.sheetName,
+    detectedDateColumn: resolvedMapping.date || null,
+    detectedDebitColumn: resolvedMapping.debit || null,
+    detectedCreditColumn: resolvedMapping.credit || null,
+    detectedAmountColumn: resolvedMapping.amount || null,
+    detectedAccountNameColumn: resolvedMapping.account_name || null,
+    detectedAccountNumberColumn: resolvedMapping.account_number || null,
+    detectedDescriptionColumn: resolvedMapping.description || null,
+    detectedReferenceColumn: resolvedMapping.reference || null,
+    headers: sheetData.headers,
+  }));
+
   const missingRequired = REQUIRED_GL_MAPPING_FIELDS.filter((field) => !resolvedMapping[field]);
   if (missingRequired.length) {
     return {
@@ -669,6 +1203,7 @@ function parseGlSheetTransactions({
     sheetData,
     fallback: fiscalYearHint,
   });
+  const resolvedFiscalCalendar = resolveFiscalCalendarConfig(fiscalCalendar);
 
   console.log(
     `[ManualGL][MultiYear] Sheet: ${sheetData.sheetName} | Inferred Year: ${inferredYear} | Row count: ${sheetData.rows?.length || 0}`,
@@ -676,6 +1211,44 @@ function parseGlSheetTransactions({
 
   const transactions = [];
   const warnings = [];
+  const stats = {
+    sheetName: sheetData.sheetName || "",
+    totalRows: Array.isArray(sheetData.rows) ? sheetData.rows.length : 0,
+    parsedRows: 0,
+    skippedRows: 0,
+    skippedByReason: {
+      missing_account_name: 0,
+      balance_forward_row: 0,
+      summary_or_total_row: 0,
+      missing_or_invalid_date: 0,
+      no_amount: 0,
+      invalid_amount: 0,
+    },
+    inferredYearHint: inferredYear || null,
+    fiscalYearStartMonth: resolvedFiscalCalendar.fiscalYearStartMonth,
+    fiscalYearStartDay: resolvedFiscalCalendar.fiscalYearStartDay,
+  };
+
+  const addWarning = (warning) => {
+    if (warnings.length < MAX_SKIP_SAMPLES) {
+      warnings.push(warning);
+    }
+  };
+
+  const markSkipped = (reason, rowNumber, message, detail = null) => {
+    stats.skippedRows += 1;
+    stats.skippedByReason[reason] = (stats.skippedByReason[reason] || 0) + 1;
+    addWarning({
+      row: rowNumber,
+      reason,
+      message,
+      ...(detail && typeof detail === "object" ? { detail } : {}),
+    });
+  };
+
+  const hasValue = (value) =>
+    !(value === null || value === undefined || String(value).trim() === "");
+
   let lastAccountName = "";
 
   sheetData.rows.forEach((row, index) => {
@@ -709,21 +1282,60 @@ function parseGlSheetTransactions({
       accountName = lastAccountName;
     }
 
-    // Exclude summary rows from source exports.
-    if (!accountName) return;
-    lastAccountName = accountName;
-    const isTotalRow =
-      /^(total|subtotal|net income|gross profit|beginning balance|ending balance|balance forward)/i.test(
-        accountName,
-      ) || /\b(total|subtotal|balance forward)\b/i.test(accountName);
-    if (isTotalRow) {
+    if (!accountName) {
+      markSkipped("missing_account_name", rowNumber, "Missing account name. Row skipped.");
       return;
     }
 
-    let parsedDate = parseDateFlexible(rawDate);
+    lastAccountName = accountName;
+    const accountKey = normalizeKey(accountName);
+    const rawDescriptionKey = rawDescription ? normalizeKey(String(rawDescription).trim()) : "";
+    const rawReferenceKey = rawReference ? normalizeKey(String(rawReference).trim()) : "";
+    // Detect structural/summary rows that must never count as GL activity.
+    // QuickBooks and other accounting exports include per-account summary rows
+    // (beginning balance, ending balance, balance forward) that represent
+    // carry-forward totals, NOT new transactions. Including these as activity
+    // double-counts the opening/closing balance and corrupts all subsequent
+    // roll-forward calculations.
+    // Detect QBO "Balance Forward" / "Beginning Balance" / "Ending Balance" carry-forward
+    // rows separately from generic aggregate/total rows so the staging response can report
+    // exactly how many of these corrupting entries were caught.
+    const isBalanceForwardRow =
+      /^(beginning balance|ending balance|balance forward)\b/i.test(accountKey) ||
+      /^(beginning balance|beg\.?\s*bal|beg\s+bal|opening balance|open\.?\s*bal|balance forward|bal\.?\s*fwd|ending balance|end\.?\s*bal|end\s+bal|opening balance equity|initial balance)\b/i.test(rawDescriptionKey) ||
+      /^(beginning balance|beg\.?\s*bal|balance forward|bal\.?\s*fwd|ending balance)\b/i.test(rawReferenceKey);
+
+    const isTotalRow =
+      !isBalanceForwardRow && (
+        /^(total|subtotal|net income|gross profit)\b/i.test(accountKey) ||
+        accountKey.startsWith("total for ")
+      );
+
+    if (isBalanceForwardRow) {
+      markSkipped(
+        "balance_forward_row",
+        rowNumber,
+        `Balance forward/opening/ending row "${accountName}" skipped — not a GL transaction.`,
+      );
+      return;
+    }
+    if (isTotalRow) {
+      markSkipped(
+        "summary_or_total_row",
+        rowNumber,
+        `Summary row "${accountName}" skipped.`,
+      );
+      return;
+    }
+
+    const parsedDate = parseDateFlexible(rawDate);
     const amountDetail = parseAmountDetail(rawAmount);
     const debitDetail = parseAmountDetail(rawDebit);
     const creditDetail = parseAmountDetail(rawCredit);
+    const invalidAmountFields = [];
+    if (amountDetail.isPresent && !amountDetail.isValid) invalidAmountFields.push("amount");
+    if (debitDetail.isPresent && !debitDetail.isValid) invalidAmountFields.push("debit");
+    if (creditDetail.isPresent && !creditDetail.isValid) invalidAmountFields.push("credit");
 
     const accountNumber = rawAccountNumber ? String(rawAccountNumber).trim() : "";
     const accountType = normalizeAccountType(rawAccountType) || inferAccountType(accountName, accountNumber);
@@ -737,31 +1349,64 @@ function parseGlSheetTransactions({
       credit = derived.credit;
     }
 
-    const hasAmount = debit !== 0 || credit !== 0 || (amountDetail.isPresent && amountDetail.value !== 0);
-    if (!accountName && !parsedDate && !hasAmount) return;
+    const hasAmount =
+      debit !== 0 ||
+      credit !== 0 ||
+      (amountDetail.isPresent && amountDetail.value !== 0);
+    const hasAnyAmountField =
+      hasValue(rawAmount) || hasValue(rawDebit) || hasValue(rawCredit);
 
-    if (!accountName) {
-      warnings.push({ row: rowNumber, message: "Missing account name. Row skipped." });
+    if (invalidAmountFields.length > 0 && !hasAmount) {
+      markSkipped(
+        "invalid_amount",
+        rowNumber,
+        `Invalid amount value for account "${accountName}" (${invalidAmountFields.join(", ")}). Row skipped.`,
+      );
       return;
     }
 
     if (!parsedDate) {
-      warnings.push({ row: rowNumber, message: `Missing/invalid date for account "${accountName}". Row skipped.` });
+      // Treat structural account heading rows as "no amount" rather than invalid-date data errors.
+      if (!hasAnyAmountField && !hasAmount) {
+        markSkipped(
+          "no_amount",
+          rowNumber,
+          `Account heading row "${accountName}" has no transactional amount. Row skipped.`,
+        );
+      } else {
+        markSkipped(
+          "missing_or_invalid_date",
+          rowNumber,
+          `Missing/invalid date for account "${accountName}". Row skipped.`,
+        );
+      }
       return;
     }
 
     if (!hasAmount) {
+      markSkipped(
+        "no_amount",
+        rowNumber,
+        `No debit/credit amount for account "${accountName}". Row skipped.`,
+      );
       return;
     }
 
     const isoDate = toIsoDate(parsedDate);
-    // Derive year/month from the ISO date string rather than getUTCFullYear() / getUTCMonth().
-    // Rationale: parseDateFlexible() creates Date objects in local time for non-ISO input
-    // (e.g. "December 31, 2023"). toISOString() then converts to UTC, which can shift a
-    // Dec-31 local-midnight to Jan-01 UTC in timezones behind UTC (EST, PST, etc.), causing
-    // year-end transactions to land in the wrong fiscal year. Slicing the stored ISO string
-    // is always consistent because toIsoDate() is already UTC-normalised.
-    const fiscalYear = (isoDate ? Number(isoDate.slice(0, 4)) : 0) || inferredYear || fiscalYearHint || null;
+    if (!isoDate) {
+      markSkipped(
+        "missing_or_invalid_date",
+        rowNumber,
+        `Could not normalize date for account "${accountName}". Row skipped.`,
+      );
+      return;
+    }
+
+    const fiscalYear =
+      computeFiscalYearEndLabel(isoDate, resolvedFiscalCalendar) ||
+      inferredYear ||
+      fiscalYearHint ||
+      null;
     const fiscalMonth = isoDate ? Number(isoDate.slice(5, 7)) : null;
     const normalizedType = normalizeAccountType(accountType) || inferAccountType(accountName, accountNumber);
     const defaultCategory =
@@ -824,8 +1469,14 @@ function parseGlSheetTransactions({
         sheetName: sheetData.sheetName,
         inferredFiscalYear: inferredYear || null,
         fiscalMonth,
+        fiscalYear,
+        fiscalYearLabel: formatFiscalYearLabel(fiscalYear, resolvedFiscalCalendar.fiscalYearStartMonth),
+        fiscalYearStartMonth: resolvedFiscalCalendar.fiscalYearStartMonth,
+        fiscalYearStartDay: resolvedFiscalCalendar.fiscalYearStartDay,
       },
     });
+
+    stats.parsedRows += 1;
   });
 
   return {
@@ -833,6 +1484,7 @@ function parseGlSheetTransactions({
     mapping: resolvedMapping,
     warnings,
     transactions,
+    stats,
   };
 }
 
@@ -1750,13 +2402,22 @@ function normalizeStagedTransactionRow(row) {
   const txId = row.transaction_id || row.transactionId || "";
   const rawDate = row.txn_date || row.date || null;
   const isoDate = toIsoDate(rawDate) || (rawDate ? String(rawDate) : null);
+  const metadata =
+    row.metadata && typeof row.metadata === "object"
+      ? row.metadata
+      : {};
+  const rowFiscalCalendar = resolveFiscalCalendarConfig({
+    fiscalYearStartMonth: metadata.fiscalYearStartMonth,
+    fiscalYearStartDay: metadata.fiscalYearStartDay,
+  });
   const accountNumber = row.account_number || row.accountNumber || "";
   const accountName = row.account_name || row.accountName || "";
   const rawType = row.account_type || row.accountType || "";
   const normalizedType = normalizeAccountType(rawType) || inferAccountType(accountName, accountNumber);
   const parsedFiscalYear =
     Number(row.fiscal_year || row.fiscalYear || 0) ||
-    (isoDate && /^\d{4}-\d{2}-\d{2}$/.test(isoDate) ? Number(isoDate.slice(0, 4)) : null);
+    Number(metadata.fiscalYear || 0) ||
+    computeFiscalYearEndLabel(isoDate, rowFiscalCalendar);
   const parsedFiscalMonth =
     Number(row.fiscal_month || row.fiscalMonth || 0) ||
     (isoDate && /^\d{4}-\d{2}-\d{2}$/.test(isoDate) ? Number(isoDate.slice(5, 7)) : null);
@@ -1979,7 +2640,10 @@ function calculateProfitLossBuckets(transactions = []) {
     const category = normalizeProfitLossCategory(tx.category, tx.accountName, tx.accountType);
     if (!category) return;
 
-    const year = Number(tx.fiscalYear || (String(tx.date || "").slice(0, 4))) || 0;
+    const year =
+      Number(tx.fiscalYear || 0) ||
+      computeFiscalYearEndLabel(tx.date, resolveFiscalCalendarConfig()) ||
+      0;
     const month = String(tx.date || "").slice(0, 7);
     const signed = roundMoney(Number(tx.netAmount || 0));
     const normalizedAmount = category === "Revenue" ? signed : roundMoney(-signed);
@@ -2080,11 +2744,21 @@ function buildYearComparison(yearlyRows = []) {
 }
 
 function buildProfitLossHierarchicalRows(transactions = [], yearlyRows = [], displayYear = null) {
+  // Resolve displayYear to the last available year so account-level rows always
+  // match the header totals. Without this guard, a null displayYear would let ALL
+  // years' transaction amounts accumulate into account rows while the section
+  // totals (pulled from yearlyRows) would only reflect the last year — producing
+  // inflated account-level numbers in a multi-year GL view.
+  const resolvedDisplayYear =
+    (Number.isInteger(displayYear) && displayYear > 0)
+      ? displayYear
+      : (yearlyRows.length > 0 ? yearlyRows[yearlyRows.length - 1].fiscalYear : null);
+
   const accountMap = new Map();
 
   transactions.forEach((tx) => {
     const txFY = Number(tx.fiscalYear || 0);
-    if (displayYear && txFY !== displayYear) return;
+    if (resolvedDisplayYear && txFY !== resolvedDisplayYear) return;
 
     const accountType = normalizeAccountType(tx.accountType) || inferAccountType(tx.accountName, tx.accountNumber);
     if (!['income', 'cogs', 'expense'].includes(accountType)) return;
@@ -2104,7 +2778,7 @@ function buildProfitLossHierarchicalRows(transactions = [], yearlyRows = [], dis
   accountMap.forEach((acc) => { if (byCategory[acc.category]) byCategory[acc.category].push(acc); });
   Object.values(byCategory).forEach((arr) => arr.sort((a, b) => a.accountName.localeCompare(b.accountName)));
 
-  const yearRow = displayYear ? yearlyRows.find(r => r.fiscalYear === displayYear) : (yearlyRows[yearlyRows.length - 1] || null);
+  const yearRow = resolvedDisplayYear ? yearlyRows.find(r => r.fiscalYear === resolvedDisplayYear) : (yearlyRows[yearlyRows.length - 1] || null);
   const get = (key) => yearRow ? roundMoney(yearRow[key] || 0) : 0;
 
   const toAccountRows = (accounts, prefix) => accounts.map((acc, i) => ({
@@ -2252,7 +2926,7 @@ function buildProfitLossDetailPayload(transactions = [], filters = {}) {
   };
 }
 
-function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYear = {}, startingLines = []) {
+function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYear = {}, startingLines = [], fiscalCalendar = {}) {
   const normalized = transactions.filter(Boolean);
 
   // Years present in user-selected filter (may be empty → "show all").
@@ -2353,7 +3027,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
       source: "starting",
     });
     if (!account) return;
-    account.openingBalance = roundMoney(account.openingBalance + Number(line.amount || 0));
+    account.openingBalance = roundMoney(account.openingBalance + normalizeBsLineAmount(line.amount, accountType, accountName));
   });
 
   // Activity from staged GL transactions.
@@ -2372,10 +3046,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
     if (!years.includes(txYear)) return;
 
     const contra = isContraAccount(tx.accountName, account.accountType);
-    const netAmount = Number(tx.netAmount || 0); // credit - debit
-    let delta = account.accountType === "asset" ? -netAmount : netAmount;
-    if (contra) delta = -delta;
-    delta = roundMoney(delta);
+    const delta = computeBsActivityDelta(tx.netAmount, account.accountType, contra);
 
     account.activityByYear[txYear] = roundMoney((account.activityByYear[txYear] || 0) + delta);
   });
@@ -2388,6 +3059,27 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
       account.balancesByYear[year] = running;
     });
   });
+
+  // Phase 7: MissingAccountDetector — warn when a starting-BS account has zero balance
+  // across all computed years. Most common cause: re-staging without re-uploading the starting BS.
+  if (startingLines.length > 0) {
+    const zeroBsAccounts = accounts.filter(
+      (a) => a.sources.has("starting") && Object.values(a.balancesByYear).every((v) => v === 0),
+    );
+    if (zeroBsAccounts.length > 0) {
+      console.warn(
+        `[ManualGL][BS][MissingAccountDetector] ${zeroBsAccounts.length} starting-BS account(s) resolved to $0 across all years.`,
+        `This usually means the starting BS was not re-uploaded when the GL was re-staged.`,
+        `Affected accounts: ${zeroBsAccounts.map((a) => `"${a.accountName}" (${a.accountType})`).join(", ")}`,
+      );
+    }
+  } else {
+    console.warn(
+      `[ManualGL][BS][MissingAccountDetector] startingLines is empty — no opening balances loaded.`,
+      `Static BS accounts (e.g. fixed assets with no GL activity) will show $0.`,
+      `Re-upload the starting Balance Sheet to fix this.`,
+    );
+  }
 
   const sections = {
     Assets: { label: "Assets", totalByYear: {}, categories: [] },
@@ -2467,23 +3159,30 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
   const shouldCarryForwardNetIncome =
     explicitNetIncomeAccounts.length === 0 && retainedEarningsActivityMagnitude <= BALANCE_EPSILON;
 
-  // Derive the starting BS year so we don't double-count net income that is already
-  // reflected in the starting BS opening balance. Only carry forward net income from
-  // GL years that fall AFTER the starting BS date.
-  const startingBsYear = (() => {
-    const dateStr = startingLines.find((l) => l.as_of_date)?.as_of_date;
-    if (!dateStr) return null;
-    const yr = new Date(dateStr).getFullYear();
-    return Number.isInteger(yr) && yr > 0 ? yr : null;
-  })();
+  // Carry net income for prior year Y only when the starting BS predates the END of
+  // fiscal year Y — i.e. FY Y's net income has NOT yet been closed into the opening
+  // retained-earnings balance.
+  //
+  // We use a direct ISO-date comparison against computeFiscalYearEndDate so the guard
+  // is correct regardless of whether transactions were labeled with calendar-year keys
+  // (BUG-2 fix: non-explicit fiscal calendar → calendar year) or true fiscal-year end
+  // labels (explicit April or other fiscal calendar).  The old approach compared integer
+  // year labels using ">" which failed when the default April calendar (month=4) was
+  // applied to a calendar-year company: computeFiscalYearEndLabel("2022-12-31", month=4)
+  // returned 2023, blocking the legitimate carry of 2023 net income into 2024 RE.
+  const startingBsDateStr = startingLines.find((l) => l.as_of_date)?.as_of_date || null;
+  const bsCalendar = resolveFiscalCalendarConfig(fiscalCalendar);
 
   const retainedByYearCarry = {};
   let cumulativePriorNet = 0;
   years.forEach((year, index) => {
     if (index > 0) {
       const priorYear = years[index - 1];
-      // Skip if the prior year is already covered by the starting BS opening balance
-      if (!startingBsYear || priorYear > startingBsYear) {
+      // Carry priorYear's NI only when the starting BS is dated BEFORE the end of
+      // that fiscal year (meaning its net income has NOT been closed into opening RE).
+      const fiscalEndDate = computeFiscalYearEndDate(priorYear, bsCalendar);
+      const priorYearNotYetClosed = !startingBsDateStr || !fiscalEndDate || startingBsDateStr < fiscalEndDate;
+      if (priorYearNotYetClosed) {
         cumulativePriorNet = roundMoney(cumulativePriorNet + Number(netProfitByYear[priorYear] || 0));
       }
     }
@@ -2571,11 +3270,19 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
   };
   let hasBalancingAdjustment = false;
 
+  // Capture pre-adjustment variance per year BEFORE mutating section totals so
+  // the audit can surface the real imbalance to server logs and the API caller.
+  // The force-balance below parks any variance into Retained Earnings so the
+  // rendered sheet always nets to zero — but hiding the root cause makes
+  // debugging impossible, so we track it separately.
+  const rawVarianceByYear = {};
+
   years.forEach((year) => {
     const assets = roundMoney(Number(sections.Assets.totalByYear?.[year] || 0));
     const liabilities = roundMoney(Number(sections.Liabilities.totalByYear?.[year] || 0));
     const equity = roundMoney(Number(sections.Equity.totalByYear?.[year] || 0));
     const variance = roundMoney(assets - (liabilities + equity));
+    rawVarianceByYear[year] = variance;
     balancingAdjustmentAccount.balancesByYear[year] = variance;
 
     if (Math.abs(variance) <= BALANCE_EPSILON) return;
@@ -2601,12 +3308,16 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
     const equity = getYearValue(sections.Equity.totalByYear, year);
     const liabilitiesAndEquity = roundMoney(liabilities + equity);
     const difference = roundMoney(assets - liabilitiesAndEquity);
+    // rawVariance is the pre-force-balance gap; difference is always ≤ BALANCE_EPSILON
+    // after the adjustment above.  Expose both so callers can detect real data issues.
+    const rawVariance = rawVarianceByYear[year] ?? difference;
     return {
       year,
       assets,
       liabilitiesAndEquity,
       difference,
-      isBalanced: Math.abs(difference) <= BALANCE_EPSILON,
+      rawVariance,
+      isBalanced: Math.abs(rawVariance) <= BALANCE_EPSILON,
     };
   });
 
@@ -2786,6 +3497,25 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
     );
   }
 
+  // Phase 4/8: ReconciliationEngine — per-year double-entry check (total debits = total credits).
+  // Uses the full normalized transaction set (all account types, not just BS) so we verify
+  // whether the source GL journals are internally balanced. A non-zero netGlVariance here
+  // points to corrupted GL data BEFORE classification, not a BS-specific bug.
+  const glReconciliation = years.map((year) => {
+    const yearTxs = normalized.filter((tx) => Number(tx.fiscalYear || 0) === year);
+    const totalDebits = roundMoney(yearTxs.reduce((sum, tx) => sum + Math.abs(Number(tx.debit || 0)), 0));
+    const totalCredits = roundMoney(yearTxs.reduce((sum, tx) => sum + Math.abs(Number(tx.credit || 0)), 0));
+    const netGlVariance = roundMoney(totalCredits - totalDebits);
+    const isGlBalanced = Math.abs(netGlVariance) <= BALANCE_EPSILON;
+    if (!isGlBalanced) {
+      console.warn(
+        `[ManualGL][BS][ReconciliationEngine] Year ${year}: GL debits (${totalDebits}) ≠ credits (${totalCredits}).`,
+        `Net variance: ${netGlVariance}. Source GL may contain unbalanced journal entries.`,
+      );
+    }
+    return { year, totalDebits, totalCredits, netGlVariance, isGlBalanced };
+  });
+
   return {
     source: "manual_gl_staged_transactions",
     reportType: "balance_sheet",
@@ -2795,6 +3525,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
     sections,
     hierarchicalRows: [assetsNode, liabilitiesAndEquityNode],
     audit,
+    glReconciliation,
   };
 }
 
@@ -2803,15 +3534,21 @@ async function getBalanceSheetSummaryFromStage(companyId, filters = {}) {
     filters.batchId ||
     (await getLatestManualBatch(companyId, { status: "staged" }))?.id;
 
-  // Load starting + ending BS lines (needed for opening balance and query-time re-classification).
+  // Load starting + ending BS lines and batch metadata in parallel.
   let startingLines = [];
   let endingLines = [];
+  let batchMeta = {};
   if (effectiveBatchId) {
-    [startingLines, endingLines] = await Promise.all([
+    [startingLines, endingLines, batchMeta] = await Promise.all([
       loadBatchBalanceSheetLines(companyId, effectiveBatchId, SHEET_TYPE.STARTING),
       loadBatchBalanceSheetLines(companyId, effectiveBatchId, SHEET_TYPE.ENDING),
+      loadBatchMetadata(effectiveBatchId),
     ]);
   }
+  // When a batch was staged WITHOUT an explicit fiscal calendar (calendar-year company),
+  // the old code (pre-BUG2-fix) applied the April default and assigned wrong end-year labels
+  // to Apr–Dec transactions. We correct at query time so re-staging is not required.
+  const fiscalCalendarExplicit = batchMeta.fiscalCalendarExplicit === true;
 
   // STEP 2: Query ALL transactions for the batch, cumulative and unfiltered by year.
   // This is intentional: BS balances are rolling totals — e.g. the Dec-31-2023 balance
@@ -2831,9 +3568,10 @@ async function getBalanceSheetSummaryFromStage(companyId, filters = {}) {
     `| selectedYears: ${JSON.stringify(targetYears)}`,
     `| maxYear: ${maxYear}`,
     `| batchId: ${effectiveBatchId || "none"}`,
+    `| fiscalCalendarExplicit: ${fiscalCalendarExplicit}`,
   );
 
-  const { rows } = await queryStagedTransactions(companyId, {
+  const { rows: rawRows } = await queryStagedTransactions(companyId, {
     ...filters,
     batchId: effectiveBatchId || filters.batchId || "",
     reportType: "",
@@ -2844,7 +3582,21 @@ async function getBalanceSheetSummaryFromStage(companyId, filters = {}) {
     limit: DEFAULT_STAGING_LIMIT,
   });
 
+  // Apply calendar-year correction for non-explicit-fiscal-calendar batches.
+  // For explicit fiscal calendars (April, etc.) the stored labels are correct.
+  const rows = fiscalCalendarExplicit ? rawRows : applyCalendarYearCorrection(rawRows);
+
   console.log(`[ManualGL][BS][Debug] Total staged transactions in batch: ${rows.length}`);
+
+  // Distribute rows by corrected fiscal_year for the audit log.
+  const rawYearGroups = {};
+  rawRows.forEach((r) => { const yr = r.fiscal_year || "unknown"; rawYearGroups[yr] = (rawYearGroups[yr] || 0) + 1; });
+  const correctedYearGroups = {};
+  rows.forEach((r) => { const yr = r.fiscal_year || "unknown"; correctedYearGroups[yr] = (correctedYearGroups[yr] || 0) + 1; });
+  if (!fiscalCalendarExplicit) {
+    console.log(`[ManualGL][BS][Debug] Year distribution BEFORE correction:`, JSON.stringify(rawYearGroups));
+    console.log(`[ManualGL][BS][Debug] Year distribution AFTER correction:`, JSON.stringify(correctedYearGroups));
+  }
 
   let cumulativeRows = rows;
   if (maxYear) {
@@ -2856,13 +3608,43 @@ async function getBalanceSheetSummaryFromStage(companyId, filters = {}) {
     `(excluded future years: ${rows.length - cumulativeRows.length})`,
   );
 
+  // CRITICAL: Exclude GL transactions on/before the starting BS as_of_date.
+  //
+  // Root cause of the "exact 2x doubling" bug:
+  // The starting BS opening balance already reflects ALL activity through its as_of_date
+  // (e.g. 2022-12-31 means all 2022 journal entries are baked into every account's
+  // opening balance). If we also include those 2022 GL rows as "activity", the
+  // buildBalanceSheetPayload rolling loop adds them on top of an opening balance that
+  // already contains them → every account doubles.
+  //
+  // Fix: only pass GL transactions that occurred AFTER the starting BS date.
+  // The starting BS opening balance covers everything up to and including that date.
+  const startingBsDate = startingLines.find((l) => l.as_of_date)?.as_of_date || null;
+  if (startingBsDate) {
+    const preFilterCount = cumulativeRows.length;
+    cumulativeRows = cumulativeRows.filter((r) => String(r.txn_date || "") > startingBsDate);
+    const excluded = preFilterCount - cumulativeRows.length;
+    if (excluded > 0) {
+      console.log(
+        `[ManualGL][BS][Debug] Excluded ${excluded}/${preFilterCount} GL rows on/before starting BS date ` +
+        `(${startingBsDate}) to prevent double-counting of pre-opening activity.`,
+      );
+    }
+  } else if (startingLines.length > 0) {
+    console.warn(
+      `[ManualGL][BS][Debug] Starting BS lines exist but no as_of_date found — ` +
+      `cannot filter pre-opening GL rows. Upload a starting BS with a parseable "As of" date ` +
+      `to prevent double-counting.`,
+    );
+  }
+
   // Log year distribution of cumulative rows
   const cumulativeYearGroups = {};
   cumulativeRows.forEach((r) => {
     const yr = r.fiscal_year || "unknown";
     cumulativeYearGroups[yr] = (cumulativeYearGroups[yr] || 0) + 1;
   });
-  console.log(`[ManualGL][BS][Debug] Cumulative rows by year:`, JSON.stringify(cumulativeYearGroups));
+  console.log(`[ManualGL][BS][Debug] Cumulative rows by year (after pre-BS exclusion):`, JSON.stringify(cumulativeYearGroups));
 
   let normalized = cumulativeRows.map(normalizeStagedTransactionRow).filter(Boolean);
 
@@ -2895,6 +3677,12 @@ async function getBalanceSheetSummaryFromStage(companyId, filters = {}) {
     JSON.stringify(pnlPayload.netProfitByYear || {}),
   );
 
+  // Reconstruct fiscal calendar from batch metadata so the RE carry-forward guard
+  // uses the correct fiscal year-end date (calendar-year → month=1, April FY → month=4).
+  const batchFiscalCalendar = fiscalCalendarExplicit
+    ? { fiscalYearStartMonth: batchMeta.fiscalYearStartMonth, fiscalYearStartDay: batchMeta.fiscalYearStartDay }
+    : { fiscalYearStartMonth: 1, fiscalYearStartDay: 1 };
+
   // STEP 4: Build reconciled Balance Sheet using cumulative transactions.
   const payload = buildBalanceSheetPayload(
     normalized,
@@ -2904,6 +3692,7 @@ async function getBalanceSheetSummaryFromStage(companyId, filters = {}) {
     },
     pnlPayload.netProfitByYear || {},
     startingLines,
+    batchFiscalCalendar,
   );
 
   console.log(
@@ -2920,7 +3709,7 @@ async function getBalanceSheetSummaryFromStage(companyId, filters = {}) {
   if (Array.isArray(payload.audit) && payload.audit.length > 0) {
     console.log("[ManualGL][BS][Validation] ═══ Per-Year Balance Equation Check ═══");
     payload.audit.forEach((a) => {
-      const diffStr = a.difference !== 0 ? ` ← VARIANCE: ${a.difference}` : "";
+      const diffStr = a.rawVariance !== 0 ? ` ← RAW VARIANCE: ${a.rawVariance} (force-balanced via RE adjustment)` : "";
       const status = a.isBalanced ? "BALANCED ✓" : "IMBALANCED ✗";
       console.log(
         `[ManualGL][BS][Validation]   Year ${a.year}: ` +
@@ -3468,21 +4257,169 @@ function logYearDetectionAudit(detection) {
   console.log("[ManualGL][YearDetection] ==========================================");
 }
 
+// ─── Multi-Year Normalization Helpers ────────────────────────────────────────
+
+/**
+ * Splits a flat array of parsed transactions into a Map keyed by fiscal year.
+ * This is the canonical "normalization" step: a multi-year GL file produces the
+ * same per-year datasets as if each year had been uploaded as a separate file.
+ *
+ * Transactions with no parseable fiscal year are grouped under the key 'unknown'
+ * and excluded from all year-specific report logic.
+ */
+function splitTransactionsByFiscalYear(transactions = []) {
+  const yearMap = new Map();
+
+  transactions.forEach((tx) => {
+    const yr = Number.isInteger(Number(tx.fiscalYear)) && Number(tx.fiscalYear) > 0
+      ? Number(tx.fiscalYear)
+      : "unknown";
+
+    if (!yearMap.has(yr)) yearMap.set(yr, []);
+    yearMap.get(yr).push(tx);
+  });
+
+  return yearMap;
+}
+
+/**
+ * Computes per-year statistics for a year-split Map.
+ * Returns an object mapping year → { count, dateRange, uniqueAccountCount, debitTotal, creditTotal }.
+ * Used for staging metadata and per-year audit logging.
+ */
+function computePerYearStats(yearMap) {
+  const stats = {};
+
+  yearMap.forEach((transactions, year) => {
+    if (year === "unknown") return;
+
+    const dates = transactions.map((tx) => tx.date).filter(Boolean).sort();
+    const accountNames = new Set(transactions.map((tx) => tx.accountName).filter(Boolean));
+    const debitTotal = roundMoney(transactions.reduce((s, tx) => s + Number(tx.debit || 0), 0));
+    const creditTotal = roundMoney(transactions.reduce((s, tx) => s + Number(tx.credit || 0), 0));
+
+    stats[year] = {
+      count: transactions.length,
+      dateRange: dates.length > 0 ? { min: dates[0], max: dates[dates.length - 1] } : null,
+      uniqueAccountCount: accountNames.size,
+      debitTotal,
+      creditTotal,
+    };
+  });
+
+  return stats;
+}
+
+/**
+ * Logs a structured per-year audit table immediately after year-splitting so
+ * the server logs carry clear evidence of what each year contains.
+ */
+function logPerYearSplitAudit(perYearStats, isMultiYear) {
+  if (!isMultiYear) return;
+
+  console.log("[ManualGL][YearSplit] ==========================================");
+  console.log("[ManualGL][YearSplit] Multi-year GL — per-year dataset summary:");
+  Object.entries(perYearStats).forEach(([year, stat]) => {
+    const range = stat.dateRange ? `${stat.dateRange.min} → ${stat.dateRange.max}` : "no dates";
+    console.log(
+      `[ManualGL][YearSplit]   FY ${year}: ${stat.count} transactions | ` +
+      `${stat.uniqueAccountCount} accounts | ${range} | ` +
+      `Dr=${stat.debitTotal} Cr=${stat.creditTotal}`,
+    );
+  });
+  console.log("[ManualGL][YearSplit] Each year will be queried independently via fiscal_year filter.");
+  console.log("[ManualGL][YearSplit] ==========================================");
+}
+
+function computeDebitCreditConsistency(transactions = []) {
+  const perYear = {};
+  let totalDebit = 0;
+  let totalCredit = 0;
+
+  transactions.forEach((tx) => {
+    const fiscalYear = Number(tx.fiscalYear || 0);
+    const yearKey = Number.isInteger(fiscalYear) && fiscalYear > 0 ? String(fiscalYear) : "unknown";
+    const debit = roundMoney(Number(tx.debit || 0));
+    const credit = roundMoney(Number(tx.credit || 0));
+    totalDebit = roundMoney(totalDebit + debit);
+    totalCredit = roundMoney(totalCredit + credit);
+
+    if (!perYear[yearKey]) {
+      perYear[yearKey] = { debit: 0, credit: 0, difference: 0, isBalanced: true };
+    }
+    perYear[yearKey].debit = roundMoney(perYear[yearKey].debit + debit);
+    perYear[yearKey].credit = roundMoney(perYear[yearKey].credit + credit);
+  });
+
+  Object.keys(perYear).forEach((yearKey) => {
+    const bucket = perYear[yearKey];
+    bucket.difference = roundMoney(bucket.credit - bucket.debit);
+    bucket.isBalanced = Math.abs(bucket.difference) <= BALANCE_EPSILON;
+  });
+
+  const overallDifference = roundMoney(totalCredit - totalDebit);
+  return {
+    overall: {
+      debit: totalDebit,
+      credit: totalCredit,
+      difference: overallDifference,
+      isBalanced: Math.abs(overallDifference) <= BALANCE_EPSILON,
+    },
+    perYear,
+  };
+}
+
+function logDebitCreditConsistencyAudit(audit = {}) {
+  const overall = audit?.overall || {};
+  console.log("[ManualGL][DebitCredit] ==========================================");
+  console.log(
+    `[ManualGL][DebitCredit] Overall Dr=${overall.debit || 0} Cr=${overall.credit || 0} Diff=${overall.difference || 0} Balanced=${overall.isBalanced ? "YES" : "NO"}`,
+  );
+
+  Object.entries(audit?.perYear || {})
+    .sort((a, b) => {
+      const aNum = Number(a[0]);
+      const bNum = Number(b[0]);
+      if (!Number.isNaN(aNum) && !Number.isNaN(bNum)) return aNum - bNum;
+      return String(a[0]).localeCompare(String(b[0]));
+    })
+    .forEach(([year, bucket]) => {
+      console.log(
+        `[ManualGL][DebitCredit] FY ${year}: Dr=${bucket.debit} Cr=${bucket.credit} Diff=${bucket.difference} Balanced=${bucket.isBalanced ? "YES" : "NO"}`,
+      );
+    });
+
+  console.log("[ManualGL][DebitCredit] ==========================================");
+}
+
 async function stageMultiYearGlUpload({
   companyId,
   glUploadIds = [],
   startingBalanceSheetUploadId = "",
   endingBalanceSheetUploadId = "",
   mapping = {},
+  fiscalYearStartMonth = null,
+  fiscalYearStartDay = null,
   uploadedBy = null,
   batchName = "",
 }) {
+  const fiscalCalendar = resolveFiscalCalendarConfig({
+    fiscalYearStartMonth,
+    fiscalYearStartDay,
+  });
+  const isFiscalCalendarExplicit =
+    (fiscalYearStartMonth !== null && fiscalYearStartMonth !== undefined) ||
+    (fiscalYearStartDay !== null && fiscalYearStartDay !== undefined);
+
   console.log("[ManualGL][MultiYear] === START ===", {
     companyId,
     glUploadIds,
     startingBalanceSheetUploadId,
     endingBalanceSheetUploadId,
     mappingKeys: Object.keys(mapping || {}),
+    fiscalYearStartMonth: fiscalCalendar.fiscalYearStartMonth,
+    fiscalYearStartDay: fiscalCalendar.fiscalYearStartDay,
+    fiscalCalendarExplicit: isFiscalCalendarExplicit,
     batchName,
   });
   if (!companyId) throw new Error("companyId is required");
@@ -3534,6 +4471,14 @@ async function stageMultiYearGlUpload({
   const resolvedMappings = {};
   const filesParsed = [];
   const filesRequiringMapping = [];
+  const parseAuditByFile = [];
+  const parsingTotals = {
+    totalRows: 0,
+    parsedRows: 0,
+    skippedRows: 0,
+    duplicateRowsWithinFile: 0,
+    skippedByReason: {},
+  };
 
   // Tracks parsed BS data so we can insert lines after GL classification
   const balanceSheetInfo = {
@@ -3651,6 +4596,16 @@ async function stageMultiYearGlUpload({
 
         let rawFileTransactions = [];
         let fileParsedAtLeastOne = false;
+        const fileParseAudit = {
+          uploadId,
+          fileName: upload.file_name || upload.id,
+          sheetCount: selectedSheets.length,
+          totalRows: 0,
+          parsedRows: 0,
+          skippedRows: 0,
+          skippedByReason: {},
+          sheets: [],
+        };
 
         for (const sheetData of selectedSheets) {
           const parsed = parseGlSheetTransactions({
@@ -3659,6 +4614,7 @@ async function stageMultiYearGlUpload({
             sheetData,
             mapping: effectiveMapping,
             fiscalYearHint: fileYearHint,
+            fiscalCalendar,
           });
 
           if (!parsed.success) continue;
@@ -3666,15 +4622,82 @@ async function stageMultiYearGlUpload({
           fileParsedAtLeastOne = true;
           resolvedMappings[uploadId] = parsed.mapping;
           rawFileTransactions.push(...parsed.transactions);
+          const sheetStats = parsed.stats || {};
+          fileParseAudit.totalRows += Number(sheetStats.totalRows || 0);
+          fileParseAudit.parsedRows += Number(sheetStats.parsedRows || 0);
+          fileParseAudit.skippedRows += Number(sheetStats.skippedRows || 0);
+          Object.entries(sheetStats.skippedByReason || {}).forEach(([reason, count]) => {
+            fileParseAudit.skippedByReason[reason] =
+              (fileParseAudit.skippedByReason[reason] || 0) + Number(count || 0);
+          });
+          fileParseAudit.sheets.push(sheetStats);
           parsingWarnings.push(
             ...parsed.warnings.map((w) => ({ ...w, uploadId, fileName: upload.file_name })),
           );
         }
 
+        parseAuditByFile.push(fileParseAudit);
+        parsingTotals.totalRows += fileParseAudit.totalRows;
+        parsingTotals.parsedRows += fileParseAudit.parsedRows;
+        parsingTotals.skippedRows += fileParseAudit.skippedRows;
+        Object.entries(fileParseAudit.skippedByReason).forEach(([reason, count]) => {
+          parsingTotals.skippedByReason[reason] =
+            (parsingTotals.skippedByReason[reason] || 0) + Number(count || 0);
+        });
+
         if (!fileParsedAtLeastOne || rawFileTransactions.length === 0) {
           filesRequiringMapping.push({ uploadId, fileName: upload.file_name });
+          console.warn(
+            `[ManualGL][MultiYear] File "${upload.file_name}" produced no parseable GL transactions.`,
+            fileParseAudit,
+          );
           continue;
         }
+
+        console.log(
+          `[ManualGL][ParseAudit] ${upload.file_name}: totalRows=${fileParseAudit.totalRows}, parsed=${fileParseAudit.parsedRows}, skipped=${fileParseAudit.skippedRows}`,
+        );
+
+        const calendarYearsInFile = Array.from(
+          new Set(
+            rawFileTransactions
+              .map((tx) => (String(tx.date || "").slice(0, 4)))
+              .map((year) => Number(year))
+              .filter((year) => Number.isInteger(year) && year > 0),
+          ),
+        ).sort((a, b) => a - b);
+        // Only switch to fiscal-year labelling when the caller explicitly
+        // provided a non-default fiscal calendar.  Auto-switching when the GL
+        // spans >1 calendar year caused the April default (month 4) to silently
+        // offset ALL year labels by +1, splitting calendar-year 2023 data
+        // across "FY2023" and "FY2024" buckets and producing wrong totals.
+        const useFiscalYearModeForFile = isFiscalCalendarExplicit;
+        rawFileTransactions = assignFiscalYearAndRefreshHash(rawFileTransactions, {
+          companyId,
+          fiscalCalendar,
+          useFiscalYearMode: useFiscalYearModeForFile,
+        });
+
+        const uniqueWithinFile = new Map();
+        let duplicateRowsWithinFile = 0;
+        rawFileTransactions.forEach((tx) => {
+          const hash = String(tx.transactionHash || "");
+          if (!hash) return;
+          if (uniqueWithinFile.has(hash)) {
+            duplicateRowsWithinFile += 1;
+            return;
+          }
+          uniqueWithinFile.set(hash, tx);
+        });
+        rawFileTransactions = Array.from(uniqueWithinFile.values());
+
+        fileParseAudit.calendarYearsDetected = calendarYearsInFile;
+        fileParseAudit.fiscalYearMode = useFiscalYearModeForFile ? "fiscal" : "calendar";
+        fileParseAudit.duplicateRowsWithinFile = duplicateRowsWithinFile;
+        parsingTotals.duplicateRowsWithinFile += duplicateRowsWithinFile;
+        console.log(
+          `[ManualGL][YearMode] ${upload.file_name}: mode=${fileParseAudit.fiscalYearMode} | calendarYears=[${calendarYearsInFile.join(", ")}] | duplicateRowsWithinFile=${duplicateRowsWithinFile}`,
+        );
 
         // Apply BS-driven classification (or keyword fallback when no BS)
         const classifiedTransactions = classifyGlTransactionsWithBsLookup(
@@ -3731,6 +4754,16 @@ async function stageMultiYearGlUpload({
       }
     }
 
+    console.log(
+      `[ManualGL][ParseAudit] Totals: rows=${parsingTotals.totalRows}, parsed=${parsingTotals.parsedRows}, skipped=${parsingTotals.skippedRows}, duplicateRowsWithinFile=${parsingTotals.duplicateRowsWithinFile}`,
+    );
+    if (Object.keys(parsingTotals.skippedByReason || {}).length > 0) {
+      console.log(
+        "[ManualGL][ParseAudit] Skipped by reason:",
+        JSON.stringify(parsingTotals.skippedByReason, null, 2),
+      );
+    }
+
     if (totalInserted === 0 && filesRequiringMapping.length > 0) {
       const firstFail = filesRequiringMapping[0];
       await updateBatch(batch.id, {
@@ -3755,13 +4788,44 @@ async function stageMultiYearGlUpload({
       `[ManualGL][MultiYear] Phase 3 complete — ${totalInserted} classified transactions persisted.`,
     );
 
-    // ── PHASE 3a: Multi-year detection ───────────────────────────────────────
+    // ── PHASE 3a: Multi-year detection + explicit year-split normalization ──────
     // Inspect every classified transaction to determine whether this upload
     // spans a single year or multiple years. The result is logged immediately
     // for debugging, and stored in batch metadata so callers can surface the
     // file type to the UI without re-scanning transactions.
+    //
+    // NORMALIZATION: We explicitly split the flat transaction array into a
+    // per-year Map so each year's dataset is isolated. A multi-year GL file
+    // therefore produces the same per-year datasets as uploading each year
+    // as a separate file — the fiscal_year column on every staged transaction
+    // is the canonical isolation boundary for all downstream queries.
     const yearDetection = detectMultipleYears(allClassifiedTransactions);
     logYearDetectionAudit(yearDetection);
+
+    const yearSplitMap = splitTransactionsByFiscalYear(allClassifiedTransactions);
+    const perYearStats = computePerYearStats(yearSplitMap);
+    logPerYearSplitAudit(perYearStats, yearDetection.isMultiYear);
+    const debitCreditAudit = computeDebitCreditConsistency(allClassifiedTransactions);
+    logDebitCreditConsistencyAudit(debitCreditAudit);
+
+    // Per-year P&L validation — runs calculateProfitLossBuckets on each year's
+    // isolated transactions to confirm the split produces self-consistent numbers.
+    if (yearDetection.isMultiYear) {
+      console.log("[ManualGL][YearSplit] Running per-year P&L validation...");
+      yearSplitMap.forEach((yearTxns, year) => {
+        if (year === "unknown") return;
+        const normalized = yearTxns.map(normalizeStagedTransactionRow).filter(Boolean);
+        const { yearlyRows } = calculateProfitLossBuckets(normalized);
+        const row = yearlyRows.find((r) => r.fiscalYear === year);
+        if (row) {
+          console.log(
+            `[ManualGL][YearSplit][FY${year}] Revenue=${row.Revenue} COGS=${row.COGS}` +
+            ` OpEx=${row["Operating Expenses"]} OtherEx=${row["Other Expenses"]}` +
+            ` GrossProfit=${row["Gross Profit"]} NetProfit=${row["Net Profit"]}`,
+          );
+        }
+      });
+    }
 
     // ── PHASE 3b: Validate distribution account section classifications ───────
     // Collect every unique GL account name, then check WHERE each appears in the
@@ -3858,16 +4922,11 @@ async function stageMultiYearGlUpload({
 
     let validation = null;
     if (balanceSheetInfo.startingParsed || balanceSheetInfo.endingParsed) {
-      const startingLines = await loadBatchBalanceSheetLines(
-        companyId,
-        batch.id,
-        SHEET_TYPE.STARTING,
-      );
-      const endingLines = await loadBatchBalanceSheetLines(
-        companyId,
-        batch.id,
-        SHEET_TYPE.ENDING,
-      );
+      // Both reads are independent — run in parallel instead of sequentially.
+      const [startingLines, endingLines] = await Promise.all([
+        loadBatchBalanceSheetLines(companyId, batch.id, SHEET_TYPE.STARTING),
+        loadBatchBalanceSheetLines(companyId, batch.id, SHEET_TYPE.ENDING),
+      ]);
       validation = computeBalanceSheetRollforwardValidation({
         startingLines,
         endingLines,
@@ -3895,14 +4954,22 @@ async function stageMultiYearGlUpload({
         duplicateTransactionsSkipped: totalDuplicates,
         crossFileDuplicateTransactionsSkipped: totalCrossFileDuplicates,
         warningsCount: parsingWarnings.length,
+        parsingTotals,
+        parseAuditByFile,
         classificationMode: hasBsLookup ? "bs_driven" : "keyword_fallback",
         bsLookupAccountCount: bsLookupMap.size,
-        // Multi-year detection results (from Phase 3a)
+        fiscalCalendar,
+        fiscalCalendarExplicit: isFiscalCalendarExplicit,
+        // Multi-year detection + explicit year-split results (from Phase 3a)
         fileType: yearDetection.fileType,
         isMultiYearUpload: yearDetection.isMultiYear,
         yearsDetected: yearDetection.years,
         perYearTransactionCounts: yearDetection.perYearCounts,
         invalidDateTransactionCount: yearDetection.invalidDateCount,
+        // Per-year stats from the normalization split — mirrors what would be
+        // produced by uploading each year as a separate single-year GL file.
+        perYearStats,
+        debitCreditAudit,
         sourceType,
         sourceSwitchVersion,
         uploadSessionId,
@@ -3935,6 +5002,8 @@ async function stageMultiYearGlUpload({
           glUploadCount: normalizedUploadIds.length,
           insertedTransactions: totalInserted,
           classificationMode: hasBsLookup ? "bs_driven" : "keyword_fallback",
+          fiscalCalendar,
+          fiscalCalendarExplicit: isFiscalCalendarExplicit,
         },
       });
     } catch (syncError) {
@@ -3948,7 +5017,12 @@ async function stageMultiYearGlUpload({
       yearGroups: combinedYearGroups,
       duplicateTransactionsSkipped: totalDuplicates,
       crossFileDuplicateTransactionsSkipped: totalCrossFileDuplicates,
+      duplicateRowsWithinFile: parsingTotals.duplicateRowsWithinFile || 0,
       warnings: parsingWarnings.slice(0, 500),
+      parsingTotals,
+      parseAuditByFile,
+      fiscalCalendar,
+      fiscalCalendarExplicit: isFiscalCalendarExplicit,
       mapping: effectiveMapping,
       filesParsed,
       validation,
@@ -3956,6 +5030,8 @@ async function stageMultiYearGlUpload({
       fileType: yearDetection.fileType,
       isMultiYearUpload: yearDetection.isMultiYear,
       perYearTransactionCounts: yearDetection.perYearCounts,
+      perYearStats,
+      debitCreditAudit,
       classificationMode: hasBsLookup ? "bs_driven" : "keyword_fallback",
     };
   } catch (error) {
@@ -4096,6 +5172,36 @@ async function getCashflowSummaryFromStage(companyId, filters = {}) {
   // the cash flow using cumulative rolling balances, then expose only selectedYears.
   const allBsYears = (bs.years || []).sort((a, b) => a - b);
 
+  // Build a "year-zero" anchor for each BS category: the opening balance from the
+  // starting balance sheet (openingBalance is baked into balancesByYear[firstYear]
+  // already, so for the first year the prior-year proxy is openingBalance, not 0).
+  // Without this anchor the first year's movement would equal the full cumulative
+  // balance (openingBalance + activity) instead of just the GL activity.
+  const categoryOpeningBalance = {};
+  ["Assets", "Liabilities", "Equity"].forEach((sKey) => {
+    const sectionData = bs.sections?.[sKey];
+    if (!sectionData) return;
+    (sectionData.categories || []).forEach((cat) => {
+      const label = cat.label || "";
+      if (allBsYears.length === 0) return;
+      const firstYear = allBsYears[0];
+      // Opening balance = what the category held BEFORE the first GL year.
+      // For every account in the category: openingBalance is reflected in
+      // balancesByYear[firstYear] as (openingBalance + firstYearActivity).
+      // We derive it by summing per-account openingBalance from the accounts array.
+      // If accounts expose activityByYear we can subtract it; otherwise approximate
+      // by assuming the category total at firstYear includes the opening.
+      const firstYearTotal = roundMoney(Number(cat.totalByYear?.[firstYear] || 0));
+      const firstYearActivity = roundMoney(
+        (cat.accounts || []).reduce(
+          (sum, acc) => sum + roundMoney(Number(acc.activityByYear?.[firstYear] || 0)),
+          0,
+        ),
+      );
+      categoryOpeningBalance[label] = roundMoney(firstYearTotal - firstYearActivity);
+    });
+  });
+
   const sections = {
     Operating: { label: "Cash Flow from Operating Activities", items: [], totalByYear: {} },
     Investing: { label: "Cash Flow from Investing Activities", items: [], totalByYear: {} },
@@ -4118,6 +5224,9 @@ async function getCashflowSummaryFromStage(companyId, filters = {}) {
     (sectionData.categories || []).forEach((cat) => bsCategories.push({ ...cat, sectionType: sKey }));
   });
 
+  // Collect bank/cash balances across ALL BS years (for beginning/ending cash).
+  const cashBalanceByYear = {};
+
   bsCategories.forEach((cat) => {
     const label = String(cat.label || "").toLowerCase();
 
@@ -4134,8 +5243,15 @@ async function getCashflowSummaryFromStage(companyId, filters = {}) {
       flowType = "Financing";
     }
 
-    // Cash accounts are the result, not a movement — exclude from movements.
-    if (label.includes("bank account") || label === "cash") return;
+    // Cash/bank accounts are the result — collect their balances, then skip movements.
+    if (label.includes("bank account") || label === "cash") {
+      allBsYears.forEach((y) => {
+        cashBalanceByYear[y] = roundMoney(
+          (cashBalanceByYear[y] || 0) + Number(cat.totalByYear?.[y] || 0),
+        );
+      });
+      return;
+    }
 
     const sign = cat.sectionType === "Assets" ? -1 : 1;
     const yearMovements = {};
@@ -4147,7 +5263,12 @@ async function getCashflowSummaryFromStage(companyId, filters = {}) {
       const priorYear = priorYearIdx >= 0 ? allBsYears[priorYearIdx] : null;
 
       const current = roundMoney(Number(cat.totalByYear?.[year] || 0));
-      const prior = priorYear != null ? roundMoney(Number(cat.totalByYear?.[priorYear] || 0)) : 0;
+      // For the first GL year there is no prior DB row, so use the opening balance
+      // derived from the starting balance sheet as the anchor — prevents the full
+      // cumulative balance (openingBalance + activity) from appearing as the movement.
+      const prior = priorYear != null
+        ? roundMoney(Number(cat.totalByYear?.[priorYear] || 0))
+        : roundMoney(categoryOpeningBalance[cat.label] || 0);
       const move = roundMoney((current - prior) * sign);
 
       yearMovements[year] = move;
@@ -4168,9 +5289,90 @@ async function getCashflowSummaryFromStage(companyId, filters = {}) {
     );
   });
 
+  // Build frontend-ready hierarchicalRows for CashflowSummary component.
+  // yearCols uses String keys to match amounts map keys in the component.
+  const yearCols = selectedYears.map((y) => ({ key: String(y), label: `FY ${y}` }));
+
+  const buildAmounts = (valuesByYear) => {
+    const amounts = {};
+    selectedYears.forEach((y) => { amounts[String(y)] = valuesByYear[y] || 0; });
+    return amounts;
+  };
+
+  const SECTION_KEYS = ["Operating", "Investing", "Financing"];
+  const SECTION_TOTAL_LABELS = {
+    Operating: "Net Cash from Operating Activities",
+    Investing: "Net Cash from Investing Activities",
+    Financing: "Net Cash from Financing Activities",
+  };
+
+  const hierarchicalRows = [];
+
+  SECTION_KEYS.forEach((sKey) => {
+    const sec = sections[sKey];
+    if (!sec) return;
+
+    const children = [];
+
+    if (sKey === "Operating") {
+      children.push({
+        id: "net-income",
+        name: "Net Income",
+        amounts: buildAmounts(pnl.netProfitByYear || {}),
+      });
+    }
+
+    sec.items.forEach((item, idx) => {
+      const hasValue = selectedYears.some((y) => (item.yearMovements?.[y] || 0) !== 0);
+      if (!hasValue) return;
+      children.push({
+        id: `${sKey.toLowerCase()}-item-${idx}`,
+        name: item.label,
+        amounts: buildAmounts(item.yearMovements || {}),
+      });
+    });
+
+    const headerAmounts = buildAmounts(sec.totalByYear);
+
+    hierarchicalRows.push({
+      id: `${sKey.toLowerCase()}-header`,
+      name: sec.label,
+      type: "header",
+      amounts: headerAmounts,
+      children,
+    });
+
+    hierarchicalRows.push({
+      id: `${sKey.toLowerCase()}-total`,
+      name: SECTION_TOTAL_LABELS[sKey],
+      type: "total",
+      amounts: headerAmounts,
+    });
+  });
+
+  hierarchicalRows.push({
+    id: "net-cash-change",
+    name: "Net Change in Cash",
+    type: "total",
+    amounts: buildAmounts(netCashChange),
+  });
+
+  const beginningCashAmounts = {};
+  const endingCashAmounts = {};
+  selectedYears.forEach((year) => {
+    const priorYearIdx = allBsYears.indexOf(year) - 1;
+    const priorYear = priorYearIdx >= 0 ? allBsYears[priorYearIdx] : null;
+    beginningCashAmounts[String(year)] = priorYear != null ? (cashBalanceByYear[priorYear] || 0) : 0;
+    endingCashAmounts[String(year)] = cashBalanceByYear[year] || 0;
+  });
+
+  hierarchicalRows.push({ id: "beginning-cash", name: "Beginning Cash", amounts: beginningCashAmounts });
+  hierarchicalRows.push({ id: "ending-cash", name: "Ending Cash", type: "total", amounts: endingCashAmounts });
+
   console.log(
     `[ManualGL][Cashflow][Debug] years: [${selectedYears.join(", ")}]`,
     `| netCashChange: ${JSON.stringify(netCashChange)}`,
+    `| hierarchicalRows count: ${hierarchicalRows.length}`,
   );
 
   return {
@@ -4180,25 +5382,67 @@ async function getCashflowSummaryFromStage(companyId, filters = {}) {
     years: selectedYears,
     sections,
     netCashChange,
+    hierarchicalRows,
+    yearCols,
+    beginningCash: beginningCashAmounts,
+    endingCash: endingCashAmounts,
   };
 }
 
 async function getProfitLossSummaryFromStage(companyId, filters = {}) {
-  const { filters: normalizedFilters, rows } = await queryStagedTransactions(companyId, filters);
-  let normalized = rows.map(normalizeStagedTransactionRow).filter(Boolean);
+  // For calendar-year batches (fiscalCalendarExplicit = false), the DB fiscal_year column
+  // may hold wrong April-offset labels (BUG2). We bypass the fiscal_year DB filter and
+  // instead fetch by date range, then correct + filter in memory.
+  const preFilters = parseManualFilterQuery(filters);
+  const preBatchId = preFilters.batchId ||
+    (await getLatestManualBatch(companyId, { status: "staged" }))?.id;
+  const batchMeta = await loadBatchMetadata(preBatchId);
+  const fiscalCalendarExplicit = batchMeta.fiscalCalendarExplicit === true;
 
-  const selectedYears = normalizedFilters.fiscalYears || [];
+  const selectedYearsForBypass = preFilters.fiscalYears || [];
+  let queryFilters = { ...filters, batchId: preBatchId || filters.batchId || "" };
+
+  if (!fiscalCalendarExplicit && selectedYearsForBypass.length) {
+    // Convert year filter to date-range so the query fetches by txn_date instead of fiscal_year.
+    const minYear = Math.min(...selectedYearsForBypass);
+    const maxYearPl = Math.max(...selectedYearsForBypass);
+    queryFilters = {
+      ...queryFilters,
+      fiscalYears: [],
+      fiscalYear: null,
+      startDate: `${minYear}-01-01`,
+      endDate: `${maxYearPl}-12-31`,
+    };
+    console.log(
+      `[ManualGL][PL][Debug] BUG2-bypass: converted fiscalYears ${JSON.stringify(selectedYearsForBypass)} ` +
+      `→ date range ${minYear}-01-01 to ${maxYearPl}-12-31`,
+    );
+  }
+
+  const { filters: normalizedFilters, rows: rawRows } = await queryStagedTransactions(companyId, queryFilters);
+  const correctedRows = fiscalCalendarExplicit ? rawRows : applyCalendarYearCorrection(rawRows);
+
+  // After correction, filter by selected years in memory (preserves correct rows only).
+  const selectedYears = preFilters.fiscalYears || [];
+  const filteredRows = (!fiscalCalendarExplicit && selectedYears.length)
+    ? correctedRows.filter((r) => selectedYears.includes(Number(r.fiscal_year || 0)))
+    : correctedRows;
+
+  let normalized = filteredRows.map(normalizeStagedTransactionRow).filter(Boolean);
+
+  const effectiveBatchId = normalizedFilters.batchId || preBatchId || "";
   console.log(
     `[ManualGL][PL][Debug] === P&L Summary Report ===`,
     `| selectedYears: ${JSON.stringify(selectedYears)}`,
     `| total transactions after year filter: ${normalized.length}`,
-    `| batchId: ${normalizedFilters.batchId || "none"}`,
+    `| batchId: ${effectiveBatchId}`,
+    `| fiscalCalendarExplicit: ${fiscalCalendarExplicit}`,
   );
 
   // Re-classify using BS lines from DB so reports are accurate even for data
   // staged before the BS-driven classification was implemented.
-  if (normalizedFilters.batchId) {
-    const bsLookup = await loadBsLookupForBatch(companyId, normalizedFilters.batchId);
+  if (effectiveBatchId) {
+    const bsLookup = await loadBsLookupForBatch(companyId, effectiveBatchId);
     if (bsLookup.size > 0) {
       normalized = reclassifyNormalizedTransactions(normalized, bsLookup);
     }
@@ -4214,7 +5458,12 @@ async function getProfitLossSummaryFromStage(companyId, filters = {}) {
     `[ManualGL][PL][Debug] After reclassification — P&L transactions: ${plCount}, BS transactions (excluded): ${bsCount}`,
   );
 
-  const summary = buildProfitLossSummaryPayload(normalized, normalizedFilters);
+  // Restore original fiscalYears into the filter passed to the builder so that
+  // displayYear is correct even when we bypassed the DB fiscal_year filter above.
+  const summary = buildProfitLossSummaryPayload(normalized, {
+    ...normalizedFilters,
+    fiscalYears: selectedYears.length ? selectedYears : (normalizedFilters.fiscalYears || []),
+  });
 
   console.log(
     `[ManualGL][PL][Debug] P&L result — years: ${JSON.stringify(summary.years)},`,
@@ -4225,10 +5474,37 @@ async function getProfitLossSummaryFromStage(companyId, filters = {}) {
 }
 
 async function getProfitLossDetailFromStage(companyId, filters = {}) {
-  const { filters: normalizedFilters, rows } = await queryStagedTransactions(companyId, filters);
-  let normalized = rows.map(normalizeStagedTransactionRow).filter(Boolean);
+  const preFilters = parseManualFilterQuery(filters);
+  const preBatchId = preFilters.batchId ||
+    (await getLatestManualBatch(companyId, { status: "staged" }))?.id;
+  const batchMeta = await loadBatchMetadata(preBatchId);
+  const fiscalCalendarExplicit = batchMeta.fiscalCalendarExplicit === true;
 
-  const selectedYears = normalizedFilters.fiscalYears || [];
+  const selectedYearsForBypass = preFilters.fiscalYears || [];
+  let queryFilters = { ...filters, batchId: preBatchId || filters.batchId || "" };
+
+  if (!fiscalCalendarExplicit && selectedYearsForBypass.length) {
+    const minYear = Math.min(...selectedYearsForBypass);
+    const maxYearPl = Math.max(...selectedYearsForBypass);
+    queryFilters = {
+      ...queryFilters,
+      fiscalYears: [],
+      fiscalYear: null,
+      startDate: `${minYear}-01-01`,
+      endDate: `${maxYearPl}-12-31`,
+    };
+  }
+
+  const { filters: normalizedFilters, rows: rawRows } = await queryStagedTransactions(companyId, queryFilters);
+  const correctedRows = fiscalCalendarExplicit ? rawRows : applyCalendarYearCorrection(rawRows);
+  const selectedYears = preFilters.fiscalYears || [];
+  const filteredRows = (!fiscalCalendarExplicit && selectedYears.length)
+    ? correctedRows.filter((r) => selectedYears.includes(Number(r.fiscal_year || 0)))
+    : correctedRows;
+
+  let normalized = filteredRows.map(normalizeStagedTransactionRow).filter(Boolean);
+  const effectiveBatchId = normalizedFilters.batchId || preBatchId || "";
+
   console.log(
     `[ManualGL][PL-Detail][Debug] selectedYears: ${JSON.stringify(selectedYears)},`,
     `total transactions after year filter: ${normalized.length}`,
@@ -4236,8 +5512,8 @@ async function getProfitLossDetailFromStage(companyId, filters = {}) {
 
   // Re-classify using BS lines — matches the reclassification in getProfitLossSummaryFromStage
   // so BS accounts stored with wrong type in legacy data are excluded from P&L detail.
-  if (normalizedFilters.batchId) {
-    const bsLookup = await loadBsLookupForBatch(companyId, normalizedFilters.batchId);
+  if (effectiveBatchId) {
+    const bsLookup = await loadBsLookupForBatch(companyId, effectiveBatchId);
     if (bsLookup.size > 0) {
       normalized = reclassifyNormalizedTransactions(normalized, bsLookup);
     }
@@ -4267,25 +5543,86 @@ async function getStageTransactions(companyId, filters = {}) {
 }
 
 async function getStageFilterOptions(companyId, filters = {}) {
-  // For discovery, we want to see ALL available years, accounts, etc.
-  // So we ignore most filters, keeping only the companyId and batchId (if specified).
-  const discoveryFilters = {
-    batchId: filters.batchId || "",
-    limit: DEFAULT_STAGING_LIMIT,
+  // Resolve the batch ID first (cheapest possible query — 1 row from batches table).
+  const incomingBatchId = toNonEmptyString(filters.batchId || "");
+  let batchId = incomingBatchId;
+
+  if (!batchId) {
+    const latestBatch = await getLatestManualBatch(companyId, {
+      sourceType: filters.sourceType || MANUAL_SOURCE_KEY,
+      status: "staged",
+    });
+    if (!latestBatch?.id) {
+      console.log(`[ManualGL][FilterOptions] No staged batch found for company ${companyId}`);
+      return {
+        source: "manual_gl_staged_transactions",
+        rowCount: 0,
+        options: Object.fromEntries(
+          ["fiscalYear","fiscalMonth","accountName","accountNumber","accountType",
+           "category","subCategory","department","class","location","sourceFile",
+           "transactionType","journalType","reportType"].map((k) =>
+            k === "reportType" ? [k, ["profit_loss","balance_sheet"]] : [k, []]
+          )
+        ),
+      };
+    }
+    batchId = latestBatch.id;
+  }
+
+  console.log(`[ManualGL][FilterOptions] Resolving options for batch ${batchId}`);
+
+  // Fetch only the columns needed to compute distinct filter values.
+  // This is far faster than select("*") over 200k rows.
+  const DISCOVERY_COLS = [
+    "fiscal_year", "txn_date", "account_name", "account_number", "account_type",
+    "category", "sub_category", "department", "class", "location",
+    "source_file", "transaction_type", "journal_type",
+  ].join(", ");
+
+  const fetchNarrow = async (includeSourceType = true) => {
+    let query = supabase
+      .from(TABLES.transactions)
+      .select(DISCOVERY_COLS)
+      .eq("company_id", companyId)
+      .eq("batch_id", batchId);
+
+    if (includeSourceType && filters.sourceType) {
+      query = query.eq("source_type", filters.sourceType);
+    }
+
+    query = query.order("id", { ascending: true });
+
+    const pageSize = 1000;
+    const maxRows = DEFAULT_STAGING_LIMIT;
+    const rows = [];
+    let offset = 0;
+
+    while (rows.length < maxRows) {
+      const chunkSize = Math.min(pageSize, maxRows - rows.length);
+      const { data, error } = await query.range(offset, offset + chunkSize - 1);
+      if (error) return { rows: [], error };
+      const chunk = Array.isArray(data) ? data : [];
+      if (!chunk.length) break;
+      rows.push(...chunk);
+      offset += chunk.length;
+      if (chunk.length < pageSize) break;
+    }
+
+    return { rows, error: null };
   };
 
-  console.log(`[ManualGL][MultiYear] Discovery: Fetching options for company ${companyId}`, discoveryFilters);
-  const { rows } = await queryStagedTransactions(companyId, discoveryFilters);
-  console.log(`[ManualGL][MultiYear] Discovery: Found ${rows.length} rows for discovery.`);
-  if (rows.length > 0) {
-    console.log(`[ManualGL][MultiYear] Discovery: First row fiscal_year: ${rows[0].fiscal_year}, fiscalYear: ${rows[0].fiscalYear}`);
+  let { rows, error } = await fetchNarrow(true);
+  if (error && isMissingColumnError(error)) {
+    ({ rows, error } = await fetchNarrow(false));
   }
+  if (error) throw new Error(`Failed to fetch filter options: ${error.message}`);
+
+  console.log(`[ManualGL][FilterOptions] Scanned ${rows.length} rows for batch ${batchId}`);
 
   const addValue = (set, value) => {
     if (value === null || value === undefined) return;
     const text = String(value).trim();
-    if (!text) return;
-    set.add(text);
+    if (text) set.add(text);
   };
 
   const options = {
@@ -4305,8 +5642,11 @@ async function getStageFilterOptions(companyId, filters = {}) {
     reportType: new Set(["profit_loss", "balance_sheet"]),
   };
 
+  const availableFiscalYears = getAvailableFiscalYears(rows);
+  console.log("[FiscalYearsFromDB]", { batchId, years: availableFiscalYears });
+  availableFiscalYears.forEach((yr) => options.fiscalYear.add(String(yr)));
+
   rows.forEach((row) => {
-    if (row.fiscal_year) options.fiscalYear.add(String(row.fiscal_year));
     const rowDate = String(row.txn_date || "").trim();
     if (/^\d{4}-\d{2}-\d{2}$/.test(rowDate)) {
       options.fiscalMonth.add(String(Number(rowDate.slice(5, 7))));
@@ -4425,6 +5765,40 @@ async function getLatestManualBatch(companyId, options = {}) {
   }
 
   return data || null;
+}
+
+async function loadBatchMetadata(batchId) {
+  if (!batchId) return {};
+  const { data } = await supabase
+    .from(TABLES.batches)
+    .select("metadata")
+    .eq("id", batchId)
+    .maybeSingle();
+  return (data?.metadata && typeof data.metadata === "object") ? data.metadata : {};
+}
+
+// Corrects stored fiscal_year values for calendar-year batches where BUG 2 caused
+// the April default fiscal calendar to assign wrong year labels during staging.
+// Safe no-op: when fiscal_year already equals the calendar year (correctly staged data),
+// returns the row unchanged. Never touches rows for April-calendar batches.
+function applyCalendarYearCorrection(rows) {
+  let correctedCount = 0;
+  const result = rows.map((row) => {
+    const dateStr = String(row.txn_date || "");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return row;
+    const calendarYear = Number(dateStr.slice(0, 4));
+    const storedYear = Number(row.fiscal_year || 0);
+    if (!calendarYear || calendarYear === storedYear) return row;
+    correctedCount++;
+    return { ...row, fiscal_year: calendarYear };
+  });
+  if (correctedCount > 0) {
+    console.log(
+      `[ManualGL][FYCorrection] Corrected fiscal_year for ${correctedCount}/${rows.length} rows ` +
+      `to calendar year from txn_date (BUG2 artifact).`,
+    );
+  }
+  return result;
 }
 
 async function listManualGlBatches(companyId) {
@@ -4573,12 +5947,40 @@ function buildProfitLossMonthlyDetailPayload(transactions = [], year, filters = 
 }
 
 async function getProfitLossMonthlyDetailFromStage(companyId, filters = {}) {
-  const { filters: normalizedFilters, rows } = await queryStagedTransactions(companyId, filters);
-  let normalized = rows.map(normalizeStagedTransactionRow).filter(Boolean);
+  const preFilters = parseManualFilterQuery(filters);
+  const preBatchId = preFilters.batchId ||
+    (await getLatestManualBatch(companyId, { status: "staged" }))?.id;
+  const batchMeta = await loadBatchMetadata(preBatchId);
+  const fiscalCalendarExplicit = batchMeta.fiscalCalendarExplicit === true;
+
+  const selectedYearsForBypass = preFilters.fiscalYears || [];
+  let queryFilters = { ...filters, batchId: preBatchId || filters.batchId || "" };
+
+  if (!fiscalCalendarExplicit && selectedYearsForBypass.length) {
+    const minYear = Math.min(...selectedYearsForBypass);
+    const maxYearPl = Math.max(...selectedYearsForBypass);
+    queryFilters = {
+      ...queryFilters,
+      fiscalYears: [],
+      fiscalYear: null,
+      startDate: `${minYear}-01-01`,
+      endDate: `${maxYearPl}-12-31`,
+    };
+  }
+
+  const { filters: normalizedFilters, rows: rawRows } = await queryStagedTransactions(companyId, queryFilters);
+  const correctedRows = fiscalCalendarExplicit ? rawRows : applyCalendarYearCorrection(rawRows);
+  const selectedYears = preFilters.fiscalYears || [];
+  const filteredRows = (!fiscalCalendarExplicit && selectedYears.length)
+    ? correctedRows.filter((r) => selectedYears.includes(Number(r.fiscal_year || 0)))
+    : correctedRows;
+
+  let normalized = filteredRows.map(normalizeStagedTransactionRow).filter(Boolean);
+  const effectiveBatchId = normalizedFilters.batchId || preBatchId || "";
 
   const selectedYear =
-    Array.isArray(normalizedFilters.fiscalYears) && normalizedFilters.fiscalYears.length > 0
-      ? Math.max(...normalizedFilters.fiscalYears.map((value) => Number(value)).filter((value) => Number.isInteger(value) && value > 0))
+    selectedYears.length > 0
+      ? Math.max(...selectedYears.map((value) => Number(value)).filter((value) => Number.isInteger(value) && value > 0))
       : null;
 
   console.log(
@@ -4588,8 +5990,8 @@ async function getProfitLossMonthlyDetailFromStage(companyId, filters = {}) {
 
   // Re-classify using BS lines — keeps BS accounts out of P&L monthly totals
   // (matches the reclassification logic used in getProfitLossSummaryFromStage).
-  if (normalizedFilters.batchId) {
-    const bsLookup = await loadBsLookupForBatch(companyId, normalizedFilters.batchId);
+  if (effectiveBatchId) {
+    const bsLookup = await loadBsLookupForBatch(companyId, effectiveBatchId);
     if (bsLookup.size > 0) {
       normalized = reclassifyNormalizedTransactions(normalized, bsLookup);
     }
@@ -4619,7 +6021,7 @@ async function getProfitLossMonthlyDetailFromStage(companyId, filters = {}) {
 
 // ─── Monthly Detail: Balance Sheet ───────────────────────────────────────────
 
-function buildBalanceSheetMonthlyDetailPayload(transactions = [], year, filters = {}, startingLines = [], netProfitByYear = {}, selectedMonth = null) {
+function buildBalanceSheetMonthlyDetailPayload(transactions = [], year, filters = {}, startingLines = [], netProfitByYear = {}, selectedMonth = null, fiscalCalendar = {}) {
   const resolvedSelectedMonth = (Number.isInteger(Number(selectedMonth)) && Number(selectedMonth) >= 1 && Number(selectedMonth) <= 12)
     ? Number(selectedMonth) : null;
   // For BS, months are cumulative: always show from Jan up to (and including) selectedMonth
@@ -4755,8 +6157,16 @@ function buildBalanceSheetMonthlyDetailPayload(transactions = [], year, filters 
     explicitNetIncomeAccounts.length === 0 && !retainedHasTransactionActivity;
 
   if (selectedYear && shouldCarryForwardNetIncome) {
+    // Only carry net income for years whose fiscal period ended AFTER the starting BS date.
+    // Years already closed into the starting BS opening balance must not be double-counted.
+    const startingBsDateStr = startingLines.find((l) => l.as_of_date)?.as_of_date || null;
+    const bsCalendar = resolveFiscalCalendarConfig(fiscalCalendar);
     const priorNetIncome = derivedYears
-      .filter((yr) => yr < selectedYear)
+      .filter((yr) => {
+        if (yr >= selectedYear) return false;
+        const fiscalEndDate = computeFiscalYearEndDate(yr, bsCalendar);
+        return !startingBsDateStr || !fiscalEndDate || startingBsDateStr < fiscalEndDate;
+      })
       .reduce((sum, yr) => roundMoney(sum + Number(netProfitByYear[yr] || 0)), 0);
 
     if (priorNetIncome !== 0) {
@@ -4944,17 +6354,20 @@ async function getBalanceSheetMonthlyDetailFromStage(companyId, filters = {}) {
 
   let startingLines = [];
   let endingLines = [];
+  let batchMetaMonthly = {};
   if (effectiveBatchId) {
-    [startingLines, endingLines] = await Promise.all([
+    [startingLines, endingLines, batchMetaMonthly] = await Promise.all([
       loadBatchBalanceSheetLines(companyId, effectiveBatchId, SHEET_TYPE.STARTING),
       loadBatchBalanceSheetLines(companyId, effectiveBatchId, SHEET_TYPE.ENDING),
+      loadBatchMetadata(effectiveBatchId),
     ]);
   }
+  const fiscalCalendarExplicitMonthly = batchMetaMonthly.fiscalCalendarExplicit === true;
 
   // Query cumulative rows and let the payload builder create opening + monthly balances for selected year.
   // fiscalMonths is intentionally cleared: the BS payload builder needs ALL months' transactions to compute
   // the correct cumulative running balance. Month restriction is applied via the months[] array in the builder.
-  const { rows } = await queryStagedTransactions(companyId, {
+  const { rows: rawRowsMonthly } = await queryStagedTransactions(companyId, {
     ...normalizedFilters,
     reportType: "",
     fiscalYear: null,
@@ -4965,7 +6378,9 @@ async function getBalanceSheetMonthlyDetailFromStage(companyId, filters = {}) {
     limit: DEFAULT_STAGING_LIMIT,
   });
 
-  let normalized = rows.map(normalizeStagedTransactionRow).filter(Boolean);
+  const rowsMonthly = fiscalCalendarExplicitMonthly ? rawRowsMonthly : applyCalendarYearCorrection(rawRowsMonthly);
+
+  let normalized = rowsMonthly.map(normalizeStagedTransactionRow).filter(Boolean);
   const bsLookup = buildBsLookupFromDbLines(startingLines, endingLines);
   if (bsLookup.size > 0) {
     normalized = reclassifyNormalizedTransactions(normalized, bsLookup);
@@ -4984,12 +6399,267 @@ async function getBalanceSheetMonthlyDetailFromStage(companyId, filters = {}) {
     ? normalizedFilters.fiscalMonths[0] : null;
   console.log(`[ManualGL][BS-Monthly][Filter] targetYear: ${targetYear}, selectedMonth: ${selectedMonth}`);
 
+  const batchFiscalCalendarMonthly = fiscalCalendarExplicitMonthly
+    ? { fiscalYearStartMonth: batchMetaMonthly.fiscalYearStartMonth, fiscalYearStartDay: batchMetaMonthly.fiscalYearStartDay }
+    : { fiscalYearStartMonth: 1, fiscalYearStartDay: 1 };
+
   return buildBalanceSheetMonthlyDetailPayload(
     normalized,
     targetYear,
     { ...normalizedFilters, batchId: normalizedFilters.batchId || effectiveBatchId || "" },
     startingLines,
     pnlPayload.netProfitByYear || {},
+    selectedMonth,
+    batchFiscalCalendarMonthly,
+  );
+}
+
+// ─── Monthly Detail: Cash Flow ────────────────────────────────────────────────
+
+function buildCashflowMonthlyDetailPayload(transactions = [], year, filters = {}, startingLines = [], selectedMonth = null) {
+  const resolvedSelectedMonth = (Number.isInteger(Number(selectedMonth)) && Number(selectedMonth) >= 1 && Number(selectedMonth) <= 12)
+    ? Number(selectedMonth) : null;
+  const allMonths = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+  const months = resolvedSelectedMonth !== null ? allMonths.slice(0, resolvedSelectedMonth) : allMonths;
+  const lastMonth = resolvedSelectedMonth !== null ? resolvedSelectedMonth : 12;
+  const selectedYear = (Number.isInteger(Number(year)) && Number(year) > 0) ? Number(year) : null;
+
+  if (!selectedYear) {
+    return {
+      source: "manual_gl_staged_transactions",
+      reportType: "cash_flow_monthly_detail",
+      year: null,
+      months,
+      monthNames: MONTH_NAMES,
+      sections: [],
+      filters,
+    };
+  }
+
+  const getMonth = (tx) => Number(
+    tx.fiscalMonth ||
+    (String(tx.date || "").length >= 7 ? Number(String(tx.date).slice(5, 7)) : 0),
+  );
+
+  // --- Step 1: Monthly P&L net income (period-only for target year) ---
+  const monthlyNetIncome = {};
+  months.forEach((m) => { monthlyNetIncome[m] = 0; });
+  transactions
+    .filter((tx) => Number(tx.fiscalYear || 0) === selectedYear)
+    .forEach((tx) => {
+      const acctType = normalizeAccountType(tx.accountType || "");
+      if (!["income", "cogs", "expense"].includes(acctType)) return;
+      const txMonth = getMonth(tx);
+      if (txMonth >= 1 && txMonth <= 12) {
+        monthlyNetIncome[txMonth] = roundMoney(monthlyNetIncome[txMonth] + Number(tx.netAmount || 0));
+      }
+    });
+
+  // --- Step 2: Cash opening balance (starting lines + prior-year transaction deltas) ---
+  const isCashCat = (catLabel) => {
+    const l = String(catLabel || "").toLowerCase();
+    return l.includes("bank account") || l === "cash";
+  };
+
+  let cashOpeningBalance = 0;
+  startingLines.forEach((line) => {
+    if (line.section !== "assets") return;
+    const grouping = resolveBalanceSheetGrouping(String(line.account_name || ""), "asset", line.metadata?.leafCategory || "");
+    if (isCashCat(grouping?.leafCategory)) {
+      cashOpeningBalance = roundMoney(cashOpeningBalance + Number(line.amount || 0));
+    }
+  });
+  transactions
+    .filter((tx) => Number(tx.fiscalYear || 0) < selectedYear)
+    .forEach((tx) => {
+      const acctType = normalizeAccountType(tx.accountType || "");
+      if (acctType !== "asset") return;
+      const grouping = resolveBalanceSheetGrouping(tx.accountName || "", acctType, tx.category || "");
+      if (!isCashCat(grouping?.leafCategory)) return;
+      const netAmount = Number(tx.netAmount || 0);
+      const contra = isContraAccount(tx.accountName, "asset");
+      let delta = -netAmount;
+      if (contra) delta = -delta;
+      cashOpeningBalance = roundMoney(cashOpeningBalance + delta);
+    });
+
+  // --- Step 3: Current-year monthly cash balance ---
+  const cashDeltaByMonth = {};
+  months.forEach((m) => { cashDeltaByMonth[m] = 0; });
+  transactions
+    .filter((tx) => Number(tx.fiscalYear || 0) === selectedYear)
+    .forEach((tx) => {
+      const acctType = normalizeAccountType(tx.accountType || "");
+      if (acctType !== "asset") return;
+      const grouping = resolveBalanceSheetGrouping(tx.accountName || "", acctType, tx.category || "");
+      if (!isCashCat(grouping?.leafCategory)) return;
+      const txMonth = getMonth(tx);
+      if (txMonth < 1 || txMonth > 12) return;
+      const netAmount = Number(tx.netAmount || 0);
+      const contra = isContraAccount(tx.accountName, "asset");
+      let delta = -netAmount;
+      if (contra) delta = -delta;
+      cashDeltaByMonth[txMonth] = roundMoney(cashDeltaByMonth[txMonth] + delta);
+    });
+
+  const cashMonthlyBalance = {};
+  let runningCash = cashOpeningBalance;
+  months.forEach((m) => {
+    runningCash = roundMoney(runningCash + (cashDeltaByMonth[m] || 0));
+    cashMonthlyBalance[m] = runningCash;
+  });
+
+  // --- Step 4: BS category monthly movements ---
+  // Cashflow indirect method: impact = netAmount for all BS accounts.
+  // netAmount = credit - debit:
+  //   Asset increases (debit) → netAmount < 0 → outflow ✓
+  //   Liability increases (credit) → netAmount > 0 → inflow ✓
+  const cfSections = {
+    Operating: { key: "operating", label: "Cash Flows from Operating Activities", items: new Map(), monthlyTotals: {}, total: 0 },
+    Investing:  { key: "investing",  label: "Cash Flows from Investing Activities",  items: new Map(), monthlyTotals: {}, total: 0 },
+    Financing:  { key: "financing",  label: "Cash Flows from Financing Activities",  items: new Map(), monthlyTotals: {}, total: 0 },
+  };
+  months.forEach((m) => {
+    cfSections.Operating.monthlyTotals[m] = monthlyNetIncome[m] || 0;
+    cfSections.Investing.monthlyTotals[m] = 0;
+    cfSections.Financing.monthlyTotals[m] = 0;
+  });
+  cfSections.Operating.total = roundMoney(months.reduce((s, m) => s + (monthlyNetIncome[m] || 0), 0));
+
+  transactions
+    .filter((tx) => Number(tx.fiscalYear || 0) === selectedYear)
+    .forEach((tx) => {
+      const acctType = normalizeAccountType(tx.accountType || "");
+      if (!["asset", "liability", "equity"].includes(acctType)) return;
+
+      const grouping = resolveBalanceSheetGrouping(tx.accountName || "", acctType, tx.category || "");
+      const catLabel = grouping?.leafCategory || (acctType === "asset" ? "Other Current Assets" : acctType === "liability" ? "Other Current Liabilities" : "Owner Equity");
+      const catLow = String(catLabel).toLowerCase();
+
+      if (isCashCat(catLabel)) return; // captured as beginning/ending cash
+      if (catLow.includes("net income") || catLow.includes("retained earnings")) return; // double-counted via P&L
+
+      const txMonth = getMonth(tx);
+      if (!months.includes(txMonth)) return;
+
+      const impact = roundMoney(Number(tx.netAmount || 0));
+      if (impact === 0) return;
+
+      // Contra accounts (e.g. accumulated depreciation add-back) stay in Operating.
+      const isContra = isContraAccount(tx.accountName, acctType);
+      let cfSection = "Operating";
+      if (!isContra) {
+        if (catLow.includes("fixed asset") || catLow.includes("other asset")) cfSection = "Investing";
+        if (catLow.includes("long-term") || catLow.includes("loan") || catLow.includes("owner equity")) cfSection = "Financing";
+      }
+
+      const sec = cfSections[cfSection];
+      if (!sec.items.has(catLabel)) {
+        sec.items.set(catLabel, { name: `Change in ${catLabel}`, monthly: {}, total: 0 });
+      }
+      const item = sec.items.get(catLabel);
+      item.monthly[txMonth] = roundMoney((item.monthly[txMonth] || 0) + impact);
+      item.total = roundMoney(item.total + impact);
+      sec.monthlyTotals[txMonth] = roundMoney(sec.monthlyTotals[txMonth] + impact);
+      sec.total = roundMoney(sec.total + impact);
+    });
+
+  // --- Step 5: Assemble sections for frontend ---
+  const sections = [];
+  ["Operating", "Investing", "Financing"].forEach((sKey) => {
+    const sec = cfSections[sKey];
+    const accounts = [];
+    if (sKey === "Operating") {
+      accounts.push({
+        accountName: "Net Income",
+        monthly: { ...monthlyNetIncome },
+        total: roundMoney(months.reduce((s, m) => s + (monthlyNetIncome[m] || 0), 0)),
+      });
+    }
+    sec.items.forEach((item) => accounts.push({ accountName: item.name, monthly: { ...item.monthly }, total: item.total }));
+    sections.push({
+      key: sec.key,
+      label: sec.label,
+      accounts,
+      monthlyTotals: { ...sec.monthlyTotals },
+      total: sec.total,
+      totalLabel: `Net Cash from ${sKey} Activities`,
+    });
+  });
+
+  const netCashMonthly = {};
+  months.forEach((m) => {
+    netCashMonthly[m] = roundMoney(
+      (cfSections.Operating.monthlyTotals[m] || 0) +
+      (cfSections.Investing.monthlyTotals[m] || 0) +
+      (cfSections.Financing.monthlyTotals[m] || 0),
+    );
+  });
+  sections.push({ key: "net_cash_change", label: "Net Change in Cash", isCalculated: true, monthlyTotals: netCashMonthly, total: roundMoney(months.reduce((s, m) => s + (netCashMonthly[m] || 0), 0)) });
+
+  const beginningCashMonthly = {};
+  months.forEach((m, i) => { beginningCashMonthly[m] = i === 0 ? cashOpeningBalance : (cashMonthlyBalance[months[i - 1]] || 0); });
+  sections.push({ key: "beginning_cash", label: "Beginning Cash", isCalculated: true, monthlyTotals: beginningCashMonthly, total: beginningCashMonthly[months[0]] || 0 });
+  sections.push({ key: "ending_cash",    label: "Ending Cash",    isCalculated: true, monthlyTotals: { ...cashMonthlyBalance }, total: cashMonthlyBalance[lastMonth] || 0 });
+
+  return {
+    source: "manual_gl_staged_transactions",
+    reportType: "cash_flow_monthly_detail",
+    year: selectedYear,
+    months,
+    monthNames: MONTH_NAMES,
+    sections,
+    filters,
+  };
+}
+
+async function getCashflowMonthlyDetailFromStage(companyId, filters = {}) {
+  const normalizedFilters = parseManualFilterQuery(filters);
+  const effectiveBatchId = normalizedFilters.batchId || (await getLatestManualBatch(companyId, { status: "staged" }))?.id;
+  const targetYear = Array.isArray(normalizedFilters.fiscalYears) && normalizedFilters.fiscalYears.length > 0
+    ? Math.max(...normalizedFilters.fiscalYears.map(Number).filter((y) => Number.isInteger(y) && y > 0))
+    : null;
+
+  let startingLines = [];
+  let endingLines = [];
+  let batchMetaCf = {};
+  if (effectiveBatchId) {
+    [startingLines, endingLines, batchMetaCf] = await Promise.all([
+      loadBatchBalanceSheetLines(companyId, effectiveBatchId, SHEET_TYPE.STARTING),
+      loadBatchBalanceSheetLines(companyId, effectiveBatchId, SHEET_TYPE.ENDING),
+      loadBatchMetadata(effectiveBatchId),
+    ]);
+  }
+  const fiscalCalendarExplicitCf = batchMetaCf.fiscalCalendarExplicit === true;
+
+  const { rows: rawRowsCf } = await queryStagedTransactions(companyId, {
+    ...normalizedFilters,
+    reportType: "",
+    fiscalYear: null,
+    fiscalYears: [],
+    fiscalMonths: [],
+    startDate: "",
+    endDate: "",
+    limit: DEFAULT_STAGING_LIMIT,
+  });
+
+  const rowsCf = fiscalCalendarExplicitCf ? rawRowsCf : applyCalendarYearCorrection(rawRowsCf);
+
+  let normalized = rowsCf.map(normalizeStagedTransactionRow).filter(Boolean);
+  const bsLookup = buildBsLookupFromDbLines(startingLines, endingLines);
+  if (bsLookup.size > 0) {
+    normalized = reclassifyNormalizedTransactions(normalized, bsLookup);
+  }
+
+  const selectedMonth = Array.isArray(normalizedFilters.fiscalMonths) && normalizedFilters.fiscalMonths.length > 0
+    ? normalizedFilters.fiscalMonths[0] : null;
+  console.log(`[ManualGL][CF-Monthly][Filter] targetYear: ${targetYear}, selectedMonth: ${selectedMonth}`);
+
+  return buildCashflowMonthlyDetailPayload(
+    normalized,
+    targetYear,
+    { ...normalizedFilters, batchId: normalizedFilters.batchId || effectiveBatchId || "" },
+    startingLines,
     selectedMonth,
   );
 }
@@ -5005,10 +6675,12 @@ module.exports = {
   getBalanceSheetSummaryFromStage,
   getBalanceSheetMonthlyDetailFromStage,
   getCashflowSummaryFromStage,
+  getCashflowMonthlyDetailFromStage,
   validateBatchBalanceSheet,
   getLatestManualBatch,
   listManualGlBatches,
   // Multi-year detection utility — usable by callers (e.g., upload controllers)
   // to surface file type information without re-staging.
   detectMultipleYears,
+  getAvailableFiscalYears,
 };

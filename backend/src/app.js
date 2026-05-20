@@ -2,6 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const morgan = require("morgan");
 const { errorHandler } = require("./middleware/error");
+const { timingMiddleware } = require("./middleware/timing");
 
 // Routes
 const authRoutes = require("./routes/auth");
@@ -109,6 +110,7 @@ app.use(
 
 app.use(express.json({ limit: "10mb" }));
 app.use(morgan("dev"));
+app.use(timingMiddleware);
 
 app.get("/health", (req, res) => res.json({ ok: true }));
 
