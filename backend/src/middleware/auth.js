@@ -24,6 +24,9 @@ function _setCachedUser(userId, user) {
   _userCache.set(userId, { user, ts: Date.now() });
 }
 
+const _userPromiseCache = new Map();
+
+
 function extractToken(req) {
   const authorization = req.headers.authorization || "";
   if (authorization.startsWith("Bearer ")) {
@@ -63,7 +66,15 @@ async function requireAuth(req, res, next) {
       return next();
     }
 
-    const user = await getUserById(payload.sub);
+    let userPromise = _userPromiseCache.get(payload.sub);
+    if (!userPromise) {
+      userPromise = getUserById(payload.sub).finally(() => {
+        _userPromiseCache.delete(payload.sub);
+      });
+      _userPromiseCache.set(payload.sub, userPromise);
+    }
+
+    const user = await userPromise;
 
     if (!user) {
       return res.status(401).json({ error: "Invalid token" });

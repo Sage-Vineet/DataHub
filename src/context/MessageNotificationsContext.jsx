@@ -165,17 +165,25 @@ export function MessageNotificationsProvider({ children }) {
       }
 
       const seenMap = readSeenMap(userId);
-      const contactPayloads = await Promise.all(
-        companyIds.map((companyId) =>
-          listCompanyDirectMessageContactsRequest(companyId)
-            .then((payload) => ({
-              companyId,
-              company: payload?.company || null,
-              contacts: payload?.contacts || [],
-            }))
-            .catch(() => ({ companyId, company: null, contacts: [] })),
-        ),
-      );
+
+      const payloadChunks = [];
+      const CHUNK_SIZE = 5;
+      for (let i = 0; i < companyIds.length; i += CHUNK_SIZE) {
+        const chunk = companyIds.slice(i, i + CHUNK_SIZE);
+        const results = await Promise.all(
+          chunk.map((companyId) =>
+            listCompanyDirectMessageContactsRequest(companyId)
+              .then((payload) => ({
+                companyId,
+                company: payload?.company || null,
+                contacts: payload?.contacts || [],
+              }))
+              .catch(() => ({ companyId, company: null, contacts: [] }))
+          )
+        );
+        payloadChunks.push(...results);
+      }
+      const contactPayloads = payloadChunks;
 
       const nextNotifications = [];
       contactPayloads.forEach(({ companyId, company, contacts }) => {

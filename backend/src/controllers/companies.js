@@ -46,10 +46,7 @@ const updateCompany = asyncHandler(async (req, res) => {
   }
 
   const updated = await companyService.updateCompany(req.params.id, req.body);
-  
-  const clientRepresentativeId = await companyService.syncCompanyClientRepresentative(updated, existingCompany);
-  await ensureCompanyDefaultFolders(updated.id, req.user?.id || clientRepresentativeId || null);
-  
+  await companyService.syncCompanyClientRepresentative(updated, existingCompany);
   res.json(updated);
 });
 
