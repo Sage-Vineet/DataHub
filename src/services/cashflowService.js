@@ -110,13 +110,28 @@ function normalizeName(name) {
     .trim();
 }
 
+const CF_SECTION_SYNONYMS = {
+  "cash flows from operating activities": "operating activities",
+  "cash flow from operating activities": "operating activities",
+  "operating cash flow": "operating activities",
+  "cash flows from investing activities": "investing activities",
+  "cash flow from investing activities": "investing activities",
+  "cash flows from financing activities": "financing activities",
+  "cash flow from financing activities": "financing activities",
+};
+
+function normalizeKey(name) {
+  const basic = normalizeName(name);
+  return CF_SECTION_SYNONYMS[basic] || basic;
+}
+
 function mergeFileNodes(nodeArraysByFile, fileKeys) {
   const orderedKeys = [];
   const nodeMap = new Map();
 
   nodeArraysByFile.forEach((nodes, fileIdx) => {
     (nodes || []).forEach((node) => {
-      const normKey = normalizeName(node.name);
+      const normKey = normalizeKey(node.name);
       if (!normKey) return;
       if (!nodeMap.has(normKey)) {
         orderedKeys.push(normKey);
@@ -245,7 +260,7 @@ function buildCFFromPeriodColumns(sortedFiles) {
       const visit = (items) => {
         if (!Array.isArray(items)) return;
         items.forEach((item) => {
-          const key = normalizeName(item.name);
+          const key = normalizeKey(item.name);
           if (key && item.colAmounts) nameMap.set(key, item.colAmounts);
           if (item.children) visit(item.children);
         });
@@ -259,7 +274,7 @@ function buildCFFromPeriodColumns(sortedFiles) {
       const visit = (items) => {
         if (!Array.isArray(items)) return;
         items.forEach((item) => {
-          const key = normalizeName(item.name);
+          const key = normalizeKey(item.name);
           if (key) nameMap.set(key, item.amount || 0);
           if (item.children) visit(item.children);
         });
@@ -278,7 +293,7 @@ function buildCFFromPeriodColumns(sortedFiles) {
 
   const enrich = (nodes) =>
     nodes.map((node) => {
-      const normKey = normalizeName(node.name);
+      const normKey = normalizeKey(node.name);
       const amounts = {};
       filePeriodInfo.forEach(({ startIdx, count, nameMap, singleCol }) => {
         if (singleCol) {

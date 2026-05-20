@@ -1,8 +1,25 @@
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
+const { Pool } = require("pg");
 const { supabase } = require("../db");
 const { attachAssignedCompanies, flattenUser, getUserByEmail } = require("./userService");
 const { DEMO_USERS, CLIENT_STATIC_PASSWORD } = require("../config/demoUsers");
+
+let _authPool = null;
+function getAuthPool() {
+  if (!process.env.DATABASE_URL) return null;
+  if (!_authPool) _authPool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
+  return _authPool;
+}
+
+async function getPasswordHashDirect(userId) {
+  const pool = getAuthPool();
+  if (!pool) return null;
+  try {
+    const { rows } = await pool.query("SELECT password_hash FROM users WHERE id = $1 LIMIT 1", [userId]);
+    return rows[0]?.password_hash || null;
+  } catch { return null; }
+}
 
 // Augment DEMO_USERS with full profile info for ensureDemoUser
 const DEMO_PROFILES = [
@@ -154,10 +171,13 @@ async function authenticate(email, password) {
   // 1. Check Demo Logic
   if (demo && password === demo.password) {
     const demoUser = await ensureDemoUser(demo);
-    const { data: authData } = demoUser
-      ? await supabase.from("users").select("password_hash").eq("id", demoUser.id).single()
-      : { data: null };
-    const hasCustomPassword = authData?.password_hash && authData.password_hash !== demo.password;
+    let storedHash = null;
+    if (demoUser) {
+      // Try Supabase first, fall back to direct Postgres
+      const { data: authData } = await supabase.from("users").select("password_hash").eq("id", demoUser.id).single();
+      storedHash = authData?.password_hash ?? demoUser.password_hash ?? await getPasswordHashDirect(demoUser.id);
+    }
+    const hasCustomPassword = storedHash && storedHash !== demo.password;
 
     if (demoUser && !hasCustomPassword) {
       user = demoUser;
@@ -169,7 +189,7 @@ async function authenticate(email, password) {
   if (!user) {
     console.log(`[Auth] Checking database for: ${normalizedEmail}`);
     user = await getUserByEmail(normalizedEmail);
-    
+
     if (!user) {
       console.log(`[Auth] User not found: ${normalizedEmail}`);
       throw new Error("Invalid credentials");
@@ -184,13 +204,9 @@ async function authenticate(email, password) {
       await ensureDefaultFolders(user.company_id, user.id);
     } else {
       console.log(`[Auth] Performing standard password check for: ${user.id}`);
-      const { data: authData } = await supabase
-        .from("users")
-        .select("password_hash")
-        .eq("id", user.id)
-        .single();
-
-      const storedPassword = authData?.password_hash;
+      // Try Supabase first, fall back to direct Postgres and the user object itself
+      const { data: authData } = await supabase.from("users").select("password_hash").eq("id", user.id).single();
+      const storedPassword = authData?.password_hash ?? user.password_hash ?? await getPasswordHashDirect(user.id);
       let ok = (password === storedPassword);
 
       if (storedPassword && /^\$2[aby]\$/.test(storedPassword)) {

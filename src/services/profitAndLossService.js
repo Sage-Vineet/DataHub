@@ -129,6 +129,28 @@ function normalizeName(name) {
     .trim();
 }
 
+// Maps well-known P&L section label variants to a single canonical key so that
+// files using different naming conventions (e.g. "Revenue" vs "Income",
+// "Cost of Sales" vs "Cost of Goods Sold") merge into the same row.
+const PNL_SECTION_SYNONYMS = {
+  "revenue": "income",
+  "revenues": "income",
+  "ordinary income": "income",
+  "ordinary income expense": "income",
+  "cost of sales": "cost of goods sold",
+  "cost of goods sold cost of sales": "cost of goods sold",
+  "other income expense": "other income",
+  "other income and expense": "other income",
+  "other income other expense": "other income",
+  "operating expenses": "expenses",
+  "expense": "expenses",
+};
+
+function normalizeKey(name) {
+  const basic = normalizeName(name);
+  return PNL_SECTION_SYNONYMS[basic] || basic;
+}
+
 // Union-merges tree nodes from N files into one tree.
 // Every row that exists in ANY file appears in the output.
 // amounts[fileKey] = value from that file (0 if not present).
@@ -138,7 +160,7 @@ function mergeFileNodes(nodeArraysByFile, fileKeys) {
 
   nodeArraysByFile.forEach((nodes, fileIdx) => {
     (nodes || []).forEach((node) => {
-      const normKey = normalizeName(node.name);
+      const normKey = normalizeKey(node.name);
       if (!normKey) return;
       if (!nodeMap.has(normKey)) {
         orderedKeys.push(normKey);
@@ -291,7 +313,7 @@ function buildPNLFromPeriodColumns(sortedFiles) {
       const visit = (items) => {
         if (!Array.isArray(items)) return;
         items.forEach((item) => {
-          const key = normalizeName(item.name);
+          const key = normalizeKey(item.name);
           if (key && item.colAmounts) nameMap.set(key, item.colAmounts);
           if (item.children) visit(item.children);
         });
@@ -306,7 +328,7 @@ function buildPNLFromPeriodColumns(sortedFiles) {
       const visit = (items) => {
         if (!Array.isArray(items)) return;
         items.forEach((item) => {
-          const key = normalizeName(item.name);
+          const key = normalizeKey(item.name);
           if (key) nameMap.set(key, item.amount || 0);
           if (item.children) visit(item.children);
         });
@@ -326,7 +348,7 @@ function buildPNLFromPeriodColumns(sortedFiles) {
 
   const enrich = (nodes) =>
     nodes.map((node) => {
-      const normKey = normalizeName(node.name);
+      const normKey = normalizeKey(node.name);
       const amounts = {};
       filePeriodInfo.forEach(({ startIdx, count, nameMap, singleCol }) => {
         if (singleCol) {

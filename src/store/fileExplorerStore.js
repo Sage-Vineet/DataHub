@@ -180,6 +180,15 @@ export const useFileExplorerStore = create(
       setExpandedFolders: (expandedFolders) => set({ expandedFolders }),
       hydrateFromApi: async (companyId) => {
         if (!companyId) return;
+        // Immediately clear stale tree so old company folders never show
+        set({
+          tree: INITIAL_TREE,
+          companyId,
+          currentPath: ['root'],
+          expandedFolders: ['root'],
+          selectedItems: [],
+          searchQuery: '',
+        });
         // Ensure default folder structure exists before loading the tree
         await ensureCompanyDefaultFolders(companyId).catch(() => {});
         const treeResponse = await listFolderTree(companyId);

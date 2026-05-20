@@ -483,13 +483,28 @@ function normalizeName(name) {
     .trim();
 }
 
+const BS_SECTION_SYNONYMS = {
+  "stockholders equity": "equity",
+  "stockholder s equity": "equity",
+  "owners equity": "equity",
+  "owner s equity": "equity",
+  "shareholders equity": "equity",
+  "shareholder s equity": "equity",
+  "members equity": "equity",
+};
+
+function normalizeKey(name) {
+  const basic = normalizeName(name);
+  return BS_SECTION_SYNONYMS[basic] || basic;
+}
+
 function mergeFileNodes(nodeArraysByFile, fileKeys) {
   const orderedKeys = [];
   const nodeMap = new Map();
 
   nodeArraysByFile.forEach((nodes, fileIdx) => {
     (nodes || []).forEach((node) => {
-      const normKey = normalizeName(node.name);
+      const normKey = normalizeKey(node.name);
       if (!normKey) return;
       if (!nodeMap.has(normKey)) {
         orderedKeys.push(normKey);
@@ -730,7 +745,7 @@ function buildBSFromPeriodColumns(sortedFiles) {
       const visit = (items) => {
         if (!Array.isArray(items)) return;
         items.forEach((item) => {
-          const key = normalizeName(item.name);
+          const key = normalizeKey(item.name);
           if (key && item.colAmounts) nameMap.set(key, item.colAmounts);
           if (item.children) visit(item.children);
         });
@@ -744,7 +759,7 @@ function buildBSFromPeriodColumns(sortedFiles) {
       const visit = (items) => {
         if (!Array.isArray(items)) return;
         items.forEach((item) => {
-          const key = normalizeName(item.name);
+          const key = normalizeKey(item.name);
           if (key) nameMap.set(key, item.amount || 0);
           if (item.children) visit(item.children);
         });
@@ -767,7 +782,7 @@ function buildBSFromPeriodColumns(sortedFiles) {
 
   const enrich = (nodes) =>
     nodes.map((node) => {
-      const normKey = normalizeName(node.name);
+      const normKey = normalizeKey(node.name);
       const amounts = {};
       filePeriodInfo.forEach(({ startIdx, count, nameMap, singleCol }) => {
         if (singleCol) {

@@ -302,8 +302,34 @@ async function getUserById(id) {
   const { data, error } = await selectUserRow((sel) =>
     supabase.from("users").select(sel).eq("id", id).maybeSingle()
   );
-  if (error || !data) return null;
-  return await attachAssignedCompanies(await mergeSqlProfile(flattenUser(data)));
+  if (!error && data) {
+    return await attachAssignedCompanies(await mergeSqlProfile(flattenUser(data)));
+  }
+  // Supabase quota fallback — query Postgres directly
+  const pool = getProfilePool();
+  if (!pool) return null;
+  try {
+    const { rows } = await pool.query(
+      `SELECT u.id, u.name, u.email, u.phone, u.role, u.company_id,
+              u.status, u.created_at, u.updated_at, u.password_hash,
+              c.name AS company_name
+       FROM users u LEFT JOIN companies c ON u.company_id = c.id
+       WHERE u.id = $1 LIMIT 1`,
+      [id],
+    );
+    if (!rows[0]) return null;
+    const r = rows[0];
+    return {
+      id: r.id, name: r.name, email: r.email, phone: r.phone || null,
+      role: r.role, company_id: r.company_id, company_name: r.company_name || null,
+      password_hash: r.password_hash, status: r.status,
+      created_at: r.created_at, updated_at: r.updated_at,
+      assignedCompanies: [],
+    };
+  } catch (pgErr) {
+    console.warn("[getUserById] Direct Postgres fallback failed:", pgErr.message);
+    return null;
+  }
 }
 
 /**
@@ -316,8 +342,44 @@ async function getUserByEmail(email) {
   const { data, error } = await selectUserRow((sel) =>
     supabase.from("users").select(sel).eq("email", email).maybeSingle()
   );
-  if (error || !data) return null;
-  return await attachAssignedCompanies(await mergeSqlProfile(flattenUser(data)));
+  if (!error && data) {
+    return await attachAssignedCompanies(await mergeSqlProfile(flattenUser(data)));
+  }
+
+  // Supabase API unavailable (e.g. quota restriction) — fall back to direct Postgres
+  const pool = getProfilePool();
+  if (!pool) return null;
+  try {
+    const { rows } = await pool.query(
+      `SELECT u.id, u.name, u.email, u.phone, u.role, u.company_id,
+              u.status, u.created_at, u.updated_at, u.password_hash,
+              c.name AS company_name
+       FROM users u
+       LEFT JOIN companies c ON u.company_id = c.id
+       WHERE lower(u.email) = lower($1)
+       LIMIT 1`,
+      [String(email).trim()],
+    );
+    if (!rows[0]) return null;
+    const r = rows[0];
+    return {
+      id: r.id,
+      name: r.name,
+      email: r.email,
+      phone: r.phone || null,
+      role: r.role,
+      company_id: r.company_id,
+      company_name: r.company_name || null,
+      password_hash: r.password_hash,
+      status: r.status,
+      created_at: r.created_at,
+      updated_at: r.updated_at,
+      assignedCompanies: [],
+    };
+  } catch (pgErr) {
+    console.warn("[getUserByEmail] Direct Postgres fallback failed:", pgErr.message);
+    return null;
+  }
 }
 
 /**

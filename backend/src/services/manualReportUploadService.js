@@ -1313,6 +1313,21 @@ function normalizeSectionLabel(value = "") {
     .trim();
 }
 
+function isCrossSectionSummary(label = "") {
+  const norm = normalizeText(label);
+  return (
+    /^gross profit/.test(norm) ||
+    /^gross loss/.test(norm) ||
+    /^net operating income/.test(norm) ||
+    /^net operating loss/.test(norm) ||
+    /^net other income/.test(norm) ||
+    /^net other expense/.test(norm) ||
+    /^net income/.test(norm) ||
+    /^net loss/.test(norm) ||
+    /^net earnings/.test(norm)
+  );
+}
+
 function parseSectionedStatement(entries = [], sectionDefinitions = [], options = {}) {
   const rows = [];
   let currentSection = null;
@@ -1333,8 +1348,16 @@ function parseSectionedStatement(entries = [], sectionDefinitions = [], options 
   entries.forEach((entry) => {
     const section = findSection(entry.label);
     if (section && entry.amount === null) {
+      if (currentSection?.id === section.id) {
+        // Already in this section — update name to the simpler form if the current
+        // has a "/" (wrapper like "Ordinary Income/Expense") and the new label doesn't.
+        if (currentSection.name.includes("/") && !entry.label.includes("/")) {
+          currentSection.name = entry.label;
+        }
+        return;
+      }
       currentSection = {
-        name: section.name,
+        name: entry.label,
         id: section.id,
         children: [],
       };
@@ -1343,6 +1366,23 @@ function parseSectionedStatement(entries = [], sectionDefinitions = [], options 
     }
 
     if (entry.amount === null) return;
+
+    // Summary rows that sit between sections (Gross Profit, Net Operating Income, etc.)
+    // must appear at top level, not inside whatever section happened to be open.
+    if (isCrossSectionSummary(entry.label)) {
+      currentSection = null;
+      rows.push(
+        buildNode(
+          entry.label,
+          entry.amount,
+          "total",
+          `${normalizeSlug(entry.label) || "row"}-${entry.index + 1}`,
+          entry.firstPeriodAmount ?? null,
+          entry.colAmounts ?? null,
+        ),
+      );
+      return;
+    }
 
     const target = currentSection?.children ? currentSection.children : rows;
     const normalizedLabel = normalizeText(entry.label);
