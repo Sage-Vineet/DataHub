@@ -102,71 +102,95 @@ function SourceCard({
   return (
     <div
       className={cn(
-        "rounded-2xl border bg-bg-card p-5 transition-all",
+        "group relative flex flex-col justify-between overflow-hidden rounded-2xl border p-6 transition-all duration-400",
         isActive
-          ? "border-primary shadow-[0_8px_30px_rgba(139,197,61,0.15)]"
+          ? "border-primary shadow-md bg-white z-10"
           : comingSoon
-            ? "border-border opacity-60"
-            : "border-border",
+            ? "border-border bg-gray-50/50 opacity-60"
+            : "border-border bg-bg-card hover:-translate-y-1.5 hover:border-primary/40 hover:shadow-[0_20px_40px_rgba(0,0,0,0.06)]",
       )}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex items-start gap-3">
+
+      <div className="relative z-10 flex items-start justify-between gap-3">
+        <div className="flex flex-col items-start gap-4 xl:flex-row">
           <div
             className={cn(
-              "flex h-11 w-11 items-center justify-center rounded-xl",
-              isActive ? "bg-primary text-white" : "bg-bg-page text-text-secondary",
+              "flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl shadow-sm transition-transform duration-500 ease-out group-hover:scale-110 group-hover:rotate-3",
+              isActive
+                ? "bg-primary text-white shadow-[0_4px_20px_rgba(139,197,61,0.4)]"
+                : "bg-gray-100 text-gray-500 group-hover:bg-primary/10 group-hover:text-primary",
             )}
           >
             {icon}
           </div>
-          <div>
-            <h3 className="text-[16px] font-semibold text-text-primary">{title}</h3>
-            <p className="mt-1 text-[13px] text-text-secondary">{description}</p>
+          <div className="flex-1">
+            <h3 className={cn("text-[17px] font-bold tracking-tight transition-colors duration-300", isActive ? "text-primary-dark" : "text-text-primary group-hover:text-primary-dark")}>
+              {title}
+            </h3>
+            <p className="mt-1.5 text-[13px] leading-relaxed text-text-secondary xl:line-clamp-3">
+              {description}
+            </p>
           </div>
         </div>
-        {isActive ? (
-          <span className="rounded-full bg-primary/15 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-primary">
-            Active Source
-          </span>
-        ) : comingSoon ? (
-          <span className="rounded-full bg-bg-page px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-text-muted">
-            Coming Soon
-          </span>
-        ) : null}
       </div>
 
-      <div className="mt-4 space-y-2">
-        <div className="flex items-center gap-2 text-[12px] text-text-secondary">
-          <CheckCircle2 size={14} className={comingSoon ? "text-text-muted" : "text-primary"} />
-          <span>{statusLabel}</span>
+      <div className="relative z-10 mt-6 flex flex-col gap-4">
+        <div className="space-y-3 rounded-xl bg-gray-50/80 p-3.5 backdrop-blur-sm transition-colors duration-300 group-hover:bg-gray-50/95">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-[12px] font-medium text-text-secondary">
+              <CheckCircle2
+                size={16}
+                strokeWidth={2.5}
+                className={cn(
+                  "transition-colors duration-300",
+                  isActive ? "text-primary" : comingSoon ? "text-text-muted" : "text-gray-400 group-hover:text-primary/70"
+                )}
+              />
+              <span className={cn(isActive && "text-primary-dark font-semibold")}>{statusLabel}</span>
+            </div>
+            {isActive ? (
+              <span className="flex shrink-0 items-center gap-1.5 rounded-full bg-primary/15 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-primary ring-1 ring-inset ring-primary/20">
+                <span className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />
+                Active
+              </span>
+            ) : comingSoon ? (
+              <span className="shrink-0 rounded-full bg-gray-200/60 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-gray-500 ring-1 ring-inset ring-black/5">
+                Soon
+              </span>
+            ) : null}
+          </div>
+          <div className="flex items-center gap-3 text-[11px] font-medium text-text-muted">
+            <div className="h-px flex-1 bg-gradient-to-r from-transparent via-border to-transparent opacity-60" />
+            <span className="whitespace-nowrap">{lastActivityLabel}</span>
+            <div className="h-px flex-1 bg-gradient-to-r from-transparent via-border to-transparent opacity-60" />
+          </div>
         </div>
-        <div className="text-[12px] text-text-muted">{lastActivityLabel}</div>
-      </div>
 
-      <div className="mt-5">
         <button
           type="button"
           onClick={onAction}
           disabled={disabled || isBusy || comingSoon}
           className={cn(
-            "inline-flex h-10 items-center justify-center rounded-lg px-4 text-[13px] font-semibold transition-colors",
+            "relative w-full overflow-hidden rounded-xl py-3 text-[13px] font-bold transition-all duration-300",
             isActive
-              ? "bg-bg-page text-text-secondary"
+              ? "bg-gray-100 text-text-secondary"
               : comingSoon
-                ? "bg-bg-page text-text-muted"
-                : "bg-primary text-white hover:bg-primary/90",
-            (disabled || isBusy || comingSoon) && "cursor-not-allowed opacity-60",
+                ? "bg-gray-100 text-gray-400"
+                : "bg-primary text-white hover:bg-primary-dark shadow-[0_4px_10px_rgba(139,197,61,0.25)] hover:shadow-md hover:-translate-y-0.5",
+            (disabled || isBusy || comingSoon) && "cursor-not-allowed",
+            (!isActive && !comingSoon && disabled) && "opacity-60 hover:bg-primary hover:shadow-none hover:translate-y-0"
           )}
         >
-          {isBusy ? (
-            <>
-              <Loader2 size={14} className="mr-2 animate-spin" />
-              Updating...
-            </>
-          ) : (
-            actionLabel
-          )}
+          <span className="relative z-10 flex items-center justify-center gap-2">
+            {isBusy ? (
+              <>
+                <Loader2 size={16} className="animate-spin" />
+                <span>Updating...</span>
+              </>
+            ) : (
+              actionLabel
+            )}
+          </span>
         </button>
       </div>
     </div>
@@ -528,54 +552,55 @@ export default function WorkspaceConnections() {
   ]);
 
   return (
-    <div className="page-container flex h-full flex-col">
+    <div className="page-container flex h-full flex-col bg-gray-50/30">
       <Header title="Connections" />
-      <div className="page-content flex-1 space-y-5 p-6">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h1 className="text-[24px] font-bold text-[#050505]">
+      <div className="page-content flex-1 space-y-8 p-6 md:p-8 lg:px-10">
+        <div className="flex flex-col justify-between gap-6 md:flex-row md:items-end">
+          <div className="max-w-2xl">
+            <h1 className="bg-gradient-to-r from-navy via-navy to-primary/90 bg-clip-text text-[32px] font-black tracking-tight text-transparent">
               Manage Connections
             </h1>
-            <p className="mt-1 text-[13px] text-text-secondary">
-              Choose and manage the single active data source for this workspace.
+            <p className="mt-3 text-[15px] leading-relaxed text-text-secondary">
+              Centralize your financial ecosystem. Choose and manage the single active data source for this workspace to ensure consistent reporting.
             </p>
-          </div>
-          <div className="rounded-full border border-border bg-bg-card px-4 py-1.5 text-[12px] font-medium text-text-secondary">
-            Current Source:{" "}
-            <span className="font-semibold text-text-primary">{activeSourceLabel}</span>
           </div>
         </div>
 
         {isLoadingSources ? (
-          <div className="flex items-center gap-2 rounded-lg border border-border bg-bg-card px-4 py-3 text-[13px] text-text-secondary">
-            <Loader2 size={14} className="animate-spin" />
-            Refreshing workspace source state...
+          <div className="flex items-center gap-3 rounded-xl border border-border bg-white px-5 py-4 text-[13px] font-medium text-text-secondary shadow-sm">
+            <Loader2 size={16} className="animate-spin text-primary" />
+            Refreshing workspace source state and connection health...
           </div>
         ) : null}
 
         {!hasAnySourceData ? (
-          <div className="rounded-2xl border border-dashed border-border bg-bg-card p-6">
-            <h2 className="text-[18px] font-semibold text-text-primary">
-              Choose a financial data source
-            </h2>
-            <p className="mt-2 text-[13px] text-text-secondary">
-              Connect QuickBooks for automated sync, or stage Manual GL files for upload-based reporting.
-            </p>
-            <div className="mt-4 flex flex-wrap gap-3">
-              <button
-                type="button"
-                onClick={requestQuickBooksSwitch}
-                className="btn-primary h-10 px-4 text-[13px] font-semibold"
-              >
-                Connect QuickBooks
-              </button>
-              <button
-                type="button"
-                onClick={requestManualSwitch}
-                className="btn-secondary h-10 px-4 text-[13px] font-semibold"
-              >
-                Upload General Ledger
-              </button>
+          <div className="relative overflow-hidden rounded-2xl border border-primary/20 bg-gradient-to-br from-white to-[#FAFCF7] p-8 shadow-sm">
+            <div className="absolute -right-20 -top-20 h-64 w-64 rounded-full bg-primary/5 blur-3xl" />
+            <div className="relative z-10 max-w-3xl">
+              <h2 className="text-[20px] font-bold text-navy">
+                Choose a financial data source
+              </h2>
+              <p className="mt-3 text-[14px] leading-relaxed text-text-secondary">
+                Connect QuickBooks for automated sync, or stage Manual GL files for upload-based reporting. This configures the root data pipeline for standard reports.
+              </p>
+              <div className="mt-6 flex flex-wrap gap-4">
+                <button
+                  type="button"
+                  onClick={requestQuickBooksSwitch}
+                  className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-primary px-6 text-[14px] font-bold text-white shadow-[0_4px_14px_rgba(139,197,61,0.3)] transition-all hover:bg-primary-dark hover:-translate-y-0.5 hover:shadow-[0_8px_20px_rgba(139,197,61,0.4)]"
+                >
+                  <Link2 size={16} />
+                  Connect QuickBooks
+                </button>
+                <button
+                  type="button"
+                  onClick={requestManualSwitch}
+                  className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-border bg-white px-6 text-[14px] font-bold text-text-primary shadow-sm transition-all hover:border-text-primary/20 hover:bg-gray-50 hover:-translate-y-0.5"
+                >
+                  <FileSpreadsheet size={16} className="text-text-muted" />
+                  Upload General Ledger
+                </button>
+              </div>
             </div>
           </div>
         ) : null}
@@ -655,7 +680,7 @@ export default function WorkspaceConnections() {
             isActive={false}
             lastActivityLabel="Coming soon — no activity yet"
             actionLabel="Coming Soon"
-            onAction={() => {}}
+            onAction={() => { }}
             disabled={true}
             comingSoon={true}
           />

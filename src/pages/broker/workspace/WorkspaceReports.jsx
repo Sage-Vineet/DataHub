@@ -12,6 +12,7 @@ import {
   getLatestManualUploadedReport,
   getAllManualUploadedReports,
 } from "../../../lib/api";
+import { MANUAL_GL_STAGED_EVENT } from "../../../lib/dataSourceEvents";
 import { useDataSource } from "../../../context/DataSourceContext";
 import {
   getBalanceSheet,
@@ -151,6 +152,7 @@ function createDefaultManualFilters() {
   return {
     batchId: "",
     fiscalYear: [],
+    fiscalMonth: "",
     startDate: "",
     endDate: "",
     accountName: [],
@@ -167,6 +169,21 @@ function createDefaultManualFilters() {
     journalType: [],
   };
 }
+
+const MONTH_OPTIONS = [
+  { value: "1", label: "January" },
+  { value: "2", label: "February" },
+  { value: "3", label: "March" },
+  { value: "4", label: "April" },
+  { value: "5", label: "May" },
+  { value: "6", label: "June" },
+  { value: "7", label: "July" },
+  { value: "8", label: "August" },
+  { value: "9", label: "September" },
+  { value: "10", label: "October" },
+  { value: "11", label: "November" },
+  { value: "12", label: "December" },
+];
 
 function normalizeManualFilters(input = {}) {
   const defaults = createDefaultManualFilters();
@@ -209,9 +226,8 @@ export default function WorkspaceReports() {
     activeSource: contextActiveSource,
     quickbooksConnected: contextQbConnected,
   } = useDataSource();
-  const today = new Date();
-  const todayString = formatDateForInput(today);
-  const defaultCustomStart = `${todayString.slice(0, 7)}-01`;
+  const todayString = useMemo(() => formatDateForInput(new Date()), []);
+  const defaultCustomStart = useMemo(() => `${todayString.slice(0, 7)}-01`, [todayString]);
   const storedState = getStoredReportsState(clientId);
   const REPORT_TABS = useMemo(
     () => [
@@ -271,6 +287,7 @@ export default function WorkspaceReports() {
     normalizeManualFilters(storedState?.appliedManualFilters),
   );
   const [manualFilterOptions, setManualFilterOptions] = useState({});
+  const [filterOptionsVersion, setFilterOptionsVersion] = useState(0);
   const [manualUploadFiles, setManualUploadFiles] = useState({
     "Balance Sheet": [],
     "Profit & Loss": [],
@@ -283,12 +300,25 @@ export default function WorkspaceReports() {
   });
   const [isLoadingManualFiles, setIsLoadingManualFiles] = useState(false);
   const hasRestoredSessionRef = useRef(false);
+  const isFirstMountRef = useRef(true);
+  // Always-fresh ref so the filter options effect doesn't capture a stale closure.
+  const manualFiltersRef = useRef(manualFilters);
+  manualFiltersRef.current = manualFilters;
   const debugLog = useCallback((...args) => {
     if (!MANUAL_REPORT_DEBUG) return;
     console.log(...args);
   }, []);
 
   useEffect(() => {
+    // On the initial mount useState already hydrated from sessionStorage, so skip
+    // the restore here to avoid 11 extra setState calls → extra report generation.
+    // On subsequent clientId changes (navigating between clients) we do need to restore.
+    if (isFirstMountRef.current) {
+      isFirstMountRef.current = false;
+      hasRestoredSessionRef.current = true;
+      return;
+    }
+
     const restoredState = getStoredReportsState(clientId);
 
     Promise.resolve().then(() => {
@@ -338,6 +368,18 @@ export default function WorkspaceReports() {
     };
   }, [clientId]);
 
+  // Increment filterOptionsVersion whenever a new manual GL batch is staged,
+  // so the filter options effect re-runs and picks up the new fiscal years.
+  useEffect(() => {
+    function handleGlStaged(event) {
+      const { clientId: eventClientId } = event.detail || {};
+      if (eventClientId && clientId && eventClientId !== clientId) return;
+      setFilterOptionsVersion((v) => v + 1);
+    }
+    window.addEventListener(MANUAL_GL_STAGED_EVENT, handleGlStaged);
+    return () => window.removeEventListener(MANUAL_GL_STAGED_EVENT, handleGlStaged);
+  }, [clientId]);
+
   const clientName = useMemo(
     () => company?.name || "All Clients",
     [company?.name],
@@ -382,12 +424,14 @@ export default function WorkspaceReports() {
         });
         const availableYears = Array.isArray(options.fiscalYear) ? options.fiscalYear : [];
         if (availableYears.length > 0) {
-          const currentYear = manualFilters.fiscalYear?.[0];
+          // Read from ref to get the latest filters without adding manualFilters to deps,
+          // which would re-run this effect on every user filter interaction.
+          const currentYear = manualFiltersRef.current.fiscalYear?.[0];
           const yearMatch = availableYears.find((y) => String(y) === String(currentYear));
           if (!currentYear || !yearMatch) {
             const sorted = [...availableYears].map(Number).filter(Number.isFinite).sort((a, b) => b - a);
             if (sorted.length > 0) {
-              const next = { ...manualFilters, fiscalYear: [String(sorted[0])] };
+              const next = { ...manualFiltersRef.current, fiscalYear: [String(sorted[0])] };
               setManualFilters(next);
               setAppliedManualFilters(next);
               debugLog("[ManualGL][UI][FilterAutoSelectYear]", {
@@ -401,7 +445,8 @@ export default function WorkspaceReports() {
         console.error("[WorkspaceReports] Failed to load manual filter options:", error);
         setManualFilterOptions({});
       });
-  }, [appliedManualFilters.batchId, clientId, selectedSourceMode]);
+  // filterOptionsVersion increments when a new GL batch is staged, forcing a re-fetch.
+  }, [appliedManualFilters.batchId, clientId, selectedSourceMode, filterOptionsVersion]);
 
   // Load available uploaded files per tab when in manual_upload source mode
   useEffect(() => {
@@ -715,7 +760,7 @@ export default function WorkspaceReports() {
     return m ? parseInt(m[1], 10) : null;
   };
 
-  const handleGenerateReport = async () => {
+  const handleGenerateReport = useCallback(async () => {
     setIsLoading(true);
 
     try {
@@ -760,6 +805,11 @@ export default function WorkspaceReports() {
         selectedSourceMode === "manual"
           ? buildManualFilterParams(appliedManualFilters)
           : null;
+      // Summary reports must not receive a month filter — fiscalMonths applied at the DB layer
+      // would restrict transactions to a single month, breaking multi-month aggregations.
+      const summaryFilterParams = manualFilterParams
+        ? { ...manualFilterParams, fiscalMonth: undefined }
+        : null;
       if (selectedSourceMode === "manual") {
         debugLog("[ManualGL][UI][GenerateReport][Request]", {
           selectedTab,
@@ -801,7 +851,7 @@ export default function WorkspaceReports() {
             normalizedAccountingMethod,
             {
               sourceMode: selectedSourceMode,
-              manualFilters: manualFilterParams,
+              manualFilters: summaryFilterParams,
               manualUploadRowId,
             },
           ).catch(() => ({
@@ -829,7 +879,7 @@ export default function WorkspaceReports() {
             normalizedAccountingMethod,
             {
               sourceMode: selectedSourceMode,
-              manualFilters: manualFilterParams,
+              manualFilters: summaryFilterParams,
               manualUploadRowId,
             },
           ).catch(() => []);
@@ -852,7 +902,7 @@ export default function WorkspaceReports() {
             normalizedAccountingMethod,
             {
               sourceMode: selectedSourceMode,
-              manualFilters: manualFilterParams,
+              manualFilters: summaryFilterParams,
               manualUploadRowId,
             },
           ).catch(() => []);
@@ -897,30 +947,29 @@ export default function WorkspaceReports() {
     } finally {
       setIsLoading(false);
     }
-  };
-
-  // Auto-generate report when dependencies change.
-  // Debounced 80ms to prevent double-fetch when multiple state updates arrive
-  // in the same tick (e.g. session restore followed by filter auto-selection).
-  useEffect(() => {
-    if (!clientId) return;
-    const timer = setTimeout(() => {
-      handleGenerateReport();
-    }, 80);
-    return () => clearTimeout(timer);
   }, [
     accountingMethod,
     appliedManualFilters,
     clientId,
-    customRange.end,
-    customRange.start,
-    dateRange,
+    getDates,
+    debugLog,
     reportType,
     selectedSourceMode,
     selectedTab,
     // eslint-disable-next-line react-hooks/exhaustive-deps
     selectedManualUploadRowId[selectedTab],
   ]);
+
+  // Auto-generate report when dependencies change.
+  // Debounced 80ms to prevent double-fetch when multiple state updates arrive
+  // in the same tick (e.g. session restore followed by filter auto-selection).
+  // handleGenerateReport is memoized with useCallback so this effect only fires
+  // when the underlying filter/tab/source values actually change.
+  useEffect(() => {
+    if (!clientId) return;
+    const timer = setTimeout(handleGenerateReport, 80);
+    return () => clearTimeout(timer);
+  }, [handleGenerateReport, clientId]);
 
 
   const currentReport = reportsData[selectedTab];
@@ -974,7 +1023,14 @@ export default function WorkspaceReports() {
               </label>
               <div className="flex rounded-lg border border-border bg-bg-page p-1">
                 <button
-                  onClick={() => setReportType("Summary")}
+                  onClick={() => {
+                    setReportType("Summary");
+                    if (manualFilters.fiscalMonth) {
+                      const cleared = { ...manualFilters, fiscalMonth: "" };
+                      setManualFilters(cleared);
+                      setAppliedManualFilters(cleared);
+                    }
+                  }}
                   className={cn(
                     "rounded-md px-4 py-1.5 text-[13px] font-medium transition-all",
                     reportType === "Summary"
@@ -1134,6 +1190,7 @@ export default function WorkspaceReports() {
                         const next = {
                           ...manualFilters,
                           fiscalYear: year ? [year] : [],
+                          fiscalMonth: "",
                         };
                         setManualFilters(next);
                         setAppliedManualFilters(next);
@@ -1156,6 +1213,40 @@ export default function WorkspaceReports() {
                     />
                   </div>
                 </div>
+
+                {reportType === "Detail" && (
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
+                      Month
+                    </label>
+                    <div className="relative min-w-[130px]">
+                      <select
+                        value={manualFilters.fiscalMonth || ""}
+                        onChange={(event) => {
+                          const month = event.target.value;
+                          const next = { ...manualFilters, fiscalMonth: month };
+                          setManualFilters(next);
+                          setAppliedManualFilters(next);
+                          debugLog("[ManualGL][UI][FilterChange][FiscalMonth]", {
+                            selectedFiscalMonth: month || null,
+                          });
+                        }}
+                        className="h-9 w-full appearance-none rounded-md border border-border-input bg-bg-card pl-3 pr-9 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                      >
+                        <option value="">All months</option>
+                        {MONTH_OPTIONS.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
+                      <ChevronDown
+                        size={14}
+                        className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-text-muted"
+                      />
+                    </div>
+                  </div>
+                )}
               </>
             )}
 
@@ -1171,6 +1262,12 @@ export default function WorkspaceReports() {
               </div>
             ) : (
               <>
+                {selectedTab === "Balance Sheet" && currentReport.summary?.reStageRequired && (
+                  <div className="mx-4 mb-3 rounded border border-amber-300 bg-amber-50 px-4 py-3 text-[13px] text-amber-800">
+                    <strong>Data re-staging required:</strong>{" "}
+                    {currentReport.summary.reStageWarning || "Re-run staging to fix Balance Sheet totals."}
+                  </div>
+                )}
                 <div id="report-content" className="bg-white">
                   {selectedTab === "Balance Sheet" ? (
                     <BalanceSheetReport

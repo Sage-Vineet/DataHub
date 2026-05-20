@@ -24,24 +24,27 @@ async function pgQuery(sql, params = []) {
 }
 
 const DEFAULT_FOLDERS = [
-  ["Finance",              null],
-  ["Compliance",           null],
-  ["HR",                   null],
-  ["Legal",                null],
-  ["M&A",                  null],
-  ["Tax",                  null],
-  ["Other",                null],
+  ["Finance", null],
+  ["Compliance", null],
+  ["HR", null],
+  ["Legal", null],
+  ["M&A", null],
+  ["Tax", null],
+  ["Other", null],
   ["Manual Upload Source", null],
-  ["Reports",              "Manual Upload Source"],
-  ["Balance Sheet",        "Reports"],
-  ["Profit & Loss",        "Reports"],
-  ["Cashflow",             "Reports"],
-  ["Bank Statement",       "Manual Upload Source"],
-  ["Tax Return",           "Manual Upload Source"],
+  ["Reports", "Manual Upload Source"],
+  ["Balance Sheet", "Reports"],
+  ["Profit & Loss", "Reports"],
+  ["Cashflow", "Reports"],
+  ["Bank Statement", "Manual Upload Source"],
+  ["Tax Return", "Manual Upload Source"],
 ];
 
 // Expected folder count — used to decide whether cleanup is needed
 const EXPECTED_FOLDER_COUNT = DEFAULT_FOLDERS.length;
+
+// Per-company mutex: prevents concurrent ensure calls from creating duplicates
+const _ensureInProgress = new Map();
 
 async function resolveCreatorId(companyId, preferredUserId) {
   const candidates = [
@@ -65,6 +68,19 @@ async function resolveCreatorId(companyId, preferredUserId) {
 async function ensureCompanyDefaultFolders(companyId, preferredCreatedBy = null) {
   if (!companyId) return [];
 
+  // Coalesce concurrent calls for the same company to prevent duplicate inserts
+  if (_ensureInProgress.has(companyId)) {
+    return _ensureInProgress.get(companyId);
+  }
+
+  const promise = _doEnsureCompanyDefaultFolders(companyId, preferredCreatedBy).finally(() => {
+    _ensureInProgress.delete(companyId);
+  });
+  _ensureInProgress.set(companyId, promise);
+  return promise;
+}
+
+async function _doEnsureCompanyDefaultFolders(companyId, preferredCreatedBy) {
   const creatorId = await resolveCreatorId(companyId, preferredCreatedBy);
   if (!creatorId) {
     console.error(`[folders] No creator found for company ${companyId}`);
@@ -96,7 +112,18 @@ async function ensureCompanyDefaultFolders(companyId, preferredCreatedBy = null)
         console.log(`[folders]   ✓ "${name}"`);
       }
     } catch (err) {
-      console.error(`[folders]   ✗ "${name}":`, err.message);
+      if (err.message.includes("duplicate key value") || err.message.includes("unique constraint")) {
+        // Race condition: another request created it just now
+        const existingNow = parentId === null
+          ? await pgQuery("SELECT id FROM folders WHERE company_id=$1 AND lower(name)=lower($2) AND parent_id IS NULL LIMIT 1", [companyId, name])
+          : await pgQuery("SELECT id FROM folders WHERE company_id=$1 AND lower(name)=lower($2) AND parent_id=$3 LIMIT 1", [companyId, name, parentId]);
+
+        if (existingNow.length > 0) {
+          idByName[name] = existingNow[0].id;
+        }
+      } else {
+        console.error(`[folders]   ✗ "${name}":`, err.message);
+      }
     }
   }
 
@@ -105,25 +132,18 @@ async function ensureCompanyDefaultFolders(companyId, preferredCreatedBy = null)
   } catch { return []; }
 }
 
-/**
- * Lists all folders for a company
- * @param {string} companyId - Company ID
- * @param {Object} options
- * @param {boolean} [options.includeArchived] - Include archived folders
- * @returns {Promise<Array>}
- */
-async function listFoldersByCompany(companyId, options = {}) {
-  let query = supabase
+async function cleanupDuplicateFolders(companyId) {
+  // Legacy cleanup function; unique indexes handle duplicates now,
+  // but keeping interface intact.
+  return 0;
+}
+
+async function listFoldersByCompany(companyId) {
+  const { data, error } = await supabase
     .from("folders")
     .select("*")
     .eq("company_id", companyId)
     .order("created_at", { ascending: true });
-
-  if (!options.includeArchived) {
-    query = query.is("archived_at", null);
-  }
-
-  const { data, error } = await query;
   if (error) throw error;
   return data || [];
 }
@@ -139,30 +159,17 @@ async function getFolderById(id) {
   return data || null;
 }
 
-/**
- * Gets a tree structure of folders for a company
- * @param {string} companyId - Company ID
- * @param {Object} options
- * @param {boolean} [options.includeArchived] - Include archived folders
- * @returns {Promise<Array>}
- */
-async function getFolderTree(companyId, options = {}) {
-  let query = supabase
+async function getFolderTree(companyId) {
+  const { data: rows, error } = await supabase
     .from("folders")
     .select("*")
     .eq("company_id", companyId)
     .order("created_at", { ascending: true });
 
-  if (!options.includeArchived) {
-    query = query.is("archived_at", null);
-  }
-
-  const { data: rows, error } = await query;
-
   if (error) throw error;
 
   const byId = new Map();
-  for (const row of deduped) byId.set(row.id, { ...row, children: [] });
+  for (const row of (rows || [])) byId.set(row.id, { ...row, children: [] });
 
   const roots = [];
   for (const node of byId.values()) {
@@ -173,39 +180,6 @@ async function getFolderTree(companyId, options = {}) {
     }
   }
   return roots;
-}
-
-async function getFolderTree(companyId, preferredCreatedBy = null) {
-  let rows = await fetchFolderRows(companyId);
-
-  if (rows.length === 0) {
-    console.log(`[folders] No folders for company ${companyId} — self-healing`);
-    await ensureCompanyDefaultFolders(companyId, preferredCreatedBy).catch((err) =>
-      console.error("[folders] self-heal failed:", err.message),
-    );
-    rows = await fetchFolderRows(companyId);
-  }
-
-  // If there are more folders than expected, duplicates exist — clean them up
-  if (rows.length > EXPECTED_FOLDER_COUNT) {
-    console.log(`[folders] Found ${rows.length} folders (expected ${EXPECTED_FOLDER_COUNT}) — deduplicating`);
-    await cleanupDuplicateFolders(companyId).catch((err) =>
-      console.error("[folders] dedup failed:", err.message),
-    );
-    rows = await fetchFolderRows(companyId);
-  }
-
-  return buildTree(rows);
-}
-
-async function listFoldersByCompany(companyId) {
-  try {
-    return await pgQuery("SELECT * FROM folders WHERE company_id=$1 ORDER BY created_at ASC", [companyId]);
-  } catch {
-    const { data, error } = await supabase.from("folders").select("*").eq("company_id", companyId).order("created_at", { ascending: true });
-    if (error) throw error;
-    return data || [];
-  }
 }
 
 async function ensureRootUploadFolder(companyId, preferredCreatedBy) {
@@ -318,9 +292,8 @@ async function moveFolder(id, parentId) {
 
 module.exports = {
   ensureCompanyDefaultFolders,
-  ensureRootUploadFolder,
   cleanupDuplicateFolders,
-  resolveFolderCreatorId: resolveCreatorId,
+  ensureRootUploadFolder,
   listFoldersByCompany,
   getFolderById,
   getFolderTree,

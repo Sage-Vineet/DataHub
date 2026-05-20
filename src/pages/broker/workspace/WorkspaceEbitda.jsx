@@ -9,12 +9,12 @@ import {
   ChevronDown,
 } from "lucide-react";
 import { cn, formatCurrency } from "../../../lib/utils";
-import { getStoredToken, getCompanyRequest, getReportSources, setSelectedReportSource as apiSetSelectedReportSource, getAllManualUploadedReports } from "../../../lib/api";
+import { getCompanyRequest, getReportSources, setSelectedReportSource as apiSetSelectedReportSource, getAllManualUploadedReports } from "../../../lib/api";
 import {
   getEbitdaData,
   extractEbitdaFromManualPLRows,
 } from "../../../services/ebitdaService";
-import { REPORT_SOURCE_KEYS, REPORT_SOURCE_OPTIONS, normalizeReportSourceKey, getReportSourceLabel } from "../../../lib/report-source";
+import { REPORT_SOURCE_KEYS, normalizeReportSourceKey } from "../../../lib/report-source";
 import { refreshQuickbooksToken } from "../../../lib/quickbooks";
 import QBDisconnectedBanner from "../../../components/common/QBDisconnectedBanner";
 import Modal from "../../../components/common/Modal";
@@ -36,8 +36,7 @@ function EmptyState() {
         Generate EBITDA Analysis
       </h3>
       <p className="mt-1.5 max-w-sm text-center text-[13px] text-text-muted">
-        No financial data was found for the current workspace.
-        Please ensure your QuickBooks connection is active.
+        No financial data was found. Please upload and stage your financial data, then generate the analysis.
       </p>
     </div>
   );
@@ -89,12 +88,11 @@ export default function WorkspaceEbitda() {
 
   const accountingMethod = "Accrual";
 
-  // Initialize from DataSourceContext immediately so the generate doesn't wait
-  // for the getReportSources round-trip to complete.
-  const [selectedReportSource, setSelectedReportSource] = useState(
-    () => activeSource ? normalizeReportSourceKey(activeSource) : null,
-  );
-  const [reportSources, setReportSources] = useState([]);
+  const reportSource = activeSource ? normalizeReportSourceKey(activeSource) : REPORT_SOURCE_KEYS.QUICKBOOKS;
+  const isManualGl = reportSource === REPORT_SOURCE_KEYS.MANUAL_GL;
+  const isManualUpload = reportSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD;
+  const isManualMode = isManualGl || isManualUpload;
+
   const [multiYearData, setMultiYearData] = useState(null);
   const [years, setYears] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -187,62 +185,11 @@ export default function WorkspaceEbitda() {
     return () => { active = false; };
   }, [clientId]);
 
-  // Load full sources list for the dropdown. selectedReportSource is already
-  // initialized from DataSourceContext, so we only fill the gap (null) here.
-  useEffect(() => {
-    if (!clientId) return;
-    let active = true;
-    getReportSources({ clientId })
-      .then((payload) => {
-        if (!active) return;
-        setReportSources(Array.isArray(payload?.sources) ? payload.sources : []);
-        setSelectedReportSource((prev) =>
-          prev ?? normalizeReportSourceKey(payload?.selectedSource || REPORT_SOURCE_KEYS.QUICKBOOKS),
-        );
-      })
-      .catch(() => {
-        if (active) setSelectedReportSource((prev) => prev ?? REPORT_SOURCE_KEYS.QUICKBOOKS);
-      });
-    return () => { active = false; };
-  }, [clientId]);
-
-  const handleReportSourceChange = async (sourceKey) => {
-    const normalized = normalizeReportSourceKey(sourceKey);
-    const previous = selectedReportSource;
-    // Clear cache for the incoming source so it fetches fresh data on switch
-    try { sessionStorage.removeItem(`ebitda_data_${clientId}_${normalized}`); } catch { /* ignore */ }
-    setSelectedReportSource(normalized);
-    setMultiYearData(null);
-    setIsDataInitialized(false);
-    try {
-      const payload = await apiSetSelectedReportSource(normalized, { clientId });
-      setReportSources(Array.isArray(payload?.sources) ? payload.sources : []);
-      setSelectedReportSource(normalizeReportSourceKey(payload?.selectedSource));
-    } catch {
-      setSelectedReportSource(previous);
-    }
-  };
-
-  const sourceOptions = useMemo(() => {
-    if (reportSources.length > 0) {
-      return reportSources.map((s) => ({
-        key: normalizeReportSourceKey(s.sourceKey),
-        label: s.sourceLabel || getReportSourceLabel(s.sourceKey),
-      }));
-    }
-    return REPORT_SOURCE_OPTIONS.map((o) => ({ key: o.key, label: o.label }));
-  }, [reportSources]);
-
-
-  const isManualMode = selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD ||
-    selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_GL;
-
-  const ebitdaCacheKey = clientId && selectedReportSource
-    ? `ebitda_data_${clientId}_${selectedReportSource}`
+  const ebitdaCacheKey = clientId && reportSource
+    ? `ebitda_data_${clientId}_${reportSource}`
     : null;
 
   const handleGenerate = useCallback(async (skipCache = false) => {
-    // Serve from session storage if available and not explicitly bypassed
     if (!skipCache && ebitdaCacheKey) {
       try {
         const cached = sessionStorage.getItem(ebitdaCacheKey);
@@ -263,7 +210,35 @@ export default function WorkspaceEbitda() {
     try {
       const currentYear = new Date().getFullYear();
 
-      if (isManualMode) {
+      if (isManualGl) {
+        // Staged GL: discover available fiscal years, then fetch EBITDA per year
+        const filterOpts = await getManualStageFilterOptions({ clientId });
+        const yearStrings = filterOpts?.options?.fiscalYear || [];
+        const availableYears = yearStrings
+          .map((y) => parseInt(y, 10))
+          .filter((y) => Number.isInteger(y) && y > 0)
+          .sort((a, b) => b - a);
+
+        if (!availableYears.length) {
+          throw new Error("No staged GL data found. Please upload and stage your GL files first.");
+        }
+
+        const results = {};
+        await Promise.all(
+          availableYears.map(async (year) => {
+            try {
+              results[year] = await getEbitdaData(`${year}-01-01`, `${year}-12-31`, accountingMethod, "manual");
+            } catch {
+              results[year] = null;
+            }
+          })
+        );
+        setYears(availableYears);
+        setMultiYearData(results);
+        if (ebitdaCacheKey) {
+          try { sessionStorage.setItem(ebitdaCacheKey, JSON.stringify({ multiYearData: results, years: availableYears })); } catch { /* quota exceeded */ }
+        }
+      } else if (isManualUpload) {
         // Fetch ALL uploaded P&L files so every year is represented
         const result = await getAllManualUploadedReports("profit_and_loss", { clientId });
         const files = (result?.files || []).filter((f) => f.data?.rows?.length);
@@ -328,10 +303,10 @@ export default function WorkspaceEbitda() {
         setYears(newYears);
         setMultiYearData(newData);
         if (ebitdaCacheKey) {
-          try { sessionStorage.setItem(ebitdaCacheKey, JSON.stringify({ multiYearData: newData, years: newYears })); } catch { /* quota exceeded — skip cache */ }
+          try { sessionStorage.setItem(ebitdaCacheKey, JSON.stringify({ multiYearData: newData, years: newYears })); } catch { /* quota exceeded */ }
         }
       } else {
-        // QuickBooks: fetch per-year as before
+        // QuickBooks: fetch per-year
         const todayStr = new Date().toISOString().split("T")[0];
         const yearList = [currentYear, currentYear - 1, currentYear - 2, currentYear - 3];
         setYears(yearList);
@@ -343,33 +318,27 @@ export default function WorkspaceEbitda() {
             const ey = year === currentYear ? todayStr : `${year}-12-31`;
             try {
               results[year] = await getEbitdaData(sy, ey, accountingMethod);
-            } catch (err) {
-              console.error(`[EBITDA] Failed to fetch data for ${year}:`, err);
+            } catch {
               results[year] = null;
             }
           })
         );
         setMultiYearData(results);
         if (ebitdaCacheKey) {
-          try { sessionStorage.setItem(ebitdaCacheKey, JSON.stringify({ multiYearData: results, years: yearList })); } catch { /* quota exceeded — skip cache */ }
+          try { sessionStorage.setItem(ebitdaCacheKey, JSON.stringify({ multiYearData: results, years: yearList })); } catch { /* quota exceeded */ }
         }
       }
     } catch (err) {
-      console.error("[WorkspaceEbitda] Generation failed:", err);
       setError(err?.message || "Failed to fetch EBITDA data. Please try again.");
       setMultiYearData(null);
     } finally {
       setIsLoading(false);
     }
-  }, [selectedReportSource, isManualMode, clientId, ebitdaCacheKey]);
+  }, [isManualGl, isManualUpload, clientId, ebitdaCacheKey, accountingMethod]);
 
-  // Generate when source is known (or changes).
-  // For manual-upload mode we always skip the session cache so that newly
-  // detected year info (asOfDate / periodEnd) is used rather than a stale
-  // "FY 2026" entry that was written before the fix.
   useEffect(() => {
-    if (selectedReportSource !== null) handleGenerate(isManualMode);
-  }, [handleGenerate, isManualMode]);
+    handleGenerate(isManualUpload);
+  }, [handleGenerate]);
 
   // Handle Dynamic Addbacks Initialization and Persistence
   useEffect(() => {
@@ -567,15 +536,13 @@ export default function WorkspaceEbitda() {
 
   const handleSync = async () => {
     setIsSyncing(true);
-    // Clear existing cache so fresh data is stored after sync
     if (ebitdaCacheKey) {
       try { sessionStorage.removeItem(ebitdaCacheKey); } catch { /* ignore */ }
     }
     try {
-      await refreshQuickbooksToken();
-      await handleGenerate(true); // force fresh fetch, bypass cache
-    } catch (err) {
-      console.error("Sync failed:", err);
+      if (!isManualMode) await refreshQuickbooksToken();
+      await handleGenerate(true);
+    } catch {
       setError("Sync failed. Please try again.");
     } finally {
       setIsSyncing(false);
@@ -593,7 +560,9 @@ export default function WorkspaceEbitda() {
               EBITDA Analysis
             </h1>
             <p className="mt-1 text-[13px] text-text-muted">
-              {isManualMode
+              {isManualGl
+                ? `Powered by staged GL data${company?.name ? ` — ${company.name}` : ""}`
+                : isManualUpload
                 ? `Powered by your uploaded Profit & Loss file${company?.name ? ` — ${company.name}` : ""}`
                 : `Dynamic earnings analysis powered by your Profit & Loss data${company?.name ? ` — ${company.name}` : ""}`}
             </p>
@@ -614,31 +583,6 @@ export default function WorkspaceEbitda() {
         </div>
 
         <QBDisconnectedBanner pageName="EBITDA Analysis" />
-
-        {/* Data Connection selector */}
-        <section className="card-base w-full p-5">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <h2 className="text-[16px] font-semibold text-text-primary">Data Connection</h2>
-              <p className="mt-0.5 text-[13px] text-text-secondary">
-                Choose the source used to populate EBITDA data.
-              </p>
-            </div>
-            <div className="flex items-center gap-2">
-              <label className="text-[12px] font-medium text-text-secondary">Connection</label>
-              <select
-                value={selectedReportSource || ""}
-                onChange={(e) => void handleReportSourceChange(e.target.value)}
-                className="input-base h-9 min-w-[220px]"
-                disabled={selectedReportSource === null}
-              >
-                {sourceOptions.map((opt) => (
-                  <option key={opt.key} value={opt.key}>{opt.label}</option>
-                ))}
-              </select>
-            </div>
-          </div>
-        </section>
 
         {/* Content */}
         {isLoading ? (

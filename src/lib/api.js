@@ -119,9 +119,6 @@ async function request(path, options = {}) {
 
   if (token) {
     headers.Authorization = `Bearer ${token}`;
-    headers['X-Access-Token'] = token;
-    headers['X-Auth-Token'] = token;
-    headers['X-Token'] = token;
   }
 
   const response = await fetch(buildUrl(path), {
@@ -404,9 +401,6 @@ export async function fetchProtectedFileBlob(fileUrl, options = {}) {
 
   if (token) {
     headers.Authorization = `Bearer ${token}`;
-    headers['X-Access-Token'] = token;
-    headers['X-Auth-Token'] = token;
-    headers['X-Token'] = token;
   }
 
   const response = await fetch(resolvedUrl, {
@@ -562,9 +556,31 @@ export function getManualGlBalanceSheet(options = {}) {
 }
 
 export function getManualGlCashflow(options = {}) {
-  const clientId = options.clientId ?? resolveClientIdFromLocation();
-  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
-  return request(`/reports/cashflow${query}`, options);
+  const { params = {}, ...requestOptions } = options || {};
+  const clientId = requestOptions.clientId ?? resolveClientIdFromLocation();
+  const search = new URLSearchParams();
+  if (clientId) search.set("clientId", clientId);
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    if (Array.isArray(value)) { if (value.length === 0) return; search.set(key, value.join(",")); return; }
+    search.set(key, String(value));
+  });
+  const query = search.toString();
+  return request(`/reports/cashflow${query ? `?${query}` : ""}`, requestOptions);
+}
+
+export function getManualStagedCashflowMonthlyDetail(options = {}) {
+  const { clientId: clientIdOption, params = {}, ...requestOptions } = options || {};
+  const clientId = clientIdOption ?? resolveClientIdFromLocation();
+  const search = new URLSearchParams();
+  if (clientId) search.set("clientId", clientId);
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    if (Array.isArray(value)) { if (value.length === 0) return; search.set(key, value.join(",")); return; }
+    search.set(key, String(value));
+  });
+  const query = search.toString();
+  return request(`/reports/cashflow/monthly-detail${query ? `?${query}` : ""}`, requestOptions);
 }
 
 export function stageMultiYearManualGl(payload, options = {}) {

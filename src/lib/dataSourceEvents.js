@@ -1,4 +1,5 @@
 export const WORKSPACE_DATASOURCE_UPDATED_EVENT = "datahub:workspace-datasource-updated";
+export const MANUAL_GL_STAGED_EVENT = "datahub:manual-gl-staged";
 
 function canUseWindow() {
   return typeof window !== "undefined";
@@ -26,4 +27,17 @@ export function subscribeWorkspaceDataSourceUpdated(handler) {
   return () => {
     window.removeEventListener(WORKSPACE_DATASOURCE_UPDATED_EVENT, handler);
   };
+}
+
+export function emitManualGlStaged(detail = {}) {
+  if (!canUseWindow()) return;
+  window.dispatchEvent(
+    new CustomEvent(MANUAL_GL_STAGED_EVENT, {
+      detail: {
+        clientId: detail.clientId || null,
+        batchId: detail.batchId || null,
+        timestamp: new Date().toISOString(),
+      },
+    }),
+  );
 }

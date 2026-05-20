@@ -449,6 +449,8 @@ export async function getBalanceSheet(startDate, endDate, accountingMethod, opti
         sourceLabel: resolveSourceLabel(source),
         asOfDate: response?.asOfDate || endDate || null,
         noDataText: rows.length > 0 ? null : "No Balance Sheet Available",
+        reStageRequired: response?.reStageRequired || false,
+        reStageWarning: response?.reStageWarning || null,
       };
     }
   } catch (error) {
@@ -899,7 +901,13 @@ export async function getBalanceSheetDetail(
         ? options.manualFilters
         : {}),
     };
-    return getManualStagedBalanceSheetMonthlyDetail({ params });
+    console.log("[DetailedReportUI][BS] Requesting monthly detail with params:", JSON.stringify(params));
+    const response = await getManualStagedBalanceSheetMonthlyDetail({ params });
+    console.log("[DetailedReportUI][BS] Received keys:", Object.keys(response || {}), "| source:", response?.source, "| reportType:", response?.reportType, "| months:", response?.months);
+    if (!response?.sections || Object.keys(response.sections).length === 0) {
+      console.warn("[DetailedReportUI][BS] WARNING: sections is empty — check fiscal year filter and staged data.");
+    }
+    return response;
   }
 
   if (options?.sourceMode === "manual_upload") {

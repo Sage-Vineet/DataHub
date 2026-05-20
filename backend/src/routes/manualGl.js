@@ -21,11 +21,13 @@ const {
   getBalanceSheetSummaryFromStage,
   getBalanceSheetMonthlyDetailFromStage,
   getCashflowSummaryFromStage,
+  getCashflowMonthlyDetailFromStage,
   validateBatchBalanceSheet,
   listManualGlBatches,
 } = require("../services/manualGlMultiYearService");
 const { uploadController } = require("../controllers/manualGl/uploadController");
 const { continueController } = require("../controllers/manualGl/continueController");
+const reportCache = require("../services/reportCache");
 
 const router = express.Router();
 router.use(requireAuth);
@@ -130,20 +132,23 @@ async function handleGetLatestReport(req, res, statementType) {
 
   const normalizedStatementType = statementType || resolveStatementTypeFromPath(req.path) || req.params.statementType;
   const uploadId = String(req.query.uploadId || "").trim();
-  const row = await getLatestGeneratedManualGlReport({
-    companyId: clientId,
-    statementType: normalizedStatementType,
-    uploadId,
-  });
+
+  // Run both independent queries in parallel instead of sequentially.
+  const [row, quickbooksRow] = await Promise.all([
+    getLatestGeneratedManualGlReport({
+      companyId: clientId,
+      statementType: normalizedStatementType,
+      uploadId,
+    }),
+    getLatestManualGlQuickbooksReport({
+      companyId: clientId,
+      statementType: normalizedStatementType,
+    }),
+  ]);
 
   if (!row) {
     return res.status(404).json({ error: "No generated manual GL report found." });
   }
-
-  const quickbooksRow = await getLatestManualGlQuickbooksReport({
-    companyId: clientId,
-    statementType: normalizedStatementType,
-  });
 
   return res.json({
     success: true,
@@ -235,27 +240,12 @@ router.get("/reports/pl", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
 
     const filters = parseManualFilterQuery(req.query || {});
-    const stagedPayload = await getProfitLossSummaryFromStage(clientId, filters);
-    const netProfitLine = Array.isArray(stagedPayload?.lines)
-      ? stagedPayload.lines.find((line) => line.label === "Net Profit")
-      : null;
-    console.log(
-      "[ManualGL][API][PL]",
-      "client=",
-      clientId,
-      "batch=",
-      stagedPayload?.filters?.batchId || filters.batchId || "",
-      "years=",
-      stagedPayload?.years || [],
-      "netProfitByYear=",
-      netProfitLine?.valuesByYear || {},
-    );
+    const cached = reportCache.get("pl", clientId, filters);
+    if (cached) return res.json({ success: true, ...cached, source: "MANUAL_STAGED" });
 
-    return res.json({
-      success: true,
-      ...stagedPayload,
-      source: "MANUAL_STAGED",
-    });
+    const stagedPayload = await getProfitLossSummaryFromStage(clientId, filters);
+    reportCache.set("pl", clientId, filters, stagedPayload);
+    return res.json({ success: true, ...stagedPayload, source: "MANUAL_STAGED" });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message || "Failed to fetch P&L report." });
   }
@@ -267,24 +257,29 @@ router.get("/reports/balance-sheet", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
 
     const filters = parseManualFilterQuery(req.query || {});
-    const stagedPayload = await getBalanceSheetSummaryFromStage(clientId, filters);
-    console.log(
-      "[ManualGL][API][BS]",
-      "client=",
-      clientId,
-      "batch=",
-      stagedPayload?.filters?.batchId || filters.batchId || "",
-      "years=",
-      stagedPayload?.years || [],
-      "audit=",
-      stagedPayload?.audit || [],
-    );
 
-    return res.json({
-      success: true,
+    // reStageRequired is derived from audit data — include it in the cached payload.
+    const cached = reportCache.get("bs", clientId, filters);
+    if (cached) return res.json({ success: true, ...cached, source: "MANUAL_STAGED" });
+
+    const stagedPayload = await getBalanceSheetSummaryFromStage(clientId, filters);
+
+    // Detect large raw variance (>$1000): signal that data was staged before the
+    // fiscal-year-label fix (BUG-2). Surface reStageRequired so frontend can prompt.
+    const maxRawVariance = Array.isArray(stagedPayload?.audit)
+      ? Math.max(0, ...stagedPayload.audit.map((a) => Math.abs(Number(a.rawVariance || 0))))
+      : 0;
+    const reStageRequired = maxRawVariance > 1000;
+    const payload = {
       ...stagedPayload,
-      source: "MANUAL_STAGED",
-    });
+      ...(reStageRequired ? {
+        reStageRequired: true,
+        reStageWarning: "Balance Sheet variance detected. The staged data may have been processed with an older version. Re-run staging to resolve incorrect fiscal-year labels and recalculate totals.",
+      } : {}),
+    };
+
+    reportCache.set("bs", clientId, filters, payload);
+    return res.json({ success: true, ...payload, source: "MANUAL_STAGED" });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message || "Failed to fetch Balance Sheet report." });
   }
@@ -296,15 +291,31 @@ router.get("/reports/cashflow", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL),
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
 
     const filters = parseManualFilterQuery(req.query || {});
-    const stagedPayload = await getCashflowSummaryFromStage(clientId, filters);
+    const cached = reportCache.get("cf", clientId, filters);
+    if (cached) return res.json({ success: true, ...cached, source: "MANUAL_STAGED" });
 
-    return res.json({
-      success: true,
-      ...stagedPayload,
-      source: "MANUAL_STAGED",
-    });
+    const stagedPayload = await getCashflowSummaryFromStage(clientId, filters);
+    reportCache.set("cf", clientId, filters, stagedPayload);
+    return res.json({ success: true, ...stagedPayload, source: "MANUAL_STAGED" });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message || "Failed to fetch Cash Flow report." });
+  }
+});
+
+router.get("/reports/cashflow/monthly-detail", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+
+    const filters = parseManualFilterQuery(req.query || {});
+    const cached = reportCache.get("cf_monthly", clientId, filters);
+    if (cached) return res.json({ success: true, ...cached });
+
+    const payload = await getCashflowMonthlyDetailFromStage(clientId, filters);
+    reportCache.set("cf_monthly", clientId, filters, payload);
+    return res.json({ success: true, ...payload });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message || "Failed to fetch Cash Flow monthly detail." });
   }
 });
 
@@ -362,6 +373,8 @@ router.post("/manual-gl/staging/multi-year", enforceDataSource(REPORT_SOURCE_KEY
       startingBalanceSheetUploadId = "",
       endingBalanceSheetUploadId = "",
       mapping = {},
+      fiscalYearStartMonth = null,
+      fiscalYearStartDay = null,
       batchName = "",
     } = req.body || {};
 
@@ -371,6 +384,8 @@ router.post("/manual-gl/staging/multi-year", enforceDataSource(REPORT_SOURCE_KEY
       startingBalanceSheetUploadId,
       endingBalanceSheetUploadId,
       mapping,
+      fiscalYearStartMonth,
+      fiscalYearStartDay,
       uploadedBy: req.user?.id || null,
       batchName,
     });
@@ -378,6 +393,10 @@ router.post("/manual-gl/staging/multi-year", enforceDataSource(REPORT_SOURCE_KEY
     if (!result.success && result.requiresManualMapping) {
       return res.status(400).json(result);
     }
+
+    // New batch staged — evict all cached reports for this company so next
+    // report request reflects the fresh data.
+    reportCache.invalidateCompany(clientId);
 
     return res.status(201).json(result);
   } catch (error) {
@@ -409,7 +428,6 @@ router.get("/manual-gl/staging/filter-options", enforceDataSource(REPORT_SOURCE_
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
     const filters = parseManualFilterQuery(req.query || {});
     const payload = await getStageFilterOptions(clientId, filters);
-    console.log(`[ManualGL][Route] Sending filter options for client ${clientId}:`, JSON.stringify(payload.options?.fiscalYear));
     return res.json({ success: true, ...payload });
   } catch (error) {
     return res.status(500).json({
@@ -438,21 +456,11 @@ router.get("/reports/profit-loss", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_G
     const clientId = resolveClientId(req);
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
     const filters = parseManualFilterQuery(req.query || {});
+    const cached = reportCache.get("pl", clientId, filters);
+    if (cached) return res.json({ success: true, ...cached, source: "MANUAL_STAGED" });
+
     const payload = await getProfitLossSummaryFromStage(clientId, filters);
-    const netProfitLine = Array.isArray(payload?.lines)
-      ? payload.lines.find((line) => line.label === "Net Profit")
-      : null;
-    console.log(
-      "[ManualGL][API][ProfitLoss]",
-      "client=",
-      clientId,
-      "batch=",
-      payload?.filters?.batchId || filters.batchId || "",
-      "years=",
-      payload?.years || [],
-      "netProfitByYear=",
-      netProfitLine?.valuesByYear || {},
-    );
+    reportCache.set("pl", clientId, filters, payload);
     return res.json({ success: true, ...payload, source: "MANUAL_STAGED" });
   } catch (error) {
     return res.status(500).json({
@@ -482,7 +490,11 @@ router.get("/reports/profit-loss/monthly-detail", enforceDataSource(REPORT_SOURC
     const clientId = resolveClientId(req);
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
     const filters = parseManualFilterQuery(req.query || {});
+    const cached = reportCache.get("pl_monthly_detail", clientId, filters);
+    if (cached) return res.json({ success: true, ...cached });
+
     const payload = await getProfitLossMonthlyDetailFromStage(clientId, filters);
+    reportCache.set("pl_monthly_detail", clientId, filters, payload);
     return res.json({ success: true, ...payload });
   } catch (error) {
     return res.status(500).json({
@@ -497,7 +509,11 @@ router.get("/reports/balance-sheet/monthly-detail", enforceDataSource(REPORT_SOU
     const clientId = resolveClientId(req);
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
     const filters = parseManualFilterQuery(req.query || {});
+    const cached = reportCache.get("bs_monthly", clientId, filters);
+    if (cached) return res.json({ success: true, ...cached });
+
     const payload = await getBalanceSheetMonthlyDetailFromStage(clientId, filters);
+    reportCache.set("bs_monthly", clientId, filters, payload);
     return res.json({ success: true, ...payload });
   } catch (error) {
     return res.status(500).json({
@@ -512,7 +528,9 @@ router.get("/reports/profit-loss/monthly", enforceDataSource(REPORT_SOURCE_KEYS.
     const clientId = resolveClientId(req);
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
     const filters = parseManualFilterQuery(req.query || {});
-    const payload = await getProfitLossSummaryFromStage(clientId, filters);
+    const cached = reportCache.get("pl", clientId, filters);
+    const payload = cached || await getProfitLossSummaryFromStage(clientId, filters);
+    if (!cached) reportCache.set("pl", clientId, filters, payload);
     return res.json({
       success: true,
       source: payload.source,
@@ -533,7 +551,9 @@ router.get("/reports/profit-loss/year-comparison", enforceDataSource(REPORT_SOUR
     const clientId = resolveClientId(req);
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
     const filters = parseManualFilterQuery(req.query || {});
-    const payload = await getProfitLossSummaryFromStage(clientId, filters);
+    const cached = reportCache.get("pl", clientId, filters);
+    const payload = cached || await getProfitLossSummaryFromStage(clientId, filters);
+    if (!cached) reportCache.set("pl", clientId, filters, payload);
     return res.json({
       success: true,
       source: payload.source,

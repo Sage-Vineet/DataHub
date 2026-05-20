@@ -1,5 +1,5 @@
 import { fetchCashflow } from "../lib/quickbooks";
-import { getLatestManualUploadedReport, getManualGlCashflow, getAllManualUploadedReports } from "../lib/api";
+import { getLatestManualUploadedReport, getManualGlCashflow, getAllManualUploadedReports, getManualStagedCashflowMonthlyDetail } from "../lib/api";
 import { normalizeAccountingMethod } from "../lib/report-filters";
 import { parseSummaryReport } from "../lib/report-parsers";
 
@@ -76,11 +76,6 @@ async function fetchSinglePeriodCashflow(startDate, endDate, accountingMethod, s
         return rows.map(sumNode);
       }
       return rows;
-    }
-
-    if (sourceMode === "manual") {
-      const payload = await getManualGlCashflow();
-      return parseSummaryReport(payload?.quickbooksSchema || payload?.data || payload);
     }
 
     const payload = await fetchCashflow({
@@ -213,13 +208,19 @@ function mergeCashflowPeriods(periodResults, periods) {
 }
 
 export async function getCashflow(startDate, endDate, accountingMethod, options = {}) {
-  return await fetchSinglePeriodCashflow(
-    startDate,
-    endDate,
-    accountingMethod,
-    options?.sourceMode || "quickbooks",
-    options,
-  );
+  const sourceMode = options?.sourceMode || "quickbooks";
+
+  if (sourceMode === "manual") {
+    const params = {
+      ...((options?.manualFilters && typeof options.manualFilters === "object")
+        ? options.manualFilters
+        : {}),
+    };
+    const payload = await getManualGlCashflow({ params });
+    return payload;
+  }
+
+  return await fetchSinglePeriodCashflow(startDate, endDate, accountingMethod, sourceMode);
 }
 
 function cfFileYear(file) {
@@ -362,6 +363,19 @@ export async function getCashflowDetail(
   accountingMethod,
   options = {},
 ) {
+  const sourceMode = options?.sourceMode || "quickbooks";
+
+  if (sourceMode === "manual") {
+    const params = {
+      ...((options?.manualFilters && typeof options.manualFilters === "object")
+        ? options.manualFilters
+        : {}),
+    };
+    console.log("[DetailedReportUI][CF] Requesting monthly detail with params:", JSON.stringify(params));
+    const response = await getManualStagedCashflowMonthlyDetail({ params });
+    console.log("[DetailedReportUI][CF] Received keys:", Object.keys(response || {}), "| source:", response?.source, "| reportType:", response?.reportType);
+    return response;
+  }
   if (options?.sourceMode === "manual_upload") {
     return buildCFMultiFileDetail();
   }
@@ -370,12 +384,7 @@ export async function getCashflowDetail(
 
   const results = await Promise.all(
     periods.map((p) =>
-      fetchSinglePeriodCashflow(
-        p.start,
-        p.end,
-        accountingMethod,
-        options?.sourceMode || "quickbooks",
-      ),
+      fetchSinglePeriodCashflow(p.start, p.end, accountingMethod, sourceMode),
     ),
   );
 
@@ -383,28 +392,21 @@ export async function getCashflowDetail(
 
   const yearCols = periods
     .filter((p) => !p.key.includes("_ytd"))
-    .map((p) => ({
-      key: p.key,
-      label: p.label,
-    }));
+    .map((p) => ({ key: p.key, label: p.label }));
 
-  const currentYearKey = periods
-    .filter((p) => !p.key.includes("_ytd"))
-    .pop()?.key;
+  const currentYearKey = periods.filter((p) => !p.key.includes("_ytd")).pop()?.key;
   const prevYtdKey = periods.find((p) => p.key.includes("_ytd"))?.key;
-
-  const ytdComparison = {
-    currentKey: currentYearKey,
-    prevKey: prevYtdKey,
-    currentLabel: periods.find((p) => p.key === currentYearKey)?.label,
-    prevLabel: periods.find((p) => p.key === prevYtdKey)?.label,
-  };
 
   return {
     rows,
     columns: {
       yearCols,
-      ytdComparison,
+      ytdComparison: {
+        currentKey: currentYearKey,
+        prevKey: prevYtdKey,
+        currentLabel: periods.find((p) => p.key === currentYearKey)?.label,
+        prevLabel: periods.find((p) => p.key === prevYtdKey)?.label,
+      },
     },
   };
 }

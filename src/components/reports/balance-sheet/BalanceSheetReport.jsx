@@ -21,8 +21,11 @@ export default function BalanceSheetReport({
   const source = data?.source || null;
   const sourceLabel = data?.sourceLabel || null;
   const noDataText = data?.noDataText || null;
+  // Backend returns source="manual_gl_staged_transactions" (not "manual_staged").
+  // Accept all known manual-staged source strings to be forward-compatible.
+  const MANUAL_STAGED_SOURCES = ["manual_staged", "manual_gl_staged_transactions", "MANUAL_STAGED"];
   const isManualMonthlyDetail = Boolean(
-    detailedData?.source === "manual_staged" && detailedData?.reportType === "balance_sheet_monthly_detail"
+    MANUAL_STAGED_SOURCES.includes(detailedData?.source) && detailedData?.reportType === "balance_sheet_monthly_detail"
   );
   const summarySubtitle = sourceMode === "manual"
     ? undefined

@@ -9,7 +9,6 @@ import {
   deleteDocument,
   deleteFolder,
   deleteFolderAccess,
-  ensureCompanyDefaultFolders,
   listFolderAccess,
   listFolderDocuments,
   listFolderTree,
@@ -192,7 +191,6 @@ export const useFileExplorerStore = create(
       setExpandedFolders: (expandedFolders) => set({ expandedFolders }),
       hydrateFromApi: async (companyId) => {
         if (!companyId) return;
-        await ensureCompanyDefaultFolders(companyId).catch(() => {});
         const treeResponse = await listFolderTree(companyId, { includeArchived: true });
         const children = treeResponse.map(mapFolderNode);
         let root = { id: 'root', name: 'Documents', type: 'folder', createdAt: new Date().toISOString().slice(0, 10), children };
