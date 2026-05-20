@@ -1,17 +1,9 @@
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
+const { Pool } = require("pg");
 const { supabase } = require("../db");
 const { attachAssignedCompanies, flattenUser, getUserByEmail } = require("./userService");
-const { DEMO_USERS, CLIENT_STATIC_PASSWORD } = require("../config/demoUsers");
-
-// Augment DEMO_USERS with full profile info for ensureDemoUser
-const DEMO_PROFILES = [
-  { email: "broker@leo.com",     name: "Rajesh Sharma", role: "broker", companyName: "Dataroom"      },
-  { email: "admin@datahub.com",  name: "System Admin",  role: "admin",  companyName: "DataHub"       },
-  { email: "admin@leo.com",      name: "System Admin",  role: "admin",  companyName: "DataHub"       },
-  { email: "demo@leo.com",       name: "Demo User",     role: "buyer",  companyName: "Demo Company"  },
-  { email: "client@infosys.com", name: "Ananya Mehta",  role: "buyer",  companyName: "Infosys Ltd."  },
-];
+const { CLIENT_STATIC_PASSWORD } = require("../config/demoUsers");
 
 /**
  * Signs a JWT token for a user
@@ -24,78 +16,38 @@ function signToken(userId) {
   });
 }
 
-/**
- * Ensures a company exists by name
- * @param {string} companyName - Name of the company
- * @returns {Promise<Object>} Company object
- */
-async function ensureCompany(companyName) {
-  if (!companyName) return null;
-
-  const { data: existing, error: findError } = await supabase
-    .from("companies")
-    .select("id, name")
-    .eq("name", companyName)
-    .maybeSingle();
-
-  if (findError) console.error("❌ Error finding company:", findError.message);
-  if (existing) return existing;
-
-  const { data: created, error: insertError } = await supabase
-    .from("companies")
-    .insert({
-      name: companyName,
-      industry: "Technology",
-      contact_name: "Demo Contact",
-      contact_email: "demo@leo.com",
-      contact_phone: "+91-9000000000"
-    })
-    .select("id, name")
-    .single();
-
-  if (insertError) {
-    console.error("❌ Error creating company:", insertError.message);
-    return null;
-  }
-  return created;
+function normalizeEmail(value) {
+  return String(value || "").trim().toLowerCase();
 }
 
-/**
- * Ensures a demo user exists in the database
- * @param {Object} demo - Demo user definition
- * @returns {Promise<Object>} Enriched user object
- */
-async function ensureDemoUser(demo) {
-  const existing = await getUserByEmail(demo.email);
-  if (existing) {
-    return existing;
-  }
+function normalizeText(value) {
+  return String(value || "").trim();
+}
 
-  const company = await ensureCompany(demo.companyName);
-  const passwordHash = demo.password; // Plain text storage for debugging
+function isValidEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
 
-  const { data: created, error: insertError } = await supabase
+function isValidPhone(value) {
+  if (!value) return true;
+  const digits = value.replace(/\D/g, "");
+  return /^\+?[0-9][0-9\s().-]{6,19}$/.test(value) && digits.length >= 7 && digits.length <= 15;
+}
+
+async function setBrokerCompanyProfile(userId, brokerCompany) {
+  if (!brokerCompany) return;
+  const { error } = await supabase
     .from("users")
-    .insert({
-      name: demo.name,
-      email: demo.email,
-      password_hash: passwordHash,
-      role: demo.role,
-      company_id: company?.id || null,
-      status: "active"
-    })
-    .select(`
-      id, name, email, password_hash, role, company_id, status,
-      companies:company_id ( name )
-    `)
-    .single();
+    .update({ broker_company: brokerCompany })
+    .eq("id", userId);
 
-  if (insertError) {
-    console.error("❌ Error creating demo user:", insertError.message);
-    return null;
-  }
+  const missingColumn = error && (
+    error.code === "42703" ||
+    error.message?.toLowerCase().includes("broker_company") ||
+    error.message?.toLowerCase().includes("column")
+  );
 
-  return await attachAssignedCompanies(flattenUser(created));
+  if (error && !missingColumn) throw error;
 }
 
 /**
@@ -138,78 +90,43 @@ async function ensureDefaultFolders(companyId, createdBy) {
 }
 
 /**
- * Validates user credentials and handles demo logic
+ * Validates user credentials against stored database users.
  * @param {string} email - User email
  * @param {string} password - User password
  * @returns {Promise<Object>} { user, token }
  */
 async function authenticate(email, password) {
-  const normalizedEmail = String(email).trim().toLowerCase();
-  const demoAuth    = DEMO_USERS.find((d) => d.email === normalizedEmail);
-  const demoProfile = DEMO_PROFILES.find((d) => d.email === normalizedEmail);
-  const demo = demoAuth && demoProfile ? { ...demoAuth, ...demoProfile } : null;
+  const normalizedEmail = normalizeEmail(email);
+  const rawPassword = String(password || "");
+  if (!normalizedEmail || !rawPassword) throw new Error("Invalid credentials");
 
-  let user = null;
-
-  // 1. Check Demo Logic
-  if (demo && password === demo.password) {
-    const demoUser = await ensureDemoUser(demo);
-    const { data: authData } = demoUser
-      ? await supabase.from("users").select("password_hash").eq("id", demoUser.id).single()
-      : { data: null };
-    const hasCustomPassword = authData?.password_hash && authData.password_hash !== demo.password;
-
-    if (demoUser && !hasCustomPassword) {
-      user = demoUser;
-      await syncUserCompanyAssignment(user.id, user.company_id);
-    }
+  const user = await getUserByEmail(normalizedEmail);
+  if (!user || String(user.status || "").toLowerCase() === "inactive") {
+    throw new Error("Invalid credentials");
   }
 
-  // 2. Check Database Logic
-  if (!user) {
-    console.log(`[Auth] Checking database for: ${normalizedEmail}`);
-    user = await getUserByEmail(normalizedEmail);
-    
-    if (!user) {
-      console.log(`[Auth] User not found: ${normalizedEmail}`);
-      throw new Error("Invalid credentials");
+  if (user.role === "buyer" && rawPassword === CLIENT_STATIC_PASSWORD) {
+    await syncUserCompanyAssignment(user.id, user.company_id);
+    await ensureDefaultFolders(user.company_id, user.id);
+  } else {
+    const { data: authData } = await supabase
+      .from("users")
+      .select("password_hash")
+      .eq("id", user.id)
+      .single();
+
+    const storedPassword = authData?.password_hash;
+    let ok = rawPassword === storedPassword;
+
+    if (storedPassword && /^\$2[aby]\$/.test(storedPassword)) {
+      try {
+        ok = await bcrypt.compare(rawPassword, storedPassword);
+      } catch {
+        ok = false;
+      }
     }
 
-    console.log(`[Auth] User found in DB: ${user.id} (${user.role})`);
-
-    // 3. Password Validation
-    if (user.role === "buyer" && password === CLIENT_STATIC_PASSWORD) {
-      console.log(`[Auth] Buyer logged in with static password: ${user.id}`);
-      await syncUserCompanyAssignment(user.id, user.company_id);
-      await ensureDefaultFolders(user.company_id, user.id);
-    } else {
-      console.log(`[Auth] Performing standard password check for: ${user.id}`);
-      const { data: authData } = await supabase
-        .from("users")
-        .select("password_hash")
-        .eq("id", user.id)
-        .single();
-
-      const storedPassword = authData?.password_hash;
-      let ok = (password === storedPassword);
-
-      if (storedPassword && /^\$2[aby]\$/.test(storedPassword)) {
-        try {
-          ok = await bcrypt.compare(password, storedPassword);
-        } catch {
-          ok = false;
-        }
-      }
-
-      console.log(`[Auth] Password match result: ${ok}`);
-
-      if (!ok) {
-        console.log(`[Auth] Password mismatch or legacy hash encountered for user: ${user.id}`);
-        throw new Error("Invalid credentials");
-      }
-
-      console.log(`[Auth] Password match for user: ${user.id}`);
-    }
+    if (!ok) throw new Error("Invalid credentials");
   }
 
   const token = signToken(user.id);
@@ -221,8 +138,87 @@ async function authenticate(email, password) {
   return { user: safeUser, token };
 }
 
+async function createBrokerAccount(payload = {}) {
+  const name = normalizeText(payload.name);
+  const email = normalizeEmail(payload.email);
+  const phone = normalizeText(payload.phone);
+  const password = String(payload.password || "");
+  const brokerCompany = normalizeText(payload.broker_company || payload.brokerCompany);
+
+  if (!name) {
+    const error = new Error("Full name is required.");
+    error.status = 400;
+    throw error;
+  }
+  if (!email || !isValidEmail(email)) {
+    const error = new Error("Please enter a valid email address.");
+    error.status = 400;
+    throw error;
+  }
+  if (!password || password.length < 8) {
+    const error = new Error("Password must be at least 8 characters.");
+    error.status = 400;
+    throw error;
+  }
+  if (!/[A-Za-z]/.test(password) || !/\d/.test(password)) {
+    const error = new Error("Password must include at least one letter and one number.");
+    error.status = 400;
+    throw error;
+  }
+  if (!isValidPhone(phone)) {
+    const error = new Error("Please enter a valid phone number.");
+    error.status = 400;
+    throw error;
+  }
+
+  const existing = await getUserByEmail(email);
+  if (existing) {
+    const error = new Error("An account with this email already exists.");
+    error.status = 409;
+    throw error;
+  }
+
+  const passwordHash = await bcrypt.hash(password, 10);
+  const { data: created, error } = await supabase
+    .from("users")
+    .insert({
+      name,
+      email,
+      phone: phone || null,
+      password_hash: passwordHash,
+      role: "broker",
+      company_id: null,
+      status: "active",
+    })
+    .select(`
+      id, name, email, phone, role, company_id, status, created_at, updated_at,
+      companies:company_id ( name )
+    `)
+    .single();
+
+  if (error) {
+    if (error.code === "23505") {
+      const duplicate = new Error("An account with this email already exists.");
+      duplicate.status = 409;
+      throw duplicate;
+    }
+    throw error;
+  }
+
+  await setBrokerCompanyProfile(created.id, brokerCompany);
+
+  const user = await attachAssignedCompanies(flattenUser({
+    ...created,
+    broker_company: brokerCompany || null,
+  }));
+  const token = signToken(user.id);
+
+  return { user, token };
+}
+
 module.exports = {
   authenticate,
+  createBrokerAccount,
   signToken,
   ensureDefaultFolders
 };

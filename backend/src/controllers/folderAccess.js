@@ -1,7 +1,35 @@
 const { supabase } = require("../db");
 const asyncHandler = require("../utils");
+const permissionService = require("../services/permissionService");
+
+async function getFolderCompanyId(folderId) {
+  const { data, error } = await supabase
+    .from("folders")
+    .select("company_id")
+    .eq("id", folderId)
+    .maybeSingle();
+  if (error) throw error;
+  return data?.company_id || null;
+}
+
+async function getAccessCompanyId(accessId) {
+  const { data, error } = await supabase
+    .from("folder_access")
+    .select("folder_id")
+    .eq("id", accessId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data?.folder_id) return null;
+  return getFolderCompanyId(data.folder_id);
+}
 
 const listFolderAccess = asyncHandler(async (req, res) => {
+  const companyId = await getFolderCompanyId(req.params.id);
+  if (!companyId) return res.status(404).json({ error: "Not found" });
+  if (!permissionService.canAccessCompany(req.user, companyId)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+
   const { data, error } = await supabase
     .from("folder_access")
     .select("*")
@@ -13,6 +41,12 @@ const listFolderAccess = asyncHandler(async (req, res) => {
 });
 
 const createFolderAccess = asyncHandler(async (req, res) => {
+  const companyId = await getFolderCompanyId(req.params.id);
+  if (!companyId) return res.status(404).json({ error: "Not found" });
+  if (!permissionService.canAccessCompany(req.user, companyId)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+
   const { user_id, group_id, can_read, can_write, can_download, created_by } = req.body || {};
   const resolvedCreatedBy = created_by || req.user?.id;
   if (!resolvedCreatedBy) return res.status(400).json({ error: "created_by required" });
@@ -36,6 +70,12 @@ const createFolderAccess = asyncHandler(async (req, res) => {
 });
 
 const updateFolderAccess = asyncHandler(async (req, res) => {
+  const companyId = await getAccessCompanyId(req.params.id);
+  if (!companyId) return res.status(404).json({ error: "Not found" });
+  if (!permissionService.canAccessCompany(req.user, companyId)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+
   const body = req.body || {};
   if (Object.keys(body).length === 0) return res.status(400).json({ error: "No updates" });
 
@@ -51,10 +91,15 @@ const updateFolderAccess = asyncHandler(async (req, res) => {
 });
 
 const deleteFolderAccess = asyncHandler(async (req, res) => {
+  const companyId = await getAccessCompanyId(req.params.id);
+  if (!companyId) return res.status(404).json({ error: "Not found" });
+  if (!permissionService.canAccessCompany(req.user, companyId)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+
   const { error } = await supabase.from("folder_access").delete().eq("id", req.params.id);
   if (error) return res.status(404).json({ error: "Not found" });
   res.status(204).send();
 });
 
 module.exports = { listFolderAccess, createFolderAccess, updateFolderAccess, deleteFolderAccess };
-

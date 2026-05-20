@@ -1,7 +1,22 @@
 const { supabase } = require("../db");
 const asyncHandler = require("../utils");
+const permissionService = require("../services/permissionService");
+
+async function getGroupCompanyId(groupId) {
+  const { data, error } = await supabase
+    .from("buyer_groups")
+    .select("company_id")
+    .eq("id", groupId)
+    .maybeSingle();
+  if (error) throw error;
+  return data?.company_id || null;
+}
 
 const listGroups = asyncHandler(async (req, res) => {
+  if (!permissionService.canAccessCompany(req.user, req.params.id)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+
   const { data: groups, error: groupsError } = await supabase
     .from("buyer_groups")
     .select("id, company_id, name, description, created_at")
@@ -35,6 +50,10 @@ const listGroups = asyncHandler(async (req, res) => {
 });
 
 const createGroup = asyncHandler(async (req, res) => {
+  if (!permissionService.canAccessCompany(req.user, req.params.id)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+
   const { name, description } = req.body || {};
   if (!name) return res.status(400).json({ error: "name required" });
 
@@ -53,6 +72,12 @@ const createGroup = asyncHandler(async (req, res) => {
 });
 
 const updateGroup = asyncHandler(async (req, res) => {
+  const companyId = await getGroupCompanyId(req.params.id);
+  if (!companyId) return res.status(404).json({ error: "Not found" });
+  if (!permissionService.canAccessCompany(req.user, companyId)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+
   const { name, description } = req.body || {};
   if (!name) return res.status(400).json({ error: "name required" });
 
@@ -72,12 +97,24 @@ const updateGroup = asyncHandler(async (req, res) => {
 });
 
 const deleteGroup = asyncHandler(async (req, res) => {
+  const companyId = await getGroupCompanyId(req.params.id);
+  if (!companyId) return res.status(404).json({ error: "Not found" });
+  if (!permissionService.canAccessCompany(req.user, companyId)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+
   const { error } = await supabase.from("buyer_groups").delete().eq("id", req.params.id);
   if (error) return res.status(404).json({ error: "Not found" });
   res.status(204).send();
 });
 
 const addMember = asyncHandler(async (req, res) => {
+  const companyId = await getGroupCompanyId(req.params.id);
+  if (!companyId) return res.status(404).json({ error: "Not found" });
+  if (!permissionService.canAccessCompany(req.user, companyId)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+
   const { user_id } = req.body || {};
   if (!user_id) return res.status(400).json({ error: "user_id required" });
 
@@ -95,6 +132,12 @@ const addMember = asyncHandler(async (req, res) => {
 });
 
 const listGroupMembers = asyncHandler(async (req, res) => {
+  const companyId = await getGroupCompanyId(req.params.id);
+  if (!companyId) return res.status(404).json({ error: "Not found" });
+  if (!permissionService.canAccessCompany(req.user, companyId)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+
   const { data, error } = await supabase
     .from("buyer_group_members")
     .select("user_id, created_at")
@@ -106,6 +149,12 @@ const listGroupMembers = asyncHandler(async (req, res) => {
 });
 
 const removeMember = asyncHandler(async (req, res) => {
+  const companyId = await getGroupCompanyId(req.params.id);
+  if (!companyId) return res.status(404).json({ error: "Not found" });
+  if (!permissionService.canAccessCompany(req.user, companyId)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+
   const { error } = await supabase
     .from("buyer_group_members")
     .delete()
@@ -117,4 +166,3 @@ const removeMember = asyncHandler(async (req, res) => {
 });
 
 module.exports = { listGroups, createGroup, updateGroup, deleteGroup, addMember, listGroupMembers, removeMember };
-

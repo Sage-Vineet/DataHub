@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect } from 'react';
-import { loginRequest, logoutRequest, meRequest, setStoredToken, getStoredToken } from '../lib/api';
+import { brokerSignupRequest, loginRequest, logoutRequest, meRequest, setStoredToken, getStoredToken } from '../lib/api';
 
 const AuthContext = createContext(null);
 
@@ -55,7 +55,9 @@ function initials(name = '') {
 function normalizeUser(userData) {
   if (!userData) return userData;
   const normalizedRole = ROLE_MAP[userData.effective_role || userData.role] || userData.effective_role || userData.role;
-  const normalizedCompany = userData.company ?? userData.company_name ?? userData.companyName ?? '';
+  const normalizedCompany =
+    (userData.role === 'broker' && userData.broker_company) ? userData.broker_company
+    : userData.company ?? userData.company_name ?? userData.companyName ?? '';
   const assignedCompanies = userData.assigned_companies ?? userData.assignedCompanies ?? [];
   const normalizedName = userData.name ?? userData.full_name ?? userData.fullName ?? '';
   const normalizedAvatar = userData.avatar ?? initials(normalizedName);
@@ -132,6 +134,29 @@ export function AuthProvider({ children }) {
     }
   };
 
+  const signupBroker = async (payload) => {
+    try {
+      setError('');
+      const response = await brokerSignupRequest(payload);
+      const token = extractToken(response);
+      const userData = unwrapUser(response);
+
+      if (!token || !userData) {
+        throw new Error('Invalid sign up response');
+      }
+
+      setStoredToken(token);
+      const normalizedUser = normalizeUser(userData);
+      setUser(normalizedUser);
+      return normalizedUser;
+    } catch (signupError) {
+      setError(signupError?.message || 'Unable to create broker account.');
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const refreshUser = async () => {
     try {
       const payload = await meRequest();
@@ -165,7 +190,7 @@ export function AuthProvider({ children }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, login, logout, error, setError, loading, refreshUser }}>
+    <AuthContext.Provider value={{ user, login, signupBroker, logout, error, setError, loading, refreshUser }}>
       {children}
     </AuthContext.Provider>
   );

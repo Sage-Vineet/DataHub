@@ -9,7 +9,7 @@ import {
   ChevronDown,
 } from "lucide-react";
 import { cn, formatCurrency } from "../../../lib/utils";
-import { getStoredToken, getCompanyRequest, getManualStageFilterOptions } from "../../../lib/api";
+import { getCompanyRequest, getReportSources, setSelectedReportSource as apiSetSelectedReportSource, getAllManualUploadedReports } from "../../../lib/api";
 import {
   getEbitdaData,
   extractEbitdaFromManualPLRows,
@@ -239,45 +239,67 @@ export default function WorkspaceEbitda() {
           try { sessionStorage.setItem(ebitdaCacheKey, JSON.stringify({ multiYearData: results, years: availableYears })); } catch { /* quota exceeded */ }
         }
       } else if (isManualUpload) {
-        // Manual upload: fetch the stored P&L report and extract EBITDA from it
-        const token = getStoredToken();
-        const headers = {
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          ...(clientId ? { "X-Client-Id": clientId } : {}),
+        // Fetch ALL uploaded P&L files so every year is represented
+        const result = await getAllManualUploadedReports("profit_and_loss", { clientId });
+        const files = (result?.files || []).filter((f) => f.data?.rows?.length);
+
+        if (!files.length) {
+          throw new Error("No P&L reports found. Please upload your Profit & Loss files via the Connections page.");
+        }
+
+        // Detect the fiscal year a file belongs to
+        const detectFileYear = (file) => {
+          const data = file.data || {};
+          const dateSrc = data.asOfDate || data.periodEnd || data.periodStart;
+          if (dateSrc) {
+            const parsed = parseInt(String(dateSrc).split("-")[0], 10);
+            if (parsed >= 2000 && parsed <= currentYear + 1) return parsed;
+          }
+          const yearInName = (file.fileName || "").match(/\b(20\d{2})\b/);
+          if (yearInName) return parseInt(yearInName[1], 10);
+          return currentYear;
         };
-        const url = `${API_BASE_URL}/manual-report-uploads/reports/profit_and_loss/latest?clientId=${clientId}`;
-        const resp = await fetch(url, { headers });
 
-        if (!resp.ok) {
-          const errBody = await resp.json().catch(() => ({}));
-          throw new Error(errBody?.error || "No P&L report found. Please sync your Profit & Loss file first via the Connections page.");
+        // For multi-period files (monthly columns), use the "Total" column if
+        // present, otherwise sum all months → amount for EBITDA calculations.
+        const buildSumColAmounts = (periods) => {
+          const totalIdx = (periods || []).findIndex((p) => /^total$/i.test(String(p).trim()));
+          const getVal = (colAmounts) => {
+            if (!Array.isArray(colAmounts) || colAmounts.length === 0) return 0;
+            return totalIdx >= 0
+              ? (colAmounts[totalIdx] || 0)
+              : colAmounts.reduce((s, v) => s + (v || 0), 0);
+          };
+          const sumColAmounts = (node) => ({
+            ...node,
+            amount: getVal(node.colAmounts) || (node.amount || 0),
+            children: node.children ? node.children.map(sumColAmounts) : undefined,
+          });
+          return sumColAmounts;
+        };
+
+        // One EBITDA entry per year; if two files share a year keep the newest
+        const yearFileMap = new Map();
+        for (const file of files) {
+          const yr = detectFileYear(file);
+          const existing = yearFileMap.get(yr);
+          if (!existing || new Date(file.updatedAt || 0) > new Date(existing.updatedAt || 0)) {
+            yearFileMap.set(yr, file);
+          }
         }
 
-        const payload = await resp.json();
-        const rows = payload.data?.rows || [];
-        const asOfDate = payload.data?.asOfDate || null;
-        const periodEnd = payload.data?.periodEnd || null;
-        const periodStart = payload.data?.periodStart || null;
-
-        if (!rows.length) {
-          throw new Error("The synced P&L report contains no data rows.");
+        const newData = {};
+        for (const [yr, file] of yearFileMap) {
+          const hasPeriods = (file.data?.periods?.length || 0) > 0;
+          const sumColAmounts = buildSumColAmounts(file.data?.periods || []);
+          const rows = hasPeriods
+            ? (file.data.rows || []).map(sumColAmounts)
+            : (file.data.rows || []);
+          newData[yr] = extractEbitdaFromManualPLRows(rows, file.data?.asOfDate || null);
         }
 
-        // Year detection: asOfDate → periodEnd → periodStart → filename → current year
-        let year = currentYear;
-        const dateSrc = asOfDate || periodEnd || periodStart;
-        if (dateSrc) {
-          const parsed = parseInt(String(dateSrc).split("-")[0], 10);
-          if (parsed >= 2000 && parsed <= currentYear + 1) year = parsed;
-        }
-        if (year === currentYear) {
-          const fileName = payload.reportParams?.fileName || "";
-          const yearInName = fileName.match(/\b(20\d{2})\b/);
-          if (yearInName) year = parseInt(yearInName[1], 10);
-        }
-
-        const newData = { [year]: extractEbitdaFromManualPLRows(rows, asOfDate) };
-        const newYears = [year];
+        // Sort years newest → oldest to match QuickBooks column order
+        const newYears = Array.from(yearFileMap.keys()).sort((a, b) => b - a);
         setYears(newYears);
         setMultiYearData(newData);
         if (ebitdaCacheKey) {

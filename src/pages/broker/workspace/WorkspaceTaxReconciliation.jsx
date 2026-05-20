@@ -254,7 +254,7 @@ export default function WorkspaceTaxReconciliation() {
 
   // ── Loader ────────────────────────────────────────────────────────────
 
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (forceRefresh = false) => {
     setIsLoading(true);
     setError("");
     setIsQBDisconnected(false);
@@ -269,10 +269,11 @@ export default function WorkspaceTaxReconciliation() {
         setSyncStatus({ status: "loading", message: "Reading financial PDFs from DataRoom…" });
 
         // 1. Fetch P&L years and Tax Return years in parallel
+        const forceParam = forceRefresh ? "&force=1" : "";
         const [plRes, taxRes] = await Promise.all([
-          fetch(`${API_BASE_URL}/manual-report-uploads/pl-for-tax?clientId=${clientId || ""}`, { headers })
+          fetch(`${API_BASE_URL}/manual-report-uploads/pl-for-tax?clientId=${clientId || ""}${forceParam}`, { headers })
             .then((r) => r.json()).catch(() => ({ success: false })),
-          fetch(`${API_BASE_URL}/manual-report-uploads/tax-data?clientId=${clientId || ""}`, { headers })
+          fetch(`${API_BASE_URL}/manual-report-uploads/tax-data?clientId=${clientId || ""}${forceParam}`, { headers })
             .then((r) => r.json()).catch(() => ({ success: false })),
         ]);
 
@@ -486,7 +487,24 @@ export default function WorkspaceTaxReconciliation() {
     <div className="space-y-6">
       {isManualMode && (
         <div className="space-y-3">
-          {syncStatus?.message && !isLoading && <SyncStatus sync={syncStatus} />}
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              {syncStatus?.message && <SyncStatus sync={syncStatus} />}
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                try { window.sessionStorage.removeItem(getStorageKey(clientId)); } catch { /* ignore */ }
+                setMatrixData({});
+                void loadData(true);
+              }}
+              disabled={isLoading}
+              className="inline-flex h-9 items-center justify-center gap-2 rounded-xl bg-primary px-4 text-[13px] font-semibold text-white transition hover:bg-primary-dark disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              <RefreshCw size={14} className={cn(isLoading && "animate-spin")} />
+              {isLoading ? "Syncing…" : "Sync"}
+            </button>
+          </div>
           {warnings.length > 0 && !error && (
             <div className="space-y-1 rounded-xl border border-yellow-200 bg-yellow-50 px-4 py-3 text-[13px] text-yellow-800">
               {warnings.map((w, i) => (

@@ -2,76 +2,19 @@ const asyncHandler = require("../utils");
 const userService = require("../services/userService");
 const { hasSupabaseCredentials } = require("../lib/supabaseClient");
 
-const localPublicUsers = [
-  {
-    id: "demo-broker-1",
-    name: "Rajesh Sharma",
-    email: "broker@leo.com",
-    phone: null,
-    role: "broker",
-    effective_role: "broker",
-    company_id: "company-dataroom",
-    company_name: "Dataroom",
-    status: "active",
-    created_at: null,
-    updated_at: null,
-  },
-  {
-    id: "demo-admin-1",
-    name: "System Admin",
-    email: "admin@datahub.com",
-    phone: null,
-    role: "admin",
-    effective_role: "admin",
-    company_id: "company-datahub",
-    company_name: "DataHub",
-    status: "active",
-    created_at: null,
-    updated_at: null,
-  },
-  {
-    id: "demo-admin-2",
-    name: "System Admin",
-    email: "admin@leo.com",
-    phone: null,
-    role: "admin",
-    effective_role: "admin",
-    company_id: "company-datahub",
-    company_name: "DataHub",
-    status: "active",
-    created_at: null,
-    updated_at: null,
-  },
-  {
-    id: "demo-buyer-1",
-    name: "Demo User",
-    email: "demo@leo.com",
-    phone: null,
-    role: "buyer",
-    effective_role: "user",
-    company_id: "company-demo",
-    company_name: "Demo Company",
-    status: "active",
-    created_at: null,
-    updated_at: null,
-  },
-  {
-    id: "demo-client-1",
-    name: "Ananya Mehta",
-    email: "client@infosys.com",
-    phone: null,
-    role: "buyer",
-    effective_role: "user",
-    company_id: "company-infosys",
-    company_name: "Infosys Ltd.",
-    status: "active",
-    created_at: null,
-    updated_at: null,
-  },
-];
+const localPublicUsers = [];
+
+function canViewUser(requester, target) {
+  if (!requester || !target) return false;
+  if (String(requester.id) === String(target.id)) return true;
+  const requesterRole = String(requester.role || "").toLowerCase();
+  const requesterCompanyIds = new Set(userService.getUserCompanyIds(requester).map(String));
+  const sharesCompany = userService.getUserCompanyIds(target).some((companyId) => requesterCompanyIds.has(String(companyId)));
+  return requesterRole === "admin" || (requesterRole === "broker" && sharesCompany);
+}
 
 const listUsers = asyncHandler(async (req, res) => {
-  const users = await userService.listAllUsers();
+  const users = await userService.listAllUsers(req.user);
   res.json(users);
 });
 
@@ -81,7 +24,15 @@ const createUser = asyncHandler(async (req, res) => {
     return res.status(400).json({ error: "name, email, password, role required" });
   }
 
-  const user = await userService.createUser(req.body);
+  const requesterRole = String(req.user?.role || "").toLowerCase();
+  if (!["broker", "admin"].includes(requesterRole)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  if (requesterRole !== "admin" && ["admin", "broker"].includes(String(role || "").toLowerCase())) {
+    return res.status(403).json({ error: "Brokers can only create company user accounts." });
+  }
+
+  const user = await userService.createUser({ ...req.body, created_by: req.user });
   res.status(201).json(user);
 });
 
@@ -90,7 +41,7 @@ const listPublicUsers = asyncHandler(async (_req, res) => {
     return res.json(localPublicUsers);
   }
 
-  const users = await userService.listAllUsers();
+  const users = await userService.listAllUsers(_req.user);
 
   const publicUsers = users.map((user) => ({
     id: user.id,
@@ -112,6 +63,9 @@ const listPublicUsers = asyncHandler(async (_req, res) => {
 const getUser = asyncHandler(async (req, res) => {
   const user = await userService.getUserById(req.params.id);
   if (!user) return res.status(404).json({ error: "Not found" });
+  if (!canViewUser(req.user, user)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   res.json(user);
 });
 
@@ -124,6 +78,9 @@ const getPublicUser = asyncHandler(async (req, res) => {
 
   const user = await userService.getUserById(req.params.id);
   if (!user) return res.status(404).json({ error: "Not found" });
+  if (!canViewUser(req.user, user)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
 
   const publicUser = {
     id: user.id,
@@ -155,6 +112,27 @@ const updateUser = asyncHandler(async (req, res) => {
     return res.status(403).json({ error: "Current password changes can only be made for the signed-in account." });
   }
 
+  if (!isSelf && requesterRole !== "admin") {
+    const target = await userService.getUserById(req.params.id);
+    if (!target) return res.status(404).json({ error: "Not found" });
+    const requesterCompanyIds = new Set(userService.getUserCompanyIds(req.user).map(String));
+    const sharesCompany = userService.getUserCompanyIds(target).some((companyId) => requesterCompanyIds.has(String(companyId)));
+    if (!sharesCompany) return res.status(403).json({ error: "Forbidden" });
+  }
+  if (requesterRole !== "admin") {
+    if (req.body?.role !== undefined && String(req.body.role || "").toLowerCase() !== "buyer") {
+      return res.status(403).json({ error: "Brokers cannot change account roles." });
+    }
+    if (req.body?.company_id !== undefined || req.body?.company_ids !== undefined) {
+      const requestedCompanyIds = userService.normalizeCompanyIds(req.body?.company_id, req.body?.company_ids);
+      const requesterCompanyIds = new Set(userService.getUserCompanyIds(req.user).map(String));
+      const invalidCompanyId = requestedCompanyIds.find((companyId) => !requesterCompanyIds.has(String(companyId)));
+      if (invalidCompanyId) {
+        return res.status(403).json({ error: "Cannot assign users to a company outside this broker account." });
+      }
+    }
+  }
+
   let user;
   try {
     user = await userService.updateUser(req.params.id, req.body);
@@ -168,6 +146,12 @@ const updateUser = asyncHandler(async (req, res) => {
 const deleteUser = asyncHandler(async (req, res) => {
   const user = await userService.getUserById(req.params.id);
   if (!user) return res.status(404).json({ error: "Not found" });
+  const requesterRole = String(req.user?.role || "").toLowerCase();
+  const requesterCompanyIds = new Set(userService.getUserCompanyIds(req.user).map(String));
+  const sharesCompany = userService.getUserCompanyIds(user).some((companyId) => requesterCompanyIds.has(String(companyId)));
+  if (requesterRole !== "admin" && !(requesterRole === "broker" && sharesCompany)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
 
   const replacementUserId = await userService.resolveReplacementUserId(req.user?.id, user);
   if (!replacementUserId) {

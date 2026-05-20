@@ -10,10 +10,12 @@ const {
 
 const router = express.Router();
 
+router.use(requireAuth);
+
 router.get("/", listUsers);
 router.post("/", createUser);
 router.get("/:id", getUser);
-router.patch("/:id", requireAuth, updateUser);
-router.delete("/:id", requireAuth, deleteUser);
+router.patch("/:id", updateUser);
+router.delete("/:id", deleteUser);
 
 module.exports = router;

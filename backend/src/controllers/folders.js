@@ -1,40 +1,75 @@
 const folderService = require("../services/folderService");
 const documentService = require("../services/documentService");
+const permissionService = require("../services/permissionService");
 const asyncHandler = require("../utils");
 const { buildUploadContentUrl } = require("../utils/uploadStorage");
 
 const listFolders = asyncHandler(async (req, res) => {
+  if (!permissionService.canAccessCompany(req.user, req.params.id)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   const folders = await folderService.listFoldersByCompany(req.params.id);
   res.json(folders);
 });
 
 const listFolderTree = asyncHandler(async (req, res) => {
-  const tree = await folderService.getFolderTree(req.params.id);
+  if (!permissionService.canAccessCompany(req.user, req.params.id)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  const includeArchived = req.query.includeArchived === 'true';
+  const tree = await folderService.getFolderTree(req.params.id, { includeArchived });
   res.json(tree);
 });
 
 const createFolder = asyncHandler(async (req, res) => {
-  const folder = await folderService.createFolder(req.params.id, req.body);
+  if (!permissionService.canAccessCompany(req.user, req.params.id)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  const folder = await folderService.createFolder(req.params.id, {
+    ...req.body,
+    created_by: req.body?.created_by || req.user?.id,
+  });
   res.status(201).json(folder);
 });
 
 const updateFolder = asyncHandler(async (req, res) => {
+  const existing = await folderService.getFolderById(req.params.id);
+  if (!existing) return res.status(404).json({ error: "Not found" });
+  if (!permissionService.canAccessCompany(req.user, existing.company_id)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   const folder = await folderService.updateFolder(req.params.id, req.body);
   res.json(folder);
 });
 
 const deleteFolder = asyncHandler(async (req, res) => {
+  const existing = await folderService.getFolderById(req.params.id);
+  if (!existing) return res.status(404).json({ error: "Not found" });
+  if (!permissionService.canAccessCompany(req.user, existing.company_id)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   await folderService.deleteFolder(req.params.id);
   res.status(204).send();
 });
 
 const moveFolder = asyncHandler(async (req, res) => {
+  const existing = await folderService.getFolderById(req.params.id);
+  if (!existing) return res.status(404).json({ error: "Not found" });
+  if (!permissionService.canAccessCompany(req.user, existing.company_id)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   const folder = await folderService.moveFolder(req.params.id, req.body.parent_id);
   res.json(folder);
 });
 
 const listFolderDocuments = asyncHandler(async (req, res) => {
-  const documents = await documentService.listDocumentsByFolder(req.params.id);
+  const folder = await folderService.getFolderById(req.params.id);
+  if (!folder) return res.status(404).json({ error: "Not found" });
+  if (!permissionService.canAccessCompany(req.user, folder.company_id)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  const includeArchived = req.query.includeArchived === 'true';
+  const documents = await documentService.listDocumentsByFolder(req.params.id, { includeArchived });
   res.json(documents);
 });
 
@@ -52,6 +87,9 @@ const addFolderDocument = asyncHandler(async (req, res) => {
 
   if (!name || !size || !ext || !status || !uploaded_by || !company_id) {
     return res.status(400).json({ error: "Missing required fields" });
+  }
+  if (!permissionService.canAccessCompany(req.user, company_id)) {
+    return res.status(403).json({ error: "Forbidden" });
   }
 
   let resolvedUploadId = upload_id || null;
@@ -76,6 +114,12 @@ const addFolderDocument = asyncHandler(async (req, res) => {
       return res.status(400).json({ error: "Unable to resolve a destination folder for root uploads" });
     }
     targetFolderId = uploadFolder.id;
+  } else {
+    const folder = await folderService.getFolderById(targetFolderId);
+    if (!folder) return res.status(404).json({ error: "Folder not found" });
+    if (String(folder.company_id) !== String(company_id)) {
+      return res.status(400).json({ error: "Folder does not belong to this company" });
+    }
   }
 
   const doc = await documentService.createDocument({
@@ -96,7 +140,52 @@ const addFolderDocument = asyncHandler(async (req, res) => {
   });
 });
 
+const archiveFolderController = asyncHandler(async (req, res) => {
+  const existing = await folderService.getFolderById(req.params.id);
+  if (!existing) return res.status(404).json({ error: "Not found" });
+  if (!permissionService.canAccessCompany(req.user, existing.company_id)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  const folder = await folderService.archiveFolder(req.params.id);
+  res.json(folder);
+});
+
+const unarchiveFolderController = asyncHandler(async (req, res) => {
+  const existing = await folderService.getFolderById(req.params.id);
+  if (!existing) return res.status(404).json({ error: "Not found" });
+  if (!permissionService.canAccessCompany(req.user, existing.company_id)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  const folder = await folderService.unarchiveFolder(req.params.id);
+  res.json(folder);
+});
+
+const archiveDocumentController = asyncHandler(async (req, res) => {
+  const existing = await documentService.getDocumentById(req.params.id);
+  if (!existing) return res.status(404).json({ error: "Not found" });
+  if (!permissionService.canAccessCompany(req.user, existing.company_id)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  const document = await documentService.archiveDocument(req.params.id);
+  res.json(document);
+});
+
+const unarchiveDocumentController = asyncHandler(async (req, res) => {
+  const existing = await documentService.getDocumentById(req.params.id);
+  if (!existing) return res.status(404).json({ error: "Not found" });
+  if (!permissionService.canAccessCompany(req.user, existing.company_id)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  const document = await documentService.unarchiveDocument(req.params.id);
+  res.json(document);
+});
+
 const deleteDocument = asyncHandler(async (req, res) => {
+  const existing = await documentService.getDocumentById(req.params.id);
+  if (!existing) return res.status(404).json({ error: "Not found" });
+  if (!permissionService.canAccessCompany(req.user, existing.company_id)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   await documentService.deleteDocument(req.params.id);
   res.status(204).send();
 });
@@ -112,20 +201,40 @@ const recordDocumentActivity = asyncHandler(async (req, res) => {
     return res.status(401).json({ error: "Unauthorized" });
   }
 
+  const document = await documentService.getDocumentById(req.params.id);
+  if (!document) return res.status(404).json({ error: "Not found" });
+  if (!permissionService.canAccessCompany(req.user, document.company_id)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+
   const activity = await documentService.recordDocumentActivity(req.params.id, userId, activity_type);
   res.status(201).json(activity);
 });
 
 const getDocumentActivity = asyncHandler(async (req, res) => {
+  const document = await documentService.getDocumentById(req.params.id);
+  if (!document) return res.status(404).json({ error: "Not found" });
+  if (!permissionService.canAccessCompany(req.user, document.company_id)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   const activity = await documentService.getDocumentActivity(req.params.id);
   res.json(activity);
 });
 
 const ensureDefaultFolders = asyncHandler(async (req, res) => {
   const companyId = req.params.id;
+  if (!permissionService.canAccessCompany(req.user, companyId)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
   const userId = req.user?.id || null;
   await folderService.ensureCompanyDefaultFolders(companyId, userId);
   res.json({ success: true });
+});
+
+const cleanupFolders = asyncHandler(async (req, res) => {
+  const companyId = req.params.id;
+  const deleted = await folderService.cleanupDuplicateFolders(companyId);
+  res.json({ success: true, duplicatesRemoved: deleted });
 });
 
 module.exports = {
@@ -134,12 +243,16 @@ module.exports = {
   updateFolder,
   deleteFolder,
   moveFolder,
+  archiveFolderController,
+  unarchiveFolderController,
   listFolderDocuments,
   addFolderDocument,
   deleteDocument,
+  archiveDocumentController,
+  unarchiveDocumentController,
   listFolderTree,
   recordDocumentActivity,
   getDocumentActivity,
   ensureDefaultFolders,
+  cleanupFolders,
 };
-

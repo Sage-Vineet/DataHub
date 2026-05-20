@@ -7,6 +7,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon --config nodemon.json",
+    "seed": "node seed.js",
     "lint": "echo \"No lint configured\""
   },
   "dependencies": {

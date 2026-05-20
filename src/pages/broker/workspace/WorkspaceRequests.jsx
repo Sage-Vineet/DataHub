@@ -399,7 +399,7 @@ function CategoryCard({ category, requestsInCategory, onClick }) {
         <span className="text-xs font-semibold text-[#6D6E71]">{total} Requests</span>
       </div>
       <h3 className="text-lg font-bold text-[#050505]">{category}</h3>
-      <p className="text-sm text-[#6D6E71] mt-1">{completed} Completed � {pending} Pending</p>
+      <p className="text-sm text-[#6D6E71] mt-1">{completed} Completed · {pending} Pending</p>
       <div className="mt-4 h-2 bg-gray-100 rounded-full overflow-hidden">
         <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, background: meta.color }} />
       </div>
@@ -414,7 +414,6 @@ function RequestRow({ item, onView, onApprove, approving }) {
   const canReview = item.workflowStatus === 'in-review';
   return (
     <tr className="border-b border-gray-50 hover:bg-gray-50/70 transition-colors">
-      <td className="px-4 py-3 text-xs font-bold text-[#6D6E71] font-mono">{item.id}</td>
       <td className="px-4 py-3">
         <p className="font-semibold text-[#050505] leading-tight">{item.name}</p>
         {item.subLabel && <p className="text-xs text-[#A5A5A5] mt-0.5">{item.subLabel}</p>}
@@ -483,7 +482,6 @@ function RequestTable({ rows, onView, onApprove, approvingRequestId }) {
       <table className="w-full min-w-[980px]">
         <thead>
           <tr className="bg-gray-50 border-b border-gray-100">
-            <th className="px-4 py-3 text-left text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Request ID</th>
             <th className="px-4 py-3 text-left text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Request Name</th>
             <th className="px-4 py-3 text-left text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Type</th>
             <th className="px-4 py-3 text-left text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Priority</th>
@@ -515,7 +513,7 @@ function CategoryGroupedTable({ grouped, onView, onApprove, approvingRequestId }
       <table className="w-full min-w-[980px]">
         <thead>
           <tr className="bg-gray-50 border-b border-gray-100">
-            {['Request ID', 'Request Name', 'Type', 'Priority', 'Documents', 'Status', 'Visibility', 'Action'].map(h => (
+            {['Request Name', 'Type', 'Priority', 'Documents', 'Status', 'Visibility', 'Action'].map(h => (
               <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">{h}</th>
             ))}
           </tr>
@@ -530,13 +528,13 @@ function CategoryGroupedTable({ grouped, onView, onApprove, approvingRequestId }
             return (
               <Fragment key={g.category}>
                 <tr>
-                  <td colSpan={8} className="px-4 py-2.5 border-y border-gray-100" style={{ background: meta.bg + '60' }}>
+                  <td colSpan={7} className="px-4 py-2.5 border-y border-gray-100" style={{ background: meta.bg + '60' }}>
                     <div className="flex items-center gap-2.5">
                       <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: meta.bg }}>
                         <Icon size={14} style={{ color: meta.color }} />
                       </div>
                       <span className="font-bold text-sm" style={{ color: meta.color }}>{g.category}</span>
-                      <span className="text-xs text-[#6D6E71]">� {rows.length} requests � {completed} completed</span>
+                      <span className="text-xs text-[#6D6E71]">· {rows.length} requests · {completed} completed</span>
                       <div className="ml-auto flex items-center gap-2">
                         <span className="text-xs font-semibold" style={{ color: meta.color }}>{pct}%</span>
                         <div className="w-24 h-1.5 rounded-full overflow-hidden" style={{ background: meta.bg }}>
@@ -547,7 +545,7 @@ function CategoryGroupedTable({ grouped, onView, onApprove, approvingRequestId }
                   </td>
                 </tr>
                 {rows.length === 0 ? (
-                  <tr><td colSpan={8} className="px-4 py-4 text-center text-xs text-[#A5A5A5]">No requests in this category</td></tr>
+                  <tr><td colSpan={7} className="px-4 py-4 text-center text-xs text-[#A5A5A5]">No requests in this category</td></tr>
                 ) : rows.map(r => (
                   <RequestRow
                     key={r.id}
@@ -729,7 +727,6 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
           <div className="space-y-5">
             <div className="rounded-2xl bg-white p-5 shadow-card">
               <div className="mb-3 flex flex-wrap items-center gap-2">
-                <span className="rounded-md bg-gray-100 px-2.5 py-1 font-mono text-xs font-bold text-[#6D6E71]">{request.id}</span>
                 <StatusBadge status={currentStatus} />
               </div>
               <p className="text-xs font-semibold uppercase tracking-wide text-[#A5A5A5]">{request.subLabel || request.category}</p>
@@ -827,7 +824,7 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
                     <FileText size={15} className="text-[#00B0F0]" />
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-[#050505] truncate">{doc.name}</p>
-                      <p className="text-xs text-[#A5A5A5]">{doc.uploadedBy} � {doc.uploadedAt}</p>
+                      <p className="text-xs text-[#A5A5A5]">{doc.uploadedBy} · {doc.uploadedAt}</p>
                     </div>
                     <button
                       type="button"

@@ -44,11 +44,12 @@ const PNLRow = ({ line, depth = 0, columns }) => {
   const amounts = line.amounts || {};
   const yearCols = columns?.yearCols || [];
   const ytdComp = columns?.ytdComparison || {};
+  const hasYTD = !!(ytdComp?.currentKey);
 
   // Dynamic column mapping based on service response
   const yearValues = yearCols.map(col => amounts[col.key] || 0);
-  const currentYTD = amounts[ytdComp.currentKey] || 0;
-  const prevYTD = amounts[ytdComp.prevKey] || 0;
+  const currentYTD = hasYTD ? (amounts[ytdComp.currentKey] || 0) : 0;
+  const prevYTD = hasYTD ? (amounts[ytdComp.prevKey] || 0) : 0;
 
   // Variances
   const v23Var = calculateChange(yearValues[1], yearValues[0]);
@@ -112,7 +113,7 @@ const PNLRow = ({ line, depth = 0, columns }) => {
           <td
             key={idx}
             className={cn(
-              "py-2.5 px-3 text-right tabular-nums text-[14px]",
+              "py-2.5 px-3 text-right tabular-nums text-[14px] whitespace-nowrap",
               val < 0 ? "text-status-error font-semibold" : "text-text-secondary",
             )}
           >
@@ -120,76 +121,90 @@ const PNLRow = ({ line, depth = 0, columns }) => {
           </td>
         ))}
 
-        {/* Current YTD Highlight */}
-        <td
-          className={cn(
-            "py-2.5 px-3 text-right tabular-nums text-[14px] font-semibold bg-blue-50/20",
-            currentYTD < 0 ? "text-status-error" : "text-text-primary",
-          )}
-        >
-          {formatValue(currentYTD)}
-        </td>
+        {/* Current YTD Highlight — only when ytdComparison is present */}
+        {hasYTD && (
+          <td
+            className={cn(
+              "py-2.5 px-3 text-right tabular-nums text-[14px] font-semibold bg-blue-50/20",
+              currentYTD < 0 ? "text-status-error" : "text-text-primary",
+            )}
+          >
+            {formatValue(currentYTD)}
+          </td>
+        )}
 
-        {/* Variances */}
-        <td
-          className={cn(
-            "py-2.5 px-3 text-right tabular-nums text-[14px]",
-            v23Var < 0 ? "text-status-error font-semibold" : "text-text-muted",
-          )}
-        >
-          {formatValue(v23Var)}
-        </td>
-        <td
-          className={cn(
-            "py-2.5 px-3 text-right tabular-nums text-[13px] border-r border-border-light",
-            v23Pct < 0 ? "text-status-error" : "text-text-muted",
-          )}
-        >
-          {formatPercentage(v23Pct)}
-        </td>
+        {/* Variances — only when ytdComparison is present */}
+        {yearCols.length > 1 && hasYTD && (
+          <>
+            <td
+              className={cn(
+                "py-2.5 px-3 text-right tabular-nums text-[14px]",
+                v23Var < 0 ? "text-status-error font-semibold" : "text-text-muted",
+              )}
+            >
+              {formatValue(v23Var)}
+            </td>
+            <td
+              className={cn(
+                "py-2.5 px-3 text-right tabular-nums text-[13px] border-r border-border-light",
+                v23Pct < 0 ? "text-status-error" : "text-text-muted",
+              )}
+            >
+              {formatPercentage(v23Pct)}
+            </td>
+          </>
+        )}
 
-        <td
-          className={cn(
-            "py-2.5 px-3 text-right tabular-nums text-[14px]",
-            v24Var < 0 ? "text-status-error font-semibold" : "text-text-muted",
-          )}
-        >
-          {formatValue(v24Var)}
-        </td>
-        <td
-          className={cn(
-            "py-2.5 px-3 text-right tabular-nums text-[13px] border-r border-border-light",
-            v24Pct < 0 ? "text-status-error" : "text-text-muted",
-          )}
-        >
-          {formatPercentage(v24Pct)}
-        </td>
+        {yearCols.length > 2 && hasYTD && (
+          <>
+            <td
+              className={cn(
+                "py-2.5 px-3 text-right tabular-nums text-[14px]",
+                v24Var < 0 ? "text-status-error font-semibold" : "text-text-muted",
+              )}
+            >
+              {formatValue(v24Var)}
+            </td>
+            <td
+              className={cn(
+                "py-2.5 px-3 text-right tabular-nums text-[13px] border-r border-border-light",
+                v24Pct < 0 ? "text-status-error" : "text-text-muted",
+              )}
+            >
+              {formatPercentage(v24Pct)}
+            </td>
+          </>
+        )}
 
-        {/* YTD Analysis */}
-        <td
-          className={cn(
-            "py-2.5 px-3 text-right tabular-nums text-[14px]",
-            prevYTD < 0 ? "text-status-error font-semibold" : "text-text-secondary",
-          )}
-        >
-          {formatValue(prevYTD)}
-        </td>
-        <td
-          className={cn(
-            "py-2.5 px-3 text-right tabular-nums text-[14px] font-semibold",
-            ytdVar < 0 ? "text-status-error" : "text-primary",
-          )}
-        >
-          {formatValue(ytdVar)}
-        </td>
-        <td
-          className={cn(
-            "py-2.5 px-4 text-right tabular-nums text-[13px] font-bold",
-            ytdPct < 0 ? "text-status-error" : "text-text-primary",
-          )}
-        >
-          {formatPercentage(ytdPct)}
-        </td>
+        {/* YTD Analysis — only when ytdComparison is present */}
+        {hasYTD && (
+          <>
+            <td
+              className={cn(
+                "py-2.5 px-3 text-right tabular-nums text-[14px]",
+                prevYTD < 0 ? "text-status-error font-semibold" : "text-text-secondary",
+              )}
+            >
+              {formatValue(prevYTD)}
+            </td>
+            <td
+              className={cn(
+                "py-2.5 px-3 text-right tabular-nums text-[14px] font-semibold",
+                ytdVar < 0 ? "text-status-error" : "text-primary",
+              )}
+            >
+              {formatValue(ytdVar)}
+            </td>
+            <td
+              className={cn(
+                "py-2.5 px-4 text-right tabular-nums text-[13px] font-bold",
+                ytdPct < 0 ? "text-status-error" : "text-text-primary",
+              )}
+            >
+              {formatPercentage(ytdPct)}
+            </td>
+          </>
+        )}
       </tr>
 
       {hasChildren && isOpen && (
@@ -218,6 +233,7 @@ export default function ProfitAndLossSummary({
 
   const yearCols = columns?.yearCols || [];
   const ytdComp = columns?.ytdComparison || {};
+  const hasYTD = !!(ytdComp?.currentKey);
 
   if (!columns && (!rows || rows.length === 0)) {
 
@@ -248,46 +264,62 @@ export default function ProfitAndLossSummary({
         </div>
 
         <div className="overflow-x-auto flex-1">
-          <table className="w-full border-collapse">
+          <table className="min-w-max border-collapse">
             <thead>
               <tr className="border-b-2 border-text-primary sticky top-0 bg-bg-card z-20">
                 <th rowSpan={2} className="pb-3 pt-2 px-4 text-left text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider min-w-[320px]">
                   Description
                 </th>
-                <th colSpan={yearCols.length + 1} className="pb-1 text-center text-[10px] font-bold text-text-muted/60 uppercase border-b border-border-light">Actuals</th>
-                {yearCols.length > 1 && (
+                <th colSpan={hasYTD ? yearCols.length + 1 : yearCols.length} className="pb-1 text-center text-[10px] font-bold text-text-muted/60 uppercase border-b border-border-light">Actuals</th>
+                {yearCols.length > 1 && hasYTD && (
                   <th colSpan={2} className="pb-1 text-center text-[10px] font-bold text-text-muted/60 uppercase border-b border-border-light border-l border-border-light">
                     {yearCols[1]?.label?.slice(-2)} Var
                   </th>
                 )}
-                {yearCols.length > 2 && (
+                {yearCols.length > 2 && hasYTD && (
                   <th colSpan={2} className="pb-1 text-center text-[10px] font-bold text-text-muted/60 uppercase border-b border-border-light border-l border-border-light">
                     {yearCols[2]?.label?.slice(-2)} Var
                   </th>
                 )}
-                <th colSpan={3} className="pb-1 text-right text-[10px] font-bold text-primary uppercase border-b border-border-light border-l border-border-light">YTD Analysis</th>
+                {hasYTD && (
+                  <th colSpan={3} className="pb-1 text-right text-[10px] font-bold text-primary uppercase border-b border-border-light border-l border-border-light">YTD Analysis</th>
+                )}
               </tr>
               <tr className="bg-bg-page/20 border-b border-border-light sticky top-[38px] z-20">
                 {yearCols.map((col, idx) => (
-                  <th key={idx} className="py-2 px-3 text-right text-[12px] font-medium text-text-muted uppercase">
+                  <th key={idx} className="py-2 px-3 text-right text-[12px] font-medium text-text-muted uppercase whitespace-nowrap min-w-[90px]">
                     {col.label}
                   </th>
                 ))}
-                <th className="py-2 px-3 text-right text-[12px] font-bold text-text-primary bg-blue-50/30">
-                  {ytdComp.currentLabel || "Current YTD"}
-                </th>
+                {hasYTD && (
+                  <th className="py-2 px-3 text-right text-[12px] font-bold text-text-primary bg-blue-50/30">
+                    {ytdComp.currentLabel || "Current YTD"}
+                  </th>
+                )}
 
-                <th className="py-2 px-3 text-right text-[11px] font-medium text-text-muted">$ Δ</th>
-                <th className="py-2 px-3 text-right text-[11px] font-medium text-text-muted border-r border-border-light">% Δ</th>
+                {yearCols.length > 1 && hasYTD && (
+                  <>
+                    <th className="py-2 px-3 text-right text-[11px] font-medium text-text-muted">$ Δ</th>
+                    <th className="py-2 px-3 text-right text-[11px] font-medium text-text-muted border-r border-border-light">% Δ</th>
+                  </>
+                )}
 
-                <th className="py-2 px-3 text-right text-[11px] font-medium text-text-muted">$ Δ</th>
-                <th className="py-2 px-3 text-right text-[11px] font-medium text-text-muted border-r border-border-light">% Δ</th>
+                {yearCols.length > 2 && hasYTD && (
+                  <>
+                    <th className="py-2 px-3 text-right text-[11px] font-medium text-text-muted">$ Δ</th>
+                    <th className="py-2 px-3 text-right text-[11px] font-medium text-text-muted border-r border-border-light">% Δ</th>
+                  </>
+                )}
 
-                <th className="py-2 px-3 text-right text-[12px] font-medium text-text-muted">
-                  {ytdComp.prevLabel || "Prev YTD"}
-                </th>
-                <th className="py-2 px-3 text-right text-[12px] font-bold text-primary">$ Δ</th>
-                <th className="py-2 px-4 text-right text-[12px] font-bold text-text-primary">% Δ</th>
+                {hasYTD && (
+                  <>
+                    <th className="py-2 px-3 text-right text-[12px] font-medium text-text-muted">
+                      {ytdComp.prevLabel || "Prev YTD"}
+                    </th>
+                    <th className="py-2 px-3 text-right text-[12px] font-bold text-primary">$ Δ</th>
+                    <th className="py-2 px-4 text-right text-[12px] font-bold text-text-primary">% Δ</th>
+                  </>
+                )}
               </tr>
             </thead>
             <tbody>

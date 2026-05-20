@@ -174,6 +174,24 @@ export function loginRequest(credentials) {
   });
 }
 
+export function brokerSignupRequest(payload) {
+  return fetch(buildUrl('/auth/broker/signup'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+    body: JSON.stringify(payload),
+    cache: 'no-store',
+    credentials: 'omit',
+  }).then(async (response) => {
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      const error = new Error(data?.error || 'Request failed');
+      error.status = response.status;
+      throw error;
+    }
+    return data;
+  });
+}
+
 export function logoutRequest(options = {}) {
   return request('/auth/logout', { method: 'POST', ...options });
 }
@@ -196,6 +214,10 @@ export function createCompanyRequest(payload) {
 
 export function updateCompanyRequest(companyId, payload) {
   return request(`/companies/${companyId}`, { method: 'PATCH', body: payload }).then(unwrapPayload);
+}
+
+export function deleteCompanyRequest(companyId) {
+  return request(`/companies/${companyId}`, { method: 'DELETE' }).then(unwrapPayload);
 }
 
 export function listUsersRequest() {
@@ -319,6 +341,10 @@ export function listCompanyReminders(companyId) {
 
 export function listCompanyActivity(companyId) {
   return request(`/companies/${companyId}/activity`).then(ensureArray);
+}
+
+export function listBrokerActivity(limit = 25) {
+  return request(`/broker/activity?limit=${limit}`).then(ensureArray);
 }
 
 export async function uploadFile(file, options = {}) {
@@ -766,9 +792,21 @@ export function syncManualUploadSource(options = {}) {
 
 export function getLatestManualUploadedReport(statementType, options = {}) {
   const clientId = options.clientId ?? resolveClientIdFromLocation();
-  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  const params = new URLSearchParams();
+  if (clientId) params.set("clientId", clientId);
+  if (options.rowId) params.set("rowId", options.rowId);
+  const query = params.toString() ? `?${params}` : "";
   return request(
     `/manual-report-uploads/reports/${encodeURIComponent(statementType)}/latest${query}`,
+    options,
+  );
+}
+
+export function getAllManualUploadedReports(statementType, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(
+    `/manual-report-uploads/reports/${encodeURIComponent(statementType)}/all${query}`,
     options,
   );
 }
@@ -803,8 +841,9 @@ export function listCompanyFolders(companyId) {
   return request(`/companies/${companyId}/folders`).then(ensureArray);
 }
 
-export function listFolderTree(companyId) {
-  return request(`/companies/${companyId}/folders/tree`).then(ensureArray);
+export function listFolderTree(companyId, options = {}) {
+  const qs = options.includeArchived ? '?includeArchived=true' : '';
+  return request(`/companies/${companyId}/folders/tree${qs}`).then(ensureArray);
 }
 
 export function ensureCompanyDefaultFolders(companyId) {
@@ -827,12 +866,29 @@ export function deleteFolder(folderId) {
   return request(`/folders/${folderId}`, { method: 'DELETE' });
 }
 
-export function listFolderDocuments(folderId) {
-  return request(`/folders/${folderId}/documents`).then(ensureArray);
+export function archiveFolder(folderId) {
+  return request(`/folders/${folderId}/archive`, { method: 'POST' }).then(unwrapPayload);
+}
+
+export function unarchiveFolder(folderId) {
+  return request(`/folders/${folderId}/unarchive`, { method: 'POST' }).then(unwrapPayload);
+}
+
+export function listFolderDocuments(folderId, options = {}) {
+  const qs = options.includeArchived ? '?includeArchived=true' : '';
+  return request(`/folders/${folderId}/documents${qs}`).then(ensureArray);
 }
 
 export function deleteDocument(documentId) {
   return request(`/documents/${documentId}`, { method: 'DELETE' });
+}
+
+export function archiveDocument(documentId) {
+  return request(`/documents/${documentId}/archive`, { method: 'POST' }).then(unwrapPayload);
+}
+
+export function unarchiveDocument(documentId) {
+  return request(`/documents/${documentId}/unarchive`, { method: 'POST' }).then(unwrapPayload);
 }
 
 export function recordDocumentActivity(documentId, activityType) {

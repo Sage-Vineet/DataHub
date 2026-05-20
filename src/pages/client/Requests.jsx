@@ -240,7 +240,6 @@ function RequestRow({ item, onView }) {
   const priority = getPriorityMeta(item.priority);
   return (
     <tr className="border-b border-gray-50 hover:bg-gray-50/70 transition-colors">
-      <td className="px-4 py-3 text-xs font-bold text-[#6D6E71] font-mono">{item.id}</td>
       <td className="px-4 py-3">
         <p className="font-semibold text-[#050505] leading-tight">{item.name}</p>
         {item.subLabel && <p className="text-xs text-[#A5A5A5] mt-0.5">{item.subLabel}</p>}
@@ -278,7 +277,6 @@ function RequestTable({ rows, onView }) {
       <table className="w-full min-w-[980px]">
         <thead>
           <tr className="bg-gray-50 border-b border-gray-100">
-            <th className="px-4 py-3 text-left text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Request ID</th>
             <th className="px-4 py-3 text-left text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Request Name</th>
             <th className="px-4 py-3 text-left text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Type</th>
             <th className="px-4 py-3 text-left text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Priority</th>
@@ -302,7 +300,7 @@ function CategoryGroupedTable({ grouped, onView }) {
       <table className="w-full min-w-[980px]">
         <thead>
           <tr className="bg-gray-50 border-b border-gray-100">
-            {['Request ID', 'Request Name', 'Type', 'Priority', 'Documents', 'Status', 'Visibility', 'Action'].map(h => (
+            {['Request Name', 'Type', 'Priority', 'Documents', 'Status', 'Visibility', 'Action'].map(h => (
               <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">{h}</th>
             ))}
           </tr>
@@ -317,7 +315,7 @@ function CategoryGroupedTable({ grouped, onView }) {
             return (
               <Fragment key={g.category}>
                 <tr>
-                  <td colSpan={8} className="px-4 py-2.5 border-y border-gray-100" style={{ background: meta.bg + '60' }}>
+                  <td colSpan={7} className="px-4 py-2.5 border-y border-gray-100" style={{ background: meta.bg + '60' }}>
                     <div className="flex items-center gap-2.5">
                       <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: meta.bg }}>
                         <Icon size={14} style={{ color: meta.color }} />
@@ -334,7 +332,7 @@ function CategoryGroupedTable({ grouped, onView }) {
                   </td>
                 </tr>
                 {rows.length === 0 ? (
-                  <tr><td colSpan={8} className="px-4 py-4 text-center text-xs text-[#A5A5A5]">No requests in this category</td></tr>
+                  <tr><td colSpan={7} className="px-4 py-4 text-center text-xs text-[#A5A5A5]">No requests in this category</td></tr>
                 ) : rows.map(r => <RequestRow key={r.id} item={r} onView={onView} />)}
               </Fragment>
             );
@@ -474,7 +472,6 @@ function RequestDetailPage({ onBack, request, allRequests, onSubmitResponse, err
             <div className="space-y-5">
               <div className="rounded-2xl bg-white p-5 shadow-card">
                 <div className="mb-3 flex flex-wrap items-center gap-2">
-                  <span className="rounded-md bg-gray-100 px-2.5 py-1 font-mono text-xs font-bold text-[#6D6E71]">{request.id}</span>
                   <StatusBadge status={currentStatus} />
                 </div>
                 <p className="text-xs font-semibold uppercase tracking-wide text-[#A5A5A5]">{request.subLabel || request.category}</p>

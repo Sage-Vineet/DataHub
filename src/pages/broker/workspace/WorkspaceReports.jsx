@@ -10,6 +10,7 @@ import {
   getCompanyRequest,
   getManualStageFilterOptions,
   getLatestManualUploadedReport,
+  getAllManualUploadedReports,
 } from "../../../lib/api";
 import { MANUAL_GL_STAGED_EVENT } from "../../../lib/dataSourceEvents";
 import { useDataSource } from "../../../context/DataSourceContext";
@@ -287,6 +288,17 @@ export default function WorkspaceReports() {
   );
   const [manualFilterOptions, setManualFilterOptions] = useState({});
   const [filterOptionsVersion, setFilterOptionsVersion] = useState(0);
+  const [manualUploadFiles, setManualUploadFiles] = useState({
+    "Balance Sheet": [],
+    "Profit & Loss": [],
+    "Cashflow": [],
+  });
+  const [selectedManualUploadRowId, setSelectedManualUploadRowId] = useState({
+    "Balance Sheet": null,
+    "Profit & Loss": null,
+    "Cashflow": null,
+  });
+  const [isLoadingManualFiles, setIsLoadingManualFiles] = useState(false);
   const hasRestoredSessionRef = useRef(false);
   const isFirstMountRef = useRef(true);
   // Always-fresh ref so the filter options effect doesn't capture a stale closure.
@@ -435,6 +447,35 @@ export default function WorkspaceReports() {
       });
   // filterOptionsVersion increments when a new GL batch is staged, forcing a re-fetch.
   }, [appliedManualFilters.batchId, clientId, selectedSourceMode, filterOptionsVersion]);
+
+  // Load available uploaded files per tab when in manual_upload source mode
+  useEffect(() => {
+    if (selectedSourceMode !== "manual_upload" || !clientId) return;
+    const statementTypeMap = {
+      "Balance Sheet": "balance_sheet",
+      "Profit & Loss": "profit_and_loss",
+      "Cashflow": "cash_flow",
+    };
+    const stType = statementTypeMap[selectedTab];
+    if (!stType) return;
+
+    setIsLoadingManualFiles(true);
+    getAllManualUploadedReports(stType, { clientId })
+      .then((result) => {
+        const files = result?.files || [];
+        setManualUploadFiles((prev) => ({ ...prev, [selectedTab]: files }));
+        setSelectedManualUploadRowId((prev) => {
+          const current = prev[selectedTab];
+          const stillValid = files.some((f) => f.rowId === current);
+          return stillValid ? prev : { ...prev, [selectedTab]: files[0]?.rowId || null };
+        });
+      })
+      .catch((err) => {
+        console.error("[WorkspaceReports] Failed to load uploaded files:", err);
+        setManualUploadFiles((prev) => ({ ...prev, [selectedTab]: [] }));
+      })
+      .finally(() => setIsLoadingManualFiles(false));
+  }, [selectedSourceMode, selectedTab, clientId]);
 
   useEffect(() => {
     if (!clientId || !hasRestoredSessionRef.current) return;
@@ -731,25 +772,23 @@ export default function WorkspaceReports() {
       const normalizedAccountingMethod =
         normalizeAccountingMethod(accountingMethod);
 
-      // In manual-upload mode, override the date range with the year from the
-      // uploaded file so the report header shows the correct fiscal period.
+      // In manual-upload mode, resolve the fiscal year from the selected file
+      // (avoids an extra API call — file list was already fetched by the files effect).
       let resolvedStart;
       let resolvedEnd;
       if (selectedSourceMode === "manual_upload") {
-        const statementTypeMap = {
-          "Balance Sheet": "balance_sheet",
-          "Profit & Loss": "profit_and_loss",
-          "Cashflow": "cash_flow",
-        };
-        const stType = statementTypeMap[selectedTab] || "profit_and_loss";
-        try {
-          const manualPayload = await getLatestManualUploadedReport(stType, { clientId });
-          const year = resolveManualUploadYear(manualPayload);
-          if (year) {
-            resolvedStart = `${year}-01-01`;
-            resolvedEnd = `${year}-12-31`;
-          }
-        } catch { /* ignore — fall through to user dates */ }
+        const selectedRowId = selectedManualUploadRowId[selectedTab];
+        const fileEntry = manualUploadFiles[selectedTab]?.find(
+          (f) => f.rowId === selectedRowId,
+        ) || manualUploadFiles[selectedTab]?.[0];
+        const year = resolveManualUploadYear({
+          data: fileEntry?.data,
+          reportParams: { fileName: fileEntry?.fileName },
+        });
+        if (year) {
+          resolvedStart = `${year}-01-01`;
+          resolvedEnd = `${year}-12-31`;
+        }
       }
 
       if (!resolvedStart || !resolvedEnd) {
@@ -799,6 +838,11 @@ export default function WorkspaceReports() {
       let summary = [];
       let detail = { groups: [] };
 
+      const manualUploadRowId =
+        selectedSourceMode === "manual_upload"
+          ? selectedManualUploadRowId[selectedTab]
+          : null;
+
       if (selectedTab === "Balance Sheet") {
         if (reportType === "Summary") {
           summary = await getBalanceSheet(
@@ -808,6 +852,8 @@ export default function WorkspaceReports() {
             {
               sourceMode: selectedSourceMode,
               manualFilters: summaryFilterParams,
+              manualFilters: manualFilterParams,
+              manualUploadRowId,
             },
           ).catch(() => ({
             rows: [],
@@ -835,6 +881,8 @@ export default function WorkspaceReports() {
             {
               sourceMode: selectedSourceMode,
               manualFilters: summaryFilterParams,
+              manualFilters: manualFilterParams,
+              manualUploadRowId,
             },
           ).catch(() => []);
         } else {
@@ -857,6 +905,8 @@ export default function WorkspaceReports() {
             {
               sourceMode: selectedSourceMode,
               manualFilters: summaryFilterParams,
+              manualFilters: manualFilterParams,
+              manualUploadRowId,
             },
           ).catch(() => []);
         } else {
@@ -909,6 +959,8 @@ export default function WorkspaceReports() {
     reportType,
     selectedSourceMode,
     selectedTab,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    selectedManualUploadRowId[selectedTab],
   ]);
 
   // Auto-generate report when dependencies change.
@@ -1084,6 +1136,47 @@ export default function WorkspaceReports() {
                 />
               </div>
             </div>
+
+            {selectedSourceMode === "manual_upload" && reportType === "Summary" && (
+              isLoadingManualFiles ? (
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
+                    File
+                  </label>
+                  <div className="h-9 min-w-[200px] flex items-center px-3 rounded-md border border-border-input bg-bg-card text-[13px] text-text-muted animate-pulse">
+                    Loading files…
+                  </div>
+                </div>
+              ) : manualUploadFiles[selectedTab]?.length > 0 ? (
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
+                    File
+                  </label>
+                  <div className="relative min-w-[200px]">
+                    <select
+                      value={selectedManualUploadRowId[selectedTab] || ""}
+                      onChange={(e) => {
+                        setSelectedManualUploadRowId((prev) => ({
+                          ...prev,
+                          [selectedTab]: e.target.value || null,
+                        }));
+                      }}
+                      className="h-9 w-full appearance-none rounded-md border border-border-input bg-bg-card pl-3 pr-9 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                    >
+                      {manualUploadFiles[selectedTab].map((f) => (
+                        <option key={f.rowId} value={f.rowId}>
+                          {f.fileName}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown
+                      size={14}
+                      className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-text-muted"
+                    />
+                  </div>
+                </div>
+              ) : null
+            )}
 
             {selectedSourceMode === "manual" && (
               <>

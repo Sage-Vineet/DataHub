@@ -210,7 +210,7 @@ export default function UserPortalDashboard() {
               </span>
             </div>
 
-            <h2 className="mt-4 text-lg font-bold text-[#05164D]">{company.name}</h2>
+            <h2 className="mt-4 text-lg font-bold text-[#05164D]">{company.project_name || company.name}</h2>
             <p className="mt-1 text-sm text-[#6D6E71]">{company.industry}</p>
 
             <div className="mt-4 space-y-2 text-sm text-[#6D6E71]">

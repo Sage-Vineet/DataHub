@@ -131,7 +131,7 @@ function BSRow({ row, isCollapsed, onToggle, columns }) {
 
       {yearCols.map((col) => (
         <td key={col.key} className={cn(
-          "py-2.5 px-3 text-right tabular-nums text-[14px]",
+          "py-2.5 px-3 text-right tabular-nums text-[14px] whitespace-nowrap",
           col.isCurrent ? "font-semibold text-text-primary" : "text-text-secondary",
           isTotal ? "font-semibold" : "font-medium"
         )}>
@@ -140,14 +140,16 @@ function BSRow({ row, isCollapsed, onToggle, columns }) {
       ))}
 
       {changeCols.map((col) => (
-        <td key={col.key} className="py-2.5 px-3 text-right tabular-nums text-[14px] text-text-muted font-medium">
+        <td key={col.key} className="py-2.5 px-3 text-right tabular-nums text-[14px] text-text-muted font-medium whitespace-nowrap">
           {formatBSCurrency(calculateChange(amounts?.[col.to], amounts?.[col.from]))}
         </td>
       ))}
 
-      <td className="py-2.5 px-4 text-right tabular-nums text-[14px] font-semibold text-primary">
-        {formatBSCurrency(amounts?.monthlyChange || 0)}
-      </td>
+      {changeCols.length > 0 && (
+        <td className="py-2.5 px-4 text-right tabular-nums text-[14px] font-semibold text-primary whitespace-nowrap">
+          {formatBSCurrency(amounts?.monthlyChange || 0)}
+        </td>
+      )}
     </tr>
   );
 }
@@ -224,7 +226,7 @@ export default function BalanceSheetSummary({
         </div>
 
         <div className="overflow-x-auto flex-1">
-          <table className="w-full border-collapse">
+          <table className="min-w-max border-collapse">
             <thead>
               <tr className="border-b-2 border-text-primary sticky top-0 bg-bg-card z-20">
                 <th className="pb-3 pt-2 px-4 text-left text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider">
@@ -232,7 +234,7 @@ export default function BalanceSheetSummary({
                 </th>
                 {columns.yearCols.map((col) => (
                   <th key={col.key} className={cn(
-                    "pb-3 pt-2 px-3 text-right text-[12px] font-medium whitespace-nowrap",
+                    "pb-3 pt-2 px-3 text-right text-[12px] font-medium whitespace-nowrap min-w-[90px]",
                     col.isCurrent ? "text-text-primary font-bold" : "text-text-muted"
                   )}>
                     {col.label}

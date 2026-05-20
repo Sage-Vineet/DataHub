@@ -1,282 +1,168 @@
 const { supabase } = require("../db");
+const { Pool } = require("pg");
 
-const DEFAULT_FOLDER_STRUCTURE = [
-  { name: "Finance" },
-  { name: "Compliance" },
-  { name: "HR" },
-  { name: "Legal" },
-  { name: "M&A" },
-  { name: "Tax" },
-  { name: "Other" },
-  {
-    name: "Manual Upload Source",
-    children: [
-      {
-        name: "Reports",
-        children: [
-          { name: "Balance Sheet" },
-          { name: "Profit & Loss" },
-          { name: "Cashflow" },
-        ],
-      },
-      { name: "Bank Statement" },
-      { name: "Tax Return" },
-    ],
-  },
+let _pool = null;
+function getPool() {
+  if (!process.env.DATABASE_URL) return null;
+  if (!_pool) {
+    _pool = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: { rejectUnauthorized: false },
+      max: 5,
+      connectionTimeoutMillis: 8000,
+    });
+    _pool.on("error", (err) => console.error("[folderService] pg pool error:", err.message));
+  }
+  return _pool;
+}
+
+async function pgQuery(sql, params = []) {
+  const pool = getPool();
+  if (!pool) throw new Error("DATABASE_URL not configured");
+  const { rows } = await pool.query(sql, params);
+  return rows;
+}
+
+const DEFAULT_FOLDERS = [
+  ["Finance",              null],
+  ["Compliance",           null],
+  ["HR",                   null],
+  ["Legal",                null],
+  ["M&A",                  null],
+  ["Tax",                  null],
+  ["Other",                null],
+  ["Manual Upload Source", null],
+  ["Reports",              "Manual Upload Source"],
+  ["Balance Sheet",        "Reports"],
+  ["Profit & Loss",        "Reports"],
+  ["Cashflow",             "Reports"],
+  ["Bank Statement",       "Manual Upload Source"],
+  ["Tax Return",           "Manual Upload Source"],
 ];
 
-async function userExists(userId) {
-  if (!userId) return false;
-  const { data, error } = await supabase
-    .from("users")
-    .select("id")
-    .eq("id", userId)
-    .maybeSingle();
-  return !!data && !error;
+// Expected folder count — used to decide whether cleanup is needed
+const EXPECTED_FOLDER_COUNT = DEFAULT_FOLDERS.length;
+
+async function resolveCreatorId(companyId, preferredUserId) {
+  const candidates = [
+    preferredUserId
+      ? () => pgQuery("SELECT id FROM users WHERE id=$1 LIMIT 1", [preferredUserId])
+      : null,
+    () => pgQuery("SELECT id FROM users WHERE role IN ('admin','broker') LIMIT 1"),
+    () => pgQuery("SELECT id FROM users WHERE company_id=$1 LIMIT 1", [companyId]),
+    () => pgQuery("SELECT id FROM users LIMIT 1"),
+  ].filter(Boolean);
+
+  for (const fn of candidates) {
+    try {
+      const rows = await fn();
+      if (rows[0]?.id) return rows[0].id;
+    } catch { /* try next */ }
+  }
+  return null;
 }
 
-async function resolveFolderCreatorId(companyId, preferredCreatedBy) {
-  if (await userExists(preferredCreatedBy)) return preferredCreatedBy;
-
-  const { data: companyUser } = await supabase
-    .from("users")
-    .select("id")
-    .eq("company_id", companyId)
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
-
-  if (companyUser?.id) return companyUser.id;
-
-  const { data: assignedUser } = await supabase
-    .from("user_companies")
-    .select("user_id")
-    .eq("company_id", companyId)
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
-
-  if (assignedUser?.user_id) return assignedUser.user_id;
-
-  const { data: brokerUser } = await supabase
-    .from("users")
-    .select("id")
-    .in("role", ["admin", "broker"])
-    .order("created_at", { ascending: true })
-    .limit(1)
-    .maybeSingle();
-
-  return brokerUser?.id || null;
-}
-
-// Idempotent: find-or-create a single folder, then recurse into children.
-async function ensureFolderNode(companyId, folderDef, parentId, creatorId) {
-  // Look for an existing folder with the same name under the same parent
-  let query = supabase
-    .from("folders")
-    .select("id")
-    .eq("company_id", companyId)
-    .ilike("name", folderDef.name);
-
-  if (parentId === null) {
-    query = query.is("parent_id", null);
-  } else {
-    query = query.eq("parent_id", parentId);
-  }
-
-  const { data: existing } = await query.maybeSingle();
-
-  let folderId = existing?.id || null;
-
-  if (!folderId) {
-    const { data: created, error } = await supabase
-      .from("folders")
-      .insert({
-        company_id: companyId,
-        parent_id: parentId,
-        name: folderDef.name,
-        color: null,
-        created_by: creatorId,
-      })
-      .select("id")
-      .single();
-
-    if (error) {
-      console.error("❌ Error creating folder:", folderDef.name, error.message);
-      return;
-    }
-    folderId = created?.id || null;
-  }
-
-  if (folderId && Array.isArray(folderDef.children)) {
-    for (const child of folderDef.children) {
-      await ensureFolderNode(companyId, child, folderId, creatorId);
-    }
-  }
-}
-
-// Legacy folder names that should be removed if they exist
-const LEGACY_FOLDER_NAMES = ["Datahub Reports Documents"];
-
-// Legacy Manual Upload Source child folders to remove
-const LEGACY_MANUAL_CHILD_NAMES = ["Invoices", "EBITDA"];
-
-// Legacy Manual Upload Source child folders to rename: [oldName, newName]
-const MANUAL_FOLDER_RENAMES = [
-  ["Bank Reconciliation", "Bank Statement"],
-  ["Tax Reconciliation", "Tax Return"],
-];
-
-async function removeLegacyFolders(companyId) {
-  for (const name of LEGACY_FOLDER_NAMES) {
-    const { data: found } = await supabase
-      .from("folders")
-      .select("id")
-      .eq("company_id", companyId)
-      .is("parent_id", null)
-      .ilike("name", name);
-
-    if (found?.length) {
-      const ids = found.map((f) => f.id);
-      await supabase.from("folders").delete().in("id", ids);
-    }
-  }
-}
-
-// Migrates existing companies' Manual Upload Source children:
-// - deletes Invoices and EBITDA folders
-// - renames Bank Reconciliation → Bank Statement, Tax Reconciliation → Tax Return
-async function migrateManualUploadSourceFolders(companyId) {
-  const { data: sourceFolder } = await supabase
-    .from("folders")
-    .select("id")
-    .eq("company_id", companyId)
-    .is("parent_id", null)
-    .ilike("name", "Manual Upload Source")
-    .maybeSingle();
-
-  if (!sourceFolder) return;
-
-  // Remove legacy children
-  for (const name of LEGACY_MANUAL_CHILD_NAMES) {
-    const { data: found } = await supabase
-      .from("folders")
-      .select("id")
-      .eq("company_id", companyId)
-      .eq("parent_id", sourceFolder.id)
-      .ilike("name", name);
-    if (found?.length) {
-      const ids = found.map((f) => f.id);
-      await supabase.from("folders").delete().in("id", ids);
-    }
-  }
-
-  // Rename legacy children
-  for (const [oldName, newName] of MANUAL_FOLDER_RENAMES) {
-    const { data: found } = await supabase
-      .from("folders")
-      .select("id")
-      .eq("company_id", companyId)
-      .eq("parent_id", sourceFolder.id)
-      .ilike("name", oldName)
-      .maybeSingle();
-    if (found?.id) {
-      await supabase.from("folders").update({ name: newName }).eq("id", found.id);
-    }
-  }
-}
-
-async function ensureCompanyDefaultFolders(companyId, preferredCreatedBy) {
+async function ensureCompanyDefaultFolders(companyId, preferredCreatedBy = null) {
   if (!companyId) return [];
 
-  const creatorId = await resolveFolderCreatorId(companyId, preferredCreatedBy);
-  if (!creatorId) return [];
-
-  // Remove any legacy root folder names
-  await removeLegacyFolders(companyId);
-
-  // Migrate Manual Upload Source children (rename/remove outdated folders)
-  await migrateManualUploadSourceFolders(companyId);
-
-  // Always run through the full structure — ensureFolderNode is idempotent
-  // so existing folders are left untouched and only missing ones are created.
-  for (const folder of DEFAULT_FOLDER_STRUCTURE) {
-    await ensureFolderNode(companyId, folder, null, creatorId);
+  const creatorId = await resolveCreatorId(companyId, preferredCreatedBy);
+  if (!creatorId) {
+    console.error(`[folders] No creator found for company ${companyId}`);
+    return [];
   }
 
-  const { data: finalFolders } = await supabase
-    .from("folders")
-    .select("*")
-    .eq("company_id", companyId)
-    .order("created_at", { ascending: true });
+  console.log(`[folders] Ensuring default folders for ${companyId} (creator: ${creatorId})`);
 
-  return finalFolders || [];
-}
+  const idByName = {};
 
-async function ensureRootUploadFolder(companyId, preferredCreatedBy) {
-  const { data: existing, error: findError } = await supabase
-    .from("folders")
-    .select("*")
-    .eq("company_id", companyId)
-    .is("parent_id", null)
-    .ilike("name", "General Uploads")
-    .maybeSingle();
+  for (const [name, parentKey] of DEFAULT_FOLDERS) {
+    const parentId = parentKey ? (idByName[parentKey] || null) : null;
+    try {
+      const existing = parentId === null
+        ? await pgQuery("SELECT id FROM folders WHERE company_id=$1 AND lower(name)=lower($2) AND parent_id IS NULL LIMIT 1", [companyId, name])
+        : await pgQuery("SELECT id FROM folders WHERE company_id=$1 AND lower(name)=lower($2) AND parent_id=$3 LIMIT 1", [companyId, name, parentId]);
 
-  if (existing) return existing;
+      if (existing.length > 0) {
+        idByName[name] = existing[0].id;
+        continue;
+      }
 
-  const creatorId = await resolveFolderCreatorId(companyId, preferredCreatedBy);
-  if (!creatorId) return null;
+      const created = await pgQuery(
+        "INSERT INTO folders (company_id, parent_id, name, color, created_by) VALUES ($1,$2,$3,NULL,$4) RETURNING id",
+        [companyId, parentId, name, creatorId],
+      );
+      if (created[0]?.id) {
+        idByName[name] = created[0].id;
+        console.log(`[folders]   ✓ "${name}"`);
+      }
+    } catch (err) {
+      console.error(`[folders]   ✗ "${name}":`, err.message);
+    }
+  }
 
-  const { data: created, error: insertError } = await supabase
-    .from("folders")
-    .insert({
-      company_id: companyId,
-      parent_id: null,
-      name: "General Uploads",
-      color: null,
-      created_by: creatorId
-    })
-    .select("*")
-    .single();
-
-  if (insertError) console.error("❌ Error creating root upload folder:", insertError.message);
-  return created || null;
+  try {
+    return await pgQuery("SELECT * FROM folders WHERE company_id=$1 ORDER BY created_at ASC", [companyId]);
+  } catch { return []; }
 }
 
 /**
  * Lists all folders for a company
  * @param {string} companyId - Company ID
+ * @param {Object} options
+ * @param {boolean} [options.includeArchived] - Include archived folders
  * @returns {Promise<Array>}
  */
-async function listFoldersByCompany(companyId) {
-  const { data, error } = await supabase
+async function listFoldersByCompany(companyId, options = {}) {
+  let query = supabase
     .from("folders")
     .select("*")
     .eq("company_id", companyId)
     .order("created_at", { ascending: true });
 
+  if (!options.includeArchived) {
+    query = query.is("archived_at", null);
+  }
+
+  const { data, error } = await query;
   if (error) throw error;
   return data || [];
+}
+
+async function getFolderById(id) {
+  if (!id) return null;
+  const { data, error } = await supabase
+    .from("folders")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw error;
+  return data || null;
 }
 
 /**
  * Gets a tree structure of folders for a company
  * @param {string} companyId - Company ID
+ * @param {Object} options
+ * @param {boolean} [options.includeArchived] - Include archived folders
  * @returns {Promise<Array>}
  */
-async function getFolderTree(companyId) {
-  const { data: rows, error } = await supabase
+async function getFolderTree(companyId, options = {}) {
+  let query = supabase
     .from("folders")
     .select("*")
     .eq("company_id", companyId)
     .order("created_at", { ascending: true });
 
+  if (!options.includeArchived) {
+    query = query.is("archived_at", null);
+  }
+
+  const { data: rows, error } = await query;
+
   if (error) throw error;
 
   const byId = new Map();
-  for (const row of (rows || [])) {
-    byId.set(row.id, { ...row, children: [] });
-  }
+  for (const row of deduped) byId.set(row.id, { ...row, children: [] });
 
   const roots = [];
   for (const node of byId.values()) {
@@ -286,48 +172,123 @@ async function getFolderTree(companyId) {
       roots.push(node);
     }
   }
-
   return roots;
 }
 
-/**
- * Creates a new folder
- * @param {string} companyId - Company ID
- * @param {Object} folderData - Folder data
- * @returns {Promise<Object>}
- */
+async function getFolderTree(companyId, preferredCreatedBy = null) {
+  let rows = await fetchFolderRows(companyId);
+
+  if (rows.length === 0) {
+    console.log(`[folders] No folders for company ${companyId} — self-healing`);
+    await ensureCompanyDefaultFolders(companyId, preferredCreatedBy).catch((err) =>
+      console.error("[folders] self-heal failed:", err.message),
+    );
+    rows = await fetchFolderRows(companyId);
+  }
+
+  // If there are more folders than expected, duplicates exist — clean them up
+  if (rows.length > EXPECTED_FOLDER_COUNT) {
+    console.log(`[folders] Found ${rows.length} folders (expected ${EXPECTED_FOLDER_COUNT}) — deduplicating`);
+    await cleanupDuplicateFolders(companyId).catch((err) =>
+      console.error("[folders] dedup failed:", err.message),
+    );
+    rows = await fetchFolderRows(companyId);
+  }
+
+  return buildTree(rows);
+}
+
+async function listFoldersByCompany(companyId) {
+  try {
+    return await pgQuery("SELECT * FROM folders WHERE company_id=$1 ORDER BY created_at ASC", [companyId]);
+  } catch {
+    const { data, error } = await supabase.from("folders").select("*").eq("company_id", companyId).order("created_at", { ascending: true });
+    if (error) throw error;
+    return data || [];
+  }
+}
+
+async function ensureRootUploadFolder(companyId, preferredCreatedBy) {
+  try {
+    const rows = await pgQuery("SELECT * FROM folders WHERE company_id=$1 AND parent_id IS NULL AND lower(name)='general uploads' LIMIT 1", [companyId]);
+    if (rows[0]) return rows[0];
+    const creatorId = await resolveCreatorId(companyId, preferredCreatedBy);
+    if (!creatorId) return null;
+    const created = await pgQuery(
+      "INSERT INTO folders (company_id, parent_id, name, color, created_by) VALUES ($1,NULL,'General Uploads',NULL,$2) RETURNING *",
+      [companyId, creatorId],
+    );
+    return created[0] || null;
+  } catch {
+    const { data: existing } = await supabase.from("folders").select("*").eq("company_id", companyId).is("parent_id", null).ilike("name", "General Uploads").maybeSingle();
+    if (existing) return existing;
+    const creatorId = await resolveCreatorId(companyId, preferredCreatedBy);
+    if (!creatorId) return null;
+    const { data, error } = await supabase.from("folders")
+      .insert({ company_id: companyId, parent_id: null, name: "General Uploads", color: null, created_by: creatorId })
+      .select("*").single();
+    if (error) console.error("[folders] ensureRootUploadFolder:", error.message);
+    return data || null;
+  }
+}
+
 async function createFolder(companyId, folderData) {
+  try {
+    const rows = await pgQuery(
+      "INSERT INTO folders (company_id, parent_id, name, color, created_by) VALUES ($1,$2,$3,$4,$5) RETURNING *",
+      [companyId, folderData.parent_id || null, folderData.name, folderData.color || null, folderData.created_by],
+    );
+    return rows[0];
+  } catch {
+    const { data, error } = await supabase.from("folders")
+      .insert({ company_id: companyId, parent_id: folderData.parent_id || null, name: folderData.name, color: folderData.color || null, created_by: folderData.created_by })
+      .select("*").single();
+    if (error) throw error;
+    return data;
+  }
+}
+
+async function updateFolder(id, folderData) {
+  const updates = {};
+  if (folderData.name !== undefined) updates.name = folderData.name;
+  if (folderData.color !== undefined) updates.color = folderData.color;
+  try {
+    const keys = Object.keys(updates);
+    if (!keys.length) throw new Error("Nothing to update");
+    const set = keys.map((k, i) => `"${k}"=$${i + 1}`).join(", ");
+    const rows = await pgQuery(`UPDATE folders SET ${set} WHERE id=$${keys.length + 1} RETURNING *`, [...keys.map((k) => updates[k]), id]);
+    return rows[0];
+  } catch {
+    const { data, error } = await supabase.from("folders").update(updates).eq("id", id).select("*").single();
+    if (error) throw error;
+    return data;
+  }
+}
+
+/**
+ * Archives a folder (soft delete)
+ */
+async function archiveFolder(id) {
   const { data, error } = await supabase
     .from("folders")
-    .insert({
-      company_id: companyId,
-      parent_id: folderData.parent_id || null,
-      name: folderData.name,
-      color: folderData.color || null,
-      created_by: folderData.created_by
-    })
+    .update({ archived_at: new Date().toISOString() })
+    .eq("id", id)
     .select("*")
     .single();
-
   if (error) throw error;
   return data;
 }
 
 /**
- * Updates a folder
+ * Unarchives a folder
  */
-async function updateFolder(id, folderData) {
-  const updates = {};
-  if (folderData.name !== undefined) updates.name = folderData.name;
-  if (folderData.color !== undefined) updates.color = folderData.color;
-
+async function unarchiveFolder(id) {
   const { data, error } = await supabase
     .from("folders")
-    .update(updates)
+    .update({ archived_at: null })
     .eq("id", id)
     .select("*")
     .single();
-
   if (error) throw error;
   return data;
 }
@@ -336,33 +297,37 @@ async function updateFolder(id, folderData) {
  * Deletes a folder
  */
 async function deleteFolder(id) {
-  const { error } = await supabase.from("folders").delete().eq("id", id);
-  if (error) throw error;
+  try {
+    await pgQuery("DELETE FROM folders WHERE id=$1", [id]);
+  } catch {
+    const { error } = await supabase.from("folders").delete().eq("id", id);
+    if (error) throw error;
+  }
 }
 
-/**
- * Moves a folder to a new parent
- */
 async function moveFolder(id, parentId) {
-  const { data, error } = await supabase
-    .from("folders")
-    .update({ parent_id: parentId || null })
-    .eq("id", id)
-    .select("*")
-    .single();
-
-  if (error) throw error;
-  return data;
+  try {
+    const rows = await pgQuery("UPDATE folders SET parent_id=$1 WHERE id=$2 RETURNING *", [parentId || null, id]);
+    return rows[0];
+  } catch {
+    const { data, error } = await supabase.from("folders").update({ parent_id: parentId || null }).eq("id", id).select("*").single();
+    if (error) throw error;
+    return data;
+  }
 }
 
 module.exports = {
   ensureCompanyDefaultFolders,
   ensureRootUploadFolder,
-  resolveFolderCreatorId,
+  cleanupDuplicateFolders,
+  resolveFolderCreatorId: resolveCreatorId,
   listFoldersByCompany,
+  getFolderById,
   getFolderTree,
   createFolder,
   updateFolder,
+  archiveFolder,
+  unarchiveFolder,
   deleteFolder,
-  moveFolder
+  moveFolder,
 };

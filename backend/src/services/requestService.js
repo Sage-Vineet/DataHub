@@ -1,5 +1,22 @@
 const { supabase } = require("../db");
+const { Pool } = require("pg");
 const { resolveReminderFrequencyDays } = require("../utils/requestReminders");
+
+let _pool = null;
+function getPool() {
+  if (!process.env.DATABASE_URL) return null;
+  if (!_pool) {
+    _pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false }, max: 5 });
+    _pool.on("error", (err) => console.error("[requestService] pg pool error:", err.message));
+  }
+  return _pool;
+}
+async function pgQuery(sql, params = []) {
+  const pool = getPool();
+  if (!pool) throw new Error("DATABASE_URL not configured");
+  const { rows } = await pool.query(sql, params);
+  return rows;
+}
 
 const REQUEST_CATEGORIES = ["Finance", "Legal", "Compliance", "HR", "Tax", "M&A", "Other"];
 const RESPONSE_TYPES = ["Upload", "Narrative", "Both"];
@@ -110,79 +127,90 @@ function normalizeBoolean(value, fallback = true) {
  * Gets a request by ID with user info
  */
 async function getRequestById(requestId) {
-  const { data, error } = await supabase
-    .from("requests")
-    .select(`
-      *,
-      created_by_user:users!requests_created_by_fkey(name, email),
-      approved_by_user:users!requests_approved_by_fkey(name)
-    `)
-    .eq("id", requestId)
-    .maybeSingle();
-
-  if (error || !data) return null;
-  return {
-    ...data,
-    created_by_name: data.created_by_user?.name,
-    created_by_email: data.created_by_user?.email,
-    approved_by_name: data.approved_by_user?.name
-  };
+  try {
+    const rows = await pgQuery(
+      `SELECT r.*, u1.name AS created_by_name, u1.email AS created_by_email, u2.name AS approved_by_name
+       FROM requests r
+       LEFT JOIN users u1 ON r.created_by = u1.id
+       LEFT JOIN users u2 ON r.approved_by = u2.id
+       WHERE r.id = $1 LIMIT 1`,
+      [requestId],
+    );
+    return rows[0] || null;
+  } catch {
+    const { data, error } = await supabase
+      .from("requests")
+      .select(`*, created_by_user:users!requests_created_by_fkey(name, email), approved_by_user:users!requests_approved_by_fkey(name)`)
+      .eq("id", requestId).maybeSingle();
+    if (error || !data) return null;
+    return { ...data, created_by_name: data.created_by_user?.name, created_by_email: data.created_by_user?.email, approved_by_name: data.approved_by_user?.name };
+  }
 }
 
 /**
  * Lists requests for a company
  */
 async function listRequestsByCompany(companyId) {
-  const { data, error } = await supabase
-    .from("requests")
-    .select(`
-      *,
-      created_by_user:users!requests_created_by_fkey(name, email),
-      approved_by_user:users!requests_approved_by_fkey(name)
-    `)
-    .eq("company_id", companyId)
-    .order("created_at", { ascending: false });
-
-  if (error) throw error;
-
-  return (data || []).map(r => ({
-    ...r,
-    created_by_name: r.created_by_user?.name,
-    created_by_email: r.created_by_user?.email,
-    approved_by_name: r.approved_by_user?.name
-  }));
+  try {
+    const rows = await pgQuery(
+      `SELECT r.*, u1.name AS created_by_name, u1.email AS created_by_email, u2.name AS approved_by_name
+       FROM requests r
+       LEFT JOIN users u1 ON r.created_by = u1.id
+       LEFT JOIN users u2 ON r.approved_by = u2.id
+       WHERE r.company_id = $1
+       ORDER BY r.created_at DESC`,
+      [companyId],
+    );
+    return rows;
+  } catch {
+    const { data, error } = await supabase
+      .from("requests")
+      .select(`*, created_by_user:users!requests_created_by_fkey(name, email), approved_by_user:users!requests_approved_by_fkey(name)`)
+      .eq("company_id", companyId).order("created_at", { ascending: false });
+    if (error) throw error;
+    return (data || []).map(r => ({ ...r, created_by_name: r.created_by_user?.name, created_by_email: r.created_by_user?.email, approved_by_name: r.approved_by_user?.name }));
+  }
 }
 
 /**
  * Creates a new request
  */
 async function createRequest(companyId, payload) {
-  const { data, error } = await supabase
-    .from("requests")
-    .insert({
-      company_id: companyId,
-      ...payload
-    })
-    .select("*")
-    .single();
-
-  if (error) throw error;
-  return data;
+  const fields = { company_id: companyId, ...payload };
+  try {
+    const keys = Object.keys(fields);
+    const cols = keys.map((k) => `"${k}"`).join(", ");
+    const vals = keys.map((_, i) => `$${i + 1}`).join(", ");
+    const rows = await pgQuery(
+      `INSERT INTO requests (${cols}) VALUES (${vals}) RETURNING *`,
+      keys.map((k) => fields[k]),
+    );
+    return rows[0];
+  } catch {
+    const { data, error } = await supabase.from("requests").insert(fields).select("*").single();
+    if (error) throw error;
+    return data;
+  }
 }
 
 /**
  * Updates an existing request
  */
 async function updateRequest(requestId, payload) {
-  const { data, error } = await supabase
-    .from("requests")
-    .update(payload)
-    .eq("id", requestId)
-    .select("*")
-    .single();
-
-  if (error) throw error;
-  return data;
+  try {
+    const keys = Object.keys(payload);
+    if (!keys.length) throw new Error("Nothing to update");
+    const set = keys.map((k, i) => `"${k}"=$${i + 1}`).join(", ");
+    const rows = await pgQuery(
+      `UPDATE requests SET ${set} WHERE id=$${keys.length + 1} RETURNING *`,
+      [...keys.map((k) => payload[k]), requestId],
+    );
+    return rows[0];
+  } catch {
+    const { data, error } = await supabase.from("requests").update(payload).eq("id", requestId).select("*").single();
+    if (error) throw error;
+    return data;
+  }
 }
 
 /**
@@ -190,14 +218,18 @@ async function updateRequest(requestId, payload) {
  */
 async function createReminderEvent(requestId, sentBy, sentAt = null) {
   const reminderSentAt = sentAt || new Date().toISOString();
-  const { data, error } = await supabase
-    .from("request_reminders")
-    .insert({ request_id: requestId, sent_by: sentBy, sent_at: reminderSentAt })
-    .select("*")
-    .single();
-    
-  if (error) throw error;
-  return data;
+  try {
+    const rows = await pgQuery(
+      "INSERT INTO request_reminders (request_id, sent_by, sent_at) VALUES ($1, $2, $3) RETURNING *",
+      [requestId, sentBy, reminderSentAt],
+    );
+    return rows[0];
+  } catch {
+    const { data, error } = await supabase.from("request_reminders")
+      .insert({ request_id: requestId, sent_by: sentBy, sent_at: reminderSentAt }).select("*").single();
+    if (error) throw error;
+    return data;
+  }
 }
 
 /**
@@ -231,123 +263,133 @@ async function createRequestsBulk(companyId, items, createdBy) {
     ...item.value
   }));
 
-  const { data, error } = await supabase
-    .from("requests")
-    .insert(payloads)
-    .select("id");
-
-  if (error) throw error;
-
-  // Create reminders for all
-  for (const row of data) {
-    await createReminderEvent(row.id, createdBy);
+  let ids = [];
+  try {
+    const results = await Promise.all(payloads.map(async (p) => {
+      const keys = Object.keys(p);
+      const cols = keys.map((k) => `"${k}"`).join(", ");
+      const vals = keys.map((_, i) => `$${i + 1}`).join(", ");
+      const rows = await pgQuery(`INSERT INTO requests (${cols}) VALUES (${vals}) RETURNING id`, keys.map((k) => p[k]));
+      return rows[0]?.id;
+    }));
+    ids = results.filter(Boolean);
+  } catch {
+    const { data, error } = await supabase.from("requests").insert(payloads).select("id");
+    if (error) throw error;
+    ids = (data || []).map((r) => r.id);
   }
 
-  return { count: data.length };
+  for (const id of ids) await createReminderEvent(id, createdBy);
+  return { count: ids.length };
 }
 
 /**
  * Approves a request
  */
 async function approveRequest(requestId, approvedBy) {
-  const { data, error } = await supabase
-    .from("requests")
-    .update({
-      approval_status: "approved",
-      approved_by: approvedBy,
-      approved_at: new Date().toISOString(),
-      updated_at: new Date().toISOString()
-    })
-    .eq("id", requestId)
-    .select("*")
-    .single();
-
-  if (error) throw error;
-  await createReminderEvent(requestId, approvedBy);
-  return data;
+  const now = new Date().toISOString();
+  try {
+    const rows = await pgQuery(
+      "UPDATE requests SET approval_status='approved', approved_by=$1, approved_at=$2, updated_at=$3 WHERE id=$4 RETURNING *",
+      [approvedBy, now, now, requestId],
+    );
+    await createReminderEvent(requestId, approvedBy);
+    return rows[0];
+  } catch {
+    const { data, error } = await supabase.from("requests")
+      .update({ approval_status: "approved", approved_by: approvedBy, approved_at: now, updated_at: now })
+      .eq("id", requestId).select("*").single();
+    if (error) throw error;
+    await createReminderEvent(requestId, approvedBy);
+    return data;
+  }
 }
 
-/**
- * Deletes a request
- */
 async function deleteRequest(requestId) {
-  const { error } = await supabase.from("requests").delete().eq("id", requestId);
-  if (error) throw error;
+  try {
+    await pgQuery("DELETE FROM requests WHERE id=$1", [requestId]);
+  } catch {
+    const { error } = await supabase.from("requests").delete().eq("id", requestId);
+    if (error) throw error;
+  }
 }
 
-/**
- * Lists documents linked to a request
- */
 async function listRequestDocuments(requestId) {
-  const { data, error } = await supabase
+  const { data: links, error: linksError } = await supabase
     .from("request_documents")
-    .select(`
-      id, request_id, document_id, visible, created_at,
-      document:documents!request_documents_document_id_fkey(name, file_url, status, upload_id)
-    `)
+    .select("id, request_id, document_id, visible, created_at")
     .eq("request_id", requestId)
     .order("created_at", { ascending: false });
 
-  if (error) throw error;
+  if (linksError) throw linksError;
+  if (!links || links.length === 0) return [];
 
-  return (data || []).map(rd => ({
-    ...rd,
-    name: rd.document?.name,
-    file_url: rd.document?.file_url,
-    status: rd.document?.status,
-    upload_id: rd.document?.upload_id
-  }));
+  const documentIds = links.map((l) => l.document_id).filter(Boolean);
+  const { data: documents, error: docsError } = await supabase
+    .from("documents")
+    .select("id, name, file_url, status, upload_id")
+    .in("id", documentIds);
+
+  if (docsError) throw docsError;
+
+  const docMap = {};
+  (documents || []).forEach((doc) => { docMap[doc.id] = doc; });
+
+  return links.map((rd) => {
+    const doc = docMap[rd.document_id] || {};
+    return {
+      ...rd,
+      name: doc.name,
+      file_url: doc.file_url,
+      status: doc.status,
+      upload_id: doc.upload_id,
+    };
+  });
 }
 
-/**
- * Links a document to a request
- */
 async function addRequestDocument(requestId, documentId, visible = true) {
-  const { data, error } = await supabase
-    .from("request_documents")
-    .insert({
-      request_id: requestId,
-      document_id: documentId,
-      visible: normalizeBoolean(visible, true)
-    })
-    .select("*")
-    .single();
-
-  if (error) throw error;
-  return data;
+  try {
+    const rows = await pgQuery(
+      "INSERT INTO request_documents (request_id, document_id, visible) VALUES ($1, $2, $3) RETURNING *",
+      [requestId, documentId, normalizeBoolean(visible, true)],
+    );
+    return rows[0];
+  } catch {
+    const { data, error } = await supabase.from("request_documents")
+      .insert({ request_id: requestId, document_id: documentId, visible: normalizeBoolean(visible, true) }).select("*").single();
+    if (error) throw error;
+    return data;
+  }
 }
 
-/**
- * Updates or creates a narrative for a request
- */
 async function updateNarrative(requestId, content, updatedBy) {
-  const { data, error } = await supabase
-    .from("request_narratives")
-    .upsert({
-      request_id: requestId,
-      content,
-      updated_by: updatedBy,
-      updated_at: new Date().toISOString()
-    }, { onConflict: "request_id" })
-    .select("*")
-    .single();
-
-  if (error) throw error;
-  return data;
+  const now = new Date().toISOString();
+  try {
+    const rows = await pgQuery(
+      `INSERT INTO request_narratives (request_id, content, updated_by, updated_at)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (request_id) DO UPDATE SET content=$2, updated_by=$3, updated_at=$4
+       RETURNING *`,
+      [requestId, content, updatedBy, now],
+    );
+    return rows[0];
+  } catch {
+    const { data, error } = await supabase.from("request_narratives")
+      .upsert({ request_id: requestId, content, updated_by: updatedBy, updated_at: now }, { onConflict: "request_id" }).select("*").single();
+    if (error) throw error;
+    return data;
+  }
 }
 
-/**
- * Gets a narrative for a request
- */
 async function getNarrative(requestId) {
-  const { data, error } = await supabase
-    .from("request_narratives")
-    .select("content")
-    .eq("request_id", requestId)
-    .maybeSingle();
-
-  if (error) throw error;
-  return data;
+  try {
+    const rows = await pgQuery("SELECT content FROM request_narratives WHERE request_id=$1 LIMIT 1", [requestId]);
+    return rows[0] || null;
+  } catch {
+    const { data, error } = await supabase.from("request_narratives").select("content").eq("request_id", requestId).maybeSingle();
+    if (error) throw error;
+    return data;
+  }
 }
 
 module.exports = {

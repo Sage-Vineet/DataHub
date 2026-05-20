@@ -561,4 +561,218 @@ const listActivity = asyncHandler(async (req, res) => {
   return res.json(activity);
 });
 
-module.exports = { listActivity };
+// ── Global broker activity feed ───────────────────────────────────────────────
+
+async function buildBrokerActivity(user, limit) {
+  const PER_SOURCE = 40;
+  const isAdmin = permissionService.isAdmin(user);
+  const allowedCompanyIds = permissionService.normalizeCompanyIds(user);
+  if (!isAdmin && !allowedCompanyIds.length) return [];
+
+  const [companiesRaw, usersRaw, documentsRaw, requestsRaw, narrativesRaw, activityLogRaw] =
+    await Promise.all([
+      safeQuery(
+        (isAdmin
+          ? supabase
+          .from("companies")
+          .select("id, name, project_name, industry, created_at")
+          : supabase
+          .from("companies")
+          .select("id, name, project_name, industry, created_at")
+          .in("id", allowedCompanyIds))
+          .order("created_at", { ascending: false })
+          .limit(PER_SOURCE)
+      ),
+      safeQuery(
+        (isAdmin
+          ? supabase
+          .from("users")
+          .select("id, name, email, role, company_id, created_at")
+          .eq("role", "buyer")
+          : supabase
+          .from("users")
+          .select("id, name, email, role, company_id, created_at")
+          .eq("role", "buyer")
+          .in("company_id", allowedCompanyIds))
+          .order("created_at", { ascending: false })
+          .limit(PER_SOURCE)
+      ),
+      safeQuery(
+        (isAdmin
+          ? supabase
+          .from("documents")
+          .select("id, name, company_id, uploaded_by, uploaded_at")
+          : supabase
+          .from("documents")
+          .select("id, name, company_id, uploaded_by, uploaded_at")
+          .in("company_id", allowedCompanyIds))
+          .order("uploaded_at", { ascending: false })
+          .limit(PER_SOURCE)
+      ),
+      safeQuery(
+        (isAdmin
+          ? supabase
+          .from("requests")
+          .select("id, title, company_id, created_by, created_at")
+          : supabase
+          .from("requests")
+          .select("id, title, company_id, created_by, created_at")
+          .in("company_id", allowedCompanyIds))
+          .order("created_at", { ascending: false })
+          .limit(PER_SOURCE)
+      ),
+      safeQuery(
+        supabase
+          .from("request_narratives")
+          .select("id, request_id, updated_by, updated_at")
+          .order("updated_at", { ascending: false })
+          .limit(PER_SOURCE)
+      ),
+      safeQuery(
+        (isAdmin
+          ? supabase
+          .from("activity_log")
+          .select("id, type, message, company_id, created_by, created_at")
+          : supabase
+          .from("activity_log")
+          .select("id, type, message, company_id, created_by, created_at")
+          .in("company_id", allowedCompanyIds))
+          .order("created_at", { ascending: false })
+          .limit(PER_SOURCE)
+      ),
+    ]);
+
+  // Resolve request titles for narratives
+  const narrativeRequestIds = [...new Set(narrativesRaw.map((n) => n.request_id).filter(Boolean))];
+  const requestTitleById = new Map();
+  if (narrativeRequestIds.length) {
+    const { data: reqRows } = await supabase
+      .from("requests")
+      .select("id, title, company_id")
+      .in("id", narrativeRequestIds);
+    for (const r of reqRows || []) {
+      if (!isAdmin && !allowedCompanyIds.includes(String(r.company_id))) continue;
+      requestTitleById.set(r.id, { title: r.title, company_id: r.company_id });
+    }
+  }
+
+  // Build actor map
+  const actorIds = collectActorIds([usersRaw, documentsRaw, requestsRaw, narrativesRaw, activityLogRaw]);
+  const userNameById = await buildUserNameMap(actorIds);
+
+  // Build company name map for context labels
+  const companyIds = new Set([
+    ...documentsRaw.map((d) => d.company_id),
+    ...requestsRaw.map((r) => r.company_id),
+    ...activityLogRaw.map((a) => a.company_id),
+    ...usersRaw.map((u) => u.company_id),
+    ...[...requestTitleById.values()].map((v) => v.company_id),
+  ].filter(Boolean));
+
+  const companyNameById = new Map();
+  if (companyIds.size) {
+    const { data: compData } = await supabase
+      .from("companies")
+      .select("id, name, project_name")
+      .in("id", Array.from(companyIds));
+    for (const c of compData || []) {
+      companyNameById.set(c.id, c.project_name || c.name);
+    }
+  }
+
+  const events = [];
+
+  for (const c of companiesRaw) {
+    events.push({
+      id: `company-created-${c.id}`,
+      type: "company_created",
+      message: `Company added: ${c.project_name || c.name}`,
+      detail: c.industry || null,
+      actor_name: null,
+      created_at: asIsoDate(c.created_at),
+      source: "companies",
+    });
+  }
+
+  for (const u of usersRaw) {
+    events.push({
+      id: `user-added-${u.id}`,
+      type: "user_added",
+      message: `Client added: ${u.name || u.email}`,
+      detail: companyNameById.get(u.company_id) || null,
+      actor_name: null,
+      created_at: asIsoDate(u.created_at),
+      source: "users",
+    });
+  }
+
+  for (const d of documentsRaw) {
+    events.push({
+      id: `document-uploaded-${d.id}`,
+      type: "document_uploaded",
+      message: `Document uploaded: ${d.name || "Document"}`,
+      detail: companyNameById.get(d.company_id) || null,
+      actor_name: userNameById.get(d.uploaded_by) || null,
+      created_at: asIsoDate(d.uploaded_at),
+      source: "documents",
+    });
+  }
+
+  for (const r of requestsRaw) {
+    events.push({
+      id: `request-created-${r.id}`,
+      type: "request_created",
+      message: `Request created: ${r.title || "Untitled"}`,
+      detail: companyNameById.get(r.company_id) || null,
+      actor_name: userNameById.get(r.created_by) || null,
+      created_at: asIsoDate(r.created_at),
+      source: "requests",
+    });
+  }
+
+  for (const n of narrativesRaw) {
+    const req = requestTitleById.get(n.request_id);
+    if (!isAdmin && !req) continue;
+    events.push({
+      id: `request-answered-${n.id}`,
+      type: "request_narrative_updated",
+      message: `Request answered: ${req?.title || "Untitled request"}`,
+      detail: companyNameById.get(req?.company_id) || null,
+      actor_name: userNameById.get(n.updated_by) || null,
+      created_at: asIsoDate(n.updated_at),
+      source: "request_narratives",
+    });
+  }
+
+  for (const log of activityLogRaw) {
+    events.push({
+      id: `activity-log-${log.id}`,
+      type: log.type || "activity",
+      message: log.message,
+      detail: companyNameById.get(log.company_id) || null,
+      actor_name: userNameById.get(log.created_by) || null,
+      created_at: asIsoDate(log.created_at),
+      source: "activity_log",
+    });
+  }
+
+  const deduped = new Map();
+  for (const event of events) {
+    if (!event.created_at) continue;
+    deduped.set(event.id, event);
+  }
+
+  return withSequence(Array.from(deduped.values()), limit);
+}
+
+const listBrokerActivity = asyncHandler(async (req, res) => {
+  const role = String(req.user?.role || "").toLowerCase();
+  if (!["broker", "admin"].includes(role)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  const activity = await buildBrokerActivity(req.user, clampLimit(req.query.limit));
+  res.set("Cache-Control", "private, max-age=15");
+  return res.json(activity);
+});
+
+module.exports = { listActivity, listBrokerActivity };

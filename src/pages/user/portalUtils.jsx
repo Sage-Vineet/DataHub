@@ -15,12 +15,14 @@ export function normalizeAssignedCompany(company) {
   if (!id) return null;
 
   const name = company.name ?? company.company_name ?? company.companyName ?? 'Assigned Company';
+  const projectName = company.project_name ?? company.projectName ?? null;
 
   return {
     ...company,
     id,
     name,
-    logo: company.logo || initials(name),
+    project_name: projectName,
+    logo: company.logo || initials(projectName || name),
     industry: company.industry || 'Business Services',
     status: company.status || 'active',
     contact_name: company.contact_name || company.contactName || 'Primary Contact',
