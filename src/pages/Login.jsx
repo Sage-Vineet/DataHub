@@ -127,7 +127,7 @@ export default function Login() {
               <form onSubmit={handleSignupSubmit} className="space-y-4">
                 <div>
                   <label className="mb-1.5 block text-sm font-medium text-text-primary">
-                    Full Name
+                    Your Name
                   </label>
                   <input
                     type="text"
@@ -141,7 +141,7 @@ export default function Login() {
 
                 <div>
                   <label className="mb-1.5 block text-sm font-medium text-text-primary">
-                    Brokerage / Company
+                    Company Name
                   </label>
                   <input
                     type="text"
@@ -189,7 +189,7 @@ export default function Login() {
                       value={signupForm.password}
                       onChange={(e) => setSignupField("password", e.target.value)}
                       required
-                      placeholder="Minimum 8 characters"
+                      placeholder="Min. 8 alphanumeric characters"
                       className="theme-input h-12 rounded-xl px-4 pr-12"
                     />
                     <button
@@ -211,7 +211,7 @@ export default function Login() {
                     value={signupForm.confirmPassword}
                     onChange={(e) => setSignupField("confirmPassword", e.target.value)}
                     required
-                    placeholder="Repeat password"
+                    placeholder="Min. 8 alphanumeric characters"
                     className="theme-input h-12 rounded-xl px-4"
                   />
                 </div>
@@ -322,7 +322,7 @@ export default function Login() {
             )}
 
             <p className="mt-6 text-center text-xs text-text-muted">
-              Protected by DataRoom Security · All rights reserved
+               © 2026 M&A Hub • Privacy • Terms
             </p>
           </div>
         </div>

@@ -1,8 +1,21 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { listCompaniesRequest, listCompanyDirectMessageContactsRequest } from '../lib/api';
 import { useAuth } from './AuthContext';
 
 const MessageNotificationsContext = createContext(null);
+const NOTIFICATION_CACHE_TTL_MS = 60_000;
+const BACKGROUND_STALE_MS = 5 * 60_000;
+const COMPANY_CACHE_TTL_MS = 10 * 60_000;
+const REQUEST_DEBOUNCE_MS = 1_500;
+
+const notificationCache = new Map();
+const notificationInflight = new Map();
+const brokerCompanyCache = {
+  companyIds: [],
+  fetchedAt: 0,
+  inflight: null,
+};
 
 function getStorageKey(userId) {
   return `leo-message-seen:${userId}`;
@@ -28,6 +41,27 @@ function threadKey(companyId, participantId) {
   return `${companyId}:${participantId}`;
 }
 
+function getCachedState(userId) {
+  return notificationCache.get(userId) || null;
+}
+
+function setCachedState(userId, state) {
+  if (!userId) return;
+  notificationCache.set(userId, {
+    notifications: state.notifications || [],
+    lastUpdatedAt: state.lastUpdatedAt || new Date().toISOString(),
+    fetchedAt: state.fetchedAt || Date.now(),
+  });
+}
+
+function applySeenMap(notifications, userId) {
+  const seenMap = readSeenMap(userId);
+  return notifications.filter((item) => {
+    const seenAt = seenMap[item.id];
+    return !(seenAt && String(seenAt) >= String(item.createdAt));
+  });
+}
+
 function normalizeCompanyIds(user) {
   if (!user) return [];
   if (user.role === 'broker') return null;
@@ -40,33 +74,94 @@ function normalizeCompanyIds(user) {
   ].filter(Boolean).map(String)));
 }
 
+async function resolveCompanyIds(user, force = false) {
+  const companyIds = normalizeCompanyIds(user);
+  if (companyIds !== null) return companyIds;
+
+  const now = Date.now();
+  if (!force && brokerCompanyCache.companyIds.length && now - brokerCompanyCache.fetchedAt < COMPANY_CACHE_TTL_MS) {
+    return brokerCompanyCache.companyIds;
+  }
+
+  if (!force && brokerCompanyCache.inflight) {
+    return brokerCompanyCache.inflight;
+  }
+
+  brokerCompanyCache.inflight = listCompaniesRequest()
+    .catch(() => [])
+    .then((companies) => {
+      const ids = companies.map((company) => String(company.id)).filter(Boolean);
+      brokerCompanyCache.companyIds = ids;
+      brokerCompanyCache.fetchedAt = Date.now();
+      return ids;
+    })
+    .finally(() => {
+      brokerCompanyCache.inflight = null;
+    });
+
+  return brokerCompanyCache.inflight;
+}
+
 export function MessageNotificationsProvider({ children }) {
   const { user } = useAuth();
-  const [notifications, setNotifications] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [lastUpdatedAt, setLastUpdatedAt] = useState(null);
-
+  const location = useLocation();
   const userId = user?.id ? String(user.id) : null;
+  const cachedState = userId ? getCachedState(userId) : null;
+  const [notifications, setNotifications] = useState(() => cachedState?.notifications || []);
+  const [loading, setLoading] = useState(false);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState(() => cachedState?.lastUpdatedAt || null);
+  const lastRefreshRequestAtRef = useRef(0);
+  const mountedRef = useRef(false);
 
-  const refresh = useCallback(async () => {
+  const userScopeKey = useMemo(() => {
+    if (!user) return 'anonymous';
+    const companyIds = normalizeCompanyIds(user);
+    return JSON.stringify({
+      id: user.id,
+      role: user.role,
+      companyIds: companyIds === null ? 'broker-all' : companyIds,
+    });
+  }, [user]);
+
+  const refresh = useCallback(async (options = {}) => {
+    const { force = false, silent = false } = options;
     if (!userId || !user) {
       setNotifications([]);
       setLoading(false);
       return;
     }
 
-    setLoading(true);
-    try {
-      let companyIds = normalizeCompanyIds(user);
-      if (companyIds === null) {
-        const companies = await listCompaniesRequest().catch(() => []);
-        companyIds = companies.map((company) => String(company.id)).filter(Boolean);
-      }
+    const now = Date.now();
+    const cached = getCachedState(userId);
+    if (!force && cached && now - cached.fetchedAt < NOTIFICATION_CACHE_TTL_MS) {
+      const nextNotifications = applySeenMap(cached.notifications, userId);
+      setNotifications(nextNotifications);
+      setLastUpdatedAt(cached.lastUpdatedAt);
+      return;
+    }
 
+    const inflightKey = `${userId}:${userScopeKey}`;
+    if (notificationInflight.has(inflightKey)) {
+      const cachedPromise = notificationInflight.get(inflightKey);
+      if (!silent) setLoading(true);
+      const result = await cachedPromise;
+      if (mountedRef.current) {
+        setNotifications(result.notifications);
+        setLastUpdatedAt(result.lastUpdatedAt);
+        setLoading(false);
+      }
+      return;
+    }
+
+    if (!silent) setLoading(true);
+    const requestPromise = (async () => {
+      const companyIds = await resolveCompanyIds(user, force);
       if (!companyIds.length) {
-        setNotifications([]);
-        setLastUpdatedAt(new Date().toISOString());
-        return;
+        return {
+          notifications: [],
+          lastUpdatedAt: new Date().toISOString(),
+          fetchedAt: Date.now(),
+        };
       }
 
       const seenMap = readSeenMap(userId);
@@ -107,50 +202,127 @@ export function MessageNotificationsProvider({ children }) {
       });
 
       nextNotifications.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
-      setNotifications(nextNotifications);
-      setLastUpdatedAt(new Date().toISOString());
+      return {
+        notifications: nextNotifications,
+        lastUpdatedAt: new Date().toISOString(),
+        fetchedAt: Date.now(),
+      };
+    })();
+
+    notificationInflight.set(inflightKey, requestPromise);
+    try {
+      const result = await requestPromise;
+      setCachedState(userId, result);
+      if (mountedRef.current) {
+        setNotifications(result.notifications);
+        setLastUpdatedAt(result.lastUpdatedAt);
+      }
     } finally {
-      setLoading(false);
+      notificationInflight.delete(inflightKey);
+      if (mountedRef.current) {
+        setLoading(false);
+      }
     }
-  }, [user, userId]);
+  }, [user, userId, userScopeKey]);
+
+  const requestRefresh = useCallback((options = {}) => {
+    const { force = false } = options;
+    const now = Date.now();
+    if (!force && now - lastRefreshRequestAtRef.current < REQUEST_DEBOUNCE_MS) return;
+    lastRefreshRequestAtRef.current = now;
+    refresh(options);
+  }, [refresh]);
+
+  const ensureFresh = useCallback((options = {}) => {
+    const cached = userId ? getCachedState(userId) : null;
+    const maxAge = options.maxAge ?? NOTIFICATION_CACHE_TTL_MS;
+    if (!cached || Date.now() - cached.fetchedAt >= maxAge) {
+      requestRefresh({ ...options, force: options.force ?? !cached });
+    }
+  }, [requestRefresh, userId]);
 
   useEffect(() => {
-    refresh();
-  }, [refresh]);
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const commit = (fn) => {
+      queueMicrotask(() => {
+        if (!cancelled) fn();
+      });
+    };
+
+    if (!userId) {
+      commit(() => {
+        setNotifications([]);
+        setLastUpdatedAt(null);
+        setLoading(false);
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const cached = getCachedState(userId);
+    if (cached) {
+      commit(() => {
+        setNotifications(applySeenMap(cached.notifications, userId));
+        setLastUpdatedAt(cached.lastUpdatedAt);
+      });
+      ensureFresh({ silent: true, maxAge: BACKGROUND_STALE_MS });
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    requestRefresh({ force: true });
+    return () => {
+      cancelled = true;
+    };
+  }, [ensureFresh, requestRefresh, userId]);
+
+  useEffect(() => {
+    ensureFresh({ silent: true, maxAge: BACKGROUND_STALE_MS });
+  }, [ensureFresh, location.pathname, location.search]);
 
   useEffect(() => {
     if (!userId) return undefined;
 
-    const intervalId = window.setInterval(() => {
-      refresh();
-    }, 30000);
-
-    // Prevent burst refreshes on rapid tab-switching: minimum 10 s between focus-triggered calls.
-    let lastFocusRefreshAt = 0;
     const handleFocus = () => {
-      const now = Date.now();
-      if (now - lastFocusRefreshAt < 10_000) return;
-      lastFocusRefreshAt = now;
-      refresh();
+      ensureFresh({ silent: true, maxAge: NOTIFICATION_CACHE_TTL_MS });
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        ensureFresh({ silent: true, maxAge: NOTIFICATION_CACHE_TTL_MS });
+      }
     };
     const handleStorage = (event) => {
       if (event.key === getStorageKey(userId)) {
-        refresh();
+        const cached = getCachedState(userId);
+        setNotifications((current) => applySeenMap(cached?.notifications || current, userId));
       }
     };
-    const handleCustomUpdate = () => refresh();
+    const handleCustomUpdate = () => {
+      const cached = getCachedState(userId);
+      setNotifications((current) => applySeenMap(cached?.notifications || current, userId));
+    };
 
     window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
     window.addEventListener('storage', handleStorage);
     window.addEventListener('leo-message-notifications-updated', handleCustomUpdate);
 
     return () => {
-      window.clearInterval(intervalId);
       window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('storage', handleStorage);
       window.removeEventListener('leo-message-notifications-updated', handleCustomUpdate);
     };
-  }, [refresh, userId]);
+  }, [ensureFresh, userId]);
 
   const markConversationRead = useCallback((companyId, participantId, seenAt = null) => {
     if (!userId || !companyId || !participantId) return;
@@ -160,6 +332,13 @@ export function MessageNotificationsProvider({ children }) {
     if (!seenMap[key] || String(seenMap[key]) < String(nextSeenAt)) {
       seenMap[key] = nextSeenAt;
       writeSeenMap(userId, seenMap);
+      const cached = getCachedState(userId);
+      if (cached) {
+        setCachedState(userId, {
+          ...cached,
+          notifications: cached.notifications.filter((item) => item.id !== key),
+        });
+      }
       setNotifications((current) => current.filter((item) => item.id !== key));
       window.dispatchEvent(new Event('leo-message-notifications-updated'));
     }
@@ -173,8 +352,10 @@ export function MessageNotificationsProvider({ children }) {
     loading,
     lastUpdatedAt,
     refresh,
+    requestRefresh,
+    ensureFresh,
     markConversationRead,
-  }), [notifications, unreadCount, loading, lastUpdatedAt, refresh, markConversationRead]);
+  }), [notifications, unreadCount, loading, lastUpdatedAt, refresh, requestRefresh, ensureFresh, markConversationRead]);
 
   return (
     <MessageNotificationsContext.Provider value={value}>

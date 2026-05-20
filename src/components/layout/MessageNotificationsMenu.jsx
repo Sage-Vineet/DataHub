@@ -16,7 +16,7 @@ function formatTime(value) {
 
 export default function MessageNotificationsMenu({ portal = 'client', companyId = null, className = '' }) {
   const navigate = useNavigate();
-  const { notifications, unreadCount } = useMessageNotifications();
+  const { notifications, unreadCount, ensureFresh } = useMessageNotifications();
   const [open, setOpen] = useState(false);
 
   const scopedNotifications = companyId
@@ -45,7 +45,15 @@ export default function MessageNotificationsMenu({ portal = 'client', companyId 
     <div className={`relative ${className}`}>
       <button
         type="button"
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => {
+          setOpen((value) => {
+            const nextOpen = !value;
+            if (nextOpen) {
+              ensureFresh({ silent: true });
+            }
+            return nextOpen;
+          });
+        }}
         className="group relative flex h-10 w-10 items-center justify-center rounded-md border border-border bg-bg-card text-text-muted transition-all hover:bg-bg-page"
       >
         <Bell size={18} className="transition-colors group-hover:text-primary" />
