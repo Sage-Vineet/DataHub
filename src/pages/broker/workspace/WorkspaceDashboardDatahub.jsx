@@ -264,6 +264,8 @@ export default function WorkspaceDashboardDatahub() {
 
   // Tracks the last chart request so we never fire the same one twice
   const lastChartRequestKeyRef = useRef("");
+  const chartRequestSeqRef = useRef(0);
+  const kpiRequestSeqRef = useRef(0);
   const kpiSelectorRef = useRef(null);
   // True once the mount effect has run — prevents the auto-save effect from
   // firing before state is properly initialised
@@ -449,8 +451,13 @@ export default function WorkspaceDashboardDatahub() {
     setIsManualUploadMode(restoredSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD);
 
     // Only restore if there is actual data — otherwise fall through to fresh fetch
-    const hasData =
+    const isManual = restoredSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD;
+    const hasStatsData =
       Array.isArray(snapshot.dynamicStats) && snapshot.dynamicStats.length > 0;
+    const hasChartData =
+      Array.isArray(snapshot.chartDataState) &&
+      snapshot.chartDataState.length > 0;
+    const hasData = hasStatsData && (isManual || hasChartData);
     const hydratedStats = hydrateDashboardStats(snapshot.dynamicStats || []);
     const restoredKpiLabels =
       Array.isArray(snapshot.selectedKpiLabels) &&
@@ -491,7 +498,6 @@ export default function WorkspaceDashboardDatahub() {
     setDynamicStats(hydratedStats);
     setSelectedKpiLabels(restoredKpiLabels);
     // In manual upload mode chart, invoices and insights are always blank
-    const isManual = restoredSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD;
     setInvoicesData(isManual ? [] : snapshot.invoicesData || []);
     setChartDataState(isManual ? [] : snapshot.chartDataState || []);
     setMonthlyInsights(isManual ? [] : snapshot.monthlyInsights || []);
@@ -579,30 +585,37 @@ export default function WorkspaceDashboardDatahub() {
     const requestKey = `${start}|${end}|${aggType}|${sourceMode}`;
     if (lastChartRequestKeyRef.current === requestKey) return;
     lastChartRequestKeyRef.current = requestKey;
+    const requestSeq = ++chartRequestSeqRef.current;
 
     setIsChartLoading(true);
     try {
       const data = await fetchFinancialTrends(start, end, aggType, {
         sourceMode,
       });
+      if (requestSeq !== chartRequestSeqRef.current) return;
       setChartDataState(data);
     } catch (err) {
+      if (requestSeq !== chartRequestSeqRef.current) return;
       console.error("Failed to load chart data:", err);
       // Preserve previous chart snapshot to avoid flicker/reset on transient or disconnect errors.
       lastChartRequestKeyRef.current = "";
     } finally {
-      setIsChartLoading(false);
+      if (requestSeq === chartRequestSeqRef.current) {
+        setIsChartLoading(false);
+      }
     }
   }, [activeSourceMode]);
 
   const loadKpiData = useCallback(async (start, end, sourceModeOverride = "") => {
     const sourceMode = sourceModeOverride || activeSourceMode;
+    const requestSeq = ++kpiRequestSeqRef.current;
     setIsLoading(true);
     try {
       const [kpiData, invsData] = await Promise.all([
         fetchDashboardKPIs(start, end, { sourceMode }),
         sourceMode === "quickbooks" ? fetchInvoices() : Promise.resolve([]),
       ]);
+      if (requestSeq !== kpiRequestSeqRef.current) return;
 
       const invs = Array.isArray(invsData?.QueryResponse?.Invoice)
         ? invsData.QueryResponse.Invoice
@@ -660,10 +673,12 @@ export default function WorkspaceDashboardDatahub() {
         },
       ]);
     } catch (err) {
+      if (requestSeq !== kpiRequestSeqRef.current) return;
       console.error("Failed to load dashboard KPI data:", err);
       const reportFallback = await getProfitAndLoss("", "", "", {
         sourceMode,
       }).catch(() => null);
+      if (requestSeq !== kpiRequestSeqRef.current) return;
       if (reportFallback) {
         setMonthlyInsights((current) =>
           current.length
@@ -679,7 +694,9 @@ export default function WorkspaceDashboardDatahub() {
         );
       }
     } finally {
-      setIsLoading(false);
+      if (requestSeq === kpiRequestSeqRef.current) {
+        setIsLoading(false);
+      }
     }
   }, [activeSourceMode]);
 

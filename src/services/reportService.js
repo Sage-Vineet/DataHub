@@ -134,8 +134,35 @@ function flattenRows(rows = []) {
   ]);
 }
 
+function unwrapReportPayload(payload) {
+  let current = payload;
+
+  for (let depth = 0; depth < 6; depth += 1) {
+    if (!current || typeof current !== "object") break;
+
+    if (current?.Rows?.Row) return current;
+
+    if (current?.data && typeof current.data === "object") {
+      current = current.data;
+      continue;
+    }
+
+    break;
+  }
+
+  return payload;
+}
+
 function getRows(payload) {
-  return payload?.Rows?.Row || payload?.data?.Rows?.Row || [];
+  const report = unwrapReportPayload(payload);
+  return (
+    report?.Rows?.Row ||
+    payload?.Rows?.Row ||
+    payload?.data?.Rows?.Row ||
+    payload?.data?.data?.Rows?.Row ||
+    payload?.data?.data?.data?.Rows?.Row ||
+    []
+  );
 }
 
 function normalizeLabel(value) {
@@ -280,9 +307,43 @@ async function fetchCombinedReports(params = {}) {
 }
 
 const MAX_CHART_REQUESTS = 12;
+const TREND_FETCH_CONCURRENCY = 4;
+
+async function mapWithConcurrency(items, mapper, concurrency = 4) {
+  const list = Array.isArray(items) ? items : [];
+  const safeConcurrency = Math.max(1, Math.min(concurrency, list.length || 1));
+  const results = new Array(list.length);
+  let cursor = 0;
+
+  const worker = async () => {
+    while (true) {
+      const index = cursor;
+      cursor += 1;
+      if (index >= list.length) return;
+      results[index] = await mapper(list[index], index);
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: safeConcurrency }, () => worker()),
+  );
+
+  return results;
+}
 
 function getAccountListRows(payload) {
-  return payload?.accountList?.Rows?.Row || payload?.AccountList?.Rows?.Row || [];
+  const report = unwrapReportPayload(payload);
+  return (
+    report?.accountList?.Rows?.Row ||
+    report?.AccountList?.Rows?.Row ||
+    payload?.accountList?.Rows?.Row ||
+    payload?.AccountList?.Rows?.Row ||
+    payload?.data?.accountList?.Rows?.Row ||
+    payload?.data?.AccountList?.Rows?.Row ||
+    payload?.data?.data?.accountList?.Rows?.Row ||
+    payload?.data?.data?.AccountList?.Rows?.Row ||
+    []
+  );
 }
 
 function findAccountBalance(payload, matchers = []) {
@@ -1016,41 +1077,42 @@ export async function fetchFinancialTrends(
     -MAX_CHART_REQUESTS,
   );
 
-  const results = [];
-  for (const bucket of buckets) {
-    let totals = { revenue: 0, expenses: 0 };
+  return mapWithConcurrency(
+    buckets,
+    async (bucket) => {
+      let totals = { revenue: 0, expenses: 0 };
 
-    if (sourceMode === "manual") {
-      const manualReport = await getManualStagedProfitLossSummary({
-        params: {
-          startDate: bucket.start,
-          endDate: bucket.end,
-        },
-      }).catch(() => null);
-      const manualTotals = extractManualProfitAndLossTotals(manualReport || {});
-      totals = {
-        revenue: manualTotals.revenue,
-        expenses: manualTotals.expenses,
+      if (sourceMode === "manual") {
+        const manualReport = await getManualStagedProfitLossSummary({
+          params: {
+            startDate: bucket.start,
+            endDate: bucket.end,
+          },
+        }).catch(() => null);
+        const manualTotals = extractManualProfitAndLossTotals(manualReport || {});
+        totals = {
+          revenue: manualTotals.revenue,
+          expenses: manualTotals.expenses,
+        };
+      } else {
+        const report = await fetchProfitAndLoss({
+          start_date: bucket.start,
+          end_date: bucket.end,
+        }).catch(() => null);
+        const quickBooksTotals = extractProfitAndLossTotals(report || {});
+        totals = {
+          revenue: quickBooksTotals.revenue,
+          expenses: quickBooksTotals.expenses,
+        };
+      }
+
+      return {
+        name: bucket.shortName || bucket.name,
+        fullLabel: bucket.name,
+        revenue: totals.revenue,
+        expenses: totals.expenses,
       };
-    } else {
-      const report = await fetchProfitAndLoss({
-        start_date: bucket.start,
-        end_date: bucket.end,
-      }).catch(() => null);
-      const quickBooksTotals = extractProfitAndLossTotals(report || {});
-      totals = {
-        revenue: quickBooksTotals.revenue,
-        expenses: quickBooksTotals.expenses,
-      };
-    }
-
-    results.push({
-      name: bucket.shortName || bucket.name,
-      fullLabel: bucket.name,
-      revenue: totals.revenue,
-      expenses: totals.expenses,
-    });
-  }
-
-  return results;
+    },
+    TREND_FETCH_CONCURRENCY,
+  );
 }
