@@ -27,6 +27,13 @@ const {
 } = require("../services/manualGlMultiYearService");
 const { uploadController } = require("../controllers/manualGl/uploadController");
 const { continueController } = require("../controllers/manualGl/continueController");
+const {
+  listUploadJobs,
+  getUploadJob,
+  listDatasetVersions,
+  activateDatasetVersion,
+  rollbackToVersion,
+} = require("../services/datasetVersionService");
 const reportCache = require("../services/reportCache");
 
 const router = express.Router();
@@ -264,19 +271,7 @@ router.get("/reports/balance-sheet", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL
 
     const stagedPayload = await getBalanceSheetSummaryFromStage(clientId, filters);
 
-    // Detect large raw variance (>$1000): signal that data was staged before the
-    // fiscal-year-label fix (BUG-2). Surface reStageRequired so frontend can prompt.
-    const maxRawVariance = Array.isArray(stagedPayload?.audit)
-      ? Math.max(0, ...stagedPayload.audit.map((a) => Math.abs(Number(a.rawVariance || 0))))
-      : 0;
-    const reStageRequired = maxRawVariance > 1000;
-    const payload = {
-      ...stagedPayload,
-      ...(reStageRequired ? {
-        reStageRequired: true,
-        reStageWarning: "Balance Sheet variance detected. The staged data may have been processed with an older version. Re-run staging to resolve incorrect fiscal-year labels and recalculate totals.",
-      } : {}),
-    };
+    const payload = { ...stagedPayload };
 
     reportCache.set("bs", clientId, filters, payload);
     return res.json({ success: true, ...payload, source: "MANUAL_STAGED" });
@@ -581,6 +576,87 @@ router.get("/manual-gl/validation/balance-sheet", enforceDataSource(REPORT_SOURC
       success: false,
       error: error.message || "Failed to validate balance sheet rollforward.",
     });
+  }
+});
+
+// === Dataset Versions & Upload Jobs (Snapshot Architecture) ===
+
+router.get("/manual-gl/dataset-versions", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+
+    const versions = await listDatasetVersions(clientId, 50);
+    return res.json({ success: true, versions });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post("/manual-gl/dataset-versions/:id/activate", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+
+    const versionId = req.params.id;
+    const activated = await activateDatasetVersion(clientId, versionId);
+
+    // Invalidate report cache since the active dataset changed!
+    if (typeof reportCache.invalidateCompany === "function") {
+      reportCache.invalidateCompany(clientId);
+    }
+
+    return res.json({ success: true, version: activated });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.post("/manual-gl/dataset-versions/:id/rollback", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+
+    const versionId = req.params.id;
+    const activated = await rollbackToVersion(clientId, versionId);
+
+    // Invalidate report cache since the active dataset changed!
+    if (typeof reportCache.invalidateCompany === "function") {
+      reportCache.invalidateCompany(clientId);
+    }
+
+    return res.json({ success: true, version: activated });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get("/manual-gl/upload-jobs", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+
+    const jobs = await listUploadJobs(clientId, 20);
+    return res.json({ success: true, jobs });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get("/manual-gl/upload-jobs/:id", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+
+    const jobId = req.params.id;
+    const job = await getUploadJob(jobId);
+
+    if (!job || job.company_id !== clientId) {
+      return res.status(404).json({ success: false, error: "Upload job not found." });
+    }
+    return res.json({ success: true, job });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
   }
 });
 

@@ -593,6 +593,46 @@ export function stageMultiYearManualGl(payload, options = {}) {
   });
 }
 
+// === Snapshot Dataset Versioning APIs ===
+
+export function listManualGlDatasetVersions(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/dataset-versions${query}`, options).then(res => res?.versions || []);
+}
+
+export function activateManualGlDatasetVersion(versionId, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/dataset-versions/${encodeURIComponent(versionId)}/activate${query}`, {
+    method: "POST",
+    ...options,
+  });
+}
+
+export function rollbackManualGlDatasetVersion(versionId, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/dataset-versions/${encodeURIComponent(versionId)}/rollback${query}`, {
+    method: "POST",
+    ...options,
+  });
+}
+
+// === Upload Jobs APIs ===
+
+export function listManualGlUploadJobs(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/upload-jobs${query}`, options).then(res => res?.jobs || []);
+}
+
+export function getManualGlUploadJob(jobId, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/upload-jobs/${encodeURIComponent(jobId)}${query}`, options).then(res => res?.job || null);
+}
+
 export function getManualStageTransactions(options = {}) {
   const {
     clientId: clientIdOption,

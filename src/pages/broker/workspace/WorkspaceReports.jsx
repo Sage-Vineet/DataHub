@@ -1257,12 +1257,6 @@ export default function WorkspaceReports() {
               </div>
             ) : (
               <>
-                {selectedTab === "Balance Sheet" && currentReport.summary?.reStageRequired && (
-                  <div className="mx-4 mb-3 rounded border border-amber-300 bg-amber-50 px-4 py-3 text-[13px] text-amber-800">
-                    <strong>Data re-staging required:</strong>{" "}
-                    {currentReport.summary.reStageWarning || "Re-run staging to fix Balance Sheet totals."}
-                  </div>
-                )}
                 <div id="report-content" className="bg-white">
                   {selectedTab === "Balance Sheet" ? (
                     <BalanceSheetReport

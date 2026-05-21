@@ -5,6 +5,13 @@ const {
   REPORT_SOURCE_KEYS,
   updateReportSourceRecord,
 } = require("./reportSourceStore");
+const {
+  startUploadLifecycle,
+  finalizeUploadLifecycle,
+  failUploadLifecycle,
+  getActiveDatasetVersion,
+  ensureLegacyDatasetVersion,
+} = require("./datasetVersionService");
 
 const TABLES = {
   batches: "manual_gl_batches",
@@ -354,7 +361,7 @@ async function retrySupabaseOperation(operation, maxRetries = 3, initialDelay = 
       lastError = error;
       const isRetryable = error.status === 429 || error.status === 503 || error.status === 504 || error.message?.includes("timeout") || error.message?.includes("rate limit");
       if (!isRetryable && attempt === 0) throw error; // If not retryable, fail fast on first attempt
-      
+
       const delay = initialDelay * Math.pow(2, attempt);
       console.warn(`[ManualGL][Retry] Attempt ${attempt + 1} failed. Retrying in ${delay}ms...`, error.message);
       await new Promise((resolve) => setTimeout(resolve, delay));
@@ -1674,6 +1681,7 @@ function toBalanceSheetLineRows({
   upload,
   sheetType,
   parsed,
+  datasetVersionId = null,
   sourceType = MANUAL_SOURCE_KEY,
   sourceSwitchVersion = null,
   uploadSessionId = null,
@@ -1694,6 +1702,7 @@ function toBalanceSheetLineRows({
         source_file: String(upload.file_name || ""),
         source_upload_id: upload.id,
         row_number: Number(item.rowNumber || null),
+        dataset_version_id: datasetVersionId,
         source_type: sourceType || MANUAL_SOURCE_KEY,
         source_switch_version: sourceSwitchVersion || null,
         upload_session_id: uploadSessionId && isValidUuid(uploadSessionId) ? uploadSessionId : null,
@@ -1928,6 +1937,7 @@ async function createBatch({
   companyId,
   createdBy = null,
   batchName = "",
+  datasetVersionId = null,
   sourceType = MANUAL_SOURCE_KEY,
   sourceSwitchVersion = null,
   uploadSessionId = null,
@@ -1955,6 +1965,7 @@ async function createBatch({
 
   let payload = {
     ...basePayload,
+    dataset_version_id: datasetVersionId,
     source_type: sourceType || MANUAL_SOURCE_KEY,
     source_switch_version: normalizedVersion,
     upload_session_id: normalizedSessionId,
@@ -2015,6 +2026,7 @@ async function insertTransactions({
   companyId,
   batchId,
   transactions = [],
+  datasetVersionId = null,
   sourceType = MANUAL_SOURCE_KEY,
   sourceSwitchVersion = null,
   uploadSessionId = null,
@@ -2064,6 +2076,7 @@ async function insertTransactions({
   }));
   let rows = baseRows.map((row) => ({
     ...row,
+    dataset_version_id: datasetVersionId,
     source_type: sourceType || MANUAL_SOURCE_KEY,
     source_switch_version: normalizedVersion,
     upload_session_id: normalizedSessionId,
@@ -2086,7 +2099,7 @@ async function insertTransactions({
 
   for (let index = 0; index < rows.length; index += chunkSize) {
     const chunk = rows.slice(index, index + chunkSize);
-    
+
     console.log(`[ManualGL][MultiYear] Upserting chunk ${index / chunkSize + 1} (${chunk.length} rows)`);
 
     await retrySupabaseOperation(async () => {
@@ -2230,6 +2243,7 @@ function parseManualFilterQuery(rawFilters = {}) {
   );
   return {
     batchId: rawFilters.batchId || rawFilters.batch_id || "",
+    datasetVersionId: rawFilters.datasetVersionId || rawFilters.dataset_version_id || "",
     fiscalYears: parseIntegerValues(rawFilters.fiscalYears || rawFilters.fiscalYear || rawFilters.year || rawFilters.years),
     fiscalMonths: parseIntegerValues(rawFilters.fiscalMonths || rawFilters.fiscalMonth || rawFilters.month || rawFilters.months)
       .filter((month) => month >= 1 && month <= 12),
@@ -2268,37 +2282,26 @@ async function queryStagedTransactions(companyId, rawFilters = {}) {
     return { filters, rows: [] };
   }
 
-  if (!filters.batchId && !filters.allBatches) {
-    const latestBatch = await getLatestManualBatch(companyId, {
-      sourceType: filters.sourceType || MANUAL_SOURCE_KEY,
-      sourceSwitchVersion: filters.sourceSwitchVersion || "",
-      uploadSessionId: filters.uploadSessionId || "",
-      status: "staged",
-    });
-    if (!latestBatch?.id) {
+  if (!filters.batchId && !filters.allBatches && !filters.datasetVersionId) {
+    let activeVersion = await getActiveDatasetVersion(companyId);
+    if (!activeVersion) {
+      activeVersion = await ensureLegacyDatasetVersion(companyId);
+    }
+    if (!activeVersion) {
       return { filters, rows: [] };
     }
-    filters.batchId = latestBatch.id;
-    filters.sourceType = filters.sourceType || latestBatch.source_type || MANUAL_SOURCE_KEY;
-    filters.sourceSwitchVersion =
-      filters.sourceSwitchVersion ||
-      latestBatch.source_switch_version ||
-      latestBatch.metadata?.sourceSwitchVersion ||
-      "";
-    filters.uploadSessionId =
-      filters.uploadSessionId ||
-      latestBatch.upload_session_id ||
-      latestBatch.metadata?.uploadSessionId ||
-      "";
+    filters.datasetVersionId = activeVersion.id;
   }
 
   const buildQuery = (includeSourceColumns = true) => {
     let query = supabase
-    .from(TABLES.transactions)
-    .select("*")
-    .eq("company_id", companyId);
+      .from(TABLES.transactions)
+      .select("*")
+      .eq("company_id", companyId);
 
-    if (filters.batchId) {
+    if (filters.datasetVersionId) {
+      query = query.eq("dataset_version_id", filters.datasetVersionId);
+    } else if (filters.batchId) {
       query = query.eq("batch_id", filters.batchId);
     }
 
@@ -3480,12 +3483,9 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
   console.log(
     `[ManualGL][BS][Debug] buildBalanceSheetPayload — internal years: [${years.join(", ")}]`,
     `| displayYear: ${displayYear}`,
-    `| accounts classified: Assets=${
-      sections.Assets.categories.reduce((s, c) => s + c.accounts.length, 0)
-    }, Liabilities=${
-      sections.Liabilities.categories.reduce((s, c) => s + c.accounts.length, 0)
-    }, Equity=${
-      sections.Equity.categories.reduce((s, c) => s + c.accounts.length, 0)
+    `| accounts classified: Assets=${sections.Assets.categories.reduce((s, c) => s + c.accounts.length, 0)
+    }, Liabilities=${sections.Liabilities.categories.reduce((s, c) => s + c.accounts.length, 0)
+    }, Equity=${sections.Equity.categories.reduce((s, c) => s + c.accounts.length, 0)
     }`,
   );
   if (displayYear) {
@@ -3812,8 +3812,8 @@ function buildBsLookupFromDbLines(startingLines = [], endingLines = []) {
       const section = String(line.section || "");
       const accountType = section === "assets" ? "asset"
         : section === "liabilities" ? "liability"
-        : section === "equity" ? "equity"
-        : null;
+          : section === "equity" ? "equity"
+            : null;
       if (!accountType) return;
       const metadata = line.metadata && typeof line.metadata === "object" ? line.metadata : {};
       const majorGroup = metadata.majorGroup || "";
@@ -4455,11 +4455,19 @@ async function stageMultiYearGlUpload({
   const uploadSessionId = crypto.randomUUID();
   const stageStartedAt = new Date().toISOString();
 
+  console.log("[ManualGL][MultiYear] Starting upload lifecycle...");
+  const { job: uploadJob, version: datasetVersion } = await startUploadLifecycle(
+    companyId,
+    batchName || "Multi-Year GL Upload",
+    uploadedBy,
+  );
+
   console.log("[ManualGL][MultiYear] Creating batch...");
   const batch = await createBatch({
     companyId,
     createdBy: uploadedBy,
     batchName,
+    datasetVersionId: datasetVersion.id,
     sourceType,
     sourceSwitchVersion,
     uploadSessionId,
@@ -4732,6 +4740,7 @@ async function stageMultiYearGlUpload({
           companyId,
           batchId: batch.id,
           transactions: dedupedTransactions,
+          datasetVersionId: datasetVersion.id,
           sourceType,
           sourceSwitchVersion,
           uploadSessionId,
@@ -4852,6 +4861,7 @@ async function stageMultiYearGlUpload({
         upload: balanceSheetInfo.startingUpload,
         sheetType: SHEET_TYPE.STARTING,
         parsed: balanceSheetInfo.startingParsed,
+        datasetVersionId: datasetVersion.id,
         sourceType,
         sourceSwitchVersion,
         uploadSessionId,
@@ -4876,6 +4886,7 @@ async function stageMultiYearGlUpload({
         upload: balanceSheetInfo.endingUpload,
         sheetType: SHEET_TYPE.ENDING,
         parsed: balanceSheetInfo.endingParsed,
+        datasetVersionId: datasetVersion.id,
         sourceType,
         sourceSwitchVersion,
         uploadSessionId,
@@ -5010,6 +5021,9 @@ async function stageMultiYearGlUpload({
       console.warn("[ManualGL][MultiYear] Failed to refresh report source:", syncError.message);
     }
 
+    console.log("[ManualGL][MultiYear] Finalizing upload lifecycle...");
+    await finalizeUploadLifecycle(uploadJob.id, datasetVersion.id, companyId, batch.id);
+
     return {
       success: true,
       batchId: batch.id,
@@ -5036,6 +5050,13 @@ async function stageMultiYearGlUpload({
     };
   } catch (error) {
     console.error("[ManualGL][MultiYear] === FAILED ===", error.message, error.stack);
+    try {
+      if (typeof failUploadLifecycle === "function") {
+        await failUploadLifecycle(uploadJob?.id, datasetVersion?.id, error.message);
+      }
+    } catch (lifecycleErr) {
+      console.error("[ManualGL][MultiYear] Failed to fail upload lifecycle:", lifecycleErr);
+    }
     try {
       const [txCleanup, bsCleanup] = await Promise.all([
         supabase
@@ -5558,11 +5579,11 @@ async function getStageFilterOptions(companyId, filters = {}) {
         source: "manual_gl_staged_transactions",
         rowCount: 0,
         options: Object.fromEntries(
-          ["fiscalYear","fiscalMonth","accountName","accountNumber","accountType",
-           "category","subCategory","department","class","location","sourceFile",
-           "transactionType","journalType","reportType"].map((k) =>
-            k === "reportType" ? [k, ["profit_loss","balance_sheet"]] : [k, []]
-          )
+          ["fiscalYear", "fiscalMonth", "accountName", "accountNumber", "accountType",
+            "category", "subCategory", "department", "class", "location", "sourceFile",
+            "transactionType", "journalType", "reportType"].map((k) =>
+              k === "reportType" ? [k, ["profit_loss", "balance_sheet"]] : [k, []]
+            )
         ),
       };
     }
@@ -5730,13 +5751,22 @@ async function getLatestManualBatch(companyId, options = {}) {
   const uploadSessionId = isValidUuid(rawUploadSessionId) ? rawUploadSessionId : "";
   const status = toNonEmptyString(options.status || "");
 
+  let activeVersion = await getActiveDatasetVersion(companyId);
+  if (!activeVersion) {
+    activeVersion = await ensureLegacyDatasetVersion(companyId);
+  }
+
   const runQuery = async (includeSourceColumns = true) => {
     let query = supabase
       .from(TABLES.batches)
       .select("*")
-      .eq("company_id", companyId)
-      .order("created_at", { ascending: false })
-      .limit(1);
+      .eq("company_id", companyId);
+
+    if (activeVersion) {
+      query = query.eq("dataset_version_id", activeVersion.id);
+    } else {
+      query = query.order("created_at", { ascending: false }).limit(1);
+    }
 
     if (status) {
       query = query.eq("status", status);
@@ -5752,7 +5782,11 @@ async function getLatestManualBatch(companyId, options = {}) {
       }
     }
 
-    return query.single();
+    // Since dataset version is 1-to-1 with a batch, .single() or limit(1) works
+    if (activeVersion) {
+      query = query.limit(1).maybeSingle();
+    }
+    return activeVersion ? query : query.single();
   };
 
   let { data, error } = await runQuery(true);
@@ -6516,8 +6550,8 @@ function buildCashflowMonthlyDetailPayload(transactions = [], year, filters = {}
   //   Liability increases (credit) → netAmount > 0 → inflow ✓
   const cfSections = {
     Operating: { key: "operating", label: "Cash Flows from Operating Activities", items: new Map(), monthlyTotals: {}, total: 0 },
-    Investing:  { key: "investing",  label: "Cash Flows from Investing Activities",  items: new Map(), monthlyTotals: {}, total: 0 },
-    Financing:  { key: "financing",  label: "Cash Flows from Financing Activities",  items: new Map(), monthlyTotals: {}, total: 0 },
+    Investing: { key: "investing", label: "Cash Flows from Investing Activities", items: new Map(), monthlyTotals: {}, total: 0 },
+    Financing: { key: "financing", label: "Cash Flows from Financing Activities", items: new Map(), monthlyTotals: {}, total: 0 },
   };
   months.forEach((m) => {
     cfSections.Operating.monthlyTotals[m] = monthlyNetIncome[m] || 0;
@@ -6600,7 +6634,7 @@ function buildCashflowMonthlyDetailPayload(transactions = [], year, filters = {}
   const beginningCashMonthly = {};
   months.forEach((m, i) => { beginningCashMonthly[m] = i === 0 ? cashOpeningBalance : (cashMonthlyBalance[months[i - 1]] || 0); });
   sections.push({ key: "beginning_cash", label: "Beginning Cash", isCalculated: true, monthlyTotals: beginningCashMonthly, total: beginningCashMonthly[months[0]] || 0 });
-  sections.push({ key: "ending_cash",    label: "Ending Cash",    isCalculated: true, monthlyTotals: { ...cashMonthlyBalance }, total: cashMonthlyBalance[lastMonth] || 0 });
+  sections.push({ key: "ending_cash", label: "Ending Cash", isCalculated: true, monthlyTotals: { ...cashMonthlyBalance }, total: cashMonthlyBalance[lastMonth] || 0 });
 
   return {
     source: "manual_gl_staged_transactions",
