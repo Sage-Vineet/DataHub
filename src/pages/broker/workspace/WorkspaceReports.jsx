@@ -45,10 +45,8 @@ import {
   getDateRange,
 } from "../../../lib/report-date-resolver";
 import {
-  exportToExcel,
+  exportFinancialReportToExcel,
   exportToPDF,
-  flattenSummaryData,
-  flattenMultiYearData,
 } from "../../../lib/export-utils";
 
 function formatDateForInput(date) {
@@ -772,21 +770,21 @@ export default function WorkspaceReports() {
       const subtitle = `Report Period: ${appliedStartDate || "N/A"} to ${appliedEndDate || "N/A"} | ${appliedAccountingMethod} Basis`;
       const fileName = `${selectedTab.toLowerCase()}-${appliedReportType.toLowerCase()}-export`;
 
-      if (appliedReportType === "Summary") {
-        exportToExcel(
-          selectedTab,
-          subtitle,
-          flattenSummaryData(summaryData),
-          fileName,
-        );
-      } else {
-        exportToExcel(
-          `${selectedTab} Detail`,
-          subtitle,
-          flattenMultiYearData(detailData.rows, detailData.columns),
-          fileName,
-        );
-      }
+      exportFinancialReportToExcel({
+        reportName: selectedTab,
+        viewType: appliedReportType,
+        entityName: clientName,
+        subtitle,
+        sourceLabel: currentReport.summary?.sourceLabel || selectedSourceLabel,
+        createdOn,
+        startDate: appliedStartDate,
+        endDate: appliedEndDate,
+        accountingMethod: appliedAccountingMethod,
+        summaryColumns: currentReport.summary?.columns,
+        summaryRows: summaryData,
+        detailData,
+        fileName,
+      });
     } catch (error) {
       console.error("Excel generation failed:", error);
       alert("Error: Could not generate Excel report.");

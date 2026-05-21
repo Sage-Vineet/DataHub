@@ -4,6 +4,7 @@ import {
   ChevronRight, ChevronDown, Trash2, Home, Archive, X, ArrowLeft, Check,
   MoreVertical, LayoutGrid, List, AlertCircle, Pencil, FolderPlus,
   ArrowUpDown, ArrowUp, ArrowDown, CheckCircle, Share2, Users, Loader2,
+  RotateCcw,
 } from 'lucide-react';
 import { useFileExplorerStore, findById, getPathTo } from '../../store/fileExplorerStore';
 import {
@@ -13,8 +14,26 @@ import {
   listUsersRequest,
   recordDocumentActivity,
 } from '../../lib/api';
+import * as XLSX from 'xlsx';
+import { strFromU8, unzipSync } from 'fflate';
 
 // ── File Type Helpers ────────────────────────────────────────────────────────
+const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg'];
+const PDF_EXTENSIONS = ['pdf'];
+const SPREADSHEET_EXTENSIONS = ['xls', 'xlsx'];
+const WORD_EXTENSIONS = ['doc', 'docx'];
+const TEXT_EXTENSIONS = ['txt', 'md', 'json'];
+const PREVIEWABLE_EXTENSIONS = [
+  ...PDF_EXTENSIONS,
+  ...IMAGE_EXTENSIONS,
+  ...SPREADSHEET_EXTENSIONS,
+  ...WORD_EXTENSIONS,
+  ...TEXT_EXTENSIONS,
+];
+const MAX_SPREADSHEET_ROWS = 100;
+const MAX_SPREADSHEET_COLUMNS = 24;
+const MAX_WORD_BLOCKS = 240;
+
 function getMimeIcon(ext) {
   const e = (ext || '').toLowerCase();
   if (e === 'pdf') return { Icon: FileText, color: '#E74C3C', bg: '#FDECEA' };
@@ -46,7 +65,163 @@ function getFileKind(ext) {
 
 function canInlinePreview(ext) {
   const normalized = (ext || '').toLowerCase();
-  return ['pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'txt', 'md', 'json'].includes(normalized);
+  return PREVIEWABLE_EXTENSIONS.includes(normalized);
+}
+
+function buildSpreadsheetPreview(workbook) {
+  const sheetNames = workbook.SheetNames || [];
+  return sheetNames
+    .map((name) => {
+      const sheet = workbook.Sheets[name];
+      const rows = XLSX.utils.sheet_to_json(sheet, {
+        header: 1,
+        blankrows: false,
+        defval: '',
+        raw: false,
+      });
+      const width = rows.reduce((max, row) => Math.max(max, row.length), 0);
+      const visibleColumns = Math.min(width, MAX_SPREADSHEET_COLUMNS);
+      const normalizedRows = rows.slice(0, MAX_SPREADSHEET_ROWS).map((row) =>
+        Array.from({ length: visibleColumns }, (_, index) => row[index] ?? '')
+      );
+
+      return {
+        name,
+        totalRows: rows.length,
+        totalColumns: width,
+        rows: normalizedRows,
+        truncated: rows.length > MAX_SPREADSHEET_ROWS || width > MAX_SPREADSHEET_COLUMNS,
+      };
+    })
+    .filter((sheet) => sheet.rows.length > 0);
+}
+
+function getParagraphStyle(paragraph) {
+  const styleNode = paragraph.getElementsByTagName('w:pStyle')?.[0];
+  const value = styleNode?.getAttribute('w:val') || styleNode?.getAttribute('val') || '';
+  if (/heading\s*1|title/i.test(value)) return 'heading1';
+  if (/heading\s*2|subtitle/i.test(value)) return 'heading2';
+  if (/heading\s*3/i.test(value)) return 'heading3';
+  return 'paragraph';
+}
+
+function parseDocxRuns(paragraph) {
+  const runs = [];
+  Array.from(paragraph.childNodes || []).forEach((child) => {
+    if (child.nodeName !== 'w:r') return;
+    const textParts = Array.from(child.childNodes || [])
+      .filter((node) => node.nodeName === 'w:t' || node.nodeName === 'w:tab' || node.nodeName === 'w:br')
+      .map((node) => {
+        if (node.nodeName === 'w:tab') return '\t';
+        if (node.nodeName === 'w:br') return '\n';
+        return node.textContent || '';
+      });
+    const text = textParts.join('');
+    if (!text) return;
+    const properties = child.getElementsByTagName('w:rPr')?.[0];
+    runs.push({
+      text,
+      bold: Boolean(properties?.getElementsByTagName('w:b')?.length),
+      italic: Boolean(properties?.getElementsByTagName('w:i')?.length),
+      underline: Boolean(properties?.getElementsByTagName('w:u')?.length),
+    });
+  });
+  return runs;
+}
+
+function parseDocxParagraph(paragraph) {
+  const runs = parseDocxRuns(paragraph);
+  const text = runs.map((run) => run.text).join('').trim();
+  if (!text) return null;
+  return {
+    type: 'paragraph',
+    style: getParagraphStyle(paragraph),
+    runs,
+  };
+}
+
+function parseDocxTable(table) {
+  const rows = Array.from(table.childNodes || [])
+    .filter((node) => node.nodeName === 'w:tr')
+    .slice(0, 60)
+    .map((row) =>
+      Array.from(row.childNodes || [])
+        .filter((node) => node.nodeName === 'w:tc')
+        .slice(0, 12)
+        .map((cell) => {
+          const paragraphs = Array.from(cell.childNodes || [])
+            .filter((node) => node.nodeName === 'w:p')
+            .map(parseDocxParagraph)
+            .filter(Boolean);
+          return paragraphs.length ? paragraphs : [{ type: 'paragraph', style: 'paragraph', runs: [{ text: cell.textContent || '' }] }];
+        })
+    );
+
+  return rows.length ? { type: 'table', rows } : null;
+}
+
+function parseDocxPreview(arrayBuffer) {
+  const files = unzipSync(new Uint8Array(arrayBuffer));
+  const documentXml = files['word/document.xml'];
+  if (!documentXml) {
+    throw new Error('This Word document does not contain readable document content.');
+  }
+
+  const xml = strFromU8(documentXml);
+  const parsed = new DOMParser().parseFromString(xml, 'application/xml');
+  if (parsed.getElementsByTagName('parsererror').length) {
+    throw new Error('Unable to parse this Word document.');
+  }
+
+  const body = parsed.getElementsByTagName('w:body')?.[0];
+  if (!body) throw new Error('No readable Word document body was found.');
+
+  const blocks = [];
+  Array.from(body.childNodes || []).forEach((node) => {
+    if (blocks.length >= MAX_WORD_BLOCKS) return;
+    if (node.nodeName === 'w:p') {
+      const paragraph = parseDocxParagraph(node);
+      if (paragraph) blocks.push(paragraph);
+    }
+    if (node.nodeName === 'w:tbl') {
+      const table = parseDocxTable(node);
+      if (table) blocks.push(table);
+    }
+  });
+
+  return {
+    blocks,
+    truncated: blocks.length >= MAX_WORD_BLOCKS,
+  };
+}
+
+function parseLegacyWordPreview(arrayBuffer) {
+  const bytes = new Uint8Array(arrayBuffer);
+  const decoder = new TextDecoder('latin1');
+  const text = decoder
+    .decode(bytes.slice(0, Math.min(bytes.length, 400000)))
+    .split('')
+    .map((char) => {
+      const code = char.charCodeAt(0);
+      return code === 9 || code === 10 || code === 13 || (code >= 32 && code <= 126) ? char : ' ';
+    })
+    .join('')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+
+  if (!text) throw new Error('No readable text was found in this Word document.');
+
+  return {
+    blocks: text
+      .split(/(?<=[.!?])\s+(?=[A-Z0-9])/)
+      .slice(0, 80)
+      .map((chunk) => ({
+        type: 'paragraph',
+        style: 'paragraph',
+        runs: [{ text: chunk }],
+      })),
+    truncated: text.length > 400000,
+  };
 }
 
 const ACCESS_TYPE_OPTIONS = [
@@ -81,15 +256,43 @@ function sortItems(items, sortBy, sortDir) {
   });
 }
 
-function searchTree(node, query) {
+function isArchivedItem(item) {
+  return Boolean(item?.archivedAt);
+}
+
+function searchTree(node, query, predicate = () => true) {
   const results = [];
   const q = query.toLowerCase();
   const search = (n) => {
-    if (n.id !== 'root' && n.name.toLowerCase().includes(q)) results.push(n);
+    if (n.id !== 'root' && n.name.toLowerCase().includes(q) && predicate(n)) results.push(n);
     if (n.children) n.children.forEach(search);
   };
   search(node);
   return results;
+}
+
+function collectArchivedItems(node, results = []) {
+  (node.children || []).forEach((child) => {
+    if (isArchivedItem(child)) results.push(child);
+    collectArchivedItems(child, results);
+  });
+  return results;
+}
+
+function IconTooltipButton({ label, className = '', children, ...props }) {
+  return (
+    <button
+      type="button"
+      {...props}
+      aria-label={label}
+      className={`group/tooltip relative ${className}`}
+    >
+      {children}
+      <span className="pointer-events-none absolute left-1/2 top-full z-30 mt-2 -translate-x-1/2 whitespace-nowrap rounded-lg bg-[#050505] px-2 py-1 text-[10px] font-semibold text-white opacity-0 shadow-lg transition-opacity duration-150 group-hover/tooltip:opacity-100">
+        {label}
+      </span>
+    </button>
+  );
 }
 
 function countItems(node, canAccessFolder = () => true) {
@@ -97,6 +300,7 @@ function countItems(node, canAccessFolder = () => true) {
   let folders = 0;
   const walk = (n) => {
     (n.children || []).forEach((child) => {
+      if (isArchivedItem(child)) return;
       if (child.type === 'folder') {
         if (!canAccessFolder(child.id)) return;
         folders += 1;
@@ -113,6 +317,7 @@ function countItems(node, canAccessFolder = () => true) {
 function countFiles(node, canAccessFolder = () => true) {
   let files = 0;
   (node.children || []).forEach((c) => {
+    if (isArchivedItem(c)) return;
     if (c.type === 'file') files += 1;
     if (c.type === 'folder' && canAccessFolder(c.id)) files += countFiles(c, canAccessFolder);
   });
@@ -138,7 +343,7 @@ function FolderTreeNode({ node, depth = 0, canAccessFolder }) {
   const isExpanded = expandedFolders.includes(node.id);
   const isActive = currentPath[currentPath.length - 1] === node.id;
   const isDragTarget = dragOver === node.id;
-  const subFolders = (node.children || []).filter(c => c.type === 'folder' && canAccessFolder(c.id));
+  const subFolders = (node.children || []).filter(c => c.type === 'folder' && !isArchivedItem(c) && canAccessFolder(c.id));
   const filesCount = countFiles(node, canAccessFolder);
 
   return (
@@ -198,6 +403,7 @@ function FolderTree({ tree, onUpload, role, getFolderPermissions }) {
   const [loadingTree, setLoadingTree] = useState(false);
   const [treeError, setTreeError] = useState('');
   const currentFolderId = currentPath[currentPath.length - 1];
+  const isArchiveView = currentFolderId === 'archive';
   const canAccessFolder = (id) => role === 'broker' || getFolderPermissions(id).read;
   const canWrite = role === 'broker' || getFolderPermissions(currentFolderId).write;
   const { files, folders } = useMemo(() => countItems(tree, canAccessFolder), [tree, role, getFolderPermissions]);
@@ -258,7 +464,20 @@ function FolderTree({ tree, onUpload, role, getFolderPermissions }) {
             {files} files
           </span>
         </div>
-        {(tree.children || []).filter(c => c.type === 'folder' && canAccessFolder(c.id)).map(node => (
+        <div
+          className={`group mt-1 flex items-center gap-1.5 px-2 py-1.5 rounded-xl cursor-pointer text-xs font-medium transition-all
+            ${isArchiveView ? 'bg-[#05164D]/10 text-[#05164D] font-semibold' : 'text-[#4A4A4A] hover:bg-gray-100'}`}
+          onClick={() => navigateTo('archive')}
+        >
+          <span className="relative flex-shrink-0">
+            <Archive size={14} className="text-[#6D6E71]" />
+          </span>
+          <span>Archive</span>
+          <span className="text-[10px] text-[#A5A5A5] ml-auto flex-shrink-0">
+            {collectArchivedItems(tree).length}
+          </span>
+        </div>
+        {(tree.children || []).filter(c => c.type === 'folder' && !isArchivedItem(c) && canAccessFolder(c.id)).map(node => (
           <FolderTreeNode
             key={node.id}
             node={node}
@@ -282,19 +501,20 @@ function Breadcrumbs({ tree, currentPath }) {
       {currentPath.map((id, idx) => {
         const node = findById(tree, id);
         const isLast = idx === currentPath.length - 1;
+        const label = id === 'archive' ? 'Archive' : id === 'root' ? 'All Documents' : node?.name || id;
         return (
           <span key={id} className="flex items-center gap-0.5 min-w-0">
             {idx > 0 && <ChevronRight size={13} className="flex-shrink-0 text-[#A5A5A5]" />}
             {isLast ? (
               <span className="font-semibold text-[#050505] truncate max-w-[160px]">
-                {id === 'root' ? 'All Documents' : node?.name || id}
+                {label}
               </span>
             ) : (
               <button
                 className="text-[#6D6E71] hover:text-[#05164D] transition-colors truncate max-w-[120px] font-medium"
                 onClick={() => navigateTo(id)}
               >
-                {id === 'root' ? 'Home' : node?.name || id}
+                {id === 'root' ? 'Home' : label}
               </button>
             )}
           </span>
@@ -305,13 +525,23 @@ function Breadcrumbs({ tree, currentPath }) {
 }
 
 // ── TopBar ────────────────────────────────────────────────────────────────────
-function TopBar({ tree, currentPath, onUpload, role, currentFolderPermissions }) {
+function TopBar({ tree, currentPath, onUpload, role, currentFolderPermissions, archivedCount }) {
   const {
     view, setView, sortBy, sortDir, setSortBy, searchQuery, setSearchQuery,
-    startNewFolder, goBack, selectedItems, deleteItems,
+    startNewFolder, goBack, selectedItems, deleteItems, archiveItems, unarchiveItems,
+    navigateTo,
   } = useFileExplorerStore();
   const currentFolderId = currentPath[currentPath.length - 1];
+  const isArchiveView = currentFolderId === 'archive';
   const canWrite = role === 'broker' || currentFolderPermissions.write;
+  const canCreateHere = canWrite && !isArchiveView;
+  const runSelectedAction = (e, action) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const ids = [...selectedItems];
+    if (!ids.length) return;
+    action(ids);
+  };
 
   return (
     <div className="bg-white border-b border-gray-100 px-4 py-3 flex items-center gap-3 flex-wrap flex-shrink-0">
@@ -345,24 +575,47 @@ function TopBar({ tree, currentPath, onUpload, role, currentFolderPermissions })
       </div>
 
       {/* Action bar when items selected */}
-      {selectedItems.length > 0 && role === 'broker' && (
+      {selectedItems.length > 0 && canWrite && (
         <div className="flex items-center gap-1 px-2 py-1 bg-[#05164D]/8 rounded-xl border border-[#05164D]/15">
           <span className="text-xs font-semibold text-[#05164D]">{selectedItems.length} selected</span>
-          <button
-            onClick={() => deleteItems(selectedItems)}
-            className="ml-2 p-1 rounded-lg hover:bg-red-50 text-red-500 transition-colors"
-            title="Delete selected"
+          <IconTooltipButton
+            label={isArchiveView ? 'Unarchive' : 'Archive'}
+            onClick={(e) => runSelectedAction(e, (ids) => isArchiveView ? unarchiveItems(ids) : archiveItems(ids))}
+            className="ml-2 p-1 rounded-lg hover:bg-[#E6F3D3] text-[#476E2C] transition-colors"
           >
-            <Trash2 size={14} />
-          </button>
-          <button
-            onClick={() => useFileExplorerStore.getState().clearSelection()}
+            {isArchiveView ? <RotateCcw size={14} /> : <Archive size={14} />}
+          </IconTooltipButton>
+          {role === 'broker' && (
+            <IconTooltipButton
+              label="Delete"
+              onClick={(e) => runSelectedAction(e, deleteItems)}
+              className="p-1 rounded-lg hover:bg-red-50 text-red-500 transition-colors"
+            >
+              <Trash2 size={14} />
+            </IconTooltipButton>
+          )}
+          <IconTooltipButton
+            label="Close"
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); useFileExplorerStore.getState().clearSelection(); }}
             className="p-1 rounded-lg hover:bg-gray-100 text-[#6D6E71] transition-colors"
           >
             <X size={14} />
-          </button>
+          </IconTooltipButton>
         </div>
       )}
+
+      <button
+        onClick={() => navigateTo('archive')}
+        className={`flex items-center gap-1.5 px-3 py-2 rounded-xl border text-xs font-semibold transition-colors ${
+          isArchiveView
+            ? 'bg-[#05164D]/8 border-[#05164D]/15 text-[#05164D]'
+            : 'border-gray-200 text-[#6D6E71] hover:bg-gray-50'
+        }`}
+      >
+        <Archive size={14} />
+        Archive
+        <span className="rounded-full bg-white px-1.5 py-0.5 text-[10px] text-[#6D6E71] shadow-sm">{archivedCount}</span>
+      </button>
 
       {/* Sort */}
       <div className="flex items-center gap-1">
@@ -397,18 +650,18 @@ function TopBar({ tree, currentPath, onUpload, role, currentFolderPermissions })
 
       {/* New Folder */}
       <button
-        onClick={() => { if (canWrite) startNewFolder(currentFolderId); }}
-        disabled={!canWrite}
-        className={`flex items-center gap-1.5 px-3 py-2 rounded-xl border text-xs font-semibold transition-colors ${canWrite ? 'border-gray-200 text-[#6D6E71] hover:bg-gray-50' : 'border-gray-200 text-[#A5A5A5] bg-gray-100 cursor-not-allowed'}`}
+        onClick={() => { if (canCreateHere) startNewFolder(currentFolderId); }}
+        disabled={!canCreateHere}
+        className={`flex items-center gap-1.5 px-3 py-2 rounded-xl border text-xs font-semibold transition-colors ${canCreateHere ? 'border-gray-200 text-[#6D6E71] hover:bg-gray-50' : 'border-gray-200 text-[#A5A5A5] bg-gray-100 cursor-not-allowed'}`}
       >
         <FolderPlus size={14} /> New Folder
       </button>
 
       {/* Upload */}
       <button
-        onClick={() => { if (canWrite) onUpload(); }}
-        disabled={!canWrite}
-        className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold transition-colors shadow-sm ${canWrite ? 'bg-[#8BC53D] text-white hover:bg-[#7ab535]' : 'bg-gray-200 text-[#A5A5A5] cursor-not-allowed'}`}
+        onClick={() => { if (canCreateHere) onUpload(); }}
+        disabled={!canCreateHere}
+        className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold transition-colors shadow-sm ${canCreateHere ? 'bg-[#8BC53D] text-white hover:bg-[#7ab535]' : 'bg-gray-200 text-[#A5A5A5] cursor-not-allowed'}`}
       >
         <Upload size={14} /> Upload
       </button>
@@ -481,7 +734,7 @@ function RenameInput({ item }) {
 }
 
 // ── FileCard (grid) ────────────────────────────────────────────────────────────
-function FileCard({ item, role, permissions, sharedMeta, onShareAccess, onMoveFolder, onPreviewFile, onDownloadFile, onOpenActivity }) {
+function FileCard({ item, role, permissions, sharedMeta, onShareAccess, onMoveFolder, onPreviewFile, onDownloadFile, onOpenActivity, isArchiveView }) {
   const {
     selectedItems, selectItem, renamingId, draggingItems, setDraggingItems,
     dragOver, setDragOver, moveItemsTo, clearDrag, navigateTo,
@@ -507,12 +760,13 @@ function FileCard({ item, role, permissions, sharedMeta, onShareAccess, onMoveFo
 
   const handleDoubleClick = (e) => {
     e.stopPropagation();
+    if (isArchiveView && item.type === 'folder') return;
     if (item.type === 'folder') navigateTo(item.id);
     else onPreviewFile(item);
   };
 
   const handleDragStart = (e) => {
-    if (!canManage) return;
+    if (!canManage || isArchiveView) return;
     const toMove = selectedItems.includes(item.id) ? selectedItems : [item.id];
     setDraggingItems(toMove);
     e.dataTransfer.effectAllowed = 'move';
@@ -520,7 +774,7 @@ function FileCard({ item, role, permissions, sharedMeta, onShareAccess, onMoveFo
   };
 
   const handleDragOver = (e) => {
-    if (!canManage || item.type !== 'folder') return;
+    if (!canManage || isArchiveView || item.type !== 'folder') return;
     e.preventDefault();
     e.stopPropagation();
     setDragOver(item.id);
@@ -529,7 +783,7 @@ function FileCard({ item, role, permissions, sharedMeta, onShareAccess, onMoveFo
   const handleDrop = (e) => {
     e.preventDefault();
     e.stopPropagation();
-    if (!canManage) return;
+    if (!canManage || isArchiveView) return;
     if (item.type === 'folder' && draggingItems.length > 0) {
       moveItemsTo(draggingItems, item.id);
     }
@@ -544,7 +798,7 @@ function FileCard({ item, role, permissions, sharedMeta, onShareAccess, onMoveFo
 
   return (
     <div
-      draggable={canManage}
+      draggable={canManage && !isArchiveView}
       onDragStart={handleDragStart}
       onDragEnd={() => clearDrag()}
       onDragOver={handleDragOver}
@@ -566,17 +820,24 @@ function FileCard({ item, role, permissions, sharedMeta, onShareAccess, onMoveFo
             onShareAccess={() => onShareAccess(item)}
             onRename={() => startRenaming(item.id)}
             onMove={() => onMoveFolder(item)}
+            isArchiveView={isArchiveView}
             onDelete={() => useFileExplorerStore.getState().deleteItems([item.id])}
           />
         </div>
       )}
 
-      {/* Checkbox */}
-      {isSelected && (
-        <div className="absolute top-2 left-2 w-5 h-5 rounded-full bg-[#05164D] flex items-center justify-center">
-          <Check size={11} className="text-white" />
-        </div>
-      )}
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); selectItem(item.id, true); }}
+        className={`absolute top-2 left-2 z-10 w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${
+          isSelected
+            ? 'bg-[#05164D] border-[#05164D] opacity-100'
+            : 'bg-white/95 border-gray-300 opacity-100 hover:border-[#05164D]/50'
+        }`}
+        aria-label={isSelected ? `Deselect ${item.name}` : `Select ${item.name}`}
+      >
+        {isSelected && <Check size={11} className="text-white" />}
+      </button>
 
       {/* Icon */}
       <div
@@ -660,7 +921,7 @@ function FileCard({ item, role, permissions, sharedMeta, onShareAccess, onMoveFo
 }
 
 // ── FileRow (list) ─────────────────────────────────────────────────────────────
-function FileRow({ item, role, permissions, sharedMeta, onShareAccess, onMoveFolder, onPreviewFile, onDownloadFile, onOpenActivity }) {
+function FileRow({ item, role, permissions, sharedMeta, onShareAccess, onMoveFolder, onPreviewFile, onDownloadFile, onOpenActivity, isArchiveView }) {
   const {
     selectedItems, selectItem, renamingId, draggingItems, setDraggingItems,
     dragOver, setDragOver, moveItemsTo, clearDrag, navigateTo,
@@ -686,9 +947,9 @@ function FileRow({ item, role, permissions, sharedMeta, onShareAccess, onMoveFol
 
   return (
     <tr
-      draggable={canManage}
+      draggable={canManage && !isArchiveView}
       onDragStart={e => {
-        if (!canManage) return;
+        if (!canManage || isArchiveView) return;
         const toMove = selectedItems.includes(item.id) ? selectedItems : [item.id];
         setDraggingItems(toMove);
         e.dataTransfer.effectAllowed = 'move';
@@ -696,13 +957,13 @@ function FileRow({ item, role, permissions, sharedMeta, onShareAccess, onMoveFol
       }}
       onDragEnd={() => clearDrag()}
       onDragOver={e => {
-        if (!canManage || item.type !== 'folder') return;
+        if (!canManage || isArchiveView || item.type !== 'folder') return;
         e.preventDefault(); e.stopPropagation(); setDragOver(item.id);
       }}
       onDragLeave={e => { e.stopPropagation(); setDragOver(null); }}
       onDrop={e => {
         e.preventDefault(); e.stopPropagation();
-        if (!canManage) return;
+        if (!canManage || isArchiveView) return;
         if (item.type === 'folder' && draggingItems.length > 0)
           moveItemsTo(draggingItems, item.id);
         clearDrag();
@@ -711,7 +972,10 @@ function FileRow({ item, role, permissions, sharedMeta, onShareAccess, onMoveFol
         if (e.ctrlKey || e.metaKey) selectItem(item.id, true);
         else selectItem(item.id, false);
       }}
-      onDoubleClick={() => item.type === 'folder' ? navigateTo(item.id) : onPreviewFile(item)}
+      onDoubleClick={() => {
+        if (isArchiveView && item.type === 'folder') return;
+        item.type === 'folder' ? navigateTo(item.id) : onPreviewFile(item);
+      }}
       onContextMenu={e => { e.preventDefault(); if (canManage) showContextMenu(e.clientX, e.clientY, item.id); }}
       className={`group cursor-pointer transition-all duration-100 select-none
         ${isSelected ? 'bg-[#05164D]/5' : 'hover:bg-gray-50'}
@@ -719,10 +983,15 @@ function FileRow({ item, role, permissions, sharedMeta, onShareAccess, onMoveFol
         ${draggingItems.includes(item.id) ? 'opacity-50' : ''}`}
     >
       <td className="pl-4 pr-2 py-2.5 w-8">
-        <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-all
-          ${isSelected ? 'bg-[#05164D] border-[#05164D]' : 'border-gray-300 group-hover:border-[#05164D]/40'}`}>
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); selectItem(item.id, true); }}
+          className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-all
+          ${isSelected ? 'bg-[#05164D] border-[#05164D]' : 'bg-white border-gray-300 group-hover:border-[#05164D]/40'}`}
+          aria-label={isSelected ? `Deselect ${item.name}` : `Select ${item.name}`}
+        >
           {isSelected && <Check size={11} className="text-white" />}
-        </div>
+        </button>
       </td>
       <td className="px-2 py-2.5">
         <div className="flex items-center gap-2.5">
@@ -791,6 +1060,7 @@ function FileRow({ item, role, permissions, sharedMeta, onShareAccess, onMoveFol
               onShareAccess={() => onShareAccess(item)}
               onRename={() => startRenaming(item.id)}
               onMove={() => onMoveFolder(item)}
+              isArchiveView={isArchiveView}
               onDelete={() => useFileExplorerStore.getState().deleteItems([item.id])}
             />
           )}
@@ -825,6 +1095,7 @@ function FileGrid({
   onDownloadFile,
   onOpenActivity,
   currentFolderPermissions,
+  isArchiveView,
 }) {
   const { newFolderParentId } = useFileExplorerStore();
   return (
@@ -849,6 +1120,7 @@ function FileGrid({
             onPreviewFile={onPreviewFile}
             onDownloadFile={onDownloadFile}
             onOpenActivity={onOpenActivity}
+            isArchiveView={isArchiveView}
           />
         );
       })}
@@ -868,6 +1140,7 @@ function FileTable({
   onDownloadFile,
   onOpenActivity,
   currentFolderPermissions,
+  isArchiveView,
 }) {
   const { newFolderParentId } = useFileExplorerStore();
   return (
@@ -905,6 +1178,7 @@ function FileTable({
                 onPreviewFile={onPreviewFile}
                 onDownloadFile={onDownloadFile}
                 onOpenActivity={onOpenActivity}
+                isArchiveView={isArchiveView}
               />
             );
           })}
@@ -914,7 +1188,7 @@ function FileTable({
   );
 }
 
-function FolderActionMenu({ onShareAccess, onRename, onMove, onDelete, className }) {
+function FolderActionMenu({ onShareAccess, onRename, onMove, onDelete, isArchiveView, className }) {
   const [open, setOpen] = useState(false);
   const menuRef = useRef(null);
 
@@ -938,28 +1212,32 @@ function FolderActionMenu({ onShareAccess, onRename, onMove, onDelete, className
       </button>
       {open && (
         <div className="absolute right-0 mt-2 w-48 bg-white rounded-2xl shadow-xl border border-gray-100 py-2 z-20 animate-fadeIn">
-          <button
-            onClick={() => { onShareAccess(); setOpen(false); }}
-            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-gray-50"
-          >
-            <Share2 size={14} className="text-[#05164D]" />
-            Share Access
-          </button>
-          <button
-            onClick={() => { onRename(); setOpen(false); }}
-            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-gray-50"
-          >
-            <Pencil size={14} className="text-[#6D6E71]" />
-            Rename Folder
-          </button>
-          <button
-            onClick={() => { onMove(); setOpen(false); }}
-            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-gray-50"
-          >
-            <ArrowUpDown size={14} className="text-[#6D6E71]" />
-            Move Folder
-          </button>
-          <div className="my-1 border-t border-gray-100" />
+          {!isArchiveView && (
+            <>
+              <button
+                onClick={() => { onShareAccess(); setOpen(false); }}
+                className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-gray-50"
+              >
+                <Share2 size={14} className="text-[#05164D]" />
+                Share Access
+              </button>
+              <button
+                onClick={() => { onRename(); setOpen(false); }}
+                className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-gray-50"
+              >
+                <Pencil size={14} className="text-[#6D6E71]" />
+                Rename Folder
+              </button>
+              <button
+                onClick={() => { onMove(); setOpen(false); }}
+                className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-gray-50"
+              >
+                <ArrowUpDown size={14} className="text-[#6D6E71]" />
+                Move Folder
+              </button>
+            </>
+          )}
+          {!isArchiveView && <div className="my-1 border-t border-gray-100" />}
           <button
             onClick={() => { onDelete(); setOpen(false); }}
             className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left text-red-500 hover:bg-red-50"
@@ -1240,7 +1518,8 @@ function MoveFolderModal({ isOpen, folder, tree, onMove, onClose }) {
 function ContextMenu({ tree, onPreviewFile, onDownloadFile, onOpenActivity }) {
   const {
     contextMenu, hideContextMenu, deleteItems, startRenaming,
-    startNewFolder, navigateTo, selectedItems, moveItemsTo, tree: storeTree,
+    startNewFolder, navigateTo, selectedItems, tree: storeTree,
+    currentPath,
   } = useFileExplorerStore();
 
   const ref = useRef(null);
@@ -1259,6 +1538,7 @@ function ContextMenu({ tree, onPreviewFile, onDownloadFile, onOpenActivity }) {
   const ids = selectedItems.length > 1 && selectedItems.includes(contextMenu.itemId)
     ? selectedItems
     : [contextMenu.itemId];
+  const isArchiveView = currentPath[currentPath.length - 1] === 'archive';
 
   // Adjust to stay in viewport
   const menuW = 200, menuH = 280;
@@ -1287,7 +1567,7 @@ function ContextMenu({ tree, onPreviewFile, onDownloadFile, onOpenActivity }) {
         <p className="text-[10px] text-[#A5A5A5]">{item.type === 'folder' ? 'Folder' : item.ext?.toUpperCase() || 'File'}</p>
       </div>
       <div className="px-1">
-        {item.type === 'folder' && (
+        {item.type === 'folder' && !isArchiveView && (
           <MenuItem icon={FolderOpen} label="Open" onClick={() => navigateTo(item.id)} />
         )}
         {item.type === 'file' && (
@@ -1299,10 +1579,10 @@ function ContextMenu({ tree, onPreviewFile, onDownloadFile, onOpenActivity }) {
         {item.type === 'file' && (
           <MenuItem icon={Users} label="View Activity" onClick={() => onOpenActivity(item)} />
         )}
-        {ids.length === 1 && (
+        {ids.length === 1 && !isArchiveView && (
           <MenuItem icon={Pencil} label="Rename" onClick={() => startRenaming(item.id)} />
         )}
-        {item.type === 'folder' && ids.length === 1 && (
+        {item.type === 'folder' && ids.length === 1 && !isArchiveView && (
           <MenuItem icon={FolderPlus} label="New Folder Inside" onClick={() => startNewFolder(item.id)} />
         )}
         <div className="my-1 border-t border-gray-100" />
@@ -1442,27 +1722,201 @@ function DocumentActivityModal({ document: activityDocument, onClose }) {
   );
 }
 
+function PreviewToolbarButton({ children, onClick, disabled }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-[#050505] shadow-sm transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+    >
+      {children}
+    </button>
+  );
+}
+
+function ImagePreview({ blobUrl, name, zoom, setZoom }) {
+  return (
+    <div className="flex h-full flex-col bg-[radial-gradient(circle_at_top,#f8fafc,#eef2f7)]">
+      <div className="flex items-center justify-end gap-2 border-b border-gray-100 bg-white/90 px-4 py-2">
+        <PreviewToolbarButton onClick={() => setZoom((value) => Math.max(50, value - 25))}>-</PreviewToolbarButton>
+        <span className="w-14 text-center text-xs font-semibold text-[#6D6E71]">{zoom}%</span>
+        <PreviewToolbarButton onClick={() => setZoom((value) => Math.min(250, value + 25))}>+</PreviewToolbarButton>
+        <PreviewToolbarButton onClick={() => setZoom(100)}>Reset</PreviewToolbarButton>
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto p-6">
+        <img
+          src={blobUrl}
+          alt={name}
+          className="mx-auto h-auto rounded-2xl border border-gray-100 shadow-lg"
+          style={{ width: `${zoom}%`, maxWidth: zoom <= 100 ? '100%' : 'none' }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function PdfPreview({ blobUrl, name, zoom, setZoom }) {
+  return (
+    <div className="flex h-full flex-col bg-white">
+      <div className="flex items-center justify-end gap-2 border-b border-gray-100 bg-white px-4 py-2">
+        <PreviewToolbarButton onClick={() => setZoom((value) => Math.max(50, value - 25))}>-</PreviewToolbarButton>
+        <span className="w-14 text-center text-xs font-semibold text-[#6D6E71]">{zoom}%</span>
+        <PreviewToolbarButton onClick={() => setZoom((value) => Math.min(200, value + 25))}>+</PreviewToolbarButton>
+        <PreviewToolbarButton onClick={() => setZoom(100)}>Reset</PreviewToolbarButton>
+      </div>
+      <iframe
+        title={name}
+        src={`${blobUrl}#toolbar=0&navpanes=0&scrollbar=1&zoom=${zoom}`}
+        className="min-h-0 flex-1 bg-white"
+      />
+    </div>
+  );
+}
+
+function SpreadsheetPreview({ sheets, activeSheetIndex, setActiveSheetIndex }) {
+  const activeSheet = sheets[activeSheetIndex] || sheets[0];
+  if (!activeSheet) return null;
+
+  return (
+    <div className="flex h-full flex-col bg-white">
+      <div className="flex flex-wrap items-center gap-2 border-b border-gray-100 bg-[#FCFCFD] p-3">
+        {sheets.map((sheet, index) => (
+          <button
+            type="button"
+            key={sheet.name}
+            onClick={() => setActiveSheetIndex(index)}
+            className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors ${
+              index === activeSheetIndex
+                ? 'bg-[#05164D] text-white'
+                : 'bg-white text-[#6D6E71] ring-1 ring-gray-200 hover:bg-gray-50'
+            }`}
+          >
+            {sheet.name}
+          </button>
+        ))}
+      </div>
+      <div className="border-b border-gray-100 px-4 py-2 text-xs font-medium text-[#6D6E71]">
+        Showing up to {MAX_SPREADSHEET_ROWS} rows and {MAX_SPREADSHEET_COLUMNS} columns from {activeSheet.totalRows} rows x {activeSheet.totalColumns} columns.
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto">
+        <table className="min-w-full border-separate border-spacing-0 text-left text-sm">
+          <tbody>
+            {activeSheet.rows.map((row, rowIndex) => (
+              <tr key={`row-${rowIndex}`} className={rowIndex === 0 ? 'bg-[#F8FAFC]' : 'bg-white'}>
+                {row.map((cell, cellIndex) => (
+                  <td
+                    key={`cell-${rowIndex}-${cellIndex}`}
+                    className={`max-w-[260px] whitespace-nowrap border-b border-r border-gray-100 px-3 py-2 text-[#2B2F38] ${
+                      rowIndex === 0 ? 'font-semibold text-[#050505]' : ''
+                    }`}
+                  >
+                    <span className="block overflow-hidden text-ellipsis">{String(cell || '')}</span>
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {activeSheet.truncated ? (
+        <div className="border-t border-gray-100 bg-[#FCFCFD] px-4 py-2 text-xs text-[#6D6E71]">
+          Preview trimmed for performance. Download the file to view the full workbook.
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function WordRun({ run, index }) {
+  const className = [
+    run.bold ? 'font-bold' : '',
+    run.italic ? 'italic' : '',
+    run.underline ? 'underline' : '',
+  ].filter(Boolean).join(' ');
+  return <span key={index} className={className}>{run.text}</span>;
+}
+
+function WordParagraph({ block }) {
+  const content = block.runs.map((run, index) => <WordRun key={`${run.text}-${index}`} run={run} index={index} />);
+  if (block.style === 'heading1') return <h1 className="mb-4 mt-2 text-2xl font-bold text-[#050505]">{content}</h1>;
+  if (block.style === 'heading2') return <h2 className="mb-3 mt-5 text-xl font-bold text-[#050505]">{content}</h2>;
+  if (block.style === 'heading3') return <h3 className="mb-2 mt-4 text-base font-bold text-[#050505]">{content}</h3>;
+  return <p className="mb-3 text-sm leading-7 text-[#2B2F38]">{content}</p>;
+}
+
+function WordPreview({ preview }) {
+  return (
+    <div className="h-full overflow-auto bg-[#F8FAFC] p-4 sm:p-6">
+      <div className="mx-auto max-w-4xl rounded-2xl bg-white px-6 py-7 shadow-sm ring-1 ring-gray-100 sm:px-10">
+        {preview.blocks.map((block, index) => {
+          if (block.type === 'table') {
+            return (
+              <div key={`table-${index}`} className="mb-5 overflow-auto rounded-xl border border-gray-100">
+                <table className="min-w-full border-separate border-spacing-0 text-sm">
+                  <tbody>
+                    {block.rows.map((row, rowIndex) => (
+                      <tr key={`word-row-${rowIndex}`}>
+                        {row.map((cell, cellIndex) => (
+                          <td key={`word-cell-${rowIndex}-${cellIndex}`} className="min-w-[160px] border-b border-r border-gray-100 px-3 py-2 align-top">
+                            {cell.map((paragraph, paragraphIndex) => (
+                              <WordParagraph key={`word-p-${paragraphIndex}`} block={paragraph} />
+                            ))}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            );
+          }
+          return <WordParagraph key={`word-block-${index}`} block={block} />;
+        })}
+        {preview.truncated ? (
+          <div className="mt-6 rounded-xl bg-[#F8FAFC] px-4 py-3 text-xs font-medium text-[#6D6E71]">
+            Preview trimmed for performance. Download the file to view the full document.
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 // ── PreviewModal ───────────────────────────────────────────────────────────────
 function PreviewModal({ onDownloadFile }) {
   const { previewItem, hidePreview } = useFileExplorerStore();
   const [blobUrl, setBlobUrl] = useState('');
   const [textPreview, setTextPreview] = useState('');
+  const [spreadsheetPreview, setSpreadsheetPreview] = useState([]);
+  const [activeSheetIndex, setActiveSheetIndex] = useState(0);
+  const [wordPreview, setWordPreview] = useState(null);
+  const [imageZoom, setImageZoom] = useState(100);
+  const [pdfZoom, setPdfZoom] = useState(100);
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [previewError, setPreviewError] = useState('');
   const normalizedExt = (previewItem?.ext || '').toLowerCase();
   const { Icon, color, bg } = getMimeIcon(previewItem?.ext);
-  const isImage = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'].includes(normalizedExt);
+  const isImage = IMAGE_EXTENSIONS.includes(normalizedExt);
   const isPdf = normalizedExt === 'pdf';
-  const isText = ['txt', 'md', 'json'].includes(normalizedExt);
-  const isWordDoc = ['doc', 'docx'].includes(normalizedExt);
+  const isText = TEXT_EXTENSIONS.includes(normalizedExt);
+  const isSpreadsheet = SPREADSHEET_EXTENSIONS.includes(normalizedExt);
+  const isWordDoc = WORD_EXTENSIONS.includes(normalizedExt);
   const canPreview = canInlinePreview(previewItem?.ext) && Boolean(previewItem?.fileUrl);
 
   useEffect(() => {
     let revokedUrl = '';
     let active = true;
 
+    // This effect owns the external file fetch lifecycle and clears stale preview state before loading the next file.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setBlobUrl('');
     setTextPreview('');
+    setSpreadsheetPreview([]);
+    setActiveSheetIndex(0);
+    setWordPreview(null);
+    setImageZoom(100);
+    setPdfZoom(100);
     setPreviewError('');
 
     if (!previewItem?.fileUrl || !canPreview) {
@@ -1481,10 +1935,33 @@ function PreviewModal({ onDownloadFile }) {
           if (!active) return;
           setTextPreview(text);
         }
+        if (isSpreadsheet) {
+          const workbook = XLSX.read(await blob.arrayBuffer(), {
+            type: 'array',
+            cellDates: true,
+            dense: false,
+          });
+          if (!active) return;
+          const sheets = buildSpreadsheetPreview(workbook);
+          setSpreadsheetPreview(sheets);
+          if (!sheets.length) setPreviewError('No readable sheets were found in this spreadsheet.');
+        }
+        if (isWordDoc) {
+          const buffer = await blob.arrayBuffer();
+          const parsedWord = normalizedExt === 'docx'
+            ? parseDocxPreview(buffer)
+            : parseLegacyWordPreview(buffer);
+          if (!active) return;
+          if (!parsedWord.blocks.length) {
+            setPreviewError('No readable content was found in this Word document.');
+          } else {
+            setWordPreview(parsedWord);
+          }
+        }
       })
       .catch((err) => {
         if (!active) return;
-        setPreviewError(err.message || 'Unable to load document preview.');
+        setPreviewError(err.message || 'Preview not available for this file type.');
       })
       .finally(() => {
         if (active) setLoadingPreview(false);
@@ -1494,7 +1971,7 @@ function PreviewModal({ onDownloadFile }) {
       active = false;
       if (revokedUrl) URL.revokeObjectURL(revokedUrl);
     };
-  }, [previewItem?.id, previewItem?.fileUrl, canPreview, isText]);
+  }, [previewItem?.id, previewItem?.fileUrl, canPreview, isText, isSpreadsheet, isWordDoc, normalizedExt]);
 
   if (!previewItem) return null;
 
@@ -1554,19 +2031,27 @@ function PreviewModal({ onDownloadFile }) {
                   </div>
                 </div>
               ) : isImage && blobUrl ? (
-                <div className="h-full overflow-auto bg-[radial-gradient(circle_at_top,#f8fafc,#eef2f7)] p-6">
-                  <img
-                    src={blobUrl}
-                    alt={previewItem.name}
-                    className="mx-auto max-w-full h-auto rounded-2xl shadow-lg border border-gray-100"
-                  />
-                </div>
-              ) : isPdf && blobUrl ? (
-                <iframe
-                  title={previewItem.name}
-                  src={`${blobUrl}#toolbar=0&navpanes=0&scrollbar=1`}
-                  className="w-full h-full bg-white"
+                <ImagePreview
+                  blobUrl={blobUrl}
+                  name={previewItem.name}
+                  zoom={imageZoom}
+                  setZoom={setImageZoom}
                 />
+              ) : isPdf && blobUrl ? (
+                <PdfPreview
+                  blobUrl={blobUrl}
+                  name={previewItem.name}
+                  zoom={pdfZoom}
+                  setZoom={setPdfZoom}
+                />
+              ) : isSpreadsheet && spreadsheetPreview.length ? (
+                <SpreadsheetPreview
+                  sheets={spreadsheetPreview}
+                  activeSheetIndex={activeSheetIndex}
+                  setActiveSheetIndex={setActiveSheetIndex}
+                />
+              ) : isWordDoc && wordPreview ? (
+                <WordPreview preview={wordPreview} />
               ) : isText ? (
                 <div className="h-full overflow-auto bg-[#FCFCFD] p-6">
                   <pre className="whitespace-pre-wrap break-words text-sm leading-6 text-[#2B2F38] font-mono">
@@ -1581,9 +2066,9 @@ function PreviewModal({ onDownloadFile }) {
                   <div>
                     <p className="text-lg font-semibold text-[#050505]">{previewItem.name}</p>
                     <p className="text-sm text-[#6D6E71] mt-1">
-                      {isWordDoc
-                        ? 'Word documents are supported here, but browser inline preview is limited. Use download to open the full file.'
-                        : 'Inline preview is not available for this file type yet. You can still download it.'}
+                      {canPreview
+                        ? 'Preview not available for this file type.'
+                        : 'Preview not available for this file type.'}
                     </p>
                   </div>
                 </div>
@@ -1617,7 +2102,7 @@ function PreviewModal({ onDownloadFile }) {
               <div className="rounded-2xl bg-[#F8FAFC] border border-gray-100 p-4">
                 <p className="text-sm font-semibold text-[#050505]">Preview Notes</p>
                 <p className="text-xs leading-5 text-[#6D6E71] mt-2">
-                  PDFs and images open directly inside this preview. Multi-page PDFs stay scrollable in the preview area, and Word documents remain available through download when the browser cannot render them inline.
+                  PDFs, spreadsheets, Word documents, and images render inside this preview when the file can be read safely. Large files are trimmed for responsiveness.
                 </p>
               </div>
             </div>
@@ -1856,7 +2341,9 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
   }, [companyId, role, tree, loadFolderAccessFromApi, setFolderAccess]);
 
   const currentFolderId = currentPath[currentPath.length - 1];
-  const currentFolder = findById(tree, currentFolderId) || tree;
+  const isArchiveView = currentFolderId === 'archive';
+  const archivedItems = useMemo(() => collectArchivedItems(tree), [tree]);
+  const currentFolder = isArchiveView ? { id: 'archive', name: 'Archive', type: 'folder', children: archivedItems } : findById(tree, currentFolderId) || tree;
   const canManageAccess = role === 'broker';
 
   const currentUser = useMemo(() => (
@@ -1903,14 +2390,14 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
       : { count: 0, tooltip: '' };
   }, [folderAccess]);
 
-  const currentFolderPermissions = getFolderPermissions(currentFolderId);
+  const currentFolderPermissions = isArchiveView ? { read: true, write: true, download: true } : getFolderPermissions(currentFolderId);
   const canWriteCurrent = currentFolderPermissions.write || role === 'broker';
   const canReadCurrent = currentFolderPermissions.read || role === 'broker' || currentFolderId === 'root';
 
   // Get items in current view
   const rawItems = searchQuery
-    ? searchTree(tree, searchQuery)
-    : sortItems(currentFolder.children || [], sortBy, sortDir);
+    ? searchTree(tree, searchQuery, (item) => isArchiveView ? isArchivedItem(item) : !isArchivedItem(item))
+    : sortItems((currentFolder.children || []).filter((item) => isArchiveView ? isArchivedItem(item) : !isArchivedItem(item)), sortBy, sortDir);
   const canReadFile = (item) => {
     const path = getPathTo(tree, item.id);
     if (path && path.length > 1) {
@@ -1919,7 +2406,13 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
     }
     return canReadCurrent;
   };
-  const currentItems = role === 'broker'
+  const currentItems = isArchiveView
+    ? (role === 'broker'
+      ? rawItems
+      : rawItems.filter(item => (
+        item.type === 'folder' ? getFolderPermissions(item.id).read : canReadFile(item)
+      )))
+    : role === 'broker'
     ? rawItems
     : rawItems.filter(item => (
       item.type === 'folder' ? getFolderPermissions(item.id).read : canReadFile(item)
@@ -1948,18 +2441,18 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
     setDragCounter(0);
     setDragOver(null);
     if (e.dataTransfer.files.length > 0) {
-      if (!canWriteCurrent) return;
+      if (!canWriteCurrent || isArchiveView) return;
       const warns = uploadFiles(currentFolderId, e.dataTransfer.files);
       if (warns.length > 0) setDuplicateWarnings(warns);
     } else if (draggingItems.length > 0) {
       // drop on background = no-op (items stay where they are)
       clearDrag();
     }
-  }, [currentFolderId, uploadFiles, draggingItems, setDragOver, clearDrag, canWriteCurrent]);
+  }, [currentFolderId, uploadFiles, draggingItems, setDragOver, clearDrag, canWriteCurrent, isArchiveView]);
 
   // File input upload
   const handleFileInputChange = (e) => {
-    if (!canWriteCurrent) return;
+    if (!canWriteCurrent || isArchiveView) return;
     if (e.target.files?.length) {
       const warns = uploadFiles(currentFolderId, e.target.files);
       if (warns.length > 0) setDuplicateWarnings(warns);
@@ -1968,7 +2461,7 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
   };
 
   const openUpload = () => {
-    if (!canWriteCurrent) return;
+    if (!canWriteCurrent || isArchiveView) return;
     fileInputRef.current?.click();
   };
 
@@ -2075,6 +2568,7 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
           onUpload={openUpload}
           role={role}
           currentFolderPermissions={currentFolderPermissions}
+          archivedCount={archivedItems.length}
         />
 
         {/* Content Area */}
@@ -2128,6 +2622,7 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
               onDownloadFile={downloadFile}
               onOpenActivity={openActivity}
               currentFolderPermissions={currentFolderPermissions}
+              isArchiveView={isArchiveView}
             />
           ) : (
             <div className="bg-white rounded-2xl overflow-hidden border border-gray-100">
@@ -2143,6 +2638,7 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
                 onDownloadFile={downloadFile}
                 onOpenActivity={openActivity}
                 currentFolderPermissions={currentFolderPermissions}
+                isArchiveView={isArchiveView}
               />
             </div>
           )}

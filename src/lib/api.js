@@ -6,6 +6,17 @@ function buildUrl(path) {
   return `${API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`;
 }
 
+function withQuery(path, params = {}) {
+  const query = new URLSearchParams();
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== false) {
+      query.set(key, value === true ? '1' : String(value));
+    }
+  });
+  const qs = query.toString();
+  return qs ? `${path}${path.includes('?') ? '&' : '?'}${qs}` : path;
+}
+
 function resolveProtectedFileUrl(fileUrl) {
   const raw = String(fileUrl || '').trim();
   if (!raw) return '';
@@ -570,12 +581,16 @@ export function setSelectedReportSource(sourceKey, options = {}) {
   });
 }
 
-export function listCompanyFolders(companyId) {
-  return request(`/companies/${companyId}/folders`).then(ensureArray);
+export function listCompanyFolders(companyId, options = {}) {
+  return request(withQuery(`/companies/${companyId}/folders`, {
+    includeArchived: options.includeArchived,
+  })).then(ensureArray);
 }
 
-export function listFolderTree(companyId) {
-  return request(`/companies/${companyId}/folders/tree`).then(ensureArray);
+export function listFolderTree(companyId, options = {}) {
+  return request(withQuery(`/companies/${companyId}/folders/tree`, {
+    includeArchived: options.includeArchived,
+  })).then(ensureArray);
 }
 
 export function createCompanyFolder(companyId, payload) {
@@ -590,16 +605,34 @@ export function moveFolder(folderId, payload) {
   return request(`/folders/${folderId}/move`, { method: 'POST', body: payload }).then(unwrapPayload);
 }
 
+export function archiveFolder(folderId) {
+  return request(`/folders/${folderId}/archive`, { method: 'POST' }).then(unwrapPayload);
+}
+
+export function unarchiveFolder(folderId) {
+  return request(`/folders/${folderId}/unarchive`, { method: 'POST' }).then(unwrapPayload);
+}
+
 export function deleteFolder(folderId) {
   return request(`/folders/${folderId}`, { method: 'DELETE' });
 }
 
-export function listFolderDocuments(folderId) {
-  return request(`/folders/${folderId}/documents`).then(ensureArray);
+export function listFolderDocuments(folderId, options = {}) {
+  return request(withQuery(`/folders/${folderId}/documents`, {
+    includeArchived: options.includeArchived,
+  })).then(ensureArray);
 }
 
 export function deleteDocument(documentId) {
   return request(`/documents/${documentId}`, { method: 'DELETE' });
+}
+
+export function archiveDocument(documentId) {
+  return request(`/documents/${documentId}/archive`, { method: 'POST' }).then(unwrapPayload);
+}
+
+export function unarchiveDocument(documentId) {
+  return request(`/documents/${documentId}/unarchive`, { method: 'POST' }).then(unwrapPayload);
 }
 
 export function recordDocumentActivity(documentId, activityType) {
