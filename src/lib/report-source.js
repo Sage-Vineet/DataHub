@@ -25,7 +25,6 @@ export const REPORT_SOURCE_OPTIONS = [
     key: REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL,
     label: "QuickBooks Manual",
     sourceMode: "quickbooks_manual",
-    isComingSoon: true,
   },
 ];
 

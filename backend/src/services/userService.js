@@ -25,7 +25,14 @@ function markProfileFallbackCooldown(error) {
 function getProfilePool() {
   if (!process.env.DATABASE_URL) return null;
   if (!profilePool) {
-    profilePool = new Pool({ connectionString: process.env.DATABASE_URL, connectionTimeoutMillis: 5000 });
+    profilePool = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: { rejectUnauthorized: false },
+      max: 3,
+      connectionTimeoutMillis: 2000,
+      idleTimeoutMillis: 10000,
+    });
+    profilePool.on("error", () => {}); // suppress unhandled pool errors
   }
   return profilePool;
 }
@@ -57,24 +64,32 @@ async function selectUserRow(buildQuery) {
 
 async function getSqlProfileByEmail(email) {
   const normalizedEmail = String(email || "").trim();
-  if (isProfileFallbackCoolingDown()) return {};
-  const pool = normalizedEmail ? getProfilePool() : null;
+  if (!normalizedEmail) return {};
+
+  // Circuit breaker: skip Postgres entirely while it's known to be unreachable
+  if (Date.now() < _pgOpenUntil) return {};
+
+  const pool = getProfilePool();
   if (!pool) return {};
 
   try {
     const { rows } = await pool.query(
-      `
-        select date_of_birth, occupation, address, broker_company
-        from users
-        where lower(email) = lower($1)
-        limit 1
-      `,
-      [normalizedEmail]
+      `SELECT date_of_birth, occupation, address, broker_company
+       FROM users WHERE lower(email) = lower($1) LIMIT 1`,
+      [normalizedEmail],
     );
     return rows[0] || {};
   } catch (err) {
     markProfileFallbackCooldown(err);
     console.warn("Profile SQL fallback read failed:", err.message);
+    const isNetworkErr = err.code === "ETIMEDOUT" || err.code === "ECONNREFUSED" ||
+      /timeout|ETIMEDOUT|ECONNREFUSED|terminated/i.test(err.message);
+    if (isNetworkErr) {
+      _pgOpenUntil = Date.now() + 60_000; // open circuit for 60 s
+      console.warn("[userService] Postgres unreachable — skipping SQL fallback for 60 s");
+    } else {
+      console.warn("Profile SQL fallback read failed:", err.message);
+    }
     return {};
   }
 }

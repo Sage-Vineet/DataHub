@@ -4,6 +4,8 @@ import {
   getManualStagedProfitLossMonthlyDetail,
   getLatestManualUploadedReport,
   getAllManualUploadedReports,
+  getLatestQMSUploadedReport,
+  getAllQMSUploadedReports,
 } from "../lib/api";
 import { normalizeAccountingMethod } from "../lib/report-filters";
 import { parseSummaryReport } from "../lib/report-parsers";
@@ -66,8 +68,9 @@ async function fetchSinglePeriodPNL(
   options = {},
 ) {
   try {
-    if (sourceMode === "manual_upload") {
-      const payload = await getLatestManualUploadedReport("profit_and_loss", {
+    if (sourceMode === "manual_upload" || sourceMode === "quickbooks_manual") {
+      const fetchFn = sourceMode === "quickbooks_manual" ? getLatestQMSUploadedReport : getLatestManualUploadedReport;
+      const payload = await fetchFn("profit_and_loss", {
         rowId: options?.manualUploadRowId,
       });
       const rows = Array.isArray(payload?.data?.rows) ? payload.data.rows : [];
@@ -373,8 +376,9 @@ function buildPNLFromPeriodColumns(sortedFiles) {
   };
 }
 
-async function buildPNLMultiFileDetail() {
-  const result = await getAllManualUploadedReports("profit_and_loss");
+async function buildPNLMultiFileDetail(sourceMode = "manual_upload") {
+  const fetchFn = sourceMode === "quickbooks_manual" ? getAllQMSUploadedReports : getAllManualUploadedReports;
+  const result = await fetchFn("profit_and_loss");
   const files = (result?.files || []).filter((f) => f.data?.rows?.length);
   if (!files.length) return { rows: [], columns: { yearCols: [], ytdComparison: null } };
 
@@ -433,8 +437,8 @@ export async function getProfitAndLossDetail(
     return response;
   }
 
-  if (options?.sourceMode === "manual_upload") {
-    return buildPNLMultiFileDetail();
+  if (options?.sourceMode === "manual_upload" || options?.sourceMode === "quickbooks_manual") {
+    return buildPNLMultiFileDetail(options.sourceMode);
   }
 
   // Detail now uses system-defined multi-year comparison (EBITDA analysis)

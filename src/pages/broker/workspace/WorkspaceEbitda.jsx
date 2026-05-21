@@ -9,7 +9,7 @@ import {
   ChevronDown,
 } from "lucide-react";
 import { cn, formatCurrency } from "../../../lib/utils";
-import { getCompanyRequest, getReportSources, setSelectedReportSource as apiSetSelectedReportSource, getAllManualUploadedReports, getManualStageFilterOptions } from "../../../lib/api";
+import { getCompanyRequest, getReportSources, setSelectedReportSource as apiSetSelectedReportSource, getAllManualUploadedReports, getAllQMSUploadedReports, syncQMSUploadSource } from "../../../lib/api";
 import {
   getEbitdaData,
   extractEbitdaFromManualPLRows,
@@ -24,7 +24,6 @@ function formatPercent(value) {
   if (!Number.isFinite(value)) return "-";
   return `${value.toFixed(1)}%`;
 }
-
 
 function EmptyState() {
   return (
@@ -42,24 +41,67 @@ function EmptyState() {
   );
 }
 
-function ErrorState({ error, onRetry }) {
+function EmptyStateNotification({ error, onRetry }) {
   return (
-    <div className="flex flex-col items-center justify-center rounded-2xl border border-red-200 bg-red-50/50 py-12">
-      <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-red-100">
-        <AlertCircle size={22} className="text-red-500" />
-      </div>
-      <h3 className="text-[15px] font-semibold text-red-900">
-        Unable to Load EBITDA Data
-      </h3>
-      <p className="mt-1 max-w-sm text-center text-[13px] text-red-600">
-        {error}
-      </p>
+    <div className="flex items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+      <AlertCircle size={16} className="shrink-0 text-amber-500" />
+      <p className="flex-1 text-[13px] text-amber-800">{error}</p>
       <button
         onClick={onRetry}
-        className="mt-4 rounded-lg bg-red-600 px-4 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-red-700"
+        className="shrink-0 rounded-md border border-amber-300 bg-white px-3 py-1.5 text-[12px] font-medium text-amber-700 transition-colors hover:bg-amber-50"
       >
-        Try Again
+        Retry
       </button>
+    </div>
+  );
+}
+
+const EMPTY_TABLE_ROWS = [
+  { label: 'Net Income', indent: false, bold: true, shade: 'bg-gray-50' },
+  { label: 'Total Interest Income', indent: true, bold: false, shade: '' },
+  { label: 'Total Interest Expense', indent: true, bold: false, shade: '' },
+  { label: 'Total Income Tax Expense', indent: true, bold: false, shade: '' },
+  { label: 'Depreciation', indent: true, bold: false, shade: '' },
+  { label: 'Amortization Expense', indent: true, bold: false, shade: '' },
+  { label: 'EBITDA', indent: false, bold: true, shade: 'bg-[#f8fafc]' },
+  { label: 'Addbacks', indent: false, bold: true, shade: 'bg-gray-100' },
+  { label: "Seller's Discretionary Earnings", indent: false, bold: true, shade: 'bg-gray-50' },
+  { label: 'SDE % of Sales', indent: false, bold: false, shade: '' },
+];
+
+function EmptyEbitdaTable({ companyName }) {
+  return (
+    <div className="flex gap-6 items-start">
+      <div className="flex-1 overflow-hidden rounded-xl border border-[#cbd5e1] bg-white shadow-lg">
+        <div className="bg-[#8bc53d] py-3 text-center">
+          <h2 className="text-[18px] font-bold text-white">
+            Recalculated Seller&apos;s Discretionary Earnings of {companyName || 'the Business'}
+          </h2>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-[14px]">
+            <thead>
+              <tr className="bg-[#8bc53d] text-white">
+                <th className="border-b border-[#cbd5e1] p-3 text-left font-bold min-w-[280px]"></th>
+                <th className="border-b border-[#cbd5e1] p-3 text-right font-bold min-w-[120px] opacity-40">FY —</th>
+              </tr>
+            </thead>
+            <tbody>
+              {EMPTY_TABLE_ROWS.map((row) => (
+                <tr
+                  key={row.label}
+                  className={`border-b border-[#f1f5f9] h-[46px] ${row.shade}`}
+                >
+                  <td className={`p-3 ${row.indent ? 'pl-8' : 'pl-3'} ${row.bold ? 'font-bold text-[#050505]' : 'text-text-primary'}`}>
+                    {row.label}
+                  </td>
+                  <td className="p-3 text-right text-text-muted">—</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
 }
@@ -91,7 +133,8 @@ export default function WorkspaceEbitda() {
   const reportSource = activeSource ? normalizeReportSourceKey(activeSource) : REPORT_SOURCE_KEYS.QUICKBOOKS;
   const isManualGl = reportSource === REPORT_SOURCE_KEYS.MANUAL_GL;
   const isManualUpload = reportSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD;
-  const isManualMode = isManualGl || isManualUpload;
+  const isQBManual = reportSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
+  const isManualMode = isManualGl || isManualUpload || isQBManual;
 
   const [multiYearData, setMultiYearData] = useState(null);
   const [years, setYears] = useState([]);
@@ -305,6 +348,68 @@ export default function WorkspaceEbitda() {
         if (ebitdaCacheKey) {
           try { sessionStorage.setItem(ebitdaCacheKey, JSON.stringify({ multiYearData: newData, years: newYears })); } catch { /* quota exceeded */ }
         }
+      } else if (isQBManual) {
+        // QuickBooks Manual: read all synced P&L files from qb_synced_reports
+        const result = await getAllQMSUploadedReports("profit_and_loss", { clientId });
+        const files = (result?.files || []).filter((f) => f.data?.rows?.length);
+
+        if (!files.length) {
+          throw new Error("No P&L reports found. Please sync your Quickbooks Manual Source folder first.");
+        }
+
+        const detectFileYear = (file) => {
+          const data = file.data || {};
+          const dateSrc = data.asOfDate || data.periodEnd || data.periodStart;
+          if (dateSrc) {
+            const parsed = parseInt(String(dateSrc).split("-")[0], 10);
+            if (parsed >= 2000 && parsed <= currentYear + 1) return parsed;
+          }
+          const yearInName = (file.fileName || "").match(/\b(20\d{2})\b/);
+          if (yearInName) return parseInt(yearInName[1], 10);
+          return currentYear;
+        };
+
+        const buildSumColAmounts = (periods) => {
+          const totalIdx = (periods || []).findIndex((p) => /^total$/i.test(String(p).trim()));
+          const getVal = (colAmounts) => {
+            if (!Array.isArray(colAmounts) || colAmounts.length === 0) return 0;
+            return totalIdx >= 0
+              ? (colAmounts[totalIdx] || 0)
+              : colAmounts.reduce((s, v) => s + (v || 0), 0);
+          };
+          const sumColAmounts = (node) => ({
+            ...node,
+            amount: getVal(node.colAmounts) || (node.amount || 0),
+            children: node.children ? node.children.map(sumColAmounts) : undefined,
+          });
+          return sumColAmounts;
+        };
+
+        const yearFileMap = new Map();
+        for (const file of files) {
+          const yr = detectFileYear(file);
+          const existing = yearFileMap.get(yr);
+          if (!existing || new Date(file.updatedAt || 0) > new Date(existing.updatedAt || 0)) {
+            yearFileMap.set(yr, file);
+          }
+        }
+
+        const newData = {};
+        for (const [yr, file] of yearFileMap) {
+          const hasPeriods = (file.data?.periods?.length || 0) > 0;
+          const sumColAmounts = buildSumColAmounts(file.data?.periods || []);
+          const rows = hasPeriods
+            ? (file.data.rows || []).map(sumColAmounts)
+            : (file.data.rows || []);
+          newData[yr] = extractEbitdaFromManualPLRows(rows, file.data?.asOfDate || null);
+        }
+
+        const newYears = Array.from(yearFileMap.keys()).sort((a, b) => b - a);
+        setYears(newYears);
+        setMultiYearData(newData);
+        if (ebitdaCacheKey) {
+          try { sessionStorage.setItem(ebitdaCacheKey, JSON.stringify({ multiYearData: newData, years: newYears })); } catch { /* quota exceeded */ }
+        }
       } else {
         // QuickBooks: fetch per-year
         const todayStr = new Date().toISOString().split("T")[0];
@@ -334,10 +439,10 @@ export default function WorkspaceEbitda() {
     } finally {
       setIsLoading(false);
     }
-  }, [isManualGl, isManualUpload, clientId, ebitdaCacheKey, accountingMethod]);
+  }, [isManualGl, isManualUpload, isQBManual, clientId, ebitdaCacheKey, accountingMethod]);
 
   useEffect(() => {
-    handleGenerate(isManualUpload);
+    handleGenerate(isManualUpload || isQBManual);
   }, [handleGenerate]);
 
   // Handle Dynamic Addbacks Initialization and Persistence
@@ -540,7 +645,12 @@ export default function WorkspaceEbitda() {
       try { sessionStorage.removeItem(ebitdaCacheKey); } catch { /* ignore */ }
     }
     try {
-      if (!isManualMode) await refreshQuickbooksToken();
+      if (isQBManual) {
+        // Re-sync all QMS files so the latest parser fixes apply, then re-fetch EBITDA.
+        await syncQMSUploadSource({ clientId });
+      } else if (!isManualMode) {
+        await refreshQuickbooksToken();
+      }
       await handleGenerate(true);
     } catch {
       setError("Sync failed. Please try again.");
@@ -564,22 +674,22 @@ export default function WorkspaceEbitda() {
                 ? `Powered by staged GL data${company?.name ? ` — ${company.name}` : ""}`
                 : isManualUpload
                 ? `Powered by your uploaded Profit & Loss file${company?.name ? ` — ${company.name}` : ""}`
+                : isQBManual
+                ? `Powered by your QuickBooks Manual P&L reports${company?.name ? ` — ${company.name}` : ""}`
                 : `Dynamic earnings analysis powered by your Profit & Loss data${company?.name ? ` — ${company.name}` : ""}`}
             </p>
           </div>
-          {activeSourceMode === "quickbooks" && (
-            <button
-              onClick={handleSync}
-              disabled={isSyncing}
-              className="btn-secondary"
-            >
-              <RefreshCw
-                size={16}
-                className={isSyncing ? "animate-spin" : ""}
-              />
-              {isSyncing ? "Syncing..." : "Sync"}
-            </button>
-          )}
+          <button
+            onClick={handleSync}
+            disabled={isSyncing || isLoading}
+            className="btn-secondary"
+          >
+            <RefreshCw
+              size={16}
+              className={isSyncing ? "animate-spin" : ""}
+            />
+            {isSyncing ? "Refreshing..." : "Refresh"}
+          </button>
         </div>
 
         <QBDisconnectedBanner pageName="EBITDA Analysis" />
@@ -587,8 +697,11 @@ export default function WorkspaceEbitda() {
         {/* Content */}
         {isLoading ? (
           <LoadingState />
-        ) : error ? (
-          <ErrorState error={error} onRetry={handleGenerate} />
+        ) : error && !multiYearData ? (
+          <div className="flex flex-col gap-4">
+            <EmptyStateNotification error={error} onRetry={handleGenerate} />
+            <EmptyEbitdaTable companyName={company?.name} />
+          </div>
         ) : multiYearData ? (
           <div className="animate-in slide-in-from-bottom-2 fade-in duration-300">
             {/* Side-by-Side Layout Wrapper */}

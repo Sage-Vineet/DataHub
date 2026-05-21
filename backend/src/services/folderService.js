@@ -9,7 +9,8 @@ function getPool() {
       connectionString: process.env.DATABASE_URL,
       ssl: { rejectUnauthorized: false },
       max: 5,
-      connectionTimeoutMillis: 8000,
+      connectionTimeoutMillis: 2000,
+      idleTimeoutMillis: 10000,
     });
     _pool.on("error", (err) => console.error("[folderService] pg pool error:", err.message));
   }
@@ -23,21 +24,35 @@ async function pgQuery(sql, params = []) {
   return rows;
 }
 
+// Each entry: [folderName, parentIdKey, idKey?]
+// idKey is the key stored in idByName (defaults to folderName).
+// Use unique idKey values when the same name appears under different parents
+// (e.g. two "Reports" folders) to avoid key collisions.
 const DEFAULT_FOLDERS = [
-  ["Finance", null],
-  ["Compliance", null],
-  ["HR", null],
-  ["Legal", null],
-  ["M&A", null],
-  ["Tax", null],
-  ["Other", null],
-  ["Manual Upload Source", null],
-  ["Reports", "Manual Upload Source"],
-  ["Balance Sheet", "Reports"],
-  ["Profit & Loss", "Reports"],
-  ["Cashflow", "Reports"],
-  ["Bank Statement", "Manual Upload Source"],
-  ["Tax Return", "Manual Upload Source"],
+  // [name,                       parentIdKey,                   idKey]
+  ["Finance",                   null],
+  ["Compliance",                null],
+  ["HR",                        null],
+  ["Legal",                     null],
+  ["M&A",                       null],
+  ["Tax",                       null],
+  ["Other",                     null],
+  // Manual Upload Source tree
+  ["Manual Upload Source",      null],
+  ["Reports",                   "Manual Upload Source",         "MUS-Reports"],
+  ["Balance Sheet",             "MUS-Reports",                  "MUS-BS"],
+  ["Profit & Loss",             "MUS-Reports",                  "MUS-PL"],
+  ["Cashflow",                  "MUS-Reports",                  "MUS-CF"],
+  ["Bank Statement",            "Manual Upload Source",         "MUS-Bank"],
+  ["Tax Return",                "Manual Upload Source",         "MUS-Tax"],
+  // Quickbooks Manual Source tree (same sub-structure, unique idKeys)
+  ["Quickbooks Manual Source",  null],
+  ["Reports",                   "Quickbooks Manual Source",     "QMS-Reports"],
+  ["Balance Sheet",             "QMS-Reports",                  "QMS-BS"],
+  ["Profit & Loss",             "QMS-Reports",                  "QMS-PL"],
+  ["Cashflow",                  "QMS-Reports",                  "QMS-CF"],
+  ["Bank Statement",            "Quickbooks Manual Source",     "QMS-Bank"],
+  ["Tax Return",                "Quickbooks Manual Source",     "QMS-Tax"],
 ];
 
 // Expected folder count — used to decide whether cleanup is needed
@@ -47,6 +62,21 @@ const EXPECTED_FOLDER_COUNT = DEFAULT_FOLDERS.length;
 const _ensureInProgress = new Map();
 
 async function resolveCreatorId(companyId, preferredUserId) {
+  // Supabase-first (reads are reliable); Postgres is often unreachable locally
+  try {
+    if (preferredUserId) {
+      const { data } = await supabase.from("users").select("id").eq("id", preferredUserId).maybeSingle();
+      if (data?.id) return data.id;
+    }
+    const { data: admin } = await supabase.from("users").select("id").in("role", ["admin", "broker"]).limit(1).maybeSingle();
+    if (admin?.id) return admin.id;
+    const { data: cu } = await supabase.from("users").select("id").eq("company_id", companyId).limit(1).maybeSingle();
+    if (cu?.id) return cu.id;
+    const { data: any } = await supabase.from("users").select("id").limit(1).maybeSingle();
+    if (any?.id) return any.id;
+  } catch { /* fall through */ }
+
+  // Postgres fallback (used in production where direct DB is reachable)
   const candidates = [
     preferredUserId
       ? () => pgQuery("SELECT id FROM users WHERE id=$1 LIMIT 1", [preferredUserId])
@@ -80,6 +110,14 @@ async function ensureCompanyDefaultFolders(companyId, preferredCreatedBy = null)
   return promise;
 }
 
+async function _sbFolderExists(companyId, name, parentId) {
+  const q = supabase.from("folders").select("id").eq("company_id", companyId).ilike("name", name).limit(1);
+  const { data } = parentId === null
+    ? await q.is("parent_id", null).maybeSingle()
+    : await q.eq("parent_id", parentId).maybeSingle();
+  return data?.id ? [{ id: data.id }] : [];
+}
+
 async function _doEnsureCompanyDefaultFolders(companyId, preferredCreatedBy) {
   const creatorId = await resolveCreatorId(companyId, preferredCreatedBy);
   if (!creatorId) {
@@ -91,45 +129,59 @@ async function _doEnsureCompanyDefaultFolders(companyId, preferredCreatedBy) {
 
   const idByName = {};
 
-  for (const [name, parentKey] of DEFAULT_FOLDERS) {
+  for (const [name, parentKey, idKey] of DEFAULT_FOLDERS) {
+    const key = idKey || name;
     const parentId = parentKey ? (idByName[parentKey] || null) : null;
     try {
-      const existing = parentId === null
-        ? await pgQuery("SELECT id FROM folders WHERE company_id=$1 AND lower(name)=lower($2) AND parent_id IS NULL LIMIT 1", [companyId, name])
-        : await pgQuery("SELECT id FROM folders WHERE company_id=$1 AND lower(name)=lower($2) AND parent_id=$3 LIMIT 1", [companyId, name, parentId]);
+      // 1. Check if folder already exists — Supabase first, Postgres fallback
+      let existing;
+      try {
+        existing = await _sbFolderExists(companyId, name, parentId);
+      } catch {
+        existing = parentId === null
+          ? await pgQuery("SELECT id FROM folders WHERE company_id=$1 AND lower(name)=lower($2) AND parent_id IS NULL LIMIT 1", [companyId, name])
+          : await pgQuery("SELECT id FROM folders WHERE company_id=$1 AND lower(name)=lower($2) AND parent_id=$3 LIMIT 1", [companyId, name, parentId]);
+      }
 
       if (existing.length > 0) {
-        idByName[name] = existing[0].id;
+        idByName[key] = existing[0].id;
         continue;
       }
 
-      const created = await pgQuery(
-        "INSERT INTO folders (company_id, parent_id, name, color, created_by) VALUES ($1,$2,$3,NULL,$4) RETURNING id",
-        [companyId, parentId, name, creatorId],
-      );
-      if (created[0]?.id) {
-        idByName[name] = created[0].id;
+      // 2. Insert — Supabase first, Postgres fallback
+      let insertedId = null;
+      const { data: sbCreated, error: sbErr } = await supabase.from("folders")
+        .insert({ company_id: companyId, parent_id: parentId, name, color: null, created_by: creatorId })
+        .select("id").single();
+
+      if (!sbErr && sbCreated?.id) {
+        insertedId = sbCreated.id;
+      } else {
+        const rows = await pgQuery(
+          "INSERT INTO folders (company_id, parent_id, name, color, created_by) VALUES ($1,$2,$3,NULL,$4) RETURNING id",
+          [companyId, parentId, name, creatorId],
+        );
+        insertedId = rows[0]?.id || null;
+      }
+
+      if (insertedId) {
+        idByName[key] = insertedId;
         console.log(`[folders]   ✓ "${name}"`);
       }
     } catch (err) {
+      // On duplicate key, re-fetch the winner
       if (err.message.includes("duplicate key value") || err.message.includes("unique constraint")) {
-        // Race condition: another request created it just now
-        const existingNow = parentId === null
-          ? await pgQuery("SELECT id FROM folders WHERE company_id=$1 AND lower(name)=lower($2) AND parent_id IS NULL LIMIT 1", [companyId, name])
-          : await pgQuery("SELECT id FROM folders WHERE company_id=$1 AND lower(name)=lower($2) AND parent_id=$3 LIMIT 1", [companyId, name, parentId]);
-
-        if (existingNow.length > 0) {
-          idByName[name] = existingNow[0].id;
-        }
+        const winner = await _sbFolderExists(companyId, name, parentId).catch(() => []);
+        if (winner.length > 0) idByName[key] = winner[0].id;
       } else {
         console.error(`[folders]   ✗ "${name}":`, err.message);
       }
     }
   }
 
-  try {
-    return await pgQuery("SELECT * FROM folders WHERE company_id=$1 ORDER BY created_at ASC", [companyId]);
-  } catch { return []; }
+  // Return all folders for this company
+  const { data } = await supabase.from("folders").select("*").eq("company_id", companyId).order("created_at", { ascending: true });
+  return data || [];
 }
 
 async function cleanupDuplicateFolders(companyId) {
@@ -159,17 +211,26 @@ async function getFolderById(id) {
   return data || null;
 }
 
-async function getFolderTree(companyId) {
-  const { data: rows, error } = await supabase
-    .from("folders")
-    .select("*")
-    .eq("company_id", companyId)
-    .order("created_at", { ascending: true });
+async function fetchFolderRows(companyId) {
+  // Try direct Postgres first (bypasses Supabase quota)
+  try {
+    return await pgQuery(
+      "SELECT * FROM folders WHERE company_id=$1 ORDER BY created_at ASC",
+      [companyId],
+    );
+  } catch {
+    const { data } = await supabase
+      .from("folders")
+      .select("*")
+      .eq("company_id", companyId)
+      .order("created_at", { ascending: true });
+    return data || [];
+  }
+}
 
-  if (error) throw error;
-
+function buildTree(rows) {
   const byId = new Map();
-  for (const row of (rows || [])) byId.set(row.id, { ...row, children: [] });
+  for (const row of rows) byId.set(row.id, { ...row, children: [] });
 
   const roots = [];
   for (const node of byId.values()) {
@@ -180,6 +241,23 @@ async function getFolderTree(companyId) {
     }
   }
   return roots;
+}
+
+async function getFolderTree(companyId) {
+  let rows = await fetchFolderRows(companyId);
+
+  // Self-heal: create any missing default folders whenever the count is below expected
+  if (rows.length < EXPECTED_FOLDER_COUNT) {
+    console.log(
+      `[folders] Company ${companyId} has ${rows.length}/${EXPECTED_FOLDER_COUNT} folders — ensuring defaults`,
+    );
+    await ensureCompanyDefaultFolders(companyId).catch((err) =>
+      console.error("[folders] self-heal failed:", err.message),
+    );
+    rows = await fetchFolderRows(companyId);
+  }
+
+  return buildTree(rows);
 }
 
 async function ensureRootUploadFolder(companyId, preferredCreatedBy) {

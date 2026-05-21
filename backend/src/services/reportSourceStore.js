@@ -4,12 +4,14 @@ const REPORT_SOURCE_KEYS = {
   QUICKBOOKS: "quickbooks_online",
   MANUAL_GL: "manual_gl_upload",
   MANUAL_UPLOAD: "manual_upload_excel_pdf",
+  QUICKBOOKS_MANUAL: "quickbooks_manual",
 };
 
 const REPORT_SOURCE_LABELS = {
   [REPORT_SOURCE_KEYS.QUICKBOOKS]: "QuickBooks Online",
   [REPORT_SOURCE_KEYS.MANUAL_GL]: "Manual GL Upload",
   [REPORT_SOURCE_KEYS.MANUAL_UPLOAD]: "Manual Upload (Excel or PDF)",
+  [REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL]: "QuickBooks Manual",
 };
 
 const VALID_SOURCE_KEYS = Object.values(REPORT_SOURCE_KEYS);
@@ -23,6 +25,8 @@ const SOURCE_KEY_ALIASES = new Map([
   ["manual_upload_excel_pdf", REPORT_SOURCE_KEYS.MANUAL_UPLOAD],
   ["manual_upload", REPORT_SOURCE_KEYS.MANUAL_UPLOAD],
   ["manual_report_upload", REPORT_SOURCE_KEYS.MANUAL_UPLOAD],
+  ["quickbooks_manual", REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL],
+  ["qb_manual", REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL],
 ]);
 
 function normalizeSourceKey(value) {
@@ -55,6 +59,15 @@ function getDefaultRows(companyId) {
       company_id: companyId,
       source_key: REPORT_SOURCE_KEYS.MANUAL_UPLOAD,
       source_label: REPORT_SOURCE_LABELS[REPORT_SOURCE_KEYS.MANUAL_UPLOAD],
+      is_selected: false,
+      is_available: false,
+      is_connected: false,
+      metadata: {},
+    },
+    {
+      company_id: companyId,
+      source_key: REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL,
+      source_label: REPORT_SOURCE_LABELS[REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL],
       is_selected: false,
       is_available: false,
       is_connected: false,
@@ -333,6 +346,32 @@ async function getManualUploadSnapshot(companyId) {
   };
 }
 
+async function getQMSSnapshot(companyId) {
+  const { data: qmsReport } = await supabase
+    .from("qb_synced_reports")
+    .select("report_type, report_params, updated_at, last_synced_at, status")
+    .eq("company_id", companyId)
+    .eq("source", "quickbooks_manual_upload")
+    .in("report_type", ["balance_sheet", "profit_and_loss", "cash_flow"])
+    .order("updated_at", { ascending: false })
+    .order("last_synced_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  return {
+    isConnected: false,
+    isAvailable: Boolean(qmsReport),
+    lastConnectedAt: null,
+    lastSyncedAt: qmsReport?.last_synced_at || qmsReport?.updated_at || null,
+    metadata: {
+      latestReportType: qmsReport?.report_type || null,
+      selectedFolderId: qmsReport?.report_params?.folderId || null,
+      selectedFolderName: qmsReport?.report_params?.folderName || null,
+      status: qmsReport?.status || null,
+    },
+  };
+}
+
 async function updateReportSourceRecord(companyId, sourceKey, updates = {}) {
   if (!companyId) {
     throw new Error("companyId is required");
@@ -408,16 +447,18 @@ async function syncReportSourceRecords(companyId) {
 
   await ensureReportSourceRecords(companyId);
 
-  const [quickbooksSnapshot, manualSnapshot, manualUploadSnapshot] = await Promise.all([
+  const [quickbooksSnapshot, manualSnapshot, manualUploadSnapshot, qmsSnapshot] = await Promise.all([
     getQuickBooksSnapshot(companyId),
     getManualGlSnapshot(companyId),
     getManualUploadSnapshot(companyId),
+    getQMSSnapshot(companyId),
   ]);
 
   await Promise.all([
     updateReportSourceRecord(companyId, REPORT_SOURCE_KEYS.QUICKBOOKS, quickbooksSnapshot),
     updateReportSourceRecord(companyId, REPORT_SOURCE_KEYS.MANUAL_GL, manualSnapshot),
     updateReportSourceRecord(companyId, REPORT_SOURCE_KEYS.MANUAL_UPLOAD, manualUploadSnapshot),
+    updateReportSourceRecord(companyId, REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL, qmsSnapshot),
   ]);
 
   const { data, error } = await supabase

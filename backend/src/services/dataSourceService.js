@@ -17,7 +17,8 @@ function normalizeSourceKey(value, fallback = null) {
 function isManualSourceKey(sourceKey) {
   return (
     sourceKey === REPORT_SOURCE_KEYS.MANUAL_GL ||
-    sourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD
+    sourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD ||
+    sourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL
   );
 }
 
@@ -103,6 +104,24 @@ class DataSourceService {
       //   column "last_source_switch_at" does not exist          (PostgreSQL-level)
       //   Column 'last_source_switch_at' of relation '...' does not exist (PostgREST schema-cache)
       //   Could not find column 'last_source_switch_at' in the schema cache
+      // Handle check constraint violations by stripping the offending column and retrying.
+      const checkConstraintMatch = String(error.message || "").match(
+        /violates check constraint\s+["']([^"']+)["']/i,
+      );
+      if (checkConstraintMatch) {
+        if (Object.prototype.hasOwnProperty.call(payload, "data_source_type")) {
+          console.warn(
+            `[DataSourceService] data_source_type check constraint violation — stripping and retrying. Run migration 017_add_quickbooks_manual_source_type.sql to fix permanently.`,
+            { companyId, value: payload.data_source_type, error: error.message },
+          );
+          lastErrorWasMissingColumn = true;
+          delete payload.data_source_type;
+          continue;
+        }
+        lastErrorWasMissingColumn = false;
+        break;
+      }
+
       const missingColumnMatch = String(error.message || "").match(
         /column\s+['"]([^'"]+)['"]/i,
       );
@@ -167,10 +186,15 @@ class DataSourceService {
 
     const selectedSource = resolveSelectedSource(sources);
     const companySource = normalizeSourceKey(company?.data_source_type);
+    // report_source_records (selectedSource) is always written by switchDataSource and is
+    // the authoritative current selection. company.data_source_type is a denormalized cache
+    // that may be stale if the DB migration adding a new source key hasn't been run yet.
+    // Prioritising selectedSource prevents stale companySource from reverting a recent switch.
     const activeSource =
-      companySource || selectedSource || REPORT_SOURCE_KEYS.QUICKBOOKS;
+      selectedSource || companySource || REPORT_SOURCE_KEYS.QUICKBOOKS;
 
     if (activeSource && selectedSource !== activeSource) {
+      // selectedSource was null — initialise report_source_records from the companies row.
       sources = await setSelectedReportSource(companyId, activeSource);
     }
 
@@ -260,7 +284,9 @@ class DataSourceService {
               ? "switch_to_manual"
               : normalizedTargetSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD
                 ? "switch_to_manual_upload"
-              : "switch_to_quickbooks",
+                : normalizedTargetSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL
+                  ? "switch_to_quickbooks_manual"
+                  : "switch_to_quickbooks",
           requestedSource: normalizedTargetSource,
           currentSource,
         },

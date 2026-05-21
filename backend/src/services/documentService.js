@@ -9,6 +9,8 @@ function getPool() {
       connectionString: process.env.DATABASE_URL,
       ssl: { rejectUnauthorized: false },
       max: 5,
+      connectionTimeoutMillis: 2000,
+      idleTimeoutMillis: 10000,
     });
     _pool.on("error", (err) => console.error("[documentService] pg pool error:", err.message));
   }
