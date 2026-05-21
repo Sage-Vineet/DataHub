@@ -11,12 +11,12 @@ import {
   getCompanyRequest,
   getReportSources,
   setSelectedReportSource,
-  ensureCompanyDefaultFolders,
 } from "../../../lib/api";
 import Header from "../../../components/Header";
 import QuickBooksConnection from "../../../components/quickbooks/QuickBooksConnection";
 import ManualGLUpload from "../../../components/manual-gl/ManualGLUpload";
 import ManualFolderReportsUpload from "../../../components/manual-reports/ManualFolderReportsUpload";
+import QuickBooksManualUpload from "../../../components/quickbooks-manual/QuickBooksManualUpload";
 import { cn } from "../../../lib/utils";
 import {
   getReportSourceLabel,
@@ -217,9 +217,6 @@ export default function WorkspaceConnections() {
     targetSourceKey: null,
     switchOptions: {},
   });
-  const [selectedCardKey, setSelectedCardKey] = useState(
-    storedState?.selectedCardKey || null,
-  );
 
   const quickbooksRecord = useMemo(
     () => getSourceRecord(sourceState.sources, REPORT_SOURCE_KEYS.QUICKBOOKS),
@@ -233,11 +230,14 @@ export default function WorkspaceConnections() {
     () => getSourceRecord(sourceState.sources, REPORT_SOURCE_KEYS.MANUAL_UPLOAD),
     [sourceState.sources],
   );
+  const qmsRecord = useMemo(
+    () => getSourceRecord(sourceState.sources, REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL),
+    [sourceState.sources],
+  );
 
   const activeSourceKey = normalizeReportSourceKey(
     sourceState.activeSource || sourceState.selectedSource || null,
   );
-  const activeSourceLabel = getReportSourceLabel(activeSourceKey);
   const quickbooksConnected = Boolean(
     sourceState.quickbooksConnected || quickbooksRecord?.isConnected,
   );
@@ -250,20 +250,9 @@ export default function WorkspaceConnections() {
     if (source === "quickbooks_manual") return "quickbooks_manual";
     if (activeSourceKey === REPORT_SOURCE_KEYS.MANUAL_GL) return "manual";
     if (activeSourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD) return "manual_upload";
+    if (activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) return "quickbooks_manual";
     return "quickbooks";
   }, [activeSourceKey, searchParams]);
-
-  useEffect(() => {
-    setSelectedCardKey(
-      selectedView === "manual"
-        ? REPORT_SOURCE_KEYS.MANUAL_GL
-        : selectedView === "manual_upload"
-          ? REPORT_SOURCE_KEYS.MANUAL_UPLOAD
-          : selectedView === "quickbooks_manual"
-            ? REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL
-            : REPORT_SOURCE_KEYS.QUICKBOOKS,
-    );
-  }, [selectedView]);
 
   const refreshSourceState = useCallback(async () => {
     if (!clientId) {
@@ -305,18 +294,7 @@ export default function WorkspaceConnections() {
         ...restored.sourceState,
       }));
     }
-
-    const currentView = searchParams.get("source");
-    const validViews = ["manual", "quickbooks", "manual_upload", "quickbooks_manual"];
-    if (
-      validViews.includes(currentView) ||
-      !validViews.includes(restored.selectedView)
-    ) {
-      return;
-    }
-
-    setSearchParams({ source: restored.selectedView }, { replace: true });
-  }, [clientId, searchParams, setSearchParams]);
+  }, [clientId]);
 
   useEffect(() => {
     Promise.resolve().then(() => {
@@ -332,12 +310,15 @@ export default function WorkspaceConnections() {
   }, [clientId]);
 
   useEffect(() => {
-    const sourceParam = searchParams.get("source");
-    if (["manual", "quickbooks", "manual_upload", "quickbooks_manual"].includes(sourceParam)) return;
     let fallback = "quickbooks";
     if (activeSourceKey === REPORT_SOURCE_KEYS.MANUAL_GL) fallback = "manual";
     else if (activeSourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD) fallback = "manual_upload";
-    setSearchParams({ source: fallback }, { replace: true });
+    else if (activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) fallback = "quickbooks_manual";
+
+    const sourceParam = searchParams.get("source");
+    if (sourceParam !== fallback) {
+      setSearchParams({ source: fallback }, { replace: true });
+    }
   }, [activeSourceKey, searchParams, setSearchParams]);
 
   const closeSourceSwitchModal = useCallback(() => {
@@ -351,6 +332,7 @@ export default function WorkspaceConnections() {
 
       setIsSwitchingSource(true);
       setSwitchingTargetKey(targetKey);
+      let switchSucceeded = false;
       try {
         const payload = await setSelectedReportSource(targetKey, {
           clientId,
@@ -363,24 +345,17 @@ export default function WorkspaceConnections() {
           quickbooksConnected: Boolean(payload?.quickbooksConnected),
           manualUploadActive:
             normalizeReportSourceKey(payload?.activeSource) === REPORT_SOURCE_KEYS.MANUAL_GL ||
-            normalizeReportSourceKey(payload?.activeSource) === REPORT_SOURCE_KEYS.MANUAL_UPLOAD,
+            normalizeReportSourceKey(payload?.activeSource) === REPORT_SOURCE_KEYS.MANUAL_UPLOAD ||
+            normalizeReportSourceKey(payload?.activeSource) === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL,
           lastSourceSwitchAt: new Date().toISOString(),
           sources: Array.isArray(payload?.sources) ? payload.sources : [],
         };
 
         setSourceState(next);
+        switchSucceeded = true;
         const resolvedSourceKey = normalizeReportSourceKey(
           next.activeSource || next.selectedSource || targetKey,
         );
-        const nextView =
-          resolvedSourceKey === REPORT_SOURCE_KEYS.MANUAL_GL
-            ? "manual"
-            : resolvedSourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD
-              ? "manual_upload"
-              : resolvedSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL
-                ? "quickbooks_manual"
-                : "quickbooks";
-        setSearchParams({ source: nextView });
 
         emitWorkspaceDataSourceUpdated({
           clientId,
@@ -408,10 +383,15 @@ export default function WorkspaceConnections() {
           targetSourceKey: null,
           switchOptions: {},
         });
-        await refreshSourceState();
+        // Only refresh on failure — the switch response already contains the
+        // correct full state. Refreshing after success can overwrite it with
+        // stale data if the read-after-write hasn't propagated yet.
+        if (!switchSucceeded) {
+          await refreshSourceState();
+        }
       }
     },
-    [clientId, refreshSourceState, setSearchParams, showToast],
+    [clientId, refreshSourceState, showToast],
   );
 
   const confirmSourceSwitch = useCallback(async () => {
@@ -424,7 +404,6 @@ export default function WorkspaceConnections() {
 
   const requestQuickBooksSwitch = useCallback(() => {
     if (activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS) {
-      setSearchParams({ source: "quickbooks" });
       return;
     }
 
@@ -436,11 +415,10 @@ export default function WorkspaceConnections() {
       targetSourceKey: REPORT_SOURCE_KEYS.QUICKBOOKS,
       switchOptions: { confirmSwitch: true },
     });
-  }, [activeSourceKey, setSearchParams]);
+  }, [activeSourceKey]);
 
   const requestManualSwitch = useCallback(() => {
     if (activeSourceKey === REPORT_SOURCE_KEYS.MANUAL_GL) {
-      setSearchParams({ source: "manual" });
       return;
     }
 
@@ -453,11 +431,10 @@ export default function WorkspaceConnections() {
       targetSourceKey: REPORT_SOURCE_KEYS.MANUAL_GL,
       switchOptions: { confirmSwitch: true },
     });
-  }, [activeSourceKey, quickbooksConnected, setSearchParams]);
+  }, [activeSourceKey, quickbooksConnected]);
 
   const requestManualUploadSwitch = useCallback(() => {
     if (activeSourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD) {
-      setSearchParams({ source: "manual_upload" });
       return;
     }
 
@@ -468,6 +445,23 @@ export default function WorkspaceConnections() {
         ? "Manual Upload (Excel/PDF) will become active. QuickBooks connection is kept for cached history, but sync stays inactive until you switch back."
         : "Manual Upload (Excel/PDF) will become the active source for reports, dashboards, and DataHub. Continue?",
       targetSourceKey: REPORT_SOURCE_KEYS.MANUAL_UPLOAD,
+      switchOptions: { confirmSwitch: true },
+    });
+  }, [activeSourceKey, quickbooksConnected]);
+
+  const requestQMSSwitch = useCallback(() => {
+    if (activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) {
+      setSearchParams({ source: "quickbooks_manual" });
+      return;
+    }
+
+    setSourceSwitchModal({
+      isOpen: true,
+      title: "Switch To QuickBooks Manual?",
+      message: quickbooksConnected
+        ? "QuickBooks Manual will become active. QuickBooks connection is kept for cached history, but live sync stays inactive until you switch back."
+        : "QuickBooks Manual will become the active source. Upload QuickBooks-exported files to the 'Quickbooks Manual Source' folder, then sync. Continue?",
+      targetSourceKey: REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL,
       switchOptions: { confirmSwitch: true },
     });
   }, [activeSourceKey, quickbooksConnected, setSearchParams]);
@@ -497,9 +491,13 @@ export default function WorkspaceConnections() {
     return "No Files Uploaded Yet";
   }, [activeSourceKey, manualUploadRecord?.isAvailable]);
 
-  const hasAnySourceData = Boolean(
-    quickbooksConnected || quickbooksRecord?.isAvailable || manualRecord?.isAvailable,
-  );
+  const qmsStatusLabel = useMemo(() => {
+    if (activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) {
+      return "Ready • Currently Active";
+    }
+    if (qmsRecord?.isAvailable) return "Synced Data Available • Inactive";
+    return "Not Synced Yet";
+  }, [activeSourceKey, qmsRecord?.isAvailable]);
 
   const manualLockMessage = quickbooksConnected
     ? "QuickBooks is currently the active source. Switch source to Manual Upload to continue."
@@ -510,8 +508,6 @@ export default function WorkspaceConnections() {
 
     saveStoredConnectionsState(clientId, {
       sourceState,
-      selectedView,
-      selectedCardKey,
       isSwitchingSource,
       switchingTargetKey,
       activeSourceKey,
@@ -544,8 +540,6 @@ export default function WorkspaceConnections() {
     quickbooksRecord?.isAvailable,
     quickbooksRecord?.lastConnectedAt,
     quickbooksRecord?.lastSyncedAt,
-    selectedCardKey,
-    selectedView,
     sourceState,
     isSwitchingSource,
     switchingTargetKey,
@@ -570,38 +564,6 @@ export default function WorkspaceConnections() {
           <div className="flex items-center gap-3 rounded-xl border border-border bg-white px-5 py-4 text-[13px] font-medium text-text-secondary shadow-sm">
             <Loader2 size={16} className="animate-spin text-primary" />
             Refreshing workspace source state and connection health...
-          </div>
-        ) : null}
-
-        {!hasAnySourceData ? (
-          <div className="relative overflow-hidden rounded-2xl border border-primary/20 bg-gradient-to-br from-white to-[#FAFCF7] p-8 shadow-sm">
-            <div className="absolute -right-20 -top-20 h-64 w-64 rounded-full bg-primary/5 blur-3xl" />
-            <div className="relative z-10 max-w-3xl">
-              <h2 className="text-[20px] font-bold text-navy">
-                Choose a financial data source
-              </h2>
-              <p className="mt-3 text-[14px] leading-relaxed text-text-secondary">
-                Connect QuickBooks for automated sync, or stage Manual GL files for upload-based reporting. This configures the root data pipeline for standard reports.
-              </p>
-              <div className="mt-6 flex flex-wrap gap-4">
-                <button
-                  type="button"
-                  onClick={requestQuickBooksSwitch}
-                  className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-primary px-6 text-[14px] font-bold text-white shadow-[0_4px_14px_rgba(139,197,61,0.3)] transition-all hover:bg-primary-dark hover:-translate-y-0.5 hover:shadow-[0_8px_20px_rgba(139,197,61,0.4)]"
-                >
-                  <Link2 size={16} />
-                  Connect QuickBooks
-                </button>
-                <button
-                  type="button"
-                  onClick={requestManualSwitch}
-                  className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-border bg-white px-6 text-[14px] font-bold text-text-primary shadow-sm transition-all hover:border-text-primary/20 hover:bg-gray-50 hover:-translate-y-0.5"
-                >
-                  <FileSpreadsheet size={16} className="text-text-muted" />
-                  Upload General Ledger
-                </button>
-              </div>
-            </div>
           </div>
         ) : null}
 
@@ -676,24 +638,33 @@ export default function WorkspaceConnections() {
             icon={<Link2 size={18} />}
             title="QuickBooks Manual"
             description="Manually reconcile and import QuickBooks-exported data for controlled reporting."
-            statusLabel="Not Available Yet"
-            isActive={false}
-            lastActivityLabel="Coming soon — no activity yet"
-            actionLabel="Coming Soon"
-            onAction={() => { }}
-            disabled={true}
-            comingSoon={true}
+            statusLabel={qmsStatusLabel}
+            isActive={activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL}
+            lastActivityLabel={`Last sync: ${formatTimestamp(
+              qmsRecord?.lastSyncedAt || qmsRecord?.lastConnectedAt,
+            )}`}
+            actionLabel={
+              activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL
+                ? "Currently Active"
+                : "Switch To QuickBooks Manual"
+            }
+            onAction={requestQMSSwitch}
+            disabled={activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL}
+            isBusy={
+              isSwitchingSource &&
+              switchingTargetKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL
+            }
           />
         </div>
 
         <div className="rounded-2xl border border-border bg-bg-card p-5">
           <div className="mb-4 flex items-center justify-between">
             <h2 className="text-[16px] font-semibold text-text-primary">
-              {selectedView === "quickbooks"
+              {!activeSourceKey || activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS
                 ? "QuickBooks Connection"
-                : selectedView === "manual_upload"
+                : activeSourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD
                   ? "Manual Upload (Excel/PDF)"
-                  : selectedView === "quickbooks_manual"
+                  : activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL
                     ? "QuickBooks Manual"
                     : "Manual GL Upload"}
             </h2>
@@ -702,31 +673,26 @@ export default function WorkspaceConnections() {
             </span>
           </div>
 
-          {selectedView === "quickbooks" ? (
+          {!activeSourceKey || activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS ? (
             <QuickBooksConnection
+              key={activeSourceKey || "fallback_quickbooks"}
               company={company}
               isSourceActive={activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS}
               onConnectionStateChange={refreshSourceState}
               onRequireSourceSwitch={requestQuickBooksSwitch}
             />
-          ) : selectedView === "manual_upload" ? (
+          ) : activeSourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD ? (
             <ManualFolderReportsUpload
+              key={activeSourceKey}
               companyId={clientId}
             />
           ) : selectedView === "quickbooks_manual" ? (
-            <div className="flex flex-col items-center justify-center py-12 text-center">
-              <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-bg-page">
-                <Link2 size={22} className="text-text-muted" />
-              </div>
-              <h3 className="text-[16px] font-semibold text-text-primary">Coming Soon</h3>
-              <p className="mt-2 max-w-sm text-[13px] text-text-secondary">
-                QuickBooks Manual integration is under development. Check back later.
-              </p>
-            </div>
+            <QuickBooksManualUpload companyId={clientId} />
           ) : (
             <ManualGLUpload
+              key={activeSourceKey}
               companyId={clientId}
-              isLocked={activeSourceKey !== REPORT_SOURCE_KEYS.MANUAL_GL}
+              isLocked={false}
               lockMessage={manualLockMessage}
               onStageComplete={refreshSourceState}
             />

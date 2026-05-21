@@ -180,6 +180,7 @@ export default function WorkspaceTaxReconciliation() {
   }));
 
   const isManualMode = activeSourceMode === 'manual_upload' || activeSourceMode === 'manual';
+  const isQBManual = activeSourceMode === 'quickbooks_manual';
 
   const selectedYears = useMemo(() => {
     const s = parseInt(startYear, 10);
@@ -189,14 +190,14 @@ export default function WorkspaceTaxReconciliation() {
     return Array.from({ length: hi - lo + 1 }, (_, i) => lo + i);
   }, [startYear, endYear]);
 
-  // activeYears: for manual mode derive from matrixData keys; for QB use selectedYears
+  // activeYears: for manual / QMS mode derive from matrixData keys; for QB use selectedYears
   const activeYears = useMemo(() => {
-    if (isManualMode) {
+    if (isManualMode || isQBManual) {
       const keys = Object.keys(matrixData).map(Number).filter(Boolean).sort();
       return keys.length > 0 ? keys : [];
     }
     return selectedYears;
-  }, [isManualMode, matrixData, selectedYears]);
+  }, [isManualMode, isQBManual, matrixData, selectedYears]);
 
   const getHeaders = useCallback(() => {
     const token = getStoredToken();
@@ -349,6 +350,91 @@ export default function WorkspaceTaxReconciliation() {
           status: "success",
           message: `Loaded ${loadedYears.length} year(s): FY ${loadedYears.join(", FY ")}.`,
         });
+      } else if (isQBManual) {
+        // ── QuickBooks Manual: P&L from synced qb_synced_reports + tax from DataRoom ─
+        const headers = getHeaders();
+        const allWarnings = [];
+
+        setSyncStatus({ status: "loading", message: "Reading synced P&L reports…" });
+
+        const [plRes, taxRes] = await Promise.all([
+          fetch(`${API_BASE_URL}/manual-report-uploads/qms-reports/profit_and_loss/all?clientId=${clientId || ""}`, { headers })
+            .then((r) => r.json()).catch(() => ({ success: false })),
+          fetch(`${API_BASE_URL}/manual-report-uploads/tax-data?clientId=${clientId || ""}`, { headers })
+            .then((r) => r.json()).catch(() => ({ success: false })),
+        ]);
+
+        const files = (plRes?.files || []).filter((f) => f.data?.rows?.length);
+        if (!files.length) {
+          throw new Error("No synced P&L reports found. Please sync your files on the Connections page first.");
+        }
+
+        if (taxRes.warning)  allWarnings.push(taxRes.warning);
+        if (Array.isArray(taxRes.warnings)) allWarnings.push(...taxRes.warnings);
+
+        // Detect fiscal year from file date metadata or filename
+        const detectFileYear = (file) => {
+          const d = file.data || {};
+          const dateSrc = d.asOfDate || d.periodEnd || d.periodStart;
+          if (dateSrc) {
+            const y = parseInt(String(dateSrc).split("-")[0], 10);
+            if (y >= 2000 && y <= currentYear + 1) return y;
+          }
+          const m = (file.fileName || "").match(/\b(20\d{2})\b/);
+          return m ? parseInt(m[1], 10) : currentYear;
+        };
+
+        // One file per year — keep newest when duplicates
+        const yearFileMap = new Map();
+        for (const file of files) {
+          const yr = detectFileYear(file);
+          const existing = yearFileMap.get(yr);
+          if (!existing || new Date(file.updatedAt || 0) > new Date(existing.updatedAt || 0)) {
+            yearFileMap.set(yr, file);
+          }
+        }
+
+        const taxYears = (taxRes.success && taxRes.years) ? taxRes.years : {};
+
+        const results = {};
+        for (const [yr, file] of yearFileMap) {
+          const plData = extractTaxRowsFromManualPL(file.data.rows || []);
+          const mergedMap = new Map();
+
+          MAIN_LINE_ITEMS.forEach((item) => {
+            mergedMap.set(item.label, { label: item.label, pl: 0, taxReturn: 0, isReconcilingItem: false });
+          });
+
+          plData.forEach((item) => {
+            if (mergedMap.has(item.label)) {
+              mergedMap.get(item.label).pl = Number(item.pl || 0);
+            } else {
+              mergedMap.set(item.label, { label: item.label, pl: Number(item.pl || 0), taxReturn: 0, isReconcilingItem: false });
+            }
+          });
+
+          (taxYears[yr]?.data || []).forEach((item) => {
+            if (mergedMap.has(item.label)) {
+              const row = mergedMap.get(item.label);
+              row.taxReturn = Number(item.taxReturn || 0);
+              if (item.isReconcilingItem) row.isReconcilingItem = true;
+            } else {
+              mergedMap.set(item.label, { label: item.label, pl: 0, taxReturn: Number(item.taxReturn || 0), isReconcilingItem: !!item.isReconcilingItem });
+            }
+          });
+
+          results[yr] = {
+            success: true,
+            taxYear: yr,
+            data: Array.from(mergedMap.values()).map((row) => ({ ...row, variance: (row.taxReturn || 0) - (row.pl || 0) })),
+            warnings: [],
+          };
+        }
+
+        const loadedYears = Object.keys(results).map(Number).sort();
+        setMatrixData(results);
+        setWarnings(allWarnings);
+        setSyncStatus({ status: "success", message: `Loaded ${loadedYears.length} year(s): FY ${loadedYears.join(", FY ")}.` });
       } else {
         // ── QuickBooks mode: existing multi-year fetch ────────────────────
         const allWarnings = new Set();
@@ -424,7 +510,7 @@ export default function WorkspaceTaxReconciliation() {
     } finally {
       setIsLoading(false);
     }
-  }, [selectedYears, accountingMethod, clientId, getHeaders, isManualMode]);
+  }, [selectedYears, accountingMethod, clientId, getHeaders, isManualMode, isQBManual, currentYear]);
 
   useEffect(() => {
     if (!activeSource) return;
@@ -523,19 +609,22 @@ export default function WorkspaceTaxReconciliation() {
         </div>
       )}
 
-      {/* ── Controls — QuickBooks mode only ─────────────────────────────── */}
+      {/* ── Controls ────────────────────────────────────────────────────── */}
       {!isManualMode && (
         <section className="rounded-[var(--radius-card)] border border-border bg-white p-5 shadow-[0_10px_30px_rgba(15,23,42,0.04)] lg:p-6">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div>
               <h1 className="text-[20px] font-semibold text-text-primary">Tax Reconciliation</h1>
               <p className="mt-1 text-[14px] text-text-secondary">
-                QuickBooks tax-to-book and SDE reconciliation for {reportTitle}.
+                {isQBManual
+                  ? `QuickBooks Manual tax-to-book reconciliation for ${reportTitle}.`
+                  : `QuickBooks tax-to-book and SDE reconciliation for ${reportTitle}.`}
               </p>
             </div>
 
             <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-              {[
+              {/* Year + method filters — hidden in QMS mode */}
+              {!isQBManual && [
                 { label: "Start Year", value: startYear, set: setStartYear },
                 { label: "End Year", value: endYear, set: setEndYear },
               ].map(({ label, value, set }) => (
@@ -554,21 +643,27 @@ export default function WorkspaceTaxReconciliation() {
                 </label>
               ))}
 
-              <label className="flex min-w-[140px] flex-col gap-1.5 text-[13px] font-medium text-text-primary">
-                Accounting Method
-                <select
-                  value={accountingMethod}
-                  onChange={(e) => setAccountingMethod(e.target.value)}
-                  className="h-11 rounded-xl border border-border bg-white px-3 text-[14px] text-text-primary outline-none transition focus:border-primary"
-                >
-                  <option value="Accrual">Accrual</option>
-                  <option value="Cash">Cash</option>
-                </select>
-              </label>
+              {!isQBManual && (
+                <label className="flex min-w-[140px] flex-col gap-1.5 text-[13px] font-medium text-text-primary">
+                  Accounting Method
+                  <select
+                    value={accountingMethod}
+                    onChange={(e) => setAccountingMethod(e.target.value)}
+                    className="h-11 rounded-xl border border-border bg-white px-3 text-[14px] text-text-primary outline-none transition focus:border-primary"
+                  >
+                    <option value="Accrual">Accrual</option>
+                    <option value="Cash">Cash</option>
+                  </select>
+                </label>
+              )}
 
               <button
                 type="button"
-                onClick={() => void loadData()}
+                onClick={() => {
+                  try { window.sessionStorage.removeItem(getStorageKey(clientId)); } catch { /* ignore */ }
+                  setMatrixData({});
+                  void loadData(true);
+                }}
                 disabled={isLoading}
                 className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-primary px-4 text-[14px] font-semibold text-white transition hover:bg-primary-dark disabled:cursor-not-allowed disabled:opacity-70"
               >

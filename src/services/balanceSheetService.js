@@ -4,6 +4,8 @@ import {
   getManualStagedBalanceSheetMonthlyDetail,
   getLatestManualUploadedReport,
   getAllManualUploadedReports,
+  getLatestQMSUploadedReport,
+  getAllQMSUploadedReports,
 } from "../lib/api";
 import { normalizeAccountingMethod } from "../lib/report-filters";
 import {
@@ -365,14 +367,15 @@ export async function getBalanceSheet(startDate, endDate, accountingMethod, opti
     }
   }
 
-  if (sourceMode === "manual_upload") {
+  if (sourceMode === "manual_upload" || sourceMode === "quickbooks_manual") {
+    const isQMS = sourceMode === "quickbooks_manual";
     try {
-      const response = await getLatestManualUploadedReport("balance_sheet", {
+      const fetchFn = isQMS ? getLatestQMSUploadedReport : getLatestManualUploadedReport;
+      const response = await fetchFn("balance_sheet", {
         rowId: options?.manualUploadRowId,
       });
       const rows = Array.isArray(response?.data?.rows) ? response.data.rows : [];
       const periods = response?.data?.periods || [];
-      // For monthly files, sum colAmounts so Summary shows one total per row
       const totalIdx = periods.length > 0
         ? periods.findIndex((p) => /^total$/i.test(String(p).trim()))
         : -1;
@@ -393,13 +396,13 @@ export async function getBalanceSheet(startDate, endDate, accountingMethod, opti
         : rows;
       return {
         rows: summaryRows,
-        source: "MANUAL_UPLOAD_EXCEL_PDF",
-        sourceLabel: "Manual Upload (Excel or PDF)",
+        source: isQMS ? "QUICKBOOKS_MANUAL" : "MANUAL_UPLOAD_EXCEL_PDF",
+        sourceLabel: isQMS ? "QuickBooks Manual" : "Manual Upload (Excel or PDF)",
         asOfDate: response?.data?.asOfDate || endDate || null,
         noDataText: rows.length > 0 ? null : "No Balance Sheet Available",
       };
     } catch (error) {
-      console.warn("Manual uploaded Balance Sheet fetch failed:", error.message);
+      console.warn(`${isQMS ? "QMS" : "Manual uploaded"} Balance Sheet fetch failed:`, error.message);
       return {
         rows: [],
         source: null,
@@ -814,8 +817,9 @@ function buildBSFromPeriodColumns(sortedFiles) {
   };
 }
 
-async function buildBSMultiFileDetail() {
-  const result = await getAllManualUploadedReports("balance_sheet");
+async function buildBSMultiFileDetail(sourceMode = "manual_upload") {
+  const fetchFn = sourceMode === "quickbooks_manual" ? getAllQMSUploadedReports : getAllManualUploadedReports;
+  const result = await fetchFn("balance_sheet");
   const files = (result?.files || []).filter((f) => f.data?.rows?.length);
   if (!files.length) return { rows: [], columns: { yearCols: [], changeCols: [], currentMonth: "" } };
 
@@ -910,8 +914,8 @@ export async function getBalanceSheetDetail(
     return response;
   }
 
-  if (options?.sourceMode === "manual_upload") {
-    return buildBSMultiFileDetail();
+  if (options?.sourceMode === "manual_upload" || options?.sourceMode === "quickbooks_manual") {
+    return buildBSMultiFileDetail(options.sourceMode);
   }
 
   // Detail now uses system-defined multi-year comparison (EBITDA analysis)

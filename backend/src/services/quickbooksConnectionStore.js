@@ -24,6 +24,29 @@ async function markCompanyQuickBooksDisconnected(companyId, now = new Date().toI
   }
 }
 
+async function upsertConnectionStatus(companyId, patch = {}) {
+  if (!companyId) return;
+
+  const payload = {
+    company_id: companyId,
+    source: "quickbooks",
+    is_connected: patch.isConnected === true,
+    disconnected_at: patch.disconnectedAt || null,
+    disconnected_reason: patch.disconnectedReason || null,
+    last_checked_at: new Date().toISOString(),
+    metadata: patch.metadata && typeof patch.metadata === "object" ? patch.metadata : {},
+    updated_at: new Date().toISOString(),
+  };
+
+  const { error } = await supabase
+    .from("connection_status")
+    .upsert(payload, { onConflict: "company_id,source" });
+
+  if (error) {
+    console.warn("[QB Store] Failed to upsert connection_status:", error.message);
+  }
+}
+
 function parseSyncedEntities(value) {
   if (Array.isArray(value)) return value;
   if (!value) return [];
@@ -231,6 +254,17 @@ async function upsertQuickBooksConnection(connection) {
     console.warn("[QB Store] Failed to update company quickbooks_connected=true:", companyStateError.message);
   }
 
+  await upsertConnectionStatus(companyId, {
+    isConnected: true,
+    disconnectedAt: null,
+    disconnectedReason: null,
+    metadata: {
+      realmId,
+      environment: savedConnection?.environment || environment || null,
+      connectedAt: normalizedConnectedAt,
+    },
+  });
+
   return savedConnection;
 }
 
@@ -264,6 +298,12 @@ async function deleteQuickBooksConnection(companyId) {
   }
 
   await markCompanyQuickBooksDisconnected(companyId, now);
+  await upsertConnectionStatus(companyId, {
+    isConnected: false,
+    disconnectedAt: now,
+    disconnectedReason: "deleted",
+    metadata: { deleted: true },
+  });
 
   return true;
 }
@@ -312,6 +352,12 @@ async function softDisconnectQuickBooks(companyId) {
   }
 
   await markCompanyQuickBooksDisconnected(companyId, now);
+  await upsertConnectionStatus(companyId, {
+    isConnected: false,
+    disconnectedAt: now,
+    disconnectedReason: "manual_disconnect",
+    metadata: { tokensCleared: true },
+  });
 
   return true;
 }

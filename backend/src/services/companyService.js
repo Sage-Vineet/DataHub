@@ -332,11 +332,25 @@ async function attachCompanyStats(companies) {
 }
 
 async function deleteCompany(id) {
+  // 1. Nullify users.company_id for any users whose primary company is this one
+  const { error: userUnlinkErr } = await supabase
+    .from("users")
+    .update({ company_id: null })
+    .eq("company_id", id);
+  if (userUnlinkErr) throw userUnlinkErr;
+
+  // 2. Remove user_companies join-table rows referencing this company
+  const { error: ucErr } = await supabase
+    .from("user_companies")
+    .delete()
+    .eq("company_id", id);
+  if (ucErr) throw ucErr;
+
+  // 3. Now delete the company itself
   const { error } = await supabase
     .from("companies")
     .delete()
     .eq("id", id);
-
   if (error) throw error;
 }
 

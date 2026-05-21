@@ -13,6 +13,7 @@ import {
 import {
   connectQuickbooks,
   disconnectQuickbooks,
+  fetchQuickbooksSyncStatus,
   getConnectionStatus,
   syncQuickbooksReports,
 } from "../../lib/quickbooks";
@@ -67,6 +68,7 @@ export default function QuickBooksConnection({
   const { showToast } = useToast();
 
   const [connection, setConnection] = useState(null);
+  const [syncSnapshot, setSyncSnapshot] = useState(null);
   const [pageState, setPageState] = useState("loading");
   const [errorMessage, setErrorMessage] = useState(null);
 
@@ -79,8 +81,12 @@ export default function QuickBooksConnection({
     if (showLoader) setPageState("loading");
     setErrorMessage(null);
     try {
-      const data = await getConnectionStatus();
+      const [data, syncStatus] = await Promise.all([
+        getConnectionStatus(),
+        fetchQuickbooksSyncStatus().catch(() => null),
+      ]);
       setConnection(data);
+      setSyncSnapshot(syncStatus);
 
       if (data?.isNameMismatch) {
         setPageState("disconnected");
@@ -102,7 +108,7 @@ export default function QuickBooksConnection({
           : "Could not reach the backend. Is it running?",
       );
     }
-  }, [isSourceActive]);
+  }, []);
 
   useEffect(() => {
     Promise.resolve().then(() => {
@@ -202,11 +208,7 @@ export default function QuickBooksConnection({
     try {
       await disconnectQuickbooks();
       setShowDisconnectModal(false);
-
-      // Immediately reset local state for better UI responsiveness
-      setConnection(null);
-      setPageState("disconnected");
-      setDynamicEntities(null);
+      await fetchStatus(false);
       setErrorMessage(null);
 
       showToast({
@@ -258,6 +260,15 @@ export default function QuickBooksConnection({
     ? getTimeLeft(connection.tokenExpiresAt)
     : "—";
   const isTokenExpired = tokenTimeLeft === "Expired";
+  const syncStatusLabel = syncSnapshot?.syncStatus || connection?.syncStatus || "idle";
+  const syncProgress = Number(syncSnapshot?.syncProgress ?? connection?.syncProgress ?? 0);
+  const lastSyncTimestamp =
+    connection?.lastSyncAt ||
+    syncSnapshot?.lastSuccessfulSync ||
+    syncSnapshot?.lastSyncedAt ||
+    connection?.lastCacheSyncedAt ||
+    connection?.lastSynced ||
+    null;
 
   // ────────────────────────────────────────────────────────
   return (
@@ -347,9 +358,9 @@ export default function QuickBooksConnection({
               {pageState === "error" && "Connection Error"}
             </span>
           </div>
-          {pageState === "connected" && connection?.lastSynced && (
+          {pageState === "connected" && lastSyncTimestamp && (
             <span className="text-[12px] text-text-muted">
-              Last synced: {timeAgo(connection.lastSynced)}
+              Last synced: {timeAgo(lastSyncTimestamp)}
             </span>
           )}
         </div>
@@ -505,6 +516,26 @@ export default function QuickBooksConnection({
           )}
         </div>
       </div>
+
+      {(syncStatusLabel === "running" || syncStatusLabel === "queued") && (
+        <div className="card-base p-4">
+          <div className="mb-2 flex items-center justify-between text-[12px] font-medium text-text-secondary">
+            <span>Sync Progress</span>
+            <span>{Math.max(0, Math.min(100, Math.round(syncProgress)))}%</span>
+          </div>
+          <div className="h-2 w-full overflow-hidden rounded-full bg-[#E6E8EE]">
+            <div
+              className="h-full rounded-full bg-primary transition-all duration-500"
+              style={{ width: `${Math.max(2, Math.min(100, syncProgress))}%` }}
+            />
+          </div>
+          <p className="mt-2 text-[12px] text-text-muted">
+            {syncStatusLabel === "queued"
+              ? "Sync queued. Snapshot finalization will begin shortly."
+              : "Sync running. Reports continue showing the last finalized snapshot."}
+          </p>
+        </div>
+      )}
 
       {/* ─── Info Grid (only when connected) ───────────── */}
       {pageState === "connected" && connection && (

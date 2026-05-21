@@ -1,5 +1,5 @@
 const express = require("express");
-const { fetchAndCacheReport, serveCachedReport, REPORT_TYPES } = require("../../../services/quickbooksReportService");
+const { fetchAndCacheReport, REPORT_TYPES } = require("../../../services/quickbooksReportService");
 
 const router = express.Router();
 
@@ -37,37 +37,6 @@ router.get("/general-ledger", async (req, res) => {
   const clientId = req.clientId;
   const { start_date, end_date, account } = req.query;
 
-  // If QB is disconnected, serve cached data
-  if (req.qbDisconnected) {
-    try {
-      const cached = await serveCachedReport(
-        clientId,
-        REPORT_TYPES.GENERAL_LEDGER,
-        { start_date, end_date, account }
-      );
-      if (cached) {
-        return res.json({
-          success: true,
-          data: cached.data,
-          source: "cache",
-          lastSyncedAt: cached.lastSyncedAt,
-          isDisconnected: true,
-        });
-      }
-      return res.status(404).json({
-        success: false,
-        message: "QuickBooks is disconnected and no cached general ledger data is available.",
-        isDisconnected: true,
-      });
-    } catch (cacheError) {
-      return res.status(500).json({
-        success: false,
-        message: "Failed to retrieve cached data.",
-        error: cacheError.message,
-      });
-    }
-  }
-
   // Build query parameters for QB API
   const queryParams = {};
   if (start_date) queryParams.start_date = start_date;
@@ -85,14 +54,19 @@ router.get("/general-ledger", async (req, res) => {
     return res.json({
       success: true,
       data: result.data,
-      source: result.source,
-      lastSyncedAt: result.lastSyncedAt,
+      source: "cached_snapshot",
+      disconnected: Boolean(req.qbDisconnected),
+      lastSyncAt: result.lastSyncedAt,
+      datasetVersion: result.datasetVersion || null,
     });
   } catch (error) {
+    const status = /No finalized snapshot/i.test(error.message) ? 404 : 500;
     console.error("❌ General Ledger API Error:", error.message);
-    return res.status(error.response?.status || 500).json({
-      error: "Failed to fetch General Ledger report",
-      details: error.response?.data || error.message,
+    return res.status(status).json({
+      success: false,
+      source: "cached_snapshot",
+      disconnected: Boolean(req.qbDisconnected),
+      message: error.message || "Failed to fetch General Ledger snapshot.",
     });
   }
 });

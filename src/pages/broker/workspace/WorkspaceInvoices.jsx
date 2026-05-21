@@ -28,8 +28,8 @@ import {
 import { fetchCustomers } from "../../../services/customerService";
 import {
   getConnectionStatus,
-  refreshQuickbooksToken,
 } from "../../../services/authService";
+import { syncQuickbooksReports } from "../../../lib/quickbooks";
 import QBDisconnectedBanner from "../../../components/common/QBDisconnectedBanner";
 
 const MONTH_NAMES = [
@@ -649,7 +649,6 @@ function useInvoices() {
       } catch (err) {
         if (isMounted) {
           setError(err.message || "Failed to load invoices.");
-          setInvoices([]);
         }
       } finally {
         if (isMounted) {
@@ -687,9 +686,7 @@ function useCustomers() {
           setCustomers(normalized);
         }
       } catch {
-        if (isMounted) {
-          setCustomers([]);
-        }
+        // Keep the previously loaded customer list instead of wiping UI state.
       }
     }
 
@@ -854,8 +851,10 @@ export default function WorkspaceInvoices() {
   const handleSync = async () => {
     setIsSyncing(true);
     try {
-      await refreshQuickbooksToken();
-      window.location.reload();
+      await syncQuickbooksReports();
+      const payload = await fetchInvoices();
+      const normalized = getInvoicesArray(payload).map(normalizeInvoice);
+      setInvoices(normalized);
     } catch (err) {
       console.error("Sync failed:", err);
       alert("Sync failed. Please try again.");

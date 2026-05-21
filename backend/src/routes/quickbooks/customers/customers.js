@@ -125,149 +125,47 @@ router.post("/customers", async (req, res) => {
  *         description: Server error
  */
 router.get("/customers", async (req, res) => {
-  // If QB is disconnected, serve cached data
-  if (req.qbDisconnected) {
-    try {
-      const { serveCachedReport } = require("../../../services/quickbooksReportService");
-      const cached = await serveCachedReport(req.clientId, "customers");
-      if (cached) {
-        return res.json({
-          ...cached.data,
-          _meta: { source: "cache", lastSyncedAt: cached.lastSyncedAt, isDisconnected: true },
-        });
-      }
-      return res.status(404).json({
-        error: "QuickBooks is disconnected and no cached customer data is available.",
-        isDisconnected: true,
-      });
-    } catch (cacheError) {
-      return res.status(500).json({ error: "Failed to retrieve cached data." });
-    }
-  }
-
-  const qb = getQBConfig(req.clientId);
-
-  // Validate QuickBooks configuration
-  if (!qb.accessToken || !qb.realmId) {
-    return res.status(400).json({
-      error: "Missing QuickBooks configuration. Please authenticate first.",
-    });
-  }
-
-  let { startposition, maxresults } = req.query;
-
-  console.log("=".repeat(60));
-  console.log("👥 CUSTOMERS REQUEST");
-  console.log("=".repeat(60));
-  console.log(
-    `📌 Start Position: ${startposition || "Not specified (default: 1)"}`,
-  );
-  console.log(
-    `📊 Max Results: ${maxresults || "Not specified (default: 100)"}`,
-  );
-  console.log("=".repeat(60));
-
-  // Set defaults and validate
-  const startPos = parseInt(startposition) || 1;
-  const maxRes = Math.min(parseInt(maxresults) || 100, 1000); // Max 1000 per QuickBooks limit
-
-  // Build the query
-  const query = `SELECT * FROM Customer STARTPOSITION ${startPos} MAXRESULTS ${maxRes}`;
-
-  console.log(`🔍 Query: ${query}`);
+  const { serveCachedReport, REPORT_TYPES } = require("../../../services/quickbooksReportService");
 
   try {
-    const url = `${qb.baseUrl}/v3/company/${qb.realmId}/query?minorversion=75`;
-
-    console.log(`🔗 URL: ${url}`);
-    console.log(`📝 Query: ${query}`);
-
-    const response = await axios.post(url, query, {
-      headers: {
-        Authorization: `Bearer ${qb.accessToken}`,
-        Accept: "application/json",
-        "Content-Type": "application/text",
-        "User-Agent": "QuickBooks-Integration/1.0",
+    const cached = await serveCachedReport(
+      req.clientId,
+      REPORT_TYPES.CUSTOMERS,
+      {
+        startposition: req.query.startposition,
+        maxresults: req.query.maxresults,
       },
+      { disconnected: Boolean(req.qbDisconnected) },
+    );
+
+    if (!cached?.data) {
+      return res.status(404).json({
+        success: false,
+        source: "cached_snapshot",
+        disconnected: Boolean(req.qbDisconnected),
+        message: "No finalized customer snapshot is available. Run QuickBooks sync to refresh cached data.",
+      });
+    }
+
+    return res.json({
+      success: true,
+      source: "cached_snapshot",
+      disconnected: Boolean(req.qbDisconnected),
+      lastSyncAt: cached.lastSyncedAt,
+      datasetVersion: cached.datasetVersion || null,
+      data: cached.data,
     });
-
-    console.log("✅ Customers fetched successfully!");
-
-    // Log summary
-    if (response.data && response.data.QueryResponse) {
-      const customerCount = response.data.QueryResponse.Customer?.length || 0;
-      const totalCount = response.data.QueryResponse.totalCount || 0;
-      console.log(
-        `📊 Retrieved ${customerCount} customers out of ${totalCount} total`,
-      );
-    }
-
-    // Cache the response for offline access
-    const { upsertSyncedReport } = require("../../../services/quickbooksSyncStore");
-    upsertSyncedReport({
-      companyId: req.clientId,
-      reportType: "customers",
-      reportParams: { startposition: startPos, maxresults: maxRes },
-      data: response.data,
-    }).catch(err => console.error("[Customers] Cache failed:", err.message));
-
-    // Return raw QuickBooks response
-    return res.json(response.data);
   } catch (error) {
-    console.error("❌ Customers API Error:", error.message);
-
-    if (error.response) {
-      console.error("📝 Status Code:", error.response.status);
-      console.error(
-        "📝 Response Data:",
-        JSON.stringify(error.response.data, null, 2),
-      );
-
-      // Handle 401 Unauthorized - Token expired
-      if (error.response.status === 401) {
-        console.log("⚠️ Token expired, attempting to refresh...");
-
-        try {
-          const newAccessToken = await tokenManager.refreshAccessToken(
-            req.clientId,
-          );
-          console.log("✅ Token refreshed successfully!");
-
-          const retryResponse = await axios.post(
-            `${qb.baseUrl}/v3/company/${qb.realmId}/query?minorversion=75`,
-            query,
-            {
-              headers: {
-                Authorization: `Bearer ${newAccessToken}`,
-                Accept: "application/json",
-                "Content-Type": "application/text",
-                "User-Agent": "QuickBooks-Integration/1.0",
-              },
-            },
-          );
-
-          console.log("✅ Retry successful with new token!");
-          return res.json(retryResponse.data);
-        } catch (refreshError) {
-          console.error("❌ Token refresh failed:", refreshError.message);
-          return res.status(401).json({
-            error: "Authentication failed. Please re-authenticate.",
-            details: refreshError.message,
-          });
-        }
-      }
-
-      // Return the exact QuickBooks error response
-      return res.status(error.response.status).json(error.response.data);
-    }
-
+    console.error("[Customers] Snapshot read failed:", error.message);
     return res.status(500).json({
-      error: "Failed to fetch customers",
-      details: error.message,
+      success: false,
+      source: "cached_snapshot",
+      disconnected: Boolean(req.qbDisconnected),
+      message: "Failed to load customer snapshot.",
+      error: error.message,
     });
   }
 });
-
 /**
  * @swagger
  * /customers/query:
@@ -528,3 +426,4 @@ router.put("/api/customers/:id", async (req, res) => {
 });
 
 module.exports = router;
+

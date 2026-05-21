@@ -5,6 +5,7 @@ const { enforceDataSource, REPORT_SOURCE_KEYS } = require("../../middleware/data
 const { syncAllReports, getSyncStatus } = require("../../services/quickbooksReportService");
 
 const router = express.Router();
+const backgroundSyncByCompany = new Map();
 
 /**
  * @swagger
@@ -28,12 +29,72 @@ router.post(
   async (req, res) => {
   try {
     const clientId = req.clientId;
+    const background =
+      req.body?.background === true ||
+      req.body?.background === "true" ||
+      req.query?.background === "true";
+    const yearsBack = Number(req.body?.yearsBack || req.query?.yearsBack || 4);
+    const monthsBack = Number(req.body?.monthsBack || req.query?.monthsBack || 18);
+    const incremental =
+      req.body?.incremental === undefined && req.query?.incremental === undefined
+        ? true
+        : req.body?.incremental === true ||
+          req.body?.incremental === "true" ||
+          req.query?.incremental === "true";
+
+    const syncOptions = {
+      requestedBy: req.user?.id || null,
+      yearsBack,
+      monthsBack,
+      accountingMethod: req.body?.accountingMethod || "Accrual",
+      incremental,
+    };
 
     console.log(`[Sync] Full sync triggered for company ${clientId}`);
-    const result = await syncAllReports(clientId);
+    if (background) {
+      if (!backgroundSyncByCompany.has(clientId)) {
+        const runningPromise = syncAllReports(clientId, syncOptions)
+          .catch((error) => {
+            console.error(`[Sync][Background] failed for company ${clientId}:`, error.message);
+          })
+          .finally(() => {
+            backgroundSyncByCompany.delete(clientId);
+          });
+        backgroundSyncByCompany.set(clientId, runningPromise);
+      }
+
+      // Give the sync worker a brief moment to create the DB sync job row.
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      const status = await getSyncStatus(clientId).catch(() => null);
+
+      return res.status(202).json({
+        success: true,
+        source: "sync_job",
+        disconnected: Boolean(req.qbDisconnected),
+        message: "Background sync started.",
+        syncStatus: status?.syncStatus || "running",
+        syncProgress: status?.syncProgress || 0,
+        syncJobId: status?.syncJobId || null,
+        datasetVersion: status?.datasetVersion || null,
+      });
+    }
+
+    const result = await syncAllReports(clientId, syncOptions);
+    if (result?.alreadyRunning) {
+      return res.status(202).json({
+        success: true,
+        source: "sync_job",
+        disconnected: Boolean(req.qbDisconnected),
+        message: result.message || "A sync job is already running.",
+        syncStatus: result.status || "running",
+        syncJobId: result.syncJobId || null,
+      });
+    }
 
     return res.json({
       success: true,
+      source: "sync_job",
+      disconnected: Boolean(req.qbDisconnected),
       message: result.hasErrors
         ? "Sync completed with some errors"
         : "All reports synced successfully",
@@ -41,8 +102,13 @@ router.post(
     });
   } catch (error) {
     console.error("[Sync] Full sync failed:", error.message);
-    return res.status(500).json({
+    const status = /missing or disconnected/i.test(String(error.message || ""))
+      ? 400
+      : 500;
+    return res.status(status).json({
       success: false,
+      source: "sync_job",
+      disconnected: Boolean(req.qbDisconnected),
       error: "Sync failed",
       message: error.message,
     });
@@ -77,6 +143,7 @@ router.get("/api/quickbooks/sync-status", requireAuth, async (req, res) => {
 
     return res.json({
       success: true,
+      source: "cached_snapshot",
       ...status,
     });
   } catch (error) {

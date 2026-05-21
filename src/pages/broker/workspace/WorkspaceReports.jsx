@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import Header from "../../../components/Header";
+import QBDisconnectedBanner from "../../../components/common/QBDisconnectedBanner";
 import {
   ChevronDown,
   RefreshCw,
@@ -9,8 +10,8 @@ import { cn } from "../../../lib/utils";
 import {
   getCompanyRequest,
   getManualStageFilterOptions,
-  getLatestManualUploadedReport,
   getAllManualUploadedReports,
+  getAllQMSUploadedReports,
 } from "../../../lib/api";
 import { MANUAL_GL_STAGED_EVENT } from "../../../lib/dataSourceEvents";
 import { useDataSource } from "../../../context/DataSourceContext";
@@ -224,7 +225,6 @@ export default function WorkspaceReports() {
   const { clientId } = useParams();
   const {
     activeSource: contextActiveSource,
-    quickbooksConnected: contextQbConnected,
   } = useDataSource();
   const todayString = useMemo(() => formatDateForInput(new Date()), []);
   const defaultCustomStart = useMemo(() => `${todayString.slice(0, 7)}-01`, [todayString]);
@@ -299,6 +299,17 @@ export default function WorkspaceReports() {
     "Cashflow": null,
   });
   const [isLoadingManualFiles, setIsLoadingManualFiles] = useState(false);
+  const [qmsFiles, setQMSFiles] = useState({
+    "Balance Sheet": [],
+    "Profit & Loss": [],
+    "Cashflow": [],
+  });
+  const [selectedQMSRowId, setSelectedQMSRowId] = useState({
+    "Balance Sheet": null,
+    "Profit & Loss": null,
+    "Cashflow": null,
+  });
+  const [isLoadingQMSFiles, setIsLoadingQMSFiles] = useState(false);
   const hasRestoredSessionRef = useRef(false);
   const isFirstMountRef = useRef(true);
   // Always-fresh ref so the filter options effect doesn't capture a stale closure.
@@ -445,7 +456,7 @@ export default function WorkspaceReports() {
         console.error("[WorkspaceReports] Failed to load manual filter options:", error);
         setManualFilterOptions({});
       });
-  // filterOptionsVersion increments when a new GL batch is staged, forcing a re-fetch.
+    // filterOptionsVersion increments when a new GL batch is staged, forcing a re-fetch.
   }, [appliedManualFilters.batchId, clientId, selectedSourceMode, filterOptionsVersion]);
 
   // Load available uploaded files per tab when in manual_upload source mode
@@ -475,6 +486,35 @@ export default function WorkspaceReports() {
         setManualUploadFiles((prev) => ({ ...prev, [selectedTab]: [] }));
       })
       .finally(() => setIsLoadingManualFiles(false));
+  }, [selectedSourceMode, selectedTab, clientId]);
+
+  // Load QMS report files per tab when in quickbooks_manual source mode
+  useEffect(() => {
+    if (selectedSourceMode !== "quickbooks_manual" || !clientId) return;
+    const statementTypeMap = {
+      "Balance Sheet": "balance_sheet",
+      "Profit & Loss": "profit_and_loss",
+      "Cashflow": "cash_flow",
+    };
+    const stType = statementTypeMap[selectedTab];
+    if (!stType) return;
+
+    setIsLoadingQMSFiles(true);
+    getAllQMSUploadedReports(stType, { clientId })
+      .then((result) => {
+        const files = result?.files || [];
+        setQMSFiles((prev) => ({ ...prev, [selectedTab]: files }));
+        setSelectedQMSRowId((prev) => {
+          const current = prev[selectedTab];
+          const stillValid = files.some((f) => f.rowId === current);
+          return stillValid ? prev : { ...prev, [selectedTab]: files[0]?.rowId || null };
+        });
+      })
+      .catch((err) => {
+        console.error("[WorkspaceReports] Failed to load QMS files:", err);
+        setQMSFiles((prev) => ({ ...prev, [selectedTab]: [] }));
+      })
+      .finally(() => setIsLoadingQMSFiles(false));
   }, [selectedSourceMode, selectedTab, clientId]);
 
   useEffect(() => {
@@ -772,7 +812,7 @@ export default function WorkspaceReports() {
       const normalizedAccountingMethod =
         normalizeAccountingMethod(accountingMethod);
 
-      // In manual-upload mode, resolve the fiscal year from the selected file
+      // In manual-upload / QMS mode, resolve the fiscal year from the selected file
       // (avoids an extra API call — file list was already fetched by the files effect).
       let resolvedStart;
       let resolvedEnd;
@@ -781,6 +821,20 @@ export default function WorkspaceReports() {
         const fileEntry = manualUploadFiles[selectedTab]?.find(
           (f) => f.rowId === selectedRowId,
         ) || manualUploadFiles[selectedTab]?.[0];
+        const year = resolveManualUploadYear({
+          data: fileEntry?.data,
+          reportParams: { fileName: fileEntry?.fileName },
+        });
+        if (year) {
+          resolvedStart = `${year}-01-01`;
+          resolvedEnd = `${year}-12-31`;
+        }
+      }
+      if (selectedSourceMode === "quickbooks_manual") {
+        const selectedRowId = selectedQMSRowId[selectedTab];
+        const fileEntry = qmsFiles[selectedTab]?.find(
+          (f) => f.rowId === selectedRowId,
+        ) || qmsFiles[selectedTab]?.[0];
         const year = resolveManualUploadYear({
           data: fileEntry?.data,
           reportParams: { fileName: fileEntry?.fileName },
@@ -841,7 +895,9 @@ export default function WorkspaceReports() {
       const manualUploadRowId =
         selectedSourceMode === "manual_upload"
           ? selectedManualUploadRowId[selectedTab]
-          : null;
+          : selectedSourceMode === "quickbooks_manual"
+            ? selectedQMSRowId[selectedTab]
+            : null;
 
       if (selectedTab === "Balance Sheet") {
         if (reportType === "Summary") {
@@ -854,12 +910,7 @@ export default function WorkspaceReports() {
               manualFilters: summaryFilterParams,
               manualUploadRowId,
             },
-          ).catch(() => ({
-            rows: [],
-            source: null,
-            sourceLabel: null,
-            noDataText: "No Balance Sheet Available",
-          }));
+          );
         } else {
           detail = await getBalanceSheetDetail(
             effectiveStartDate,
@@ -869,7 +920,7 @@ export default function WorkspaceReports() {
               sourceMode: selectedSourceMode,
               manualFilters: manualFilterParams,
             },
-          ).catch(() => ({ groups: [] }));
+          );
         }
       } else if (selectedTab === "Profit & Loss") {
         if (reportType === "Summary") {
@@ -882,7 +933,7 @@ export default function WorkspaceReports() {
               manualFilters: summaryFilterParams,
               manualUploadRowId,
             },
-          ).catch(() => []);
+          );
         } else {
           detail = await getProfitAndLossDetail(
             effectiveStartDate,
@@ -892,7 +943,7 @@ export default function WorkspaceReports() {
               sourceMode: selectedSourceMode,
               manualFilters: manualFilterParams,
             },
-          ).catch(() => []);
+          );
         }
       } else {
         if (reportType === "Summary") {
@@ -905,7 +956,7 @@ export default function WorkspaceReports() {
               manualFilters: summaryFilterParams,
               manualUploadRowId,
             },
-          ).catch(() => []);
+          );
         } else {
           detail = await getCashflowDetail(
             effectiveStartDate,
@@ -915,7 +966,7 @@ export default function WorkspaceReports() {
               sourceMode: selectedSourceMode,
               manualFilters: manualFilterParams,
             },
-          ).catch(() => ({ rows: [], columns: {} }));
+          );
         }
       }
 
@@ -958,6 +1009,8 @@ export default function WorkspaceReports() {
     selectedTab,
     // eslint-disable-next-line react-hooks/exhaustive-deps
     selectedManualUploadRowId[selectedTab],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    selectedQMSRowId[selectedTab],
   ]);
 
   // Auto-generate report when dependencies change.
@@ -979,6 +1032,7 @@ export default function WorkspaceReports() {
       <Header title="Reports" />
 
       <div className="page-content">
+        <QBDisconnectedBanner />
         <div className="mb-4 flex items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-3">
             <h1 className="text-2xl font-bold text-[#050505]">
@@ -1054,7 +1108,7 @@ export default function WorkspaceReports() {
               </div>
             </div>
 
-            {reportType === "Summary" && selectedSourceMode !== "manual" && (
+            {reportType === "Summary" && selectedSourceMode !== "manual" && selectedSourceMode !== "manual_upload" && selectedSourceMode !== "quickbooks_manual" && (
               <>
                 <div className="flex flex-col gap-1.5">
                   <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
@@ -1175,6 +1229,48 @@ export default function WorkspaceReports() {
               ) : null
             )}
 
+            {selectedSourceMode === "quickbooks_manual" && reportType === "Summary" && (
+              isLoadingQMSFiles ? (
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
+                    File
+                  </label>
+                  <div className="h-9 min-w-[200px] flex items-center px-3 rounded-md border border-border-input bg-bg-card text-[13px] text-text-muted animate-pulse">
+                    Loading files…
+                  </div>
+                </div>
+              ) : qmsFiles[selectedTab]?.length > 0 ? (
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
+                    File
+                  </label>
+                  <div className="relative min-w-[200px]">
+                    <select
+                      value={selectedQMSRowId[selectedTab] || ""}
+                      onChange={(e) => {
+                        setSelectedQMSRowId((prev) => ({
+                          ...prev,
+                          [selectedTab]: e.target.value || null,
+                        }));
+                      }}
+                      className="h-9 w-full appearance-none rounded-md border border-border-input bg-bg-card pl-3 pr-9 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                    >
+                      {qmsFiles[selectedTab].map((f) => (
+                        <option key={f.rowId} value={f.rowId}>
+                          {f.fileName}
+                          {f.data?.asOfDate ? ` (${f.data.asOfDate.split("-")[0]})` : ""}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown
+                      size={14}
+                      className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-text-muted"
+                    />
+                  </div>
+                </div>
+              ) : null
+            )}
+
             {selectedSourceMode === "manual" && (
               <>
 
@@ -1262,12 +1358,6 @@ export default function WorkspaceReports() {
               </div>
             ) : (
               <>
-                {selectedTab === "Balance Sheet" && currentReport.summary?.reStageRequired && (
-                  <div className="mx-4 mb-3 rounded border border-amber-300 bg-amber-50 px-4 py-3 text-[13px] text-amber-800">
-                    <strong>Data re-staging required:</strong>{" "}
-                    {currentReport.summary.reStageWarning || "Re-run staging to fix Balance Sheet totals."}
-                  </div>
-                )}
                 <div id="report-content" className="bg-white">
                   {selectedTab === "Balance Sheet" ? (
                     <BalanceSheetReport

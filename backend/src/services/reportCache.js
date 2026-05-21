@@ -10,11 +10,12 @@
  */
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
-const CACHE_MAX    = 500;
+const CACHE_MAX = 500;
 
 const _cache = new Map();
 
 function _key(type, companyId, filters) {
+  // datasetVersionId should be included in the cache key to isolate cache across updates
   return JSON.stringify({ type, companyId, ...filters });
 }
 

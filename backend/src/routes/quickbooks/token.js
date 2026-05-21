@@ -736,11 +736,24 @@ router.get("/api/auth/status", requireAuth, async (req, res) => {
     await loadQBConfig(clientId);
     const qb = getQBConfig(clientId);
 
-    // DB flag is source of truth; token presence is secondary
-    const hasTokens = !!(qb.accessToken && qb.realmId);
-    const isConnected = hasTokens;
+    const { data: connectionState } = await supabase
+      .from("connection_status")
+      .select("is_connected, disconnected_at, disconnected_reason, last_checked_at")
+      .eq("company_id", clientId)
+      .eq("source", "quickbooks")
+      .maybeSingle();
 
-    console.log(`[QB Status] client=${clientId} | hasTokens=${hasTokens} | isConnected=${isConnected} | realmId=${qb.realmId || 'null'} | accessToken=${qb.accessToken ? 'present' : 'null'}`);
+    const hasTokens = !!(qb.accessToken && qb.realmId);
+    const dbConnected =
+      connectionState?.is_connected === true
+        ? true
+        : connectionState?.is_connected === false
+          ? false
+          : null;
+    const isConnected =
+      dbConnected === null ? hasTokens : Boolean(dbConnected && hasTokens);
+
+    console.log(`[QB Status] client=${clientId} | hasTokens=${hasTokens} | dbConnected=${dbConnected} | isConnected=${isConnected} | realmId=${qb.realmId || 'null'} | accessToken=${qb.accessToken ? 'present' : 'null'}`);
 
     // Always fetch sync status (available even when disconnected)
     let syncStatus = null;
@@ -758,11 +771,22 @@ router.get("/api/auth/status", requireAuth, async (req, res) => {
       }
       return res.json({
         success: true,
+        source: "cached_snapshot",
+        disconnected: true,
         isConnected: false,
+        disconnectedReason:
+          connectionState?.disconnected_reason ||
+          (hasTokens ? "connection_state_disconnected" : "missing_tokens"),
+        disconnectedAt: connectionState?.disconnected_at || null,
         syncedEntities: [],
         hasCachedData: syncStatus ? syncStatus.totalCachedReports > 0 : false,
         cachedReports: syncStatus ? syncStatus.reports : [],
         lastSyncedAt: syncStatus ? syncStatus.lastSyncedAt : null,
+        syncStatus: syncStatus?.syncStatus || "idle",
+        syncProgress: syncStatus?.syncProgress || 0,
+        syncJobId: syncStatus?.syncJobId || null,
+        datasetVersion: syncStatus?.datasetVersion || null,
+        lastSyncAt: syncStatus?.lastSyncedAt || null,
       });
     }
 
@@ -771,7 +795,10 @@ router.get("/api/auth/status", requireAuth, async (req, res) => {
 
     return res.json({
       success: true,
+      source: "cached_snapshot",
+      disconnected: false,
       isConnected: true,
+      connectionCheckedAt: connectionState?.last_checked_at || null,
       dataHubCompanyId: qb.dataHubCompanyId || clientId,
       companyName: quickbooksCompanyName,
       workspaceCompanyName: workspaceCompanyName || null,
@@ -789,6 +816,11 @@ router.get("/api/auth/status", requireAuth, async (req, res) => {
       hasCachedData: syncStatus ? syncStatus.totalCachedReports > 0 : false,
       cachedReports: syncStatus ? syncStatus.reports : [],
       lastCacheSyncedAt: syncStatus ? syncStatus.lastSyncedAt : null,
+      syncStatus: syncStatus?.syncStatus || "idle",
+      syncProgress: syncStatus?.syncProgress || 0,
+      syncJobId: syncStatus?.syncJobId || null,
+      datasetVersion: syncStatus?.datasetVersion || null,
+      lastSyncAt: syncStatus?.lastSyncedAt || qb.lastSynced || null,
     });
   } catch (error) {
     console.error("Failed to fetch connection status:", error.message);

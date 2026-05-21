@@ -9,7 +9,7 @@ import {
   ChevronDown,
 } from "lucide-react";
 import { cn, formatCurrency } from "../../../lib/utils";
-import { getCompanyRequest, getReportSources, setSelectedReportSource as apiSetSelectedReportSource, getAllManualUploadedReports } from "../../../lib/api";
+import { getCompanyRequest, getReportSources, setSelectedReportSource as apiSetSelectedReportSource, getAllManualUploadedReports, getAllQMSUploadedReports, syncQMSUploadSource } from "../../../lib/api";
 import {
   getEbitdaData,
   extractEbitdaFromManualPLRows,
@@ -24,7 +24,6 @@ function formatPercent(value) {
   if (!Number.isFinite(value)) return "-";
   return `${value.toFixed(1)}%`;
 }
-
 
 function EmptyState() {
   return (
@@ -134,7 +133,8 @@ export default function WorkspaceEbitda() {
   const reportSource = activeSource ? normalizeReportSourceKey(activeSource) : REPORT_SOURCE_KEYS.QUICKBOOKS;
   const isManualGl = reportSource === REPORT_SOURCE_KEYS.MANUAL_GL;
   const isManualUpload = reportSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD;
-  const isManualMode = isManualGl || isManualUpload;
+  const isQBManual = reportSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
+  const isManualMode = isManualGl || isManualUpload || isQBManual;
 
   const [multiYearData, setMultiYearData] = useState(null);
   const [years, setYears] = useState([]);
@@ -348,6 +348,68 @@ export default function WorkspaceEbitda() {
         if (ebitdaCacheKey) {
           try { sessionStorage.setItem(ebitdaCacheKey, JSON.stringify({ multiYearData: newData, years: newYears })); } catch { /* quota exceeded */ }
         }
+      } else if (isQBManual) {
+        // QuickBooks Manual: read all synced P&L files from qb_synced_reports
+        const result = await getAllQMSUploadedReports("profit_and_loss", { clientId });
+        const files = (result?.files || []).filter((f) => f.data?.rows?.length);
+
+        if (!files.length) {
+          throw new Error("No P&L reports found. Please sync your Quickbooks Manual Source folder first.");
+        }
+
+        const detectFileYear = (file) => {
+          const data = file.data || {};
+          const dateSrc = data.asOfDate || data.periodEnd || data.periodStart;
+          if (dateSrc) {
+            const parsed = parseInt(String(dateSrc).split("-")[0], 10);
+            if (parsed >= 2000 && parsed <= currentYear + 1) return parsed;
+          }
+          const yearInName = (file.fileName || "").match(/\b(20\d{2})\b/);
+          if (yearInName) return parseInt(yearInName[1], 10);
+          return currentYear;
+        };
+
+        const buildSumColAmounts = (periods) => {
+          const totalIdx = (periods || []).findIndex((p) => /^total$/i.test(String(p).trim()));
+          const getVal = (colAmounts) => {
+            if (!Array.isArray(colAmounts) || colAmounts.length === 0) return 0;
+            return totalIdx >= 0
+              ? (colAmounts[totalIdx] || 0)
+              : colAmounts.reduce((s, v) => s + (v || 0), 0);
+          };
+          const sumColAmounts = (node) => ({
+            ...node,
+            amount: getVal(node.colAmounts) || (node.amount || 0),
+            children: node.children ? node.children.map(sumColAmounts) : undefined,
+          });
+          return sumColAmounts;
+        };
+
+        const yearFileMap = new Map();
+        for (const file of files) {
+          const yr = detectFileYear(file);
+          const existing = yearFileMap.get(yr);
+          if (!existing || new Date(file.updatedAt || 0) > new Date(existing.updatedAt || 0)) {
+            yearFileMap.set(yr, file);
+          }
+        }
+
+        const newData = {};
+        for (const [yr, file] of yearFileMap) {
+          const hasPeriods = (file.data?.periods?.length || 0) > 0;
+          const sumColAmounts = buildSumColAmounts(file.data?.periods || []);
+          const rows = hasPeriods
+            ? (file.data.rows || []).map(sumColAmounts)
+            : (file.data.rows || []);
+          newData[yr] = extractEbitdaFromManualPLRows(rows, file.data?.asOfDate || null);
+        }
+
+        const newYears = Array.from(yearFileMap.keys()).sort((a, b) => b - a);
+        setYears(newYears);
+        setMultiYearData(newData);
+        if (ebitdaCacheKey) {
+          try { sessionStorage.setItem(ebitdaCacheKey, JSON.stringify({ multiYearData: newData, years: newYears })); } catch { /* quota exceeded */ }
+        }
       } else {
         // QuickBooks: fetch per-year
         const todayStr = new Date().toISOString().split("T")[0];
@@ -377,10 +439,10 @@ export default function WorkspaceEbitda() {
     } finally {
       setIsLoading(false);
     }
-  }, [isManualGl, isManualUpload, clientId, ebitdaCacheKey, accountingMethod]);
+  }, [isManualGl, isManualUpload, isQBManual, clientId, ebitdaCacheKey, accountingMethod]);
 
   useEffect(() => {
-    handleGenerate(isManualUpload);
+    handleGenerate(isManualUpload || isQBManual);
   }, [handleGenerate]);
 
   // Handle Dynamic Addbacks Initialization and Persistence
@@ -583,7 +645,12 @@ export default function WorkspaceEbitda() {
       try { sessionStorage.removeItem(ebitdaCacheKey); } catch { /* ignore */ }
     }
     try {
-      if (!isManualMode) await refreshQuickbooksToken();
+      if (isQBManual) {
+        // Re-sync all QMS files so the latest parser fixes apply, then re-fetch EBITDA.
+        await syncQMSUploadSource({ clientId });
+      } else if (!isManualMode) {
+        await refreshQuickbooksToken();
+      }
       await handleGenerate(true);
     } catch {
       setError("Sync failed. Please try again.");
@@ -607,22 +674,22 @@ export default function WorkspaceEbitda() {
                 ? `Powered by staged GL data${company?.name ? ` — ${company.name}` : ""}`
                 : isManualUpload
                 ? `Powered by your uploaded Profit & Loss file${company?.name ? ` — ${company.name}` : ""}`
+                : isQBManual
+                ? `Powered by your QuickBooks Manual P&L reports${company?.name ? ` — ${company.name}` : ""}`
                 : `Dynamic earnings analysis powered by your Profit & Loss data${company?.name ? ` — ${company.name}` : ""}`}
             </p>
           </div>
-          {activeSourceMode === "quickbooks" && (
-            <button
-              onClick={handleSync}
-              disabled={isSyncing}
-              className="btn-secondary"
-            >
-              <RefreshCw
-                size={16}
-                className={isSyncing ? "animate-spin" : ""}
-              />
-              {isSyncing ? "Syncing..." : "Sync"}
-            </button>
-          )}
+          <button
+            onClick={handleSync}
+            disabled={isSyncing || isLoading}
+            className="btn-secondary"
+          >
+            <RefreshCw
+              size={16}
+              className={isSyncing ? "animate-spin" : ""}
+            />
+            {isSyncing ? "Refreshing..." : "Refresh"}
+          </button>
         </div>
 
         <QBDisconnectedBanner pageName="EBITDA Analysis" />

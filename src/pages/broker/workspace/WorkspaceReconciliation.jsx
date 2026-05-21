@@ -41,6 +41,7 @@ const API_BASE_URL =
 const QB_BANK_ACTIVITY_ENDPOINT = `${API_BASE_URL}/qb-bank-activity`;
 const QB_ONE_BANK_ACTIVITY_ENDPOINT = `${API_BASE_URL}/qb-one-bank-activity`;
 const EXTRACT_BANK_PDF_RECORDS_ENDPOINT = `${API_BASE_URL}/extract-bank-pdf-records`;
+const QMS_BANK_DATA_ENDPOINT = `${API_BASE_URL}/manual-report-uploads/qms-bank-data`;
 const RECONCILIATION_STORAGE_PREFIX = "workspace-reconciliation";
 
 const getErrMsg = (e) => (e instanceof Error ? e.message : String(e));
@@ -513,10 +514,44 @@ export default function WorkspaceReconciliation() {
     }
   }, [getHeaders]);
 
+  const loadQMSBankData = useCallback(async () => {
+    setIsLoadingExtractedBankPdfData(true);
+    setExtractedBankPdfError("");
+    setExtractedBankPdfFetchStatus({
+      status: "loading",
+      message: "Loading bank statement data from QuickBooks Manual source...",
+    });
+
+    try {
+      const params = new URLSearchParams();
+      if (clientId) params.append("clientId", clientId);
+      const url = `${QMS_BANK_DATA_ENDPOINT}?${params.toString()}`;
+      const resp = await fetch(url, { cache: "no-store", headers: getHeaders() });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
+
+      const normalized = normalizeExtractedBankPdfData(data);
+      setExtractedBankPdfData(normalized);
+      setExtractedBankPdfFetchStatus({
+        status: normalized ? "success" : "idle",
+        message: normalized
+          ? `Loaded ${normalized.banks?.length ?? 0} bank(s) across ${normalized.months?.length ?? 0} month(s).`
+          : "No bank statement data found. Please sync your QuickBooks Manual Source folder first.",
+      });
+    } catch (e) {
+      setExtractedBankPdfError(getErrMsg(e));
+      setExtractedBankPdfFetchStatus({ status: "error", message: getErrMsg(e) });
+      setExtractedBankPdfData(null);
+    } finally {
+      setIsLoadingExtractedBankPdfData(false);
+    }
+  }, [clientId, getHeaders]);
+
   useEffect(() => {
+    if (selectedReportSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) return;
     if (storedState?.extractedBankPdfData) return;
     void loadExtractedBankPdfData();
-  }, [loadExtractedBankPdfData, storedState?.extractedBankPdfData]);
+  }, [loadExtractedBankPdfData, storedState?.extractedBankPdfData, selectedReportSource]);
 
   useEffect(() => {
     if (!clientId) return;
@@ -565,7 +600,13 @@ export default function WorkspaceReconciliation() {
 
   const isManualUpload = selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD;
   const isManualGl = selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_GL;
+  const isQBManual = selectedReportSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
   const isQBOnline = selectedReportSource === REPORT_SOURCE_KEYS.QUICKBOOKS;
+
+  useEffect(() => {
+    if (!isQBManual) return;
+    void loadQMSBankData();
+  }, [isQBManual, loadQMSBankData]);
 
   const reportMonths = qbBankActivity?.months?.length
     ? qbBankActivity.months
@@ -1937,7 +1978,7 @@ export default function WorkspaceReconciliation() {
                 Bank Account Balances
               </h2>
               <p className="text-[14px] text-text-secondary">
-                {(isManualUpload || isManualGl)
+                {(isManualUpload || isManualGl || isQBManual)
                   ? "Per-bank balance detail extracted from uploaded bank statement PDF files."
                   : "Per-account balance detail from QuickBooks with reconciliation checks."}
               </p>
@@ -1946,7 +1987,7 @@ export default function WorkspaceReconciliation() {
               <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
                 Bank Account
               </label>
-              {(isManualUpload || isManualGl) ? (
+              {(isManualUpload || isManualGl || isQBManual) ? (
                 <select
                   className="input-base h-10 w-full"
                   value={selectedManualBankName}
@@ -1982,7 +2023,7 @@ export default function WorkspaceReconciliation() {
             </div>
           </div>
 
-          {(isManualUpload || isManualGl) ? (
+          {(isManualUpload || isManualGl || isQBManual) ? (
             extractedBankPdfData ? (
               renderManualBalanceAccountTable(
                 extractedBankPdfData.banks.find((b) => b.bankName === selectedManualBankName) ||
@@ -2015,7 +2056,7 @@ export default function WorkspaceReconciliation() {
               </p>
             </div>
           </div>
-          {(isManualUpload || isManualGl) ? (
+          {(isManualUpload || isManualGl || isQBManual) ? (
             renderManualActivityTable()
           ) : hasData ? (
             renderActivityTable()

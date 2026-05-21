@@ -593,6 +593,46 @@ export function stageMultiYearManualGl(payload, options = {}) {
   });
 }
 
+// === Snapshot Dataset Versioning APIs ===
+
+export function listManualGlDatasetVersions(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/dataset-versions${query}`, options).then(res => res?.versions || []);
+}
+
+export function activateManualGlDatasetVersion(versionId, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/dataset-versions/${encodeURIComponent(versionId)}/activate${query}`, {
+    method: "POST",
+    ...options,
+  });
+}
+
+export function rollbackManualGlDatasetVersion(versionId, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/dataset-versions/${encodeURIComponent(versionId)}/rollback${query}`, {
+    method: "POST",
+    ...options,
+  });
+}
+
+// === Upload Jobs APIs ===
+
+export function listManualGlUploadJobs(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/upload-jobs${query}`, options).then(res => res?.jobs || []);
+}
+
+export function getManualGlUploadJob(jobId, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/upload-jobs/${encodeURIComponent(jobId)}${query}`, options).then(res => res?.job || null);
+}
+
 export function getManualStageTransactions(options = {}) {
   const {
     clientId: clientIdOption,
@@ -790,6 +830,41 @@ export function syncManualUploadSource(options = {}) {
   });
 }
 
+export function getQMSUploadSourceTree(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-report-uploads/qms-source-tree${query}`, options).then(
+    (res) => res?.tree ?? null,
+  );
+}
+
+export function syncQMSUploadSource(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-report-uploads/sync-qms-source${query}`, {
+    method: "POST",
+    ...options,
+  });
+}
+
+export function parseQMSDocuments({ clientId: clientIdOption, documents = [], clearFirst = false } = {}) {
+  const clientId = clientIdOption ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-report-uploads/qms-parse-documents${query}`, {
+    method: "POST",
+    body: { documents, clearFirst },
+  });
+}
+
+export function syncQMSFolder({ clientId: clientIdOption, folderId, folderName } = {}) {
+  const clientId = clientIdOption ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-report-uploads/sync${query}`, {
+    method: "POST",
+    body: { folderId, folderName: folderName || "" },
+  });
+}
+
 export function getLatestManualUploadedReport(statementType, options = {}) {
   const clientId = options.clientId ?? resolveClientIdFromLocation();
   const params = new URLSearchParams();
@@ -807,6 +882,27 @@ export function getAllManualUploadedReports(statementType, options = {}) {
   const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
   return request(
     `/manual-report-uploads/reports/${encodeURIComponent(statementType)}/all${query}`,
+    options,
+  );
+}
+
+export function getAllQMSUploadedReports(statementType, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(
+    `/manual-report-uploads/qms-reports/${encodeURIComponent(statementType)}/all${query}`,
+    options,
+  );
+}
+
+export function getLatestQMSUploadedReport(statementType, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const params = new URLSearchParams();
+  if (clientId) params.set("clientId", clientId);
+  if (options.rowId) params.set("rowId", options.rowId);
+  const query = params.toString() ? `?${params}` : "";
+  return request(
+    `/manual-report-uploads/qms-reports/${encodeURIComponent(statementType)}/latest${query}`,
     options,
   );
 }

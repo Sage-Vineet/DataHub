@@ -320,8 +320,8 @@ async function callGemini(base64Pdf, prompt) {
   let lastError = null;
 
   for (const modelName of GEMINI_MODELS) {
-    let retries = 3;
-    let delay = 5000;
+    let retries = 2;
+    const retryDelay = 3000; // fixed 3 s — avoid exponential backoff that causes 10-min hangs
 
     while (retries > 0) {
       try {
@@ -344,9 +344,8 @@ async function callGemini(base64Pdf, prompt) {
 
         if (isNotFound) break;
         if (isQuota && retries > 1) {
-          console.log(`[GeminiParser] Rate limited on ${modelName}, waiting ${delay}ms…`);
-          await sleep(delay);
-          delay *= 2;
+          console.log(`[GeminiParser] Rate limited on ${modelName}, waiting ${retryDelay}ms…`);
+          await sleep(retryDelay);
           retries--;
         } else {
           break;
