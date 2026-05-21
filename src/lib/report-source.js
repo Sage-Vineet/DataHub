@@ -29,10 +29,18 @@ export const REPORT_SOURCE_OPTIONS = [
 ];
 
 export function normalizeReportSourceKey(value) {
+  if (!value) return null;
   if (value === REPORT_SOURCE_KEYS.MANUAL_GL) return REPORT_SOURCE_KEYS.MANUAL_GL;
   if (value === REPORT_SOURCE_KEYS.MANUAL_UPLOAD) return REPORT_SOURCE_KEYS.MANUAL_UPLOAD;
   if (value === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) return REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
-  return REPORT_SOURCE_KEYS.QUICKBOOKS;
+  if (value === REPORT_SOURCE_KEYS.QUICKBOOKS) return REPORT_SOURCE_KEYS.QUICKBOOKS;
+  // Legacy aliases
+  const lower = String(value).trim().toLowerCase();
+  if (lower === "quickbooks" || lower === "quickbooks_online") return REPORT_SOURCE_KEYS.QUICKBOOKS;
+  if (lower === "manual_gl" || lower === "manual" || lower === "manual_gl_upload") return REPORT_SOURCE_KEYS.MANUAL_GL;
+  if (lower === "manual_upload" || lower === "manual_report_upload" || lower === "manual_upload_excel_pdf") return REPORT_SOURCE_KEYS.MANUAL_UPLOAD;
+  if (lower === "quickbooks_manual" || lower === "qb_manual") return REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
+  return null;
 }
 
 export function getReportSourceMode(sourceKey) {

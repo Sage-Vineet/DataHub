@@ -4,6 +4,7 @@ const { Pool } = require("pg");
 
 let profilePool = null;
 let profileFallbackCooldownUntil = 0;
+let _pgOpenUntil = 0;
 const PROFILE_FALLBACK_COOLDOWN_MS = 60 * 1000;
 
 function isProfileFallbackCoolingDown() {

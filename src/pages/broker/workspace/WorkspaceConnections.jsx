@@ -310,13 +310,15 @@ export default function WorkspaceConnections() {
   }, [clientId]);
 
   useEffect(() => {
-    const sourceParam = searchParams.get("source");
-    if (["manual", "quickbooks", "manual_upload", "quickbooks_manual"].includes(sourceParam)) return;
     let fallback = "quickbooks";
     if (activeSourceKey === REPORT_SOURCE_KEYS.MANUAL_GL) fallback = "manual";
     else if (activeSourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD) fallback = "manual_upload";
     else if (activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) fallback = "quickbooks_manual";
-    setSearchParams({ source: fallback }, { replace: true });
+
+    const sourceParam = searchParams.get("source");
+    if (sourceParam !== fallback) {
+      setSearchParams({ source: fallback }, { replace: true });
+    }
   }, [activeSourceKey, searchParams, setSearchParams]);
 
   const closeSourceSwitchModal = useCallback(() => {
@@ -330,6 +332,7 @@ export default function WorkspaceConnections() {
 
       setIsSwitchingSource(true);
       setSwitchingTargetKey(targetKey);
+      let switchSucceeded = false;
       try {
         const payload = await setSelectedReportSource(targetKey, {
           clientId,
@@ -349,6 +352,7 @@ export default function WorkspaceConnections() {
         };
 
         setSourceState(next);
+        switchSucceeded = true;
         const resolvedSourceKey = normalizeReportSourceKey(
           next.activeSource || next.selectedSource || targetKey,
         );
@@ -379,7 +383,12 @@ export default function WorkspaceConnections() {
           targetSourceKey: null,
           switchOptions: {},
         });
-        await refreshSourceState();
+        // Only refresh on failure — the switch response already contains the
+        // correct full state. Refreshing after success can overwrite it with
+        // stale data if the read-after-write hasn't propagated yet.
+        if (!switchSucceeded) {
+          await refreshSourceState();
+        }
       }
     },
     [clientId, refreshSourceState, showToast],

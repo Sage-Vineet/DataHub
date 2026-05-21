@@ -400,10 +400,6 @@ async function updateReportSourceRecord(companyId, sourceKey, updates = {}) {
     source_key: normalizedSourceKey,
     source_label:
       REPORT_SOURCE_LABELS[normalizedSourceKey] || current?.source_label || normalizedSourceKey,
-    is_selected:
-      typeof updates.isSelected === "boolean"
-        ? updates.isSelected
-        : Boolean(current?.is_selected),
     is_available:
       typeof updates.isAvailable === "boolean"
         ? updates.isAvailable
@@ -426,6 +422,10 @@ async function updateReportSourceRecord(companyId, sourceKey, updates = {}) {
     },
     updated_at: new Date().toISOString(),
   };
+
+  if (typeof updates.isSelected === "boolean") {
+    payload.is_selected = updates.isSelected;
+  }
 
   const { data, error } = await supabase
     .from("report_source_records")
