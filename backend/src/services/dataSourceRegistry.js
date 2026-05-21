@@ -2,6 +2,7 @@ const DATA_SOURCE_KEYS = Object.freeze({
   QUICKBOOKS: "quickbooks_online",
   MANUAL_GL: "manual_gl_upload",
   MANUAL_UPLOAD: "manual_upload_excel_pdf",
+  QUICKBOOKS_MANUAL: "quickbooks_manual",
 });
 
 const DATA_SOURCE_DEFINITIONS = Object.freeze({
@@ -23,6 +24,12 @@ const DATA_SOURCE_DEFINITIONS = Object.freeze({
     mode: "manual_upload",
     supportsConnection: false,
   }),
+  [DATA_SOURCE_KEYS.QUICKBOOKS_MANUAL]: Object.freeze({
+    key: DATA_SOURCE_KEYS.QUICKBOOKS_MANUAL,
+    label: "QuickBooks Manual",
+    mode: "quickbooks_manual",
+    supportsConnection: false,
+  }),
 });
 
 const VALID_DATA_SOURCE_KEYS = Object.freeze(
@@ -40,6 +47,9 @@ const DATA_SOURCE_ALIASES = new Map(
     [DATA_SOURCE_KEYS.MANUAL_UPLOAD, DATA_SOURCE_KEYS.MANUAL_UPLOAD],
     ["manual_upload", DATA_SOURCE_KEYS.MANUAL_UPLOAD],
     ["manual_report_upload", DATA_SOURCE_KEYS.MANUAL_UPLOAD],
+    [DATA_SOURCE_KEYS.QUICKBOOKS_MANUAL, DATA_SOURCE_KEYS.QUICKBOOKS_MANUAL],
+    ["quickbooks_manual", DATA_SOURCE_KEYS.QUICKBOOKS_MANUAL],
+    ["qb_manual", DATA_SOURCE_KEYS.QUICKBOOKS_MANUAL],
   ].map(([alias, key]) => [String(alias).toLowerCase(), key]),
 );
 

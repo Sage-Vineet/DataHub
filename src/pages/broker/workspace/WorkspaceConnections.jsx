@@ -17,6 +17,7 @@ import Header from "../../../components/Header";
 import QuickBooksConnection from "../../../components/quickbooks/QuickBooksConnection";
 import ManualGLUpload from "../../../components/manual-gl/ManualGLUpload";
 import ManualFolderReportsUpload from "../../../components/manual-reports/ManualFolderReportsUpload";
+import QuickBooksManualUpload from "../../../components/quickbooks-manual/QuickBooksManualUpload";
 import { cn } from "../../../lib/utils";
 import {
   getReportSourceLabel,
@@ -233,6 +234,10 @@ export default function WorkspaceConnections() {
     () => getSourceRecord(sourceState.sources, REPORT_SOURCE_KEYS.MANUAL_UPLOAD),
     [sourceState.sources],
   );
+  const qmsRecord = useMemo(
+    () => getSourceRecord(sourceState.sources, REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL),
+    [sourceState.sources],
+  );
 
   const activeSourceKey = normalizeReportSourceKey(
     sourceState.activeSource || sourceState.selectedSource || null,
@@ -250,6 +255,7 @@ export default function WorkspaceConnections() {
     if (source === "quickbooks_manual") return "quickbooks_manual";
     if (activeSourceKey === REPORT_SOURCE_KEYS.MANUAL_GL) return "manual";
     if (activeSourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD) return "manual_upload";
+    if (activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) return "quickbooks_manual";
     return "quickbooks";
   }, [activeSourceKey, searchParams]);
 
@@ -337,6 +343,7 @@ export default function WorkspaceConnections() {
     let fallback = "quickbooks";
     if (activeSourceKey === REPORT_SOURCE_KEYS.MANUAL_GL) fallback = "manual";
     else if (activeSourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD) fallback = "manual_upload";
+    else if (activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) fallback = "quickbooks_manual";
     setSearchParams({ source: fallback }, { replace: true });
   }, [activeSourceKey, searchParams, setSearchParams]);
 
@@ -363,7 +370,8 @@ export default function WorkspaceConnections() {
           quickbooksConnected: Boolean(payload?.quickbooksConnected),
           manualUploadActive:
             normalizeReportSourceKey(payload?.activeSource) === REPORT_SOURCE_KEYS.MANUAL_GL ||
-            normalizeReportSourceKey(payload?.activeSource) === REPORT_SOURCE_KEYS.MANUAL_UPLOAD,
+            normalizeReportSourceKey(payload?.activeSource) === REPORT_SOURCE_KEYS.MANUAL_UPLOAD ||
+            normalizeReportSourceKey(payload?.activeSource) === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL,
           lastSourceSwitchAt: new Date().toISOString(),
           sources: Array.isArray(payload?.sources) ? payload.sources : [],
         };
@@ -472,6 +480,23 @@ export default function WorkspaceConnections() {
     });
   }, [activeSourceKey, quickbooksConnected, setSearchParams]);
 
+  const requestQMSSwitch = useCallback(() => {
+    if (activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) {
+      setSearchParams({ source: "quickbooks_manual" });
+      return;
+    }
+
+    setSourceSwitchModal({
+      isOpen: true,
+      title: "Switch To QuickBooks Manual?",
+      message: quickbooksConnected
+        ? "QuickBooks Manual will become active. QuickBooks connection is kept for cached history, but live sync stays inactive until you switch back."
+        : "QuickBooks Manual will become the active source. Upload QuickBooks-exported files to the 'Quickbooks Manual Source' folder, then sync. Continue?",
+      targetSourceKey: REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL,
+      switchOptions: { confirmSwitch: true },
+    });
+  }, [activeSourceKey, quickbooksConnected, setSearchParams]);
+
   const quickbooksStatusLabel = useMemo(() => {
     if (quickbooksConnected && activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS) {
       return "Connected • Currently Active";
@@ -496,6 +521,14 @@ export default function WorkspaceConnections() {
     if (manualUploadRecord?.isAvailable) return "Uploaded Data Available • Inactive";
     return "No Files Uploaded Yet";
   }, [activeSourceKey, manualUploadRecord?.isAvailable]);
+
+  const qmsStatusLabel = useMemo(() => {
+    if (activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) {
+      return "Ready • Currently Active";
+    }
+    if (qmsRecord?.isAvailable) return "Synced Data Available • Inactive";
+    return "Not Synced Yet";
+  }, [activeSourceKey, qmsRecord?.isAvailable]);
 
   const hasAnySourceData = Boolean(
     quickbooksConnected || quickbooksRecord?.isAvailable || manualRecord?.isAvailable,
@@ -676,13 +709,22 @@ export default function WorkspaceConnections() {
             icon={<Link2 size={18} />}
             title="QuickBooks Manual"
             description="Manually reconcile and import QuickBooks-exported data for controlled reporting."
-            statusLabel="Not Available Yet"
-            isActive={false}
-            lastActivityLabel="Coming soon — no activity yet"
-            actionLabel="Coming Soon"
-            onAction={() => { }}
-            disabled={true}
-            comingSoon={true}
+            statusLabel={qmsStatusLabel}
+            isActive={activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL}
+            lastActivityLabel={`Last sync: ${formatTimestamp(
+              qmsRecord?.lastSyncedAt || qmsRecord?.lastConnectedAt,
+            )}`}
+            actionLabel={
+              activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL
+                ? "Currently Active"
+                : "Switch To QuickBooks Manual"
+            }
+            onAction={requestQMSSwitch}
+            disabled={activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL}
+            isBusy={
+              isSwitchingSource &&
+              switchingTargetKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL
+            }
           />
         </div>
 
@@ -714,15 +756,7 @@ export default function WorkspaceConnections() {
               companyId={clientId}
             />
           ) : selectedView === "quickbooks_manual" ? (
-            <div className="flex flex-col items-center justify-center py-12 text-center">
-              <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-bg-page">
-                <Link2 size={22} className="text-text-muted" />
-              </div>
-              <h3 className="text-[16px] font-semibold text-text-primary">Coming Soon</h3>
-              <p className="mt-2 max-w-sm text-[13px] text-text-secondary">
-                QuickBooks Manual integration is under development. Check back later.
-              </p>
-            </div>
+            <QuickBooksManualUpload companyId={clientId} />
           ) : (
             <ManualGLUpload
               companyId={clientId}

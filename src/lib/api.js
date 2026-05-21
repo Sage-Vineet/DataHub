@@ -790,6 +790,41 @@ export function syncManualUploadSource(options = {}) {
   });
 }
 
+export function getQMSUploadSourceTree(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-report-uploads/qms-source-tree${query}`, options).then(
+    (res) => res?.tree ?? null,
+  );
+}
+
+export function syncQMSUploadSource(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-report-uploads/sync-qms-source${query}`, {
+    method: "POST",
+    ...options,
+  });
+}
+
+export function parseQMSDocuments({ clientId: clientIdOption, documents = [], clearFirst = false } = {}) {
+  const clientId = clientIdOption ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-report-uploads/qms-parse-documents${query}`, {
+    method: "POST",
+    body: { documents, clearFirst },
+  });
+}
+
+export function syncQMSFolder({ clientId: clientIdOption, folderId, folderName } = {}) {
+  const clientId = clientIdOption ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-report-uploads/sync${query}`, {
+    method: "POST",
+    body: { folderId, folderName: folderName || "" },
+  });
+}
+
 export function getLatestManualUploadedReport(statementType, options = {}) {
   const clientId = options.clientId ?? resolveClientIdFromLocation();
   const params = new URLSearchParams();
@@ -807,6 +842,27 @@ export function getAllManualUploadedReports(statementType, options = {}) {
   const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
   return request(
     `/manual-report-uploads/reports/${encodeURIComponent(statementType)}/all${query}`,
+    options,
+  );
+}
+
+export function getAllQMSUploadedReports(statementType, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(
+    `/manual-report-uploads/qms-reports/${encodeURIComponent(statementType)}/all${query}`,
+    options,
+  );
+}
+
+export function getLatestQMSUploadedReport(statementType, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const params = new URLSearchParams();
+  if (clientId) params.set("clientId", clientId);
+  if (options.rowId) params.set("rowId", options.rowId);
+  const query = params.toString() ? `?${params}` : "";
+  return request(
+    `/manual-report-uploads/qms-reports/${encodeURIComponent(statementType)}/latest${query}`,
     options,
   );
 }

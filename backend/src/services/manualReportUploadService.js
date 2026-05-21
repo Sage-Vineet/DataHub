@@ -928,6 +928,7 @@ function isPageIndicatorLine(line = "") {
 }
 
 function extractAsOfDateFromLines(lines = []) {
+  // "As of [date]" — used by Balance Sheet headers
   const asOfPattern = /as\s+of\s+([a-z]+\s+\d{1,2},?\s+\d{4}|\d{1,2}[-/]\d{1,2}[-/]\d{2,4}|\d{4}[-/]\d{1,2}[-/]\d{1,2})/i;
   for (const line of lines.slice(0, 40)) {
     const match = line.match(asOfPattern);
@@ -936,6 +937,15 @@ function extractAsOfDateFromLines(lines = []) {
       if (date) return date;
     }
   }
+  // Period range — used by P&L / Cash Flow headers (e.g. "January-December, 2022", "Oct 2021 - Sep 2022").
+  // Match before the generic month pattern so the footer export date is not captured.
+  const M = "jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?";
+  const periodRange = new RegExp(`(?:${M})(?:\\s+\\d{4})?[\\s,\\-–]+(?:${M}),?\\s+(\\d{4})`, "i");
+  for (const line of lines.slice(0, 20)) {
+    const m = line.match(periodRange);
+    if (m?.[1]) return `${m[1]}-12-31`;
+  }
+  // Generic "Month Day, Year" — last resort; may match footer timestamps
   const monthPattern = /\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2},?\s+\d{4}/i;
   for (const line of lines.slice(0, 40)) {
     const match = line.match(monthPattern);
@@ -943,6 +953,37 @@ function extractAsOfDateFromLines(lines = []) {
       const date = toIsoDate(match[0]);
       if (date) return date;
     }
+  }
+  return null;
+}
+
+// Extracts start and end dates from a P&L/CF period header line.
+// e.g. "January-December, 2022" → { start: "2022-01-01", end: "2022-12-31" }
+//      "October 2021 - September 2022" → { start: "2021-10-01", end: "2022-09-30" }
+function extractPeriodDatesFromLines(lines = []) {
+  const MONTH_MAP = { jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12 };
+  const M = "jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?";
+  // Two-month range: "(Month[ year]) - (Month[ year])"
+  const rangeRe = new RegExp(
+    `(${M})(?:\\s+(\\d{4}))?[\\s,\\-–]+` +
+    `(${M}),?\\s+(\\d{4})`,
+    "i",
+  );
+  for (const line of lines.slice(0, 20)) {
+    const m = line.match(rangeRe);
+    if (!m) continue;
+    const startMonthKey = m[1].slice(0, 3).toLowerCase();
+    const startMonthNum = MONTH_MAP[startMonthKey];
+    const endMonthKey = m[3].slice(0, 3).toLowerCase();
+    const endMonthNum = MONTH_MAP[endMonthKey];
+    const endYear = parseInt(m[4], 10);
+    const startYear = m[2] ? parseInt(m[2], 10) : endYear;
+    if (!startMonthNum || !endMonthNum || !endYear) continue;
+    const endDay = new Date(endYear, endMonthNum, 0).getDate(); // last day of end month
+    return {
+      start: `${startYear}-${String(startMonthNum).padStart(2, "0")}-01`,
+      end: `${endYear}-${String(endMonthNum).padStart(2, "0")}-${String(endDay).padStart(2, "0")}`,
+    };
   }
   return null;
 }
@@ -1280,6 +1321,23 @@ function extractEntriesFromLines(lines = []) {
       }
     }
 
+    // Pattern 1.5: Amount directly concatenated to label with no whitespace separator.
+    // QuickBooks PDF exports often lose the column gap when parsed by pdf-parse.
+    // e.g. "Total for Income$111,604.89", "In8 Revenue Share30,591.39", "Net Income-$166,405.04"
+    // Strategy: find the rightmost financial amount at the end of the line.
+    const concatAmtSuffix = line.match(/(-?\$\d{1,3}(?:,\d{3})*(?:\.\d+)?|\$-?\d{1,3}(?:,\d{3})*(?:\.\d+)?|-?\d{1,3}(?:,\d{3})+\.\d{2,}|-?\d+\.\d{2})$/);
+    if (concatAmtSuffix) {
+      const matchedAmt = concatAmtSuffix[1];
+      const splitAt = line.lastIndexOf(matchedAmt);
+      const potentialLabel = line.slice(0, splitAt).replace(/[\s.\-_]+$/, "").trim();
+      // Only accept if label is non-empty, not purely numeric, and not a year.
+      if (potentialLabel && potentialLabel.length >= 2 && !/^\d+$/.test(potentialLabel) && !isStandaloneYear(matchedAmt)) {
+        entries.push({ label: potentialLabel, amount: roundMoney(parseAmount(matchedAmt) || 0), index: i });
+        i++;
+        continue;
+      }
+    }
+
     // Pattern 2: label on this line, standalone amount on the very next line.
     // Handles PDFs where label and value appear on alternating lines.
     if (i + 1 < lines.length) {
@@ -1413,7 +1471,11 @@ function parseSectionedStatement(entries = [], sectionDefinitions = [], options 
   );
 }
 
-async function parseStoredReport(upload, forcedStatementType = null) {
+// Statement types that require AI (Gemini) parsing in QMS mode.
+// Balance Sheet, P&L, and Cash Flow use the rule-based parser only.
+const QMS_AI_STATEMENT_TYPES = new Set(["tax_return", "bank_statement", "bank_reconciliation"]);
+
+async function parseStoredReport(upload, forcedStatementType = null, { skipAI = false } = {}) {
   const buffer = normalizeUploadBinary(upload?.data);
   const fileName = String(upload?.file_name || "");
   const contentType = String(upload?.content_type || "");
@@ -1421,7 +1483,8 @@ async function parseStoredReport(upload, forcedStatementType = null) {
   const isPdf = lowerFileName.endsWith(".pdf") || contentType.toLowerCase().includes("pdf");
 
   // ── Gemini path for PDFs ────────────────────────────────────────────────
-  if (isPdf && process.env.GEMINI_API_KEY) {
+  // Skipped when skipAI=true (QMS mode for non-AI statement types).
+  if (isPdf && process.env.GEMINI_API_KEY && !skipAI) {
     try {
       const geminiResult = await parsePdfWithGemini(buffer, fileName);
       if (Array.isArray(geminiResult.rows) && geminiResult.rows.length > 0) {
@@ -1527,10 +1590,21 @@ async function parseStoredReport(upload, forcedStatementType = null) {
 
   const exactMatchOnly = parserType !== "pdf" && statementType === STATEMENT_TYPES.PROFIT_AND_LOSS;
 
-  // Extract date period for P&L / Cash Flow (same patterns used for Balance Sheet PDFs)
+  // Extract date period for P&L / Cash Flow
   let reportAsOfDate = null;
+  let reportPeriodStart = null;
+  let reportPeriodEnd = null;
+
   if (parserType === "pdf" && lines.length > 0) {
-    reportAsOfDate = extractAsOfDateFromLines(lines);
+    // Try to extract a precise period range first (e.g. "January-December, 2022")
+    const periodDates = extractPeriodDatesFromLines(lines);
+    if (periodDates) {
+      reportPeriodStart = periodDates.start;
+      reportPeriodEnd = periodDates.end;
+      reportAsOfDate = periodDates.end;
+    } else {
+      reportAsOfDate = extractAsOfDateFromLines(lines);
+    }
   }
   if (!reportAsOfDate && parserType === "excel" && rows.length > 0) {
     // Scan first 10 rows for a 4-digit year (e.g. "January through December 2024")
@@ -1555,6 +1629,8 @@ async function parseStoredReport(upload, forcedStatementType = null) {
     report: {
       rows: parseSectionedStatement(entries, sectionDefinitions, { exactMatchOnly }),
       asOfDate: reportAsOfDate,
+      ...(reportPeriodStart ? { periodStart: reportPeriodStart } : {}),
+      ...(reportPeriodEnd ? { periodEnd: reportPeriodEnd } : {}),
       ...(periodInfo ? { periods: periodInfo.periods.map((p) => p.label) } : {}),
     },
   };
@@ -1753,6 +1829,43 @@ async function getAllManualUploadedReports({ companyId, statementType }) {
 // ── Manual Upload Source sync ─────────────────────────────────────────────────
 
 const SOURCE_FOLDER_NAME = "Manual Upload Source";
+const QMS_FOLDER_NAME = "Quickbooks Manual Source";
+const QMS_REPORT_UPLOAD_SOURCE = "quickbooks_manual_upload";
+
+async function getAllQMSUploadedReports({ companyId, statementType }) {
+  if (!companyId) throw new Error("companyId is required");
+  if (!statementType) throw new Error("statementType is required");
+
+  const { data, error } = await supabase
+    .from("qb_synced_reports")
+    .select("id, report_type, report_params, data, updated_at, last_synced_at")
+    .eq("company_id", companyId)
+    .eq("source", QMS_REPORT_UPLOAD_SOURCE)
+    .eq("report_type", statementType)
+    .order("updated_at", { ascending: true });
+
+  if (error) throw new Error(`QMS uploaded reports fetch failed: ${error.message}`);
+  return data || [];
+}
+
+async function getLatestQMSUploadedReport({ companyId, statementType }) {
+  if (!companyId) throw new Error("companyId is required");
+  if (!statementType) throw new Error("statementType is required");
+
+  const { data, error } = await supabase
+    .from("qb_synced_reports")
+    .select("id, report_type, report_params, data, updated_at, last_synced_at")
+    .eq("company_id", companyId)
+    .eq("source", QMS_REPORT_UPLOAD_SOURCE)
+    .eq("report_type", statementType)
+    .order("updated_at", { ascending: false })
+    .order("last_synced_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw new Error(`QMS latest report fetch failed: ${error.message}`);
+  return data || null;
+}
 
 async function syncBankReconciliationFolder(companyId, folder, now) {
   const { data: documents } = await supabase
@@ -2229,14 +2342,353 @@ async function extractAndCacheReportAsOfDate(reportRow) {
   return asOfDate;
 }
 
+async function getQMSUploadSourceTree(companyId) {
+  if (!companyId) throw new Error("companyId is required");
+
+  const { data: sourceFolder } = await supabase
+    .from("folders")
+    .select("id, name")
+    .eq("company_id", companyId)
+    .is("parent_id", null)
+    .ilike("name", QMS_FOLDER_NAME)
+    .maybeSingle();
+
+  if (!sourceFolder) return null;
+
+  const { data: children } = await supabase
+    .from("folders")
+    .select("id, name")
+    .eq("parent_id", sourceFolder.id)
+    .order("created_at", { ascending: true });
+
+  const result = [];
+
+  for (const child of (children || [])) {
+    const nameLower = child.name.toLowerCase().trim();
+
+    if (nameLower === "reports") {
+      const { data: reportChildren } = await supabase
+        .from("folders")
+        .select("id, name")
+        .eq("parent_id", child.id)
+        .order("created_at", { ascending: true });
+
+      const subItems = await Promise.all((reportChildren || []).map(async (rc) => {
+        const { count } = await supabase
+          .from("documents")
+          .select("id", { count: "exact", head: true })
+          .eq("folder_id", rc.id);
+        return {
+          id: rc.id,
+          name: rc.name,
+          statementType: SUBFOLDER_STATEMENT_MAP[rc.name.toLowerCase().trim()] || null,
+          fileCount: count || 0,
+        };
+      }));
+
+      result.push({ id: child.id, name: child.name, isGroup: true, children: subItems });
+    } else {
+      const { count } = await supabase
+        .from("documents")
+        .select("id", { count: "exact", head: true })
+        .eq("folder_id", child.id);
+
+      result.push({
+        id: child.id,
+        name: child.name,
+        statementType: SUBFOLDER_STATEMENT_MAP[nameLower] || null,
+        fileCount: count || 0,
+        isGroup: false,
+      });
+    }
+  }
+
+  return { id: sourceFolder.id, name: sourceFolder.name, children: result };
+}
+
+async function syncQMSUploadSource(companyId) {
+  if (!companyId) throw new Error("companyId is required");
+
+  const sourceTree = await getQMSUploadSourceTree(companyId);
+  if (!sourceTree) {
+    throw new Error(`"${QMS_FOLDER_NAME}" folder not found in DataRoom.`);
+  }
+
+  const foldersToSync = [];
+  for (const item of sourceTree.children) {
+    if (item.isGroup) {
+      for (const sub of (item.children || [])) {
+        if (sub.statementType) foldersToSync.push({ folder: sub, statementType: sub.statementType });
+      }
+    } else if (item.statementType) {
+      foldersToSync.push({ folder: item, statementType: item.statementType });
+    }
+  }
+
+  // Clear all existing QMS records for this company before re-syncing.
+  const { error: deleteError } = await supabase
+    .from("qb_synced_reports")
+    .delete()
+    .eq("company_id", companyId)
+    .eq("source", QMS_REPORT_UPLOAD_SOURCE);
+
+  if (deleteError) throw new Error(`Failed to clear QMS records: ${deleteError.message}`);
+
+  const now = new Date().toISOString();
+  const processed = [];
+  const failed = [];
+
+  for (const { folder, statementType } of foldersToSync) {
+    if (statementType === STATEMENT_TYPES.BANK_RECONCILIATION) {
+      try {
+        const bankResult = await syncBankReconciliationFolder(companyId, folder, now);
+        processed.push(...(bankResult.processed || []));
+        failed.push(...(bankResult.failed || []));
+        if (!bankResult.success && !bankResult.failed?.length && bankResult.reason !== "No files in folder") {
+          failed.push({ fileName: folder.name, folderName: folder.name, reason: bankResult.reason || "Bank extraction failed" });
+        }
+      } catch (err) {
+        failed.push({ fileName: folder.name, folderName: folder.name, reason: err.message });
+      }
+      continue;
+    }
+
+    if (statementType === STATEMENT_TYPES.TAX_RETURN) {
+      try {
+        const taxResult = await syncTaxReturnFolder(companyId, folder, now);
+        processed.push(...(taxResult.processed || []));
+        failed.push(...(taxResult.failed || []));
+      } catch (err) {
+        failed.push({ fileName: folder.name, folderName: folder.name, reason: err.message });
+      }
+      continue;
+    }
+
+    const { data: documents } = await supabase
+      .from("documents")
+      .select("id, name, upload_id, file_url")
+      .eq("folder_id", folder.id)
+      .order("uploaded_at", { ascending: false });
+
+    if (!documents?.length) continue;
+
+    const settlements = await Promise.allSettled(
+      documents.map(async (doc) => {
+        let upload;
+        try {
+          upload = await loadUploadForDoc(doc);
+        } catch (err) {
+          return { failed: true, documentId: doc.id, fileName: doc.name, folderName: folder.name, reason: err.message };
+        }
+        // TAX_RETURN and BANK_RECONCILIATION are handled by their own AI-powered
+        // sync functions above. The main loop only sees BS/PL/CF — always rule-based.
+        const parsed = await parseStoredReport(upload, statementType, { skipAI: true });
+
+        if (!parsed?.report?.rows?.length) {
+          return { failed: true, documentId: doc.id, fileName: doc.name, folderName: folder.name, reason: "No parseable data in file" };
+        }
+
+        const resolvedUploadId = upload.id || doc.upload_id || null;
+
+        const { error: insertError } = await supabase
+          .from("qb_synced_reports")
+          .insert({
+            company_id: companyId,
+            report_type: statementType,
+            report_params: {
+              sourceFolderName: QMS_FOLDER_NAME,
+              folderId: folder.id,
+              folderName: folder.name,
+              documentId: doc.id,
+              uploadId: resolvedUploadId,
+              fileName: doc.name,
+            },
+            data: {
+              manual_report_upload: {
+                statementType,
+                parserType: parsed.parserType,
+                folderId: folder.id,
+                folderName: folder.name,
+                documentId: doc.id,
+                uploadId: resolvedUploadId,
+                fileName: doc.name,
+                fileUrl: doc.file_url || null,
+                report: parsed.report,
+                syncedAt: now,
+              },
+            },
+            source: QMS_REPORT_UPLOAD_SOURCE,
+            status: "synced",
+            last_synced_at: now,
+            updated_at: now,
+          });
+
+        if (insertError) throw new Error(insertError.message);
+        return { failed: false, documentId: doc.id, fileName: doc.name, statementType, folderName: folder.name };
+      }),
+    );
+
+    for (let i = 0; i < settlements.length; i++) {
+      const s = settlements[i];
+      if (s.status === "fulfilled") {
+        s.value.failed ? failed.push(s.value) : processed.push(s.value);
+      } else {
+        failed.push({ folderName: folder.name, fileName: documents[i]?.name, reason: s.reason?.message });
+      }
+    }
+  }
+
+  try {
+    await updateReportSourceRecord(companyId, REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL, {
+      isAvailable: processed.length > 0,
+      isConnected: false,
+      lastSyncedAt: processed.length > 0 ? now : null,
+      metadata: {
+        sourceFolderName: QMS_FOLDER_NAME,
+        syncedReportTypes: Array.from(new Set(processed.map((p) => p.statementType))),
+        processedCount: processed.length,
+        failedCount: failed.length,
+      },
+    });
+  } catch (e) {
+    console.warn("[QMSUpload] Failed to update source record:", e.message);
+  }
+
+  return {
+    sourceFolderName: QMS_FOLDER_NAME,
+    processedCount: processed.length,
+    processed,
+    failed,
+  };
+}
+
+// Targeted parse: only processes the specific documents that were just uploaded.
+// Used by the "Choose Folder" upload flow so we never re-scan the entire QMS folder tree.
+// clearFirst=true: wipes all existing QMS synced reports before parsing (used by the Sync button
+// so old files from previous sessions are replaced by the current session's uploads).
+async function parseAndSaveQMSDocuments(companyId, documents, { clearFirst = false } = {}) {
+  if (!companyId) throw new Error("companyId is required");
+  if (!Array.isArray(documents) || documents.length === 0) return { processed: [], failed: [] };
+
+  if (clearFirst) {
+    const { error: delErr } = await supabase
+      .from("qb_synced_reports")
+      .delete()
+      .eq("company_id", companyId)
+      .eq("source", QMS_REPORT_UPLOAD_SOURCE);
+    if (delErr) throw new Error(`Failed to clear QMS records: ${delErr.message}`);
+  }
+
+  const now = new Date().toISOString();
+  const processed = [];
+  const failed = [];
+
+  for (const { uploadId, statementType, fileName } of documents) {
+    if (!uploadId || !statementType) {
+      failed.push({ fileName, reason: "Missing uploadId or statementType" });
+      continue;
+    }
+
+    // Fetch upload binary
+    let upload = null;
+    try {
+      upload = await loadUploadForDoc({ upload_id: uploadId });
+    } catch (err) {
+      failed.push({ fileName, reason: `Binary not found: ${err.message}` });
+      continue;
+    }
+
+    // In QMS mode: only tax_return and bank_statement use AI (Gemini).
+    // Balance Sheet, P&L, and Cash Flow always use the rule-based parser.
+    const skipAI = !QMS_AI_STATEMENT_TYPES.has(statementType);
+    let parsed;
+    try {
+      parsed = await parseStoredReport(upload, statementType, { skipAI });
+    } catch (err) {
+      failed.push({ fileName, reason: `Parse error: ${err.message}` });
+      continue;
+    }
+
+    if (!parsed?.report?.rows?.length) {
+      failed.push({ fileName, reason: "No parseable data found in file" });
+      continue;
+    }
+
+    // When not clearing the whole table first, remove any prior record for this upload
+    if (!clearFirst) {
+      await supabase
+        .from("qb_synced_reports")
+        .delete()
+        .eq("company_id", companyId)
+        .eq("source", QMS_REPORT_UPLOAD_SOURCE)
+        .eq("report_type", statementType)
+        .filter("report_params->>uploadId", "eq", String(uploadId));
+    }
+
+    const resolvedFileName = fileName || upload.file_name;
+    const { error: insertError } = await supabase.from("qb_synced_reports").insert({
+      company_id: companyId,
+      report_type: statementType,
+      report_params: { uploadId, fileName: resolvedFileName },
+      data: {
+        manual_report_upload: {
+          statementType,
+          parserType: parsed.parserType,
+          uploadId,
+          fileName: resolvedFileName,
+          report: parsed.report,
+          syncedAt: now,
+        },
+      },
+      source: QMS_REPORT_UPLOAD_SOURCE,
+      status: "synced",
+      last_synced_at: now,
+      updated_at: now,
+    });
+
+    if (insertError) {
+      failed.push({ fileName, reason: insertError.message });
+      continue;
+    }
+
+    processed.push({ fileName, statementType });
+  }
+
+  // Update source record availability
+  try {
+    if (processed.length > 0) {
+      await updateReportSourceRecord(companyId, REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL, {
+        isAvailable: true,
+        isConnected: false,
+        lastSyncedAt: now,
+        metadata: {
+          sourceFolderName: QMS_FOLDER_NAME,
+          syncedReportTypes: Array.from(new Set(processed.map((p) => p.statementType))),
+          processedCount: processed.length,
+          failedCount: failed.length,
+        },
+      });
+    }
+  } catch (e) {
+    console.warn("[QMSUpload] Failed to update source record:", e.message);
+  }
+
+  return { processed, failed, processedCount: processed.length };
+}
+
 module.exports = {
   MANUAL_REPORT_UPLOAD_SOURCE,
   STATEMENT_TYPES,
   syncManualReportFolder,
   syncManualUploadSource,
   getManualUploadSourceTree,
+  getQMSUploadSourceTree,
+  syncQMSUploadSource,
+  parseAndSaveQMSDocuments,
   getLatestManualUploadedReport,
   getAllManualUploadedReports,
+  getLatestQMSUploadedReport,
+  getAllQMSUploadedReports,
   extractAndCacheReportAsOfDate,
   extractTaxDataFromBuffer,
   clearTaxExtractCache,

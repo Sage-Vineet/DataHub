@@ -6,7 +6,7 @@ let _pool = null;
 function getPool() {
   if (!process.env.DATABASE_URL) return null;
   if (!_pool) {
-    _pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false }, max: 5 });
+    _pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false }, max: 5, connectionTimeoutMillis: 2000, idleTimeoutMillis: 10000 });
     _pool.on("error", (err) => console.error("[requestService] pg pool error:", err.message));
   }
   return _pool;

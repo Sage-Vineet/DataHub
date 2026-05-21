@@ -1,5 +1,5 @@
 import { fetchCashflow } from "../lib/quickbooks";
-import { getLatestManualUploadedReport, getManualGlCashflow, getAllManualUploadedReports, getManualStagedCashflowMonthlyDetail } from "../lib/api";
+import { getLatestManualUploadedReport, getManualGlCashflow, getAllManualUploadedReports, getManualStagedCashflowMonthlyDetail, getLatestQMSUploadedReport, getAllQMSUploadedReports } from "../lib/api";
 import { normalizeAccountingMethod } from "../lib/report-filters";
 import { parseSummaryReport } from "../lib/report-parsers";
 
@@ -54,8 +54,9 @@ function getCashflowComparativePeriods(numYears = 4) {
 
 async function fetchSinglePeriodCashflow(startDate, endDate, accountingMethod, sourceMode = "quickbooks", options = {}) {
   try {
-    if (sourceMode === "manual_upload") {
-      const payload = await getLatestManualUploadedReport("cash_flow", {
+    if (sourceMode === "manual_upload" || sourceMode === "quickbooks_manual") {
+      const fetchFn = sourceMode === "quickbooks_manual" ? getLatestQMSUploadedReport : getLatestManualUploadedReport;
+      const payload = await fetchFn("cash_flow", {
         rowId: options?.manualUploadRowId,
       });
       const rows = Array.isArray(payload?.data?.rows) ? payload.data.rows : [];
@@ -319,8 +320,9 @@ function buildCFFromPeriodColumns(sortedFiles) {
   };
 }
 
-async function buildCFMultiFileDetail() {
-  const result = await getAllManualUploadedReports("cash_flow");
+async function buildCFMultiFileDetail(sourceMode = "manual_upload") {
+  const fetchFn = sourceMode === "quickbooks_manual" ? getAllQMSUploadedReports : getAllManualUploadedReports;
+  const result = await fetchFn("cash_flow");
   const files = (result?.files || []).filter((f) => f.data?.rows?.length);
   if (!files.length) return { rows: [], columns: { yearCols: [], ytdComparison: null } };
 
@@ -376,8 +378,8 @@ export async function getCashflowDetail(
     console.log("[DetailedReportUI][CF] Received keys:", Object.keys(response || {}), "| source:", response?.source, "| reportType:", response?.reportType);
     return response;
   }
-  if (options?.sourceMode === "manual_upload") {
-    return buildCFMultiFileDetail();
+  if (options?.sourceMode === "manual_upload" || options?.sourceMode === "quickbooks_manual") {
+    return buildCFMultiFileDetail(options.sourceMode);
   }
 
   const periods = getCashflowComparativePeriods(4);
