@@ -1,7 +1,6 @@
 const express = require("express");
 const {
   fetchAndCacheReport,
-  serveCachedReport,
   REPORT_TYPES,
 } = require("../../../services/quickbooksReportService");
 
@@ -19,35 +18,7 @@ const router = express.Router();
 router.get("/balance-sheet", async (req, res) => {
   const clientId = req.clientId;
 
-  // If QB is disconnected, serve cached data first.
-  if (req.qbDisconnected) {
-    try {
-      const cached = await serveCachedReport(clientId, REPORT_TYPES.BALANCE_SHEET);
-      if (cached) {
-        return res.json({
-          success: true,
-          data: cached.data,
-          source: "cache",
-          lastSyncedAt: cached.lastSyncedAt,
-          isDisconnected: true,
-        });
-      }
-
-      return res.status(404).json({
-        success: false,
-        message: "QuickBooks is disconnected and no cached Balance Sheet data is available.",
-        isDisconnected: true,
-      });
-    } catch (cacheError) {
-      return res.status(500).json({
-        success: false,
-        message: "Failed to retrieve cached data.",
-        error: cacheError.message,
-      });
-    }
-  }
-
-  // QB is connected: fetch live data and cache it.
+  // Reports are snapshot-first and read from DB regardless of connection state.
   const { clientId: _cid, minorversion, ...queryParams } = req.query;
 
   try {
@@ -61,15 +32,19 @@ router.get("/balance-sheet", async (req, res) => {
     return res.json({
       success: true,
       data: result.data,
-      source: result.source,
-      lastSyncedAt: result.lastSyncedAt,
-      refreshed: result.source === "cache" ? false : undefined,
+      source: "cached_snapshot",
+      disconnected: Boolean(req.qbDisconnected),
+      lastSyncAt: result.lastSyncedAt,
+      datasetVersion: result.datasetVersion || null,
     });
   } catch (error) {
+    const status = /No finalized snapshot/i.test(error.message) ? 404 : 500;
     console.error("Balance Sheet API Error:", error.message);
-    return res.status(error.response?.status || 500).json({
-      error: "Failed to fetch balance sheet",
-      details: error.response?.data || error.message,
+    return res.status(status).json({
+      success: false,
+      source: "cached_snapshot",
+      disconnected: Boolean(req.qbDisconnected),
+      message: error.message || "Failed to fetch balance sheet snapshot.",
     });
   }
 });

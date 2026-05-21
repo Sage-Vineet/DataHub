@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useParams } from "react-router-dom";
 import Link from "../../../components/compat/NextLink";
 import Header from "../../../components/Header";
+import QBDisconnectedBanner from "../../../components/common/QBDisconnectedBanner";
 import { useAuth } from "../../../context/AuthContext";
 import { cn } from "../../../lib/utils";
 import {
@@ -47,7 +48,7 @@ import {
 } from "../../../services/reportService";
 import { fetchInvoices } from "../../../services/invoiceService";
 import { getProfitAndLoss } from "../../../services/profitAndLossService";
-import { refreshQuickbooksToken } from "../../../services/authService";
+import { syncQuickbooksReports } from "../../../lib/quickbooks";
 import { getReportSources, setSelectedReportSource, getStoredToken } from "../../../lib/api";
 import {
   getReportSourceMode,
@@ -256,12 +257,10 @@ export default function WorkspaceDashboardDatahub() {
   const [isSyncing, setIsSyncing] = useState(false);
   const {
     activeSource: contextActiveSource,
-    quickbooksConnected: contextQbConnected,
   } = useDataSource();
   const [activeSourceKey, setActiveSourceKey] = useState(
     REPORT_SOURCE_KEYS.QUICKBOOKS,
   );
-  const [quickbooksConnected, setQuickbooksConnected] = useState(false);
 
   // Tracks the last chart request so we never fire the same one twice
   const lastChartRequestKeyRef = useRef("");
@@ -322,7 +321,6 @@ export default function WorkspaceDashboardDatahub() {
   const loadSourceState = useCallback(async () => {
     if (!clientId) {
       setActiveSourceKey(REPORT_SOURCE_KEYS.QUICKBOOKS);
-      setQuickbooksConnected(false);
       return REPORT_SOURCE_KEYS.QUICKBOOKS;
     }
 
@@ -330,7 +328,6 @@ export default function WorkspaceDashboardDatahub() {
     if (contextActiveSource) {
       const normalized = normalizeReportSourceKey(contextActiveSource);
       setActiveSourceKey(normalized);
-      setQuickbooksConnected(contextQbConnected);
       return normalized;
     }
 
@@ -342,15 +339,13 @@ export default function WorkspaceDashboardDatahub() {
         payload?.selectedSource || payload?.activeSource,
       );
       setActiveSourceKey(sourceKey);
-      setQuickbooksConnected(Boolean(payload?.quickbooksConnected));
       return sourceKey;
     } catch (error) {
       console.error("[DataHub] Failed to load active source:", error);
       setActiveSourceKey(REPORT_SOURCE_KEYS.QUICKBOOKS);
-      setQuickbooksConnected(false);
       return REPORT_SOURCE_KEYS.QUICKBOOKS;
     }
-  }, [clientId, contextActiveSource, contextQbConnected]);
+  }, [clientId, contextActiveSource]);
 
   // ── Snapshot builders ──────────────────────────────────────────────────
 
@@ -593,7 +588,7 @@ export default function WorkspaceDashboardDatahub() {
       setChartDataState(data);
     } catch (err) {
       console.error("Failed to load chart data:", err);
-      setChartDataState([]);
+      // Preserve previous chart snapshot to avoid flicker/reset on transient or disconnect errors.
       lastChartRequestKeyRef.current = "";
     } finally {
       setIsChartLoading(false);
@@ -694,7 +689,7 @@ export default function WorkspaceDashboardDatahub() {
     setIsSyncing(true);
     try {
       if (activeSourceMode === "quickbooks") {
-        await refreshQuickbooksToken();
+        await syncQuickbooksReports();
       }
       if (isManualUploadMode) {
         await loadManualUploadKpiData();
@@ -1160,6 +1155,7 @@ export default function WorkspaceDashboardDatahub() {
     <>
       <Header title="Dashboard" />
       <div className="flex-1 p-6 space-y-6">
+        <QBDisconnectedBanner />
         <div className="flex items-center justify-between flex-wrap gap-4">
           <div className="flex items-center gap-3 flex-wrap">
             <h1 className="text-[24px] font-bold text-text-primary">
@@ -1248,29 +1244,29 @@ export default function WorkspaceDashboardDatahub() {
               </button>
             </div>
 
-            <div className="text-text-muted text-[13px]">or</div>
+              <div className="text-text-muted text-[13px]">or</div>
 
-            <div className="flex items-center gap-2">
-              <input
-                type="date"
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
-                className="input-base py-1.5 text-[13px]"
-              />
-              <span className="text-text-muted">to</span>
-              <input
-                type="date"
-                value={endDate}
-                onChange={(e) => setEndDate(e.target.value)}
-                className="input-base py-1.5 text-[13px]"
-              />
-              <button
-                onClick={handleCustomDateChange}
-                className="btn-secondary py-1.5 px-3 text-[13px]"
-              >
-                Apply
-              </button>
-            </div></>}
+              <div className="flex items-center gap-2">
+                <input
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                  className="input-base py-1.5 text-[13px]"
+                />
+                <span className="text-text-muted">to</span>
+                <input
+                  type="date"
+                  value={endDate}
+                  onChange={(e) => setEndDate(e.target.value)}
+                  className="input-base py-1.5 text-[13px]"
+                />
+                <button
+                  onClick={handleCustomDateChange}
+                  className="btn-secondary py-1.5 px-3 text-[13px]"
+                >
+                  Apply
+                </button>
+              </div></>}
 
             <div className="relative" ref={kpiSelectorRef}>
               <button
@@ -1725,113 +1721,113 @@ export default function WorkspaceDashboardDatahub() {
                         </tr>
                       )
                       : invoicesData
-                      .filter((inv) => {
-                        const s = searchTerm.toLowerCase();
-                        return (
-                          (inv.DocNumber || inv.id || "")
-                            .toLowerCase()
-                            .includes(s) ||
-                          (inv.CustomerRef?.name || inv.customer || "")
-                            .toLowerCase()
-                            .includes(s)
-                        );
-                      })
-                      .slice(0, 5)
-                      .map((inv, i) => {
-                        const amount = inv.TotalAmt || inv.amount || 0;
-                        const balance = inv.Balance || inv.balance || 0;
+                        .filter((inv) => {
+                          const s = searchTerm.toLowerCase();
+                          return (
+                            (inv.DocNumber || inv.id || "")
+                              .toLowerCase()
+                              .includes(s) ||
+                            (inv.CustomerRef?.name || inv.customer || "")
+                              .toLowerCase()
+                              .includes(s)
+                          );
+                        })
+                        .slice(0, 5)
+                        .map((inv, i) => {
+                          const amount = inv.TotalAmt || inv.amount || 0;
+                          const balance = inv.Balance || inv.balance || 0;
 
-                        let status = "open";
-                        if (balance === 0) status = "paid";
-                        else if (
-                          inv.DueDate &&
-                          new Date(inv.DueDate) < new Date()
-                        )
-                          status = "overdue";
+                          let status = "open";
+                          if (balance === 0) status = "paid";
+                          else if (
+                            inv.DueDate &&
+                            new Date(inv.DueDate) < new Date()
+                          )
+                            status = "overdue";
 
-                        const STATUS_CFG = {
-                          paid: {
-                            label: "Paid",
-                            icon: CheckCircle2,
-                            color: "bg-[#8bc53d] text-white",
-                          },
-                          open: {
-                            label: "Open",
-                            icon: Clock,
-                            color: "bg-[#00648F] text-white",
-                          },
-                          overdue: {
-                            label: "Overdue",
-                            icon: AlertCircle,
-                            color: "bg-[#C62026] text-white",
-                          },
-                          draft: {
-                            label: "Draft",
-                            icon: FileText,
-                            color: "bg-[#6D6E71] text-white",
-                          },
-                        };
-                        const config = STATUS_CFG[status] || STATUS_CFG.open;
+                          const STATUS_CFG = {
+                            paid: {
+                              label: "Paid",
+                              icon: CheckCircle2,
+                              color: "bg-[#8bc53d] text-white",
+                            },
+                            open: {
+                              label: "Open",
+                              icon: Clock,
+                              color: "bg-[#00648F] text-white",
+                            },
+                            overdue: {
+                              label: "Overdue",
+                              icon: AlertCircle,
+                              color: "bg-[#C62026] text-white",
+                            },
+                            draft: {
+                              label: "Draft",
+                              icon: FileText,
+                              color: "bg-[#6D6E71] text-white",
+                            },
+                          };
+                          const config = STATUS_CFG[status] || STATUS_CFG.open;
 
-                        return (
-                          <tr
-                            key={inv.id || i}
-                            className="group hover:bg-bg-page/50 transition-colors"
-                          >
-                            <td className="py-3 px-6">
-                              <div className="flex flex-col">
-                                <span className="text-[14px] font-medium text-text-primary">
-                                  #
-                                  {inv.DocNumber ||
-                                    inv.id ||
-                                    `INV-00${i + 1}`}
-                                </span>
-                                <span className="text-[12px] text-text-muted">
-                                  {new Date(
-                                    inv.MetaData?.CreateTime ||
-                                    inv.date ||
-                                    Date.now(),
-                                  ).toLocaleDateString("en-US", {
-                                    month: "short",
-                                    day: "numeric",
-                                    year: "numeric",
-                                  })}
-                                </span>
-                              </div>
-                            </td>
-                            <td className="py-3 px-4 text-[14px] text-text-secondary">
-                              {inv.CustomerRef?.name ||
-                                inv.customer ||
-                                "Unknown Client"}
-                            </td>
-                            <td className="py-3 px-4 text-[14px] text-text-secondary">
-                              {inv.DueDate || inv.dueDate || "N/A"}
-                            </td>
-                            <td className="py-3 px-4 text-right text-[14px] font-semibold text-text-primary tabular-nums">
-                              $
-                              {Number(amount).toLocaleString("en-US", {
-                                minimumFractionDigits: 2,
-                              })}
-                            </td>
-                            <td className="py-3 px-4 text-right text-[14px] font-medium text-text-primary tabular-nums">
-                              $
-                              {Number(balance).toLocaleString("en-US", {
-                                minimumFractionDigits: 2,
-                              })}
-                            </td>
-                            <td className="py-3 px-4 text-center">
-                              <div
-                                className={cn(
-                                  "inline-flex items-center justify-center px-4 py-1.5 rounded-full text-[12px] font-bold capitalize min-w-[80px]",
-                                  config.color,
-                                )}
-                              >
-                                {config.label}
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })}
+                          return (
+                            <tr
+                              key={inv.id || i}
+                              className="group hover:bg-bg-page/50 transition-colors"
+                            >
+                              <td className="py-3 px-6">
+                                <div className="flex flex-col">
+                                  <span className="text-[14px] font-medium text-text-primary">
+                                    #
+                                    {inv.DocNumber ||
+                                      inv.id ||
+                                      `INV-00${i + 1}`}
+                                  </span>
+                                  <span className="text-[12px] text-text-muted">
+                                    {new Date(
+                                      inv.MetaData?.CreateTime ||
+                                      inv.date ||
+                                      Date.now(),
+                                    ).toLocaleDateString("en-US", {
+                                      month: "short",
+                                      day: "numeric",
+                                      year: "numeric",
+                                    })}
+                                  </span>
+                                </div>
+                              </td>
+                              <td className="py-3 px-4 text-[14px] text-text-secondary">
+                                {inv.CustomerRef?.name ||
+                                  inv.customer ||
+                                  "Unknown Client"}
+                              </td>
+                              <td className="py-3 px-4 text-[14px] text-text-secondary">
+                                {inv.DueDate || inv.dueDate || "N/A"}
+                              </td>
+                              <td className="py-3 px-4 text-right text-[14px] font-semibold text-text-primary tabular-nums">
+                                $
+                                {Number(amount).toLocaleString("en-US", {
+                                  minimumFractionDigits: 2,
+                                })}
+                              </td>
+                              <td className="py-3 px-4 text-right text-[14px] font-medium text-text-primary tabular-nums">
+                                $
+                                {Number(balance).toLocaleString("en-US", {
+                                  minimumFractionDigits: 2,
+                                })}
+                              </td>
+                              <td className="py-3 px-4 text-center">
+                                <div
+                                  className={cn(
+                                    "inline-flex items-center justify-center px-4 py-1.5 rounded-full text-[12px] font-bold capitalize min-w-[80px]",
+                                    config.color,
+                                  )}
+                                >
+                                  {config.label}
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
                 </tbody>
               </table>
             </div>

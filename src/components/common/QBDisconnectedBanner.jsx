@@ -9,6 +9,7 @@ export default function QBDisconnectedBanner() {
   const navigate = useNavigate();
   const { activeSourceMode } = useDataSource();
   const [show, setShow] = useState(false);
+  const [lastSyncAt, setLastSyncAt] = useState(null);
   const [dismissed, setDismissed] = useState(false);
 
   useEffect(() => {
@@ -19,10 +20,21 @@ export default function QBDisconnectedBanner() {
     getConnectionStatus()
       .catch(() => ({ isConnected: false }))
       .then((qbData) => {
-        if (!cancelled && !qbData?.isConnected) setShow(true);
+        if (cancelled) return;
+        if (!qbData?.isConnected) {
+          setShow(true);
+          setLastSyncAt(
+            qbData?.lastSyncAt ||
+            qbData?.lastSyncedAt ||
+            qbData?.lastCacheSyncedAt ||
+            null,
+          );
+        }
       });
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [activeSourceMode]);
 
   if (!show || dismissed || activeSourceMode !== 'quickbooks') return null;
@@ -45,10 +57,15 @@ export default function QBDisconnectedBanner() {
 
       <div className="flex-1 min-w-0">
         <p className="font-bold text-[14px] leading-snug text-amber-900">
-          QuickBooks Disconnected — Showing Cached Data
+          QuickBooks disconnected. Showing last synced data.
         </p>
         <p className="mt-1 text-[13px] leading-relaxed text-amber-700">
-          You are currently disconnected. The data shown is from your last sync and may not reflect recent changes.
+          You are currently disconnected. The data shown is from your last successful sync and may not reflect recent changes.
+          {lastSyncAt ? (
+            <span className="block mt-1">
+              Last synced: {new Date(lastSyncAt).toLocaleString()}
+            </span>
+          ) : null}
           <span className="block mt-1">To get live financial data, reconnect your QuickBooks account.</span>
         </p>
       </div>

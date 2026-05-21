@@ -3,11 +3,29 @@ const bcrypt = require("bcryptjs");
 const { Pool } = require("pg");
 
 let profilePool = null;
+let profileFallbackCooldownUntil = 0;
+const PROFILE_FALLBACK_COOLDOWN_MS = 60 * 1000;
+
+function isProfileFallbackCoolingDown() {
+  return Date.now() < profileFallbackCooldownUntil;
+}
+
+function markProfileFallbackCooldown(error) {
+  const message = String(error?.message || "").toLowerCase();
+  if (
+    message.includes("timeout") ||
+    message.includes("terminated") ||
+    message.includes("econn") ||
+    message.includes("could not connect")
+  ) {
+    profileFallbackCooldownUntil = Date.now() + PROFILE_FALLBACK_COOLDOWN_MS;
+  }
+}
 
 function getProfilePool() {
   if (!process.env.DATABASE_URL) return null;
   if (!profilePool) {
-    profilePool = new Pool({ connectionString: process.env.DATABASE_URL });
+    profilePool = new Pool({ connectionString: process.env.DATABASE_URL, connectionTimeoutMillis: 5000 });
   }
   return profilePool;
 }
@@ -39,6 +57,7 @@ async function selectUserRow(buildQuery) {
 
 async function getSqlProfileByEmail(email) {
   const normalizedEmail = String(email || "").trim();
+  if (isProfileFallbackCoolingDown()) return {};
   const pool = normalizedEmail ? getProfilePool() : null;
   if (!pool) return {};
 
@@ -54,6 +73,7 @@ async function getSqlProfileByEmail(email) {
     );
     return rows[0] || {};
   } catch (err) {
+    markProfileFallbackCooldown(err);
     console.warn("Profile SQL fallback read failed:", err.message);
     return {};
   }

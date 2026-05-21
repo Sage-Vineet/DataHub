@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
+import React, { createContext, useContext, useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { useLocation } from 'react-router-dom';
 import { getReportSources, setSelectedReportSource } from '../lib/api';
 import { useToast } from './ToastContext';
@@ -38,6 +38,7 @@ export const DataSourceProvider = ({ children }) => {
   const [isLoadingSource, setIsLoadingSource] = useState(false);
   const [quickbooksConnected, setQuickbooksConnected] = useState(false);
   const [activeSource, setActiveSource] = useState(null);
+  const [sourceRecords, setSourceRecords] = useState([]);
 
   const clientIdRef = useRef(null);
 
@@ -68,10 +69,13 @@ export const DataSourceProvider = ({ children }) => {
           : (stored || REPORT_SOURCE_KEYS.QUICKBOOKS);
         setActiveSource(normalized);
         setQuickbooksConnected(Boolean(data?.quickbooksConnected));
+        setSourceRecords(Array.isArray(data?.sources) ? data.sources : []);
         sessionStorage.setItem(sourceStorageKey(clientId), normalized);
       })
       .catch(() => {
         if (clientIdRef.current !== clientId) return;
+        // Preserve prior snapshot metadata on transient failures so
+        // disconnected/cached indicators do not flicker away.
         if (!stored) setActiveSource(REPORT_SOURCE_KEYS.QUICKBOOKS);
       })
       .finally(() => {
@@ -127,6 +131,9 @@ export const DataSourceProvider = ({ children }) => {
       if (result?.quickbooksConnected !== undefined) {
         setQuickbooksConnected(Boolean(result.quickbooksConnected));
       }
+      if (Array.isArray(result?.sources)) {
+        setSourceRecords(result.sources);
+      }
 
       showToast({
         type: 'success',
@@ -160,6 +167,44 @@ export const DataSourceProvider = ({ children }) => {
   }, [activeSource, showToast]);
 
   const activeSourceMode = getReportSourceMode(activeSource);
+  const quickbooksRecord = useMemo(
+    () => (sourceRecords || []).find((item) => normalizeReportSourceKey(item?.sourceKey) === REPORT_SOURCE_KEYS.QUICKBOOKS) || null,
+    [sourceRecords],
+  );
+  const connectionState = useMemo(
+    () => ({
+      provider: 'quickbooks',
+      connected: Boolean(quickbooksConnected),
+      disconnected: !quickbooksConnected,
+    }),
+    [quickbooksConnected],
+  );
+  const syncState = useMemo(
+    () => ({
+      status: quickbooksRecord?.metadata?.syncStatus || 'idle',
+      progress: Number(quickbooksRecord?.metadata?.syncProgress || 0),
+      lastSyncAt: quickbooksRecord?.lastSyncedAt || null,
+      syncJobId: quickbooksRecord?.metadata?.syncJobId || null,
+    }),
+    [quickbooksRecord],
+  );
+  const reportState = useMemo(
+    () => ({
+      activeSource,
+      activeSourceMode,
+      isSwitching,
+      isLoadingSource,
+    }),
+    [activeSource, activeSourceMode, isSwitching, isLoadingSource],
+  );
+  const cacheState = useMemo(
+    () => ({
+      hasCachedSnapshot: Boolean(quickbooksRecord?.isAvailable),
+      snapshotSource: quickbooksRecord?.isAvailable ? 'cached_snapshot' : null,
+      lastSyncAt: quickbooksRecord?.lastSyncedAt || null,
+    }),
+    [quickbooksRecord],
+  );
 
   return (
     <DataSourceContext.Provider value={{
@@ -171,6 +216,11 @@ export const DataSourceProvider = ({ children }) => {
       isLoadingSource,
       quickbooksConnected,
       clientId,
+      sourceRecords,
+      connectionState,
+      syncState,
+      reportState,
+      cacheState,
     }}>
       {children}
     </DataSourceContext.Provider>

@@ -188,12 +188,20 @@ async function getQuickBooksSnapshot(companyId) {
 
   const { data: cachedReport } = await supabase
     .from("qb_synced_reports")
-    .select("last_synced_at, updated_at")
+    .select("last_synced_at, updated_at, dataset_version")
     .eq("company_id", companyId)
-    .eq("source", "quickbooks")
+    .eq("sync_source", "quickbooks")
+    .eq("is_active", true)
     .order("last_synced_at", { ascending: false })
     .order("updated_at", { ascending: false })
     .limit(1)
+    .maybeSingle();
+
+  const { data: syncMeta } = await supabase
+    .from("sync_metadata")
+    .select("sync_status, sync_progress, current_job_id, current_dataset_version, last_successful_sync, last_attempted_sync, last_error")
+    .eq("company_id", companyId)
+    .eq("sync_source", "quickbooks")
     .maybeSingle();
 
   return {
@@ -203,12 +211,22 @@ async function getQuickBooksSnapshot(companyId) {
     ),
     lastConnectedAt: connection?.connected_at || null,
     lastSyncedAt:
-      cachedReport?.last_synced_at || connection?.last_synced || null,
+      syncMeta?.last_successful_sync ||
+      cachedReport?.last_synced_at ||
+      connection?.last_synced ||
+      null,
     metadata: {
       realmId: connection?.realm_id || null,
       companyName: connection?.company_name || null,
       environment: connection?.environment || null,
       cacheUpdatedAt: cachedReport?.updated_at || null,
+      activeDatasetVersion:
+        syncMeta?.current_dataset_version || cachedReport?.dataset_version || null,
+      syncStatus: syncMeta?.sync_status || "idle",
+      syncProgress: syncMeta?.sync_progress || 0,
+      syncJobId: syncMeta?.current_job_id || null,
+      lastAttemptedSync: syncMeta?.last_attempted_sync || null,
+      lastSyncError: syncMeta?.last_error || null,
     },
   };
 }

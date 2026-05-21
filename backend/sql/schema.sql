@@ -152,7 +152,8 @@ CREATE TABLE IF NOT EXISTS documents (
   ext text NOT NULL,
   status document_status NOT NULL,
   uploaded_by uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-  uploaded_at timestamptz NOT NULL DEFAULT now()
+  uploaded_at timestamptz NOT NULL DEFAULT now(),
+  archived_at timestamptz
 );
 
 CREATE TABLE IF NOT EXISTS request_documents (
@@ -331,7 +332,8 @@ CREATE TABLE IF NOT EXISTS manual_gl_staged_transactions (
   staged_at timestamptz NOT NULL DEFAULT now(),
   metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT uq_manual_gl_txn_hash_batch UNIQUE (company_id, batch_id, transaction_hash)
+  CONSTRAINT uq_manual_gl_txn_hash_batch UNIQUE (company_id, batch_id, transaction_hash),
+  CONSTRAINT uq_manual_gl_txn_hash_legacy UNIQUE (company_id, transaction_hash)
 );
 
 CREATE TABLE IF NOT EXISTS manual_gl_balance_sheet_lines (
@@ -353,7 +355,8 @@ CREATE TABLE IF NOT EXISTS manual_gl_balance_sheet_lines (
   staged_at timestamptz NOT NULL DEFAULT now(),
   metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
   created_at timestamptz NOT NULL DEFAULT now(),
-  CONSTRAINT uq_manual_gl_bs_line_hash_batch UNIQUE (company_id, batch_id, sheet_type, line_hash)
+  CONSTRAINT uq_manual_gl_bs_line_hash_batch UNIQUE (company_id, batch_id, sheet_type, line_hash),
+  CONSTRAINT uq_manual_gl_bs_line_hash_legacy UNIQUE (company_id, sheet_type, line_hash)
 );
 
 CREATE INDEX IF NOT EXISTS idx_manual_gl_batches_company

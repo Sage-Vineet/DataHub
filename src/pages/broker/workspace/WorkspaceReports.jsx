@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import Header from "../../../components/Header";
+import QBDisconnectedBanner from "../../../components/common/QBDisconnectedBanner";
 import {
   ChevronDown,
   RefreshCw,
@@ -9,7 +10,6 @@ import { cn } from "../../../lib/utils";
 import {
   getCompanyRequest,
   getManualStageFilterOptions,
-  getLatestManualUploadedReport,
   getAllManualUploadedReports,
 } from "../../../lib/api";
 import { MANUAL_GL_STAGED_EVENT } from "../../../lib/dataSourceEvents";
@@ -224,7 +224,6 @@ export default function WorkspaceReports() {
   const { clientId } = useParams();
   const {
     activeSource: contextActiveSource,
-    quickbooksConnected: contextQbConnected,
   } = useDataSource();
   const todayString = useMemo(() => formatDateForInput(new Date()), []);
   const defaultCustomStart = useMemo(() => `${todayString.slice(0, 7)}-01`, [todayString]);
@@ -445,7 +444,7 @@ export default function WorkspaceReports() {
         console.error("[WorkspaceReports] Failed to load manual filter options:", error);
         setManualFilterOptions({});
       });
-  // filterOptionsVersion increments when a new GL batch is staged, forcing a re-fetch.
+    // filterOptionsVersion increments when a new GL batch is staged, forcing a re-fetch.
   }, [appliedManualFilters.batchId, clientId, selectedSourceMode, filterOptionsVersion]);
 
   // Load available uploaded files per tab when in manual_upload source mode
@@ -854,12 +853,7 @@ export default function WorkspaceReports() {
               manualFilters: summaryFilterParams,
               manualUploadRowId,
             },
-          ).catch(() => ({
-            rows: [],
-            source: null,
-            sourceLabel: null,
-            noDataText: "No Balance Sheet Available",
-          }));
+          );
         } else {
           detail = await getBalanceSheetDetail(
             effectiveStartDate,
@@ -869,7 +863,7 @@ export default function WorkspaceReports() {
               sourceMode: selectedSourceMode,
               manualFilters: manualFilterParams,
             },
-          ).catch(() => ({ groups: [] }));
+          );
         }
       } else if (selectedTab === "Profit & Loss") {
         if (reportType === "Summary") {
@@ -882,7 +876,7 @@ export default function WorkspaceReports() {
               manualFilters: summaryFilterParams,
               manualUploadRowId,
             },
-          ).catch(() => []);
+          );
         } else {
           detail = await getProfitAndLossDetail(
             effectiveStartDate,
@@ -892,7 +886,7 @@ export default function WorkspaceReports() {
               sourceMode: selectedSourceMode,
               manualFilters: manualFilterParams,
             },
-          ).catch(() => []);
+          );
         }
       } else {
         if (reportType === "Summary") {
@@ -905,7 +899,7 @@ export default function WorkspaceReports() {
               manualFilters: summaryFilterParams,
               manualUploadRowId,
             },
-          ).catch(() => []);
+          );
         } else {
           detail = await getCashflowDetail(
             effectiveStartDate,
@@ -915,7 +909,7 @@ export default function WorkspaceReports() {
               sourceMode: selectedSourceMode,
               manualFilters: manualFilterParams,
             },
-          ).catch(() => ({ rows: [], columns: {} }));
+          );
         }
       }
 
@@ -979,6 +973,7 @@ export default function WorkspaceReports() {
       <Header title="Reports" />
 
       <div className="page-content">
+        <QBDisconnectedBanner />
         <div className="mb-4 flex items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-3">
             <h1 className="text-2xl font-bold text-[#050505]">
