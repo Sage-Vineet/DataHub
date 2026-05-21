@@ -1867,7 +1867,8 @@ async function getLatestQMSUploadedReport({ companyId, statementType }) {
   return data || null;
 }
 
-async function syncBankReconciliationFolder(companyId, folder, now) {
+async function syncBankReconciliationFolder(companyId, folder, now, overrideSource) {
+  const bankSource = overrideSource || MANUAL_REPORT_UPLOAD_SOURCE;
   const { data: documents } = await supabase
     .from("documents")
     .select("id, name, upload_id, file_url")
@@ -1933,7 +1934,7 @@ async function syncBankReconciliationFolder(companyId, folder, now) {
     .from("qb_synced_reports")
     .select("id")
     .eq("company_id", companyId)
-    .eq("source", MANUAL_REPORT_UPLOAD_SOURCE)
+    .eq("source", bankSource)
     .eq("report_type", STATEMENT_TYPES.BANK_RECONCILIATION)
     .maybeSingle();
 
@@ -1950,7 +1951,7 @@ async function syncBankReconciliationFolder(companyId, folder, now) {
         documentCount: processedDocs.length,
       },
     },
-    source: MANUAL_REPORT_UPLOAD_SOURCE,
+    source: bankSource,
     status: "synced",
     last_synced_at: now,
     updated_at: now,
@@ -2441,7 +2442,7 @@ async function syncQMSUploadSource(companyId) {
   for (const { folder, statementType } of foldersToSync) {
     if (statementType === STATEMENT_TYPES.BANK_RECONCILIATION) {
       try {
-        const bankResult = await syncBankReconciliationFolder(companyId, folder, now);
+        const bankResult = await syncBankReconciliationFolder(companyId, folder, now, QMS_REPORT_UPLOAD_SOURCE);
         processed.push(...(bankResult.processed || []));
         failed.push(...(bankResult.failed || []));
         if (!bankResult.success && !bankResult.failed?.length && bankResult.reason !== "No files in folder") {

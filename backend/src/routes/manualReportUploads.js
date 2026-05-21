@@ -358,6 +358,40 @@ router.get("/manual-report-uploads/qms-reports/:statementType/all", async (req, 
 });
 
 /* ===========================
+   GET /manual-report-uploads/qms-bank-data
+   Returns the aggregated bank reconciliation data synced from the QMS Bank Statement folder.
+   Response shape: { success, banks, months, totals } — same as /extract-bank-pdf-records.
+=========================== */
+router.get("/manual-report-uploads/qms-bank-data", async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+
+    const { data: row, error } = await supabase
+      .from("qb_synced_reports")
+      .select("data")
+      .eq("company_id", clientId)
+      .eq("source", "quickbooks_manual_upload")
+      .eq("report_type", STATEMENT_TYPES.BANK_RECONCILIATION)
+      .order("last_synced_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) throw new Error(error.message);
+
+    const bankData = row?.data?.bank_reconciliation || {};
+    return res.json({
+      success: true,
+      banks: bankData.banks || [],
+      months: bankData.months || [],
+      totals: bankData.totals || [],
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message || "Failed to fetch QMS bank data." });
+  }
+});
+
+/* ===========================
    GET /manual-report-uploads/qms-reports/:statementType/latest
    Same as /reports/:statementType/latest but filtered to quickbooks_manual_upload source.
    Accepts optional ?rowId= to fetch a specific row by ID.
