@@ -22,9 +22,12 @@ const createCompany = asyncHandler(async (req, res) => {
       req.user.company_ids = Array.from(new Set([...(req.user.company_ids || []), inserted.id]));
     }
   }
-  
-  const clientRepresentativeId = await companyService.syncCompanyClientRepresentative(inserted);
-  await ensureCompanyDefaultFolders(inserted.id, req.user?.id || clientRepresentativeId || null);
+
+  const clientRepresentativeId = await companyService.syncCompanyClientRepresentative(inserted).catch((err) => {
+    console.error("[createCompany] syncCompanyClientRepresentative failed (non-fatal):", err.message);
+    return null;
+  });
+  await ensureCompanyDefaultFolders(inserted.id, req.user?.id || clientRepresentativeId || null).catch(() => { });
 
   res.status(201).json(inserted);
 });
@@ -46,7 +49,9 @@ const updateCompany = asyncHandler(async (req, res) => {
   }
 
   const updated = await companyService.updateCompany(req.params.id, req.body);
-  await companyService.syncCompanyClientRepresentative(updated, existingCompany);
+  await companyService.syncCompanyClientRepresentative(updated, existingCompany).catch((err) => {
+    console.error("[updateCompany] syncCompanyClientRepresentative failed (non-fatal):", err.message);
+  });
   res.json(updated);
 });
 

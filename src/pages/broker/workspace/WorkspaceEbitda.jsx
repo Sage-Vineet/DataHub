@@ -42,24 +42,67 @@ function EmptyState() {
   );
 }
 
-function ErrorState({ error, onRetry }) {
+function EmptyStateNotification({ error, onRetry }) {
   return (
-    <div className="flex flex-col items-center justify-center rounded-2xl border border-red-200 bg-red-50/50 py-12">
-      <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-red-100">
-        <AlertCircle size={22} className="text-red-500" />
-      </div>
-      <h3 className="text-[15px] font-semibold text-red-900">
-        Unable to Load EBITDA Data
-      </h3>
-      <p className="mt-1 max-w-sm text-center text-[13px] text-red-600">
-        {error}
-      </p>
+    <div className="flex items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+      <AlertCircle size={16} className="shrink-0 text-amber-500" />
+      <p className="flex-1 text-[13px] text-amber-800">{error}</p>
       <button
         onClick={onRetry}
-        className="mt-4 rounded-lg bg-red-600 px-4 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-red-700"
+        className="shrink-0 rounded-md border border-amber-300 bg-white px-3 py-1.5 text-[12px] font-medium text-amber-700 transition-colors hover:bg-amber-50"
       >
-        Try Again
+        Retry
       </button>
+    </div>
+  );
+}
+
+const EMPTY_TABLE_ROWS = [
+  { label: 'Net Income', indent: false, bold: true, shade: 'bg-gray-50' },
+  { label: 'Total Interest Income', indent: true, bold: false, shade: '' },
+  { label: 'Total Interest Expense', indent: true, bold: false, shade: '' },
+  { label: 'Total Income Tax Expense', indent: true, bold: false, shade: '' },
+  { label: 'Depreciation', indent: true, bold: false, shade: '' },
+  { label: 'Amortization Expense', indent: true, bold: false, shade: '' },
+  { label: 'EBITDA', indent: false, bold: true, shade: 'bg-[#f8fafc]' },
+  { label: 'Addbacks', indent: false, bold: true, shade: 'bg-gray-100' },
+  { label: "Seller's Discretionary Earnings", indent: false, bold: true, shade: 'bg-gray-50' },
+  { label: 'SDE % of Sales', indent: false, bold: false, shade: '' },
+];
+
+function EmptyEbitdaTable({ companyName }) {
+  return (
+    <div className="flex gap-6 items-start">
+      <div className="flex-1 overflow-hidden rounded-xl border border-[#cbd5e1] bg-white shadow-lg">
+        <div className="bg-[#8bc53d] py-3 text-center">
+          <h2 className="text-[18px] font-bold text-white">
+            Recalculated Seller&apos;s Discretionary Earnings of {companyName || 'the Business'}
+          </h2>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse text-[14px]">
+            <thead>
+              <tr className="bg-[#8bc53d] text-white">
+                <th className="border-b border-[#cbd5e1] p-3 text-left font-bold min-w-[280px]"></th>
+                <th className="border-b border-[#cbd5e1] p-3 text-right font-bold min-w-[120px] opacity-40">FY —</th>
+              </tr>
+            </thead>
+            <tbody>
+              {EMPTY_TABLE_ROWS.map((row) => (
+                <tr
+                  key={row.label}
+                  className={`border-b border-[#f1f5f9] h-[46px] ${row.shade}`}
+                >
+                  <td className={`p-3 ${row.indent ? 'pl-8' : 'pl-3'} ${row.bold ? 'font-bold text-[#050505]' : 'text-text-primary'}`}>
+                    {row.label}
+                  </td>
+                  <td className="p-3 text-right text-text-muted">—</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   );
 }
@@ -587,8 +630,11 @@ export default function WorkspaceEbitda() {
         {/* Content */}
         {isLoading ? (
           <LoadingState />
-        ) : error ? (
-          <ErrorState error={error} onRetry={handleGenerate} />
+        ) : error && !multiYearData ? (
+          <div className="flex flex-col gap-4">
+            <EmptyStateNotification error={error} onRetry={handleGenerate} />
+            <EmptyEbitdaTable companyName={company?.name} />
+          </div>
         ) : multiYearData ? (
           <div className="animate-in slide-in-from-bottom-2 fade-in duration-300">
             {/* Side-by-Side Layout Wrapper */}

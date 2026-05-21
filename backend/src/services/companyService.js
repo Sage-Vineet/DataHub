@@ -3,6 +3,22 @@ const { Pool } = require("pg");
 const bcrypt = require("bcryptjs");
 const CLIENT_STATIC_PASSWORD = process.env.CLIENT_STATIC_PASSWORD || "123456";
 
+let _pool = null;
+function getPool() {
+  if (!process.env.DATABASE_URL) return null;
+  if (!_pool) {
+    _pool = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: { rejectUnauthorized: false },
+      max: 5,
+      connectionTimeoutMillis: 3000,
+      idleTimeoutMillis: 10000,
+    });
+    _pool.on("error", (err) => console.error("[companyService] pg pool error:", err.message));
+  }
+  return _pool;
+}
+
 async function getAllCompanies() {
   const { data, error } = await supabase
     .from("companies")
@@ -141,26 +157,26 @@ async function syncCompanyClientRepresentative(company, previousCompany = null) 
   }
 
   if (!existingUser) {
-    const { data: users } = await supabase
+    // Try Supabase first; fall back to Postgres if quota-blocked
+    const { data: users, error: lookupErr } = await supabase
       .from("users")
       .select("id, role, company_id")
       .ilike("email", normalizedEmail)
       .maybeSingle();
 
-    existingUser = users || null;
-  }
-
-  // Postgres fallback for user lookup
-  if (!existingUser) {
-    const pool = getPool();
-    if (pool) {
-      try {
-        const { rows } = await pool.query(
-          "SELECT id, role FROM users WHERE lower(email) = lower($1) LIMIT 1",
-          [normalizedEmail],
-        );
-        existingUser = rows[0] || null;
-      } catch { /* ignore */ }
+    if (!lookupErr) {
+      existingUser = users || null;
+    } else {
+      const pool = getPool();
+      if (pool) {
+        try {
+          const { rows } = await pool.query(
+            "SELECT id, role, company_id FROM users WHERE lower(email) = lower($1) LIMIT 1",
+            [normalizedEmail],
+          );
+          existingUser = rows[0] || null;
+        } catch { /* ignore */ }
+      }
     }
   }
 
@@ -176,49 +192,42 @@ async function syncCompanyClientRepresentative(company, previousCompany = null) 
   }
 
   if (existingUser) {
-    const pool = getPool();
-    if (pool) {
-      await pool.query(
-        `UPDATE users SET name=$1, email=$2, phone=$3, company_id=$4, status='active', updated_at=now()
-         WHERE id=$5`,
-        [company.contact_name, normalizedEmail, company.contact_phone || null, company.id, existingUser.id],
-      );
-      await pool.query(
-        `INSERT INTO user_companies (user_id, company_id) VALUES ($1, $2)
-         ON CONFLICT (user_id, company_id) DO NOTHING`,
-        [existingUser.id, company.id],
-      );
-    } else {
-      await supabase.from("users").update({
-        name: company.contact_name, email: normalizedEmail,
-        phone: company.contact_phone || null, company_id: company.id,
-        status: "active", updated_at: new Date().toISOString(),
-      }).eq("id", existingUser.id);
-      await supabase.from("user_companies")
-        .upsert({ user_id: existingUser.id, company_id: company.id }, { onConflict: "user_id,company_id" });
+    const { error: updateErr } = await supabase.from("users").update({
+      name: company.contact_name, email: normalizedEmail,
+      phone: company.contact_phone || null, company_id: company.id,
+      status: "active", updated_at: new Date().toISOString(),
+    }).eq("id", existingUser.id);
+
+    if (updateErr) {
+      const pool = getPool();
+      if (pool) {
+        try {
+          await pool.query(
+            `UPDATE users SET name=$1, email=$2, phone=$3, company_id=$4, status='active', updated_at=now() WHERE id=$5`,
+            [company.contact_name, normalizedEmail, company.contact_phone || null, company.id, existingUser.id],
+          );
+        } catch { /* ignore */ }
+      }
+    }
+
+    const { error: ucErr } = await supabase.from("user_companies")
+      .upsert({ user_id: existingUser.id, company_id: company.id }, { onConflict: "user_id,company_id" });
+    if (ucErr) {
+      const pool = getPool();
+      if (pool) {
+        try {
+          await pool.query(
+            `INSERT INTO user_companies (user_id, company_id) VALUES ($1, $2) ON CONFLICT (user_id, company_id) DO NOTHING`,
+            [existingUser.id, company.id],
+          );
+        } catch { /* ignore */ }
+      }
     }
     return existingUser.id;
   }
 
-  // Create new buyer
+  // Create new buyer — Supabase first, Postgres fallback
   const passwordHash = await bcrypt.hash(CLIENT_STATIC_PASSWORD, 10);
-  const pool = getPool();
-  if (pool) {
-    const { rows } = await pool.query(
-      `INSERT INTO users (name, email, phone, password_hash, role, company_id, status)
-       VALUES ($1, $2, $3, $4, 'buyer', $5, 'active') RETURNING id`,
-      [company.contact_name, normalizedEmail, company.contact_phone || null, passwordHash, company.id],
-    );
-    const userId = rows[0]?.id;
-    if (userId) {
-      await pool.query(
-        `INSERT INTO user_companies (user_id, company_id) VALUES ($1, $2)
-         ON CONFLICT (user_id, company_id) DO NOTHING`,
-        [userId, company.id],
-      );
-    }
-    return userId || null;
-  }
 
   const { data: createdUser, error: insertError } = await supabase
     .from("users")
@@ -230,16 +239,45 @@ async function syncCompanyClientRepresentative(company, previousCompany = null) 
     .select("id")
     .single();
 
+  let userId = createdUser?.id || null;
+
   if (insertError) {
-    console.error("❌ Error creating company representative:", insertError.message);
-    return null;
+    // Supabase insert failed — try Postgres
+    const pool = getPool();
+    if (pool) {
+      try {
+        const { rows } = await pool.query(
+          `INSERT INTO users (name, email, phone, password_hash, role, company_id, status)
+           VALUES ($1, $2, $3, $4, 'buyer', $5, 'active') RETURNING id`,
+          [company.contact_name, normalizedEmail, company.contact_phone || null, passwordHash, company.id],
+        );
+        userId = rows[0]?.id || null;
+      } catch (pgErr) {
+        console.error("❌ Error creating company representative (pg):", pgErr.message);
+        return null;
+      }
+    } else {
+      console.error("❌ Error creating company representative:", insertError.message);
+      return null;
+    }
   }
 
-  if (createdUser) {
-    await supabase.from("user_companies")
-      .upsert({ user_id: createdUser.id, company_id: company.id }, { onConflict: "user_id,company_id" });
+  if (userId) {
+    const { error: ucErr } = await supabase.from("user_companies")
+      .upsert({ user_id: userId, company_id: company.id }, { onConflict: "user_id,company_id" });
+    if (ucErr) {
+      const pool = getPool();
+      if (pool) {
+        try {
+          await pool.query(
+            `INSERT INTO user_companies (user_id, company_id) VALUES ($1, $2) ON CONFLICT (user_id, company_id) DO NOTHING`,
+            [userId, company.id],
+          );
+        } catch { /* ignore */ }
+      }
+    }
   }
-  return createdUser?.id || null;
+  return userId;
 }
 
 async function attachCompanyStats(companies) {

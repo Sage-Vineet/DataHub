@@ -1619,40 +1619,48 @@ async function syncManualReportFolder({ companyId, folderId, folderName = "" }) 
         return { skipped: true, documentId: document.id, fileName: document.name, reason: "Unsupported or unreadable report" };
       }
 
+      // Remove any previous record for this exact document before inserting the fresh one.
+      // (report_params is JSONB — no unique constraint exists on it, so upsert onConflict
+      // is not usable; delete-then-insert achieves the same idempotent result.)
+      await supabase
+        .from("qb_synced_reports")
+        .delete()
+        .eq("company_id", companyId)
+        .eq("source", MANUAL_REPORT_UPLOAD_SOURCE)
+        .eq("report_type", parsed.statementType)
+        .filter("report_params->>documentId", "eq", document.id);
+
       const { error: upsertError } = await supabase
         .from("qb_synced_reports")
-        .upsert(
-          {
-            company_id: companyId,
-            report_type: parsed.statementType,
-            report_params: {
+        .insert({
+          company_id: companyId,
+          report_type: parsed.statementType,
+          report_params: {
+            folderId,
+            folderName,
+            documentId: document.id,
+            uploadId: document.upload_id,
+            fileName: document.name,
+          },
+          data: {
+            manual_report_upload: {
+              statementType: parsed.statementType,
+              parserType: parsed.parserType,
               folderId,
               folderName,
               documentId: document.id,
               uploadId: document.upload_id,
               fileName: document.name,
+              fileUrl: document.file_url || null,
+              report: parsed.report,
+              syncedAt: now,
             },
-            data: {
-              manual_report_upload: {
-                statementType: parsed.statementType,
-                parserType: parsed.parserType,
-                folderId,
-                folderName,
-                documentId: document.id,
-                uploadId: document.upload_id,
-                fileName: document.name,
-                fileUrl: document.file_url || null,
-                report: parsed.report,
-                syncedAt: now,
-              },
-            },
-            source: MANUAL_REPORT_UPLOAD_SOURCE,
-            status: "synced",
-            last_synced_at: now,
-            updated_at: now,
           },
-          { onConflict: "company_id,report_type,report_params" },
-        );
+          source: MANUAL_REPORT_UPLOAD_SOURCE,
+          status: "synced",
+          last_synced_at: now,
+          updated_at: now,
+        });
 
       if (upsertError) throw new Error(upsertError.message);
 
@@ -1970,7 +1978,7 @@ async function syncManualUploadSource(companyId) {
         const bankResult = await syncBankReconciliationFolder(companyId, folder, now);
         processed.push(...(bankResult.processed || []));
         failed.push(...(bankResult.failed || []));
-        if (!bankResult.success && !bankResult.failed?.length) {
+        if (!bankResult.success && !bankResult.failed?.length && bankResult.reason !== "No files in folder") {
           failed.push({ fileName: folder.name, folderName: folder.name, reason: bankResult.reason || "Bank extraction failed" });
         }
       } catch (err) {
@@ -2030,41 +2038,39 @@ async function syncManualUploadSource(companyId) {
         }
 
         const resolvedUploadId = upload.id || doc.upload_id || null;
+        // All existing records for this company were deleted above; plain insert is safe.
         const { error: upsertError } = await supabase
           .from("qb_synced_reports")
-          .upsert(
-            {
-              company_id: companyId,
-              report_type: statementType,
-              report_params: {
-                sourceFolderName: SOURCE_FOLDER_NAME,
+          .insert({
+            company_id: companyId,
+            report_type: statementType,
+            report_params: {
+              sourceFolderName: SOURCE_FOLDER_NAME,
+              folderId: folder.id,
+              folderName: folder.name,
+              documentId: doc.id,
+              uploadId: resolvedUploadId,
+              fileName: doc.name,
+            },
+            data: {
+              manual_report_upload: {
+                statementType,
+                parserType: parsed.parserType,
                 folderId: folder.id,
                 folderName: folder.name,
                 documentId: doc.id,
                 uploadId: resolvedUploadId,
                 fileName: doc.name,
+                fileUrl: doc.file_url || null,
+                report: parsed.report,
+                syncedAt: now,
               },
-              data: {
-                manual_report_upload: {
-                  statementType,
-                  parserType: parsed.parserType,
-                  folderId: folder.id,
-                  folderName: folder.name,
-                  documentId: doc.id,
-                  uploadId: resolvedUploadId,
-                  fileName: doc.name,
-                  fileUrl: doc.file_url || null,
-                  report: parsed.report,
-                  syncedAt: now,
-                },
-              },
-              source: MANUAL_REPORT_UPLOAD_SOURCE,
-              status: "synced",
-              last_synced_at: now,
-              updated_at: now,
             },
-            { onConflict: "company_id,report_type,report_params" },
-          );
+            source: MANUAL_REPORT_UPLOAD_SOURCE,
+            status: "synced",
+            last_synced_at: now,
+            updated_at: now,
+          });
 
         if (upsertError) throw new Error(upsertError.message);
         return { failed: false, documentId: doc.id, fileName: doc.name, statementType, folderName: folder.name };

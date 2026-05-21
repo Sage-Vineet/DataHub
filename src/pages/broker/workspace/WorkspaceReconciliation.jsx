@@ -1801,29 +1801,6 @@ export default function WorkspaceReconciliation() {
         </div>
         <QBDisconnectedBanner pageName="Reconciliation" />
 
-        {/* Connection / Data Source selector */}
-        <section className="card-base w-full p-5">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <h2 className="text-[16px] font-semibold text-text-primary">Data Connection</h2>
-              <p className="mt-0.5 text-[13px] text-text-secondary">
-                Choose the source used to populate bank activity data.
-              </p>
-            </div>
-            <div className="flex items-center gap-2">
-              <label className="text-[12px] font-medium text-text-secondary">Connection</label>
-              <select
-                value={selectedReportSource}
-                onChange={(e) => void handleReportSourceChange(e.target.value)}
-                className="input-base h-9 min-w-[220px]"
-              >
-                {sourceOptions.map((opt) => (
-                  <option key={opt.key} value={opt.key}>{opt.label}</option>
-                ))}
-              </select>
-            </div>
-          </div>
-        </section>
 
         {/* QB Bank Activity — only for QuickBooks Online */}
         {isQBOnline && (
