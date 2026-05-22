@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useParams } from "react-router-dom";
 import {
   RefreshCw,
@@ -148,6 +148,10 @@ export default function WorkspaceEbitda() {
   const [sdePerCim, setSdePerCim] = useState("");
   const [isTypeDialogOpen, setIsTypeDialogOpen] = useState(false);
 
+  const activeSourceRef = useRef(reportSource);
+  activeSourceRef.current = reportSource;
+  const prevReportSourceForClearRef = useRef(reportSource);
+
   // Extract unique P&L accounts for addback dropdown (dynamic from API data)
   const plAccountOptions = useMemo(() => {
     if (!multiYearData) return [];
@@ -228,11 +232,22 @@ export default function WorkspaceEbitda() {
     return () => { active = false; };
   }, [clientId]);
 
+  useEffect(() => {
+    if (prevReportSourceForClearRef.current === reportSource) return;
+    prevReportSourceForClearRef.current = reportSource;
+    setMultiYearData(null);
+    setYears([]);
+    setError("");
+    setIsLoading(false);
+    setIsDataInitialized(false);
+  }, [reportSource]);
+
   const ebitdaCacheKey = clientId && reportSource
     ? `ebitda_data_${clientId}_${reportSource}`
     : null;
 
   const handleGenerate = useCallback(async (skipCache = false) => {
+    const requestSource = reportSource;
     if (!skipCache && ebitdaCacheKey) {
       try {
         const cached = sessionStorage.getItem(ebitdaCacheKey);
@@ -276,6 +291,7 @@ export default function WorkspaceEbitda() {
             }
           })
         );
+        if (activeSourceRef.current !== requestSource) return;
         setYears(availableYears);
         setMultiYearData(results);
         if (ebitdaCacheKey) {
@@ -343,6 +359,7 @@ export default function WorkspaceEbitda() {
 
         // Sort years newest → oldest to match QuickBooks column order
         const newYears = Array.from(yearFileMap.keys()).sort((a, b) => b - a);
+        if (activeSourceRef.current !== requestSource) return;
         setYears(newYears);
         setMultiYearData(newData);
         if (ebitdaCacheKey) {
@@ -405,6 +422,7 @@ export default function WorkspaceEbitda() {
         }
 
         const newYears = Array.from(yearFileMap.keys()).sort((a, b) => b - a);
+        if (activeSourceRef.current !== requestSource) return;
         setYears(newYears);
         setMultiYearData(newData);
         if (ebitdaCacheKey) {
@@ -428,16 +446,18 @@ export default function WorkspaceEbitda() {
             }
           })
         );
+        if (activeSourceRef.current !== requestSource) return;
         setMultiYearData(results);
         if (ebitdaCacheKey) {
           try { sessionStorage.setItem(ebitdaCacheKey, JSON.stringify({ multiYearData: results, years: yearList })); } catch { /* quota exceeded */ }
         }
       }
     } catch (err) {
+      if (activeSourceRef.current !== requestSource) return;
       setError(err?.message || "Failed to fetch EBITDA data. Please try again.");
       setMultiYearData(null);
     } finally {
-      setIsLoading(false);
+      if (activeSourceRef.current === requestSource) setIsLoading(false);
     }
   }, [isManualGl, isManualUpload, isQBManual, clientId, ebitdaCacheKey, accountingMethod]);
 

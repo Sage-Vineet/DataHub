@@ -11,6 +11,7 @@ const { parsePdfWithGemini } = require("./geminiFinancialParser");
 const {
   normalizeBankBinary,
   extractBankStatementsFromPdfBase64,
+  extractBankStatementsFromExcelBuffer,
   buildBankResponseShape,
 } = require("./bankStatementExtractor");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
@@ -1867,6 +1868,52 @@ async function getLatestQMSUploadedReport({ companyId, statementType }) {
   return data || null;
 }
 
+// Extract any UUID from a URL string — broader fallback for non-standard file_url formats.
+const UUID_PATTERN = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+async function loadBankBuffer(doc, fileName) {
+  // 1. Direct upload_id lookup
+  if (doc.upload_id) {
+    const { data: upload } = await supabase
+      .from("uploads").select("data").eq("id", doc.upload_id).maybeSingle();
+    if (upload?.data) {
+      const buf = normalizeBankBinary(upload.data);
+      if (buf?.length) return { buffer: buf, method: "upload_id" };
+    }
+  }
+
+  if (doc.file_url) {
+    const url = String(doc.file_url);
+
+    // 2. Specific /uploads/UUID/content pattern
+    const specificMatch = url.match(/\/uploads\/([0-9a-f-]{36})\/content/i);
+    if (specificMatch) {
+      const { data: upload } = await supabase
+        .from("uploads").select("data").eq("id", specificMatch[1]).maybeSingle();
+      if (upload?.data) {
+        const buf = normalizeBankBinary(upload.data);
+        if (buf?.length) return { buffer: buf, method: "file_url_specific" };
+      }
+    }
+
+    // 3. Any UUID found anywhere in the URL (handles non-standard storage paths)
+    const uuidMatch = url.match(UUID_PATTERN);
+    if (uuidMatch && uuidMatch[0] !== specificMatch?.[1]) {
+      const { data: upload } = await supabase
+        .from("uploads").select("data").eq("id", uuidMatch[0]).maybeSingle();
+      if (upload?.data) {
+        const buf = normalizeBankBinary(upload.data);
+        if (buf?.length) {
+          console.log(`[BankSync] Loaded "${fileName}" via URL UUID fallback`);
+          return { buffer: buf, method: "file_url_uuid_fallback" };
+        }
+      }
+    }
+  }
+
+  return { buffer: null, method: "not_found" };
+}
+
 async function syncBankReconciliationFolder(companyId, folder, now, overrideSource) {
   const bankSource = overrideSource || MANUAL_REPORT_UPLOAD_SOURCE;
   const { data: documents } = await supabase
@@ -1876,58 +1923,67 @@ async function syncBankReconciliationFolder(companyId, folder, now, overrideSour
     .order("uploaded_at", { ascending: false });
 
   if (!documents?.length) {
-    return { success: false, reason: "No files in folder", processed: [] };
+    return { success: false, reason: "No files in folder", processed: [], failed: [] };
   }
 
   const allStatements = [];
   const processedDocs = [];
+  const perFileFailed = [];
 
   for (const doc of documents) {
-    const fileName = String(doc.name || "bank_statement.pdf");
-    if (!fileName.toLowerCase().endsWith(".pdf")) {
-      console.log(`[BankSync] Skipping non-PDF: "${fileName}"`);
+    const fileName = String(doc.name || "bank_statement");
+    const ext = fileName.toLowerCase().split(".").pop();
+    const isPdf = ext === "pdf";
+    const isExcel = ["xlsx", "xls", "csv"].includes(ext);
+
+    if (!isPdf && !isExcel) {
+      console.log(`[BankSync] Skipping unsupported file type: "${fileName}"`);
+      perFileFailed.push({ fileName, folderName: folder.name, reason: `Unsupported file type (.${ext}). Upload PDF, XLSX, XLS, or CSV.` });
       continue;
     }
 
-    let buffer = null;
-
-    if (doc.upload_id) {
-      const { data: upload } = await supabase
-        .from("uploads").select("data").eq("id", doc.upload_id).maybeSingle();
-      if (upload?.data) buffer = normalizeBankBinary(upload.data);
-    }
-
-    if (!buffer && doc.file_url) {
-      const urlMatch = String(doc.file_url).match(/\/uploads\/([0-9a-f-]{36})\/content/i);
-      if (urlMatch) {
-        const { data: upload2 } = await supabase
-          .from("uploads").select("data").eq("id", urlMatch[1]).maybeSingle();
-        if (upload2?.data) {
-          buffer = normalizeBankBinary(upload2.data);
-          console.log(`[BankSync] Loaded "${fileName}" via inferred upload id`);
-        }
-      }
-    }
+    const { buffer } = await loadBankBuffer(doc, fileName);
 
     if (!buffer?.length) {
       console.warn(`[BankSync] No binary data for "${fileName}", skipping`);
+      perFileFailed.push({ fileName, folderName: folder.name, reason: "File binary could not be read. Try re-uploading the file." });
       continue;
     }
 
     try {
-      const statements = await extractBankStatementsFromPdfBase64(buffer.toString("base64"), fileName);
-      allStatements.push(...statements);
-      processedDocs.push({ documentId: doc.id, fileName, statementType: STATEMENT_TYPES.BANK_RECONCILIATION });
+      let statements;
+      if (isExcel) {
+        statements = await extractBankStatementsFromExcelBuffer(buffer, fileName);
+        console.log(`[BankSync] Excel extracted ${statements.length} statement(s) from "${fileName}"`);
+      } else {
+        statements = await extractBankStatementsFromPdfBase64(buffer.toString("base64"), fileName);
+      }
+      if (statements.length) {
+        allStatements.push(...statements);
+        processedDocs.push({ documentId: doc.id, fileName, statementType: STATEMENT_TYPES.BANK_RECONCILIATION });
+      } else {
+        perFileFailed.push({ fileName, folderName: folder.name, reason: "No bank statement data found in file. Ensure it contains Beginning Balance, Deposits, Withdrawals, and Ending Balance." });
+      }
     } catch (err) {
-      console.error(`[BankSync] Gemini failed for "${fileName}": ${err.message}`);
+      console.error(`[BankSync] Extraction failed for "${fileName}": ${err.message}`);
+      perFileFailed.push({ fileName, folderName: folder.name, reason: `Extraction error: ${err.message}` });
     }
   }
 
   if (!allStatements.length) {
-    return { success: false, reason: "No bank statement data could be extracted", processed: [] };
+    const reason = perFileFailed.length
+      ? perFileFailed.map((f) => `${f.fileName}: ${f.reason}`).join("; ")
+      : "No bank statement data could be extracted";
+    return { success: false, reason, processed: [], failed: perFileFailed };
   }
 
   const { banks, months, totals } = buildBankResponseShape(allStatements);
+
+  // Don't persist empty extraction results — the endpoint will re-run live extraction next time.
+  if (!banks.length) {
+    console.warn(`[BankSync] buildBankResponseShape produced 0 banks for company ${companyId} — skipping storage`);
+    return { success: false, reason: "No bank data could be structured from extracted statements", processed: [] };
+  }
 
   // Upsert one aggregate record per company for bank reconciliation
   const { data: existing } = await supabase
@@ -1969,7 +2025,7 @@ async function syncBankReconciliationFolder(companyId, folder, now, overrideSour
   if (upsertError) throw new Error(upsertError.message);
 
   console.log(`[BankSync] Stored bank reconciliation data for company ${companyId}: ${banks.length} bank(s), ${months.length} month(s)`);
-  return { success: true, processed: processedDocs };
+  return { success: true, processed: processedDocs, failed: perFileFailed };
 }
 
 // Maps lowercase subfolder name → forced statement type
@@ -2091,8 +2147,11 @@ async function syncManualUploadSource(companyId) {
       try {
         const bankResult = await syncBankReconciliationFolder(companyId, folder, now);
         processed.push(...(bankResult.processed || []));
-        failed.push(...(bankResult.failed || []));
-        if (!bankResult.success && !bankResult.failed?.length && bankResult.reason !== "No files in folder") {
+        // Per-file failures from syncBankReconciliationFolder are the primary signal.
+        // Only add a folder-level fallback error when no per-file detail is available.
+        if (bankResult.failed?.length) {
+          failed.push(...bankResult.failed);
+        } else if (!bankResult.success && bankResult.reason !== "No files in folder") {
           failed.push({ fileName: folder.name, folderName: folder.name, reason: bankResult.reason || "Bank extraction failed" });
         }
       } catch (err) {
@@ -2444,8 +2503,9 @@ async function syncQMSUploadSource(companyId) {
       try {
         const bankResult = await syncBankReconciliationFolder(companyId, folder, now, QMS_REPORT_UPLOAD_SOURCE);
         processed.push(...(bankResult.processed || []));
-        failed.push(...(bankResult.failed || []));
-        if (!bankResult.success && !bankResult.failed?.length && bankResult.reason !== "No files in folder") {
+        if (bankResult.failed?.length) {
+          failed.push(...bankResult.failed);
+        } else if (!bankResult.success && bankResult.reason !== "No files in folder") {
           failed.push({ fileName: folder.name, folderName: folder.name, reason: bankResult.reason || "Bank extraction failed" });
         }
       } catch (err) {

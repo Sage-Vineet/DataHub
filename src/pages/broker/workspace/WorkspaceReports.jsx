@@ -312,6 +312,7 @@ export default function WorkspaceReports() {
   const [isLoadingQMSFiles, setIsLoadingQMSFiles] = useState(false);
   const hasRestoredSessionRef = useRef(false);
   const isFirstMountRef = useRef(true);
+  const prevReportSourceForClearRef = useRef(selectedReportSource);
   // Always-fresh ref so the filter options effect doesn't capture a stale closure.
   const manualFiltersRef = useRef(manualFilters);
   manualFiltersRef.current = manualFilters;
@@ -383,13 +384,34 @@ export default function WorkspaceReports() {
   // so the filter options effect re-runs and picks up the new fiscal years.
   useEffect(() => {
     function handleGlStaged(event) {
-      const { clientId: eventClientId } = event.detail || {};
+      const { clientId: eventClientId, batchId: eventBatchId } = event.detail || {};
       if (eventClientId && clientId && eventClientId !== clientId) return;
+      setManualFilters((prev) => ({
+        ...prev,
+        batchId: String(eventBatchId || "").trim(),
+        fiscalYear: [],
+        fiscalMonth: "",
+      }));
+      setAppliedManualFilters((prev) => ({
+        ...prev,
+        batchId: String(eventBatchId || "").trim(),
+        fiscalYear: [],
+        fiscalMonth: "",
+      }));
       setFilterOptionsVersion((v) => v + 1);
     }
     window.addEventListener(MANUAL_GL_STAGED_EVENT, handleGlStaged);
     return () => window.removeEventListener(MANUAL_GL_STAGED_EVENT, handleGlStaged);
   }, [clientId]);
+
+  useEffect(() => {
+    if (prevReportSourceForClearRef.current === selectedReportSource) return;
+    prevReportSourceForClearRef.current = selectedReportSource;
+    setReportsData(createInitialReportsData());
+    setManualUploadFiles({ "Balance Sheet": [], "Profit & Loss": [], "Cashflow": [] });
+    setQMSFiles({ "Balance Sheet": [], "Profit & Loss": [], "Cashflow": [] });
+    setManualFilterOptions({});
+  }, [selectedReportSource]);
 
   const clientName = useMemo(
     () => company?.name || "All Clients",
@@ -416,40 +438,60 @@ export default function WorkspaceReports() {
 
   useEffect(() => {
     if (selectedSourceMode !== "manual" || !clientId) return;
-    const optionsParams = {
-      batchId: appliedManualFilters.batchId,
-    };
+    const optionsParams = {};
 
     getManualStageFilterOptions({
       clientId,
       params: optionsParams,
     })
       .then((payload) => {
+        const activeBatchId = String(payload?.activeBatchId || "").trim();
         const options = payload?.options && typeof payload.options === "object"
           ? payload.options
           : {};
         setManualFilterOptions(options);
         debugLog("[ManualGL][UI][FilterOptions]", {
-          batchId: appliedManualFilters.batchId || "",
+          requestedBatchId: appliedManualFilters.batchId || "",
+          activeBatchId: activeBatchId || null,
           fiscalYears: options?.fiscalYear || [],
         });
         const availableYears = Array.isArray(options.fiscalYear) ? options.fiscalYear : [];
+        // Read from ref to get the latest filters without adding manualFilters to deps,
+        // which would re-run this effect on every user filter interaction.
+        const currentFilters = manualFiltersRef.current;
+        let nextFilters = { ...currentFilters };
+        let changed = false;
+
+        if (activeBatchId && currentFilters.batchId !== activeBatchId) {
+          nextFilters.batchId = activeBatchId;
+          nextFilters.fiscalMonth = "";
+          changed = true;
+        }
+
         if (availableYears.length > 0) {
-          // Read from ref to get the latest filters without adding manualFilters to deps,
-          // which would re-run this effect on every user filter interaction.
-          const currentYear = manualFiltersRef.current.fiscalYear?.[0];
+          const currentYear = nextFilters.fiscalYear?.[0];
           const yearMatch = availableYears.find((y) => String(y) === String(currentYear));
           if (!currentYear || !yearMatch) {
-            const sorted = [...availableYears].map(Number).filter(Number.isFinite).sort((a, b) => b - a);
+            const sorted = [...availableYears]
+              .map(Number)
+              .filter(Number.isFinite)
+              .sort((a, b) => b - a);
             if (sorted.length > 0) {
-              const next = { ...manualFiltersRef.current, fiscalYear: [String(sorted[0])] };
-              setManualFilters(next);
-              setAppliedManualFilters(next);
+              nextFilters.fiscalYear = [String(sorted[0])];
+              changed = true;
               debugLog("[ManualGL][UI][FilterAutoSelectYear]", {
                 selectedFiscalYear: String(sorted[0]),
               });
             }
           }
+        } else if ((nextFilters.fiscalYear || []).length > 0) {
+          nextFilters.fiscalYear = [];
+          changed = true;
+        }
+
+        if (changed) {
+          setManualFilters(nextFilters);
+          setAppliedManualFilters(nextFilters);
         }
       })
       .catch((error) => {

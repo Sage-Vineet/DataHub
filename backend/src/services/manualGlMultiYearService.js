@@ -12,6 +12,11 @@ const {
   getActiveDatasetVersion,
   ensureLegacyDatasetVersion,
 } = require("./datasetVersionService");
+const {
+  getActiveUploadBatch,
+  resolveReportBatchId,
+  REPORT_BATCH_MODE,
+} = require("./manualGlActiveBatchService");
 
 const TABLES = {
   batches: "manual_gl_batches",
@@ -31,6 +36,7 @@ const OPTIONAL_GL_MAPPING_FIELDS = [
   "amount",
   "debit",
   "credit",
+  "vendor_name",
   "description",
   "reference",
   "transaction_type",
@@ -42,7 +48,7 @@ const OPTIONAL_GL_MAPPING_FIELDS = [
   "sub_category",
 ];
 
-// Column candidate lists are ordered most-specific → least-specific.
+// Column candidate lists are ordered most-specific â†’ least-specific.
 // resolveColumn picks the first match, so longer/more-distinctive strings win
 // before short ambiguous ones like "dr", "num", "type".
 const MAPPING_CANDIDATES = {
@@ -69,6 +75,10 @@ const MAPPING_CANDIDATES = {
   ],
   debit: ["debit amount", "debits", "dr amount", "debit", "dr"],
   credit: ["credit amount", "credits", "cr amount", "credit", "cr"],
+  vendor_name: [
+    "vendor name", "payee name", "customer name", "party name",
+    "vendor", "payee", "customer", "counterparty", "name",
+  ],
   description: [
     "memo/description", "transaction description", "entry description",
     "description", "particulars", "details", "narration",
@@ -97,9 +107,10 @@ const MANUAL_SOURCE_KEY = REPORT_SOURCE_KEYS.MANUAL_GL;
 const DEFAULT_FISCAL_YEAR_START_MONTH = 1;
 const DEFAULT_FISCAL_YEAR_START_DAY = 1;
 const MAX_SKIP_SAMPLES = 500;
+const PROCESSING_BATCH_STALE_MINUTES = 30;
 
 // Pre-compiled account-type inference regexes.
-// Defined once at module load — NOT inside inferAccountType() — so they are
+// Defined once at module load â€” NOT inside inferAccountType() â€” so they are
 // never recompiled during the 100K-500K transaction classification loop.
 const RE_ACCT_ASSET = /\bcash\b|\bbank\b|\bchecking\b|\bsavings\b|\breceivable\b|\ba\/r\b|\binventory\b|\basset\b|\bprepaid\b|\bfixed asset\b|\bequipment\b|\bmachinery\b|\bvehicle\b|\btruck\b|\bfurniture\b|\bfixture\b|\bcomputer\b|\bbuilding\b|\bland\b/;
 const RE_ACCT_LIABILITY = /\bpayable\b|\bloan\b|\bliability\b|\bcredit card\b|\bcc\b|\bvisa\b|\bmastercard\b|\bamex\b|\bdebt\b|\bnote payable\b|\bnotes payable\b/;
@@ -119,6 +130,117 @@ function isMissingColumnError(error, columnName = "") {
 function isConflictTargetError(error) {
   const message = String(error?.message || "").toLowerCase();
   return message.includes("no unique or exclusion constraint matching the on conflict specification");
+}
+
+function isUniqueConstraintError(error, constraintName = "") {
+  if (!error) return false;
+  const message = String(error.message || "").toLowerCase();
+  if (!message.includes("duplicate key value violates unique constraint")) return false;
+  if (!constraintName) return true;
+  return message.includes(String(constraintName).toLowerCase());
+}
+
+function isProcessingBatchConstraintError(error) {
+  if (!error) return false;
+  if (isUniqueConstraintError(error, "uq_manual_gl_batches_company_processing")) return true;
+  const message = String(error.message || "").toLowerCase();
+  return (
+    isUniqueConstraintError(error) &&
+    message.includes("manual_gl_batches") &&
+    message.includes("batch_status") &&
+    message.includes("processing")
+  );
+}
+
+function isDatasetVersionConstraintError(error) {
+  if (!error) return false;
+  if (isUniqueConstraintError(error, "uq_manual_gl_batches_company_dataset_version")) return true;
+  const message = String(error.message || "").toLowerCase();
+  return (
+    isUniqueConstraintError(error) &&
+    message.includes("manual_gl_batches") &&
+    message.includes("dataset_version")
+  );
+}
+
+async function releaseStaleProcessingBatchLocks(
+  companyId,
+  sourceType = MANUAL_SOURCE_KEY,
+  nowIso = new Date().toISOString(),
+) {
+  if (!companyId) return 0;
+
+  const staleCutoff = new Date(
+    Date.now() - PROCESSING_BATCH_STALE_MINUTES * 60 * 1000,
+  ).toISOString();
+  const fullPayload = {
+    status: "failed",
+    batch_status: "failed",
+    is_active: false,
+    is_archived: true,
+    processing_completed_at: nowIso,
+    updated_at: nowIso,
+  };
+
+  let query = supabase
+    .from(TABLES.batches)
+    .update(fullPayload)
+    .eq("company_id", companyId)
+    .eq("batch_status", "processing")
+    .lt("updated_at", staleCutoff);
+
+  if (sourceType) {
+    query = query.eq("source_type", sourceType);
+  }
+
+  let { data, error } = await query.select("id");
+
+  if (error && isMissingColumnError(error, "source_type")) {
+    ({ data, error } = await supabase
+      .from(TABLES.batches)
+      .update(fullPayload)
+      .eq("company_id", companyId)
+      .eq("batch_status", "processing")
+      .lt("updated_at", staleCutoff)
+      .select("id"));
+  }
+
+  if (error && isMissingColumnError(error)) {
+    const legacyPayload = {
+      status: "failed",
+      updated_at: nowIso,
+    };
+
+    let legacyQuery = supabase
+      .from(TABLES.batches)
+      .update(legacyPayload)
+      .eq("company_id", companyId)
+      .eq("status", "processing")
+      .lt("updated_at", staleCutoff);
+
+    if (sourceType) {
+      legacyQuery = legacyQuery.eq("source_type", sourceType);
+    }
+
+    ({ data, error } = await legacyQuery.select("id"));
+
+    if (error && isMissingColumnError(error, "source_type")) {
+      ({ data, error } = await supabase
+        .from(TABLES.batches)
+        .update(legacyPayload)
+        .eq("company_id", companyId)
+        .eq("status", "processing")
+        .lt("updated_at", staleCutoff)
+        .select("id"));
+    }
+  }
+
+  if (error) {
+    console.warn("[ManualGL][MultiYear] Failed to clear stale processing batches:", error.message);
+    return 0;
+  }
+
+  return Array.isArray(data) ? data.length : 0;
 }
 
 function parseBoolean(value) {
@@ -145,7 +267,7 @@ function roundMoney(value) {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
-// ─── Balance Normalization Engine ─────────────────────────────────────────────
+// â”€â”€â”€ Balance Normalization Engine â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Single source of truth for all debit/credit sign conventions.
 // Every report and aggregation MUST route through these functions.
 // DO NOT scatter inline debit-credit arithmetic outside this section.
@@ -154,15 +276,15 @@ function roundMoney(value) {
  * Computes the natural (accounting-standard) balance for an account.
  *
  * Normal balance rules:
- *   Assets     (+Dr) : balance = debits − credits   → positive when Dr > Cr
- *   Expenses   (+Dr) : balance = debits − credits   → positive when Dr > Cr
- *   COGS       (+Dr) : balance = debits − credits   → positive when Dr > Cr
- *   Liabilities(+Cr) : balance = credits − debits   → positive when Cr > Dr
- *   Equity     (+Cr) : balance = credits − debits   → positive when Cr > Dr
- *   Revenue    (+Cr) : balance = credits − debits   → positive when Cr > Dr
+ *   Assets     (+Dr) : balance = debits âˆ’ credits   â†’ positive when Dr > Cr
+ *   Expenses   (+Dr) : balance = debits âˆ’ credits   â†’ positive when Dr > Cr
+ *   COGS       (+Dr) : balance = debits âˆ’ credits   â†’ positive when Dr > Cr
+ *   Liabilities(+Cr) : balance = credits âˆ’ debits   â†’ positive when Cr > Dr
+ *   Equity     (+Cr) : balance = credits âˆ’ debits   â†’ positive when Cr > Dr
+ *   Revenue    (+Cr) : balance = credits âˆ’ debits   â†’ positive when Cr > Dr
  *
- * @param {number} debit       - gross debit amount (always ≥ 0)
- * @param {number} credit      - gross credit amount (always ≥ 0)
+ * @param {number} debit       - gross debit amount (always â‰¥ 0)
+ * @param {number} credit      - gross credit amount (always â‰¥ 0)
  * @param {string} accountType - "asset"|"liability"|"equity"|"income"|"cogs"|"expense"
  * @param {boolean} isContra   - true for contra accounts (reverses the normal sign)
  * @returns {number}           - signed natural balance (positive = normal balance)
@@ -181,9 +303,9 @@ function computeNaturalBalance(debit, credit, accountType, isContra = false) {
  * For a BS roll-forward: endingBalance = openingBalance + sum(activityDelta).
  *
  * A delta of +X means the balance grew by X in the natural direction for the account type.
- * A delta of −X means the balance shrank.
+ * A delta of âˆ’X means the balance shrank.
  *
- * Internally derived from netAmount = credit − debit (the DB convention).
+ * Internally derived from netAmount = credit âˆ’ debit (the DB convention).
  *
  * @param {number} netAmount   - credit minus debit (from the staged transaction)
  * @param {string} accountType - "asset"|"liability"|"equity"
@@ -193,8 +315,8 @@ function computeNaturalBalance(debit, credit, accountType, isContra = false) {
 function computeBsActivityDelta(netAmount, accountType, isContra = false) {
   const net = roundMoney(Number(netAmount) || 0);
   const type = String(accountType || "").toLowerCase();
-  // For assets: natural balance grows with debits → delta = −(credit−debit) = debit−credit
-  // For liabilities/equity: natural balance grows with credits → delta = credit−debit
+  // For assets: natural balance grows with debits â†’ delta = âˆ’(creditâˆ’debit) = debitâˆ’credit
+  // For liabilities/equity: natural balance grows with credits â†’ delta = creditâˆ’debit
   const assetSide = type === "asset";
   const effectiveAssetSide = isContra ? !assetSide : assetSide;
   return effectiveAssetSide ? roundMoney(-net) : roundMoney(net);
@@ -209,13 +331,13 @@ function computeBsActivityDelta(netAmount, accountType, isContra = false) {
  * because the underlying ledger stores them as credit-side entries. On the rendered
  * Balance Sheet these are POSITIVE values (e.g., "Credit Card 206,412.44" means
  * the company OWES $206,412). When the parser reads "(206,412.44)" it produces
- * −206,412.44. That negative sign propagates into the opening balance and inverts
+ * âˆ’206,412.44. That negative sign propagates into the opening balance and inverts
  * every subsequent roll-forward calculation.
  *
  * Rules:
- *   LIABILITY: negative → flip to positive (natural credit balance), except for
+ *   LIABILITY: negative â†’ flip to positive (natural credit balance), except for
  *     genuine debit-balance exceptions (customer deposits, advance payments).
- *   EQUITY: negative → flip to positive unless the account name clearly represents
+ *   EQUITY: negative â†’ flip to positive unless the account name clearly represents
  *     a reduction account (owner's draw, withdrawal, distribution, deficit, net loss).
  *   ASSET: preserve sign as-is (assets are naturally debit-balance).
  *
@@ -234,8 +356,8 @@ function normalizeBsLineAmount(rawAmount, accountType, accountName = "") {
   const name = normalizeKey(accountName);
 
   if (type === "liability") {
-    // Negative liability → natural positive (company owes money shown as positive).
-    // Exception: genuine debit-balance accounts (e.g. overpaid vendor → asset-like).
+    // Negative liability â†’ natural positive (company owes money shown as positive).
+    // Exception: genuine debit-balance accounts (e.g. overpaid vendor â†’ asset-like).
     const isGenuineCreditBalance =
       /\bcustomer deposit\b|\badvance\b|\bdeposit received\b|\bprepaid revenue\b|\bdeferred revenue\b|\bdeferred income\b/.test(name);
     return isGenuineCreditBalance ? amount : Math.abs(amount);
@@ -243,9 +365,9 @@ function normalizeBsLineAmount(rawAmount, accountType, accountName = "") {
 
   if (type === "equity") {
     // Negative equity entries in BS exports:
-    //   – Owner's draw / distributions REDUCE equity → legitimately negative → preserve.
-    //   – Accumulated deficit / net loss → legitimately negative → preserve.
-    //   – Capital contributions exported with parenthetical formatting → flip to positive.
+    //   â€“ Owner's draw / distributions REDUCE equity â†’ legitimately negative â†’ preserve.
+    //   â€“ Accumulated deficit / net loss â†’ legitimately negative â†’ preserve.
+    //   â€“ Capital contributions exported with parenthetical formatting â†’ flip to positive.
     const isReductionAccount =
       /\bdraw\b|\bwithdrawal\b|\bdistribution\b|\bdeficit\b|\baccum(?:ulated)?\s+loss\b/.test(name);
     return isReductionAccount ? amount : Math.abs(amount);
@@ -254,7 +376,7 @@ function normalizeBsLineAmount(rawAmount, accountType, accountName = "") {
   return amount;
 }
 
-// ─── End Balance Normalization Engine ─────────────────────────────────────────
+// â”€â”€â”€ End Balance Normalization Engine â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function parseIntegerInRange(value, min, max, fallback) {
   const parsed = Number(value);
@@ -301,7 +423,7 @@ function computeFiscalYearFromIsoDate(isoDate, fiscalCalendar = {}) {
   return rawYear - 1;
 }
 
-// Returns the END year of the fiscal period (April–March → 2023 for the year ending March 2023).
+// Returns the END year of the fiscal period (Aprilâ€“March â†’ 2023 for the year ending March 2023).
 // For January fiscal years the start and end year are identical, so this is a no-op.
 function computeFiscalYearEndLabel(isoDate, fiscalCalendar = {}) {
   const calendar = resolveFiscalCalendarConfig(fiscalCalendar);
@@ -324,7 +446,7 @@ function computeFiscalYearEndDate(endLabel, fiscalCalendar = {}) {
     return `${year}-12-31`;
   }
   // The FY ends in the month before fiscalYearStartMonth, in year `endLabel`.
-  // E.g. April start (month 4) → ends in month 3 (March) of `endLabel`.
+  // E.g. April start (month 4) â†’ ends in month 3 (March) of `endLabel`.
   const endMonth = calendar.fiscalYearStartMonth - 1; // 1-indexed month
   const lastDay = new Date(year, endMonth, 0).getDate(); // day 0 of next month = last day of endMonth
   return `${year}-${String(endMonth).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
@@ -336,7 +458,7 @@ function formatFiscalYearLabel(endYear, fiscalYearStartMonth = 1) {
 }
 
 // Extract unique fiscal years from staged transaction rows.
-// Uses only the stored fiscal_year column — does NOT infer from dates or filenames.
+// Uses only the stored fiscal_year column â€” does NOT infer from dates or filenames.
 function getAvailableFiscalYears(rows = []) {
   const yearSet = new Set();
   for (const row of rows) {
@@ -449,7 +571,7 @@ function parseAmountDetail(value) {
   return { value: parsed, isPresent: true, isValid: true };
 }
 
-// Month abbreviation → 1-indexed month number. Defined once at module level.
+// Month abbreviation â†’ 1-indexed month number. Defined once at module level.
 const MONTH_ABBR_MAP = {
   jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
   jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
@@ -481,7 +603,7 @@ function parseDateFlexible(value) {
     .trim();
   const useRaw = dateOnly || raw;
 
-  // YYYYMMDD — no separator, exactly 8 digits (NetSuite, some ERP exports)
+  // YYYYMMDD â€” no separator, exactly 8 digits (NetSuite, some ERP exports)
   if (/^\d{8}$/.test(useRaw)) {
     const y = Number(useRaw.slice(0, 4));
     const m = Number(useRaw.slice(4, 6));
@@ -490,7 +612,7 @@ function parseDateFlexible(value) {
     if (!Number.isNaN(date.getTime()) && date.getMonth() === m - 1) return date;
   }
 
-  // ISO YYYY-MM-DD — most reliable, handle explicitly before JS Date constructor
+  // ISO YYYY-MM-DD â€” most reliable, handle explicitly before JS Date constructor
   const isoMatch = useRaw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (isoMatch) {
     const y = Number(isoMatch[1]);
@@ -519,7 +641,7 @@ function parseDateFlexible(value) {
     }
   }
 
-  // Try native Date constructor — handles many locale-aware formats:
+  // Try native Date constructor â€” handles many locale-aware formats:
   // "Jan 15, 2024", "January 15, 2024", "15 Jan 2024", RFC 2822, etc.
   let parsed = new Date(useRaw);
   if (!Number.isNaN(parsed.getTime())) return parsed;
@@ -540,16 +662,16 @@ function parseDateFlexible(value) {
       // YYYY/MM/DD or YYYY.MM.DD
       year = n1; month = n2; day = n3;
     } else if (parts[2].length === 4 && Number.isInteger(n3)) {
-      // M/D/YYYY or D/M/YYYY — use >12 heuristic to disambiguate
+      // M/D/YYYY or D/M/YYYY â€” use >12 heuristic to disambiguate
       year = n3;
       if (Number.isInteger(n1) && Number.isInteger(n2)) {
         if (n1 > 12 && n2 <= 12) { day = n1; month = n2; }
         else if (n2 > 12 && n1 <= 12) { month = n1; day = n2; }
-        else { month = n1; day = n2; } // ambiguous → M/D convention
+        else { month = n1; day = n2; } // ambiguous â†’ M/D convention
       }
     } else if (parts[2].length === 2 && Number.isInteger(n3)) {
       // Two-digit year: M/D/YY or D/M/YY
-      // Pivot: YY < 50 → 2000s, YY >= 50 → 1900s
+      // Pivot: YY < 50 â†’ 2000s, YY >= 50 â†’ 1900s
       year = n3 >= 50 ? 1900 + n3 : 2000 + n3;
       if (Number.isInteger(n1) && Number.isInteger(n2)) {
         if (n1 > 12 && n2 <= 12) { day = n1; month = n2; }
@@ -829,7 +951,7 @@ function resolveColumn(headers = [], provided = "", candidates = []) {
   if (provided && headers.includes(provided)) return provided;
   const normalized = headers.map((h) => ({ header: h, key: normalizeKey(h) }));
   for (const candidate of candidates) {
-    // Short candidates (≤3 chars: "dr", "cr", "num", "ref") require a word-boundary
+    // Short candidates (â‰¤3 chars: "dr", "cr", "num", "ref") require a word-boundary
     // match to prevent false positives: "dr" must not match "address";
     // "num" must not match "account number"; "cr" must not match "description".
     const isShort = candidate.length <= 3;
@@ -855,7 +977,7 @@ function resolveColumn(headers = [], provided = "", candidates = []) {
 // Earlier position = higher priority (that field keeps the column; others are cleared).
 const FIELD_DEDUP_PRIORITY = [
   "date", "account_name", "account_number", "debit", "credit",
-  "amount", "description", "reference", "account_type",
+  "amount", "vendor_name", "description", "reference", "account_type",
   "transaction_type", "journal_type", "class", "department",
   "location", "category", "sub_category",
 ];
@@ -922,8 +1044,8 @@ function isLikelySummaryLabel(accountName) {
 }
 
 // When no date column is found via MAPPING_CANDIDATES, scan cell values across all
-// columns and pick the one where ≥50% of sampled non-empty cells parse as a
-// plausible date (year 2000–2060). Prevents hard failures on unusual header names.
+// columns and pick the one where â‰¥50% of sampled non-empty cells parse as a
+// plausible date (year 2000â€“2060). Prevents hard failures on unusual header names.
 function detectDateColumnFallback(headers, rows) {
   const MAX_SCAN_ROWS = Math.min(rows.length, 60);
   let bestHeader = "";
@@ -1183,6 +1305,7 @@ function parseGlSheetTransactions({
     detectedDebitColumn: resolvedMapping.debit || null,
     detectedCreditColumn: resolvedMapping.credit || null,
     detectedAmountColumn: resolvedMapping.amount || null,
+    detectedVendorColumn: resolvedMapping.vendor_name || null,
     detectedAccountNameColumn: resolvedMapping.account_name || null,
     detectedAccountNumberColumn: resolvedMapping.account_number || null,
     detectedDescriptionColumn: resolvedMapping.description || null,
@@ -1271,6 +1394,7 @@ function parseGlSheetTransactions({
     const rawAmount = normalizedMap.amount ? normalizedRow[normalizedMap.amount] : null;
     const rawDebit = normalizedMap.debit ? normalizedRow[normalizedMap.debit] : null;
     const rawCredit = normalizedMap.credit ? normalizedRow[normalizedMap.credit] : null;
+    const rawVendorName = normalizedMap.vendor_name ? normalizedRow[normalizedMap.vendor_name] : null;
     const rawDescription = normalizedMap.description ? normalizedRow[normalizedMap.description] : null;
     const rawReference = normalizedMap.reference ? normalizedRow[normalizedMap.reference] : null;
     const rawTransactionType = normalizedMap.transaction_type ? normalizedRow[normalizedMap.transaction_type] : null;
@@ -1322,7 +1446,7 @@ function parseGlSheetTransactions({
       markSkipped(
         "balance_forward_row",
         rowNumber,
-        `Balance forward/opening/ending row "${accountName}" skipped — not a GL transaction.`,
+        `Balance forward/opening/ending row "${accountName}" skipped â€” not a GL transaction.`,
       );
       return;
     }
@@ -1428,6 +1552,7 @@ function parseGlSheetTransactions({
     const transactionType = rawTransactionType ? String(rawTransactionType).trim() : "";
     const journalType = rawJournalType ? String(rawJournalType).trim() : transactionType;
     const sourceFile = String(upload.file_name || "").trim();
+    const vendorName = rawVendorName ? String(rawVendorName).trim() : "";
     const description = rawDescription ? String(rawDescription).trim() : "";
     const reference = rawReference ? String(rawReference).trim() : "";
     const rowTransactionId = `${upload.id}:${sheetData.sheetName}:${rowNumber}`;
@@ -1441,6 +1566,7 @@ function parseGlSheetTransactions({
       isoDate || "",
       accountName,
       accountNumber,
+      vendorName,
       netAmount,
       description,
       reference,
@@ -1459,6 +1585,7 @@ function parseGlSheetTransactions({
       accountType: normalizedType ? normalizedType.charAt(0).toUpperCase() + normalizedType.slice(1) : "",
       category,
       subCategory,
+      vendorName,
       debit,
       credit,
       netAmount,
@@ -1611,7 +1738,7 @@ function parseBalanceSheetFromSheet(sheetData) {
     let majorGroup = currentMajorGroup || inferredGrouping.majorGroup || "";
     let minorGroup = currentMinorGroup || inferredGrouping.minorGroup || "";
     // Use structural BS header context (currentMajorGroup/currentMinorGroup) to derive
-    // leafCategory when available — prevents "Truck" under "Fixed Assets" header from
+    // leafCategory when available â€” prevents "Truck" under "Fixed Assets" header from
     // being re-classified as "Other Current Assets" by keyword inference.
     let leafCategory;
     if (
@@ -1748,16 +1875,16 @@ function normalizeAccountLabel(value) {
   // differences between the two sources never cause false misses.
   //
   // Stripping order matters:
-  //   1. normalizeKey → lowercase, trim
-  //   2. Strip pipe separators ("Bank of America | Checking" → "bank of america checking")
+  //   1. normalizeKey â†’ lowercase, trim
+  //   2. Strip pipe separators ("Bank of America | Checking" â†’ "bank of america checking")
   //   3. Strip account-number suffixes like "x7890" or "#7890" BEFORE the generic
   //      non-alphanumeric sweep, so the surrounding space collapse removes the gap.
   //   4. Strip 4+ digit standalone numbers that are account codes not part of the name.
-  //   5. Generic non-alphanumeric → space (handles &, /, -, etc.)
+  //   5. Generic non-alphanumeric â†’ space (handles &, /, -, etc.)
   //   6. Remove filler conjunctions so "Cash & Cash Equivalents" = "Cash and Cash Equivalents".
   //   7. Collapse whitespace.
   return normalizeKey(value)
-    .replace(/\|/g, " ")                  // pipe separators → space
+    .replace(/\|/g, " ")                  // pipe separators â†’ space
     .replace(/\bx\d+\b/g, "")            // "x7890" account-number suffixes
     .replace(/#\d+\b/g, "")              // "#1234" account-number suffixes
     .replace(/\b\d{4,}\b/g, "")          // standalone 4+ digit codes (e.g. "1010")
@@ -1948,6 +2075,54 @@ async function createBatch({
       ? uploadSessionId
       : crypto.randomUUID();
   const normalizedVersion = sourceSwitchVersion || now;
+  let datasetVersion = null;
+
+  try {
+    const { data: nextVersion, error: versionError } = await supabase
+      .rpc("next_manual_gl_dataset_version", { p_company_id: companyId });
+
+    if (!versionError && Number.isInteger(Number(nextVersion)) && Number(nextVersion) > 0) {
+      datasetVersion = Number(nextVersion);
+    } else if (versionError) {
+      console.warn("[ManualGL][MultiYear] Dataset version RPC fallback:", versionError.message);
+    }
+  } catch (error) {
+    console.warn("[ManualGL][MultiYear] Dataset version RPC unavailable:", error.message);
+  }
+
+  if (!datasetVersion) {
+    const runVersionLookup = async (includeSourceType = true) => {
+      let query = supabase
+        .from(TABLES.batches)
+        .select("dataset_version")
+        .eq("company_id", companyId)
+        .not("dataset_version", "is", null)
+        .order("dataset_version", { ascending: false })
+        .limit(1);
+      if (includeSourceType) {
+        query = query.eq("source_type", MANUAL_SOURCE_KEY);
+      }
+      return query.maybeSingle();
+    };
+
+    let { data: latestVersionRow, error: latestVersionError } = await runVersionLookup(true);
+
+    if (latestVersionError && isMissingColumnError(latestVersionError, "source_type")) {
+      ({ data: latestVersionRow, error: latestVersionError } = await runVersionLookup(false));
+    }
+
+    if (latestVersionError && !isMissingColumnError(latestVersionError, "dataset_version")) {
+      throw new Error(`Failed to resolve dataset version: ${latestVersionError.message}`);
+    }
+
+    const latestDatasetVersion = Number(latestVersionRow?.dataset_version || 0);
+    if (Number.isInteger(latestDatasetVersion) && latestDatasetVersion > 0) {
+      datasetVersion = latestDatasetVersion + 1;
+    } else {
+      datasetVersion = 1;
+    }
+  }
+
   const basePayload = {
     company_id: companyId,
     source: "manual_gl",
@@ -1959,6 +2134,7 @@ async function createBatch({
       sourceType: sourceType || MANUAL_SOURCE_KEY,
       sourceSwitchVersion: normalizedVersion,
       uploadSessionId: normalizedSessionId,
+      datasetVersion,
     },
     updated_at: now,
   };
@@ -1970,6 +2146,13 @@ async function createBatch({
     source_switch_version: normalizedVersion,
     upload_session_id: normalizedSessionId,
     staged_at: now,
+    batch_status: "processing",
+    is_active: false,
+    is_archived: false,
+    dataset_version: datasetVersion,
+    uploaded_by: createdBy || null,
+    uploaded_at: now,
+    processing_started_at: now,
   };
 
   const insertBatch = async (nextPayload) =>
@@ -1979,11 +2162,66 @@ async function createBatch({
       .select("*")
       .single();
 
-  let { data, error } = await insertBatch(payload);
+  const insertWithSchemaFallback = async (nextPayload) => {
+    let { data, error } = await insertBatch(nextPayload);
 
-  if (error && isMissingColumnError(error)) {
-    payload = { ...basePayload };
-    ({ data, error } = await insertBatch(payload));
+    if (error && isMissingColumnError(error)) {
+      const fallbackPayloads = [
+        {
+          ...basePayload,
+          source_type: sourceType || MANUAL_SOURCE_KEY,
+        },
+        { ...basePayload },
+      ];
+
+      for (const fallbackPayload of fallbackPayloads) {
+        ({ data, error } = await insertBatch(fallbackPayload));
+        if (!error || !isMissingColumnError(error)) break;
+      }
+    }
+
+    return { data, error };
+  };
+
+  let { data, error } = await insertWithSchemaFallback(payload);
+
+  // Recovery path #1:
+  // A prior upload may have crashed and left a stale `processing` lock row.
+  if (error && isProcessingBatchConstraintError(error)) {
+    const releasedCount = await releaseStaleProcessingBatchLocks(companyId, sourceType, now);
+    if (releasedCount > 0) {
+      console.warn(
+        `[ManualGL][MultiYear] Cleared ${releasedCount} stale processing batch lock(s) before retry.`,
+      );
+      ({ data, error } = await insertWithSchemaFallback(payload));
+    }
+    if (error && isProcessingBatchConstraintError(error)) {
+      throw new Error(
+        "Another Manual GL upload is currently processing for this company. Please wait for it to complete and retry.",
+      );
+    }
+  }
+
+  // Recovery path #2:
+  // Concurrent requests can race on dataset_version assignment.
+  let versionRetryCount = 0;
+  while (
+    error &&
+    isDatasetVersionConstraintError(error) &&
+    versionRetryCount < 3 &&
+    Number.isInteger(Number(payload.dataset_version))
+  ) {
+    versionRetryCount += 1;
+    const nextDatasetVersion = Number(payload.dataset_version) + 1;
+    payload = {
+      ...payload,
+      dataset_version: nextDatasetVersion,
+      metadata: {
+        ...(payload.metadata && typeof payload.metadata === "object" ? payload.metadata : {}),
+        datasetVersion: nextDatasetVersion,
+      },
+    };
+    ({ data, error } = await insertWithSchemaFallback(payload));
   }
 
   if (error) throw new Error(`Failed to create staging batch: ${error.message}`);
@@ -2001,9 +2239,24 @@ async function updateBatch(batchId, patch = {}) {
   if (currentError) throw new Error(`Failed to load staging batch: ${currentError.message}`);
   if (!current) return null;
 
-  const payload = {
+  const fullPayload = {
     ...(patch.status ? { status: patch.status } : {}),
     ...(patch.batch_name ? { batch_name: patch.batch_name } : {}),
+    ...(patch.batch_status ? { batch_status: patch.batch_status } : {}),
+    ...(typeof patch.is_active === "boolean" ? { is_active: patch.is_active } : {}),
+    ...(typeof patch.is_archived === "boolean" ? { is_archived: patch.is_archived } : {}),
+    ...(Number.isInteger(Number(patch.dataset_version))
+      ? { dataset_version: Number(patch.dataset_version) }
+      : {}),
+    ...(patch.upload_checksum ? { upload_checksum: patch.upload_checksum } : {}),
+    ...(patch.uploaded_by !== undefined ? { uploaded_by: patch.uploaded_by } : {}),
+    ...(patch.uploaded_at ? { uploaded_at: patch.uploaded_at } : {}),
+    ...(patch.processing_started_at ? { processing_started_at: patch.processing_started_at } : {}),
+    ...(patch.processing_completed_at ? { processing_completed_at: patch.processing_completed_at } : {}),
+    ...(patch.activated_at ? { activated_at: patch.activated_at } : {}),
+    ...(patch.activated_by !== undefined ? { activated_by: patch.activated_by } : {}),
+    ...(patch.deactivated_at ? { deactivated_at: patch.deactivated_at } : {}),
+    ...(patch.deactivated_by !== undefined ? { deactivated_by: patch.deactivated_by } : {}),
     metadata: {
       ...(current.metadata && typeof current.metadata === "object" ? current.metadata : {}),
       ...(patch.metadata && typeof patch.metadata === "object" ? patch.metadata : {}),
@@ -2011,12 +2264,29 @@ async function updateBatch(batchId, patch = {}) {
     updated_at: now,
   };
 
-  const { data, error } = await supabase
+  let { data, error } = await supabase
     .from(TABLES.batches)
-    .update(payload)
+    .update(fullPayload)
     .eq("id", batchId)
     .select("*")
     .single();
+
+  if (error && isMissingColumnError(error)) {
+    // Backward-compatible fallback for pre-026 schema.
+    const legacyPayload = {
+      ...(patch.status ? { status: patch.status } : {}),
+      ...(patch.batch_name ? { batch_name: patch.batch_name } : {}),
+      metadata: fullPayload.metadata,
+      updated_at: now,
+    };
+
+    ({ data, error } = await supabase
+      .from(TABLES.batches)
+      .update(legacyPayload)
+      .eq("id", batchId)
+      .select("*")
+      .single());
+  }
 
   if (error) throw new Error(`Failed to update staging batch: ${error.message}`);
   return data;
@@ -2050,11 +2320,13 @@ async function insertTransactions({
   const baseRows = Array.from(uniqueByHash.values()).map((tx) => ({
     company_id: companyId,
     batch_id: batchId,
+    upload_batch_id: batchId,
     transaction_id: tx.transactionId,
     fiscal_year: tx.fiscalYear,
     txn_date: tx.date,
     account_number: tx.accountNumber || null,
     account_name: tx.accountName,
+    vendor_name: tx.vendorName || null,
     account_type: tx.accountType || null,
     category: tx.category || null,
     sub_category: tx.subCategory || null,
@@ -2072,6 +2344,11 @@ async function insertTransactions({
     source_upload_id: tx.sourceUploadId || null,
     row_number: tx.rowNumber || null,
     transaction_hash: tx.transactionHash,
+    raw_row_reference: tx.rawRowReference || {
+      sourceUploadId: tx.sourceUploadId || null,
+      rowNumber: tx.rowNumber || null,
+      sourceFile: tx.sourceFile || null,
+    },
     metadata: tx.metadata || {},
   }));
   let rows = baseRows.map((row) => ({
@@ -2120,6 +2397,9 @@ async function insertTransactions({
             source_switch_version,
             upload_session_id,
             staged_at,
+            upload_batch_id,
+            vendor_name,
+            raw_row_reference,
             ...legacy
           }) => legacy,
         );
@@ -2129,6 +2409,9 @@ async function insertTransactions({
             source_switch_version,
             upload_session_id,
             staged_at,
+            upload_batch_id,
+            vendor_name,
+            raw_row_reference,
             ...legacy
           }) => legacy,
         );
@@ -2241,9 +2524,22 @@ function parseManualFilterQuery(rawFilters = {}) {
   const rawUploadSessionId = toNonEmptyString(
     rawFilters.uploadSessionId || rawFilters.upload_session_id || "",
   );
+  const rawVersionMode = toNonEmptyString(
+    rawFilters.versionMode || rawFilters.version_mode || "",
+  ).toLowerCase();
+  const includeArchived = parseBoolean(
+    rawFilters.includeArchived ||
+    rawFilters.include_archived ||
+    rawFilters.allowArchived ||
+    rawFilters.allow_archived ||
+    rawFilters.historical,
+  ) || rawVersionMode === REPORT_BATCH_MODE.HISTORICAL || rawVersionMode === "archived";
+
   return {
     batchId: rawFilters.batchId || rawFilters.batch_id || "",
     datasetVersionId: rawFilters.datasetVersionId || rawFilters.dataset_version_id || "",
+    versionMode: includeArchived ? REPORT_BATCH_MODE.HISTORICAL : REPORT_BATCH_MODE.ACTIVE,
+    includeArchived,
     fiscalYears: parseIntegerValues(rawFilters.fiscalYears || rawFilters.fiscalYear || rawFilters.year || rawFilters.years),
     fiscalMonths: parseIntegerValues(rawFilters.fiscalMonths || rawFilters.fiscalMonth || rawFilters.month || rawFilters.months)
       .filter((month) => month >= 1 && month <= 12),
@@ -2283,17 +2579,23 @@ async function queryStagedTransactions(companyId, rawFilters = {}) {
   }
 
   if (!filters.batchId && !filters.allBatches && !filters.datasetVersionId) {
-    let activeVersion = await getActiveDatasetVersion(companyId);
-    if (!activeVersion) {
-      activeVersion = await ensureLegacyDatasetVersion(companyId);
+    const activeBatch = await getActiveUploadBatch(companyId);
+    if (activeBatch?.id) {
+      filters.batchId = activeBatch.id;
+    } else {
+      // Backward-compatible fallback for legacy dataset-version-only installs.
+      let activeVersion = await getActiveDatasetVersion(companyId);
+      if (!activeVersion) {
+        activeVersion = await ensureLegacyDatasetVersion(companyId);
+      }
+      if (!activeVersion) {
+        return { filters, rows: [] };
+      }
+      filters.datasetVersionId = activeVersion.id;
     }
-    if (!activeVersion) {
-      return { filters, rows: [] };
-    }
-    filters.datasetVersionId = activeVersion.id;
   }
 
-  const buildQuery = (includeSourceColumns = true) => {
+  const buildQuery = (includeSourceColumns = true, batchColumn = "upload_batch_id") => {
     let query = supabase
       .from(TABLES.transactions)
       .select("*")
@@ -2302,7 +2604,7 @@ async function queryStagedTransactions(companyId, rawFilters = {}) {
     if (filters.datasetVersionId) {
       query = query.eq("dataset_version_id", filters.datasetVersionId);
     } else if (filters.batchId) {
-      query = query.eq("batch_id", filters.batchId);
+      query = query.eq(batchColumn, filters.batchId);
     }
 
     if (includeSourceColumns) {
@@ -2345,7 +2647,10 @@ async function queryStagedTransactions(companyId, rawFilters = {}) {
     return query;
   };
 
-  const fetchPagedRows = async (includeSourceColumns = true) => {
+  const fetchPagedRows = async (
+    includeSourceColumns = true,
+    batchColumn = "upload_batch_id",
+  ) => {
     const maxRows = Math.max(1, Number(filters.limit || DEFAULT_STAGING_LIMIT));
     const pageSize = 1000; // Supabase/PostgREST max page size.
     const rows = [];
@@ -2354,11 +2659,11 @@ async function queryStagedTransactions(companyId, rawFilters = {}) {
     while (rows.length < maxRows) {
       const chunkSize = Math.min(pageSize, maxRows - rows.length);
       const rangeEnd = offset + chunkSize - 1;
-      const query = buildQuery(includeSourceColumns).range(offset, rangeEnd);
+      const query = buildQuery(includeSourceColumns, batchColumn).range(offset, rangeEnd);
 
       const { data, error } = await query;
       if (error) {
-        return { rows: [], error };
+        return { rows: [], error, batchColumn };
       }
 
       const chunk = Array.isArray(data) ? data : [];
@@ -2370,12 +2675,33 @@ async function queryStagedTransactions(companyId, rawFilters = {}) {
       if (chunk.length < pageSize) break;
     }
 
-    return { rows, error: null };
+    return { rows, error: null, batchColumn };
   };
 
-  let { rows, error } = await fetchPagedRows(true);
-  if (error && isMissingColumnError(error)) {
-    ({ rows, error } = await fetchPagedRows(false));
+  let { rows, error, batchColumn } = await fetchPagedRows(true, "upload_batch_id");
+  if (error && isMissingColumnError(error, "upload_batch_id")) {
+    ({ rows, error, batchColumn } = await fetchPagedRows(true, "batch_id"));
+  } else if (error && isMissingColumnError(error)) {
+    ({ rows, error, batchColumn } = await fetchPagedRows(false, "upload_batch_id"));
+    if (error && isMissingColumnError(error, "upload_batch_id")) {
+      ({ rows, error, batchColumn } = await fetchPagedRows(false, "batch_id"));
+    }
+  }
+
+  // Legacy resilience: if upload_batch_id exists but historical rows were not backfilled,
+  // retry on batch_id so prior installs still render.
+  if (
+    !error &&
+    rows.length === 0 &&
+    !filters.datasetVersionId &&
+    filters.batchId &&
+    batchColumn === "upload_batch_id"
+  ) {
+    const legacy = await fetchPagedRows(true, "batch_id");
+    if (!legacy.error && Array.isArray(legacy.rows) && legacy.rows.length > 0) {
+      rows = legacy.rows;
+      batchColumn = legacy.batchColumn;
+    }
   }
   if (error) throw new Error(`Failed to load staged transactions: ${error.message}`);
 
@@ -2426,12 +2752,15 @@ function normalizeStagedTransactionRow(row) {
     (isoDate && /^\d{4}-\d{2}-\d{2}$/.test(isoDate) ? Number(isoDate.slice(5, 7)) : null);
 
   return {
+    id: row.id || row.row_id || null,
     transactionId: txId,
     fiscalYear: Number.isInteger(parsedFiscalYear) ? parsedFiscalYear : null,
     fiscalMonth: Number.isInteger(parsedFiscalMonth) ? parsedFiscalMonth : null,
     date: isoDate,
+    transactionDate: isoDate,
     accountNumber,
     accountName,
+    vendorName: row.vendor_name || row.vendorName || "",
     accountType: normalizedType,
     category: row.category || "",
     subCategory: row.sub_category || row.subCategory || "",
@@ -2448,7 +2777,22 @@ function normalizeStagedTransactionRow(row) {
     sourceFile: row.source_file || row.sourceFile || "",
     sourceUploadId: row.source_upload_id || row.sourceUploadId || null,
     rowNumber: row.row_number || row.rowNumber || null,
-    batchId: row.batch_id || row.batchId || null,
+    batchId:
+      row.upload_batch_id ||
+      row.uploadBatchId ||
+      row.batch_id ||
+      row.batchId ||
+      null,
+    uploadBatchId:
+      row.upload_batch_id ||
+      row.uploadBatchId ||
+      row.batch_id ||
+      row.batchId ||
+      null,
+    rawRowReference:
+      row.raw_row_reference && typeof row.raw_row_reference === "object"
+        ? row.raw_row_reference
+        : (row.rawRowReference && typeof row.rawRowReference === "object" ? row.rawRowReference : null),
     sourceType: row.source_type || row.sourceType || MANUAL_SOURCE_KEY,
     sourceSwitchVersion: row.source_switch_version || row.sourceSwitchVersion || null,
     uploadSessionId: row.upload_session_id || row.uploadSessionId || null,
@@ -2750,7 +3094,7 @@ function buildProfitLossHierarchicalRows(transactions = [], yearlyRows = [], dis
   // Resolve displayYear to the last available year so account-level rows always
   // match the header totals. Without this guard, a null displayYear would let ALL
   // years' transaction amounts accumulate into account rows while the section
-  // totals (pulled from yearlyRows) would only reflect the last year — producing
+  // totals (pulled from yearlyRows) would only reflect the last year â€” producing
   // inflated account-level numbers in a multi-year GL view.
   const resolvedDisplayYear =
     (Number.isInteger(displayYear) && displayYear > 0)
@@ -2872,9 +3216,15 @@ function buildProfitLossSummaryPayload(transactions = [], filters = {}) {
 
 function buildProfitLossDetailPayload(transactions = [], filters = {}) {
   const { yearlyRows, monthlyRows } = calculateProfitLossBuckets(transactions);
-  const years = yearlyRows.map((row) => row.fiscalYear).filter((year) => Number.isInteger(year));
+  const years = yearlyRows
+    .map((row) => Number(row.fiscalYear))
+    .filter((year) => Number.isInteger(year) && year > 0)
+    .sort((a, b) => a - b);
+  const validYears = new Set(years);
 
   const accountsMap = new Map();
+  let detailIndex = 0;
+
   transactions.forEach((tx) => {
     const accountType = normalizeAccountType(tx.accountType) || inferAccountType(tx.accountName, tx.accountNumber);
     if (!["income", "cogs", "expense"].includes(accountType)) return;
@@ -2882,39 +3232,118 @@ function buildProfitLossDetailPayload(transactions = [], filters = {}) {
     const category = normalizeProfitLossCategory(tx.category, tx.accountName, tx.accountType);
     if (!category) return;
 
-    const key = `${tx.accountNumber || ""}::${tx.accountName}`;
-    if (!accountsMap.has(key)) {
-      accountsMap.set(key, {
+    const fiscalYear = Number(tx.fiscalYear || 0);
+    if (!Number.isInteger(fiscalYear) || fiscalYear <= 0 || !validYears.has(fiscalYear)) return;
+
+    const accountKey = `${tx.accountNumber || ""}::${tx.accountName || ""}`;
+    if (!accountsMap.has(accountKey)) {
+      accountsMap.set(accountKey, {
         accountNumber: tx.accountNumber || "",
-        accountName: tx.accountName,
+        accountName: tx.accountName || "",
+        subCategory: tx.subCategory || "",
         category,
         accountType,
         yearlyTotals: {},
         totalNet: 0,
+        transactions: [],
       });
     }
-    const acc = accountsMap.get(key);
+
+    const account = accountsMap.get(accountKey);
+    if (!account.subCategory && tx.subCategory) {
+      account.subCategory = String(tx.subCategory).trim();
+    }
+
     const signed = roundMoney(Number(tx.netAmount || 0));
     const amount = category === "Revenue" ? signed : roundMoney(-signed);
-    acc.yearlyTotals[tx.fiscalYear] = roundMoney((acc.yearlyTotals[tx.fiscalYear] || 0) + amount);
-    acc.totalNet = roundMoney(acc.totalNet + amount);
+    account.yearlyTotals[fiscalYear] = roundMoney((account.yearlyTotals[fiscalYear] || 0) + amount);
+    account.totalNet = roundMoney(account.totalNet + amount);
+
+    const txDate = tx.transactionDate || tx.date || null;
+    const txRowNumber = Number.isInteger(Number(tx.rowNumber)) ? Number(tx.rowNumber) : null;
+    const txId = String(tx.transactionId || tx.id || "").trim();
+    const txKey = txId || `pl-detail-${fiscalYear}-${detailIndex}`;
+    detailIndex += 1;
+
+    account.transactions.push({
+      id: txKey,
+      transactionId: txId || txKey,
+      fiscalYear,
+      transactionDate: txDate,
+      date: txDate,
+      accountName: tx.accountName || "",
+      accountNumber: tx.accountNumber || "",
+      vendorName: tx.vendorName || "",
+      memo: tx.description || "",
+      description: tx.description || "",
+      journalType: tx.journalType || "",
+      transactionType: tx.transactionType || "",
+      reference: tx.reference || "",
+      debit: roundMoney(Number(tx.debit || 0)),
+      credit: roundMoney(Number(tx.credit || 0)),
+      signedAmount: amount,
+      amount,
+      sourceFile: tx.sourceFile || "",
+      sourceUploadId: tx.sourceUploadId || null,
+      rowNumber: txRowNumber,
+      batchId: tx.uploadBatchId || tx.batchId || null,
+      rawRowReference:
+        tx.rawRowReference && typeof tx.rawRowReference === "object"
+          ? tx.rawRowReference
+          : null,
+      class: tx.class || "",
+      department: tx.department || "",
+      location: tx.location || "",
+    });
   });
 
   const accounts = Array.from(accountsMap.values()).sort((a, b) => {
     if (a.category !== b.category) return a.category.localeCompare(b.category);
-    return a.accountName.localeCompare(b.accountName);
+    return String(a.accountName || "").localeCompare(String(b.accountName || ""));
   });
 
-  const groupedCategories = Array.from(new Set(accounts.map(a => a.category))).filter(Boolean).map(catName => {
-    const catAccounts = accounts.filter(a => a.category === catName);
-    const totalsByYear = {};
-    years.forEach(y => {
-      totalsByYear[y] = roundMoney(catAccounts.reduce((sum, acc) => sum + (acc.yearlyTotals[y] || 0), 0));
+  accounts.forEach((account) => {
+    account.transactions.sort((left, right) => {
+      const leftYear = Number(left.fiscalYear || 0);
+      const rightYear = Number(right.fiscalYear || 0);
+      if (leftYear !== rightYear) return leftYear - rightYear;
+      const leftDate = String(left.transactionDate || left.date || "");
+      const rightDate = String(right.transactionDate || right.date || "");
+      if (leftDate !== rightDate) return leftDate.localeCompare(rightDate);
+      const leftRow = Number(left.rowNumber || 0);
+      const rightRow = Number(right.rowNumber || 0);
+      if (leftRow !== rightRow) return leftRow - rightRow;
+      return String(left.transactionId || "").localeCompare(String(right.transactionId || ""));
     });
+  });
+
+  const categoryOrder = ["Revenue", "COGS", "Operating Expenses", "Other Expenses"];
+  const uniqueCategories = Array.from(new Set(accounts.map((account) => account.category))).filter(Boolean);
+  uniqueCategories.sort((left, right) => {
+    const leftIndex = categoryOrder.indexOf(left);
+    const rightIndex = categoryOrder.indexOf(right);
+    if (leftIndex !== -1 || rightIndex !== -1) {
+      if (leftIndex === -1) return 1;
+      if (rightIndex === -1) return -1;
+      return leftIndex - rightIndex;
+    }
+    return left.localeCompare(right);
+  });
+
+  const groupedCategories = uniqueCategories.map((categoryName) => {
+    const categoryAccounts = accounts.filter((account) => account.category === categoryName);
+    const totalsByYear = {};
+    years.forEach((year) => {
+      totalsByYear[year] = roundMoney(
+        categoryAccounts.reduce((sum, account) => sum + Number(account.yearlyTotals?.[year] || 0), 0),
+      );
+    });
+    const total = roundMoney(categoryAccounts.reduce((sum, account) => sum + Number(account.totalNet || 0), 0));
     return {
-      category: catName,
+      category: categoryName,
       totalsByYear,
-      accounts: catAccounts
+      total,
+      accounts: categoryAccounts,
     };
   });
 
@@ -2926,13 +3355,14 @@ function buildProfitLossDetailPayload(transactions = [], filters = {}) {
     categories: groupedCategories,
     accounts,
     monthlyBreakdown: monthlyRows,
+    rowCount: accounts.reduce((sum, account) => sum + (Array.isArray(account.transactions) ? account.transactions.length : 0), 0),
   };
 }
 
 function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYear = {}, startingLines = [], fiscalCalendar = {}) {
   const normalized = transactions.filter(Boolean);
 
-  // Years present in user-selected filter (may be empty → "show all").
+  // Years present in user-selected filter (may be empty â†’ "show all").
   const selectedYears = Array.isArray(filters.fiscalYears)
     ? filters.fiscalYears.map((year) => Number(year)).filter((year) => Number.isInteger(year) && year > 0)
     : [];
@@ -2958,7 +3388,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
   // Fill ALL intermediate years so that carry-forward is always applied in order.
   // E.g. if GL has [2022, 2025] and user wants [2024]:
   //   extendedYears = [2022, 2023, 2024, 2025]
-  // This ensures the 2023→2024 carry-forward happens even without 2023 transactions.
+  // This ensures the 2023â†’2024 carry-forward happens even without 2023 transactions.
   const allYearSeeds = [...new Set([...txYears, ...selectedYears])];
   let years;
   if (allYearSeeds.length === 0) {
@@ -3063,7 +3493,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
     });
   });
 
-  // Phase 7: MissingAccountDetector — warn when a starting-BS account has zero balance
+  // Phase 7: MissingAccountDetector â€” warn when a starting-BS account has zero balance
   // across all computed years. Most common cause: re-staging without re-uploading the starting BS.
   if (startingLines.length > 0) {
     const zeroBsAccounts = accounts.filter(
@@ -3078,7 +3508,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
     }
   } else {
     console.warn(
-      `[ManualGL][BS][MissingAccountDetector] startingLines is empty — no opening balances loaded.`,
+      `[ManualGL][BS][MissingAccountDetector] startingLines is empty â€” no opening balances loaded.`,
       `Static BS accounts (e.g. fixed assets with no GL activity) will show $0.`,
       `Re-upload the starting Balance Sheet to fix this.`,
     );
@@ -3163,12 +3593,12 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
     explicitNetIncomeAccounts.length === 0 && retainedEarningsActivityMagnitude <= BALANCE_EPSILON;
 
   // Carry net income for prior year Y only when the starting BS predates the END of
-  // fiscal year Y — i.e. FY Y's net income has NOT yet been closed into the opening
+  // fiscal year Y â€” i.e. FY Y's net income has NOT yet been closed into the opening
   // retained-earnings balance.
   //
   // We use a direct ISO-date comparison against computeFiscalYearEndDate so the guard
   // is correct regardless of whether transactions were labeled with calendar-year keys
-  // (BUG-2 fix: non-explicit fiscal calendar → calendar year) or true fiscal-year end
+  // (BUG-2 fix: non-explicit fiscal calendar â†’ calendar year) or true fiscal-year end
   // labels (explicit April or other fiscal calendar).  The old approach compared integer
   // year labels using ">" which failed when the default April calendar (month=4) was
   // applied to a calendar-year company: computeFiscalYearEndLabel("2022-12-31", month=4)
@@ -3276,7 +3706,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
   // Capture pre-adjustment variance per year BEFORE mutating section totals so
   // the audit can surface the real imbalance to server logs and the API caller.
   // The force-balance below parks any variance into Retained Earnings so the
-  // rendered sheet always nets to zero — but hiding the root cause makes
+  // rendered sheet always nets to zero â€” but hiding the root cause makes
   // debugging impossible, so we track it separately.
   const rawVarianceByYear = {};
 
@@ -3311,7 +3741,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
     const equity = getYearValue(sections.Equity.totalByYear, year);
     const liabilitiesAndEquity = roundMoney(liabilities + equity);
     const difference = roundMoney(assets - liabilitiesAndEquity);
-    // rawVariance is the pre-force-balance gap; difference is always ≤ BALANCE_EPSILON
+    // rawVariance is the pre-force-balance gap; difference is always â‰¤ BALANCE_EPSILON
     // after the adjustment above.  Expose both so callers can detect real data issues.
     const rawVariance = rawVarianceByYear[year] ?? difference;
     return {
@@ -3481,7 +3911,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
   };
 
   console.log(
-    `[ManualGL][BS][Debug] buildBalanceSheetPayload — internal years: [${years.join(", ")}]`,
+    `[ManualGL][BS][Debug] buildBalanceSheetPayload â€” internal years: [${years.join(", ")}]`,
     `| displayYear: ${displayYear}`,
     `| accounts classified: Assets=${sections.Assets.categories.reduce((s, c) => s + c.accounts.length, 0)
     }, Liabilities=${sections.Liabilities.categories.reduce((s, c) => s + c.accounts.length, 0)
@@ -3497,7 +3927,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
     );
   }
 
-  // Phase 4/8: ReconciliationEngine — per-year double-entry check (total debits = total credits).
+  // Phase 4/8: ReconciliationEngine â€” per-year double-entry check (total debits = total credits).
   // Uses the full normalized transaction set (all account types, not just BS) so we verify
   // whether the source GL journals are internally balanced. A non-zero netGlVariance here
   // points to corrupted GL data BEFORE classification, not a BS-specific bug.
@@ -3509,7 +3939,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
     const isGlBalanced = Math.abs(netGlVariance) <= BALANCE_EPSILON;
     if (!isGlBalanced) {
       console.warn(
-        `[ManualGL][BS][ReconciliationEngine] Year ${year}: GL debits (${totalDebits}) ≠ credits (${totalCredits}).`,
+        `[ManualGL][BS][ReconciliationEngine] Year ${year}: GL debits (${totalDebits}) â‰  credits (${totalCredits}).`,
         `Net variance: ${netGlVariance}. Source GL may contain unbalanced journal entries.`,
       );
     }
@@ -3531,8 +3961,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
 
 async function getBalanceSheetSummaryFromStage(companyId, filters = {}) {
   const effectiveBatchId =
-    filters.batchId ||
-    (await getLatestManualBatch(companyId, { status: "staged" }))?.id;
+    filters.batchId || (await resolveReportBatchId(companyId));
 
   // Load starting + ending BS lines and batch metadata in parallel.
   let startingLines = [];
@@ -3547,11 +3976,11 @@ async function getBalanceSheetSummaryFromStage(companyId, filters = {}) {
   }
   // When a batch was staged WITHOUT an explicit fiscal calendar (calendar-year company),
   // the old code (pre-BUG2-fix) applied the April default and assigned wrong end-year labels
-  // to Apr–Dec transactions. We correct at query time so re-staging is not required.
+  // to Aprâ€“Dec transactions. We correct at query time so re-staging is not required.
   const fiscalCalendarExplicit = batchMeta.fiscalCalendarExplicit === true;
 
   // STEP 2: Query ALL transactions for the batch, cumulative and unfiltered by year.
-  // This is intentional: BS balances are rolling totals — e.g. the Dec-31-2023 balance
+  // This is intentional: BS balances are rolling totals â€” e.g. the Dec-31-2023 balance
   // for an asset account equals openingBalance + 2022 activity + 2023 activity.
   // Year filtering is applied to the RESPONSE after computation (see STEP 5).
   const normalizedFilters = parseManualFilterQuery(filters);
@@ -3615,7 +4044,7 @@ async function getBalanceSheetSummaryFromStage(companyId, filters = {}) {
   // (e.g. 2022-12-31 means all 2022 journal entries are baked into every account's
   // opening balance). If we also include those 2022 GL rows as "activity", the
   // buildBalanceSheetPayload rolling loop adds them on top of an opening balance that
-  // already contains them → every account doubles.
+  // already contains them â†’ every account doubles.
   //
   // Fix: only pass GL transactions that occurred AFTER the starting BS date.
   // The starting BS opening balance covers everything up to and including that date.
@@ -3632,7 +4061,7 @@ async function getBalanceSheetSummaryFromStage(companyId, filters = {}) {
     }
   } else if (startingLines.length > 0) {
     console.warn(
-      `[ManualGL][BS][Debug] Starting BS lines exist but no as_of_date found — ` +
+      `[ManualGL][BS][Debug] Starting BS lines exist but no as_of_date found â€” ` +
       `cannot filter pre-opening GL rows. Upload a starting BS with a parseable "As of" date ` +
       `to prevent double-counting.`,
     );
@@ -3662,7 +4091,7 @@ async function getBalanceSheetSummaryFromStage(companyId, filters = {}) {
     ["income", "cogs", "expense"].includes(normalizeAccountType(tx.accountType) || ""),
   ).length;
   console.log(
-    `[ManualGL][BS][Debug] After reclassification — BS transactions: ${bsAccountCount}, P&L transactions: ${plAccountCount}, total: ${normalized.length}`,
+    `[ManualGL][BS][Debug] After reclassification â€” BS transactions: ${bsAccountCount}, P&L transactions: ${plAccountCount}, total: ${normalized.length}`,
   );
 
   // Build P&L once from the same normalized dataset to derive netProfitByYear
@@ -3678,7 +4107,7 @@ async function getBalanceSheetSummaryFromStage(companyId, filters = {}) {
   );
 
   // Reconstruct fiscal calendar from batch metadata so the RE carry-forward guard
-  // uses the correct fiscal year-end date (calendar-year → month=1, April FY → month=4).
+  // uses the correct fiscal year-end date (calendar-year â†’ month=1, April FY â†’ month=4).
   const batchFiscalCalendar = fiscalCalendarExplicit
     ? { fiscalYearStartMonth: batchMeta.fiscalYearStartMonth, fiscalYearStartDay: batchMeta.fiscalYearStartDay }
     : { fiscalYearStartMonth: 1, fiscalYearStartDay: 1 };
@@ -3696,7 +4125,7 @@ async function getBalanceSheetSummaryFromStage(companyId, filters = {}) {
   );
 
   console.log(
-    `[ManualGL][BS][Debug] Built BS payload — internal years: [${(payload.years || []).join(", ")}]`,
+    `[ManualGL][BS][Debug] Built BS payload â€” internal years: [${(payload.years || []).join(", ")}]`,
     `| displayYear: ${payload.displayYear}`,
     `| assets total: ${payload.sections?.Assets?.totalByYear?.[payload.displayYear] ?? "n/a"}`,
     `| liabilities total: ${payload.sections?.Liabilities?.totalByYear?.[payload.displayYear] ?? "n/a"}`,
@@ -3707,10 +4136,12 @@ async function getBalanceSheetSummaryFromStage(companyId, filters = {}) {
   // Logged at every BS report call so discrepancies surface in server logs
   // without waiting for a staging re-run.
   if (Array.isArray(payload.audit) && payload.audit.length > 0) {
-    console.log("[ManualGL][BS][Validation] ═══ Per-Year Balance Equation Check ═══");
+    console.log("[ManualGL][BS][Validation] === Per-Year Balance Equation Check ===");
     payload.audit.forEach((a) => {
-      const diffStr = a.rawVariance !== 0 ? ` ← RAW VARIANCE: ${a.rawVariance} (force-balanced via RE adjustment)` : "";
-      const status = a.isBalanced ? "BALANCED ✓" : "IMBALANCED ✗";
+      const diffStr = a.rawVariance !== 0
+        ? ` -> RAW VARIANCE: ${a.rawVariance} (force-balanced via RE adjustment)`
+        : "";
+      const status = a.isBalanced ? "BALANCED [OK]" : "IMBALANCED [X]";
       console.log(
         `[ManualGL][BS][Validation]   Year ${a.year}: ` +
         `Assets=${a.assets}  L+E=${a.liabilitiesAndEquity}  ${status}${diffStr}`,
@@ -3719,11 +4150,11 @@ async function getBalanceSheetSummaryFromStage(companyId, filters = {}) {
     const totalImbalanced = payload.audit.filter((a) => !a.isBalanced).length;
     if (totalImbalanced > 0) {
       console.warn(
-        `[ManualGL][BS][Validation] *** ${totalImbalanced} year(s) are IMBALANCED — ` +
+        `[ManualGL][BS][Validation] *** ${totalImbalanced} year(s) are IMBALANCED - ` +
         `check account classification and opening balance accuracy ***`,
       );
     }
-    console.log("[ManualGL][BS][Validation] ═══════════════════════════════════════");
+    console.log("[ManualGL][BS][Validation] ========================================");
   }
 
   // STEP 5: Restrict the response to ONLY the user-selected year(s).
@@ -3741,13 +4172,13 @@ async function getBalanceSheetSummaryFromStage(companyId, filters = {}) {
   return payload;
 }
 
-// ─── BS-Driven Account Classification Engine ─────────────────────────────────
+// â”€â”€â”€ BS-Driven Account Classification Engine â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /**
- * Builds a normalized account-name → BS classification lookup map from
+ * Builds a normalized account-name â†’ BS classification lookup map from
  * one or two parsed balance sheets (starting and/or ending).
  *
- * Normalization: lowercase + strip non-alphanumeric → "accounts receivable"
+ * Normalization: lowercase + strip non-alphanumeric â†’ "accounts receivable"
  * so minor formatting differences between GL and BS don't break matching.
  *
  * Starting sheet takes precedence when the same account appears in both.
@@ -3820,7 +4251,7 @@ function buildBsLookupFromDbLines(startingLines = [], endingLines = []) {
       const minorGroup = metadata.minorGroup || "";
       // Prefer structural majorGroup over stored leafCategory for fixed groupings where
       // legacy data may have an incorrect leafCategory from before the BS-driven fix.
-      // e.g. majorGroup="Fixed Assets" but leafCategory="Other Current Assets" → use majorGroup.
+      // e.g. majorGroup="Fixed Assets" but leafCategory="Other Current Assets" â†’ use majorGroup.
       const AUTHORITATIVE_MAJOR_GROUPS = new Set(["Fixed Assets", "Other Assets", "Long-Term Liabilities"]);
       const rawLeaf = metadata.leafCategory || minorGroup || majorGroup || "";
       const leafCategory = AUTHORITATIVE_MAJOR_GROUPS.has(majorGroup) ? majorGroup : rawLeaf;
@@ -3864,7 +4295,7 @@ function reclassifyNormalizedTransactions(normalizedRows = [], bsLookupMap = new
       };
     }
 
-    // Not in BS → keep existing type intact (preserves correct keyword P&L accounts)
+    // Not in BS â†’ keep existing type intact (preserves correct keyword P&L accounts)
     return tx;
   });
 }
@@ -3896,16 +4327,16 @@ async function loadBsLookupForBatch(companyId, batchId) {
  * the balance sheet lookup map.
  *
  * Rule (per spec):
- *   - Account in starting OR ending BS → BALANCE_SHEET (type = asset/liability/equity)
- *   - Account NOT in either BS         → PROFIT_LOSS   (type = income/cogs/expense)
+ *   - Account in starting OR ending BS â†’ BALANCE_SHEET (type = asset/liability/equity)
+ *   - Account NOT in either BS         â†’ PROFIT_LOSS   (type = income/cogs/expense)
  *
  * When no BS is provided (map is empty) the function returns transactions
- * unchanged — falling back to the existing keyword-based classification.
+ * unchanged â€” falling back to the existing keyword-based classification.
  */
 function classifyGlTransactionsWithBsLookup(transactions = [], bsLookupMap = new Map()) {
   if (!bsLookupMap || !bsLookupMap.size) {
     console.log(
-      "[ManualGL][Classify] No BS lookup map available — using keyword-based classification (fallback).",
+      "[ManualGL][Classify] No BS lookup map available â€” using keyword-based classification (fallback).",
     );
     return transactions;
   }
@@ -3922,7 +4353,7 @@ function classifyGlTransactionsWithBsLookup(transactions = [], bsLookupMap = new
     const lookupKey = normalizeAccountLabel(String(tx.accountName || ""));
     const bsEntry = bsLookupMap.get(lookupKey);
 
-    // ── BALANCE SHEET account ──
+    // â”€â”€ BALANCE SHEET account â”€â”€
     if (bsEntry) {
       bsMatched++;
       const bsType = bsEntry.accountType; // 'asset' | 'liability' | 'equity'
@@ -3935,7 +4366,7 @@ function classifyGlTransactionsWithBsLookup(transactions = [], bsLookupMap = new
       if (!debuggedAccounts.has(lookupKey)) {
         debuggedAccounts.add(lookupKey);
         console.log(
-          `[ManualGL][DistribSection] MATCHED "${tx.accountName}" → section: ${bsEntry.section}, ` +
+          `[ManualGL][DistribSection] MATCHED "${tx.accountName}" â†’ section: ${bsEntry.section}, ` +
           `type: ${bsType}, majorGroup: "${bsEntry.majorGroup || ""}", ` +
           `minorGroup: "${bsEntry.minorGroup || ""}", path: "${bsEntry.hierarchyPath || bsEntry.section}"`,
         );
@@ -3959,14 +4390,14 @@ function classifyGlTransactionsWithBsLookup(transactions = [], bsLookupMap = new
       };
     }
 
-    // ── PROFIT & LOSS account ──
+    // â”€â”€ PROFIT & LOSS account â”€â”€
     plClassified++;
     unmatchedByName.add(tx.accountName);
 
     if (!debuggedAccounts.has(lookupKey)) {
       debuggedAccounts.add(lookupKey);
       console.log(
-        `[ManualGL][DistribSection] UNMATCHED "${tx.accountName}" — not found in starting or ending balance sheet → classified as P&L`,
+        `[ManualGL][DistribSection] UNMATCHED "${tx.accountName}" â€” not found in starting or ending balance sheet â†’ classified as P&L`,
       );
     }
 
@@ -4024,7 +4455,7 @@ function classifyGlTransactionsWithBsLookup(transactions = [], bsLookupMap = new
       ...new Map(ambiguousAccounts.map((a) => [a.accountName, a])).values(),
     ].slice(0, 30);
     console.warn(
-      "[ManualGL][Classify] Ambiguous accounts (keyword says BS type but NOT in balance sheets — treated as P&L Expense):",
+      "[ManualGL][Classify] Ambiguous accounts (keyword says BS type but NOT in balance sheets â€” treated as P&L Expense):",
       uniqueAmbiguous.map((a) => `"${a.accountName}" (${a.keywordType})`).join(", "),
     );
   }
@@ -4040,7 +4471,7 @@ function classifyGlTransactionsWithBsLookup(transactions = [], bsLookupMap = new
   return result;
 }
 
-// ─── Distribution Account Section Validation ─────────────────────────────────
+// â”€â”€â”€ Distribution Account Section Validation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /**
  * Builds a per-sheet (starting / ending) section breakdown for every account
@@ -4092,10 +4523,10 @@ function buildDetailedBsSectionMap(startingParsed = null, endingParsed = null) {
 /**
  * Validates every unique GL distribution account against the detailed section
  * map. Produces four buckets:
- *   matched                — found in ≥1 sheet; logs section + hierarchy path
- *   unmatched              — not in either balance sheet
- *   crossYearInconsistencies — section differs between starting and ending sheet
- *   conflicts              — keyword-inferred type contradicts BS section placement
+ *   matched                â€” found in â‰¥1 sheet; logs section + hierarchy path
+ *   unmatched              â€” not in either balance sheet
+ *   crossYearInconsistencies â€” section differs between starting and ending sheet
+ *   conflicts              â€” keyword-inferred type contradicts BS section placement
  *
  * All findings are logged immediately. The returned object is stored in batch
  * metadata so it can be surfaced to the UI or external review.
@@ -4117,7 +4548,7 @@ function validateDistributionAccountSections(glAccountNames = [], detailedSectio
     const entry = detailedSectionMap ? detailedSectionMap.get(key) : null;
     if (!entry || (!entry.starting && !entry.ending)) {
       unmatched.push({ accountName, normalizedKey: key });
-      console.log(`[ManualGL][DistribValidate] UNMATCHED "${accountName}" — not present in starting or ending balance sheet`);
+      console.log(`[ManualGL][DistribValidate] UNMATCHED "${accountName}" â€” not present in starting or ending balance sheet`);
       continue;
     }
 
@@ -4136,13 +4567,13 @@ function validateDistributionAccountSections(glAccountNames = [], detailedSectio
         endingPath: ending.hierarchyPath,
       });
       console.warn(
-        `[ManualGL][DistribValidate] CROSS-YEAR INCONSISTENCY "${accountName}" — ` +
+        `[ManualGL][DistribValidate] CROSS-YEAR INCONSISTENCY "${accountName}" â€” ` +
         `Starting: ${starting.section} (${starting.hierarchyPath}) vs ` +
         `Ending: ${ending.section} (${ending.hierarchyPath})`,
       );
     }
 
-    // Effective classification — starting sheet wins
+    // Effective classification â€” starting sheet wins
     const effective = starting || ending;
 
     // Detect keyword-vs-BS-section conflicts
@@ -4165,7 +4596,7 @@ function validateDistributionAccountSections(glAccountNames = [], detailedSectio
         issue: `Keyword infers "${keywordType}" but BS places account under "${effective.section}"`,
       });
       console.warn(
-        `[ManualGL][DistribValidate] CONFLICT "${accountName}" — ` +
+        `[ManualGL][DistribValidate] CONFLICT "${accountName}" â€” ` +
         `keyword type "${keywordType}" vs BS section "${effective.section}" (${effective.hierarchyPath})`,
       );
     }
@@ -4184,14 +4615,14 @@ function validateDistributionAccountSections(glAccountNames = [], detailedSectio
     });
 
     console.log(
-      `[ManualGL][DistribValidate] MATCHED "${accountName}" → ` +
+      `[ManualGL][DistribValidate] MATCHED "${accountName}" â†’ ` +
       `section: ${effective.section}, type: ${effective.accountType}, ` +
       `path: "${effective.hierarchyPath}" [found in: ${foundIn.join(", ")}]`,
     );
   }
 
   console.log(
-    `[ManualGL][DistribValidate] Summary — matched: ${matched.length}, ` +
+    `[ManualGL][DistribValidate] Summary â€” matched: ${matched.length}, ` +
     `unmatched: ${unmatched.length}, crossYearInconsistencies: ${crossYearInconsistencies.length}, ` +
     `conflicts: ${conflicts.length}`,
   );
@@ -4199,7 +4630,7 @@ function validateDistributionAccountSections(glAccountNames = [], detailedSectio
   return { matched, unmatched, crossYearInconsistencies, conflicts };
 }
 
-// ─── Multi-Year Detection ─────────────────────────────────────────────────────
+// â”€â”€â”€ Multi-Year Detection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /**
  * Inspects a flat array of classified/parsed transactions and returns an audit
@@ -4244,10 +4675,10 @@ function logYearDetectionAudit(detection) {
   console.log(`[ManualGL][YearDetection] File type detected : ${fileType}`);
   console.log(`[ManualGL][YearDetection] Fiscal years found : [${years.join(", ") || "none"}]`);
   if (isMultiYear) {
-    console.log("[ManualGL][YearDetection] *** MULTI-YEAR GL FILE — processing each year independently ***");
+    console.log("[ManualGL][YearDetection] *** MULTI-YEAR GL FILE â€” processing each year independently ***");
   }
   years.forEach((yr) => {
-    console.log(`[ManualGL][YearDetection]   ${yr} → ${perYearCounts[yr]} transactions`);
+    console.log(`[ManualGL][YearDetection]   ${yr} â†’ ${perYearCounts[yr]} transactions`);
   });
   if (invalidDateCount > 0) {
     console.warn(
@@ -4257,7 +4688,7 @@ function logYearDetectionAudit(detection) {
   console.log("[ManualGL][YearDetection] ==========================================");
 }
 
-// ─── Multi-Year Normalization Helpers ────────────────────────────────────────
+// â”€â”€â”€ Multi-Year Normalization Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /**
  * Splits a flat array of parsed transactions into a Map keyed by fiscal year.
@@ -4284,7 +4715,7 @@ function splitTransactionsByFiscalYear(transactions = []) {
 
 /**
  * Computes per-year statistics for a year-split Map.
- * Returns an object mapping year → { count, dateRange, uniqueAccountCount, debitTotal, creditTotal }.
+ * Returns an object mapping year â†’ { count, dateRange, uniqueAccountCount, debitTotal, creditTotal }.
  * Used for staging metadata and per-year audit logging.
  */
 function computePerYearStats(yearMap) {
@@ -4318,9 +4749,9 @@ function logPerYearSplitAudit(perYearStats, isMultiYear) {
   if (!isMultiYear) return;
 
   console.log("[ManualGL][YearSplit] ==========================================");
-  console.log("[ManualGL][YearSplit] Multi-year GL — per-year dataset summary:");
+  console.log("[ManualGL][YearSplit] Multi-year GL â€” per-year dataset summary:");
   Object.entries(perYearStats).forEach(([year, stat]) => {
-    const range = stat.dateRange ? `${stat.dateRange.min} → ${stat.dateRange.max}` : "no dates";
+    const range = stat.dateRange ? `${stat.dateRange.min} â†’ ${stat.dateRange.max}` : "no dates";
     console.log(
       `[ManualGL][YearSplit]   FY ${year}: ${stat.count} transactions | ` +
       `${stat.uniqueAccountCount} accounts | ${range} | ` +
@@ -4402,6 +4833,8 @@ async function stageMultiYearGlUpload({
   fiscalYearStartDay = null,
   uploadedBy = null,
   batchName = "",
+  useDatasetLifecycle = true,
+  deferLifecycleFinalization = false,
 }) {
   const fiscalCalendar = resolveFiscalCalendarConfig({
     fiscalYearStartMonth,
@@ -4438,13 +4871,13 @@ async function stageMultiYearGlUpload({
 
   if (!startingBalanceSheetUploadId) {
     console.warn(
-      "[ManualGL][MultiYear] No Starting Balance Sheet provided — classification will fall back to keyword inference. " +
+      "[ManualGL][MultiYear] No Starting Balance Sheet provided â€” classification will fall back to keyword inference. " +
       "Provide a Starting Balance Sheet for accurate BS vs P&L bifurcation.",
     );
   }
   if (!endingBalanceSheetUploadId) {
     console.warn(
-      "[ManualGL][MultiYear] No Ending Balance Sheet provided — classification will fall back to keyword inference. " +
+      "[ManualGL][MultiYear] No Ending Balance Sheet provided â€” classification will fall back to keyword inference. " +
       "Provide an Ending Balance Sheet for accurate BS vs P&L bifurcation.",
     );
   }
@@ -4455,19 +4888,25 @@ async function stageMultiYearGlUpload({
   const uploadSessionId = crypto.randomUUID();
   const stageStartedAt = new Date().toISOString();
 
-  console.log("[ManualGL][MultiYear] Starting upload lifecycle...");
-  const { job: uploadJob, version: datasetVersion } = await startUploadLifecycle(
-    companyId,
-    batchName || "Multi-Year GL Upload",
-    uploadedBy,
-  );
+  let uploadJob = null;
+  let datasetVersion = null;
+  if (useDatasetLifecycle) {
+    console.log("[ManualGL][MultiYear] Starting upload lifecycle...");
+    const lifecycle = await startUploadLifecycle(
+      companyId,
+      batchName || "Multi-Year GL Upload",
+      uploadedBy,
+    );
+    uploadJob = lifecycle.job || null;
+    datasetVersion = lifecycle.version || null;
+  }
 
   console.log("[ManualGL][MultiYear] Creating batch...");
   const batch = await createBatch({
     companyId,
     createdBy: uploadedBy,
     batchName,
-    datasetVersionId: datasetVersion.id,
+    datasetVersionId: datasetVersion?.id || null,
     sourceType,
     sourceSwitchVersion,
     uploadSessionId,
@@ -4498,13 +4937,13 @@ async function stageMultiYearGlUpload({
   };
 
   try {
-    // ── PHASE 1: Parse Balance Sheets FIRST ──────────────────────────────────
+    // â”€â”€ PHASE 1: Parse Balance Sheets FIRST â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // We must know BS accounts before classifying GL transactions, so BS files
-    // are parsed here (not inserted yet — that happens after GL classification).
+    // are parsed here (not inserted yet â€” that happens after GL classification).
 
     if (startingBalanceSheetUploadId) {
       console.log(
-        "[ManualGL][MultiYear] Phase 1 – Parsing STARTING balance sheet:",
+        "[ManualGL][MultiYear] Phase 1 â€“ Parsing STARTING balance sheet:",
         startingBalanceSheetUploadId,
       );
       try {
@@ -4515,7 +4954,7 @@ async function stageMultiYearGlUpload({
           balanceSheetInfo.startingParsed = parseBalanceSheetFromSheet(startSheet);
           balanceSheetInfo.startingUpload = startUpload;
           console.log(
-            "[ManualGL][MultiYear] Starting BS parsed — assets:",
+            "[ManualGL][MultiYear] Starting BS parsed â€” assets:",
             balanceSheetInfo.startingParsed.assets?.length,
             "liabilities:",
             balanceSheetInfo.startingParsed.liabilities?.length,
@@ -4530,7 +4969,7 @@ async function stageMultiYearGlUpload({
 
     if (endingBalanceSheetUploadId) {
       console.log(
-        "[ManualGL][MultiYear] Phase 1 – Parsing ENDING balance sheet:",
+        "[ManualGL][MultiYear] Phase 1 â€“ Parsing ENDING balance sheet:",
         endingBalanceSheetUploadId,
       );
       try {
@@ -4541,7 +4980,7 @@ async function stageMultiYearGlUpload({
           balanceSheetInfo.endingParsed = parseBalanceSheetFromSheet(endSheet);
           balanceSheetInfo.endingUpload = endUpload;
           console.log(
-            "[ManualGL][MultiYear] Ending BS parsed — assets:",
+            "[ManualGL][MultiYear] Ending BS parsed â€” assets:",
             balanceSheetInfo.endingParsed.assets?.length,
             "liabilities:",
             balanceSheetInfo.endingParsed.liabilities?.length,
@@ -4554,9 +4993,9 @@ async function stageMultiYearGlUpload({
       }
     }
 
-    // ── PHASE 2: Build BS account lookup map ─────────────────────────────────
-    // Maps normalised account name → { accountType, section, majorGroup, minorGroup, leafCategory, hierarchyPath }.
-    // Empty map means no BS was provided → fall back to keyword classification.
+    // â”€â”€ PHASE 2: Build BS account lookup map â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // Maps normalised account name â†’ { accountType, section, majorGroup, minorGroup, leafCategory, hierarchyPath }.
+    // Empty map means no BS was provided â†’ fall back to keyword classification.
 
     const bsLookupMap = buildBsLookupFromParsedSheets(
       balanceSheetInfo.startingParsed,
@@ -4572,10 +5011,10 @@ async function stageMultiYearGlUpload({
 
     const hasBsLookup = bsLookupMap.size > 0;
     console.log(
-      `[ManualGL][MultiYear] Phase 2 – BS lookup map: ${bsLookupMap.size} accounts (${hasBsLookup ? "data-driven classification" : "keyword-based fallback"})`,
+      `[ManualGL][MultiYear] Phase 2 â€“ BS lookup map: ${bsLookupMap.size} accounts (${hasBsLookup ? "data-driven classification" : "keyword-based fallback"})`,
     );
 
-    // ── PHASE 3: Parse GL files, classify, then insert ───────────────────────
+    // â”€â”€ PHASE 3: Parse GL files, classify, then insert â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Each file's transactions are classified using the BS lookup before
     // being persisted, so account_type in the DB is always BS-driven.
 
@@ -4740,7 +5179,7 @@ async function stageMultiYearGlUpload({
           companyId,
           batchId: batch.id,
           transactions: dedupedTransactions,
-          datasetVersionId: datasetVersion.id,
+          datasetVersionId: datasetVersion?.id || null,
           sourceType,
           sourceSwitchVersion,
           uploadSessionId,
@@ -4777,6 +5216,9 @@ async function stageMultiYearGlUpload({
       const firstFail = filesRequiringMapping[0];
       await updateBatch(batch.id, {
         status: "failed",
+        batch_status: "failed",
+        is_archived: true,
+        processing_completed_at: new Date().toISOString(),
         metadata: {
           requiresManualMapping: true,
           failedUploadId: firstFail.uploadId,
@@ -4794,10 +5236,10 @@ async function stageMultiYearGlUpload({
     }
 
     console.log(
-      `[ManualGL][MultiYear] Phase 3 complete — ${totalInserted} classified transactions persisted.`,
+      `[ManualGL][MultiYear] Phase 3 complete â€” ${totalInserted} classified transactions persisted.`,
     );
 
-    // ── PHASE 3a: Multi-year detection + explicit year-split normalization ──────
+    // â”€â”€ PHASE 3a: Multi-year detection + explicit year-split normalization â”€â”€â”€â”€â”€â”€
     // Inspect every classified transaction to determine whether this upload
     // spans a single year or multiple years. The result is logged immediately
     // for debugging, and stored in batch metadata so callers can surface the
@@ -4806,7 +5248,7 @@ async function stageMultiYearGlUpload({
     // NORMALIZATION: We explicitly split the flat transaction array into a
     // per-year Map so each year's dataset is isolated. A multi-year GL file
     // therefore produces the same per-year datasets as uploading each year
-    // as a separate file — the fiscal_year column on every staged transaction
+    // as a separate file â€” the fiscal_year column on every staged transaction
     // is the canonical isolation boundary for all downstream queries.
     const yearDetection = detectMultipleYears(allClassifiedTransactions);
     logYearDetectionAudit(yearDetection);
@@ -4817,7 +5259,7 @@ async function stageMultiYearGlUpload({
     const debitCreditAudit = computeDebitCreditConsistency(allClassifiedTransactions);
     logDebitCreditConsistencyAudit(debitCreditAudit);
 
-    // Per-year P&L validation — runs calculateProfitLossBuckets on each year's
+    // Per-year P&L validation â€” runs calculateProfitLossBuckets on each year's
     // isolated transactions to confirm the split produces self-consistent numbers.
     if (yearDetection.isMultiYear) {
       console.log("[ManualGL][YearSplit] Running per-year P&L validation...");
@@ -4836,7 +5278,7 @@ async function stageMultiYearGlUpload({
       });
     }
 
-    // ── PHASE 3b: Validate distribution account section classifications ───────
+    // â”€â”€ PHASE 3b: Validate distribution account section classifications â”€â”€â”€â”€â”€â”€â”€
     // Collect every unique GL account name, then check WHERE each appears in the
     // balance sheet hierarchy. Detects unmatched accounts, cross-year section
     // inconsistencies, and keyword-vs-BS conflicts. Results are stored in the
@@ -4847,11 +5289,11 @@ async function stageMultiYearGlUpload({
       ),
     ];
     console.log(
-      `[ManualGL][MultiYear] Phase 3b – validating ${uniqueGlAccounts.length} unique distribution accounts against balance sheet hierarchy...`,
+      `[ManualGL][MultiYear] Phase 3b â€“ validating ${uniqueGlAccounts.length} unique distribution accounts against balance sheet hierarchy...`,
     );
     const distributionValidation = validateDistributionAccountSections(uniqueGlAccounts, detailedSectionMap);
 
-    // ── PHASE 4: Insert Balance Sheet lines ──────────────────────────────────
+    // â”€â”€ PHASE 4: Insert Balance Sheet lines â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Now that GL is stored, persist the BS line data we parsed in Phase 1.
 
     if (balanceSheetInfo.startingParsed && balanceSheetInfo.startingUpload) {
@@ -4861,7 +5303,7 @@ async function stageMultiYearGlUpload({
         upload: balanceSheetInfo.startingUpload,
         sheetType: SHEET_TYPE.STARTING,
         parsed: balanceSheetInfo.startingParsed,
-        datasetVersionId: datasetVersion.id,
+        datasetVersionId: datasetVersion?.id || null,
         sourceType,
         sourceSwitchVersion,
         uploadSessionId,
@@ -4875,7 +5317,7 @@ async function stageMultiYearGlUpload({
       });
       balanceSheetInfo.inserted.starting = result.inserted;
       console.log(
-        `[ManualGL][MultiYear] Phase 4 – STARTING BS lines inserted: ${result.inserted}`,
+        `[ManualGL][MultiYear] Phase 4 â€“ STARTING BS lines inserted: ${result.inserted}`,
       );
     }
 
@@ -4886,7 +5328,7 @@ async function stageMultiYearGlUpload({
         upload: balanceSheetInfo.endingUpload,
         sheetType: SHEET_TYPE.ENDING,
         parsed: balanceSheetInfo.endingParsed,
-        datasetVersionId: datasetVersion.id,
+        datasetVersionId: datasetVersion?.id || null,
         sourceType,
         sourceSwitchVersion,
         uploadSessionId,
@@ -4900,11 +5342,11 @@ async function stageMultiYearGlUpload({
       });
       balanceSheetInfo.inserted.ending = result.inserted;
       console.log(
-        `[ManualGL][MultiYear] Phase 4 – ENDING BS lines inserted: ${result.inserted}`,
+        `[ManualGL][MultiYear] Phase 4 â€“ ENDING BS lines inserted: ${result.inserted}`,
       );
     }
 
-    // ── PHASE 5: Summary, validation, batch update ───────────────────────────
+    // â”€â”€ PHASE 5: Summary, validation, batch update â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     const normalizedTransactions = allClassifiedTransactions
       .map(normalizeStagedTransactionRow)
@@ -4928,12 +5370,12 @@ async function stageMultiYearGlUpload({
       ),
     ).length;
     console.log(
-      `[ManualGL][MultiYear] Classification audit — BS transactions: ${bsAccounts}, P&L transactions: ${plAccounts}, total: ${normalizedTransactions.length}`,
+      `[ManualGL][MultiYear] Classification audit â€” BS transactions: ${bsAccounts}, P&L transactions: ${plAccounts}, total: ${normalizedTransactions.length}`,
     );
 
     let validation = null;
     if (balanceSheetInfo.startingParsed || balanceSheetInfo.endingParsed) {
-      // Both reads are independent — run in parallel instead of sequentially.
+      // Both reads are independent â€” run in parallel instead of sequentially.
       const [startingLines, endingLines] = await Promise.all([
         loadBatchBalanceSheetLines(companyId, batch.id, SHEET_TYPE.STARTING),
         loadBatchBalanceSheetLines(companyId, batch.id, SHEET_TYPE.ENDING),
@@ -4955,6 +5397,9 @@ async function stageMultiYearGlUpload({
     console.log("[ManualGL][MultiYear] Updating batch to staged...");
     await updateBatch(batch.id, {
       status: "staged",
+      batch_status: "staged",
+      is_archived: false,
+      processing_completed_at: new Date().toISOString(),
       metadata: {
         requiresManualMapping: false,
         glUploadIds: normalizedUploadIds,
@@ -4977,7 +5422,7 @@ async function stageMultiYearGlUpload({
         yearsDetected: yearDetection.years,
         perYearTransactionCounts: yearDetection.perYearCounts,
         invalidDateTransactionCount: yearDetection.invalidDateCount,
-        // Per-year stats from the normalization split — mirrors what would be
+        // Per-year stats from the normalization split â€” mirrors what would be
         // produced by uploading each year as a separate single-year GL file.
         perYearStats,
         debitCreditAudit,
@@ -5021,12 +5466,16 @@ async function stageMultiYearGlUpload({
       console.warn("[ManualGL][MultiYear] Failed to refresh report source:", syncError.message);
     }
 
-    console.log("[ManualGL][MultiYear] Finalizing upload lifecycle...");
-    await finalizeUploadLifecycle(uploadJob.id, datasetVersion.id, companyId, batch.id);
+    if (useDatasetLifecycle && !deferLifecycleFinalization && uploadJob?.id && datasetVersion?.id) {
+      console.log("[ManualGL][MultiYear] Finalizing upload lifecycle...");
+      await finalizeUploadLifecycle(uploadJob.id, datasetVersion.id, companyId, batch.id);
+    }
 
     return {
       success: true,
       batchId: batch.id,
+      uploadJobId: uploadJob?.id || null,
+      datasetVersionId: datasetVersion?.id || null,
       insertedTransactions: totalInserted,
       yearGroups: combinedYearGroups,
       duplicateTransactionsSkipped: totalDuplicates,
@@ -5051,7 +5500,7 @@ async function stageMultiYearGlUpload({
   } catch (error) {
     console.error("[ManualGL][MultiYear] === FAILED ===", error.message, error.stack);
     try {
-      if (typeof failUploadLifecycle === "function") {
+      if (useDatasetLifecycle && typeof failUploadLifecycle === "function") {
         await failUploadLifecycle(uploadJob?.id, datasetVersion?.id, error.message);
       }
     } catch (lifecycleErr) {
@@ -5093,6 +5542,9 @@ async function stageMultiYearGlUpload({
     try {
       await updateBatch(batch.id, {
         status: "failed",
+        batch_status: "failed",
+        is_archived: true,
+        processing_completed_at: new Date().toISOString(),
         metadata: { error: error.message, rolledBack: true },
       });
     } catch (updateError) {
@@ -5107,7 +5559,7 @@ async function stageMultiYearGlUpload({
  *
  * Internally the BS computation uses CUMULATIVE transactions (e.g. 2022+2023 for a
  * 2023 report) so that running balances are correct.  But the API response should
- * only expose data for the year(s) the user actually requested — otherwise the
+ * only expose data for the year(s) the user actually requested â€” otherwise the
  * frontend sees columns/totals for years the user never asked for and renders
  * cross-year contaminated values.
  *
@@ -5123,7 +5575,7 @@ function restrictBsPayloadToSelectedYears(payload, selectedYears) {
 
   if (!filteredYears.length) {
     console.log(
-      `[ManualGL][YearRestrict] No payload years match selectedYears ${JSON.stringify(selectedYears)} — returning unrestricted payload.`,
+      `[ManualGL][YearRestrict] No payload years match selectedYears ${JSON.stringify(selectedYears)} â€” returning unrestricted payload.`,
     );
     return payload;
   }
@@ -5159,7 +5611,7 @@ function restrictBsPayloadToSelectedYears(payload, selectedYears) {
   const filteredAudit = (payload.audit || []).filter((a) => keepYear(a.year));
 
   console.log(
-    `[ManualGL][YearRestrict] BS response years restricted from [${(payload.years || []).join(", ")}] → [${filteredYears.join(", ")}]`,
+    `[ManualGL][YearRestrict] BS response years restricted from [${(payload.years || []).join(", ")}] â†’ [${filteredYears.join(", ")}]`,
   );
 
   return {
@@ -5236,8 +5688,8 @@ async function getCashflowSummaryFromStage(companyId, filters = {}) {
 
   // Build movements from BS category rolling balances (indirect method).
   // "Movement" = change from end of prior year to end of current year.
-  // For assets:  an increase is a cash OUTFLOW → negative to cash flow.
-  // For liabilities/equity: an increase is a cash INFLOW → positive to cash flow.
+  // For assets:  an increase is a cash OUTFLOW â†’ negative to cash flow.
+  // For liabilities/equity: an increase is a cash INFLOW â†’ positive to cash flow.
   const bsCategories = [];
   ["Assets", "Liabilities", "Equity"].forEach((sKey) => {
     const sectionData = bs.sections?.[sKey];
@@ -5264,7 +5716,7 @@ async function getCashflowSummaryFromStage(companyId, filters = {}) {
       flowType = "Financing";
     }
 
-    // Cash/bank accounts are the result — collect their balances, then skip movements.
+    // Cash/bank accounts are the result â€” collect their balances, then skip movements.
     if (label.includes("bank account") || label === "cash") {
       allBsYears.forEach((y) => {
         cashBalanceByYear[y] = roundMoney(
@@ -5285,7 +5737,7 @@ async function getCashflowSummaryFromStage(companyId, filters = {}) {
 
       const current = roundMoney(Number(cat.totalByYear?.[year] || 0));
       // For the first GL year there is no prior DB row, so use the opening balance
-      // derived from the starting balance sheet as the anchor — prevents the full
+      // derived from the starting balance sheet as the anchor â€” prevents the full
       // cumulative balance (openingBalance + activity) from appearing as the movement.
       const prior = priorYear != null
         ? roundMoney(Number(cat.totalByYear?.[priorYear] || 0))
@@ -5416,7 +5868,7 @@ async function getProfitLossSummaryFromStage(companyId, filters = {}) {
   // instead fetch by date range, then correct + filter in memory.
   const preFilters = parseManualFilterQuery(filters);
   const preBatchId = preFilters.batchId ||
-    (await getLatestManualBatch(companyId, { status: "staged" }))?.id;
+    (await resolveReportBatchId(companyId));
   const batchMeta = await loadBatchMetadata(preBatchId);
   const fiscalCalendarExplicit = batchMeta.fiscalCalendarExplicit === true;
 
@@ -5436,7 +5888,7 @@ async function getProfitLossSummaryFromStage(companyId, filters = {}) {
     };
     console.log(
       `[ManualGL][PL][Debug] BUG2-bypass: converted fiscalYears ${JSON.stringify(selectedYearsForBypass)} ` +
-      `→ date range ${minYear}-01-01 to ${maxYearPl}-12-31`,
+      `â†’ date range ${minYear}-01-01 to ${maxYearPl}-12-31`,
     );
   }
 
@@ -5476,7 +5928,7 @@ async function getProfitLossSummaryFromStage(companyId, filters = {}) {
     ["asset", "liability", "equity"].includes(normalizeAccountType(tx.accountType) || ""),
   ).length;
   console.log(
-    `[ManualGL][PL][Debug] After reclassification — P&L transactions: ${plCount}, BS transactions (excluded): ${bsCount}`,
+    `[ManualGL][PL][Debug] After reclassification â€” P&L transactions: ${plCount}, BS transactions (excluded): ${bsCount}`,
   );
 
   // Restore original fiscalYears into the filter passed to the builder so that
@@ -5487,7 +5939,7 @@ async function getProfitLossSummaryFromStage(companyId, filters = {}) {
   });
 
   console.log(
-    `[ManualGL][PL][Debug] P&L result — years: ${JSON.stringify(summary.years)},`,
+    `[ManualGL][PL][Debug] P&L result â€” years: ${JSON.stringify(summary.years)},`,
     `netProfitByYear: ${JSON.stringify(summary.netProfitByYear || {})}`,
   );
 
@@ -5497,7 +5949,7 @@ async function getProfitLossSummaryFromStage(companyId, filters = {}) {
 async function getProfitLossDetailFromStage(companyId, filters = {}) {
   const preFilters = parseManualFilterQuery(filters);
   const preBatchId = preFilters.batchId ||
-    (await getLatestManualBatch(companyId, { status: "staged" }))?.id;
+    (await resolveReportBatchId(companyId));
   const batchMeta = await loadBatchMetadata(preBatchId);
   const fiscalCalendarExplicit = batchMeta.fiscalCalendarExplicit === true;
 
@@ -5531,7 +5983,7 @@ async function getProfitLossDetailFromStage(companyId, filters = {}) {
     `total transactions after year filter: ${normalized.length}`,
   );
 
-  // Re-classify using BS lines — matches the reclassification in getProfitLossSummaryFromStage
+  // Re-classify using BS lines â€” matches the reclassification in getProfitLossSummaryFromStage
   // so BS accounts stored with wrong type in legacy data are excluded from P&L detail.
   if (effectiveBatchId) {
     const bsLookup = await loadBsLookupForBatch(companyId, effectiveBatchId);
@@ -5547,10 +5999,13 @@ async function getProfitLossDetailFromStage(companyId, filters = {}) {
     ["asset", "liability", "equity"].includes(normalizeAccountType(tx.accountType) || ""),
   ).length;
   console.log(
-    `[ManualGL][PL-Detail][Debug] After reclassification — P&L accounts: ${plCount}, BS accounts (excluded): ${bsCount}`,
+    `[ManualGL][PL-Detail][Debug] After reclassification â€” P&L accounts: ${plCount}, BS accounts (excluded): ${bsCount}`,
   );
 
-  return buildProfitLossDetailPayload(normalized, normalizedFilters);
+  return buildProfitLossDetailPayload(normalized, {
+    ...normalizedFilters,
+    fiscalYears: selectedYears.length ? selectedYears : (normalizedFilters.fiscalYears || []),
+  });
 }
 
 async function getStageTransactions(companyId, filters = {}) {
@@ -5564,36 +6019,69 @@ async function getStageTransactions(companyId, filters = {}) {
 }
 
 async function getStageFilterOptions(companyId, filters = {}) {
-  // Resolve the batch ID first (cheapest possible query — 1 row from batches table).
+  const emptyOptions = Object.fromEntries(
+    ["fiscalYear", "fiscalMonth", "accountName", "accountNumber", "accountType",
+      "category", "subCategory", "department", "class", "location", "sourceFile",
+      "transactionType", "journalType", "reportType"].map((k) =>
+        k === "reportType" ? [k, ["profit_loss", "balance_sheet"]] : [k, []]
+      ),
+  );
+
   const incomingBatchId = toNonEmptyString(filters.batchId || "");
-  let batchId = incomingBatchId;
+  const includeArchived =
+    filters.includeArchived === true ||
+    toNonEmptyString(filters.versionMode || "").toLowerCase() === REPORT_BATCH_MODE.HISTORICAL;
+  const batchId = await resolveReportBatchId(companyId, incomingBatchId, {
+    allowExplicitBatch: includeArchived,
+    includeArchived,
+    versionMode: includeArchived ? REPORT_BATCH_MODE.HISTORICAL : REPORT_BATCH_MODE.ACTIVE,
+  });
+  const activeBatch = await getActiveUploadBatch(companyId);
+  const activeBatchId = activeBatch?.id || null;
 
   if (!batchId) {
-    const latestBatch = await getLatestManualBatch(companyId, {
-      sourceType: filters.sourceType || MANUAL_SOURCE_KEY,
-      status: "staged",
-    });
-    if (!latestBatch?.id) {
-      console.log(`[ManualGL][FilterOptions] No staged batch found for company ${companyId}`);
+    return {
+      source: "manual_gl_active_batch",
+      activeBatchId,
+      resolvedBatchId: null,
+      requestedBatchId: incomingBatchId || null,
+      versionMode: includeArchived ? REPORT_BATCH_MODE.HISTORICAL : REPORT_BATCH_MODE.ACTIVE,
+      rowCount: 0,
+      options: emptyOptions,
+    };
+  }
+
+  // Snapshot-first read for fast and immutable filter option rendering.
+  try {
+    const { data: filterSnapshot, error: snapshotError } = await supabase
+      .from("reporting_snapshots")
+      .select("snapshot_payload")
+      .eq("company_id", companyId)
+      .eq("upload_batch_id", batchId)
+      .eq("report_type", "filter_options")
+      .eq("fiscal_year", -1)
+      .order("generated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (!snapshotError && filterSnapshot?.snapshot_payload?.options) {
+      const payload = filterSnapshot.snapshot_payload;
       return {
-        source: "manual_gl_staged_transactions",
-        rowCount: 0,
-        options: Object.fromEntries(
-          ["fiscalYear", "fiscalMonth", "accountName", "accountNumber", "accountType",
-            "category", "subCategory", "department", "class", "location", "sourceFile",
-            "transactionType", "journalType", "reportType"].map((k) =>
-              k === "reportType" ? [k, ["profit_loss", "balance_sheet"]] : [k, []]
-            )
-        ),
+        source: "manual_gl_reporting_snapshot",
+        activeBatchId,
+        resolvedBatchId: batchId,
+        requestedBatchId: incomingBatchId || null,
+        versionMode: includeArchived ? REPORT_BATCH_MODE.HISTORICAL : REPORT_BATCH_MODE.ACTIVE,
+        rowCount: Number(payload.rowCount || 0),
+        options: payload.options || emptyOptions,
       };
     }
-    batchId = latestBatch.id;
+  } catch (_) {
+    // reporting_snapshots may not exist until migration 026 is applied.
   }
 
   console.log(`[ManualGL][FilterOptions] Resolving options for batch ${batchId}`);
 
-  // Fetch only the columns needed to compute distinct filter values.
-  // This is far faster than select("*") over 200k rows.
   const DISCOVERY_COLS = [
     "fiscal_year", "txn_date", "account_name", "account_number", "account_type",
     "category", "sub_category", "department", "class", "location",
@@ -5605,7 +6093,7 @@ async function getStageFilterOptions(companyId, filters = {}) {
       .from(TABLES.transactions)
       .select(DISCOVERY_COLS)
       .eq("company_id", companyId)
-      .eq("batch_id", batchId);
+      .eq("upload_batch_id", batchId);
 
     if (includeSourceType && filters.sourceType) {
       query = query.eq("source_type", filters.sourceType);
@@ -5633,7 +6121,44 @@ async function getStageFilterOptions(companyId, filters = {}) {
   };
 
   let { rows, error } = await fetchNarrow(true);
-  if (error && isMissingColumnError(error)) {
+  if (error && isMissingColumnError(error, "upload_batch_id")) {
+    const fetchLegacyBatch = async (includeSourceType = true) => {
+      let query = supabase
+        .from(TABLES.transactions)
+        .select(DISCOVERY_COLS)
+        .eq("company_id", companyId)
+        .eq("batch_id", batchId);
+
+      if (includeSourceType && filters.sourceType) {
+        query = query.eq("source_type", filters.sourceType);
+      }
+
+      query = query.order("id", { ascending: true });
+
+      const pageSize = 1000;
+      const maxRows = DEFAULT_STAGING_LIMIT;
+      const legacyRows = [];
+      let offset = 0;
+
+      while (legacyRows.length < maxRows) {
+        const chunkSize = Math.min(pageSize, maxRows - legacyRows.length);
+        const { data, error: fetchError } = await query.range(offset, offset + chunkSize - 1);
+        if (fetchError) return { rows: [], error: fetchError };
+        const chunk = Array.isArray(data) ? data : [];
+        if (!chunk.length) break;
+        legacyRows.push(...chunk);
+        offset += chunk.length;
+        if (chunk.length < pageSize) break;
+      }
+
+      return { rows: legacyRows, error: null };
+    };
+
+    ({ rows, error } = await fetchLegacyBatch(true));
+    if (error && isMissingColumnError(error)) {
+      ({ rows, error } = await fetchLegacyBatch(false));
+    }
+  } else if (error && isMissingColumnError(error)) {
     ({ rows, error } = await fetchNarrow(false));
   }
   if (error) throw new Error(`Failed to fetch filter options: ${error.message}`);
@@ -5664,7 +6189,6 @@ async function getStageFilterOptions(companyId, filters = {}) {
   };
 
   const availableFiscalYears = getAvailableFiscalYears(rows);
-  console.log("[FiscalYearsFromDB]", { batchId, years: availableFiscalYears });
   availableFiscalYears.forEach((yr) => options.fiscalYear.add(String(yr)));
 
   rows.forEach((row) => {
@@ -5687,12 +6211,16 @@ async function getStageFilterOptions(companyId, filters = {}) {
 
   return {
     source: "manual_gl_staged_transactions",
+    activeBatchId,
+    resolvedBatchId: batchId,
+    requestedBatchId: incomingBatchId || null,
+    versionMode: includeArchived ? REPORT_BATCH_MODE.HISTORICAL : REPORT_BATCH_MODE.ACTIVE,
     rowCount: rows.length,
     options: Object.fromEntries(
       Object.entries(options).map(([key, set]) => [
         key,
         Array.from(set).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })),
-      ])
+      ]),
     ),
   };
 }
@@ -5714,7 +6242,7 @@ async function loadBatchBalanceSheetLines(companyId, batchId, sheetType) {
 
 async function validateBatchBalanceSheet(companyId, batchId = "") {
   const effectiveBatchId =
-    batchId || (await getLatestManualBatch(companyId, { status: "staged" }))?.id;
+    batchId || (await resolveReportBatchId(companyId));
   if (!effectiveBatchId) {
     throw new Error("No staged batch available for validation.");
   }
@@ -5745,31 +6273,42 @@ async function validateBatchBalanceSheet(companyId, batchId = "") {
 }
 
 async function getLatestManualBatch(companyId, options = {}) {
+  if (!companyId) return null;
+
   const sourceType = toNonEmptyString(options.sourceType || "");
   const sourceSwitchVersion = toNonEmptyString(options.sourceSwitchVersion || "");
   const rawUploadSessionId = toNonEmptyString(options.uploadSessionId || "");
   const uploadSessionId = isValidUuid(rawUploadSessionId) ? rawUploadSessionId : "";
-  const status = toNonEmptyString(options.status || "");
+  const status = toNonEmptyString(options.status || "").toLowerCase();
 
-  let activeVersion = await getActiveDatasetVersion(companyId);
-  if (!activeVersion) {
-    activeVersion = await ensureLegacyDatasetVersion(companyId);
+  if (!status || status === "active") {
+    const active = await getActiveUploadBatch(companyId);
+    if (active) {
+      if (sourceType && toNonEmptyString(active.source_type) !== sourceType) {
+        // Continue to query fallback path below.
+      } else {
+        return active;
+      }
+    }
+    if (status === "active") return null;
   }
 
-  const runQuery = async (includeSourceColumns = true) => {
+  const runQuery = async (config = {}) => {
+    const includeSourceColumns = config.includeSourceColumns !== false;
+    const useBatchStatusColumn = config.useBatchStatusColumn === true;
+
     let query = supabase
       .from(TABLES.batches)
       .select("*")
       .eq("company_id", companyId);
 
-    if (activeVersion) {
-      query = query.eq("dataset_version_id", activeVersion.id);
-    } else {
-      query = query.order("created_at", { ascending: false }).limit(1);
-    }
-
     if (status) {
-      query = query.eq("status", status);
+      if (useBatchStatusColumn) {
+        query = query.eq("batch_status", status);
+      } else {
+        const statusFallback = status === "active" ? "staged" : status;
+        query = query.eq("status", statusFallback);
+      }
     }
 
     if (includeSourceColumns) {
@@ -5782,16 +6321,19 @@ async function getLatestManualBatch(companyId, options = {}) {
       }
     }
 
-    // Since dataset version is 1-to-1 with a batch, .single() or limit(1) works
-    if (activeVersion) {
-      query = query.limit(1).maybeSingle();
-    }
-    return activeVersion ? query : query.single();
+    return query.order("created_at", { ascending: false }).limit(1).maybeSingle();
   };
 
-  let { data, error } = await runQuery(true);
+  let { data, error } = await runQuery({
+    includeSourceColumns: true,
+    useBatchStatusColumn: Boolean(status),
+  });
+
   if (error && isMissingColumnError(error)) {
-    ({ data, error } = await runQuery(false));
+    ({ data, error } = await runQuery({
+      includeSourceColumns: false,
+      useBatchStatusColumn: false,
+    }));
   }
 
   if (error && error.code !== "PGRST116") {
@@ -5836,11 +6378,39 @@ function applyCalendarYearCorrection(rows) {
 }
 
 async function listManualGlBatches(companyId) {
-  const { data, error } = await supabase
-    .from(TABLES.batches)
-    .select("id, batch_name, status, created_at, updated_at, metadata")
-    .eq("company_id", companyId)
-    .order("created_at", { ascending: false });
+  const runQuery = async (includeVersionColumns = true) => {
+    let query = supabase
+      .from(TABLES.batches)
+      .select(
+        includeVersionColumns
+          ? "id, batch_name, status, batch_status, is_active, is_archived, dataset_version, upload_checksum, created_at, updated_at, metadata, activated_at, deactivated_at"
+          : "id, batch_name, status, batch_status, is_active, upload_checksum, created_at, updated_at, metadata, activated_at, deactivated_at",
+      )
+      .eq("company_id", companyId)
+      .eq("source_type", MANUAL_SOURCE_KEY);
+
+    if (includeVersionColumns) {
+      query = query
+        .order("dataset_version", { ascending: false, nullsFirst: false })
+        .order("created_at", { ascending: false });
+    } else {
+      query = query.order("created_at", { ascending: false });
+    }
+
+    return query;
+  };
+
+  let { data, error } = await runQuery(true);
+
+  if (error && isMissingColumnError(error, "dataset_version")) {
+    ({ data, error } = await runQuery(false));
+  } else if (error && isMissingColumnError(error, "source_type")) {
+    ({ data, error } = await supabase
+      .from(TABLES.batches)
+      .select("id, batch_name, status, batch_status, is_active, upload_checksum, created_at, updated_at, metadata, activated_at, deactivated_at")
+      .eq("company_id", companyId)
+      .order("created_at", { ascending: false }));
+  }
 
   if (error) {
     throw new Error(`Failed to list manual GL batches: ${error.message}`);
@@ -5851,7 +6421,7 @@ async function listManualGlBatches(companyId) {
 
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-// ─── Monthly Detail: Profit & Loss ───────────────────────────────────────────
+// â”€â”€â”€ Monthly Detail: Profit & Loss â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function buildProfitLossMonthlyDetailPayload(transactions = [], year, filters = {}, selectedMonth = null) {
   const resolvedSelectedMonth = (Number.isInteger(Number(selectedMonth)) && Number(selectedMonth) >= 1 && Number(selectedMonth) <= 12)
@@ -5983,7 +6553,7 @@ function buildProfitLossMonthlyDetailPayload(transactions = [], year, filters = 
 async function getProfitLossMonthlyDetailFromStage(companyId, filters = {}) {
   const preFilters = parseManualFilterQuery(filters);
   const preBatchId = preFilters.batchId ||
-    (await getLatestManualBatch(companyId, { status: "staged" }))?.id;
+    (await resolveReportBatchId(companyId));
   const batchMeta = await loadBatchMetadata(preBatchId);
   const fiscalCalendarExplicit = batchMeta.fiscalCalendarExplicit === true;
 
@@ -6022,7 +6592,7 @@ async function getProfitLossMonthlyDetailFromStage(companyId, filters = {}) {
     `total transactions after year filter: ${normalized.length}`,
   );
 
-  // Re-classify using BS lines — keeps BS accounts out of P&L monthly totals
+  // Re-classify using BS lines â€” keeps BS accounts out of P&L monthly totals
   // (matches the reclassification logic used in getProfitLossSummaryFromStage).
   if (effectiveBatchId) {
     const bsLookup = await loadBsLookupForBatch(companyId, effectiveBatchId);
@@ -6053,7 +6623,7 @@ async function getProfitLossMonthlyDetailFromStage(companyId, filters = {}) {
   return buildProfitLossMonthlyDetailPayload(normalized, fallbackYear, normalizedFilters, selectedMonth);
 }
 
-// ─── Monthly Detail: Balance Sheet ───────────────────────────────────────────
+// â”€â”€â”€ Monthly Detail: Balance Sheet â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function buildBalanceSheetMonthlyDetailPayload(transactions = [], year, filters = {}, startingLines = [], netProfitByYear = {}, selectedMonth = null, fiscalCalendar = {}) {
   const resolvedSelectedMonth = (Number.isInteger(Number(selectedMonth)) && Number(selectedMonth) >= 1 && Number(selectedMonth) <= 12)
@@ -6380,7 +6950,7 @@ function buildBalanceSheetMonthlyDetailPayload(transactions = [], year, filters 
 async function getBalanceSheetMonthlyDetailFromStage(companyId, filters = {}) {
   const normalizedFilters = parseManualFilterQuery(filters);
   const effectiveBatchId =
-    normalizedFilters.batchId || (await getLatestManualBatch(companyId, { status: "staged" }))?.id;
+    normalizedFilters.batchId || (await resolveReportBatchId(companyId));
   const targetYear =
     Array.isArray(normalizedFilters.fiscalYears) && normalizedFilters.fiscalYears.length > 0
       ? Math.max(...normalizedFilters.fiscalYears.map((value) => Number(value)).filter((value) => Number.isInteger(value) && value > 0))
@@ -6448,7 +7018,7 @@ async function getBalanceSheetMonthlyDetailFromStage(companyId, filters = {}) {
   );
 }
 
-// ─── Monthly Detail: Cash Flow ────────────────────────────────────────────────
+// â”€â”€â”€ Monthly Detail: Cash Flow â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function buildCashflowMonthlyDetailPayload(transactions = [], year, filters = {}, startingLines = [], selectedMonth = null) {
   const resolvedSelectedMonth = (Number.isInteger(Number(selectedMonth)) && Number(selectedMonth) >= 1 && Number(selectedMonth) <= 12)
@@ -6546,8 +7116,8 @@ function buildCashflowMonthlyDetailPayload(transactions = [], year, filters = {}
   // --- Step 4: BS category monthly movements ---
   // Cashflow indirect method: impact = netAmount for all BS accounts.
   // netAmount = credit - debit:
-  //   Asset increases (debit) → netAmount < 0 → outflow ✓
-  //   Liability increases (credit) → netAmount > 0 → inflow ✓
+  //   Asset increases (debit) â†’ netAmount < 0 â†’ outflow âœ“
+  //   Liability increases (credit) â†’ netAmount > 0 â†’ inflow âœ“
   const cfSections = {
     Operating: { key: "operating", label: "Cash Flows from Operating Activities", items: new Map(), monthlyTotals: {}, total: 0 },
     Investing: { key: "investing", label: "Cash Flows from Investing Activities", items: new Map(), monthlyTotals: {}, total: 0 },
@@ -6649,7 +7219,7 @@ function buildCashflowMonthlyDetailPayload(transactions = [], year, filters = {}
 
 async function getCashflowMonthlyDetailFromStage(companyId, filters = {}) {
   const normalizedFilters = parseManualFilterQuery(filters);
-  const effectiveBatchId = normalizedFilters.batchId || (await getLatestManualBatch(companyId, { status: "staged" }))?.id;
+  const effectiveBatchId = normalizedFilters.batchId || (await resolveReportBatchId(companyId));
   const targetYear = Array.isArray(normalizedFilters.fiscalYears) && normalizedFilters.fiscalYears.length > 0
     ? Math.max(...normalizedFilters.fiscalYears.map(Number).filter((y) => Number.isInteger(y) && y > 0))
     : null;
@@ -6713,7 +7283,7 @@ module.exports = {
   validateBatchBalanceSheet,
   getLatestManualBatch,
   listManualGlBatches,
-  // Multi-year detection utility — usable by callers (e.g., upload controllers)
+  // Multi-year detection utility â€” usable by callers (e.g., upload controllers)
   // to surface file type information without re-staging.
   detectMultipleYears,
   getAvailableFiscalYears,

@@ -248,17 +248,46 @@ async function getManualGlSnapshot(companyId) {
   let latestBatch = null;
   let batchQueryError = null;
   try {
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from("manual_gl_batches")
-      .select("id, batch_name, status, metadata, created_at, updated_at")
+      .select("id, batch_name, status, batch_status, is_active, metadata, created_at, updated_at, activated_at")
       .eq("company_id", companyId)
-      .order("created_at", { ascending: false })
+      .eq("is_active", true)
+      .order("activated_at", { ascending: false })
+      .order("updated_at", { ascending: false })
       .limit(1)
       .maybeSingle();
+
+    if (error && error.code === "PGRST116") {
+      ({ data, error } = await supabase
+        .from("manual_gl_batches")
+        .select("id, batch_name, status, batch_status, is_active, metadata, created_at, updated_at, activated_at")
+        .eq("company_id", companyId)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle());
+    }
+
     latestBatch = data || null;
     batchQueryError = error || null;
   } catch (error) {
     batchQueryError = error;
+  }
+
+  if (batchQueryError && batchQueryError.code === "42703") {
+    try {
+      const { data, error } = await supabase
+        .from("manual_gl_batches")
+        .select("id, batch_name, status, metadata, created_at, updated_at")
+        .eq("company_id", companyId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+      latestBatch = data || null;
+      batchQueryError = error || null;
+    } catch (legacyError) {
+      batchQueryError = legacyError;
+    }
   }
 
   if (batchQueryError && batchQueryError.code !== "PGRST116") {
@@ -300,8 +329,10 @@ async function getManualGlSnapshot(companyId) {
     metadata: {
       latestBatchId: latestBatch?.id || null,
       latestBatchName: latestBatch?.batch_name || null,
-      latestBatchStatus: latestBatch?.status || null,
+      latestBatchStatus: latestBatch?.batch_status || latestBatch?.status || null,
+      latestBatchIsActive: latestBatch?.is_active === true,
       latestBatchCreatedAt: latestBatch?.created_at || null,
+      latestBatchActivatedAt: latestBatch?.activated_at || null,
       sourceSwitchVersion: manualMetadata.sourceSwitchVersion || null,
       uploadSessionId: manualMetadata.uploadSessionId || null,
       insertedTransactions:

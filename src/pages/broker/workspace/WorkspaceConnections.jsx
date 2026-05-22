@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import {
   AlertTriangle,
@@ -65,6 +65,22 @@ function saveStoredConnectionsState(clientId, state) {
   }
 }
 
+const LOCAL_SOURCE_KEY_PREFIX = "datahub-active-source";
+
+function getLocalActiveSource(clientId) {
+  if (!clientId || typeof window === "undefined") return null;
+  try {
+    return window.localStorage.getItem(`${LOCAL_SOURCE_KEY_PREFIX}:${clientId}`) || null;
+  } catch { return null; }
+}
+
+function setLocalActiveSource(clientId, source) {
+  if (!clientId || typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(`${LOCAL_SOURCE_KEY_PREFIX}:${clientId}`, source);
+  } catch { /* ignore quota errors */ }
+}
+
 function formatTimestamp(value) {
   if (!value) return "Never";
   const date = new Date(value);
@@ -92,22 +108,30 @@ function SourceCard({
   description,
   statusLabel,
   isActive,
+  isSelected,
   lastActivityLabel,
   actionLabel,
   onAction,
+  onSelect,
   disabled = false,
   isBusy = false,
   comingSoon = false,
 }) {
   return (
     <div
+      role="button"
+      tabIndex={0}
+      onClick={onSelect}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") onSelect?.(); }}
       className={cn(
-        "group relative flex flex-col justify-between overflow-hidden rounded-2xl border p-6 transition-all duration-400",
+        "group relative flex flex-col justify-between overflow-hidden rounded-2xl border p-6 transition-all duration-400 cursor-pointer",
         isActive
           ? "border-primary shadow-md bg-white z-10"
-          : comingSoon
-            ? "border-border bg-gray-50/50 opacity-60"
-            : "border-border bg-bg-card hover:-translate-y-1.5 hover:border-primary/40 hover:shadow-[0_20px_40px_rgba(0,0,0,0.06)]",
+          : isSelected
+            ? "border-primary/60 shadow-sm bg-white z-10"
+            : comingSoon
+              ? "border-border bg-gray-50/50 opacity-60"
+              : "border-border bg-bg-card hover:-translate-y-1.5 hover:border-primary/40 hover:shadow-[0_20px_40px_rgba(0,0,0,0.06)]",
       )}
     >
 
@@ -168,7 +192,7 @@ function SourceCard({
 
         <button
           type="button"
-          onClick={onAction}
+          onClick={(e) => { e.stopPropagation(); onSelect?.(); onAction?.(); }}
           disabled={disabled || isBusy || comingSoon}
           className={cn(
             "relative w-full overflow-hidden rounded-xl py-3 text-[13px] font-bold transition-all duration-300",
@@ -202,11 +226,18 @@ export default function WorkspaceConnections() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { showToast } = useToast();
   const storedState = getStoredConnectionsState(clientId);
+  // Capture session-stored selectedView once at mount. Used as fallback in the selectedView
+  // useMemo so the correct panel is shown immediately on navigation-back, before the
+  // URL-setting effect can restore ?source= and without relying on activeSourceKey (which
+  // may have been reverted to the server's value by refreshSourceState on the previous visit).
+  const initialStoredViewRef = useRef(storedState?.selectedView ?? null);
 
   const [company, setCompany] = useState(null);
-  const [sourceState, setSourceState] = useState(
-    storedState?.sourceState || INITIAL_SOURCE_STATE,
-  );
+  const [sourceState, setSourceState] = useState(() => {
+    const localActiveSource = getLocalActiveSource(clientId);
+    const base = storedState?.sourceState || INITIAL_SOURCE_STATE;
+    return localActiveSource ? { ...base, activeSource: localActiveSource } : base;
+  });
   const [isLoadingSources, setIsLoadingSources] = useState(false);
   const [isSwitchingSource, setIsSwitchingSource] = useState(false);
   const [switchingTargetKey, setSwitchingTargetKey] = useState(null);
@@ -238,21 +269,41 @@ export default function WorkspaceConnections() {
   const activeSourceKey = normalizeReportSourceKey(
     sourceState.activeSource || sourceState.selectedSource || null,
   );
+  // Keep a ref to the latest activeSourceKey so the URL-init effect can read it
+  // without adding it to the dependency array (which would cause the effect to fire
+  // on every refreshSourceState call and potentially override a user's selection).
+  const activeSourceKeyRef = useRef(activeSourceKey);
+  activeSourceKeyRef.current = activeSourceKey;
+
   const quickbooksConnected = Boolean(
     sourceState.quickbooksConnected || quickbooksRecord?.isConnected,
   );
 
   const selectedView = useMemo(() => {
     const source = searchParams.get("source");
-    if (source === "manual") return "manual";
-    if (source === "quickbooks") return "quickbooks";
-    if (source === "manual_upload") return "manual_upload";
-    if (source === "quickbooks_manual") return "quickbooks_manual";
+    const validViews = ["manual", "quickbooks", "manual_upload", "quickbooks_manual"];
+    if (validViews.includes(source)) return source;
+    if (initialStoredViewRef.current && validViews.includes(initialStoredViewRef.current)) {
+      return initialStoredViewRef.current;
+    }
     if (activeSourceKey === REPORT_SOURCE_KEYS.MANUAL_GL) return "manual";
     if (activeSourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD) return "manual_upload";
     if (activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) return "quickbooks_manual";
     return "quickbooks";
   }, [activeSourceKey, searchParams]);
+
+  // Synchronously set the selected view in both the URL and session storage.
+  // Using an imperative helper (instead of relying solely on the reactive session-save
+  // effect) ensures the session is always up-to-date before any navigation happens —
+  // eliminating the race condition where navigating away before the effect runs left
+  // the session with a stale view that would be restored on the next visit.
+  const navigateToView = useCallback((view) => {
+    if (!view) return;
+    setSearchParams({ source: view });
+    initialStoredViewRef.current = view;
+    const current = getStoredConnectionsState(clientId) || {};
+    saveStoredConnectionsState(clientId, { ...current, selectedView: view });
+  }, [clientId, setSearchParams]);
 
   const refreshSourceState = useCallback(async () => {
     if (!clientId) {
@@ -271,6 +322,19 @@ export default function WorkspaceConnections() {
         lastSourceSwitchAt: payload?.lastSourceSwitchAt || null,
         sources: Array.isArray(payload?.sources) ? payload.sources : [],
       };
+      // User's explicit localStorage choice takes priority over backend response —
+      // prevents any API call from reverting a source the user explicitly selected.
+      const localSource = getLocalActiveSource(clientId);
+      if (localSource) {
+        nextState.activeSource = localSource;
+        nextState.manualUploadActive =
+          localSource === REPORT_SOURCE_KEYS.MANUAL_GL ||
+          localSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD ||
+          localSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
+      } else if (nextState.activeSource) {
+        // Seed localStorage on first visit so future visits use it.
+        setLocalActiveSource(clientId, normalizeReportSourceKey(nextState.activeSource) || nextState.activeSource);
+      }
       setSourceState(nextState);
       return nextState;
     } catch (error) {
@@ -282,19 +346,54 @@ export default function WorkspaceConnections() {
     }
   }, [clientId]);
 
+  // Restore sourceState from session — runs ONLY when clientId changes (mount / company switch).
+  // Must NOT depend on searchParams: executeSourceSwitch calls setSearchParams, which would
+  // re-fire this effect with stale session storage and overwrite the just-set active source.
   useEffect(() => {
     if (!clientId) return;
-
     const restored = getStoredConnectionsState(clientId);
-    if (!restored || typeof restored !== "object") return;
-
-    if (restored.sourceState && typeof restored.sourceState === "object") {
-      setSourceState((previous) => ({
-        ...previous,
-        ...restored.sourceState,
-      }));
+    if (restored?.sourceState && typeof restored.sourceState === "object") {
+      const mergedState = { ...restored.sourceState };
+      // localStorage is the durable source of truth — override any stale sessionStorage value.
+      const localSource = getLocalActiveSource(clientId);
+      if (localSource) {
+        mergedState.activeSource = localSource;
+        mergedState.manualUploadActive =
+          localSource === REPORT_SOURCE_KEYS.MANUAL_GL ||
+          localSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD ||
+          localSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
+      }
+      setSourceState((previous) => ({ ...previous, ...mergedState }));
     }
   }, [clientId]);
+
+  // Set ?source= when absent — runs only when the URL param is missing/invalid.
+  // activeSourceKey is intentionally NOT in the dependency array: we read it via
+  // activeSourceKeyRef so that refreshSourceState() completing (which changes
+  // activeSourceKey) never triggers this effect and never overrides a selection
+  // the user already made.
+  useEffect(() => {
+    if (!clientId) return;
+    const currentView = searchParams.get("source");
+    const validViews = ["manual", "quickbooks", "manual_upload", "quickbooks_manual"];
+    if (validViews.includes(currentView)) return; // URL already valid — nothing to do
+    // (2) Restore from session
+    const restored = getStoredConnectionsState(clientId);
+    if (restored && validViews.includes(restored.selectedView)) {
+      setSearchParams({ source: restored.selectedView }, { replace: true });
+      return;
+    }
+    // (3) Derive from active source key (read via ref — no dep on the reactive value)
+    const activeKey = activeSourceKeyRef.current;
+    if (!activeKey) return;
+    const fallback =
+      activeKey === REPORT_SOURCE_KEYS.MANUAL_GL ? "manual" :
+      activeKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD ? "manual_upload" :
+      activeKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL ? "quickbooks_manual" :
+      "quickbooks";
+    setSearchParams({ source: fallback }, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clientId, searchParams, setSearchParams]);
 
   useEffect(() => {
     Promise.resolve().then(() => {
@@ -309,17 +408,6 @@ export default function WorkspaceConnections() {
       .catch(() => setCompany(null));
   }, [clientId]);
 
-  useEffect(() => {
-    let fallback = "quickbooks";
-    if (activeSourceKey === REPORT_SOURCE_KEYS.MANUAL_GL) fallback = "manual";
-    else if (activeSourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD) fallback = "manual_upload";
-    else if (activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) fallback = "quickbooks_manual";
-
-    const sourceParam = searchParams.get("source");
-    if (sourceParam !== fallback) {
-      setSearchParams({ source: fallback }, { replace: true });
-    }
-  }, [activeSourceKey, searchParams, setSearchParams]);
 
   const closeSourceSwitchModal = useCallback(() => {
     if (isSwitchingSource) return;
@@ -339,23 +427,33 @@ export default function WorkspaceConnections() {
           confirmSwitch: true,
           ...switchOptions,
         });
+
+        // Use targetKey as the authoritative activeSource — the server response may be
+        // stale and return the old activeSource, which would revert the card highlight.
+        const resolvedSourceKey = normalizeReportSourceKey(targetKey);
         const next = {
-          selectedSource: payload?.selectedSource || null,
-          activeSource: payload?.activeSource || payload?.selectedSource || null,
+          selectedSource: payload?.selectedSource || targetKey,
+          activeSource: targetKey,
           quickbooksConnected: Boolean(payload?.quickbooksConnected),
           manualUploadActive:
-            normalizeReportSourceKey(payload?.activeSource) === REPORT_SOURCE_KEYS.MANUAL_GL ||
-            normalizeReportSourceKey(payload?.activeSource) === REPORT_SOURCE_KEYS.MANUAL_UPLOAD ||
-            normalizeReportSourceKey(payload?.activeSource) === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL,
+            resolvedSourceKey === REPORT_SOURCE_KEYS.MANUAL_GL ||
+            resolvedSourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD ||
+            resolvedSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL,
           lastSourceSwitchAt: new Date().toISOString(),
           sources: Array.isArray(payload?.sources) ? payload.sources : [],
         };
 
         setSourceState(next);
-        switchSucceeded = true;
-        const resolvedSourceKey = normalizeReportSourceKey(
-          next.activeSource || next.selectedSource || targetKey,
-        );
+        setLocalActiveSource(clientId, resolvedSourceKey);
+        const nextView =
+          resolvedSourceKey === REPORT_SOURCE_KEYS.MANUAL_GL
+            ? "manual"
+            : resolvedSourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD
+              ? "manual_upload"
+              : resolvedSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL
+                ? "quickbooks_manual"
+                : "quickbooks";
+        navigateToView(nextView);
 
         emitWorkspaceDataSourceUpdated({
           clientId,
@@ -367,6 +465,7 @@ export default function WorkspaceConnections() {
           title: "Source updated",
           message: `Current source is now ${getReportSourceLabel(resolvedSourceKey)}.`,
         });
+        switchSucceeded = true;
       } catch (error) {
         showToast({
           type: "error",
@@ -391,7 +490,7 @@ export default function WorkspaceConnections() {
         }
       }
     },
-    [clientId, refreshSourceState, showToast],
+    [clientId, navigateToView, refreshSourceState, showToast],
   );
 
   const confirmSourceSwitch = useCallback(async () => {
@@ -451,7 +550,6 @@ export default function WorkspaceConnections() {
 
   const requestQMSSwitch = useCallback(() => {
     if (activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) {
-      setSearchParams({ source: "quickbooks_manual" });
       return;
     }
 
@@ -464,7 +562,7 @@ export default function WorkspaceConnections() {
       targetSourceKey: REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL,
       switchOptions: { confirmSwitch: true },
     });
-  }, [activeSourceKey, quickbooksConnected, setSearchParams]);
+  }, [activeSourceKey, quickbooksConnected]);
 
   const quickbooksStatusLabel = useMemo(() => {
     if (quickbooksConnected && activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS) {
@@ -508,6 +606,8 @@ export default function WorkspaceConnections() {
 
     saveStoredConnectionsState(clientId, {
       sourceState,
+      // selectedView is written synchronously by navigateToView — not here, to avoid
+      // overwriting a user's selection with a stale searchParams value from this closure.
       isSwitchingSource,
       switchingTargetKey,
       activeSourceKey,
@@ -574,6 +674,7 @@ export default function WorkspaceConnections() {
             description="Live accounting sync with customers, invoices, and financial statements."
             statusLabel={quickbooksStatusLabel}
             isActive={activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS}
+            isSelected={selectedView === "quickbooks"}
             lastActivityLabel={`Last sync: ${formatTimestamp(
               quickbooksRecord?.lastSyncedAt || quickbooksRecord?.lastConnectedAt,
             )}`}
@@ -583,6 +684,7 @@ export default function WorkspaceConnections() {
                 : "Switch To QuickBooks"
             }
             onAction={requestQuickBooksSwitch}
+            onSelect={() => navigateToView("quickbooks")}
             disabled={activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS}
             isBusy={
               isSwitchingSource &&
@@ -596,6 +698,7 @@ export default function WorkspaceConnections() {
             description="Upload and stage multi-year GL datasets with controlled report generation."
             statusLabel={manualStatusLabel}
             isActive={activeSourceKey === REPORT_SOURCE_KEYS.MANUAL_GL}
+            isSelected={selectedView === "manual"}
             lastActivityLabel={`Last staged: ${formatTimestamp(
               manualRecord?.metadata?.latestBatchCreatedAt || manualRecord?.lastSyncedAt,
             )}`}
@@ -605,6 +708,7 @@ export default function WorkspaceConnections() {
                 : "Switch To Manual GL"
             }
             onAction={requestManualSwitch}
+            onSelect={() => navigateToView("manual")}
             disabled={activeSourceKey === REPORT_SOURCE_KEYS.MANUAL_GL}
             isBusy={
               isSwitchingSource &&
@@ -618,6 +722,7 @@ export default function WorkspaceConnections() {
             description="Upload financial reports directly as Excel or PDF files for structured analysis."
             statusLabel={manualUploadStatusLabel}
             isActive={activeSourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD}
+            isSelected={selectedView === "manual_upload"}
             lastActivityLabel={`Last upload: ${formatTimestamp(
               manualUploadRecord?.metadata?.latestBatchCreatedAt || manualUploadRecord?.lastSyncedAt,
             )}`}
@@ -627,6 +732,7 @@ export default function WorkspaceConnections() {
                 : "Switch To Manual Upload"
             }
             onAction={requestManualUploadSwitch}
+            onSelect={() => navigateToView("manual_upload")}
             disabled={activeSourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD}
             isBusy={
               isSwitchingSource &&
@@ -640,6 +746,7 @@ export default function WorkspaceConnections() {
             description="Manually reconcile and import QuickBooks-exported data for controlled reporting."
             statusLabel={qmsStatusLabel}
             isActive={activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL}
+            isSelected={selectedView === "quickbooks_manual"}
             lastActivityLabel={`Last sync: ${formatTimestamp(
               qmsRecord?.lastSyncedAt || qmsRecord?.lastConnectedAt,
             )}`}
@@ -649,6 +756,7 @@ export default function WorkspaceConnections() {
                 : "Switch To QuickBooks Manual"
             }
             onAction={requestQMSSwitch}
+            onSelect={() => navigateToView("quickbooks_manual")}
             disabled={activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL}
             isBusy={
               isSwitchingSource &&
@@ -660,41 +768,41 @@ export default function WorkspaceConnections() {
         <div className="rounded-2xl border border-border bg-bg-card p-5">
           <div className="mb-4 flex items-center justify-between">
             <h2 className="text-[16px] font-semibold text-text-primary">
-              {!activeSourceKey || activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS
-                ? "QuickBooks Connection"
-                : activeSourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD
+              {selectedView === "manual"
+                ? "Manual GL Upload"
+                : selectedView === "manual_upload"
                   ? "Manual Upload (Excel/PDF)"
-                  : activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL
+                  : selectedView === "quickbooks_manual"
                     ? "QuickBooks Manual"
-                    : "Manual GL Upload"}
+                    : "QuickBooks Connection"}
             </h2>
             <span className="text-[12px] text-text-muted">
               Last source switch: {formatTimestamp(sourceState.lastSourceSwitchAt)}
             </span>
           </div>
 
-          {!activeSourceKey || activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS ? (
-            <QuickBooksConnection
-              key={activeSourceKey || "fallback_quickbooks"}
-              company={company}
-              isSourceActive={activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS}
-              onConnectionStateChange={refreshSourceState}
-              onRequireSourceSwitch={requestQuickBooksSwitch}
+          {selectedView === "manual" ? (
+            <ManualGLUpload
+              key="manual"
+              companyId={clientId}
+              isLocked={false}
+              lockMessage={manualLockMessage}
+              onStageComplete={refreshSourceState}
             />
-          ) : activeSourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD ? (
+          ) : selectedView === "manual_upload" ? (
             <ManualFolderReportsUpload
-              key={activeSourceKey}
+              key="manual_upload"
               companyId={clientId}
             />
           ) : selectedView === "quickbooks_manual" ? (
             <QuickBooksManualUpload companyId={clientId} />
           ) : (
-            <ManualGLUpload
-              key={activeSourceKey}
-              companyId={clientId}
-              isLocked={false}
-              lockMessage={manualLockMessage}
-              onStageComplete={refreshSourceState}
+            <QuickBooksConnection
+              key="quickbooks"
+              company={company}
+              isSourceActive={activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS}
+              onConnectionStateChange={refreshSourceState}
+              onRequireSourceSwitch={requestQuickBooksSwitch}
             />
           )}
         </div>

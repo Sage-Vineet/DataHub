@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import Header from "../../../components/Header";
 
@@ -42,6 +42,7 @@ const QB_BANK_ACTIVITY_ENDPOINT = `${API_BASE_URL}/qb-bank-activity`;
 const QB_ONE_BANK_ACTIVITY_ENDPOINT = `${API_BASE_URL}/qb-one-bank-activity`;
 const EXTRACT_BANK_PDF_RECORDS_ENDPOINT = `${API_BASE_URL}/extract-bank-pdf-records`;
 const QMS_BANK_DATA_ENDPOINT = `${API_BASE_URL}/manual-report-uploads/qms-bank-data`;
+const MANUAL_BANK_DATA_ENDPOINT = `${API_BASE_URL}/manual-report-uploads/manual-bank-data`;
 const RECONCILIATION_STORAGE_PREFIX = "workspace-reconciliation";
 
 const getErrMsg = (e) => (e instanceof Error ? e.message : String(e));
@@ -117,50 +118,82 @@ const monthLabel = (ym) => {
  *   { bankName, months[], totals }
  */
 
+// Convert "Jan-2025" display key ↔ "2025-01" ISO key
+const _DISP_MONTH_MAP = {Jan:"01",Feb:"02",Mar:"03",Apr:"04",May:"05",Jun:"06",Jul:"07",Aug:"08",Sep:"09",Oct:"10",Nov:"11",Dec:"12"};
+const _ISO_TO_SHORT = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const displayMonthToIso = (d) => {
+  const [mon, year] = String(d || "").split("-");
+  return _DISP_MONTH_MAP[mon] ? `${year}-${_DISP_MONTH_MAP[mon]}` : d;
+};
+const isoToDisplayMonth = (iso) => {
+  const [year, month] = String(iso || "").split("-");
+  const idx = parseInt(month, 10) - 1;
+  return `${_ISO_TO_SHORT[idx] || month}-${year}`;
+};
+
+// Normalize a month entry that may be a string "Jan-2025" or object {key, label}
+const normMonth = (m) => {
+  if (typeof m === "string") return { key: displayMonthToIso(m), label: m };
+  if (m?.key) return m;
+  if (m?.monthKey) return { key: m.monthKey, label: isoToDisplayMonth(m.monthKey) };
+  return null;
+};
+
+// Normalize a totals entry that may have {month: "Jan-2025"} or {monthKey: "2025-01"}
+const normTotal = (t) => {
+  const key = t.monthKey || (t.month ? displayMonthToIso(t.month) : null);
+  return { ...t, monthKey: key };
+};
+
 const normalizeExtractedBankPdfData = (payload) => {
   if (!payload?.banks?.length || !payload?.months?.length) return null;
 
+  const months = (payload.months || []).map(normMonth).filter(Boolean);
+  if (!months.length) return null;
+
   const banks = payload.banks.map((bank) => {
     const acct = bank.accounts?.[0];
+    // Dropdown display name: prefer bank_name (includes last-4 suffix) for uniqueness
+    const displayName = bank.bank_name || bank.bankName || "Unknown Bank";
     return {
-      bankName: bank.bank_name,
+      bankName: displayName,
+      bankNameClean: bank.bank_name_clean || bank.bankName || displayName,
+      accountName: bank.account_name || bank.accountName || "",
+      accountNumber: bank.account_number || bank.accountNumber || "",
+      status: acct?.status || "Verified",
       months: (acct?.months || []).map((m) => ({
         monthKey: m.monthKey,
         startingBalance: m.startingBalance ?? 0,
         deposits: m.deposits ?? 0,
         withdrawals: m.withdrawals ?? 0,
         endingBalance: m.endingBalance ?? 0,
+        status: m.status || "Verified",
+        statementStartDate: m.statement_start_date || "",
+        statementEndDate: m.statement_end_date || "",
       })),
       totals: {
         startingBalance:
           acct?.totals?.startingBalance ??
-          (acct?.months || []).reduce(
-            (sum, m) => sum + (m.startingBalance || 0),
-            0,
-          ),
+          (acct?.months || []).reduce((sum, m) => sum + (m.startingBalance || 0), 0),
         deposits:
           acct?.totals?.deposits ??
           (acct?.months || []).reduce((sum, m) => sum + (m.deposits || 0), 0),
         withdrawals:
           acct?.totals?.withdrawals ??
-          (acct?.months || []).reduce(
-            (sum, m) => sum + (m.withdrawals || 0),
-            0,
-          ),
+          (acct?.months || []).reduce((sum, m) => sum + (m.withdrawals || 0), 0),
         endingBalance:
           acct?.totals?.endingBalance ??
-          (acct?.months || []).reduce(
-            (sum, m) => sum + (m.endingBalance || 0),
-            0,
-          ),
+          (acct?.months || []).reduce((sum, m) => sum + (m.endingBalance || 0), 0),
       },
     };
   });
 
   return {
-    months: payload.months,
+    months,
     banks,
-    totals: payload.totals || [],
+    totals: (payload.totals || []).map(normTotal),
+    syncedAt: payload.syncedAt || null,
+    documentCount: payload.documentCount || banks.length,
   };
 };
 function buildEmptyTTM() {
@@ -258,18 +291,18 @@ export default function WorkspaceReconciliation() {
       ? "Restored saved single-account QuickBooks activity."
       : "",
   });
-  const [extractedBankPdfData, setExtractedBankPdfData] = useState(
-    storedState?.extractedBankPdfData || null,
-  );
+  const _initialBankPdfData =
+    storedState?.extractedBankPdfDataSource === storedState?.selectedReportSource
+      ? (storedState?.extractedBankPdfData || null)
+      : null;
+  const [extractedBankPdfData, setExtractedBankPdfData] = useState(_initialBankPdfData);
   const [isLoadingExtractedBankPdfData, setIsLoadingExtractedBankPdfData] =
     useState(false);
   const [extractedBankPdfError, setExtractedBankPdfError] = useState("");
   const [extractedBankPdfFetchStatus, setExtractedBankPdfFetchStatus] =
     useState({
-      status: storedState?.extractedBankPdfData ? "success" : "idle",
-      message: storedState?.extractedBankPdfData
-        ? "Restored saved bank PDF extraction."
-        : "",
+      status: _initialBankPdfData ? "success" : "idle",
+      message: _initialBankPdfData ? "Restored saved bank PDF extraction." : "",
     });
   const [reportSources, setReportSources] = useState([]);
   const [selectedReportSource, setSelectedReportSourceState] = useState(
@@ -277,6 +310,16 @@ export default function WorkspaceReconciliation() {
       storedState?.selectedReportSource || REPORT_SOURCE_KEYS.QUICKBOOKS,
     ),
   );
+  // True only after getReportSources API confirms the actual source.
+  // Prevents stale storedState from triggering the wrong endpoint on mount.
+  const [isSourceConfirmedByServer, setIsSourceConfirmedByServer] = useState(false);
+
+  // Always reflects the latest selectedReportSource — used to discard in-flight fetch results
+  // that started under a different source (race condition: user switches source while a fetch
+  // for the old source is still in-flight; the stale result would overwrite the correct data).
+  // Assigned synchronously in the render body so the ref is always current before any effect fires.
+  const activeSourceRef = useRef(selectedReportSource);
+  activeSourceRef.current = selectedReportSource;
 
   const getHeaders = useCallback(
     () => {
@@ -324,19 +367,22 @@ export default function WorkspaceReconciliation() {
         : "",
     });
     setOneBankActivityError("");
-    setExtractedBankPdfData(nextState?.extractedBankPdfData || null);
+    const restoredSource = normalizeReportSourceKey(
+      nextState?.selectedReportSource || REPORT_SOURCE_KEYS.QUICKBOOKS,
+    );
+    // Only restore bank PDF data if it was produced by the same source.
+    // Stale cross-source data is discarded — the unified effect will fetch fresh data.
+    const restoredBankData =
+      nextState?.extractedBankPdfDataSource === restoredSource
+        ? (nextState?.extractedBankPdfData || null)
+        : null;
+    setExtractedBankPdfData(restoredBankData);
     setExtractedBankPdfFetchStatus({
-      status: nextState?.extractedBankPdfData ? "success" : "idle",
-      message: nextState?.extractedBankPdfData
-        ? "Restored saved bank PDF extraction."
-        : "",
+      status: restoredBankData ? "success" : "idle",
+      message: restoredBankData ? "Restored saved bank PDF extraction." : "",
     });
     setExtractedBankPdfError("");
-    setSelectedReportSourceState(
-      normalizeReportSourceKey(
-        nextState?.selectedReportSource || REPORT_SOURCE_KEYS.QUICKBOOKS,
-      ),
-    );
+    setSelectedReportSourceState(restoredSource);
   }, [clientId]);
 
   useEffect(() => {
@@ -357,8 +403,10 @@ export default function WorkspaceReconciliation() {
           oneBankAccountId,
           qbOneBankActivity:
             qbOneBankActivity ?? existing.qbOneBankActivity ?? null,
-          extractedBankPdfData:
-            extractedBankPdfData ?? existing.extractedBankPdfData ?? null,
+          extractedBankPdfData: extractedBankPdfData,
+          // Store which source produced this data so stale cross-source data is never served.
+          extractedBankPdfDataSource:
+            extractedBankPdfData != null ? selectedReportSource : null,
           selectedReportSource,
         }),
       );
@@ -487,6 +535,8 @@ export default function WorkspaceReconciliation() {
     try {
       const params = new URLSearchParams();
       if (clientId) params.append("clientId", clientId);
+      // Pass the active source so the backend reads from the correct folder + cache partition.
+      if (selectedReportSource) params.append("source", selectedReportSource);
       const url = `${EXTRACT_BANK_PDF_RECORDS_ENDPOINT}?${params.toString()}`;
       const resp = await fetch(url, {
         cache: "no-store",
@@ -496,6 +546,8 @@ export default function WorkspaceReconciliation() {
       if (!resp.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
 
       const normalized = normalizeExtractedBankPdfData(data);
+      // Discard result if source changed while this fetch was in-flight.
+      if (activeSourceRef.current !== selectedReportSource) return;
       setExtractedBankPdfData(normalized);
       setExtractedBankPdfFetchStatus({
         status: "success",
@@ -503,6 +555,7 @@ export default function WorkspaceReconciliation() {
           } month(s).`,
       });
     } catch (e) {
+      if (activeSourceRef.current !== selectedReportSource) return;
       setExtractedBankPdfError(getErrMsg(e));
       setExtractedBankPdfFetchStatus({
         status: "error",
@@ -510,11 +563,22 @@ export default function WorkspaceReconciliation() {
       });
       setExtractedBankPdfData(null);
     } finally {
-      setIsLoadingExtractedBankPdfData(false);
+      if (activeSourceRef.current === selectedReportSource) {
+        setIsLoadingExtractedBankPdfData(false);
+      }
     }
-  }, [getHeaders]);
+  }, [clientId, selectedReportSource, getHeaders]);
 
   const loadQMSBankData = useCallback(async () => {
+    // Safety guard: never call QMS endpoint when in Manual Upload mode
+    if (
+      selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD ||
+      selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_GL
+    ) {
+      console.warn("[BankData] loadQMSBankData blocked — source is Manual Upload, use loadExtractedBankPdfData instead");
+      return;
+    }
+
     setIsLoadingExtractedBankPdfData(true);
     setExtractedBankPdfError("");
     setExtractedBankPdfFetchStatus({
@@ -531,6 +595,8 @@ export default function WorkspaceReconciliation() {
       if (!resp.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
 
       const normalized = normalizeExtractedBankPdfData(data);
+      // Discard result if source changed while this fetch was in-flight.
+      if (activeSourceRef.current !== selectedReportSource) return;
       setExtractedBankPdfData(normalized);
       setExtractedBankPdfFetchStatus({
         status: normalized ? "success" : "idle",
@@ -539,19 +605,70 @@ export default function WorkspaceReconciliation() {
           : "No bank statement data found. Please sync your QuickBooks Manual Source folder first.",
       });
     } catch (e) {
+      if (activeSourceRef.current !== selectedReportSource) return;
       setExtractedBankPdfError(getErrMsg(e));
       setExtractedBankPdfFetchStatus({ status: "error", message: getErrMsg(e) });
       setExtractedBankPdfData(null);
     } finally {
-      setIsLoadingExtractedBankPdfData(false);
+      if (activeSourceRef.current === selectedReportSource) {
+        setIsLoadingExtractedBankPdfData(false);
+      }
     }
-  }, [clientId, getHeaders]);
+  }, [clientId, selectedReportSource, getHeaders]);
 
+  const loadManualBankData = useCallback(async () => {
+    setIsLoadingExtractedBankPdfData(true);
+    setExtractedBankPdfError("");
+    setExtractedBankPdfFetchStatus({
+      status: "loading",
+      message: "Loading bank statement data from Manual Upload source...",
+    });
+    try {
+      const params = new URLSearchParams();
+      if (clientId) params.append("clientId", clientId);
+      const url = `${MANUAL_BANK_DATA_ENDPOINT}?${params.toString()}`;
+      const resp = await fetch(url, { cache: "no-store", headers: getHeaders() });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
+      const normalized = normalizeExtractedBankPdfData(data);
+      if (activeSourceRef.current !== selectedReportSource) return;
+      setExtractedBankPdfData(normalized);
+      setExtractedBankPdfFetchStatus({
+        status: normalized ? "success" : "idle",
+        message: normalized
+          ? `Loaded ${normalized.banks?.length ?? 0} bank(s).`
+          : "No bank statement data found. Upload files to Manual Upload Source → Bank Statement.",
+      });
+    } catch (e) {
+      if (activeSourceRef.current !== selectedReportSource) return;
+      setExtractedBankPdfError(getErrMsg(e));
+      setExtractedBankPdfFetchStatus({ status: "error", message: getErrMsg(e) });
+      setExtractedBankPdfData(null);
+    } finally {
+      if (activeSourceRef.current === selectedReportSource) {
+        setIsLoadingExtractedBankPdfData(false);
+      }
+    }
+  }, [clientId, selectedReportSource, getHeaders]);
+
+  // Unified bank-data loader — dispatches ONLY based on server-confirmed source.
+  // isSourceConfirmedByServer prevents stale storedState from triggering the wrong endpoint.
+  // Never short-circuit on stored data — stored data may be from a different source.
   useEffect(() => {
-    if (selectedReportSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) return;
-    if (storedState?.extractedBankPdfData) return;
-    void loadExtractedBankPdfData();
-  }, [loadExtractedBankPdfData, storedState?.extractedBankPdfData, selectedReportSource]);
+    if (!clientId || !selectedReportSource || !isSourceConfirmedByServer) return;
+
+    if (selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD) {
+      // Manual Upload → dedicated endpoint reading "Manual Upload Source" folder only
+      void loadManualBankData();
+    } else if (selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_GL) {
+      // Manual GL → PDF/Excel extraction endpoint
+      void loadExtractedBankPdfData();
+    } else if (selectedReportSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) {
+      // QuickBooks Manual ONLY → QMS endpoint reading "Quickbooks Manual Source" folder only
+      void loadQMSBankData();
+    }
+    // QUICKBOOKS (QB Online) uses its own separate data flow — no action here
+  }, [clientId, selectedReportSource, isSourceConfirmedByServer, loadExtractedBankPdfData, loadManualBankData, loadQMSBankData]);
 
   useEffect(() => {
     if (!clientId) return;
@@ -563,11 +680,13 @@ export default function WorkspaceReconciliation() {
         setSelectedReportSourceState(
           normalizeReportSourceKey(payload?.selectedSource),
         );
+        setIsSourceConfirmedByServer(true);
       })
       .catch(() => {
         if (active) {
           setReportSources([]);
           setSelectedReportSourceState(REPORT_SOURCE_KEYS.QUICKBOOKS);
+          setIsSourceConfirmedByServer(true);
         }
       });
     return () => { active = false; };
@@ -577,6 +696,16 @@ export default function WorkspaceReconciliation() {
     const normalized = normalizeReportSourceKey(sourceKey);
     const previous = selectedReportSource;
     setSelectedReportSourceState(normalized);
+    // Clear ALL source-specific data immediately — never show cross-source data.
+    setExtractedBankPdfData(null);
+    setExtractedBankPdfFetchStatus({ status: "idle", message: "" });
+    setExtractedBankPdfError("");
+    setQbBankActivity(null);
+    setBankActivityFetchStatus({ status: "idle", message: "" });
+    setBankActivityError("");
+    setQbOneBankActivity(null);
+    setOneBankActivityFetchStatus({ status: "idle", message: "" });
+    setOneBankActivityError("");
     try {
       const payload = await setSelectedReportSource(normalized, { clientId });
       setReportSources(Array.isArray(payload?.sources) ? payload.sources : []);
@@ -603,10 +732,7 @@ export default function WorkspaceReconciliation() {
   const isQBManual = selectedReportSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
   const isQBOnline = selectedReportSource === REPORT_SOURCE_KEYS.QUICKBOOKS;
 
-  useEffect(() => {
-    if (!isQBManual) return;
-    void loadQMSBankData();
-  }, [isQBManual, loadQMSBankData]);
+  // QMS loading is now handled in the unified bank-data loader effect above
 
   const reportMonths = qbBankActivity?.months?.length
     ? qbBankActivity.months
@@ -1418,17 +1544,31 @@ export default function WorkspaceReconciliation() {
     const va = (f) => [...rows.map((r) => fmtAcct(r[f])), fmtAcct(ttm[f])];
     const rawNums = (f) => [...rows.map((r) => r[f] ?? null), ttm[f] ?? null];
 
+    const overallStatus = bank?.status || (rows.every((r) => Math.abs(r.footingCheck) <= 1) ? "Verified" : "Needs Review");
+
     return (
       <div className="mb-4 overflow-hidden rounded-[var(--radius-card)] border border-border bg-white shadow-[0_10px_30px_rgba(15,23,42,0.04)]">
         <div className="flex w-full items-center justify-between border-b border-primary/15 bg-[#F8FBF1] px-4 py-3">
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             <span className="text-[14px] font-semibold text-primary">{bankLabel}</span>
-            {bank && (
-              <span className="rounded-full bg-primary/10 px-2.5 py-0.5 text-[11px] font-medium tracking-wide text-primary">
-                {bank.bankName}
+            {bank?.accountName && (
+              <span className="text-[12px] text-text-secondary">{bank.accountName}</span>
+            )}
+            {bank?.accountNumber && (
+              <span className="rounded-full bg-bg-page px-2 py-0.5 text-[11px] font-mono text-text-muted border border-border">
+                ···{String(bank.accountNumber).slice(-4)}
               </span>
             )}
           </div>
+          {bank && (
+            <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${
+              overallStatus === "Verified"
+                ? "bg-green-100 text-green-700"
+                : "bg-amber-100 text-amber-700"
+            }`}>
+              {overallStatus}
+            </span>
+          )}
         </div>
         <div className="overflow-x-auto border-t border-border bg-white">
           {isLoadingExtractedBankPdfData ? (
@@ -1983,6 +2123,24 @@ export default function WorkspaceReconciliation() {
                   : "Per-account balance detail from QuickBooks with reconciliation checks."}
               </p>
             </div>
+            <div className="flex items-end gap-3">
+              {(isManualUpload || isManualGl || isQBManual) && (
+                <button
+                  type="button"
+                  className="btn-outline flex h-10 items-center gap-1.5 px-3 text-[13px]"
+                  disabled={isLoadingExtractedBankPdfData}
+                  onClick={() => {
+                    if (isQBManual) void loadQMSBankData();
+                    else void loadExtractedBankPdfData();
+                  }}
+                  title="Reload data from the active source"
+                >
+                  {isLoadingExtractedBankPdfData
+                    ? <LoaderCircle size={14} className="animate-spin" />
+                    : <RefreshCw size={14} />}
+                  Refresh
+                </button>
+              )}
             <div className="min-w-[280px]">
               <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
                 Bank Account
@@ -2021,6 +2179,7 @@ export default function WorkspaceReconciliation() {
                 </select>
               )}
             </div>
+            </div>{/* end flex items-end gap-3 */}
           </div>
 
           {(isManualUpload || isManualGl || isQBManual) ? (
@@ -2029,6 +2188,11 @@ export default function WorkspaceReconciliation() {
                 extractedBankPdfData.banks.find((b) => b.bankName === selectedManualBankName) ||
                 extractedBankPdfData.banks[0],
               )
+            ) : extractedBankPdfFetchStatus.status === "success" ? (
+              // Fetched successfully but active source has no bank statement files
+              <div className="rounded-2xl border border-dashed border-border bg-bg-page/40 p-6 text-[14px] text-text-muted">
+                No bank statements found for the active source. Upload PDF or Excel files to the Bank Statement folder and sync.
+              </div>
             ) : (
               renderManualBalanceAccountTable(null)
             )
@@ -2057,7 +2221,15 @@ export default function WorkspaceReconciliation() {
             </div>
           </div>
           {(isManualUpload || isManualGl || isQBManual) ? (
-            renderManualActivityTable()
+            extractedBankPdfData?.months?.length ? (
+              renderManualActivityTable()
+            ) : extractedBankPdfFetchStatus.status === "success" ? (
+              <div className="rounded-2xl border border-dashed border-border bg-bg-page/40 p-6 text-[14px] text-text-muted">
+                No bank statements found for the active source. Upload PDF or Excel files to the Bank Statement folder and sync.
+              </div>
+            ) : (
+              renderManualActivityTable()
+            )
           ) : hasData ? (
             renderActivityTable()
           ) : (
