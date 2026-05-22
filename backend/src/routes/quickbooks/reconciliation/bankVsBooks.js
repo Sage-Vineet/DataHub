@@ -4,11 +4,26 @@ const { supabase } = require("../../../db");
 const {
   normalizeBankBinary,
   extractBankStatementsFromPdfBase64,
+  extractBankStatementsFromExcelBuffer,
   buildBankResponseShape,
 } = require("../../../services/bankStatementExtractor");
 
 const MANUAL_REPORT_UPLOAD_SOURCE = "manual_report_upload";
+const QMS_REPORT_UPLOAD_SOURCE = "quickbooks_manual_upload";
 const BANK_RECONCILIATION_TYPE = "bank_reconciliation";
+
+// Maps frontend REPORT_SOURCE_KEYS values → backend cache source + DataRoom folder root
+const SOURCE_CONFIG = {
+  manual_upload_excel_pdf: {
+    cacheSource: MANUAL_REPORT_UPLOAD_SOURCE,
+    folderRootName: "Manual Upload Source",
+  },
+  quickbooks_manual: {
+    cacheSource: QMS_REPORT_UPLOAD_SOURCE,
+    folderRootName: "Quickbooks Manual Source",
+  },
+};
+const DEFAULT_SOURCE_CONFIG = SOURCE_CONFIG.manual_upload_excel_pdf;
 
 // Middleware to extract clientId with multiple fallbacks
 const extractClientId = (req, res, next) => {
@@ -27,18 +42,17 @@ const extractClientId = (req, res, next) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // DataRoom: get PDF documents from "Bank Reconciliation" folder
 // ─────────────────────────────────────────────────────────────────────────────
-async function getBankReconciliationDocuments(companyId) {
-  // Find "Manual Upload Source" root folder
+async function getBankReconciliationDocuments(companyId, folderRootName = "Manual Upload Source") {
   const { data: sourceFolder } = await supabase
     .from("folders")
     .select("id")
     .eq("company_id", companyId)
     .is("parent_id", null)
-    .ilike("name", "Manual Upload Source")
+    .ilike("name", folderRootName)
     .maybeSingle();
 
   if (!sourceFolder) {
-    console.log(`[BankPDF] "Manual Upload Source" folder not found for company ${companyId}`);
+    console.log(`[BankPDF] "${folderRootName}" folder not found for company ${companyId}`);
     return [];
   }
 
@@ -192,12 +206,17 @@ router.get("/extract-bank-pdf-records", extractClientId, async (req, res) => {
       return res.status(400).json({ success: false, error: "Missing clientId." });
     }
 
-    // ── Check for cached sync result first ──────────────────────────────────
+    // Resolve source config — isolates cache and folder per active connection source.
+    const sourceKey = req.query.source || "manual_upload_excel_pdf";
+    const { cacheSource, folderRootName } = SOURCE_CONFIG[sourceKey] || DEFAULT_SOURCE_CONFIG;
+    console.log(`[BankPDF] source="${sourceKey}" → cacheSource="${cacheSource}", folder="${folderRootName}"`);
+
+    // ── Check for cached sync result for THIS source only ───────────────────
     const { data: cached } = await supabase
       .from("qb_synced_reports")
       .select("data, updated_at")
       .eq("company_id", req.clientId)
-      .eq("source", MANUAL_REPORT_UPLOAD_SOURCE)
+      .eq("source", cacheSource)
       .eq("report_type", BANK_RECONCILIATION_TYPE)
       .order("updated_at", { ascending: false })
       .limit(1)
@@ -205,85 +224,103 @@ router.get("/extract-bank-pdf-records", extractClientId, async (req, res) => {
 
     if (cached?.data?.bank_reconciliation) {
       const bd = cached.data.bank_reconciliation;
-      console.log(`[BankPDF] Returning cached sync result for company ${req.clientId} (synced: ${bd.syncedAt || cached.updated_at})`);
-      return res.json({
-        success: true,
-        source: "cache",
-        bank_count: bd.banks?.length || 0,
-        banks: bd.banks || [],
-        months: bd.months || [],
-        totals: bd.totals || [],
-      });
+      // Only serve cache when it actually has data — empty cache means a prior extraction failed.
+      if (bd.banks?.length > 0) {
+        console.log(`[BankPDF] Returning cached sync result for company ${req.clientId} (source=${cacheSource})`);
+        return res.json({
+          success: true,
+          source: "cache",
+          bank_count: bd.banks.length,
+          banks: bd.banks,
+          months: bd.months || [],
+          totals: bd.totals || [],
+          syncedAt: bd.syncedAt || cached.updated_at,
+          documentCount: bd.documentCount || bd.banks.length,
+        });
+      }
+      console.log(`[BankPDF] Cache exists but banks[] is empty for company ${req.clientId} (source=${cacheSource}) — falling through to live extraction`);
     }
 
-    // ── No cache — live Gemini extraction ────────────────────────────────────
-    console.log(`[BankPDF] No cached result for company ${req.clientId}, running live Gemini extraction`);
-    const documents = await getBankReconciliationDocuments(req.clientId);
+    // ── No cache — live Gemini extraction from the correct source folder ─────
+    console.log(`[BankPDF] No cached result for company ${req.clientId} (source=${cacheSource}), running live extraction from "${folderRootName}"`);
+    const documents = await getBankReconciliationDocuments(req.clientId, folderRootName);
 
     if (!documents.length) {
-      return res.status(404).json({
-        success: false,
-        error: "No files found in the Bank Reconciliation folder. Upload PDF bank statements to Manual Upload Source → Bank Reconciliation in the Data Room.",
+      return res.json({
+        success: true,
+        banks: [],
+        months: [],
+        totals: [],
+        source: "empty",
+        message: `No bank statement files found in "${folderRootName}". Upload PDF or Excel files to ${folderRootName} → Bank Statement in the Data Room.`,
       });
     }
 
     const allStatements = [];
+    const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
     for (const doc of documents) {
-      const fileName = String(doc.name || "bank_statement.pdf");
-      if (!fileName.toLowerCase().endsWith(".pdf")) {
-        console.log(`[BankPDF] Skipping non-PDF file: "${fileName}"`);
+      const fileName = String(doc.name || "bank_statement");
+      const ext = fileName.toLowerCase().split(".").pop();
+      const isPdf = ext === "pdf";
+      const isExcel = ["xlsx", "xls", "csv"].includes(ext);
+
+      if (!isPdf && !isExcel) {
+        console.log(`[BankPDF] Skipping unsupported file: "${fileName}"`);
         continue;
       }
 
       let buffer = null;
 
-      // Path 1: load binary from uploads table via upload_id
+      // 1. Direct upload_id
       if (doc.upload_id) {
         const { data: upload, error: uploadError } = await supabase
-          .from("uploads")
-          .select("data")
-          .eq("id", doc.upload_id)
-          .maybeSingle();
-
-        if (uploadError) {
-          console.warn(`[BankPDF] DB error loading "${fileName}": ${uploadError.message}`);
-        } else if (upload?.data) {
-          buffer = normalizeBankBinary(upload.data);
-        }
+          .from("uploads").select("data").eq("id", doc.upload_id).maybeSingle();
+        if (uploadError) console.warn(`[BankPDF] DB error loading "${fileName}": ${uploadError.message}`);
+        else if (upload?.data) buffer = normalizeBankBinary(upload.data);
       }
 
-      // Path 2: extract UUID from file_url
+      // 2. Specific /uploads/UUID/content URL pattern
       if (!buffer && doc.file_url) {
-        try {
-          const urlMatch = String(doc.file_url).match(/\/uploads\/([0-9a-f-]{36})\/content/i);
-          if (urlMatch) {
-            const { data: upload2 } = await supabase
-              .from("uploads")
-              .select("data")
-              .eq("id", urlMatch[1])
-              .maybeSingle();
-            if (upload2?.data) {
-              buffer = normalizeBankBinary(upload2.data);
-              console.log(`[BankPDF] Loaded "${fileName}" via inferred upload id from file_url`);
-            }
+        const specificMatch = String(doc.file_url).match(/\/uploads\/([0-9a-f-]{36})\/content/i);
+        if (specificMatch) {
+          const { data: upload2 } = await supabase
+            .from("uploads").select("data").eq("id", specificMatch[1]).maybeSingle();
+          if (upload2?.data) {
+            buffer = normalizeBankBinary(upload2.data);
+            console.log(`[BankPDF] Loaded "${fileName}" via inferred upload id`);
           }
-        } catch (urlErr) {
-          console.warn(`[BankPDF] file_url fallback failed for "${fileName}": ${urlErr.message}`);
         }
       }
 
-      if (!buffer || !buffer.length) {
+      // 3. Any UUID found anywhere in file_url (handles non-standard storage paths)
+      if (!buffer && doc.file_url) {
+        const uuidMatch = String(doc.file_url).match(UUID_RE);
+        if (uuidMatch) {
+          const { data: upload3 } = await supabase
+            .from("uploads").select("data").eq("id", uuidMatch[0]).maybeSingle();
+          if (upload3?.data) {
+            buffer = normalizeBankBinary(upload3.data);
+            console.log(`[BankPDF] Loaded "${fileName}" via URL UUID fallback`);
+          }
+        }
+      }
+
+      if (!buffer?.length) {
         console.warn(`[BankPDF] No binary data for "${fileName}", skipping`);
         continue;
       }
 
       try {
-        const pdfBase64 = buffer.toString("base64");
-        const statements = await extractBankStatementsFromPdfBase64(pdfBase64, fileName);
+        let statements;
+        if (isExcel) {
+          statements = await extractBankStatementsFromExcelBuffer(buffer, fileName);
+        } else {
+          statements = await extractBankStatementsFromPdfBase64(buffer.toString("base64"), fileName);
+        }
         allStatements.push(...statements);
-      } catch (geminiErr) {
-        console.error(`[BankPDF] Gemini failed for "${fileName}": ${geminiErr.message}`);
+      } catch (err) {
+        console.error(`[BankPDF] Extraction failed for "${fileName}": ${err.message}`);
       }
     }
 

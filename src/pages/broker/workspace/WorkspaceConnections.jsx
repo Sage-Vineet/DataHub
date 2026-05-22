@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import {
   AlertTriangle,
@@ -203,6 +203,11 @@ export default function WorkspaceConnections() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { showToast } = useToast();
   const storedState = getStoredConnectionsState(clientId);
+  // Capture session-stored selectedView once at mount. Used as fallback in the selectedView
+  // useMemo so the correct panel is shown immediately on navigation-back, before the
+  // URL-setting effect can restore ?source= and without relying on activeSourceKey (which
+  // may have been reverted to the server's value by refreshSourceState on the previous visit).
+  const initialStoredViewRef = useRef(storedState?.selectedView ?? null);
 
   const [company, setCompany] = useState(null);
   const [sourceState, setSourceState] = useState(
@@ -249,10 +254,15 @@ export default function WorkspaceConnections() {
 
   const selectedView = useMemo(() => {
     const source = searchParams.get("source");
-    if (source === "manual") return "manual";
-    if (source === "quickbooks") return "quickbooks";
-    if (source === "manual_upload") return "manual_upload";
-    if (source === "quickbooks_manual") return "quickbooks_manual";
+    const validViews = ["manual", "quickbooks", "manual_upload", "quickbooks_manual"];
+    if (validViews.includes(source)) return source;
+    // No URL param — use session-stored view before falling back to activeSourceKey.
+    // initialStoredViewRef.current is stable across renders (set only at mount), so the
+    // save effect cannot overwrite it with the activeSourceKey fallback during the first
+    // render before the URL-setting effect has a chance to restore ?source=.
+    if (initialStoredViewRef.current && validViews.includes(initialStoredViewRef.current)) {
+      return initialStoredViewRef.current;
+    }
     if (activeSourceKey === REPORT_SOURCE_KEYS.MANUAL_GL) return "manual";
     if (activeSourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD) return "manual_upload";
     if (activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) return "quickbooks_manual";
@@ -299,30 +309,43 @@ export default function WorkspaceConnections() {
     }
   }, [clientId]);
 
+  // Restore sourceState from session — runs ONLY when clientId changes (mount / company switch).
+  // Must NOT depend on searchParams: executeSourceSwitch calls setSearchParams, which would
+  // re-fire this effect with stale session storage and overwrite the just-set active source.
   useEffect(() => {
     if (!clientId) return;
-
     const restored = getStoredConnectionsState(clientId);
-    if (!restored || typeof restored !== "object") return;
-
-    if (restored.sourceState && typeof restored.sourceState === "object") {
-      setSourceState((previous) => ({
-        ...previous,
-        ...restored.sourceState,
-      }));
+    if (restored?.sourceState && typeof restored.sourceState === "object") {
+      setSourceState((previous) => ({ ...previous, ...restored.sourceState }));
     }
+  }, [clientId]);
 
+  // Single effect to set ?source= when absent.
+  // Priority: (1) already valid → skip, (2) session-stored view → restore,
+  // (3) active source key → derive.
+  // Previously split into two effects; the second effect (defined later in the
+  // file) ran after the first in the same render cycle with stale searchParams,
+  // causing it to overwrite the session-restore URL with the activeSourceKey value.
+  useEffect(() => {
+    if (!clientId) return;
     const currentView = searchParams.get("source");
     const validViews = ["manual", "quickbooks", "manual_upload", "quickbooks_manual"];
-    if (
-      validViews.includes(currentView) ||
-      !validViews.includes(restored.selectedView)
-    ) {
+    if (validViews.includes(currentView)) return;
+    // (2) Restore from session storage
+    const restored = getStoredConnectionsState(clientId);
+    if (restored && validViews.includes(restored.selectedView)) {
+      setSearchParams({ source: restored.selectedView }, { replace: true });
       return;
     }
-
-    setSearchParams({ source: restored.selectedView }, { replace: true });
-  }, [clientId, searchParams, setSearchParams]);
+    // (3) Derive from active source key
+    if (!activeSourceKey) return;
+    const fallback =
+      activeSourceKey === REPORT_SOURCE_KEYS.MANUAL_GL ? "manual" :
+      activeSourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD ? "manual_upload" :
+      activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL ? "quickbooks_manual" :
+      "quickbooks";
+    setSearchParams({ source: fallback }, { replace: true });
+  }, [activeSourceKey, clientId, searchParams, setSearchParams]);
 
   useEffect(() => {
     Promise.resolve().then(() => {
@@ -337,16 +360,6 @@ export default function WorkspaceConnections() {
       .catch(() => setCompany(null));
   }, [clientId]);
 
-  useEffect(() => {
-    const sourceParam = searchParams.get("source");
-    if (["manual", "quickbooks", "manual_upload", "quickbooks_manual"].includes(sourceParam)) return;
-    let fallback = "quickbooks";
-    if (activeSourceKey === REPORT_SOURCE_KEYS.MANUAL_GL) fallback = "manual";
-    else if (activeSourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD) fallback = "manual_upload";
-    else if (activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) fallback = "quickbooks_manual";
-    setSearchParams({ source: fallback }, { replace: true });
-  }, [activeSourceKey, searchParams, setSearchParams]);
-
   const closeSourceSwitchModal = useCallback(() => {
     if (isSwitchingSource) return;
     setSourceSwitchModal((previous) => ({ ...previous, isOpen: false }));
@@ -358,28 +371,30 @@ export default function WorkspaceConnections() {
 
       setIsSwitchingSource(true);
       setSwitchingTargetKey(targetKey);
+      let switchSucceeded = false;
       try {
         const payload = await setSelectedReportSource(targetKey, {
           clientId,
           confirmSwitch: true,
           ...switchOptions,
         });
+
+        // Use targetKey as the authoritative activeSource — the server response may be
+        // stale and return the old activeSource, which would revert the card highlight.
+        const resolvedSourceKey = normalizeReportSourceKey(targetKey);
         const next = {
-          selectedSource: payload?.selectedSource || null,
-          activeSource: payload?.activeSource || payload?.selectedSource || null,
+          selectedSource: payload?.selectedSource || targetKey,
+          activeSource: targetKey,
           quickbooksConnected: Boolean(payload?.quickbooksConnected),
           manualUploadActive:
-            normalizeReportSourceKey(payload?.activeSource) === REPORT_SOURCE_KEYS.MANUAL_GL ||
-            normalizeReportSourceKey(payload?.activeSource) === REPORT_SOURCE_KEYS.MANUAL_UPLOAD ||
-            normalizeReportSourceKey(payload?.activeSource) === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL,
+            resolvedSourceKey === REPORT_SOURCE_KEYS.MANUAL_GL ||
+            resolvedSourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD ||
+            resolvedSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL,
           lastSourceSwitchAt: new Date().toISOString(),
           sources: Array.isArray(payload?.sources) ? payload.sources : [],
         };
 
         setSourceState(next);
-        const resolvedSourceKey = normalizeReportSourceKey(
-          next.activeSource || next.selectedSource || targetKey,
-        );
         const nextView =
           resolvedSourceKey === REPORT_SOURCE_KEYS.MANUAL_GL
             ? "manual"
@@ -388,6 +403,8 @@ export default function WorkspaceConnections() {
               : resolvedSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL
                 ? "quickbooks_manual"
                 : "quickbooks";
+        // Update the stored-view ref so navigation-back after this switch shows the correct panel.
+        initialStoredViewRef.current = nextView;
         setSearchParams({ source: nextView });
 
         emitWorkspaceDataSourceUpdated({
@@ -400,6 +417,7 @@ export default function WorkspaceConnections() {
           title: "Source updated",
           message: `Current source is now ${getReportSourceLabel(resolvedSourceKey)}.`,
         });
+        switchSucceeded = true;
       } catch (error) {
         showToast({
           type: "error",
@@ -416,7 +434,12 @@ export default function WorkspaceConnections() {
           targetSourceKey: null,
           switchOptions: {},
         });
-        await refreshSourceState();
+        // Only refresh server state on failure — on success, setSourceState(next) above is
+        // authoritative. Refreshing immediately after success fetches stale server data that
+        // overwrites the activeSource we just set, reverting the card highlight.
+        if (!switchSucceeded) {
+          await refreshSourceState();
+        }
       }
     },
     [clientId, refreshSourceState, setSearchParams, showToast],
