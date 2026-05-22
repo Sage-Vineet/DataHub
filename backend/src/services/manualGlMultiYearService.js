@@ -5574,7 +5574,52 @@ async function getStageFilterOptions(companyId, filters = {}) {
       status: "staged",
     });
     if (!latestBatch?.id) {
-      console.log(`[ManualGL][FilterOptions] No staged batch found for company ${companyId}`);
+      // ── FALLBACK: No staged batch (upload has been finalized) ───────────
+      // Read fiscal years from the active dataset version, which is the
+      // authoritative source for what years are in the current active snapshot.
+      console.log(`[ManualGL][FilterOptions] No staged batch found for company ${companyId}, falling back to active version`);
+
+      const activeVersion = await getActiveDatasetVersion(companyId);
+      if (activeVersion?.fiscal_years?.length > 0) {
+        const years = activeVersion.fiscal_years.map(String).sort();
+        // Also read filter options from the version's cached metadata if available
+        const cachedOptions = activeVersion.metadata?.filterOptions || {};
+        return {
+          source: "manual_gl_active_snapshot",
+          rowCount: activeVersion.metadata?.rowCount || 0,
+          options: {
+            ...cachedOptions,
+            fiscalYear: years,
+          },
+        };
+      }
+
+      // Last resort: query fiscal years directly from active version's transactions
+      if (activeVersion?.id) {
+        const { data: txYears } = await supabase
+          .from(TABLES.transactions)
+          .select("fiscal_year")
+          .eq("company_id", companyId)
+          .eq("dataset_version_id", activeVersion.id)
+          .limit(10000);
+
+        if (txYears?.length > 0) {
+          const years = [...new Set(txYears.map((r) => String(r.fiscal_year)).filter(Boolean))].sort();
+          return {
+            source: "manual_gl_active_snapshot",
+            rowCount: txYears.length,
+            options: Object.fromEntries(
+              ["fiscalYear", "fiscalMonth", "accountName", "accountNumber", "accountType",
+                "category", "subCategory", "department", "class", "location", "sourceFile",
+                "transactionType", "journalType", "reportType"].map((k) =>
+                  k === "reportType" ? [k, ["profit_loss", "balance_sheet"]] :
+                  k === "fiscalYear" ? [k, years] : [k, []]
+                )
+            ),
+          };
+        }
+      }
+
       return {
         source: "manual_gl_staged_transactions",
         rowCount: 0,
@@ -5751,9 +5796,18 @@ async function getLatestManualBatch(companyId, options = {}) {
   const uploadSessionId = isValidUuid(rawUploadSessionId) ? rawUploadSessionId : "";
   const status = toNonEmptyString(options.status || "");
 
-  let activeVersion = await getActiveDatasetVersion(companyId);
-  if (!activeVersion) {
-    activeVersion = await ensureLegacyDatasetVersion(companyId);
+  // When looking for a "staged" batch, do NOT filter by active version ID.
+  // Staging batches belong to the NEW dataset version (not yet active), so
+  // filtering by the CURRENT active version would always miss them.
+  // This is the root cause of stale fiscal years in the dropdown.
+  const isStagingLookup = status === "staged";
+
+  let activeVersion = null;
+  if (!isStagingLookup) {
+    activeVersion = await getActiveDatasetVersion(companyId);
+    if (!activeVersion) {
+      activeVersion = await ensureLegacyDatasetVersion(companyId);
+    }
   }
 
   const runQuery = async (includeSourceColumns = true) => {
@@ -5764,7 +5818,7 @@ async function getLatestManualBatch(companyId, options = {}) {
 
     if (activeVersion) {
       query = query.eq("dataset_version_id", activeVersion.id);
-    } else {
+    } else if (!isStagingLookup) {
       query = query.order("created_at", { ascending: false }).limit(1);
     }
 
@@ -5782,11 +5836,13 @@ async function getLatestManualBatch(companyId, options = {}) {
       }
     }
 
-    // Since dataset version is 1-to-1 with a batch, .single() or limit(1) works
-    if (activeVersion) {
+    // When no version constraint, just get the latest matching batch
+    if (isStagingLookup || !activeVersion) {
+      query = query.order("created_at", { ascending: false }).limit(1).maybeSingle();
+    } else {
       query = query.limit(1).maybeSingle();
     }
-    return activeVersion ? query : query.single();
+    return query;
   };
 
   let { data, error } = await runQuery(true);
