@@ -1,5 +1,6 @@
 import { fetchProfitAndLoss } from "../lib/quickbooks";
 import { normalizeAccountingMethod } from "../lib/report-filters";
+import { getManualStagedProfitLossSummary } from "../lib/api";
 
 /**
  * EBITDA Service
@@ -442,18 +443,151 @@ function findNetIncome(rows, flatRows) {
 
 
 /* ------------------------------------------------------------------ */
+/*  Manual P&L support (both staged GL and manual-upload)             */
+/* ------------------------------------------------------------------ */
+
+function flattenManualPLRows(rows, depth = 0, parentLabel = "") {
+  const results = [];
+  for (const row of (rows || [])) {
+    const label = (row.name || "").trim();
+    if (!label) continue;
+    const children = row.children || [];
+    const amount = typeof row.amount === "number" ? row.amount : 0;
+    const source = row.type === "total" ? "summary" : row.type === "header" ? "header" : "data";
+    results.push({ label, value: amount, depth, parentLabel, source });
+    if (children.length > 0) {
+      results.push(...flattenManualPLRows(children, depth + 1, label || parentLabel));
+    }
+  }
+  return results;
+}
+
+function buildEbitdaFromFlatRows(flatRows, periodMeta = {}) {
+  const netIncomeMatch = (() => {
+    for (let i = flatRows.length - 1; i >= 0; i--) {
+      if (matchesPatterns(flatRows[i].label, NET_INCOME_PATTERNS)) {
+        return { label: flatRows[i].label, value: flatRows[i].value };
+      }
+    }
+    return { label: "Net Income", value: 0 };
+  })();
+
+  const interestIncome = extractComponent(flatRows, INTEREST_INCOME_PATTERNS);
+  const interestExpense = extractComponent(flatRows, INTEREST_PATTERNS, INTEREST_EXCLUDE);
+  const taxes = extractComponent(flatRows, TAX_PATTERNS, TAX_EXCLUDE);
+  const depreciation = extractComponent(flatRows, DEPRECIATION_PATTERNS, DEPRECIATION_EXCLUDE);
+  const amortization = extractComponent(flatRows, AMORTIZATION_PATTERNS);
+  const officerWages = extractComponent(flatRows, OFFICER_WAGES_PATTERNS);
+  const officerPayrollTax = extractComponent(flatRows, OFFICER_PAYROLL_TAX_PATTERNS);
+  const realEstateTax = extractComponent(flatRows, REAL_ESTATE_TAX_PATTERNS);
+  const gainLossAssets = extractComponent(flatRows, GAIN_LOSS_ASSETS_PATTERNS);
+  const adjustments = extractComponent(flatRows, ADJUSTMENT_PATTERNS, [...ADJ_EXCLUDE, ...OFFICER_WAGES_PATTERNS]);
+  const revenue = extractComponent(flatRows, REVENUE_PATTERNS);
+  const opex = extractComponent(flatRows, OPEX_PATTERNS);
+
+  const addBackRows = [
+    ...interestExpense.items, ...taxes.items, ...depreciation.items,
+    ...amortization.items, ...officerWages.items, ...officerPayrollTax.items,
+    ...realEstateTax.items, ...gainLossAssets.items,
+  ];
+  const uniqueAddBackKeys = new Set();
+  let uniqueAddBackTotal = 0;
+  addBackRows.forEach((row) => {
+    const key = `${normalize(row.label)}:${row.value}`;
+    if (!uniqueAddBackKeys.has(key)) {
+      uniqueAddBackKeys.add(key);
+      uniqueAddBackTotal += row.value;
+    }
+  });
+
+  const ebitda = netIncomeMatch.value + uniqueAddBackTotal;
+
+  return {
+    ebitda,
+    adjustedEbitda: ebitda + adjustments.total,
+    revenue: revenue.total,
+    opex: opex.total,
+    components: {
+      netIncome: { label: netIncomeMatch.label || "Net Income", value: netIncomeMatch.value, total: netIncomeMatch.value, matchedAccounts: [netIncomeMatch] },
+      interestIncome: { label: "Total Interest Income", value: interestIncome.total, total: interestIncome.total, matchedAccounts: interestIncome.items },
+      interestExpense: { label: "Total Interest Expense", value: interestExpense.total, total: interestExpense.total, matchedAccounts: interestExpense.items },
+      taxes: { label: "Total Income Tax Expense", value: taxes.total, total: taxes.total, matchedAccounts: taxes.items },
+      depreciation: { label: "Depreciation", value: depreciation.total, total: depreciation.total, matchedAccounts: depreciation.items },
+      amortization: { label: "Amortization Expense", value: amortization.total, total: amortization.total, matchedAccounts: amortization.items },
+      officerWages: { label: "Officer Wages", value: officerWages.total, total: officerWages.total, matchedAccounts: officerWages.items },
+      officerPayrollTax: { label: "Officer Payroll Taxes", value: officerPayrollTax.total, total: officerPayrollTax.total, matchedAccounts: officerPayrollTax.items },
+      realEstateTax: { label: "Real Estate Taxes", value: realEstateTax.total, total: realEstateTax.total, matchedAccounts: realEstateTax.items },
+      gainLossAssets: { label: "Gain on Sale of Assets", value: gainLossAssets.total, total: gainLossAssets.total, matchedAccounts: gainLossAssets.items },
+      adjustments: { label: "Other Add-backs", value: adjustments.total, total: adjustments.total, matchedAccounts: adjustments.items },
+    },
+    reportPeriod: periodMeta,
+    hasData: flatRows.length > 0,
+    _debug: { totalFlatRows: flatRows.length, uniqueAddBackTotal, flatRows },
+  };
+}
+
+async function getEbitdaDataManual(startDate, endDate) {
+  const payload = await getManualStagedProfitLossSummary({
+    params: {
+      ...(startDate ? { startDate } : {}),
+      ...(endDate ? { endDate } : {}),
+    },
+  });
+
+  const rawRows =
+    payload?.hierarchicalRows ||
+    payload?.data?.hierarchicalRows ||
+    payload?.rows ||
+    [];
+
+  const flatRows = flattenManualPLRows(rawRows);
+  return buildEbitdaFromFlatRows(flatRows, {
+    startDate: startDate || "",
+    endDate: endDate || "",
+    reportBasis: "Accrual",
+    currency: "USD",
+    time: "",
+  });
+}
+
+/**
+ * Extracts EBITDA components from a manual-upload P&L row tree.
+ * Returns the same shape as getEbitdaData so WorkspaceEbitda works unchanged.
+ */
+export function extractEbitdaFromManualPLRows(rows, asOfDate) {
+  const flatRows = flattenManualPLRows(rows);
+  return buildEbitdaFromFlatRows(flatRows, {
+    startDate: asOfDate || "",
+    endDate: asOfDate || "",
+    reportBasis: "Manual Upload",
+    currency: "USD",
+    time: "",
+  });
+}
+
+/* ------------------------------------------------------------------ */
 /*  Public API                                                        */
 /* ------------------------------------------------------------------ */
 
 /**
- * Fetches the P&L report from the existing API and extracts EBITDA components.
+ * Fetches the P&L report and extracts EBITDA components.
  *
  * @param {string} startDate  – YYYY-MM-DD
  * @param {string} endDate    – YYYY-MM-DD
  * @param {string} accountingMethod – "Cash" | "Accrual"
+ * @param {string} sourceMode – "quickbooks" | "manual"
  * @returns {Promise<Object>} EBITDA breakdown
  */
-export async function getEbitdaData(startDate, endDate, accountingMethod) {
+export async function getEbitdaData(startDate, endDate, accountingMethod, sourceMode = 'quickbooks') {
+  if (sourceMode === 'manual') {
+    try {
+      return await getEbitdaDataManual(startDate, endDate);
+    } catch (error) {
+      console.error('[EBITDA Service] Manual staged fetch failed:', error);
+      throw error;
+    }
+  }
+
   try {
     const payload = await fetchProfitAndLoss({
       ...(startDate ? { start_date: startDate } : {}),

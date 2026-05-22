@@ -8,10 +8,29 @@ import { useNavigate } from 'react-router-dom';
 import { useClientStore } from '../../store/clientStore';
 import StatusBadge from '../../components/common/StatusBadge';
 import Modal from '../../components/common/Modal';
-import { createCompanyRequest, listCompaniesRequest, updateCompanyRequest } from '../../lib/api';
+import { createCompanyRequest, deleteCompanyRequest, listCompaniesRequest, updateCompanyRequest } from '../../lib/api';
 
 const PAGE_SIZE = 10;
-const EMPTY_FORM = { name: '', contact: '', email: '', phone: '', industry: '' };
+const EMPTY_FORM = { name: '', project_name: '', contact: '', email: '', phone: '', industry: '' };
+const OTHER_INDUSTRY_OPTION = 'Other';
+
+const INDUSTRY_OPTIONS = [
+  'Technology & Software',
+  'Healthcare & Life Sciences',
+  'Financial Services',
+  'Consumer & Retail',
+  'Industrial & Manufacturing',
+  'Real Estate & Construction',
+  'Media & Entertainment',
+  'Energy & Natural Resources',
+  'Transportation & Logistics',
+  'Business Services',
+  'Education & Training',
+  'Telecommunications',
+  'Food & Beverage',
+  'Agriculture',
+  'Government & Non-Profit',
+];
 
 function getInitials(name = '') {
   return name
@@ -23,17 +42,30 @@ function getInitials(name = '') {
     .toUpperCase();
 }
 
+function formatDate(value) {
+  if (!value) return 'N/A';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value).slice(0, 10);
+
+  return date.toLocaleDateString('en-IN', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+  });
+}
+
 function formatCompany(company) {
   if (!company) return null;
   return {
     id: company.id,
     name: company.name,
+    projectName: company.project_name || '',
     contact: company.contact_name,
     email: company.contact_email,
     phone: company.contact_phone,
     industry: company.industry,
     status: company.status,
-    since: company.since ? company.since.slice(0, 10) : 'N/A',
+    since: formatDate(company.created_at || company.since),
     logo: company.logo || getInitials(company.name),
     requestCount: company.request_count || 0,
     pendingCount: company.pending_request_count || 0,
@@ -47,7 +79,8 @@ export default function Companies() {
   const [companies, setCompanies] = useState([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState('');
+  const [pageError, setPageError] = useState('');
+  const [formError, setFormError] = useState('');
   const [success, setSuccess] = useState('');
   const [search, setSearch] = useState('');
   const [industryFilter, setIndustryFilter] = useState('All Industries');
@@ -56,16 +89,19 @@ export default function Companies() {
   const [selected, setSelected] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
+  const [useCustomIndustry, setUseCustomIndustry] = useState(false);
   const [editing, setEditing] = useState(null);
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   const loadCompanies = async () => {
     setLoading(true);
-    setError('');
+    setPageError('');
     try {
       const data = await listCompaniesRequest();
       setCompanies(data.map(formatCompany).filter(Boolean));
     } catch (err) {
-      setError(err.message || 'Unable to load companies.');
+      setPageError(err.message || 'Unable to load companies.');
     } finally {
       setLoading(false);
     }
@@ -120,8 +156,9 @@ export default function Companies() {
   const paginated = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
 
   const handleExport = () => {
-    const headers = ['Company Name', 'Industry', 'Contact Person', 'Email', 'Phone', 'Status', 'Since', 'Total Requests', 'Pending'];
+    const headers = ['Project Name', 'Company Name', 'Industry', 'Contact Person', 'Email', 'Phone', 'Status', 'Since', 'Total Requests', 'Pending'];
     const rows = filtered.map((company) => [
+      company.projectName,
       company.name,
       company.industry,
       company.contact,
@@ -146,75 +183,70 @@ export default function Companies() {
     setShowAdd(false);
     setEditing(null);
     setForm(EMPTY_FORM);
+    setUseCustomIndustry(false);
+    setFormError('');
   };
 
   const openAddModal = () => {
-    setError('');
+    setFormError('');
     setEditing(null);
     setForm(EMPTY_FORM);
+    setUseCustomIndustry(false);
     setShowAdd(true);
   };
 
   const openEditModal = (company) => {
-    setError('');
+    setFormError('');
     setEditing(company);
+    const industry = company.industry || '';
+    setUseCustomIndustry(Boolean(industry) && !INDUSTRY_OPTIONS.includes(industry));
     setForm({
       name: company.name || '',
+      project_name: company.projectName || '',
       contact: company.contact || '',
       email: company.email || '',
       phone: company.phone || '',
-      industry: company.industry || '',
+      industry,
     });
     setShowAdd(true);
   };
 
-  const handlePhoneChange = (event) => {
-    let value = event.target.value.replace(/\D/g, ''); // Keep only numbers
-    if (value.length > 10) value = value.slice(0, 10);
-    
-    let formatted = value;
-    if (value.length > 6) {
-      formatted = `${value.slice(0, 3)}-${value.slice(3, 6)}-${value.slice(6)}`;
-    } else if (value.length > 3) {
-      formatted = `${value.slice(0, 3)}-${value.slice(3)}`;
-    }
-    
-    setForm((current) => ({ ...current, phone: formatted }));
-  };
-
   const handleSaveCompany = async () => {
-    if (!form.name.trim() || !form.contact.trim() || !form.email.trim() || !form.phone.trim() || !form.industry.trim()) {
-      setError('Please fill in all company fields.');
+    if (!form.name.trim() || !form.project_name.trim() || !form.contact.trim() || !form.email.trim() || !form.phone.trim() || !form.industry.trim()) {
+      setFormError('Please fill in all required fields, including Project Name and Industry.');
       return;
     }
 
     setSubmitting(true);
-    setError('');
+    setFormError('');
     setSuccess('');
 
     const payload = {
-        name: form.name.trim(),
-        industry: form.industry.trim(),
-        contact_name: form.contact.trim(),
-        contact_email: form.email.trim(),
-        contact_phone: form.phone.trim(),
-        logo: getInitials(form.name),
-      };
+      name: form.name.trim(),
+      project_name: form.project_name.trim(),
+      industry: form.industry.trim(),
+      contact_name: form.contact.trim(),
+      contact_email: form.email.trim(),
+      contact_phone: form.phone.trim(),
+      logo: getInitials(form.name),
+    };
 
     try {
       if (editing) {
         const updated = await updateCompanyRequest(editing.id, payload);
         if (updated?.id) {
+          const formatted = formatCompany({
+            ...updated,
+            request_count: editing.requestCount,
+            pending_request_count: editing.pendingCount,
+            completed_request_count: editing.completedCount,
+          });
+
           setCompanies((current) => current.map((company) => {
             if (company.id !== editing.id) return company;
-            const hydrated = {
-              ...updated,
-              request_count: company.requestCount,
-              pending_request_count: company.pendingCount,
-              completed_request_count: company.completedCount,
-            };
-            return formatCompany(hydrated);
+            return formatted;
           }));
+          setSelected((current) => (current?.id === editing.id ? formatted : current));
         } else {
           await loadCompanies();
         }
@@ -222,18 +254,42 @@ export default function Companies() {
       } else {
         const created = await createCompanyRequest(payload);
         if (created?.id) {
-          setCompanies((current) => [formatCompany(created), ...current].filter(Boolean));
+          const formatted = formatCompany({
+            ...created,
+            request_count: created.request_count || 0,
+            pending_request_count: created.pending_request_count || 0,
+            completed_request_count: created.completed_request_count || 0,
+          });
+          setCompanies((current) => [formatted, ...current].filter(Boolean));
           setPage(1);
+        } else {
+          await loadCompanies();
         }
-        await loadCompanies();
         setSuccess('Company created successfully.');
       }
 
       closeFormModal();
     } catch (err) {
-      setError(err.message || `Unable to ${editing ? 'update' : 'create'} company.`);
+      setFormError(err.message || `Unable to ${editing ? 'update' : 'create'} company.`);
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleDeleteCompany = async () => {
+    if (!confirmDelete) return;
+    setDeleting(true);
+    try {
+      await deleteCompanyRequest(confirmDelete.id);
+      setCompanies((current) => current.filter((c) => c.id !== confirmDelete.id));
+      if (selected?.id === confirmDelete.id) setSelected(null);
+      setConfirmDelete(null);
+      closeFormModal();
+      setSuccess('Company deleted successfully.');
+    } catch (err) {
+      setFormError(err.message || 'Unable to delete company.');
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -263,9 +319,9 @@ export default function Companies() {
         </div>
       </div>
 
-      {error && (
+      {pageError && (
         <div className="px-4 py-3 bg-red-50 rounded-2xl border border-red-100 text-sm text-[#C62026]">
-          {error}
+          {pageError}
         </div>
       )}
       {success && (
@@ -323,12 +379,13 @@ export default function Companies() {
             <thead>
               <tr className="border-b border-gray-100 bg-gray-50">
                 <th className="text-left px-5 py-3.5 text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">#</th>
+                <th className="text-left px-5 py-3.5 text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Project Name</th>
                 <th className="text-left px-5 py-3.5 text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Company</th>
+                <th className="text-left px-5 py-3.5 text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Industry</th>
                 <th className="text-left px-5 py-3.5 text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Contact Person</th>
                 <th className="text-left px-5 py-3.5 text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Email</th>
                 <th className="text-left px-5 py-3.5 text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Phone</th>
                 <th className="text-left px-5 py-3.5 text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Status</th>
-                <th className="text-center px-5 py-3.5 text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Total Req</th>
                 <th className="text-center px-5 py-3.5 text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Pending</th>
                 <th className="text-right px-5 py-3.5 text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Actions</th>
               </tr>
@@ -336,35 +393,39 @@ export default function Companies() {
             <tbody className="divide-y divide-gray-50">
               {loading && (
                 <tr>
-                  <td colSpan={9} className="text-center py-16 text-[#A5A5A5] text-sm">
+                  <td colSpan={10} className="text-center py-16 text-[#A5A5A5] text-sm">
                     Loading companies...
                   </td>
                 </tr>
               )}
               {!loading && paginated.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="text-center py-16 text-[#A5A5A5] text-sm">
+                  <td colSpan={10} className="text-center py-16 text-[#A5A5A5] text-sm">
                     No companies found matching your filters.
                   </td>
                 </tr>
               )}
               {!loading && paginated.map((company, index) => (
-                <tr key={company.id} className="hover:bg-gray-50/60 transition-colors group">
+                <tr key={company.id} onClick={() => handleOpenWorkspace(company)} className="hover:bg-gray-50/60 transition-colors group cursor-pointer">
                   <td className="px-5 py-4 text-xs text-[#A5A5A5] font-medium">
                     {(safePage - 1) * PAGE_SIZE + index + 1}
                   </td>
                   <td className="px-5 py-4">
-                    <div className="flex items-center gap-3">
-                      <div className="w-9 h-9 rounded-xl bg-[#05164D] flex items-center justify-center text-xs font-bold text-white flex-shrink-0">
-                        {company.logo}
-                      </div>
-                      <button
-                        onClick={() => handleOpenWorkspace(company)}
-                        className="font-semibold text-[#050505] hover:text-[#8BC53D] hover:underline leading-tight text-left transition-colors"
-                      >
-                        {company.name}
-                      </button>
-                    </div>
+                    {company.projectName ? (
+                      <span className="text-sm font-semibold text-[#050505] whitespace-nowrap">
+                        {company.projectName}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-[#A5A5A5]">—</span>
+                    )}
+                  </td>
+                  <td className="px-5 py-4">
+                    <span className="font-semibold text-[#050505] leading-tight whitespace-nowrap">
+                      {company.name}
+                    </span>
+                  </td>
+                  <td className="px-5 py-4">
+                    <span className="text-sm text-[#6D6E71]">{company.industry || '—'}</span>
                   </td>
                   <td className="px-5 py-4">
                     <div className="flex items-center gap-1.5 text-[#050505]">
@@ -388,9 +449,6 @@ export default function Companies() {
                     <StatusBadge value={company.status} size="xs" />
                   </td>
                   <td className="px-5 py-4 text-center">
-                    <span className="text-base font-bold text-[#050505]">{company.requestCount}</span>
-                  </td>
-                  <td className="px-5 py-4 text-center">
                     {company.pendingCount > 0 ? (
                       <span className="inline-block px-2.5 py-0.5 rounded-full text-xs font-bold bg-[#FAC086]/50 text-[#b45e08]">
                         {company.pendingCount}
@@ -402,14 +460,14 @@ export default function Companies() {
                   <td className="px-5 py-4">
                     <div className="flex items-center justify-end">
                       <button
-                        onClick={() => setSelected(company)}
+                        onClick={(e) => { e.stopPropagation(); setSelected(company); }}
                         title="View details"
                         className="p-1.5 rounded-lg text-[#6D6E71] hover:bg-[#A7DCF7]/40 hover:text-[#00648F] transition-colors"
                       >
                         <Eye size={15} />
                       </button>
                       <button
-                        onClick={() => openEditModal(company)}
+                        onClick={(e) => { e.stopPropagation(); openEditModal(company); }}
                         title="Edit company"
                         className="p-1.5 rounded-lg text-[#6D6E71] hover:bg-[#C9E4A4]/60 hover:text-[#476E2C] transition-colors"
                       >
@@ -440,11 +498,10 @@ export default function Companies() {
                 <button
                   key={pageNumber}
                   onClick={() => setPage(pageNumber)}
-                  className={`w-8 h-8 rounded-lg text-xs font-semibold transition-colors border ${
-                    pageNumber === safePage
-                      ? 'bg-[#05164D] text-white border-[#05164D]'
-                      : 'border-gray-200 text-[#6D6E71] hover:bg-white'
-                  }`}
+                  className={`w-8 h-8 rounded-lg text-xs font-semibold transition-colors border ${pageNumber === safePage
+                    ? 'bg-[#05164D] text-white border-[#05164D]'
+                    : 'border-gray-200 text-[#6D6E71] hover:bg-white'
+                    }`}
                 >
                   {pageNumber}
                 </button>
@@ -475,7 +532,12 @@ export default function Companies() {
               <div className="w-16 h-16 rounded-2xl bg-[#05164D] flex items-center justify-center text-xl font-bold text-white">
                 {selected.logo}
               </div>
-              <div>
+              <div className="min-w-0">
+                {selected.projectName && (
+                  <span className="mb-1 inline-block rounded-full bg-[#05164D]/10 px-2.5 py-0.5 text-xs font-semibold text-[#05164D]">
+                    {selected.projectName}
+                  </span>
+                )}
                 <h3 className="text-lg font-bold text-[#050505]">{selected.name}</h3>
                 <p className="text-sm text-[#6D6E71]">{selected.industry}</p>
                 <StatusBadge value={selected.status} />
@@ -497,17 +559,20 @@ export default function Companies() {
                 </div>
               ))}
             </div>
-            <div className="grid grid-cols-3 gap-3">
-              {[
-                { label: 'Total', value: selected.requestCount, color: '#050505' },
-                { label: 'Pending', value: selected.pendingCount, color: '#b45e08' },
-                { label: 'Completed', value: selected.completedCount, color: '#476E2C' },
-              ].map((stat) => (
-                <div key={stat.label} className="text-center bg-gray-50 rounded-xl py-3">
-                  <p className="text-2xl font-bold" style={{ color: stat.color }}>{stat.value}</p>
-                  <p className="text-xs text-[#A5A5A5] mt-0.5">{stat.label}</p>
-                </div>
-              ))}
+            <div className="space-y-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-[#6D6E71]">Request Summary</p>
+              <div className="grid grid-cols-3 gap-3">
+                {[
+                  { label: 'Total Requests', value: selected.requestCount, color: '#050505' },
+                  { label: 'Pending Requests', value: selected.pendingCount, color: '#b45e08' },
+                  { label: 'Completed Requests', value: selected.completedCount, color: '#476E2C' },
+                ].map((stat) => (
+                  <div key={stat.label} className="text-center bg-gray-50 rounded-xl py-3 px-2">
+                    <p className="text-2xl font-bold" style={{ color: stat.color }}>{stat.value}</p>
+                    <p className="text-xs text-[#A5A5A5] mt-0.5 leading-tight">{stat.label}</p>
+                  </div>
+                ))}
+              </div>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <button
@@ -532,32 +597,76 @@ export default function Companies() {
       </Modal>
 
       <Modal isOpen={showAdd} onClose={closeFormModal} title={editing ? 'Edit Company' : 'Add New Company'}>
-        <div className="space-y-4">
+        <div className="space-y-4 pt-6">
+          {formError && (
+            <div className="px-4 py-3 bg-red-50 rounded-2xl border border-red-100 text-sm text-[#C62026]">
+              {formError}
+            </div>
+          )}
           {[
+            { label: 'Project Name', key: 'project_name', placeholder: 'e.g. Project Falcon' },
             { label: 'Company Name', key: 'name', placeholder: 'e.g. Accenture India' },
             { label: 'Contact Person', key: 'contact', placeholder: 'Full name' },
             { label: 'Email Address', key: 'email', placeholder: 'contact@company.com', type: 'email' },
-            { label: 'Phone Number', key: 'phone', placeholder: '555-555-5555' },
-            { label: 'Industry', key: 'industry', placeholder: 'e.g. IT Services' },
+            { label: 'Phone Number', key: 'phone', placeholder: '+91 98765 43210' },
           ].map((field) => (
             <div key={field.key}>
-              <label className="block text-sm font-medium text-[#050505] mb-1.5">{field.label}</label>
+              <label className="block text-sm font-medium text-[#050505] mb-1.5">
+                {field.label} <span className="text-[#C62026]">*</span>
+              </label>
               <input
                 type={field.type || 'text'}
                 value={form[field.key]}
-                onChange={(event) => {
-                  if (field.key === 'phone') {
-                    handlePhoneChange(event);
-                  } else {
-                    setForm((current) => ({ ...current, [field.key]: event.target.value }));
-                  }
-                }}
+                onChange={(event) => setForm((current) => ({ ...current, [field.key]: event.target.value }))}
                 placeholder={field.placeholder}
                 className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all placeholder-[#A5A5A5]"
               />
             </div>
           ))}
+          <div>
+            <label className="block text-sm font-medium text-[#050505] mb-1.5">
+              Industry <span className="text-[#C62026]">*</span>
+            </label>
+            <select
+              value={useCustomIndustry ? OTHER_INDUSTRY_OPTION : form.industry}
+              onChange={(event) => {
+                const selectedIndustry = event.target.value;
+                if (selectedIndustry === OTHER_INDUSTRY_OPTION) {
+                  setUseCustomIndustry(true);
+                  setForm((current) => ({ ...current, industry: '' }));
+                  return;
+                }
+                setUseCustomIndustry(false);
+                setForm((current) => ({ ...current, industry: selectedIndustry }));
+              }}
+              className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all text-[#050505] bg-white"
+            >
+              <option value="">Select industry…</option>
+              {INDUSTRY_OPTIONS.map((opt) => (
+                <option key={opt} value={opt}>{opt}</option>
+              ))}
+              <option value={OTHER_INDUSTRY_OPTION}>{OTHER_INDUSTRY_OPTION}</option>
+            </select>
+            {useCustomIndustry && (
+              <input
+                type="text"
+                value={form.industry}
+                onChange={(event) => setForm((current) => ({ ...current, industry: event.target.value }))}
+                placeholder="Enter industry name"
+                className="mt-3 w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all placeholder-[#A5A5A5]"
+              />
+            )}
+          </div>
           <div className="flex gap-3 pt-2">
+            {editing && (
+              <button
+                onClick={() => setConfirmDelete(editing)}
+                disabled={submitting}
+                className="px-4 py-2.5 rounded-xl border border-red-200 text-sm font-semibold text-[#C62026] hover:bg-red-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Delete
+              </button>
+            )}
             <button
               onClick={closeFormModal}
               className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-[#6D6E71] hover:bg-gray-50 transition-colors"
@@ -573,6 +682,33 @@ export default function Companies() {
             </button>
           </div>
         </div>
+      </Modal>
+      <Modal isOpen={!!confirmDelete} onClose={() => setConfirmDelete(null)} title="Delete Company" size="sm">
+        {confirmDelete && (
+          <div className="space-y-5">
+            <p className="text-sm text-[#050505] leading-relaxed">
+              Are you sure you want to delete{' '}
+              <span className="font-semibold">{confirmDelete.name}</span>?{' '}
+              This action cannot be undone.
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setConfirmDelete(null)}
+                disabled={deleting}
+                className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-[#6D6E71] hover:bg-gray-50 transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDeleteCompany}
+                disabled={deleting}
+                className="flex-1 py-2.5 rounded-xl bg-[#C62026] text-white text-sm font-semibold hover:bg-red-700 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {deleting ? 'Deleting...' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        )}
       </Modal>
     </div>
   );

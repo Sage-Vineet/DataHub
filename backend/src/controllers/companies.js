@@ -1,127 +1,69 @@
-const db = require("../db");
 const asyncHandler = require("../utils");
-
-const DEFAULT_FOLDER_STRUCTURE = [
-  { name: "Finance", children: ["Q3 Reports"] },
-  { name: "Legal", children: ["Contracts"] },
-  { name: "HR & People" },
-  { name: "Tax" },
-  { name: "M&A" },
-  { name: "Compliance" },
-];
-
-const createDefaultFolders = async (companyId, createdBy) => {
-  for (const folder of DEFAULT_FOLDER_STRUCTURE) {
-    const { rows: parentRows } = await db.query(
-      "INSERT INTO folders (company_id, parent_id, name, color, created_by) VALUES (?, ?, ?, ?, ?) RETURNING *",
-      [companyId, null, folder.name, null, createdBy]
-    );
-
-    const parent = parentRows[0];
-    if (folder.children && folder.children.length) {
-      for (const childName of folder.children) {
-        await db.query(
-          "INSERT INTO folders (company_id, parent_id, name, color, created_by) VALUES (?, ?, ?, ?, ?) RETURNING *",
-          [companyId, parent.id, childName, null, createdBy]
-        );
-      }
-    }
-  }
-};
+const { ensureCompanyDefaultFolders } = require("../services/folderService");
+const companyService = require("../services/companyService");
+const permissionService = require("../services/permissionService");
 
 const listCompanies = asyncHandler(async (req, res) => {
-  const { rows } = await db.query(
-    `SELECT
-       c.*,
-       COUNT(r.id) AS request_count,
-       COUNT(CASE WHEN r.status = 'pending' THEN 1 END) AS pending_request_count,
-       COUNT(CASE WHEN r.status = 'completed' THEN 1 END) AS completed_request_count
-     FROM companies c
-     LEFT JOIN requests r ON r.company_id = c.id
-     GROUP BY c.id
-     ORDER BY c.created_at DESC`
-  );
-  res.json(rows);
+  const companies = await companyService.getCompaniesForUser(req.user);
+  res.json(companies);
 });
 
 const createCompany = asyncHandler(async (req, res) => {
-  const {
-    name,
-    industry,
-    status,
-    since,
-    logo,
-    contact_name,
-    contact_email,
-    contact_phone,
-  } = req.body || {};
+  const { name, project_name, industry, contact_name, contact_email, contact_phone } = req.body || {};
 
-  if (!name || !industry || !contact_name || !contact_email || !contact_phone) {
+  if (!name || !project_name || !industry || !contact_name || !contact_email || !contact_phone) {
     return res.status(400).json({ error: "Missing required fields" });
   }
 
-  const { rows } = await db.query(
-    `INSERT INTO companies (name, industry, status, since, logo, contact_name, contact_email, contact_phone)
-     VALUES (?, ?, CAST(COALESCE(?, 'active') AS company_status), ?, ?, ?, ?, ?)
-     RETURNING *`,
-    [name, industry, status || null, since || null, logo || null, contact_name, contact_email, contact_phone]
-  );
-
-  const inserted = rows[0];
-  const createdBy = req.user?.id;
-  if (inserted && createdBy) {
-    await createDefaultFolders(inserted.id, createdBy);
+  const inserted = await companyService.createCompany(req.body);
+  if (["broker", "admin"].includes(String(req.user?.role || "").toLowerCase())) {
+    await companyService.assignCompanyToUser(req.user.id, inserted.id);
+    if (!permissionService.isAdmin(req.user)) {
+      req.user.company_ids = Array.from(new Set([...(req.user.company_ids || []), inserted.id]));
+    }
   }
+
+  const clientRepresentativeId = await companyService.syncCompanyClientRepresentative(inserted).catch((err) => {
+    console.error("[createCompany] syncCompanyClientRepresentative failed (non-fatal):", err.message);
+    return null;
+  });
+  await ensureCompanyDefaultFolders(inserted.id, req.user?.id || clientRepresentativeId || null).catch(() => { });
 
   res.status(201).json(inserted);
 });
 
 const getCompany = asyncHandler(async (req, res) => {
-  const { rows } = await db.query(
-    `SELECT
-       c.*,
-       COUNT(r.id) AS request_count,
-       COUNT(CASE WHEN r.status = 'pending' THEN 1 END) AS pending_request_count,
-       COUNT(CASE WHEN r.status = 'completed' THEN 1 END) AS completed_request_count
-     FROM companies c
-     LEFT JOIN requests r ON r.company_id = c.id
-     WHERE c.id = ?
-     GROUP BY c.id`,
-    [req.params.id]
-  );
-  if (!rows[0]) return res.status(404).json({ error: "Not found" });
-  res.json(rows[0]);
+  const company = await companyService.getCompanyById(req.params.id);
+  if (!company) return res.status(404).json({ error: "Not found" });
+  if (!permissionService.canAccessCompany(req.user, company.id)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  res.json(company);
 });
 
 const updateCompany = asyncHandler(async (req, res) => {
-  const fields = [];
-  const values = [];
-  let idx = 1;
-  const body = req.body || {};
+  const existingCompany = await companyService.getCompanyById(req.params.id);
+  if (!existingCompany) return res.status(404).json({ error: "Not found" });
+  if (!permissionService.canAccessCompany(req.user, existingCompany.id)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
 
-  Object.keys(body).forEach((key) => {
-    if (key === 'status') {
-      fields.push(`${key} = CAST(? AS company_status)`);
-    } else {
-      fields.push(`${key} = ?`);
-    }
-    values.push(body[key]);
+  const updated = await companyService.updateCompany(req.params.id, req.body);
+  await companyService.syncCompanyClientRepresentative(updated, existingCompany).catch((err) => {
+    console.error("[updateCompany] syncCompanyClientRepresentative failed (non-fatal):", err.message);
   });
-
-  if (fields.length === 0) return res.status(400).json({ error: "No updates" });
-
-  values.push(new Date().toISOString());
-  values.push(req.params.id);
-
-  await db.query(
-    `UPDATE companies SET ${fields.join(", ")}, updated_at = ? WHERE id = ?`,
-    values
-  );
-
-  // Get updated company
-  const { rows } = await db.query("SELECT * FROM companies WHERE id = ?", [req.params.id]);
-  if (!rows[0]) return res.status(404).json({ error: "Not found" });
-  res.json(rows[0]);
+  res.json(updated);
 });
 
-module.exports = { listCompanies, createCompany, getCompany, updateCompany };
+const deleteCompany = asyncHandler(async (req, res) => {
+  const existing = await companyService.getCompanyById(req.params.id);
+  if (!existing) return res.status(404).json({ error: "Not found" });
+  if (!permissionService.canAccessCompany(req.user, existing.id)) {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+
+  await companyService.deleteCompany(req.params.id);
+  res.status(200).json({ message: "Company deleted successfully" });
+});
+
+module.exports = { listCompanies, createCompany, getCompany, updateCompany, deleteCompany };

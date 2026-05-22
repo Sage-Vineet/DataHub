@@ -17,7 +17,11 @@ import {
   fetchProfitAndLoss,
   fetchQuickbooksInvoices,
 } from "../lib/quickbooks";
-import { getStoredToken } from "../lib/api";
+import {
+  getManualGlBalanceSheet,
+  getManualStagedProfitLossSummary,
+  getStoredToken,
+} from "../lib/api";
 
 const API_BASE_URL = (
   import.meta.env.VITE_API_BASE_URL || "http://localhost:4000"
@@ -130,8 +134,35 @@ function flattenRows(rows = []) {
   ]);
 }
 
+function unwrapReportPayload(payload) {
+  let current = payload;
+
+  for (let depth = 0; depth < 6; depth += 1) {
+    if (!current || typeof current !== "object") break;
+
+    if (current?.Rows?.Row) return current;
+
+    if (current?.data && typeof current.data === "object") {
+      current = current.data;
+      continue;
+    }
+
+    break;
+  }
+
+  return payload;
+}
+
 function getRows(payload) {
-  return payload?.Rows?.Row || payload?.data?.Rows?.Row || [];
+  const report = unwrapReportPayload(payload);
+  return (
+    report?.Rows?.Row ||
+    payload?.Rows?.Row ||
+    payload?.data?.Rows?.Row ||
+    payload?.data?.data?.Rows?.Row ||
+    payload?.data?.data?.data?.Rows?.Row ||
+    []
+  );
 }
 
 function normalizeLabel(value) {
@@ -276,9 +307,43 @@ async function fetchCombinedReports(params = {}) {
 }
 
 const MAX_CHART_REQUESTS = 12;
+const TREND_FETCH_CONCURRENCY = 4;
+
+async function mapWithConcurrency(items, mapper, concurrency = 4) {
+  const list = Array.isArray(items) ? items : [];
+  const safeConcurrency = Math.max(1, Math.min(concurrency, list.length || 1));
+  const results = new Array(list.length);
+  let cursor = 0;
+
+  const worker = async () => {
+    while (true) {
+      const index = cursor;
+      cursor += 1;
+      if (index >= list.length) return;
+      results[index] = await mapper(list[index], index);
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: safeConcurrency }, () => worker()),
+  );
+
+  return results;
+}
 
 function getAccountListRows(payload) {
-  return payload?.accountList?.Rows?.Row || payload?.AccountList?.Rows?.Row || [];
+  const report = unwrapReportPayload(payload);
+  return (
+    report?.accountList?.Rows?.Row ||
+    report?.AccountList?.Rows?.Row ||
+    payload?.accountList?.Rows?.Row ||
+    payload?.AccountList?.Rows?.Row ||
+    payload?.data?.accountList?.Rows?.Row ||
+    payload?.data?.AccountList?.Rows?.Row ||
+    payload?.data?.data?.accountList?.Rows?.Row ||
+    payload?.data?.data?.AccountList?.Rows?.Row ||
+    []
+  );
 }
 
 function findAccountBalance(payload, matchers = []) {
@@ -307,6 +372,199 @@ function pickFirstNumber(...values) {
     }
   }
   return 0;
+}
+
+function findManualLineValue(payload = {}, label = "") {
+  const target = normalizeLabel(label);
+  const lines = Array.isArray(payload?.lines) ? payload.lines : [];
+  const line = lines.find((item) => normalizeLabel(item?.label) === target);
+  return toNumber(line?.consolidated);
+}
+
+function extractManualProfitAndLossTotals(payload = {}) {
+  const revenue = findManualLineValue(payload, "Revenue");
+  const cogs = findManualLineValue(payload, "COGS");
+  const operatingExpenses = findManualLineValue(payload, "Operating Expenses");
+  const otherExpenses = findManualLineValue(payload, "Other Expenses");
+  const netProfit = findManualLineValue(payload, "Net Profit");
+
+  return {
+    revenue,
+    expenses: roundMoney(cogs + operatingExpenses + otherExpenses),
+    netProfit,
+  };
+}
+
+function getLatestManualYear(payload = {}) {
+  const years = Array.isArray(payload?.years)
+    ? payload.years.map((year) => Number(year)).filter((year) => Number.isInteger(year))
+    : [];
+  if (years.length === 0) return null;
+  return Math.max(...years);
+}
+
+function findManualSectionTotal(payload = {}, sectionKey = "", year = null) {
+  if (!year) return 0;
+  const section = payload?.sections?.[sectionKey];
+  return toNumber(section?.totalByYear?.[year]);
+}
+
+function findManualAmountByMatchers(payload = {}, sectionKey = "", year = null, matchers = []) {
+  if (!year) return 0;
+  const section = payload?.sections?.[sectionKey];
+  if (!section || !Array.isArray(section.categories)) return 0;
+
+  const targets = matchers.map((matcher) => normalizeLabel(matcher));
+
+  let total = 0;
+  section.categories.forEach((category) => {
+    const categoryLabel = normalizeLabel(category?.label);
+    const categoryMatch = targets.some((target) => categoryLabel.includes(target));
+
+    if (categoryMatch) {
+      total += toNumber(category?.totalByYear?.[year]);
+      return;
+    }
+
+    const accounts = Array.isArray(category?.accounts) ? category.accounts : [];
+    accounts.forEach((account) => {
+      const accountName = normalizeLabel(account?.name);
+      const accountNumber = normalizeLabel(account?.number);
+      if (
+        targets.some(
+          (target) => accountName.includes(target) || accountNumber.includes(target),
+        )
+      ) {
+        total += toNumber(account?.balancesByYear?.[year]);
+      }
+    });
+  });
+
+  return roundMoney(total);
+}
+
+function roundMoney(value) {
+  if (!Number.isFinite(value)) return 0;
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+function buildDashboardCards({
+  revenue = 0,
+  expenses = 0,
+  netProfit = 0,
+  totalAssets = 0,
+  totalLiabilities = 0,
+  totalEquity = 0,
+  workingCapital = 0,
+  cashBank = 0,
+  receivable = 0,
+  inventoryValue = 0,
+  accountPayable = 0,
+  longTermDebt = 0,
+}) {
+  const cards = [
+    {
+      label: "Total Revenue",
+      value: formatMoney(revenue),
+      rawValue: revenue,
+      desc: "Total gross income",
+      color: "#8bc53d",
+      icon: CircleDollarSign,
+    },
+    {
+      label: "Total Expenses",
+      value: formatMoney(expenses),
+      rawValue: expenses,
+      desc: "Total operating costs",
+      color: "#C62026",
+      icon: CreditCard,
+    },
+    {
+      label: "Net Profit",
+      value: formatMoney(netProfit),
+      rawValue: netProfit,
+      desc: "Bottom-line earnings",
+      color: "#00648F",
+      icon: TrendingUp,
+    },
+    {
+      label: "Total Assets",
+      value: formatMoney(totalAssets),
+      rawValue: totalAssets,
+      desc: "Company's total valuation",
+      color: "#8bc53d",
+      icon: Building2,
+    },
+    {
+      label: "Total Liabilities",
+      value: formatMoney(totalLiabilities),
+      rawValue: totalLiabilities,
+      desc: "Current total obligations",
+      color: "#F68C1F",
+      icon: Wallet,
+    },
+    {
+      label: "Total Equity",
+      value: formatMoney(totalEquity),
+      rawValue: totalEquity,
+      desc: "Net asset value",
+      color: "#00648F",
+      icon: Scale,
+    },
+    {
+      label: "Working Capital",
+      value: formatMoney(workingCapital),
+      rawValue: workingCapital,
+      desc: "Available operating liquidity",
+      color: "#8bc53d",
+      icon: RefreshCw,
+    },
+    {
+      label: "Cash & Bank Balance",
+      value: formatMoney(cashBank),
+      rawValue: cashBank,
+      desc: "Liquid funds available",
+      color: "#8bc53d",
+      icon: PiggyBank,
+    },
+    {
+      label: "Account Receivable",
+      value: formatMoney(receivable),
+      rawValue: receivable,
+      desc: "Unpaid client invoices",
+      color: "#00A3FF",
+      icon: ArrowDownToLine,
+    },
+    {
+      label: "Inventory Value",
+      value: formatMoney(inventoryValue),
+      rawValue: inventoryValue,
+      desc: "Current stock valuation",
+      color: "#6D6E71",
+      icon: Package,
+    },
+    {
+      label: "Account Payable",
+      value: formatMoney(accountPayable),
+      rawValue: accountPayable,
+      desc: "Outstanding vendor bills",
+      color: "#EF4444",
+      icon: ArrowUpToLine,
+    },
+    {
+      label: "Long-Term Debt",
+      value: formatMoney(longTermDebt),
+      rawValue: longTermDebt,
+      desc: "Non-current liabilities",
+      color: "#DC2626",
+      icon: Landmark,
+    },
+  ];
+
+  return cards.map((card) => ({
+    ...card,
+    rawValue: Number(card.rawValue || 0),
+  }));
 }
 
 function buildTrendBuckets(start, end, aggregationType) {
@@ -388,7 +646,8 @@ function buildTrendBuckets(start, end, aggregationType) {
   return buckets;
 }
 
-export async function fetchDashboardKPIs(start, end) {
+export async function fetchDashboardKPIs(start, end, options = {}) {
+  const sourceMode = options?.sourceMode === "manual" ? "manual" : "quickbooks";
   const params =
     start || end
       ? {
@@ -396,6 +655,139 @@ export async function fetchDashboardKPIs(start, end) {
         ...(end ? { end_date: end } : {}),
       }
       : {};
+
+  if (sourceMode === "manual") {
+    const manualParams =
+      start || end
+        ? {
+          ...(start ? { startDate: start } : {}),
+          ...(end ? { endDate: end } : {}),
+        }
+        : {};
+
+    const [profitAndLossPayload, balanceSheetPayload] = await Promise.all([
+      getManualStagedProfitLossSummary({ params: manualParams }).catch(() => null),
+      getManualGlBalanceSheet({ params: manualParams }).catch(() => null),
+    ]);
+
+    const pnlTotals = extractManualProfitAndLossTotals(profitAndLossPayload || {});
+    const latestYear = getLatestManualYear(balanceSheetPayload || {});
+    const manualBalanceSchema =
+      balanceSheetPayload?.quickbooksSchema ||
+      balanceSheetPayload?.data ||
+      balanceSheetPayload ||
+      {};
+
+    const totalAssets = pickFirstNumber(
+      findManualSectionTotal(balanceSheetPayload, "Assets", latestYear),
+      findValueByGroup(manualBalanceSchema, ["TotalAssets"]),
+      findValueByExactLabel(manualBalanceSchema, ["Total Assets", "TOTAL ASSETS"]),
+    );
+    const totalLiabilities = pickFirstNumber(
+      findManualSectionTotal(balanceSheetPayload, "Liabilities", latestYear),
+      findValueByGroup(manualBalanceSchema, ["Liabilities"]),
+      findValueByExactLabel(manualBalanceSchema, ["Total Liabilities"]),
+    );
+    const totalEquity = pickFirstNumber(
+      findManualSectionTotal(balanceSheetPayload, "Equity", latestYear),
+      findValueByGroup(manualBalanceSchema, ["Equity"]),
+      findValueByExactLabel(manualBalanceSchema, ["Total Equity"]),
+    );
+    const currentAssets = pickFirstNumber(
+      findManualAmountByMatchers(balanceSheetPayload, "Assets", latestYear, [
+        "current asset",
+      ]),
+      findValueByGroup(manualBalanceSchema, ["CurrentAssets"]),
+      findValueByExactLabel(manualBalanceSchema, ["Total Current Assets"]),
+    );
+    const currentLiabilities = pickFirstNumber(
+      findManualAmountByMatchers(
+        balanceSheetPayload,
+        "Liabilities",
+        latestYear,
+        ["current liabilit"],
+      ),
+      findValueByGroup(manualBalanceSchema, ["CurrentLiabilities"]),
+      findValueByExactLabel(manualBalanceSchema, ["Total Current Liabilities"]),
+    );
+    const cashBank = pickFirstNumber(
+      findManualAmountByMatchers(balanceSheetPayload, "Assets", latestYear, [
+        "cash",
+        "bank",
+        "checking",
+        "savings",
+      ]),
+      findValueByGroup(manualBalanceSchema, ["BankAccounts"]),
+      findValueByExactLabel(manualBalanceSchema, [
+        "Total Bank Accounts",
+        "Total Cash and cash equivalents",
+        "Total Cash and Cash Equivalents",
+      ]),
+    );
+    const receivable = pickFirstNumber(
+      findManualAmountByMatchers(balanceSheetPayload, "Assets", latestYear, [
+        "receivable",
+        "a/r",
+      ]),
+      findValueByGroup(manualBalanceSchema, ["AR"]),
+      findValueByExactLabel(manualBalanceSchema, [
+        "Total Accounts Receivable",
+        "Total Accounts Receivable (A/R)",
+      ]),
+    );
+    const inventoryValue = pickFirstNumber(
+      findManualAmountByMatchers(balanceSheetPayload, "Assets", latestYear, [
+        "inventory",
+      ]),
+      findValueByLabel(manualBalanceSchema, ["inventory asset", "inventory"]),
+    );
+    const accountPayable = pickFirstNumber(
+      findManualAmountByMatchers(
+        balanceSheetPayload,
+        "Liabilities",
+        latestYear,
+        ["payable", "a/p"],
+      ),
+      findValueByGroup(manualBalanceSchema, ["AP"]),
+      findValueByExactLabel(manualBalanceSchema, [
+        "Total Accounts Payable",
+        "Total Accounts Payable (A/P)",
+      ]),
+    );
+    const longTermDebt = pickFirstNumber(
+      findManualAmountByMatchers(
+        balanceSheetPayload,
+        "Liabilities",
+        latestYear,
+        ["long term", "long-term", "note payable", "loan"],
+      ),
+      findValueByGroup(manualBalanceSchema, ["LongTermLiabilities"]),
+      findValueByExactLabel(manualBalanceSchema, [
+        "Total Long-Term Liabilities",
+        "Total Long Term Liabilities",
+      ]),
+    );
+
+    const workingCapital =
+      currentAssets !== 0 || currentLiabilities !== 0
+        ? currentAssets - currentLiabilities
+        : totalAssets - totalLiabilities;
+
+    return buildDashboardCards({
+      revenue: pnlTotals.revenue,
+      expenses: pnlTotals.expenses,
+      netProfit: pnlTotals.netProfit,
+      totalAssets,
+      totalLiabilities,
+      totalEquity,
+      workingCapital,
+      cashBank,
+      receivable,
+      inventoryValue,
+      accountPayable,
+      longTermDebt,
+    });
+  }
 
   const [profitAndLoss, balanceSheet, combinedReports, invoicesPayload] =
     await Promise.all([
@@ -505,134 +897,222 @@ export async function fetchDashboardKPIs(start, end) {
       ? currentAssets - currentLiabilities
       : cashBank + receivable + inventoryValue - accountPayable;
 
+  return buildDashboardCards({
+    revenue,
+    expenses: safeExpenses,
+    netProfit: safeNetProfit,
+    totalAssets,
+    totalLiabilities,
+    totalEquity,
+    workingCapital,
+    cashBank,
+    receivable,
+    inventoryValue,
+    accountPayable,
+    longTermDebt,
+  });
+}
+
+// ── Manual upload KPI helpers ──────────────────────────────────────────────
+
+function flattenManualRows(rows = []) {
+  const out = [];
+  function walk(items) {
+    for (const item of items) {
+      if (item && typeof item === "object") {
+        out.push(item);
+        if (Array.isArray(item.children)) walk(item.children);
+      }
+    }
+  }
+  walk(rows);
+  return out;
+}
+
+function findManualAmount(flat, namePhrases) {
+  const lc = (s) => String(s || "").toLowerCase().trim();
+
+  // 1. Exact match on type:total rows
+  for (const phrase of namePhrases) {
+    const r = flat.find((f) => f.type === "total" && lc(f.name) === lc(phrase));
+    if (r !== undefined) return parseFloat(r.amount) || 0;
+  }
+
+  // 2. Includes match on type:total rows — guard against over-matching.
+  // e.g. "total assets" must NOT match "total current assets".
+  for (const phrase of namePhrases) {
+    const lcPhrase = lc(phrase);
+    const r = flat.find((f) => {
+      if (f.type !== "total") return false;
+      const name = lc(f.name);
+      if (!name.includes(lcPhrase)) return false;
+      // The remainder after stripping the search phrase must contain no word chars
+      const extra = name.replace(lcPhrase, "").trim();
+      return !extra || !/\w/.test(extra);
+    });
+    if (r !== undefined) return parseFloat(r.amount) || 0;
+  }
+
+  // 3. Search type:header nodes — Gemini sets computed amounts on section headers.
+  // Strip "total " prefix from phrase to match the section header name.
+  for (const phrase of namePhrases) {
+    const sectionName = lc(phrase).replace(/^total\s+/, "");
+    const r = flat.find(
+      (f) => f.type === "header" && lc(f.name) === sectionName && f.amount,
+    );
+    if (r !== undefined) return parseFloat(r.amount) || 0;
+  }
+
+  // 4. Fuzzy fallback: any row type, includes match
+  for (const phrase of namePhrases) {
+    const r = flat.find((f) => lc(f.name).includes(lc(phrase)));
+    if (r !== undefined) return parseFloat(r.amount) || 0;
+  }
+
+  return 0;
+}
+
+export async function fetchDashboardKPIsFromManualUpload() {
+  const [bsRes, plRes] = await Promise.all([
+    request("/manual-report-uploads/reports/balance_sheet/latest").catch(() => null),
+    request("/manual-report-uploads/reports/profit_and_loss/latest").catch(() => null),
+  ]);
+
+  const bsFlat = flattenManualRows(bsRes?.data?.rows || []);
+  const plFlat = flattenManualRows(plRes?.data?.rows || []);
+
+  // P&L values
+  const revenue = findManualAmount(plFlat, ["total income", "total revenue", "total sales"]);
+  const rawExpenses = findManualAmount(plFlat, ["total expenses", "total expense", "total operating expenses"]);
+  const expenses = Math.abs(rawExpenses);
+  const netProfitRaw = findManualAmount(plFlat, ["net income", "net profit", "net loss"]);
+  const netProfit = netProfitRaw !== 0 ? netProfitRaw : revenue - expenses;
+
+  // Balance sheet values
+  const totalAssets = findManualAmount(bsFlat, [
+    "total assets",
+  ]);
+  const totalLiabilities = findManualAmount(bsFlat, [
+    "total liabilities",
+  ]);
+  const totalEquity = findManualAmount(bsFlat, [
+    "total equity",
+    "total stockholders equity",
+    "total stockholders' equity",
+    "total shareholders equity",
+    "total shareholders' equity",
+  ]);
+  const currentAssets = findManualAmount(bsFlat, [
+    "total current assets",
+    "current assets",
+  ]);
+  const currentLiabilities = findManualAmount(bsFlat, [
+    "total current liabilities",
+    "current liabilities",
+  ]);
+  const cashBank = findManualAmount(bsFlat, [
+    "total bank accounts",
+    "total cash and cash equivalents",
+    "total cash and bank",
+    "total cash",
+    "bank accounts",
+    "cash and cash equivalents",
+  ]);
+  const receivable = findManualAmount(bsFlat, [
+    "total accounts receivable",
+    "total accounts receivable (a/r)",
+    "accounts receivable (a/r)",
+    "accounts receivable",
+  ]);
+  const inventoryValue = findManualAmount(bsFlat, [
+    "total inventory",
+    "inventory asset",
+    "inventory",
+  ]);
+  const accountPayable = findManualAmount(bsFlat, [
+    "total accounts payable",
+    "total accounts payable (a/p)",
+    "accounts payable (a/p)",
+    "accounts payable",
+  ]);
+  const longTermDebt = findManualAmount(bsFlat, [
+    "total long-term liabilities",
+    "total long term liabilities",
+    "long-term liabilities",
+    "long term liabilities",
+    "notes payable",
+    "long-term debt",
+  ]);
+  const workingCapital =
+    currentAssets && currentLiabilities
+      ? currentAssets - currentLiabilities
+      : cashBank + receivable + inventoryValue - accountPayable;
+
   const cards = [
-    {
-      label: "Total Revenue",
-      value: formatMoney(revenue),
-      rawValue: revenue,
-      desc: "Total gross income",
-      color: "#8bc53d",
-      icon: CircleDollarSign,
-    },
-    {
-      label: "Total Expenses",
-      value: formatMoney(safeExpenses),
-      rawValue: safeExpenses,
-      desc: "Total operating costs",
-      color: "#C62026",
-      icon: CreditCard,
-    },
-    {
-      label: "Net Profit",
-      value: formatMoney(safeNetProfit),
-      rawValue: safeNetProfit,
-      desc: "Bottom-line earnings",
-      color: "#00648F",
-      icon: TrendingUp,
-    },
-    {
-      label: "Total Assets",
-      value: formatMoney(totalAssets),
-      rawValue: totalAssets,
-      desc: "Company's total valuation",
-      color: "#8bc53d",
-      icon: Building2,
-    },
-    {
-      label: "Total Liabilities",
-      value: formatMoney(totalLiabilities),
-      rawValue: totalLiabilities,
-      desc: "Current total obligations",
-      color: "#F68C1F",
-      icon: Wallet,
-    },
-    {
-      label: "Total Equity",
-      value: formatMoney(totalEquity),
-      rawValue: totalEquity,
-      desc: "Net asset value",
-      color: "#00648F",
-      icon: Scale,
-    },
-    {
-      label: "Working Capital",
-      value: formatMoney(workingCapital),
-      rawValue: workingCapital,
-      desc: "Available operating liquidity",
-      color: "#8bc53d",
-      icon: RefreshCw,
-    },
-    {
-      label: "Cash & Bank Balance",
-      value: formatMoney(cashBank),
-      rawValue: cashBank,
-      desc: "Liquid funds available",
-      color: "#8bc53d",
-      icon: PiggyBank,
-    },
-    {
-      label: "Account Receivable",
-      value: formatMoney(receivable),
-      rawValue: receivable,
-      desc: "Unpaid client invoices",
-      color: "#00A3FF",
-      icon: ArrowDownToLine,
-    },
-    {
-      label: "Inventory Value",
-      value: formatMoney(inventoryValue),
-      rawValue: inventoryValue,
-      desc: "Current stock valuation",
-      color: "#6D6E71",
-      icon: Package,
-    },
-    {
-      label: "Account Payable",
-      value: formatMoney(accountPayable),
-      rawValue: accountPayable,
-      desc: "Outstanding vendor bills",
-      color: "#EF4444",
-      icon: ArrowUpToLine,
-    },
-    {
-      label: "Long-Term Debt",
-      value: formatMoney(longTermDebt),
-      rawValue: longTermDebt,
-      desc: "Non-current liabilities",
-      color: "#DC2626",
-      icon: Landmark,
-    },
+    { label: "Total Revenue",       value: formatMoney(revenue),          rawValue: revenue,          desc: "Total gross income",             color: "#8bc53d", icon: CircleDollarSign },
+    { label: "Total Expenses",      value: formatMoney(expenses),         rawValue: expenses,         desc: "Total operating costs",          color: "#C62026", icon: CreditCard },
+    { label: "Net Profit",          value: formatMoney(netProfit),        rawValue: netProfit,        desc: "Bottom-line earnings",           color: "#00648F", icon: TrendingUp },
+    { label: "Total Assets",        value: formatMoney(totalAssets),      rawValue: totalAssets,      desc: "Company's total valuation",      color: "#8bc53d", icon: Building2 },
+    { label: "Total Liabilities",   value: formatMoney(totalLiabilities), rawValue: totalLiabilities, desc: "Current total obligations",      color: "#F68C1F", icon: Wallet },
+    { label: "Total Equity",        value: formatMoney(totalEquity),      rawValue: totalEquity,      desc: "Net asset value",                color: "#00648F", icon: Scale },
+    { label: "Working Capital",     value: formatMoney(workingCapital),   rawValue: workingCapital,   desc: "Available operating liquidity",  color: "#8bc53d", icon: RefreshCw },
+    { label: "Cash & Bank Balance", value: formatMoney(cashBank),         rawValue: cashBank,         desc: "Liquid funds available",         color: "#8bc53d", icon: PiggyBank },
+    { label: "Account Receivable",  value: formatMoney(receivable),       rawValue: receivable,       desc: "Unpaid client invoices",         color: "#00A3FF", icon: ArrowDownToLine },
+    { label: "Inventory Value",     value: formatMoney(inventoryValue),   rawValue: inventoryValue,   desc: "Current stock valuation",        color: "#6D6E71", icon: Package },
+    { label: "Account Payable",     value: formatMoney(accountPayable),   rawValue: accountPayable,   desc: "Outstanding vendor bills",       color: "#EF4444", icon: ArrowUpToLine },
+    { label: "Long-Term Debt",      value: formatMoney(longTermDebt),     rawValue: longTermDebt,     desc: "Non-current liabilities",        color: "#DC2626", icon: Landmark },
   ];
 
-  return cards.map((card) => ({
-    ...card,
-    rawValue: Number(card.rawValue || 0),
-  }));
+  return cards.map((card) => ({ ...card, rawValue: Number(card.rawValue || 0) }));
 }
 
 export async function fetchFinancialTrends(
   start,
   end,
   aggregationType = "monthly",
+  options = {},
 ) {
+  const sourceMode = options?.sourceMode === "manual" ? "manual" : "quickbooks";
   const buckets = buildTrendBuckets(start, end, aggregationType).slice(
     -MAX_CHART_REQUESTS,
   );
 
-  const results = [];
-  for (const bucket of buckets) {
-    const report = await fetchProfitAndLoss({
-      start_date: bucket.start,
-      end_date: bucket.end,
-    }).catch(() => null);
-    const totals = extractProfitAndLossTotals(report || {});
-    results.push({
-      name: bucket.shortName || bucket.name,
-      fullLabel: bucket.name,
-      revenue: totals.revenue,
-      expenses: totals.expenses,
-    });
-  }
+  return mapWithConcurrency(
+    buckets,
+    async (bucket) => {
+      let totals = { revenue: 0, expenses: 0 };
 
-  return results;
+      if (sourceMode === "manual") {
+        const manualReport = await getManualStagedProfitLossSummary({
+          params: {
+            startDate: bucket.start,
+            endDate: bucket.end,
+          },
+        }).catch(() => null);
+        const manualTotals = extractManualProfitAndLossTotals(manualReport || {});
+        totals = {
+          revenue: manualTotals.revenue,
+          expenses: manualTotals.expenses,
+        };
+      } else {
+        const report = await fetchProfitAndLoss({
+          start_date: bucket.start,
+          end_date: bucket.end,
+        }).catch(() => null);
+        const quickBooksTotals = extractProfitAndLossTotals(report || {});
+        totals = {
+          revenue: quickBooksTotals.revenue,
+          expenses: quickBooksTotals.expenses,
+        };
+      }
+
+      return {
+        name: bucket.shortName || bucket.name,
+        fullLabel: bucket.name,
+        revenue: totals.revenue,
+        expenses: totals.expenses,
+      };
+    },
+    TREND_FETCH_CONCURRENCY,
+  );
 }

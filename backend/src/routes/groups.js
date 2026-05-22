@@ -8,8 +8,11 @@ const {
   removeMember,
   listGroupMembers,
 } = require("../controllers/groups");
+const { requireAuth } = require("../middleware/auth");
 
 const router = express.Router();
+
+router.use(requireAuth);
 
 router.get("/companies/:id/groups", listGroups);
 router.post("/companies/:id/groups", createGroup);

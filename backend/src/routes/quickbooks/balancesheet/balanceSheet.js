@@ -1,7 +1,8 @@
 const express = require("express");
-const axios = require("axios");
-const tokenManager = require("../../../tokenManager");
-const { getQBConfig } = require("../../../qbconfig");
+const {
+  fetchAndCacheReport,
+  REPORT_TYPES,
+} = require("../../../services/quickbooksReportService");
 
 const router = express.Router();
 
@@ -15,65 +16,35 @@ const router = express.Router();
  *         description: Success
  */
 router.get("/balance-sheet", async (req, res) => {
-  const qb = getQBConfig(req.clientId);
+  const clientId = req.clientId;
 
-  // Validate required config
-  if (!qb.accessToken || !qb.realmId) {
-    return res.status(400).json({
-      error: "Missing QuickBooks configuration. Please authenticate first.",
-    });
-  }
-
-  // Forward all query parameters from frontend (start_date, end_date, accounting_method, etc.)
-  const queryParams = new URLSearchParams(req.query).toString();
-  const url = `${qb.baseUrl}/v3/company/${qb.realmId}/reports/BalanceSheet?minorversion=75${queryParams ? `&${queryParams}` : ""}`;
+  // Reports are snapshot-first and read from DB regardless of connection state.
+  const { clientId: _cid, minorversion, ...queryParams } = req.query;
 
   try {
-    const response = await axios.get(url, {
-      headers: {
-        Authorization: `Bearer ${qb.accessToken}`,
-        Accept: "application/json",
-      },
+    const result = await fetchAndCacheReport(
+      clientId,
+      REPORT_TYPES.BALANCE_SHEET,
+      "BalanceSheet",
+      queryParams
+    );
+
+    return res.json({
+      success: true,
+      data: result.data,
+      source: "cached_snapshot",
+      disconnected: Boolean(req.qbDisconnected),
+      lastSyncAt: result.lastSyncedAt,
+      datasetVersion: result.datasetVersion || null,
     });
-
-    return res.json({ success: true, data: response.data });
   } catch (error) {
-    // Handle 401 Unauthorized - Token expired
-    if (error.response && error.response.status === 401) {
-      console.log("⚠️ Token expired, attempting to refresh...");
-
-      try {
-        const newAccessToken = await tokenManager.refreshAccessToken(
-          req.clientId,
-        );
-
-        // Retry the request with new token
-        const retryResponse = await axios.get(url, {
-          headers: {
-            Authorization: `Bearer ${newAccessToken}`,
-            Accept: "application/json",
-          },
-        });
-
-        return res.json({
-          success: true,
-          data: retryResponse.data,
-          refreshed: true,
-        });
-      } catch (refreshError) {
-        console.error("❌ Token refresh failed:", refreshError.message);
-        return res.status(401).json({
-          error: "Authentication failed. Please re-authenticate.",
-          details: refreshError.response?.data || refreshError.message,
-        });
-      }
-    }
-
-    // Handle other errors
-    console.error("❌ Balance Sheet API Error:", error.message);
-    return res.status(error.response?.status || 500).json({
-      error: "Failed to fetch balance sheet",
-      details: error.response?.data || error.message,
+    const status = /No finalized snapshot/i.test(error.message) ? 404 : 500;
+    console.error("Balance Sheet API Error:", error.message);
+    return res.status(status).json({
+      success: false,
+      source: "cached_snapshot",
+      disconnected: Boolean(req.qbDisconnected),
+      message: error.message || "Failed to fetch balance sheet snapshot.",
     });
   }
 });

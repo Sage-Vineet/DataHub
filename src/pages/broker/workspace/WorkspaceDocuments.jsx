@@ -13,7 +13,6 @@ export default function WorkspaceDocuments() {
     if (!clientId) return;
     getCompanyRequest(clientId).then(setCompany).catch(() => setCompany(null));
   }, [clientId]);
-
   return (
     <div className="-m-4 lg:-m-6 h-[calc(100vh-4rem)]">
       <FileExplorer

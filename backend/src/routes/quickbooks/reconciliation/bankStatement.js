@@ -4,7 +4,7 @@ const multer = require("multer");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const pool = require("../../../db");
+const { supabase } = require("../../../db");
 const Anthropic = require("@anthropic-ai/sdk");
 const anthropicApiKey = (process.env.ANTHROPIC_API_KEY || "").trim();
 const client = anthropicApiKey
@@ -509,15 +509,26 @@ router.post(
 
       console.log("Total Transactions Extracted:", transactions.length);
 
-      await pool.query("DELETE FROM bank_transactions WHERE client_id = $1", [
-        req.clientId,
-      ]);
-      for (const txn of transactions) {
-        await pool.query(
-          `INSERT INTO bank_transactions (client_id, txn_date, narration, amount) VALUES ($1, $2, $3, $4)`,
-          [req.clientId, txn.date, txn.narration, txn.amount],
-        );
+      await supabase
+        .from("bank_transactions")
+        .delete()
+        .eq("client_id", req.clientId);
+
+      if (transactions.length > 0) {
+        const toInsert = transactions.map((txn) => ({
+          client_id: req.clientId,
+          txn_date: txn.date,
+          narration: txn.narration || txn.name,
+          amount: txn.amount,
+        }));
+
+        const { error: insertError } = await supabase
+          .from("bank_transactions")
+          .insert(toInsert);
+
+        if (insertError) throw insertError;
       }
+
 
       cleanupFile(filePath);
       console.log(

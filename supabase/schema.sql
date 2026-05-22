@@ -50,6 +50,10 @@ CREATE TABLE IF NOT EXISTS companies (
   contact_name text NOT NULL,
   contact_email text NOT NULL,
   contact_phone text NOT NULL,
+  data_source_type text,
+  quickbooks_connected boolean NOT NULL DEFAULT false,
+  manual_upload_active boolean NOT NULL DEFAULT false,
+  last_source_switch_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
@@ -233,6 +237,79 @@ CREATE TABLE IF NOT EXISTS quickbooks_connections (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS manual_gl_batches (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  source text NOT NULL DEFAULT 'manual_gl',
+  source_type text NOT NULL DEFAULT 'manual_gl_upload',
+  source_switch_version timestamptz NOT NULL DEFAULT now(),
+  upload_session_id uuid DEFAULT gen_random_uuid(),
+  staged_at timestamptz NOT NULL DEFAULT now(),
+  status text NOT NULL DEFAULT 'staged',
+  batch_name text,
+  created_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS manual_gl_staged_transactions (
+  id bigserial PRIMARY KEY,
+  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  batch_id uuid NOT NULL REFERENCES manual_gl_batches(id) ON DELETE CASCADE,
+  transaction_id text NOT NULL,
+  fiscal_year integer,
+  txn_date date,
+  account_number text,
+  account_name text NOT NULL,
+  account_type text,
+  category text,
+  sub_category text,
+  debit numeric(18, 2) NOT NULL DEFAULT 0,
+  credit numeric(18, 2) NOT NULL DEFAULT 0,
+  net_amount numeric(18, 2) NOT NULL DEFAULT 0,
+  class text,
+  department text,
+  location text,
+  journal_type text,
+  transaction_type text,
+  reference text,
+  description text,
+  source_file text,
+  source_upload_id uuid REFERENCES uploads(id) ON DELETE SET NULL,
+  row_number integer,
+  transaction_hash text NOT NULL,
+  source_type text NOT NULL DEFAULT 'manual_gl_upload',
+  source_switch_version timestamptz,
+  upload_session_id uuid,
+  staged_at timestamptz NOT NULL DEFAULT now(),
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_manual_gl_txn_hash_batch UNIQUE (company_id, batch_id, transaction_hash)
+);
+
+CREATE TABLE IF NOT EXISTS manual_gl_balance_sheet_lines (
+  id bigserial PRIMARY KEY,
+  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  batch_id uuid NOT NULL REFERENCES manual_gl_batches(id) ON DELETE CASCADE,
+  sheet_type text NOT NULL,
+  as_of_date date,
+  section text NOT NULL,
+  account_name text NOT NULL,
+  amount numeric(18, 2) NOT NULL DEFAULT 0,
+  source_file text,
+  source_upload_id uuid REFERENCES uploads(id) ON DELETE SET NULL,
+  row_number integer,
+  line_hash text NOT NULL,
+  source_type text NOT NULL DEFAULT 'manual_gl_upload',
+  source_switch_version timestamptz,
+  upload_session_id uuid,
+  staged_at timestamptz NOT NULL DEFAULT now(),
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_manual_gl_bs_line_hash_batch UNIQUE (company_id, batch_id, sheet_type, line_hash)
+);
+
 CREATE INDEX IF NOT EXISTS idx_requests_company_id ON requests(company_id);
 CREATE INDEX IF NOT EXISTS idx_user_companies_user ON user_companies(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_companies_company ON user_companies(company_id);
@@ -249,3 +326,38 @@ CREATE INDEX IF NOT EXISTS idx_reminders_company ON reminders(company_id);
 CREATE INDEX IF NOT EXISTS idx_bank_transactions_client_id ON bank_transactions(client_id);
 CREATE INDEX IF NOT EXISTS idx_reconciliation_transactions_client_id ON reconciliation_transactions(client_id);
 CREATE INDEX IF NOT EXISTS idx_quickbooks_connections_realm_id ON quickbooks_connections(realm_id);
+CREATE INDEX IF NOT EXISTS idx_manual_gl_batches_company ON manual_gl_batches(company_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_manual_gl_batches_company_status_created ON manual_gl_batches(company_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_manual_gl_batches_source_isolation ON manual_gl_batches(company_id, source_type, source_switch_version, upload_session_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_manual_gl_txn_batch ON manual_gl_staged_transactions(batch_id);
+CREATE INDEX IF NOT EXISTS idx_manual_gl_txn_company_date ON manual_gl_staged_transactions(company_id, txn_date);
+CREATE INDEX IF NOT EXISTS idx_manual_gl_txn_company_year ON manual_gl_staged_transactions(company_id, fiscal_year);
+CREATE INDEX IF NOT EXISTS idx_manual_gl_txn_account ON manual_gl_staged_transactions(company_id, account_name, account_number);
+CREATE INDEX IF NOT EXISTS idx_manual_gl_txn_category ON manual_gl_staged_transactions(company_id, category, sub_category);
+CREATE INDEX IF NOT EXISTS idx_manual_gl_txn_source_isolation ON manual_gl_staged_transactions(company_id, source_type, source_switch_version, upload_session_id, staged_at DESC);
+CREATE INDEX IF NOT EXISTS idx_manual_gl_bs_batch ON manual_gl_balance_sheet_lines(batch_id, sheet_type);
+CREATE INDEX IF NOT EXISTS idx_manual_gl_bs_company_date ON manual_gl_balance_sheet_lines(company_id, as_of_date);
+CREATE INDEX IF NOT EXISTS idx_manual_gl_bs_source_isolation ON manual_gl_balance_sheet_lines(company_id, source_type, source_switch_version, upload_session_id, staged_at DESC);
+
+-- Report source records: one row per (company, source_key); tracks selection, availability, and connection state
+CREATE TABLE IF NOT EXISTS report_source_records (
+  id            uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_id    uuid        NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  source_key    text        NOT NULL,
+  source_label  text        NOT NULL DEFAULT '',
+  is_selected   boolean     NOT NULL DEFAULT false,
+  is_available  boolean     NOT NULL DEFAULT false,
+  is_connected  boolean     NOT NULL DEFAULT false,
+  last_connected_at timestamptz,
+  last_synced_at    timestamptz,
+  metadata      jsonb       NOT NULL DEFAULT '{}'::jsonb,
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  updated_at    timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_report_source_records_company_source UNIQUE (company_id, source_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_report_source_records_company
+  ON report_source_records(company_id, source_key);
+
+CREATE INDEX IF NOT EXISTS idx_report_source_records_selected
+  ON report_source_records(company_id, is_selected);
