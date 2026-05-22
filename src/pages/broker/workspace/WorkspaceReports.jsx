@@ -312,6 +312,7 @@ export default function WorkspaceReports() {
   const [isLoadingQMSFiles, setIsLoadingQMSFiles] = useState(false);
   const hasRestoredSessionRef = useRef(false);
   const isFirstMountRef = useRef(true);
+  const prevReportSourceForClearRef = useRef(selectedReportSource);
   // Always-fresh ref so the filter options effect doesn't capture a stale closure.
   const manualFiltersRef = useRef(manualFilters);
   manualFiltersRef.current = manualFilters;
@@ -402,6 +403,15 @@ export default function WorkspaceReports() {
     window.addEventListener(MANUAL_GL_STAGED_EVENT, handleGlStaged);
     return () => window.removeEventListener(MANUAL_GL_STAGED_EVENT, handleGlStaged);
   }, [clientId]);
+
+  useEffect(() => {
+    if (prevReportSourceForClearRef.current === selectedReportSource) return;
+    prevReportSourceForClearRef.current = selectedReportSource;
+    setReportsData(createInitialReportsData());
+    setManualUploadFiles({ "Balance Sheet": [], "Profit & Loss": [], "Cashflow": [] });
+    setQMSFiles({ "Balance Sheet": [], "Profit & Loss": [], "Cashflow": [] });
+    setManualFilterOptions({});
+  }, [selectedReportSource]);
 
   const clientName = useMemo(
     () => company?.name || "All Clients",

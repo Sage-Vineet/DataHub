@@ -42,6 +42,7 @@ const QB_BANK_ACTIVITY_ENDPOINT = `${API_BASE_URL}/qb-bank-activity`;
 const QB_ONE_BANK_ACTIVITY_ENDPOINT = `${API_BASE_URL}/qb-one-bank-activity`;
 const EXTRACT_BANK_PDF_RECORDS_ENDPOINT = `${API_BASE_URL}/extract-bank-pdf-records`;
 const QMS_BANK_DATA_ENDPOINT = `${API_BASE_URL}/manual-report-uploads/qms-bank-data`;
+const MANUAL_BANK_DATA_ENDPOINT = `${API_BASE_URL}/manual-report-uploads/manual-bank-data`;
 const RECONCILIATION_STORAGE_PREFIX = "workspace-reconciliation";
 
 const getErrMsg = (e) => (e instanceof Error ? e.message : String(e));
@@ -615,27 +616,59 @@ export default function WorkspaceReconciliation() {
     }
   }, [clientId, selectedReportSource, getHeaders]);
 
+  const loadManualBankData = useCallback(async () => {
+    setIsLoadingExtractedBankPdfData(true);
+    setExtractedBankPdfError("");
+    setExtractedBankPdfFetchStatus({
+      status: "loading",
+      message: "Loading bank statement data from Manual Upload source...",
+    });
+    try {
+      const params = new URLSearchParams();
+      if (clientId) params.append("clientId", clientId);
+      const url = `${MANUAL_BANK_DATA_ENDPOINT}?${params.toString()}`;
+      const resp = await fetch(url, { cache: "no-store", headers: getHeaders() });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
+      const normalized = normalizeExtractedBankPdfData(data);
+      if (activeSourceRef.current !== selectedReportSource) return;
+      setExtractedBankPdfData(normalized);
+      setExtractedBankPdfFetchStatus({
+        status: normalized ? "success" : "idle",
+        message: normalized
+          ? `Loaded ${normalized.banks?.length ?? 0} bank(s).`
+          : "No bank statement data found. Upload files to Manual Upload Source → Bank Statement.",
+      });
+    } catch (e) {
+      if (activeSourceRef.current !== selectedReportSource) return;
+      setExtractedBankPdfError(getErrMsg(e));
+      setExtractedBankPdfFetchStatus({ status: "error", message: getErrMsg(e) });
+      setExtractedBankPdfData(null);
+    } finally {
+      if (activeSourceRef.current === selectedReportSource) {
+        setIsLoadingExtractedBankPdfData(false);
+      }
+    }
+  }, [clientId, selectedReportSource, getHeaders]);
+
   // Unified bank-data loader — dispatches ONLY based on server-confirmed source.
   // isSourceConfirmedByServer prevents stale storedState from triggering the wrong endpoint.
   // Never short-circuit on stored data — stored data may be from a different source.
   useEffect(() => {
     if (!clientId || !selectedReportSource || !isSourceConfirmedByServer) return;
 
-    const isManual =
-      selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD ||
-      selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_GL;
-    const isQMS = selectedReportSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
-
-    if (isManual) {
-      // Manual Upload / Manual GL → ALWAYS use PDF/Excel extraction endpoint, source-filtered.
-      // Never call qms-bank-data for manual upload sources.
+    if (selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD) {
+      // Manual Upload → dedicated endpoint reading "Manual Upload Source" folder only
+      void loadManualBankData();
+    } else if (selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_GL) {
+      // Manual GL → PDF/Excel extraction endpoint
       void loadExtractedBankPdfData();
-    } else if (isQMS) {
-      // QuickBooks Manual ONLY → use QMS endpoint
+    } else if (selectedReportSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) {
+      // QuickBooks Manual ONLY → QMS endpoint reading "Quickbooks Manual Source" folder only
       void loadQMSBankData();
     }
     // QUICKBOOKS (QB Online) uses its own separate data flow — no action here
-  }, [clientId, selectedReportSource, isSourceConfirmedByServer, loadExtractedBankPdfData, loadQMSBankData]);
+  }, [clientId, selectedReportSource, isSourceConfirmedByServer, loadExtractedBankPdfData, loadManualBankData, loadQMSBankData]);
 
   useEffect(() => {
     if (!clientId) return;
@@ -663,10 +696,16 @@ export default function WorkspaceReconciliation() {
     const normalized = normalizeReportSourceKey(sourceKey);
     const previous = selectedReportSource;
     setSelectedReportSourceState(normalized);
-    // Clear bank data from the previous source immediately — never show cross-source data.
+    // Clear ALL source-specific data immediately — never show cross-source data.
     setExtractedBankPdfData(null);
     setExtractedBankPdfFetchStatus({ status: "idle", message: "" });
     setExtractedBankPdfError("");
+    setQbBankActivity(null);
+    setBankActivityFetchStatus({ status: "idle", message: "" });
+    setBankActivityError("");
+    setQbOneBankActivity(null);
+    setOneBankActivityFetchStatus({ status: "idle", message: "" });
+    setOneBankActivityError("");
     try {
       const payload = await setSelectedReportSource(normalized, { clientId });
       setReportSources(Array.isArray(payload?.sources) ? payload.sources : []);

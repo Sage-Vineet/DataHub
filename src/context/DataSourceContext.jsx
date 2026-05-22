@@ -27,6 +27,20 @@ function sourceStorageKey(clientId) {
   return clientId ? `activeReportSource:${clientId}` : 'activeReportSource';
 }
 
+function localSourceKey(clientId) {
+  return clientId ? `datahub-active-source:${clientId}` : 'datahub-active-source';
+}
+
+function getLocalSource(clientId) {
+  if (!clientId || typeof window === 'undefined') return null;
+  try { return window.localStorage.getItem(localSourceKey(clientId)) || null; } catch { return null; }
+}
+
+function setLocalSource(clientId, source) {
+  if (!clientId || typeof window === 'undefined') return;
+  try { window.localStorage.setItem(localSourceKey(clientId), source); } catch { /* ignore quota */ }
+}
+
 export const DataSourceProvider = ({ children }) => {
   const location = useLocation();
   const { showToast } = useToast();
@@ -53,10 +67,12 @@ export const DataSourceProvider = ({ children }) => {
     if (clientIdRef.current === clientId) return;
     clientIdRef.current = clientId;
 
-    // Apply sessionStorage immediately for instant first render
+    // Apply localStorage first (survives browser restart), then sessionStorage
     const stored = sessionStorage.getItem(sourceStorageKey(clientId));
-    if (stored) {
-      setActiveSource(stored);
+    const localStored = getLocalSource(clientId);
+    const initialSource = localStored || stored;
+    if (initialSource) {
+      setActiveSource(initialSource);
     }
 
     setIsLoadingSource(true);
@@ -64,13 +80,18 @@ export const DataSourceProvider = ({ children }) => {
       .then((data) => {
         if (clientIdRef.current !== clientId) return; // stale response
         const source = data?.activeSource || data?.selectedSource;
-        const normalized = source
+        // User's explicit localStorage choice persists over backend API response.
+        // Only use backend value if user has never explicitly selected a source here.
+        const localSource = getLocalSource(clientId);
+        const normalized = localSource || (source
           ? normalizeReportSourceKey(source)
-          : (stored || REPORT_SOURCE_KEYS.QUICKBOOKS);
+          : (stored || REPORT_SOURCE_KEYS.QUICKBOOKS));
         setActiveSource(normalized);
         setQuickbooksConnected(Boolean(data?.quickbooksConnected));
         setSourceRecords(Array.isArray(data?.sources) ? data.sources : []);
         sessionStorage.setItem(sourceStorageKey(clientId), normalized);
+        // Seed localStorage on first visit so future visits use it as fallback.
+        if (!localSource && normalized) setLocalSource(clientId, normalized);
       })
       .catch(() => {
         if (clientIdRef.current !== clientId) return;
@@ -96,6 +117,7 @@ export const DataSourceProvider = ({ children }) => {
       setActiveSource(normalized);
       if (clientIdRef.current) {
         sessionStorage.setItem(sourceStorageKey(clientIdRef.current), normalized);
+        setLocalSource(clientIdRef.current, normalized);
       }
     }
 
@@ -116,6 +138,7 @@ export const DataSourceProvider = ({ children }) => {
     setActiveSource(sourceKey);
     if (effectiveClientId) {
       sessionStorage.setItem(sourceStorageKey(effectiveClientId), sourceKey);
+      setLocalSource(effectiveClientId, sourceKey);
     }
     window.dispatchEvent(new CustomEvent('dataSourceChanged', {
       detail: { sourceKey, clientId: effectiveClientId },
