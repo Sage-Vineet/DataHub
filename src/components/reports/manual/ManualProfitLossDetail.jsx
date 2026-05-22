@@ -1,6 +1,15 @@
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { formatCurrency } from "../../../lib/utils";
+
+function formatSourceReference(tx = {}) {
+  const fileName = String(tx.sourceFile || "").trim();
+  const rowNumber = Number.isInteger(Number(tx.rowNumber)) ? Number(tx.rowNumber) : null;
+  if (fileName && rowNumber) return `${fileName} (Row ${rowNumber})`;
+  if (fileName) return fileName;
+  if (rowNumber) return `Row ${rowNumber}`;
+  return "-";
+}
 
 function AccountRow({ account, years, onToggle, isOpen }) {
   return (
@@ -33,34 +42,51 @@ function AccountRow({ account, years, onToggle, isOpen }) {
               <table className="w-full border-collapse">
                 <thead>
                   <tr className="border-b border-border bg-bg-page">
+                    <th className="px-2 py-2 text-left text-[11px] text-text-muted">FY</th>
                     <th className="px-2 py-2 text-left text-[11px] text-text-muted">Date</th>
+                    <th className="px-2 py-2 text-left text-[11px] text-text-muted">Vendor / Payee</th>
                     <th className="px-2 py-2 text-left text-[11px] text-text-muted">Journal Type</th>
                     <th className="px-2 py-2 text-left text-[11px] text-text-muted">Reference</th>
                     <th className="px-2 py-2 text-left text-[11px] text-text-muted">Description</th>
                     <th className="px-2 py-2 text-left text-[11px] text-text-muted">Department</th>
                     <th className="px-2 py-2 text-left text-[11px] text-text-muted">Class</th>
                     <th className="px-2 py-2 text-left text-[11px] text-text-muted">Location</th>
+                    <th className="px-2 py-2 text-right text-[11px] text-text-muted">Debit</th>
+                    <th className="px-2 py-2 text-right text-[11px] text-text-muted">Credit</th>
                     <th className="px-2 py-2 text-right text-[11px] text-text-muted">Amount</th>
+                    <th className="px-2 py-2 text-left text-[11px] text-text-muted">Source Row</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {(account.transactions || []).map((tx) => (
-                    <tr key={tx.transactionId} className="border-b border-border-light">
-                      <td className="px-2 py-1.5 text-[12px] text-text-secondary">{tx.date || "-"}</td>
-                      <td className="px-2 py-1.5 text-[12px] text-text-secondary">{tx.journalType || tx.transactionType || "-"}</td>
-                      <td className="px-2 py-1.5 text-[12px] text-text-secondary">{tx.reference || "-"}</td>
-                      <td className="px-2 py-1.5 text-[12px] text-text-secondary">{tx.description || "-"}</td>
-                      <td className="px-2 py-1.5 text-[12px] text-text-secondary">{tx.department || "-"}</td>
-                      <td className="px-2 py-1.5 text-[12px] text-text-secondary">{tx.class || "-"}</td>
-                      <td className="px-2 py-1.5 text-[12px] text-text-secondary">{tx.location || "-"}</td>
-                      <td className={`px-2 py-1.5 text-right text-[12px] tabular-nums ${Number(tx.signedAmount || 0) < 0 ? "text-status-error" : "text-text-secondary"}`}>
-                        {formatCurrency(Number(tx.signedAmount || 0))}
-                      </td>
-                    </tr>
-                  ))}
+                  {(account.transactions || []).map((tx, index) => {
+                    const txKey = tx.id || tx.transactionId || `${account.accountNumber || account.accountName}-tx-${index}`;
+                    return (
+                      <tr key={txKey} className="border-b border-border-light">
+                        <td className="px-2 py-1.5 text-[12px] text-text-secondary">{tx.fiscalYear || "-"}</td>
+                        <td className="px-2 py-1.5 text-[12px] text-text-secondary">{tx.transactionDate || tx.date || "-"}</td>
+                        <td className="px-2 py-1.5 text-[12px] text-text-secondary">{tx.vendorName || "-"}</td>
+                        <td className="px-2 py-1.5 text-[12px] text-text-secondary">{tx.journalType || tx.transactionType || "-"}</td>
+                        <td className="px-2 py-1.5 text-[12px] text-text-secondary">{tx.reference || "-"}</td>
+                        <td className="px-2 py-1.5 text-[12px] text-text-secondary">{tx.description || tx.memo || "-"}</td>
+                        <td className="px-2 py-1.5 text-[12px] text-text-secondary">{tx.department || "-"}</td>
+                        <td className="px-2 py-1.5 text-[12px] text-text-secondary">{tx.class || "-"}</td>
+                        <td className="px-2 py-1.5 text-[12px] text-text-secondary">{tx.location || "-"}</td>
+                        <td className="px-2 py-1.5 text-right text-[12px] tabular-nums text-text-secondary">
+                          {formatCurrency(Number(tx.debit || 0))}
+                        </td>
+                        <td className="px-2 py-1.5 text-right text-[12px] tabular-nums text-text-secondary">
+                          {formatCurrency(Number(tx.credit || 0))}
+                        </td>
+                        <td className={`px-2 py-1.5 text-right text-[12px] tabular-nums ${Number(tx.signedAmount || tx.amount || 0) < 0 ? "text-status-error" : "text-text-secondary"}`}>
+                          {formatCurrency(Number(tx.signedAmount || tx.amount || 0))}
+                        </td>
+                        <td className="px-2 py-1.5 text-[12px] text-text-secondary">{formatSourceReference(tx)}</td>
+                      </tr>
+                    );
+                  })}
                   {!(account.transactions || []).length ? (
                     <tr>
-                      <td colSpan={8} className="px-2 py-4 text-center text-[12px] text-text-muted italic">
+                      <td colSpan={13} className="px-2 py-4 text-center text-[12px] text-text-muted italic">
                         No transactions available.
                       </td>
                     </tr>
@@ -81,10 +107,7 @@ export default function ManualProfitLossDetail({
   subtitle = "",
   entityName = "Company",
 }) {
-  const years = useMemo(
-    () => (Array.isArray(data?.years) ? data.years : []),
-    [data?.years],
-  );
+  const years = Array.isArray(data?.years) ? data.years : [];
   const categories = Array.isArray(data?.categories) ? data.categories : [];
   const monthlyBreakdown = Array.isArray(data?.monthlyBreakdown)
     ? data.monthlyBreakdown
@@ -136,8 +159,13 @@ export default function ManualProfitLossDetail({
               </tr>
             </thead>
             <tbody>
-              {categories.map((category) => (
-                <Fragment key={`cat-${category.category}`}>
+              {categories.map((category) => {
+                const categoryTotal = Number(
+                  category.total ??
+                  years.reduce((sum, year) => sum + Number(category.totalsByYear?.[year] || 0), 0),
+                );
+                return (
+                  <Fragment key={`cat-${category.category}`}>
                   <tr className="bg-bg-page/50 border-b border-border">
                     <td className="px-3 py-2 text-[13px] font-semibold text-text-primary" colSpan={3}>
                       {category.category}
@@ -147,8 +175,8 @@ export default function ManualProfitLossDetail({
                         {formatCurrency(Number(category.totalsByYear?.[year] || 0))}
                       </td>
                     ))}
-                    <td className={`px-3 py-2 text-right text-[13px] font-semibold tabular-nums ${Number(category.total || 0) < 0 ? "text-status-error" : "text-text-primary"}`}>
-                      {formatCurrency(Number(category.total || 0))}
+                    <td className={`px-3 py-2 text-right text-[13px] font-semibold tabular-nums ${categoryTotal < 0 ? "text-status-error" : "text-text-primary"}`}>
+                      {formatCurrency(categoryTotal)}
                     </td>
                   </tr>
                   {(category.accounts || []).map((account) => {
@@ -164,7 +192,8 @@ export default function ManualProfitLossDetail({
                     );
                   })}
                 </Fragment>
-              ))}
+                );
+              })}
               {!categories.length ? (
                 <tr>
                   <td colSpan={Math.max(5, years.length + 4)} className="px-3 py-16 text-center text-text-muted italic">

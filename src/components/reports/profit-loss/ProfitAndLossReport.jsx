@@ -14,13 +14,17 @@ export default function ProfitAndLossReport({
   clientName = "All Clients",
   entityName,
   createdOn,
-  isPreview = false,
 }) {
   const resolvedEntityName = entityName || clientName || "Company";
   const periodText = startDate === "1970-01-01" ? "All Dates" : `${startDate || "N/A"} to ${endDate || "N/A"}`;
   // Backend returns source="manual_gl_staged_transactions" (not "manual_staged").
   // Accept all known manual-staged source strings to be forward-compatible.
-  const MANUAL_STAGED_SOURCES = ["manual_staged", "manual_gl_staged_transactions", "MANUAL_STAGED"];
+  const MANUAL_STAGED_SOURCES = [
+    "manual_staged",
+    "manual_gl_staged_transactions",
+    "manual_gl_reporting_snapshot",
+    "MANUAL_STAGED",
+  ];
   const isManualStagedSummary = Boolean(
     data && typeof data === "object" && !Array.isArray(data) &&
     MANUAL_STAGED_SOURCES.includes(data.source)

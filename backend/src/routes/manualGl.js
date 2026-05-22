@@ -12,7 +12,6 @@ const {
 } = require("../services/manualGlService");
 const {
   parseManualFilterQuery,
-  stageMultiYearGlUpload,
   getStageTransactions,
   getStageFilterOptions,
   getProfitLossSummaryFromStage,
@@ -25,6 +24,16 @@ const {
   validateBatchBalanceSheet,
   listManualGlBatches,
 } = require("../services/manualGlMultiYearService");
+const { orchestrateManualGlUpload } = require("../services/manualGlUploadOrchestrationService");
+const {
+  SNAPSHOT_REPORT_TYPES,
+  getSnapshotForActiveBatch,
+} = require("../services/manualGlReportingSnapshotService");
+const {
+  activateUploadBatch,
+  getActiveUploadBatch,
+  resolveReportBatchId,
+} = require("../services/manualGlActiveBatchService");
 const { uploadController } = require("../controllers/manualGl/uploadController");
 const { continueController } = require("../controllers/manualGl/continueController");
 const {
@@ -54,6 +63,115 @@ function resolveStatementTypeFromPath(pathname = "") {
   if (normalized.includes("/balance-sheet")) return "balance_sheet";
   if (normalized.includes("/cashflow")) return "cash_flow";
   return "";
+}
+
+function resolveSelectedFiscalYear(filters = {}) {
+  const fiscalYears = Array.isArray(filters?.fiscalYears)
+    ? filters.fiscalYears
+    : Array.isArray(filters?.fiscalYear)
+      ? filters.fiscalYear
+      : [];
+  const parsed = fiscalYears
+    .map((value) => Number(value))
+    .filter((value) => Number.isInteger(value) && value > 0);
+  if (!parsed.length) return null;
+  return Math.max(...parsed);
+}
+
+function normalizeApiErrorMessage(error, fallback = "Request failed.") {
+  const raw = String(error?.message || fallback).trim();
+  if (!raw) return fallback;
+  const compact = raw.replace(/\s+/g, " ").trim();
+  const lower = compact.toLowerCase();
+  const isHtmlPayload =
+    lower.includes("<!doctype html") ||
+    lower.includes("<html") ||
+    lower.includes("<head>") ||
+    lower.includes("<body>");
+
+  if (isHtmlPayload) {
+    const cfCode =
+      compact.match(/error code\s*([0-9]{3})/i)?.[1] ||
+      compact.match(/\b(52[0-9])\b/)?.[1] ||
+      "";
+    return cfCode
+      ? `Upstream data service is temporarily unavailable (Cloudflare ${cfCode}). Please retry.`
+      : "Upstream data service is temporarily unavailable. Please retry.";
+  }
+
+  return compact.length > 500 ? `${compact.slice(0, 500)}...` : compact;
+}
+
+function isUpstreamUnavailableMessage(message = "") {
+  const normalized = String(message || "").toLowerCase();
+  return (
+    normalized.includes("cloudflare 52") ||
+    normalized.includes("web server is down") ||
+    normalized.includes("upstream unavailable") ||
+    normalized.includes("service unavailable")
+  );
+}
+
+function isHistoricalBatchMode(filters = {}) {
+  if (!filters || typeof filters !== "object") return false;
+  if (filters.includeArchived === true) return true;
+  const versionMode = String(filters.versionMode || filters.version_mode || "").trim().toLowerCase();
+  return versionMode === "historical" || versionMode === "archived";
+}
+
+function hasManualDetailFilterOverrides(filters = {}) {
+  if (!filters || typeof filters !== "object") return false;
+  if (Array.isArray(filters.fiscalMonths) && filters.fiscalMonths.length > 0) return true;
+  if (String(filters.startDate || "").trim()) return true;
+  if (String(filters.endDate || "").trim()) return true;
+  const textKeys = [
+    "accountName",
+    "accountNumber",
+    "accountType",
+    "category",
+    "subCategory",
+    "department",
+    "class",
+    "location",
+    "sourceFile",
+    "transactionType",
+    "journalType",
+  ];
+  return textKeys.some((key) => {
+    const value = filters[key];
+    if (Array.isArray(value)) return value.length > 0;
+    return Boolean(String(value || "").trim());
+  });
+}
+
+function hasRenderableProfitLossDetailPayload(payload) {
+  if (!payload || typeof payload !== "object") return false;
+  const accounts = Array.isArray(payload.accounts) ? payload.accounts : [];
+  if (accounts.length === 0) return true;
+  return accounts.every((account) => Array.isArray(account.transactions));
+}
+
+async function tryLoadActiveSnapshot(companyId, reportType, filters = {}) {
+  try {
+    const fiscalYear = resolveSelectedFiscalYear(filters);
+    const { snapshot, activeBatchId } = await getSnapshotForActiveBatch({
+      companyId,
+      reportType,
+      fiscalYear,
+    });
+
+    if (!snapshot?.snapshot_payload) {
+      return { payload: null, activeBatchId };
+    }
+
+    return {
+      payload: snapshot.snapshot_payload,
+      activeBatchId,
+    };
+  } catch (error) {
+    console.warn("[ManualGL][Routes] Snapshot lookup failed:", error.message);
+    return { payload: null, activeBatchId: null };
+  }
 }
 
 async function handleCreateUpload(req, res) {
@@ -247,12 +365,38 @@ router.get("/reports/pl", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
 
     const filters = parseManualFilterQuery(req.query || {});
-    const cached = reportCache.get("pl", clientId, filters);
-    if (cached) return res.json({ success: true, ...cached, source: "MANUAL_STAGED" });
+    const activeBatchId = await resolveReportBatchId(clientId, filters.batchId, {
+      allowExplicitBatch: isHistoricalBatchMode(filters),
+    });
+    const cacheFilters = { ...filters, batchId: activeBatchId || filters.batchId || "" };
 
-    const stagedPayload = await getProfitLossSummaryFromStage(clientId, filters);
-    reportCache.set("pl", clientId, filters, stagedPayload);
-    return res.json({ success: true, ...stagedPayload, source: "MANUAL_STAGED" });
+    const cached = reportCache.get("pl", clientId, cacheFilters);
+    if (cached) return res.json({ success: true, ...cached, source: cached.source || "MANUAL_STAGED" });
+
+    const snapshotResult = await tryLoadActiveSnapshot(
+      clientId,
+      SNAPSHOT_REPORT_TYPES.PROFIT_LOSS_SUMMARY,
+      cacheFilters,
+    );
+
+    if (snapshotResult.payload) {
+      const payload = {
+        ...snapshotResult.payload,
+        source: "manual_gl_reporting_snapshot",
+        activeBatchId: snapshotResult.activeBatchId || activeBatchId || null,
+      };
+      reportCache.set("pl", clientId, cacheFilters, payload);
+      return res.json({ success: true, ...payload });
+    }
+
+    const stagedPayload = await getProfitLossSummaryFromStage(clientId, cacheFilters);
+    const payload = {
+      ...stagedPayload,
+      source: stagedPayload.source || "MANUAL_STAGED",
+      activeBatchId: activeBatchId || null,
+    };
+    reportCache.set("pl", clientId, cacheFilters, payload);
+    return res.json({ success: true, ...payload });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message || "Failed to fetch P&L report." });
   }
@@ -264,17 +408,39 @@ router.get("/reports/balance-sheet", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
 
     const filters = parseManualFilterQuery(req.query || {});
+    const activeBatchId = await resolveReportBatchId(clientId, filters.batchId, {
+      allowExplicitBatch: isHistoricalBatchMode(filters),
+    });
+    const cacheFilters = { ...filters, batchId: activeBatchId || filters.batchId || "" };
 
-    // reStageRequired is derived from audit data — include it in the cached payload.
-    const cached = reportCache.get("bs", clientId, filters);
-    if (cached) return res.json({ success: true, ...cached, source: "MANUAL_STAGED" });
+    const cached = reportCache.get("bs", clientId, cacheFilters);
+    if (cached) return res.json({ success: true, ...cached, source: cached.source || "MANUAL_STAGED" });
 
-    const stagedPayload = await getBalanceSheetSummaryFromStage(clientId, filters);
+    const snapshotResult = await tryLoadActiveSnapshot(
+      clientId,
+      SNAPSHOT_REPORT_TYPES.BALANCE_SHEET_SUMMARY,
+      cacheFilters,
+    );
 
-    const payload = { ...stagedPayload };
+    if (snapshotResult.payload) {
+      const payload = {
+        ...snapshotResult.payload,
+        source: "manual_gl_reporting_snapshot",
+        activeBatchId: snapshotResult.activeBatchId || activeBatchId || null,
+      };
+      reportCache.set("bs", clientId, cacheFilters, payload);
+      return res.json({ success: true, ...payload });
+    }
 
-    reportCache.set("bs", clientId, filters, payload);
-    return res.json({ success: true, ...payload, source: "MANUAL_STAGED" });
+    const stagedPayload = await getBalanceSheetSummaryFromStage(clientId, cacheFilters);
+    const payload = {
+      ...stagedPayload,
+      source: stagedPayload.source || "MANUAL_STAGED",
+      activeBatchId: activeBatchId || null,
+    };
+
+    reportCache.set("bs", clientId, cacheFilters, payload);
+    return res.json({ success: true, ...payload });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message || "Failed to fetch Balance Sheet report." });
   }
@@ -286,12 +452,38 @@ router.get("/reports/cashflow", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL),
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
 
     const filters = parseManualFilterQuery(req.query || {});
-    const cached = reportCache.get("cf", clientId, filters);
-    if (cached) return res.json({ success: true, ...cached, source: "MANUAL_STAGED" });
+    const activeBatchId = await resolveReportBatchId(clientId, filters.batchId, {
+      allowExplicitBatch: isHistoricalBatchMode(filters),
+    });
+    const cacheFilters = { ...filters, batchId: activeBatchId || filters.batchId || "" };
 
-    const stagedPayload = await getCashflowSummaryFromStage(clientId, filters);
-    reportCache.set("cf", clientId, filters, stagedPayload);
-    return res.json({ success: true, ...stagedPayload, source: "MANUAL_STAGED" });
+    const cached = reportCache.get("cf", clientId, cacheFilters);
+    if (cached) return res.json({ success: true, ...cached, source: cached.source || "MANUAL_STAGED" });
+
+    const snapshotResult = await tryLoadActiveSnapshot(
+      clientId,
+      SNAPSHOT_REPORT_TYPES.CASHFLOW_SUMMARY,
+      cacheFilters,
+    );
+
+    if (snapshotResult.payload) {
+      const payload = {
+        ...snapshotResult.payload,
+        source: "manual_gl_reporting_snapshot",
+        activeBatchId: snapshotResult.activeBatchId || activeBatchId || null,
+      };
+      reportCache.set("cf", clientId, cacheFilters, payload);
+      return res.json({ success: true, ...payload });
+    }
+
+    const stagedPayload = await getCashflowSummaryFromStage(clientId, cacheFilters);
+    const payload = {
+      ...stagedPayload,
+      source: stagedPayload.source || "MANUAL_STAGED",
+      activeBatchId: activeBatchId || null,
+    };
+    reportCache.set("cf", clientId, cacheFilters, payload);
+    return res.json({ success: true, ...payload });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message || "Failed to fetch Cash Flow report." });
   }
@@ -303,17 +495,40 @@ router.get("/reports/cashflow/monthly-detail", enforceDataSource(REPORT_SOURCE_K
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
 
     const filters = parseManualFilterQuery(req.query || {});
-    const cached = reportCache.get("cf_monthly", clientId, filters);
+    const activeBatchId = await resolveReportBatchId(clientId, filters.batchId, {
+      allowExplicitBatch: isHistoricalBatchMode(filters),
+    });
+    const cacheFilters = { ...filters, batchId: activeBatchId || filters.batchId || "" };
+    const hasMonthFilter = Array.isArray(cacheFilters.fiscalMonths) && cacheFilters.fiscalMonths.length > 0;
+
+    const cached = reportCache.get("cf_monthly", clientId, cacheFilters);
     if (cached) return res.json({ success: true, ...cached });
 
-    const payload = await getCashflowMonthlyDetailFromStage(clientId, filters);
-    reportCache.set("cf_monthly", clientId, filters, payload);
+    if (!hasMonthFilter) {
+      const snapshotResult = await tryLoadActiveSnapshot(
+        clientId,
+        SNAPSHOT_REPORT_TYPES.CASHFLOW_MONTHLY_DETAIL,
+        cacheFilters,
+      );
+
+      if (snapshotResult.payload) {
+        const payload = {
+          ...snapshotResult.payload,
+          source: "manual_gl_reporting_snapshot",
+          activeBatchId: snapshotResult.activeBatchId || activeBatchId || null,
+        };
+        reportCache.set("cf_monthly", clientId, cacheFilters, payload);
+        return res.json({ success: true, ...payload });
+      }
+    }
+
+    const payload = await getCashflowMonthlyDetailFromStage(clientId, cacheFilters);
+    reportCache.set("cf_monthly", clientId, cacheFilters, payload);
     return res.json({ success: true, ...payload });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message || "Failed to fetch Cash Flow monthly detail." });
   }
 });
-
 router.get("/manual-gl/columns/:uploadId", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
   try {
     const { uploadId } = req.params;
@@ -373,7 +588,7 @@ router.post("/manual-gl/staging/multi-year", enforceDataSource(REPORT_SOURCE_KEY
       batchName = "",
     } = req.body || {};
 
-    const result = await stageMultiYearGlUpload({
+    const result = await orchestrateManualGlUpload({
       companyId: clientId,
       glUploadIds,
       startingBalanceSheetUploadId,
@@ -391,13 +606,24 @@ router.post("/manual-gl/staging/multi-year", enforceDataSource(REPORT_SOURCE_KEY
 
     // New batch staged — evict all cached reports for this company so next
     // report request reflects the fresh data.
-    reportCache.invalidateCompany(clientId);
+    if (result?.activated === true) {
+      reportCache.invalidateCompany(clientId);
+    }
 
-    return res.status(201).json(result);
+    const statusCode = result?.noChangesDetected
+      ? 200
+      : result?.pendingActivation
+        ? 202
+        : 201;
+    return res.status(statusCode).json(result);
   } catch (error) {
-    return res.status(500).json({
+    const message = normalizeApiErrorMessage(error, "Failed to stage multi-year GL data.");
+    const isProcessingConflict = String(message).toLowerCase().includes("currently processing");
+    const isUpstreamUnavailable = isUpstreamUnavailableMessage(message);
+    const statusCode = isProcessingConflict ? 409 : isUpstreamUnavailable ? 503 : 500;
+    return res.status(statusCode).json({
       success: false,
-      error: error.message || "Failed to stage multi-year GL data.",
+      error: message,
     });
   }
 });
@@ -446,17 +672,66 @@ router.get("/manual-gl/staging/batches", enforceDataSource(REPORT_SOURCE_KEYS.MA
   }
 });
 
+router.post("/manual-gl/staging/batches/:batchId/activate", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+
+    const batchId = String(req.params.batchId || "").trim();
+    if (!batchId) {
+      return res.status(400).json({ success: false, error: "batchId is required." });
+    }
+
+    const activated = await activateUploadBatch(clientId, batchId, req.user?.id || null);
+    const activeBatch = activated || (await getActiveUploadBatch(clientId));
+
+    reportCache.invalidateCompany(clientId);
+
+    return res.json({
+      success: true,
+      activeBatchId: activeBatch?.id || batchId,
+      batch: activeBatch || null,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to activate manual GL batch.",
+    });
+  }
+});
+
 router.get("/reports/profit-loss", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
   try {
     const clientId = resolveClientId(req);
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
     const filters = parseManualFilterQuery(req.query || {});
-    const cached = reportCache.get("pl", clientId, filters);
-    if (cached) return res.json({ success: true, ...cached, source: "MANUAL_STAGED" });
+    const activeBatchId = await resolveReportBatchId(clientId, filters.batchId, {
+      allowExplicitBatch: isHistoricalBatchMode(filters),
+    });
+    const cacheFilters = { ...filters, batchId: activeBatchId || filters.batchId || "" };
 
-    const payload = await getProfitLossSummaryFromStage(clientId, filters);
-    reportCache.set("pl", clientId, filters, payload);
-    return res.json({ success: true, ...payload, source: "MANUAL_STAGED" });
+    const cached = reportCache.get("pl", clientId, cacheFilters);
+    if (cached) return res.json({ success: true, ...cached, source: cached.source || "MANUAL_STAGED" });
+
+    const snapshotResult = await tryLoadActiveSnapshot(
+      clientId,
+      SNAPSHOT_REPORT_TYPES.PROFIT_LOSS_SUMMARY,
+      cacheFilters,
+    );
+
+    if (snapshotResult.payload) {
+      const payload = {
+        ...snapshotResult.payload,
+        source: "manual_gl_reporting_snapshot",
+        activeBatchId: snapshotResult.activeBatchId || activeBatchId || null,
+      };
+      reportCache.set("pl", clientId, cacheFilters, payload);
+      return res.json({ success: true, ...payload });
+    }
+
+    const payload = await getProfitLossSummaryFromStage(clientId, cacheFilters);
+    reportCache.set("pl", clientId, cacheFilters, payload);
+    return res.json({ success: true, ...payload, source: payload.source || "MANUAL_STAGED", activeBatchId: activeBatchId || null });
   } catch (error) {
     return res.status(500).json({
       success: false,
@@ -470,8 +745,30 @@ router.get("/reports/profit-loss/detail", enforceDataSource(REPORT_SOURCE_KEYS.M
     const clientId = resolveClientId(req);
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
     const filters = parseManualFilterQuery(req.query || {});
-    const payload = await getProfitLossDetailFromStage(clientId, filters);
-    return res.json({ success: true, ...payload });
+    const activeBatchId = await resolveReportBatchId(clientId, filters.batchId, {
+      allowExplicitBatch: isHistoricalBatchMode(filters),
+    });
+    const cacheFilters = { ...filters, batchId: activeBatchId || filters.batchId || "" };
+    const skipSnapshot = hasManualDetailFilterOverrides(cacheFilters);
+
+    if (!skipSnapshot) {
+      const snapshotResult = await tryLoadActiveSnapshot(
+        clientId,
+        SNAPSHOT_REPORT_TYPES.PROFIT_LOSS_DETAIL,
+        cacheFilters,
+      );
+      if (snapshotResult.payload && hasRenderableProfitLossDetailPayload(snapshotResult.payload)) {
+        return res.json({
+          success: true,
+          ...snapshotResult.payload,
+          source: "manual_gl_reporting_snapshot",
+          activeBatchId: snapshotResult.activeBatchId || activeBatchId || null,
+        });
+      }
+    }
+
+    const payload = await getProfitLossDetailFromStage(clientId, cacheFilters);
+    return res.json({ success: true, ...payload, activeBatchId: activeBatchId || null });
   } catch (error) {
     return res.status(500).json({
       success: false,
@@ -485,12 +782,35 @@ router.get("/reports/profit-loss/monthly-detail", enforceDataSource(REPORT_SOURC
     const clientId = resolveClientId(req);
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
     const filters = parseManualFilterQuery(req.query || {});
-    const cached = reportCache.get("pl_monthly_detail", clientId, filters);
+    const activeBatchId = await resolveReportBatchId(clientId, filters.batchId, {
+      allowExplicitBatch: isHistoricalBatchMode(filters),
+    });
+    const cacheFilters = { ...filters, batchId: activeBatchId || filters.batchId || "" };
+    const hasMonthFilter = Array.isArray(cacheFilters.fiscalMonths) && cacheFilters.fiscalMonths.length > 0;
+
+    const cached = reportCache.get("pl_monthly_detail", clientId, cacheFilters);
     if (cached) return res.json({ success: true, ...cached });
 
-    const payload = await getProfitLossMonthlyDetailFromStage(clientId, filters);
-    reportCache.set("pl_monthly_detail", clientId, filters, payload);
-    return res.json({ success: true, ...payload });
+    if (!hasMonthFilter) {
+      const snapshotResult = await tryLoadActiveSnapshot(
+        clientId,
+        SNAPSHOT_REPORT_TYPES.PROFIT_LOSS_MONTHLY_DETAIL,
+        cacheFilters,
+      );
+      if (snapshotResult.payload) {
+        const payload = {
+          ...snapshotResult.payload,
+          source: "manual_gl_reporting_snapshot",
+          activeBatchId: snapshotResult.activeBatchId || activeBatchId || null,
+        };
+        reportCache.set("pl_monthly_detail", clientId, cacheFilters, payload);
+        return res.json({ success: true, ...payload });
+      }
+    }
+
+    const payload = await getProfitLossMonthlyDetailFromStage(clientId, cacheFilters);
+    reportCache.set("pl_monthly_detail", clientId, cacheFilters, payload);
+    return res.json({ success: true, ...payload, activeBatchId: activeBatchId || null });
   } catch (error) {
     return res.status(500).json({
       success: false,
@@ -504,12 +824,35 @@ router.get("/reports/balance-sheet/monthly-detail", enforceDataSource(REPORT_SOU
     const clientId = resolveClientId(req);
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
     const filters = parseManualFilterQuery(req.query || {});
-    const cached = reportCache.get("bs_monthly", clientId, filters);
+    const activeBatchId = await resolveReportBatchId(clientId, filters.batchId, {
+      allowExplicitBatch: isHistoricalBatchMode(filters),
+    });
+    const cacheFilters = { ...filters, batchId: activeBatchId || filters.batchId || "" };
+    const hasMonthFilter = Array.isArray(cacheFilters.fiscalMonths) && cacheFilters.fiscalMonths.length > 0;
+
+    const cached = reportCache.get("bs_monthly", clientId, cacheFilters);
     if (cached) return res.json({ success: true, ...cached });
 
-    const payload = await getBalanceSheetMonthlyDetailFromStage(clientId, filters);
-    reportCache.set("bs_monthly", clientId, filters, payload);
-    return res.json({ success: true, ...payload });
+    if (!hasMonthFilter) {
+      const snapshotResult = await tryLoadActiveSnapshot(
+        clientId,
+        SNAPSHOT_REPORT_TYPES.BALANCE_SHEET_MONTHLY_DETAIL,
+        cacheFilters,
+      );
+      if (snapshotResult.payload) {
+        const payload = {
+          ...snapshotResult.payload,
+          source: "manual_gl_reporting_snapshot",
+          activeBatchId: snapshotResult.activeBatchId || activeBatchId || null,
+        };
+        reportCache.set("bs_monthly", clientId, cacheFilters, payload);
+        return res.json({ success: true, ...payload });
+      }
+    }
+
+    const payload = await getBalanceSheetMonthlyDetailFromStage(clientId, cacheFilters);
+    reportCache.set("bs_monthly", clientId, cacheFilters, payload);
+    return res.json({ success: true, ...payload, activeBatchId: activeBatchId || null });
   } catch (error) {
     return res.status(500).json({
       success: false,
@@ -517,15 +860,18 @@ router.get("/reports/balance-sheet/monthly-detail", enforceDataSource(REPORT_SOU
     });
   }
 });
-
 router.get("/reports/profit-loss/monthly", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
   try {
     const clientId = resolveClientId(req);
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
     const filters = parseManualFilterQuery(req.query || {});
-    const cached = reportCache.get("pl", clientId, filters);
-    const payload = cached || await getProfitLossSummaryFromStage(clientId, filters);
-    if (!cached) reportCache.set("pl", clientId, filters, payload);
+    const activeBatchId = await resolveReportBatchId(clientId, filters.batchId, {
+      allowExplicitBatch: isHistoricalBatchMode(filters),
+    });
+    const cacheFilters = { ...filters, batchId: activeBatchId || filters.batchId || "" };
+    const cached = reportCache.get("pl", clientId, cacheFilters);
+    const payload = cached || await getProfitLossSummaryFromStage(clientId, cacheFilters);
+    if (!cached) reportCache.set("pl", clientId, cacheFilters, payload);
     return res.json({
       success: true,
       source: payload.source,
@@ -546,9 +892,13 @@ router.get("/reports/profit-loss/year-comparison", enforceDataSource(REPORT_SOUR
     const clientId = resolveClientId(req);
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
     const filters = parseManualFilterQuery(req.query || {});
-    const cached = reportCache.get("pl", clientId, filters);
-    const payload = cached || await getProfitLossSummaryFromStage(clientId, filters);
-    if (!cached) reportCache.set("pl", clientId, filters, payload);
+    const activeBatchId = await resolveReportBatchId(clientId, filters.batchId, {
+      allowExplicitBatch: isHistoricalBatchMode(filters),
+    });
+    const cacheFilters = { ...filters, batchId: activeBatchId || filters.batchId || "" };
+    const cached = reportCache.get("pl", clientId, cacheFilters);
+    const payload = cached || await getProfitLossSummaryFromStage(clientId, cacheFilters);
+    if (!cached) reportCache.set("pl", clientId, cacheFilters, payload);
     return res.json({
       success: true,
       source: payload.source,
@@ -661,3 +1011,4 @@ router.get("/manual-gl/upload-jobs/:id", enforceDataSource(REPORT_SOURCE_KEYS.MA
 });
 
 module.exports = router;
+

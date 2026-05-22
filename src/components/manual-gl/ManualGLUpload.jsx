@@ -383,12 +383,21 @@ export default function ManualGLUpload({
       setStartingBalanceSheetFile(null);
       setEndingBalanceSheetFile(null);
 
-      showToast({
-        type: "success",
-        title: "Staging complete",
-        message: `Batch ${staged.batchId} staged. Inserted ${staged.insertedTransactions || 0}, skipped duplicates ${staged.duplicateTransactionsSkipped || 0}.`,
-      });
-      emitManualGlStaged({ clientId: companyId, batchId: staged.batchId });
+      const nextActiveBatchId = staged.activeBatchId || staged.batchId;
+      if (staged.noChangesDetected) {
+        showToast({
+          type: "info",
+          title: "No changes detected",
+          message: staged.message || "Current dataset is already active.",
+        });
+      } else {
+        showToast({
+          type: "success",
+          title: "Staging complete",
+          message: `Batch ${staged.batchId} staged. Inserted ${staged.insertedTransactions || 0}, skipped duplicates ${staged.duplicateTransactionsSkipped || 0}.`,
+        });
+      }
+      emitManualGlStaged({ clientId: companyId, batchId: nextActiveBatchId });
       if (typeof onStageComplete === "function") {
         await onStageComplete(staged);
       }
@@ -546,12 +555,21 @@ export default function ManualGLUpload({
       setBalanceSheetValidation(validation);
       setPendingStageRequest(payload);
 
-      showToast({
-        type: "success",
-        title: "Staging complete",
-        message: `Batch ${staged.batchId} staged. Inserted ${staged.insertedTransactions || 0}, skipped duplicates ${staged.duplicateTransactionsSkipped || 0}.`,
-      });
-      emitManualGlStaged({ clientId: companyId, batchId: staged.batchId });
+      const nextActiveBatchId = staged.activeBatchId || staged.batchId;
+      if (staged.noChangesDetected) {
+        showToast({
+          type: "info",
+          title: "No changes detected",
+          message: staged.message || "Current dataset is already active.",
+        });
+      } else {
+        showToast({
+          type: "success",
+          title: "Staging complete",
+          message: `Batch ${staged.batchId} staged. Inserted ${staged.insertedTransactions || 0}, skipped duplicates ${staged.duplicateTransactionsSkipped || 0}.`,
+        });
+      }
+      emitManualGlStaged({ clientId: companyId, batchId: nextActiveBatchId });
       if (typeof onStageComplete === "function") {
         await onStageComplete(staged);
       }
