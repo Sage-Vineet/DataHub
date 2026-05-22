@@ -307,8 +307,14 @@ async function approveRequest(requestId, approvedBy) {
 
 async function deleteRequest(requestId) {
   try {
+    await pgQuery("DELETE FROM request_reminders WHERE request_id=$1", [requestId]);
     await pgQuery("DELETE FROM requests WHERE id=$1", [requestId]);
   } catch {
+    const { error: reminderError } = await supabase
+      .from("request_reminders")
+      .delete()
+      .eq("request_id", requestId);
+    if (reminderError) throw reminderError;
     const { error } = await supabase.from("requests").delete().eq("id", requestId);
     if (error) throw error;
   }
