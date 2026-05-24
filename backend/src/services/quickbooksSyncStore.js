@@ -429,7 +429,16 @@ async function getCachedReport({
 
     if (onlyActive) query = query.eq("is_active", true);
     if (useDatasetVersion && datasetVersion) query = query.eq("dataset_version", datasetVersion);
-    if (useParams && paramsFilterValue) query = query.eq("report_params", paramsFilterValue);
+
+    if (useParams && params && Object.keys(params).length > 0) {
+      if (matchMode === "partial") {
+        // @> operator: stored record must contain all requested key-value pairs.
+        // Use .filter() with 'cs' to guarantee PostgREST sends the @> JSONB operator.
+        query = query.filter("report_params", "cs", paramsFilterValue);
+      } else if (paramsFilterValue) {
+        query = query.eq("report_params", paramsFilterValue);
+      }
+    }
 
     if (usePeriod === "exact" && hasPeriod) {
       query = query
@@ -448,6 +457,11 @@ async function getCachedReport({
     query = query.limit(1);
 
     const { data, error } = await query.maybeSingle();
+    console.log(
+      `[SyncStore] getCachedReport step {useParams:${useParams} mode:${matchMode} active:${onlyActive} dsv:${useDatasetVersion}}` +
+      ` → ${data ? "HIT params=" + JSON.stringify(data.report_params) : "MISS"}` +
+      (error ? ` ERR:${error.message}` : "")
+    );
     if (error && error.code !== "PGRST116") {
       console.warn(`[SyncStore] getCachedReport query failed for ${reportType}:`, error.message);
       return null;
@@ -461,14 +475,14 @@ async function getCachedReport({
   // skipUnconstrained prevents returning a completely unrelated snapshot for period requests.
   const unconstrainedSteps = skipUnconstrained ? [] : [
     { useParams: false, onlyActive: !includeInactive, useDatasetVersion: Boolean(datasetVersion), usePeriod: "none" },
-    { useParams: false, onlyActive: false,            useDatasetVersion: Boolean(datasetVersion), usePeriod: "none" },
+    { useParams: false, onlyActive: false, useDatasetVersion: Boolean(datasetVersion), usePeriod: "none" },
   ];
 
   const searchPlan = [
-    { useParams: true,  onlyActive: !includeInactive, useDatasetVersion: Boolean(datasetVersion), usePeriod: "none" },
+    { useParams: true, onlyActive: !includeInactive, useDatasetVersion: Boolean(datasetVersion), usePeriod: "none" },
     { useParams: false, onlyActive: !includeInactive, useDatasetVersion: Boolean(datasetVersion), usePeriod: "exact" },
-    { useParams: true,  onlyActive: false,            useDatasetVersion: Boolean(datasetVersion), usePeriod: "none" },
-    { useParams: false, onlyActive: false,            useDatasetVersion: Boolean(datasetVersion), usePeriod: "exact" },
+    { useParams: true, onlyActive: false, useDatasetVersion: Boolean(datasetVersion), usePeriod: "none" },
+    { useParams: false, onlyActive: false, useDatasetVersion: Boolean(datasetVersion), usePeriod: "exact" },
     ...unconstrainedSteps,
   ];
 
@@ -477,26 +491,67 @@ async function getCachedReport({
     if (hit) return hit;
   }
 
-  // Legacy fallback where sync_source may not be populated yet.
-  // Skip entirely for period-specific requests — returning an unrelated snapshot would be wrong.
-  if (skipUnconstrained) return null;
+  // Period-coverage fallback (date-filtered queries only):
+  // When no exact-period snapshot exists (e.g. requested Jan 1–31 but only a
+  // yearly Jan 1–Dec 31 was synced, or monthly ranges are off by one day due
+  // to a prior timezone bug), look for any snapshot whose stored period_start/
+  // period_end CONTAINS the requested range.  Only meaningful when both dates
+  // are present and the JSONB param search exhausted all options above.
+  if (hasDateFilter && params.start_date && params.end_date) {
+    const tryCoverage = async (onlyActive) => {
+      let q = supabase
+        .from("qb_synced_reports")
+        .select("*")
+        .eq("company_id", companyId)
+        .eq("report_type", reportType)
+        .eq("sync_source", syncSource)
+        .lte("period_start", params.start_date)  // stored period starts on/before requested start
+        .gte("period_end", params.end_date)       // stored period ends on/after requested end
+        .order("is_active", { ascending: false })
+        .order("period_start", { ascending: false })
+        .order("last_synced_at", { ascending: false })
+        .limit(1);
 
-  const { data: legacyHit, error: legacyError } = await supabase
-    .from("qb_synced_reports")
-    .select("*")
-    .eq("company_id", companyId)
-    .eq("report_type", reportType)
-    .order("last_synced_at", { ascending: false })
-    .order("updated_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+      if (onlyActive) q = q.eq("is_active", true);
+      if (datasetVersion) q = q.eq("dataset_version", datasetVersion);
 
-  if (legacyError && legacyError.code !== "PGRST116") {
-    console.warn(`[SyncStore] Legacy fallback failed for ${reportType}:`, legacyError.message);
-    return null;
+      const { data, error } = await q.maybeSingle();
+      console.log(
+        `[SyncStore] getCachedReport period-coverage fallback (onlyActive=${onlyActive}) for ${reportType}` +
+        ` → ${data ? `HIT period=${data.period_start} to ${data.period_end} params=${JSON.stringify(data.report_params)}` : "MISS"}` +
+        (error ? ` ERR:${error.message}` : "")
+      );
+      if (error && error.code !== "PGRST116") return null;
+      return data || null;
+    };
+
+    const coverageHit = (await tryCoverage(!includeInactive)) || (await tryCoverage(false));
+    if (coverageHit) return coverageHit;
   }
 
-  return legacyHit || null;
+  // Legacy fallback: match reports that predate sync_source tracking.
+  // Skipped when date filters are present — returning a different-period report
+  // would silently serve wrong-period financial data to the caller.
+  if (!hasDateFilter) {
+    const { data: legacyHit, error: legacyError } = await supabase
+      .from("qb_synced_reports")
+      .select("*")
+      .eq("company_id", companyId)
+      .eq("report_type", reportType)
+      .order("last_synced_at", { ascending: false })
+      .order("updated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (legacyError && legacyError.code !== "PGRST116") {
+      console.warn(`[SyncStore] Legacy fallback failed for ${reportType}:`, legacyError.message);
+      return null;
+    }
+
+    return legacyHit || null;
+  }
+
+  return null;
 }
 
 async function listReportsForDataset(companyId, datasetVersion, syncSource = DEFAULT_SYNC_SOURCE) {

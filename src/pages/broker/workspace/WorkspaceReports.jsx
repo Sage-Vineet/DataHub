@@ -548,6 +548,31 @@ export default function WorkspaceReports() {
       .finally(() => setIsLoadingManualFiles(false));
   }, [selectedSourceMode, selectedTab, clientId]);
 
+  // Load available Cash Flow years when on Cashflow tab in manual_upload mode.
+  useEffect(() => {
+    if (selectedSourceMode !== "manual_upload" || selectedTab !== "Cashflow" || !clientId) return;
+
+    setIsLoadingCfYears(true);
+    getManualCashFlowPeriods({ clientId })
+      .then((result) => {
+        const years = (result?.periods || [])
+          .map((p) => parseInt(String(p.period ?? p), 10))
+          .filter(Boolean)
+          .sort((a, b) => b - a); // descending so latest is first
+        setManualCfYears(years);
+        setSelectedManualCfYear((prev) => {
+          // Keep existing selection if still valid; otherwise default to latest.
+          if (prev && years.includes(parseInt(String(prev), 10))) return prev;
+          return years.length ? String(years[0]) : null;
+        });
+      })
+      .catch(() => {
+        setManualCfYears([]);
+        setSelectedManualCfYear(null);
+      })
+      .finally(() => setIsLoadingCfYears(false));
+  }, [selectedSourceMode, selectedTab, clientId]);
+
   // Load QMS report files per tab when in quickbooks_manual source mode
   useEffect(() => {
     if (selectedSourceMode !== "quickbooks_manual" || !clientId) return;
@@ -1012,6 +1037,12 @@ export default function WorkspaceReports() {
           effectiveEndDate = `${selectedYear}-12-31`;
         }
       }
+      // For manual_upload Cash Flow: period must reflect the selected CF year,
+      // not the QB date-range picker (which is hidden on this tab).
+      if (selectedSourceMode === "manual_upload" && selectedTab === "Cashflow" && selectedManualCfYear) {
+        effectiveStartDate = `${selectedManualCfYear}-01-01`;
+        effectiveEndDate = `${selectedManualCfYear}-12-31`;
+      }
 
       setAppliedStartDate(effectiveStartDate || "");
       setAppliedEndDate(effectiveEndDate || "");
@@ -1083,6 +1114,10 @@ export default function WorkspaceReports() {
               sourceMode: selectedSourceMode,
               manualFilters: summaryFilterParams,
               manualUploadRowId,
+              year: selectedManualCfYear,
+              // Always regenerate for manual_upload CF so stale cache (generated
+              // before a previous-year BS was uploaded) is never served.
+              force: selectedSourceMode === "manual_upload",
             },
           );
         } else {
@@ -1386,6 +1421,40 @@ export default function WorkspaceReports() {
                         <option key={f.rowId} value={f.rowId}>
                           {f.fileName}
                         </option>
+                      ))}
+                    </select>
+                    <ChevronDown
+                      size={14}
+                      className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-text-muted"
+                    />
+                  </div>
+                </div>
+              ) : null
+            )}
+
+            {selectedSourceMode === "manual_upload" && selectedTab === "Cashflow" && (
+              isLoadingCfYears ? (
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
+                    Year
+                  </label>
+                  <div className="h-9 min-w-[120px] flex items-center px-3 rounded-md border border-border-input bg-bg-card text-[13px] text-text-muted animate-pulse">
+                    Loading…
+                  </div>
+                </div>
+              ) : manualCfYears.length > 0 ? (
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
+                    Year
+                  </label>
+                  <div className="relative min-w-[120px]">
+                    <select
+                      value={selectedManualCfYear || ""}
+                      onChange={(e) => setSelectedManualCfYear(e.target.value || null)}
+                      className="h-9 w-full appearance-none rounded-md border border-border-input bg-bg-card pl-3 pr-9 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                    >
+                      {manualCfYears.map((year) => (
+                        <option key={year} value={String(year)}>{year}</option>
                       ))}
                     </select>
                     <ChevronDown

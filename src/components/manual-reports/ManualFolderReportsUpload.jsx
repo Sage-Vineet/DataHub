@@ -78,13 +78,18 @@ function FolderFilesPopup({ folder, companyId, anchorRef, onClose }) {
   }, [onClose, anchorRef]);
 
   useEffect(() => {
+    if (folder?.isGenerated) {
+      setFiles([]);
+      setLoading(false);
+      return;
+    }
     if (!folder?.id || !companyId) return;
     setLoading(true);
     getManualFolderFiles({ clientId: companyId, folderId: folder.id })
       .then(setFiles)
       .catch(() => setFiles([]))
       .finally(() => setLoading(false));
-  }, [folder?.id, companyId]);
+  }, [folder?.id, folder?.isGenerated, companyId]);
 
   if (!style.top && !style.left) return null;
 
@@ -118,7 +123,9 @@ function FolderFilesPopup({ folder, companyId, anchorRef, onClose }) {
         ) : !files || files.length === 0 ? (
           <div className="flex items-center gap-2 px-4 py-5 text-[13px] text-text-muted">
             <FolderOpen size={13} className="shrink-0" />
-            No files uploaded yet.
+            {folder?.isGenerated
+              ? `${folder.fileCount || 0} statement${(folder.fileCount || 0) !== 1 ? "s" : ""} auto-generated during Sync All`
+              : "No files uploaded yet."}
           </div>
         ) : (
           <div>
