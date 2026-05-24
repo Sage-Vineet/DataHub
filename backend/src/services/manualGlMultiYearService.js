@@ -7119,9 +7119,9 @@ function buildCashflowMonthlyDetailPayload(transactions = [], year, filters = {}
   //   Asset increases (debit) â†’ netAmount < 0 â†’ outflow âœ“
   //   Liability increases (credit) â†’ netAmount > 0 â†’ inflow âœ“
   const cfSections = {
-    Operating: { key: "operating", label: "Cash Flows from Operating Activities", items: new Map(), monthlyTotals: {}, total: 0 },
-    Investing: { key: "investing", label: "Cash Flows from Investing Activities", items: new Map(), monthlyTotals: {}, total: 0 },
-    Financing: { key: "financing", label: "Cash Flows from Financing Activities", items: new Map(), monthlyTotals: {}, total: 0 },
+    Operating: { key: "operating", label: "Operating Activities", items: new Map(), monthlyTotals: {}, total: 0 },
+    Investing: { key: "investing", label: "Investing Activities", items: new Map(), monthlyTotals: {}, total: 0 },
+    Financing: { key: "financing", label: "Financing Activities", items: new Map(), monthlyTotals: {}, total: 0 },
   };
   months.forEach((m) => {
     cfSections.Operating.monthlyTotals[m] = monthlyNetIncome[m] || 0;

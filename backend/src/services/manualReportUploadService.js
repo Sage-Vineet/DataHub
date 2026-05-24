@@ -2102,6 +2102,42 @@ async function getManualUploadSourceTree(companyId) {
     }
   }
 
+  // Augment tree: show generated Cash Flow count even when no CF folder exists in DataRoom
+  try {
+    const { count: cfCount } = await supabase
+      .from("qb_synced_reports")
+      .select("id", { count: "exact", head: true })
+      .eq("company_id", companyId)
+      .eq("source", "manual_upload_generated")
+      .eq("report_type", STATEMENT_TYPES.CASH_FLOW);
+
+    // Find an existing CF folder entry anywhere in the tree
+    let existingCfEntry = null;
+    for (const item of result) {
+      if (item.statementType === STATEMENT_TYPES.CASH_FLOW) { existingCfEntry = item; break; }
+      if (item.isGroup) {
+        const sub = (item.children || []).find((c) => c.statementType === STATEMENT_TYPES.CASH_FLOW);
+        if (sub) { existingCfEntry = sub; break; }
+      }
+    }
+
+    if (existingCfEntry) {
+      existingCfEntry.fileCount   = cfCount || 0;
+      existingCfEntry.isGenerated = true;
+    } else {
+      result.push({
+        id:          "generated-cashflow",
+        name:        "Cash Flow",
+        statementType: STATEMENT_TYPES.CASH_FLOW,
+        fileCount:   cfCount || 0,
+        isGroup:     false,
+        isGenerated: true,
+      });
+    }
+  } catch (e) {
+    console.warn("[ManualUploadTree] Could not add CF count:", e.message);
+  }
+
   return { id: sourceFolder.id, name: sourceFolder.name, children: result };
 }
 
@@ -2258,6 +2294,21 @@ async function syncManualUploadSource(companyId) {
         failed.push({ folderName: folder.name, fileName: documents[i]?.name, reason: s.reason?.message });
       }
     }
+  }
+
+  // Generate Cash Flow reports via Gemini for all complete year pairs
+  try {
+    const { generateAndSaveCashFlowsForAllYears } = require("./manualCashFlowService");
+    const cfGenResult = await generateAndSaveCashFlowsForAllYears(companyId, now);
+    console.log(`[Sync] CF generation: ${cfGenResult.generated.length} generated, ${cfGenResult.failed.length} failed`);
+    for (const g of (cfGenResult.generated || [])) {
+      processed.push({ statementType: "cash_flow", fileName: `CashFlow_${g.year}`, folderName: "Cash Flow" });
+    }
+    for (const f of (cfGenResult.failed || [])) {
+      failed.push({ statementType: "cash_flow", fileName: `CashFlow_${f.year}`, folderName: "Cash Flow", reason: f.reason });
+    }
+  } catch (cfErr) {
+    console.error("[Sync] Cash flow generation error:", cfErr.message);
   }
 
   try {

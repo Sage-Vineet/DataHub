@@ -22,6 +22,11 @@ const {
   extractPLLineItemsFromRows,
 } = require("../services/manualReportUploadService");
 const { parsePdfWithGemini } = require("../services/geminiFinancialParser");
+const {
+  getCachedCashFlow,
+  listAvailablePeriods,
+  generatedCfToRows,
+} = require("../services/manualCashFlowService");
 const { supabase } = require("../db");
 const { canAccessCompany } = require("../services/permissionService");
 
@@ -190,6 +195,44 @@ router.get("/manual-report-uploads/reports/:statementType/latest", async (req, r
     if (!validTypes.includes(statementType)) {
       return res.status(400).json({ success: false, error: "Invalid statementType." });
     }
+
+    // ── Generated Cash Flow intercept ─────────────────────────────────────────
+    // Cash flow is generated during Sync All — never stored as an uploaded file.
+    if (statementType === "cash_flow") {
+      const periods = await listAvailablePeriods(clientId);
+
+      if (!periods.length) {
+        return res.status(404).json({
+          success: false,
+          source: "manual_upload_generated",
+          error: "No cash flow reports found. Run Sync All to generate them.",
+        });
+      }
+
+      const latestPeriod = Math.max(...periods.map((p) => parseInt(p.period, 10)));
+      const cf = await getCachedCashFlow(clientId, String(latestPeriod));
+
+      if (!cf) {
+        return res.status(404).json({
+          success: false,
+          source: "manual_upload_generated",
+          error: "Cash flow report not found. Run Sync All to generate cash flow reports.",
+        });
+      }
+
+      return res.json({
+        success: true,
+        source: "manual_upload_generated",
+        statementType: "cash_flow",
+        data: {
+          rows: generatedCfToRows(cf),
+          period: cf.period,
+          generatedAt: cf.generatedAt,
+          inputs: cf.inputs || null,
+        },
+      });
+    }
+    // ─────────────────────────────────────────────────────────────────────────
 
     const rowId = String(req.query.rowId || "").trim() || null;
 
@@ -868,6 +911,95 @@ router.get("/manual-report-uploads/pl-for-tax", async (req, res) => {
   } catch (err) {
     console.error("[PLForTax] Error:", err);
     return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/* ===========================
+   GET /manual-upload/cashflow/periods
+   List all periods for which an automatic Cash Flow can be generated.
+   A period is available when BS(Y-1), BS(Y), and P&L(Y) are all uploaded.
+=========================== */
+router.get("/manual-upload/cashflow/periods", async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+
+    const periods = await listAvailablePeriods(clientId);
+    return res.json({ success: true, periods });
+  } catch (error) {
+    console.error("[CashFlowPeriods] Error:", error.message);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* ===========================
+   GET /manual-upload/cashflow?period=2022[&force=1]
+   Return a generated Cash Flow statement for the given year.
+
+   Flow:
+     1. If ?force=1 is absent, check for a cached generated statement → return it.
+     2. Otherwise generate fresh from uploaded BS + P&L files, cache, and return.
+
+   Success response:
+   {
+     success: true,
+     source: "manual_upload_generated",
+     period: "2022",
+     generatedAt: "...",
+     inputs: { bsPrevFile, bsCurrFile, plFile, ... },
+     operatingActivities: [ { label, amount, type }, ... ],
+     netOperating: 0,
+     investingActivities: [ ... ],
+     netInvesting: 0,
+     financingActivities: [ ... ],
+     netFinancing: 0,
+     beginningCash: 0,
+     endingCash: 0,
+     netCashIncrease: 0,
+     cashValidated: true
+   }
+
+   Failure response (missing files):
+   {
+     success: false,
+     source: "manual_upload_generated",
+     message: "...",
+     missingInputs: ["Balance Sheet 2021", ...]
+   }
+=========================== */
+router.get("/manual-upload/cashflow", async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+
+    const period = String(req.query.period || "").trim();
+    if (!period || !/^\d{4}$/.test(period)) {
+      return res.status(400).json({
+        success: false,
+        error: "period query param is required and must be a 4-digit year (e.g. 2022).",
+      });
+    }
+
+    // Read pre-generated CF — created during Sync All, never on-demand
+    const cached = await getCachedCashFlow(clientId, period);
+    if (cached) {
+      console.log(`[ManualCashFlow] Serving pre-generated statement for period=${period}`);
+      return res.json({ ...cached, source: "manual_upload_generated" });
+    }
+
+    return res.status(404).json({
+      success: false,
+      source: "manual_upload_generated",
+      error: `No cash flow report found for ${period}. Run Sync All to generate cash flow reports automatically.`,
+      period,
+    });
+  } catch (error) {
+    console.error("[ManualCashFlow] Error:", error.message);
+    return res.status(500).json({
+      success: false,
+      source: "manual_upload_generated",
+      error: error.message,
+    });
   }
 });
 

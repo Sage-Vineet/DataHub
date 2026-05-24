@@ -1,7 +1,90 @@
 import { fetchCashflow } from "../lib/quickbooks";
-import { getLatestManualUploadedReport, getManualGlCashflow, getAllManualUploadedReports, getManualStagedCashflowMonthlyDetail, getLatestQMSUploadedReport, getAllQMSUploadedReports } from "../lib/api";
+import {
+  getLatestManualUploadedReport,
+  getManualGlCashflow,
+  getAllManualUploadedReports,
+  getManualStagedCashflowMonthlyDetail,
+  getLatestQMSUploadedReport,
+  getAllQMSUploadedReports,
+  getManualCashFlowPeriods,
+  getManualGeneratedCashFlow,
+} from "../lib/api";
 import { normalizeAccountingMethod } from "../lib/report-filters";
 import { parseSummaryReport } from "../lib/report-parsers";
+
+// ── Generated-CF → renderer-row transform ────────────────────────────────────
+// Converts the flat {operatingActivities, investingActivities, ...} shape
+// returned by the generated cash flow API into the hierarchical node tree
+// that CashflowSummary / the existing renderer expects.
+
+function slug(label) {
+  return String(label || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function buildCfSection(activities, netAmount, sectionTitle) {
+  const children = (activities || []).map((item) => ({
+    id: slug(item.label),
+    name: item.label,
+    type: "data",
+    amount: item.value ?? item.amount ?? 0, // new format uses .value; old uses .amount
+  }));
+  children.push({
+    id: `total-${slug(sectionTitle)}`,
+    name: `Net Cash from ${sectionTitle}`,
+    type: "total",
+    amount: netAmount || 0,
+  });
+  return {
+    id: `section-${slug(sectionTitle)}`,
+    name: ` ${sectionTitle}`,
+    type: "header",
+    amount: netAmount || 0,
+    children,
+  };
+}
+
+function generatedCfToRows(cf) {
+  // Handle both { data: {...} } wrapper shape and flat shape
+  const d = cf?.data || cf;
+  return [
+    buildCfSection(
+      d.operatingActivities,
+      d.totalOperating ?? d.netOperating,
+      "Operating Activities",
+    ),
+    buildCfSection(
+      d.investingActivities,
+      d.totalInvesting ?? d.netInvesting,
+      "Investing Activities",
+    ),
+    buildCfSection(
+      d.financingActivities,
+      d.totalFinancing ?? d.netFinancing,
+      "Financing Activities",
+    ),
+    {
+      id: "beginning-cash-balance",
+      name: "Beginning Cash Balance",
+      type: "data",
+      amount: d.beginningCash || 0,
+    },
+    {
+      id: "net-increase-decrease-in-cash",
+      name: "Net Increase (Decrease) in Cash",
+      type: "total",
+      amount: d.netCashChange ?? d.netCashIncrease ?? 0,
+    },
+    {
+      id: "ending-cash-balance",
+      name: "Ending Cash Balance",
+      type: "data",
+      amount: d.endingCash || 0,
+    },
+  ];
+}
 
 /**
  * Generates periods for Cash Flow Comparative Summary.
@@ -54,9 +137,29 @@ function getCashflowComparativePeriods(numYears = 4) {
 
 async function fetchSinglePeriodCashflow(startDate, endDate, accountingMethod, sourceMode = "quickbooks", options = {}) {
   try {
-    if (sourceMode === "manual_upload" || sourceMode === "quickbooks_manual") {
-      const fetchFn = sourceMode === "quickbooks_manual" ? getLatestQMSUploadedReport : getLatestManualUploadedReport;
-      const payload = await fetchFn("cash_flow", {
+    // ── Manual Upload: use dynamically generated Cash Flow ──────────────────
+    if (sourceMode === "manual_upload") {
+      let targetYear = options?.year ? parseInt(String(options.year), 10) : null;
+
+      if (!targetYear) {
+        // Discover available periods and default to the latest
+        const periodsResult = await getManualCashFlowPeriods();
+        const availablePeriods = (periodsResult?.periods || [])
+          .map((p) => parseInt(String(p.period ?? p), 10))
+          .filter(Boolean);
+        if (!availablePeriods.length) return [];
+        targetYear = Math.max(...availablePeriods);
+      }
+
+      const cf = await getManualGeneratedCashFlow(targetYear, { force: options?.force });
+      if (!cf?.success) return [];
+
+      return generatedCfToRows(cf);
+    }
+
+    // ── QMS: uploaded cash flow PDFs/Excels (unchanged) ─────────────────────
+    if (sourceMode === "quickbooks_manual") {
+      const payload = await getLatestQMSUploadedReport("cash_flow", {
         rowId: options?.manualUploadRowId,
       });
       const rows = Array.isArray(payload?.data?.rows) ? payload.data.rows : [];
@@ -107,12 +210,12 @@ function normalizeName(name) {
 }
 
 const CF_SECTION_SYNONYMS = {
-  "cash flows from operating activities": "operating activities",
+  " operating activities": "operating activities",
   "cash flow from operating activities": "operating activities",
   "operating cash flow": "operating activities",
-  "cash flows from investing activities": "investing activities",
+  " investing activities": "investing activities",
   "cash flow from investing activities": "investing activities",
-  "cash flows from financing activities": "financing activities",
+  " financing activities": "financing activities",
   "cash flow from financing activities": "financing activities",
 };
 
@@ -221,7 +324,7 @@ export async function getCashflow(startDate, endDate, accountingMethod, options 
     return payload;
   }
 
-  return await fetchSinglePeriodCashflow(startDate, endDate, accountingMethod, sourceMode);
+  return await fetchSinglePeriodCashflow(startDate, endDate, accountingMethod, sourceMode, options);
 }
 
 function cfFileYear(file) {
@@ -234,7 +337,7 @@ function cfFileYear(file) {
 }
 
 function cfFileLabel(file) {
-  const monthNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const dateStr = file?.data?.asOfDate || file?.data?.periodEnd;
   if (dateStr) {
     const parts = String(dateStr).split("-");
@@ -320,7 +423,38 @@ function buildCFFromPeriodColumns(sortedFiles) {
   };
 }
 
+async function buildGeneratedCFMultiYear() {
+  // Fetch all available periods, then one generated statement per period.
+  const periodsResult = await getManualCashFlowPeriods();
+  const availablePeriods = (periodsResult?.periods || [])
+    .map((p) => parseInt(String(p.period ?? p), 10))
+    .filter(Boolean)
+    .sort((a, b) => a - b);
+
+  if (!availablePeriods.length) return { rows: [], columns: { yearCols: [], ytdComparison: null } };
+
+  const cfResults = await Promise.all(
+    availablePeriods.map((period) => getManualGeneratedCashFlow(period).catch(() => null)),
+  );
+
+  const yearCols = availablePeriods.map((y) => ({ key: `y${y}`, label: `FY ${y}` }));
+  const allRowSets = cfResults.map((cf) => (cf?.success ? generatedCfToRows(cf) : []));
+
+  if (allRowSets.every((r) => r.length === 0)) {
+    return { rows: [], columns: { yearCols: [], ytdComparison: null } };
+  }
+
+  const fileKeys = yearCols.map((c) => c.key);
+  const rows = mergeFileNodes(allRowSets, fileKeys);
+  return { rows, columns: { yearCols, ytdComparison: null } };
+}
+
 async function buildCFMultiFileDetail(sourceMode = "manual_upload") {
+  // manual_upload cash flows are generated, not stored as uploaded files.
+  if (sourceMode === "manual_upload") {
+    return buildGeneratedCFMultiYear();
+  }
+
   const fetchFn = sourceMode === "quickbooks_manual" ? getAllQMSUploadedReports : getAllManualUploadedReports;
   const result = await fetchFn("cash_flow");
   const files = (result?.files || []).filter((f) => f.data?.rows?.length);

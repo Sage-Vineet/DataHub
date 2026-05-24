@@ -16,6 +16,7 @@ const {
   updateSyncMetadata,
   createDatasetVersion,
   getLatestFinalizedDataset,
+  ensureWorkingDatasetVersion,
   listReportsForDataset,
   createSyncJob,
   getRunningSyncJob,
@@ -103,19 +104,29 @@ function buildYearlyRanges({ yearsBack = 4, endDate = null } = {}) {
 }
 
 function buildMonthlyRanges({ monthsBack = 18, endDate = null } = {}) {
-  const end = endDate ? new Date(endDate) : new Date();
-  if (Number.isNaN(end.getTime())) return [];
+  const ref = endDate ? new Date(endDate) : new Date();
+  if (Number.isNaN(ref.getTime())) return [];
 
   const safeMonthsBack = Math.max(1, Math.min(36, Number(monthsBack) || 18));
   const ranges = [];
 
+  // Use UTC year/month so dates don't shift in non-UTC server timezones.
+  const refYear = ref.getUTCFullYear();
+  const refMonth = ref.getUTCMonth(); // 0-based
+
   for (let i = safeMonthsBack - 1; i >= 0; i -= 1) {
-    const monthStart = new Date(end.getFullYear(), end.getMonth() - i, 1);
-    const monthEnd = new Date(end.getFullYear(), end.getMonth() - i + 1, 0);
+    let year = refYear;
+    let month = refMonth - i;
+    while (month < 0) { month += 12; year -= 1; }
+
+    // UTC calendar month: first day and last day
+    const firstDay = new Date(Date.UTC(year, month, 1));
+    const lastDay = new Date(Date.UTC(year, month + 1, 0)); // day 0 = last day of month
+
     ranges.push({
-      fiscalYear: monthStart.getFullYear(),
-      start: toIsoDate(monthStart),
-      end: toIsoDate(monthEnd),
+      fiscalYear: year,
+      start: firstDay.toISOString().slice(0, 10),
+      end: lastDay.toISOString().slice(0, 10),
     });
   }
 
@@ -492,32 +503,121 @@ function buildSnapshotResult(row, disconnected = false) {
   };
 }
 
+// Fetches a single report live from the QuickBooks API with the given params,
+// caches it in qb_synced_reports so subsequent requests hit the cache, and
+// returns the result in the same shape as serveCachedReport.
+async function fetchOnDemandReport(clientId, reportType, qbReportName, queryParams = {}) {
+  await loadQBConfig(clientId);
+  const qb = getQBConfig(clientId);
+
+  if (!qb || !qb.accessToken || !qb.realmId) {
+    throw new Error("QuickBooks connection unavailable for on-demand report fetch.");
+  }
+
+  const sanitizedParams = sanitizeReportParams(queryParams);
+
+  console.log(
+    `[fetchOnDemandReport] Live fetch — reportType=${reportType} params=${JSON.stringify(sanitizedParams)} clientId=${clientId}`
+  );
+
+  const payload = await fetchLiveTask(clientId, {
+    type: reportType,
+    mode: "report",
+    qbName: qbReportName,
+    params: sanitizedParams,
+    periodStart: sanitizedParams.start_date || null,
+    periodEnd: sanitizedParams.end_date || null,
+  });
+
+  const syncSource = DEFAULT_SYNC_SOURCE;
+  const activeDataset = await getLatestFinalizedDataset(clientId, syncSource);
+  const datasetVersion =
+    activeDataset?.dataset_version || (await ensureWorkingDatasetVersion(clientId, syncSource));
+
+  await upsertSyncedReport({
+    companyId: clientId,
+    reportType,
+    reportParams: sanitizedParams,
+    data: payload,
+    source: syncSource,
+    syncSource,
+    datasetVersion,
+    syncStatus: "finalized",
+    isActive: true,
+    periodStart: sanitizedParams.start_date || null,
+    periodEnd: sanitizedParams.end_date || null,
+  });
+
+  console.log(
+    `[fetchOnDemandReport] Cached live result — reportType=${reportType} datasetVersion=${datasetVersion}`
+  );
+
+  return buildSnapshotResult(
+    {
+      data: payload,
+      report_params: sanitizedParams,
+      dataset_version: datasetVersion,
+      last_synced_at: new Date().toISOString(),
+      sync_status: "finalized",
+    },
+    false
+  );
+}
+
 async function serveCachedReport(clientId, reportType, queryParams = {}, options = {}) {
   const syncSource = options.syncSource || DEFAULT_SYNC_SOURCE;
+  const sanitizedParams = sanitizeReportParams(queryParams);
   const activeDataset = await getLatestFinalizedDataset(clientId, syncSource);
+
+  console.log(
+    `[serveCachedReport] reportType=${reportType} clientId=${clientId}` +
+    ` appliedFilters=${JSON.stringify(sanitizedParams)}` +
+    ` activeDatasetVersion=${activeDataset?.dataset_version ?? "(none)"}`
+  );
 
   const cached = await getCachedReport({
     companyId: clientId,
     reportType,
-    reportParams: sanitizeReportParams(queryParams),
+    reportParams: sanitizedParams,
     datasetVersion: activeDataset?.dataset_version || null,
     syncSource,
     includeInactive: false,
   });
 
   if (cached) {
+    console.log(
+      `[serveCachedReport] Cache hit (active) — reportType=${reportType}` +
+      ` storedParams=${JSON.stringify(cached.report_params ?? {})}` +
+      ` datasetVersion=${cached.dataset_version}`
+    );
     return buildSnapshotResult(cached, options.disconnected === true);
   }
+
+  console.log(
+    `[serveCachedReport] Cache miss (active dataset) — trying inactive fallback for reportType=${reportType}`
+  );
 
   const fallback = await getCachedReport({
     companyId: clientId,
     reportType,
-    reportParams: sanitizeReportParams(queryParams),
+    reportParams: sanitizedParams,
     syncSource,
     includeInactive: true,
   });
 
-  return fallback ? buildSnapshotResult(fallback, options.disconnected === true) : null;
+  if (fallback) {
+    console.log(
+      `[serveCachedReport] Cache hit (inactive fallback) — reportType=${reportType}` +
+      ` storedParams=${JSON.stringify(fallback.report_params ?? {})}` +
+      ` datasetVersion=${fallback.dataset_version}`
+    );
+    return buildSnapshotResult(fallback, options.disconnected === true);
+  }
+
+  console.log(
+    `[serveCachedReport] Cache miss (all lookups exhausted) — reportType=${reportType} clientId=${clientId}`
+  );
+  return null;
 }
 
 async function fetchAndCacheReport(clientId, reportType, _qbReportName, queryParams = {}) {
@@ -1109,6 +1209,7 @@ module.exports = {
   REPORT_TYPES,
   fetchAndCacheReport,
   fetchAndCacheQuery,
+  fetchOnDemandReport,
   serveCachedReport,
   syncAllReports,
   getSyncStatus,
