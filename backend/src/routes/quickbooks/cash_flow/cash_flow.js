@@ -1,7 +1,7 @@
 const express = require("express");
 const {
-  fetchAndCacheReport,
   serveCachedReport,
+  fetchOnDemandReport,
   REPORT_TYPES,
 } = require("../../../services/quickbooksReportService");
 
@@ -50,24 +50,93 @@ router.get("/qb-transactions", async (req, res) => {
 
 router.get("/qb-cashflow", async (req, res) => {
   const clientId = req.clientId;
-  const { start_date, end_date, accounting_method } = req.query;
+  const disconnected = Boolean(req.qbDisconnected);
+  const start_date = String(req.query.start_date || "").trim();
+  const end_date = String(req.query.end_date || "").trim();
+  const accounting_method = String(req.query.accounting_method || "Accrual").trim();
+  const hasDateFilter = Boolean(start_date || end_date);
+
+  const queryParams = { start_date, end_date, accounting_method };
 
   try {
-    const cached = await fetchAndCacheReport(
+    // ── 1. Try exact cache hit ────────────────────────────────────────────────
+    const cached = await serveCachedReport(
       clientId,
       REPORT_TYPES.CASH_FLOW,
-      "CashFlow",
-      { start_date, end_date, accounting_method },
+      queryParams,
+      { disconnected },
     );
 
-    return res.json(snapshotEnvelope(cached, req.qbDisconnected));
-  } catch (error) {
-    const status = /No finalized snapshot/i.test(error.message) ? 404 : 500;
-    return res.status(status).json({
+    const cachedIsExact = cached?.data &&
+      (!start_date || cached.reportParams?.start_date === start_date) &&
+      (!end_date   || cached.reportParams?.end_date   === end_date);
+
+    if (cachedIsExact) {
+      return res.json(snapshotEnvelope(cached, disconnected));
+    }
+
+    // ── 2. No exact cache — fetch live from QB when connected ─────────────────
+    if (!disconnected && hasDateFilter) {
+      try {
+        const live = await fetchOnDemandReport(
+          clientId,
+          REPORT_TYPES.CASH_FLOW,
+          "CashFlow",
+          queryParams,
+        );
+        return res.json({
+          success: true,
+          source: "live_fetch",
+          disconnected,
+          lastSyncAt: live.lastSyncedAt,
+          datasetVersion: live.datasetVersion || null,
+          reportParams: live.reportParams,
+          data: live.data,
+        });
+      } catch (liveError) {
+        console.error(`[CashFlow] Live fetch failed — falling through to coverage cache: ${liveError.message}`);
+      }
+    }
+
+    // ── 3. Coverage fallback for disconnected / live failure ──────────────────
+    if (cached?.data) {
+      const storedParams = cached.reportParams || {};
+      const storedStartAfter = start_date && storedParams.start_date && storedParams.start_date > start_date;
+      const storedEndBefore  = end_date   && storedParams.end_date   && storedParams.end_date   < end_date;
+
+      if (!storedStartAfter && !storedEndBefore) {
+        return res.json({
+          success: true,
+          source: "cached_snapshot",
+          disconnected,
+          lastSyncAt: cached.lastSyncedAt,
+          datasetVersion: cached.datasetVersion || null,
+          reportParams: storedParams,
+          coverageFallback: true,
+          note: `No exact snapshot for ${start_date}–${end_date}. Returning nearest available snapshot (${storedParams.start_date}–${storedParams.end_date}).`,
+          data: cached.data,
+        });
+      }
+    }
+
+    // ── 4. Nothing usable ─────────────────────────────────────────────────────
+    return res.status(404).json({
       success: false,
       source: "cached_snapshot",
-      disconnected: Boolean(req.qbDisconnected),
-      message: error.message,
+      disconnected,
+      message: disconnected
+        ? "QuickBooks is disconnected and no cached Cash Flow snapshot is available for the requested period."
+        : "No Cash Flow snapshot is available for the requested period. Run QuickBooks sync to generate one.",
+    });
+
+  } catch (error) {
+    console.error("[CashFlow] Request failed:", error.message);
+    return res.status(500).json({
+      success: false,
+      source: "cached_snapshot",
+      disconnected,
+      message: "Failed to load Cash Flow snapshot.",
+      error: error.message,
     });
   }
 });
