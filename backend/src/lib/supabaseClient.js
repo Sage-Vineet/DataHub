@@ -45,26 +45,26 @@ function resetSupabaseErrors() {
 
 const supabase = hasSupabaseCredentials
   ? createClient(supabaseUrl, supabaseKey || process.env.SUPABASE_ANON_KEY, {
-      auth: {
-        persistSession: false,
+    auth: {
+      persistSession: false,
+    },
+    // Add global request timeout (in milliseconds)
+    global: {
+      fetch: (url, options = {}) => {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 300000); // 300 second timeout (5 minutes)
+
+        return fetch(url, {
+          ...options,
+          signal: controller.signal,
+        }).finally(() => clearTimeout(timeoutId));
       },
-      // Add global request timeout (in milliseconds)
-      global: {
-        fetch: (url, options = {}) => {
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 8000); // 8 second timeout
-          
-          return fetch(url, {
-            ...options,
-            signal: controller.signal,
-          }).finally(() => clearTimeout(timeoutId));
-        },
-      },
-    })
+    },
+  })
   : null;
 
 if (hasSupabaseCredentials) {
-  console.log("Supabase client initialized with connection timeout: 8s, circuit breaker: 30s");
+  console.log("Supabase client initialized with connection timeout: 30s, circuit breaker: 30s");
 }
 
 module.exports = {

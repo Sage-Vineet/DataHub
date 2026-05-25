@@ -116,6 +116,9 @@ async function orchestrateManualGlUpload({
   });
 
   if (!staged?.success || !staged?.batchId) {
+    if (staged?.blockedAsDuplicate) {
+      console.log(`[ManualGL][Orchestrator] Staging blocked as duplicate: batch ${staged.batchId}`);
+    }
     return staged;
   }
 

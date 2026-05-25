@@ -527,9 +527,26 @@ export function getLatestManualGlReport(statementType, options = {}) {
 }
 
 export function getManualGlProfitLoss(options = {}) {
-  const clientId = options.clientId ?? resolveClientIdFromLocation();
-  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
-  return request(`/reports/pl${query}`, options);
+  const { params = {}, ...requestOptions } = options || {};
+  const clientId = requestOptions.clientId ?? resolveClientIdFromLocation();
+  const search = new URLSearchParams();
+
+  if (clientId) {
+    search.set("clientId", clientId);
+  }
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    if (Array.isArray(value)) {
+      if (value.length === 0) return;
+      search.set(key, value.join(","));
+      return;
+    }
+    search.set(key, String(value));
+  });
+
+  const query = search.toString();
+  return request(`/reports/pl${query ? `?${query}` : ""}`, requestOptions);
 }
 
 export function getManualGlBalanceSheet(options = {}) {
@@ -598,7 +615,48 @@ export function stageMultiYearManualGl(payload, options = {}) {
 export function listManualGlDatasetVersions(options = {}) {
   const clientId = options.clientId ?? resolveClientIdFromLocation();
   const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
-  return request(`/manual-gl/dataset-versions${query}`, options).then(res => res?.versions || []);
+  return request(`/manual-gl/dataset-versions${query}`, options).then((res) => {
+    const rawList = Array.isArray(res?.versions)
+      ? res.versions
+      : Array.isArray(res)
+        ? res
+        : [];
+
+    const seen = new Set();
+    const normalized = rawList
+      .map((row) => {
+        const parsedVersion = Number(
+          row?.value ??
+          row?.dataset_version ??
+          row?.version_number ??
+          row?.versionNumber ??
+          row?.version_no ??
+          row?.id ??
+          0,
+        );
+        if (!Number.isInteger(parsedVersion) || parsedVersion <= 0) return null;
+        if (seen.has(parsedVersion)) return null;
+        seen.add(parsedVersion);
+
+        return {
+          id: String(row?.id || parsedVersion),
+          value: parsedVersion,
+          label: String(row?.label || `Version ${parsedVersion}`),
+          dataset_version: parsedVersion,
+          version_number: parsedVersion,
+          versionNumber: parsedVersion,
+          is_active: Boolean(row?.is_active ?? row?.isActive),
+          isActive: Boolean(row?.is_active ?? row?.isActive),
+          created_at: row?.created_at || row?.createdAt || null,
+          createdAt: row?.created_at || row?.createdAt || null,
+          status: row?.status || "STAGED",
+        };
+      })
+      .filter(Boolean)
+      .sort((left, right) => Number(right.value || 0) - Number(left.value || 0));
+
+    return normalized;
+  });
 }
 
 export function activateManualGlDatasetVersion(versionId, options = {}) {

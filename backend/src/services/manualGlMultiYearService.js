@@ -20,6 +20,7 @@ const {
 const {
   getActiveUploadSessionMap,
   getLatestUploadSessionVersion,
+  findExistingStagedUploadSessionsByYearHash,
 } = require("./manualGlUploadSessionService");
 
 const TABLES = {
@@ -264,6 +265,148 @@ function toNonEmptyString(value, fallback = "") {
 
 function normalizeKey(val) {
   return String(val || "").trim().toLowerCase();
+}
+
+/**
+ * Scans the first N rows of a sheet for keywords matching "Company", "Client", etc.
+ * extraction of potential company name associated with the GL dataset.
+ */
+function detectCompanyInGl(sheetData, maxRows = 100) {
+  if (!sheetData?.rows?.length) return null;
+
+  const keywords = ["company", "client", "business", "entity", "customer", "firm"];
+  const rows = sheetData.rows.slice(0, maxRows);
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const cells = Object.values(row);
+
+    for (let j = 0; j < cells.length; j++) {
+      const cell = String(cells[j] || "").trim().toLowerCase();
+
+      // Look for "Keyword:" or "Keyword :"
+      for (const kw of keywords) {
+        if (cell.startsWith(kw) && (cell.includes(":") || cell.includes(" - "))) {
+          // If the cell contains both keyword and value (e.g. "Company: TCS")
+          const parts = cell.split(/[:\-]/);
+          if (parts.length > 1 && parts[1].trim()) {
+            return parts[1].trim();
+          }
+          // If the value is in the next cell
+          if (j + 1 < cells.length && cells[j + 1]) {
+            return String(cells[j + 1]).trim();
+          }
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Validates whether the selected fiscal years are already staged for the company.
+   * Implements strict collision detection for multi-year uploads.
+   */
+async function checkExistingStagedFiscalYears(companyId, fiscalYears = [], dataHash = null) {
+  const normalizedYears = Array.from(
+    new Set(
+      (Array.isArray(fiscalYears) ? fiscalYears : [])
+        .map((year) => Number(year))
+        .filter((year) => Number.isInteger(year) && year > 0),
+    ),
+  ).sort((a, b) => a - b);
+
+  if (!companyId || normalizedYears.length === 0) {
+    return { isDuplicate: false, duplicateYears: [], duplicates: [], matches: [] };
+  }
+
+  const requestedYearHashes = Array.isArray(dataHash)
+    ? dataHash
+      .map((item) => ({
+        fiscalYear: Number(item?.fiscalYear || 0),
+        dataHash: String(item?.dataHash || "").trim(),
+      }))
+      .filter((item) => Number.isInteger(item.fiscalYear) && item.fiscalYear > 0 && item.dataHash)
+    : typeof dataHash === "string" && dataHash.trim()
+      ? normalizedYears.map((fiscalYear) => ({ fiscalYear, dataHash: dataHash.trim() }))
+      : [];
+
+  console.log(
+    `[ManualGL][Validation] Checking duplicates for company ${companyId}; years=[${normalizedYears.join(", ")}]; ` +
+    `hashPairs=${requestedYearHashes.length}`,
+  );
+
+  if (requestedYearHashes.length === 0) {
+    return { isDuplicate: false, duplicateYears: [], duplicates: [], matches: [] };
+  }
+
+  try {
+    const lookup = await findExistingStagedUploadSessionsByYearHash({
+      companyId,
+      yearHashes: requestedYearHashes,
+    });
+
+    const matches = Array.isArray(lookup?.matches) ? lookup.matches : [];
+    const duplicateYears = Array.from(
+      new Set(
+        matches
+          .map((entry) => Number(entry?.fiscalYear || 0))
+          .filter((year) => Number.isInteger(year) && year > 0),
+      ),
+    ).sort((a, b) => a - b);
+
+    console.log(
+      `[ManualGL][Validation] Duplicate query result: stagedRows=${lookup?.rows?.length || 0}, ` +
+      `matchedYears=[${duplicateYears.join(", ")}]`,
+    );
+
+    if (duplicateYears.length === normalizedYears.length) {
+      const firstMatch = matches[0]?.existingSession || null;
+      return {
+        isDuplicate: true,
+        message: "The selected fiscal year data is already staged.",
+        existingVersion: Number(firstMatch?.version_no || 0) || null,
+        activeBatchId: firstMatch?.staging_batch_id || null,
+        duplicateYears,
+        duplicates: duplicateYears,
+        matches,
+      };
+    }
+
+    return {
+      isDuplicate: false,
+      duplicateYears,
+      duplicates: duplicateYears,
+      matches,
+    };
+  } catch (error) {
+    console.error("[ManualGL][Validation] Duplicate check failed:", error.message);
+    return { isDuplicate: false, duplicateYears: [], duplicates: [], matches: [] };
+  }
+}
+
+/**
+ * Builds a deterministic SHA-256 hash for a collection of transactions.
+ * Used to detect duplicate datasets regardless of filename or upload session.
+ */
+function buildDatasetHash(transactions = []) {
+  if (!transactions.length) return null;
+
+  // Build from normalized business fields (NOT upload-id dependent hashes) so
+  // the same dataset always yields the same checksum across re-uploads.
+  const sortedHashes = transactions
+    .map((tx) => buildCrossFileDedupHash(tx))
+    .filter(Boolean)
+    .sort();
+
+  if (!sortedHashes.length) return null;
+
+  const digest = crypto.createHash("sha256");
+  sortedHashes.forEach((h) => digest.update(h));
+  digest.update(`#count:${sortedHashes.length}`);
+
+  return digest.digest("hex");
 }
 
 function roundMoney(value) {
@@ -1191,22 +1334,26 @@ function buildTransactionHash(parts) {
 }
 
 function buildCrossFileDedupHash(tx = {}) {
-  return buildTransactionHash([
-    String(tx.fiscalYear || ""),
-    String(tx.date || ""),
-    String(tx.accountNumber || ""),
-    String(tx.accountName || ""),
+  // Normalize strings and round numbers for absolute determinism
+  const parts = [
+    String(tx.fiscalYear || "").trim(),
+    String(tx.date || "").trim(),
+    String(tx.accountNumber || "").trim().toLowerCase(),
+    String(tx.accountName || "").trim().toLowerCase(),
     roundMoney(Number(tx.debit || 0)).toFixed(2),
     roundMoney(Number(tx.credit || 0)).toFixed(2),
     roundMoney(Number(tx.netAmount || 0)).toFixed(2),
-    String(tx.class || ""),
-    String(tx.department || ""),
-    String(tx.location || ""),
-    String(tx.transactionType || ""),
-    String(tx.journalType || ""),
-    String(tx.reference || ""),
-    String(tx.description || ""),
-  ]);
+    String(tx.class || "").trim().toLowerCase(),
+    String(tx.department || "").trim().toLowerCase(),
+    String(tx.location || "").trim().toLowerCase(),
+    String(tx.transactionType || "").trim().toLowerCase(),
+    String(tx.journalType || "").trim().toLowerCase(),
+    String(tx.reference || "").trim().toLowerCase(),
+    String(tx.description || "").trim().toLowerCase(),
+  ];
+
+  const raw = parts.join("|");
+  return crypto.createHash("sha1").update(raw).digest("hex");
 }
 
 function sha256Hex(parts = []) {
@@ -2096,6 +2243,9 @@ async function createBatch({
   sourceType = MANUAL_SOURCE_KEY,
   sourceSwitchVersion = null,
   uploadSessionId = null,
+  datasetHash = null,
+  fiscalYearStart = null,
+  fiscalYearEnd = null,
 }) {
   const now = new Date().toISOString();
   const normalizedSessionId =
@@ -2181,6 +2331,9 @@ async function createBatch({
     uploaded_by: createdBy || null,
     uploaded_at: now,
     processing_started_at: now,
+    dataset_hash: datasetHash,
+    fiscal_year_start: fiscalYearStart,
+    fiscal_year_end: fiscalYearEnd,
   };
 
   const insertBatch = async (nextPayload) =>
@@ -2806,6 +2959,11 @@ function parseIntegerValues(value) {
     .filter((item) => Number.isInteger(item));
 }
 
+function parsePositiveIntegerValue(value) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
 function applyTextFilter(query, column, value, exactList = false) {
   const values = parseMultiValue(value);
   if (!values.length) return query;
@@ -2816,9 +2974,26 @@ function applyTextFilter(query, column, value, exactList = false) {
 }
 
 function parseManualFilterQuery(rawFilters = {}) {
-  const rawUploadSessionId = toNonEmptyString(
-    rawFilters.uploadSessionId || rawFilters.upload_session_id || "",
+  const rawDatasetVersionId = toNonEmptyString(
+    rawFilters.datasetVersionId || rawFilters.dataset_version_id || "",
   );
+  let rawDatasetVersion = toNonEmptyString(
+    rawFilters.datasetVersion ||
+    rawFilters.dataset_version ||
+    rawFilters.versionNumber ||
+    rawFilters.version_number ||
+    "",
+  );
+  const rawUploadSessionId = toNonEmptyString(
+    rawFilters.uploadSessionId || rawFilters.upload_session_id || rawFilters.versionId || rawFilters.version_id || "",
+  );
+  const rawVersionId = toNonEmptyString(
+    rawFilters.versionId || rawFilters.version_id || rawUploadSessionId || "",
+  );
+  if (!rawDatasetVersion && rawVersionId && !isValidUuid(rawVersionId)) {
+    rawDatasetVersion = rawVersionId;
+  }
+  const datasetVersion = parsePositiveIntegerValue(rawDatasetVersion);
   const rawVersionMode = toNonEmptyString(
     rawFilters.versionMode || rawFilters.version_mode || "",
   ).toLowerCase();
@@ -2828,11 +3003,13 @@ function parseManualFilterQuery(rawFilters = {}) {
     rawFilters.allowArchived ||
     rawFilters.allow_archived ||
     rawFilters.historical,
-  ) || rawVersionMode === REPORT_BATCH_MODE.HISTORICAL || rawVersionMode === "archived";
+  ) || rawVersionMode === REPORT_BATCH_MODE.HISTORICAL || rawVersionMode === "archived" || !!rawVersionId || !!datasetVersion;
 
   return {
     batchId: rawFilters.batchId || rawFilters.batch_id || "",
-    datasetVersionId: rawFilters.datasetVersionId || rawFilters.dataset_version_id || "",
+    datasetVersionId: rawDatasetVersionId,
+    datasetVersion,
+    versionId: rawVersionId,
     versionMode: includeArchived ? REPORT_BATCH_MODE.HISTORICAL : REPORT_BATCH_MODE.ACTIVE,
     includeArchived,
     fiscalYears: parseIntegerValues(rawFilters.fiscalYears || rawFilters.fiscalYear || rawFilters.year || rawFilters.years),
@@ -2873,7 +3050,34 @@ async function queryStagedTransactions(companyId, rawFilters = {}) {
     return { filters, rows: [] };
   }
 
-  if (!filters.batchId && !filters.allBatches && !filters.datasetVersionId) {
+  if (!filters.batchId && (filters.versionId || filters.uploadSessionId)) {
+    const resolvedBatchFromVersion = await resolveReportBatchId(companyId, "", {
+      ...filters,
+      allowExplicitBatch: true,
+      includeArchived: true,
+      versionMode: REPORT_BATCH_MODE.HISTORICAL,
+      versionId: filters.versionId || "",
+      uploadSessionId: filters.uploadSessionId || "",
+    });
+    if (resolvedBatchFromVersion) {
+      filters.batchId = resolvedBatchFromVersion;
+    }
+  }
+
+  if (!filters.batchId && Number.isInteger(Number(filters.datasetVersion)) && Number(filters.datasetVersion) > 0) {
+    const resolvedBatchFromDatasetVersion = await resolveReportBatchId(companyId, "", {
+      ...filters,
+      allowExplicitBatch: true,
+      includeArchived: true,
+      versionMode: REPORT_BATCH_MODE.HISTORICAL,
+      datasetVersion: Number(filters.datasetVersion),
+    });
+    if (resolvedBatchFromDatasetVersion) {
+      filters.batchId = resolvedBatchFromDatasetVersion;
+    }
+  }
+
+  if (!filters.batchId && !filters.allBatches && !filters.datasetVersionId && !filters.datasetVersion) {
     const activeBatch = await getActiveUploadBatch(companyId);
     if (activeBatch?.id) {
       filters.batchId = activeBatch.id;
@@ -5237,19 +5441,18 @@ async function stageMultiYearGlUpload({
 
   let uploadJob = null;
   let datasetVersion = null;
-  if (useDatasetLifecycle) {
-    console.log("[ManualGL][MultiYear] Starting upload lifecycle...");
-    const lifecycle = await startUploadLifecycle(
-      companyId,
-      batchName || "Multi-Year GL Upload",
-      uploadedBy,
-    );
-    uploadJob = lifecycle.job || null;
-    datasetVersion = lifecycle.version || null;
-  }
 
   let batch = null;
   const effectiveMapping = ensureMappingShape(mapping || {});
+
+  // Fetch target company details for identity validation
+  const targetCompany = await supabase
+    .from("companies")
+    .select("name, legal_name")
+    .eq("id", companyId)
+    .maybeSingle();
+  const targetCompanyName = normalizeKey(targetCompany?.data?.name || "");
+  const targetLegalName = normalizeKey(targetCompany?.data?.legal_name || "");
 
   const parsingWarnings = [];
   const resolvedMappings = {};
@@ -5408,6 +5611,28 @@ async function stageMultiYearGlUpload({
           });
 
           if (!parsed.success) continue;
+
+          // STRICT COMPANY IDENTITY VALIDATION
+          const detectedName = normalizeKey(detectCompanyInGl(sheetData));
+          if (detectedName && targetCompanyName) {
+            // Check against both trade name and legal name
+            const isMatch =
+              detectedName === targetCompanyName ||
+              detectedName === targetLegalName ||
+              targetCompanyName.includes(detectedName) ||
+              targetLegalName.includes(detectedName) ||
+              detectedName.includes(targetCompanyName) ||
+              detectedName.includes(targetLegalName);
+
+            if (!isMatch) {
+              console.error(
+                `[ManualGL][Identity] REJECTED: Uploaded file "${upload.file_name}" metadata "${detectedName}" does not match company "${targetCompany?.data?.name}".`,
+              );
+              throw new Error(
+                `The uploaded GL file (${upload.file_name}) appears to belong to another company ("${detectedName}"). Please ensure you are uploading data for your active company.`,
+              );
+            }
+          }
 
           fileParsedAtLeastOne = true;
           resolvedMappings[uploadId] = parsed.mapping;
@@ -5608,11 +5833,41 @@ async function stageMultiYearGlUpload({
       .map(Number)
       .sort((a, b) => a - b);
 
-    const exactDuplicateYears = [];
+    const uploadedYearHashPairs = uploadedYears
+      .map((fiscalYear) => ({
+        fiscalYear,
+        dataHash: uploadedYearSummaries?.[fiscalYear]?.dataHash || "",
+      }))
+      .filter((item) => Number.isInteger(item.fiscalYear) && item.fiscalYear > 0 && item.dataHash);
+
+    // DETERMINISTIC DATASET HASHING & DUPLICATE PREVENTION
+    const datasetHash = buildDatasetHash(allClassifiedTransactions);
+    console.log(`[ManualGL][MultiYear] Generated dataset hash: ${datasetHash}`);
+    console.log(
+      "[ManualGL][MultiYear] Generated year hashes:",
+      uploadedYearHashPairs.map((item) => `${item.fiscalYear}:${item.dataHash.slice(0, 12)}`).join(", "),
+    );
+    const fiscalYearStart = uploadedYears.length > 0 ? uploadedYears[0] : null;
+    const fiscalYearEnd = uploadedYears.length > 0 ? uploadedYears[uploadedYears.length - 1] : null;
+
+    // Duplicate detection MUST run before any DB writes.
+    const collisionCheck = await checkExistingStagedFiscalYears(
+      companyId,
+      uploadedYears,
+      uploadedYearHashPairs,
+    );
+    const exactDuplicateYearSet = new Set(
+      Array.isArray(collisionCheck?.duplicateYears) ? collisionCheck.duplicateYears.map(Number) : [],
+    );
+
     const stagedYears = [];
     const versionPlan = [];
 
     for (const fiscalYear of uploadedYears) {
+      if (exactDuplicateYearSet.has(fiscalYear)) {
+        continue;
+      }
+
       const uploadedSummary = uploadedYearSummaries[fiscalYear];
       const activeSession = activeSessionMap.get(fiscalYear) || null;
       const fallbackActiveSummary = activeYearSummaries?.[fiscalYear] || null;
@@ -5625,7 +5880,7 @@ async function stageMultiYearGlUpload({
       ).trim();
 
       if (activeDataHash && uploadedSummary.dataHash === activeDataHash) {
-        exactDuplicateYears.push(fiscalYear);
+        exactDuplicateYearSet.add(fiscalYear);
         continue;
       }
 
@@ -5656,7 +5911,14 @@ async function stageMultiYearGlUpload({
           previousActiveBatchId: activeBatch?.id || null,
         },
       });
+
+      console.log(
+        `[ManualGL][VersionPlan] fiscalYear=${fiscalYear} versionNo=${nextVersionNo} ` +
+        `rowCount=${uploadedSummary.rowCount} dataHash=${String(uploadedSummary.dataHash || "").slice(0, 12)}...`,
+      );
     }
+
+    const exactDuplicateYears = Array.from(exactDuplicateYearSet).sort((a, b) => a - b);
 
     if (stagedYears.length === 0 && exactDuplicateYears.length > 0) {
       return {
@@ -5664,6 +5926,9 @@ async function stageMultiYearGlUpload({
         blockedAsDuplicate: true,
         noChangesDetected: true,
         duplicateFiscalYears: exactDuplicateYears,
+        duplicateYears: exactDuplicateYears,
+        existingVersion: collisionCheck?.existingVersion || null,
+        activeBatchId: collisionCheck?.activeBatchId || null,
         message: "The selected GL data is already staged for this company and fiscal year.",
       };
     }
@@ -5678,6 +5943,17 @@ async function stageMultiYearGlUpload({
       activeBatchId: activeBatch?.id || null,
     });
 
+    if (useDatasetLifecycle) {
+      console.log("[ManualGL][MultiYear] Starting upload lifecycle...");
+      const lifecycle = await startUploadLifecycle(
+        companyId,
+        batchName || "Multi-Year GL Upload",
+        uploadedBy,
+      );
+      uploadJob = lifecycle.job || null;
+      datasetVersion = lifecycle.version || null;
+    }
+
     console.log("[ManualGL][MultiYear] Creating batch...");
     batch = await createBatch({
       companyId,
@@ -5687,6 +5963,9 @@ async function stageMultiYearGlUpload({
       sourceType,
       sourceSwitchVersion,
       uploadSessionId,
+      datasetHash,
+      fiscalYearStart,
+      fiscalYearEnd,
     });
     console.log("[ManualGL][MultiYear] Batch created:", batch.id);
 
@@ -6575,6 +6854,13 @@ async function getStageFilterOptions(companyId, filters = {}) {
   );
 
   const incomingBatchId = toNonEmptyString(filters.batchId || "");
+  const datasetVersion = parsePositiveIntegerValue(
+    filters.datasetVersion ||
+    filters.dataset_version ||
+    filters.versionNumber ||
+    filters.version_number ||
+    "",
+  );
   const includeArchived =
     filters.includeArchived === true ||
     toNonEmptyString(filters.versionMode || "").toLowerCase() === REPORT_BATCH_MODE.HISTORICAL;
@@ -6582,11 +6868,20 @@ async function getStageFilterOptions(companyId, filters = {}) {
     allowExplicitBatch: includeArchived,
     includeArchived,
     versionMode: includeArchived ? REPORT_BATCH_MODE.HISTORICAL : REPORT_BATCH_MODE.ACTIVE,
+    versionId: toNonEmptyString(filters.versionId || ""),
+    uploadSessionId: toNonEmptyString(filters.uploadSessionId || ""),
+    datasetVersion,
   });
   const activeBatch = await getActiveUploadBatch(companyId);
   const activeBatchId = activeBatch?.id || null;
 
-  if (!batchId) {
+  console.log(
+    `[ManualGL][FilterOptions][ReportFilters] company=${companyId} ` +
+    `datasetVersion=${datasetVersion || "none"} requestedBatchId=${incomingBatchId || "none"} ` +
+    `resolvedBatchId=${batchId || "none"} includeArchived=${includeArchived}`,
+  );
+
+  if (!batchId && !datasetVersion) {
     return {
       source: "manual_gl_active_batch",
       activeBatchId,
@@ -6600,23 +6895,35 @@ async function getStageFilterOptions(companyId, filters = {}) {
 
   // Snapshot-first read for fast and immutable filter option rendering.
   try {
-    const { data: filterSnapshot, error: snapshotError } = await supabase
+    let snapshotQuery = supabase
       .from("reporting_snapshots")
-      .select("snapshot_payload")
+      .select("snapshot_payload, upload_batch_id, dataset_version")
       .eq("company_id", companyId)
-      .eq("upload_batch_id", batchId)
       .eq("report_type", "filter_options")
       .eq("fiscal_year", -1)
-      .order("generated_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+      .order("generated_at", { ascending: false });
+
+    if (datasetVersion) {
+      snapshotQuery = snapshotQuery.eq("dataset_version", datasetVersion);
+    } else if (batchId) {
+      snapshotQuery = snapshotQuery.eq("upload_batch_id", batchId);
+    }
+
+    const { data: filterSnapshot, error: snapshotError } = await snapshotQuery.limit(1).maybeSingle();
 
     if (!snapshotError && filterSnapshot?.snapshot_payload?.options) {
       const payload = filterSnapshot.snapshot_payload;
+      const snapshotBatchId = toNonEmptyString(
+        payload?.resolvedBatchId ||
+        payload?.activeBatchId ||
+        filterSnapshot?.upload_batch_id ||
+        batchId ||
+        "",
+      );
       return {
         source: "manual_gl_reporting_snapshot",
         activeBatchId,
-        resolvedBatchId: batchId,
+        resolvedBatchId: snapshotBatchId || null,
         requestedBatchId: incomingBatchId || null,
         versionMode: includeArchived ? REPORT_BATCH_MODE.HISTORICAL : REPORT_BATCH_MODE.ACTIVE,
         rowCount: Number(payload.rowCount || 0),
@@ -6627,7 +6934,21 @@ async function getStageFilterOptions(companyId, filters = {}) {
     // reporting_snapshots may not exist until migration 026 is applied.
   }
 
-  console.log(`[ManualGL][FilterOptions] Resolving options for batch ${batchId}`);
+  if (!batchId) {
+    return {
+      source: "manual_gl_active_batch",
+      activeBatchId,
+      resolvedBatchId: null,
+      requestedBatchId: incomingBatchId || null,
+      versionMode: includeArchived ? REPORT_BATCH_MODE.HISTORICAL : REPORT_BATCH_MODE.ACTIVE,
+      rowCount: 0,
+      options: emptyOptions,
+    };
+  }
+
+  console.log(
+    `[ManualGL][FilterOptions] Resolving options for batch ${batchId} datasetVersion=${datasetVersion || "none"}`,
+  );
 
   const DISCOVERY_COLS = [
     "fiscal_year", "txn_date", "account_name", "account_number", "account_type",
@@ -7834,4 +8155,7 @@ module.exports = {
   // to surface file type information without re-staging.
   detectMultipleYears,
   getAvailableFiscalYears,
+  checkExistingStagedFiscalYears,
+  retrySupabaseOperation,
 };
+

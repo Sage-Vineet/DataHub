@@ -29,11 +29,11 @@ function getProfilePool() {
     profilePool = new Pool({
       connectionString: process.env.DATABASE_URL,
       ssl: { rejectUnauthorized: false },
-      max: 3,
-      connectionTimeoutMillis: 2000,
-      idleTimeoutMillis: 10000,
+      max: 10,
+      connectionTimeoutMillis: 10000,
+      idleTimeoutMillis: 30000,
     });
-    profilePool.on("error", () => {}); // suppress unhandled pool errors
+    profilePool.on("error", () => { }); // suppress unhandled pool errors
   }
   return profilePool;
 }
@@ -161,7 +161,7 @@ function flattenUser(user) {
 async function attachAssignedCompanies(users) {
   const isSingle = !Array.isArray(users);
   const userList = isSingle ? [users] : users;
-  
+
   if (!userList || !userList.length) return users;
 
   const userIds = userList.map((user) => user.id).filter(Boolean);
@@ -202,7 +202,7 @@ async function attachAssignedCompanies(users) {
     const normalizedCompanies = hasPrimary || !user.company_id
       ? assignedCompanies
       : [{ id: user.company_id, name: user.company_name }, ...assignedCompanies];
-    
+
     const normalizedEmail = String(user.email || "").trim().toLowerCase();
     const isSeller = normalizedCompanies.some((company) => (
       String(company.contact_email || "").trim().toLowerCase() === normalizedEmail
@@ -412,7 +412,7 @@ async function syncUserCompanies(userId, companyIds) {
 
   // Delete existing
   await supabase.from("user_companies").delete().eq("user_id", userId);
-  
+
   if (companyIds && companyIds.length > 0) {
     const records = companyIds.map(cid => ({ user_id: userId, company_id: cid }));
     await supabase.from("user_companies").upsert(records, { onConflict: "user_id,company_id" });
@@ -721,10 +721,10 @@ async function updateUser(id, userData) {
 
   // ── Profile updates via Supabase JS client ──────────────────────────────────
   const profileUpdates = {};
-  if (date_of_birth   !== undefined) profileUpdates.date_of_birth   = normalizedDob;
-  if (occupation      !== undefined) profileUpdates.occupation      = normalizedOccupation;
-  if (address         !== undefined) profileUpdates.address         = normalizedAddress;
-  if (broker_company  !== undefined) profileUpdates.broker_company  = normalizedBrokerCompany;
+  if (date_of_birth !== undefined) profileUpdates.date_of_birth = normalizedDob;
+  if (occupation !== undefined) profileUpdates.occupation = normalizedOccupation;
+  if (address !== undefined) profileUpdates.address = normalizedAddress;
+  if (broker_company !== undefined) profileUpdates.broker_company = normalizedBrokerCompany;
 
   if (Object.keys(profileUpdates).length > 0) {
     const { error: profileErr } = await supabase
