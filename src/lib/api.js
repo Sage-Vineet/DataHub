@@ -966,6 +966,26 @@ export function getLatestQMSUploadedReport(statementType, options = {}) {
 }
 
 /**
+ * Returns the structured QMS (QuickBooks Manual) dashboard payload pre-computed on the server:
+ *   { years, reports, allFiles, trends }
+ */
+export function getQMSDashboard(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-report-uploads/qms-dashboard${query}`, options);
+}
+
+/**
+ * Returns the structured Manual Upload (Excel/PDF) dashboard payload pre-computed on the server:
+ *   { years, reports, allFiles, trends }
+ */
+export function getManualUploadDashboard(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-report-uploads/manual-upload-dashboard${query}`, options);
+}
+
+/**
  * GET /manual-upload/cashflow/periods
  * Returns all years for which a Cash Flow can be automatically generated
  * (i.e. BS(Y-1) + BS(Y) + P&L(Y) are all uploaded).

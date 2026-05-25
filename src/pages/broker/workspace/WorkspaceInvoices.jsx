@@ -104,18 +104,21 @@ function formatEditableAmount(value) {
 }
 
 function getInvoicesArray(payload) {
+  // New structured format: { invoices: [...] }
+  if (Array.isArray(payload?.invoices)) {
+    return payload.invoices;
+  }
+  // Raw QB format: { QueryResponse: { Invoice: [...] } }
   if (Array.isArray(payload?.QueryResponse?.Invoice)) {
     return payload.QueryResponse.Invoice;
   }
-
+  // Nested: { data: { QueryResponse: { Invoice: [...] } } }
   if (Array.isArray(payload?.data?.QueryResponse?.Invoice)) {
     return payload.data.QueryResponse.Invoice;
   }
-
   if (Array.isArray(payload)) {
     return payload;
   }
-
   return [];
 }
 
@@ -1108,6 +1111,22 @@ export default function WorkspaceInvoices() {
           <div className="flex items-center gap-3 rounded-2xl border border-[#F5C2C7] bg-[#FDECEC] p-5 text-[14px] font-medium text-[#C62026]">
             <AlertCircle size={18} />
             {error}
+          </div>
+        ) : invoices.length === 0 ? (
+          <div className="flex flex-col items-center justify-center rounded-[24px] border border-[#E6E8EE] bg-white py-20 text-center shadow-[0_18px_45px_rgba(15,23,42,0.06)]">
+            <FileText size={40} className="mb-4 text-[#D0D5DD]" />
+            <p className="text-[17px] font-semibold text-[#101828]">No invoice data available</p>
+            <p className="mt-2 max-w-sm text-[14px] text-[#667085]">
+              Sync your QuickBooks data to load invoice history, or check that invoices exist in your QuickBooks account.
+            </p>
+            <button
+              onClick={handleSync}
+              disabled={isSyncing}
+              className="mt-6 inline-flex items-center gap-2 rounded-2xl bg-[#8BC53D] px-5 py-3 text-[14px] font-semibold text-white transition-all hover:bg-[#78AA32] disabled:opacity-60"
+            >
+              <RefreshCw size={16} className={isSyncing ? "animate-spin" : ""} />
+              {isSyncing ? "Syncing..." : "Sync QuickBooks"}
+            </button>
           </div>
         ) : (
           <>

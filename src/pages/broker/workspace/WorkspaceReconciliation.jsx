@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import Header from "../../../components/Header";
 
-import { getStoredToken, getReportSources, setSelectedReportSource } from "../../../lib/api";
+import { getStoredToken, setSelectedReportSource } from "../../../lib/api";
+import { useDataSource } from "../../../context/DataSourceContext";
+import { emitWorkspaceDataSourceUpdated } from "../../../lib/dataSourceEvents";
 import { cn } from "../../../lib/utils";
 import {
   REPORT_SOURCE_KEYS,
@@ -42,7 +44,7 @@ const QB_BANK_ACTIVITY_ENDPOINT = `${API_BASE_URL}/qb-bank-activity`;
 const QB_ONE_BANK_ACTIVITY_ENDPOINT = `${API_BASE_URL}/qb-one-bank-activity`;
 const EXTRACT_BANK_PDF_RECORDS_ENDPOINT = `${API_BASE_URL}/extract-bank-pdf-records`;
 const QMS_BANK_DATA_ENDPOINT = `${API_BASE_URL}/manual-report-uploads/qms-bank-data`;
-const MANUAL_BANK_DATA_ENDPOINT = `${API_BASE_URL}/manual-report-uploads/manual-bank-data`;
+const MANUAL_BANK_DATA_ENDPOINT = `${API_BASE_URL}/manual-upload/bank-data`;
 const RECONCILIATION_STORAGE_PREFIX = "workspace-reconciliation";
 
 const getErrMsg = (e) => (e instanceof Error ? e.message : String(e));
@@ -249,6 +251,11 @@ function buildEmptyActivityReviewRow() {
 
 export default function WorkspaceReconciliation() {
   const { clientId } = useParams();
+  // Use the global DataSourceContext as the single source of truth for the active source.
+  // This is the same value the header badge shows (localStorage-backed, survives refreshes).
+  // WorkspaceReconciliation must never call getReportSources independently — doing so reads
+  // only the DB value and can be stale relative to the localStorage cache in DataSourceContext.
+  const { activeSource: contextActiveSource, sourceRecords: contextSourceRecords } = useDataSource();
   const storedState = getStoredWorkspaceState(clientId);
   const [expandedAccounts, setExpandedAccounts] = useState(
     storedState?.expandedAccounts || getDefaultExpandedAccounts(),
@@ -291,18 +298,14 @@ export default function WorkspaceReconciliation() {
       ? "Restored saved single-account QuickBooks activity."
       : "",
   });
-  const _initialBankPdfData =
-    storedState?.extractedBankPdfDataSource === storedState?.selectedReportSource
-      ? (storedState?.extractedBankPdfData || null)
-      : null;
-  const [extractedBankPdfData, setExtractedBankPdfData] = useState(_initialBankPdfData);
+  const [extractedBankPdfData, setExtractedBankPdfData] = useState(null);
   const [isLoadingExtractedBankPdfData, setIsLoadingExtractedBankPdfData] =
     useState(false);
   const [extractedBankPdfError, setExtractedBankPdfError] = useState("");
   const [extractedBankPdfFetchStatus, setExtractedBankPdfFetchStatus] =
     useState({
-      status: _initialBankPdfData ? "success" : "idle",
-      message: _initialBankPdfData ? "Restored saved bank PDF extraction." : "",
+      status: "idle",
+      message: "",
     });
   const [reportSources, setReportSources] = useState([]);
   const [selectedReportSource, setSelectedReportSourceState] = useState(
@@ -340,6 +343,12 @@ export default function WorkspaceReconciliation() {
   );
 
   useEffect(() => {
+    // Reset server-confirmation guard so the unified loader cannot fire until
+    // getReportSources confirms the correct source for this clientId.
+    // Without this, navigating between clients (SPA) leaves isSourceConfirmedByServer=true,
+    // causing the unified loader to dispatch the OLD source's endpoint for the new client.
+    setIsSourceConfirmedByServer(false);
+
     const nextState = getStoredWorkspaceState(clientId);
     setExpandedAccounts(
       nextState?.expandedAccounts || getDefaultExpandedAccounts(),
@@ -370,17 +379,10 @@ export default function WorkspaceReconciliation() {
     const restoredSource = normalizeReportSourceKey(
       nextState?.selectedReportSource || REPORT_SOURCE_KEYS.QUICKBOOKS,
     );
-    // Only restore bank PDF data if it was produced by the same source.
-    // Stale cross-source data is discarded — the unified effect will fetch fresh data.
-    const restoredBankData =
-      nextState?.extractedBankPdfDataSource === restoredSource
-        ? (nextState?.extractedBankPdfData || null)
-        : null;
-    setExtractedBankPdfData(restoredBankData);
-    setExtractedBankPdfFetchStatus({
-      status: restoredBankData ? "success" : "idle",
-      message: restoredBankData ? "Restored saved bank PDF extraction." : "",
-    });
+    // Always discard stored bank data — getReportSources will confirm the real source
+    // and the unified loader will fetch fresh data from the correct endpoint.
+    setExtractedBankPdfData(null);
+    setExtractedBankPdfFetchStatus({ status: "idle", message: "" });
     setExtractedBankPdfError("");
     setSelectedReportSourceState(restoredSource);
   }, [clientId]);
@@ -570,12 +572,11 @@ export default function WorkspaceReconciliation() {
   }, [clientId, selectedReportSource, getHeaders]);
 
   const loadQMSBankData = useCallback(async () => {
-    // Safety guard: never call QMS endpoint when in Manual Upload mode
-    if (
-      selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD ||
-      selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_GL
-    ) {
-      console.warn("[BankData] loadQMSBankData blocked — source is Manual Upload, use loadExtractedBankPdfData instead");
+    // Always read from activeSourceRef.current (not the stale closure value of selectedReportSource).
+    // A stale useCallback created when source was "quickbooks_manual" can survive into renders
+    // where the source has already switched — the ref ensures we see the live current value.
+    if (activeSourceRef.current !== REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) {
+      console.warn(`[BankData] loadQMSBankData blocked — activeSource=${activeSourceRef.current} is not QuickBooks Manual`);
       return;
     }
 
@@ -617,6 +618,10 @@ export default function WorkspaceReconciliation() {
   }, [clientId, selectedReportSource, getHeaders]);
 
   const loadManualBankData = useCallback(async () => {
+    if (activeSourceRef.current !== REPORT_SOURCE_KEYS.MANUAL_UPLOAD) {
+      console.warn(`[BankData] loadManualBankData blocked — activeSource=${activeSourceRef.current} is not Manual Upload`);
+      return;
+    }
     setIsLoadingExtractedBankPdfData(true);
     setExtractedBankPdfError("");
     setExtractedBankPdfFetchStatus({
@@ -630,11 +635,19 @@ export default function WorkspaceReconciliation() {
       const resp = await fetch(url, { cache: "no-store", headers: getHeaders() });
       const data = await resp.json();
       if (!resp.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
-      const normalized = normalizeExtractedBankPdfData(data);
       if (activeSourceRef.current !== selectedReportSource) return;
+      if (data.empty) {
+        setExtractedBankPdfData(null);
+        setExtractedBankPdfFetchStatus({
+          status: "success",
+          message: data.message || "No bank statements uploaded. Upload PDF or Excel files to Manual Upload Source → Bank Statement.",
+        });
+        return;
+      }
+      const normalized = normalizeExtractedBankPdfData(data);
       setExtractedBankPdfData(normalized);
       setExtractedBankPdfFetchStatus({
-        status: normalized ? "success" : "idle",
+        status: "success",
         message: normalized
           ? `Loaded ${normalized.banks?.length ?? 0} bank(s).`
           : "No bank statement data found. Upload files to Manual Upload Source → Bank Statement.",
@@ -670,27 +683,25 @@ export default function WorkspaceReconciliation() {
     // QUICKBOOKS (QB Online) uses its own separate data flow — no action here
   }, [clientId, selectedReportSource, isSourceConfirmedByServer, loadExtractedBankPdfData, loadManualBankData, loadQMSBankData]);
 
+  // Drive selectedReportSource from DataSourceContext.activeSource — the single source of truth
+  // that the header badge also reads. This eliminates the split-brain between the badge and the
+  // reconciliation page that was causing qms-bank-data to fire in Manual Upload mode.
   useEffect(() => {
-    if (!clientId) return;
-    let active = true;
-    getReportSources({ clientId })
-      .then((payload) => {
-        if (!active) return;
-        setReportSources(Array.isArray(payload?.sources) ? payload.sources : []);
-        setSelectedReportSourceState(
-          normalizeReportSourceKey(payload?.selectedSource),
-        );
-        setIsSourceConfirmedByServer(true);
-      })
-      .catch(() => {
-        if (active) {
-          setReportSources([]);
-          setSelectedReportSourceState(REPORT_SOURCE_KEYS.QUICKBOOKS);
-          setIsSourceConfirmedByServer(true);
-        }
-      });
-    return () => { active = false; };
-  }, [clientId]);
+    if (!contextActiveSource) return;
+    const confirmed = normalizeReportSourceKey(contextActiveSource);
+    if (!confirmed) return;
+    setSelectedReportSourceState(confirmed);
+    setReportSources(
+      Array.isArray(contextSourceRecords) ? contextSourceRecords.map((s) => ({
+        key: normalizeReportSourceKey(s.sourceKey),
+        label: s.sourceLabel || getReportSourceLabel(s.sourceKey),
+      })) : [],
+    );
+    setExtractedBankPdfData(null);
+    setExtractedBankPdfFetchStatus({ status: "idle", message: "" });
+    setExtractedBankPdfError("");
+    setIsSourceConfirmedByServer(true);
+  }, [contextActiveSource, contextSourceRecords]);
 
   const handleReportSourceChange = async (sourceKey) => {
     const normalized = normalizeReportSourceKey(sourceKey);
@@ -708,12 +719,12 @@ export default function WorkspaceReconciliation() {
     setOneBankActivityError("");
     try {
       const payload = await setSelectedReportSource(normalized, { clientId });
-      setReportSources(Array.isArray(payload?.sources) ? payload.sources : []);
-      setSelectedReportSourceState(
-        normalizeReportSourceKey(payload?.selectedSource),
-      );
+      const confirmedKey = normalizeReportSourceKey(payload?.selectedSource) || normalized;
+      // Notify DataSourceContext so the badge and all other consumers see the new source.
+      emitWorkspaceDataSourceUpdated({ clientId, sourceKey: confirmedKey });
     } catch {
       setSelectedReportSourceState(previous);
+      emitWorkspaceDataSourceUpdated({ clientId, sourceKey: previous });
     }
   };
 
@@ -2131,6 +2142,7 @@ export default function WorkspaceReconciliation() {
                   disabled={isLoadingExtractedBankPdfData}
                   onClick={() => {
                     if (isQBManual) void loadQMSBankData();
+                    else if (isManualUpload) void loadManualBankData();
                     else void loadExtractedBankPdfData();
                   }}
                   title="Reload data from the active source"

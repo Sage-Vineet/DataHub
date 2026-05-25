@@ -43,9 +43,10 @@ import {
 } from "../../../components/charts/RechartsCompat";
 import {
   fetchDashboardKPIs,
-  fetchDashboardKPIsFromManualUpload,
   fetchFinancialTrends,
 } from "../../../services/reportService";
+import { loadQMSDashboard } from "../../../services/qmsManualDashboardService";
+import { loadManualUploadDashboard } from "../../../services/manualUploadDashboardService";
 import { fetchInvoices } from "../../../services/invoiceService";
 import { getProfitAndLoss } from "../../../services/profitAndLossService";
 import { syncQuickbooksReports } from "../../../lib/quickbooks";
@@ -232,6 +233,11 @@ export default function WorkspaceDashboardDatahub() {
   const [isClient, setIsClient] = useState(false);
   const [selectedSource, setSelectedSource] = useState(REPORT_SOURCE_KEYS.QUICKBOOKS);
   const [isManualUploadMode, setIsManualUploadMode] = useState(false);
+  const [isQBManualMode, setIsQBManualMode] = useState(false);
+  const [qmsSelectedYear, setQmsSelectedYear] = useState("all");
+  const [qmsAvailableYears, setQmsAvailableYears] = useState([]);
+  const [manualUploadSelectedYear, setManualUploadSelectedYear] = useState("all");
+  const [manualUploadAvailableYears, setManualUploadAvailableYears] = useState([]);
   const [dynamicStats, setDynamicStats] = useState([]);
   const [selectedKpiLabels, setSelectedKpiLabels] = useState([]);
   const [isKpiSelectorOpen, setIsKpiSelectorOpen] = useState(false);
@@ -384,6 +390,10 @@ export default function WorkspaceDashboardDatahub() {
       invoicesData: overrides.invoicesData ?? invoicesData,
       chartDataState: overrides.chartDataState ?? chartDataState,
       monthlyInsights: overrides.monthlyInsights ?? monthlyInsights,
+      qmsSelectedYear: overrides.qmsSelectedYear ?? qmsSelectedYear,
+      qmsAvailableYears: overrides.qmsAvailableYears ?? qmsAvailableYears,
+      manualUploadSelectedYear: overrides.manualUploadSelectedYear ?? manualUploadSelectedYear,
+      manualUploadAvailableYears: overrides.manualUploadAvailableYears ?? manualUploadAvailableYears,
     }),
     [
       activeSourceKey,
@@ -404,6 +414,10 @@ export default function WorkspaceDashboardDatahub() {
       selectedMonth,
       selectedYear,
       startDate,
+      qmsSelectedYear,
+      qmsAvailableYears,
+      manualUploadSelectedYear,
+      manualUploadAvailableYears,
     ],
   );
 
@@ -459,15 +473,21 @@ export default function WorkspaceDashboardDatahub() {
     const restoredSource = snapshot.selectedSource || REPORT_SOURCE_KEYS.QUICKBOOKS;
     setSelectedSource(restoredSource);
     setIsManualUploadMode(restoredSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD);
+    setIsQBManualMode(restoredSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL);
+    if (snapshot.qmsSelectedYear !== undefined) setQmsSelectedYear(snapshot.qmsSelectedYear);
+    if (Array.isArray(snapshot.qmsAvailableYears)) setQmsAvailableYears(snapshot.qmsAvailableYears);
+    if (snapshot.manualUploadSelectedYear !== undefined) setManualUploadSelectedYear(snapshot.manualUploadSelectedYear);
+    if (Array.isArray(snapshot.manualUploadAvailableYears)) setManualUploadAvailableYears(snapshot.manualUploadAvailableYears);
 
     // Only restore if there is actual data — otherwise fall through to fresh fetch
     const isManual = restoredSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD;
+    const isQBManual = restoredSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
     const hasStatsData =
       Array.isArray(snapshot.dynamicStats) && snapshot.dynamicStats.length > 0;
     const hasChartData =
       Array.isArray(snapshot.chartDataState) &&
       snapshot.chartDataState.length > 0;
-    const hasData = hasStatsData && (isManual || hasChartData);
+    const hasData = hasStatsData && (isManual || isQBManual || hasChartData);
     const hydratedStats = hydrateDashboardStats(snapshot.dynamicStats || []);
     const restoredKpiLabels =
       Array.isArray(snapshot.selectedKpiLabels) &&
@@ -507,10 +527,10 @@ export default function WorkspaceDashboardDatahub() {
     setAggregationType(snapshot.aggregationType || "monthly");
     setDynamicStats(hydratedStats);
     setSelectedKpiLabels(restoredKpiLabels);
-    // In manual upload mode chart, invoices and insights are always blank
-    setInvoicesData(isManual ? [] : snapshot.invoicesData || []);
-    setChartDataState(isManual ? [] : snapshot.chartDataState || []);
-    setMonthlyInsights(isManual ? [] : snapshot.monthlyInsights || []);
+    // In manual/QMS modes invoices and insights are always blank; chart shows trends
+    setInvoicesData(isManual || isQBManual ? [] : snapshot.invoicesData || []);
+    setChartDataState(isManual ? snapshot.chartDataState || [] : isQBManual ? snapshot.chartDataState || [] : snapshot.chartDataState || []);
+    setMonthlyInsights(isManual || isQBManual ? [] : snapshot.monthlyInsights || []);
     setSearchTerm(snapshot.searchTerm || "");
 
     // Mark the chart request key so loadChartData won't re-fire for same params
@@ -567,23 +587,45 @@ export default function WorkspaceDashboardDatahub() {
 
   // ── Data fetchers ──────────────────────────────────────────────────────
 
-  const loadManualUploadKpiData = useCallback(async () => {
+  const loadManualUploadDashboardData = useCallback(async (year = "all") => {
     setIsLoading(true);
     try {
-      const kpiData = await fetchDashboardKPIsFromManualUpload();
-      setDynamicStats(kpiData);
+      const result = await loadManualUploadDashboard(year, { clientId });
+      setDynamicStats(result.kpis);
       setSelectedKpiLabels((current) =>
-        current.length ? current : kpiData.map((kpi) => kpi.label),
+        current.length ? current : result.kpis.map((kpi) => kpi.label),
       );
-      setChartDataState([]);
+      setManualUploadAvailableYears(result.availableYears);
+      setManualUploadSelectedYear(year);
+      setChartDataState(result.trends);
       setInvoicesData([]);
       setMonthlyInsights([]);
     } catch (err) {
-      console.error("Failed to load manual upload dashboard KPI data:", err);
+      console.error("[Manual Upload Dashboard] Failed to load data:", err);
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [clientId]);
+
+  const loadQMSDashboardData = useCallback(async (year = "all") => {
+    setIsLoading(true);
+    try {
+      const result = await loadQMSDashboard(year, { clientId });
+      setDynamicStats(result.kpis);
+      setSelectedKpiLabels((current) =>
+        current.length ? current : result.kpis.map((kpi) => kpi.label),
+      );
+      setQmsAvailableYears(result.availableYears);
+      setQmsSelectedYear(year);
+      setChartDataState(result.trends);
+      setInvoicesData([]);
+      setMonthlyInsights([]);
+    } catch (err) {
+      console.error("[QMS Dashboard] Failed to load data:", err);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [clientId]);
 
   const loadChartData = useCallback(async (
     start,
@@ -719,7 +761,9 @@ export default function WorkspaceDashboardDatahub() {
         await syncQuickbooksReports();
       }
       if (isManualUploadMode) {
-        await loadManualUploadKpiData();
+        await loadManualUploadDashboardData(manualUploadSelectedYear);
+      } else if (isQBManualMode) {
+        await loadQMSDashboardData(qmsSelectedYear);
       } else {
         await loadKpiData(startDate, endDate, activeSourceMode);
         lastChartRequestKeyRef.current = "";
@@ -738,7 +782,11 @@ export default function WorkspaceDashboardDatahub() {
   }, [
     activeSourceMode,
     isManualUploadMode,
-    loadManualUploadKpiData,
+    isQBManualMode,
+    loadManualUploadDashboardData,
+    loadQMSDashboardData,
+    manualUploadSelectedYear,
+    qmsSelectedYear,
     aggregationType,
     chartEndDate,
     chartStartDate,
@@ -754,7 +802,9 @@ export default function WorkspaceDashboardDatahub() {
     if (newSourceKey === selectedSource) return;
     setSelectedSource(newSourceKey);
     const newIsManual = newSourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD;
+    const newIsQBManual = newSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
     setIsManualUploadMode(newIsManual);
+    setIsQBManualMode(newIsQBManual);
     setDynamicStats([]);
     setChartDataState([]);
     setInvoicesData([]);
@@ -764,7 +814,11 @@ export default function WorkspaceDashboardDatahub() {
     setSelectedReportSource(newSourceKey).catch(() => null);
 
     if (newIsManual) {
-      await loadManualUploadKpiData();
+      setManualUploadSelectedYear("all");
+      await loadManualUploadDashboardData("all");
+    } else if (newIsQBManual) {
+      setQmsSelectedYear("all");
+      await loadQMSDashboardData("all");
     } else {
       const currentYear = new Date().getFullYear();
       const currentMonth = (new Date().getMonth() + 1).toString();
@@ -785,7 +839,8 @@ export default function WorkspaceDashboardDatahub() {
   }, [
     selectedSource,
     calculateDateRangeFromYearMonth,
-    loadManualUploadKpiData,
+    loadManualUploadDashboardData,
+    loadQMSDashboardData,
     loadKpiData,
     loadChartData,
     aggregationType,
@@ -817,10 +872,29 @@ export default function WorkspaceDashboardDatahub() {
       const sourcesData = await getReportSources().catch(() => null);
       const liveSource = sourcesData?.selectedSource || REPORT_SOURCE_KEYS.QUICKBOOKS;
       const liveIsManual = liveSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD;
+      const liveIsQBManual = liveSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
       setSelectedSource(liveSource);
       setIsManualUploadMode(liveIsManual);
+      setIsQBManualMode(liveIsQBManual);
 
-      // 2. Try sessionStorage — only use it if the cached source matches the live source.
+      // 2. For manual upload modes, always fetch fresh data — the user may have
+      //    uploaded new files from the Connections page and the session snapshot
+      //    would still hold the stale $0 values from the previous visit.
+      if (liveIsManual) {
+        saveStoredDashboardState(clientId, user?.id, null);
+        await loadManualUploadDashboardData("all");
+        hasRestoredRef.current = true;
+        return;
+      }
+
+      if (liveIsQBManual) {
+        saveStoredDashboardState(clientId, user?.id, null);
+        await loadQMSDashboardData("all");
+        hasRestoredRef.current = true;
+        return;
+      }
+
+      // 3. Try sessionStorage — only use it if the cached source matches the live source.
       //    If the user switched source on the Connections page the cache is stale and
       //    must be ignored so we fetch fresh data for the new mode.
       const sessionSnap = getStoredDashboardState(clientId, user?.id);
@@ -838,13 +912,6 @@ export default function WorkspaceDashboardDatahub() {
       } else if (sessionSnap && sessionSource !== liveSource) {
         // Source changed since the session was saved — wipe stale cache
         saveStoredDashboardState(clientId, user?.id, null);
-      }
-
-      // 3. Session miss or source mismatch — load fresh data for the live source
-      if (liveIsManual) {
-        await loadManualUploadKpiData();
-        hasRestoredRef.current = true;
-        return;
       }
 
       // 4. QuickBooks mode: try the remote snapshot before doing a full API fetch
@@ -892,7 +959,8 @@ export default function WorkspaceDashboardDatahub() {
 
     bootstrap();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clientId, user?.id, loadManualUploadKpiData]); // Re-run when client, user, or data loader changes
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clientId, user?.id, loadManualUploadDashboardData, loadQMSDashboardData]); // Re-run when client, user, or data loader changes
 
   // ── Auto-save: persist state to sessionStorage after every meaningful change
   //
@@ -1190,7 +1258,7 @@ export default function WorkspaceDashboardDatahub() {
             </h1>
             <button
               onClick={handleSync}
-              disabled={isSyncing || activeSourceMode !== "quickbooks"}
+              disabled={isSyncing || (activeSourceMode !== "quickbooks" && !isQBManualMode && !isManualUploadMode)}
               className="btn-secondary py-1.5 px-3"
               title="Sync data"
             >
@@ -1202,7 +1270,43 @@ export default function WorkspaceDashboardDatahub() {
           </div>
 
           <div className="flex items-center gap-4 flex-wrap">
-            {!isManualUploadMode && <><div className="flex items-center gap-2 bg-bg-page rounded-lg border border-border p-2">
+            {isManualUploadMode && (
+              <div className="flex items-center gap-2 bg-bg-page rounded-lg border border-border p-2">
+                <span className="text-[13px] text-text-secondary font-medium">Year:</span>
+                <select
+                  value={manualUploadSelectedYear}
+                  onChange={(e) => {
+                    const val = e.target.value === "all" ? "all" : parseInt(e.target.value, 10);
+                    loadManualUploadDashboardData(val);
+                  }}
+                  className="px-3 py-1.5 text-[13px] font-medium bg-transparent border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
+                >
+                  <option value="all">All Files</option>
+                  {manualUploadAvailableYears.map((year) => (
+                    <option key={year} value={year}>FY {year}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {isQBManualMode && (
+              <div className="flex items-center gap-2 bg-bg-page rounded-lg border border-border p-2">
+                <span className="text-[13px] text-text-secondary font-medium">Year:</span>
+                <select
+                  value={qmsSelectedYear}
+                  onChange={(e) => {
+                    const val = e.target.value === "all" ? "all" : parseInt(e.target.value, 10);
+                    loadQMSDashboardData(val);
+                  }}
+                  className="px-3 py-1.5 text-[13px] font-medium bg-transparent border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
+                >
+                  <option value="all">All Files</option>
+                  {qmsAvailableYears.map((year) => (
+                    <option key={year} value={year}>FY {year}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {!isManualUploadMode && !isQBManualMode && <><div className="flex items-center gap-2 bg-bg-page rounded-lg border border-border p-2">
               <button
                 onClick={handlePreviousYear}
                 className="p-1.5 hover:bg-bg-page/80 rounded-md transition-colors"

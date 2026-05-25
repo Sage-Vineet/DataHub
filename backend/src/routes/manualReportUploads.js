@@ -20,8 +20,16 @@ const {
   extractPLForTax,
   buildPLForTaxData,
   extractPLLineItemsFromRows,
+  buildQMSDashboardData,
+  buildManualUploadDashboardData,
 } = require("../services/manualReportUploadService");
 const { parsePdfWithGemini } = require("../services/geminiFinancialParser");
+const {
+  normalizeBankBinary,
+  extractBankStatementsFromPdfBase64,
+  extractBankStatementsFromExcelBuffer,
+  buildBankResponseShape,
+} = require("../services/bankStatementExtractor");
 const {
   getCachedCashFlow,
   listAvailablePeriods,
@@ -431,6 +439,30 @@ router.get("/manual-report-uploads/qms-bank-data", async (req, res) => {
     });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message || "Failed to fetch QMS bank data." });
+  }
+});
+
+router.get("/manual-report-uploads/qms-dashboard", async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+    const dashboard = await buildQMSDashboardData(clientId);
+    return res.json({ success: true, ...dashboard });
+  } catch (error) {
+    console.error("[QMSDashboard] Route error:", error.message);
+    return res.status(500).json({ success: false, error: error.message || "Failed to build QMS dashboard data." });
+  }
+});
+
+router.get("/manual-report-uploads/manual-upload-dashboard", async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+    const dashboard = await buildManualUploadDashboardData(clientId);
+    return res.json({ success: true, ...dashboard });
+  } catch (error) {
+    console.error("[ManualUploadDashboard] Route error:", error.message);
+    return res.status(500).json({ success: false, error: error.message || "Failed to build Manual Upload dashboard data." });
   }
 });
 
@@ -1000,6 +1032,183 @@ router.get("/manual-upload/cashflow", async (req, res) => {
       source: "manual_upload_generated",
       error: error.message,
     });
+  }
+});
+
+/* ===========================
+   GET /manual-upload/bank-data
+   Returns bank reconciliation data from Manual Upload Source folder ONLY.
+   Isolated to "manual_report_upload" cache + "Manual Upload Source" DataRoom folder.
+   Never reads from Quickbooks Manual Source or QMS caches.
+   Response shape: { success, source: "manual_upload", banks, months, totals }
+              or: { success: true, empty: true, message: "..." }
+=========================== */
+router.get("/manual-upload/bank-data", async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+
+    console.log(`[BANK SOURCE] source=manual_upload clientId=${clientId} — checking cache...`);
+
+    // 1. Check source-isolated cache (manual_report_upload only)
+    const { data: cached } = await supabase
+      .from("qb_synced_reports")
+      .select("data, updated_at")
+      .eq("company_id", clientId)
+      .eq("source", MANUAL_REPORT_UPLOAD_SOURCE)
+      .eq("report_type", STATEMENT_TYPES.BANK_RECONCILIATION)
+      .order("updated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (cached?.data?.bank_reconciliation?.banks?.length > 0) {
+      const bd = cached.data.bank_reconciliation;
+      console.log(`[BANK SOURCE] Cache hit — ${bd.banks.length} bank(s) for ${clientId}`);
+      return res.json({
+        success: true,
+        source: "manual_upload",
+        banks: bd.banks,
+        months: bd.months || [],
+        totals: bd.totals || [],
+        syncedAt: bd.syncedAt || cached.updated_at,
+      });
+    }
+
+    // 2. Live extraction from "Manual Upload Source" DataRoom folder
+    console.log(`[BANK SOURCE] Cache miss — live extraction from "Manual Upload Source" for ${clientId}`);
+
+    const { data: sourceFolder } = await supabase
+      .from("folders")
+      .select("id")
+      .eq("company_id", clientId)
+      .is("parent_id", null)
+      .ilike("name", "Manual Upload Source")
+      .maybeSingle();
+
+    if (!sourceFolder) {
+      console.log(`[BANK SOURCE] "Manual Upload Source" folder not found for ${clientId}`);
+      return res.json({
+        success: true,
+        empty: true,
+        source: "manual_upload",
+        banks: [],
+        months: [],
+        totals: [],
+        message: "No bank statements uploaded. Upload PDF or Excel files to Manual Upload Source → Bank Statement in the Data Room.",
+      });
+    }
+
+    // Find "Bank Statement" (or legacy "Bank Reconciliation") subfolder
+    let bankFolder = null;
+    for (const folderName of ["Bank Statement", "Bank Reconciliation"]) {
+      const { data: found } = await supabase
+        .from("folders")
+        .select("id")
+        .eq("company_id", clientId)
+        .ilike("name", folderName)
+        .or(`parent_id.eq.${sourceFolder.id}`)
+        .maybeSingle();
+      if (found) { bankFolder = found; break; }
+    }
+
+    if (!bankFolder) {
+      console.log(`[BANK SOURCE] "Bank Statement" subfolder not found for ${clientId}`);
+      return res.json({
+        success: true,
+        empty: true,
+        source: "manual_upload",
+        banks: [],
+        months: [],
+        totals: [],
+        message: "No bank statements uploaded. Create a Bank Statement folder under Manual Upload Source in the Data Room.",
+      });
+    }
+
+    const { data: documents } = await supabase
+      .from("documents")
+      .select("id, name, upload_id, file_url")
+      .eq("folder_id", bankFolder.id)
+      .order("uploaded_at", { ascending: false });
+
+    if (!documents?.length) {
+      console.log(`[BANK SOURCE] No documents in Bank Statement folder for ${clientId}`);
+      return res.json({
+        success: true,
+        empty: true,
+        source: "manual_upload",
+        banks: [],
+        months: [],
+        totals: [],
+        message: "No bank statements uploaded. Upload PDF or Excel files to Manual Upload Source → Bank Statement in the Data Room.",
+      });
+    }
+
+    const allStatements = [];
+    const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+    for (const doc of documents) {
+      const fileName = String(doc.name || "bank_statement");
+      const ext = fileName.toLowerCase().split(".").pop();
+      const isPdf = ext === "pdf";
+      const isExcel = ["xlsx", "xls", "csv"].includes(ext);
+      if (!isPdf && !isExcel) continue;
+
+      let buffer = null;
+      if (doc.upload_id) {
+        const { data: upload } = await supabase
+          .from("uploads").select("data").eq("id", doc.upload_id).maybeSingle();
+        if (upload?.data) buffer = normalizeBankBinary(upload.data);
+      }
+      if (!buffer && doc.file_url) {
+        const m = String(doc.file_url).match(/\/uploads\/([0-9a-f-]{36})\/content/i);
+        if (m) {
+          const { data: upload2 } = await supabase
+            .from("uploads").select("data").eq("id", m[1]).maybeSingle();
+          if (upload2?.data) buffer = normalizeBankBinary(upload2.data);
+        }
+      }
+      if (!buffer && doc.file_url) {
+        const uuidMatch = String(doc.file_url).match(UUID_RE);
+        if (uuidMatch) {
+          const { data: upload3 } = await supabase
+            .from("uploads").select("data").eq("id", uuidMatch[0]).maybeSingle();
+          if (upload3?.data) buffer = normalizeBankBinary(upload3.data);
+        }
+      }
+      if (!buffer?.length) {
+        console.warn(`[BANK SOURCE] No binary data for "${fileName}", skipping`);
+        continue;
+      }
+
+      try {
+        const statements = isExcel
+          ? await extractBankStatementsFromExcelBuffer(buffer, fileName)
+          : await extractBankStatementsFromPdfBase64(buffer.toString("base64"), fileName);
+        allStatements.push(...statements);
+      } catch (err) {
+        console.error(`[BANK SOURCE] Extraction failed for "${fileName}": ${err.message}`);
+      }
+    }
+
+    if (!allStatements.length) {
+      console.log(`[BANK SOURCE] No extractable bank data in ${documents.length} file(s) for ${clientId}`);
+      return res.json({
+        success: true,
+        empty: true,
+        source: "manual_upload",
+        banks: [],
+        months: [],
+        totals: [],
+        message: "No bank statement data could be extracted from the uploaded files.",
+      });
+    }
+
+    const { banks, months, totals } = buildBankResponseShape(allStatements);
+    console.log(`[BANK SOURCE] Extracted ${banks.length} bank(s) from ${documents.length} file(s) for ${clientId}`);
+    return res.json({ success: true, source: "manual_upload", banks, months, totals });
+  } catch (error) {
+    console.error("[BANK SOURCE] Error:", error);
+    return res.status(500).json({ success: false, error: error.message || "Failed to fetch manual upload bank data." });
   }
 });
 
