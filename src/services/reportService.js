@@ -1170,13 +1170,21 @@ export async function fetchFinancialTrends(
     );
   }
 
-  // QB mode: single request with summarize_columns_by returns all periods in one response.
-  // QB returns one column per month/quarter; future periods have 0 values and get trimmed.
-  const summarizeBy = aggregationType === "quarterly" ? "Quarter" : "Month";
-  const report = await fetchProfitAndLoss(
-    { start_date: start, end_date: end, summarize_columns_by: summarizeBy },
-    { signal: AbortSignal.timeout(15000) },
-  ).catch(() => null);
-
-  return extractMultiColumnTrends(report || {}, buckets);
+  return mapWithConcurrency(
+    buckets,
+    async (bucket) => {
+      const report = await fetchProfitAndLoss(
+        { start_date: bucket.start, end_date: bucket.end },
+        { signal: AbortSignal.timeout(15000) },
+      ).catch(() => null);
+      const totals = extractProfitAndLossTotals(report || {});
+      return {
+        name: bucket.shortName ?? bucket.name,
+        fullLabel: bucket.fullLabel ?? bucket.name,
+        revenue: totals.revenue,
+        expenses: totals.expenses,
+      };
+    },
+    TREND_FETCH_CONCURRENCY,
+  );
 }
