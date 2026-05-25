@@ -8,6 +8,7 @@ const {
   getBalanceSheetMonthlyDetailFromStage,
   getCashflowSummaryFromStage,
   getCashflowMonthlyDetailFromStage,
+  retrySupabaseOperation,
 } = require("./manualGlMultiYearService");
 const { getActiveUploadBatch } = require("./manualGlActiveBatchService");
 
@@ -98,10 +99,12 @@ async function upsertReportingSnapshot({
       .select("*")
       .maybeSingle();
 
-  let { data, error } = await runUpsert(payload);
+  let { data, error } = await retrySupabaseOperation(() => runUpsert(payload));
   if (error && isMissingColumnError(error, "dataset_version")) {
     const { dataset_version, ...legacyPayload } = payload;
-    ({ data, error } = await runUpsert(legacyPayload));
+    const legacyResult = await retrySupabaseOperation(() => runUpsert(legacyPayload));
+    data = legacyResult.data;
+    error = legacyResult.error;
   }
 
   if (error) {
@@ -134,6 +137,38 @@ async function getSnapshotForBatch({ companyId, batchId, reportType, fiscalYear 
   return mapSnapshotRow(data || null);
 }
 
+async function getSnapshotForDatasetVersion({
+  companyId,
+  datasetVersion,
+  reportType,
+  fiscalYear = null,
+}) {
+  if (!companyId || !reportType) return null;
+  const parsedDatasetVersion = Number(datasetVersion);
+  if (!Number.isInteger(parsedDatasetVersion) || parsedDatasetVersion <= 0) return null;
+
+  const normalizedFiscalYear = normalizeFiscalYear(fiscalYear);
+
+  const { data, error } = await supabase
+    .from(TABLE_SNAPSHOTS)
+    .select("*")
+    .eq("company_id", companyId)
+    .eq("dataset_version", parsedDatasetVersion)
+    .eq("report_type", reportType)
+    .eq("fiscal_year", normalizedFiscalYear)
+    .order("generated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error && error.code !== "PGRST116") {
+    throw new Error(
+      `Failed to fetch reporting snapshot (${reportType}) for dataset_version=${parsedDatasetVersion}: ${error.message}`,
+    );
+  }
+
+  return mapSnapshotRow(data || null);
+}
+
 async function getSnapshotForActiveBatch({ companyId, reportType, fiscalYear = null }) {
   if (!companyId || !reportType) return { snapshot: null, activeBatchId: null };
 
@@ -153,6 +188,40 @@ async function getSnapshotForActiveBatch({ companyId, reportType, fiscalYear = n
     snapshot,
     activeBatchId: activeBatch.id,
   };
+}
+
+async function listReportingSnapshotDatasetVersions(companyId, limit = 50) {
+  if (!companyId) return [];
+
+  const { data, error } = await supabase
+    .from(TABLE_SNAPSHOTS)
+    .select("dataset_version")
+    .eq("company_id", companyId)
+    .not("dataset_version", "is", null)
+    .order("dataset_version", { ascending: false })
+    .limit(Math.max(limit * 20, limit));
+
+  if (error) {
+    throw new Error(`Failed to list reporting snapshot dataset versions: ${error.message}`);
+  }
+
+  console.log(
+    `[ManualGL][Versions][Snapshots][Rows] company=${companyId} rowCount=${Array.isArray(data) ? data.length : 0} ` +
+    `rows=${JSON.stringify(Array.isArray(data) ? data.slice(0, 200) : [])}`,
+  );
+
+  const seen = new Set();
+  const versions = [];
+  for (const row of Array.isArray(data) ? data : []) {
+    const parsed = Number(row?.dataset_version);
+    if (!Number.isInteger(parsed) || parsed <= 0) continue;
+    if (seen.has(parsed)) continue;
+    seen.add(parsed);
+    versions.push(parsed);
+    if (versions.length >= limit) break;
+  }
+
+  return versions;
 }
 
 async function generateReportingSnapshotsForBatch(companyId, batchId) {
@@ -213,6 +282,7 @@ async function generateReportingSnapshotsForBatch(companyId, batchId) {
       };
 
     // Build all report payloads for this fiscal slice.
+    // Use retry logic for each report calculation to handle transient DB timeouts.
     const [
       profitLossSummary,
       profitLossDetail,
@@ -222,73 +292,38 @@ async function generateReportingSnapshotsForBatch(companyId, batchId) {
       cashflowSummary,
       cashflowMonthlyDetail,
     ] = await Promise.all([
-      getProfitLossSummaryFromStage(companyId, filters),
-      getProfitLossDetailFromStage(companyId, filters),
-      getProfitLossMonthlyDetailFromStage(companyId, filters),
-      getBalanceSheetSummaryFromStage(companyId, filters),
-      getBalanceSheetMonthlyDetailFromStage(companyId, filters),
-      getCashflowSummaryFromStage(companyId, filters),
-      getCashflowMonthlyDetailFromStage(companyId, filters),
+      retrySupabaseOperation(() => getProfitLossSummaryFromStage(companyId, filters)),
+      retrySupabaseOperation(() => getProfitLossDetailFromStage(companyId, filters)),
+      retrySupabaseOperation(() => getProfitLossMonthlyDetailFromStage(companyId, filters)),
+      retrySupabaseOperation(() => getBalanceSheetSummaryFromStage(companyId, filters)),
+      retrySupabaseOperation(() => getBalanceSheetMonthlyDetailFromStage(companyId, filters)),
+      retrySupabaseOperation(() => getCashflowSummaryFromStage(companyId, filters)),
+      retrySupabaseOperation(() => getCashflowMonthlyDetailFromStage(companyId, filters)),
     ]);
 
-    await Promise.all([
-      upsertReportingSnapshot({
+    // Upsert snapshots. We process these sequentially instead of in massive
+    // Promise.all blocks to avoid exhausting the DB connection pool during
+    // high-volume orchestration.
+    const snapshotTasks = [
+      { type: SNAPSHOT_REPORT_TYPES.PROFIT_LOSS_SUMMARY, payload: profitLossSummary },
+      { type: SNAPSHOT_REPORT_TYPES.PROFIT_LOSS_DETAIL, payload: profitLossDetail },
+      { type: SNAPSHOT_REPORT_TYPES.PROFIT_LOSS_MONTHLY_DETAIL, payload: profitLossMonthlyDetail },
+      { type: SNAPSHOT_REPORT_TYPES.BALANCE_SHEET_SUMMARY, payload: balanceSheetSummary },
+      { type: SNAPSHOT_REPORT_TYPES.BALANCE_SHEET_MONTHLY_DETAIL, payload: balanceSheetMonthlyDetail },
+      { type: SNAPSHOT_REPORT_TYPES.CASHFLOW_SUMMARY, payload: cashflowSummary },
+      { type: SNAPSHOT_REPORT_TYPES.CASHFLOW_MONTHLY_DETAIL, payload: cashflowMonthlyDetail },
+    ];
+
+    for (const task of snapshotTasks) {
+      await upsertReportingSnapshot({
         companyId,
         batchId,
         datasetVersion: resolvedDatasetVersion,
-        reportType: SNAPSHOT_REPORT_TYPES.PROFIT_LOSS_SUMMARY,
-        snapshotPayload: profitLossSummary,
+        reportType: task.type,
+        snapshotPayload: task.payload,
         fiscalYear: year,
-      }),
-      upsertReportingSnapshot({
-        companyId,
-        batchId,
-        datasetVersion: resolvedDatasetVersion,
-        reportType: SNAPSHOT_REPORT_TYPES.PROFIT_LOSS_DETAIL,
-        snapshotPayload: profitLossDetail,
-        fiscalYear: year,
-      }),
-      upsertReportingSnapshot({
-        companyId,
-        batchId,
-        datasetVersion: resolvedDatasetVersion,
-        reportType: SNAPSHOT_REPORT_TYPES.PROFIT_LOSS_MONTHLY_DETAIL,
-        snapshotPayload: profitLossMonthlyDetail,
-        fiscalYear: year,
-      }),
-      upsertReportingSnapshot({
-        companyId,
-        batchId,
-        datasetVersion: resolvedDatasetVersion,
-        reportType: SNAPSHOT_REPORT_TYPES.BALANCE_SHEET_SUMMARY,
-        snapshotPayload: balanceSheetSummary,
-        fiscalYear: year,
-      }),
-      upsertReportingSnapshot({
-        companyId,
-        batchId,
-        datasetVersion: resolvedDatasetVersion,
-        reportType: SNAPSHOT_REPORT_TYPES.BALANCE_SHEET_MONTHLY_DETAIL,
-        snapshotPayload: balanceSheetMonthlyDetail,
-        fiscalYear: year,
-      }),
-      upsertReportingSnapshot({
-        companyId,
-        batchId,
-        datasetVersion: resolvedDatasetVersion,
-        reportType: SNAPSHOT_REPORT_TYPES.CASHFLOW_SUMMARY,
-        snapshotPayload: cashflowSummary,
-        fiscalYear: year,
-      }),
-      upsertReportingSnapshot({
-        companyId,
-        batchId,
-        datasetVersion: resolvedDatasetVersion,
-        reportType: SNAPSHOT_REPORT_TYPES.CASHFLOW_MONTHLY_DETAIL,
-        snapshotPayload: cashflowMonthlyDetail,
-        fiscalYear: year,
-      }),
-    ]);
+      });
+    }
 
     snapshotCount += 7;
   }
@@ -307,7 +342,9 @@ module.exports = {
   SNAPSHOT_REPORT_TYPES,
   upsertReportingSnapshot,
   getSnapshotForBatch,
+  getSnapshotForDatasetVersion,
   getSnapshotForActiveBatch,
+  listReportingSnapshotDatasetVersions,
   generateReportingSnapshotsForBatch,
 };
 

@@ -17,6 +17,11 @@ const {
   resolveReportBatchId,
   REPORT_BATCH_MODE,
 } = require("./manualGlActiveBatchService");
+const {
+  getActiveUploadSessionMap,
+  getLatestUploadSessionVersion,
+  findExistingStagedUploadSessionsByYearHash,
+} = require("./manualGlUploadSessionService");
 
 const TABLES = {
   batches: "manual_gl_batches",
@@ -260,6 +265,148 @@ function toNonEmptyString(value, fallback = "") {
 
 function normalizeKey(val) {
   return String(val || "").trim().toLowerCase();
+}
+
+/**
+ * Scans the first N rows of a sheet for keywords matching "Company", "Client", etc.
+ * extraction of potential company name associated with the GL dataset.
+ */
+function detectCompanyInGl(sheetData, maxRows = 100) {
+  if (!sheetData?.rows?.length) return null;
+
+  const keywords = ["company", "client", "business", "entity", "customer", "firm"];
+  const rows = sheetData.rows.slice(0, maxRows);
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const cells = Object.values(row);
+
+    for (let j = 0; j < cells.length; j++) {
+      const cell = String(cells[j] || "").trim().toLowerCase();
+
+      // Look for "Keyword:" or "Keyword :"
+      for (const kw of keywords) {
+        if (cell.startsWith(kw) && (cell.includes(":") || cell.includes(" - "))) {
+          // If the cell contains both keyword and value (e.g. "Company: TCS")
+          const parts = cell.split(/[:\-]/);
+          if (parts.length > 1 && parts[1].trim()) {
+            return parts[1].trim();
+          }
+          // If the value is in the next cell
+          if (j + 1 < cells.length && cells[j + 1]) {
+            return String(cells[j + 1]).trim();
+          }
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Validates whether the selected fiscal years are already staged for the company.
+   * Implements strict collision detection for multi-year uploads.
+   */
+async function checkExistingStagedFiscalYears(companyId, fiscalYears = [], dataHash = null) {
+  const normalizedYears = Array.from(
+    new Set(
+      (Array.isArray(fiscalYears) ? fiscalYears : [])
+        .map((year) => Number(year))
+        .filter((year) => Number.isInteger(year) && year > 0),
+    ),
+  ).sort((a, b) => a - b);
+
+  if (!companyId || normalizedYears.length === 0) {
+    return { isDuplicate: false, duplicateYears: [], duplicates: [], matches: [] };
+  }
+
+  const requestedYearHashes = Array.isArray(dataHash)
+    ? dataHash
+      .map((item) => ({
+        fiscalYear: Number(item?.fiscalYear || 0),
+        dataHash: String(item?.dataHash || "").trim(),
+      }))
+      .filter((item) => Number.isInteger(item.fiscalYear) && item.fiscalYear > 0 && item.dataHash)
+    : typeof dataHash === "string" && dataHash.trim()
+      ? normalizedYears.map((fiscalYear) => ({ fiscalYear, dataHash: dataHash.trim() }))
+      : [];
+
+  console.log(
+    `[ManualGL][Validation] Checking duplicates for company ${companyId}; years=[${normalizedYears.join(", ")}]; ` +
+    `hashPairs=${requestedYearHashes.length}`,
+  );
+
+  if (requestedYearHashes.length === 0) {
+    return { isDuplicate: false, duplicateYears: [], duplicates: [], matches: [] };
+  }
+
+  try {
+    const lookup = await findExistingStagedUploadSessionsByYearHash({
+      companyId,
+      yearHashes: requestedYearHashes,
+    });
+
+    const matches = Array.isArray(lookup?.matches) ? lookup.matches : [];
+    const duplicateYears = Array.from(
+      new Set(
+        matches
+          .map((entry) => Number(entry?.fiscalYear || 0))
+          .filter((year) => Number.isInteger(year) && year > 0),
+      ),
+    ).sort((a, b) => a - b);
+
+    console.log(
+      `[ManualGL][Validation] Duplicate query result: stagedRows=${lookup?.rows?.length || 0}, ` +
+      `matchedYears=[${duplicateYears.join(", ")}]`,
+    );
+
+    if (duplicateYears.length === normalizedYears.length) {
+      const firstMatch = matches[0]?.existingSession || null;
+      return {
+        isDuplicate: true,
+        message: "The selected fiscal year data is already staged.",
+        existingVersion: Number(firstMatch?.version_no || 0) || null,
+        activeBatchId: firstMatch?.staging_batch_id || null,
+        duplicateYears,
+        duplicates: duplicateYears,
+        matches,
+      };
+    }
+
+    return {
+      isDuplicate: false,
+      duplicateYears,
+      duplicates: duplicateYears,
+      matches,
+    };
+  } catch (error) {
+    console.error("[ManualGL][Validation] Duplicate check failed:", error.message);
+    return { isDuplicate: false, duplicateYears: [], duplicates: [], matches: [] };
+  }
+}
+
+/**
+ * Builds a deterministic SHA-256 hash for a collection of transactions.
+ * Used to detect duplicate datasets regardless of filename or upload session.
+ */
+function buildDatasetHash(transactions = []) {
+  if (!transactions.length) return null;
+
+  // Build from normalized business fields (NOT upload-id dependent hashes) so
+  // the same dataset always yields the same checksum across re-uploads.
+  const sortedHashes = transactions
+    .map((tx) => buildCrossFileDedupHash(tx))
+    .filter(Boolean)
+    .sort();
+
+  if (!sortedHashes.length) return null;
+
+  const digest = crypto.createHash("sha256");
+  sortedHashes.forEach((h) => digest.update(h));
+  digest.update(`#count:${sortedHashes.length}`);
+
+  return digest.digest("hex");
 }
 
 function roundMoney(value) {
@@ -1187,22 +1334,50 @@ function buildTransactionHash(parts) {
 }
 
 function buildCrossFileDedupHash(tx = {}) {
-  return buildTransactionHash([
-    String(tx.fiscalYear || ""),
-    String(tx.date || ""),
-    String(tx.accountNumber || ""),
-    String(tx.accountName || ""),
+  // Normalize strings and round numbers for absolute determinism
+  const parts = [
+    String(tx.fiscalYear || "").trim(),
+    String(tx.date || "").trim(),
+    String(tx.accountNumber || "").trim().toLowerCase(),
+    String(tx.accountName || "").trim().toLowerCase(),
     roundMoney(Number(tx.debit || 0)).toFixed(2),
     roundMoney(Number(tx.credit || 0)).toFixed(2),
     roundMoney(Number(tx.netAmount || 0)).toFixed(2),
-    String(tx.class || ""),
-    String(tx.department || ""),
-    String(tx.location || ""),
-    String(tx.transactionType || ""),
-    String(tx.journalType || ""),
-    String(tx.reference || ""),
-    String(tx.description || ""),
-  ]);
+    String(tx.class || "").trim().toLowerCase(),
+    String(tx.department || "").trim().toLowerCase(),
+    String(tx.location || "").trim().toLowerCase(),
+    String(tx.transactionType || "").trim().toLowerCase(),
+    String(tx.journalType || "").trim().toLowerCase(),
+    String(tx.reference || "").trim().toLowerCase(),
+    String(tx.description || "").trim().toLowerCase(),
+  ];
+
+  const raw = parts.join("|");
+  return crypto.createHash("sha1").update(raw).digest("hex");
+}
+
+function sha256Hex(parts = []) {
+  const digest = crypto.createHash("sha256");
+  parts.forEach((part) => {
+    digest.update(String(part ?? ""));
+    digest.update("|");
+  });
+  return digest.digest("hex");
+}
+
+function buildYearDataHash(transactions = []) {
+  const canonical = transactions
+    .map((tx) => buildCrossFileDedupHash(tx))
+    .sort();
+  return sha256Hex([...canonical, `rows:${canonical.length}`]);
+}
+
+function buildYearFileHash(uploadHashes = []) {
+  const normalized = uploadHashes
+    .map((item) => String(item || "").trim().toLowerCase())
+    .filter(Boolean)
+    .sort();
+  return normalized.length ? sha256Hex([...normalized, `files:${normalized.length}`]) : null;
 }
 
 function assignFiscalYearAndRefreshHash(
@@ -2068,6 +2243,9 @@ async function createBatch({
   sourceType = MANUAL_SOURCE_KEY,
   sourceSwitchVersion = null,
   uploadSessionId = null,
+  datasetHash = null,
+  fiscalYearStart = null,
+  fiscalYearEnd = null,
 }) {
   const now = new Date().toISOString();
   const normalizedSessionId =
@@ -2153,6 +2331,9 @@ async function createBatch({
     uploaded_by: createdBy || null,
     uploaded_at: now,
     processing_started_at: now,
+    dataset_hash: datasetHash,
+    fiscal_year_start: fiscalYearStart,
+    fiscal_year_end: fiscalYearEnd,
   };
 
   const insertBatch = async (nextPayload) =>
@@ -2495,6 +2676,273 @@ async function replaceBalanceSheetLines({
   return { inserted: lines.length };
 }
 
+async function fetchBatchTransactions(companyId, batchId, fiscalYears = [], columns = "*") {
+  if (!companyId || !batchId) return [];
+
+  const years = Array.isArray(fiscalYears)
+    ? fiscalYears.map((year) => Number(year)).filter((year) => Number.isInteger(year) && year > 0)
+    : [];
+
+  const pageSize = 1000;
+  const rows = [];
+  let offset = 0;
+
+  while (true) {
+    let query = supabase
+      .from(TABLES.transactions)
+      .select(columns)
+      .eq("company_id", companyId)
+      .eq("upload_batch_id", batchId)
+      .order("id", { ascending: true })
+      .range(offset, offset + pageSize - 1);
+
+    if (years.length) {
+      query = query.in("fiscal_year", years);
+    }
+
+    let { data, error } = await query;
+
+    if (error && isMissingColumnError(error, "upload_batch_id")) {
+      let fallback = supabase
+        .from(TABLES.transactions)
+        .select(columns)
+        .eq("company_id", companyId)
+        .eq("batch_id", batchId)
+        .order("id", { ascending: true })
+        .range(offset, offset + pageSize - 1);
+
+      if (years.length) {
+        fallback = fallback.in("fiscal_year", years);
+      }
+
+      ({ data, error } = await fallback);
+    }
+
+    if (error) {
+      throw new Error(`Failed to load batch transactions: ${error.message}`);
+    }
+
+    const chunk = Array.isArray(data) ? data : [];
+    if (!chunk.length) break;
+
+    rows.push(...chunk);
+    if (chunk.length < pageSize) break;
+    offset += chunk.length;
+  }
+
+  return rows;
+}
+
+async function computeBatchYearSummaries(companyId, batchId, fiscalYears = []) {
+  const rows = await fetchBatchTransactions(companyId, batchId, fiscalYears);
+  const grouped = new Map();
+
+  rows.forEach((row) => {
+    const normalized = normalizeStagedTransactionRow(row);
+    const fiscalYear = Number(normalized?.fiscalYear || 0);
+    if (!Number.isInteger(fiscalYear) || fiscalYear <= 0) return;
+    if (!grouped.has(fiscalYear)) grouped.set(fiscalYear, []);
+    grouped.get(fiscalYear).push(normalized);
+  });
+
+  const summaries = {};
+  grouped.forEach((transactions, fiscalYear) => {
+    summaries[fiscalYear] = {
+      fiscalYear,
+      rowCount: transactions.length,
+      sourceUploadIds: Array.from(
+        new Set(transactions.map((tx) => String(tx.sourceUploadId || "").trim()).filter(Boolean)),
+      ).sort(),
+      fileHash: null,
+      dataHash: buildYearDataHash(transactions),
+    };
+  });
+
+  return summaries;
+}
+
+async function copyBatchTransactionsForYears({
+  companyId,
+  sourceBatchId,
+  targetBatchId,
+  fiscalYears = [],
+  datasetVersionId = null,
+  sourceType = MANUAL_SOURCE_KEY,
+  sourceSwitchVersion = null,
+  uploadSessionId = null,
+}) {
+  const years = Array.isArray(fiscalYears)
+    ? fiscalYears.map((year) => Number(year)).filter((year) => Number.isInteger(year) && year > 0)
+    : [];
+  if (!companyId || !sourceBatchId || !targetBatchId || years.length === 0) {
+    return { inserted: 0, yearGroups: {} };
+  }
+
+  const rows = await fetchBatchTransactions(companyId, sourceBatchId, years);
+  if (!rows.length) {
+    return { inserted: 0, yearGroups: {} };
+  }
+
+  const stagedAt = new Date().toISOString();
+  const normalizedSessionId =
+    uploadSessionId && isValidUuid(uploadSessionId) ? uploadSessionId : null;
+  const normalizedVersion = sourceSwitchVersion || null;
+  const payloads = rows.map((row) => ({
+    company_id: companyId,
+    batch_id: targetBatchId,
+    upload_batch_id: targetBatchId,
+    transaction_id: row.transaction_id,
+    fiscal_year: row.fiscal_year,
+    txn_date: row.txn_date,
+    account_number: row.account_number,
+    account_name: row.account_name,
+    vendor_name: row.vendor_name || null,
+    account_type: row.account_type || null,
+    category: row.category || null,
+    sub_category: row.sub_category || null,
+    debit: row.debit,
+    credit: row.credit,
+    net_amount: row.net_amount,
+    class: row.class || null,
+    department: row.department || null,
+    location: row.location || null,
+    journal_type: row.journal_type || null,
+    transaction_type: row.transaction_type || null,
+    reference: row.reference || null,
+    description: row.description || null,
+    source_file: row.source_file || null,
+    source_upload_id: row.source_upload_id || null,
+    row_number: row.row_number || null,
+    transaction_hash: buildTransactionHash([targetBatchId, row.transaction_hash]),
+    raw_row_reference: row.raw_row_reference || {
+      sourceUploadId: row.source_upload_id || null,
+      rowNumber: row.row_number || null,
+      sourceFile: row.source_file || null,
+    },
+    metadata: {
+      ...(row.metadata && typeof row.metadata === "object" ? row.metadata : {}),
+      carriedForwardFromBatchId: sourceBatchId,
+    },
+    dataset_version_id: datasetVersionId,
+    source_type: sourceType || MANUAL_SOURCE_KEY,
+    source_switch_version: normalizedVersion,
+    upload_session_id: normalizedSessionId,
+    staged_at: stagedAt,
+  }));
+
+  const yearGroups = {};
+  payloads.forEach((row) => {
+    const yearKey = row.fiscal_year || "Unknown";
+    yearGroups[yearKey] = (yearGroups[yearKey] || 0) + 1;
+  });
+
+  const chunkSize = 500;
+  for (let index = 0; index < payloads.length; index += chunkSize) {
+    const chunk = payloads.slice(index, index + chunkSize);
+    let { error } = await supabase
+      .from(TABLES.transactions)
+      .upsert(chunk, {
+        onConflict: "company_id,batch_id,transaction_hash",
+        ignoreDuplicates: true,
+      });
+
+    if (error && (isMissingColumnError(error) || isConflictTargetError(error))) {
+      const legacyChunk = chunk.map(
+        ({
+          source_type,
+          source_switch_version,
+          upload_session_id,
+          staged_at,
+          upload_batch_id,
+          vendor_name,
+          raw_row_reference,
+          ...legacy
+        }) => legacy,
+      );
+
+      const legacyResult = await supabase
+        .from(TABLES.transactions)
+        .upsert(legacyChunk, {
+          onConflict: isConflictTargetError(error)
+            ? "company_id,transaction_hash"
+            : "company_id,batch_id,transaction_hash",
+          ignoreDuplicates: true,
+        });
+
+      error = legacyResult.error;
+    }
+
+    if (error) {
+      throw new Error(`Failed to carry forward staged transactions: ${error.message}`);
+    }
+  }
+
+  return {
+    inserted: payloads.length,
+    yearGroups,
+  };
+}
+
+async function copyBalanceSheetLinesFromBatch({
+  companyId,
+  sourceBatchId,
+  targetBatchId,
+  sheetType,
+  datasetVersionId = null,
+  sourceType = MANUAL_SOURCE_KEY,
+  sourceSwitchVersion = null,
+  uploadSessionId = null,
+}) {
+  if (!companyId || !sourceBatchId || !targetBatchId || !sheetType) {
+    return { inserted: 0 };
+  }
+
+  const lines = await loadBatchBalanceSheetLines(companyId, sourceBatchId, sheetType);
+  if (!lines.length) {
+    return { inserted: 0 };
+  }
+
+  const stagedAt = new Date().toISOString();
+  const normalizedSessionId =
+    uploadSessionId && isValidUuid(uploadSessionId) ? uploadSessionId : null;
+  const normalizedVersion = sourceSwitchVersion || null;
+
+  const payloads = lines.map((line) => ({
+    company_id: companyId,
+    batch_id: targetBatchId,
+    sheet_type: line.sheet_type,
+    as_of_date: line.as_of_date || null,
+    section: line.section,
+    account_name: line.account_name,
+    amount: line.amount,
+    source_file: line.source_file || null,
+    source_upload_id: line.source_upload_id || null,
+    row_number: line.row_number || null,
+    line_hash: buildBalanceSheetLineHash({
+      ...line,
+      batch_id: targetBatchId,
+    }),
+    source_type: sourceType || MANUAL_SOURCE_KEY,
+    source_switch_version: normalizedVersion,
+    upload_session_id: normalizedSessionId,
+    staged_at: stagedAt,
+    metadata: {
+      ...(line.metadata && typeof line.metadata === "object" ? line.metadata : {}),
+      carriedForwardFromBatchId: sourceBatchId,
+    },
+    dataset_version_id: datasetVersionId,
+  }));
+
+  const result = await replaceBalanceSheetLines({
+    companyId,
+    batchId: targetBatchId,
+    sheetType,
+    lines: payloads,
+  });
+
+  return result;
+}
+
 function parseMultiValue(value) {
   if (Array.isArray(value)) {
     return value.map((item) => String(item || "").trim()).filter(Boolean);
@@ -2511,6 +2959,11 @@ function parseIntegerValues(value) {
     .filter((item) => Number.isInteger(item));
 }
 
+function parsePositiveIntegerValue(value) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
 function applyTextFilter(query, column, value, exactList = false) {
   const values = parseMultiValue(value);
   if (!values.length) return query;
@@ -2521,9 +2974,26 @@ function applyTextFilter(query, column, value, exactList = false) {
 }
 
 function parseManualFilterQuery(rawFilters = {}) {
-  const rawUploadSessionId = toNonEmptyString(
-    rawFilters.uploadSessionId || rawFilters.upload_session_id || "",
+  const rawDatasetVersionId = toNonEmptyString(
+    rawFilters.datasetVersionId || rawFilters.dataset_version_id || "",
   );
+  let rawDatasetVersion = toNonEmptyString(
+    rawFilters.datasetVersion ||
+    rawFilters.dataset_version ||
+    rawFilters.versionNumber ||
+    rawFilters.version_number ||
+    "",
+  );
+  const rawUploadSessionId = toNonEmptyString(
+    rawFilters.uploadSessionId || rawFilters.upload_session_id || rawFilters.versionId || rawFilters.version_id || "",
+  );
+  const rawVersionId = toNonEmptyString(
+    rawFilters.versionId || rawFilters.version_id || rawUploadSessionId || "",
+  );
+  if (!rawDatasetVersion && rawVersionId && !isValidUuid(rawVersionId)) {
+    rawDatasetVersion = rawVersionId;
+  }
+  const datasetVersion = parsePositiveIntegerValue(rawDatasetVersion);
   const rawVersionMode = toNonEmptyString(
     rawFilters.versionMode || rawFilters.version_mode || "",
   ).toLowerCase();
@@ -2533,11 +3003,13 @@ function parseManualFilterQuery(rawFilters = {}) {
     rawFilters.allowArchived ||
     rawFilters.allow_archived ||
     rawFilters.historical,
-  ) || rawVersionMode === REPORT_BATCH_MODE.HISTORICAL || rawVersionMode === "archived";
+  ) || rawVersionMode === REPORT_BATCH_MODE.HISTORICAL || rawVersionMode === "archived" || !!rawVersionId || !!datasetVersion;
 
   return {
     batchId: rawFilters.batchId || rawFilters.batch_id || "",
-    datasetVersionId: rawFilters.datasetVersionId || rawFilters.dataset_version_id || "",
+    datasetVersionId: rawDatasetVersionId,
+    datasetVersion,
+    versionId: rawVersionId,
     versionMode: includeArchived ? REPORT_BATCH_MODE.HISTORICAL : REPORT_BATCH_MODE.ACTIVE,
     includeArchived,
     fiscalYears: parseIntegerValues(rawFilters.fiscalYears || rawFilters.fiscalYear || rawFilters.year || rawFilters.years),
@@ -2578,7 +3050,34 @@ async function queryStagedTransactions(companyId, rawFilters = {}) {
     return { filters, rows: [] };
   }
 
-  if (!filters.batchId && !filters.allBatches && !filters.datasetVersionId) {
+  if (!filters.batchId && (filters.versionId || filters.uploadSessionId)) {
+    const resolvedBatchFromVersion = await resolveReportBatchId(companyId, "", {
+      ...filters,
+      allowExplicitBatch: true,
+      includeArchived: true,
+      versionMode: REPORT_BATCH_MODE.HISTORICAL,
+      versionId: filters.versionId || "",
+      uploadSessionId: filters.uploadSessionId || "",
+    });
+    if (resolvedBatchFromVersion) {
+      filters.batchId = resolvedBatchFromVersion;
+    }
+  }
+
+  if (!filters.batchId && Number.isInteger(Number(filters.datasetVersion)) && Number(filters.datasetVersion) > 0) {
+    const resolvedBatchFromDatasetVersion = await resolveReportBatchId(companyId, "", {
+      ...filters,
+      allowExplicitBatch: true,
+      includeArchived: true,
+      versionMode: REPORT_BATCH_MODE.HISTORICAL,
+      datasetVersion: Number(filters.datasetVersion),
+    });
+    if (resolvedBatchFromDatasetVersion) {
+      filters.batchId = resolvedBatchFromDatasetVersion;
+    }
+  }
+
+  if (!filters.batchId && !filters.allBatches && !filters.datasetVersionId && !filters.datasetVersion) {
     const activeBatch = await getActiveUploadBatch(companyId);
     if (activeBatch?.id) {
       filters.batchId = activeBatch.id;
@@ -4741,6 +5240,58 @@ function computePerYearStats(yearMap) {
   return stats;
 }
 
+function computeUploadedYearSummaries(yearMap, fileHashesByUploadId = new Map()) {
+  const summaries = {};
+
+  yearMap.forEach((transactions, year) => {
+    const fiscalYear = Number(year);
+    if (!Number.isInteger(fiscalYear) || fiscalYear <= 0) return;
+
+    const sourceUploadIds = Array.from(
+      new Set(transactions.map((tx) => String(tx.sourceUploadId || "").trim()).filter(Boolean)),
+    ).sort();
+
+    const uploadHashes = sourceUploadIds
+      .map((uploadId) => fileHashesByUploadId.get(uploadId))
+      .filter(Boolean);
+
+    summaries[fiscalYear] = {
+      fiscalYear,
+      rowCount: transactions.length,
+      sourceUploadIds,
+      fileHash: buildYearFileHash(uploadHashes),
+      dataHash: buildYearDataHash(transactions),
+    };
+  });
+
+  return summaries;
+}
+
+function extractYearsFromBatchMetadata(metadata = {}) {
+  if (!metadata || typeof metadata !== "object") return [];
+
+  const years = new Set();
+  const directYears = Array.isArray(metadata.yearsDetected) ? metadata.yearsDetected : [];
+  directYears.forEach((year) => {
+    const parsed = Number(year);
+    if (Number.isInteger(parsed) && parsed > 0) {
+      years.add(parsed);
+    }
+  });
+
+  const perYearStats = metadata.perYearStats && typeof metadata.perYearStats === "object"
+    ? metadata.perYearStats
+    : {};
+  Object.keys(perYearStats).forEach((yearKey) => {
+    const parsed = Number(yearKey);
+    if (Number.isInteger(parsed) && parsed > 0) {
+      years.add(parsed);
+    }
+  });
+
+  return Array.from(years).sort((a, b) => a - b);
+}
+
 /**
  * Logs a structured per-year audit table immediately after year-splitting so
  * the server logs carry clear evidence of what each year contains.
@@ -4890,35 +5441,26 @@ async function stageMultiYearGlUpload({
 
   let uploadJob = null;
   let datasetVersion = null;
-  if (useDatasetLifecycle) {
-    console.log("[ManualGL][MultiYear] Starting upload lifecycle...");
-    const lifecycle = await startUploadLifecycle(
-      companyId,
-      batchName || "Multi-Year GL Upload",
-      uploadedBy,
-    );
-    uploadJob = lifecycle.job || null;
-    datasetVersion = lifecycle.version || null;
-  }
 
-  console.log("[ManualGL][MultiYear] Creating batch...");
-  const batch = await createBatch({
-    companyId,
-    createdBy: uploadedBy,
-    batchName,
-    datasetVersionId: datasetVersion?.id || null,
-    sourceType,
-    sourceSwitchVersion,
-    uploadSessionId,
-  });
-  console.log("[ManualGL][MultiYear] Batch created:", batch.id);
+  let batch = null;
   const effectiveMapping = ensureMappingShape(mapping || {});
+
+  // Fetch target company details for identity validation
+  const targetCompany = await supabase
+    .from("companies")
+    .select("name, legal_name")
+    .eq("id", companyId)
+    .maybeSingle();
+  const targetCompanyName = normalizeKey(targetCompany?.data?.name || "");
+  const targetLegalName = normalizeKey(targetCompany?.data?.legal_name || "");
 
   const parsingWarnings = [];
   const resolvedMappings = {};
   const filesParsed = [];
   const filesRequiringMapping = [];
   const parseAuditByFile = [];
+  const fileHashesByUploadId = new Map();
+  const preparedFilePayloads = [];
   const parsingTotals = {
     totalRows: 0,
     parsedRows: 0,
@@ -5030,6 +5572,10 @@ async function stageMultiYearGlUpload({
     for (const uploadId of normalizedUploadIds) {
       try {
         const upload = await loadUpload(uploadId);
+        fileHashesByUploadId.set(
+          uploadId,
+          crypto.createHash("sha256").update(normalizeUploadBinary(upload.data)).digest("hex"),
+        );
         const sheets = parseWorkbook(upload);
         const scored = sheets
           .map((sheet) => ({ sheet, score: scoreSheetForGl(sheet) }))
@@ -5065,6 +5611,28 @@ async function stageMultiYearGlUpload({
           });
 
           if (!parsed.success) continue;
+
+          // STRICT COMPANY IDENTITY VALIDATION
+          const detectedName = normalizeKey(detectCompanyInGl(sheetData));
+          if (detectedName && targetCompanyName) {
+            // Check against both trade name and legal name
+            const isMatch =
+              detectedName === targetCompanyName ||
+              detectedName === targetLegalName ||
+              targetCompanyName.includes(detectedName) ||
+              targetLegalName.includes(detectedName) ||
+              detectedName.includes(targetCompanyName) ||
+              detectedName.includes(targetLegalName);
+
+            if (!isMatch) {
+              console.error(
+                `[ManualGL][Identity] REJECTED: Uploaded file "${upload.file_name}" metadata "${detectedName}" does not match company "${targetCompany?.data?.name}".`,
+              );
+              throw new Error(
+                `The uploaded GL file (${upload.file_name}) appears to belong to another company ("${detectedName}"). Please ensure you are uploading data for your active company.`,
+              );
+            }
+          }
 
           fileParsedAtLeastOne = true;
           resolvedMappings[uploadId] = parsed.mapping;
@@ -5174,27 +5742,15 @@ async function stageMultiYearGlUpload({
         totalCrossFileDuplicates += fileCrossFileDuplicates;
 
         allClassifiedTransactions.push(...dedupedTransactions);
-
-        const insertStats = await insertTransactions({
-          companyId,
-          batchId: batch.id,
+        preparedFilePayloads.push({
+          uploadId,
+          fileName: upload.file_name,
           transactions: dedupedTransactions,
-          datasetVersionId: datasetVersion?.id || null,
-          sourceType,
-          sourceSwitchVersion,
-          uploadSessionId,
-        });
-
-        totalInserted += insertStats.inserted;
-        totalDuplicates += insertStats.duplicates || 0;
-
-        Object.entries(insertStats.yearGroups || {}).forEach(([year, count]) => {
-          combinedYearGroups[year] = (combinedYearGroups[year] || 0) + count;
         });
 
         filesParsed.push(upload.file_name);
         console.log(
-          `[ManualGL][MultiYear] Staged ${insertStats.inserted} classified rows from "${upload.file_name}" ` +
+          `[ManualGL][MultiYear] Prepared ${dedupedTransactions.length} classified rows from "${upload.file_name}" ` +
           `(cross-file duplicates skipped: ${fileCrossFileDuplicates})`,
         );
       } catch (fileErr) {
@@ -5212,32 +5768,21 @@ async function stageMultiYearGlUpload({
       );
     }
 
-    if (totalInserted === 0 && filesRequiringMapping.length > 0) {
+    if (preparedFilePayloads.length === 0 && filesRequiringMapping.length > 0) {
       const firstFail = filesRequiringMapping[0];
-      await updateBatch(batch.id, {
-        status: "failed",
-        batch_status: "failed",
-        is_archived: true,
-        processing_completed_at: new Date().toISOString(),
-        metadata: {
-          requiresManualMapping: true,
-          failedUploadId: firstFail.uploadId,
-          failedFileName: firstFail.fileName,
-        },
-      });
       return {
         success: false,
         requiresManualMapping: true,
-        batchId: batch.id,
         failedUploadId: firstFail.uploadId,
         fileName: firstFail.fileName,
         error: "Mapping required for one or more files.",
       };
     }
 
-    console.log(
-      `[ManualGL][MultiYear] Phase 3 complete â€” ${totalInserted} classified transactions persisted.`,
-    );
+    if (allClassifiedTransactions.length === 0) {
+      throw new Error("No valid GL transactions were parsed from the selected files.");
+    }
+
 
     // â”€â”€ PHASE 3a: Multi-year detection + explicit year-split normalization â”€â”€â”€â”€â”€â”€
     // Inspect every classified transaction to determine whether this upload
@@ -5258,6 +5803,219 @@ async function stageMultiYearGlUpload({
     logPerYearSplitAudit(perYearStats, yearDetection.isMultiYear);
     const debitCreditAudit = computeDebitCreditConsistency(allClassifiedTransactions);
     logDebitCreditConsistencyAudit(debitCreditAudit);
+    const uploadedYearSummaries = computeUploadedYearSummaries(yearSplitMap, fileHashesByUploadId);
+    const uploadedYears = Object.keys(uploadedYearSummaries)
+      .map((year) => Number(year))
+      .filter((year) => Number.isInteger(year) && year > 0)
+      .sort((a, b) => a - b);
+
+    let activeBatch = await getActiveUploadBatch(companyId);
+    const activeSessionMap = await getActiveUploadSessionMap(companyId);
+    const activeBatchMetadata = activeBatch?.id ? await loadBatchMetadata(activeBatch.id) : {};
+    let activeYearSummaries =
+      activeBatchMetadata?.uploadedYearSummaries && typeof activeBatchMetadata.uploadedYearSummaries === "object"
+        ? activeBatchMetadata.uploadedYearSummaries
+        : {};
+
+    if (activeBatch?.id && Object.keys(activeYearSummaries).length === 0) {
+      activeYearSummaries = await computeBatchYearSummaries(companyId, activeBatch.id);
+    }
+
+    const metadataYears = extractYearsFromBatchMetadata(activeBatchMetadata);
+    const activeYears = (
+      activeSessionMap.size > 0
+        ? Array.from(activeSessionMap.keys())
+        : metadataYears.length > 0
+          ? metadataYears
+          : Object.keys(activeYearSummaries).map((year) => Number(year))
+    )
+      .filter((year) => Number.isInteger(Number(year)) && Number(year) > 0)
+      .map(Number)
+      .sort((a, b) => a - b);
+
+    const uploadedYearHashPairs = uploadedYears
+      .map((fiscalYear) => ({
+        fiscalYear,
+        dataHash: uploadedYearSummaries?.[fiscalYear]?.dataHash || "",
+      }))
+      .filter((item) => Number.isInteger(item.fiscalYear) && item.fiscalYear > 0 && item.dataHash);
+
+    // DETERMINISTIC DATASET HASHING & DUPLICATE PREVENTION
+    const datasetHash = buildDatasetHash(allClassifiedTransactions);
+    console.log(`[ManualGL][MultiYear] Generated dataset hash: ${datasetHash}`);
+    console.log(
+      "[ManualGL][MultiYear] Generated year hashes:",
+      uploadedYearHashPairs.map((item) => `${item.fiscalYear}:${item.dataHash.slice(0, 12)}`).join(", "),
+    );
+    const fiscalYearStart = uploadedYears.length > 0 ? uploadedYears[0] : null;
+    const fiscalYearEnd = uploadedYears.length > 0 ? uploadedYears[uploadedYears.length - 1] : null;
+
+    // Duplicate detection MUST run before any DB writes.
+    const collisionCheck = await checkExistingStagedFiscalYears(
+      companyId,
+      uploadedYears,
+      uploadedYearHashPairs,
+    );
+    const exactDuplicateYearSet = new Set(
+      Array.isArray(collisionCheck?.duplicateYears) ? collisionCheck.duplicateYears.map(Number) : [],
+    );
+
+    const stagedYears = [];
+    const versionPlan = [];
+
+    for (const fiscalYear of uploadedYears) {
+      if (exactDuplicateYearSet.has(fiscalYear)) {
+        continue;
+      }
+
+      const uploadedSummary = uploadedYearSummaries[fiscalYear];
+      const activeSession = activeSessionMap.get(fiscalYear) || null;
+      const fallbackActiveSummary = activeYearSummaries?.[fiscalYear] || null;
+      const activeDataHash = String(
+        activeSession?.data_hash ||
+        activeSession?.dataHash ||
+        fallbackActiveSummary?.data_hash ||
+        fallbackActiveSummary?.dataHash ||
+        "",
+      ).trim();
+
+      if (activeDataHash && uploadedSummary.dataHash === activeDataHash) {
+        exactDuplicateYearSet.add(fiscalYear);
+        continue;
+      }
+
+      let nextVersionNo = null;
+      if (Number.isInteger(Number(activeSession?.version_no)) && Number(activeSession.version_no) > 0) {
+        nextVersionNo = Number(activeSession.version_no) + 1;
+      } else {
+        const latestStoredVersion = await getLatestUploadSessionVersion(companyId, fiscalYear);
+        if (latestStoredVersion) {
+          nextVersionNo = latestStoredVersion + 1;
+        } else if (fallbackActiveSummary) {
+          nextVersionNo = 2;
+        } else {
+          nextVersionNo = 1;
+        }
+      }
+
+      stagedYears.push(fiscalYear);
+      versionPlan.push({
+        fiscalYear,
+        versionNo: nextVersionNo,
+        rowCount: uploadedSummary.rowCount,
+        fileHash: uploadedSummary.fileHash,
+        dataHash: uploadedSummary.dataHash,
+        sourceUploadIds: uploadedSummary.sourceUploadIds,
+        metadata: {
+          previousActiveSessionId: activeSession?.id || null,
+          previousActiveBatchId: activeBatch?.id || null,
+        },
+      });
+
+      console.log(
+        `[ManualGL][VersionPlan] fiscalYear=${fiscalYear} versionNo=${nextVersionNo} ` +
+        `rowCount=${uploadedSummary.rowCount} dataHash=${String(uploadedSummary.dataHash || "").slice(0, 12)}...`,
+      );
+    }
+
+    const exactDuplicateYears = Array.from(exactDuplicateYearSet).sort((a, b) => a - b);
+
+    if (stagedYears.length === 0 && exactDuplicateYears.length > 0) {
+      return {
+        success: false,
+        blockedAsDuplicate: true,
+        noChangesDetected: true,
+        duplicateFiscalYears: exactDuplicateYears,
+        duplicateYears: exactDuplicateYears,
+        existingVersion: collisionCheck?.existingVersion || null,
+        activeBatchId: collisionCheck?.activeBatchId || null,
+        message: "The selected GL data is already staged for this company and fiscal year.",
+      };
+    }
+
+    const carryForwardYears = activeYears.filter((year) => !stagedYears.includes(year));
+
+    console.log("[ManualGL][VersionPlan]", {
+      uploadedYears,
+      stagedYears,
+      exactDuplicateYears,
+      carryForwardYears,
+      activeBatchId: activeBatch?.id || null,
+    });
+
+    if (useDatasetLifecycle) {
+      console.log("[ManualGL][MultiYear] Starting upload lifecycle...");
+      const lifecycle = await startUploadLifecycle(
+        companyId,
+        batchName || "Multi-Year GL Upload",
+        uploadedBy,
+      );
+      uploadJob = lifecycle.job || null;
+      datasetVersion = lifecycle.version || null;
+    }
+
+    console.log("[ManualGL][MultiYear] Creating batch...");
+    batch = await createBatch({
+      companyId,
+      createdBy: uploadedBy,
+      batchName,
+      datasetVersionId: datasetVersion?.id || null,
+      sourceType,
+      sourceSwitchVersion,
+      uploadSessionId,
+      datasetHash,
+      fiscalYearStart,
+      fiscalYearEnd,
+    });
+    console.log("[ManualGL][MultiYear] Batch created:", batch.id);
+
+    for (const prepared of preparedFilePayloads) {
+      const yearScopedTransactions = prepared.transactions.filter((tx) =>
+        stagedYears.includes(Number(tx.fiscalYear || 0)),
+      );
+
+      if (!yearScopedTransactions.length) continue;
+
+      const insertStats = await insertTransactions({
+        companyId,
+        batchId: batch.id,
+        transactions: yearScopedTransactions,
+        datasetVersionId: datasetVersion?.id || null,
+        sourceType,
+        sourceSwitchVersion,
+        uploadSessionId,
+      });
+
+      totalInserted += insertStats.inserted;
+      totalDuplicates += insertStats.duplicates || 0;
+
+      Object.entries(insertStats.yearGroups || {}).forEach(([year, count]) => {
+        combinedYearGroups[year] = (combinedYearGroups[year] || 0) + count;
+      });
+    }
+
+    if (activeBatch?.id && carryForwardYears.length > 0) {
+      const carryForwardStats = await copyBatchTransactionsForYears({
+        companyId,
+        sourceBatchId: activeBatch.id,
+        targetBatchId: batch.id,
+        fiscalYears: carryForwardYears,
+        datasetVersionId: datasetVersion?.id || null,
+        sourceType,
+        sourceSwitchVersion,
+        uploadSessionId,
+      });
+
+      totalInserted += carryForwardStats.inserted;
+      Object.entries(carryForwardStats.yearGroups || {}).forEach(([year, count]) => {
+        combinedYearGroups[year] = (combinedYearGroups[year] || 0) + count;
+      });
+    }
+
+    console.log(
+      `[ManualGL][MultiYear] Phase 3 persisted ${totalInserted} rows across years ` +
+      `[${[...stagedYears, ...carryForwardYears].sort((a, b) => a - b).join(", ")}].`,
+    );
 
     // Per-year P&L validation â€” runs calculateProfitLossBuckets on each year's
     // isolated transactions to confirm the split produces self-consistent numbers.
@@ -5296,7 +6054,23 @@ async function stageMultiYearGlUpload({
     // â”€â”€ PHASE 4: Insert Balance Sheet lines â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Now that GL is stored, persist the BS line data we parsed in Phase 1.
 
-    if (balanceSheetInfo.startingParsed && balanceSheetInfo.startingUpload) {
+    const finalYears = Array.from(new Set([...stagedYears, ...carryForwardYears])).sort((a, b) => a - b);
+    const earliestFinalYear = finalYears.length ? finalYears[0] : null;
+    const latestFinalYear = finalYears.length ? finalYears[finalYears.length - 1] : null;
+    const earliestUploadedYear = stagedYears.length ? Math.min(...stagedYears) : null;
+    const latestUploadedYear = stagedYears.length ? Math.max(...stagedYears) : null;
+    const shouldUseUploadedStarting =
+      balanceSheetInfo.startingParsed &&
+      balanceSheetInfo.startingUpload &&
+      earliestUploadedYear !== null &&
+      earliestUploadedYear === earliestFinalYear;
+    const shouldUseUploadedEnding =
+      balanceSheetInfo.endingParsed &&
+      balanceSheetInfo.endingUpload &&
+      latestUploadedYear !== null &&
+      latestUploadedYear === latestFinalYear;
+
+    if (shouldUseUploadedStarting) {
       const lines = toBalanceSheetLineRows({
         companyId,
         batchId: batch.id,
@@ -5321,7 +6095,21 @@ async function stageMultiYearGlUpload({
       );
     }
 
-    if (balanceSheetInfo.endingParsed && balanceSheetInfo.endingUpload) {
+    if (!shouldUseUploadedStarting && activeBatch?.id) {
+      const result = await copyBalanceSheetLinesFromBatch({
+        companyId,
+        sourceBatchId: activeBatch.id,
+        targetBatchId: batch.id,
+        sheetType: SHEET_TYPE.STARTING,
+        datasetVersionId: datasetVersion?.id || null,
+        sourceType,
+        sourceSwitchVersion,
+        uploadSessionId,
+      });
+      balanceSheetInfo.inserted.starting = result.inserted;
+    }
+
+    if (shouldUseUploadedEnding) {
       const lines = toBalanceSheetLineRows({
         companyId,
         batchId: batch.id,
@@ -5348,7 +6136,27 @@ async function stageMultiYearGlUpload({
 
     // â”€â”€ PHASE 5: Summary, validation, batch update â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-    const normalizedTransactions = allClassifiedTransactions
+    if (!shouldUseUploadedEnding && activeBatch?.id) {
+      const result = await copyBalanceSheetLinesFromBatch({
+        companyId,
+        sourceBatchId: activeBatch.id,
+        targetBatchId: batch.id,
+        sheetType: SHEET_TYPE.ENDING,
+        datasetVersionId: datasetVersion?.id || null,
+        sourceType,
+        sourceSwitchVersion,
+        uploadSessionId,
+      });
+      balanceSheetInfo.inserted.ending = result.inserted;
+    }
+
+    const stagedForBatch = await getStageTransactions(companyId, {
+      batchId: batch.id,
+      includeArchived: true,
+      versionMode: REPORT_BATCH_MODE.HISTORICAL,
+      limit: DEFAULT_STAGING_LIMIT,
+    });
+    const normalizedTransactions = (Array.isArray(stagedForBatch?.rows) ? stagedForBatch.rows : [])
       .map(normalizeStagedTransactionRow)
       .filter(Boolean);
 
@@ -5374,7 +6182,7 @@ async function stageMultiYearGlUpload({
     );
 
     let validation = null;
-    if (balanceSheetInfo.startingParsed || balanceSheetInfo.endingParsed) {
+    if (balanceSheetInfo.startingParsed || balanceSheetInfo.endingParsed || activeBatch?.id) {
       // Both reads are independent â€” run in parallel instead of sequentially.
       const [startingLines, endingLines] = await Promise.all([
         loadBatchBalanceSheetLines(companyId, batch.id, SHEET_TYPE.STARTING),
@@ -5420,11 +6228,16 @@ async function stageMultiYearGlUpload({
         fileType: yearDetection.fileType,
         isMultiYearUpload: yearDetection.isMultiYear,
         yearsDetected: yearDetection.years,
+        stagedFiscalYears: stagedYears,
+        carryForwardFiscalYears: carryForwardYears,
+        skippedDuplicateFiscalYears: exactDuplicateYears,
         perYearTransactionCounts: yearDetection.perYearCounts,
         invalidDateTransactionCount: yearDetection.invalidDateCount,
         // Per-year stats from the normalization split â€” mirrors what would be
         // produced by uploading each year as a separate single-year GL file.
         perYearStats,
+        uploadedYearSummaries,
+        uploadSessionVersionPlan: versionPlan,
         debitCreditAudit,
         sourceType,
         sourceSwitchVersion,
@@ -5460,6 +6273,9 @@ async function stageMultiYearGlUpload({
           classificationMode: hasBsLookup ? "bs_driven" : "keyword_fallback",
           fiscalCalendar,
           fiscalCalendarExplicit: isFiscalCalendarExplicit,
+          stagedFiscalYears: stagedYears,
+          carryForwardFiscalYears: carryForwardYears,
+          skippedDuplicateFiscalYears: exactDuplicateYears,
         },
       });
     } catch (syncError) {
@@ -5490,10 +6306,15 @@ async function stageMultiYearGlUpload({
       filesParsed,
       validation,
       yearsDetected: yearDetection.years,
+      stagedFiscalYears: stagedYears,
+      carryForwardFiscalYears: carryForwardYears,
+      skippedDuplicateFiscalYears: exactDuplicateYears,
       fileType: yearDetection.fileType,
       isMultiYearUpload: yearDetection.isMultiYear,
       perYearTransactionCounts: yearDetection.perYearCounts,
       perYearStats,
+      uploadedYearSummaries,
+      uploadSessionVersionPlan: versionPlan,
       debitCreditAudit,
       classificationMode: hasBsLookup ? "bs_driven" : "keyword_fallback",
     };
@@ -5507,18 +6328,21 @@ async function stageMultiYearGlUpload({
       console.error("[ManualGL][MultiYear] Failed to fail upload lifecycle:", lifecycleErr);
     }
     try {
-      const [txCleanup, bsCleanup] = await Promise.all([
-        supabase
-          .from(TABLES.transactions)
-          .delete()
-          .eq("company_id", companyId)
-          .eq("batch_id", batch.id),
-        supabase
-          .from(TABLES.balanceSheetLines)
-          .delete()
-          .eq("company_id", companyId)
-          .eq("batch_id", batch.id),
-      ]);
+      const batchId = batch?.id || null;
+      const [txCleanup, bsCleanup] = batchId
+        ? await Promise.all([
+          supabase
+            .from(TABLES.transactions)
+            .delete()
+            .eq("company_id", companyId)
+            .eq("batch_id", batchId),
+          supabase
+            .from(TABLES.balanceSheetLines)
+            .delete()
+            .eq("company_id", companyId)
+            .eq("batch_id", batchId),
+        ])
+        : [{ error: null }, { error: null }];
 
       if (txCleanup.error) {
         console.error(
@@ -5540,13 +6364,15 @@ async function stageMultiYearGlUpload({
     }
 
     try {
-      await updateBatch(batch.id, {
-        status: "failed",
-        batch_status: "failed",
-        is_archived: true,
-        processing_completed_at: new Date().toISOString(),
-        metadata: { error: error.message, rolledBack: true },
-      });
+      if (batch?.id) {
+        await updateBatch(batch.id, {
+          status: "failed",
+          batch_status: "failed",
+          is_archived: true,
+          processing_completed_at: new Date().toISOString(),
+          metadata: { error: error.message, rolledBack: true },
+        });
+      }
     } catch (updateError) {
       console.error("[ManualGL][MultiYear] Failed to update batch status:", updateError.message);
     }
@@ -6028,6 +6854,13 @@ async function getStageFilterOptions(companyId, filters = {}) {
   );
 
   const incomingBatchId = toNonEmptyString(filters.batchId || "");
+  const datasetVersion = parsePositiveIntegerValue(
+    filters.datasetVersion ||
+    filters.dataset_version ||
+    filters.versionNumber ||
+    filters.version_number ||
+    "",
+  );
   const includeArchived =
     filters.includeArchived === true ||
     toNonEmptyString(filters.versionMode || "").toLowerCase() === REPORT_BATCH_MODE.HISTORICAL;
@@ -6035,11 +6868,20 @@ async function getStageFilterOptions(companyId, filters = {}) {
     allowExplicitBatch: includeArchived,
     includeArchived,
     versionMode: includeArchived ? REPORT_BATCH_MODE.HISTORICAL : REPORT_BATCH_MODE.ACTIVE,
+    versionId: toNonEmptyString(filters.versionId || ""),
+    uploadSessionId: toNonEmptyString(filters.uploadSessionId || ""),
+    datasetVersion,
   });
   const activeBatch = await getActiveUploadBatch(companyId);
   const activeBatchId = activeBatch?.id || null;
 
-  if (!batchId) {
+  console.log(
+    `[ManualGL][FilterOptions][ReportFilters] company=${companyId} ` +
+    `datasetVersion=${datasetVersion || "none"} requestedBatchId=${incomingBatchId || "none"} ` +
+    `resolvedBatchId=${batchId || "none"} includeArchived=${includeArchived}`,
+  );
+
+  if (!batchId && !datasetVersion) {
     return {
       source: "manual_gl_active_batch",
       activeBatchId,
@@ -6053,23 +6895,35 @@ async function getStageFilterOptions(companyId, filters = {}) {
 
   // Snapshot-first read for fast and immutable filter option rendering.
   try {
-    const { data: filterSnapshot, error: snapshotError } = await supabase
+    let snapshotQuery = supabase
       .from("reporting_snapshots")
-      .select("snapshot_payload")
+      .select("snapshot_payload, upload_batch_id, dataset_version")
       .eq("company_id", companyId)
-      .eq("upload_batch_id", batchId)
       .eq("report_type", "filter_options")
       .eq("fiscal_year", -1)
-      .order("generated_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+      .order("generated_at", { ascending: false });
+
+    if (datasetVersion) {
+      snapshotQuery = snapshotQuery.eq("dataset_version", datasetVersion);
+    } else if (batchId) {
+      snapshotQuery = snapshotQuery.eq("upload_batch_id", batchId);
+    }
+
+    const { data: filterSnapshot, error: snapshotError } = await snapshotQuery.limit(1).maybeSingle();
 
     if (!snapshotError && filterSnapshot?.snapshot_payload?.options) {
       const payload = filterSnapshot.snapshot_payload;
+      const snapshotBatchId = toNonEmptyString(
+        payload?.resolvedBatchId ||
+        payload?.activeBatchId ||
+        filterSnapshot?.upload_batch_id ||
+        batchId ||
+        "",
+      );
       return {
         source: "manual_gl_reporting_snapshot",
         activeBatchId,
-        resolvedBatchId: batchId,
+        resolvedBatchId: snapshotBatchId || null,
         requestedBatchId: incomingBatchId || null,
         versionMode: includeArchived ? REPORT_BATCH_MODE.HISTORICAL : REPORT_BATCH_MODE.ACTIVE,
         rowCount: Number(payload.rowCount || 0),
@@ -6080,7 +6934,21 @@ async function getStageFilterOptions(companyId, filters = {}) {
     // reporting_snapshots may not exist until migration 026 is applied.
   }
 
-  console.log(`[ManualGL][FilterOptions] Resolving options for batch ${batchId}`);
+  if (!batchId) {
+    return {
+      source: "manual_gl_active_batch",
+      activeBatchId,
+      resolvedBatchId: null,
+      requestedBatchId: incomingBatchId || null,
+      versionMode: includeArchived ? REPORT_BATCH_MODE.HISTORICAL : REPORT_BATCH_MODE.ACTIVE,
+      rowCount: 0,
+      options: emptyOptions,
+    };
+  }
+
+  console.log(
+    `[ManualGL][FilterOptions] Resolving options for batch ${batchId} datasetVersion=${datasetVersion || "none"}`,
+  );
 
   const DISCOVERY_COLS = [
     "fiscal_year", "txn_date", "account_name", "account_number", "account_type",
@@ -7287,4 +8155,7 @@ module.exports = {
   // to surface file type information without re-staging.
   detectMultipleYears,
   getAvailableFiscalYears,
+  checkExistingStagedFiscalYears,
+  retrySupabaseOperation,
 };
+

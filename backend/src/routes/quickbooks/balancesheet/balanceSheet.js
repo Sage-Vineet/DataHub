@@ -11,27 +11,27 @@ function normalizeBalanceSheetQuery(query = {}) {
   // Strip QB/internal params that must not be used as cache-key discriminators.
   const { clientId: _cid, minorversion: _mv, ...rest } = query;
   return {
-    start_date:        String(rest.start_date        || "").trim(),
-    end_date:          String(rest.end_date          || "").trim(),
+    start_date: String(rest.start_date || "").trim(),
+    end_date: String(rest.end_date || "").trim(),
     accounting_method: String(rest.accounting_method || "").trim(),
     // QB Balance Sheet uses as_of_date as the snapshot date.
     // Default to end_date when not explicitly provided.
-    as_of_date:        String(rest.as_of_date        || rest.end_date || "").trim(),
+    as_of_date: String(rest.as_of_date || rest.end_date || "").trim(),
   };
 }
 
 function isExactPeriodMatch(requested, storedParams = {}) {
   const { start_date, end_date, as_of_date, accounting_method } = requested;
   return (
-    (!start_date       || storedParams.start_date       === start_date)       &&
-    (!end_date         || storedParams.end_date         === end_date)         &&
-    (!as_of_date       || storedParams.as_of_date       === as_of_date)       &&
+    (!start_date || storedParams.start_date === start_date) &&
+    (!end_date || storedParams.end_date === end_date) &&
+    (!as_of_date || storedParams.as_of_date === as_of_date) &&
     (!accounting_method || storedParams.accounting_method === accounting_method)
   );
 }
 
 router.get("/balance-sheet", async (req, res) => {
-  const clientId   = req.clientId;
+  const clientId = req.clientId;
   const disconnected = Boolean(req.qbDisconnected);
   const { start_date, end_date, accounting_method, as_of_date } =
     normalizeBalanceSheetQuery(req.query);
@@ -63,8 +63,8 @@ router.get("/balance-sheet", async (req, res) => {
       `[Balance Sheet] Cache result: ${cached?.data ? (cachedIsExact ? "exact hit" : "coverage hit") : "miss"}` +
       (cached?.reportParams
         ? ` storedParams=${JSON.stringify(cached.reportParams)}` +
-          ` snapshot_accounting_method=${cached.reportParams?.accounting_method || "(none)"}` +
-          ` ReportBasis=${cached.data?.Header?.ReportBasis || "(none)"}`
+        ` snapshot_accounting_method=${cached.reportParams?.accounting_method || "(none)"}` +
+        ` ReportBasis=${cached.data?.Header?.ReportBasis || "(none)"}`
         : "")
     );
 
@@ -120,7 +120,7 @@ router.get("/balance-sheet", async (req, res) => {
     if (cached?.data) {
       const storedParams = cached.reportParams || {};
       const storedStartAfter = start_date && storedParams.start_date && storedParams.start_date > start_date;
-      const storedEndBefore  = end_date   && storedParams.end_date   && storedParams.end_date   < end_date;
+      const storedEndBefore = end_date && storedParams.end_date && storedParams.end_date < end_date;
 
       if (!storedStartAfter && !storedEndBefore) {
         console.log(

@@ -1,4 +1,5 @@
-const { supabase } = require("../db");
+const { supabase, isCircuitBreakerOpen, recordSupabaseError, resetSupabaseErrors } = require("../db");
+const { withRetry, validateSupabaseResponse, normalizeError } = require("../utils/dbErrorHandler");
 
 const REPORT_SOURCE_KEYS = {
   QUICKBOOKS: "quickbooks_online",
@@ -104,46 +105,82 @@ function sortRowsByRecency(rows = []) {
 }
 
 async function dedupeReportSourceRecords(companyId) {
-  const { data: rawRows, error } = await supabase
-    .from("report_source_records")
-    .select("id, source_key, updated_at, created_at")
-    .eq("company_id", companyId);
-
-  if (error) {
-    throw new Error(
-      `Failed to inspect report source records for dedupe: ${error.message}`,
-    );
+  // Check circuit breaker
+  if (isCircuitBreakerOpen()) {
+    console.warn("[dedupeReportSourceRecords] Circuit breaker open, skipping dedup");
+    return;
   }
 
-  const rows = Array.isArray(rawRows) ? rawRows : [];
-  if (rows.length <= 2) return;
+  try {
+    const result = await withRetry(
+      async () => {
+        const { data: rawRows, error } = await supabase
+          .from("report_source_records")
+          .select("id, source_key, updated_at, created_at")
+          .eq("company_id", companyId);
 
-  const bySourceKey = rows.reduce((accumulator, row) => {
-    const key = String(row.source_key || "");
-    if (!accumulator.has(key)) accumulator.set(key, []);
-    accumulator.get(key).push(row);
-    return accumulator;
-  }, new Map());
+        if (error) {
+          recordSupabaseError();
+          throw new Error(error.message || "Failed to fetch report source records");
+        }
 
-  const duplicateIds = [];
-  bySourceKey.forEach((entries) => {
-    if (!entries || entries.length <= 1) return;
-    const sorted = sortRowsByRecency(entries);
-    sorted.slice(1).forEach((row) => {
-      if (row?.id) duplicateIds.push(row.id);
+        resetSupabaseErrors();
+        return rawRows;
+      },
+      {
+        maxAttempts: 3,
+        exponentialBackoff: true,
+        operationName: "dedupeReportSourceRecords",
+      },
+    );
+
+    const rows = Array.isArray(result) ? result : [];
+    if (rows.length <= 2) return;
+
+    const bySourceKey = rows.reduce((accumulator, row) => {
+      const key = String(row.source_key || "");
+      if (!accumulator.has(key)) accumulator.set(key, []);
+      accumulator.get(key).push(row);
+      return accumulator;
+    }, new Map());
+
+    const duplicateIds = [];
+    bySourceKey.forEach((entries) => {
+      if (!entries || entries.length <= 1) return;
+      const sorted = sortRowsByRecency(entries);
+      sorted.slice(1).forEach((row) => {
+        if (row?.id) duplicateIds.push(row.id);
+      });
     });
-  });
 
-  if (!duplicateIds.length) return;
+    if (!duplicateIds.length) return;
 
-  const { error: deleteError } = await supabase
-    .from("report_source_records")
-    .delete()
-    .in("id", duplicateIds);
+    await withRetry(
+      async () => {
+        const { error: deleteError } = await supabase
+          .from("report_source_records")
+          .delete()
+          .in("id", duplicateIds);
 
-  if (deleteError) {
-    throw new Error(
-      `Failed to dedupe report source records: ${deleteError.message}`,
+        if (deleteError) {
+          recordSupabaseError();
+          throw new Error(deleteError.message || "Failed to delete duplicate records");
+        }
+
+        resetSupabaseErrors();
+      },
+      {
+        maxAttempts: 3,
+        exponentialBackoff: true,
+        operationName: "dedupeReportSourceRecords delete",
+      },
+    );
+  } catch (error) {
+    recordSupabaseError();
+    // Log but don't throw - dedup is not critical
+    console.warn(
+      "[dedupeReportSourceRecords] Non-critical dedupe operation failed:",
+      error.message,
     );
   }
 }
@@ -153,42 +190,79 @@ async function ensureReportSourceRecords(companyId) {
     throw new Error("companyId is required");
   }
 
-  await dedupeReportSourceRecords(companyId);
+  // Check circuit breaker first
+  if (isCircuitBreakerOpen()) {
+    console.warn("[ensureReportSourceRecords] Circuit breaker open, returning defaults");
+    return getDefaultRows(companyId);
+  }
 
-  const { data: existingRows, error: existingError } = await supabase
-    .from("report_source_records")
-    .select("source_key")
-    .eq("company_id", companyId);
+  try {
+    await dedupeReportSourceRecords(companyId);
 
-  if (existingError) {
-    throw new Error(
-      `Failed to ensure report source records: ${existingError.message}`,
+    const existingRows = await withRetry(
+      async () => {
+        const { data, error } = await supabase
+          .from("report_source_records")
+          .select("source_key")
+          .eq("company_id", companyId);
+
+        if (error) {
+          recordSupabaseError();
+          throw new Error(error.message || "Failed to fetch existing records");
+        }
+
+        resetSupabaseErrors();
+        return data;
+      },
+      {
+        maxAttempts: 3,
+        exponentialBackoff: true,
+        operationName: "ensureReportSourceRecords fetch",
+      },
     );
-  }
 
-  const existingKeys = new Set(
-    Array.isArray(existingRows)
-      ? existingRows.map((row) => String(row.source_key || ""))
-      : [],
-  );
+    const existingKeys = new Set(
+      Array.isArray(existingRows)
+        ? existingRows.map((row) => String(row.source_key || ""))
+        : [],
+    );
 
-  const missingRows = getDefaultRows(companyId)
-    .filter((row) => !existingKeys.has(row.source_key))
-    .map((row) => ({
-      ...row,
-      updated_at: new Date().toISOString(),
-    }));
+    const missingRows = getDefaultRows(companyId)
+      .filter((row) => !existingKeys.has(row.source_key))
+      .map((row) => ({
+        ...row,
+        updated_at: new Date().toISOString(),
+      }));
 
-  if (missingRows.length === 0) {
-    return;
-  }
+    if (missingRows.length === 0) {
+      return existingRows;
+    }
 
-  const { error } = await supabase
-    .from("report_source_records")
-    .insert(missingRows);
+    await withRetry(
+      async () => {
+        const { error } = await supabase
+          .from("report_source_records")
+          .insert(missingRows);
 
-  if (error && error.code !== "23505") {
-    throw new Error(`Failed to ensure report source records: ${error.message}`);
+        // Ignore duplicate key errors (23505)
+        if (error && error.code !== "23505") {
+          recordSupabaseError();
+          throw new Error(error.message || "Failed to insert records");
+        }
+
+        resetSupabaseErrors();
+      },
+      {
+        maxAttempts: 3,
+        exponentialBackoff: true,
+        operationName: "ensureReportSourceRecords insert",
+      },
+    );
+
+    return [...(existingRows || []), ...missingRows];
+  } catch (error) {
+    recordSupabaseError();
+    throw normalizeError(error);
   }
 }
 

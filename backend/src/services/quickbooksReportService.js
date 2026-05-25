@@ -223,9 +223,13 @@ function buildSyncTasks(options = {}) {
   ];
 
   const yearlyTasks = yearly.flatMap((range) => {
+    // Use YYYY-12-31 as the canonical end date for yearly snapshots so that
+    // full-year frontend requests (?end_date=YYYY-12-31) can find them via
+    // exact params match. QB returns data up to today for future end dates.
+    const yearEnd = `${range.fiscalYear}-12-31`;
     const periodParams = {
       start_date: range.start,
-      end_date: range.end,
+      end_date: yearEnd,
       accounting_method: options.accountingMethod || "Accrual",
     };
 
@@ -236,7 +240,7 @@ function buildSyncTasks(options = {}) {
         qbName: "ProfitAndLoss",
         params: periodParams,
         periodStart: range.start,
-        periodEnd: range.end,
+        periodEnd: yearEnd,
         fiscalYear: range.fiscalYear,
       },
       {
@@ -245,7 +249,7 @@ function buildSyncTasks(options = {}) {
         qbName: "ProfitAndLossDetail",
         params: periodParams,
         periodStart: range.start,
-        periodEnd: range.end,
+        periodEnd: yearEnd,
         fiscalYear: range.fiscalYear,
       },
       {
@@ -254,10 +258,10 @@ function buildSyncTasks(options = {}) {
         qbName: "BalanceSheet",
         params: {
           ...periodParams,
-          as_of_date: range.end,
+          as_of_date: yearEnd,
         },
         periodStart: range.start,
-        periodEnd: range.end,
+        periodEnd: yearEnd,
         fiscalYear: range.fiscalYear,
       },
       {
@@ -267,10 +271,10 @@ function buildSyncTasks(options = {}) {
         params: {
           ...periodParams,
           summarize_column_by: "Total",
-          as_of_date: range.end,
+          as_of_date: yearEnd,
         },
         periodStart: range.start,
-        periodEnd: range.end,
+        periodEnd: yearEnd,
         fiscalYear: range.fiscalYear,
       },
       {
@@ -279,7 +283,7 @@ function buildSyncTasks(options = {}) {
         qbName: "CashFlow",
         params: periodParams,
         periodStart: range.start,
-        periodEnd: range.end,
+        periodEnd: yearEnd,
         fiscalYear: range.fiscalYear,
       },
       {
@@ -288,27 +292,79 @@ function buildSyncTasks(options = {}) {
         qbName: "GeneralLedger",
         params: periodParams,
         periodStart: range.start,
-        periodEnd: range.end,
+        periodEnd: yearEnd,
         fiscalYear: range.fiscalYear,
       },
     ];
   });
 
-  const monthlyTrendTasks = monthly.map((range) => ({
-    type: REPORT_TYPES.PROFIT_AND_LOSS,
-    mode: "report",
-    qbName: "ProfitAndLoss",
-    params: {
-      start_date: range.start,
-      end_date: range.end,
-      accounting_method: options.accountingMethod || "Accrual",
+  // Store both Accrual and default (Cash) monthly P&L snapshots.
+  // The frontend requests without accounting_method; the Cash snapshot gives
+  // an exact params match after sync, while Accrual is kept for completeness.
+  const monthlyTrendTasks = monthly.flatMap((range) => [
+    {
+      type: REPORT_TYPES.PROFIT_AND_LOSS,
+      mode: "report",
+      qbName: "ProfitAndLoss",
+      params: {
+        start_date: range.start,
+        end_date: range.end,
+        accounting_method: options.accountingMethod || "Accrual",
+      },
+      periodStart: range.start,
+      periodEnd: range.end,
+      fiscalYear: range.fiscalYear,
     },
-    periodStart: range.start,
-    periodEnd: range.end,
-    fiscalYear: range.fiscalYear,
-  }));
+    {
+      type: REPORT_TYPES.PROFIT_AND_LOSS,
+      mode: "report",
+      qbName: "ProfitAndLoss",
+      params: {
+        start_date: range.start,
+        end_date: range.end,
+      },
+      periodStart: range.start,
+      periodEnd: range.end,
+      fiscalYear: range.fiscalYear,
+    },
+  ]);
 
-  return [...baseTasks, ...yearlyTasks, ...monthlyTrendTasks];
+  // Full-year multi-column P&L snapshots for the Financial Trends chart.
+  // Always uses Dec 31 as end_date so params exactly match the frontend's full-year request.
+  // QB returns Month/Quarter columns for each period; future months will have 0 values.
+  const trendColumnTasks = yearly.flatMap((range) => {
+    const yearEnd = `${range.fiscalYear}-12-31`;
+    return [
+      {
+        type: REPORT_TYPES.PROFIT_AND_LOSS,
+        mode: "report",
+        qbName: "ProfitAndLoss",
+        params: {
+          start_date: range.start,
+          end_date: yearEnd,
+          summarize_columns_by: "Month",
+        },
+        periodStart: range.start,
+        periodEnd: yearEnd,
+        fiscalYear: range.fiscalYear,
+      },
+      {
+        type: REPORT_TYPES.PROFIT_AND_LOSS,
+        mode: "report",
+        qbName: "ProfitAndLoss",
+        params: {
+          start_date: range.start,
+          end_date: yearEnd,
+          summarize_columns_by: "Quarter",
+        },
+        periodStart: range.start,
+        periodEnd: yearEnd,
+        fiscalYear: range.fiscalYear,
+      },
+    ];
+  });
+
+  return [...baseTasks, ...yearlyTasks, ...trendColumnTasks, ...monthlyTrendTasks];
 }
 
 async function fetchWithTokenRetry(clientId, url, params = {}) {
@@ -587,7 +643,11 @@ async function serveCachedReport(clientId, reportType, queryParams = {}, options
     datasetVersion: activeDataset?.dataset_version || null,
     syncSource,
     includeInactive: false,
+    periodStart,
+    periodEnd,
+    skipUnconstrained: hasPeriod,
   });
+  if (cached) return buildSnapshotResult(cached, options.disconnected === true);
 
   if (cached) {
     console.log(

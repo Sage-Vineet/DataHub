@@ -409,6 +409,9 @@ async function getCachedReport({
   datasetVersion = null,
   syncSource = DEFAULT_SYNC_SOURCE,
   includeInactive = false,
+  periodStart = null,
+  periodEnd = null,
+  skipUnconstrained = false,
 }) {
   if (!companyId || !reportType) return null;
 
@@ -438,11 +441,7 @@ async function getCachedReport({
       .select("*")
       .eq("company_id", companyId)
       .eq("report_type", reportType)
-      .eq("sync_source", syncSource)
-      .order("is_active", { ascending: false })
-      .order("last_synced_at", { ascending: false })
-      .order("updated_at", { ascending: false })
-      .limit(1);
+      .eq("sync_source", syncSource);
 
     if (onlyActive) query = query.eq("is_active", true);
     if (useDatasetVersion && datasetVersion) query = query.eq("dataset_version", datasetVersion);
@@ -456,6 +455,22 @@ async function getCachedReport({
         query = query.eq("report_params", paramsFilterValue);
       }
     }
+
+    if (usePeriod === "exact" && hasPeriod) {
+      query = query
+        .eq("period_start", periodStart)
+        .eq("period_end", periodEnd)
+        .order("is_active", { ascending: false })
+        .order("last_synced_at", { ascending: false })
+        .order("updated_at", { ascending: false });
+    } else {
+      query = query
+        .order("is_active", { ascending: false })
+        .order("last_synced_at", { ascending: false })
+        .order("updated_at", { ascending: false });
+    }
+
+    query = query.limit(1);
 
     const { data, error } = await query.maybeSingle();
     console.log(
@@ -472,20 +487,20 @@ async function getCachedReport({
 
   const searchPlan = hasDateFilter
     ? [
-        // Exact match first (params stored identically to what was requested)
-        { useParams: true, matchMode: "exact",   onlyActive: !includeInactive, useDatasetVersion: Boolean(datasetVersion) },
-        // Partial match: stored params are a superset (e.g. has accounting_method, we didn't request it)
-        { useParams: true, matchMode: "partial", onlyActive: !includeInactive, useDatasetVersion: Boolean(datasetVersion) },
-        // Same two steps but allow inactive snapshots
-        { useParams: true, matchMode: "exact",   onlyActive: false, useDatasetVersion: Boolean(datasetVersion) },
-        { useParams: true, matchMode: "partial", onlyActive: false, useDatasetVersion: Boolean(datasetVersion) },
-      ]
+      // Exact match first (params stored identically to what was requested)
+      { useParams: true, matchMode: "exact", onlyActive: !includeInactive, useDatasetVersion: Boolean(datasetVersion) },
+      // Partial match: stored params are a superset (e.g. has accounting_method, we didn't request it)
+      { useParams: true, matchMode: "partial", onlyActive: !includeInactive, useDatasetVersion: Boolean(datasetVersion) },
+      // Same two steps but allow inactive snapshots
+      { useParams: true, matchMode: "exact", onlyActive: false, useDatasetVersion: Boolean(datasetVersion) },
+      { useParams: true, matchMode: "partial", onlyActive: false, useDatasetVersion: Boolean(datasetVersion) },
+    ]
     : [
-        { useParams: true,  matchMode: "exact", onlyActive: !includeInactive, useDatasetVersion: Boolean(datasetVersion) },
-        { useParams: false, matchMode: "exact", onlyActive: !includeInactive, useDatasetVersion: Boolean(datasetVersion) },
-        { useParams: true,  matchMode: "exact", onlyActive: false, useDatasetVersion: Boolean(datasetVersion) },
-        { useParams: false, matchMode: "exact", onlyActive: false, useDatasetVersion: Boolean(datasetVersion) },
-      ];
+      { useParams: true, matchMode: "exact", onlyActive: !includeInactive, useDatasetVersion: Boolean(datasetVersion) },
+      { useParams: false, matchMode: "exact", onlyActive: !includeInactive, useDatasetVersion: Boolean(datasetVersion) },
+      { useParams: true, matchMode: "exact", onlyActive: false, useDatasetVersion: Boolean(datasetVersion) },
+      { useParams: false, matchMode: "exact", onlyActive: false, useDatasetVersion: Boolean(datasetVersion) },
+    ];
 
   for (const step of searchPlan) {
     const hit = await tryRead(step);

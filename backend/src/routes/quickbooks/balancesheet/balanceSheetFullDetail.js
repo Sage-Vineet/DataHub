@@ -138,7 +138,7 @@ router.get("/balance-sheet-detail", async (req, res) => {
 // ── /all-reports ──────────────────────────────────────────────────────────────
 
 router.get("/all-reports", async (req, res) => {
-  const clientId   = req.clientId;
+  const clientId = req.clientId;
   const disconnected = Boolean(req.qbDisconnected);
 
   try {
@@ -149,7 +149,7 @@ router.get("/all-reports", async (req, res) => {
       { disconnected },
     );
 
-    const lastSyncAt    = accountList?.lastSyncedAt  || null;
+    const lastSyncAt = accountList?.lastSyncedAt || null;
     const datasetVersion = accountList?.datasetVersion || null;
 
     const data = {

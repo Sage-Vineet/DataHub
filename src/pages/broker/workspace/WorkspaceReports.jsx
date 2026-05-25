@@ -13,6 +13,7 @@ import {
   getAllManualUploadedReports,
   getAllQMSUploadedReports,
   getManualCashFlowPeriods,
+  listManualGlDatasetVersions,
 } from "../../../lib/api";
 import { MANUAL_GL_STAGED_EVENT } from "../../../lib/dataSourceEvents";
 import { useDataSource } from "../../../context/DataSourceContext";
@@ -315,6 +316,9 @@ export default function WorkspaceReports() {
   const [manualCfYears, setManualCfYears] = useState([]);
   const [selectedManualCfYear, setSelectedManualCfYear] = useState(null);
   const [isLoadingCfYears, setIsLoadingCfYears] = useState(false);
+  const [versions, setVersions] = useState([]);
+  const [selectedVersionId, setSelectedVersionId] = useState(storedState?.selectedVersionId || "");
+  const [isLoadingVersions, setIsLoadingVersions] = useState(false);
   const hasRestoredSessionRef = useRef(false);
   const isFirstMountRef = useRef(true);
   const prevReportSourceForClearRef = useRef(selectedReportSource);
@@ -360,6 +364,7 @@ export default function WorkspaceReports() {
       setAppliedAccountingMethod(nextState.appliedAccountingMethod || "Accrual");
       setManualFilters(normalizeManualFilters(nextState.manualFilters));
       setAppliedManualFilters(normalizeManualFilters(nextState.appliedManualFilters));
+      setSelectedVersionId(nextState.selectedVersionId || "");
       hasRestoredSessionRef.current = true;
     });
   }, [clientId, defaultCustomStart, todayString]);
@@ -443,7 +448,14 @@ export default function WorkspaceReports() {
 
   useEffect(() => {
     if (selectedSourceMode !== "manual" || !clientId) return;
-    const optionsParams = {};
+    const selectedDatasetVersion = Number(selectedVersionId);
+    const optionsParams = Number.isInteger(selectedDatasetVersion) && selectedDatasetVersion > 0
+      ? {
+        datasetVersion: selectedDatasetVersion,
+        includeArchived: true,
+        versionMode: "historical",
+      }
+      : {};
 
     getManualStageFilterOptions({
       clientId,
@@ -451,12 +463,18 @@ export default function WorkspaceReports() {
     })
       .then((payload) => {
         const activeBatchId = String(payload?.activeBatchId || "").trim();
+        const resolvedBatchId = String(payload?.resolvedBatchId || activeBatchId || "").trim();
         const options = payload?.options && typeof payload.options === "object"
           ? payload.options
           : {};
         setManualFilterOptions(options);
         debugLog("[ManualGL][UI][FilterOptions]", {
+          requestedDatasetVersion:
+            Number.isInteger(selectedDatasetVersion) && selectedDatasetVersion > 0
+              ? selectedDatasetVersion
+              : null,
           requestedBatchId: appliedManualFilters.batchId || "",
+          resolvedBatchId: resolvedBatchId || null,
           activeBatchId: activeBatchId || null,
           fiscalYears: options?.fiscalYear || [],
         });
@@ -467,8 +485,8 @@ export default function WorkspaceReports() {
         let nextFilters = { ...currentFilters };
         let changed = false;
 
-        if (activeBatchId && currentFilters.batchId !== activeBatchId) {
-          nextFilters.batchId = activeBatchId;
+        if (resolvedBatchId && currentFilters.batchId !== resolvedBatchId) {
+          nextFilters.batchId = resolvedBatchId;
           nextFilters.fiscalMonth = "";
           changed = true;
         }
@@ -504,7 +522,7 @@ export default function WorkspaceReports() {
         setManualFilterOptions({});
       });
     // filterOptionsVersion increments when a new GL batch is staged, forcing a re-fetch.
-  }, [appliedManualFilters.batchId, clientId, selectedSourceMode, filterOptionsVersion]);
+  }, [appliedManualFilters.batchId, clientId, selectedSourceMode, filterOptionsVersion, selectedVersionId, debugLog]);
 
   // Load available uploaded files per tab when in manual_upload source mode
   useEffect(() => {
@@ -606,6 +624,7 @@ export default function WorkspaceReports() {
       selectedReportSource,
       manualFilters,
       appliedManualFilters,
+      selectedVersionId,
       savedAt: new Date().toISOString(),
     });
   }, [
@@ -623,7 +642,61 @@ export default function WorkspaceReports() {
     selectedReportSource,
     selectedTab,
     manualFilters,
+    selectedVersionId,
   ]);
+
+  useEffect(() => {
+    if (selectedSourceMode !== "manual" || !clientId) return;
+    setIsLoadingVersions(true);
+    listManualGlDatasetVersions({ clientId })
+      .then((list) => {
+        const normalizedList = Array.isArray(list) ? list : [];
+        debugLog("[ManualGL][UI][VersionDropdown][Response]", {
+          companyId: clientId,
+          count: normalizedList.length,
+          versions: normalizedList.map((item) => ({
+            value: Number(item.value ?? item.dataset_version ?? item.version_number ?? item.versionNumber ?? 0) || null,
+            label: item.label || null,
+          })),
+        });
+        debugLog(
+          "[ManualGL][UI][VersionDropdown][Options]",
+          normalizedList.map((item) => ({
+            value: Number(item.value ?? item.dataset_version ?? item.version_number ?? item.versionNumber ?? 0) || null,
+            label: item.label || null,
+          })),
+        );
+
+        const selectedStillExists = normalizedList.some(
+          (item) => String(item.id || item.value || "") === String(selectedVersionId || ""),
+        );
+        let nextSelectedId = selectedVersionId;
+        if (!selectedStillExists) {
+          const active = normalizedList.find((v) => Boolean(v.is_active ?? v.isActive));
+          nextSelectedId = String(active?.id || active?.value || normalizedList[0]?.id || normalizedList[0]?.value || "");
+        }
+
+        setVersions(normalizedList);
+        if (nextSelectedId !== selectedVersionId) {
+          setSelectedVersionId(nextSelectedId);
+        }
+      })
+      .catch((err) => {
+        console.error("[WorkspaceReports] Failed to load versions:", err);
+        setVersions([]);
+      })
+      .finally(() => setIsLoadingVersions(false));
+  }, [clientId, selectedSourceMode, selectedVersionId, debugLog]);
+
+  useEffect(() => {
+    if (selectedSourceMode !== "manual") return;
+    debugLog("[ManualGL][UI][VersionDropdown][Selected]", {
+      selectedDatasetVersion: (() => {
+        const parsed = Number(selectedVersionId);
+        return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+      })(),
+    });
+  }, [debugLog, selectedSourceMode, selectedVersionId]);
 
   const handleSync = async () => {
     setIsSyncing(true);
@@ -929,7 +1002,20 @@ export default function WorkspaceReports() {
 
       const manualFilterParams =
         selectedSourceMode === "manual"
-          ? buildManualFilterParams(appliedManualFilters)
+          ? {
+            ...buildManualFilterParams(appliedManualFilters),
+            ...(() => {
+              const parsedVersion = Number(selectedVersionId);
+              if (!Number.isInteger(parsedVersion) || parsedVersion <= 0) return {};
+              return {
+                datasetVersion: parsedVersion,
+                dataset_version: parsedVersion,
+                includeArchived: true,
+                versionMode: "historical",
+                batchId: "",
+              };
+            })(),
+          }
           : null;
       // Summary reports must not receive a month filter — fiscalMonths applied at the DB layer
       // would restrict transactions to a single month, breaking multi-month aggregations.
@@ -1094,6 +1180,7 @@ export default function WorkspaceReports() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     selectedQMSRowId[selectedTab],
     selectedManualCfYear,
+    selectedVersionId,
   ]);
 
   // Auto-generate report when dependencies change.
@@ -1270,6 +1357,45 @@ export default function WorkspaceReports() {
                 />
               </div>
             </div>
+
+            {selectedSourceMode === "manual" && (
+              <div className="flex flex-col gap-1.5">
+                <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
+                  Dataset Version
+                </label>
+                <div className="relative min-w-[180px]">
+                  <select
+                    value={selectedVersionId}
+                    onChange={(e) => {
+                      const nextVersionId = e.target.value;
+                      setSelectedVersionId(nextVersionId);
+                      debugLog("[ManualGL][UI][VersionDropdown][Change]", {
+                        selectedDatasetVersion: (() => {
+                          const parsed = Number(nextVersionId);
+                          return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+                        })(),
+                      });
+                    }}
+                    disabled={isLoadingVersions}
+                    className="h-9 w-full appearance-none rounded-md border border-border-input bg-bg-card pl-3 pr-9 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50"
+                  >
+                    {versions.length === 0 ? (
+                      <option value="">No versions available</option>
+                    ) : (
+                      versions.map((v) => (
+                        <option key={String(v.id || v.value)} value={String(v.id || v.value)}>
+                          {v.label || `Version ${v.value ?? v.version_number ?? v.versionNumber ?? "-"}`}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                  <ChevronDown
+                    size={14}
+                    className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-text-muted"
+                  />
+                </div>
+              </div>
+            )}
 
             {selectedSourceMode === "manual_upload" && reportType === "Summary" && (
               isLoadingManualFiles ? (
