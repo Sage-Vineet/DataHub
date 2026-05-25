@@ -58,6 +58,11 @@ router.get("/qb-cashflow", async (req, res) => {
 
   const queryParams = { start_date, end_date, accounting_method };
 
+  console.log(
+    `[CashFlow] Request — clientId=${clientId} start_date=${start_date || "(none)"}` +
+    ` end_date=${end_date || "(none)"} accounting_method=${accounting_method} disconnected=${disconnected}`
+  );
+
   try {
     // ── 1. Try exact cache hit ────────────────────────────────────────────────
     const cached = await serveCachedReport(
@@ -69,9 +74,14 @@ router.get("/qb-cashflow", async (req, res) => {
 
     const cachedIsExact = cached?.data &&
       (!start_date || cached.reportParams?.start_date === start_date) &&
-      (!end_date   || cached.reportParams?.end_date   === end_date);
+      (!end_date   || cached.reportParams?.end_date   === end_date) &&
+      (!accounting_method || cached.reportParams?.accounting_method === accounting_method);
 
     if (cachedIsExact) {
+      console.log(
+        `[CashFlow] Cache hit (exact) — snapshot_accounting_method=${cached.reportParams?.accounting_method || "(none)"}` +
+        ` ReportBasis=${cached.data?.Header?.ReportBasis || "(none)"}`
+      );
       return res.json(snapshotEnvelope(cached, disconnected));
     }
 

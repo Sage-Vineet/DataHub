@@ -50,7 +50,11 @@ router.post(
       incremental,
     };
 
-    console.log(`[Sync] Full sync triggered for company ${clientId}`);
+    console.log(
+      `[Sync] Full sync triggered for company ${clientId}` +
+      ` accountingMethod=${syncOptions.accountingMethod} yearsBack=${yearsBack} monthsBack=${monthsBack}` +
+      ` incremental=${incremental} background=${background}`
+    );
     if (background) {
       if (!backgroundSyncByCompany.has(clientId)) {
         const runningPromise = syncAllReports(clientId, syncOptions)

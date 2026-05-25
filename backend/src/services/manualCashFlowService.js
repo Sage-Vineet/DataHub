@@ -133,11 +133,11 @@ const LINE_OF_CREDIT_PATTERNS = [
   /\brevolver\b/i,
 ];
 
+// Intentionally excludes "total long-term liabilities" to prevent double-counting
+// with LINE_OF_CREDIT_PATTERNS when both a LOC and LTD exist on the balance sheet.
 const LONG_DEBT_PATTERNS = [
   /^(total )?long.?term (debt|notes? payable|loans? payable)$/i,
-  /^(total )?long.?term liabilities$/i,
   /long.?term (debt|notes? payable|loans? payable)/i,
-  /long.?term liabilities/i,
 ];
 
 const NOTES_PAYABLE_PATTERNS = [
@@ -293,23 +293,21 @@ function buildCashFlow({ bsPrevRows, bsCurrRows, plRows, year }) {
   const currOCL  = findAmt(bsCurrRows, OTHER_CL_PATTERNS);
   const prevOCL  = hasPrev ? findAmt(bsPrevRows, OTHER_CL_PATTERNS)  : 0;
 
-  // Operating indirect-method sign convention:
-  //   AR  increase → cash used      → negative
-  //   INV increase → cash used      → negative
-  //   AP  increase → cash received  → positive
-  //   ACCR increase → cash deferred → positive
-  //   OCA increase → cash used      → negative
-  //   OCL increase → cash deferred  → positive
-  const changeAR   = hasPrev ? r2(-(currAR   - prevAR))   : 0;
-  const changeInv  = hasPrev ? r2(-(currInv  - prevInv))  : 0;
-  const changeAP   = hasPrev ? r2(+(currAP   - prevAP))   : 0;
-  const changeAccr = hasPrev ? r2(+(currAccr - prevAccr)) : 0;
-  const changeOCA  = hasPrev ? r2(-(currOCA  - prevOCA))  : 0;
-  const changeOCL  = hasPrev ? r2(+(currOCL  - prevOCL))  : 0;
+  // Store raw balance-sheet deltas (positive = account increased, negative = decreased).
+  // Indirect method sign rules are applied in the totalOperating formula below:
+  //   asset increases reduce cash   → subtracted
+  //   liability increases add cash  → added
+  const changeAR   = hasPrev ? r2(currAR   - prevAR)   : 0;
+  const changeInv  = hasPrev ? r2(currInv  - prevInv)  : 0;
+  const changeAP   = hasPrev ? r2(currAP   - prevAP)   : 0;
+  const changeAccr = hasPrev ? r2(currAccr - prevAccr) : 0;
+  const changeOCA  = hasPrev ? r2(currOCA  - prevOCA)  : 0;
+  const changeOCL  = hasPrev ? r2(currOCL  - prevOCL)  : 0;
 
   const totalOperating = r2(
-    netIncome + depreciation + amortization +
-    changeAR + changeInv + changeAP + changeAccr + changeOCA + changeOCL
+    netIncome + depreciation + amortization
+    - changeAR - changeInv - changeOCA    // asset increases reduce cash
+    + changeAP + changeAccr + changeOCL   // liability increases add cash
   );
 
   // ── Investing Activities ────────────────────────────────────────────────────
@@ -343,9 +341,9 @@ function buildCashFlow({ bsPrevRows, bsCurrRows, plRows, year }) {
   const totalDebtCurr = currLOC + currLTD + currNotes;
   const debtDelta     = hasPrev ? r2(totalDebtCurr - totalDebtPrev) : 0;
 
-  // Loans split by direction; loanRepayment stored as a positive magnitude.
-  const loansReceived = debtDelta > 0 ? debtDelta : 0;
-  const loanRepayment = debtDelta < 0 ? r2(Math.abs(debtDelta)) : 0; // positive magnitude
+  // Natural-sign split: loansReceived >= 0, loanRepayment <= 0 (no Math.abs)
+  const loansReceived = r2(Math.max(debtDelta, 0));  // positive when new borrowing
+  const loanRepayment = r2(Math.min(debtDelta, 0));  // negative when net repayment
 
   // Equity: raw delta (can be negative if equity decreased)
   const currEquity    = findAmt(bsCurrRows, EQUITY_PAID_IN_PATTERNS);
@@ -355,8 +353,8 @@ function buildCashFlow({ bsPrevRows, bsCurrRows, plRows, year }) {
   // Dividends / distributions: taken from the P&L (positive outflow amount)
   const dividends = r2(findAmt(plRows, DIVIDENDS_PATTERNS));
 
-  // Total: LoansReceived − LoanRepayment + EquityContribution − Dividends
-  const totalFinancing = r2(loansReceived - loanRepayment + equityContrib - dividends);
+  // Total: LoansReceived + LoanRepayment (already negative) + EquityContribution − Dividends
+  const totalFinancing = r2(loansReceived + loanRepayment + equityContrib - dividends);
 
   // ── Cash reconciliation ───────────────────────────────────────────────────
   // BeginningCash = PreviousYearBS.BankAccounts (0 when no previous BS)
@@ -415,7 +413,7 @@ function buildCashFlow({ bsPrevRows, bsCurrRows, plRows, year }) {
       totalInvesting,
       financingActivities: [
         { label: "Loans Received",      value: loansReceived    },
-        { label: "Loan Repayment",      value: -loanRepayment   }, // stored as negative (cash outflow)
+        { label: "Loan Repayment",      value: loanRepayment    }, // naturally negative (Math.min)
         { label: "Equity Contribution", value: equityContrib    },
         { label: "Dividends",           value: -dividends       }, // stored as negative (cash outflow)
       ],
@@ -690,6 +688,76 @@ function generatedCfToRows(cf) {
   ];
 }
 
+// ── Uploaded CF extractor ─────────────────────────────────────────────────────
+
+/**
+ * Convert a parsed, uploaded Cash Flow record (source="manual_report_upload")
+ * into the generated-CF format so it can be stored by upsertGeneratedCashFlow.
+ *
+ * The stored rows come from parseSectionedStatement with CF section definitions:
+ *   Operating Activities / Investing Activities / Financing Activities
+ *
+ * Beginning/ending cash entries may sit inside the Financing section children
+ * or at the top level — we search the flat row set to cover both cases.
+ */
+function extractUploadedCFSections(cfRecord, year) {
+  const rows = extractRows(cfRecord);
+  const flat = flatten(rows);
+
+  // Find a top-level section header by name pattern
+  function findSectionHeader(nameRe) {
+    return rows.find((n) => n.type === "header" && nameRe.test(String(n.name || "")));
+  }
+
+  // Find a single numeric value across ALL flat nodes (covers nested rows)
+  function findRowAmt(nameRe) {
+    const node = flat.find((n) => nameRe.test(String(n.name || "")) && typeof n.amount === "number");
+    return node ? r2(node.amount) : 0;
+  }
+
+  const opSection  = findSectionHeader(/operating.?activities/i);
+  const invSection = findSectionHeader(/investing.?activities/i);
+  const finSection = findSectionHeader(/financing.?activities/i);
+
+  // buildSectionNode computes section.amount from children — use it directly
+  const totalOperating = r2(opSection?.amount  || 0);
+  const totalInvesting = r2(invSection?.amount || 0);
+  const totalFinancing = r2(finSection?.amount || 0);
+  const netCashChange  = r2(totalOperating + totalInvesting + totalFinancing);
+
+  const beginningCash      = findRowAmt(/beginning.cash|cash.at.beginning|opening.cash|cash.beginning/i);
+  const endingCashFromFile = findRowAmt(/ending.cash|cash.at.end|closing.cash|cash.end|end.of.period/i);
+  const endingCash         = endingCashFromFile || r2(beginningCash + netCashChange);
+
+  // Extract child line items (skip the sub-total "Net Cash from X" child)
+  const CASH_POS_RE = /beginning.cash|cash.at.beginning|opening.cash|ending.cash|cash.at.end|closing.cash/i;
+  function sectionItems(section) {
+    if (!section) return [];
+    return (section.children || [])
+      .filter((c) => c.type !== "total" && !CASH_POS_RE.test(c.name))
+      .map((c) => ({ label: c.name, value: r2(c.amount || 0) }));
+  }
+
+  return {
+    year: Number(year),
+    reportType: "cashflow",
+    accountingMethod: "Accrual",
+    data: {
+      operatingActivities: sectionItems(opSection),
+      totalOperating,
+      investingActivities: sectionItems(invSection),
+      totalInvesting,
+      financingActivities: sectionItems(finSection),
+      totalFinancing,
+      netCashChange,
+      beginningCash,
+      endingCash,
+      cashValidated: Math.abs((beginningCash + netCashChange) - endingCash) <= 1,
+      generatedBy: "uploaded",
+    },
+  };
+}
+
 // ── Gemini Cash Flow Generation (Indirect Method) ─────────────────────────────
 
 const GEMINI_CF_MODELS = ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash"];
@@ -956,25 +1024,27 @@ function normalizeCfFromGemini(raw, year) {
   const beginningCash = r2(raw.beginningCash ?? 0);
   const endingCash    = r2(beginningCash + netCashChange);
 
-  // ── Validate against Gemini's reported values ──────────────────────────────
-  // Accept both field name variants: netIncrease (new) and netIncreaseInCash (legacy).
+  // ── Validate against Gemini's reported values (warnings only) ────────────
+  // netCashChange is already recomputed from section totals above, so we own it.
+  // Gemini sometimes reports a wrong netIncrease/endingCash due to arithmetic errors;
+  // log the discrepancy but do NOT throw — the section totals are the source of truth.
   const geminiNetRaw = raw.netIncrease ?? raw.netIncreaseInCash ?? null;
   if (geminiNetRaw != null) {
     const geminiNet = r2(geminiNetRaw);
     if (Math.abs(netCashChange - geminiNet) > 1) {
-      throw new Error(
-        `Cash flow reconciliation failed for year ${year}: ` +
-        `computed net=${netCashChange} vs Gemini net=${geminiNet} ` +
-        `(Operating=${totalOperating}, Investing=${totalInvesting}, Financing=${totalFinancing})`
+      console.warn(
+        `[ManualCashFlow] year=${year}: Gemini netIncrease=${geminiNet} differs from ` +
+        `computed net=${netCashChange} (Op=${totalOperating}, Inv=${totalInvesting}, Fin=${totalFinancing}). ` +
+        `Using computed value.`
       );
     }
   }
   if (raw.endingCash != null) {
     const geminiEnding = r2(raw.endingCash);
     if (Math.abs(endingCash - geminiEnding) > 1) {
-      throw new Error(
-        `Cash flow reconciliation failed for year ${year}: ` +
-        `computed endingCash=${endingCash} vs Gemini endingCash=${geminiEnding}`
+      console.warn(
+        `[ManualCashFlow] year=${year}: Gemini endingCash=${geminiEnding} differs from ` +
+        `computed endingCash=${endingCash}. Using computed value.`
       );
     }
   }
@@ -1022,14 +1092,23 @@ async function generateCashFlowWithGemini(currentPL, currentBS, previousBS, year
 
 /**
  * Called at the end of Sync All.
- * Reads all uploaded BS + P&L rows from DB, groups by year, calls Gemini for each
- * complete year pair, and persists the results as manual_upload_generated records.
+ *
+ * Priority order per year:
+ *   1. Uploaded Cash Flow file (source=manual_report_upload, report_type=cash_flow)
+ *      → values read directly from the parsed row tree, no recalculation
+ *   2. Balance Sheet (curr + prev) + Profit & Loss → Gemini indirect-method generation
+ *
+ * Results are stored as manual_upload_generated records and served by the CF routes.
  */
 async function generateAndSaveCashFlowsForAllYears(companyId, now = new Date().toISOString()) {
   if (!companyId) throw new Error("companyId is required");
 
-  // Direct DB queries — avoids circular dep with manualReportUploadService
-  const [{ data: bsRecs, error: bsErr }, { data: plRecs, error: plErr }] = await Promise.all([
+  // Fetch BS, PL, AND uploaded CF records in one round-trip
+  const [
+    { data: bsRecs, error: bsErr },
+    { data: plRecs, error: plErr },
+    { data: cfRecs, error: cfErr },
+  ] = await Promise.all([
     supabase.from("qb_synced_reports")
       .select("id, report_params, data, updated_at")
       .eq("company_id", companyId).eq("source", "manual_report_upload").eq("report_type", "balance_sheet")
@@ -1038,13 +1117,25 @@ async function generateAndSaveCashFlowsForAllYears(companyId, now = new Date().t
       .select("id, report_params, data, updated_at")
       .eq("company_id", companyId).eq("source", "manual_report_upload").eq("report_type", "profit_and_loss")
       .order("updated_at", { ascending: false }),
+    supabase.from("qb_synced_reports")
+      .select("id, report_params, data, updated_at")
+      .eq("company_id", companyId).eq("source", "manual_report_upload").eq("report_type", "cash_flow")
+      .order("updated_at", { ascending: false }),
   ]);
 
   if (bsErr) throw new Error(`BS fetch failed: ${bsErr.message}`);
   if (plErr) throw new Error(`PL fetch failed: ${plErr.message}`);
+  if (cfErr) console.warn(`[ManualCashFlow] Uploaded CF fetch warning: ${cfErr.message}`);
 
   const bsByYear = groupByYear(bsRecs || []);
   const plByYear = groupByYear(plRecs || []);
+  const cfByYear = groupByYear(cfRecs || []);
+
+  console.log("[ManualCashFlow] Available records", {
+    bsYears:         Object.keys(bsByYear).sort(),
+    plYears:         Object.keys(plByYear).sort(),
+    uploadedCFYears: Object.keys(cfByYear).sort(),
+  });
 
   // Wipe existing generated CFs — Sync All always produces a clean slate
   await supabase.from("qb_synced_reports").delete()
@@ -1055,39 +1146,71 @@ async function generateAndSaveCashFlowsForAllYears(companyId, now = new Date().t
   const generated = [];
   const failed    = [];
 
-  const years = Object.keys(plByYear).map(Number).filter((y) => bsByYear[y]).sort();
+  // Process all years that have either an uploaded CF OR a BS+PL pair
+  const yearsFromBSPL = Object.keys(plByYear).map(Number).filter((y) => bsByYear[y]);
+  const yearsFromCF   = Object.keys(cfByYear).map(Number);
+  const allYears = Array.from(new Set([...yearsFromBSPL, ...yearsFromCF])).sort();
 
-  for (const year of years) {
-    const currentBS  = bsByYear[year];
-    const currentPL  = plByYear[year];
-    const previousBS = bsByYear[year - 1] || null;
+  for (const year of allYears) {
+    const uploadedCF = cfByYear[year]      || null;
+    const currentBS  = bsByYear[year]      || null;
+    const currentPL  = plByYear[year]      || null;
+    const previousBS = bsByYear[year - 1]  || null;
 
-    console.log("[ManualCashFlow] Generating CF via Gemini", {
+    console.log("[ManualCashFlow] Processing year", {
       year,
-      currentBSFound:  !!currentBS,
-      currentPLFound:  !!currentPL,
-      previousBSFound: !!previousBS,
+      uploadedCFFile: uploadedCF?.report_params?.fileName || null,
+      currentBSFile:  currentBS?.report_params?.fileName  || null,
+      currentPLFile:  currentPL?.report_params?.fileName  || null,
+      previousBSFile: previousBS?.report_params?.fileName || null,
     });
 
     try {
-      const cfResult = await generateCashFlowWithGemini(currentPL, currentBS, previousBS, year);
-      console.log("[ManualCashFlow] Generated Cash Flow", cfResult);
+      let cfResult;
+      let inputs;
 
-      const inputs = {
-        bsPrevYear:    previousBS ? year - 1 : null,
-        bsCurrYear:    year,
-        plYear:        year,
-        bsPrevFile:    previousBS?.report_params?.fileName || null,
-        bsCurrFile:    currentBS.report_params?.fileName  || null,
-        plFile:        currentPL.report_params?.fileName  || null,
-        hasPreviousBS: Boolean(previousBS),
-        generatedBy:   "gemini",
-      };
+      if (uploadedCF) {
+        // ── PRIORITY 1: use uploaded Cash Flow file directly ──────────────────
+        cfResult = extractUploadedCFSections(uploadedCF, year);
+        inputs = {
+          uploadedCFFile: uploadedCF.report_params?.fileName || null,
+          hasPreviousBS:  false,
+          generatedBy:    "uploaded",
+        };
+        const d = cfResult.data;
+        console.log(
+          `[QB MANUAL CASHFLOW]\nYear=${year}\n` +
+          `Uploaded:  Operating=${d.totalOperating} Investing=${d.totalInvesting} Financing=${d.totalFinancing} EndingCash=${d.endingCash}\n` +
+          `Status=USING_UPLOADED_FILE`
+        );
+      } else if (currentBS && currentPL) {
+        // ── PRIORITY 2: generate from BS + PL via Gemini ─────────────────────
+        cfResult = await generateCashFlowWithGemini(currentPL, currentBS, previousBS, year);
+        inputs = {
+          bsPrevYear:    previousBS ? year - 1 : null,
+          bsCurrYear:    year,
+          plYear:        year,
+          bsPrevFile:    previousBS?.report_params?.fileName || null,
+          bsCurrFile:    currentBS.report_params?.fileName   || null,
+          plFile:        currentPL.report_params?.fileName   || null,
+          hasPreviousBS: Boolean(previousBS),
+          generatedBy:   "gemini",
+        };
+        const d = cfResult.data;
+        console.log(
+          `[QB MANUAL CASHFLOW]\nYear=${year}\n` +
+          `Generated: Operating=${d.totalOperating} Investing=${d.totalInvesting} Financing=${d.totalFinancing} EndingCash=${d.endingCash}\n` +
+          `Status=GENERATED_FROM_BS_PL`
+        );
+      } else {
+        console.warn(`[ManualCashFlow] Skipping year=${year}: no uploaded CF and missing BS or PL`);
+        continue;
+      }
 
       await upsertGeneratedCashFlow(companyId, year, cfResult, inputs);
-      generated.push({ year, success: true });
+      generated.push({ year, success: true, source: inputs.generatedBy });
     } catch (err) {
-      console.error(`[ManualCashFlow] Gemini generation failed for year=${year}:`, err.message);
+      console.error(`[ManualCashFlow] CF failed for year=${year}:`, err.message);
       failed.push({ year, reason: err.message });
     }
   }

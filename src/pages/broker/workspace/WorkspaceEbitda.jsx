@@ -724,290 +724,276 @@ export default function WorkspaceEbitda() {
           </div>
         ) : multiYearData ? (
           <div className="animate-in slide-in-from-bottom-2 fade-in duration-300">
-            {/* Side-by-Side Layout Wrapper */}
-            <div className="flex gap-6 items-start">
-              {/* Left: Financial Report Table */}
-              <div className="flex-1 overflow-hidden rounded-xl border border-[#cbd5e1] bg-white shadow-lg">
-                <div className="bg-[#8bc53d] py-3 text-center">
-                  <h2 className="text-[18px] font-bold text-white">
-                    Recalculated Seller's Discretionary Earnings of {company?.name || "the Business"}
-                  </h2>
-                </div>
+            {/*
+              Unified Data + Comments Table
+              ─────────────────────────────
+              Both data columns and comment inputs live in the SAME <tr>.
+              The browser's table-layout engine guarantees every cell in a row
+              shares the same height — no hardcoded pixel heights, no JS sync.
+              This works identically for QB, Xero, manual upload, cached data,
+              and any future connection mode.
+            */}
+            <div className="overflow-hidden rounded-xl border border-[#cbd5e1] bg-white shadow-lg">
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse text-[14px]">
+                  <thead>
+                    {/* ── Dual panel titles ───────────────────────────── */}
+                    <tr>
+                      <th
+                        colSpan={1 + years.length}
+                        className="bg-[#8bc53d] py-3 text-center"
+                      >
+                        <span className="text-[18px] font-bold text-white">
+                          Recalculated Seller&apos;s Discretionary Earnings of {company?.name || "the Business"}
+                        </span>
+                      </th>
+                      <th
+                        className="bg-[#8bc53d] py-3 text-center min-w-[280px]"
+                        style={{ borderLeft: "3px solid rgba(255,255,255,0.35)" }}
+                      >
+                        <span className="text-[18px] font-bold text-white">Comments</span>
+                      </th>
+                    </tr>
+                    {/* ── Year label sub-headers ──────────────────────── */}
+                    <tr className="bg-[#8bc53d] text-white">
+                      <th className="border-b border-[#cbd5e1] p-3 text-left font-bold min-w-[280px]"></th>
+                      {years.map(year => (
+                        <th key={year} className="border-b border-[#cbd5e1] p-3 text-right font-bold min-w-[120px]">
+                          FY {year}
+                        </th>
+                      ))}
+                      <th
+                        className="border-b border-[#cbd5e1] p-3 min-w-[280px]"
+                        style={{ borderLeft: "3px solid rgba(255,255,255,0.35)" }}
+                      ></th>
+                    </tr>
+                  </thead>
 
-                <div className="overflow-x-auto">
-                  <table className="w-full border-collapse text-[14px]">
-                    <thead>
-                      <tr className="bg-[#8bc53d] text-white">
-                        <th className="border-b border-[#cbd5e1] p-3 text-left font-bold min-w-[280px]"></th>
+                  <tbody>
+                    {/* ── Net Income ──────────────────────────────────── */}
+                    <tr className="border-b border-[#cbd5e1] bg-gray-50">
+                      <td className="p-3 font-bold text-[#050505]">Net Income</td>
+                      {years.map(year => (
+                        <td key={year} className="p-3 text-right font-bold text-[#050505]">
+                          {formatCurrency(multiYearData[year]?.components?.netIncome?.value)}
+                        </td>
+                      ))}
+                      <td className="p-1 bg-gray-50" style={{ borderLeft: "2px solid #cbd5e1" }}>
+                        <input
+                          value={rowComments['netIncome'] || ""}
+                          onChange={(e) => updateRowComment('netIncome', e.target.value)}
+                          placeholder="Net income remarks..."
+                          className="w-full bg-transparent border-none focus:ring-0 text-[13px] px-3 placeholder:italic text-slate-600"
+                        />
+                      </td>
+                    </tr>
+
+                    {/* ── EBITDA Adjustments ──────────────────────────── */}
+                    {[
+                      { key: 'interestIncome', label: 'Total Interest Income' },
+                      { key: 'interestExpense', label: 'Total Interest Expense' },
+                      { key: 'taxes', label: 'Total Income Tax Expense' },
+                      { key: 'depreciation', label: 'Depreciation' },
+                      { key: 'amortization', label: 'Amortization Expense' },
+                    ].map(row => (
+                      <tr key={row.key} className="border-b border-[#f1f5f9] hover:bg-slate-50 transition-colors">
+                        <td className="p-3 pl-8 text-text-primary">{row.label}</td>
                         {years.map(year => (
-                          <th key={year} className="border-b border-[#cbd5e1] p-3 text-right font-bold min-w-[120px]">
-                            FY {year}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {/* Net Income Section */}
-                      <tr className="border-b border-[#cbd5e1] bg-gray-50 h-[46px]">
-                        <td className="p-3 font-bold text-[#050505]">Net Income</td>
-                        {years.map(year => (
-                          <td key={year} className="p-3 text-right font-bold text-[#050505]">
-                            {formatCurrency(multiYearData[year]?.components?.netIncome?.value)}
+                          <td key={year} className="p-3 text-right text-text-primary">
+                            {formatCurrency(multiYearData[year]?.components?.[row.key]?.value)}
                           </td>
                         ))}
-                      </tr>
-
-                      {/* EBITDA Adjustments removed */}
-                      {[
-                        { key: 'interestIncome', label: 'Total Interest Income' },
-                        { key: 'interestExpense', label: 'Total Interest Expense' },
-                        { key: 'taxes', label: 'Total Income Tax Expense' },
-                        { key: 'depreciation', label: 'Depreciation' },
-                        { key: 'amortization', label: 'Amortization Expense' }
-                      ].map(row => (
-                        <tr key={row.key} className="border-b border-[#f1f5f9] hover:bg-slate-50 transition-colors h-[45px]">
-                          <td className="p-3 pl-8 text-text-primary">{row.label}</td>
-                          {years.map(year => (
-                            <td key={year} className="p-3 text-right text-text-primary">
-                              {formatCurrency(multiYearData[year]?.components?.[row.key]?.value)}
-                            </td>
-                          ))}
-                        </tr>
-                      ))}
-
-                      {/* Calculated EBITDA row */}
-                      <tr className="bg-[#f8fafc] border-y border-[#cbd5e1] h-[45px]">
-                        <td className="p-3 pl-4 font-bold text-[#050505]">EBITDA</td>
-                        {years.map(year => {
-                          const ebitdaVal = calculateBaseEbitda(year);
-                          return (
-                            <td key={year} className="p-3 text-right font-bold text-[#050505]">
-                              {formatCurrency(ebitdaVal)}
-                            </td>
-                          );
-                        })}
-                      </tr>
-
-                      {/* Owner Addbacks Section */}
-                      <tr className="bg-white h-[45px]">
-                        <td colSpan={years.length + 1} className="p-0 bg-gray-100">
-                          <div className="px-4 py-3">
-                            <div className="flex items-center justify-between font-bold text-[#050505]">
-                              <span>Addbacks</span>
-                              <div className="flex items-center gap-2">
-                                <button
-                                  onClick={() => setIsTypeDialogOpen(true)}
-                                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#8bc53d] text-white text-[11px] font-bold hover:bg-[#78ab34] transition-colors"
-                                >
-                                  <Plus size={12} strokeWidth={3} />
-                                  ADD ROW
-                                </button>
-                              </div>
-                            </div>
-                            <p className="mt-1 text-[11px] text-slate-500">
-                              * Values marked with an asterisk (*) are automatically fetched from the Profit &amp; Loss statement. Values without (*) are manually added.
-                            </p>
-                          </div>
+                        <td className="p-1" style={{ borderLeft: "2px solid #f1f5f9" }}>
+                          <input
+                            value={rowComments[row.key] || ""}
+                            onChange={(e) => updateRowComment(row.key, e.target.value)}
+                            placeholder={`${row.label} remarks...`}
+                            className="w-full bg-transparent border-none focus:ring-0 text-[13px] px-3 placeholder:italic text-slate-600"
+                          />
                         </td>
                       </tr>
-                      {dynamicAddbacks.map((row) => (
-                        <tr key={row.id} className="group border-b border-[#f1f5f9] hover:bg-slate-50 transition-colors h-[45px]">
-                          <td className="p-3 pl-6 text-text-primary">
-                            <div className="flex items-center gap-2">
-                              {/* Account selector or custom label */}
-                              {row.type === "PL" ? (
-                                <div className="relative flex-1">
-                                  <select
-                                    value={row.label}
-                                    onChange={(e) => handleAccountSelection(row.id, e.target.value)}
-                                    className="appearance-none w-full bg-transparent border-b border-transparent hover:border-gray-300 focus:border-[#8bc53d] focus:outline-none transition-all py-0.5 pr-5 text-[13px] cursor-pointer"
-                                  >
-                                    <option value="" disabled>Select account...</option>
-                                    {plAccountNames.map(name => (
-                                      <option key={name} value={name}>{name}</option>
-                                    ))}
-                                  </select>
-                                  <ChevronDown size={11} className="pointer-events-none absolute right-0 top-1/2 -translate-y-1/2 text-slate-400" />
-                                </div>
-                              ) : (
-                                <input
-                                  value={row.label}
-                                  onChange={(e) => updateAddbackLabel(row.id, e.target.value)}
-                                  className="flex-1 bg-transparent border-b border-transparent hover:border-gray-300 focus:border-[#8bc53d] focus:outline-none transition-all py-0.5 text-[13px]"
-                                  placeholder="Enter label…"
-                                />
-                              )}
-                              <button
-                                onClick={() => deleteAddback(row.id)}
-                                className="opacity-0 group-hover:opacity-100 p-1 text-red-500 hover:bg-red-50 rounded transition-all flex-shrink-0"
-                                title="Delete Row"
-                              >
-                                <Trash2 size={14} />
-                              </button>
-                            </div>
+                    ))}
+
+                    {/* ── EBITDA Total ─────────────────────────────────── */}
+                    <tr className="bg-[#f8fafc] border-y border-[#cbd5e1]">
+                      <td className="p-3 pl-4 font-bold text-[#050505]">EBITDA</td>
+                      {years.map(year => {
+                        const ebitdaVal = calculateBaseEbitda(year);
+                        return (
+                          <td key={year} className="p-3 text-right font-bold text-[#050505]">
+                            {formatCurrency(ebitdaVal)}
                           </td>
-                          {years.map((year) => {
-                            const { apiValue, userValue } = row.values[year] || { apiValue: null, userValue: null };
-                            const rawDisplayValue = userValue !== null ? String(userValue) : (apiValue !== null ? String(apiValue) : "");
-                            const showPLAsterisk = Boolean(
-                              row.isFromPL &&
-                              row.linkedToPL &&
-                              userValue === null &&
-                              apiValue !== null
-                            );
-                            const displayValue =
-                              showPLAsterisk && rawDisplayValue && !rawDisplayValue.startsWith("*")
-                                ? `*${rawDisplayValue}`
-                                : rawDisplayValue;
+                        );
+                      })}
+                      <td className="p-1 bg-[#f8fafc]" style={{ borderLeft: "2px solid #cbd5e1" }}>
+                        <input
+                          value={rowComments['ebitda'] || ""}
+                          onChange={(e) => updateRowComment('ebitda', e.target.value)}
+                          placeholder="EBITDA remarks..."
+                          className="w-full bg-transparent border-none font-bold focus:ring-0 text-[13px] px-3 placeholder:italic placeholder:font-normal text-slate-800"
+                        />
+                      </td>
+                    </tr>
 
-                            return (
-                              <td key={year} className="p-1.5 text-right">
-                                <input
-                                  type="text"
-                                  value={displayValue}
-                                  onChange={(e) => updateAddbackValue(row.id, year, e.target.value)}
-                                  title={showPLAsterisk ? "This value is sourced from Profit & Loss" : undefined}
-                                  className={cn(
-                                    "w-full bg-transparent text-right font-medium focus:outline-none focus:ring-1 focus:ring-[#8bc53d] rounded px-2 py-1",
-                                    (userValue !== null || apiValue !== null) ? "text-text-primary" : "text-gray-300"
-                                  )}
-                                  placeholder={apiValue !== null ? String(apiValue) : "-"}
-                                />
-                              </td>
-                            );
-                          })}
-                        </tr>
-                      ))}
+                    {/* ── Addbacks Section Header ──────────────────────── */}
+                    <tr className="bg-gray-100">
+                      <td colSpan={1 + years.length} className="p-0">
+                        <div className="px-4 py-3">
+                          <div className="flex items-center justify-between font-bold text-[#050505]">
+                            <span>Addbacks</span>
+                            <button
+                              onClick={() => setIsTypeDialogOpen(true)}
+                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#8bc53d] text-white text-[11px] font-bold hover:bg-[#78ab34] transition-colors"
+                            >
+                              <Plus size={12} strokeWidth={3} />
+                              ADD ROW
+                            </button>
+                          </div>
+                          <p className="mt-1 text-[11px] text-slate-500">
+                            * Values marked with an asterisk (*) are automatically fetched from the Profit &amp; Loss statement. Values without (*) are manually added.
+                          </p>
+                        </div>
+                      </td>
+                      {/* Comment cell for the Addbacks header — intentionally blank */}
+                      <td className="bg-gray-100" style={{ borderLeft: "2px solid #cbd5e1" }}></td>
+                    </tr>
 
-                      {/* Final Totals */}
-                      <tr className="border-t-2 border-[#8bc53d] bg-[#f8fafc] h-[58px]">
-                        <td className="p-4 font-bold text-[#050505] text-[15px]">Seller's Discretionary Earnings</td>
-                        {years.map(year => {
-                          const baseEbitda = calculateBaseEbitda(year);
-                          const addbacksSum = dynamicAddbacks.reduce((sum, ab) => {
-                            const { apiValue, userValue } = ab.values[year] || { apiValue: null, userValue: null };
-                            const val = userValue !== null ? userValue : (apiValue || 0);
-                            return sum + val;
-                          }, 0);
-                          const finalSde = baseEbitda + addbacksSum;
+                    {/* ── Dynamic Addback Rows ─────────────────────────── */}
+                    {dynamicAddbacks.map((row) => (
+                      <tr key={row.id} className="group border-b border-[#f1f5f9] hover:bg-slate-50 transition-colors">
+                        <td className="p-3 pl-6 text-text-primary">
+                          <div className="flex items-center gap-2">
+                            {row.type === "PL" ? (
+                              <div className="relative flex-1">
+                                <select
+                                  value={row.label}
+                                  onChange={(e) => handleAccountSelection(row.id, e.target.value)}
+                                  className="appearance-none w-full bg-transparent border-b border-transparent hover:border-gray-300 focus:border-[#8bc53d] focus:outline-none transition-all py-0.5 pr-5 text-[13px] cursor-pointer"
+                                >
+                                  <option value="" disabled>Select account...</option>
+                                  {plAccountNames.map(name => (
+                                    <option key={name} value={name}>{name}</option>
+                                  ))}
+                                </select>
+                                <ChevronDown size={11} className="pointer-events-none absolute right-0 top-1/2 -translate-y-1/2 text-slate-400" />
+                              </div>
+                            ) : (
+                              <input
+                                value={row.label}
+                                onChange={(e) => updateAddbackLabel(row.id, e.target.value)}
+                                className="flex-1 bg-transparent border-b border-transparent hover:border-gray-300 focus:border-[#8bc53d] focus:outline-none transition-all py-0.5 text-[13px]"
+                                placeholder="Enter label…"
+                              />
+                            )}
+                            <button
+                              onClick={() => deleteAddback(row.id)}
+                              className="opacity-0 group-hover:opacity-100 p-1 text-red-500 hover:bg-red-50 rounded transition-all flex-shrink-0"
+                              title="Delete Row"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                        </td>
+                        {years.map((year) => {
+                          const { apiValue, userValue } = row.values[year] || { apiValue: null, userValue: null };
+                          const rawDisplayValue = userValue !== null ? String(userValue) : (apiValue !== null ? String(apiValue) : "");
+                          const showPLAsterisk = Boolean(
+                            row.isFromPL &&
+                            row.linkedToPL &&
+                            userValue === null &&
+                            apiValue !== null
+                          );
+                          const displayValue =
+                            showPLAsterisk && rawDisplayValue && !rawDisplayValue.startsWith("*")
+                              ? `*${rawDisplayValue}`
+                              : rawDisplayValue;
 
                           return (
-                            <td key={year} className="p-4 text-right font-bold text-[#8bc53d] text-[16px]">
-                              {formatCurrency(finalSde)}
+                            <td key={year} className="p-1.5 text-right">
+                              <input
+                                type="text"
+                                value={displayValue}
+                                onChange={(e) => updateAddbackValue(row.id, year, e.target.value)}
+                                title={showPLAsterisk ? "This value is sourced from Profit & Loss" : undefined}
+                                className={cn(
+                                  "w-full bg-transparent text-right font-medium focus:outline-none focus:ring-1 focus:ring-[#8bc53d] rounded px-2 py-1",
+                                  (userValue !== null || apiValue !== null) ? "text-text-primary" : "text-gray-300"
+                                )}
+                                placeholder={apiValue !== null ? String(apiValue) : "-"}
+                              />
                             </td>
                           );
                         })}
+                        <td className="p-1" style={{ borderLeft: "2px solid #f1f5f9" }}>
+                          <input
+                            value={rowComments[row.id] || ""}
+                            onChange={(e) => updateRowComment(row.id, e.target.value)}
+                            placeholder={`${row.label || "Addback"} remarks...`}
+                            className="w-full bg-transparent border-none focus:ring-0 text-[13px] px-3 placeholder:italic text-slate-600"
+                          />
+                        </td>
                       </tr>
-                      <tr className="border-b border-[#cbd5e1] bg-white h-[45px]">
-                        <td className="p-3 font-bold text-[#050505]">SDE % of Sales</td>
-                        {years.map(year => {
-                          const baseEbitda = calculateBaseEbitda(year);
-                          const addbacksSum = dynamicAddbacks.reduce((sum, ab) => {
-                            const { apiValue, userValue } = ab.values[year] || { apiValue: null, userValue: null };
-                            const val = userValue !== null ? userValue : (apiValue || 0);
-                            return sum + val;
-                          }, 0);
-                          const finalSde = baseEbitda + addbacksSum;
-                          const revenue = multiYearData[year]?.revenue || 0;
-                          const sdePct = revenue > 0 ? (finalSde / revenue) * 100 : 0;
+                    ))}
 
-                          return (
-                            <td key={year} className="p-3 text-right font-bold text-text-primary">
-                              {formatPercent(sdePct)}
-                            </td>
-                          );
-                        })}
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              </div>
+                    {/* ── Seller's Discretionary Earnings ─────────────── */}
+                    <tr className="border-t-2 border-[#8bc53d] bg-[#f8fafc]">
+                      <td className="p-4 font-bold text-[#050505] text-[15px]">Seller's Discretionary Earnings</td>
+                      {years.map(year => {
+                        const baseEbitda = calculateBaseEbitda(year);
+                        const addbacksSum = dynamicAddbacks.reduce((sum, ab) => {
+                          const { apiValue, userValue } = ab.values[year] || { apiValue: null, userValue: null };
+                          const val = userValue !== null ? userValue : (apiValue || 0);
+                          return sum + val;
+                        }, 0);
+                        const finalSde = baseEbitda + addbacksSum;
+                        return (
+                          <td key={year} className="p-4 text-right font-bold text-[#8bc53d] text-[16px]">
+                            {formatCurrency(finalSde)}
+                          </td>
+                        );
+                      })}
+                      <td className="p-2 bg-[#f8fafc]" style={{ borderLeft: "2px solid #8bc53d" }}>
+                        <textarea
+                          value={rowComments['totalSde'] || ""}
+                          onChange={(e) => updateRowComment('totalSde', e.target.value)}
+                          placeholder="Story of Seller's Discretionary Earnings..."
+                          className="w-full bg-transparent border-none focus:ring-0 text-[12px] px-2 leading-tight resize-none overflow-hidden placeholder:italic font-semibold text-slate-800"
+                          rows={2}
+                        />
+                      </td>
+                    </tr>
 
-              {/* Right: Comments Panel */}
-              <div className="w-[380px] overflow-hidden rounded-xl border border-[#cbd5e1] bg-white shadow-lg flex flex-col">
-                <div className="bg-[#8bc53d] py-3 text-center border-b border-[#cbd5e1]">
-                  <h2 className="text-[18px] font-bold text-white">Comments</h2>
-                </div>
+                    {/* ── SDE % of Sales ───────────────────────────────── */}
+                    <tr className="border-b border-[#cbd5e1] bg-white">
+                      <td className="p-3 font-bold text-[#050505]">SDE % of Sales</td>
+                      {years.map(year => {
+                        const baseEbitda = calculateBaseEbitda(year);
+                        const addbacksSum = dynamicAddbacks.reduce((sum, ab) => {
+                          const { apiValue, userValue } = ab.values[year] || { apiValue: null, userValue: null };
+                          const val = userValue !== null ? userValue : (apiValue || 0);
+                          return sum + val;
+                        }, 0);
+                        const finalSde = baseEbitda + addbacksSum;
+                        const revenue = multiYearData[year]?.revenue || 0;
+                        const sdePct = revenue > 0 ? (finalSde / revenue) * 100 : 0;
+                        return (
+                          <td key={year} className="p-3 text-right font-bold text-text-primary">
+                            {formatPercent(sdePct)}
+                          </td>
+                        );
+                      })}
+                      <td className="p-1 bg-white" style={{ borderLeft: "2px solid #cbd5e1" }}>
+                        <input
+                          value={rowComments['sdePercent'] || ""}
+                          onChange={(e) => updateRowComment('sdePercent', e.target.value)}
+                          placeholder="Margin analysis..."
+                          className="w-full bg-transparent border-none focus:ring-0 text-[13px] px-3 placeholder:italic text-slate-600"
+                        />
+                      </td>
+                    </tr>
 
-                <div className="flex-1 flex flex-col space-y-0">
-                  {/* Net Income Comment */}
-                  <div className="h-[46px] border-b border-[#cbd5e1] bg-gray-50 p-1 flex items-center">
-                    <input
-                      value={rowComments['netIncome'] || ""}
-                      onChange={(e) => updateRowComment('netIncome', e.target.value)}
-                      placeholder="Net income remarks..."
-                      className="w-full bg-transparent border-none focus:ring-0 text-[13px] px-3 placeholder:italic text-slate-600"
-                    />
-                  </div>
-
-                  {/* EBITDA Adj Comments */}
-                  {[
-                    { key: 'interestIncome', label: 'Total Interest Income' },
-                    { key: 'interestExpense', label: 'Total Interest Expense' },
-                    { key: 'taxes', label: 'Total Income Tax Expense' },
-                    { key: 'depreciation', label: 'Depreciation' },
-                    { key: 'amortization', label: 'Amortization Expense' }
-                  ].map(row => (
-                    <div key={row.key} className="h-[45px] border-b border-[#f1f5f9] p-1 flex items-center hover:bg-slate-50 transition-colors">
-                      <input
-                        value={rowComments[row.key] || ""}
-                        onChange={(e) => updateRowComment(row.key, e.target.value)}
-                        placeholder={`${row.label} remarks...`}
-                        className="w-full bg-transparent border-none focus:ring-0 text-[13px] px-3 placeholder:italic text-slate-600"
-                      />
-                    </div>
-                  ))}
-
-                  {/* EBITDA Row Comment */}
-                  <div className="h-[45px] border-y border-[#cbd5e1] bg-[#f8fafc] p-1 flex items-center">
-                    <input
-                      value={rowComments['ebitda'] || ""}
-                      onChange={(e) => updateRowComment('ebitda', e.target.value)}
-                      placeholder="EBITDA remarks..."
-                      className="w-full bg-transparent border-none font-bold focus:ring-0 text-[13px] px-3 placeholder:italic placeholder:font-normal text-slate-800"
-                    />
-                  </div>
-
-                  {/* Owner Addbacks Section spacer — mirrors table header height */}
-                  <div className="bg-gray-100 border-b border-[#cbd5e1] px-4 py-3">
-                    <div className="flex items-center justify-between">
-                      <span className="font-bold text-[#050505] invisible" aria-hidden="true">&nbsp;</span>
-                      <span className="px-3 py-1.5 text-[11px] font-bold invisible" aria-hidden="true">ADD ROW</span>
-                    </div>
-                    <p className="mt-1 text-[11px] invisible select-none" aria-hidden="true">&nbsp;</p>
-                  </div>
-
-                  {/* Dynamic Addback Comments */}
-                  {dynamicAddbacks.map((row) => (
-                    <div key={row.id} className="h-[45px] border-b border-[#f1f5f9] p-1 flex items-center hover:bg-slate-50 transition-colors">
-                      <input
-                        value={rowComments[row.id] || ""}
-                        onChange={(e) => updateRowComment(row.id, e.target.value)}
-                        placeholder={`${row.label} remarks...`}
-                        className="w-full bg-transparent border-none focus:ring-0 text-[13px] px-3 placeholder:italic text-slate-600"
-                      />
-                    </div>
-                  ))}
-
-                  {/* Story of SDE Totals Comments */}
-                  <div className="h-[58px] border-t-2 border-[#8bc53d] bg-[#f8fafc] p-2 flex items-center">
-                    <textarea
-                      value={rowComments['totalSde'] || ""}
-                      onChange={(e) => updateRowComment('totalSde', e.target.value)}
-                      placeholder="Story of Seller's Discretionary Earnings..."
-                      className="w-full bg-transparent border-none focus:ring-0 text-[12px] px-2 leading-tight resize-none placeholder:italic font-semibold text-slate-800"
-                      rows={2}
-                    />
-                  </div>
-                  <div className="h-[45px] border-b border-[#cbd5e1] bg-white p-1 flex items-center">
-                    <input
-                      value={rowComments['sdePercent'] || ""}
-                      onChange={(e) => updateRowComment('sdePercent', e.target.value)}
-                      placeholder="Margin analysis..."
-                      className="w-full bg-transparent border-none focus:ring-0 text-[13px] px-3 placeholder:italic text-slate-600"
-                    />
-                  </div>
-                </div>
+                  </tbody>
+                </table>
               </div>
             </div>
 

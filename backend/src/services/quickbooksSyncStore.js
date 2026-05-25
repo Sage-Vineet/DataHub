@@ -415,6 +415,12 @@ async function getCachedReport({
   const params = reportParams ? sanitizeReportParams(reportParams) : null;
   const paramsFilterValue = serializeJsonFilterValue(params);
 
+  console.log(
+    `[SyncStore] getCachedReport — reportType=${reportType}` +
+    ` requested_accounting_method=${params?.accounting_method || "(none)"}` +
+    ` start_date=${params?.start_date || "(none)"} end_date=${params?.end_date || "(none)"}`
+  );
+
   // When explicit date filters are present, never return a report with different
   // date params — doing so silently serves wrong-period financial data.
   const hasDateFilter = Boolean(params && (params.start_date || params.end_date));
@@ -510,6 +516,11 @@ async function getCachedReport({
       if (onlyActive) q = q.eq("is_active", true);
       if (datasetVersion) q = q.eq("dataset_version", datasetVersion);
 
+      // Never return an Accrual snapshot for a Cash request (or vice versa).
+      if (params.accounting_method) {
+        q = q.filter("report_params->>accounting_method", "eq", params.accounting_method);
+      }
+
       const { data, error } = await q.maybeSingle();
       console.log(
         `[SyncStore] getCachedReport period-coverage fallback (onlyActive=${onlyActive}) for ${reportType}` +
@@ -528,15 +539,23 @@ async function getCachedReport({
   // Skipped when date filters are present — returning a different-period report
   // would silently serve wrong-period financial data to the caller.
   if (!hasDateFilter) {
-    const { data: legacyHit, error: legacyError } = await supabase
+    let legacyQuery = supabase
       .from("qb_synced_reports")
       .select("*")
       .eq("company_id", companyId)
       .eq("report_type", reportType)
       .order("last_synced_at", { ascending: false })
       .order("updated_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+      .limit(1);
+
+    // Never serve an Accrual snapshot for a Cash request (or vice versa).
+    if (params && params.accounting_method) {
+      legacyQuery = legacyQuery.filter(
+        "report_params->>accounting_method", "eq", params.accounting_method
+      );
+    }
+
+    const { data: legacyHit, error: legacyError } = await legacyQuery.maybeSingle();
 
     if (legacyError && legacyError.code !== "PGRST116") {
       console.warn(`[SyncStore] Legacy fallback failed for ${reportType}:`, legacyError.message);

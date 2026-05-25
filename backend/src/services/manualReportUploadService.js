@@ -2327,6 +2327,9 @@ async function syncManualUploadSource(companyId) {
     console.warn("[ManualReportUpload] Failed to update source record:", e.message);
   }
 
+  // Invalidate the manual upload dashboard cache so the next request rebuilds fresh data
+  clearManualDashboardCache(companyId);
+
   return {
     sourceFolderName: SOURCE_FOLDER_NAME,
     processedCount: processed.length,
@@ -2666,6 +2669,9 @@ async function syncQMSUploadSource(companyId) {
     console.warn("[QMSUpload] Failed to update source record:", e.message);
   }
 
+  // Invalidate dashboard cache so the next request reflects the new sync
+  clearQMSDashboardCache(companyId);
+
   return {
     sourceFolderName: QMS_FOLDER_NAME,
     processedCount: processed.length,
@@ -2785,7 +2791,580 @@ async function parseAndSaveQMSDocuments(companyId, documents, { clearFirst = fal
     console.warn("[QMSUpload] Failed to update source record:", e.message);
   }
 
+  // Invalidate dashboard cache so the next request reflects new uploads
+  clearQMSDashboardCache(companyId);
+
   return { processed, failed, processedCount: processed.length };
+}
+
+// ── QMS Dashboard: parse + aggregate ─────────────────────────────────────────
+
+const _qmsDashboardCache = new Map();
+const QMS_DASHBOARD_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+function clearQMSDashboardCache(companyId) {
+  if (companyId) {
+    _qmsDashboardCache.delete(companyId);
+  } else {
+    _qmsDashboardCache.clear();
+  }
+}
+
+function _lcStr(s) {
+  return String(s || "").toLowerCase().trim();
+}
+
+// Mirrors the parser's normalizeSectionLabel: strips "total for " and "total " prefixes.
+// This makes "Total for Income" → "income", matching "total income" (also → "income").
+function _normalizeName(s) {
+  return _lcStr(s)
+    .replace(/^total\s+for\s+/, "")
+    .replace(/^total\s+/, "")
+    .replace(/['']/g, "")       // remove apostrophes for equity variants
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function _flattenQMSRows(rows) {
+  const out = [];
+  function walk(items) {
+    for (const item of (Array.isArray(items) ? items : [])) {
+      if (item && typeof item === "object") {
+        out.push(item);
+        if (Array.isArray(item.children)) walk(item.children);
+      }
+    }
+  }
+  walk(rows);
+  return out;
+}
+
+/**
+ * Find the best numeric amount in a flat row array matching any of namePhrases.
+ *
+ * Five-tier search (stops at first hit):
+ *  T1 — exact name match on type:total rows  (handles "Total Assets", "Net Income", etc.)
+ *  T2 — normalized name match on type:total  (handles "Total for Income" → "income")
+ *  T3 — normalized name match on type:header (handles section nodes "Income", "Assets", etc.)
+ *  T4 — substring includes match on type:total (handles partial / capitalisation variants)
+ *  T5 — substring includes match on any type  (last resort, any row)
+ *
+ * Why normalization is needed:
+ *   QuickBooks exports P&L section totals as "Total for Income" / "Total for Expenses".
+ *   The parser stores the label verbatim (buildNode preserves entry.label as-is).
+ *   "total for income".includes("total income") === false, so naive includes matching fails.
+ *   _normalizeName strips "total for " and "total " prefixes on BOTH sides so that
+ *   "Total for Income" → "income" matches "total income" → "income" at T2/T3.
+ */
+function _findQMSAmount(flat, namePhrases) {
+  // Pre-compute both raw and normalized versions of each search phrase
+  const phrases    = namePhrases.map(_lcStr);
+  const normPhrases = namePhrases.map(_normalizeName);
+
+  // T1: exact match on type:total (works for "Total Bank Accounts", "Net Income", etc.)
+  for (const phrase of phrases) {
+    const r = flat.find((f) => f.type === "total" && _lcStr(f.name) === phrase);
+    if (r !== undefined) return parseFloat(r.amount) || 0;
+  }
+
+  // T2: normalized exact match on type:total
+  //     Handles "Total for Income" → norm "income" matching search "total income" → norm "income"
+  for (const normPhrase of normPhrases) {
+    if (!normPhrase) continue;
+    const r = flat.find(
+      (f) => f.type === "total" && _normalizeName(f.name) === normPhrase
+    );
+    if (r !== undefined) return parseFloat(r.amount) || 0;
+  }
+
+  // T3: normalized exact match on type:header (section nodes hold computed totals)
+  //     Handles the "Income" / "Assets" / "Liabilities" / "Equity" section headers
+  for (const normPhrase of normPhrases) {
+    if (!normPhrase) continue;
+    const r = flat.find(
+      (f) => f.type === "header" && _normalizeName(f.name) === normPhrase
+    );
+    if (r !== undefined) return parseFloat(r.amount) || 0;
+  }
+
+  // T4: substring includes on type:total (handles casing / abbreviation variants)
+  for (const phrase of phrases) {
+    if (!phrase) continue;
+    const r = flat.find((f) => {
+      if (f.type !== "total") return false;
+      const name = _lcStr(f.name);
+      if (!name.includes(phrase)) return false;
+      // The extra text after stripping the phrase must not be a meaningful word
+      const extra = name.replace(phrase, "").trim();
+      return !extra || !/\w/.test(extra);
+    });
+    if (r !== undefined) return parseFloat(r.amount) || 0;
+  }
+
+  // T5: any row type — last resort for free-form file structures
+  for (const phrase of phrases) {
+    if (!phrase) continue;
+    const r = flat.find((f) => {
+      const name = _lcStr(f.name);
+      if (!name.includes(phrase)) return false;
+      const extra = name.replace(phrase, "").trim();
+      return !extra || !/\w/.test(extra);
+    });
+    if (r !== undefined) return parseFloat(r.amount) || 0;
+  }
+
+  return 0;
+}
+
+function _extractKPIsFromQMSRows(bsRows, plRows, debugLabel = "") {
+  const bsFlat = _flattenQMSRows(bsRows);
+  const plFlat = _flattenQMSRows(plRows);
+
+  // ── Profit & Loss KPIs ────────────────────────────────────────────────────
+  // Revenue: "Total for Income", "Total Income", "Total Revenue", "Income" header, etc.
+  const totalRevenue = _findQMSAmount(plFlat, [
+    "total income", "total revenue", "total sales", "total ordinary income",
+    "income", "revenue",
+  ]);
+
+  // Expenses: "Total for Expenses", "Total Expenses", "Expenses" header, etc.
+  const rawExpenses = _findQMSAmount(plFlat, [
+    "total expenses", "total expense", "total operating expenses",
+    "expenses", "operating expenses",
+  ]);
+  const totalExpenses = Math.abs(rawExpenses);
+
+  const netProfitRaw = _findQMSAmount(plFlat, [
+    "net income", "net profit", "net loss", "net earnings",
+    "net income loss",
+  ]);
+  const netProfit = netProfitRaw !== 0 ? netProfitRaw : totalRevenue - totalExpenses;
+
+  // ── Balance Sheet KPIs ────────────────────────────────────────────────────
+  // Assets: "TOTAL ASSETS", "Total Assets", "Total for Assets", "Assets" header
+  const totalAssets = _findQMSAmount(bsFlat, [
+    "total assets", "assets",
+  ]);
+
+  // Liabilities: "Total Liabilities", "Total for Liabilities", "Liabilities" header
+  const totalLiabilities = _findQMSAmount(bsFlat, [
+    "total liabilities", "liabilities",
+  ]);
+
+  // Equity: various QB naming conventions
+  const totalEquity = _findQMSAmount(bsFlat, [
+    "total equity",
+    "total stockholders equity", "total stockholders equity",
+    "total shareholders equity", "total shareholders equity",
+    "total owners equity",
+    "equity",
+    "stockholders equity", "shareholders equity", "owners equity",
+  ]);
+
+  const currentAssets = _findQMSAmount(bsFlat, [
+    "total current assets", "current assets",
+  ]);
+  const currentLiabilities = _findQMSAmount(bsFlat, [
+    "total current liabilities", "current liabilities",
+  ]);
+  const cashAndBankBalance = _findQMSAmount(bsFlat, [
+    "total bank accounts", "total cash and cash equivalents",
+    "total cash and bank", "total cash",
+    "bank accounts", "cash and cash equivalents",
+  ]);
+  const accountsReceivable = _findQMSAmount(bsFlat, [
+    "total accounts receivable", "total accounts receivable a r",
+    "accounts receivable a r", "accounts receivable",
+  ]);
+  const inventoryValue = _findQMSAmount(bsFlat, [
+    "total inventory", "inventory asset", "inventory",
+  ]);
+  const accountsPayable = _findQMSAmount(bsFlat, [
+    "total accounts payable", "total accounts payable a p",
+    "accounts payable a p", "accounts payable",
+  ]);
+  const longTermDebt = _findQMSAmount(bsFlat, [
+    "total long-term liabilities", "total long term liabilities",
+    "long-term liabilities", "long term liabilities",
+    "notes payable", "long-term debt",
+  ]);
+  const workingCapital =
+    currentAssets && currentLiabilities
+      ? currentAssets - currentLiabilities
+      : cashAndBankBalance + accountsReceivable + inventoryValue - accountsPayable;
+
+  if (debugLabel) {
+    console.log(
+      `[QB-MANUAL] ${debugLabel}\n` +
+      `  Revenue=$${totalRevenue} Expenses=$${totalExpenses} NetProfit=$${netProfit}\n` +
+      `  Assets=$${totalAssets} Liabilities=$${totalLiabilities} Equity=$${totalEquity}\n` +
+      `  WorkingCapital=$${workingCapital} Cash=$${cashAndBankBalance}\n` +
+      `  AR=$${accountsReceivable} AP=$${accountsPayable} LTDebt=$${longTermDebt}\n` +
+      `  (plFlatRows=${plFlat.length} bsFlatRows=${bsFlat.length})`
+    );
+  }
+
+  return {
+    totalRevenue,
+    totalExpenses,
+    netProfit,
+    totalAssets,
+    totalLiabilities,
+    totalEquity,
+    workingCapital,
+    cashAndBankBalance,
+    accountsReceivable,
+    inventoryValue,
+    accountsPayable,
+    longTermDebt,
+  };
+}
+
+function _extractYearFromQMSRecord(row) {
+  const report = row.data?.manual_report_upload?.report;
+
+  const tryYear = (value) => {
+    if (!value) return null;
+    const d = new Date(value);
+    if (!isNaN(d.getTime())) return d.getFullYear();
+    const bareYear = String(value).match(/^(\d{4})$/);
+    if (bareYear) return parseInt(bareYear[1], 10);
+    return null;
+  };
+
+  const fromPeriodEnd   = tryYear(report?.periodEnd);
+  if (fromPeriodEnd)   return fromPeriodEnd;
+  const fromPeriodStart = tryYear(report?.periodStart);
+  if (fromPeriodStart) return fromPeriodStart;
+  const fromAsOfDate    = tryYear(report?.asOfDate);
+  if (fromAsOfDate)    return fromAsOfDate;
+
+  // Filename fallback — e.g. BalanceSheet_2025.pdf
+  const fileName = row.report_params?.fileName || "";
+  const match = fileName.match(/\b(20\d{2}|19\d{2})\b/);
+  if (match) return parseInt(match[1], 10);
+
+  return null;
+}
+
+function _pickLatestRecord(records) {
+  if (!records || records.length === 0) return null;
+  return records.reduce((best, cur) => {
+    const bestTs = new Date(best.updated_at || best.last_synced_at || 0).getTime();
+    const curTs  = new Date(cur.updated_at  || cur.last_synced_at  || 0).getTime();
+    return curTs > bestTs ? cur : best;
+  });
+}
+
+/**
+ * Fetch all QMS Balance Sheet + P&L records, group by fiscal year,
+ * deduplicate, extract KPIs, and return the dashboard payload.
+ *
+ * Caches the result per company for QMS_DASHBOARD_CACHE_TTL_MS.
+ */
+async function buildQMSDashboardData(companyId) {
+  if (!companyId) throw new Error("companyId is required");
+
+  const cached = _qmsDashboardCache.get(companyId);
+  if (cached && Date.now() < cached.expiresAt) {
+    console.log(`[QMSDashboard] Cache hit for company ${companyId}`);
+    return cached.data;
+  }
+
+  console.log(`[QMSDashboard] Building dashboard data for company ${companyId}`);
+
+  const [bsRecords, plRecords] = await Promise.all([
+    getAllQMSUploadedReports({ companyId, statementType: STATEMENT_TYPES.BALANCE_SHEET }),
+    getAllQMSUploadedReports({ companyId, statementType: STATEMENT_TYPES.PROFIT_AND_LOSS }),
+  ]);
+
+  // Annotate each record with its extracted fiscal year
+  const annotate = (records) =>
+    records.map((r) => ({ ...r, _year: _extractYearFromQMSRecord(r) }));
+
+  const annotatedBS = annotate(bsRecords);
+  const annotatedPL = annotate(plRecords);
+
+  // Group by year, keeping only the latest-updated record per year
+  const groupByYear = (records) => {
+    const map = new Map();
+    for (const r of records) {
+      if (r._year == null) continue;
+      const existing = map.get(r._year);
+      if (!existing) {
+        map.set(r._year, [r]);
+      } else {
+        existing.push(r);
+      }
+    }
+    // Resolve each year to a single winner
+    const resolved = new Map();
+    for (const [year, list] of map) {
+      resolved.set(year, _pickLatestRecord(list));
+    }
+    return resolved;
+  };
+
+  const bsByYear = groupByYear(annotatedBS);
+  const plByYear = groupByYear(annotatedPL);
+
+  const allYears = Array.from(
+    new Set([...bsByYear.keys(), ...plByYear.keys()])
+  ).sort((a, b) => b - a); // descending (newest first)
+
+  // Build per-year report summaries + KPIs
+  const reports = {};
+  for (const year of allYears) {
+    const bsRecord = bsByYear.get(year) || null;
+    const plRecord = plByYear.get(year) || null;
+    const bsReport = bsRecord?.data?.manual_report_upload?.report || null;
+    const plReport = plRecord?.data?.manual_report_upload?.report || null;
+
+    const warnings = [];
+    if (!bsReport) warnings.push(`Balance Sheet missing for ${year}`);
+    if (!plReport) warnings.push(`Profit & Loss missing for ${year}`);
+
+    const kpis = _extractKPIsFromQMSRows(bsReport?.rows || [], plReport?.rows || []);
+
+    reports[String(year)] = {
+      year: String(year),
+      balanceSheet: bsReport
+        ? {
+            rowId:       bsRecord.id,
+            fileName:    bsRecord.report_params?.fileName    || null,
+            folderName:  bsRecord.report_params?.folderName  || null,
+            asOfDate:    bsReport.asOfDate    || null,
+            periodStart: bsReport.periodStart || null,
+            periodEnd:   bsReport.periodEnd   || null,
+            updatedAt:   bsRecord.updated_at  || null,
+          }
+        : null,
+      profitLoss: plReport
+        ? {
+            rowId:       plRecord.id,
+            fileName:    plRecord.report_params?.fileName    || null,
+            folderName:  plRecord.report_params?.folderName  || null,
+            asOfDate:    plReport.asOfDate    || null,
+            periodStart: plReport.periodStart || null,
+            periodEnd:   plReport.periodEnd   || null,
+            updatedAt:   plRecord.updated_at  || null,
+          }
+        : null,
+      kpis,
+      ...(warnings.length > 0 ? { warnings } : {}),
+    };
+  }
+
+  // "All Files" — use the single most-recently-updated file of each type
+  const latestBS = _pickLatestRecord(annotatedBS);
+  const latestPL = _pickLatestRecord(annotatedPL);
+  const allFilesKpis = _extractKPIsFromQMSRows(
+    latestBS?.data?.manual_report_upload?.report?.rows || [],
+    latestPL?.data?.manual_report_upload?.report?.rows || [],
+  );
+
+  const allFilesWarnings = [];
+  if (!latestBS) allFilesWarnings.push("No Balance Sheet files found");
+  if (!latestPL) allFilesWarnings.push("No Profit & Loss files found");
+
+  // Trend data — one entry per year, sorted ascending
+  const trends = [...allYears].reverse().map((year) => {
+    const plRecord = plByYear.get(year) || null;
+    const plReport = plRecord?.data?.manual_report_upload?.report || null;
+    const plFlat   = _flattenQMSRows(plReport?.rows || []);
+    const revenue    = _findQMSAmount(plFlat, ["total income", "total revenue", "total sales", "total ordinary income", "income", "revenue"]);
+    const rawExpenses = _findQMSAmount(plFlat, ["total expenses", "total expense", "total operating expenses", "expenses", "operating expenses"]);
+    const expenses   = Math.abs(rawExpenses);
+    const netProfitRaw = _findQMSAmount(plFlat, ["net income", "net profit", "net loss", "net earnings", "net income loss"]);
+    const netProfit  = netProfitRaw !== 0 ? netProfitRaw : revenue - expenses;
+    return { year: String(year), revenue, expenses, netProfit };
+  });
+
+  const result = {
+    years: ["All Files", ...allYears.map(String)],
+    reports,
+    allFiles: {
+      year: "All Files",
+      kpis: allFilesKpis,
+      ...(allFilesWarnings.length > 0 ? { warnings: allFilesWarnings } : {}),
+    },
+    trends,
+  };
+
+  _qmsDashboardCache.set(companyId, { data: result, expiresAt: Date.now() + QMS_DASHBOARD_CACHE_TTL_MS });
+  console.log(`[QMSDashboard] Built data for company ${companyId} — years: ${allYears.join(", ") || "(none)"}`);
+  return result;
+}
+
+// ── Manual Upload Dashboard: parse + aggregate ────────────────────────────────
+
+const _manualDashboardCache = new Map();
+const MANUAL_DASHBOARD_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+function clearManualDashboardCache(companyId) {
+  if (companyId) {
+    _manualDashboardCache.delete(companyId);
+  } else {
+    _manualDashboardCache.clear();
+  }
+}
+
+/**
+ * Fetch all Manual Upload (Excel/PDF) Balance Sheet + P&L records,
+ * group by fiscal year, deduplicate, extract KPIs, and return the dashboard payload.
+ *
+ * Reuses: _flattenQMSRows, _findQMSAmount, _extractKPIsFromQMSRows,
+ *         _extractYearFromQMSRecord, _pickLatestRecord
+ *
+ * Returns { years, reports, allFiles, trends } — same shape as buildQMSDashboardData.
+ */
+async function buildManualUploadDashboardData(companyId) {
+  if (!companyId) throw new Error("companyId is required");
+
+  const cached = _manualDashboardCache.get(companyId);
+  if (cached && Date.now() < cached.expiresAt) {
+    console.log(`[MANUAL_UPLOAD] Cache hit for company ${companyId}`);
+    return cached.data;
+  }
+
+  console.log(`[MANUAL_UPLOAD] Building dashboard data for company ${companyId}`);
+
+  const [bsRecords, plRecords] = await Promise.all([
+    getAllManualUploadedReports({ companyId, statementType: STATEMENT_TYPES.BALANCE_SHEET }),
+    getAllManualUploadedReports({ companyId, statementType: STATEMENT_TYPES.PROFIT_AND_LOSS }),
+  ]);
+
+  const annotate = (records) =>
+    records.map((r) => ({ ...r, _year: _extractYearFromQMSRecord(r) }));
+
+  const annotatedBS = annotate(bsRecords);
+  const annotatedPL = annotate(plRecords);
+
+  const groupByYear = (records) => {
+    const map = new Map();
+    for (const r of records) {
+      if (r._year == null) continue;
+      const existing = map.get(r._year);
+      if (!existing) {
+        map.set(r._year, [r]);
+      } else {
+        existing.push(r);
+      }
+    }
+    const resolved = new Map();
+    for (const [year, list] of map) {
+      resolved.set(year, _pickLatestRecord(list));
+    }
+    return resolved;
+  };
+
+  const bsByYear = groupByYear(annotatedBS);
+  const plByYear = groupByYear(annotatedPL);
+
+  const allYears = Array.from(
+    new Set([...bsByYear.keys(), ...plByYear.keys()])
+  ).sort((a, b) => b - a); // descending (newest first)
+
+  const reports = {};
+  for (const year of allYears) {
+    const bsRecord = bsByYear.get(year) || null;
+    const plRecord = plByYear.get(year) || null;
+    const bsReport = bsRecord?.data?.manual_report_upload?.report || null;
+    const plReport = plRecord?.data?.manual_report_upload?.report || null;
+
+    const warnings = [];
+    if (!bsReport) warnings.push(`Balance Sheet missing for ${year}`);
+    if (!plReport) warnings.push(`Profit & Loss missing for ${year}`);
+
+    const kpis = _extractKPIsFromQMSRows(
+      bsReport?.rows || [],
+      plReport?.rows || [],
+      `Year=${year}`,
+    );
+
+    console.log(
+      `[MANUAL_UPLOAD]\n` +
+      `Selected Year=${year}\n` +
+      `Revenue=${kpis.totalRevenue}\n` +
+      `Expenses=${kpis.totalExpenses}\n` +
+      `NetProfit=${kpis.netProfit}\n` +
+      `Assets=${kpis.totalAssets}\n` +
+      `Liabilities=${kpis.totalLiabilities}\n` +
+      `Equity=${kpis.totalEquity}\n` +
+      `Cash=${kpis.cashAndBankBalance}\n` +
+      `AR=${kpis.accountsReceivable}\n` +
+      `AP=${kpis.accountsPayable}\n` +
+      `LongTermDebt=${kpis.longTermDebt}`
+    );
+
+    reports[String(year)] = {
+      year: String(year),
+      balanceSheet: bsReport
+        ? {
+            rowId:       bsRecord.id,
+            fileName:    bsRecord.report_params?.fileName    || null,
+            folderName:  bsRecord.report_params?.folderName  || null,
+            asOfDate:    bsReport.asOfDate    || null,
+            periodStart: bsReport.periodStart || null,
+            periodEnd:   bsReport.periodEnd   || null,
+            updatedAt:   bsRecord.updated_at  || null,
+          }
+        : null,
+      profitLoss: plReport
+        ? {
+            rowId:       plRecord.id,
+            fileName:    plRecord.report_params?.fileName    || null,
+            folderName:  plRecord.report_params?.folderName  || null,
+            asOfDate:    plReport.asOfDate    || null,
+            periodStart: plReport.periodStart || null,
+            periodEnd:   plReport.periodEnd   || null,
+            updatedAt:   plRecord.updated_at  || null,
+          }
+        : null,
+      kpis,
+      ...(warnings.length > 0 ? { warnings } : {}),
+    };
+  }
+
+  // "All Files" — aggregate KPIs from the most recently updated file of each type
+  const latestBS = _pickLatestRecord(annotatedBS);
+  const latestPL = _pickLatestRecord(annotatedPL);
+  const allFilesKpis = _extractKPIsFromQMSRows(
+    latestBS?.data?.manual_report_upload?.report?.rows || [],
+    latestPL?.data?.manual_report_upload?.report?.rows || [],
+  );
+
+  const allFilesWarnings = [];
+  if (!latestBS) allFilesWarnings.push("No Balance Sheet files found");
+  if (!latestPL) allFilesWarnings.push("No Profit & Loss files found");
+
+  // Trend data — one entry per year, sorted ascending
+  const trends = [...allYears].reverse().map((year) => {
+    const plRecord = plByYear.get(year) || null;
+    const plReport = plRecord?.data?.manual_report_upload?.report || null;
+    const plFlat   = _flattenQMSRows(plReport?.rows || []);
+    const revenue     = _findQMSAmount(plFlat, ["total income", "total revenue", "total sales", "total ordinary income", "income", "revenue"]);
+    const rawExpenses = _findQMSAmount(plFlat, ["total expenses", "total expense", "total operating expenses", "expenses", "operating expenses"]);
+    const expenses    = Math.abs(rawExpenses);
+    const netProfitRaw = _findQMSAmount(plFlat, ["net income", "net profit", "net loss", "net earnings", "net income loss"]);
+    const netProfit   = netProfitRaw !== 0 ? netProfitRaw : revenue - expenses;
+    return { year: String(year), revenue, expenses, netProfit };
+  });
+
+  const result = {
+    years: ["All Files", ...allYears.map(String)],
+    reports,
+    allFiles: {
+      year: "All Files",
+      kpis: allFilesKpis,
+      ...(allFilesWarnings.length > 0 ? { warnings: allFilesWarnings } : {}),
+    },
+    trends,
+  };
+
+  _manualDashboardCache.set(companyId, { data: result, expiresAt: Date.now() + MANUAL_DASHBOARD_CACHE_TTL_MS });
+  console.log(`[MANUAL_UPLOAD] Built data for company ${companyId} — years: ${allYears.join(", ") || "(none)"}`);
+  return result;
 }
 
 module.exports = {
@@ -2810,4 +3389,8 @@ module.exports = {
   buildPLForTaxData,
   syncPLForTaxFolder,
   extractPLLineItemsFromRows,
+  buildQMSDashboardData,
+  clearQMSDashboardCache,
+  buildManualUploadDashboardData,
+  clearManualDashboardCache,
 };

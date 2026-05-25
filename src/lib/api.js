@@ -895,6 +895,28 @@ export function getAllQMSUploadedReports(statementType, options = {}) {
   );
 }
 
+/**
+ * Returns the structured Manual Upload (Excel/PDF) dashboard payload pre-computed on the server:
+ *   { years, reports, allFiles, trends }
+ * Row parsing and KPI extraction happen server-side; results are cached 5 min.
+ */
+export function getManualUploadDashboard(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-report-uploads/manual-upload-dashboard${query}`, options);
+}
+
+/**
+ * Returns the structured QMS dashboard payload pre-computed on the server:
+ *   { years, reports, allFiles, trends }
+ * Row parsing and KPI extraction happen server-side; results are cached 5 min.
+ */
+export function getQMSDashboard(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-report-uploads/qms-dashboard${query}`, options);
+}
+
 export function getLatestQMSUploadedReport(statementType, options = {}) {
   const clientId = options.clientId ?? resolveClientIdFromLocation();
   const params = new URLSearchParams();

@@ -517,7 +517,9 @@ async function fetchOnDemandReport(clientId, reportType, qbReportName, queryPara
   const sanitizedParams = sanitizeReportParams(queryParams);
 
   console.log(
-    `[fetchOnDemandReport] Live fetch — reportType=${reportType} params=${JSON.stringify(sanitizedParams)} clientId=${clientId}`
+    `[fetchOnDemandReport] Live fetch — reportType=${reportType}` +
+    ` requested_accounting_method=${sanitizedParams.accounting_method || "(none)"}` +
+    ` params=${JSON.stringify(sanitizedParams)} clientId=${clientId}`
   );
 
   const payload = await fetchLiveTask(clientId, {
@@ -549,7 +551,9 @@ async function fetchOnDemandReport(clientId, reportType, qbReportName, queryPara
   });
 
   console.log(
-    `[fetchOnDemandReport] Cached live result — reportType=${reportType} datasetVersion=${datasetVersion}`
+    `[fetchOnDemandReport] Cached live result — reportType=${reportType}` +
+    ` returned_ReportBasis=${payload?.Header?.ReportBasis || "(none)"}` +
+    ` datasetVersion=${datasetVersion}`
   );
 
   return buildSnapshotResult(
@@ -571,6 +575,7 @@ async function serveCachedReport(clientId, reportType, queryParams = {}, options
 
   console.log(
     `[serveCachedReport] reportType=${reportType} clientId=${clientId}` +
+    ` requested_accounting_method=${sanitizedParams.accounting_method || "(none)"}` +
     ` appliedFilters=${JSON.stringify(sanitizedParams)}` +
     ` activeDatasetVersion=${activeDataset?.dataset_version ?? "(none)"}`
   );
@@ -587,6 +592,8 @@ async function serveCachedReport(clientId, reportType, queryParams = {}, options
   if (cached) {
     console.log(
       `[serveCachedReport] Cache hit (active) — reportType=${reportType}` +
+      ` snapshot_accounting_method=${cached.report_params?.accounting_method || "(none)"}` +
+      ` ReportBasis=${cached.data?.Header?.ReportBasis || "(none)"}` +
       ` storedParams=${JSON.stringify(cached.report_params ?? {})}` +
       ` datasetVersion=${cached.dataset_version}`
     );
@@ -608,6 +615,8 @@ async function serveCachedReport(clientId, reportType, queryParams = {}, options
   if (fallback) {
     console.log(
       `[serveCachedReport] Cache hit (inactive fallback) — reportType=${reportType}` +
+      ` snapshot_accounting_method=${fallback.report_params?.accounting_method || "(none)"}` +
+      ` ReportBasis=${fallback.data?.Header?.ReportBasis || "(none)"}` +
       ` storedParams=${JSON.stringify(fallback.report_params ?? {})}` +
       ` datasetVersion=${fallback.dataset_version}`
     );
@@ -769,6 +778,11 @@ async function syncAllReports(clientId, options = {}) {
       previousSuccessfulSync,
     },
   });
+
+  console.log(
+    `[syncAllReports] Building sync tasks — accountingMethod=${options.accountingMethod || "Accrual"}` +
+    ` yearsBack=${options.yearsBack || 4} monthsBack=${options.monthsBack || 18}`
+  );
 
   const tasks = buildSyncTasks({
     ...options,

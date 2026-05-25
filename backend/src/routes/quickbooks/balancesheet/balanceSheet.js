@@ -21,11 +21,12 @@ function normalizeBalanceSheetQuery(query = {}) {
 }
 
 function isExactPeriodMatch(requested, storedParams = {}) {
-  const { start_date, end_date, as_of_date } = requested;
+  const { start_date, end_date, as_of_date, accounting_method } = requested;
   return (
-    (!start_date  || storedParams.start_date  === start_date)  &&
-    (!end_date    || storedParams.end_date    === end_date)    &&
-    (!as_of_date  || storedParams.as_of_date  === as_of_date)
+    (!start_date       || storedParams.start_date       === start_date)       &&
+    (!end_date         || storedParams.end_date         === end_date)         &&
+    (!as_of_date       || storedParams.as_of_date       === as_of_date)       &&
+    (!accounting_method || storedParams.accounting_method === accounting_method)
   );
 }
 
@@ -56,12 +57,14 @@ router.get("/balance-sheet", async (req, res) => {
     );
 
     const cachedIsExact = cached?.data &&
-      isExactPeriodMatch({ start_date, end_date, as_of_date }, cached.reportParams);
+      isExactPeriodMatch({ start_date, end_date, as_of_date, accounting_method }, cached.reportParams);
 
     console.log(
       `[Balance Sheet] Cache result: ${cached?.data ? (cachedIsExact ? "exact hit" : "coverage hit") : "miss"}` +
       (cached?.reportParams
-        ? ` storedParams=${JSON.stringify(cached.reportParams)}`
+        ? ` storedParams=${JSON.stringify(cached.reportParams)}` +
+          ` snapshot_accounting_method=${cached.reportParams?.accounting_method || "(none)"}` +
+          ` ReportBasis=${cached.data?.Header?.ReportBasis || "(none)"}`
         : "")
     );
 

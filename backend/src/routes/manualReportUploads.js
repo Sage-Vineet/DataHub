@@ -20,6 +20,8 @@ const {
   extractPLForTax,
   buildPLForTaxData,
   extractPLLineItemsFromRows,
+  buildQMSDashboardData,
+  buildManualUploadDashboardData,
 } = require("../services/manualReportUploadService");
 const { parsePdfWithGemini } = require("../services/geminiFinancialParser");
 const {
@@ -431,6 +433,63 @@ router.get("/manual-report-uploads/qms-bank-data", async (req, res) => {
     });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message || "Failed to fetch QMS bank data." });
+  }
+});
+
+/* ===========================
+   GET /manual-report-uploads/qms-dashboard
+   Returns a fully structured dashboard payload for the QuickBooks Manual source:
+   - years[]        list: ["All Files", "2025", "2024", ...]
+   - reports{}      keyed by year: { year, balanceSheet, profitLoss, kpis, warnings? }
+   - allFiles{}     aggregate KPIs across all uploaded files
+   - trends[]       year-over-year: [{ year, revenue, expenses, netProfit }]
+
+   All row parsing and KPI extraction happens server-side.
+   Results are cached for 5 minutes per company; cache is invalidated on every sync.
+=========================== */
+router.get("/manual-report-uploads/qms-dashboard", async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) {
+      return res.status(400).json({ success: false, error: "Missing clientId." });
+    }
+
+    const dashboard = await buildQMSDashboardData(clientId);
+
+    return res.json({ success: true, ...dashboard });
+  } catch (error) {
+    console.error("[QMSDashboard] Route error:", error.message);
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to build QMS dashboard data.",
+    });
+  }
+});
+
+/* ===========================
+   GET /manual-report-uploads/manual-upload-dashboard
+   Returns a fully structured dashboard payload for the Manual Upload (Excel/PDF) source:
+   - years[]        list: ["All Files", "2025", "2024", ...]
+   - reports{}      keyed by year: { year, balanceSheet, profitLoss, kpis, warnings? }
+   - allFiles{}     aggregate KPIs across all uploaded files
+   - trends[]       year-over-year: [{ year, revenue, expenses, netProfit }]
+=========================== */
+router.get("/manual-report-uploads/manual-upload-dashboard", async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) {
+      return res.status(400).json({ success: false, error: "Missing clientId." });
+    }
+
+    const dashboard = await buildManualUploadDashboardData(clientId);
+
+    return res.json({ success: true, ...dashboard });
+  } catch (error) {
+    console.error("[ManualUploadDashboard] Route error:", error.message);
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to build Manual Upload dashboard data.",
+    });
   }
 });
 

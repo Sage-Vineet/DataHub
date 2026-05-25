@@ -16,10 +16,11 @@ function normalizeStatementQuery(query = {}) {
 }
 
 function isExactPeriodMatch(requestedParams, storedParams = {}) {
-  const { start_date, end_date } = requestedParams;
+  const { start_date, end_date, accounting_method } = requestedParams;
   return (
     (!start_date || storedParams.start_date === start_date) &&
-    (!end_date || storedParams.end_date === end_date)
+    (!end_date || storedParams.end_date === end_date) &&
+    (!accounting_method || storedParams.accounting_method === accounting_method)
   );
 }
 
@@ -45,14 +46,16 @@ router.get("/profit-and-loss-statement", async (req, res) => {
     );
 
     const cachedIsExact = cached?.data && isExactPeriodMatch(
-      { start_date, end_date },
+      { start_date, end_date, accounting_method },
       cached.reportParams
     );
 
     if (cachedIsExact) {
       console.log(
         `[P&L Statement] Cache hit (exact) — datasetVersion=${cached.datasetVersion}` +
-        ` start_date=${cached.reportParams.start_date} end_date=${cached.reportParams.end_date}`
+        ` start_date=${cached.reportParams.start_date} end_date=${cached.reportParams.end_date}` +
+        ` snapshot_accounting_method=${cached.reportParams?.accounting_method || "(none)"}` +
+        ` ReportBasis=${cached.data?.Header?.ReportBasis || "(none)"}`
       );
       return res.json({
         success: true,
