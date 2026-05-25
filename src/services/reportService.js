@@ -1166,7 +1166,7 @@ export async function fetchFinancialTrends(
           expenses: manualTotals.expenses,
         };
       },
-      TREND_FETCH_CONCURRENCY,
+      1,
     );
   }
 
@@ -1185,6 +1185,6 @@ export async function fetchFinancialTrends(
         expenses: totals.expenses,
       };
     },
-    TREND_FETCH_CONCURRENCY,
+    1,
   );
 }
