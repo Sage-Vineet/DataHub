@@ -409,26 +409,43 @@ async function getCachedReport({
   datasetVersion = null,
   syncSource = DEFAULT_SYNC_SOURCE,
   includeInactive = false,
+  periodStart = null,
+  periodEnd = null,
+  skipUnconstrained = false,
 }) {
   if (!companyId || !reportType) return null;
 
   const params = reportParams ? sanitizeReportParams(reportParams) : null;
   const paramsFilterValue = serializeJsonFilterValue(params);
-  const tryRead = async ({ useParams, onlyActive, useDatasetVersion }) => {
+  const hasPeriod = Boolean(periodStart && periodEnd);
+
+  const tryRead = async ({ useParams, onlyActive, useDatasetVersion, usePeriod }) => {
     let query = supabase
       .from("qb_synced_reports")
       .select("*")
       .eq("company_id", companyId)
       .eq("report_type", reportType)
-      .eq("sync_source", syncSource)
-      .order("is_active", { ascending: false })
-      .order("last_synced_at", { ascending: false })
-      .order("updated_at", { ascending: false })
-      .limit(1);
+      .eq("sync_source", syncSource);
 
     if (onlyActive) query = query.eq("is_active", true);
     if (useDatasetVersion && datasetVersion) query = query.eq("dataset_version", datasetVersion);
     if (useParams && paramsFilterValue) query = query.eq("report_params", paramsFilterValue);
+
+    if (usePeriod === "exact" && hasPeriod) {
+      query = query
+        .eq("period_start", periodStart)
+        .eq("period_end", periodEnd)
+        .order("is_active", { ascending: false })
+        .order("last_synced_at", { ascending: false })
+        .order("updated_at", { ascending: false });
+    } else {
+      query = query
+        .order("is_active", { ascending: false })
+        .order("last_synced_at", { ascending: false })
+        .order("updated_at", { ascending: false });
+    }
+
+    query = query.limit(1);
 
     const { data, error } = await query.maybeSingle();
     if (error && error.code !== "PGRST116") {
@@ -438,11 +455,21 @@ async function getCachedReport({
     return data || null;
   };
 
+  // Search plan: exact params → exact period → unconstrained (skipped when skipUnconstrained=true).
+  // Period-matched steps find the snapshot for a specific date range even when stored params
+  // include extra fields (e.g. accounting_method) the caller didn't pass.
+  // skipUnconstrained prevents returning a completely unrelated snapshot for period requests.
+  const unconstrainedSteps = skipUnconstrained ? [] : [
+    { useParams: false, onlyActive: !includeInactive, useDatasetVersion: Boolean(datasetVersion), usePeriod: "none" },
+    { useParams: false, onlyActive: false,            useDatasetVersion: Boolean(datasetVersion), usePeriod: "none" },
+  ];
+
   const searchPlan = [
-    { useParams: true, onlyActive: !includeInactive, useDatasetVersion: Boolean(datasetVersion) },
-    { useParams: false, onlyActive: !includeInactive, useDatasetVersion: Boolean(datasetVersion) },
-    { useParams: true, onlyActive: false, useDatasetVersion: Boolean(datasetVersion) },
-    { useParams: false, onlyActive: false, useDatasetVersion: Boolean(datasetVersion) },
+    { useParams: true,  onlyActive: !includeInactive, useDatasetVersion: Boolean(datasetVersion), usePeriod: "none" },
+    { useParams: false, onlyActive: !includeInactive, useDatasetVersion: Boolean(datasetVersion), usePeriod: "exact" },
+    { useParams: true,  onlyActive: false,            useDatasetVersion: Boolean(datasetVersion), usePeriod: "none" },
+    { useParams: false, onlyActive: false,            useDatasetVersion: Boolean(datasetVersion), usePeriod: "exact" },
+    ...unconstrainedSteps,
   ];
 
   for (const step of searchPlan) {
@@ -451,6 +478,9 @@ async function getCachedReport({
   }
 
   // Legacy fallback where sync_source may not be populated yet.
+  // Skip entirely for period-specific requests — returning an unrelated snapshot would be wrong.
+  if (skipUnconstrained) return null;
+
   const { data: legacyHit, error: legacyError } = await supabase
     .from("qb_synced_reports")
     .select("*")

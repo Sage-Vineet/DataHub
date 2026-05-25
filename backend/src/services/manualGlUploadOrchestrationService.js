@@ -18,12 +18,41 @@ const {
   REPORT_SOURCE_KEYS,
   updateReportSourceRecord,
 } = require("./reportSourceStore");
+const {
+  replaceActiveUploadSessions,
+} = require("./manualGlUploadSessionService");
 
 function mergeObject(base, patch) {
   return {
     ...(base && typeof base === "object" ? base : {}),
     ...(patch && typeof patch === "object" ? patch : {}),
   };
+}
+
+function buildUploadSessionActivationPlan(batchMetadata = {}, stagedResult = {}) {
+  const candidates = Array.isArray(stagedResult?.uploadSessionVersionPlan)
+    ? stagedResult.uploadSessionVersionPlan
+    : Array.isArray(batchMetadata?.uploadSessionVersionPlan)
+      ? batchMetadata.uploadSessionVersionPlan
+      : [];
+
+  return candidates
+    .map((item) => ({
+      fiscalYear: Number(item?.fiscalYear || item?.fiscal_year || 0),
+      versionNo: Number(item?.versionNo || item?.version_no || 0),
+      fileHash: item?.fileHash || item?.file_hash || null,
+      dataHash: item?.dataHash || item?.data_hash || null,
+      rowCount: Number(item?.rowCount || item?.row_count || 0),
+      sourceUploadIds: Array.isArray(item?.sourceUploadIds)
+        ? item.sourceUploadIds
+        : Array.isArray(item?.source_upload_ids)
+          ? item.source_upload_ids
+          : [],
+      metadata: item?.metadata && typeof item.metadata === "object" ? item.metadata : {},
+    }))
+    .filter((item) => Number.isInteger(item.fiscalYear) && item.fiscalYear > 0)
+    .filter((item) => Number.isInteger(item.versionNo) && item.versionNo > 0)
+    .filter((item) => String(item.dataHash || "").trim());
 }
 
 function isUpstreamOutageError(error) {
@@ -87,6 +116,9 @@ async function orchestrateManualGlUpload({
   });
 
   if (!staged?.success || !staged?.batchId) {
+    if (staged?.blockedAsDuplicate) {
+      console.log(`[ManualGL][Orchestrator] Staging blocked as duplicate: batch ${staged.batchId}`);
+    }
     return staged;
   }
 
@@ -154,6 +186,15 @@ async function orchestrateManualGlUpload({
     }
 
     const activated = await activateUploadBatch(companyId, batchId, uploadedBy || null);
+    const uploadSessionPlan = buildUploadSessionActivationPlan(activated?.metadata || {}, staged);
+    if (uploadSessionPlan.length > 0) {
+      await replaceActiveUploadSessions({
+        companyId,
+        batchId,
+        uploadedBy: uploadedBy || null,
+        sessions: uploadSessionPlan,
+      });
+    }
 
     const now = new Date().toISOString();
     await patchBatchWithMergedMetadata(
@@ -175,6 +216,7 @@ async function orchestrateManualGlUpload({
         snapshotYears: snapshotResult.years,
         datasetVersion: activated?.dataset_version || snapshotResult.datasetVersion || null,
         activeSnapshotGeneratedAt: snapshotResult.generatedAt,
+        activeUploadSessionFiscalYears: uploadSessionPlan.map((item) => item.fiscalYear),
         orchestrationStartedAt,
         orchestrationCompletedAt: now,
         activatedByOrchestrator: true,

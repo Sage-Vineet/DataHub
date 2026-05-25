@@ -357,6 +357,23 @@ export default function ManualGLUpload({
         pct: sourceMode === "manual" ? 50 : 20,
       }));
       const staged = await stageMultiYearManualGl(stagePayload, { clientId: companyId });
+      if (staged?.blockedAsDuplicate || (staged?.success === false && staged?.noChangesDetected)) {
+        setPendingStageRequest(stagePayload);
+        setStageResult(staged);
+        setBalanceSheetValidation(null);
+        setValidationErrors([]);
+        showToast({
+          type: "info",
+          title: "No changes detected",
+          message: staged.message || "The selected GL data is already staged for this company and fiscal year.",
+        });
+        setStagingProgress({ isActive: true, stage: "complete", message: "No changes detected.", pct: 100, error: null });
+        progressCloseTimer.current = setTimeout(() => {
+          setStagingProgress(PROGRESS_IDLE);
+          setStep(3);
+        }, 1200);
+        return;
+      }
       setStagingProgress((prev) => ({ ...prev, pct: 82, message: "Validating data…" }));
 
       setStagingProgress((prev) => ({ ...prev, stage: "validate", message: "Validating balance sheet…", pct: 88 }));
@@ -438,6 +455,21 @@ export default function ManualGLUpload({
         });
         return;
       }
+      if (error.status === 409 && error.payload?.blockedAsDuplicate) {
+        const payload = error.payload;
+        setPendingStageRequest(stagePayloadForRetry);
+        setStageResult(payload);
+        setStep(3);
+        setStagingProgress({ isActive: true, stage: "complete", message: "Already staged.", pct: 100, error: null });
+        progressCloseTimer.current = setTimeout(() => setStagingProgress(PROGRESS_IDLE), 1200);
+        showToast({
+          type: "info",
+          title: "Already Staged",
+          message: payload.message || "The selected fiscal year data is already staged.",
+        });
+        return;
+      }
+
       const errMsg = error?.message || "An unexpected error occurred.";
       setStagingProgress({ isActive: true, stage: "error", message: errMsg, pct: 0, error: errMsg });
       progressCloseTimer.current = setTimeout(() => setStagingProgress(PROGRESS_IDLE), 2000);
@@ -537,6 +569,20 @@ export default function ManualGLUpload({
       };
 
       const staged = await stageMultiYearManualGl(payload, { clientId: companyId });
+      if (staged?.blockedAsDuplicate || (staged?.success === false && staged?.noChangesDetected)) {
+        setStageResult(staged);
+        setBalanceSheetValidation(null);
+        setPendingStageRequest(payload);
+        showToast({
+          type: "info",
+          title: "No changes detected",
+          message: staged.message || "The selected GL data is already staged for this company and fiscal year.",
+        });
+        setStagingProgress({ isActive: true, stage: "complete", message: "No changes detected.", pct: 100, error: null });
+        progressCloseTimer.current = setTimeout(() => setStagingProgress(PROGRESS_IDLE), 1200);
+        setStep(3);
+        return;
+      }
       setStagingProgress((prev) => ({ ...prev, pct: 75, message: "Validating data…" }));
 
       setStagingProgress((prev) => ({ ...prev, stage: "validate", message: "Validating balance sheet…", pct: 85 }));
@@ -693,456 +739,459 @@ export default function ManualGLUpload({
 
   return (
     <>
-    <StagingProgressModal progress={stagingProgress} />
-    <div className="card-base overflow-hidden">
-      <div className="px-6 py-4 border-b border-border flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2 min-w-0">
-          <Database size={16} className="text-primary" />
-          <div className="min-w-0">
-            <h3 className="text-[16px] font-semibold text-text-primary">Manual Financial Processing</h3>
-            <p className="text-[12px] text-secondary">
-              Stage multi-year GL files. Starting and Ending Balance Sheets are required for accurate account classification.
-            </p>
-          </div>
-        </div>
-        {isLocked ? (
-          <div className="rounded-xl border border-amber-300 bg-amber-50 px-5 py-4 text-amber-900">
-            <div className="flex items-start gap-3">
-              <Lock size={18} className="mt-0.5 shrink-0" />
-              <div>
-                <p className="text-[14px] font-semibold">Manual Upload is currently locked</p>
-                <p className="mt-1 text-[13px] leading-relaxed">
-                  {lockMessage || "Manual Upload is disabled for this workspace."}
-                </p>
-              </div>
+      <StagingProgressModal progress={stagingProgress} />
+      <div className="card-base overflow-hidden">
+        <div className="px-6 py-4 border-b border-border flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2 min-w-0">
+            <Database size={16} className="text-primary" />
+            <div className="min-w-0">
+              <h3 className="text-[16px] font-semibold text-text-primary">Manual Financial Processing</h3>
+              <p className="text-[12px] text-secondary">
+                Stage multi-year GL files. Starting and Ending Balance Sheets are required for accurate account classification.
+              </p>
             </div>
           </div>
-        ) : null}
-
-        {!isLocked && step === 1 && (
-          <button
-            type="button"
-            onClick={() => refreshDocuments({ force: true })}
-            className="btn-secondary h-9 px-3 disabled:cursor-not-allowed disabled:opacity-60"
-            disabled={isLoadingDocuments}
-          >
-            <RefreshCw size={14} className={isLoadingDocuments ? "animate-spin" : ""} />
-            Refresh
-          </button>
-        )}
-      </div>
-
-      <div className="p-6">
-        {/* Step Indicator */}
-        <div className="mb-6 grid grid-cols-1 gap-2 sm:grid-cols-3">
-          <div className={`rounded-md border px-3 py-2 text-[13px] font-medium ${step >= 1 ? "border-primary bg-primary/10 text-primary" : "border-border bg-bg-page text-secondary"}`}>
-            1. Select Files
-          </div>
-          <div className={`rounded-md border px-3 py-2 text-[13px] font-medium ${step >= 2 ? "border-primary bg-primary/10 text-primary" : "border-border bg-bg-page text-secondary"}`}>
-            2. Map Columns (If Required)
-          </div>
-          <div className={`rounded-md border px-3 py-2 text-[13px] font-medium ${step >= 3 ? "border-primary bg-primary/10 text-primary" : "border-border bg-bg-page text-secondary"}`}>
-            3. Staged & Validated
-          </div>
-        </div>
-
-        {step === 1 && (
-          <div className="space-y-5">
-            <div className="rounded-lg border border-border bg-bg-page p-1">
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                <button
-                  type="button"
-                  className={`h-9 rounded-md px-3 text-[13px] font-medium transition-colors ${sourceMode === "dataroom" ? "bg-bg-card text-primary shadow-sm border border-primary/40" : "text-secondary hover:bg-bg-card/70"}`}
-                  onClick={() => setSourceMode("dataroom")}
-                >
-                  Use Data Room Document
-                </button>
-                <button
-                  type="button"
-                  className={`h-9 rounded-md px-3 text-[13px] font-medium transition-colors ${sourceMode === "manual" ? "bg-bg-card text-primary shadow-sm border border-primary/40" : "text-secondary hover:bg-bg-card/70"}`}
-                  onClick={() => setSourceMode("manual")}
-                >
-                  Manual Upload
-                </button>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 gap-4">
-              <div className="rounded-lg border border-border bg-bg-page/50 p-4">
-                {sourceMode === "dataroom" ? (
-                  <>
-                    <label className="text-[12px] font-semibold uppercase tracking-wide text-secondary">Data Room Documents</label>
-                    <div className="mt-2 max-h-56 overflow-y-auto border border-border rounded-lg bg-bg-card/50 p-2 space-y-1">
-                      {isLoadingDocuments ? (
-                        <div className="flex items-center justify-center p-4 gap-2 text-secondary text-[13px]">
-                          <Loader2 size={14} className="animate-spin" />
-                          Loading documents...
-                        </div>
-                      ) : !documents.length ? (
-                        <div className="p-4 text-center text-secondary text-[13px]">
-                          No uploaded Data Room documents found.
-                        </div>
-                      ) : (
-                        documents.map((doc) => (
-                          <label key={doc.id} className={`flex items-center gap-3 p-2.5 rounded-md cursor-pointer transition-all hover:bg-primary/5 ${selectedDocumentIds.includes(doc.id) ? "bg-primary/10 ring-1 ring-primary/30" : ""}`}>
-                            <input
-                              type="checkbox"
-                              className="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary"
-                              checked={selectedDocumentIds.includes(doc.id)}
-                              onChange={(e) => {
-                                if (e.target.checked) {
-                                  setSelectedDocumentIds([...selectedDocumentIds, doc.id]);
-                                } else {
-                                  setSelectedDocumentIds(selectedDocumentIds.filter(id => id !== doc.id));
-                                }
-                              }}
-                            />
-                            <div className="flex flex-col min-w-0">
-                              <span className="text-[13px] font-medium text-text-primary truncate">{doc.name}</span>
-                              <span className="text-[11px] text-secondary truncate">{doc.folderName}</span>
-                            </div>
-                          </label>
-                        ))
-                      )}
-                    </div>
-
-                    <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
-                      <div className={`rounded-md border p-3 ${selectedStartingDocumentId ? "border-green-300 bg-green-50/40" : "border-amber-300 bg-amber-50/40"}`}>
-                        <label className="block text-[11px] font-semibold uppercase tracking-wide text-secondary mb-1">
-                          Starting Balance Sheet <span className="text-red-500">*</span>
-                        </label>
-                        <select
-                          className="input-base text-[13px]"
-                          value={selectedStartingDocumentId}
-                          onChange={(event) => setSelectedStartingDocumentId(event.target.value)}
-                        >
-                          <option value="">-- Select document --</option>
-                          {documents.map((doc) => (
-                            <option key={`start-${doc.id}`} value={doc.id}>
-                              {formatDocumentLabel(doc)}
-                            </option>
-                          ))}
-                        </select>
-                        {!selectedStartingDocumentId && (
-                          <p className="mt-1 text-[11px] text-amber-700">Required for accurate account classification</p>
-                        )}
-                      </div>
-                      <div className={`rounded-md border p-3 ${selectedEndingDocumentId ? "border-green-300 bg-green-50/40" : "border-amber-300 bg-amber-50/40"}`}>
-                        <label className="block text-[11px] font-semibold uppercase tracking-wide text-secondary mb-1">
-                          Ending Balance Sheet <span className="text-red-500">*</span>
-                        </label>
-                        <select
-                          className="input-base text-[13px]"
-                          value={selectedEndingDocumentId}
-                          onChange={(event) => setSelectedEndingDocumentId(event.target.value)}
-                        >
-                          <option value="">-- Select document --</option>
-                          {documents.map((doc) => (
-                            <option key={`end-${doc.id}`} value={doc.id}>
-                              {formatDocumentLabel(doc)}
-                            </option>
-                          ))}
-                        </select>
-                        {!selectedEndingDocumentId && (
-                          <p className="mt-1 text-[11px] text-amber-700">Required for accurate account classification</p>
-                        )}
-                      </div>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <label className="text-[12px] font-semibold uppercase tracking-wide text-secondary">Financial Files</label>
-                    <div className="mt-2 border-2 border-dashed border-border rounded-lg p-6 bg-bg-card/30 flex flex-col items-center justify-center text-center hover:bg-bg-card/50 transition-colors group relative cursor-pointer">
-                      <input
-                        type="file"
-                        className="absolute inset-0 opacity-0 cursor-pointer"
-                        accept=".csv,.xlsx,.xls"
-                        multiple
-                        onChange={(event) => {
-                          const newFiles = Array.from(event.target.files || []);
-                          setFiles(prev => [...prev, ...newFiles]);
-                        }}
-                      />
-                      <FileUp size={28} className="text-secondary group-hover:text-primary transition-colors mb-2" />
-                      <p className="text-[13px] font-medium text-text-primary">Click or drag files to upload</p>
-                      <p className="text-[11px] text-secondary mt-1">Supports multiple CSV, XLSX, XLS files</p>
-                    </div>
-
-                    {files.length > 0 && (
-                      <div className="mt-4 space-y-2">
-                        {files.map((f, i) => (
-                          <div key={i} className="flex items-center justify-between gap-3 p-2 bg-bg-card rounded-md border border-border">
-                            <div className="flex items-center gap-2 min-w-0">
-                              <FileText size={14} className="text-primary shrink-0" />
-                              <span className="text-[12px] text-text-primary truncate">{f.name}</span>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() => setFiles(files.filter((_, idx) => idx !== i))}
-                              className="p-1 hover:bg-red-50 hover:text-red-500 rounded transition-colors text-secondary"
-                            >
-                              <X size={14} />
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
-                      <div className={`rounded-md border p-3 ${startingBalanceSheetFile ? "border-green-300 bg-green-50/40" : "border-amber-300 bg-amber-50/40"}`}>
-                        <label className="block text-[11px] font-semibold uppercase tracking-wide text-secondary mb-1">
-                          Starting Balance Sheet <span className="text-red-500">*</span>
-                        </label>
-                        <input
-                          type="file"
-                          accept=".csv,.xlsx,.xls"
-                          onChange={(event) => {
-                            const file = event.target.files?.[0] || null;
-                            setStartingBalanceSheetFile(file);
-                          }}
-                          className="input-base text-[13px]"
-                        />
-                        {startingBalanceSheetFile ? (
-                          <p className="mt-2 text-[12px] text-green-700 truncate">{startingBalanceSheetFile.name}</p>
-                        ) : (
-                          <p className="mt-1 text-[11px] text-amber-700">Required for accurate account classification</p>
-                        )}
-                      </div>
-                      <div className={`rounded-md border p-3 ${endingBalanceSheetFile ? "border-green-300 bg-green-50/40" : "border-amber-300 bg-amber-50/40"}`}>
-                        <label className="block text-[11px] font-semibold uppercase tracking-wide text-secondary mb-1">
-                          Ending Balance Sheet <span className="text-red-500">*</span>
-                        </label>
-                        <input
-                          type="file"
-                          accept=".csv,.xlsx,.xls"
-                          onChange={(event) => {
-                            const file = event.target.files?.[0] || null;
-                            setEndingBalanceSheetFile(file);
-                          }}
-                          className="input-base text-[13px]"
-                        />
-                        {endingBalanceSheetFile ? (
-                          <p className="mt-2 text-[12px] text-green-700 truncate">{endingBalanceSheetFile.name}</p>
-                        ) : (
-                          <p className="mt-1 text-[11px] text-amber-700">Required for accurate account classification</p>
-                        )}
-                      </div>
-                    </div>
-                  </>
-                )}
-              </div>
-            </div>
-
-            <div className="rounded-lg border border-border bg-bg-page/40 px-4 py-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="min-w-0 space-y-1">
-                <p className="text-[12px] text-secondary truncate">
-                  GL source: <span className="font-medium text-text-primary">{selectedSourceName || "None selected"}</span>
-                </p>
-                <p className="text-[11px] truncate">
-                  Starting BS:{" "}
-                  <span className={`font-medium ${hasStartingBs ? "text-green-700" : "text-amber-600"}`}>
-                    {sourceMode === "manual"
-                      ? (startingBalanceSheetFile?.name || "Not provided — required")
-                      : (selectedStartingDocumentId ? (formatDocumentLabel(documents.find((doc) => doc.id === selectedStartingDocumentId)) || "Selected") : "Not provided — required")}
-                  </span>
-                  {" · "}
-                  Ending BS:{" "}
-                  <span className={`font-medium ${hasEndingBs ? "text-green-700" : "text-amber-600"}`}>
-                    {sourceMode === "manual"
-                      ? (endingBalanceSheetFile?.name || "Not provided — required")
-                      : (selectedEndingDocumentId ? (formatDocumentLabel(documents.find((doc) => doc.id === selectedEndingDocumentId)) || "Selected") : "Not provided — required")}
-                  </span>
-                </p>
-                {isStageActionDisabled && !isSubmitting && (
-                  <p className="text-[11px] text-amber-600">
-                    {!hasSelection
-                      ? "Select at least one GL file."
-                      : !hasStartingBs
-                        ? "Provide a Starting Balance Sheet to continue."
-                        : "Provide an Ending Balance Sheet to continue."}
+          {isLocked ? (
+            <div className="rounded-xl border border-amber-300 bg-amber-50 px-5 py-4 text-amber-900">
+              <div className="flex items-start gap-3">
+                <Lock size={18} className="mt-0.5 shrink-0" />
+                <div>
+                  <p className="text-[14px] font-semibold">Manual Upload is currently locked</p>
+                  <p className="mt-1 text-[13px] leading-relaxed">
+                    {lockMessage || "Manual Upload is disabled for this workspace."}
                   </p>
-                )}
+                </div>
               </div>
-              <button
-                type="button"
-                onClick={onSubmitStage}
-                disabled={isStageActionDisabled}
-                className="btn-primary w-full sm:w-auto disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {isSubmitting ? <Loader2 size={14} className="animate-spin" /> : <FileUp size={14} />}
-                {isSubmitting ? "Staging..." : "Stage Multi-Year Data"}
+            </div>
+          ) : null}
+
+          {!isLocked && step === 1 && (
+            <button
+              type="button"
+              onClick={() => refreshDocuments({ force: true })}
+              className="btn-secondary h-9 px-3 disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={isLoadingDocuments}
+            >
+              <RefreshCw size={14} className={isLoadingDocuments ? "animate-spin" : ""} />
+              Refresh
+            </button>
+          )}
+        </div>
+
+        <div className="p-6">
+          {/* Step Indicator */}
+          <div className="mb-6 grid grid-cols-1 gap-2 sm:grid-cols-3">
+            <div className={`rounded-md border px-3 py-2 text-[13px] font-medium ${step >= 1 ? "border-primary bg-primary/10 text-primary" : "border-border bg-bg-page text-secondary"}`}>
+              1. Select Files
+            </div>
+            <div className={`rounded-md border px-3 py-2 text-[13px] font-medium ${step >= 2 ? "border-primary bg-primary/10 text-primary" : "border-border bg-bg-page text-secondary"}`}>
+              2. Map Columns (If Required)
+            </div>
+            <div className={`rounded-md border px-3 py-2 text-[13px] font-medium ${step >= 3 ? "border-primary bg-primary/10 text-primary" : "border-border bg-bg-page text-secondary"}`}>
+              3. Staged & Validated
+            </div>
+          </div>
+
+          {step === 1 && (
+            <div className="space-y-5">
+              <div className="rounded-lg border border-border bg-bg-page p-1">
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <button
+                    type="button"
+                    className={`h-9 rounded-md px-3 text-[13px] font-medium transition-colors ${sourceMode === "dataroom" ? "bg-bg-card text-primary shadow-sm border border-primary/40" : "text-secondary hover:bg-bg-card/70"}`}
+                    onClick={() => setSourceMode("dataroom")}
+                  >
+                    Use Data Room Document
+                  </button>
+                  <button
+                    type="button"
+                    className={`h-9 rounded-md px-3 text-[13px] font-medium transition-colors ${sourceMode === "manual" ? "bg-bg-card text-primary shadow-sm border border-primary/40" : "text-secondary hover:bg-bg-card/70"}`}
+                    onClick={() => setSourceMode("manual")}
+                  >
+                    Manual Upload
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-4">
+                <div className="rounded-lg border border-border bg-bg-page/50 p-4">
+                  {sourceMode === "dataroom" ? (
+                    <>
+                      <label className="text-[12px] font-semibold uppercase tracking-wide text-secondary">Data Room Documents</label>
+                      <div className="mt-2 max-h-56 overflow-y-auto border border-border rounded-lg bg-bg-card/50 p-2 space-y-1">
+                        {isLoadingDocuments ? (
+                          <div className="flex items-center justify-center p-4 gap-2 text-secondary text-[13px]">
+                            <Loader2 size={14} className="animate-spin" />
+                            Loading documents...
+                          </div>
+                        ) : !documents.length ? (
+                          <div className="p-4 text-center text-secondary text-[13px]">
+                            No uploaded Data Room documents found.
+                          </div>
+                        ) : (
+                          documents.map((doc) => (
+                            <label key={doc.id} className={`flex items-center gap-3 p-2.5 rounded-md cursor-pointer transition-all hover:bg-primary/5 ${selectedDocumentIds.includes(doc.id) ? "bg-primary/10 ring-1 ring-primary/30" : ""}`}>
+                              <input
+                                type="checkbox"
+                                className="w-4 h-4 rounded border-gray-300 text-primary focus:ring-primary"
+                                checked={selectedDocumentIds.includes(doc.id)}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    setSelectedDocumentIds([...selectedDocumentIds, doc.id]);
+                                  } else {
+                                    setSelectedDocumentIds(selectedDocumentIds.filter(id => id !== doc.id));
+                                  }
+                                }}
+                              />
+                              <div className="flex flex-col min-w-0">
+                                <span className="text-[13px] font-medium text-text-primary truncate">{doc.name}</span>
+                                <span className="text-[11px] text-secondary truncate">{doc.folderName}</span>
+                              </div>
+                            </label>
+                          ))
+                        )}
+                      </div>
+
+                      <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+                        <div className={`rounded-md border p-3 ${selectedStartingDocumentId ? "border-green-300 bg-green-50/40" : "border-amber-300 bg-amber-50/40"}`}>
+                          <label className="block text-[11px] font-semibold uppercase tracking-wide text-secondary mb-1">
+                            Starting Balance Sheet <span className="text-red-500">*</span>
+                          </label>
+                          <select
+                            className="input-base text-[13px]"
+                            value={selectedStartingDocumentId}
+                            onChange={(event) => setSelectedStartingDocumentId(event.target.value)}
+                          >
+                            <option value="">-- Select document --</option>
+                            {documents.map((doc) => (
+                              <option key={`start-${doc.id}`} value={doc.id}>
+                                {formatDocumentLabel(doc)}
+                              </option>
+                            ))}
+                          </select>
+                          {!selectedStartingDocumentId && (
+                            <p className="mt-1 text-[11px] text-amber-700">Required for accurate account classification</p>
+                          )}
+                        </div>
+                        <div className={`rounded-md border p-3 ${selectedEndingDocumentId ? "border-green-300 bg-green-50/40" : "border-amber-300 bg-amber-50/40"}`}>
+                          <label className="block text-[11px] font-semibold uppercase tracking-wide text-secondary mb-1">
+                            Ending Balance Sheet <span className="text-red-500">*</span>
+                          </label>
+                          <select
+                            className="input-base text-[13px]"
+                            value={selectedEndingDocumentId}
+                            onChange={(event) => setSelectedEndingDocumentId(event.target.value)}
+                          >
+                            <option value="">-- Select document --</option>
+                            {documents.map((doc) => (
+                              <option key={`end-${doc.id}`} value={doc.id}>
+                                {formatDocumentLabel(doc)}
+                              </option>
+                            ))}
+                          </select>
+                          {!selectedEndingDocumentId && (
+                            <p className="mt-1 text-[11px] text-amber-700">Required for accurate account classification</p>
+                          )}
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <label className="text-[12px] font-semibold uppercase tracking-wide text-secondary">Financial Files</label>
+                      <div className="mt-2 border-2 border-dashed border-border rounded-lg p-6 bg-bg-card/30 flex flex-col items-center justify-center text-center hover:bg-bg-card/50 transition-colors group relative cursor-pointer">
+                        <input
+                          type="file"
+                          className="absolute inset-0 opacity-0 cursor-pointer"
+                          accept=".csv,.xlsx,.xls"
+                          multiple
+                          onChange={(event) => {
+                            const newFiles = Array.from(event.target.files || []);
+                            setFiles(prev => [...prev, ...newFiles]);
+                          }}
+                        />
+                        <FileUp size={28} className="text-secondary group-hover:text-primary transition-colors mb-2" />
+                        <p className="text-[13px] font-medium text-text-primary">Click or drag files to upload</p>
+                        <p className="text-[11px] text-secondary mt-1">Supports multiple CSV, XLSX, XLS files</p>
+                      </div>
+
+                      {files.length > 0 && (
+                        <div className="mt-4 space-y-2">
+                          {files.map((f, i) => (
+                            <div key={i} className="flex items-center justify-between gap-3 p-2 bg-bg-card rounded-md border border-border">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <FileText size={14} className="text-primary shrink-0" />
+                                <span className="text-[12px] text-text-primary truncate">{f.name}</span>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => setFiles(files.filter((_, idx) => idx !== i))}
+                                className="p-1 hover:bg-red-50 hover:text-red-500 rounded transition-colors text-secondary"
+                              >
+                                <X size={14} />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+                        <div className={`rounded-md border p-3 ${startingBalanceSheetFile ? "border-green-300 bg-green-50/40" : "border-amber-300 bg-amber-50/40"}`}>
+                          <label className="block text-[11px] font-semibold uppercase tracking-wide text-secondary mb-1">
+                            Starting Balance Sheet <span className="text-red-500">*</span>
+                          </label>
+                          <input
+                            type="file"
+                            accept=".csv,.xlsx,.xls"
+                            onChange={(event) => {
+                              const file = event.target.files?.[0] || null;
+                              setStartingBalanceSheetFile(file);
+                            }}
+                            className="input-base text-[13px]"
+                          />
+                          {startingBalanceSheetFile ? (
+                            <p className="mt-2 text-[12px] text-green-700 truncate">{startingBalanceSheetFile.name}</p>
+                          ) : (
+                            <p className="mt-1 text-[11px] text-amber-700">Required for accurate account classification</p>
+                          )}
+                        </div>
+                        <div className={`rounded-md border p-3 ${endingBalanceSheetFile ? "border-green-300 bg-green-50/40" : "border-amber-300 bg-amber-50/40"}`}>
+                          <label className="block text-[11px] font-semibold uppercase tracking-wide text-secondary mb-1">
+                            Ending Balance Sheet <span className="text-red-500">*</span>
+                          </label>
+                          <input
+                            type="file"
+                            accept=".csv,.xlsx,.xls"
+                            onChange={(event) => {
+                              const file = event.target.files?.[0] || null;
+                              setEndingBalanceSheetFile(file);
+                            }}
+                            className="input-base text-[13px]"
+                          />
+                          {endingBalanceSheetFile ? (
+                            <p className="mt-2 text-[12px] text-green-700 truncate">{endingBalanceSheetFile.name}</p>
+                          ) : (
+                            <p className="mt-1 text-[11px] text-amber-700">Required for accurate account classification</p>
+                          )}
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-border bg-bg-page/40 px-4 py-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0 space-y-1">
+                  <p className="text-[12px] text-secondary truncate">
+                    GL source: <span className="font-medium text-text-primary">{selectedSourceName || "None selected"}</span>
+                  </p>
+                  <p className="text-[11px] truncate">
+                    Starting BS:{" "}
+                    <span className={`font-medium ${hasStartingBs ? "text-green-700" : "text-amber-600"}`}>
+                      {sourceMode === "manual"
+                        ? (startingBalanceSheetFile?.name || "Not provided — required")
+                        : (selectedStartingDocumentId ? (formatDocumentLabel(documents.find((doc) => doc.id === selectedStartingDocumentId)) || "Selected") : "Not provided — required")}
+                    </span>
+                    {" · "}
+                    Ending BS:{" "}
+                    <span className={`font-medium ${hasEndingBs ? "text-green-700" : "text-amber-600"}`}>
+                      {sourceMode === "manual"
+                        ? (endingBalanceSheetFile?.name || "Not provided — required")
+                        : (selectedEndingDocumentId ? (formatDocumentLabel(documents.find((doc) => doc.id === selectedEndingDocumentId)) || "Selected") : "Not provided — required")}
+                    </span>
+                  </p>
+                  {isStageActionDisabled && !isSubmitting && (
+                    <p className="text-[11px] text-amber-600">
+                      {!hasSelection
+                        ? "Select at least one GL file."
+                        : !hasStartingBs
+                          ? "Provide a Starting Balance Sheet to continue."
+                          : "Provide an Ending Balance Sheet to continue."}
+                    </p>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={onSubmitStage}
+                  disabled={isStageActionDisabled}
+                  className="btn-primary w-full sm:w-auto disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isSubmitting ? <Loader2 size={14} className="animate-spin" /> : <FileUp size={14} />}
+                  {isSubmitting ? "Staging..." : "Stage Multi-Year Data"}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {!isLocked && step === 2 && (
+            <div className="space-y-6">
+              {isLoadingColumns ? (
+                <div className="flex items-center justify-center p-8">
+                  <Loader2 className="animate-spin text-primary mr-2" size={24} />
+                  <span className="text-secondary">Loading columns...</span>
+                </div>
+              ) : (
+                <>
+                  <div className="rounded-lg border border-border bg-bg-page px-4 py-3 text-[12px] text-secondary">
+                    Required mapping: <span className="font-semibold text-text-primary">Date, Account Name</span>, and either
+                    <span className="font-semibold text-text-primary"> Debit + Credit</span> or
+                    <span className="font-semibold text-text-primary"> Split Amount</span>.
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-4 rounded-lg border border-border bg-bg-page p-4 sm:grid-cols-2 xl:grid-cols-3">
+                    {renderMappingSelect("date", "Date", true)}
+                    {renderMappingSelect("account_name", "Account Name", true)}
+                    {renderMappingSelect("account_number", "Account Number")}
+                    {renderMappingSelect("debit", "Debit")}
+                    {renderMappingSelect("credit", "Credit")}
+                    {renderMappingSelect("split_amount", "Split Amount")}
+                    {renderMappingSelect("balance", "Balance")}
+                    {renderMappingSelect("description", "Description")}
+                    {renderMappingSelect("transaction_type", "Transaction Type")}
+                    {renderMappingSelect("reference", "Reference")}
+                    {renderMappingSelect("account_type", "Account Type")}
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setStep(1)}
+                      className="btn-secondary disabled:cursor-not-allowed disabled:opacity-60"
+                      disabled={isProcessing || isSavingMapping}
+                    >
+                      <ArrowRight size={14} className="rotate-180" />
+                      Back
+                    </button>
+                    <button
+                      type="button"
+                      onClick={onSaveMapping}
+                      disabled={isSavingMapping}
+                      className="btn-secondary disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {isSavingMapping ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+                      Save Mapping
+                    </button>
+                    <button
+                      type="button"
+                      onClick={onProcessData}
+                      disabled={isProcessing || !canProcessMapping}
+                      className="btn-primary disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {isProcessing ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
+                      Process Data
+                    </button>
+                  </div>
+
+                  {validationErrors.length > 0 && (
+                    <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                      <h4 className="text-red-700 font-semibold mb-2 flex items-center gap-2">
+                        <AlertCircle size={16} /> Validation Errors
+                      </h4>
+                      <ul className="list-disc pl-5 text-red-600 text-[13px] max-h-40 overflow-y-auto">
+                        {validationErrors.map((err, i) => (
+                          <li key={i}>Row {err.row}: {err.message}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  <div className="mt-2 rounded-lg border border-border overflow-hidden">
+                    <div className="p-3 bg-bg-page border-b border-border flex items-center justify-between gap-2">
+                      <h4 className="text-[14px] font-semibold text-text-primary">Data Preview</h4>
+                      <p className="text-[12px] text-secondary">{previewData.length} row(s) shown</p>
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left border-collapse">
+                        <thead>
+                          <tr className="bg-bg-page text-[12px] text-text-muted uppercase tracking-wider">
+                            {columns.map((col) => (
+                              <th key={col} className="p-3 border-b border-border whitespace-nowrap">{col}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {previewData.length > 0 ? (
+                            previewData.map((row, i) => (
+                              <tr key={i} className="text-[13px] text-secondary hover:bg-bg-page/60 transition-colors">
+                                {columns.map((col) => (
+                                  <td key={col} className="p-3 border-b border-border whitespace-nowrap">
+                                    {String(row[col] || "")}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))
+                          ) : (
+                            <tr>
+                              <td colSpan={Math.max(columns.length, 1)} className="p-6 text-center text-[13px] text-secondary">
+                                No preview rows available.
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {!isLocked && step === 3 && (
+            <div className="py-10 flex flex-col items-center justify-center text-center rounded-lg border border-primary/30 bg-primary/5 px-4">
+              <CheckCircle className="text-primary mb-4" size={48} />
+              <h3 className="text-xl font-bold text-text-primary mb-2">
+                Multi-year Staging Complete
+              </h3>
+              <p className="text-secondary max-w-2xl">
+                Multi-year GL transactions are normalized into staged tables and ready for manual report generation.
+              </p>
+
+              {stageResult ? (
+                <div className="mt-4 w-full max-w-3xl rounded-lg border border-border bg-bg-card p-4 text-left">
+                  <h4 className="text-[14px] font-semibold text-text-primary mb-2">Batch Summary</h4>
+                  <div className="grid grid-cols-1 gap-1 text-[12px] text-secondary sm:grid-cols-2">
+                    <p>Batch ID: <span className="font-medium text-text-primary">{stageResult.batchId || stageResult.activeBatchId || "-"}</span></p>
+                    {stageResult.blockedAsDuplicate && (
+                      <p>Existing Version: <span className="font-semibold text-amber-600">{stageResult.existingVersion || stageResult.datasetVersionNo || "-"}</span></p>
+                    )}
+                    <p>Inserted Transactions: <span className="font-medium text-text-primary">{stageResult.insertedTransactions || 0}</span></p>
+                    <p>Duplicates Skipped: <span className="font-medium text-text-primary">{stageResult.duplicateTransactionsSkipped || 0}</span></p>
+                    <p>Warnings: <span className="font-medium text-text-primary">{Array.isArray(stageResult.warnings) ? stageResult.warnings.length : 0}</span></p>
+                    <p>GL Files Parsed: <span className="font-medium text-text-primary">{Array.isArray(stageResult.filesParsed) ? stageResult.filesParsed.length : 0}</span></p>
+                    <p>Years Detected: <span className="font-medium text-text-primary">{Array.isArray(stageResult.yearsDetected) && stageResult.yearsDetected.length ? stageResult.yearsDetected.join(", ") : (stageResult.duplicateFiscalYears?.join(", ") || "-")}</span></p>
+                  </div>
+                </div>
+              ) : null}
+
+              {balanceSheetValidation ? (
+                <div className="mt-4 w-full max-w-3xl rounded-lg border border-border bg-bg-card p-4 text-left">
+                  <h4 className="text-[14px] font-semibold text-text-primary mb-2">Balance Sheet Validation</h4>
+                  <p className={`text-[13px] ${balanceSheetValidation.isValid ? "text-green-700" : "text-red-600"}`}>
+                    {balanceSheetValidation.isValid
+                      ? "Opening + Net Income +/- Adjustments matches Closing balance."
+                      : "Validation detected mismatches. Review details before final reporting."}
+                  </p>
+                  <div className="mt-2 grid grid-cols-1 gap-1 text-[12px] text-secondary sm:grid-cols-2">
+                    <p>Opening Balance: {balanceSheetValidation.openingBalance ?? 0}</p>
+                    <p>Closing Balance: {balanceSheetValidation.closingBalance ?? 0}</p>
+                    <p>Net Income: {balanceSheetValidation.netIncome ?? 0}</p>
+                    <p>Adjustments: {balanceSheetValidation.adjustments ?? 0}</p>
+                    <p>Mismatched Accounts: {Array.isArray(balanceSheetValidation.mismatches) ? balanceSheetValidation.mismatches.length : 0}</p>
+                    <p>Missing in Ending: {Array.isArray(balanceSheetValidation.missingInEnding) ? balanceSheetValidation.missingInEnding.length : 0}</p>
+                  </div>
+                </div>
+              ) : (
+                <p className="mt-4 text-[12px] text-secondary">
+                  No balance sheet validation was run because starting and ending balance sheets were not both provided.
+                </p>
+              )}
+              <button type="button" onClick={resetFlow} className="btn-secondary mt-6">
+                Process Another File
               </button>
             </div>
-          </div>
-        )}
+          )}
 
-        {!isLocked && step === 2 && (
-          <div className="space-y-6">
-            {isLoadingColumns ? (
-              <div className="flex items-center justify-center p-8">
-                <Loader2 className="animate-spin text-primary mr-2" size={24} />
-                <span className="text-secondary">Loading columns...</span>
-              </div>
-            ) : (
-              <>
-                <div className="rounded-lg border border-border bg-bg-page px-4 py-3 text-[12px] text-secondary">
-                  Required mapping: <span className="font-semibold text-text-primary">Date, Account Name</span>, and either
-                  <span className="font-semibold text-text-primary"> Debit + Credit</span> or
-                  <span className="font-semibold text-text-primary"> Split Amount</span>.
-                </div>
-
-                <div className="grid grid-cols-1 gap-4 rounded-lg border border-border bg-bg-page p-4 sm:grid-cols-2 xl:grid-cols-3">
-                  {renderMappingSelect("date", "Date", true)}
-                  {renderMappingSelect("account_name", "Account Name", true)}
-                  {renderMappingSelect("account_number", "Account Number")}
-                  {renderMappingSelect("debit", "Debit")}
-                  {renderMappingSelect("credit", "Credit")}
-                  {renderMappingSelect("split_amount", "Split Amount")}
-                  {renderMappingSelect("balance", "Balance")}
-                  {renderMappingSelect("description", "Description")}
-                  {renderMappingSelect("transaction_type", "Transaction Type")}
-                  {renderMappingSelect("reference", "Reference")}
-                  {renderMappingSelect("account_type", "Account Type")}
-                </div>
-
-                <div className="flex flex-wrap items-center gap-3">
-                  <button
-                    type="button"
-                    onClick={() => setStep(1)}
-                    className="btn-secondary disabled:cursor-not-allowed disabled:opacity-60"
-                    disabled={isProcessing || isSavingMapping}
-                  >
-                    <ArrowRight size={14} className="rotate-180" />
-                    Back
-                  </button>
-                  <button
-                    type="button"
-                    onClick={onSaveMapping}
-                    disabled={isSavingMapping}
-                    className="btn-secondary disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {isSavingMapping ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
-                    Save Mapping
-                  </button>
-                  <button
-                    type="button"
-                    onClick={onProcessData}
-                    disabled={isProcessing || !canProcessMapping}
-                    className="btn-primary disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {isProcessing ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
-                    Process Data
-                  </button>
-                </div>
-
-                {validationErrors.length > 0 && (
-                  <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-                    <h4 className="text-red-700 font-semibold mb-2 flex items-center gap-2">
-                      <AlertCircle size={16} /> Validation Errors
-                    </h4>
-                    <ul className="list-disc pl-5 text-red-600 text-[13px] max-h-40 overflow-y-auto">
-                      {validationErrors.map((err, i) => (
-                        <li key={i}>Row {err.row}: {err.message}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-
-                <div className="mt-2 rounded-lg border border-border overflow-hidden">
-                  <div className="p-3 bg-bg-page border-b border-border flex items-center justify-between gap-2">
-                    <h4 className="text-[14px] font-semibold text-text-primary">Data Preview</h4>
-                    <p className="text-[12px] text-secondary">{previewData.length} row(s) shown</p>
-                  </div>
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-left border-collapse">
-                      <thead>
-                        <tr className="bg-bg-page text-[12px] text-text-muted uppercase tracking-wider">
-                          {columns.map((col) => (
-                            <th key={col} className="p-3 border-b border-border whitespace-nowrap">{col}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {previewData.length > 0 ? (
-                          previewData.map((row, i) => (
-                            <tr key={i} className="text-[13px] text-secondary hover:bg-bg-page/60 transition-colors">
-                              {columns.map((col) => (
-                                <td key={col} className="p-3 border-b border-border whitespace-nowrap">
-                                  {String(row[col] || "")}
-                                </td>
-                              ))}
-                            </tr>
-                          ))
-                        ) : (
-                          <tr>
-                            <td colSpan={Math.max(columns.length, 1)} className="p-6 text-center text-[13px] text-secondary">
-                              No preview rows available.
-                            </td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </>
-            )}
-          </div>
-        )}
-
-        {!isLocked && step === 3 && (
-          <div className="py-10 flex flex-col items-center justify-center text-center rounded-lg border border-primary/30 bg-primary/5 px-4">
-            <CheckCircle className="text-primary mb-4" size={48} />
-            <h3 className="text-xl font-bold text-text-primary mb-2">
-              Multi-year Staging Complete
-            </h3>
-            <p className="text-secondary max-w-2xl">
-              Multi-year GL transactions are normalized into staged tables and ready for manual report generation.
-            </p>
-
-            {stageResult ? (
-              <div className="mt-4 w-full max-w-3xl rounded-lg border border-border bg-bg-card p-4 text-left">
-                <h4 className="text-[14px] font-semibold text-text-primary mb-2">Batch Summary</h4>
-                <div className="grid grid-cols-1 gap-1 text-[12px] text-secondary sm:grid-cols-2">
-                  <p>Batch ID: <span className="font-medium text-text-primary">{stageResult.batchId}</span></p>
-                  <p>Inserted Transactions: <span className="font-medium text-text-primary">{stageResult.insertedTransactions || 0}</span></p>
-                  <p>Duplicates Skipped: <span className="font-medium text-text-primary">{stageResult.duplicateTransactionsSkipped || 0}</span></p>
-                  <p>Warnings: <span className="font-medium text-text-primary">{Array.isArray(stageResult.warnings) ? stageResult.warnings.length : 0}</span></p>
-                  <p>GL Files Parsed: <span className="font-medium text-text-primary">{Array.isArray(stageResult.filesParsed) ? stageResult.filesParsed.length : 0}</span></p>
-                  <p>Years Detected: <span className="font-medium text-text-primary">{Array.isArray(stageResult.yearsDetected) && stageResult.yearsDetected.length ? stageResult.yearsDetected.join(", ") : "-"}</span></p>
-                </div>
-              </div>
-            ) : null}
-
-            {balanceSheetValidation ? (
-              <div className="mt-4 w-full max-w-3xl rounded-lg border border-border bg-bg-card p-4 text-left">
-                <h4 className="text-[14px] font-semibold text-text-primary mb-2">Balance Sheet Validation</h4>
-                <p className={`text-[13px] ${balanceSheetValidation.isValid ? "text-green-700" : "text-red-600"}`}>
-                  {balanceSheetValidation.isValid
-                    ? "Opening + Net Income +/- Adjustments matches Closing balance."
-                    : "Validation detected mismatches. Review details before final reporting."}
-                </p>
-                <div className="mt-2 grid grid-cols-1 gap-1 text-[12px] text-secondary sm:grid-cols-2">
-                  <p>Opening Balance: {balanceSheetValidation.openingBalance ?? 0}</p>
-                  <p>Closing Balance: {balanceSheetValidation.closingBalance ?? 0}</p>
-                  <p>Net Income: {balanceSheetValidation.netIncome ?? 0}</p>
-                  <p>Adjustments: {balanceSheetValidation.adjustments ?? 0}</p>
-                  <p>Mismatched Accounts: {Array.isArray(balanceSheetValidation.mismatches) ? balanceSheetValidation.mismatches.length : 0}</p>
-                  <p>Missing in Ending: {Array.isArray(balanceSheetValidation.missingInEnding) ? balanceSheetValidation.missingInEnding.length : 0}</p>
-                </div>
-              </div>
-            ) : (
-              <p className="mt-4 text-[12px] text-secondary">
-                No balance sheet validation was run because starting and ending balance sheets were not both provided.
-              </p>
-            )}
-            <button type="button" onClick={resetFlow} className="btn-secondary mt-6">
-              Process Another File
-            </button>
-          </div>
-        )}
-
+        </div>
       </div>
-    </div>
     </>
   );
 }

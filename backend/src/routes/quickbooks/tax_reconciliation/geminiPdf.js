@@ -370,7 +370,7 @@ function findPdfForYear(requestedYear) {
     const match = files.find((f) => f.includes(String(requestedYear)));
     if (match) return path.join(pdfDir, match);
   } catch (e) { }
-  return DEFAULT_PDF_PATH;
+  return null;
 }
 
 router.get("/quickbooks-pl", async (req, res) => {
@@ -456,6 +456,9 @@ router.get("/tax-data", async (req, res) => {
     } else {
       // 2. Extract via Gemini
       const pdfPath = findPdfForYear(requestedYear);
+      if (!pdfPath) {
+        return res.json({ success: true, year: requestedYear, data: [], warning: "No tax return PDF found for this year." });
+      }
       try {
         const extracted = await extractTaxFromPDF(pdfPath);
         if (extracted) {

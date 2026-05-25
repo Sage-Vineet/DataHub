@@ -18,6 +18,15 @@ function toText(value, fallback = "") {
   return text || fallback;
 }
 
+function normalizeSessionStatus(status) {
+  return toText(status).toLowerCase();
+}
+
+function isStagedSessionStatus(status) {
+  const normalized = normalizeSessionStatus(status);
+  return normalized === "staged" || normalized === "active";
+}
+
 function normalizeSupabaseErrorMessage(error) {
   const message = toText(error?.message);
   if (!message) return "Unknown Supabase error.";
@@ -86,8 +95,32 @@ function mapBatchRow(row) {
   };
 }
 
+function buildCanonicalTransactionFingerprint(row = {}) {
+  return [
+    String(row.fiscal_year || ""),
+    String(row.txn_date || ""),
+    String(row.account_number || ""),
+    String(row.account_name || ""),
+    Number(row.debit || 0).toFixed(2),
+    Number(row.credit || 0).toFixed(2),
+    Number(row.net_amount || 0).toFixed(2),
+    String(row.class || ""),
+    String(row.department || ""),
+    String(row.location || ""),
+    String(row.transaction_type || ""),
+    String(row.journal_type || ""),
+    String(row.reference || ""),
+    String(row.description || ""),
+  ].join("|").toLowerCase();
+}
+
 function shouldAllowExplicitBatch(options = {}) {
   if (!options || typeof options !== "object") return false;
+  if (toText(options.versionId || options.uploadSessionId || "")) return true;
+  const datasetVersion = Number(
+    options.datasetVersion || options.dataset_version || options.versionNumber || options.version_number || 0,
+  );
+  if (Number.isInteger(datasetVersion) && datasetVersion > 0) return true;
   if (options.allowExplicitBatch === true) return true;
   const mode = toText(options.mode || options.versionMode || "").toLowerCase();
   if (mode === REPORT_BATCH_MODE.HISTORICAL) return true;
@@ -147,26 +180,84 @@ async function getUploadBatchById(companyId, batchId) {
 async function resolveReportBatchId(companyId, preferredBatchId = "", options = {}) {
   if (!companyId) return "";
   const allowExplicitBatch = shouldAllowExplicitBatch(options);
-  const explicit = toText(preferredBatchId);
+  const explicit = toText(preferredBatchId || options.versionId || options.uploadSessionId || "");
+  const datasetVersion = Number(
+    options.datasetVersion || options.dataset_version || options.versionNumber || options.version_number || 0,
+  );
+  const hasDatasetVersion = Number.isInteger(datasetVersion) && datasetVersion > 0;
 
   if (explicit && allowExplicitBatch) {
-    const requestedBatch = await getUploadBatchById(companyId, explicit);
-    if (
-      requestedBatch?.id &&
-      toText(requestedBatch.source_type, MANUAL_GL_SOURCE_TYPE) === MANUAL_GL_SOURCE_TYPE
-    ) {
+    // 1. Try resolving as a direct manual_gl_batches.id
+    let requestedBatch = await getUploadBatchById(companyId, explicit);
+    if (requestedBatch?.id && isManualBatchSource(requestedBatch.source_type)) {
       return requestedBatch.id;
     }
 
+    // 2. Try resolving as a manual_gl_upload_sessions.id (versionId)
+    const { data: sessionData } = await supabase
+      .from("manual_gl_upload_sessions")
+      .select("staging_batch_id")
+      .eq("company_id", companyId)
+      .eq("id", explicit)
+      .maybeSingle();
+
+    if (sessionData?.staging_batch_id) {
+      requestedBatch = await getUploadBatchById(companyId, sessionData.staging_batch_id);
+      if (requestedBatch?.id) return requestedBatch.id;
+    }
+
     console.warn(
-      `[ManualGL][ActiveBatch] Ignoring historical batch override "${explicit}" ` +
-      `for company ${companyId}: batch not found or not manual GL.`,
+      `[ManualGL][ActiveBatch] Ignoring historical batch/version override "${explicit}" ` +
+      `for company ${companyId}: not found or not manual GL.`,
     );
   } else if (explicit && !allowExplicitBatch) {
     console.info(
       `[ManualGL][ActiveBatch] Ignoring requested batch "${explicit}" for company ${companyId}; ` +
       "active batch mode enforced.",
     );
+  }
+
+  if (hasDatasetVersion) {
+    let { data, error } = await supabase
+      .from(TABLE_BATCHES)
+      .select("id, source_type, dataset_version, created_at")
+      .eq("company_id", companyId)
+      .eq("dataset_version", datasetVersion)
+      .order("created_at", { ascending: false })
+      .limit(50);
+
+    if (error && isMissingColumnError(error, "source_type")) {
+      ({ data, error } = await supabase
+        .from(TABLE_BATCHES)
+        .select("id, dataset_version, created_at")
+        .eq("company_id", companyId)
+        .eq("dataset_version", datasetVersion)
+        .order("created_at", { ascending: false })
+        .limit(50));
+    }
+
+    if (error && isMissingColumnError(error, "dataset_version")) {
+      console.warn(
+        `[ManualGL][ActiveBatch] dataset_version column missing; cannot resolve dataset version ` +
+        `${datasetVersion} for company ${companyId}.`,
+      );
+    } else if (error && error.code !== "PGRST116") {
+      throw new Error(formatSupabaseFailure("Failed to resolve report batch by dataset version", error));
+    } else {
+      const rows = Array.isArray(data) ? data : (data ? [data] : []);
+      const matched = rows.find((row) => isManualBatchSource(row?.source_type));
+      const resolved = matched || rows[0] || null;
+      if (resolved?.id) {
+        console.log(
+          `[ManualGL][ActiveBatch] Resolved dataset_version=${datasetVersion} to batch=${resolved.id} ` +
+          `for company=${companyId}`,
+        );
+        return resolved.id;
+      }
+      console.warn(
+        `[ManualGL][ActiveBatch] No batch found for dataset_version=${datasetVersion} company=${companyId}.`,
+      );
+    }
   }
 
   const active = await getActiveUploadBatch(companyId);
@@ -204,8 +295,9 @@ async function listUploadBatches(companyId, limit = 100) {
     .from(TABLE_BATCHES)
     .select("*")
     .eq("company_id", companyId)
+    .in("status", ["staged", "active"])
     .order("created_at", { ascending: false })
-    .limit(Math.max(limit * 2, limit));
+    .limit(limit);
 
   if (error && isMissingColumnError(error, "source_type")) {
     ({ data, error } = await supabase
@@ -223,6 +315,139 @@ async function listUploadBatches(companyId, limit = 100) {
   const rows = Array.isArray(data) ? data : [];
   const filtered = rows.filter((row) => isManualBatchSource(row?.source_type));
   return filtered.slice(0, limit).map(mapBatchRow);
+}
+
+/**
+ * Lists dataset versions specifically for Manual GL reporting.
+ * Ensures that if multiple versions point to the same batch (rare), 
+ * we only show unique entries.
+ */
+async function listManualGlDatasetVersions(companyId, limit = 50) {
+  if (!companyId) return [];
+
+  const fetchLimit = Math.max(limit * 10, limit);
+  const { data, error } = await supabase
+    .from("manual_gl_upload_sessions")
+    .select(`
+      id,
+      version_no,
+      fiscal_year,
+      is_active,
+      status,
+      created_at,
+      data_hash,
+      staging_batch_id
+    `)
+    .eq("company_id", companyId)
+    .order("created_at", { ascending: false })
+    .limit(fetchLimit);
+
+  if (error) {
+    console.error("[ManualGL][ActiveBatch] Failed to list dataset versions:", error.message);
+    return [];
+  }
+
+  const stagedRows = (Array.isArray(data) ? data : []).filter((row) =>
+    isStagedSessionStatus(row?.status),
+  );
+
+  const batchIds = Array.from(
+    new Set(
+      stagedRows
+        .map((row) => toText(row?.staging_batch_id))
+        .filter(Boolean),
+    ),
+  );
+
+  const batchMap = new Map();
+  if (batchIds.length > 0) {
+    const { data: batchRows, error: batchError } = await supabase
+      .from(TABLE_BATCHES)
+      .select("id, dataset_version, is_active, batch_status, status, created_at, source_type")
+      .in("id", batchIds);
+
+    if (batchError) {
+      console.warn("[ManualGL][ActiveBatch] Failed to hydrate batch metadata for versions:", batchError.message);
+    } else {
+      (Array.isArray(batchRows) ? batchRows : [])
+        .filter((row) => isManualBatchSource(row?.source_type))
+        .forEach((row) => {
+          batchMap.set(row.id, mapBatchRow(row));
+        });
+    }
+  }
+
+  const grouped = new Map();
+  stagedRows.forEach((row) => {
+    const key = toText(row?.staging_batch_id || row?.id);
+    if (!key) return;
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(row);
+  });
+
+  const versions = Array.from(grouped.entries())
+    .map(([groupKey, rows]) => {
+      const sortedRows = rows
+        .slice()
+        .sort((left, right) => new Date(right?.created_at || 0) - new Date(left?.created_at || 0));
+      const representative = sortedRows[0] || null;
+      if (!representative) return null;
+
+      const batchId = toText(representative.staging_batch_id || "");
+      const batch = batchId ? batchMap.get(batchId) : null;
+      const fiscalYears = Array.from(
+        new Set(
+          sortedRows
+            .map((item) => Number(item?.fiscal_year || 0))
+            .filter((year) => Number.isInteger(year) && year > 0),
+        ),
+      ).sort((a, b) => b - a);
+
+      const versionNumberFromBatch = Number(batch?.dataset_version || 0);
+      const versionNumberFromSession = Number(representative?.version_no || 0);
+      const versionNumber =
+        Number.isInteger(versionNumberFromBatch) && versionNumberFromBatch > 0
+          ? versionNumberFromBatch
+          : Number.isInteger(versionNumberFromSession) && versionNumberFromSession > 0
+            ? versionNumberFromSession
+            : null;
+
+      const createdAt = batch?.created_at || representative?.created_at || null;
+      const isActive = Boolean(batch?.is_active) || sortedRows.some((item) => item?.is_active === true);
+      const status = batch?.batch_status || batch?.status || representative?.status || "staged";
+
+      return {
+        id: batchId || groupKey,
+        version_number: versionNumber,
+        version_no: representative?.version_no || null,
+        fiscal_year: fiscalYears[0] || null,
+        fiscal_years: fiscalYears,
+        is_active: isActive,
+        status,
+        created_at: createdAt,
+        data_hash: representative?.data_hash || null,
+        batch_id: batchId || null,
+        upload_session_id: representative?.id || null,
+        versionNumber,
+        fiscalYear: fiscalYears[0] || null,
+        fiscalYears,
+        isActive,
+        createdAt,
+        dataHash: representative?.data_hash || null,
+        batchId: batchId || null,
+        uploadSessionId: representative?.id || null,
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => new Date(right?.created_at || 0) - new Date(left?.created_at || 0))
+    .slice(0, limit);
+
+  console.log(
+    `[ManualGL][ActiveBatch] listManualGlDatasetVersions company=${companyId} ` +
+    `rows=${stagedRows.length} versions=${versions.length}`,
+  );
+
+  return versions;
 }
 
 async function patchUploadBatch(batchId, patch = {}) {
@@ -360,10 +585,10 @@ async function computeUploadChecksum(companyId, batchId) {
   while (true) {
     const { data, error } = await supabase
       .from(TABLE_TRANSACTIONS)
-      .select("transaction_hash")
+      .select("fiscal_year, txn_date, account_number, account_name, debit, credit, net_amount, class, department, location, transaction_type, journal_type, reference, description")
       .eq("company_id", companyId)
       .eq(batchColumn, batchId)
-      .order("transaction_hash", { ascending: true })
+      .order("id", { ascending: true })
       .range(offset, offset + pageSize - 1);
 
     if (error && batchColumn === "upload_batch_id" && isMissingColumnError(error, "upload_batch_id")) {
@@ -379,9 +604,9 @@ async function computeUploadChecksum(companyId, batchId) {
     if (!rows.length) break;
 
     rows.forEach((row) => {
-      const hash = toText(row?.transaction_hash);
-      if (!hash) return;
-      digest.update(hash);
+      const fingerprint = buildCanonicalTransactionFingerprint(row);
+      if (!fingerprint) return;
+      digest.update(fingerprint);
       digest.update("|");
       rowCount += 1;
     });
@@ -438,6 +663,7 @@ module.exports = {
   getUploadBatchById,
   resolveReportBatchId,
   listUploadBatches,
+  listManualGlDatasetVersions,
   patchUploadBatch,
   activateUploadBatch,
   findActiveBatchByChecksum,

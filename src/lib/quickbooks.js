@@ -133,9 +133,9 @@ export function fetchBalanceSheet(params = {}) {
   return request(`/balance-sheet${query ? `?${query}` : ""}`);
 }
 
-export function fetchProfitAndLoss(params = {}) {
+export function fetchProfitAndLoss(params = {}, options = {}) {
   const query = new URLSearchParams(params).toString();
-  return request(`/profit-and-loss-statement${query ? `?${query}` : ""}`);
+  return request(`/profit-and-loss-statement${query ? `?${query}` : ""}`, options);
 }
 
 export function fetchCashflow(params = {}) {

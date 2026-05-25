@@ -5,13 +5,13 @@ const router = express.Router();
 
 router.get("/profit-and-loss-statement", async (req, res) => {
   const clientId = req.clientId;
-  const { start_date, end_date, accounting_method } = req.query;
+  const { start_date, end_date, accounting_method, summarize_columns_by } = req.query;
 
   try {
     const cached = await serveCachedReport(
       clientId,
       REPORT_TYPES.PROFIT_AND_LOSS,
-      { start_date, end_date, accounting_method },
+      { start_date, end_date, accounting_method, summarize_columns_by },
       { disconnected: Boolean(req.qbDisconnected) },
     );
 
