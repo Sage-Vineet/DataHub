@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
-import { X } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { AlertTriangle, Loader2, X } from 'lucide-react';
 
 const CATEGORY_OPTIONS = ['Finance', 'Legal', 'Compliance', 'HR', 'Tax', 'M&A', 'Other'];
 const REQUEST_TYPES = ['Document', 'Information'];
@@ -32,6 +32,9 @@ export default function NewRequestModal({
   const [form, setForm] = useState(DEFAULT_FORM);
   const [errors, setErrors] = useState({});
   const [mode, setMode] = useState('single');
+  const [submitting, setSubmitting] = useState(false);
+  const mountedRef = useRef(true);
+  useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
   const options = useMemo(() => (
     folderOptions.length
       ? folderOptions.map((opt) => (typeof opt === 'string' ? opt : opt.name)).filter(Boolean)
@@ -44,6 +47,7 @@ export default function NewRequestModal({
     setForm({ ...DEFAULT_FORM, category: initialCategory });
     setErrors({});
     setMode('single');
+    setSubmitting(false);
   }, [isOpen, options]);
 
   useEffect(() => {
@@ -64,8 +68,10 @@ export default function NewRequestModal({
 
   if (!isOpen) return null;
 
-  const submit = (e) => {
+  const submit = async (e) => {
     e.preventDefault();
+    if (submitting) return;
+
     const nextErrors = {};
     if (form.requestType !== 'Information' && !form.category) nextErrors.category = 'Folder is required';
     if (!form.name.trim()) {
@@ -80,7 +86,13 @@ export default function NewRequestModal({
     if (form.dueDate && form.dueDate < minDueDate) nextErrors.dueDate = 'Select a future due date.';
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) return;
-    onCreate?.(form);
+
+    setSubmitting(true);
+    try {
+      await onCreate?.(form);
+    } finally {
+      if (mountedRef.current) setSubmitting(false);
+    }
   };
 
   return (
@@ -194,9 +206,13 @@ export default function NewRequestModal({
               <select
                 value={form.priority}
                 onChange={(e) => setForm(s => ({ ...s, priority: e.target.value }))}
-                className={`w-full px-3 py-2.5 rounded-xl border text-sm ${errors.priority ? 'border-red-400' : 'border-gray-200'}`}
+                className={`w-full px-3 py-2.5 rounded-xl border text-sm font-semibold ${
+                  errors.priority ? 'border-red-400' :
+                  form.priority === 'critical' ? 'border-red-500 bg-red-50 text-red-700' :
+                  'border-gray-200'
+                }`}
               >
-                <option value="critical">Critical</option>
+                <option value="critical">🔴 Critical</option>
                 <option value="high">High</option>
                 <option value="medium">Medium</option>
                 <option value="low">Low</option>
@@ -204,6 +220,18 @@ export default function NewRequestModal({
               {errors.priority && <p className="text-xs text-red-500">{errors.priority}</p>}
             </div>
           </div>
+
+          {form.priority === 'critical' && (
+            <div className="flex items-start gap-3 rounded-xl border border-red-300 bg-red-50 px-4 py-3">
+              <AlertTriangle size={16} className="mt-0.5 flex-shrink-0 text-red-600" />
+              <div className="space-y-0.5">
+                <p className="text-sm font-bold text-red-700">Critical Priority — Immediate Notification</p>
+                <p className="text-xs text-red-600">
+                  On submission, an immediate reminder will be sent to the client and daily follow-ups will continue until the request is fulfilled. Use only for urgent, time-sensitive documents.
+                </p>
+              </div>
+            </div>
+          )}
 
           <div className="space-y-1.5">
             <label className="text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Due Date *</label>
@@ -223,10 +251,10 @@ export default function NewRequestModal({
             <p className="text-xs font-semibold text-[#6D6E71] uppercase tracking-wide mb-3">Priority-Based Notification Logic</p>
             {form.priority === 'critical' && (
               <div className="flex items-start gap-2 text-xs text-[#6D6E71]">
-                <span className="mt-0.5 px-2 py-0.5 rounded-full bg-red-100 text-red-700 text-[10px] font-bold">Critical</span>
+                <span className="mt-0.5 px-2 py-0.5 rounded-full bg-red-600 text-white text-[10px] font-bold">Critical</span>
                 <div>
-                  <p className="font-semibold text-[#050505]">Send immediate reminder, then daily follow-ups</p>
-                  <p>Highest urgency for broker and client tracking</p>
+                  <p className="font-semibold text-[#050505]">Immediate notification + daily follow-ups</p>
+                  <p>Client is notified instantly upon request creation. Reminders repeat every day until fulfilled.</p>
                 </div>
               </div>
             )}
@@ -263,15 +291,18 @@ export default function NewRequestModal({
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-[#6D6E71] hover:bg-gray-50"
+              disabled={submitting}
+              className="px-4 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-[#6D6E71] hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               Cancel
             </button>
             <button
               type="submit"
-              className="px-5 py-2.5 rounded-xl bg-[#8BC53D] text-white text-sm font-semibold hover:bg-[#476E2C]"
+              disabled={submitting}
+              className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#8BC53D] text-white text-sm font-semibold hover:bg-[#476E2C] disabled:opacity-70 disabled:cursor-not-allowed"
             >
-              Submit
+              {submitting && <Loader2 size={15} className="animate-spin" />}
+              {submitting ? 'Submitting…' : 'Submit'}
             </button>
           </div>
             </>
