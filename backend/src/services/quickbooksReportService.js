@@ -212,9 +212,13 @@ function buildSyncTasks(options = {}) {
   ];
 
   const yearlyTasks = yearly.flatMap((range) => {
+    // Use YYYY-12-31 as the canonical end date for yearly snapshots so that
+    // full-year frontend requests (?end_date=YYYY-12-31) can find them via
+    // exact params match. QB returns data up to today for future end dates.
+    const yearEnd = `${range.fiscalYear}-12-31`;
     const periodParams = {
       start_date: range.start,
-      end_date: range.end,
+      end_date: yearEnd,
       accounting_method: options.accountingMethod || "Accrual",
     };
 
@@ -225,7 +229,7 @@ function buildSyncTasks(options = {}) {
         qbName: "ProfitAndLoss",
         params: periodParams,
         periodStart: range.start,
-        periodEnd: range.end,
+        periodEnd: yearEnd,
         fiscalYear: range.fiscalYear,
       },
       {
@@ -234,7 +238,7 @@ function buildSyncTasks(options = {}) {
         qbName: "ProfitAndLossDetail",
         params: periodParams,
         periodStart: range.start,
-        periodEnd: range.end,
+        periodEnd: yearEnd,
         fiscalYear: range.fiscalYear,
       },
       {
@@ -243,10 +247,10 @@ function buildSyncTasks(options = {}) {
         qbName: "BalanceSheet",
         params: {
           ...periodParams,
-          as_of_date: range.end,
+          as_of_date: yearEnd,
         },
         periodStart: range.start,
-        periodEnd: range.end,
+        periodEnd: yearEnd,
         fiscalYear: range.fiscalYear,
       },
       {
@@ -256,10 +260,10 @@ function buildSyncTasks(options = {}) {
         params: {
           ...periodParams,
           summarize_column_by: "Total",
-          as_of_date: range.end,
+          as_of_date: yearEnd,
         },
         periodStart: range.start,
-        periodEnd: range.end,
+        periodEnd: yearEnd,
         fiscalYear: range.fiscalYear,
       },
       {
@@ -268,7 +272,7 @@ function buildSyncTasks(options = {}) {
         qbName: "CashFlow",
         params: periodParams,
         periodStart: range.start,
-        periodEnd: range.end,
+        periodEnd: yearEnd,
         fiscalYear: range.fiscalYear,
       },
       {
@@ -277,27 +281,79 @@ function buildSyncTasks(options = {}) {
         qbName: "GeneralLedger",
         params: periodParams,
         periodStart: range.start,
-        periodEnd: range.end,
+        periodEnd: yearEnd,
         fiscalYear: range.fiscalYear,
       },
     ];
   });
 
-  const monthlyTrendTasks = monthly.map((range) => ({
-    type: REPORT_TYPES.PROFIT_AND_LOSS,
-    mode: "report",
-    qbName: "ProfitAndLoss",
-    params: {
-      start_date: range.start,
-      end_date: range.end,
-      accounting_method: options.accountingMethod || "Accrual",
+  // Store both Accrual and default (Cash) monthly P&L snapshots.
+  // The frontend requests without accounting_method; the Cash snapshot gives
+  // an exact params match after sync, while Accrual is kept for completeness.
+  const monthlyTrendTasks = monthly.flatMap((range) => [
+    {
+      type: REPORT_TYPES.PROFIT_AND_LOSS,
+      mode: "report",
+      qbName: "ProfitAndLoss",
+      params: {
+        start_date: range.start,
+        end_date: range.end,
+        accounting_method: options.accountingMethod || "Accrual",
+      },
+      periodStart: range.start,
+      periodEnd: range.end,
+      fiscalYear: range.fiscalYear,
     },
-    periodStart: range.start,
-    periodEnd: range.end,
-    fiscalYear: range.fiscalYear,
-  }));
+    {
+      type: REPORT_TYPES.PROFIT_AND_LOSS,
+      mode: "report",
+      qbName: "ProfitAndLoss",
+      params: {
+        start_date: range.start,
+        end_date: range.end,
+      },
+      periodStart: range.start,
+      periodEnd: range.end,
+      fiscalYear: range.fiscalYear,
+    },
+  ]);
 
-  return [...baseTasks, ...yearlyTasks, ...monthlyTrendTasks];
+  // Full-year multi-column P&L snapshots for the Financial Trends chart.
+  // Always uses Dec 31 as end_date so params exactly match the frontend's full-year request.
+  // QB returns Month/Quarter columns for each period; future months will have 0 values.
+  const trendColumnTasks = yearly.flatMap((range) => {
+    const yearEnd = `${range.fiscalYear}-12-31`;
+    return [
+      {
+        type: REPORT_TYPES.PROFIT_AND_LOSS,
+        mode: "report",
+        qbName: "ProfitAndLoss",
+        params: {
+          start_date: range.start,
+          end_date: yearEnd,
+          summarize_columns_by: "Month",
+        },
+        periodStart: range.start,
+        periodEnd: yearEnd,
+        fiscalYear: range.fiscalYear,
+      },
+      {
+        type: REPORT_TYPES.PROFIT_AND_LOSS,
+        mode: "report",
+        qbName: "ProfitAndLoss",
+        params: {
+          start_date: range.start,
+          end_date: yearEnd,
+          summarize_columns_by: "Quarter",
+        },
+        periodStart: range.start,
+        periodEnd: yearEnd,
+        fiscalYear: range.fiscalYear,
+      },
+    ];
+  });
+
+  return [...baseTasks, ...yearlyTasks, ...trendColumnTasks, ...monthlyTrendTasks];
 }
 
 async function fetchWithTokenRetry(clientId, url, params = {}) {
@@ -496,28 +552,85 @@ async function serveCachedReport(clientId, reportType, queryParams = {}, options
   const syncSource = options.syncSource || DEFAULT_SYNC_SOURCE;
   const activeDataset = await getLatestFinalizedDataset(clientId, syncSource);
 
+  const periodStart = queryParams.start_date || null;
+  const periodEnd = queryParams.end_date || null;
+  const hasPeriod = Boolean(periodStart || periodEnd);
+  const datasetVersion = activeDataset?.dataset_version || null;
+
+  // Step 1: exact params match. When a specific period is requested, skip the unconstrained
+  // fallback so a mismatched snapshot (e.g. YTD) is never returned for a monthly request.
   const cached = await getCachedReport({
     companyId: clientId,
     reportType,
     reportParams: sanitizeReportParams(queryParams),
-    datasetVersion: activeDataset?.dataset_version || null,
+    datasetVersion,
     syncSource,
     includeInactive: false,
+    periodStart,
+    periodEnd,
+    skipUnconstrained: hasPeriod,
   });
+  if (cached) return buildSnapshotResult(cached, options.disconnected === true);
 
-  if (cached) {
-    return buildSnapshotResult(cached, options.disconnected === true);
+  // Step 2: Accrual params fallback — sync tasks store yearly and monthly P&L snapshots with
+  // accounting_method: "Accrual" embedded in their params. When the caller doesn't specify an
+  // accounting_method (e.g. the monthly chart or full-year KPI), we retry with Accrual so those
+  // snapshots are found by exact params match instead of falling to an unconstrained result.
+  if (!queryParams.accounting_method && hasPeriod) {
+    const accrualCached = await getCachedReport({
+      companyId: clientId,
+      reportType,
+      reportParams: sanitizeReportParams({ ...queryParams, accounting_method: "Accrual" }),
+      datasetVersion,
+      syncSource,
+      includeInactive: false,
+      skipUnconstrained: true,
+    });
+    if (accrualCached) return buildSnapshotResult(accrualCached, options.disconnected === true);
+
+    // Also try without summarize_columns_by — individual monthly Accrual snapshots were synced
+    // without it and can serve as fallback for single-period requests (e.g. single-month view).
+    if (queryParams.summarize_columns_by) {
+      const { summarize_columns_by: _scb, ...baseParams } = queryParams;
+      const accrualBaseCached = await getCachedReport({
+        companyId: clientId,
+        reportType,
+        reportParams: sanitizeReportParams({ ...baseParams, accounting_method: "Accrual" }),
+        datasetVersion,
+        syncSource,
+        includeInactive: false,
+        skipUnconstrained: true,
+      });
+      if (accrualBaseCached) return buildSnapshotResult(accrualBaseCached, options.disconnected === true);
+    }
+
+    // Also try inactive Accrual snapshots (e.g. after a dataset rollover)
+    const inactiveAccrual = await getCachedReport({
+      companyId: clientId,
+      reportType,
+      reportParams: sanitizeReportParams({ ...queryParams, accounting_method: "Accrual" }),
+      syncSource,
+      includeInactive: true,
+      skipUnconstrained: true,
+    });
+    if (inactiveAccrual) return buildSnapshotResult(inactiveAccrual, options.disconnected === true);
   }
 
-  const fallback = await getCachedReport({
-    companyId: clientId,
-    reportType,
-    reportParams: sanitizeReportParams(queryParams),
-    syncSource,
-    includeInactive: true,
-  });
+  // Step 3: unconstrained fallback — only for requests without a specific period (e.g. base
+  // P&L, balance sheet). Period-specific requests return null so the caller gets a clean 404
+  // instead of data from the wrong date range.
+  if (!hasPeriod) {
+    const fallback = await getCachedReport({
+      companyId: clientId,
+      reportType,
+      reportParams: sanitizeReportParams(queryParams),
+      syncSource,
+      includeInactive: true,
+    });
+    return fallback ? buildSnapshotResult(fallback, options.disconnected === true) : null;
+  }
 
-  return fallback ? buildSnapshotResult(fallback, options.disconnected === true) : null;
+  return null;
 }
 
 async function fetchAndCacheReport(clientId, reportType, _qbReportName, queryParams = {}) {

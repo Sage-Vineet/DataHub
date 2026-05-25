@@ -74,7 +74,16 @@ router.get("/all-reports", async (req, res) => {
     accounting_method,
   };
 
+  const disconnected = Boolean(req.qbDisconnected);
+
   try {
+    // Balance sheet is fetched with a two-step fallback: period-specific first,
+    // then latest available (no monthly BS snapshots are stored during sync).
+    const balanceSheetFetch =
+      serveCachedReport(clientId, REPORT_TYPES.BALANCE_SHEET, queryParams, { disconnected })
+        .then((r) => r || serveCachedReport(clientId, REPORT_TYPES.BALANCE_SHEET, {}, { disconnected }))
+        .catch(() => null);
+
     const [
       accountList,
       agedPayableDetail,
@@ -84,13 +93,13 @@ router.get("/all-reports", async (req, res) => {
       generalLedger,
       trialBalance,
     ] = await Promise.all([
-      serveCachedReport(clientId, REPORT_TYPES.ACCOUNT_LIST, {}, { disconnected: Boolean(req.qbDisconnected) }),
-      serveCachedReport(clientId, REPORT_TYPES.AGED_PAYABLE_DETAIL, queryParams, { disconnected: Boolean(req.qbDisconnected) }),
-      serveCachedReport(clientId, REPORT_TYPES.AGED_RECEIVABLE_DETAIL, queryParams, { disconnected: Boolean(req.qbDisconnected) }),
-      serveCachedReport(clientId, REPORT_TYPES.BALANCE_SHEET, queryParams, { disconnected: Boolean(req.qbDisconnected) }),
-      serveCachedReport(clientId, REPORT_TYPES.CASH_SALES, queryParams, { disconnected: Boolean(req.qbDisconnected) }),
-      serveCachedReport(clientId, REPORT_TYPES.GENERAL_LEDGER, queryParams, { disconnected: Boolean(req.qbDisconnected) }),
-      serveCachedReport(clientId, REPORT_TYPES.TRIAL_BALANCE, queryParams, { disconnected: Boolean(req.qbDisconnected) }),
+      serveCachedReport(clientId, REPORT_TYPES.ACCOUNT_LIST, {}, { disconnected }),
+      serveCachedReport(clientId, REPORT_TYPES.AGED_PAYABLE_DETAIL, queryParams, { disconnected }),
+      serveCachedReport(clientId, REPORT_TYPES.AGED_RECEIVABLE_DETAIL, queryParams, { disconnected }),
+      balanceSheetFetch,
+      serveCachedReport(clientId, REPORT_TYPES.CASH_SALES, queryParams, { disconnected }),
+      serveCachedReport(clientId, REPORT_TYPES.GENERAL_LEDGER, queryParams, { disconnected }),
+      serveCachedReport(clientId, REPORT_TYPES.TRIAL_BALANCE, queryParams, { disconnected }),
     ]);
 
     const lastSyncAt =

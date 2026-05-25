@@ -276,6 +276,16 @@ export default function WorkspaceDashboardDatahub() {
     return dynamicStats.filter((stat) => selectedKpiLabels.includes(stat.label));
   }, [dynamicStats, selectedKpiLabels]);
 
+  // Strip trailing months with no data so future months don't render as empty slots.
+  const displayChartData = useMemo(() => {
+    if (!chartDataState.length) return chartDataState;
+    let last = chartDataState.length - 1;
+    while (last >= 0 && chartDataState[last].revenue === 0 && chartDataState[last].expenses === 0) {
+      last -= 1;
+    }
+    return chartDataState.slice(0, last + 1);
+  }, [chartDataState]);
+
   const activeSourceMode = useMemo(
     () => getReportSourceMode(activeSourceKey),
     [activeSourceKey],
@@ -1518,10 +1528,14 @@ export default function WorkspaceDashboardDatahub() {
             </div>
 
             <div className="h-[300px] w-full mt-auto">
-              {isClient && !isChartLoading && chartDataState.length > 0 ? (
-                <ResponsiveContainer width="100%" height="100%">
+              {isClient && !isChartLoading && displayChartData.length > 0 ? (
+                <ResponsiveContainer
+                  key={`${activeSourceKey}-${chartSelectedYear}-${aggregationType}`}
+                  width="100%"
+                  height="100%"
+                >
                   <BarChart
-                    data={chartDataState}
+                    data={displayChartData}
                     margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
                   >
                     <CartesianGrid
@@ -1541,19 +1555,19 @@ export default function WorkspaceDashboardDatahub() {
                       dy={10}
                       angle={
                         aggregationType === "monthly" &&
-                          chartDataState.length > 6
+                          displayChartData.length > 6
                           ? -45
                           : 0
                       }
                       textAnchor={
                         aggregationType === "monthly" &&
-                          chartDataState.length > 6
+                          displayChartData.length > 6
                           ? "end"
                           : "middle"
                       }
                       height={
                         aggregationType === "monthly" &&
-                          chartDataState.length > 6
+                          displayChartData.length > 6
                           ? 60
                           : 30
                       }
@@ -1621,7 +1635,9 @@ export default function WorkspaceDashboardDatahub() {
                     <span className="ml-2 text-text-muted">
                       {isChartLoading
                         ? "Loading chart data..."
-                        : "No data available"}
+                        : activeSourceMode === "quickbooks"
+                          ? "No P&L data found — sync QuickBooks to populate trends"
+                          : "No data available"}
                     </span>
                   </div>
                 </div>

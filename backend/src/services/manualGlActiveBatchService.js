@@ -86,6 +86,25 @@ function mapBatchRow(row) {
   };
 }
 
+function buildCanonicalTransactionFingerprint(row = {}) {
+  return [
+    String(row.fiscal_year || ""),
+    String(row.txn_date || ""),
+    String(row.account_number || ""),
+    String(row.account_name || ""),
+    Number(row.debit || 0).toFixed(2),
+    Number(row.credit || 0).toFixed(2),
+    Number(row.net_amount || 0).toFixed(2),
+    String(row.class || ""),
+    String(row.department || ""),
+    String(row.location || ""),
+    String(row.transaction_type || ""),
+    String(row.journal_type || ""),
+    String(row.reference || ""),
+    String(row.description || ""),
+  ].join("|").toLowerCase();
+}
+
 function shouldAllowExplicitBatch(options = {}) {
   if (!options || typeof options !== "object") return false;
   if (options.allowExplicitBatch === true) return true;
@@ -360,10 +379,10 @@ async function computeUploadChecksum(companyId, batchId) {
   while (true) {
     const { data, error } = await supabase
       .from(TABLE_TRANSACTIONS)
-      .select("transaction_hash")
+      .select("fiscal_year, txn_date, account_number, account_name, debit, credit, net_amount, class, department, location, transaction_type, journal_type, reference, description")
       .eq("company_id", companyId)
       .eq(batchColumn, batchId)
-      .order("transaction_hash", { ascending: true })
+      .order("id", { ascending: true })
       .range(offset, offset + pageSize - 1);
 
     if (error && batchColumn === "upload_batch_id" && isMissingColumnError(error, "upload_batch_id")) {
@@ -379,9 +398,9 @@ async function computeUploadChecksum(companyId, batchId) {
     if (!rows.length) break;
 
     rows.forEach((row) => {
-      const hash = toText(row?.transaction_hash);
-      if (!hash) return;
-      digest.update(hash);
+      const fingerprint = buildCanonicalTransactionFingerprint(row);
+      if (!fingerprint) return;
+      digest.update(fingerprint);
       digest.update("|");
       rowCount += 1;
     });

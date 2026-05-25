@@ -357,6 +357,23 @@ export default function ManualGLUpload({
         pct: sourceMode === "manual" ? 50 : 20,
       }));
       const staged = await stageMultiYearManualGl(stagePayload, { clientId: companyId });
+      if (staged?.blockedAsDuplicate || (staged?.success === false && staged?.noChangesDetected)) {
+        setPendingStageRequest(stagePayload);
+        setStageResult(staged);
+        setBalanceSheetValidation(null);
+        setValidationErrors([]);
+        showToast({
+          type: "info",
+          title: "No changes detected",
+          message: staged.message || "The selected GL data is already staged for this company and fiscal year.",
+        });
+        setStagingProgress({ isActive: true, stage: "complete", message: "No changes detected.", pct: 100, error: null });
+        progressCloseTimer.current = setTimeout(() => {
+          setStagingProgress(PROGRESS_IDLE);
+          setStep(3);
+        }, 1200);
+        return;
+      }
       setStagingProgress((prev) => ({ ...prev, pct: 82, message: "Validating data…" }));
 
       setStagingProgress((prev) => ({ ...prev, stage: "validate", message: "Validating balance sheet…", pct: 88 }));
@@ -537,6 +554,20 @@ export default function ManualGLUpload({
       };
 
       const staged = await stageMultiYearManualGl(payload, { clientId: companyId });
+      if (staged?.blockedAsDuplicate || (staged?.success === false && staged?.noChangesDetected)) {
+        setStageResult(staged);
+        setBalanceSheetValidation(null);
+        setPendingStageRequest(payload);
+        showToast({
+          type: "info",
+          title: "No changes detected",
+          message: staged.message || "The selected GL data is already staged for this company and fiscal year.",
+        });
+        setStagingProgress({ isActive: true, stage: "complete", message: "No changes detected.", pct: 100, error: null });
+        progressCloseTimer.current = setTimeout(() => setStagingProgress(PROGRESS_IDLE), 1200);
+        setStep(3);
+        return;
+      }
       setStagingProgress((prev) => ({ ...prev, pct: 75, message: "Validating data…" }));
 
       setStagingProgress((prev) => ({ ...prev, stage: "validate", message: "Validating balance sheet…", pct: 85 }));

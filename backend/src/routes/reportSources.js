@@ -5,6 +5,7 @@ const {
 } = require("../services/reportSourceStore");
 const dataSourceService = require("../services/dataSourceService");
 const { canAccessCompany } = require("../services/permissionService");
+const { normalizeError, isConnectionError } = require("../utils/dbErrorHandler");
 
 const router = express.Router();
 
@@ -53,13 +54,18 @@ router.get("/report-sources", async (req, res) => {
       lastSourceSwitchAt: state.lastSourceSwitchAt || null,
     });
   } catch (error) {
+    const normalizedError = normalizeError(error);
+    const statusCode = isConnectionError(normalizedError) ? 503 : 500;
+    
     console.error("[ReportSources] GET /report-sources failed", {
-      error: error.message,
-      stack: error.stack,
+      error: normalizedError.message,
+      isConnectionError: isConnectionError(normalizedError),
+      statusCode,
     });
-    return res.status(500).json({
+    
+    return res.status(statusCode).json({
       success: false,
-      error: error.message || "Failed to load report sources.",
+      error: normalizedError.message || "Failed to load report sources.",
     });
   }
 });

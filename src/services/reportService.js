@@ -142,9 +142,17 @@ function unwrapReportPayload(payload) {
 
     if (current?.Rows?.Row) return current;
 
-    if (current?.data && typeof current.data === "object") {
-      current = current.data;
+    const d = current?.data;
+    if (d && typeof d === "object") {
+      current = d;
       continue;
+    }
+    // Handle double-serialized JSON stored as a string in the DB
+    if (d && typeof d === "string") {
+      try {
+        const parsed = JSON.parse(d);
+        if (parsed && typeof parsed === "object") { current = parsed; continue; }
+      } catch { /* not valid JSON */ }
     }
 
     break;
@@ -270,22 +278,28 @@ function extractProfitAndLossTotals(payload) {
       "Total Income",
       "Total Revenue",
       "Total Income and Other Income",
+      "Total Gross Profit",
     ]) ??
+    findValueByGroup(payload, ["Income", "GrossProfit", "OtherIncome"]) ??
     findValueByLabel(payload, [
       "total income",
       "total revenue",
       "income and other income",
+      "gross profit",
     ]);
   const expenses =
-    findValueByExactLabel(payload, ["Total Expenses"]) ??
-    findValueByLabel(payload, ["total expenses"]);
+    findValueByExactLabel(payload, ["Total Expenses", "Total Operating Expenses"]) ??
+    findValueByGroup(payload, ["Expenses", "OtherExpenses"]) ??
+    findValueByLabel(payload, ["total expenses", "total operating expenses"]);
   const netProfit =
     findValueByExactLabel(payload, [
       "Net Income",
       "Net Profit",
       "Net Operating Income",
+      "Net Earnings",
     ]) ??
-    findValueByLabel(payload, ["net income", "net profit", "net operating income"]);
+    findValueByGroup(payload, ["NetIncome"]) ??
+    findValueByLabel(payload, ["net income", "net profit", "net operating income", "net earnings"]);
 
   const safeRevenue = revenue ?? 0;
   const safeExpenses = expenses ?? 0;
@@ -1066,6 +1080,63 @@ export async function fetchDashboardKPIsFromManualUpload() {
   return cards.map((card) => ({ ...card, rawValue: Number(card.rawValue || 0) }));
 }
 
+function extractMultiColumnTrends(payload, buckets) {
+  const qbReport = unwrapReportPayload(payload);
+
+  // Identify period columns: money columns whose title is NOT "total"
+  const allCols = qbReport?.Columns?.Column || payload?.Columns?.Column || [];
+  const periodCols = allCols
+    .filter((c) => c.ColType === "Money")
+    .filter((c) => !/^total$/i.test((c.ColTitle || "").trim()));
+  const nCols = periodCols.length;
+
+  if (nCols === 0) {
+    // Single-column (Total) fallback — extract aggregate and assign to first bucket
+    const totals = extractProfitAndLossTotals(payload);
+    return buckets.map((bucket, idx) => ({
+      name: bucket.shortName ?? bucket.name,
+      fullLabel: bucket.fullLabel ?? bucket.name,
+      revenue: idx === 0 ? totals.revenue : 0,
+      expenses: idx === 0 ? totals.expenses : 0,
+    }));
+  }
+
+  const revenues = new Array(nCols).fill(0);
+  const expenses = new Array(nCols).fill(0);
+
+  // Walk top-level report rows to find Income / Expenses section summaries
+  for (const row of getRows(qbReport)) {
+    const group = (row?.group || "").toLowerCase();
+    const label = normalizeLabel(getRowLabel(row));
+    // ColData layout: [label, period_1, period_2, ..., period_N, Total]
+    const colData = row?.Summary?.ColData || row?.ColData || [];
+    const vals = colData.slice(1, nCols + 1).map((d) => parseNumeric(d?.value) ?? 0);
+
+    if (
+      group === "income" || group === "grossprofit" ||
+      label === "total income" || label === "total revenue" ||
+      (label.startsWith("total") && label.includes("income"))
+    ) {
+      for (let i = 0; i < nCols; i++) revenues[i] = vals[i] ?? 0;
+    }
+
+    if (
+      group === "expenses" || group === "otherexpenses" ||
+      label === "total expenses" || label === "total operating expenses" ||
+      (label.startsWith("total") && label.includes("expense"))
+    ) {
+      for (let i = 0; i < nCols; i++) expenses[i] += vals[i] ?? 0;
+    }
+  }
+
+  return buckets.map((bucket, idx) => ({
+    name: bucket.shortName ?? bucket.name,
+    fullLabel: bucket.fullLabel ?? bucket.name,
+    revenue: revenues[idx] ?? 0,
+    expenses: expenses[idx] ?? 0,
+  }));
+}
+
 export async function fetchFinancialTrends(
   start,
   end,
@@ -1077,12 +1148,10 @@ export async function fetchFinancialTrends(
     -MAX_CHART_REQUESTS,
   );
 
-  return mapWithConcurrency(
-    buckets,
-    async (bucket) => {
-      let totals = { revenue: 0, expenses: 0 };
-
-      if (sourceMode === "manual") {
+  if (sourceMode === "manual") {
+    return mapWithConcurrency(
+      buckets,
+      async (bucket) => {
         const manualReport = await getManualStagedProfitLossSummary({
           params: {
             startDate: bucket.start,
@@ -1090,29 +1159,24 @@ export async function fetchFinancialTrends(
           },
         }).catch(() => null);
         const manualTotals = extractManualProfitAndLossTotals(manualReport || {});
-        totals = {
+        return {
+          name: bucket.shortName || bucket.name,
+          fullLabel: bucket.name,
           revenue: manualTotals.revenue,
           expenses: manualTotals.expenses,
         };
-      } else {
-        const report = await fetchProfitAndLoss({
-          start_date: bucket.start,
-          end_date: bucket.end,
-        }).catch(() => null);
-        const quickBooksTotals = extractProfitAndLossTotals(report || {});
-        totals = {
-          revenue: quickBooksTotals.revenue,
-          expenses: quickBooksTotals.expenses,
-        };
-      }
+      },
+      TREND_FETCH_CONCURRENCY,
+    );
+  }
 
-      return {
-        name: bucket.shortName || bucket.name,
-        fullLabel: bucket.name,
-        revenue: totals.revenue,
-        expenses: totals.expenses,
-      };
-    },
-    TREND_FETCH_CONCURRENCY,
-  );
+  // QB mode: single request with summarize_columns_by returns all periods in one response.
+  // QB returns one column per month/quarter; future periods have 0 values and get trimmed.
+  const summarizeBy = aggregationType === "quarterly" ? "Quarter" : "Month";
+  const report = await fetchProfitAndLoss(
+    { start_date: start, end_date: end, summarize_columns_by: summarizeBy },
+    { signal: AbortSignal.timeout(15000) },
+  ).catch(() => null);
+
+  return extractMultiColumnTrends(report || {}, buckets);
 }

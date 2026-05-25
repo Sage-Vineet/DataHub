@@ -1,4 +1,5 @@
-const { supabase } = require("../db");
+const { supabase, isCircuitBreakerOpen, recordSupabaseError, resetSupabaseErrors } = require("../db");
+const { withRetry, normalizeError } = require("../utils/dbErrorHandler");
 const {
   REPORT_SOURCE_KEYS,
   setSelectedReportSource,
@@ -45,37 +46,75 @@ class DataSourceService {
   async getCompanySourceState(companyId) {
     if (!companyId) return null;
 
-    const { data: company, error } = await supabase
-      .from("companies")
-      .select("*")
-      .eq("id", companyId)
-      .maybeSingle();
+    try {
+      const result = await withRetry(
+        async () => {
+          const { data: company, error } = await supabase
+            .from("companies")
+            .select("*")
+            .eq("id", companyId)
+            .maybeSingle();
 
-    if (error) {
-      throw new Error(`Failed to load company source state: ${error.message}`);
+          if (error) {
+            recordSupabaseError();
+            throw new Error(error.message || "Failed to fetch company");
+          }
+
+          resetSupabaseErrors();
+          return company;
+        },
+        {
+          maxAttempts: 2,
+          exponentialBackoff: true,
+          operationName: "getCompanySourceState",
+        },
+      );
+
+      return result || null;
+    } catch (error) {
+      recordSupabaseError();
+      console.warn("[getCompanySourceState] Failed to get company state:", error.message);
+      return null; // Return null instead of throwing to allow fallback
     }
-
-    return company || null;
   }
 
   async getQuickBooksConnectionState(companyId) {
     if (!companyId) return { isConnected: false, realmId: null };
 
-    const { data, error } = await supabase
-      .from("quickbooks_connections")
-      .select("*")
-      .eq("company_id", companyId)
-      .maybeSingle();
+    try {
+      const result = await withRetry(
+        async () => {
+          const { data, error } = await supabase
+            .from("quickbooks_connections")
+            .select("*")
+            .eq("company_id", companyId)
+            .maybeSingle();
 
-    if (error && error.code !== "PGRST116") {
-      throw new Error(`Failed to load QuickBooks connection state: ${error.message}`);
+          if (error && error.code !== "PGRST116") {
+            recordSupabaseError();
+            throw new Error(error.message || "Failed to fetch QB connection");
+          }
+
+          resetSupabaseErrors();
+          return data;
+        },
+        {
+          maxAttempts: 2,
+          exponentialBackoff: true,
+          operationName: "getQuickBooksConnectionState",
+        },
+      );
+
+      const isConnected = Boolean(result?.realm_id) && result?.is_connected !== false;
+      return {
+        isConnected,
+        realmId: result?.realm_id || null,
+      };
+    } catch (error) {
+      recordSupabaseError();
+      console.warn("[getQuickBooksConnectionState] Failed:", error.message);
+      return { isConnected: false, realmId: null }; // Return default instead of throwing
     }
-
-    const isConnected = Boolean(data?.realm_id) && data?.is_connected !== false;
-    return {
-      isConnected,
-      realmId: data?.realm_id || null,
-    };
   }
 
   async updateCompanySourceState(companyId, patch = {}) {
@@ -180,41 +219,59 @@ class DataSourceService {
       };
     }
 
-    let sources = await syncReportSourceRecords(companyId);
-    const company = await this.getCompanySourceState(companyId);
-    const quickBooksConnection = await this.getQuickBooksConnectionState(companyId);
-
-    const selectedSource = resolveSelectedSource(sources);
-    const companySource = normalizeSourceKey(company?.data_source_type);
-    // report_source_records (selectedSource) is always written by switchDataSource and is
-    // the authoritative current selection. company.data_source_type is a denormalized cache
-    // that may be stale if the DB migration adding a new source key hasn't been run yet.
-    // Prioritising selectedSource prevents stale companySource from reverting a recent switch.
-    const activeSource =
-      selectedSource || companySource || REPORT_SOURCE_KEYS.QUICKBOOKS;
-
-    if (activeSource && selectedSource !== activeSource) {
-      // selectedSource was null — initialise report_source_records from the companies row.
-      sources = await setSelectedReportSource(companyId, activeSource);
+    // Check circuit breaker - return graceful default
+    if (isCircuitBreakerOpen()) {
+      console.warn("[getDataSourceState] Circuit breaker open for:", companyId);
+      return {
+        activeSource: REPORT_SOURCE_KEYS.QUICKBOOKS,
+        quickbooksConnected: false,
+        manualUploadActive: false,
+        lastSourceSwitchAt: null,
+        sources: [],
+      };
     }
 
-    const quickbooksRecord = sources.find(
-      (source) => source.sourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS,
-    );
-    const quickbooksConnected = Boolean(
-      quickbooksRecord?.isConnected ||
-      quickBooksConnection.isConnected ||
-      company?.quickbooks_connected,
-    );
-    const manualUploadActive = isManualSourceKey(activeSource);
+    try {
+      let sources = await syncReportSourceRecords(companyId);
+      const company = await this.getCompanySourceState(companyId);
+      const quickBooksConnection = await this.getQuickBooksConnectionState(companyId);
 
-    return {
-      activeSource,
-      quickbooksConnected,
-      manualUploadActive,
-      lastSourceSwitchAt: company?.last_source_switch_at || null,
-      sources,
-    };
+      const selectedSource = resolveSelectedSource(sources);
+      const companySource = normalizeSourceKey(company?.data_source_type);
+      // report_source_records (selectedSource) is always written by switchDataSource and is
+      // the authoritative current selection. company.data_source_type is a denormalized cache
+      // that may be stale if the DB migration adding a new source key hasn't been run yet.
+      // Prioritising selectedSource prevents stale companySource from reverting a recent switch.
+      const activeSource =
+        selectedSource || companySource || REPORT_SOURCE_KEYS.QUICKBOOKS;
+
+      if (activeSource && selectedSource !== activeSource) {
+        // selectedSource was null — initialise report_source_records from the companies row.
+        sources = await setSelectedReportSource(companyId, activeSource);
+      }
+
+      const quickbooksRecord = sources.find(
+        (source) => source.sourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS,
+      );
+      const quickbooksConnected = Boolean(
+        quickbooksRecord?.isConnected ||
+        quickBooksConnection.isConnected ||
+        company?.quickbooks_connected,
+      );
+      const manualUploadActive = isManualSourceKey(activeSource);
+
+      return {
+        activeSource,
+        quickbooksConnected,
+        manualUploadActive,
+        lastSourceSwitchAt: company?.last_source_switch_at || null,
+        sources,
+      };
+    } catch (error) {
+      recordSupabaseError();
+      // Return normalized error instead of raw HTML
+      throw normalizeError(error);
+    }
   }
 
   /**
