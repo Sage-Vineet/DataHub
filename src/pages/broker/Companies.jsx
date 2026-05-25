@@ -139,12 +139,15 @@ export default function Companies() {
   const filtered = useMemo(() => {
     return companies.filter((company) => {
       const term = search.toLowerCase();
+      const phone = String(company.phone || '').toLowerCase();
       const matchSearch =
         !term ||
+        company.projectName.toLowerCase().includes(term) ||
         company.name.toLowerCase().includes(term) ||
+        company.industry?.toLowerCase().includes(term) ||
         company.contact.toLowerCase().includes(term) ||
         company.email.toLowerCase().includes(term) ||
-        company.phone.includes(term);
+        phone.includes(term);
       const matchIndustry = industryFilter === 'All Industries' || company.industry === industryFilter;
       const matchStatus = statusFilter === 'All Status' || company.status === statusFilter;
       return matchSearch && matchIndustry && matchStatus;
@@ -337,7 +340,7 @@ export default function Companies() {
             <input
               value={search}
               onChange={(event) => { setSearch(event.target.value); setPage(1); }}
-              placeholder="Search by name, contact, email..."
+              placeholder="Search by project, company, industry, contact, email or phone..."
               className="text-sm outline-none text-[#050505] placeholder-[#A5A5A5] bg-transparent w-full"
             />
             {search && (

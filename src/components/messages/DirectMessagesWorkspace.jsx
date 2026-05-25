@@ -37,7 +37,9 @@ function formatThreadTime(value) {
 function roleLabel(role) {
   if (role === "broker") return "Broker";
   if (role === "client") return "Client";
-  return "User";
+  if (role === "admin") return "Admin";
+  if (role === "user" || role === "buyer") return "Buyer";
+  return role ? role.charAt(0).toUpperCase() + role.slice(1) : "Buyer";
 }
 
 function ParticipantPill({ participant }) {
@@ -309,11 +311,7 @@ export default function DirectMessagesWorkspace({
                         {participant.name}
                       </p>
                       <p className="mt-0.5 truncate text-xs text-[#8A94A6]">
-                        {participant.role === "broker"
-                          ? "Broker"
-                          : participant.role === "client"
-                          ? "Client"
-                          : "User"}
+                        {roleLabel(participant.role)}
                       </p>
                       {threadForUser?.last_message && (
                         <p className="mt-1 truncate text-xs text-[#6D6E71]">

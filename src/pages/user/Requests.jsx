@@ -161,20 +161,6 @@ export default function UserRequests() {
     loadRequests();
   }, [assignedCompanies, user?.id]);
 
-  useEffect(() => {
-    if (!assignedCompanies.length) return undefined;
-    const refreshOnReturn = () => {
-      if (document.visibilityState === 'visible') {
-        loadRequests();
-      }
-    };
-    window.addEventListener('focus', refreshOnReturn);
-    document.addEventListener('visibilitychange', refreshOnReturn);
-    return () => {
-      window.removeEventListener('focus', refreshOnReturn);
-      document.removeEventListener('visibilitychange', refreshOnReturn);
-    };
-  }, [assignedCompanies, user?.id]);
 
   const createRequest = async (form) => {
     if (!activeCompanyId) {

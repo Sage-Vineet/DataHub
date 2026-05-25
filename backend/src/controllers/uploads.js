@@ -4,6 +4,11 @@ const asyncHandler = require("../utils");
 const { buildUploadContentUrl } = require("../utils/uploadStorage");
 const permissionService = require("../services/permissionService");
 
+// Supabase Storage bucket for file uploads (create this bucket in your Supabase project)
+const STORAGE_BUCKET = process.env.STORAGE_BUCKET || "documents";
+// Files larger than this go to Storage; smaller ones are stored as bytea
+const STORAGE_THRESHOLD_BYTES = 5 * 1024 * 1024; // 5 MB
+
 let _pool = null;
 function getPool() {
   if (!process.env.DATABASE_URL) return null;
@@ -70,6 +75,40 @@ function normalizeUploadBinary(data) {
   return Buffer.from(String(data));
 }
 
+// Upload file buffer to Supabase Storage, return storage path or null on failure
+async function uploadToStorage(buffer, storagePath, contentType) {
+  if (!supabase) return null;
+  try {
+    const { error } = await supabase.storage
+      .from(STORAGE_BUCKET)
+      .upload(storagePath, buffer, { contentType, upsert: false });
+    if (error) {
+      console.warn("[uploads] Supabase Storage upload failed:", error.message);
+      return null;
+    }
+    return storagePath;
+  } catch (err) {
+    console.warn("[uploads] Supabase Storage upload error:", err.message);
+    return null;
+  }
+}
+
+// Download file from Supabase Storage, return Buffer or null
+async function downloadFromStorage(storagePath) {
+  if (!supabase) return null;
+  try {
+    const { data, error } = await supabase.storage
+      .from(STORAGE_BUCKET)
+      .download(storagePath);
+    if (error || !data) return null;
+    const arrayBuffer = await data.arrayBuffer();
+    return Buffer.from(arrayBuffer);
+  } catch (err) {
+    console.warn("[uploads] Supabase Storage download error:", err.message);
+    return null;
+  }
+}
+
 const createUpload = asyncHandler(async (req, res) => {
   const fileNameHeader = req.headers["x-file-name"];
   const fileName = typeof fileNameHeader === "string" ? fileNameHeader.trim() : "";
@@ -81,34 +120,82 @@ const createUpload = asyncHandler(async (req, res) => {
   if (!fileName) return res.status(400).json({ error: "x-file-name header is required" });
   if (!body.length) return res.status(400).json({ error: "Upload body is required" });
 
+  const uploadedBy = req.user?.id || null;
+  const useLargeStorage = body.length > STORAGE_THRESHOLD_BYTES;
+
+  // For large files, try Supabase Storage first
+  let storagePath = null;
+  if (useLargeStorage) {
+    const ext = fileName.includes(".") ? fileName.split(".").pop().toLowerCase() : "bin";
+    const uniqueName = `${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+    const candidate = `${prefix}/${uniqueName}`;
+    storagePath = await uploadToStorage(body, candidate, contentType);
+    if (!storagePath) {
+      // Storage not available — enforce a hard limit to prevent broken bytea inserts
+      const maxBytea = parseInt(process.env.MAX_BYTEA_BYTES || String(10 * 1024 * 1024), 10);
+      if (body.length > maxBytea) {
+        return res.status(413).json({
+          error: `File too large. Maximum size is ${Math.round(maxBytea / 1024 / 1024)} MB when storage is unavailable. Please configure STORAGE_BUCKET in Supabase.`,
+        });
+      }
+    }
+  }
+
   let upload = null;
 
-  // Try direct Postgres first (pg handles Buffer → bytea natively)
-  try {
-    const rows = await pgQuery(
-      `INSERT INTO uploads (file_name, content_type, size_bytes, data, prefix, uploaded_by)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING id, file_name, content_type, size_bytes, prefix, uploaded_by, created_at`,
-      [fileName, contentType || "application/octet-stream", body.length, body, prefix || "uploads", req.user?.id || null],
-    );
-    upload = rows[0];
-  } catch {
-    // Supabase fallback — encode binary as \x<hex>
-    const byteaLiteral = `\\x${body.toString("hex")}`;
-    const { data, error } = await supabase
-      .from("uploads")
-      .insert({
-        file_name: fileName,
-        content_type: contentType || "application/octet-stream",
-        size_bytes: body.length,
-        data: byteaLiteral,
-        prefix: prefix || "uploads",
-        uploaded_by: req.user?.id || null,
-      })
-      .select("id, file_name, content_type, size_bytes, prefix, uploaded_by, created_at")
-      .single();
-    if (error) return res.status(500).json({ error: error.message });
-    upload = data;
+  if (storagePath) {
+    // Store record with storage path, no bytea data
+    try {
+      const rows = await pgQuery(
+        `INSERT INTO uploads (file_name, content_type, size_bytes, storage_path, prefix, uploaded_by)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING id, file_name, content_type, size_bytes, storage_path, prefix, uploaded_by, created_at`,
+        [fileName, contentType, body.length, storagePath, prefix, uploadedBy],
+      );
+      upload = rows[0];
+    } catch {
+      const { data, error } = await supabase
+        .from("uploads")
+        .insert({
+          file_name: fileName,
+          content_type: contentType,
+          size_bytes: body.length,
+          storage_path: storagePath,
+          prefix,
+          uploaded_by: uploadedBy,
+        })
+        .select("id, file_name, content_type, size_bytes, storage_path, prefix, uploaded_by, created_at")
+        .single();
+      if (error) return res.status(500).json({ error: error.message });
+      upload = data;
+    }
+  } else {
+    // Small file — store as bytea
+    try {
+      const rows = await pgQuery(
+        `INSERT INTO uploads (file_name, content_type, size_bytes, data, prefix, uploaded_by)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING id, file_name, content_type, size_bytes, prefix, uploaded_by, created_at`,
+        [fileName, contentType, body.length, body, prefix, uploadedBy],
+      );
+      upload = rows[0];
+    } catch {
+      const byteaLiteral = `\\x${body.toString("hex")}`;
+      const { data, error } = await supabase
+        .from("uploads")
+        .insert({
+          file_name: fileName,
+          content_type: contentType,
+          size_bytes: body.length,
+          data: byteaLiteral,
+          prefix,
+          uploaded_by: uploadedBy,
+        })
+        .select("id, file_name, content_type, size_bytes, prefix, uploaded_by, created_at")
+        .single();
+      if (error) return res.status(500).json({ error: error.message });
+      upload = data;
+    }
   }
 
   res.status(201).json({
@@ -123,22 +210,18 @@ const createUpload = asyncHandler(async (req, res) => {
 });
 
 const getUploadContent = asyncHandler(async (req, res) => {
-  const { data, error } = await supabase
-    .from("uploads")
-    .select("id, file_name, content_type, data, uploaded_by")
-    .eq("id", req.params.id)
-    .maybeSingle();
+  let upload = null;
 
   try {
     const rows = await pgQuery(
-      "SELECT id, file_name, content_type, data FROM uploads WHERE id = $1 LIMIT 1",
+      "SELECT id, file_name, content_type, data, storage_path, uploaded_by FROM uploads WHERE id = $1 LIMIT 1",
       [req.params.id],
     );
     upload = rows[0] || null;
   } catch {
     const { data, error } = await supabase
       .from("uploads")
-      .select("id, file_name, content_type, data")
+      .select("id, file_name, content_type, data, storage_path, uploaded_by")
       .eq("id", req.params.id)
       .maybeSingle();
     if (error) return res.status(500).json({ error: error.message });
@@ -155,21 +238,34 @@ const getUploadContent = asyncHandler(async (req, res) => {
 
   if (documentsError) return res.status(500).json({ error: documentsError.message });
 
-  const linkedCompanyIds = Array.from(new Set((documentRows || []).map((row) => row.company_id).filter(Boolean)));
-  if (linkedCompanyIds.length) {
-    const allowed = linkedCompanyIds.some((companyId) => permissionService.canAccessCompany(req.user, companyId));
-    if (!allowed) return res.status(403).json({ error: "Forbidden" });
-  } else if (data.uploaded_by && String(data.uploaded_by) !== String(req.user?.id) && !permissionService.isAdmin(req.user)) {
-    return res.status(403).json({ error: "Forbidden" });
+  if (!permissionService.isBroker(req.user)) {
+    const linkedCompanyIds = Array.from(new Set((documentRows || []).map((row) => row.company_id).filter(Boolean)));
+    if (linkedCompanyIds.length) {
+      const allowed = linkedCompanyIds.some((companyId) => permissionService.canAccessCompany(req.user, companyId));
+      if (!allowed) return res.status(403).json({ error: "Forbidden" });
+    } else if (upload.uploaded_by && String(upload.uploaded_by) !== String(req.user?.id)) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
   }
 
-  const upload = data;
   const fileName = upload.file_name || "download";
   const encodedName = encodeURIComponent(fileName).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
-  const content = normalizeUploadBinary(upload.data);
 
   res.setHeader("Content-Type", upload.content_type || "application/octet-stream");
   res.setHeader("Content-Disposition", `inline; filename*=UTF-8''${encodedName}`);
+
+  // Serve from Supabase Storage if available
+  if (upload.storage_path) {
+    const buffer = await downloadFromStorage(upload.storage_path);
+    if (buffer) {
+      res.setHeader("Content-Length", buffer.length);
+      return res.send(buffer);
+    }
+    return res.status(500).json({ error: "Failed to retrieve file from storage" });
+  }
+
+  // Fall back to bytea data column (legacy / small files)
+  const content = normalizeUploadBinary(upload.data);
   res.send(content);
 });
 
