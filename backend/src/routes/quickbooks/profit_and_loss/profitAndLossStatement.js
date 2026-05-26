@@ -7,25 +7,44 @@ const {
 
 const router = express.Router();
 
+function normalizeAccountingMethod(raw) {
+  const str = String(raw || "").trim().toLowerCase();
+  if (str === "cash") return "Cash";
+  if (str === "accrual") return "Accrual";
+  return str ? String(raw).trim() : "";
+}
+
+function accountingMethodMatches(requestedMethod, storedParams, cachedData) {
+  const requested = normalizeAccountingMethod(requestedMethod);
+  if (!requested) return true;
+  const stored = normalizeAccountingMethod(storedParams && storedParams.accounting_method);
+  const basis = String((cachedData && cachedData.Header && cachedData.Header.ReportBasis) || "").trim();
+  const storedOk = !stored || stored === requested;
+  const basisOk = !basis || basis.toLowerCase() === requested.toLowerCase();
+  return storedOk && basisOk;
+}
+
 function normalizeStatementQuery(query = {}) {
   return {
     start_date: String(query.start_date || "").trim(),
     end_date: String(query.end_date || "").trim(),
-    accounting_method: String(query.accounting_method || "").trim(),
+    accounting_method: normalizeAccountingMethod(query.accounting_method),
   };
 }
 
-function isExactPeriodMatch(requestedParams, storedParams = {}) {
-  const { start_date, end_date } = requestedParams;
-  return (
+function isExactPeriodMatch(requestedParams, storedParams = {}, cachedData = null) {
+  const { start_date, end_date, accounting_method } = requestedParams;
+  const datesMatch =
     (!start_date || storedParams.start_date === start_date) &&
-    (!end_date || storedParams.end_date === end_date)
-  );
+    (!end_date   || storedParams.end_date   === end_date);
+  const methodMatch = accountingMethodMatches(accounting_method, storedParams, cachedData);
+  return datesMatch && methodMatch;
 }
 
 router.get("/profit-and-loss-statement", async (req, res) => {
   const clientId = req.clientId;
-  const { start_date, end_date, accounting_method, summarize_columns_by } = req.query;
+  const { start_date, end_date, summarize_columns_by } = req.query;
+  const accounting_method = normalizeAccountingMethod(req.query.accounting_method);
   const disconnected = Boolean(req.qbDisconnected);
   const hasDateFilter = Boolean(start_date || end_date);
 
@@ -42,13 +61,12 @@ router.get("/profit-and-loss-statement", async (req, res) => {
       REPORT_TYPES.PROFIT_AND_LOSS,
       { start_date, end_date, accounting_method, summarize_columns_by },
       { disconnected: Boolean(req.qbDisconnected) },
-      { start_date, end_date, accounting_method },
-      { disconnected },
     );
 
     const cachedIsExact = cached?.data && isExactPeriodMatch(
-      { start_date, end_date },
-      cached.reportParams
+      { start_date, end_date, accounting_method },
+      cached.reportParams,
+      cached.data,
     );
 
     if (cachedIsExact) {
@@ -106,33 +124,45 @@ router.get("/profit-and-loss-statement", async (req, res) => {
     // ── 3. QB disconnected (or live fetch failed) — serve coverage cache ──────
     // The cached result may be a broader period that contains the requested range
     // (e.g. yearly Jan–Dec when Jan–Jan was requested). Surface it with a note.
+    // Reject immediately if accounting_method does not match.
     if (cached?.data) {
       const storedParams = cached.reportParams || {};
-      const storedStartAfter = start_date && storedParams.start_date && storedParams.start_date > start_date;
-      const storedEndBefore = end_date && storedParams.end_date && storedParams.end_date < end_date;
+      const methodOk = accountingMethodMatches(accounting_method, storedParams, cached.data);
 
-      if (storedStartAfter || storedEndBefore) {
+      if (!methodOk) {
         console.warn(
-          `[P&L Statement] Coverage cache period does not contain requested range` +
-          ` — stored=${storedParams.start_date}–${storedParams.end_date}` +
-          ` requested=${start_date}–${end_date}`
+          `[P&L Statement] Coverage cache rejected — accounting_method mismatch:` +
+          ` requested=${accounting_method || "(none)"}` +
+          ` stored=${storedParams.accounting_method || "(none)"}` +
+          ` ReportBasis=${cached.data?.Header?.ReportBasis || "(none)"}`
         );
       } else {
-        console.log(
-          `[P&L Statement] Coverage cache hit — stored=${storedParams.start_date}–${storedParams.end_date}` +
-          ` requested=${start_date}–${end_date} disconnected=${disconnected}`
-        );
-        return res.json({
-          success: true,
-          source: "cached_snapshot",
-          disconnected,
-          lastSyncAt: cached.lastSyncedAt,
-          datasetVersion: cached.datasetVersion || null,
-          reportParams: storedParams,
-          coverageFallback: true,
-          note: `No exact snapshot for ${start_date}–${end_date}. Returning nearest available snapshot (${storedParams.start_date}–${storedParams.end_date}).`,
-          data: cached.data,
-        });
+        const storedStartAfter = start_date && storedParams.start_date && storedParams.start_date > start_date;
+        const storedEndBefore = end_date && storedParams.end_date && storedParams.end_date < end_date;
+
+        if (storedStartAfter || storedEndBefore) {
+          console.warn(
+            `[P&L Statement] Coverage cache period does not contain requested range` +
+            ` — stored=${storedParams.start_date}–${storedParams.end_date}` +
+            ` requested=${start_date}–${end_date}`
+          );
+        } else {
+          console.log(
+            `[P&L Statement] Coverage cache hit — stored=${storedParams.start_date}–${storedParams.end_date}` +
+            ` requested=${start_date}–${end_date} accounting=${accounting_method || "(none)"} disconnected=${disconnected}`
+          );
+          return res.json({
+            success: true,
+            source: "cached_snapshot",
+            disconnected,
+            lastSyncAt: cached.lastSyncedAt,
+            datasetVersion: cached.datasetVersion || null,
+            reportParams: storedParams,
+            coverageFallback: true,
+            note: `No exact snapshot for ${start_date}–${end_date}. Returning nearest available snapshot (${storedParams.start_date}–${storedParams.end_date}).`,
+            data: cached.data,
+          });
+        }
       }
     }
 

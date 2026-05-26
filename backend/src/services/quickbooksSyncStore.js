@@ -6,6 +6,13 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function normalizeAccountingMethod(raw) {
+  const str = String(raw || "").trim().toLowerCase();
+  if (str === "cash") return "Cash";
+  if (str === "accrual") return "Accrual";
+  return str ? String(raw).trim() : "";
+}
+
 function sanitizeReportParams(params) {
   if (!params || typeof params !== "object") return {};
 
@@ -15,6 +22,11 @@ function sanitizeReportParams(params) {
     const value = params[key];
     if (value === undefined || value === null || value === "") continue;
     if (key === "clientId" || key === "minorversion") continue;
+    if (key === "accounting_method") {
+      const normalized = normalizeAccountingMethod(value);
+      if (normalized) cleaned[key] = normalized;
+      continue;
+    }
     cleaned[key] = String(value);
   }
 

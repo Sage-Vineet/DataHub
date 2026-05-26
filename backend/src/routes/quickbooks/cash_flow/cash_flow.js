@@ -48,12 +48,29 @@ router.get("/qb-transactions", async (req, res) => {
   }
 });
 
+function normalizeAccountingMethod(raw) {
+  const str = String(raw || "").trim().toLowerCase();
+  if (str === "cash") return "Cash";
+  if (str === "accrual") return "Accrual";
+  return str ? String(raw).trim() : "";
+}
+
+function accountingMethodMatches(requestedMethod, storedParams, cachedData) {
+  const requested = normalizeAccountingMethod(requestedMethod);
+  if (!requested) return true;
+  const stored = normalizeAccountingMethod(storedParams && storedParams.accounting_method);
+  const basis = String((cachedData && cachedData.Header && cachedData.Header.ReportBasis) || "").trim();
+  const storedOk = !stored || stored === requested;
+  const basisOk = !basis || basis.toLowerCase() === requested.toLowerCase();
+  return storedOk && basisOk;
+}
+
 router.get("/qb-cashflow", async (req, res) => {
   const clientId = req.clientId;
   const disconnected = Boolean(req.qbDisconnected);
   const start_date = String(req.query.start_date || "").trim();
   const end_date = String(req.query.end_date || "").trim();
-  const accounting_method = String(req.query.accounting_method || "Accrual").trim();
+  const accounting_method = normalizeAccountingMethod(req.query.accounting_method || "Accrual");
   const hasDateFilter = Boolean(start_date || end_date);
 
   const queryParams = { start_date, end_date, accounting_method };
@@ -67,9 +84,15 @@ router.get("/qb-cashflow", async (req, res) => {
       { disconnected },
     );
 
-    const cachedIsExact = cached?.data &&
-      (!start_date || cached.reportParams?.start_date === start_date) &&
-      (!end_date   || cached.reportParams?.end_date   === end_date);
+    const storedParams = cached?.reportParams || {};
+    const methodOk = accountingMethodMatches(accounting_method, storedParams, cached?.data);
+
+    const cachedIsExact = Boolean(
+      cached?.data &&
+      methodOk &&
+      (!start_date || storedParams.start_date === start_date) &&
+      (!end_date   || storedParams.end_date   === end_date)
+    );
 
     if (cachedIsExact) {
       return res.json(snapshotEnvelope(cached, disconnected));
@@ -99,23 +122,31 @@ router.get("/qb-cashflow", async (req, res) => {
     }
 
     // ── 3. Coverage fallback for disconnected / live failure ──────────────────
+    // Reject if accounting_method does not match — never return Accrual for a Cash request.
     if (cached?.data) {
-      const storedParams = cached.reportParams || {};
-      const storedStartAfter = start_date && storedParams.start_date && storedParams.start_date > start_date;
-      const storedEndBefore  = end_date   && storedParams.end_date   && storedParams.end_date   < end_date;
+      if (!methodOk) {
+        console.warn(
+          `[CashFlow] Coverage cache rejected — accounting_method mismatch:` +
+          ` requested=${accounting_method} stored=${storedParams.accounting_method || "(none)"}` +
+          ` ReportBasis=${cached.data?.Header?.ReportBasis || "(none)"}`
+        );
+      } else {
+        const storedStartAfter = start_date && storedParams.start_date && storedParams.start_date > start_date;
+        const storedEndBefore  = end_date   && storedParams.end_date   && storedParams.end_date   < end_date;
 
-      if (!storedStartAfter && !storedEndBefore) {
-        return res.json({
-          success: true,
-          source: "cached_snapshot",
-          disconnected,
-          lastSyncAt: cached.lastSyncedAt,
-          datasetVersion: cached.datasetVersion || null,
-          reportParams: storedParams,
-          coverageFallback: true,
-          note: `No exact snapshot for ${start_date}–${end_date}. Returning nearest available snapshot (${storedParams.start_date}–${storedParams.end_date}).`,
-          data: cached.data,
-        });
+        if (!storedStartAfter && !storedEndBefore) {
+          return res.json({
+            success: true,
+            source: "cached_snapshot",
+            disconnected,
+            lastSyncAt: cached.lastSyncedAt,
+            datasetVersion: cached.datasetVersion || null,
+            reportParams: storedParams,
+            coverageFallback: true,
+            note: `No exact snapshot for ${start_date}–${end_date}. Returning nearest available snapshot (${storedParams.start_date}–${storedParams.end_date}).`,
+            data: cached.data,
+          });
+        }
       }
     }
 

@@ -85,6 +85,26 @@ function escapeQueryLiteral(value) {
   return String(value || "").replace(/'/g, "''");
 }
 
+function normalizeAccountingMethod(raw) {
+  const str = String(raw || "").trim().toLowerCase();
+  if (str === "cash") return "Cash";
+  if (str === "accrual") return "Accrual";
+  return str ? String(raw).trim() : "";
+}
+
+// Returns true when the requested accounting method is compatible with a cached
+// result.  Checks both the stored report_params and the QB Header.ReportBasis
+// field so that a Cash request never accepts an Accrual snapshot and vice-versa.
+function accountingMethodMatches(requestedMethod, storedParams, cachedData) {
+  const requested = normalizeAccountingMethod(requestedMethod);
+  if (!requested) return true; // no constraint — accept anything
+  const stored = normalizeAccountingMethod(storedParams && storedParams.accounting_method);
+  const basis = String((cachedData && cachedData.Header && cachedData.Header.ReportBasis) || "").trim();
+  const storedOk = !stored || stored === requested;
+  const basisOk = !basis || basis.toLowerCase() === requested.toLowerCase();
+  return storedOk && basisOk;
+}
+
 function buildYearlyRanges({ yearsBack = 4, endDate = null } = {}) {
   const end = toIsoDate(endDate) || toIsoDate(new Date());
   const endYear = Number(String(end).slice(0, 4));
@@ -625,6 +645,12 @@ async function serveCachedReport(clientId, reportType, queryParams = {}, options
   const sanitizedParams = sanitizeReportParams(queryParams);
   const activeDataset = await getLatestFinalizedDataset(clientId, syncSource);
 
+  // Derive period variables from sanitized params so getCachedReport can also
+  // match on the period_start / period_end columns (set during sync tasks).
+  const periodStart = sanitizedParams.start_date || null;
+  const periodEnd   = sanitizedParams.end_date   || null;
+  const hasPeriod   = Boolean(periodStart && periodEnd);
+
   console.log(
     `[serveCachedReport] reportType=${reportType} clientId=${clientId}` +
     ` appliedFilters=${JSON.stringify(sanitizedParams)}` +
@@ -642,7 +668,6 @@ async function serveCachedReport(clientId, reportType, queryParams = {}, options
     periodEnd,
     skipUnconstrained: hasPeriod,
   });
-  if (cached) return buildSnapshotResult(cached, options.disconnected === true);
 
   if (cached) {
     console.log(
