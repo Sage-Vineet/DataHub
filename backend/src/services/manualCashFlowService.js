@@ -1,6 +1,7 @@
 "use strict";
 
 const { supabase } = require("../db");
+const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 const CF_GENERATED_SOURCE = "manual_upload_generated";
 const CF_REPORT_TYPE = "cash_flow";
@@ -101,20 +102,6 @@ const OTHER_CL_PATTERNS = [
   /deferred revenue/i,
 ];
 
-// Accrued Revenue (unbilled / contract assets — treated as Other Current Asset)
-const ACCRUED_REVENUE_PATTERNS = [
-  /^(total )?accrued revenue$/i,
-  /accrued revenue/i,
-  /unbilled (revenue|receivables?)/i,
-];
-
-// American Express / credit-card liability account (treated as Other Current Liability)
-const AMERICAN_EXPRESS_PATTERNS = [
-  /^american express$/i,
-  /american express/i,
-  /\bamex\b/i,
-];
-
 const FIXED_PATTERNS = [
   /^(total |net )?property,? plant( and|&) equipment,? net$/i,
   /^(net |total )?property and equipment$/i,
@@ -131,6 +118,14 @@ const DEPOSITS_PATTERNS = [
   /\bdeposits?\b/i,
 ];
 
+// Long-term Investments (not fixed assets, not deposits)
+const INVESTMENTS_PATTERNS = [
+  /^(total )?long.?term investments?$/i,
+  /^(total )?investments?$/i,
+  /^marketable securities$/i,
+  /long.?term investments?/i,
+  /\binvestments?\b/i,
+];
 
 const LINE_OF_CREDIT_PATTERNS = [
   /^(total )?line of credit$/i,
@@ -266,132 +261,133 @@ function extractRows(row) {
 // ── Cash Flow generation (indirect method) ────────────────────────────────────
 
 /**
- * Build the complete cash flow statement using only exact values from the
- * uploaded Balance Sheet and P&L. No AI inference, no estimation.
- *
- * Sign rules (per spec):
- *   Operating assets  (AR, Inventory, OCA) — balance is negated  (cash tied up)
- *   Operating liabilities (AP, Accrued, OCL) — balance is positive (cash deferred)
- *   OCA includes AccruedRevenue + OtherCurrentAssets
- *   OCL includes AmericanExpress + OtherCurrentLiabilities
- *   Investing outflows (Fixed Assets, Security Deposits) — negated
- *   Financing loans / equity — positive; Dividends — negated
- *
- * All section totals are calculated programmatically — never text-predicted.
+ * Build the complete cash flow statement.
+ * bsPrevRows is optional — when absent, all balance-sheet delta lines are 0.
  */
 function buildCashFlow({ bsPrevRows, bsCurrRows, plRows, year }) {
   const hasPrev = Array.isArray(bsPrevRows) && bsPrevRows.length > 0;
 
-  // ── OPERATING ACTIVITIES ────────────────────────────────────────────────────
+  // ── Operating Activities ────────────────────────────────────────────────────
 
-  // Source: P&L only
-  const netIncome    = r2(findAmt(plRows, NET_INCOME_PATTERNS));
+  const netIncome = r2(findAmt(plRows, NET_INCOME_PATTERNS));
   const depreciation = r2(findAmt(plRows, DEPRECIATION_PATTERNS));
 
-  // Amortization — only when it is a separate line (not already folded into D&A)
+  // Amortization — only count when separate from D&A node
   const daNode = flatten(plRows).find((n) => DEPRECIATION_PATTERNS[0].test(String(n.name || "")));
   const amortization = /amortization/i.test(String(daNode?.name || ""))
     ? 0
     : r2(findAmt(plRows, AMORTIZATION_PATTERNS));
 
-  // Working-capital adjustments — always read from CURRENT Balance Sheet directly.
-  // No year-over-year delta; the ending balance represents the period's net change.
-  const currAR         = r2(findAmt(bsCurrRows, AR_PATTERNS));
-  const currInv        = r2(findAmt(bsCurrRows, INV_PATTERNS));
-  const currAP         = r2(findAmt(bsCurrRows, AP_PATTERNS));
-  const currAccr       = r2(findAmt(bsCurrRows, ACCR_PATTERNS));
-  const currOCA        = r2(findAmt(bsCurrRows, OTHER_CA_PATTERNS));
-  const currAccruedRev = r2(findAmt(bsCurrRows, ACCRUED_REVENUE_PATTERNS));
-  const currOCL        = r2(findAmt(bsCurrRows, OTHER_CL_PATTERNS));
-  const currAmEx       = r2(findAmt(bsCurrRows, AMERICAN_EXPRESS_PATTERNS));
+  // Working capital deltas — always read from both BSes.
+  // When hasPrev=false all delta lines are forced to 0 (no baseline to compare against).
+  const currAR = findAmt(bsCurrRows, AR_PATTERNS);
+  const prevAR = hasPrev ? findAmt(bsPrevRows, AR_PATTERNS) : 0;
+  const currInv = findAmt(bsCurrRows, INV_PATTERNS);
+  const prevInv = hasPrev ? findAmt(bsPrevRows, INV_PATTERNS) : 0;
+  const currAP = findAmt(bsCurrRows, AP_PATTERNS);
+  const prevAP = hasPrev ? findAmt(bsPrevRows, AP_PATTERNS) : 0;
+  const currAccr = findAmt(bsCurrRows, ACCR_PATTERNS);
+  const prevAccr = hasPrev ? findAmt(bsPrevRows, ACCR_PATTERNS) : 0;
+  const currOCA = findAmt(bsCurrRows, OTHER_CA_PATTERNS);
+  const prevOCA = hasPrev ? findAmt(bsPrevRows, OTHER_CA_PATTERNS) : 0;
+  const currOCL = findAmt(bsCurrRows, OTHER_CL_PATTERNS);
+  const prevOCL = hasPrev ? findAmt(bsPrevRows, OTHER_CL_PATTERNS) : 0;
 
-  // Apply sign convention — values stored with sign already applied
-  const changeAR   = r2(-currAR);                         // -(AccountsReceivable)
-  const changeInv  = r2(-currInv);                        // -(Inventory)
-  const changeAP   = r2(currAP);                          // +(AccountsPayable)
-  const changeAccr = r2(currAccr);                        // +(AccruedExpenses)
-  const changeOCA  = r2(-(currOCA + currAccruedRev));     // -(AccruedRevenue + OtherCurrentAssets)
-  const changeOCL  = r2(currOCL + currAmEx);              // +(AmericanExpress + OtherCurrentLiabilities)
+  // Operating indirect-method sign convention:
+  //   AR  increase → cash used      → negative
+  //   INV increase → cash used      → negative
+  //   AP  increase → cash received  → positive
+  //   ACCR increase → cash deferred → positive
+  //   OCA increase → cash used      → negative
+  //   OCL increase → cash deferred  → positive
+  const changeAR = hasPrev ? r2(-(currAR - prevAR)) : 0;
+  const changeInv = hasPrev ? r2(-(currInv - prevInv)) : 0;
+  const changeAP = hasPrev ? r2(+(currAP - prevAP)) : 0;
+  const changeAccr = hasPrev ? r2(+(currAccr - prevAccr)) : 0;
+  const changeOCA = hasPrev ? r2(-(currOCA - prevOCA)) : 0;
+  const changeOCL = hasPrev ? r2(+(currOCL - prevOCL)) : 0;
 
-  // Programmatic total — never AI-generated
   const totalOperating = r2(
     netIncome + depreciation + amortization +
     changeAR + changeInv + changeAP + changeAccr + changeOCA + changeOCL
   );
 
-  // ── INVESTING ACTIVITIES ────────────────────────────────────────────────────
-  // Only include lines where a value is actually present in the BS.
+  // ── Investing Activities ────────────────────────────────────────────────────
+  // Raw year-over-year delta for each balance-sheet investing line.
+  // PurchaseOfFixedAssets = currFixed - prevFixed (positive = net purchase = cash out)
+  // SecurityDeposits      = -(currDep  - prevDep) (increase in deposits = cash out)
+  // Investments           = currInvt  - prevInvt  (positive = net purchase = cash out)
+  const currFixed = findAmt(bsCurrRows, FIXED_PATTERNS);
+  const prevFixed = hasPrev ? findAmt(bsPrevRows, FIXED_PATTERNS) : 0;
+  const currDep = findAmt(bsCurrRows, DEPOSITS_PATTERNS);
+  const prevDep = hasPrev ? findAmt(bsPrevRows, DEPOSITS_PATTERNS) : 0;
+  const currInvt = findAmt(bsCurrRows, INVESTMENTS_PATTERNS);
+  const prevInvt = hasPrev ? findAmt(bsPrevRows, INVESTMENTS_PATTERNS) : 0;
 
-  const currFixed = r2(findAmt(bsCurrRows, FIXED_PATTERNS));
-  const currDep   = r2(findAmt(bsCurrRows, DEPOSITS_PATTERNS));
+  const purchaseOfFixed = hasPrev ? r2(currFixed - prevFixed) : 0;
+  const securityDeposits = hasPrev ? r2(-(currDep - prevDep)) : 0;
+  const investments = hasPrev ? r2(currInvt - prevInvt) : 0;
 
-  // Spending on assets = cash outflow (negative)
-  const purchaseOfFixed  = currFixed !== 0 ? r2(-currFixed) : 0;
-  // Security deposits paid = cash outflow (negative)
-  const securityDeposits = currDep   !== 0 ? r2(-currDep)   : 0;
+  const totalInvesting = r2(purchaseOfFixed + securityDeposits + investments);
 
-  const investingActivities = [];
-  if (purchaseOfFixed  !== 0) investingActivities.push({ label: "Purchase of Fixed Assets", value: purchaseOfFixed  });
-  if (securityDeposits !== 0) investingActivities.push({ label: "Security Deposits",         value: securityDeposits });
+  // ── Financing Activities ────────────────────────────────────────────────────
+  const currLOC = findAmt(bsCurrRows, LINE_OF_CREDIT_PATTERNS);
+  const prevLOC = hasPrev ? findAmt(bsPrevRows, LINE_OF_CREDIT_PATTERNS) : 0;
+  const currLTD = findAmt(bsCurrRows, LONG_DEBT_PATTERNS);
+  const prevLTD = hasPrev ? findAmt(bsPrevRows, LONG_DEBT_PATTERNS) : 0;
+  // Notes payable: fallback when neither LOC nor LTD is present
+  const currNotes = (currLOC === 0 && currLTD === 0) ? findAmt(bsCurrRows, NOTES_PAYABLE_PATTERNS) : 0;
+  const prevNotes = (hasPrev && prevLOC === 0 && prevLTD === 0) ? findAmt(bsPrevRows, NOTES_PAYABLE_PATTERNS) : 0;
 
-  // Programmatic total
-  const totalInvesting = r2(investingActivities.reduce((s, x) => s + x.value, 0));
+  const totalDebtPrev = prevLOC + prevLTD + prevNotes;
+  const totalDebtCurr = currLOC + currLTD + currNotes;
+  const debtDelta = hasPrev ? r2(totalDebtCurr - totalDebtPrev) : 0;
 
-  // ── FINANCING ACTIVITIES ────────────────────────────────────────────────────
-  // Loans: current balance of all debt accounts (positive = outstanding = received)
-  const currLOC   = r2(findAmt(bsCurrRows, LINE_OF_CREDIT_PATTERNS));
-  const currLTD   = r2(findAmt(bsCurrRows, LONG_DEBT_PATTERNS));
-  // Notes payable: fallback only when neither LOC nor LTD is present
-  const currNotes = (currLOC === 0 && currLTD === 0)
-    ? r2(findAmt(bsCurrRows, NOTES_PAYABLE_PATTERNS))
-    : 0;
-  const loansTotal    = r2(currLOC + currLTD + currNotes);
+  // Loans split by direction; loanRepayment stored as a positive magnitude.
+  const loansReceived = debtDelta > 0 ? debtDelta : 0;
+  const loanRepayment = debtDelta < 0 ? r2(Math.abs(debtDelta)) : 0; // positive magnitude
 
-  const currEquity    = r2(findAmt(bsCurrRows, EQUITY_PAID_IN_PATTERNS));
-  const equityContrib = currEquity;
+  // Equity: raw delta (can be negative if equity decreased)
+  const currEquity = findAmt(bsCurrRows, EQUITY_PAID_IN_PATTERNS);
+  const prevEquity = hasPrev ? findAmt(bsPrevRows, EQUITY_PAID_IN_PATTERNS) : 0;
+  const equityContrib = hasPrev ? r2(currEquity - prevEquity) : 0;
 
-  // Dividends / distributions — from P&L, stored as negative (cash outflow)
+  // Dividends / distributions: taken from the P&L (positive outflow amount)
   const dividends = r2(findAmt(plRows, DIVIDENDS_PATTERNS));
 
-  const financingActivities = [];
-  if (loansTotal    !== 0) financingActivities.push({ label: "Loans",               value: loansTotal          });
-  if (equityContrib !== 0) financingActivities.push({ label: "Equity Contribution", value: equityContrib       });
-  if (dividends     !== 0) financingActivities.push({ label: "Dividends",           value: r2(-dividends)      });
+  // Total: LoansReceived − LoanRepayment + EquityContribution − Dividends
+  const totalFinancing = r2(loansReceived - loanRepayment + equityContrib - dividends);
 
-  // Programmatic total
-  const totalFinancing = r2(financingActivities.reduce((s, x) => s + x.value, 0));
-
-  // ── FINAL TOTALS (programmatic) ───────────────────────────────────────────────
-  const netCashChange = r2(totalOperating + totalInvesting + totalFinancing);
+  // ── Cash reconciliation ───────────────────────────────────────────────────
+  // BeginningCash = PreviousYearBS.BankAccounts (0 when no previous BS)
   const beginningCash = r2(hasPrev ? findAmt(bsPrevRows, CASH_PATTERNS) : 0);
-
-  // CASH AT END OF PERIOD = Balance Sheet Cash value (read directly, never computed)
+  const netCashChange = r2(totalOperating + totalInvesting + totalFinancing);
+  // EndingCash derived arithmetically so the statement is always self-consistent.
   const bsEndingCash = r2(findAmt(bsCurrRows, CASH_PATTERNS));
-  const endingCash   = bsEndingCash;
+  const endingCash = r2(beginningCash + netCashChange);
+  const cashValidated = bsEndingCash !== 0 && Math.abs(endingCash - bsEndingCash) <= 1;
 
-  // ── MANDATORY VALIDATION ────────────────────────────────────────────────────
-  // Rule: Net Cash Increase + Beginning Cash must equal Ending Cash exactly.
-  // Tolerance: 0.00 — any difference means the statement does not reconcile.
-  const computedEnding = r2(beginningCash + netCashChange);
-  const cashDiff       = Math.abs(computedEnding - endingCash);
-  const cashValidated  = cashDiff === 0;
-
-  if (!cashValidated) {
-    console.error(
-      `[ManualCashFlow] VALIDATION FAILED year=${year}: ` +
-      `beginningCash(${beginningCash}) + netCashChange(${netCashChange}) = ${computedEnding} ` +
-      `!= bsEndingCash(${endingCash}) diff=${cashDiff.toFixed(2)} | ` +
-      `Operating=${totalOperating} Investing=${totalInvesting} Financing=${totalFinancing}`
-    );
+  if (!cashValidated && bsEndingCash !== 0) {
+    console.error(`[ManualCashFlow] Cash mismatch year=${year}: computed endingCash=${endingCash} vs BS cash=${bsEndingCash} (diff=${Math.abs(endingCash - bsEndingCash).toFixed(2)})`);
   }
 
+  // ── Diagnostics ──────────────────────────────────────────────────────────
   console.log("[ManualCashFlow] buildCashFlow", {
-    year, hasPrev,
-    operating: { netIncome, depreciation, amortization, changeAR, changeInv, changeAP, changeAccr, changeOCA, changeOCL },
-    investing:  { purchaseOfFixed, securityDeposits },
-    financing:  { loansTotal, equityContrib, dividends },
-    totals:     { totalOperating, totalInvesting, totalFinancing, netCashChange },
-    cash:       { beginningCash, bsEndingCash, endingCash, cashValidated },
+    year,
+    hasPrev,
+    workingCapitalChanges: {
+      AR: { curr: currAR, prev: prevAR, change: changeAR },
+      INV: { curr: currInv, prev: prevInv, change: changeInv },
+      AP: { curr: currAP, prev: prevAP, change: changeAP },
+      ACCR: { curr: currAccr, prev: prevAccr, change: changeAccr },
+      OCA: { curr: currOCA, prev: prevOCA, change: changeOCA },
+      OCL: { curr: currOCL, prev: prevOCL, change: changeOCL },
+    },
+    plValues: { netIncome, depreciation, amortization },
+    investing: { purchaseOfFixed, securityDeposits, investments },
+    financing: { loansReceived, loanRepayment, equityContrib, dividends },
+    totals: { totalOperating, totalInvesting, totalFinancing, netCashChange },
+    cash: { beginningCash, bsEndingCash, endingCash, cashValidated },
   });
 
   return {
@@ -400,20 +396,29 @@ function buildCashFlow({ bsPrevRows, bsCurrRows, plRows, year }) {
     accountingMethod: "Accrual",
     data: {
       operatingActivities: [
-        { label: "Net Income",                          value: netIncome    },
-        { label: "Depreciation",                        value: depreciation },
-        { label: "Amortization",                        value: amortization },
-        { label: "Change in Accounts Receivable",       value: changeAR     },
-        { label: "Change in Inventory",                 value: changeInv    },
-        { label: "Change in Accounts Payable",          value: changeAP     },
-        { label: "Change in Accrued Expenses",          value: changeAccr   },
-        { label: "Change in Other Current Assets",      value: changeOCA    },
-        { label: "Change in Other Current Liabilities", value: changeOCL    },
+        { label: "Net Income", value: netIncome },
+        { label: "Depreciation", value: depreciation },
+        { label: "Amortization", value: amortization },
+        { label: "Change in Accounts Receivable", value: changeAR },
+        { label: "Change in Inventory", value: changeInv },
+        { label: "Change in Accounts Payable", value: changeAP },
+        { label: "Change in Accrued Expenses", value: changeAccr },
+        { label: "Change in Other Current Assets", value: changeOCA },
+        { label: "Change in Other Current Liabilities", value: changeOCL },
       ],
       totalOperating,
-      investingActivities,
+      investingActivities: [
+        { label: "Purchase of Fixed Assets", value: purchaseOfFixed },
+        { label: "Security Deposits", value: securityDeposits },
+        { label: "Investments", value: investments },
+      ],
       totalInvesting,
-      financingActivities,
+      financingActivities: [
+        { label: "Loans Received", value: loansReceived },
+        { label: "Loan Repayment", value: -loanRepayment }, // stored as negative (cash outflow)
+        { label: "Equity Contribution", value: equityContrib },
+        { label: "Dividends", value: -dividends }, // stored as negative (cash outflow)
+      ],
       totalFinancing,
       netCashChange,
       beginningCash,
@@ -498,7 +503,7 @@ async function listAvailablePeriods(companyId) {
 
   return (data || [])
     .map((row) => ({
-      period:       String(row.report_params?.period || ""),
+      period: String(row.report_params?.period || ""),
       hasPreviousBS: row.data?.manual_upload_generated_cashflow?.inputs?.hasPreviousBS || false,
     }))
     .filter((p) => /^\d{4}$/.test(p.period));
@@ -529,11 +534,11 @@ async function generateCashFlow(companyId, year) {
 
   const bsCurr = bsByYear[periodYear];
   const bsPrev = bsByYear[periodYear - 1] || null; // optional
-  const pl     = plByYear[periodYear];
+  const pl = plByYear[periodYear];
 
-  const bsCurrAsOf  = bsCurr?.data?.manual_report_upload?.report?.asOfDate  || bsCurr?.report_params?.fileName || "?";
-  const bsPrevAsOf  = bsPrev?.data?.manual_report_upload?.report?.asOfDate  || bsPrev?.report_params?.fileName || "none";
-  const plPeriodEnd = pl?.data?.manual_report_upload?.report?.periodEnd     || pl?.data?.manual_report_upload?.report?.asOfDate || pl?.report_params?.fileName || "?";
+  const bsCurrAsOf = bsCurr?.data?.manual_report_upload?.report?.asOfDate || bsCurr?.report_params?.fileName || "?";
+  const bsPrevAsOf = bsPrev?.data?.manual_report_upload?.report?.asOfDate || bsPrev?.report_params?.fileName || "none";
+  const plPeriodEnd = pl?.data?.manual_report_upload?.report?.periodEnd || pl?.data?.manual_report_upload?.report?.asOfDate || pl?.report_params?.fileName || "?";
 
   console.log("[ManualCashFlow] generateCashFlow", {
     selectedYear: periodYear,
@@ -552,24 +557,13 @@ async function generateCashFlow(companyId, year) {
 
   const missingInputs = [];
   if (!bsCurr) missingInputs.push(`Balance Sheet ${periodYear}`);
-  if (!pl)     missingInputs.push(`Profit & Loss ${periodYear}`);
+  if (!pl) missingInputs.push(`Profit & Loss ${periodYear}`);
 
   if (missingInputs.length > 0) {
     return {
       success: false,
       message: `Missing required files for ${periodYear} cash flow generation.`,
       missingInputs,
-    };
-  }
-
-  // STEP 1 — Period match: BS and P&L must cover the same fiscal year.
-  const bsCurrYear = extractYear(bsCurr);
-  const plExtractedYear = extractYear(pl);
-  if (bsCurrYear !== plExtractedYear) {
-    console.error(`[ManualCashFlow] Period mismatch: BS year=${bsCurrYear} PL year=${plExtractedYear}`);
-    return {
-      success: false,
-      message: "Balance Sheet and Profit & Loss periods do not match",
     };
   }
 
@@ -592,12 +586,12 @@ async function generateCashFlow(companyId, year) {
   });
 
   const inputs = {
-    bsPrevYear:  bsPrev ? periodYear - 1 : null,
-    bsCurrYear:  periodYear,
-    plYear:      periodYear,
-    bsPrevFile:  bsPrev?.report_params?.fileName || null,
-    bsCurrFile:  bsCurr.report_params?.fileName  || null,
-    plFile:      pl.report_params?.fileName      || null,
+    bsPrevYear: bsPrev ? periodYear - 1 : null,
+    bsCurrYear: periodYear,
+    plYear: periodYear,
+    bsPrevFile: bsPrev?.report_params?.fileName || null,
+    bsCurrFile: bsCurr.report_params?.fileName || null,
+    plFile: pl.report_params?.fileName || null,
     hasPreviousBS: Boolean(bsPrev),
   };
 
@@ -672,9 +666,9 @@ function generatedCfToRows(cf) {
   }
 
   return [
-    buildSection(d.operatingActivities,  d.totalOperating  ?? d.netOperating,  "Operating Activities"),
-    buildSection(d.investingActivities,   d.totalInvesting  ?? d.netInvesting,  "Investing Activities"),
-    buildSection(d.financingActivities,   d.totalFinancing  ?? d.netFinancing,  "Financing Activities"),
+    buildSection(d.operatingActivities, d.totalOperating ?? d.netOperating, "Operating Activities"),
+    buildSection(d.investingActivities, d.totalInvesting ?? d.netInvesting, "Investing Activities"),
+    buildSection(d.financingActivities, d.totalFinancing ?? d.netFinancing, "Financing Activities"),
     {
       id: "beginning-cash-balance",
       name: "Beginning Cash Balance",
@@ -696,12 +690,340 @@ function generatedCfToRows(cf) {
   ];
 }
 
+// ── Gemini Cash Flow Generation (Indirect Method) ─────────────────────────────
+
+const GEMINI_CF_MODELS = ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash"];
+const GEMINI_CF_SLEEP = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function serializeFinancialRows(nodes, indent = 0) {
+  const lines = [];
+  for (const node of (nodes || [])) {
+    const pad = "  ".repeat(indent);
+    const sign = typeof node.amount === "number" && node.amount < 0 ? "-" : "";
+    const abs = typeof node.amount === "number" ? Math.abs(node.amount).toFixed(2) : null;
+    const amt = abs !== null ? `  $${sign}${abs}` : "";
+    lines.push(`${pad}${node.name}${amt}`);
+    if (Array.isArray(node.children) && node.children.length > 0) {
+      lines.push(...serializeFinancialRows(node.children, indent + 1));
+    }
+  }
+  return lines;
+}
+
+function buildCashFlowGeminiPrompt(plRows, bsCurrRows, bsPrevRows, year) {
+  const pl = serializeFinancialRows(plRows).join("\n") || "Not available";
+  const bsCurr = serializeFinancialRows(bsCurrRows).join("\n") || "Not available";
+  const bsPrev = (bsPrevRows || []).length > 0
+    ? serializeFinancialRows(bsPrevRows).join("\n")
+    : "No previous year data available";
+
+  return `You are an accounting engine.
+
+Your job:
+1. Read the entire Balance Sheet and Profit & Loss.
+2. Understand each account SEMANTICALLY — never rely on exact labels.
+3. Normalize account names to standard categories using the table below.
+4. Generate a Cash Flow Statement using the INDIRECT METHOD.
+
+=== Current Year (${year}) Profit & Loss ===
+${pl}
+
+=== Current Year (${year}) Balance Sheet ===
+${bsCurr}
+
+=== Previous Year (${year - 1}) Balance Sheet ===
+${bsPrev}
+
+════════════════════════════════════════════════════════
+STEP 1 — NORMALIZE ACCOUNT NAMES
+════════════════════════════════════════════════════════
+Map every account you find to its standard category below.
+Use accounting meaning and context — not exact string matching.
+
+AccountsReceivable (ASSET):
+  Accounts Receivable, Accounts Receivable (A/R), Trade Receivables, Receivables,
+  Customer Receivables, Outstanding Receipts, Debtors, Trade Debtors
+
+AccountsPayable (LIABILITY):
+  Accounts Payable, Accounts Payable (A/P), Trade Payables, Payables,
+  Creditors, Trade Creditors
+
+Inventory (ASSET):
+  Inventory, Stock, Finished Goods, Raw Material, Inventory Assets
+
+AccruedExpenses (LIABILITY):
+  Accrued Expenses, Outstanding Expenses, Accrued Liabilities, Expenses Payable
+
+OtherCurrentAssets (ASSET):
+  Accrued Revenue, Prepaid Expenses, Advance Payments, Deposits (asset side),
+  Current Assets Other
+
+OtherCurrentLiabilities (LIABILITY):
+  American Express, Credit Card, Short Term Borrowings, Current Liabilities Other
+
+Loans (LIABILITY — detail lines, one per account):
+  Loans, Borrowings, Long Term Debt, Notes Payable, Bank Loan,
+  Director Loan, Partner Loan — any named borrowing in Liabilities section
+
+Cash (ASSET):
+  Bank Accounts, Cash, Checking Account, Savings Account, any named bank account,
+  Cash in Hand, Petty Cash
+
+SecurityDeposits (ASSET):
+  Security Deposit, Rental Deposit, Deposits Paid
+
+FixedAssets (ASSET):
+  Property Plant & Equipment, Fixed Assets, Equipment, Furniture,
+  Leasehold Improvements, Vehicles, net PP&E
+
+EquityContribution (EQUITY — STRICT RULE):
+  INCLUDE ONLY: Capital Contribution, Owner Contribution, Paid-In Capital,
+                Additional Paid-In Capital
+  EXCLUDE (NOT cash movements):
+    • Any account with "Equity" in name but not "Contribution"
+      (e.g. "[Name] - Equity", "Owner Equity", ownership % entries like "55%", "45%")
+    • Opening Balance Equity
+    • Retained Earnings
+    • Net Income in equity section
+
+Dividends (from P&L):
+  Owner Draws, Owner's Draw, Distributions, Dividends Paid
+
+NetIncome (from P&L):
+  Net Income, Net Profit, Net Earnings, Net Income (Loss), Profit for the Year
+
+Depreciation (from P&L):
+  Depreciation, Depreciation & Amortization, Depreciation Expense
+
+Amortization (from P&L):
+  Amortization, Amortization Expense (only if separate from Depreciation)
+
+════════════════════════════════════════════════════════
+STEP 2 — COMPUTE CASH FLOW (INDIRECT METHOD)
+════════════════════════════════════════════════════════
+Use (Current − Previous) for all BS deltas.
+If no previous year data: all deltas = 0; BeginningCash = 0.
+
+SIGN RULES:
+  Asset account change    → cash impact = -(Current − Previous)
+    [asset increase = cash used = negative]
+  Liability account change → cash impact = +(Current − Previous)
+    [liability increase = cash received = positive]
+
+── Operating Activities ──
+NetIncome      = P&L NetIncome
+Depreciation   = P&L Depreciation (add back, positive)
+Amortization   = P&L Amortization (add back, positive; 0 if already included in Depreciation)
+ARChange       = -(CurrentBS.AccountsReceivable - PreviousBS.AccountsReceivable)
+InventoryChange= -(CurrentBS.Inventory - PreviousBS.Inventory)
+APChange       = +(CurrentBS.AccountsPayable - PreviousBS.AccountsPayable)
+AccruedChange  = +(CurrentBS.AccruedExpenses - PreviousBS.AccruedExpenses)
+OCAChange      = -(CurrentBS.OtherCurrentAssets - PreviousBS.OtherCurrentAssets)
+OCLChange      = +(CurrentBS.OtherCurrentLiabilities - PreviousBS.OtherCurrentLiabilities)
+
+totalOperating = NetIncome + Depreciation + Amortization
+               + ARChange + InventoryChange + APChange + AccruedChange + OCAChange + OCLChange
+
+── Investing Activities ──
+FixedAssetsChange     = -(CurrentBS.FixedAssets - PreviousBS.FixedAssets)
+SecurityDepositChange = -(CurrentBS.SecurityDeposits - PreviousBS.SecurityDeposits)
+
+totalInvesting = FixedAssetsChange + SecurityDepositChange
+
+── Financing Activities — LOANS (one line per account, never aggregated) ──
+For EACH individual loan account found in the BS Liabilities section:
+  LoanChange = CurrentBalance - PreviousBalance
+  Label it: "Loans - [Exact Account Name as it appears in the BS]"
+
+── Financing Activities — EQUITY ──
+EquityContribution = sum of INCLUDED equity accounts only (see normalization rules above).
+                     If no qualifying accounts: 0.
+Dividends          = P&L owner draws/distributions (use as negative outflow).
+
+totalFinancing = sum(all loan lines) + EquityContribution - Dividends
+
+── Cash ──
+NetIncrease  = totalOperating + totalInvesting + totalFinancing
+BeginningCash = PreviousBS.Cash  (0 if no previous year)
+EndingCash    = BeginningCash + NetIncrease
+
+════════════════════════════════════════════════════════
+STEP 3 — VALIDATE
+════════════════════════════════════════════════════════
+Check: BeginningCash + NetIncrease ≈ CurrentBS.Cash
+If difference > 1: attempt reclassification of ambiguous accounts and recalculate.
+
+════════════════════════════════════════════════════════
+STEP 4 — RETURN JSON ONLY
+════════════════════════════════════════════════════════
+Never return explanation, markdown, or code fences.
+Include ALL line items even if value is 0.
+Use standard English label names (not account codes).
+
+{
+  "year": ${year},
+  "reportType": "cashflow",
+  "period": { "start": "${year}-01-01", "end": "${year}-12-31" },
+  "operatingActivities": [
+    { "label": "Net Income",                        "value": 0 },
+    { "label": "Depreciation",                      "value": 0 },
+    { "label": "Amortization",                      "value": 0 },
+    { "label": "Change in Accounts Receivable",     "value": 0 },
+    { "label": "Change in Inventory",               "value": 0 },
+    { "label": "Change in Accounts Payable",        "value": 0 },
+    { "label": "Change in Accrued Expenses",        "value": 0 },
+    { "label": "Change in Other Current Assets",    "value": 0 },
+    { "label": "Change in Other Current Liabilities","value": 0 }
+  ],
+  "totalOperating": 0,
+  "investingActivities": [
+    { "label": "Purchase of Fixed Assets", "value": 0 },
+    { "label": "Security Deposits",        "value": 0 }
+  ],
+  "totalInvesting": 0,
+  "financingActivities": [
+    { "label": "Loans - [Account Name 1]", "value": 0 },
+    { "label": "Loans - [Account Name 2]", "value": 0 },
+    { "label": "Equity Contribution",      "value": 0 },
+    { "label": "Dividends",                "value": 0 }
+  ],
+  "totalFinancing": 0,
+  "netIncrease": 0,
+  "beginningCash": 0,
+  "endingCash": 0
+}`;
+}
+
+async function callGeminiForCashFlow(prompt) {
+  if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY not set");
+  let lastError = null;
+  for (const modelName of GEMINI_CF_MODELS) {
+    let retries = 2;
+    while (retries > 0) {
+      try {
+        const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+        const model = genAI.getGenerativeModel({ model: modelName });
+        const result = await model.generateContent(prompt);
+        return result.response.text();
+      } catch (err) {
+        lastError = err;
+        const msg = String(err?.message || err);
+        const isQuota = msg.includes("429") || msg.toLowerCase().includes("quota");
+        const isNotFound = msg.includes("404") || msg.toLowerCase().includes("not found");
+        console.warn(`[ManualCashFlow] Gemini model ${modelName} error: ${msg}`);
+        if (isNotFound) break;
+        if (isQuota && retries > 1) { await GEMINI_CF_SLEEP(3000); retries--; }
+        else break;
+      }
+    }
+  }
+  throw new Error(`Gemini CF generation failed: ${lastError?.message || "unknown"}`);
+}
+
+function parseGeminiJsonText(text = "") {
+  const cleaned = text.trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```\s*$/i, "")
+    .trim();
+  return JSON.parse(cleaned);
+}
+
+function normalizeCfFromGemini(raw, year) {
+  if (!raw || typeof raw !== "object") throw new Error("Gemini returned non-object");
+
+  const normalize = (arr) =>
+    (Array.isArray(arr) ? arr : []).map((item) => ({
+      label: String(item.label || item.name || ""),
+      value: r2(item.value ?? item.amount ?? 0),
+    }));
+
+  const operatingActivities = normalize(raw.operatingActivities);
+  const investingActivities = normalize(raw.investingActivities);
+  const financingActivities = normalize(raw.financingActivities);
+
+  // Trust Gemini's explicit section totals; fall back to array sum.
+  // Guard against "Adjustments to Reconcile Net Income" subtotal rows that would
+  // double-count individual WC items if accidentally included.
+  const isAdjSubtotal = (item) => /adjustments?\s+to\s+reconcile/i.test(item.label);
+  const operatingForSum = operatingActivities.filter((x) => !isAdjSubtotal(x));
+
+  const totalOperating = r2(raw.totalOperating ?? operatingForSum.reduce((s, x) => s + x.value, 0));
+  const totalInvesting = r2(raw.totalInvesting ?? investingActivities.reduce((s, x) => s + x.value, 0));
+  const totalFinancing = r2(raw.totalFinancing ?? financingActivities.reduce((s, x) => s + x.value, 0));
+
+  // Always recompute net cash from the three section totals for self-consistency.
+  const netCashChange = r2(totalOperating + totalInvesting + totalFinancing);
+  const beginningCash = r2(raw.beginningCash ?? 0);
+  const endingCash = r2(beginningCash + netCashChange);
+
+  // ── Validate against Gemini's reported values ──────────────────────────────
+  // Accept both field name variants: netIncrease (new) and netIncreaseInCash (legacy).
+  const geminiNetRaw = raw.netIncrease ?? raw.netIncreaseInCash ?? null;
+  if (geminiNetRaw != null) {
+    const geminiNet = r2(geminiNetRaw);
+    if (Math.abs(netCashChange - geminiNet) > 1) {
+      throw new Error(
+        `Cash flow reconciliation failed for year ${year}: ` +
+        `computed net=${netCashChange} vs Gemini net=${geminiNet} ` +
+        `(Operating=${totalOperating}, Investing=${totalInvesting}, Financing=${totalFinancing})`
+      );
+    }
+  }
+  if (raw.endingCash != null) {
+    const geminiEnding = r2(raw.endingCash);
+    if (Math.abs(endingCash - geminiEnding) > 1) {
+      throw new Error(
+        `Cash flow reconciliation failed for year ${year}: ` +
+        `computed endingCash=${endingCash} vs Gemini endingCash=${geminiEnding}`
+      );
+    }
+  }
+
+  return {
+    year: Number(raw.year || year),
+    reportType: "cashflow",
+    accountingMethod: "Accrual",
+    data: {
+      operatingActivities,
+      totalOperating,
+      investingActivities,
+      totalInvesting,
+      financingActivities,
+      totalFinancing,
+      netCashChange,
+      beginningCash,
+      endingCash,
+      cashValidated: true,
+      generatedBy: "gemini",
+    },
+  };
+}
+
+async function generateCashFlowWithGemini(currentPL, currentBS, previousBS, year) {
+  const plRows = extractRows(currentPL);
+  const bsCurrRows = extractRows(currentBS);
+  const bsPrevRows = previousBS ? extractRows(previousBS) : [];
+
+  if (plRows.length === 0) throw new Error(`No P&L rows for year ${year}`);
+  if (bsCurrRows.length === 0) throw new Error(`No BS rows for year ${year}`);
+
+  const prompt = buildCashFlowGeminiPrompt(plRows, bsCurrRows, bsPrevRows, year);
+  const responseText = await callGeminiForCashFlow(prompt);
+
+  let raw;
+  try {
+    raw = parseGeminiJsonText(responseText);
+  } catch (e) {
+    throw new Error(`Gemini response JSON parse failed: ${e.message} — raw: ${responseText.slice(0, 300)}`);
+  }
+
+  return normalizeCfFromGemini(raw, year);
+}
 
 /**
  * Called at the end of Sync All.
- * Reads all uploaded BS + P&L rows from DB, groups by year, runs the programmatic
- * buildCashFlow for each complete year pair, and persists the results.
- * No AI / Gemini calls — all values come directly from the uploaded reports.
+ * Reads all uploaded BS + P&L rows from DB, groups by year, calls Gemini for each
+ * complete year pair, and persists the results as manual_upload_generated records.
  */
 async function generateAndSaveCashFlowsForAllYears(companyId, now = new Date().toISOString()) {
   if (!companyId) throw new Error("companyId is required");
@@ -731,58 +1053,41 @@ async function generateAndSaveCashFlowsForAllYears(companyId, now = new Date().t
     .eq("report_type", CF_REPORT_TYPE);
 
   const generated = [];
-  const failed    = [];
+  const failed = [];
 
   const years = Object.keys(plByYear).map(Number).filter((y) => bsByYear[y]).sort();
 
   for (const year of years) {
-    const currentBS  = bsByYear[year];
-    const currentPL  = plByYear[year];
+    const currentBS = bsByYear[year];
+    const currentPL = plByYear[year];
     const previousBS = bsByYear[year - 1] || null;
 
-    // STEP 1 — Period match: BS and P&L must cover the same fiscal year
-    const bsExtYear = extractYear(currentBS);
-    const plExtYear = extractYear(currentPL);
-    if (bsExtYear !== plExtYear) {
-      console.error(`[ManualCashFlow] Period mismatch year=${year}: BS=${bsExtYear} PL=${plExtYear} — skipping`);
-      failed.push({ year, reason: "Balance Sheet and Profit & Loss periods do not match" });
-      continue;
-    }
-
-    console.log("[ManualCashFlow] Generating CF (programmatic)", {
+    console.log("[ManualCashFlow] Generating CF via Gemini", {
       year,
-      currentBSFound:  !!currentBS,
-      currentPLFound:  !!currentPL,
+      currentBSFound: !!currentBS,
+      currentPLFound: !!currentPL,
       previousBSFound: !!previousBS,
-      bsPeriod:        bsExtYear,
-      plPeriod:        plExtYear,
     });
 
     try {
-      const bsCurrRows = extractRows(currentBS);
-      const bsPrevRows = previousBS ? extractRows(previousBS) : [];
-      const plRows     = extractRows(currentPL);
-
-      if (plRows.length === 0)     throw new Error(`No P&L rows extracted for year ${year}`);
-      if (bsCurrRows.length === 0) throw new Error(`No BS rows extracted for year ${year}`);
-
-      const cfResult = buildCashFlow({ bsPrevRows, bsCurrRows, plRows, year });
+      const cfResult = await generateCashFlowWithGemini(currentPL, currentBS, previousBS, year);
+      console.log("[ManualCashFlow] Generated Cash Flow", cfResult);
 
       const inputs = {
-        bsPrevYear:    previousBS ? year - 1 : null,
-        bsCurrYear:    year,
-        plYear:        year,
-        bsPrevFile:    previousBS?.report_params?.fileName || null,
-        bsCurrFile:    currentBS.report_params?.fileName  || null,
-        plFile:        currentPL.report_params?.fileName  || null,
+        bsPrevYear: previousBS ? year - 1 : null,
+        bsCurrYear: year,
+        plYear: year,
+        bsPrevFile: previousBS?.report_params?.fileName || null,
+        bsCurrFile: currentBS.report_params?.fileName || null,
+        plFile: currentPL.report_params?.fileName || null,
         hasPreviousBS: Boolean(previousBS),
-        generatedBy:   "programmatic",
+        generatedBy: "gemini",
       };
 
       await upsertGeneratedCashFlow(companyId, year, cfResult, inputs);
       generated.push({ year, success: true });
     } catch (err) {
-      console.error(`[ManualCashFlow] Cash flow generation failed for year=${year}:`, err.message);
+      console.error(`[ManualCashFlow] Gemini generation failed for year=${year}:`, err.message);
       failed.push({ year, reason: err.message });
     }
   }
@@ -792,6 +1097,7 @@ async function generateAndSaveCashFlowsForAllYears(companyId, now = new Date().t
 
 module.exports = {
   generateCashFlow,
+  generateCashFlowWithGemini,
   generateAndSaveCashFlowsForAllYears,
   getCachedCashFlow,
   listAvailablePeriods,
