@@ -2,7 +2,7 @@
  * Manual Upload (Excel/PDF) Dashboard Service
  *
  * Delegates all row-parsing and KPI extraction to the backend endpoint
- * GET /manual-report-uploads/manual-upload-dashboard.
+ * GET /manual-upload/dashboard.
  *
  * The backend returns:
  *   {

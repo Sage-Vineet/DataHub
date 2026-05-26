@@ -66,6 +66,13 @@ const DASHBOARD_STATE_PAGE_KEY = "datahub-dashboard";
 const DASHBOARD_STATE_ENDPOINT = `${API_BASE_URL}/workspace-page-state/${DASHBOARD_STATE_PAGE_KEY}`;
 const DASHBOARD_STORAGE_PREFIX = "workspace-datahub-dashboard";
 
+const DASHBOARD_ENDPOINTS = {
+  quickbooks_manual: "/manual-report-uploads/qms-dashboard",
+  manual_upload: "/manual-upload/dashboard",
+  quickbooks_online: "/dashboard",
+  manual_gl: "/manual-gl/dashboard",
+};
+
 const KPI_ICON_BY_LABEL = {
   "Total Revenue": CircleDollarSign,
   "Total Expenses": CreditCard,
@@ -277,6 +284,10 @@ export default function WorkspaceDashboardDatahub() {
   // True once the mount effect has run — prevents the auto-save effect from
   // firing before state is properly initialised
   const hasRestoredRef = useRef(false);
+  // Tracks the last source that the bootstrap loaded data for — used to skip
+  // redundant bootstrap re-runs when contextActiveSource fires but the live
+  // source hasn't actually changed (e.g., null → "quickbooks_manual" on init).
+  const lastBootstrappedSourceRef = useRef(null);
 
   const visibleDynamicStats = useMemo(() => {
     if (!selectedKpiLabels.length) return dynamicStats;
@@ -594,8 +605,7 @@ export default function WorkspaceDashboardDatahub() {
   // ── Data fetchers ──────────────────────────────────────────────────────
 
   const loadManualUploadDashboardData = useCallback(async (year = "all") => {
-    console.log(`[DASHBOARD] activeSource=manual_upload endpoint=/manual-report-uploads/manual-upload-dashboard clientId=${clientId}`);
-    console.log("[DATA SOURCE] using=Manual Upload Source QMSAccess=false");
+    console.log(`[DASHBOARD] activeSource=manual_upload endpoint=${DASHBOARD_ENDPOINTS.manual_upload} dataSource=ManualUpload clientId=${clientId}`);
     setIsLoading(true);
     try {
       const result = await loadManualUploadDashboard(year, { clientId });
@@ -616,8 +626,7 @@ export default function WorkspaceDashboardDatahub() {
   }, [clientId]);
 
   const loadQMSDashboardData = useCallback(async (year = "all") => {
-    console.log(`[DASHBOARD] activeSource=quickbooks_manual endpoint=/manual-report-uploads/qms-dashboard clientId=${clientId}`);
-    console.log("[DATA SOURCE] using=QuickBooks Manual Source QMSAccess=true");
+    console.log(`[DASHBOARD] activeSource=quickbooks_manual endpoint=${DASHBOARD_ENDPOINTS.quickbooks_manual} dataSource=QMS clientId=${clientId}`);
     setIsLoading(true);
     try {
       const result = await loadQMSDashboard(year, { clientId });
@@ -827,12 +836,16 @@ export default function WorkspaceDashboardDatahub() {
     setInvoicesData([]);
     setMonthlyInsights([]);
 
-    // Clear stale session snapshot so old source data can never bleed into the new source.
+    // Clear stale session snapshot and generic dashboard cache keys so old source
+    // data can never bleed into the new source.
     saveStoredDashboardState(clientId, user?.id, null);
+    sessionStorage.removeItem("dashboardData");
+    sessionStorage.removeItem("dashboardKpis");
+    sessionStorage.removeItem("financialTrends");
 
     // Persist selection server-side and update DataSourceContext + localStorage
     // so that contextActiveSource and localStorage stay in sync with the switch.
-    setSelectedReportSource(newSourceKey).catch(() => null);
+    setSelectedReportSource(newSourceKey, { clientId, confirmSwitch: true }).catch(() => null);
     emitWorkspaceDataSourceUpdated({ clientId, sourceKey: newSourceKey });
 
     if (newIsManual) {
@@ -893,8 +906,27 @@ export default function WorkspaceDashboardDatahub() {
       // 1. Always fetch the authoritative source from the server first.
       //    This ensures a source change on the Connections page is immediately
       //    reflected here, even if the session cache still has the old source.
-      const sourcesData = await getReportSources().catch(() => null);
-      const liveSource = sourcesData?.selectedSource || REPORT_SOURCE_KEYS.QUICKBOOKS;
+      const sourcesData = await getReportSources({ clientId }).catch(() => null);
+      const apiSource = normalizeReportSourceKey(sourcesData?.selectedSource) || REPORT_SOURCE_KEYS.QUICKBOOKS;
+
+      // contextActiveSource is what the user sees in the header (set from localStorage
+      // + DOM events). If it disagrees with the DB, trust the UI and sync the DB in
+      // the background — this prevents the header showing "Manual Upload" while the
+      // dashboard fetches from the QMS endpoint (or vice versa).
+      const contextNorm = contextActiveSource ? normalizeReportSourceKey(contextActiveSource) : null;
+      const liveSource = contextNorm || apiSource;
+
+      if (contextNorm && contextNorm !== apiSource) {
+        console.log(`[DASHBOARD] Source mismatch: context=${contextNorm} api=${apiSource} — syncing DB to context`);
+        setSelectedReportSource(contextNorm, { clientId, confirmSwitch: true }).catch(() => null);
+      }
+
+      // Skip re-run if we already loaded data for this exact source
+      // (prevents double-loading when contextActiveSource fires its initial
+      // null→value transition while the live source hasn't actually changed).
+      if (hasRestoredRef.current && lastBootstrappedSourceRef.current === liveSource) return;
+      lastBootstrappedSourceRef.current = liveSource;
+
       const liveIsManual = liveSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD;
       const liveIsQBManual = liveSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
       setSelectedSource(liveSource);
@@ -983,8 +1015,7 @@ export default function WorkspaceDashboardDatahub() {
 
     bootstrap();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clientId, user?.id, loadManualUploadDashboardData, loadQMSDashboardData]); // Re-run when client, user, or data loader changes
+  }, [clientId, user?.id, loadManualUploadDashboardData, loadQMSDashboardData, contextActiveSource]);
 
   // ── Auto-save: persist state to sessionStorage after every meaningful change
   //
