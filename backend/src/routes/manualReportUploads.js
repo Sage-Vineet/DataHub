@@ -287,11 +287,11 @@ router.get("/manual-report-uploads/reports/:statementType/latest", async (req, r
 
     const reportWithDate = report
       ? {
-          ...report,
-          asOfDate: resolvedAsOfDate,
-          periodStart: resolvedPeriodStart,
-          periodEnd: resolvedPeriodEnd,
-        }
+        ...report,
+        asOfDate: resolvedAsOfDate,
+        periodStart: resolvedPeriodStart,
+        periodEnd: resolvedPeriodEnd,
+      }
       : null;
 
     return res.json({
@@ -342,12 +342,12 @@ router.get("/manual-report-uploads/reports/:statementType/all", async (req, res)
         folderName: row.report_params?.folderName || null,
         data: report
           ? {
-              rows: report.rows || [],
-              asOfDate: report.asOfDate || null,
-              periodStart: report.periodStart || null,
-              periodEnd: report.periodEnd || null,
-              ...(report.periods?.length ? { periods: report.periods } : {}),
-            }
+            rows: report.rows || [],
+            asOfDate: report.asOfDate || null,
+            periodStart: report.periodStart || null,
+            periodEnd: report.periodEnd || null,
+            ...(report.periods?.length ? { periods: report.periods } : {}),
+          }
           : null,
         updatedAt: row.updated_at || null,
         lastSyncedAt: row.last_synced_at || null,
@@ -390,12 +390,12 @@ router.get("/manual-report-uploads/qms-reports/:statementType/all", async (req, 
         folderName: row.report_params?.folderName || null,
         data: report
           ? {
-              rows: report.rows || [],
-              asOfDate: report.asOfDate || null,
-              periodStart: report.periodStart || null,
-              periodEnd: report.periodEnd || null,
-              ...(report.periods?.length ? { periods: report.periods } : {}),
-            }
+            rows: report.rows || [],
+            asOfDate: report.asOfDate || null,
+            periodStart: report.periodStart || null,
+            periodEnd: report.periodEnd || null,
+            ...(report.periods?.length ? { periods: report.periods } : {}),
+          }
           : null,
         updatedAt: row.updated_at || null,
         lastSyncedAt: row.last_synced_at || null,

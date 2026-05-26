@@ -91,7 +91,7 @@ router.get("/qb-cashflow", async (req, res) => {
       cached?.data &&
       methodOk &&
       (!start_date || storedParams.start_date === start_date) &&
-      (!end_date   || storedParams.end_date   === end_date)
+      (!end_date || storedParams.end_date === end_date)
     );
 
     if (cachedIsExact) {
@@ -132,7 +132,7 @@ router.get("/qb-cashflow", async (req, res) => {
         );
       } else {
         const storedStartAfter = start_date && storedParams.start_date && storedParams.start_date > start_date;
-        const storedEndBefore  = end_date   && storedParams.end_date   && storedParams.end_date   < end_date;
+        const storedEndBefore = end_date && storedParams.end_date && storedParams.end_date < end_date;
 
         if (!storedStartAfter && !storedEndBefore) {
           return res.json({

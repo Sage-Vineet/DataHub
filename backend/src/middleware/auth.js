@@ -100,4 +100,11 @@ function requireRole(roles) {
   };
 }
 
-module.exports = { requireAuth, requireRole };
+function invalidateUserCache(userId) {
+  if (!userId) return;
+  const key = String(userId);
+  _userCache.delete(key);
+  _userPromiseCache.delete(key);
+}
+
+module.exports = { requireAuth, requireRole, invalidateUserCache };

@@ -22,6 +22,7 @@ const REQUEST_CATEGORIES = ["Finance", "Legal", "Compliance", "HR", "Tax", "M&A"
 const RESPONSE_TYPES = ["Upload", "Narrative", "Both"];
 const REQUEST_STATUSES = ["pending", "in-review", "completed", "blocked"];
 const APPROVAL_STATUSES = ["pending", "approved"];
+const PRIORITY_VALUES = ["critical", "high", "medium", "low"];
 
 /**
  * Normalizes and validates request input
@@ -32,7 +33,7 @@ function validateAndNormalizeRequest(input = {}, fallbackCreatedBy, options = {}
   const description = typeof input.description === "string" ? input.description.trim() : "";
   const category = typeof input.category === "string" ? input.category.trim() : "";
   const responseType = typeof input.response_type === "string" ? input.response_type.trim() : "";
-  const priority = typeof input.priority === "string" ? input.priority.trim() : "";
+  const priority = typeof input.priority === "string" ? input.priority.trim().toLowerCase() : "";
   const status = options.forceStatus || (typeof input.status === "string" ? input.status.trim().toLowerCase() : "pending");
   const dueDate = typeof input.due_date === "string" ? input.due_date.trim() : "";
   const assignedTo = typeof input.assigned_to === "string" && input.assigned_to.trim()
@@ -58,14 +59,16 @@ function validateAndNormalizeRequest(input = {}, fallbackCreatedBy, options = {}
   if (!RESPONSE_TYPES.includes(responseType)) {
     errors.push(`response_type must be one of: ${RESPONSE_TYPES.join(", ")}`);
   }
-  if (!priority) errors.push("priority is required");
+  if (!PRIORITY_VALUES.includes(priority.toLowerCase())) {
+    errors.push(`priority must be one of: ${PRIORITY_VALUES.join(", ")}`);
+  }
   if (!REQUEST_STATUSES.includes(status)) {
     errors.push(`status must be one of: ${REQUEST_STATUSES.join(", ")}`);
   }
   
   if (!isValidDate(dueDate)) {
     errors.push("due_date must be in YYYY-MM-DD format");
-  } else if (!isFutureDate(dueDate)) {
+  } else if (!options.allowPastDates && !isFutureDate(dueDate)) {
     errors.push("due_date must be a future date");
   }
   
@@ -242,6 +245,7 @@ async function createRequestsBulk(companyId, items, createdBy) {
       approvalStatus: "approved",
       approvedBy: createdBy,
       forceStatus: "pending",
+      allowPastDates: true,
     });
     return normalized;
   });

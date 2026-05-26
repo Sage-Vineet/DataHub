@@ -36,7 +36,7 @@ function isExactPeriodMatch(requestedParams, storedParams = {}, cachedData = nul
   const { start_date, end_date, accounting_method } = requestedParams;
   const datesMatch =
     (!start_date || storedParams.start_date === start_date) &&
-    (!end_date   || storedParams.end_date   === end_date);
+    (!end_date || storedParams.end_date === end_date);
   const methodMatch = accountingMethodMatches(accounting_method, storedParams, cachedData);
   return datesMatch && methodMatch;
 }

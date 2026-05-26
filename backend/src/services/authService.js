@@ -2,7 +2,23 @@ const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const { Pool } = require("pg");
 const { supabase } = require("../db");
-const { attachAssignedCompanies, flattenUser, getUserByEmail } = require("./userService");
+
+let _authPool = null;
+function getAuthPool() {
+  if (!process.env.DATABASE_URL) return null;
+  if (!_authPool) {
+    _authPool = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: { rejectUnauthorized: false },
+      max: 5,
+      connectionTimeoutMillis: 10000,
+      idleTimeoutMillis: 30000,
+    });
+    _authPool.on("error", () => {});
+  }
+  return _authPool;
+}
+const { attachAssignedCompanies, flattenUser, getUserByEmail, getUserById } = require("./userService");
 const { CLIENT_STATIC_PASSWORD } = require("../config/demoUsers");
 
 /**
@@ -58,8 +74,24 @@ async function syncUserCompanyAssignment(userId, companyId) {
   const { error } = await supabase
     .from("user_companies")
     .upsert({ user_id: userId, company_id: companyId }, { onConflict: "user_id,company_id" });
-  
-  if (error) console.error("❌ Error syncing user company assignment:", error.message);
+
+  if (error) {
+    console.error("❌ Error syncing user company assignment via Supabase:", error.message);
+    // Pg fallback — critical for post-migration state where Supabase RLS may block
+    const pool = getAuthPool();
+    if (pool) {
+      try {
+        await pool.query(
+          `INSERT INTO user_companies (user_id, company_id)
+           VALUES ($1, $2)
+           ON CONFLICT (user_id, company_id) DO NOTHING`,
+          [userId, companyId],
+        );
+      } catch (pgErr) {
+        console.error("❌ pg fallback for syncUserCompanyAssignment also failed:", pgErr.message);
+      }
+    }
+  }
 }
 
 /**
@@ -105,9 +137,12 @@ async function authenticate(email, password) {
     throw new Error("Invalid credentials");
   }
 
+  let freshUser = user;
   if (user.role === "buyer" && rawPassword === CLIENT_STATIC_PASSWORD) {
     await syncUserCompanyAssignment(user.id, user.company_id);
     await ensureDefaultFolders(user.company_id, user.id);
+    // Re-fetch so freshUser has the correct effective_role and company_ids after sync
+    freshUser = (await getUserById(user.id)) || user;
   } else {
     const { data: authData } = await supabase
       .from("users")
@@ -129,12 +164,12 @@ async function authenticate(email, password) {
     if (!ok) throw new Error("Invalid credentials");
   }
 
-  const token = signToken(user.id);
-  
+  const token = signToken(freshUser.id);
+
   // Final cleanup of user object for response
-  const safeUser = { ...user };
+  const safeUser = { ...freshUser };
   delete safeUser.password_hash;
-  
+
   return { user: safeUser, token };
 }
 

@@ -1,4 +1,4 @@
-﻿import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
   CheckCircle2,
@@ -58,6 +58,18 @@ const PRIORITY_META = {
 
 const CATEGORY_ORDER = ['Finance', 'Legal', 'Compliance', 'HR', 'Tax', 'M&A', 'Other'];
 
+function resolveCompanyId(user) {
+  return (
+    user?.company_id ||
+    user?.companyId ||
+    user?.company_ids?.[0] ||
+    user?.companyIds?.[0] ||
+    user?.assigned_companies?.[0]?.id ||
+    user?.assignedCompanies?.[0]?.id ||
+    null
+  );
+}
+
 function mapToCategory(item) {
   const text = `${item.name} ${item.subLabel || ''} ${item.description || ''}`.toLowerCase();
   if (text.includes('revenue recognition') || text.includes('trial balance')) return 'Finance';
@@ -83,44 +95,34 @@ function normalizeWorkflowStatus(status) {
 
 function getDisplayStatus(workflowStatus, dueDate) {
   if (workflowStatus === 'blocked') return 'blocked';
+  if (workflowStatus === 'completed') return 'completed';
   const date = new Date(dueDate);
-  const isOverdue = date < new Date() && workflowStatus !== 'completed';
-  if (isOverdue) return 'overdue';
+  if (!Number.isNaN(date.getTime()) && date < new Date()) return 'overdue';
   return workflowStatus;
 }
 
 function normalizePriority(priority) {
-  const normalized = `${priority ?? ''}`.trim();
-  return normalized || 'medium';
+  return `${priority ?? ''}`.trim() || 'medium';
 }
 
 function getReminderFrequencyLabel(priority) {
-  const normalized = `${priority ?? ''}`.trim().toLowerCase();
-  if (normalized === 'critical' || normalized === 'high') return 'daily';
-  if (normalized === 'medium') return 'every 2 days';
+  const p = `${priority ?? ''}`.trim().toLowerCase();
+  if (p === 'critical' || p === 'high') return 'daily';
+  if (p === 'medium') return 'every 2 days';
   return 'weekly';
 }
 
 function getPriorityMeta(priority) {
-  const normalized = `${priority ?? ''}`.trim().toLowerCase();
-  if (PRIORITY_META[normalized]) return PRIORITY_META[normalized];
-  return {
-    label: `${priority || 'Custom'}`,
-    bg: '#DBEAFE',
-    color: '#1D4ED8',
-  };
+  const p = `${priority ?? ''}`.trim().toLowerCase();
+  return PRIORITY_META[p] || { label: `${priority || 'Custom'}`, bg: '#DBEAFE', color: '#1D4ED8' };
 }
 
 function normalizeType(item) {
   const type = (item.responseType || '').toLowerCase();
   const hasFolderBinding = Boolean((item.subLabel || '').trim());
-  if (type === 'upload') {
-    return hasFolderBinding ? 'Both' : item.responseType;
-  }
+  if (type === 'upload') return hasFolderBinding ? 'Both' : item.responseType;
   if (type === 'both') return item.responseType;
-  if (type === 'narrative') {
-    return hasFolderBinding ? 'Both' : item.responseType;
-  }
+  if (type === 'narrative') return hasFolderBinding ? 'Both' : item.responseType;
   return item.documents?.length ? 'Both' : (hasFolderBinding ? 'Both' : 'Narrative');
 }
 
@@ -157,7 +159,10 @@ function StatusBadge({ status }) {
   const meta = STATUS_META[status] || STATUS_META.pending;
   const Icon = meta.icon;
   return (
-    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold" style={{ background: meta.bg, color: meta.color }}>
+    <span
+      className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold"
+      style={{ background: meta.bg, color: meta.color }}
+    >
       <Icon size={11} />
       {meta.label}
     </span>
@@ -177,15 +182,16 @@ function mapApiRequestToUi(request) {
     subLabel: request.sub_label || '',
     description: request.description || 'No description provided.',
     category,
-    responseType: normalizeType({
-      responseType: request.response_type || '',
-      subLabel: request.sub_label || '',
-    }),
+    responseType: normalizeType({ responseType: request.response_type || '', subLabel: request.sub_label || '' }),
     priority: normalizePriority(request.priority),
     workflowStatus: normalizeWorkflowStatus(request.status),
     dueDate: request.due_date ? request.due_date.slice(0, 10) : formatToday(),
     createdAt: request.created_at ? request.created_at.slice(0, 10) : formatToday(),
-    updatedAt: request.updated_at ? request.updated_at.slice(0, 10) : (request.created_at ? request.created_at.slice(0, 10) : formatToday()),
+    updatedAt: request.updated_at
+      ? request.updated_at.slice(0, 10)
+      : request.created_at
+      ? request.created_at.slice(0, 10)
+      : formatToday(),
     assignedTo: request.assigned_to || 'Unassigned',
     visible: request.visible !== false,
     narrativeResponse: '',
@@ -211,14 +217,14 @@ function CategoryCard({ category, requestsInCategory, onClick }) {
   const meta = CATEGORY_META[category];
   const Icon = meta.icon;
   const total = requestsInCategory.length;
-  const completed = requestsInCategory.filter(r => r.workflowStatus === 'completed').length;
+  const completed = requestsInCategory.filter((r) => r.workflowStatus === 'completed').length;
   const pending = total - completed;
   const pct = total ? Math.round((completed / total) * 100) : 0;
 
   return (
     <button
       onClick={onClick}
-      className="text-left bg-white rounded-2xl shadow-card hover:shadow-hover p-5 transition-all duration-200 hover:-translate-y-0.5 border border-transparent hover:border-[#8BC53D]/30"
+      className="border border-transparent text-left bg-white rounded-2xl shadow-card hover:shadow-hover p-5 transition-all duration-200 hover:-translate-y-0.5 hover:border-[#8BC53D]/30"
     >
       <div className="flex items-center justify-between mb-4">
         <div className="w-11 h-11 rounded-xl flex items-center justify-center" style={{ background: meta.bg }}>
@@ -238,6 +244,7 @@ function CategoryCard({ category, requestsInCategory, onClick }) {
 
 function RequestRow({ item, onView }) {
   const priority = getPriorityMeta(item.priority);
+  const displayStatus = item.status || getDisplayStatus(item.workflowStatus, item.dueDate);
   return (
     <tr className="border-b border-gray-50 hover:bg-gray-50/70 transition-colors">
       <td className="px-4 py-3">
@@ -252,8 +259,8 @@ function RequestRow({ item, onView }) {
           {priority.label}
         </span>
       </td>
-      <td className="px-4 py-3 text-center text-sm font-semibold text-[#050505]">{item.linkedDocuments.length}</td>
-      <td className="px-4 py-3"><StatusBadge status={item.status} /></td>
+      <td className="px-4 py-3 text-center text-sm font-semibold text-[#050505]">{item.linkedDocuments?.length || 0}</td>
+      <td className="px-4 py-3"><StatusBadge status={displayStatus} /></td>
       <td className="px-4 py-3 text-center">
         <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${item.visible ? 'bg-[#E6F3D3] text-[#476E2C]' : 'bg-gray-100 text-[#A5A5A5]'}`}>
           {item.visible ? 'Yes' : 'No'}
@@ -277,17 +284,15 @@ function RequestTable({ rows, onView }) {
       <table className="w-full min-w-[980px]">
         <thead>
           <tr className="bg-gray-50 border-b border-gray-100">
-            <th className="px-4 py-3 text-left text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Request Name</th>
-            <th className="px-4 py-3 text-left text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Type</th>
-            <th className="px-4 py-3 text-left text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Priority</th>
-            <th className="px-4 py-3 text-center text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Documents Count</th>
-            <th className="px-4 py-3 text-left text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Status</th>
-            <th className="px-4 py-3 text-center text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Client Visibility</th>
-            <th className="px-4 py-3 text-center text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Action</th>
+            {['Request Name', 'Type', 'Priority', 'Documents Count', 'Status', 'Client Visibility', 'Action'].map((h) => (
+              <th key={h} className={`px-4 py-3 text-xs font-semibold text-[#6D6E71] uppercase tracking-wide ${['Documents Count', 'Client Visibility', 'Action'].includes(h) ? 'text-center' : 'text-left'}`}>
+                {h}
+              </th>
+            ))}
           </tr>
         </thead>
         <tbody>
-          {rows.map(r => <RequestRow key={r.id} item={r} onView={onView} />)}
+          {rows.map((r) => <RequestRow key={r.id} item={r} onView={onView} />)}
         </tbody>
       </table>
     </div>
@@ -300,22 +305,22 @@ function CategoryGroupedTable({ grouped, onView }) {
       <table className="w-full min-w-[980px]">
         <thead>
           <tr className="bg-gray-50 border-b border-gray-100">
-            {['Request Name', 'Type', 'Priority', 'Documents', 'Status', 'Visibility', 'Action'].map(h => (
+            {['Request Name', 'Type', 'Priority', 'Documents', 'Status', 'Visibility', 'Action'].map((h) => (
               <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">{h}</th>
             ))}
           </tr>
         </thead>
         <tbody>
-          {grouped.map(g => {
-            const meta = CATEGORY_META[g.category];
+          {grouped.map((g) => {
+            const meta = CATEGORY_META[g.category] || CATEGORY_META.Other;
             const Icon = meta.icon;
-            const rows = g.items.map(r => ({ ...r, status: getDisplayStatus(r.workflowStatus, r.dueDate) }));
-            const completed = rows.filter(r => r.status === 'completed').length;
+            const rows = g.items.map((r) => ({ ...r, status: getDisplayStatus(r.workflowStatus, r.dueDate) }));
+            const completed = rows.filter((r) => r.status === 'completed').length;
             const pct = rows.length ? Math.round((completed / rows.length) * 100) : 0;
             return (
               <Fragment key={g.category}>
                 <tr>
-                  <td colSpan={7} className="px-4 py-2.5 border-y border-gray-100" style={{ background: meta.bg + '60' }}>
+                  <td colSpan={7} className="px-4 py-2.5 border-y border-gray-100" style={{ background: `${meta.bg}60` }}>
                     <div className="flex items-center gap-2.5">
                       <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: meta.bg }}>
                         <Icon size={14} style={{ color: meta.color }} />
@@ -333,7 +338,7 @@ function CategoryGroupedTable({ grouped, onView }) {
                 </tr>
                 {rows.length === 0 ? (
                   <tr><td colSpan={7} className="px-4 py-4 text-center text-xs text-[#A5A5A5]">No requests in this category</td></tr>
-                ) : rows.map(r => <RequestRow key={r.id} item={r} onView={onView} />)}
+                ) : rows.map((r) => <RequestRow key={r.id} item={r} onView={onView} />)}
               </Fragment>
             );
           })}
@@ -358,11 +363,7 @@ function FileUpload({ onAddFiles, duplicateNames }) {
       <div
         onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
         onDragLeave={() => setDragging(false)}
-        onDrop={(e) => {
-          e.preventDefault();
-          setDragging(false);
-          processFiles(Array.from(e.dataTransfer.files));
-        }}
+        onDrop={(e) => { e.preventDefault(); setDragging(false); processFiles(Array.from(e.dataTransfer.files)); }}
         onClick={() => inputRef.current?.click()}
         className={`border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-all ${dragging ? 'border-[#8BC53D] bg-[#E6F3D3]/40' : 'border-gray-200 hover:border-[#00B0F0]/40 hover:bg-gray-50'}`}
       >
@@ -383,9 +384,7 @@ function FileUpload({ onAddFiles, duplicateNames }) {
           onChange={(e) => processFiles(Array.from(e.target.files || []))}
         />
       </div>
-      <p className="text-[11px] text-[#A5A5A5] mt-2">
-        Files can be attached to multiple requests. Warn on duplicates.
-      </p>
+      <p className="text-[11px] text-[#A5A5A5] mt-2">Files can be attached to multiple requests. Warn on duplicates.</p>
       {duplicateNames.length > 0 && (
         <div className="mt-2 px-3 py-2 rounded-lg bg-[#FFF7ED] border border-[#FDBA74]">
           <p className="text-xs text-[#C2410C] font-medium">Duplicate warning: {duplicateNames.join(', ')}</p>
@@ -415,34 +414,27 @@ function RequestDetailPage({ onBack, request, allRequests, onSubmitResponse, err
   const due = new Date(request.dueDate);
   const isOverdue = due < new Date() && request.workflowStatus !== 'completed' && request.workflowStatus !== 'blocked';
   const currentStatus = getDisplayStatus(request.workflowStatus, request.dueDate);
-  const categoryIcon = CATEGORY_META[request.category].icon;
-  const CategoryIcon = categoryIcon;
+  const catMeta = CATEGORY_META[request.category] || CATEGORY_META.Other;
+  const CategoryIcon = catMeta.icon;
   const isReadOnly = request.workflowStatus === 'completed' || request.workflowStatus === 'blocked';
   const canUpload = !isReadOnly && (request.responseType === 'Upload' || request.responseType === 'Both');
   const canNarrative = request.responseType === 'Narrative' || request.responseType === 'Both';
   const hasNarrative = narrativeDraft.trim().length > 0;
   const hasPendingFiles = pendingFiles.length > 0;
   const canSave = !isReadOnly && (hasNarrative || hasPendingFiles);
-
-  const allLinkedNames = allRequests.flatMap(r => r.linkedDocuments.map(d => d.name.toLowerCase()));
+  const allLinkedNames = allRequests.flatMap((r) => (r.linkedDocuments || []).map((d) => d.name.toLowerCase()));
 
   const addFiles = (files) => {
     if (isReadOnly) return;
-    const duplicates = files
-      .map(f => f.name)
-      .filter(name => allLinkedNames.includes(name.toLowerCase()));
-
+    const duplicates = files.map((f) => f.name).filter((name) => allLinkedNames.includes(name.toLowerCase()));
     setDuplicateWarning(duplicates);
-    setPendingFiles((current) => [...current, ...files]);
+    setPendingFiles((prev) => [...prev, ...files]);
   };
 
   const submitResponse = async () => {
     if (!canSave || submitting) return;
     setSubmitting(true);
-    const ok = await onSubmitResponse?.(request, {
-      narrative: narrativeDraft.trim(),
-      files: pendingFiles,
-    });
+    const ok = await onSubmitResponse?.(request, { narrative: narrativeDraft.trim(), files: pendingFiles });
     if (ok) {
       setPendingFiles([]);
       setSubmitting(false);
@@ -455,134 +447,130 @@ function RequestDetailPage({ onBack, request, allRequests, onSubmitResponse, err
   return (
     <div className="space-y-6">
       <div className="bg-[#F8FAFC] rounded-2xl p-4 sm:p-5 lg:p-7">
-          {error && (
-            <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">{error}</div>
-          )}
-          {success && (
-            <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm text-emerald-700">{success}</div>
-          )}
-          <div className="flex items-center justify-between mb-4">
-            <button onClick={onBack} className="flex items-center gap-2 text-sm text-[#6D6E71] hover:text-[#050505] transition-colors">
-              <ArrowLeft size={14} /> Back
-            </button>
-            <button onClick={onBack} className="text-[#A5A5A5] hover:text-[#050505] p-1"><X size={18} /></button>
-          </div>
+        {error && (
+          <div className="mb-4 rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700">{error}</div>
+        )}
+        {success && (
+          <div className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm text-emerald-700">{success}</div>
+        )}
+        <div className="flex items-center justify-between mb-4">
+          <button onClick={onBack} className="flex items-center gap-2 text-sm text-[#6D6E71] hover:text-[#050505] transition-colors">
+            <ArrowLeft size={14} /> Back
+          </button>
+          <button onClick={onBack} className="text-[#A5A5A5] hover:text-[#050505] p-1"><X size={18} /></button>
+        </div>
 
-          <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
-            <div className="space-y-5">
-              <div className="rounded-2xl bg-white p-5 shadow-card">
-                <div className="mb-3 flex flex-wrap items-center gap-2">
-                  <StatusBadge status={currentStatus} />
-                </div>
-                <p className="text-xs font-semibold uppercase tracking-wide text-[#A5A5A5]">{request.subLabel || request.category}</p>
-                <h2 className="mt-2 text-2xl font-bold leading-tight text-[#050505] sm:text-3xl">{request.name}</h2>
-                <p className="mt-4 rounded-xl border border-gray-100 bg-gray-50 p-4 text-sm leading-6 text-[#4B5563]">{request.description}</p>
+        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+          <div className="space-y-5">
+            <div className="rounded-2xl bg-white p-5 shadow-card">
+              <div className="mb-3 flex flex-wrap items-center gap-2">
+                <StatusBadge status={currentStatus} />
               </div>
-
-              {isReadOnly && (
-                <div className="rounded-2xl border border-gray-100 bg-white p-4 shadow-card">
-                  <p className="text-sm text-[#6D6E71]">
-                    This request is currently {request.workflowStatus === 'completed' ? 'completed' : 'in review'}. Responses are locked and view-only.
-                  </p>
-                </div>
-              )}
-
-              {canUpload && (
-                <FileUpload onAddFiles={addFiles} duplicateNames={duplicateWarning} />
-              )}
-
-              <div className="rounded-2xl bg-white p-5 shadow-card">
-                <h3 className="font-semibold text-[#050505] mb-3">Linked Documents ({request.linkedDocuments.length})</h3>
-                <div className="space-y-2">
-                  {request.linkedDocuments.length === 0 && pendingFiles.length === 0 && (
-                    <p className="rounded-xl border border-dashed border-gray-200 px-4 py-5 text-center text-sm text-[#A5A5A5]">No documents uploaded yet.</p>
-                  )}
-                  {request.linkedDocuments.map(doc => (
-                    <div key={doc.id} className="flex items-center gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors">
-                      <FileText size={15} className="text-[#00B0F0]" />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-[#050505] truncate">{doc.name}</p>
-                        <p className="text-xs text-[#A5A5A5]">{doc.uploadedBy} · {doc.uploadedAt}</p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setPreviewDocument(doc)}
-                        disabled={!doc.fileUrl}
-                        className="rounded-lg border border-[#D8E2F0] bg-white px-3 py-1.5 text-xs font-semibold text-[#05164D] transition-colors hover:bg-[#F8FAFC] disabled:cursor-not-allowed disabled:border-gray-200 disabled:bg-gray-100 disabled:text-[#A5A5A5]"
-                      >
-                        View
-                      </button>
-                      <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#E6F3D3] text-[#476E2C]">Client Visible</span>
-                    </div>
-                  ))}
-                  {pendingFiles.map((file, index) => (
-                    <div key={`${file.name}-${index}`} className="flex items-center gap-3 rounded-xl bg-[#EFF6FF] p-3">
-                      <FileText size={15} className="text-[#2563EB]" />
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-medium text-[#050505]">{file.name}</p>
-                        <p className="text-xs text-[#6D6E71]">Ready to submit</p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {canNarrative && (
-                <div className="rounded-2xl bg-white p-5 shadow-card">
-                  <h3 className="font-semibold text-[#050505] mb-3">Narrative Response</h3>
-                  <textarea
-                    rows={6}
-                    value={narrativeDraft}
-                    onChange={(e) => setNarrativeDraft(e.target.value)}
-                    placeholder="Enter explanation, comments, or notes related to this request"
-                    disabled={isReadOnly}
-                    className={`w-full px-4 py-3 rounded-xl border text-sm resize-none ${isReadOnly ? 'bg-gray-50 text-[#6D6E71] border-gray-100' : 'border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]'}`}
-                  />
-                </div>
-              )}
-
-              {!isReadOnly && (
-                <div className="sticky bottom-3 rounded-2xl border border-gray-200 bg-white/95 p-4 shadow-card backdrop-blur">
-                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                    <p className="text-xs text-[#6D6E71]">
-                      Add a narrative response or at least one document before saving.
-                    </p>
-                    <button
-                      type="button"
-                      onClick={submitResponse}
-                      disabled={!canSave || submitting}
-                      className="rounded-xl bg-[#8BC53D] px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#476E2C] disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-[#A5A5A5]"
-                    >
-                      {submitting ? 'Saving...' : 'Save Response'}
-                    </button>
-                  </div>
-                </div>
-              )}
+              <p className="text-xs font-semibold uppercase tracking-wide text-[#A5A5A5]">{request.subLabel || request.category}</p>
+              <h2 className="mt-2 text-2xl font-bold leading-tight text-[#050505] sm:text-3xl">{request.name}</h2>
+              <p className="mt-4 rounded-xl border border-gray-100 bg-gray-50 p-4 text-sm leading-6 text-[#4B5563]">{request.description}</p>
             </div>
 
-            <aside className="space-y-4 xl:sticky xl:top-5 xl:h-fit">
-              <div className="rounded-2xl bg-white p-5 shadow-card">
-                <h3 className="mb-4 font-semibold text-[#050505]">Request Summary</h3>
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
-                  {[
-                    { label: 'Current Status', value: <StatusBadge status={currentStatus} /> },
-                    { label: 'Priority', value: <span className="inline-flex rounded-full px-2.5 py-1 text-xs font-bold" style={{ background: priority.bg, color: priority.color }}>{priority.label}</span> },
-                    { label: 'Category', value: <span className="inline-flex items-center gap-1.5 font-semibold text-[#050505]"><CategoryIcon size={14} style={{ color: CATEGORY_META[request.category].color }} />{request.category}</span> },
-                    { label: 'Due Date', value: <span className={`font-semibold ${isOverdue ? 'text-[#B91C1C]' : 'text-[#050505]'}`}>{request.dueDate}</span> },
-                    { label: 'Response Type', value: <span className="font-semibold text-[#050505]">{request.responseType}</span> },
-                    { label: 'Assigned To', value: <span className="font-semibold text-[#050505]">{request.assignedTo}</span> },
-                    { label: 'Created Date', value: <span className="font-semibold text-[#050505]">{request.createdAt}</span> },
-                    { label: 'Last Updated', value: <span className="font-semibold text-[#050505]">{request.updatedAt}</span> },
-                  ].map((item) => (
-                    <div key={item.label} className="rounded-xl border border-gray-100 bg-gray-50 p-3">
-                      <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-[#A5A5A5]">{item.label}</p>
-                      <div className="text-sm">{item.value}</div>
+            {isReadOnly && (
+              <div className="rounded-2xl border border-gray-100 bg-white p-4 shadow-card">
+                <p className="text-sm text-[#6D6E71]">
+                  This request is currently {request.workflowStatus === 'completed' ? 'completed' : 'in review'}. Responses are locked and view-only.
+                </p>
+              </div>
+            )}
+
+            {canUpload && <FileUpload onAddFiles={addFiles} duplicateNames={duplicateWarning} />}
+
+            <div className="rounded-2xl bg-white p-5 shadow-card">
+              <h3 className="font-semibold text-[#050505] mb-3">Linked Documents ({(request.linkedDocuments || []).length})</h3>
+              <div className="space-y-2">
+                {(request.linkedDocuments || []).length === 0 && pendingFiles.length === 0 && (
+                  <p className="rounded-xl border border-dashed border-gray-200 px-4 py-5 text-center text-sm text-[#A5A5A5]">No documents uploaded yet.</p>
+                )}
+                {(request.linkedDocuments || []).map((doc) => (
+                  <div key={doc.id} className="flex items-center gap-3 p-3 rounded-xl bg-gray-50 hover:bg-gray-100 transition-colors">
+                    <FileText size={15} className="text-[#00B0F0]" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-[#050505] truncate">{doc.name}</p>
+                      <p className="text-xs text-[#A5A5A5]">{doc.uploadedBy} · {doc.uploadedAt}</p>
                     </div>
-                  ))}
+                    <button
+                      type="button"
+                      onClick={() => setPreviewDocument(doc)}
+                      disabled={!doc.fileUrl}
+                      className="rounded-lg border border-[#D8E2F0] bg-white px-3 py-1.5 text-xs font-semibold text-[#05164D] transition-colors hover:bg-[#F8FAFC] disabled:cursor-not-allowed disabled:border-gray-200 disabled:bg-gray-100 disabled:text-[#A5A5A5]"
+                    >
+                      View
+                    </button>
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-[#E6F3D3] text-[#476E2C]">Client Visible</span>
+                  </div>
+                ))}
+                {pendingFiles.map((file, index) => (
+                  <div key={`${file.name}-${index}`} className="flex items-center gap-3 rounded-xl bg-[#EFF6FF] p-3">
+                    <FileText size={15} className="text-[#2563EB]" />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium text-[#050505]">{file.name}</p>
+                      <p className="text-xs text-[#6D6E71]">Ready to submit</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {canNarrative && (
+              <div className="rounded-2xl bg-white p-5 shadow-card">
+                <h3 className="font-semibold text-[#050505] mb-3">Narrative Response</h3>
+                <textarea
+                  rows={6}
+                  value={narrativeDraft}
+                  onChange={(e) => setNarrativeDraft(e.target.value)}
+                  placeholder="Enter explanation, comments, or notes related to this request"
+                  disabled={isReadOnly}
+                  className={`w-full px-4 py-3 rounded-xl border text-sm resize-none ${isReadOnly ? 'bg-gray-50 text-[#6D6E71] border-gray-100' : 'border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]'}`}
+                />
+              </div>
+            )}
+
+            {!isReadOnly && (
+              <div className="sticky bottom-3 rounded-2xl border border-gray-200 bg-white/95 p-4 shadow-card backdrop-blur">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <p className="text-xs text-[#6D6E71]">Add a narrative response or at least one document before saving.</p>
+                  <button
+                    type="button"
+                    onClick={submitResponse}
+                    disabled={!canSave || submitting}
+                    className="rounded-xl bg-[#8BC53D] px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#476E2C] disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-[#A5A5A5]"
+                  >
+                    {submitting ? 'Saving...' : 'Save Response'}
+                  </button>
                 </div>
               </div>
-            </aside>
+            )}
           </div>
+
+          <aside className="space-y-4 xl:sticky xl:top-5 xl:h-fit">
+            <div className="rounded-2xl bg-white p-5 shadow-card">
+              <h3 className="mb-4 font-semibold text-[#050505]">Request Summary</h3>
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
+                {[
+                  { label: 'Current Status', value: <StatusBadge status={currentStatus} /> },
+                  { label: 'Priority', value: <span className="inline-flex rounded-full px-2.5 py-1 text-xs font-bold" style={{ background: priority.bg, color: priority.color }}>{priority.label}</span> },
+                  { label: 'Category', value: <span className="inline-flex items-center gap-1.5 font-semibold text-[#050505]"><CategoryIcon size={14} style={{ color: catMeta.color }} />{request.category}</span> },
+                  { label: 'Due Date', value: <span className={`font-semibold ${isOverdue ? 'text-[#B91C1C]' : 'text-[#050505]'}`}>{request.dueDate}</span> },
+                  { label: 'Response Type', value: <span className="font-semibold text-[#050505]">{request.responseType}</span> },
+                  { label: 'Assigned To', value: <span className="font-semibold text-[#050505]">{request.assignedTo}</span> },
+                  { label: 'Created Date', value: <span className="font-semibold text-[#050505]">{request.createdAt}</span> },
+                  { label: 'Last Updated', value: <span className="font-semibold text-[#050505]">{request.updatedAt}</span> },
+                ].map((item) => (
+                  <div key={item.label} className="rounded-xl border border-gray-100 bg-gray-50 p-3">
+                    <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-[#A5A5A5]">{item.label}</p>
+                    <div className="text-sm">{item.value}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </aside>
+        </div>
       </div>
       <RequestDocumentPreviewModal document={previewDocument} onClose={() => setPreviewDocument(null)} />
     </div>
@@ -591,7 +579,7 @@ function RequestDetailPage({ onBack, request, allRequests, onSubmitResponse, err
 
 export default function ClientRequests() {
   const { user } = useAuth();
-  const companyId = user?.company_id || user?.companyId || null;
+  const companyId = resolveCompanyId(user);
   const [requestState, setRequestState] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -604,38 +592,37 @@ export default function ClientRequests() {
   const [search, setSearch] = useState('');
   const [activeRequestId, setActiveRequestId] = useState(null);
 
-  const loadRequests = async () => {
-    if (!companyId) return;
+  const loadRequests = useCallback(async () => {
+    if (!companyId) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError('');
     try {
       const list = await listCompanyRequests(companyId);
-      setRequestState(list.map(mapApiRequestToUi).filter(Boolean));
+      setRequestState((Array.isArray(list) ? list : []).map(mapApiRequestToUi).filter(Boolean));
     } catch (err) {
       setError(err.message || 'Unable to load requests.');
+      setRequestState([]);
     } finally {
       setLoading(false);
     }
-  };
+  }, [companyId]);
 
   useEffect(() => {
-    if (!companyId) return;
     loadRequests();
-    listFolderTree(companyId)
-      .then((tree) => {
-        setFolderMap(buildFolderMapFromTree(tree));
-      })
-      .catch(() => {
-        setFolderMap({});
-      });
-  }, [companyId]);
+    if (companyId) {
+      listFolderTree(companyId)
+        .then((tree) => setFolderMap(buildFolderMapFromTree(tree || [])))
+        .catch(() => setFolderMap({}));
+    }
+  }, [companyId, loadRequests]);
 
   useEffect(() => {
     if (!companyId) return undefined;
     const refreshOnReturn = () => {
-      if (document.visibilityState === 'visible') {
-        loadRequests();
-      }
+      if (document.visibilityState === 'visible') loadRequests();
     };
     window.addEventListener('focus', refreshOnReturn);
     document.addEventListener('visibilitychange', refreshOnReturn);
@@ -643,7 +630,7 @@ export default function ClientRequests() {
       window.removeEventListener('focus', refreshOnReturn);
       document.removeEventListener('visibilitychange', refreshOnReturn);
     };
-  }, [companyId]);
+  }, [companyId, loadRequests]);
 
   useEffect(() => {
     if (!success) return undefined;
@@ -657,39 +644,11 @@ export default function ClientRequests() {
       .then((docs) => {
         setRequestState((prev) => prev.map((r) => {
           if (r.id !== activeRequestId) return r;
-          const mapped = docs.map((doc) => mapRequestDocumentToUi(doc, 'Client'));
-          return { ...r, linkedDocuments: mapped };
+          return { ...r, linkedDocuments: (Array.isArray(docs) ? docs : []).map((d) => mapRequestDocumentToUi(d, 'Client')) };
         }));
       })
       .catch(() => {});
   }, [activeRequestId]);
-
-  const updateRequestState = async (id, patch) => {
-    setRequestState(prev => prev.map(r => (r.id === id ? { ...r, ...patch } : r)));
-    try {
-      let canonicalRequest = null;
-      if (patch.narrativeResponse !== undefined && patch.narrativeResponse.trim()) {
-        canonicalRequest = await updateRequestNarrative(id, { content: patch.narrativeResponse.trim() });
-      }
-      const apiPatch = mapUiPatchToApi(patch);
-      if (Object.keys(apiPatch).length > 0) {
-        canonicalRequest = await updateRequest(id, apiPatch);
-      }
-      if (canonicalRequest?.id) {
-        setRequestState(prev => prev.map(r => (r.id === id
-          ? {
-              ...r,
-              workflowStatus: normalizeWorkflowStatus(canonicalRequest.status),
-              updatedAt: canonicalRequest.updated_at ? canonicalRequest.updated_at.slice(0, 10) : r.updatedAt,
-            }
-          : r)));
-      }
-      return true;
-    } catch (err) {
-      setError(err.message || 'Unable to update request.');
-      return false;
-    }
-  };
 
   const uploadFilesForRequest = async (request, files) => {
     if (!companyId || !files.length) return false;
@@ -697,14 +656,9 @@ export default function ClientRequests() {
     if (!folderId) {
       try {
         const folderName = request.subLabel || request.category || 'Uploads';
-        const created = await createCompanyFolder(companyId, {
-          name: folderName,
-          created_by: user?.id || null,
-        });
+        const created = await createCompanyFolder(companyId, { name: folderName, created_by: user?.id || null });
         folderId = created?.id;
-        if (folderId) {
-          setFolderMap((prev) => ({ ...prev, [folderName.toLowerCase()]: folderId }));
-        }
+        if (folderId) setFolderMap((prev) => ({ ...prev, [folderName.toLowerCase()]: folderId }));
       } catch (err) {
         setError(err.message || 'Unable to create folder for upload.');
         return false;
@@ -717,10 +671,7 @@ export default function ClientRequests() {
     try {
       const createdDocs = [];
       for (const file of files) {
-        const uploaded = await uploadFile(file, {
-          fileName: file.name,
-          prefix: 'requests',
-        });
+        const uploaded = await uploadFile(file, { fileName: file.name, prefix: 'requests' });
         const ext = file.name.split('.').pop()?.toLowerCase() || '';
         const createdDoc = await createFolderDocument(folderId, {
           company_id: companyId,
@@ -747,22 +698,21 @@ export default function ClientRequests() {
         });
       }
       if (createdDocs.length) {
-        const canonicalRequest = createdDocs.map((doc) => doc.updatedRequest).find((item) => item?.status);
-        setRequestState(prev => prev.map(r => (r.id === request.id
-          ? (() => {
-            const existingNames = new Set(r.linkedDocuments.map(d => d.name.toLowerCase()));
-            const merged = [
-              ...r.linkedDocuments,
-              ...createdDocs.filter(d => !existingNames.has(d.name.toLowerCase())),
-            ];
-            return {
-              ...r,
-              linkedDocuments: merged.map(({ updatedRequest, ...doc }) => doc),
-              workflowStatus: canonicalRequest ? normalizeWorkflowStatus(canonicalRequest.status) : r.workflowStatus,
-              updatedAt: canonicalRequest?.updated_at ? canonicalRequest.updated_at.slice(0, 10) : formatToday(),
-            };
-          })()
-          : r)));
+        const canonicalRequest = createdDocs.map((d) => d.updatedRequest).find((r) => r?.status);
+        setRequestState((prev) => prev.map((r) => {
+          if (r.id !== request.id) return r;
+          const existingNames = new Set((r.linkedDocuments || []).map((d) => d.name.toLowerCase()));
+          const merged = [
+            ...(r.linkedDocuments || []),
+            ...createdDocs.filter((d) => !existingNames.has(d.name.toLowerCase())),
+          ];
+          return {
+            ...r,
+            linkedDocuments: merged.map(({ updatedRequest: _ur, ...doc }) => doc),
+            workflowStatus: canonicalRequest ? normalizeWorkflowStatus(canonicalRequest.status) : r.workflowStatus,
+            updatedAt: canonicalRequest?.updated_at ? canonicalRequest.updated_at.slice(0, 10) : formatToday(),
+          };
+        }));
       }
       setSuccess('Response uploaded successfully.');
       return true;
@@ -777,28 +727,22 @@ export default function ClientRequests() {
     const narrative = `${response?.narrative || ''}`.trim();
     const files = Array.isArray(response?.files) ? response.files : [];
     if (!narrative && files.length === 0) return false;
-
     setError('');
     setSuccess('');
-
     try {
       if (narrative) {
         const updatedRequest = await updateRequestNarrative(request.id, { content: narrative });
-        setRequestState(prev => prev.map(r => (r.id === request.id
-          ? {
-              ...r,
-              narrativeResponse: narrative,
-              workflowStatus: updatedRequest?.status ? normalizeWorkflowStatus(updatedRequest.status) : r.workflowStatus,
-              updatedAt: updatedRequest?.updated_at ? updatedRequest.updated_at.slice(0, 10) : formatToday(),
-            }
-          : r)));
+        setRequestState((prev) => prev.map((r) => r.id !== request.id ? r : {
+          ...r,
+          narrativeResponse: narrative,
+          workflowStatus: updatedRequest?.status ? normalizeWorkflowStatus(updatedRequest.status) : r.workflowStatus,
+          updatedAt: updatedRequest?.updated_at ? updatedRequest.updated_at.slice(0, 10) : formatToday(),
+        }));
       }
-
       if (files.length > 0) {
         const ok = await uploadFilesForRequest(request, files);
         if (!ok) return false;
       }
-
       setSuccess('Response submitted for broker review.');
       return true;
     } catch (err) {
@@ -807,39 +751,40 @@ export default function ClientRequests() {
     }
   };
 
-  const visibleRequests = requestState.filter(r => r.visible);
+  const visibleRequests = requestState.filter((r) => r.visible);
   const grouped = useMemo(() => {
-    const categories = Array.from(new Set(visibleRequests.map(r => r.category)))
+    const categories = Array.from(new Set(visibleRequests.map((r) => r.category)))
       .sort((a, b) => {
         const ia = CATEGORY_ORDER.indexOf(a);
         const ib = CATEGORY_ORDER.indexOf(b);
         return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
       });
-    return categories.map(cat => ({
-      category: cat,
-      items: visibleRequests.filter(r => r.category === cat),
-    })).filter(g => g.items.length > 0);
+    return categories
+      .map((cat) => ({ category: cat, items: visibleRequests.filter((r) => r.category === cat) }))
+      .filter((g) => g.items.length > 0);
   }, [visibleRequests]);
 
   const priorityFilterOptions = useMemo(() => ([
     'all',
-    ...Array.from(new Set(visibleRequests.map((request) => request.priority).filter(Boolean))),
+    ...Array.from(new Set(visibleRequests.map((r) => r.priority).filter(Boolean))),
   ]), [visibleRequests]);
 
   const rowsForCategory = useMemo(() => {
     if (!selectedCategory) return [];
-    return visibleRequests.filter(r => {
-      if (r.category !== selectedCategory) return false;
-      const s = search.toLowerCase();
-      const matchesSearch = !s || r.name.toLowerCase().includes(s) || r.id.toLowerCase().includes(s);
-      const displayStatus = getDisplayStatus(r.workflowStatus, r.dueDate);
-      const matchesStatus = statusFilter === 'all' || displayStatus === statusFilter;
-      const matchesPriority = priorityFilter === 'all' || r.priority === priorityFilter;
-      return matchesSearch && matchesStatus && matchesPriority;
-    }).map(r => ({ ...r, status: getDisplayStatus(r.workflowStatus, r.dueDate) }));
+    return visibleRequests
+      .filter((r) => {
+        if (r.category !== selectedCategory) return false;
+        const s = search.toLowerCase();
+        const matchesSearch = !s || r.name.toLowerCase().includes(s) || r.id.toLowerCase().includes(s);
+        const displayStatus = getDisplayStatus(r.workflowStatus, r.dueDate);
+        const matchesStatus = statusFilter === 'all' || displayStatus === statusFilter;
+        const matchesPriority = priorityFilter === 'all' || r.priority === priorityFilter;
+        return matchesSearch && matchesStatus && matchesPriority;
+      })
+      .map((r) => ({ ...r, status: getDisplayStatus(r.workflowStatus, r.dueDate) }));
   }, [selectedCategory, visibleRequests, search, statusFilter, priorityFilter]);
 
-  const activeRequest = requestState.find(r => r.id === activeRequestId) || null;
+  const activeRequest = requestState.find((r) => r.id === activeRequestId) || null;
 
   if (activeRequest) {
     return (
@@ -863,39 +808,38 @@ export default function ClientRequests() {
         <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm text-emerald-700">{success}</div>
       )}
       <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-[#050505]">Request Categories</h1>
-        </div>
+        <h1 className="text-2xl font-bold text-[#050505]">Request Categories</h1>
         {!selectedCategory && (
-          <div className="flex items-center gap-3">
-            <div className="flex items-center bg-gray-100 rounded-xl p-0.5">
-              <button
-                onClick={() => setCategoryView('cards')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${categoryView === 'cards' ? 'bg-white text-[#050505] shadow-sm' : 'text-[#6D6E71] hover:text-[#050505]'}`}
-              >
-                <LayoutGrid size={13} /> Cards
-              </button>
-              <button
-                onClick={() => setCategoryView('table')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${categoryView === 'table' ? 'bg-white text-[#050505] shadow-sm' : 'text-[#6D6E71] hover:text-[#050505]'}`}
-              >
-                <List size={13} /> Table
-              </button>
-            </div>
+          <div className="flex items-center bg-gray-100 rounded-xl p-0.5">
+            <button
+              onClick={() => setCategoryView('cards')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${categoryView === 'cards' ? 'bg-white text-[#050505] shadow-sm' : 'text-[#6D6E71] hover:text-[#050505]'}`}
+            >
+              <LayoutGrid size={13} /> Cards
+            </button>
+            <button
+              onClick={() => setCategoryView('table')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${categoryView === 'table' ? 'bg-white text-[#050505] shadow-sm' : 'text-[#6D6E71] hover:text-[#050505]'}`}
+            >
+              <List size={13} /> Table
+            </button>
           </div>
         )}
       </div>
 
       {loading ? (
-        <div className="text-center text-sm text-[#A5A5A5] py-10">Loading requests...</div>
-      ) : (!selectedCategory ? (
+        <div className="text-center text-sm text-[#A5A5A5] py-10">
+          <Loader2 size={24} className="mx-auto mb-2 animate-spin text-[#8BC53D]" />
+          Loading requests...
+        </div>
+      ) : !selectedCategory ? (
         grouped.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-gray-200 bg-white px-6 py-14 text-center text-sm text-[#6D6E71]">
             No requests have been shared with the client portal yet.
           </div>
         ) : categoryView === 'cards' ? (
           <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-5">
-            {grouped.map(g => (
+            {grouped.map((g) => (
               <CategoryCard
                 key={g.category}
                 category={g.category}
@@ -943,18 +887,12 @@ export default function ClientRequests() {
                 onChange={(e) => setPriorityFilter(e.target.value)}
                 className="px-3 py-2 rounded-xl border border-gray-200 bg-white text-sm text-[#050505]"
               >
-                {priorityFilterOptions.map((option) => (
-                  <option key={option} value={option}>
-                    {option === 'all' ? 'All Priorities' : option}
-                  </option>
+                {priorityFilterOptions.map((opt) => (
+                  <option key={opt} value={opt}>{opt === 'all' ? 'All Priorities' : opt}</option>
                 ))}
               </select>
               <button
-                onClick={() => {
-                  setSearch('');
-                  setStatusFilter('all');
-                  setPriorityFilter('all');
-                }}
+                onClick={() => { setSearch(''); setStatusFilter('all'); setPriorityFilter('all'); }}
                 className="px-3 py-2 rounded-xl border border-gray-200 bg-white text-sm text-[#6D6E71] hover:bg-gray-50"
               >
                 Clear Filters
@@ -970,7 +908,7 @@ export default function ClientRequests() {
             <RequestTable rows={rowsForCategory} onView={(r) => setActiveRequestId(r.id)} />
           )}
         </div>
-      ))}
+      )}
     </div>
   );
 }
