@@ -205,7 +205,7 @@ function UserFormModal({ initial, companies, companyLock, groups, onSave, onClos
   const [companiesDropdownOpen, setCompaniesDropdownOpen] = useState(false);
   const companiesDropdownRef = useRef(null);
   const setField = (patch) => setForm((current) => ({ ...current, ...patch }));
-  const valid = form.name.trim() && form.email.trim() && (isEdit ? form.role && form.status : true) && (isEdit || form.password.trim());
+  const valid = form.name.trim() && form.email.trim() && (isEdit ? form.status : true) && (isEdit || form.password.trim());
 
   useEffect(() => {
     const seed = initial || EMPTY_FORM;
@@ -449,44 +449,18 @@ function UserFormModal({ initial, companies, companyLock, groups, onSave, onClos
           </div>
 
           {isEdit && (
-            <>
-              <div>
-                <label className="block text-xs font-semibold text-gray-500 mb-1.5">Role *</label>
-                <div className="flex gap-2">
-                  {ROLE_ORDER.map((role) => {
-                    const meta = roleMeta(role);
-                    return (
-                      <button
-                        key={role}
-                        type="button"
-                        onClick={() => setField({ role })}
-                        className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl border text-xs font-semibold transition-all ${
-                          form.role === role
-                            ? 'bg-[#05164D] text-white border-[#05164D]'
-                            : 'bg-gray-50 text-gray-500 border-gray-200 hover:border-gray-300'
-                        }`}
-                      >
-                        <meta.Icon size={12} />
-                        {meta.label}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-gray-500 mb-1.5">Status *</label>
-                <select
-                  value={form.status}
-                  onChange={(event) => setField({ status: event.target.value })}
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]"
-                >
-                  {STATUS_ORDER.map((status) => (
-                    <option key={status} value={status}>{statusMeta(status).label}</option>
-                  ))}
-                </select>
-              </div>
-            </>
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 mb-1.5">Status *</label>
+              <select
+                value={form.status}
+                onChange={(event) => setField({ status: event.target.value })}
+                className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]"
+              >
+                {STATUS_ORDER.map((status) => (
+                  <option key={status} value={status}>{statusMeta(status).label}</option>
+                ))}
+              </select>
+            </div>
           )}
         </div>
 
@@ -715,7 +689,7 @@ export default function WorkspaceUsers() {
       name: form.name.trim(),
       email: form.email.trim(),
       phone: form.phone.trim() || null,
-      role: ['user', 'client'].includes(form.role) ? 'buyer' : form.role,
+      role: 'buyer',
       profile_image: form.profileImage.trim() || null,
       company_id: clientId || form.companyId || null,
       company_ids: Array.from(new Set([clientId || form.companyId, ...(form.companyIds || [])].filter(Boolean))),

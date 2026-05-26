@@ -21,6 +21,8 @@ function normalizeCompanyIds(user) {
 function canAccessCompany(user, companyId) {
   if (!user || !companyId) return false;
   if (isAdmin(user)) return true;
+  // Direct match on users.company_id — works even when company_ids array is stale/empty
+  if (user.company_id && String(user.company_id) === String(companyId)) return true;
   return normalizeCompanyIds(user).includes(String(companyId));
 }
 

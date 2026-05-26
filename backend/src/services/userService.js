@@ -220,6 +220,25 @@ function flattenUser(user) {
 }
 
 /**
+ * Minimal enrichment used when both Supabase and direct-Postgres are
+ * unavailable.  Sets company_ids / assigned_companies from users.company_id
+ * so canAccessCompany() still returns true for the user's primary company,
+ * and sets effective_role to the DB role (buyer → "user" as a safe default)
+ * so downstream filtering code never receives undefined.
+ */
+function _enrichFromCompanyIdOnly(userList, isSingle) {
+  const enriched = userList.map((u) => ({
+    ...u,
+    effective_role: u.effective_role ?? (u.role === "buyer" ? "user" : u.role === "client" ? "client" : u.role),
+    company_ids: u.company_ids ?? (u.company_id ? [String(u.company_id)] : []),
+    assigned_companies: u.assigned_companies ?? (
+      u.company_id ? [{ id: u.company_id, name: u.company_name || null }] : []
+    ),
+  }));
+  return isSingle ? enriched[0] : enriched;
+}
+
+/**
  * Attaches assigned companies and calculates effective role for users.
  * Supports both single user object and array of users.
  * @param {Object|Array} users - User or users to enrich
@@ -268,10 +287,13 @@ async function attachAssignedCompanies(users) {
         }));
       } catch (pgErr) {
         console.error("❌ pg fallback for user_companies also failed:", pgErr.message);
-        return users;
+        // Both Supabase and direct-Postgres failed.  Fall back to the
+        // minimal enrichment that can be derived from users.company_id alone
+        // so canAccessCompany() still works and the user is not locked out.
+        return _enrichFromCompanyIdOnly(userList, isSingle);
       }
     } else {
-      return users;
+      return _enrichFromCompanyIdOnly(userList, isSingle);
     }
   }
 
@@ -320,9 +342,11 @@ async function attachAssignedCompanies(users) {
     const isSeller = normalizedCompanies.some((company) => (
       String(company.contact_email || "").trim().toLowerCase() === normalizedEmail
     ));
-    const effectiveRole = user.role === "buyer"
-      ? (isSeller ? "client" : "user")
-      : user.role;
+    const effectiveRole = user.role === "client"
+      ? "client"
+      : user.role === "buyer"
+        ? (isSeller ? "client" : "user")
+        : user.role;
 
     return {
       ...user,
@@ -560,7 +584,7 @@ async function getUserById(id) {
     );
     if (!rows[0]) return null;
     const r = rows[0];
-    return {
+    const base = {
       id: r.id, name: r.name, email: r.email, phone: r.phone || null,
       role: r.role, company_id: r.company_id, company_name: r.company_name || null,
       password_hash: r.password_hash, status: r.status,
@@ -569,8 +593,10 @@ async function getUserById(id) {
       address: r.address || null,
       broker_company: r.broker_company || null,
       created_at: r.created_at, updated_at: r.updated_at,
-      assignedCompanies: [],
     };
+    // Apply minimal enrichment so canAccessCompany() works even when
+    // Supabase is unreachable and we can't run attachAssignedCompanies.
+    return _enrichFromCompanyIdOnly([base], true);
   } catch (pgErr) {
     console.warn("[getUserById] Direct Postgres fallback failed:", pgErr.message);
     return null;
@@ -607,7 +633,7 @@ async function getUserByEmail(email) {
     );
     if (!rows[0]) return null;
     const r = rows[0];
-    return {
+    const base = {
       id: r.id,
       name: r.name,
       email: r.email,
@@ -619,8 +645,10 @@ async function getUserByEmail(email) {
       status: r.status,
       created_at: r.created_at,
       updated_at: r.updated_at,
-      assignedCompanies: [],
     };
+    // Apply minimal enrichment so canAccessCompany() works even when
+    // Supabase is unreachable and we can't run attachAssignedCompanies.
+    return _enrichFromCompanyIdOnly([base], true);
   } catch (pgErr) {
     console.warn("[getUserByEmail] Direct Postgres fallback failed:", pgErr.message);
     return null;
@@ -741,7 +769,7 @@ async function createUser(userData) {
   }
 
   const primaryCompanyId = company_id || assignedCompanyIds[0] || null;
-  const passwordHash = password; // Plain text storage for debugging
+  const passwordHash = await bcrypt.hash(String(password || ""), 10);
   const resolvedStatus = status || "active";
 
   const { data: created, error } = await supabase
