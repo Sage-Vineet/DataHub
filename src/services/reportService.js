@@ -272,6 +272,32 @@ function findSummaryTotal(payload, matchers = []) {
   return null;
 }
 
+// Returns true when QuickBooks signals that no report data exists for the
+// requested period (Header.Option contains {Name:"NoReportData",Value:"true"}).
+// This happens for future months and should NOT be treated as revenue=0.
+function hasNoReportData(payload) {
+  if (!payload || typeof payload !== "object") return false;
+  let current = payload;
+  for (let depth = 0; depth < 6; depth += 1) {
+    if (!current || typeof current !== "object") break;
+    const header = current.Header;
+    if (header && typeof header === "object") {
+      const opts = Array.isArray(header.Option)
+        ? header.Option
+        : header.Option
+          ? [header.Option]
+          : [];
+      if (opts.some(
+        (o) => String(o?.Name || "").trim() === "NoReportData" &&
+               String(o?.Value || "").trim().toLowerCase() === "true",
+      )) return true;
+    }
+    const d = current.data;
+    if (d && typeof d === "object") { current = d; } else break;
+  }
+  return false;
+}
+
 function extractProfitAndLossTotals(payload) {
   const revenue =
     findValueByExactLabel(payload, [
@@ -1170,13 +1196,16 @@ export async function fetchFinancialTrends(
     );
   }
 
-  return mapWithConcurrency(
+  const rawResults = await mapWithConcurrency(
     buckets,
     async (bucket) => {
       const report = await fetchProfitAndLoss(
         { start_date: bucket.start, end_date: bucket.end },
         { signal: AbortSignal.timeout(15000) },
       ).catch(() => null);
+      // QB returns NoReportData=true for future / empty periods.
+      // These must be omitted — they carry no financial data, not zero data.
+      if (hasNoReportData(report)) return null;
       const totals = extractProfitAndLossTotals(report || {});
       return {
         name: bucket.shortName ?? bucket.name,
@@ -1187,4 +1216,5 @@ export async function fetchFinancialTrends(
     },
     1,
   );
+  return rawResults.filter(Boolean);
 }

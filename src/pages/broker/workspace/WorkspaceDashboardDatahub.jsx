@@ -283,10 +283,15 @@ export default function WorkspaceDashboardDatahub() {
   }, [dynamicStats, selectedKpiLabels]);
 
   // Strip trailing months with no data so future months don't render as empty slots.
+  // A month is considered empty when revenue and expenses are both 0 or null/undefined.
   const displayChartData = useMemo(() => {
     if (!chartDataState.length) return chartDataState;
     let last = chartDataState.length - 1;
-    while (last >= 0 && chartDataState[last].revenue === 0 && chartDataState[last].expenses === 0) {
+    while (
+      last >= 0 &&
+      !chartDataState[last].revenue &&
+      !chartDataState[last].expenses
+    ) {
       last -= 1;
     }
     return chartDataState.slice(0, last + 1);
@@ -669,13 +674,15 @@ export default function WorkspaceDashboardDatahub() {
       ]);
       if (requestSeq !== kpiRequestSeqRef.current) return;
 
-      const invs = Array.isArray(invsData?.QueryResponse?.Invoice)
-        ? invsData.QueryResponse.Invoice
-        : Array.isArray(invsData?.data?.QueryResponse?.Invoice)
-          ? invsData.data.QueryResponse.Invoice
-          : Array.isArray(invsData)
-            ? invsData
-            : [];
+      const invs = Array.isArray(invsData?.invoices)
+        ? invsData.invoices
+        : Array.isArray(invsData?.QueryResponse?.Invoice)
+          ? invsData.QueryResponse.Invoice
+          : Array.isArray(invsData?.data?.QueryResponse?.Invoice)
+            ? invsData.data.QueryResponse.Invoice
+            : Array.isArray(invsData)
+              ? invsData
+              : [];
 
       setInvoicesData(invs);
       setDynamicStats(kpiData);
