@@ -82,7 +82,9 @@ const MAPPING_CANDIDATES = {
   credit: ["credit amount", "credits", "cr amount", "credit", "cr"],
   vendor_name: [
     "vendor name", "payee name", "customer name", "party name",
-    "vendor", "payee", "customer", "counterparty", "name",
+    "supplier name", "supplier", "payee", "vendor", "entity name",
+    "customer", "counterparty", "entity", "customer/vendor", "payee/vendor",
+    "name",
   ],
   description: [
     "memo/description", "transaction description", "entry description",
@@ -1499,6 +1501,12 @@ function parseGlSheetTransactions({
     headers: sheetData.headers,
   }));
 
+  if (resolvedMapping.vendor_name) {
+    const vCol = resolvedMapping.vendor_name;
+    const sampleValues = sheetData.rows.slice(0, 5).map(r => r[vCol]).filter(v => v !== null && v !== undefined);
+    console.log(`[GLParser][Vendor][Debug] Mapped vendor column: "${vCol}"; Samples: ${JSON.stringify(sampleValues)}`);
+  }
+
   const missingRequired = REQUIRED_GL_MAPPING_FIELDS.filter((field) => !resolvedMapping[field]);
   if (missingRequired.length) {
     return {
@@ -2636,7 +2644,6 @@ async function insertTransactions({
             upload_session_id,
             staged_at,
             upload_batch_id,
-            vendor_name,
             raw_row_reference,
             ...legacy
           }) => legacy,
@@ -2648,7 +2655,6 @@ async function insertTransactions({
             upload_session_id,
             staged_at,
             upload_batch_id,
-            vendor_name,
             raw_row_reference,
             ...legacy
           }) => legacy,
