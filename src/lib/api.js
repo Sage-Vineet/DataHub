@@ -982,7 +982,7 @@ export function getQMSDashboard(options = {}) {
 export function getManualUploadDashboard(options = {}) {
   const clientId = options.clientId ?? resolveClientIdFromLocation();
   const base = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "?";
-  return request(`/manual-upload/dashboard${base}&source=manual_upload`, options);
+  return request(`/manual-report-uploads/manual-upload-dashboard${base}&source=manual_upload`, options);
 }
 
 /**

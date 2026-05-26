@@ -68,7 +68,7 @@ const DASHBOARD_STORAGE_PREFIX = "workspace-datahub-dashboard";
 
 const DASHBOARD_ENDPOINTS = {
   quickbooks_manual: "/manual-report-uploads/qms-dashboard",
-  manual_upload: "/manual-upload/dashboard",
+  manual_upload: "/manual-report-uploads/manual-upload-dashboard",
   quickbooks_online: "/dashboard",
   manual_gl: "/manual-gl/dashboard",
 };
