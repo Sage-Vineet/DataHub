@@ -42,6 +42,18 @@ const CATEGORY_COLORS = ['#8BC53D', '#00648F', '#F68C1F', '#742982', '#476E2C', 
 const DASHBOARD_CACHE_TTL_MS = 60 * 1000;
 const REFRESH_THROTTLE_MS = 30 * 1000;
 
+function resolveCompanyId(user) {
+  return (
+    user?.company_id ||
+    user?.companyId ||
+    user?.company_ids?.[0] ||
+    user?.companyIds?.[0] ||
+    user?.assigned_companies?.[0]?.id ||
+    user?.assignedCompanies?.[0]?.id ||
+    null
+  );
+}
+
 function getDashboardCacheKey(companyId) {
   return `client-dashboard:${companyId}`;
 }
@@ -67,7 +79,7 @@ function writeDashboardCache(companyId, payload) {
       JSON.stringify({ ...payload, savedAt: Date.now() }),
     );
   } catch {
-    // Ignore cache write failures and keep dashboard functional.
+    // ignore storage quota errors
   }
 }
 
@@ -83,9 +95,7 @@ function getDisplayStatus(status, dueDate) {
   if (status === 'completed') return 'completed';
   if (dueDate) {
     const due = new Date(dueDate);
-    if (!Number.isNaN(due.getTime()) && due < new Date()) {
-      return 'overdue';
-    }
+    if (!Number.isNaN(due.getTime()) && due < new Date()) return 'overdue';
   }
   return status;
 }
@@ -127,7 +137,7 @@ function StatusPill({ status, metaMap }) {
 export default function ClientDashboard() {
   const { user } = useAuth();
   const navigate = useNavigate();
-  const companyId = user?.company_id || user?.companyId || null;
+  const companyId = resolveCompanyId(user);
 
   const [company, setCompany] = useState(null);
   const [requests, setRequests] = useState([]);
@@ -155,8 +165,6 @@ export default function ClientDashboard() {
       return;
     }
 
-    let showingCachedData = false;
-
     if (preferCache) {
       const cached = readDashboardCache(companyId);
       if (cached) {
@@ -167,16 +175,13 @@ export default function ClientDashboard() {
         setActivity(Array.isArray(cached.activity) ? cached.activity : []);
         setDocumentCount(Number.isFinite(cached.documentCount) ? cached.documentCount : 0);
         setLoading(false);
-        showingCachedData = true;
-      } else {
-        setLoading(true);
+        return;
       }
-    } else {
-      setLoading(true);
     }
 
-    if (!showingCachedData) setLoading(true);
+    setLoading(true);
     setError('');
+
     try {
       const [
         companyResult,
@@ -186,7 +191,7 @@ export default function ClientDashboard() {
         activityResult,
       ] = await Promise.allSettled([
         getCompanyRequest(companyId).catch(() => null),
-        listCompanyRequests(companyId),
+        listCompanyRequests(companyId).catch(() => []),
         listCompanyReminders(companyId).catch(() => []),
         listCompanyFolders(companyId).catch(() => []),
         listCompanyActivity(companyId).catch(() => []),
@@ -195,14 +200,10 @@ export default function ClientDashboard() {
       if (requestSequenceRef.current !== requestSequence) return;
 
       const companyPayload = companyResult.status === 'fulfilled' ? companyResult.value : null;
-      const requestRows = requestsResult.status === 'fulfilled' ? requestsResult.value : [];
-      const reminderRows = remindersResult.status === 'fulfilled' ? remindersResult.value : [];
-      const folderRows = foldersResult.status === 'fulfilled' ? foldersResult.value : [];
-      const activityRows = activityResult.status === 'fulfilled' ? activityResult.value : [];
-
-      if (requestsResult.status !== 'fulfilled') {
-        throw new Error(requestsResult.reason?.message || 'Unable to load dashboard.');
-      }
+      const requestRows = requestsResult.status === 'fulfilled' ? (requestsResult.value || []) : [];
+      const reminderRows = remindersResult.status === 'fulfilled' ? (remindersResult.value || []) : [];
+      const folderRows = foldersResult.status === 'fulfilled' ? (foldersResult.value || []) : [];
+      const activityRows = activityResult.status === 'fulfilled' ? (activityResult.value || []) : [];
 
       const normalizedRequests = requestRows.map((request) => {
         const workflowStatus = normalizeWorkflowStatus(request.status);
@@ -228,12 +229,12 @@ export default function ClientDashboard() {
       setActivity(activityRows);
 
       const requestSignature = normalizedRequests
-        .map((request) => `${request.id}:${request.updatedAt || request.createdAt || ''}`)
+        .map((r) => `${r.id}:${r.updatedAt || r.createdAt || ''}`)
         .join('|');
       const cached = preferCache ? readDashboardCache(companyId) : null;
-      const hasMatchingDocumentCount = cached?.requestSignature === requestSignature && Number.isFinite(cached?.documentCount);
+      const hasMatchingDocCount = cached?.requestSignature === requestSignature && Number.isFinite(cached?.documentCount);
 
-      if (hasMatchingDocumentCount) {
+      if (hasMatchingDocCount) {
         setDocumentCount(cached.documentCount);
       } else {
         setDocumentCount(0);
@@ -245,7 +246,7 @@ export default function ClientDashboard() {
         reminders: reminderRows,
         folders: folderRows,
         activity: activityRows,
-        documentCount: hasMatchingDocumentCount ? cached.documentCount : 0,
+        documentCount: hasMatchingDocCount ? cached.documentCount : 0,
         requestSignature,
       });
 
@@ -253,25 +254,16 @@ export default function ClientDashboard() {
 
       if (!normalizedRequests.length) {
         setDocumentCount(0);
-        writeDashboardCache(companyId, {
-          company: companyPayload,
-          requests: normalizedRequests,
-          reminders: reminderRows,
-          folders: folderRows,
-          activity: activityRows,
-          documentCount: 0,
-          requestSignature,
-        });
         return;
       }
 
       const documentLists = await Promise.all(
-        normalizedRequests.map((request) => listRequestDocuments(request.id).catch(() => [])),
+        normalizedRequests.map((r) => listRequestDocuments(r.id).catch(() => [])),
       );
 
       if (requestSequenceRef.current !== requestSequence) return;
 
-      const totalDocuments = documentLists.reduce((sum, docs) => sum + docs.length, 0);
+      const totalDocuments = documentLists.reduce((sum, docs) => sum + (Array.isArray(docs) ? docs.length : 0), 0);
       setDocumentCount(totalDocuments);
       writeDashboardCache(companyId, {
         company: companyPayload,
@@ -284,11 +276,9 @@ export default function ClientDashboard() {
       });
     } catch (err) {
       if (requestSequenceRef.current !== requestSequence) return;
-      setError(err.message || 'Unable to load dashboard.');
+      setError(err.message || 'Unable to load dashboard. Please refresh the page.');
     } finally {
-      if (requestSequenceRef.current === requestSequence) {
-        setLoading(false);
-      }
+      if (requestSequenceRef.current === requestSequence) setLoading(false);
     }
   }, [companyId]);
 
@@ -315,24 +305,21 @@ export default function ClientDashboard() {
 
   const todayLabel = useMemo(
     () => new Date().toLocaleDateString('en-IN', {
-      weekday: 'long',
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
     }),
     [],
   );
 
   const requestSummary = useMemo(() => ({
-    pending: requests.filter((request) => request.displayStatus === 'pending' || request.displayStatus === 'overdue').length,
-    inReview: requests.filter((request) => request.displayStatus === 'in-review').length,
-    completed: requests.filter((request) => request.displayStatus === 'completed').length,
-    overdue: requests.filter((request) => request.displayStatus === 'overdue').length,
+    pending: requests.filter((r) => r.displayStatus === 'pending' || r.displayStatus === 'overdue').length,
+    inReview: requests.filter((r) => r.displayStatus === 'in-review').length,
+    completed: requests.filter((r) => r.displayStatus === 'completed').length,
+    overdue: requests.filter((r) => r.displayStatus === 'overdue').length,
   }), [requests]);
 
   const reminderSummary = useMemo(() => ({
-    due: reminders.filter((item) => item.status === 'due').length,
-    active: reminders.filter((item) => item.status === 'active').length,
+    due: reminders.filter((r) => r.status === 'due').length,
+    active: reminders.filter((r) => r.status === 'active').length,
   }), [reminders]);
 
   const completionPct = requests.length
@@ -348,22 +335,21 @@ export default function ClientDashboard() {
 
   const nextDueRequest = useMemo(
     () => [...requests]
-      .filter((request) => ['pending', 'overdue'].includes(request.displayStatus) && request.dueDate)
+      .filter((r) => ['pending', 'overdue'].includes(r.displayStatus) && r.dueDate)
       .sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate))[0],
     [requests],
   );
 
   const categoryProgress = useMemo(() => {
-    const grouped = requests.reduce((acc, request) => {
-      const key = request.category || 'Other';
+    const grouped = requests.reduce((acc, r) => {
+      const key = r.category || 'Other';
       if (!acc[key]) acc[key] = [];
-      acc[key].push(request);
+      acc[key].push(r);
       return acc;
     }, {});
-
     return Object.entries(grouped)
       .map(([category, items], index) => {
-        const completed = items.filter((item) => item.displayStatus === 'completed').length;
+        const completed = items.filter((i) => i.displayStatus === 'completed').length;
         return {
           category,
           total: items.length,
@@ -389,7 +375,7 @@ export default function ClientDashboard() {
   );
 
   const topReminder = useMemo(
-    () => reminders.find((item) => item.status === 'due') || reminders.find((item) => item.status === 'active') || null,
+    () => reminders.find((r) => r.status === 'due') || reminders.find((r) => r.status === 'active') || null,
     [reminders],
   );
 
@@ -407,7 +393,7 @@ export default function ClientDashboard() {
       <div>
         <h1 className="text-2xl font-bold text-[#050505]">Welcome, {user?.name?.split(' ')[0] || 'Client'}</h1>
         <p className="mt-0.5 text-sm text-[#6D6E71]">
-           {company?.name || user?.company || 'Client Workspace'}   ·   {todayLabel}
+          {company?.name || user?.company || 'Client Workspace'} · {todayLabel}
         </p>
       </div>
 
@@ -475,23 +461,23 @@ export default function ClientDashboard() {
                       No request categories available yet.
                     </p>
                   ) : (
-                    categoryProgress.map((category) => (
-                      <div key={category.category}>
+                    categoryProgress.map((cat) => (
+                      <div key={cat.category}>
                         <div className="mb-1.5 flex items-center justify-between">
-                          <p className="text-sm font-semibold text-[#050505]">{category.category}</p>
-                          <p className="text-xs font-bold" style={{ color: category.color }}>{category.pct}%</p>
+                          <p className="text-sm font-semibold text-[#050505]">{cat.category}</p>
+                          <p className="text-xs font-bold" style={{ color: cat.color }}>{cat.pct}%</p>
                         </div>
                         <div className="h-2 overflow-hidden rounded-full bg-gray-100">
-                          <div className="h-full rounded-full transition-all" style={{ width: `${category.pct}%`, backgroundColor: category.color }} />
+                          <div className="h-full rounded-full transition-all" style={{ width: `${cat.pct}%`, backgroundColor: cat.color }} />
                         </div>
-                        <p className="mt-1 text-[11px] text-[#A5A5A5]">{category.total} request(s)</p>
+                        <p className="mt-1 text-[11px] text-[#A5A5A5]">{cat.total} request(s)</p>
                       </div>
                     ))
                   )}
                 </div>
               </div>
 
-              <div className="rounded-2xl bg-white shadow-card overflow-hidden">
+              <div className="overflow-hidden rounded-2xl bg-white shadow-card">
                 <div className="flex items-center justify-between border-b border-gray-100 px-5 py-4">
                   <h2 className="font-semibold text-[#050505]">Recent Requests</h2>
                   <button
@@ -506,10 +492,8 @@ export default function ClientDashboard() {
                   <table className="w-full min-w-[640px]">
                     <thead>
                       <tr className="border-b border-gray-100 bg-gray-50/50">
-                        {['Request', 'Category', 'Priority', 'Status', 'Updated'].map((heading) => (
-                          <th key={heading} className="px-5 py-3 text-left text-xs font-semibold text-[#6D6E71]">
-                            {heading}
-                          </th>
+                        {['Request', 'Category', 'Priority', 'Status', 'Updated'].map((h) => (
+                          <th key={h} className="px-5 py-3 text-left text-xs font-semibold text-[#6D6E71]">{h}</th>
                         ))}
                       </tr>
                     </thead>
@@ -520,22 +504,24 @@ export default function ClientDashboard() {
                             No requests available.
                           </td>
                         </tr>
-                      ) : recentRequests.map((request) => (
-                        <tr key={request.id} className="border-b border-gray-50 transition-colors hover:bg-gray-50/70">
+                      ) : recentRequests.map((r) => (
+                        <tr key={r.id} className="border-b border-gray-50 transition-colors hover:bg-gray-50/70">
                           <td className="px-5 py-3.5">
-                            <p className="text-sm font-medium text-[#050505]">{request.name}</p>
-                            <p className="mt-1 text-xs text-[#A5A5A5]">{request.responseType}</p>
+                            <p className="text-sm font-medium text-[#050505]">{r.name}</p>
+                            <p className="mt-1 text-xs text-[#A5A5A5]">{r.responseType}</p>
                           </td>
-                          <td className="px-5 py-3.5 text-sm text-[#6D6E71]">{request.category}</td>
+                          <td className="px-5 py-3.5 text-sm text-[#6D6E71]">{r.category}</td>
                           <td className="px-5 py-3.5">
                             <span className="rounded-lg bg-[#EEF6E0] px-2 py-1 text-xs font-semibold capitalize text-[#476E2C]">
-                              {request.priority}
+                              {r.priority}
                             </span>
                           </td>
                           <td className="px-5 py-3.5">
-                            <StatusPill status={request.displayStatus} metaMap={REQUEST_STATUS_META} />
+                            <StatusPill status={r.displayStatus} metaMap={REQUEST_STATUS_META} />
                           </td>
-                          <td className="px-5 py-3.5 text-xs text-[#6D6E71]">{formatDateTime(request.updatedAt || request.createdAt)}</td>
+                          <td className="px-5 py-3.5 text-xs text-[#6D6E71]">
+                            {formatDateTime(r.updatedAt || r.createdAt)}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -584,7 +570,9 @@ export default function ClientDashboard() {
                     <div className="mt-4 grid gap-3 sm:grid-cols-2">
                       <div>
                         <p className="text-[11px] font-semibold uppercase tracking-wide text-[#A5A5A5]">Next Reminder</p>
-                        <p className="mt-1 text-sm font-semibold text-[#050505]">{formatDateTime(topReminder.next_reminder_at || topReminder.next_due_at)}</p>
+                        <p className="mt-1 text-sm font-semibold text-[#050505]">
+                          {formatDateTime(topReminder.next_reminder_at || topReminder.next_due_at)}
+                        </p>
                       </div>
                       <div>
                         <p className="text-[11px] font-semibold uppercase tracking-wide text-[#A5A5A5]">Cadence</p>

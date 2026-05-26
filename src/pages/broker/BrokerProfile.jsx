@@ -335,15 +335,31 @@ function SignSecurityPage({ user, onRefresh }) {
   const [success, setSuccess] = useState('');
 
   useEffect(() => {
+    if (!success) return;
+    const t = setTimeout(() => setSuccess(''), 4000);
+    return () => clearTimeout(t);
+  }, [success]);
+
+  useEffect(() => {
     setLocalUser(user);
   }, [user]);
 
   const handleSuccess = async (updatedUser, message) => {
-    if (updatedUser) setLocalUser(updatedUser);
+    // Apply updated fields immediately so the UI reflects changes before refresh
+    if (updatedUser) setLocalUser((prev) => ({ ...prev, ...updatedUser }));
     setModal(null);
     setSuccess(message || 'Profile updated successfully.');
+    // Refresh global state; merge carefully so a stale cache doesn't undo our update
     const refreshedUser = await onRefresh();
-    if (refreshedUser) setLocalUser(refreshedUser);
+    if (refreshedUser) {
+      setLocalUser((prev) => ({
+        ...refreshedUser,
+        // Preserve fields that were in updatedUser — they're the ground truth
+        ...(updatedUser ? Object.fromEntries(
+          Object.entries(updatedUser).filter(([, v]) => v !== undefined),
+        ) : {}),
+      }));
+    }
   };
 
   return (
@@ -378,7 +394,6 @@ function SignSecurityPage({ user, onRefresh }) {
           label="Email address"
           value={localUser?.email}
           placeholder="Add your email address"
-          verified={localUser?.email_verified ?? false}
         />
         <InfoRow label="Change Password" onClick={() => setModal('password')} />
         <InfoRow
@@ -435,18 +450,31 @@ function ProfilePage({ user, onRefresh }) {
   const [localValues, setLocalValues] = useState({});
   const [success, setSuccess] = useState('');
 
+  useEffect(() => {
+    if (!success) return;
+    const t = setTimeout(() => setSuccess(''), 4000);
+    return () => clearTimeout(t);
+  }, [success]);
+
   // localValues takes priority over user prop so saved values show immediately
   const resolve = (field, fallback) =>
     field in localValues ? localValues[field] : (fallback ?? '');
 
   const handleSave = async (field, value) => {
     const updatedUser = await updateUserRequest(user.id, { [field]: value || null });
-    setLocalValues((prev) => ({ ...prev, [field]: updatedUser?.[field] ?? value ?? '' }));
+    // Use the server-confirmed value if present, otherwise fall back to what the user typed
+    const savedValue = updatedUser?.[field] !== undefined ? updatedUser[field] : value;
+    setLocalValues((prev) => ({ ...prev, [field]: savedValue ?? '' }));
+    // Refresh global user state, but never let it overwrite the field we just edited
+    // (the auth cache may still hold pre-update data for up to 60 s)
     const refreshedUser = await onRefresh();
     if (refreshedUser) {
-      setLocalValues((prev) => ({ ...prev, [field]: refreshedUser?.[field] ?? prev[field] ?? '' }));
+      setLocalValues((prev) => ({ ...prev, ...Object.fromEntries(
+        Object.entries(refreshedUser).filter(([k]) => k !== field),
+      ), [field]: savedValue ?? '' }));
     }
-    setSuccess(`${field === 'name' ? 'Entity name' : fields.find((f) => f.key === field)?.label || 'Profile field'} updated successfully.`);
+    const fieldLabel = fields.find((f) => f.key === field)?.label || 'Profile';
+    setSuccess(`${fieldLabel} updated successfully.`);
   };
 
   const rawDob = (resolve('date_of_birth', user?.date_of_birth ?? user?.dateOfBirth) || '').slice(0, 10);

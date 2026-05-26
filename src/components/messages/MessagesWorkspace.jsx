@@ -38,7 +38,9 @@ function formatThreadTime(value) {
 function roleLabel(role) {
   if (role === "broker") return "Broker";
   if (role === "client") return "Client";
-  return "User";
+  if (role === "admin") return "Admin";
+  if (role === "user" || role === "buyer") return "Buyer";
+  return role ? role.charAt(0).toUpperCase() + role.slice(1) : "Buyer";
 }
 
 function ParticipantPill({ participant }) {

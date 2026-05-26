@@ -239,11 +239,32 @@ function UserFormModal({ initial, companies, companyLock, groups, onSave, onClos
     (form.companyIds || []).some((id) => String(id) === String(company.id))
   );
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-white/30 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-2xl z-10 animate-fadeIn max-h-[88vh] overflow-hidden flex flex-col">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+  return createPortal(
+    <div
+      style={{
+        position: 'fixed', inset: 0, zIndex: 99999,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        padding: '2rem 1rem', boxSizing: 'border-box',
+      }}
+    >
+      {/* Backdrop */}
+      <div
+        style={{ position: 'fixed', inset: 0, background: 'rgba(255,255,255,0.35)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)' }}
+        onClick={onClose}
+      />
+      {/* Modal card */}
+      <div
+        style={{
+          position: 'relative', zIndex: 1,
+          width: '100%', maxWidth: 672,
+          maxHeight: 'calc(100vh - 4rem)',
+          display: 'flex', flexDirection: 'column',
+          borderRadius: 16, background: '#ffffff',
+          boxShadow: '0 8px 32px rgba(0,0,0,0.14)',
+          animation: 'modalFadeIn 0.15s ease',
+        }}
+      >
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100" style={{ flexShrink: 0 }}>
           <div>
             <h2 className="text-base font-bold text-[#05164D]">{isEdit ? 'Edit User' : 'Add New User'}</h2>
             <p className="text-xs text-gray-400 mt-0.5">{isEdit ? 'Update user information' : 'Create a new backend user account'}</p>
@@ -469,7 +490,7 @@ function UserFormModal({ initial, companies, companyLock, groups, onSave, onClos
           )}
         </div>
 
-        <div className="px-6 py-4 border-t border-gray-100 bg-white flex gap-3">
+        <div className="px-6 py-4 border-t border-gray-100 bg-white flex gap-3" style={{ flexShrink: 0 }}>
           <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-gray-600 hover:bg-gray-50 transition-colors">
             Cancel
           </button>
@@ -481,8 +502,16 @@ function UserFormModal({ initial, companies, companyLock, groups, onSave, onClos
             {submitting ? 'Saving...' : isEdit ? 'Save Changes' : 'Add User'}
           </button>
         </div>
+
+        <style>{`
+          @keyframes modalFadeIn {
+            from { opacity: 0; transform: scale(0.97) translateY(6px); }
+            to   { opacity: 1; transform: scale(1)    translateY(0); }
+          }
+        `}</style>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -574,29 +603,34 @@ export default function WorkspaceUsers() {
     return () => clearTimeout(timer);
   }, [success]);
 
+  // Only buyers (role === 'user') appear in the user list
+  const buyersData = useMemo(
+    () => data.filter((u) => ['user', 'buyer'].includes(String(u.role || '').toLowerCase())),
+    [data],
+  );
+
   const companyOptions = useMemo(
-    () => ['All Companies', ...Array.from(new Set(data.map((user) => user.company))).filter(Boolean)],
-    [data]
+    () => ['All Companies', ...Array.from(new Set(buyersData.map((user) => user.company))).filter(Boolean)],
+    [buyersData],
   );
   const roleOptions = useMemo(
-    () => ['All Roles', ...Array.from(new Set(data.map((user) => user.role))).sort((a, b) => ROLE_ORDER.indexOf(a) - ROLE_ORDER.indexOf(b))],
-    [data]
+    () => ['All Roles', ...Array.from(new Set(buyersData.map((user) => user.role))).sort((a, b) => ROLE_ORDER.indexOf(a) - ROLE_ORDER.indexOf(b))],
+    [buyersData],
   );
   const statusOptions = useMemo(
-    () => ['All Status', ...Array.from(new Set(data.map((user) => user.status))).sort((a, b) => STATUS_ORDER.indexOf(a) - STATUS_ORDER.indexOf(b))],
-    [data]
+    () => ['All Status', ...Array.from(new Set(buyersData.map((user) => user.status))).sort((a, b) => STATUS_ORDER.indexOf(a) - STATUS_ORDER.indexOf(b))],
+    [buyersData],
   );
 
   const filtered = useMemo(() => {
     const query = search.toLowerCase();
-    return data.filter((user) => {
+    return buyersData.filter((user) => {
       const matchSearch = !query || user.name.toLowerCase().includes(query) || user.email.toLowerCase().includes(query) || user.company.toLowerCase().includes(query) || user.phone.includes(query);
-      const matchRole = filterRole === 'All Roles' || user.role === filterRole;
       const matchStatus = filterStatus === 'All Status' || user.status === filterStatus;
       const matchCompany = filterCompany === 'All Companies' || user.company === filterCompany;
-      return matchSearch && matchRole && matchStatus && matchCompany;
+      return matchSearch && matchStatus && matchCompany;
     });
-  }, [data, search, filterRole, filterStatus, filterCompany]);
+  }, [buyersData, search, filterStatus, filterCompany]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const safePage = Math.min(page, totalPages);
@@ -772,7 +806,7 @@ export default function WorkspaceUsers() {
     setPage(1);
   };
 
-  const hasActiveFilter = search || filterRole !== 'All Roles' || filterStatus !== 'All Status' || filterCompany !== 'All Companies';
+  const hasActiveFilter = search || filterStatus !== 'All Status' || filterCompany !== 'All Companies';
 
   const handleCreateGroup = async () => {
     if (!clientId || !groupNameDraft.trim()) return;
@@ -1064,7 +1098,6 @@ export default function WorkspaceUsers() {
           <div className="px-4 pb-4 flex flex-wrap gap-3 border-b border-gray-100 pt-3">
             {[
               { label: 'Company', value: filterCompany, options: companyOptions, onChange: (value) => { setComp(value); setPage(1); } },
-              { label: 'Role', value: filterRole, options: roleOptions, onChange: (value) => { setRole(value); setPage(1); } },
               { label: 'Status', value: filterStatus, options: statusOptions, onChange: (value) => { setStatus(value); setPage(1); } },
             ].map(({ label, value, options, onChange }) => (
               <div key={label} className="flex flex-col gap-1">
@@ -1251,7 +1284,7 @@ export default function WorkspaceUsers() {
         />
       )}
 
-      {activeTab === 'users' && editUser && (
+      {editUser && (
         <UserFormModal
           initial={editUser}
           companies={companies}

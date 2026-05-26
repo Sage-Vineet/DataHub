@@ -125,16 +125,83 @@ async function updateSqlProfileByEmail(email, profileUpdates) {
   const assignments = entries.map(([field], index) => `${field} = $${index + 2}`);
   const values = entries.map(([, value]) => value);
 
-  const { rowCount } = await pool.query(
-    `
-      update users
-      set ${assignments.join(", ")}, updated_at = now()
-      where lower(email) = lower($1)
-    `,
-    [normalizedEmail, ...values]
-  );
+  try {
+    const { rowCount } = await pool.query(
+      `UPDATE users SET ${assignments.join(", ")}, updated_at = now() WHERE lower(email) = lower($1)`,
+      [normalizedEmail, ...values],
+    );
+    return rowCount > 0;
+  } catch (err) {
+    console.warn("[updateSqlProfileByEmail] pg update failed:", err.message);
+    return false;
+  }
+}
 
-  return rowCount > 0;
+// Updates any set of allowed columns by user ID via direct pg connection
+const _SAFE_UPDATE_COLS = new Set([
+  "name", "email", "phone", "role", "status", "company_id",
+  "date_of_birth", "occupation", "address", "broker_company", "password_hash",
+]);
+
+async function updateSqlById(id, updates) {
+  const pool = getProfilePool();
+  if (!pool) return false;
+  const entries = Object.entries(updates).filter(([k, v]) => _SAFE_UPDATE_COLS.has(k) && v !== undefined);
+  if (entries.length === 0) return false;
+  const sets = entries.map(([k], i) => `${k} = $${i + 2}`);
+  const vals = entries.map(([, v]) => v);
+  try {
+    const { rowCount } = await pool.query(
+      `UPDATE users SET ${sets.join(", ")}, updated_at = now() WHERE id = $1`,
+      [id, ...vals],
+    );
+    return rowCount > 0;
+  } catch (err) {
+    console.warn("[updateSqlById] pg update failed:", err.message);
+    return false;
+  }
+}
+
+// Fetch a single column from users via direct pg (used as Supabase fallback)
+async function getSqlUserField(id, column) {
+  const pool = getProfilePool();
+  if (!pool) return null;
+  try {
+    const { rows } = await pool.query(`SELECT ${column} FROM users WHERE id = $1 LIMIT 1`, [id]);
+    return rows[0]?.[column] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// Strips internal hostnames / credentials from DB errors before surfacing to the client
+function sanitizeDbError(err) {
+  const msg = String(err?.message || "");
+  const isNetworkErr =
+    err?.code === "ENOTFOUND" || err?.code === "ETIMEDOUT" || err?.code === "ECONNREFUSED" ||
+    /ENOTFOUND|ETIMEDOUT|ECONNREFUSED|supabase\.co|getaddrinfo|connection refused/i.test(msg);
+  if (isNetworkErr) {
+    const e = new Error("Unable to save changes. Please try again later.");
+    e.status = 503;
+    return e;
+  }
+  // Supabase PostgREST schema cache hasn't refreshed after a migration
+  if (/schema cache|Could not find.*column|column.*not found/i.test(msg)) {
+    const colMatch = msg.match(/['`"]?([\w_]+)['`"]?\s*column/i) || msg.match(/column\s*['`"]?([\w_]+)['`"]?/i);
+    const col = colMatch?.[1] || "field";
+    const e = new Error(
+      `Cannot save '${col}': the database schema cache is stale. ` +
+      `In Supabase → Settings → API, click "Reload schema cache", then retry.`,
+    );
+    e.status = 503;
+    return e;
+  }
+  const clean = msg
+    .replace(/\b[\w-]+\.supabase\.co\b/gi, "[db]")
+    .replace(/postgresql:\/\/[^@]+@[^\s]+/gi, "[db]");
+  const e = new Error(clean || "Failed to save changes.");
+  e.status = err?.status || 500;
+  return e;
 }
 
 /**
@@ -167,7 +234,7 @@ async function attachAssignedCompanies(users) {
   const userIds = userList.map((user) => user.id).filter(Boolean);
   if (!userIds.length) return users;
 
-  const { data: assignments, error } = await supabase
+  let { data: assignments, error } = await supabase
     .from("user_companies")
     .select(`
       user_id,
@@ -179,8 +246,33 @@ async function attachAssignedCompanies(users) {
     .in("user_id", userIds);
 
   if (error) {
-    console.error("❌ Error fetching assigned companies:", error.message);
-    return users;
+    console.error("❌ Error fetching assigned companies via Supabase:", error.message);
+    // Pg fallback — covers RLS blocks and network errors post-migration
+    const pool = getProfilePool();
+    if (pool) {
+      try {
+        const { rows } = await pool.query(
+          `SELECT uc.user_id, uc.company_id,
+                  c.id AS c_id, c.name, c.industry, c.status, c.contact_email
+           FROM user_companies uc
+           LEFT JOIN companies c ON c.id = uc.company_id
+           WHERE uc.user_id = ANY($1)`,
+          [userIds],
+        );
+        assignments = rows.map((r) => ({
+          user_id: r.user_id,
+          company_id: r.company_id,
+          companies: r.c_id
+            ? { id: r.c_id, name: r.name, industry: r.industry, status: r.status, contact_email: r.contact_email }
+            : null,
+        }));
+      } catch (pgErr) {
+        console.error("❌ pg fallback for user_companies also failed:", pgErr.message);
+        return users;
+      }
+    } else {
+      return users;
+    }
   }
 
   const byUserId = (assignments || []).reduce((map, uc) => {
@@ -196,12 +288,33 @@ async function attachAssignedCompanies(users) {
     byUserId[userId].push(...companies);
   }
 
+  // Batch-fetch contact_email for companies that appear only as user.company_id (no user_companies row)
+  // This covers the post-migration case where user_companies is empty but company_id is set
+  const missingCompanyIds = Array.from(new Set(
+    userList
+      .filter((u) => u.company_id && !(byUserId[u.id] || []).some((c) => String(c.id) === String(u.company_id)))
+      .map((u) => String(u.company_id)),
+  ));
+  const fallbackCompanyMap = new Map();
+  if (missingCompanyIds.length) {
+    const { data: missingCompanies } = await supabase
+      .from("companies")
+      .select("id, name, contact_email")
+      .in("id", missingCompanyIds);
+    for (const c of missingCompanies || []) {
+      fallbackCompanyMap.set(String(c.id), c);
+    }
+  }
+
   const enriched = userList.map((user) => {
     const assignedCompanies = dedupeCompanies(byUserId[user.id] || []);
     const hasPrimary = user.company_id && assignedCompanies.some((company) => String(company.id) === String(user.company_id));
+    const fallbackCompany = user.company_id
+      ? (fallbackCompanyMap.get(String(user.company_id)) || { id: user.company_id, name: user.company_name })
+      : null;
     const normalizedCompanies = hasPrimary || !user.company_id
       ? assignedCompanies
-      : [{ id: user.company_id, name: user.company_name }, ...assignedCompanies];
+      : [fallbackCompany, ...assignedCompanies];
 
     const normalizedEmail = String(user.email || "").trim().toLowerCase();
     const isSeller = normalizedCompanies.some((company) => (
@@ -439,6 +552,7 @@ async function getUserById(id) {
     const { rows } = await pool.query(
       `SELECT u.id, u.name, u.email, u.phone, u.role, u.company_id,
               u.status, u.created_at, u.updated_at, u.password_hash,
+              u.date_of_birth, u.occupation, u.address, u.broker_company,
               c.name AS company_name
        FROM users u LEFT JOIN companies c ON u.company_id = c.id
        WHERE u.id = $1 LIMIT 1`,
@@ -450,6 +564,10 @@ async function getUserById(id) {
       id: r.id, name: r.name, email: r.email, phone: r.phone || null,
       role: r.role, company_id: r.company_id, company_name: r.company_name || null,
       password_hash: r.password_hash, status: r.status,
+      date_of_birth: r.date_of_birth || null,
+      occupation: r.occupation || null,
+      address: r.address || null,
+      broker_company: r.broker_company || null,
       created_at: r.created_at, updated_at: r.updated_at,
       assignedCompanies: [],
     };
@@ -698,11 +816,17 @@ async function updateUser(id, userData) {
         throw err;
       }
 
+      let storedHash = null;
       const { data: authData } = await supabase
         .from("users").select("email, password_hash").eq("id", id).single();
+      storedHash = authData?.password_hash ?? null;
 
-      const storedHash = authData?.password_hash ?? "";
-      const matchesDb = await passwordMatches(currentPassword, storedHash);
+      // Supabase JS client may return null on network errors — fall back to pg
+      if (storedHash === null) {
+        storedHash = await getSqlUserField(id, "password_hash");
+      }
+
+      const matchesDb = await passwordMatches(currentPassword, storedHash ?? "");
 
       if (!matchesDb) {
         const err = new Error("Current password is incorrect.");
@@ -716,10 +840,14 @@ async function updateUser(id, userData) {
   if (Object.keys(coreUpdates).length > 0) {
     coreUpdates.updated_at = now;
     const { error } = await supabase.from("users").update(coreUpdates).eq("id", id);
-    if (error) throw error;
+    if (error) {
+      // Try direct pg before giving up
+      const pgOk = await updateSqlById(id, coreUpdates);
+      if (!pgOk) throw sanitizeDbError(error);
+    }
   }
 
-  // ── Profile updates via Supabase JS client ──────────────────────────────────
+  // ── Profile updates (date_of_birth, occupation, address, broker_company) ───
   const profileUpdates = {};
   if (date_of_birth !== undefined) profileUpdates.date_of_birth = normalizedDob;
   if (occupation !== undefined) profileUpdates.occupation = normalizedOccupation;
@@ -730,20 +858,18 @@ async function updateUser(id, userData) {
     const { error: profileErr } = await supabase
       .from("users").update({ ...profileUpdates, updated_at: now }).eq("id", id);
     if (profileErr) {
-      const isColumnMissing = profileErr.code === "42703" || profileErr.message?.toLowerCase().includes("column");
-      if (isColumnMissing) {
-        const { data: userIdentity, error: identityErr } = await supabase
+      // Try pg by ID first (fastest fallback, handles all error types)
+      const pgOk = await updateSqlById(id, profileUpdates);
+      if (!pgOk) {
+        // Last resort: pg by email (handles column-missing on Supabase + no DATABASE_URL)
+        const { data: userIdentity } = await supabase
           .from("users").select("email").eq("id", id).maybeSingle();
-        if (identityErr || !userIdentity?.email) throw profileErr;
-
-        const updated = await updateSqlProfileByEmail(userIdentity.email, profileUpdates);
-        if (!updated) {
-          const err = new Error("Profile fields could not be saved for this broker account.");
-          err.status = 500;
-          throw err;
+        if (userIdentity?.email) {
+          const emailOk = await updateSqlProfileByEmail(userIdentity.email, profileUpdates);
+          if (!emailOk) throw sanitizeDbError(profileErr);
+        } else {
+          throw sanitizeDbError(profileErr);
         }
-      } else {
-        throw profileErr;
       }
     }
   }
