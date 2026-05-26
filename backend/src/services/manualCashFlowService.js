@@ -364,20 +364,23 @@ function buildCashFlow({ bsPrevRows, bsCurrRows, plRows, year }) {
   // ── FINAL TOTALS (programmatic) ───────────────────────────────────────────────
   const netCashChange = r2(totalOperating + totalInvesting + totalFinancing);
   const beginningCash = r2(hasPrev ? findAmt(bsPrevRows, CASH_PATTERNS) : 0);
-  const endingCash    = r2(beginningCash + netCashChange);
+
+  // CASH AT END OF PERIOD = Balance Sheet Cash value (read directly, never computed)
+  const bsEndingCash = r2(findAmt(bsCurrRows, CASH_PATTERNS));
+  const endingCash   = bsEndingCash;
 
   // ── MANDATORY VALIDATION ────────────────────────────────────────────────────
-  // Compare computed ending cash against current BS bank balance.
-  // If difference > 0.01 the statement does not reconcile.
-  const bsEndingCash  = r2(findAmt(bsCurrRows, CASH_PATTERNS));
-  const cashDiff      = bsEndingCash !== 0 ? Math.abs(endingCash - bsEndingCash) : 0;
-  const cashValidated = bsEndingCash === 0 || cashDiff <= 0.01;
+  // Rule: Net Cash Increase + Beginning Cash must equal Ending Cash exactly.
+  // Tolerance: 0.00 — any difference means the statement does not reconcile.
+  const computedEnding = r2(beginningCash + netCashChange);
+  const cashDiff       = Math.abs(computedEnding - endingCash);
+  const cashValidated  = cashDiff === 0;
 
   if (!cashValidated) {
     console.error(
       `[ManualCashFlow] VALIDATION FAILED year=${year}: ` +
-      `computed endingCash=${endingCash} vs BS bankTotal=${bsEndingCash} ` +
-      `diff=${cashDiff.toFixed(2)} | ` +
+      `beginningCash(${beginningCash}) + netCashChange(${netCashChange}) = ${computedEnding} ` +
+      `!= bsEndingCash(${endingCash}) diff=${cashDiff.toFixed(2)} | ` +
       `Operating=${totalOperating} Investing=${totalInvesting} Financing=${totalFinancing}`
     );
   }
@@ -559,6 +562,17 @@ async function generateCashFlow(companyId, year) {
     };
   }
 
+  // STEP 1 — Period match: BS and P&L must cover the same fiscal year.
+  const bsCurrYear = extractYear(bsCurr);
+  const plExtractedYear = extractYear(pl);
+  if (bsCurrYear !== plExtractedYear) {
+    console.error(`[ManualCashFlow] Period mismatch: BS year=${bsCurrYear} PL year=${plExtractedYear}`);
+    return {
+      success: false,
+      message: "Balance Sheet and Profit & Loss periods do not match",
+    };
+  }
+
   const bsCurrRows = extractRows(bsCurr);
   const bsPrevRows = extractRows(bsPrev);
   const plDataRows = extractRows(pl);
@@ -726,11 +740,22 @@ async function generateAndSaveCashFlowsForAllYears(companyId, now = new Date().t
     const currentPL  = plByYear[year];
     const previousBS = bsByYear[year - 1] || null;
 
+    // STEP 1 — Period match: BS and P&L must cover the same fiscal year
+    const bsExtYear = extractYear(currentBS);
+    const plExtYear = extractYear(currentPL);
+    if (bsExtYear !== plExtYear) {
+      console.error(`[ManualCashFlow] Period mismatch year=${year}: BS=${bsExtYear} PL=${plExtYear} — skipping`);
+      failed.push({ year, reason: "Balance Sheet and Profit & Loss periods do not match" });
+      continue;
+    }
+
     console.log("[ManualCashFlow] Generating CF (programmatic)", {
       year,
       currentBSFound:  !!currentBS,
       currentPLFound:  !!currentPL,
       previousBSFound: !!previousBS,
+      bsPeriod:        bsExtYear,
+      plPeriod:        plExtYear,
     });
 
     try {
