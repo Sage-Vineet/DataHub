@@ -31,6 +31,8 @@ import {
 } from "../../../services/authService";
 import { syncQuickbooksReports } from "../../../lib/quickbooks";
 import QBDisconnectedBanner from "../../../components/common/QBDisconnectedBanner";
+import { getReportSources } from "../../../lib/api";
+import { normalizeReportSourceKey, REPORT_SOURCE_KEYS } from "../../../lib/report-source";
 
 const MONTH_NAMES = [
   "January",
@@ -634,6 +636,7 @@ function useInvoices() {
   const [invoices, setInvoices] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
+  const [sourceKey, setSourceKey] = useState(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -643,6 +646,31 @@ function useInvoices() {
       setError("");
 
       try {
+        // Check active source before fetching — skip for QuickBooks Manual.
+        let activeSourceKey = null;
+        try {
+          const sourcesPayload = await getReportSources();
+          activeSourceKey = normalizeReportSourceKey(
+            sourcesPayload?.selectedSource || sourcesPayload?.activeSource,
+          );
+        } catch {
+          // If source check fails, proceed with fetch (fail open).
+        }
+
+        if (activeSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) {
+          console.log(
+            "[Invoices] activeSource=QuickBooks Manual invoiceFetchSkipped=true returnedEmptyDataset=true",
+          );
+          if (isMounted) {
+            setSourceKey(activeSourceKey);
+            setInvoices([]);
+            setIsLoading(false);
+          }
+          return;
+        }
+
+        if (isMounted) setSourceKey(activeSourceKey);
+
         const payload = await fetchInvoices();
         const normalized = getInvoicesArray(payload).map(normalizeInvoice);
 
@@ -667,7 +695,7 @@ function useInvoices() {
     };
   }, []);
 
-  return { invoices, setInvoices, isLoading, error };
+  return { invoices, setInvoices, isLoading, error, sourceKey };
 }
 
 function useCustomers() {
@@ -704,7 +732,8 @@ function useCustomers() {
 }
 
 export default function WorkspaceInvoices() {
-  const { invoices, setInvoices, isLoading, error } = useInvoices();
+  const { invoices, setInvoices, isLoading, error, sourceKey } = useInvoices();
+  const isQuickBooksManual = sourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
   const { customers } = useCustomers();
 
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
@@ -1107,12 +1136,12 @@ export default function WorkspaceInvoices() {
 
         {isLoading ? (
           <MonthlySummarySkeleton />
-        ) : error && invoices.length === 0 ? (
+        ) : error && invoices.length === 0 && !isQuickBooksManual ? (
           <div className="flex items-center gap-3 rounded-2xl border border-[#F5C2C7] bg-[#FDECEC] p-5 text-[14px] font-medium text-[#C62026]">
             <AlertCircle size={18} />
             {error}
           </div>
-        ) : invoices.length === 0 ? (
+        ) : invoices.length === 0 && !isQuickBooksManual ? (
           <div className="flex flex-col items-center justify-center rounded-[24px] border border-[#E6E8EE] bg-white py-20 text-center shadow-[0_18px_45px_rgba(15,23,42,0.06)]">
             <FileText size={40} className="mb-4 text-[#D0D5DD]" />
             <p className="text-[17px] font-semibold text-[#101828]">No invoice data available</p>
@@ -1214,25 +1243,25 @@ export default function WorkspaceInvoices() {
                           {row.year}
                         </td>
                         <td className="px-4 py-3 text-right text-[15px] font-semibold text-[#3C66C9] tabular-nums">
-                          {formatCurrency(row.totalPostedAmount)}
+                          {row.invoiceCount === 0 ? "–" : formatCurrency(row.totalPostedAmount)}
                         </td>
                         <td className="px-4 py-3 text-right text-[15px] text-[#101828] tabular-nums">
                           {row.servicePercent.toFixed(2)}%
                         </td>
                         <td className="px-4 py-3 text-right text-[15px] font-semibold text-[#3C8C47] tabular-nums">
-                          {formatCurrency(row.invoiceAmount)}
+                          {row.invoiceCount === 0 ? "–" : formatCurrency(row.invoiceAmount)}
                         </td>
                         <td className="px-4 py-3 text-right text-[15px] text-[#101828] tabular-nums">
                           {row.totalEV}
                         </td>
                         <td className="px-4 py-3 text-right text-[15px] text-[#101828] tabular-nums">
-                          {formatCurrency(row.dollarsPerEV)}
+                          {row.invoiceCount === 0 ? "–" : formatCurrency(row.dollarsPerEV)}
                         </td>
                         <td className="px-4 py-3 text-right text-[15px] text-[#101828] tabular-nums">
                           {row.totalPA}
                         </td>
                         <td className="px-4 py-3 text-right text-[15px] text-[#101828] tabular-nums">
-                          {formatCurrency(row.dollarsPerPA)}
+                          {row.totalPA === 0 ? "–" : formatCurrency(row.dollarsPerPA)}
                         </td>
                         <td className="px-4 py-3">
                           <input

@@ -58,6 +58,7 @@ import {
 } from "../../../lib/report-source";
 import { exportToCSV } from "../../../lib/exportCSV";
 import { useDataSource } from "../../../context/DataSourceContext";
+import { emitWorkspaceDataSourceUpdated } from "../../../lib/dataSourceEvents";
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
@@ -593,6 +594,8 @@ export default function WorkspaceDashboardDatahub() {
   // ── Data fetchers ──────────────────────────────────────────────────────
 
   const loadManualUploadDashboardData = useCallback(async (year = "all") => {
+    console.log(`[DASHBOARD] activeSource=manual_upload endpoint=/manual-report-uploads/manual-upload-dashboard clientId=${clientId}`);
+    console.log("[DATA SOURCE] using=Manual Upload Source QMSAccess=false");
     setIsLoading(true);
     try {
       const result = await loadManualUploadDashboard(year, { clientId });
@@ -613,6 +616,8 @@ export default function WorkspaceDashboardDatahub() {
   }, [clientId]);
 
   const loadQMSDashboardData = useCallback(async (year = "all") => {
+    console.log(`[DASHBOARD] activeSource=quickbooks_manual endpoint=/manual-report-uploads/qms-dashboard clientId=${clientId}`);
+    console.log("[DATA SOURCE] using=QuickBooks Manual Source QMSAccess=true");
     setIsLoading(true);
     try {
       const result = await loadQMSDashboard(year, { clientId });
@@ -807,7 +812,12 @@ export default function WorkspaceDashboardDatahub() {
 
   const handleSourceChange = useCallback(async (newSourceKey) => {
     if (newSourceKey === selectedSource) return;
+
+    console.log(`[DASHBOARD] activeSource=${newSourceKey} switching — clearing stale cache`);
+
     setSelectedSource(newSourceKey);
+    // Keep activeSourceKey in sync so session snapshots store the correct sourceKey.
+    setActiveSourceKey(newSourceKey);
     const newIsManual = newSourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD;
     const newIsQBManual = newSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
     setIsManualUploadMode(newIsManual);
@@ -817,8 +827,13 @@ export default function WorkspaceDashboardDatahub() {
     setInvoicesData([]);
     setMonthlyInsights([]);
 
-    // Persist selection server-side (best-effort)
+    // Clear stale session snapshot so old source data can never bleed into the new source.
+    saveStoredDashboardState(clientId, user?.id, null);
+
+    // Persist selection server-side and update DataSourceContext + localStorage
+    // so that contextActiveSource and localStorage stay in sync with the switch.
     setSelectedReportSource(newSourceKey).catch(() => null);
+    emitWorkspaceDataSourceUpdated({ clientId, sourceKey: newSourceKey });
 
     if (newIsManual) {
       setManualUploadSelectedYear("all");
@@ -845,6 +860,8 @@ export default function WorkspaceDashboardDatahub() {
     }
   }, [
     selectedSource,
+    clientId,
+    user?.id,
     calculateDateRangeFromYearMonth,
     loadManualUploadDashboardData,
     loadQMSDashboardData,

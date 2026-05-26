@@ -971,8 +971,8 @@ export function getLatestQMSUploadedReport(statementType, options = {}) {
  */
 export function getQMSDashboard(options = {}) {
   const clientId = options.clientId ?? resolveClientIdFromLocation();
-  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
-  return request(`/manual-report-uploads/qms-dashboard${query}`, options);
+  const base = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "?";
+  return request(`/manual-report-uploads/qms-dashboard${base}&source=quickbooks_manual`, options);
 }
 
 /**
@@ -981,8 +981,8 @@ export function getQMSDashboard(options = {}) {
  */
 export function getManualUploadDashboard(options = {}) {
   const clientId = options.clientId ?? resolveClientIdFromLocation();
-  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
-  return request(`/manual-report-uploads/manual-upload-dashboard${query}`, options);
+  const base = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "?";
+  return request(`/manual-report-uploads/manual-upload-dashboard${base}&source=manual_upload_excel_pdf`, options);
 }
 
 /**

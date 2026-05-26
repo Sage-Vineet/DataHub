@@ -446,8 +446,19 @@ router.get("/manual-report-uploads/qms-dashboard", async (req, res) => {
   try {
     const clientId = resolveClientId(req);
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+
+    const requestedSource = String(req.query.source || "").trim();
+    console.log(`[DASHBOARD] activeSource=quickbooks_manual endpoint=/manual-report-uploads/qms-dashboard clientId=${clientId}`);
+    console.log(`[DATA SOURCE] using=QuickBooks Manual Source QMSAccess=true`);
+
+    if (requestedSource && requestedSource !== "quickbooks_manual") {
+      console.warn(
+        `[QMSDashboard] Source mismatch — endpoint expects quickbooks_manual but got source=${requestedSource} clientId=${clientId}. Serving QMS data anyway.`,
+      );
+    }
+
     const dashboard = await buildQMSDashboardData(clientId);
-    return res.json({ success: true, ...dashboard });
+    return res.json({ success: true, source: "quickbooks_manual", ...dashboard });
   } catch (error) {
     console.error("[QMSDashboard] Route error:", error.message);
     return res.status(500).json({ success: false, error: error.message || "Failed to build QMS dashboard data." });
@@ -458,8 +469,19 @@ router.get("/manual-report-uploads/manual-upload-dashboard", async (req, res) =>
   try {
     const clientId = resolveClientId(req);
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+
+    const requestedSource = String(req.query.source || "").trim();
+    console.log(`[DASHBOARD] activeSource=manual_upload endpoint=/manual-report-uploads/manual-upload-dashboard clientId=${clientId}`);
+    console.log(`[DATA SOURCE] using=Manual Upload Source QMSAccess=false`);
+
+    if (requestedSource && requestedSource !== "manual_upload_excel_pdf" && requestedSource !== "manual_upload") {
+      console.warn(
+        `[ManualUploadDashboard] Source mismatch — endpoint expects manual_upload but got source=${requestedSource} clientId=${clientId}. Serving Manual Upload data anyway.`,
+      );
+    }
+
     const dashboard = await buildManualUploadDashboardData(clientId);
-    return res.json({ success: true, ...dashboard });
+    return res.json({ success: true, source: "manual_upload_excel_pdf", ...dashboard });
   } catch (error) {
     console.error("[ManualUploadDashboard] Route error:", error.message);
     return res.status(500).json({ success: false, error: error.message || "Failed to build Manual Upload dashboard data." });

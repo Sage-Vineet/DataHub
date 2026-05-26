@@ -83,15 +83,18 @@ export const DataSourceProvider = ({ children }) => {
         // User's explicit localStorage choice persists over backend API response.
         // Only use backend value if user has never explicitly selected a source here.
         const localSource = getLocalSource(clientId);
-        const normalized = localSource || (source
+        // Server response takes precedence over stale localStorage — ensures a source
+        // switch made on another page (or via handleSourceChange) is always reflected
+        // here without waiting for localStorage to catch up.
+        const normalized = source
           ? normalizeReportSourceKey(source)
-          : (stored || REPORT_SOURCE_KEYS.QUICKBOOKS));
+          : (localSource || stored || REPORT_SOURCE_KEYS.QUICKBOOKS);
         setActiveSource(normalized);
         setQuickbooksConnected(Boolean(data?.quickbooksConnected));
         setSourceRecords(Array.isArray(data?.sources) ? data.sources : []);
         sessionStorage.setItem(sourceStorageKey(clientId), normalized);
-        // Seed localStorage on first visit so future visits use it as fallback.
-        if (!localSource && normalized) setLocalSource(clientId, normalized);
+        // Keep localStorage in sync with the authoritative server value.
+        if (normalized) setLocalSource(clientId, normalized);
       })
       .catch(() => {
         if (clientIdRef.current !== clientId) return;
