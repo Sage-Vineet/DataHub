@@ -50,7 +50,7 @@ import { loadManualUploadDashboard } from "../../../services/manualUploadDashboa
 import { fetchInvoices } from "../../../services/invoiceService";
 import { getProfitAndLoss } from "../../../services/profitAndLossService";
 import { syncQuickbooksReports } from "../../../lib/quickbooks";
-import { getReportSources, setSelectedReportSource, getStoredToken } from "../../../lib/api";
+import { getReportSources, setSelectedReportSource } from "../../../lib/api";
 import {
   getReportSourceMode,
   normalizeReportSourceKey,
@@ -60,10 +60,6 @@ import { exportToCSV } from "../../../lib/exportCSV";
 import { useDataSource } from "../../../context/DataSourceContext";
 import { emitWorkspaceDataSourceUpdated } from "../../../lib/dataSourceEvents";
 
-const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
-const DASHBOARD_STATE_PAGE_KEY = "datahub-dashboard";
-const DASHBOARD_STATE_ENDPOINT = `${API_BASE_URL}/workspace-page-state/${DASHBOARD_STATE_PAGE_KEY}`;
 const DASHBOARD_STORAGE_PREFIX = "workspace-datahub-dashboard";
 
 const DASHBOARD_ENDPOINTS = {
@@ -333,26 +329,6 @@ export default function WorkspaceDashboardDatahub() {
     };
   }, []);
 
-  const getClientHeaders = useCallback(
-    (includeJson = false) => {
-      const token = getStoredToken();
-
-      return {
-        ...(token
-          ? {
-            Authorization: `Bearer ${token}`,
-            "X-Access-Token": token,
-            "X-Auth-Token": token,
-            "X-Token": token,
-          }
-          : {}),
-        ...(clientId ? { "X-Client-Id": clientId } : {}),
-        ...(includeJson ? { "Content-Type": "application/json" } : {}),
-      };
-    },
-    [clientId],
-  );
-
   const loadSourceState = useCallback(async () => {
     if (!clientId) {
       setActiveSourceKey(REPORT_SOURCE_KEYS.QUICKBOOKS);
@@ -439,41 +415,6 @@ export default function WorkspaceDashboardDatahub() {
   );
 
   // Subset stored on the server (no UI-only fields like selectedYear/Month)
-  const buildRemoteSnapshot = useCallback(
-    (overrides = {}) => ({
-      sourceKey: overrides.sourceKey ?? activeSourceKey,
-      selectedSource: overrides.selectedSource ?? selectedSource,
-      startDate: overrides.startDate ?? startDate,
-      endDate: overrides.endDate ?? endDate,
-      filterType: overrides.filterType ?? filterType,
-      chartStartDate: overrides.chartStartDate ?? chartStartDate,
-      chartEndDate: overrides.chartEndDate ?? chartEndDate,
-      aggregationType: overrides.aggregationType ?? aggregationType,
-      selectedKpiLabels: overrides.selectedKpiLabels ?? selectedKpiLabels,
-      dynamicStats: stripDashboardStatsIcons(
-        overrides.dynamicStats ?? dynamicStats,
-      ),
-      invoicesData: overrides.invoicesData ?? invoicesData,
-      chartDataState: overrides.chartDataState ?? chartDataState,
-      monthlyInsights: overrides.monthlyInsights ?? monthlyInsights,
-    }),
-    [
-      activeSourceKey,
-      selectedSource,
-      aggregationType,
-      chartDataState,
-      chartEndDate,
-      chartStartDate,
-      dynamicStats,
-      endDate,
-      filterType,
-      invoicesData,
-      monthlyInsights,
-      selectedKpiLabels,
-      startDate,
-    ],
-  );
-
   // ── Snapshot restore ───────────────────────────────────────────────────
 
   /**
@@ -558,49 +499,6 @@ export default function WorkspaceDashboardDatahub() {
 
     return hasData;
   }, [activeSourceKey]);
-
-  // ── Remote snapshot persistence ────────────────────────────────────────
-
-  const fetchRemoteDashboardSnapshot = useCallback(async () => {
-    const token = getStoredToken();
-    if (!clientId || !user?.id || !token) return null;
-    try {
-      const response = await fetch(
-        `${DASHBOARD_STATE_ENDPOINT}?clientId=${encodeURIComponent(clientId)}`,
-        { cache: "no-store", headers: getClientHeaders() },
-      );
-      if (response.status === 401) return null;
-      const payload = await response.json().catch(() => null);
-      if (!response.ok)
-        throw new Error(payload?.error || `HTTP ${response.status}`);
-      return payload?.state || null;
-    } catch (error) {
-      console.error("Failed to load saved dashboard state:", error);
-      return null;
-    }
-  }, [clientId, getClientHeaders, user?.id]);
-
-  const replaceRemoteDashboardSnapshot = useCallback(
-    async (overrides = {}) => {
-      const token = getStoredToken();
-      if (!clientId || !user?.id || !token) return;
-      try {
-        const response = await fetch(
-          `${DASHBOARD_STATE_ENDPOINT}?clientId=${encodeURIComponent(clientId)}`,
-          {
-            method: "PUT",
-            cache: "no-store",
-            headers: getClientHeaders(true),
-            body: JSON.stringify({ state: buildRemoteSnapshot(overrides) }),
-          },
-        );
-        if (response.status === 401) return;
-      } catch (error) {
-        console.error("Failed to save dashboard state:", error);
-      }
-    },
-    [buildRemoteSnapshot, clientId, getClientHeaders, user?.id],
-  );
 
   // ── Data fetchers ──────────────────────────────────────────────────────
 
@@ -970,29 +868,7 @@ export default function WorkspaceDashboardDatahub() {
         saveStoredDashboardState(clientId, user?.id, null);
       }
 
-      // 4. QuickBooks mode: try the remote snapshot before doing a full API fetch
-      const remoteSnap = await fetchRemoteDashboardSnapshot();
-      if (remoteSnap) {
-        const restored = applyDashboardSnapshot(remoteSnap, resolvedSourceKey);
-        if (restored) {
-          saveStoredDashboardState(clientId, user?.id, {
-            ...remoteSnap,
-            selectedSource: liveSource,
-            selectedYear: remoteSnap.selectedYear ?? currentYear,
-            selectedMonth: remoteSnap.selectedMonth ?? "",
-            chartSelectedYear: remoteSnap.chartSelectedYear ?? currentYear,
-            chartSelectedMonth: remoteSnap.chartSelectedMonth ?? "",
-            searchTerm: remoteSnap.searchTerm ?? "",
-            selectedKpiLabels: remoteSnap.selectedKpiLabels ?? [],
-          });
-          hasRestoredRef.current = true;
-          setIsLoading(false);
-          setIsChartLoading(false);
-          return;
-        }
-      }
-
-      // 5. No cached data at all — fresh fetch from QuickBooks
+      // 4. No cached data at all — fresh fetch from QuickBooks
       setSelectedYear(currentYear);
       setSelectedMonth(currentMonth);
       const { startDate: kpiStart, endDate: kpiEnd } =
@@ -1061,29 +937,6 @@ export default function WorkspaceDashboardDatahub() {
       return matching.length ? matching : availableLabels;
     });
   }, [dynamicStats]);
-
-  useEffect(() => {
-    if (!hasRestoredRef.current) return;
-
-    const timeoutId = window.setTimeout(() => {
-      void replaceRemoteDashboardSnapshot();
-    }, 400);
-
-    return () => window.clearTimeout(timeoutId);
-  }, [
-    dynamicStats,
-    selectedKpiLabels,
-    invoicesData,
-    chartDataState,
-    monthlyInsights,
-    startDate,
-    endDate,
-    filterType,
-    chartStartDate,
-    chartEndDate,
-    aggregationType,
-    replaceRemoteDashboardSnapshot,
-  ]);
 
   useEffect(() => {
     if (!isKpiSelectorOpen) return undefined;
