@@ -6,6 +6,13 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function normalizeAccountingMethod(raw) {
+  const str = String(raw || "").trim().toLowerCase();
+  if (str === "cash") return "Cash";
+  if (str === "accrual") return "Accrual";
+  return str ? String(raw).trim() : "";
+}
+
 function sanitizeReportParams(params) {
   if (!params || typeof params !== "object") return {};
 
@@ -15,6 +22,11 @@ function sanitizeReportParams(params) {
     const value = params[key];
     if (value === undefined || value === null || value === "") continue;
     if (key === "clientId" || key === "minorversion") continue;
+    if (key === "accounting_method") {
+      const normalized = normalizeAccountingMethod(value);
+      if (normalized) cleaned[key] = normalized;
+      continue;
+    }
     cleaned[key] = String(value);
   }
 
@@ -419,7 +431,18 @@ async function getCachedReport({
   const paramsFilterValue = serializeJsonFilterValue(params);
   const hasPeriod = Boolean(periodStart && periodEnd);
 
-  const tryRead = async ({ useParams, onlyActive, useDatasetVersion, usePeriod }) => {
+  // When explicit date filters are present, never return a report with different
+  // date params — doing so silently serves wrong-period financial data.
+  const hasDateFilter = Boolean(params && (params.start_date || params.end_date));
+
+  // tryRead supports two match modes:
+  //   "exact"   — report_params = serialized JSON  (strict equality)
+  //   "partial" — report_params @> requested JSON  (JSONB contains, superset match)
+  //
+  // "partial" is needed because sync tasks store accounting_method alongside dates,
+  // so a query without accounting_method won't match an exact-equality lookup even
+  // when start_date and end_date are identical.
+  const tryRead = async ({ useParams, matchMode = "exact", onlyActive, useDatasetVersion, usePeriod }) => {
     let query = supabase
       .from("qb_synced_reports")
       .select("*")
@@ -429,25 +452,35 @@ async function getCachedReport({
 
     if (onlyActive) query = query.eq("is_active", true);
     if (useDatasetVersion && datasetVersion) query = query.eq("dataset_version", datasetVersion);
-    if (useParams && paramsFilterValue) query = query.eq("report_params", paramsFilterValue);
+
+    if (useParams && params && Object.keys(params).length > 0) {
+      if (matchMode === "partial") {
+        // @> operator: stored record must contain all requested key-value pairs.
+        // Use .filter() with 'cs' to guarantee PostgREST sends the @> JSONB operator.
+        query = query.filter("report_params", "cs", paramsFilterValue);
+      } else if (paramsFilterValue) {
+        query = query.eq("report_params", paramsFilterValue);
+      }
+    }
 
     if (usePeriod === "exact" && hasPeriod) {
       query = query
         .eq("period_start", periodStart)
-        .eq("period_end", periodEnd)
-        .order("is_active", { ascending: false })
-        .order("last_synced_at", { ascending: false })
-        .order("updated_at", { ascending: false });
-    } else {
-      query = query
-        .order("is_active", { ascending: false })
-        .order("last_synced_at", { ascending: false })
-        .order("updated_at", { ascending: false });
+        .eq("period_end", periodEnd);
     }
 
-    query = query.limit(1);
+    query = query
+      .order("is_active", { ascending: false })
+      .order("last_synced_at", { ascending: false })
+      .order("updated_at", { ascending: false })
+      .limit(1);
 
     const { data, error } = await query.maybeSingle();
+    console.log(
+      `[SyncStore] getCachedReport step {useParams:${useParams} mode:${matchMode} active:${onlyActive} dsv:${useDatasetVersion}}` +
+      ` → ${data ? "HIT params=" + JSON.stringify(data.report_params) : "MISS"}` +
+      (error ? ` ERR:${error.message}` : "")
+    );
     if (error && error.code !== "PGRST116") {
       console.warn(`[SyncStore] getCachedReport query failed for ${reportType}:`, error.message);
       return null;
@@ -460,15 +493,17 @@ async function getCachedReport({
   // include extra fields (e.g. accounting_method) the caller didn't pass.
   // skipUnconstrained prevents returning a completely unrelated snapshot for period requests.
   const unconstrainedSteps = skipUnconstrained ? [] : [
-    { useParams: false, onlyActive: !includeInactive, useDatasetVersion: Boolean(datasetVersion), usePeriod: "none" },
-    { useParams: false, onlyActive: false,            useDatasetVersion: Boolean(datasetVersion), usePeriod: "none" },
+    { useParams: false, matchMode: "exact", onlyActive: !includeInactive, useDatasetVersion: Boolean(datasetVersion), usePeriod: "none" },
+    { useParams: false, matchMode: "exact", onlyActive: false, useDatasetVersion: Boolean(datasetVersion), usePeriod: "none" },
   ];
 
   const searchPlan = [
-    { useParams: true,  onlyActive: !includeInactive, useDatasetVersion: Boolean(datasetVersion), usePeriod: "none" },
-    { useParams: false, onlyActive: !includeInactive, useDatasetVersion: Boolean(datasetVersion), usePeriod: "exact" },
-    { useParams: true,  onlyActive: false,            useDatasetVersion: Boolean(datasetVersion), usePeriod: "none" },
-    { useParams: false, onlyActive: false,            useDatasetVersion: Boolean(datasetVersion), usePeriod: "exact" },
+    { useParams: true, matchMode: "exact", onlyActive: !includeInactive, useDatasetVersion: Boolean(datasetVersion), usePeriod: "none" },
+    { useParams: false, matchMode: "exact", onlyActive: !includeInactive, useDatasetVersion: Boolean(datasetVersion), usePeriod: "exact" },
+    { useParams: true, matchMode: "partial", onlyActive: !includeInactive, useDatasetVersion: Boolean(datasetVersion), usePeriod: "none" },
+    { useParams: true, matchMode: "exact", onlyActive: false, useDatasetVersion: Boolean(datasetVersion), usePeriod: "none" },
+    { useParams: false, matchMode: "exact", onlyActive: false, useDatasetVersion: Boolean(datasetVersion), usePeriod: "exact" },
+    { useParams: true, matchMode: "partial", onlyActive: false, useDatasetVersion: Boolean(datasetVersion), usePeriod: "none" },
     ...unconstrainedSteps,
   ];
 
@@ -477,26 +512,32 @@ async function getCachedReport({
     if (hit) return hit;
   }
 
-  // Legacy fallback where sync_source may not be populated yet.
-  // Skip entirely for period-specific requests — returning an unrelated snapshot would be wrong.
+  // Legacy fallback: match reports that predate sync_source tracking.
+  // Skipped when date filters are present — returning a different-period report
+  // would silently serve wrong-period financial data to the caller.
+  // Also skipped entirely for period-specific requests.
   if (skipUnconstrained) return null;
 
-  const { data: legacyHit, error: legacyError } = await supabase
-    .from("qb_synced_reports")
-    .select("*")
-    .eq("company_id", companyId)
-    .eq("report_type", reportType)
-    .order("last_synced_at", { ascending: false })
-    .order("updated_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  if (!hasDateFilter) {
+    const { data: legacyHit, error: legacyError } = await supabase
+      .from("qb_synced_reports")
+      .select("*")
+      .eq("company_id", companyId)
+      .eq("report_type", reportType)
+      .order("last_synced_at", { ascending: false })
+      .order("updated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
-  if (legacyError && legacyError.code !== "PGRST116") {
-    console.warn(`[SyncStore] Legacy fallback failed for ${reportType}:`, legacyError.message);
-    return null;
+    if (legacyError && legacyError.code !== "PGRST116") {
+      console.warn(`[SyncStore] Legacy fallback failed for ${reportType}:`, legacyError.message);
+      return null;
+    }
+
+    return legacyHit || null;
   }
 
-  return legacyHit || null;
+  return null;
 }
 
 async function listReportsForDataset(companyId, datasetVersion, syncSource = DEFAULT_SYNC_SOURCE) {

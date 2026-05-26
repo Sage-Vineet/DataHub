@@ -965,6 +965,51 @@ export function getLatestQMSUploadedReport(statementType, options = {}) {
   );
 }
 
+/**
+ * Returns the structured QMS (QuickBooks Manual) dashboard payload pre-computed on the server:
+ *   { years, reports, allFiles, trends }
+ */
+export function getQMSDashboard(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const base = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "?";
+  return request(`/manual-report-uploads/qms-dashboard${base}&source=quickbooks_manual`, options);
+}
+
+/**
+ * Returns the structured Manual Upload (Excel/PDF) dashboard payload pre-computed on the server:
+ *   { years, reports, allFiles, trends }
+ */
+export function getManualUploadDashboard(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const base = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "?";
+  return request(`/manual-report-uploads/manual-upload-dashboard${base}&source=manual_upload`, options);
+}
+
+/**
+ * GET /manual-upload/cashflow/periods
+ * Returns all years for which a Cash Flow can be automatically generated
+ * (i.e. BS(Y-1) + BS(Y) + P&L(Y) are all uploaded).
+ */
+export function getManualCashFlowPeriods(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-upload/cashflow/periods${query}`, options);
+}
+
+/**
+ * GET /manual-upload/cashflow?period=YYYY[&force=1]
+ * Fetch (or generate) a Cash Flow statement for a specific year.
+ * Pass force: true to bypass the cache and regenerate from uploaded files.
+ */
+export function getManualGeneratedCashFlow(period, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const params = new URLSearchParams();
+  params.set("period", String(period));
+  if (clientId) params.set("clientId", clientId);
+  if (options.force) params.set("force", "1");
+  return request(`/manual-upload/cashflow?${params}`, options);
+}
+
 export function getReportSources(options = {}) {
   const clientId = options.clientId ?? resolveClientIdFromLocation();
   const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";

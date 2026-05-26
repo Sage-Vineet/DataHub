@@ -147,6 +147,74 @@ function buildBulkTemplateWorkbook(folderOptions) {
   return workbook;
 }
 
+const EXPORT_EXTRA_HEADERS = ['id', 'status', 'documents_count', 'created_at'];
+const EXPORT_HEADERS = [...BULK_TEMPLATE_HEADERS, ...EXPORT_EXTRA_HEADERS];
+
+function buildRequestsExportWorkbook(requests, companyName = '') {
+  const rows = requests.map((r) => ({
+    title:          r.name || '',
+    sub_label:      r.subLabel || '',
+    description:    r.description || '',
+    category:       r.category || '',
+    response_type:  r.responseType || 'Upload',
+    priority:       r.priority || 'high',
+    due_date:       r.dueDate || '',
+    assigned_to:    r.assignedTo || '',
+    visible:        r.visible === false ? 'false' : 'true',
+    id:             r.id || '',
+    status:         r.status || getDisplayStatus(r.workflowStatus, r.dueDate),
+    documents_count: r.linkedDocuments?.length ?? 0,
+    created_at:     r.createdAt ? r.createdAt.slice(0, 10) : '',
+  }));
+
+  const dataSheet = XLSX.utils.json_to_sheet(rows, { header: EXPORT_HEADERS });
+
+  // Column widths
+  dataSheet['!cols'] = EXPORT_HEADERS.map((h) => ({
+    wch: h === 'description' ? 44 : h === 'id' ? 32 : h === 'title' ? 28 : 18,
+  }));
+
+  // Style the read-only extra columns with a grey header (A1 offset for extra cols)
+  const templateColCount = BULK_TEMPLATE_HEADERS.length;
+  EXPORT_EXTRA_HEADERS.forEach((_, i) => {
+    const col = templateColCount + i;
+    const cellAddr = XLSX.utils.encode_cell({ r: 0, c: col });
+    if (dataSheet[cellAddr]) {
+      dataSheet[cellAddr].s = { font: { italic: true }, fill: { fgColor: { rgb: 'F3F4F6' } } };
+    }
+  });
+
+  const instructionsSheet = XLSX.utils.aoa_to_sheet([
+    ['Field', 'Required', 'Guidance'],
+    ['title',         'Yes', 'Request title shown to the client.'],
+    ['sub_label',     'No',  'Optional short label; use the folder name here if the request maps to a specific folder.'],
+    ['description',   'Yes', 'Short request description or instructions.'],
+    ['category',      'Yes', `Use one of: ${CATEGORY_ORDER.join(', ')}`],
+    ['response_type', 'Yes', `Use one of: ${RESPONSE_TYPE_OPTIONS.join(', ')}`],
+    ['priority',      'Yes', `Use one of: ${PRIORITY_OPTIONS.join(', ')}`],
+    ['due_date',      'Yes', 'Format must be YYYY-MM-DD.'],
+    ['assigned_to',   'No',  'Optional user id for assignment. Leave blank if unassigned.'],
+    ['visible',       'No',  'Use true or false. Blank defaults to true.'],
+    [],
+    ['--- Read-only columns (do not modify when re-importing) ---', '', ''],
+    ['id',             'N/A', 'Internal request ID — for reference only.'],
+    ['status',         'N/A', 'Current display status.'],
+    ['documents_count','N/A', 'Number of documents linked to this request.'],
+    ['created_at',     'N/A', 'Date the request was created.'],
+  ]);
+  instructionsSheet['!cols'] = [{ wch: 20 }, { wch: 10 }, { wch: 72 }];
+
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, dataSheet, 'Requests');
+  XLSX.utils.book_append_sheet(workbook, instructionsSheet, 'Instructions');
+
+  if (companyName) {
+    workbook.Props = { Title: `${companyName} — Requests Export`, Author: 'DataHub' };
+  }
+
+  return workbook;
+}
+
 function readBulkWorkbook(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -626,6 +694,7 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
   });
   const [savingRequestDetails, setSavingRequestDetails] = useState(false);
   const [savingNarrative, setSavingNarrative] = useState(false);
+  const [unblocking, setUnblocking] = useState(false);
 
   useEffect(() => {
     setNarrativeDraft(request?.narrativeResponse || '');
@@ -650,6 +719,7 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
   const canEditRequestDetails = request.workflowStatus === 'pending';
   const canEditResponse = request.workflowStatus === 'in-review';
   const isCompleted = request.workflowStatus === 'completed';
+  const isBlocked = request.workflowStatus === 'blocked';
 
   const allLinkedNames = allRequests.flatMap(r => r.linkedDocuments.map(d => d.name.toLowerCase()));
 
@@ -713,8 +783,38 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
     setSavingNarrative(false);
   };
 
+  const handleUnblock = async () => {
+    if (unblocking) return;
+    setUnblocking(true);
+    try {
+      await onUpdateRequest(request.id, { workflowStatus: 'pending', updatedAt: formatToday() });
+    } finally {
+      setUnblocking(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
+      {isBlocked && (
+        <div className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-red-200 bg-[#FEF2F2] px-5 py-4">
+          <div className="flex items-start gap-3">
+            <AlertTriangle size={18} className="mt-0.5 flex-shrink-0 text-[#B91C1C]" />
+            <div>
+              <p className="text-sm font-semibold text-[#B91C1C]">This request is currently blocked</p>
+              <p className="mt-0.5 text-xs text-[#991B1B]">The client cannot see or respond to this request until it is unblocked. It will revert to Pending status.</p>
+            </div>
+          </div>
+          <button
+            onClick={handleUnblock}
+            disabled={unblocking}
+            className="flex flex-shrink-0 items-center gap-2 rounded-xl bg-[#8BC53D] px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#476E2C] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {unblocking ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+            {unblocking ? 'Unblocking…' : 'Unblock Request'}
+          </button>
+        </div>
+      )}
+
       <div className="bg-[#F8FAFC] rounded-2xl p-5 lg:p-7">
         <div className="flex items-center justify-between mb-4">
           <button onClick={onBack} className="flex items-center gap-2 text-sm text-[#6D6E71] hover:text-[#050505] transition-colors">
@@ -947,26 +1047,36 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
               </button>
               <button
                 onClick={() => {
-                  const content = JSON.stringify(request, null, 2);
-                  const blob = new Blob([content], { type: 'application/json' });
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement('a');
-                  a.href = url;
-                  a.download = `${request.id}.json`;
-                  a.click();
-                  URL.revokeObjectURL(url);
+                  const requestWithStatus = { ...request, status: getDisplayStatus(request.workflowStatus, request.dueDate) };
+                  const wb = buildRequestsExportWorkbook([requestWithStatus]);
+                  const bytes = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+                  downloadFile(
+                    new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }),
+                    `request-${(request.name || request.id).replace(/\s+/g, '-').toLowerCase()}.xlsx`,
+                  );
                 }}
                 className="w-full py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-[#6D6E71] hover:bg-gray-50 transition-colors flex items-center justify-center gap-2"
               >
                 <Download size={14} /> Export Request
               </button>
               {!isCompleted && (
-                <button
-                  onClick={() => onUpdateRequest(request.id, { workflowStatus: 'blocked', updatedAt: formatToday() })}
-                  className="w-full py-2.5 rounded-xl bg-red-500 hover:bg-red-600 text-white text-sm font-semibold transition-colors"
-                >
-                  Block Request
-                </button>
+                isBlocked ? (
+                  <button
+                    onClick={handleUnblock}
+                    disabled={unblocking}
+                    className="w-full py-2.5 rounded-xl bg-[#8BC53D] hover:bg-[#476E2C] text-white text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-60 flex items-center justify-center gap-2"
+                  >
+                    {unblocking ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+                    {unblocking ? 'Unblocking…' : 'Unblock Request'}
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => onUpdateRequest(request.id, { workflowStatus: 'blocked', updatedAt: formatToday() })}
+                    className="w-full py-2.5 rounded-xl bg-red-500 hover:bg-red-600 text-white text-sm font-semibold transition-colors flex items-center justify-center gap-2"
+                  >
+                    <AlertTriangle size={14} /> Block Request
+                  </button>
+                )
               )}
               <button
                 onClick={() => onDeleteRequest?.(request.id)}
@@ -1042,20 +1152,6 @@ export default function WorkspaceRequests() {
   }, [clientId]);
 
   useEffect(() => {
-    if (!clientId) return undefined;
-    const refreshOnReturn = () => {
-      if (document.visibilityState === 'visible') {
-        loadRequests();
-      }
-    };
-    window.addEventListener('focus', refreshOnReturn);
-    document.addEventListener('visibilitychange', refreshOnReturn);
-    return () => {
-      window.removeEventListener('focus', refreshOnReturn);
-      document.removeEventListener('visibilitychange', refreshOnReturn);
-    };
-  }, [clientId]);
-  useEffect(() => {
     if (!success) return undefined;
     const timer = setTimeout(() => setSuccess(''), 3000);
     return () => clearTimeout(timer);
@@ -1121,6 +1217,38 @@ export default function WorkspaceRequests() {
       .map(r => ({ ...r, status: getDisplayStatus(r.workflowStatus, r.dueDate) }));
   }, [selectedCategory, requestState, search, statusFilter, priorityFilter]);
 
+  const filteredGrouped = useMemo(() => {
+    const s = search.trim().toLowerCase();
+    return grouped
+      .map(g => ({
+        ...g,
+        items: g.items.filter(r => {
+          const matchesSearch = !s
+            || r.name.toLowerCase().includes(s)
+            || r.id.toLowerCase().includes(s)
+            || (r.subLabel || '').toLowerCase().includes(s);
+          const displayStatus = getDisplayStatus(r.workflowStatus, r.dueDate);
+          const matchesStatus = statusFilter === 'all' || displayStatus === statusFilter;
+          const matchesPriority = priorityFilter === 'all' || r.priority === priorityFilter;
+          return matchesSearch && matchesStatus && matchesPriority;
+        }).map(r => ({ ...r, status: getDisplayStatus(r.workflowStatus, r.dueDate) })),
+      }))
+      .filter(g => g.items.length > 0);
+  }, [grouped, search, statusFilter, priorityFilter]);
+
+  const tableFilteredTotal = useMemo(
+    () => filteredGrouped.reduce((sum, g) => sum + g.items.length, 0),
+    [filteredGrouped],
+  );
+
+  const hasTableFilters = search !== '' || statusFilter !== 'all' || priorityFilter !== 'all';
+
+  const clearTableFilters = () => {
+    setSearch('');
+    setStatusFilter('all');
+    setPriorityFilter('all');
+  };
+
   const activeRequest = requestState.find(r => r.id === activeRequestId) || null;
 
   const updateRequestState = async (id, patch) => {
@@ -1152,15 +1280,30 @@ export default function WorkspaceRequests() {
     if (!clientId) return;
     setError('');
     setSuccess('');
+    const isCritical = normalizePriority(form.priority) === 'critical';
     try {
       const payload = {
         ...buildCreateRequestPayload(form),
         created_by: user?.id || null,
       };
-      await createCompanyRequestItem(clientId, payload);
+      const created = await createCompanyRequestItem(clientId, payload);
+
+      // For critical priority, fire an additional immediate reminder as a safety net
+      // (the backend already creates one on approval, but belt-and-suspenders for critical)
+      if (isCritical && created?.id) {
+        await createRequestReminder(created.id, {
+          sent_at: new Date().toISOString(),
+          sent_by: user?.id || null,
+        }).catch(() => {});
+      }
+
       await loadRequests();
       setIsNewRequestOpen(false);
-      setSuccess('Request created successfully.');
+      setSuccess(
+        isCritical
+          ? 'Critical request created — an immediate reminder has been sent to the client.'
+          : 'Request created successfully.',
+      );
     } catch (err) {
       setError(err.message || 'Unable to create request.');
     }
@@ -1301,13 +1444,13 @@ export default function WorkspaceRequests() {
           <div className="flex items-center gap-3">
             <div className="flex items-center bg-gray-100 rounded-xl p-0.5">
               <button
-                onClick={() => setCategoryView('cards')}
+                onClick={() => { setCategoryView('cards'); clearTableFilters(); }}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${categoryView === 'cards' ? 'bg-white text-[#050505] shadow-sm' : 'text-[#6D6E71] hover:text-[#050505]'}`}
               >
                 <LayoutGrid size={13} /> Cards
               </button>
               <button
-                onClick={() => setCategoryView('table')}
+                onClick={() => { setCategoryView('table'); clearTableFilters(); }}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${categoryView === 'table' ? 'bg-white text-[#050505] shadow-sm' : 'text-[#6D6E71] hover:text-[#050505]'}`}
               >
                 <List size={13} /> Table
@@ -1362,12 +1505,95 @@ export default function WorkspaceRequests() {
               No requests available for this company yet. Create a request to start reminder tracking.
             </div>
           ) : (
-            <CategoryGroupedTable
-              grouped={grouped}
-              onView={(r) => setActiveRequestId(r.id)}
-              onApprove={handleApproveRequest}
-              approvingRequestId={approvingRequestId}
-            />
+            <div className="space-y-4">
+              {/* Filter bar for table view */}
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-xl px-3 py-2">
+                    <Search size={15} className="text-[#A5A5A5]" />
+                    <input
+                      value={search}
+                      onChange={(e) => setSearch(e.target.value)}
+                      placeholder="Search requests..."
+                      className="text-sm outline-none bg-transparent w-44"
+                    />
+                    {search && (
+                      <button onClick={() => setSearch('')} className="text-[#A5A5A5] hover:text-[#050505]">
+                        <X size={13} />
+                      </button>
+                    )}
+                  </div>
+                  <select
+                    value={statusFilter}
+                    onChange={(e) => setStatusFilter(e.target.value)}
+                    className="px-3 py-2 rounded-xl border border-gray-200 bg-white text-sm text-[#050505]"
+                  >
+                    <option value="all">All Status</option>
+                    <option value="pending">Pending</option>
+                    <option value="in-review">In Review</option>
+                    <option value="completed">Completed</option>
+                    <option value="overdue">Overdue</option>
+                    <option value="blocked">Blocked</option>
+                  </select>
+                  <select
+                    value={priorityFilter}
+                    onChange={(e) => setPriorityFilter(e.target.value)}
+                    className="px-3 py-2 rounded-xl border border-gray-200 bg-white text-sm text-[#050505]"
+                  >
+                    {priorityFilterOptions.map((opt) => (
+                      <option key={opt} value={opt}>
+                        {opt === 'all' ? 'All Priorities' : opt.charAt(0).toUpperCase() + opt.slice(1)}
+                      </option>
+                    ))}
+                  </select>
+                  {hasTableFilters && (
+                    <button
+                      onClick={clearTableFilters}
+                      className="px-3 py-2 rounded-xl border border-gray-200 bg-white text-sm text-[#6D6E71] hover:bg-gray-50"
+                    >
+                      Clear Filters
+                    </button>
+                  )}
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-xs text-[#A5A5A5]">
+                    {hasTableFilters
+                      ? `${tableFilteredTotal} of ${requestState.length} requests`
+                      : `${requestState.length} requests`}
+                  </span>
+                  <button
+                    onClick={() => {
+                      const rows = filteredGrouped.flatMap((g) => g.items);
+                      if (!rows.length) return;
+                      const wb = buildRequestsExportWorkbook(rows, company?.name);
+                      const bytes = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+                      const slug = (company?.name || 'requests').replace(/\s+/g, '-').toLowerCase();
+                      downloadFile(
+                        new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }),
+                        `${slug}-requests-export.xlsx`,
+                      );
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-gray-200 bg-white text-sm font-semibold text-[#6D6E71] hover:bg-gray-50 transition-colors"
+                  >
+                    <Download size={14} />
+                    {hasTableFilters ? 'Export Filtered' : 'Export All'}
+                  </button>
+                </div>
+              </div>
+
+              {filteredGrouped.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-gray-200 bg-white px-6 py-14 text-center text-sm text-[#6D6E71]">
+                  No requests matched your search or filter. <button onClick={clearTableFilters} className="text-[#8BC53D] font-semibold hover:underline">Clear filters</button>
+                </div>
+              ) : (
+                <CategoryGroupedTable
+                  grouped={filteredGrouped}
+                  onView={(r) => setActiveRequestId(r.id)}
+                  onApprove={handleApproveRequest}
+                  approvingRequestId={approvingRequestId}
+                />
+              )}
+            </div>
           )
         )
       ) : (

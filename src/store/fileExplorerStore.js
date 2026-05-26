@@ -450,9 +450,15 @@ export const useFileExplorerStore = create(
       },
 
       uploadFiles: async (parentId, files) => {
+        const MAX_FILE_BYTES = 200 * 1024 * 1024; // 200 MB — matches backend limit
         const folder = findById(get().tree, parentId);
         const existingNames = new Set((folder?.children || []).map(c => c.name));
         const warnings = [];
+        const oversized = Array.from(files).filter(f => f.size > MAX_FILE_BYTES);
+        if (oversized.length > 0) {
+          const names = oversized.map(f => f.name).join(', ');
+          throw new Error(`File(s) exceed the 200 MB limit: ${names}`);
+        }
         const newFiles = Array.from(files).map(f => {
           const ext = f.name.split('.').pop()?.toLowerCase() || '';
           let name = f.name;

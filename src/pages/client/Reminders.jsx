@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertCircle, Bell, CheckCircle2, Clock3, Filter, Search, X } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { listCompanyReminders } from '../../lib/api';
@@ -18,12 +18,24 @@ const STATUS_META = {
   resolved: { label: 'Resolved', tone: '#166534', bg: '#DCFCE7', icon: CheckCircle2 },
 };
 
+function resolveCompanyId(user) {
+  return (
+    user?.company_id ||
+    user?.companyId ||
+    user?.company_ids?.[0] ||
+    user?.companyIds?.[0] ||
+    user?.assigned_companies?.[0]?.id ||
+    user?.assignedCompanies?.[0]?.id ||
+    null
+  );
+}
+
 function getPriorityTone(priority) {
-  const normalized = `${priority ?? ''}`.trim().toLowerCase();
-  if (normalized === 'critical') return { bg: '#FEE2E2', color: '#B91C1C' };
-  if (normalized === 'high') return { bg: '#FED7AA', color: '#C2410C' };
-  if (normalized === 'medium') return { bg: '#FEF3C7', color: '#A16207' };
-  if (normalized === 'low') return { bg: '#DCFCE7', color: '#166534' };
+  const p = `${priority ?? ''}`.trim().toLowerCase();
+  if (p === 'critical') return { bg: '#FEE2E2', color: '#B91C1C' };
+  if (p === 'high') return { bg: '#FED7AA', color: '#C2410C' };
+  if (p === 'medium') return { bg: '#FEF3C7', color: '#A16207' };
+  if (p === 'low') return { bg: '#DCFCE7', color: '#166534' };
   return { bg: '#DBEAFE', color: '#1D4ED8' };
 }
 
@@ -32,11 +44,7 @@ function formatDateTime(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return 'Not scheduled';
   return date.toLocaleString('en-IN', {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
+    year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
   });
 }
 
@@ -46,7 +54,7 @@ function getNextReminderDate(reminder) {
 
 export default function ClientReminders() {
   const { user } = useAuth();
-  const companyId = user?.company_id || user?.companyId || null;
+  const companyId = resolveCompanyId(user);
   const [reminders, setReminders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -58,35 +66,41 @@ export default function ClientReminders() {
     sortBy: 'next_due',
   });
 
-  useEffect(() => {
-    /* eslint-disable react-hooks/set-state-in-effect -- This effect syncs reminder state with the active company. */
+  const loadReminders = useCallback(async () => {
     if (!companyId) {
       setReminders([]);
       setLoading(false);
       return;
     }
-
     setLoading(true);
     setError('');
-    listCompanyReminders(companyId)
-      .then((payload) => setReminders(payload || []))
-      .catch((err) => setError(err.message || 'Unable to load reminders.'))
-      .finally(() => setLoading(false));
-    /* eslint-enable react-hooks/set-state-in-effect */
+    try {
+      const data = await listCompanyReminders(companyId);
+      setReminders(Array.isArray(data) ? data : []);
+    } catch (err) {
+      setError(err.message || 'Unable to load reminders.');
+      setReminders([]);
+    } finally {
+      setLoading(false);
+    }
   }, [companyId]);
+
+  useEffect(() => {
+    loadReminders();
+  }, [loadReminders]);
 
   const filteredReminders = useMemo(
     () => filterAndSortReminders(reminders, filters),
-    [reminders, filters]
+    [reminders, filters],
   );
 
   const workflowOptions = useMemo(() => getWorkflowStatusOptions(reminders), [reminders]);
   const hasFilters = hasActiveReminderFilters(filters);
 
   const summary = useMemo(() => ({
-    due: filteredReminders.filter((item) => item.status === 'due').length,
-    active: filteredReminders.filter((item) => item.status === 'active').length,
-    resolved: filteredReminders.filter((item) => item.status === 'resolved').length,
+    due: filteredReminders.filter((r) => r.status === 'due').length,
+    active: filteredReminders.filter((r) => r.status === 'active').length,
+    resolved: filteredReminders.filter((r) => r.status === 'resolved').length,
   }), [filteredReminders]);
 
   return (
@@ -134,22 +148,38 @@ export default function ClientReminders() {
               <input
                 type="search"
                 value={filters.search}
-                onChange={(event) => setFilters((current) => ({ ...current, search: event.target.value }))}
+                onChange={(e) => setFilters((f) => ({ ...f, search: e.target.value }))}
                 placeholder="Search title, request, contact..."
                 className="w-full rounded-xl border border-[#E5E7EF] bg-white py-2.5 pl-9 pr-3 text-sm text-[#050505] outline-none transition-colors focus:border-[#8BC53D]"
               />
             </div>
-            <select value={filters.status} onChange={(event) => setFilters((current) => ({ ...current, status: event.target.value }))} className="rounded-xl border border-[#E5E7EF] bg-white px-3 py-2.5 text-sm text-[#050505] outline-none transition-colors focus:border-[#8BC53D]">
-              {REMINDER_STATUS_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            <select
+              value={filters.status}
+              onChange={(e) => setFilters((f) => ({ ...f, status: e.target.value }))}
+              className="rounded-xl border border-[#E5E7EF] bg-white px-3 py-2.5 text-sm text-[#050505] outline-none transition-colors focus:border-[#8BC53D]"
+            >
+              {REMINDER_STATUS_OPTIONS.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
             </select>
-            <select value={filters.priority} onChange={(event) => setFilters((current) => ({ ...current, priority: event.target.value }))} className="rounded-xl border border-[#E5E7EF] bg-white px-3 py-2.5 text-sm text-[#050505] outline-none transition-colors focus:border-[#8BC53D]">
-              {REMINDER_PRIORITY_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            <select
+              value={filters.priority}
+              onChange={(e) => setFilters((f) => ({ ...f, priority: e.target.value }))}
+              className="rounded-xl border border-[#E5E7EF] bg-white px-3 py-2.5 text-sm text-[#050505] outline-none transition-colors focus:border-[#8BC53D]"
+            >
+              {REMINDER_PRIORITY_OPTIONS.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
             </select>
-            <select value={filters.workflowStatus} onChange={(event) => setFilters((current) => ({ ...current, workflowStatus: event.target.value }))} className="rounded-xl border border-[#E5E7EF] bg-white px-3 py-2.5 text-sm capitalize text-[#050505] outline-none transition-colors focus:border-[#8BC53D]">
-              {workflowOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            <select
+              value={filters.workflowStatus}
+              onChange={(e) => setFilters((f) => ({ ...f, workflowStatus: e.target.value }))}
+              className="rounded-xl border border-[#E5E7EF] bg-white px-3 py-2.5 text-sm capitalize text-[#050505] outline-none transition-colors focus:border-[#8BC53D]"
+            >
+              {workflowOptions.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
             </select>
-            <select value={filters.sortBy} onChange={(event) => setFilters((current) => ({ ...current, sortBy: event.target.value }))} className="rounded-xl border border-[#E5E7EF] bg-white px-3 py-2.5 text-sm text-[#050505] outline-none transition-colors focus:border-[#8BC53D]">
-              {REMINDER_SORT_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            <select
+              value={filters.sortBy}
+              onChange={(e) => setFilters((f) => ({ ...f, sortBy: e.target.value }))}
+              className="rounded-xl border border-[#E5E7EF] bg-white px-3 py-2.5 text-sm text-[#050505] outline-none transition-colors focus:border-[#8BC53D]"
+            >
+              {REMINDER_SORT_OPTIONS.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
             </select>
             <button
               type="button"
@@ -165,7 +195,9 @@ export default function ClientReminders() {
       </div>
 
       {loading ? (
-        <div className="rounded-2xl bg-white px-6 py-14 text-center text-sm text-[#A5A5A5] shadow-card">Loading reminders...</div>
+        <div className="rounded-2xl bg-white px-6 py-14 text-center text-sm text-[#A5A5A5] shadow-card">
+          Loading reminders...
+        </div>
       ) : reminders.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-gray-200 bg-white px-6 py-14 text-center shadow-card">
           <Bell size={36} className="mx-auto mb-3 text-gray-300" />
@@ -182,7 +214,6 @@ export default function ClientReminders() {
             const status = STATUS_META[reminder.status] || STATUS_META.active;
             const priorityTone = getPriorityTone(reminder.priority);
             const StatusIcon = status.icon;
-
             return (
               <div key={reminder.id} className="rounded-2xl bg-white p-5 shadow-card">
                 <div className="flex items-start gap-4">

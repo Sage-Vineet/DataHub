@@ -16,6 +16,7 @@ const {
   updateSyncMetadata,
   createDatasetVersion,
   getLatestFinalizedDataset,
+  ensureWorkingDatasetVersion,
   listReportsForDataset,
   createSyncJob,
   getRunningSyncJob,
@@ -84,6 +85,26 @@ function escapeQueryLiteral(value) {
   return String(value || "").replace(/'/g, "''");
 }
 
+function normalizeAccountingMethod(raw) {
+  const str = String(raw || "").trim().toLowerCase();
+  if (str === "cash") return "Cash";
+  if (str === "accrual") return "Accrual";
+  return str ? String(raw).trim() : "";
+}
+
+// Returns true when the requested accounting method is compatible with a cached
+// result.  Checks both the stored report_params and the QB Header.ReportBasis
+// field so that a Cash request never accepts an Accrual snapshot and vice-versa.
+function accountingMethodMatches(requestedMethod, storedParams, cachedData) {
+  const requested = normalizeAccountingMethod(requestedMethod);
+  if (!requested) return true; // no constraint — accept anything
+  const stored = normalizeAccountingMethod(storedParams && storedParams.accounting_method);
+  const basis = String((cachedData && cachedData.Header && cachedData.Header.ReportBasis) || "").trim();
+  const storedOk = !stored || stored === requested;
+  const basisOk = !basis || basis.toLowerCase() === requested.toLowerCase();
+  return storedOk && basisOk;
+}
+
 function buildYearlyRanges({ yearsBack = 4, endDate = null } = {}) {
   const end = toIsoDate(endDate) || toIsoDate(new Date());
   const endYear = Number(String(end).slice(0, 4));
@@ -103,19 +124,29 @@ function buildYearlyRanges({ yearsBack = 4, endDate = null } = {}) {
 }
 
 function buildMonthlyRanges({ monthsBack = 18, endDate = null } = {}) {
-  const end = endDate ? new Date(endDate) : new Date();
-  if (Number.isNaN(end.getTime())) return [];
+  const ref = endDate ? new Date(endDate) : new Date();
+  if (Number.isNaN(ref.getTime())) return [];
 
   const safeMonthsBack = Math.max(1, Math.min(36, Number(monthsBack) || 18));
   const ranges = [];
 
+  // Use UTC year/month so dates don't shift in non-UTC server timezones.
+  const refYear = ref.getUTCFullYear();
+  const refMonth = ref.getUTCMonth(); // 0-based
+
   for (let i = safeMonthsBack - 1; i >= 0; i -= 1) {
-    const monthStart = new Date(end.getFullYear(), end.getMonth() - i, 1);
-    const monthEnd = new Date(end.getFullYear(), end.getMonth() - i + 1, 0);
+    let year = refYear;
+    let month = refMonth - i;
+    while (month < 0) { month += 12; year -= 1; }
+
+    // UTC calendar month: first day and last day
+    const firstDay = new Date(Date.UTC(year, month, 1));
+    const lastDay = new Date(Date.UTC(year, month + 1, 0)); // day 0 = last day of month
+
     ranges.push({
-      fiscalYear: monthStart.getFullYear(),
-      start: toIsoDate(monthStart),
-      end: toIsoDate(monthEnd),
+      fiscalYear: year,
+      start: firstDay.toISOString().slice(0, 10),
+      end: lastDay.toISOString().slice(0, 10),
     });
   }
 
@@ -548,88 +579,129 @@ function buildSnapshotResult(row, disconnected = false) {
   };
 }
 
+// Fetches a single report live from the QuickBooks API with the given params,
+// caches it in qb_synced_reports so subsequent requests hit the cache, and
+// returns the result in the same shape as serveCachedReport.
+async function fetchOnDemandReport(clientId, reportType, qbReportName, queryParams = {}) {
+  await loadQBConfig(clientId);
+  const qb = getQBConfig(clientId);
+
+  if (!qb || !qb.accessToken || !qb.realmId) {
+    throw new Error("QuickBooks connection unavailable for on-demand report fetch.");
+  }
+
+  const sanitizedParams = sanitizeReportParams(queryParams);
+
+  console.log(
+    `[fetchOnDemandReport] Live fetch — reportType=${reportType} params=${JSON.stringify(sanitizedParams)} clientId=${clientId}`
+  );
+
+  const payload = await fetchLiveTask(clientId, {
+    type: reportType,
+    mode: "report",
+    qbName: qbReportName,
+    params: sanitizedParams,
+    periodStart: sanitizedParams.start_date || null,
+    periodEnd: sanitizedParams.end_date || null,
+  });
+
+  const syncSource = DEFAULT_SYNC_SOURCE;
+  const activeDataset = await getLatestFinalizedDataset(clientId, syncSource);
+  const datasetVersion =
+    activeDataset?.dataset_version || (await ensureWorkingDatasetVersion(clientId, syncSource));
+
+  await upsertSyncedReport({
+    companyId: clientId,
+    reportType,
+    reportParams: sanitizedParams,
+    data: payload,
+    source: syncSource,
+    syncSource,
+    datasetVersion,
+    syncStatus: "finalized",
+    isActive: true,
+    periodStart: sanitizedParams.start_date || null,
+    periodEnd: sanitizedParams.end_date || null,
+  });
+
+  console.log(
+    `[fetchOnDemandReport] Cached live result — reportType=${reportType} datasetVersion=${datasetVersion}`
+  );
+
+  return buildSnapshotResult(
+    {
+      data: payload,
+      report_params: sanitizedParams,
+      dataset_version: datasetVersion,
+      last_synced_at: new Date().toISOString(),
+      sync_status: "finalized",
+    },
+    false
+  );
+}
+
 async function serveCachedReport(clientId, reportType, queryParams = {}, options = {}) {
   const syncSource = options.syncSource || DEFAULT_SYNC_SOURCE;
+  const sanitizedParams = sanitizeReportParams(queryParams);
   const activeDataset = await getLatestFinalizedDataset(clientId, syncSource);
 
-  const periodStart = queryParams.start_date || null;
-  const periodEnd = queryParams.end_date || null;
-  const hasPeriod = Boolean(periodStart || periodEnd);
-  const datasetVersion = activeDataset?.dataset_version || null;
+  // Derive period variables from sanitized params so getCachedReport can also
+  // match on the period_start / period_end columns (set during sync tasks).
+  const periodStart = sanitizedParams.start_date || null;
+  const periodEnd   = sanitizedParams.end_date   || null;
+  const hasPeriod   = Boolean(periodStart && periodEnd);
 
-  // Step 1: exact params match. When a specific period is requested, skip the unconstrained
-  // fallback so a mismatched snapshot (e.g. YTD) is never returned for a monthly request.
+  console.log(
+    `[serveCachedReport] reportType=${reportType} clientId=${clientId}` +
+    ` appliedFilters=${JSON.stringify(sanitizedParams)}` +
+    ` activeDatasetVersion=${activeDataset?.dataset_version ?? "(none)"}`
+  );
+
   const cached = await getCachedReport({
     companyId: clientId,
     reportType,
-    reportParams: sanitizeReportParams(queryParams),
-    datasetVersion,
+    reportParams: sanitizedParams,
+    datasetVersion: activeDataset?.dataset_version || null,
     syncSource,
     includeInactive: false,
     periodStart,
     periodEnd,
     skipUnconstrained: hasPeriod,
   });
-  if (cached) return buildSnapshotResult(cached, options.disconnected === true);
 
-  // Step 2: Accrual params fallback — sync tasks store yearly and monthly P&L snapshots with
-  // accounting_method: "Accrual" embedded in their params. When the caller doesn't specify an
-  // accounting_method (e.g. the monthly chart or full-year KPI), we retry with Accrual so those
-  // snapshots are found by exact params match instead of falling to an unconstrained result.
-  if (!queryParams.accounting_method && hasPeriod) {
-    const accrualCached = await getCachedReport({
-      companyId: clientId,
-      reportType,
-      reportParams: sanitizeReportParams({ ...queryParams, accounting_method: "Accrual" }),
-      datasetVersion,
-      syncSource,
-      includeInactive: false,
-      skipUnconstrained: true,
-    });
-    if (accrualCached) return buildSnapshotResult(accrualCached, options.disconnected === true);
-
-    // Also try without summarize_columns_by — individual monthly Accrual snapshots were synced
-    // without it and can serve as fallback for single-period requests (e.g. single-month view).
-    if (queryParams.summarize_columns_by) {
-      const { summarize_columns_by: _scb, ...baseParams } = queryParams;
-      const accrualBaseCached = await getCachedReport({
-        companyId: clientId,
-        reportType,
-        reportParams: sanitizeReportParams({ ...baseParams, accounting_method: "Accrual" }),
-        datasetVersion,
-        syncSource,
-        includeInactive: false,
-        skipUnconstrained: true,
-      });
-      if (accrualBaseCached) return buildSnapshotResult(accrualBaseCached, options.disconnected === true);
-    }
-
-    // Also try inactive Accrual snapshots (e.g. after a dataset rollover)
-    const inactiveAccrual = await getCachedReport({
-      companyId: clientId,
-      reportType,
-      reportParams: sanitizeReportParams({ ...queryParams, accounting_method: "Accrual" }),
-      syncSource,
-      includeInactive: true,
-      skipUnconstrained: true,
-    });
-    if (inactiveAccrual) return buildSnapshotResult(inactiveAccrual, options.disconnected === true);
+  if (cached) {
+    console.log(
+      `[serveCachedReport] Cache hit (active) — reportType=${reportType}` +
+      ` storedParams=${JSON.stringify(cached.report_params ?? {})}` +
+      ` datasetVersion=${cached.dataset_version}`
+    );
+    return buildSnapshotResult(cached, options.disconnected === true);
   }
 
-  // Step 3: unconstrained fallback — only for requests without a specific period (e.g. base
-  // P&L, balance sheet). Period-specific requests return null so the caller gets a clean 404
-  // instead of data from the wrong date range.
-  if (!hasPeriod) {
-    const fallback = await getCachedReport({
-      companyId: clientId,
-      reportType,
-      reportParams: sanitizeReportParams(queryParams),
-      syncSource,
-      includeInactive: true,
-    });
-    return fallback ? buildSnapshotResult(fallback, options.disconnected === true) : null;
+  console.log(
+    `[serveCachedReport] Cache miss (active dataset) — trying inactive fallback for reportType=${reportType}`
+  );
+
+  const fallback = await getCachedReport({
+    companyId: clientId,
+    reportType,
+    reportParams: sanitizedParams,
+    syncSource,
+    includeInactive: true,
+  });
+
+  if (fallback) {
+    console.log(
+      `[serveCachedReport] Cache hit (inactive fallback) — reportType=${reportType}` +
+      ` storedParams=${JSON.stringify(fallback.report_params ?? {})}` +
+      ` datasetVersion=${fallback.dataset_version}`
+    );
+    return buildSnapshotResult(fallback, options.disconnected === true);
   }
 
+  console.log(
+    `[serveCachedReport] Cache miss (all lookups exhausted) — reportType=${reportType} clientId=${clientId}`
+  );
   return null;
 }
 
@@ -1222,6 +1294,7 @@ module.exports = {
   REPORT_TYPES,
   fetchAndCacheReport,
   fetchAndCacheQuery,
+  fetchOnDemandReport,
   serveCachedReport,
   syncAllReports,
   getSyncStatus,

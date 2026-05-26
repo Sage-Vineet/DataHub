@@ -628,6 +628,39 @@ function getAvailableFiscalYears(rows = []) {
   return Array.from(yearSet).sort((a, b) => a - b);
 }
 
+async function getActualFiscalYearsFromDB(companyId, batchId, fiscalCalendarExplicit) {
+  if (!companyId || !batchId) return [];
+  const explicit = fiscalCalendarExplicit === true;
+  let fetchResult = await supabase
+    .from(TABLES.transactions)
+    .select('fiscal_year, txn_date')
+    .eq('company_id', companyId)
+    .eq('upload_batch_id', batchId)
+    .order('fiscal_year', { ascending: true });
+  if (fetchResult.error && isMissingColumnError(fetchResult.error, 'upload_batch_id')) {
+    fetchResult = await supabase
+      .from(TABLES.transactions)
+      .select('fiscal_year, txn_date')
+      .eq('company_id', companyId)
+      .eq('batch_id', batchId)
+      .order('fiscal_year', { ascending: true });
+  }
+  if (fetchResult.error) {
+    console.warn('[ManualGL][FiscalYears] Failed to query fiscal years: ' + fetchResult.error.message);
+    return [];
+  }
+  const rows = Array.isArray(fetchResult.data) ? fetchResult.data : [];
+  const correctedRows = explicit ? rows : applyCalendarYearCorrection(rows);
+  const yearSet = new Set();
+  for (const row of correctedRows) {
+    const yr = Number(row.fiscal_year ?? 0);
+    if (Number.isInteger(yr) && yr > 0) yearSet.add(yr);
+  }
+  const years = Array.from(yearSet).sort((a, b) => a - b);
+  console.log('[ManualGL][FiscalYears] Actual staged fiscal years for batch ' + batchId + ': [' + years.join(', ') + '] (fiscalCalendarExplicit=' + explicit + ')');
+  return years;
+}
+
 /**
  * Retries a Supabase operation with exponential backoff.
  * Useful for handling rate limits or temporary connection issues during large uploads.
@@ -3794,7 +3827,10 @@ function buildProfitLossDetailPayload(transactions = [], filters = {}) {
     const category = normalizeProfitLossCategory(tx.category, tx.accountName, tx.accountType);
     if (!category) return;
 
-    const fiscalYear = Number(tx.fiscalYear || 0);
+    const fiscalYear =
+      Number(tx.fiscalYear || 0) ||
+      computeFiscalYearEndLabel(tx.date, resolveFiscalCalendarConfig()) ||
+      0;
     if (!Number.isInteger(fiscalYear) || fiscalYear <= 0 || !validYears.has(fiscalYear)) return;
 
     const accountKey = `${tx.accountNumber || ""}::${tx.accountName || ""}`;
@@ -3952,15 +3988,21 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
   //   extendedYears = [2022, 2023, 2024, 2025]
   // This ensures the 2023â†’2024 carry-forward happens even without 2023 transactions.
   const allYearSeeds = [...new Set([...txYears, ...selectedYears])];
-  let years;
+  let computationYears;
   if (allYearSeeds.length === 0) {
-    years = [];
+    computationYears = [];
   } else {
     const minYear = Math.min(...allYearSeeds);
     const maxYear = Math.max(...allYearSeeds);
-    years = [];
-    for (let y = minYear; y <= maxYear; y++) years.push(y);
+    computationYears = [];
+    for (let y = minYear; y <= maxYear; y++) computationYears.push(y);
   }
+  const years = Array.from(new Set([...txYears, ...selectedYears])).sort((a, b) => a - b);
+  console.log(
+    '[ManualGL][BS][FiscalYears] computationYears=[' + computationYears.join(',') + ']',
+    '| displayYears=[' + years.join(',') + ']',
+    '| txYears=[' + txYears.join(',') + '] | selectedYears=[' + selectedYears.join(',') + ']',
+  );
 
   const displayYear =
     (selectedYears.length ? selectedYears[selectedYears.length - 1] : null) ||
@@ -4049,7 +4091,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
   const accounts = Array.from(accountsByKey.values());
   accounts.forEach((account) => {
     let running = roundMoney(account.openingBalance || 0);
-    years.forEach((year) => {
+    computationYears.forEach((year) => {
       running = roundMoney(running + Number(account.activityByYear[year] || 0));
       account.balancesByYear[year] = running;
     });
@@ -4168,11 +4210,11 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
   const startingBsDateStr = startingLines.find((l) => l.as_of_date)?.as_of_date || null;
   const bsCalendar = resolveFiscalCalendarConfig(fiscalCalendar);
 
-  const retainedByYearCarry = {};
+  const retainedByYearCarryAll = {};
   let cumulativePriorNet = 0;
-  years.forEach((year, index) => {
+  computationYears.forEach((year, index) => {
     if (index > 0) {
-      const priorYear = years[index - 1];
+      const priorYear = computationYears[index - 1];
       // Carry priorYear's NI only when the starting BS is dated BEFORE the end of
       // that fiscal year (meaning its net income has NOT been closed into opening RE).
       const fiscalEndDate = computeFiscalYearEndDate(priorYear, bsCalendar);
@@ -4181,8 +4223,11 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
         cumulativePriorNet = roundMoney(cumulativePriorNet + Number(netProfitByYear[priorYear] || 0));
       }
     }
-    retainedByYearCarry[year] = shouldCarryForwardNetIncome ? cumulativePriorNet : 0;
+    retainedByYearCarryAll[year] = shouldCarryForwardNetIncome ? cumulativePriorNet : 0;
   });
+  const retainedByYearCarry = Object.fromEntries(
+    years.map((year) => [year, retainedByYearCarryAll[year] != null ? retainedByYearCarryAll[year] : 0]),
+  );
 
   const retainedAccountsWithCarry = retainedAccounts.length
     ? retainedAccounts.map((account) => ({
@@ -6820,6 +6865,12 @@ async function getProfitLossSummaryFromStage(companyId, filters = {}) {
     `[ManualGL][PL][Debug] After reclassification â€” P&L transactions: ${plCount}, BS transactions (excluded): ${bsCount}`,
   );
 
+  const debitCreditReconciliation = computeDebitCreditConsistency(normalized);
+  if (!debitCreditReconciliation.overall.isBalanced) {
+    console.warn('[ManualGL][PL][Validation] Debit-credit imbalance detected');
+  }
+  logDebitCreditConsistencyAudit(debitCreditReconciliation);
+
   // Restore original fiscalYears into the filter passed to the builder so that
   // displayYear is correct even when we bypassed the DB fiscal_year filter above.
   const summary = buildProfitLossSummaryPayload(normalized, {
@@ -6832,7 +6883,7 @@ async function getProfitLossSummaryFromStage(companyId, filters = {}) {
     `netProfitByYear: ${JSON.stringify(summary.netProfitByYear || {})}`,
   );
 
-  return summary;
+  return { ...summary, debitCreditReconciliation };
 }
 
 async function getProfitLossDetailFromStage(companyId, filters = {}) {
@@ -7096,6 +7147,14 @@ async function getStageFilterOptions(companyId, filters = {}) {
 
   console.log(`[ManualGL][FilterOptions] Scanned ${rows.length} rows for batch ${batchId}`);
 
+
+  let batchMetaForOptions = {};
+  try {
+    batchMetaForOptions = await loadBatchMetadata(batchId);
+  } catch (_) {}
+  const filterOptFiscalCalendarExplicit = batchMetaForOptions.fiscalCalendarExplicit === true;
+  const correctedRows = filterOptFiscalCalendarExplicit ? rows : applyCalendarYearCorrection(rows);
+
   const addValue = (set, value) => {
     if (value === null || value === undefined) return;
     const text = String(value).trim();
@@ -7119,7 +7178,8 @@ async function getStageFilterOptions(companyId, filters = {}) {
     reportType: new Set(["profit_loss", "balance_sheet"]),
   };
 
-  const availableFiscalYears = getAvailableFiscalYears(rows);
+  const availableFiscalYears = getAvailableFiscalYears(correctedRows);
+  console.log('[ManualGL][FilterOptions] Detected fiscal years: [' + availableFiscalYears.join(', ') + ']');
   availableFiscalYears.forEach((yr) => options.fiscalYear.add(String(yr)));
 
   rows.forEach((row) => {
@@ -8050,9 +8110,9 @@ function buildCashflowMonthlyDetailPayload(transactions = [], year, filters = {}
   //   Asset increases (debit) â†’ netAmount < 0 â†’ outflow âœ“
   //   Liability increases (credit) â†’ netAmount > 0 â†’ inflow âœ“
   const cfSections = {
-    Operating: { key: "operating", label: "Cash Flows from Operating Activities", items: new Map(), monthlyTotals: {}, total: 0 },
-    Investing: { key: "investing", label: "Cash Flows from Investing Activities", items: new Map(), monthlyTotals: {}, total: 0 },
-    Financing: { key: "financing", label: "Cash Flows from Financing Activities", items: new Map(), monthlyTotals: {}, total: 0 },
+    Operating: { key: "operating", label: "Operating Activities", items: new Map(), monthlyTotals: {}, total: 0 },
+    Investing: { key: "investing", label: "Investing Activities", items: new Map(), monthlyTotals: {}, total: 0 },
+    Financing: { key: "financing", label: "Financing Activities", items: new Map(), monthlyTotals: {}, total: 0 },
   };
   months.forEach((m) => {
     cfSections.Operating.monthlyTotals[m] = monthlyNetIncome[m] || 0;
@@ -8214,6 +8274,7 @@ module.exports = {
   validateBatchBalanceSheet,
   getLatestManualBatch,
   listManualGlBatches,
+  getActualFiscalYearsFromDB,
   // Multi-year detection utility â€” usable by callers (e.g., upload controllers)
   // to surface file type information without re-staging.
   detectMultipleYears,

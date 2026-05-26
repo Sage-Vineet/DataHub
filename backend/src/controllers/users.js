@@ -1,6 +1,7 @@
 const asyncHandler = require("../utils");
 const userService = require("../services/userService");
 const { hasSupabaseCredentials } = require("../lib/supabaseClient");
+const { invalidateUserCache } = require("../middleware/auth");
 
 const localPublicUsers = [];
 
@@ -140,6 +141,8 @@ const updateUser = asyncHandler(async (req, res) => {
     return res.status(err.status || 500).json({ error: err.message });
   }
   if (!user) return res.status(404).json({ error: "Not found" });
+  // Bust the 60-second auth cache so the next /auth/me returns fresh data
+  invalidateUserCache(req.params.id);
   res.json(user);
 });
 

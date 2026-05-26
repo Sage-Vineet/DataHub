@@ -20,8 +20,21 @@ const {
   extractPLForTax,
   buildPLForTaxData,
   extractPLLineItemsFromRows,
+  buildQMSDashboardData,
+  buildManualUploadDashboardData,
 } = require("../services/manualReportUploadService");
 const { parsePdfWithGemini } = require("../services/geminiFinancialParser");
+const {
+  normalizeBankBinary,
+  extractBankStatementsFromPdfBase64,
+  extractBankStatementsFromExcelBuffer,
+  buildBankResponseShape,
+} = require("../services/bankStatementExtractor");
+const {
+  getCachedCashFlow,
+  listAvailablePeriods,
+  generatedCfToRows,
+} = require("../services/manualCashFlowService");
 const { supabase } = require("../db");
 const { canAccessCompany } = require("../services/permissionService");
 
@@ -191,6 +204,44 @@ router.get("/manual-report-uploads/reports/:statementType/latest", async (req, r
       return res.status(400).json({ success: false, error: "Invalid statementType." });
     }
 
+    // ── Generated Cash Flow intercept ─────────────────────────────────────────
+    // Cash flow is generated during Sync All — never stored as an uploaded file.
+    if (statementType === "cash_flow") {
+      const periods = await listAvailablePeriods(clientId);
+
+      if (!periods.length) {
+        return res.status(404).json({
+          success: false,
+          source: "manual_upload_generated",
+          error: "No cash flow reports found. Run Sync All to generate them.",
+        });
+      }
+
+      const latestPeriod = Math.max(...periods.map((p) => parseInt(p.period, 10)));
+      const cf = await getCachedCashFlow(clientId, String(latestPeriod));
+
+      if (!cf) {
+        return res.status(404).json({
+          success: false,
+          source: "manual_upload_generated",
+          error: "Cash flow report not found. Run Sync All to generate cash flow reports.",
+        });
+      }
+
+      return res.json({
+        success: true,
+        source: "manual_upload_generated",
+        statementType: "cash_flow",
+        data: {
+          rows: generatedCfToRows(cf),
+          period: cf.period,
+          generatedAt: cf.generatedAt,
+          inputs: cf.inputs || null,
+        },
+      });
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     const rowId = String(req.query.rowId || "").trim() || null;
 
     let row;
@@ -236,11 +287,11 @@ router.get("/manual-report-uploads/reports/:statementType/latest", async (req, r
 
     const reportWithDate = report
       ? {
-          ...report,
-          asOfDate: resolvedAsOfDate,
-          periodStart: resolvedPeriodStart,
-          periodEnd: resolvedPeriodEnd,
-        }
+        ...report,
+        asOfDate: resolvedAsOfDate,
+        periodStart: resolvedPeriodStart,
+        periodEnd: resolvedPeriodEnd,
+      }
       : null;
 
     return res.json({
@@ -291,12 +342,12 @@ router.get("/manual-report-uploads/reports/:statementType/all", async (req, res)
         folderName: row.report_params?.folderName || null,
         data: report
           ? {
-              rows: report.rows || [],
-              asOfDate: report.asOfDate || null,
-              periodStart: report.periodStart || null,
-              periodEnd: report.periodEnd || null,
-              ...(report.periods?.length ? { periods: report.periods } : {}),
-            }
+            rows: report.rows || [],
+            asOfDate: report.asOfDate || null,
+            periodStart: report.periodStart || null,
+            periodEnd: report.periodEnd || null,
+            ...(report.periods?.length ? { periods: report.periods } : {}),
+          }
           : null,
         updatedAt: row.updated_at || null,
         lastSyncedAt: row.last_synced_at || null,
@@ -339,12 +390,12 @@ router.get("/manual-report-uploads/qms-reports/:statementType/all", async (req, 
         folderName: row.report_params?.folderName || null,
         data: report
           ? {
-              rows: report.rows || [],
-              asOfDate: report.asOfDate || null,
-              periodStart: report.periodStart || null,
-              periodEnd: report.periodEnd || null,
-              ...(report.periods?.length ? { periods: report.periods } : {}),
-            }
+            rows: report.rows || [],
+            asOfDate: report.asOfDate || null,
+            periodStart: report.periodStart || null,
+            periodEnd: report.periodEnd || null,
+            ...(report.periods?.length ? { periods: report.periods } : {}),
+          }
           : null,
         updatedAt: row.updated_at || null,
         lastSyncedAt: row.last_synced_at || null,
@@ -388,6 +439,72 @@ router.get("/manual-report-uploads/qms-bank-data", async (req, res) => {
     });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message || "Failed to fetch QMS bank data." });
+  }
+});
+
+router.get("/manual-report-uploads/qms-dashboard", async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+
+    const requestedSource = String(req.query.source || "").trim();
+    if (requestedSource !== "quickbooks_manual") {
+      return res.status(400).json({ success: false, message: "Invalid dashboard source" });
+    }
+
+    console.log(`[DASHBOARD] activeSource=quickbooks_manual endpoint=/manual-report-uploads/qms-dashboard dataSource=QMS clientId=${clientId}`);
+
+    const dashboard = await buildQMSDashboardData(clientId);
+    return res.json({ success: true, source: "quickbooks_manual", ...dashboard });
+  } catch (error) {
+    console.error("[QMSDashboard] Route error:", error.message);
+    return res.status(500).json({ success: false, error: error.message || "Failed to build QMS dashboard data." });
+  }
+});
+
+/* ===========================
+   GET /manual-upload/dashboard
+   Dedicated Manual Upload (Excel/PDF) dashboard endpoint — isolated from QMS.
+   Only reads manual_report_upload source data; never touches QMS cache or files.
+   Strict source validation: requires source=manual_upload, returns 400 otherwise.
+=========================== */
+router.get("/manual-upload/dashboard", async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+
+    const requestedSource = String(req.query.source || "").trim();
+    if (requestedSource !== "manual_upload") {
+      return res.status(400).json({ success: false, message: "Invalid dashboard source" });
+    }
+
+    console.log(`[DASHBOARD] activeSource=manual_upload endpoint=/manual-upload/dashboard dataSource=ManualUpload clientId=${clientId}`);
+
+    const dashboard = await buildManualUploadDashboardData(clientId);
+    return res.json({ success: true, source: "manual_upload", ...dashboard });
+  } catch (error) {
+    console.error("[ManualUploadDashboard] Route error:", error.message);
+    return res.status(500).json({ success: false, error: error.message || "Failed to build Manual Upload dashboard data." });
+  }
+});
+
+router.get("/manual-report-uploads/manual-upload-dashboard", async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+
+    const requestedSource = String(req.query.source || "").trim();
+    if (requestedSource && requestedSource !== "manual_upload_excel_pdf" && requestedSource !== "manual_upload") {
+      return res.status(400).json({ success: false, message: "Invalid dashboard source" });
+    }
+
+    console.log(`[DASHBOARD] activeSource=manual_upload endpoint=/manual-report-uploads/manual-upload-dashboard dataSource=ManualUpload clientId=${clientId}`);
+
+    const dashboard = await buildManualUploadDashboardData(clientId);
+    return res.json({ success: true, source: "manual_upload_excel_pdf", ...dashboard });
+  } catch (error) {
+    console.error("[ManualUploadDashboard] Route error:", error.message);
+    return res.status(500).json({ success: false, error: error.message || "Failed to build Manual Upload dashboard data." });
   }
 });
 
@@ -868,6 +985,272 @@ router.get("/manual-report-uploads/pl-for-tax", async (req, res) => {
   } catch (err) {
     console.error("[PLForTax] Error:", err);
     return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/* ===========================
+   GET /manual-upload/cashflow/periods
+   List all periods for which an automatic Cash Flow can be generated.
+   A period is available when BS(Y-1), BS(Y), and P&L(Y) are all uploaded.
+=========================== */
+router.get("/manual-upload/cashflow/periods", async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+
+    const periods = await listAvailablePeriods(clientId);
+    return res.json({ success: true, periods });
+  } catch (error) {
+    console.error("[CashFlowPeriods] Error:", error.message);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/* ===========================
+   GET /manual-upload/cashflow?period=2022[&force=1]
+   Return a generated Cash Flow statement for the given year.
+
+   Flow:
+     1. If ?force=1 is absent, check for a cached generated statement → return it.
+     2. Otherwise generate fresh from uploaded BS + P&L files, cache, and return.
+
+   Success response:
+   {
+     success: true,
+     source: "manual_upload_generated",
+     period: "2022",
+     generatedAt: "...",
+     inputs: { bsPrevFile, bsCurrFile, plFile, ... },
+     operatingActivities: [ { label, amount, type }, ... ],
+     netOperating: 0,
+     investingActivities: [ ... ],
+     netInvesting: 0,
+     financingActivities: [ ... ],
+     netFinancing: 0,
+     beginningCash: 0,
+     endingCash: 0,
+     netCashIncrease: 0,
+     cashValidated: true
+   }
+
+   Failure response (missing files):
+   {
+     success: false,
+     source: "manual_upload_generated",
+     message: "...",
+     missingInputs: ["Balance Sheet 2021", ...]
+   }
+=========================== */
+router.get("/manual-upload/cashflow", async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+
+    const period = String(req.query.period || "").trim();
+    if (!period || !/^\d{4}$/.test(period)) {
+      return res.status(400).json({
+        success: false,
+        error: "period query param is required and must be a 4-digit year (e.g. 2022).",
+      });
+    }
+
+    // Read pre-generated CF — created during Sync All, never on-demand
+    const cached = await getCachedCashFlow(clientId, period);
+    if (cached) {
+      console.log(`[ManualCashFlow] Serving pre-generated statement for period=${period}`);
+      return res.json({ ...cached, source: "manual_upload_generated" });
+    }
+
+    return res.status(404).json({
+      success: false,
+      source: "manual_upload_generated",
+      error: `No cash flow report found for ${period}. Run Sync All to generate cash flow reports automatically.`,
+      period,
+    });
+  } catch (error) {
+    console.error("[ManualCashFlow] Error:", error.message);
+    return res.status(500).json({
+      success: false,
+      source: "manual_upload_generated",
+      error: error.message,
+    });
+  }
+});
+
+/* ===========================
+   GET /manual-upload/bank-data
+   Returns bank reconciliation data from Manual Upload Source folder ONLY.
+   Isolated to "manual_report_upload" cache + "Manual Upload Source" DataRoom folder.
+   Never reads from Quickbooks Manual Source or QMS caches.
+   Response shape: { success, source: "manual_upload", banks, months, totals }
+              or: { success: true, empty: true, message: "..." }
+=========================== */
+router.get("/manual-upload/bank-data", async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+
+    console.log(`[BANK SOURCE] source=manual_upload clientId=${clientId} — checking cache...`);
+
+    // 1. Check source-isolated cache (manual_report_upload only)
+    const { data: cached } = await supabase
+      .from("qb_synced_reports")
+      .select("data, updated_at")
+      .eq("company_id", clientId)
+      .eq("source", MANUAL_REPORT_UPLOAD_SOURCE)
+      .eq("report_type", STATEMENT_TYPES.BANK_RECONCILIATION)
+      .order("updated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (cached?.data?.bank_reconciliation?.banks?.length > 0) {
+      const bd = cached.data.bank_reconciliation;
+      console.log(`[BANK SOURCE] Cache hit — ${bd.banks.length} bank(s) for ${clientId}`);
+      return res.json({
+        success: true,
+        source: "manual_upload",
+        banks: bd.banks,
+        months: bd.months || [],
+        totals: bd.totals || [],
+        syncedAt: bd.syncedAt || cached.updated_at,
+      });
+    }
+
+    // 2. Live extraction from "Manual Upload Source" DataRoom folder
+    console.log(`[BANK SOURCE] Cache miss — live extraction from "Manual Upload Source" for ${clientId}`);
+
+    const { data: sourceFolder } = await supabase
+      .from("folders")
+      .select("id")
+      .eq("company_id", clientId)
+      .is("parent_id", null)
+      .ilike("name", "Manual Upload Source")
+      .maybeSingle();
+
+    if (!sourceFolder) {
+      console.log(`[BANK SOURCE] "Manual Upload Source" folder not found for ${clientId}`);
+      return res.json({
+        success: true,
+        empty: true,
+        source: "manual_upload",
+        banks: [],
+        months: [],
+        totals: [],
+        message: "No bank statements uploaded. Upload PDF or Excel files to Manual Upload Source → Bank Statement in the Data Room.",
+      });
+    }
+
+    // Find "Bank Statement" (or legacy "Bank Reconciliation") subfolder
+    let bankFolder = null;
+    for (const folderName of ["Bank Statement", "Bank Reconciliation"]) {
+      const { data: found } = await supabase
+        .from("folders")
+        .select("id")
+        .eq("company_id", clientId)
+        .ilike("name", folderName)
+        .or(`parent_id.eq.${sourceFolder.id}`)
+        .maybeSingle();
+      if (found) { bankFolder = found; break; }
+    }
+
+    if (!bankFolder) {
+      console.log(`[BANK SOURCE] "Bank Statement" subfolder not found for ${clientId}`);
+      return res.json({
+        success: true,
+        empty: true,
+        source: "manual_upload",
+        banks: [],
+        months: [],
+        totals: [],
+        message: "No bank statements uploaded. Create a Bank Statement folder under Manual Upload Source in the Data Room.",
+      });
+    }
+
+    const { data: documents } = await supabase
+      .from("documents")
+      .select("id, name, upload_id, file_url")
+      .eq("folder_id", bankFolder.id)
+      .order("uploaded_at", { ascending: false });
+
+    if (!documents?.length) {
+      console.log(`[BANK SOURCE] No documents in Bank Statement folder for ${clientId}`);
+      return res.json({
+        success: true,
+        empty: true,
+        source: "manual_upload",
+        banks: [],
+        months: [],
+        totals: [],
+        message: "No bank statements uploaded. Upload PDF or Excel files to Manual Upload Source → Bank Statement in the Data Room.",
+      });
+    }
+
+    const allStatements = [];
+    const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+    for (const doc of documents) {
+      const fileName = String(doc.name || "bank_statement");
+      const ext = fileName.toLowerCase().split(".").pop();
+      const isPdf = ext === "pdf";
+      const isExcel = ["xlsx", "xls", "csv"].includes(ext);
+      if (!isPdf && !isExcel) continue;
+
+      let buffer = null;
+      if (doc.upload_id) {
+        const { data: upload } = await supabase
+          .from("uploads").select("data").eq("id", doc.upload_id).maybeSingle();
+        if (upload?.data) buffer = normalizeBankBinary(upload.data);
+      }
+      if (!buffer && doc.file_url) {
+        const m = String(doc.file_url).match(/\/uploads\/([0-9a-f-]{36})\/content/i);
+        if (m) {
+          const { data: upload2 } = await supabase
+            .from("uploads").select("data").eq("id", m[1]).maybeSingle();
+          if (upload2?.data) buffer = normalizeBankBinary(upload2.data);
+        }
+      }
+      if (!buffer && doc.file_url) {
+        const uuidMatch = String(doc.file_url).match(UUID_RE);
+        if (uuidMatch) {
+          const { data: upload3 } = await supabase
+            .from("uploads").select("data").eq("id", uuidMatch[0]).maybeSingle();
+          if (upload3?.data) buffer = normalizeBankBinary(upload3.data);
+        }
+      }
+      if (!buffer?.length) {
+        console.warn(`[BANK SOURCE] No binary data for "${fileName}", skipping`);
+        continue;
+      }
+
+      try {
+        const statements = isExcel
+          ? await extractBankStatementsFromExcelBuffer(buffer, fileName)
+          : await extractBankStatementsFromPdfBase64(buffer.toString("base64"), fileName);
+        allStatements.push(...statements);
+      } catch (err) {
+        console.error(`[BANK SOURCE] Extraction failed for "${fileName}": ${err.message}`);
+      }
+    }
+
+    if (!allStatements.length) {
+      console.log(`[BANK SOURCE] No extractable bank data in ${documents.length} file(s) for ${clientId}`);
+      return res.json({
+        success: true,
+        empty: true,
+        source: "manual_upload",
+        banks: [],
+        months: [],
+        totals: [],
+        message: "No bank statement data could be extracted from the uploaded files.",
+      });
+    }
+
+    const { banks, months, totals } = buildBankResponseShape(allStatements);
+    console.log(`[BANK SOURCE] Extracted ${banks.length} bank(s) from ${documents.length} file(s) for ${clientId}`);
+    return res.json({ success: true, source: "manual_upload", banks, months, totals });
+  } catch (error) {
+    console.error("[BANK SOURCE] Error:", error);
+    return res.status(500).json({ success: false, error: error.message || "Failed to fetch manual upload bank data." });
   }
 });
 

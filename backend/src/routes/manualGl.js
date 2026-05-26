@@ -23,6 +23,7 @@ const {
   getCashflowMonthlyDetailFromStage,
   validateBatchBalanceSheet,
   listManualGlBatches,
+  getActualFiscalYearsFromDB,
 } = require("../services/manualGlMultiYearService");
 const { orchestrateManualGlUpload } = require("../services/manualGlUploadOrchestrationService");
 const {
@@ -738,6 +739,20 @@ router.get("/manual-gl/staging/filter-options", enforceDataSource(REPORT_SOURCE_
       success: false,
       error: error.message || "Failed to fetch staging filter options.",
     });
+  }
+});
+
+router.get("/manual-gl/staging/fiscal-years", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+    const batchId = String(req.query.batchId || "").trim();
+    if (!batchId) return res.status(400).json({ success: false, error: "Missing batchId." });
+    const fiscalCalendarExplicit = req.query.fiscalCalendarExplicit === "true";
+    const fiscalYears = await getActualFiscalYearsFromDB(clientId, batchId, fiscalCalendarExplicit);
+    return res.json({ success: true, fiscalYears });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message || "Failed to fetch fiscal years." });
   }
 });
 

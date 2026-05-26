@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -283,6 +283,25 @@ function WorkspaceTopbar({ company, onMenuClick }) {
   const { user } = useAuth();
   const [showSwitch, setShowSwitch] = useState(false);
   const [companies, setCompanies] = useState(cachedSwitchCompanies ?? []);
+  const switchRef = useRef(null);
+
+  useEffect(() => {
+    if (!showSwitch) return undefined;
+
+    const handleOutsideClick = (event) => {
+      if (switchRef.current && !switchRef.current.contains(event.target)) {
+        setShowSwitch(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleOutsideClick);
+    document.addEventListener('touchstart', handleOutsideClick);
+
+    return () => {
+      document.removeEventListener('mousedown', handleOutsideClick);
+      document.removeEventListener('touchstart', handleOutsideClick);
+    };
+  }, [showSwitch]);
 
   useEffect(() => {
     if (cachedSwitchCompanies) return; // already populated — skip fetch
@@ -366,7 +385,7 @@ function WorkspaceTopbar({ company, onMenuClick }) {
 
           <ActiveSourceIndicator />
 
-          <div className="relative">
+          <div className="relative" ref={switchRef}>
             <button
               onClick={() => setShowSwitch((value) => !value)}
               className="flex min-w-[150px] items-center justify-between gap-2 rounded-md bg-primary px-4 text-[14px] font-semibold text-white transition-all hover:bg-primary-dark active:scale-[0.98]"
