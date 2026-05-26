@@ -149,7 +149,7 @@ async function syncCompanyClientRepresentative(company, previousCompany = null) 
       .from("users")
       .select("id, role, company_id")
       .eq("company_id", previousCompany.id)
-      .eq("role", "buyer")
+      .in("role", ["buyer", "client"])
       .ilike("email", previousNormalizedEmail)
       .maybeSingle();
 
@@ -234,7 +234,7 @@ async function syncCompanyClientRepresentative(company, previousCompany = null) 
     .insert({
       name: company.contact_name, email: normalizedEmail,
       phone: company.contact_phone || null, password_hash: passwordHash,
-      role: "buyer", company_id: company.id, status: "active",
+      role: "client", company_id: company.id, status: "active",
     })
     .select("id")
     .single();
@@ -248,7 +248,7 @@ async function syncCompanyClientRepresentative(company, previousCompany = null) 
       try {
         const { rows } = await pool.query(
           `INSERT INTO users (name, email, phone, password_hash, role, company_id, status)
-           VALUES ($1, $2, $3, $4, 'buyer', $5, 'active') RETURNING id`,
+           VALUES ($1, $2, $3, $4, 'client', $5, 'active') RETURNING id`,
           [company.contact_name, normalizedEmail, company.contact_phone || null, passwordHash, company.id],
         );
         userId = rows[0]?.id || null;
