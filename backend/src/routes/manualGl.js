@@ -1037,23 +1037,18 @@ router.get("/manual-gl/dataset-versions", enforceDataSource(REPORT_SOURCE_KEYS.M
 
     const requestedLimit = Math.min(Math.max(Number(req.query.limit || 50) || 50, 1), 200);
     const versionsFromSnapshots = await listReportingSnapshotDatasetVersions(clientId, requestedLimit);
-    const versions = versionsFromSnapshots.map((datasetVersion) => ({
-      id: String(datasetVersion),
-      value: datasetVersion,
-      label: `Version ${datasetVersion}`,
-      dataset_version: datasetVersion,
-      version_number: datasetVersion,
-      versionNumber: datasetVersion,
+
+    // Map to expected API shape: [{ "value": 3, "label": "Version 3" }, ...]
+    const versions = versionsFromSnapshots.map((dataset_version) => ({
+      value: dataset_version,
+      label: `Version ${dataset_version}`,
+      dataset_version,
+      version_number: dataset_version,
+      id: String(dataset_version), // For frontend keys
     }));
 
     console.log(
-      `[ManualGL][Versions][Snapshots][QueryResult] company=${clientId} raw_versions=${JSON.stringify(versionsFromSnapshots)}`,
-    );
-    console.log(
-      `[ManualGL][Versions][Snapshots][DatasetValues] company=${clientId} dataset_versions=[${versionsFromSnapshots.join(", ")}]`,
-    );
-    console.log(
-      `[ManualGL][Versions][API][Payload] company=${clientId} payload=${JSON.stringify(versions)}`,
+      `[ManualGL][Versions][API][Response] company=${clientId} count=${versions.length}`,
     );
     return res.json({ success: true, versions });
   } catch (error) {

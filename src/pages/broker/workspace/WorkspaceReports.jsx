@@ -325,6 +325,14 @@ export default function WorkspaceReports() {
     console.log(...args);
   }, []);
 
+  // [DEBUG] Reports page mount logging
+  useEffect(() => {
+    debugLog("[Reports] Component Mounted", {
+      clientId,
+      timestamp: new Date().toISOString()
+    });
+  }, [clientId, debugLog]);
+
   useEffect(() => {
     // On the initial mount useState already hydrated from sessionStorage, so skip
     // the restore here to avoid 11 extra setState calls → extra report generation.
@@ -615,48 +623,61 @@ export default function WorkspaceReports() {
     selectedVersionId,
   ]);
 
+  // Fetch available dataset versions as soon as clientId is available
   useEffect(() => {
-    if (selectedSourceMode !== "manual" || !clientId) return;
+    if (!clientId) return;
+
+    debugLog("[ManualGL][UI][VersionFetch] Start version fetch", { companyId: clientId });
     setIsLoadingVersions(true);
+
     listManualGlDatasetVersions({ clientId })
       .then((list) => {
         const normalizedList = Array.isArray(list) ? list : [];
-        debugLog("[ManualGL][UI][VersionDropdown][Response]", {
+        setVersions(normalizedList);
+
+        debugLog("[ManualGL][UI][VersionFetch][Success]", {
           companyId: clientId,
           count: normalizedList.length,
-          versions: normalizedList.map((item) => ({
-            value: Number(item.value ?? item.dataset_version ?? item.version_number ?? item.versionNumber ?? 0) || null,
-            label: item.label || null,
-          })),
+          versions: normalizedList.map(v => ({ value: v.value, label: v.label, isActive: v.isActive }))
         });
-        debugLog(
-          "[ManualGL][UI][VersionDropdown][Options]",
-          normalizedList.map((item) => ({
-            value: Number(item.value ?? item.dataset_version ?? item.version_number ?? item.versionNumber ?? 0) || null,
-            label: item.label || null,
-          })),
-        );
 
-        const selectedStillExists = normalizedList.some(
-          (item) => String(item.id || item.value || "") === String(selectedVersionId || ""),
-        );
-        let nextSelectedId = selectedVersionId;
-        if (!selectedStillExists) {
-          const active = normalizedList.find((v) => Boolean(v.is_active ?? v.isActive));
-          nextSelectedId = String(active?.id || active?.value || normalizedList[0]?.id || normalizedList[0]?.value || "");
-        }
+        // Auto-select logic
+        const existingVersionId = String(selectedVersionId || "").trim();
+        const exists = normalizedList.some(v => String(v.id || v.value) === existingVersionId);
 
-        setVersions(normalizedList);
-        if (nextSelectedId !== selectedVersionId) {
-          setSelectedVersionId(nextSelectedId);
+        if (!exists || !existingVersionId) {
+          const active = normalizedList.find(v => v.isActive);
+          const fallback = normalizedList[0];
+          const nextId = String(active?.id || active?.value || fallback?.id || fallback?.value || "");
+
+          if (nextId && nextId !== existingVersionId) {
+            debugLog("[ManualGL][UI][VersionFetch][AutoSelect]", {
+              previous: existingVersionId,
+              next: nextId,
+              reason: !exists ? "previous no longer exists" : "none selected"
+            });
+            setSelectedVersionId(nextId);
+          }
         }
       })
       .catch((err) => {
         console.error("[WorkspaceReports] Failed to load versions:", err);
         setVersions([]);
       })
-      .finally(() => setIsLoadingVersions(false));
-  }, [clientId, selectedSourceMode, selectedVersionId, debugLog]);
+      .finally(() => {
+        setIsLoadingVersions(false);
+        debugLog("[ManualGL][UI][VersionFetch] Completed");
+      });
+  }, [clientId, debugLog]);
+
+  // Log version selection changes
+  useEffect(() => {
+    if (!selectedVersionId) return;
+    debugLog("[ManualGL][UI][VersionSelected] Version ID changed", {
+      selectedVersionId,
+      sourceMode: selectedSourceMode
+    });
+  }, [selectedVersionId, selectedSourceMode, debugLog]);
 
   useEffect(() => {
     if (selectedSourceMode !== "manual") return;
@@ -1338,7 +1359,9 @@ export default function WorkspaceReports() {
                     disabled={isLoadingVersions}
                     className="h-9 w-full appearance-none rounded-md border border-border-input bg-bg-card pl-3 pr-9 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50"
                   >
-                    {versions.length === 0 ? (
+                    {isLoadingVersions ? (
+                      <option value="">Loading versions…</option>
+                    ) : versions.length === 0 ? (
                       <option value="">No versions available</option>
                     ) : (
                       versions.map((v) => (
