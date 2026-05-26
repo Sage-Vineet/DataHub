@@ -166,21 +166,27 @@ router.get("/all-reports", async (req, res) => {
       });
     }
 
+    console.log(
+      `[All Reports] clientId=${clientId}` +
+      ` accountListExists=${Boolean(accountList?.data)}` +
+      ` lastSync=${lastSyncAt} datasetVersion=${datasetVersion}`
+    );
+
     return res.json({
       success: true,
       source: "cached_snapshot",
-      disconnected: Boolean(req.qbDisconnected),
-      lastSyncAt: fallbackSummary.lastSyncedAt,
-      datasetVersion: fallbackSummary.datasetVersion || null,
-      data: fallbackSummary.data,
+      disconnected,
+      lastSyncAt,
+      datasetVersion,
+      data,
     });
   } catch (error) {
-    console.error("[Balance Sheet Detail] Snapshot read failed:", error.message);
+    console.error("[All Reports] Snapshot read failed:", error.message);
     return res.status(500).json({
       success: false,
       source: "cached_snapshot",
       disconnected: Boolean(req.qbDisconnected),
-      message: "Failed to load Balance Sheet detail snapshot.",
+      message: "Failed to load all reports snapshot.",
       error: error.message,
     });
   }
