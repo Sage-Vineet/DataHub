@@ -616,6 +616,7 @@ export function listManualGlDatasetVersions(options = {}) {
   const clientId = options.clientId ?? resolveClientIdFromLocation();
   const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
   return request(`/manual-gl/dataset-versions${query}`, options).then((res) => {
+    // The API now returns { success: true, versions: [...] }
     const rawList = Array.isArray(res?.versions)
       ? res.versions
       : Array.isArray(res)
@@ -631,7 +632,6 @@ export function listManualGlDatasetVersions(options = {}) {
           row?.version_number ??
           row?.versionNumber ??
           row?.version_no ??
-          row?.id ??
           0,
         );
         if (!Number.isInteger(parsedVersion) || parsedVersion <= 0) return null;
@@ -649,7 +649,7 @@ export function listManualGlDatasetVersions(options = {}) {
           isActive: Boolean(row?.is_active ?? row?.isActive),
           created_at: row?.created_at || row?.createdAt || null,
           createdAt: row?.created_at || row?.createdAt || null,
-          status: row?.status || "STAGED",
+          status: row?.status || "FINALIZED",
         };
       })
       .filter(Boolean)

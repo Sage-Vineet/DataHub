@@ -193,23 +193,22 @@ async function getSnapshotForActiveBatch({ companyId, reportType, fiscalYear = n
 async function listReportingSnapshotDatasetVersions(companyId, limit = 50) {
   if (!companyId) return [];
 
+  // Follow the SQL requirement:
+  // SELECT DISTINCT dataset_version FROM reporting_snapshots
+  // WHERE company_id = $1 AND dataset_version IS NOT NULL
+  // ORDER BY dataset_version DESC;
   const { data, error } = await supabase
     .from(TABLE_SNAPSHOTS)
     .select("dataset_version")
     .eq("company_id", companyId)
     .not("dataset_version", "is", null)
-    .order("dataset_version", { ascending: false })
-    .limit(Math.max(limit * 20, limit));
+    .order("dataset_version", { ascending: false });
 
   if (error) {
     throw new Error(`Failed to list reporting snapshot dataset versions: ${error.message}`);
   }
 
-  console.log(
-    `[ManualGL][Versions][Snapshots][Rows] company=${companyId} rowCount=${Array.isArray(data) ? data.length : 0} ` +
-    `rows=${JSON.stringify(Array.isArray(data) ? data.slice(0, 200) : [])}`,
-  );
-
+  // Deduplicate in JS since Supabase JS doesn't support DISTINCT natively.
   const seen = new Set();
   const versions = [];
   for (const row of Array.isArray(data) ? data : []) {
@@ -220,6 +219,10 @@ async function listReportingSnapshotDatasetVersions(companyId, limit = 50) {
     versions.push(parsed);
     if (versions.length >= limit) break;
   }
+
+  console.log(
+    `[ManualGL][Versions][Snapshots] company=${companyId} uniqueCount=${versions.length} versions=[${versions.join(", ")}]`,
+  );
 
   return versions;
 }

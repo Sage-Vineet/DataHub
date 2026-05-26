@@ -82,7 +82,9 @@ const MAPPING_CANDIDATES = {
   credit: ["credit amount", "credits", "cr amount", "credit", "cr"],
   vendor_name: [
     "vendor name", "payee name", "customer name", "party name",
-    "vendor", "payee", "customer", "counterparty", "name",
+    "supplier name", "supplier", "payee", "vendor", "entity name",
+    "customer", "counterparty", "entity", "customer/vendor", "payee/vendor",
+    "name",
   ],
   description: [
     "memo/description", "transaction description", "entry description",
@@ -165,6 +167,17 @@ function isDatasetVersionConstraintError(error) {
     isUniqueConstraintError(error) &&
     message.includes("manual_gl_batches") &&
     message.includes("dataset_version")
+  );
+}
+
+function isContentHashConstraintError(error) {
+  if (!error) return false;
+  if (isUniqueConstraintError(error, "uq_manual_gl_batches_content_hash")) return true;
+  const message = String(error.message || "").toLowerCase();
+  return (
+    isUniqueConstraintError(error) &&
+    message.includes("manual_gl_batches") &&
+    message.includes("dataset_hash")
   );
 }
 
@@ -1521,6 +1534,12 @@ function parseGlSheetTransactions({
     headers: sheetData.headers,
   }));
 
+  if (resolvedMapping.vendor_name) {
+    const vCol = resolvedMapping.vendor_name;
+    const sampleValues = sheetData.rows.slice(0, 5).map(r => r[vCol]).filter(v => v !== null && v !== undefined);
+    console.log(`[GLParser][Vendor][Debug] Mapped vendor column: "${vCol}"; Samples: ${JSON.stringify(sampleValues)}`);
+  }
+
   const missingRequired = REQUIRED_GL_MAPPING_FIELDS.filter((field) => !resolvedMapping[field]);
   if (missingRequired.length) {
     return {
@@ -2438,6 +2457,52 @@ async function createBatch({
     ({ data, error } = await insertWithSchemaFallback(payload));
   }
 
+  // Recovery path #3:
+  // A previous batch with the same dataset_hash exists (constraint: uq_manual_gl_batches_content_hash).
+  // Archive the stale batch and retry insertion.
+  if (error && isContentHashConstraintError(error) && datasetHash) {
+    console.warn(
+      `[ManualGL][MultiYear] Content hash collision detected for company ${companyId}, ` +
+      `dataset_hash=${String(datasetHash).slice(0, 12)}... — archiving stale batch and retrying.`,
+    );
+
+    const archivePayload = {
+      status: "failed",
+      batch_status: "failed",
+      is_active: false,
+      is_archived: true,
+      updated_at: now,
+    };
+
+    let archiveQuery = supabase
+      .from(TABLES.batches)
+      .update(archivePayload)
+      .eq("company_id", companyId)
+      .eq("dataset_hash", datasetHash)
+      .neq("status", "failed");
+
+    let { data: archivedRows, error: archiveError } = await archiveQuery.select("id");
+
+    if (archiveError && isMissingColumnError(archiveError)) {
+      // Fallback for schemas without batch_status / is_active / is_archived columns.
+      ({ data: archivedRows, error: archiveError } = await supabase
+        .from(TABLES.batches)
+        .update({ status: "failed", updated_at: now })
+        .eq("company_id", companyId)
+        .eq("dataset_hash", datasetHash)
+        .neq("status", "failed")
+        .select("id"));
+    }
+
+    const archivedCount = Array.isArray(archivedRows) ? archivedRows.length : 0;
+    if (archivedCount > 0) {
+      console.warn(
+        `[ManualGL][MultiYear] Archived ${archivedCount} stale batch(es) with duplicate content hash.`,
+      );
+      ({ data, error } = await insertWithSchemaFallback(payload));
+    }
+  }
+
   if (error) throw new Error(`Failed to create staging batch: ${error.message}`);
   return data;
 }
@@ -2612,7 +2677,6 @@ async function insertTransactions({
             upload_session_id,
             staged_at,
             upload_batch_id,
-            vendor_name,
             raw_row_reference,
             ...legacy
           }) => legacy,
@@ -2624,7 +2688,6 @@ async function insertTransactions({
             upload_session_id,
             staged_at,
             upload_batch_id,
-            vendor_name,
             raw_row_reference,
             ...legacy
           }) => legacy,
@@ -8216,7 +8279,107 @@ module.exports = {
   // to surface file type information without re-staging.
   detectMultipleYears,
   getAvailableFiscalYears,
+  getReportPeriodDates,
+  buildVendorProfitLossDetailPayload,
   checkExistingStagedFiscalYears,
   retrySupabaseOperation,
 };
+
+
+/**
+ * Derives the reporting period dynamically from staged transactions.
+ */
+async function getReportPeriodDates(companyId, datasetVersionId) {
+  if (!companyId) return { startDate: null, endDate: null };
+
+  const { data, error } = await supabase
+    .from("manual_gl_staged_transactions")
+    .select("txn_date")
+    .eq("company_id", companyId)
+    .eq("dataset_version_id", datasetVersionId)
+    .order("txn_date", { ascending: true });
+
+  if (error || !data?.length) {
+    const { data: fallbackData } = await supabase
+      .from("manual_gl_staged_transactions")
+      .select("txn_date")
+      .eq("company_id", companyId)
+      .order("txn_date", { ascending: true });
+
+    if (!fallbackData?.length) return { startDate: null, endDate: null };
+    return {
+      startDate: fallbackData[0].txn_date,
+      endDate: fallbackData[fallbackData.length - 1].txn_date,
+    };
+  }
+
+  return {
+    startDate: data[0].txn_date,
+    endDate: data[data.length - 1].txn_date,
+  };
+}
+
+/**
+ * Builds a vendor-wise P&L Detail payload.
+ * Hierarchy: Vendor -> Account -> Transaction
+ */
+function buildVendorProfitLossDetailPayload(transactions = [], filters = {}) {
+  const vendorMap = new Map();
+  const years = new Set();
+
+  transactions.forEach((tx) => {
+    const vendorName = tx.vendorName || "Unknown Vendor";
+    const accountName = tx.accountName || "Uncategorized Account";
+    const year = Number(tx.fiscalYear);
+    if (year > 0) years.add(year);
+
+    if (!vendorMap.has(vendorName)) {
+      vendorMap.set(vendorName, {
+        vendorName,
+        accounts: new Map(),
+        totalAmount: 0,
+      });
+    }
+
+    const vendor = vendorMap.get(vendorName);
+    if (!vendor.accounts.has(accountName)) {
+      vendor.accounts.set(accountName, {
+        accountName,
+        accountNumber: tx.accountNumber,
+        category: tx.category,
+        subCategory: tx.subCategory,
+        transactions: [],
+        totalAmount: 0,
+        yearlyTotals: {},
+      });
+    }
+
+    const account = vendor.accounts.get(accountName);
+    account.transactions.push(tx);
+
+    const amount = Number(tx.signedAmount || tx.amount || 0);
+    account.totalAmount += amount;
+    vendor.totalAmount += amount;
+
+    if (year > 0) {
+      account.yearlyTotals[year] = (account.yearlyTotals[year] || 0) + amount;
+    }
+  });
+
+  const sortedYears = Array.from(years).sort((a, b) => a - b);
+  const vendorList = Array.from(vendorMap.values())
+    .map((v) => ({
+      ...v,
+      accounts: Array.from(v.accounts.values()).sort((a, b) => b.totalAmount - a.totalAmount),
+    }))
+    .sort((a, b) => b.totalAmount - a.totalAmount);
+
+  return {
+    source: "manual_gl_staged_transactions",
+    reportType: "profit_loss_detail_vendor",
+    filters,
+    years: sortedYears,
+    vendors: vendorList,
+  };
+}
 
