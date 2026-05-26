@@ -138,173 +138,172 @@ export default function NewRequestModal({
           {mode === 'single' && (
             <>
               <div className="grid gap-4 md:grid-cols-2">
-            <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Request Type *</label>
-              <select
-                value={form.requestType}
-                onChange={(e) => setForm(s => ({
-                  ...s,
-                  requestType: e.target.value,
-                  file: e.target.value === 'Information' ? null : s.file,
-                }))}
-                className="w-full px-3 py-2.5 rounded-xl border text-sm border-gray-200"
-              >
-                {REQUEST_TYPES.map((type) => (
-                  <option key={type} value={type}>{type}</option>
-                ))}
-              </select>
-            </div>
-            {form.requestType !== 'Information' && (
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Request Type *</label>
+                  <select
+                    value={form.requestType}
+                    onChange={(e) => setForm(s => ({
+                      ...s,
+                      requestType: e.target.value,
+                      file: e.target.value === 'Information' ? null : s.file,
+                    }))}
+                    className="w-full px-3 py-2.5 rounded-xl border text-sm border-gray-200"
+                  >
+                    {REQUEST_TYPES.map((type) => (
+                      <option key={type} value={type}>{type}</option>
+                    ))}
+                  </select>
+                </div>
+                {form.requestType !== 'Information' && (
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Folder Selection *</label>
+                    <select
+                      value={form.category}
+                      onChange={(e) => setForm(s => ({ ...s, category: e.target.value }))}
+                      className={`w-full px-3 py-2.5 rounded-xl border text-sm ${errors.category ? 'border-red-400' : 'border-gray-200'}`}
+                      disabled={foldersLoading}
+                    >
+                      {foldersLoading && <option value="">Loading folders...</option>}
+                      {!foldersLoading && options.map(opt => (
+                        <option key={opt} value={opt}>{opt}</option>
+                      ))}
+                    </select>
+                    {errors.category && <p className="text-xs text-red-500">{errors.category}</p>}
+                  </div>
+                )}
+              </div>
+
               <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Folder Selection *</label>
-                <select
-                  value={form.category}
-                  onChange={(e) => setForm(s => ({ ...s, category: e.target.value }))}
-                  className={`w-full px-3 py-2.5 rounded-xl border text-sm ${errors.category ? 'border-red-400' : 'border-gray-200'}`}
-                  disabled={foldersLoading}
+                <label className="text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">
+                  {form.requestType === 'Information' ? 'Information Title *' : 'Document Name *'}
+                </label>
+                <input
+                  value={form.name}
+                  onChange={(e) => setForm(s => ({ ...s, name: e.target.value }))}
+                  placeholder={form.requestType === 'Information' ? 'Enter information title' : 'Enter document name'}
+                  className={`w-full px-3 py-2.5 rounded-xl border text-sm ${errors.name ? 'border-red-400' : 'border-gray-200'}`}
+                />
+                {errors.name && <p className="text-xs text-red-500">{errors.name}</p>}
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">
+                  Description *
+                </label>
+                <textarea
+                  rows={4}
+                  value={form.description}
+                  onChange={(e) => setForm(s => ({ ...s, description: e.target.value }))}
+                  placeholder="Add a short description"
+                  className={`w-full px-3 py-2.5 rounded-xl border text-sm resize-none ${errors.description ? 'border-red-400' : 'border-gray-200'}`}
+                />
+                {errors.description && <p className="text-xs text-red-500">{errors.description}</p>}
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Priority *</label>
+                  <select
+                    value={form.priority}
+                    onChange={(e) => setForm(s => ({ ...s, priority: e.target.value }))}
+                    className={`w-full px-3 py-2.5 rounded-xl border text-sm font-semibold ${errors.priority ? 'border-red-400' :
+                        form.priority === 'critical' ? 'border-red-500 bg-red-50 text-red-700' :
+                          'border-gray-200'
+                      }`}
+                  >
+                    <option value="critical">Critical</option>
+                    <option value="high">High</option>
+                    <option value="medium">Medium</option>
+                    <option value="low">Low</option>
+                  </select>
+                  {errors.priority && <p className="text-xs text-red-500">{errors.priority}</p>}
+                </div>
+              </div>
+
+              {form.priority === 'critical' && (
+                <div className="flex items-start gap-3 rounded-xl border border-red-300 bg-red-50 px-4 py-3">
+                  <AlertTriangle size={16} className="mt-0.5 flex-shrink-0 text-red-600" />
+                  <div className="space-y-0.5">
+                    <p className="text-sm font-bold text-red-700">Critical Priority — Immediate Notification</p>
+                    <p className="text-xs text-red-600">
+                      On submission, an immediate reminder will be sent to the client and daily follow-ups will continue until the request is fulfilled. Use only for urgent, time-sensitive documents.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Due Date *</label>
+                <input
+                  type="date"
+                  min={getTomorrowDate()}
+                  value={form.dueDate}
+                  onChange={(e) => setForm(s => ({ ...s, dueDate: e.target.value }))}
+                  className={`w-full px-3 py-2.5 rounded-xl border text-sm ${errors.dueDate ? 'border-red-400' : 'border-gray-200'}`}
+                />
+                {errors.dueDate
+                  ? <p className="text-xs text-red-500">{errors.dueDate}</p>
+                  : <p className="text-[11px] text-[#A5A5A5]">Required for notification logic</p>}
+              </div>
+
+              <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
+                <p className="text-xs font-semibold text-[#6D6E71] uppercase tracking-wide mb-3">Priority-Based Notification Logic</p>
+                {form.priority === 'critical' && (
+                  <div className="flex items-start gap-2 text-xs text-[#6D6E71]">
+                    <span className="mt-0.5 px-2 py-0.5 rounded-full bg-red-600 text-white text-[10px] font-bold">Critical</span>
+                    <div>
+                      <p className="font-semibold text-[#050505]">Immediate notification + daily follow-ups</p>
+                      <p>Client is notified instantly upon request creation. Reminders repeat every day until fulfilled.</p>
+                    </div>
+                  </div>
+                )}
+                {form.priority === 'high' && (
+                  <div className="flex items-start gap-2 text-xs text-[#6D6E71]">
+                    <span className="mt-0.5 px-2 py-0.5 rounded-full bg-red-100 text-red-600 text-[10px] font-bold">High</span>
+                    <div>
+                      <p className="font-semibold text-[#050505]">Send immediate reminder, then daily follow-ups</p>
+                      <p>Urgent cadence for open requests</p>
+                    </div>
+                  </div>
+                )}
+                {form.priority === 'medium' && (
+                  <div className="flex items-start gap-2 text-xs text-[#6D6E71]">
+                    <span className="mt-0.5 px-2 py-0.5 rounded-full bg-orange-100 text-orange-600 text-[10px] font-bold">Medium</span>
+                    <div>
+                      <p className="font-semibold text-[#050505]">Send notification every 2 days</p>
+                      <p>Medium urgency (orange badge)</p>
+                    </div>
+                  </div>
+                )}
+                {form.priority === 'low' && (
+                  <div className="flex items-start gap-2 text-xs text-[#6D6E71]">
+                    <span className="mt-0.5 px-2 py-0.5 rounded-full bg-green-100 text-green-600 text-[10px] font-bold">Low</span>
+                    <div>
+                      <p className="font-semibold text-[#050505]">Send immediate reminder, then weekly follow-ups</p>
+                      <p>Low urgency cadence</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  disabled={submitting}
+                  className="px-4 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-[#6D6E71] hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {foldersLoading && <option value="">Loading folders...</option>}
-                  {!foldersLoading && options.map(opt => (
-                    <option key={opt} value={opt}>{opt}</option>
-                  ))}
-                </select>
-                {errors.category && <p className="text-xs text-red-500">{errors.category}</p>}
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#8BC53D] text-white text-sm font-semibold hover:bg-[#476E2C] disabled:opacity-70 disabled:cursor-not-allowed"
+                >
+                  {submitting && <Loader2 size={15} className="animate-spin" />}
+                  {submitting ? 'Submitting…' : 'Submit'}
+                </button>
               </div>
-            )}
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">
-              {form.requestType === 'Information' ? 'Information Title *' : 'Document Name *'}
-            </label>
-            <input
-              value={form.name}
-              onChange={(e) => setForm(s => ({ ...s, name: e.target.value }))}
-              placeholder={form.requestType === 'Information' ? 'Enter information title' : 'Enter document name'}
-              className={`w-full px-3 py-2.5 rounded-xl border text-sm ${errors.name ? 'border-red-400' : 'border-gray-200'}`}
-            />
-            {errors.name && <p className="text-xs text-red-500">{errors.name}</p>}
-          </div>
-
-          <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">
-              Description *
-            </label>
-            <textarea
-              rows={4}
-              value={form.description}
-              onChange={(e) => setForm(s => ({ ...s, description: e.target.value }))}
-              placeholder="Add a short description"
-              className={`w-full px-3 py-2.5 rounded-xl border text-sm resize-none ${errors.description ? 'border-red-400' : 'border-gray-200'}`}
-            />
-            {errors.description && <p className="text-xs text-red-500">{errors.description}</p>}
-          </div>
-
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Priority *</label>
-              <select
-                value={form.priority}
-                onChange={(e) => setForm(s => ({ ...s, priority: e.target.value }))}
-                className={`w-full px-3 py-2.5 rounded-xl border text-sm font-semibold ${
-                  errors.priority ? 'border-red-400' :
-                  form.priority === 'critical' ? 'border-red-500 bg-red-50 text-red-700' :
-                  'border-gray-200'
-                }`}
-              >
-                <option value="critical">🔴 Critical</option>
-                <option value="high">High</option>
-                <option value="medium">Medium</option>
-                <option value="low">Low</option>
-              </select>
-              {errors.priority && <p className="text-xs text-red-500">{errors.priority}</p>}
-            </div>
-          </div>
-
-          {form.priority === 'critical' && (
-            <div className="flex items-start gap-3 rounded-xl border border-red-300 bg-red-50 px-4 py-3">
-              <AlertTriangle size={16} className="mt-0.5 flex-shrink-0 text-red-600" />
-              <div className="space-y-0.5">
-                <p className="text-sm font-bold text-red-700">Critical Priority — Immediate Notification</p>
-                <p className="text-xs text-red-600">
-                  On submission, an immediate reminder will be sent to the client and daily follow-ups will continue until the request is fulfilled. Use only for urgent, time-sensitive documents.
-                </p>
-              </div>
-            </div>
-          )}
-
-          <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-[#6D6E71] uppercase tracking-wide">Due Date *</label>
-            <input
-              type="date"
-              min={getTomorrowDate()}
-              value={form.dueDate}
-              onChange={(e) => setForm(s => ({ ...s, dueDate: e.target.value }))}
-              className={`w-full px-3 py-2.5 rounded-xl border text-sm ${errors.dueDate ? 'border-red-400' : 'border-gray-200'}`}
-            />
-            {errors.dueDate
-              ? <p className="text-xs text-red-500">{errors.dueDate}</p>
-              : <p className="text-[11px] text-[#A5A5A5]">Required for notification logic</p>}
-          </div>
-
-          <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
-            <p className="text-xs font-semibold text-[#6D6E71] uppercase tracking-wide mb-3">Priority-Based Notification Logic</p>
-            {form.priority === 'critical' && (
-              <div className="flex items-start gap-2 text-xs text-[#6D6E71]">
-                <span className="mt-0.5 px-2 py-0.5 rounded-full bg-red-600 text-white text-[10px] font-bold">Critical</span>
-                <div>
-                  <p className="font-semibold text-[#050505]">Immediate notification + daily follow-ups</p>
-                  <p>Client is notified instantly upon request creation. Reminders repeat every day until fulfilled.</p>
-                </div>
-              </div>
-            )}
-            {form.priority === 'high' && (
-              <div className="flex items-start gap-2 text-xs text-[#6D6E71]">
-                <span className="mt-0.5 px-2 py-0.5 rounded-full bg-red-100 text-red-600 text-[10px] font-bold">High</span>
-                <div>
-                  <p className="font-semibold text-[#050505]">Send immediate reminder, then daily follow-ups</p>
-                  <p>Urgent cadence for open requests</p>
-                </div>
-              </div>
-            )}
-            {form.priority === 'medium' && (
-              <div className="flex items-start gap-2 text-xs text-[#6D6E71]">
-                <span className="mt-0.5 px-2 py-0.5 rounded-full bg-orange-100 text-orange-600 text-[10px] font-bold">Medium</span>
-                <div>
-                  <p className="font-semibold text-[#050505]">Send notification every 2 days</p>
-                  <p>Medium urgency (orange badge)</p>
-                </div>
-              </div>
-            )}
-            {form.priority === 'low' && (
-              <div className="flex items-start gap-2 text-xs text-[#6D6E71]">
-                <span className="mt-0.5 px-2 py-0.5 rounded-full bg-green-100 text-green-600 text-[10px] font-bold">Low</span>
-                <div>
-                  <p className="font-semibold text-[#050505]">Send immediate reminder, then weekly follow-ups</p>
-                  <p>Low urgency cadence</p>
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="flex items-center justify-end gap-3 pt-2">
-            <button
-              type="button"
-              onClick={onClose}
-              disabled={submitting}
-              className="px-4 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-[#6D6E71] hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={submitting}
-              className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#8BC53D] text-white text-sm font-semibold hover:bg-[#476E2C] disabled:opacity-70 disabled:cursor-not-allowed"
-            >
-              {submitting && <Loader2 size={15} className="animate-spin" />}
-              {submitting ? 'Submitting…' : 'Submit'}
-            </button>
-          </div>
             </>
           )}
 

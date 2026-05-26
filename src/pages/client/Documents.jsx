@@ -1,47 +1,60 @@
-import { useMemo, useState, useRef, useEffect } from 'react';
-import { Search, ChevronDown } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { ChevronDown, Search } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import FileExplorer from '../../components/fileExplorer/FileExplorer';
 
+function resolveAssignedCompanies(user) {
+  // AuthContext normalizes both assigned_companies and assignedCompanies — check both
+  const list = user?.assigned_companies?.length
+    ? user.assigned_companies
+    : user?.assignedCompanies?.length
+    ? user.assignedCompanies
+    : [];
+
+  if (list.length > 0) return list;
+
+  // Fallback: build single-company list from company_id
+  const fallbackId = user?.company_id || user?.companyId || user?.company_ids?.[0] || user?.companyIds?.[0];
+  if (fallbackId) {
+    return [{ id: fallbackId, name: user?.company || user?.company_name || 'My Company' }];
+  }
+
+  return [];
+}
+
 export default function ClientDocuments() {
   const { user } = useAuth();
-  const assignedCompanies = useMemo(() => (
-    user?.assignedCompanies?.length
-      ? user.assignedCompanies
-      : [{ id: user?.company_id || user?.companyId, name: user?.company }].filter((company) => company.id)
-  ), [user?.assignedCompanies, user?.company_id, user?.companyId, user?.company]);
+
+  const assignedCompanies = useMemo(
+    () => resolveAssignedCompanies(user),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [user?.assigned_companies, user?.assignedCompanies, user?.company_id, user?.companyId, user?.company, user?.company_name],
+  );
 
   const [selectedCompanyId, setSelectedCompanyId] = useState(assignedCompanies[0]?.id || null);
   const [searchQuery, setSearchQuery] = useState('');
   const [isOpen, setIsOpen] = useState(false);
   const dropdownRef = useRef(null);
-  
-  const companyId = selectedCompanyId || user?.company_id || user?.companyId || null;
+
+  const companyId = selectedCompanyId || assignedCompanies[0]?.id || null;
   const fileExplorerRole = user?.role === 'user' ? 'user' : 'client';
 
   const filteredCompanies = assignedCompanies.filter((company) =>
-    (company.project_name || company.name).toLowerCase().includes(searchQuery.toLowerCase())
+    (company.project_name || company.name || '').toLowerCase().includes(searchQuery.toLowerCase()),
   );
 
-  const selectedCompany = assignedCompanies.find(c => c.id === selectedCompanyId);
+  const selectedCompany = assignedCompanies.find((c) => c.id === selectedCompanyId);
 
-  // Close dropdown when clicking outside
   useEffect(() => {
-    const handleClickOutside = (event) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
-        setIsOpen(false);
-      }
+    const handleClickOutside = (e) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target)) setIsOpen(false);
     };
-
     document.addEventListener('mousedown', handleClickOutside);
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
+    return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-[#050505]">Documents</h1>
@@ -49,12 +62,10 @@ export default function ClientDocuments() {
         </div>
       </div>
 
-      {/* Company Selector */}
       {assignedCompanies.length > 0 && (
         <div className="bg-white rounded-2xl shadow-card p-5">
           <label className="block text-sm font-semibold text-[#050505] mb-3">Select Company</label>
           <div className="relative" ref={dropdownRef}>
-            {/* Dropdown Trigger */}
             <button
               onClick={() => setIsOpen(!isOpen)}
               className="w-full flex items-center justify-between px-4 py-3 rounded-xl border-2 border-gray-200 hover:border-[#8BC53D]/50 transition-colors text-left bg-white"
@@ -68,10 +79,8 @@ export default function ClientDocuments() {
               />
             </button>
 
-            {/* Dropdown Menu */}
             {isOpen && (
               <div className="absolute top-full left-0 right-0 mt-2 bg-white border border-gray-200 rounded-xl shadow-lg z-10 max-h-60 overflow-y-auto">
-                {/* Search Input */}
                 <div className="sticky top-0 bg-white border-b border-gray-100 p-3">
                   <div className="relative">
                     <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#A5A5A5]" />
@@ -85,23 +94,13 @@ export default function ClientDocuments() {
                     />
                   </div>
                 </div>
-
-                {/* Company Options */}
                 <div>
                   {filteredCompanies.length > 0 ? (
                     filteredCompanies.map((company) => (
                       <button
                         key={company.id}
-                        onClick={() => {
-                          setSelectedCompanyId(company.id);
-                          setSearchQuery('');
-                          setIsOpen(false);
-                        }}
-                        className={`w-full text-left px-4 py-3 text-sm transition-colors hover:bg-[#E6F3D3] ${
-                          selectedCompanyId === company.id
-                            ? 'bg-[#E6F3D3] text-[#8BC53D] font-semibold'
-                            : 'text-[#050505] hover:text-[#8BC53D]'
-                        }`}
+                        onClick={() => { setSelectedCompanyId(company.id); setSearchQuery(''); setIsOpen(false); }}
+                        className={`w-full text-left px-4 py-3 text-sm transition-colors hover:bg-[#E6F3D3] ${selectedCompanyId === company.id ? 'bg-[#E6F3D3] text-[#8BC53D] font-semibold' : 'text-[#050505] hover:text-[#8BC53D]'}`}
                       >
                         <div className="flex items-center gap-2">
                           {selectedCompanyId === company.id && (
@@ -114,9 +113,7 @@ export default function ClientDocuments() {
                       </button>
                     ))
                   ) : (
-                    <div className="px-4 py-6 text-center text-xs text-[#A5A5A5]">
-                      No companies found
-                    </div>
+                    <div className="px-4 py-6 text-center text-xs text-[#A5A5A5]">No companies found</div>
                   )}
                 </div>
               </div>
@@ -125,8 +122,7 @@ export default function ClientDocuments() {
         </div>
       )}
 
-      {/* File Explorer */}
-      {companyId && (
+      {companyId ? (
         <div className="-m-4 lg:-m-6 h-[calc(100vh-18rem)]">
           <FileExplorer
             role={fileExplorerRole}
@@ -135,10 +131,7 @@ export default function ClientDocuments() {
             title={`Documents - ${selectedCompany?.name || 'Documents'}`}
           />
         </div>
-      )}
-
-      {/* No Company Selected */}
-      {!companyId && assignedCompanies.length === 0 && (
+      ) : (
         <div className="bg-white rounded-2xl shadow-card p-8 text-center">
           <p className="text-sm text-[#A5A5A5]">
             No companies assigned. Please contact your administrator to get access.

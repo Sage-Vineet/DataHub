@@ -1,5 +1,6 @@
 const asyncHandler = require("../utils");
 const { authenticate, createBrokerAccount } = require("../services/authService");
+const userService = require("../services/userService");
 
 const login = asyncHandler(async (req, res) => {
   const { email, password } = req.body || {};
@@ -42,7 +43,9 @@ const logout = asyncHandler(async (req, res) => {
 });
 
 const me = asyncHandler(async (req, res) => {
-  return res.json({ user: req.user });
+  // Always read from DB so profile fields and recent updates are reflected
+  const fresh = await userService.getUserById(req.user.id);
+  return res.json({ user: fresh || req.user });
 });
 
 module.exports = { login, signupBroker, logout, me };

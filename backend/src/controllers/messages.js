@@ -388,21 +388,31 @@ async function getCompanyParticipants(company) {
 }
 
 async function getCompanyBuyerParticipants(company) {
+  // Avoid FK-join syntax (user_companies!left) which requires defined FK in Supabase schema cache.
+  // Instead: two separate queries that work without schema relationships.
   const { data: users, error } = await supabase
     .from("users")
-    .select(`
-      id, name, email, role, status, company_id,
-      user_companies!left(company_id)
-    `)
+    .select("id, name, email, role, status, company_id")
     .eq("status", "active")
     .eq("role", "buyer")
     .order("name", { ascending: true });
 
   if (error) return [];
 
+  const userIds = (users || []).map((u) => u.id).filter(Boolean);
+  let ucCompanyUserIds = new Set();
+  if (userIds.length) {
+    const { data: ucRows } = await supabase
+      .from("user_companies")
+      .select("user_id")
+      .eq("company_id", company.id)
+      .in("user_id", userIds);
+    for (const uc of ucRows || []) ucCompanyUserIds.add(String(uc.user_id));
+  }
+
   const participants = (users || []).filter((u) => {
     if (String(u.company_id || "") === String(company.id)) return true;
-    if (u.user_companies && u.user_companies.some((uc) => String(uc.company_id) === String(company.id))) return true;
+    if (ucCompanyUserIds.has(String(u.id))) return true;
     return false;
   });
 
@@ -544,8 +554,18 @@ async function resolveDirectMessagingContext(user, companyId) {
     participants = dedupeParticipants([...participants, selfParticipant]);
   }
 
+  // User passed canAccessCompany but isn't in participants — data gap (e.g. post-migration).
+  // Add as self participant rather than blocking access entirely.
   if (!selfParticipant) {
-    return { error: { status: 403, body: { error: "Forbidden" } } };
+    selfParticipant = {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      effective_role: user.effective_role,
+      status: user.status || "active",
+    };
+    participants = dedupeParticipants([...participants, selfParticipant]);
   }
 
   const contacts = (messagingRole === "broker" ? contactsForBroker : brokerParticipants)
