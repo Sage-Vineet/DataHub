@@ -806,6 +806,33 @@ export function getManualStagedProfitLossDetail(options = {}) {
   );
 }
 
+export function getManualStagedProfitLossVendorDetail(options = {}) {
+  const {
+    clientId: clientIdOption,
+    params = {},
+    ...requestOptions
+  } = options || {};
+  const clientId = clientIdOption ?? resolveClientIdFromLocation();
+  const search = new URLSearchParams();
+  if (clientId) search.set("clientId", clientId);
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    if (Array.isArray(value)) {
+      if (value.length === 0) return;
+      search.set(key, value.join(","));
+      return;
+    }
+    search.set(key, String(value));
+  });
+
+  const query = search.toString();
+  return request(
+    `/reports/profit-loss/detail-vendor${query ? `?${query}` : ""}`,
+    requestOptions,
+  );
+}
+
 export function getManualStagedProfitLossMonthlyDetail(options = {}) {
   const { clientId: clientIdOption, params = {}, ...requestOptions } = options || {};
   const clientId = clientIdOption ?? resolveClientIdFromLocation();

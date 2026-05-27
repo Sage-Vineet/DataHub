@@ -29,6 +29,18 @@ function mergeObject(base, patch) {
   };
 }
 
+async function withTiming(label, fn) {
+  const start = Date.now();
+  try {
+    const result = await fn();
+    console.log(`[ManualGL][Perf] ${label}=${Date.now() - start}ms`);
+    return result;
+  } catch (error) {
+    console.log(`[ManualGL][Perf] ${label}=ERROR after ${Date.now() - start}ms: ${error.message}`);
+    throw error;
+  }
+}
+
 function buildUploadSessionActivationPlan(batchMetadata = {}, stagedResult = {}) {
   const candidates = Array.isArray(stagedResult?.uploadSessionVersionPlan)
     ? stagedResult.uploadSessionVersionPlan
@@ -100,8 +112,9 @@ async function orchestrateManualGlUpload({
   }
 
   const orchestrationStartedAt = new Date().toISOString();
+  const perfStart = Date.now();
 
-  const staged = await stageMultiYearGlUpload({
+  const staged = await withTiming("stage", () => stageMultiYearGlUpload({
     companyId,
     glUploadIds,
     startingBalanceSheetUploadId,
@@ -113,7 +126,7 @@ async function orchestrateManualGlUpload({
     batchName,
     useDatasetLifecycle: false,
     deferLifecycleFinalization: true,
-  });
+  }));
 
   if (!staged?.success || !staged?.batchId) {
     if (staged?.blockedAsDuplicate) {
@@ -125,16 +138,16 @@ async function orchestrateManualGlUpload({
   const batchId = staged.batchId;
 
   try {
-    const checksumInfo = await computeUploadChecksum(companyId, batchId);
+    const checksumInfo = await withTiming("checksum", () => computeUploadChecksum(companyId, batchId));
     const uploadChecksum = checksumInfo?.checksum || null;
     const checksumRowCount = Number(checksumInfo?.rowCount || 0);
 
     if (uploadChecksum) {
-      await setUploadChecksum(batchId, uploadChecksum, checksumRowCount);
+      await withTiming("setChecksum", () => setUploadChecksum(batchId, uploadChecksum, checksumRowCount));
     }
 
     const duplicateActiveBatch = uploadChecksum
-      ? await findActiveBatchByChecksum(companyId, uploadChecksum)
+      ? await withTiming("dupCheck", () => findActiveBatchByChecksum(companyId, uploadChecksum))
       : null;
 
     if (duplicateActiveBatch?.id && duplicateActiveBatch.id !== batchId) {
@@ -173,27 +186,27 @@ async function orchestrateManualGlUpload({
       };
     }
 
-    const snapshotResult = await generateReportingSnapshotsForBatch(companyId, batchId);
+    const snapshotResult = await withTiming("snapshots", () => generateReportingSnapshotsForBatch(companyId, batchId));
 
     let validation = staged.validation || null;
     if (!validation) {
       try {
-        const validationPayload = await validateBatchBalanceSheet(companyId, batchId);
+        const validationPayload = await withTiming("bsValidation", () => validateBatchBalanceSheet(companyId, batchId));
         validation = validationPayload?.validation || null;
       } catch (validationError) {
         console.warn("[ManualGL][Orchestrator] Validation check failed:", validationError.message);
       }
     }
 
-    const activated = await activateUploadBatch(companyId, batchId, uploadedBy || null);
+    const activated = await withTiming("activate", () => activateUploadBatch(companyId, batchId, uploadedBy || null));
     const uploadSessionPlan = buildUploadSessionActivationPlan(activated?.metadata || {}, staged);
     if (uploadSessionPlan.length > 0) {
-      await replaceActiveUploadSessions({
+      await withTiming("replaceSessions", () => replaceActiveUploadSessions({
         companyId,
         batchId,
         uploadedBy: uploadedBy || null,
         sessions: uploadSessionPlan,
-      });
+      }));
     }
 
     const now = new Date().toISOString();
@@ -223,6 +236,7 @@ async function orchestrateManualGlUpload({
       },
     );
 
+    console.log(`[ManualGL][Perf] orchestration_total=${Date.now() - perfStart}ms batchId=${batchId}`);
     reportCache.invalidateCompany(companyId);
 
     updateReportSourceRecord(companyId, REPORT_SOURCE_KEYS.MANUAL_GL, {

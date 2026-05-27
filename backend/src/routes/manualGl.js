@@ -879,6 +879,45 @@ router.get("/reports/profit-loss/detail", enforceDataSource(REPORT_SOURCE_KEYS.M
   }
 });
 
+router.get("/reports/profit-loss/detail-vendor", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+    const filters = parseManualFilterQuery(req.query || {});
+    const activeBatchId = await resolveReportBatchId(clientId, filters.batchId, {
+      ...filters,
+      allowExplicitBatch: isHistoricalBatchMode(filters),
+    });
+    const cacheFilters = { ...filters, batchId: activeBatchId || filters.batchId || "" };
+    logManualReportFilterDebug("reports/profit-loss/detail-vendor", clientId, cacheFilters, activeBatchId);
+    const skipSnapshot = hasManualDetailFilterOverrides(cacheFilters);
+
+    if (!skipSnapshot) {
+      const snapshotResult = await tryLoadActiveSnapshot(
+        clientId,
+        SNAPSHOT_REPORT_TYPES.PROFIT_LOSS_DETAIL_VENDOR,
+        cacheFilters,
+      );
+      if (snapshotResult.payload) {
+        return res.json({
+          success: true,
+          ...snapshotResult.payload,
+          source: "manual_gl_reporting_snapshot",
+          activeBatchId: snapshotResult.activeBatchId || activeBatchId || null,
+        });
+      }
+    }
+
+    const payload = await getProfitLossVendorDetailFromStage(clientId, cacheFilters);
+    return res.json({ success: true, ...payload, activeBatchId: activeBatchId || null });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to build staged Profit & Loss vendor detail.",
+    });
+  }
+});
+
 router.get("/reports/profit-loss/monthly-detail", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
   try {
     const clientId = resolveClientId(req);

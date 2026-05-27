@@ -719,6 +719,33 @@ export default function WorkspaceReports() {
     });
   }, [debugLog, selectedSourceMode, selectedVersionId]);
 
+  // Effect to clear data and trigger refresh when version changes
+  useEffect(() => {
+    if (selectedSourceMode !== "manual" || !selectedVersionId) return;
+
+    debugLog("[ManualGL][UI][VersionChange] Version changed, clearing state...", { selectedVersionId });
+
+    // Clear existing report data to prevent stale rendering
+    setReportsData(createInitialReportsData());
+
+    // Reset manual filters that are specific to the previous version
+    setManualFilters((prev) => ({
+      ...prev,
+      fiscalYear: [],
+      fiscalMonth: "",
+      batchId: "", // Will be re-resolved by the filter options effect
+    }));
+    setAppliedManualFilters((prev) => ({
+      ...prev,
+      fiscalYear: [],
+      fiscalMonth: "",
+      batchId: "",
+    }));
+
+    // Force a re-fetch of filter options (which will also trigger handleGenerateReport)
+    setFilterOptionsVersion((v) => v + 1);
+  }, [selectedVersionId, selectedSourceMode, debugLog]);
+
   const handleSync = async () => {
     setIsSyncing(true);
     try {
@@ -1127,6 +1154,7 @@ export default function WorkspaceReports() {
             {
               sourceMode: selectedSourceMode,
               manualFilters: manualFilterParams,
+              reportType,
             },
           );
         }

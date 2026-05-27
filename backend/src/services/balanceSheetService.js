@@ -256,6 +256,7 @@ async function saveBalanceSheetSnapshot({
         report_params: {
           stagedDataId,
           asOfDate: normalizedAsOfDate,
+          dataset_version_id: data.datasetVersionId || null,
         },
         data: payload,
         source: MANUAL_BALANCE_SHEET_SOURCE,

@@ -455,18 +455,27 @@ export default function ManualGLUpload({
         });
         return;
       }
-      if (error.status === 409 && error.payload?.blockedAsDuplicate) {
+      if (error.status === 400 && error.payload?.isDuplicate) {
         const payload = error.payload;
-        setPendingStageRequest(stagePayloadForRetry);
-        setStageResult(payload);
-        setStep(3);
-        setStagingProgress({ isActive: true, stage: "complete", message: "Already staged.", pct: 100, error: null });
-        progressCloseTimer.current = setTimeout(() => setStagingProgress(PROGRESS_IDLE), 1200);
-        showToast({
-          type: "info",
-          title: "Already Staged",
-          message: payload.message || "The selected fiscal year data is already staged.",
+        const versionInfo = payload.existingVersion || {};
+        const yearLabel = Array.isArray(payload.duplicateYears) ? payload.duplicateYears.join(", ") : "for these years";
+
+        setStagingProgress({
+          isActive: true,
+          stage: "error",
+          message: `Already staged in ${versionInfo.versionName || "Existing Version"}`,
+          pct: 0,
+          error: payload.message
         });
+
+        showToast({
+          type: "warning",
+          title: "Fiscal Years Already Staged",
+          message: payload.message || `Years ${yearLabel} are already staged under ${versionInfo.versionName || "another version"}.`,
+        });
+
+        // Don't advance to step 3; keep user on step 1 to fix selection or switch version.
+        setIsSubmitting(false);
         return;
       }
 
@@ -649,6 +658,28 @@ export default function ManualGLUpload({
           title: "Mapping needs review",
           message: payload.error || "Required mapping fields are missing. Please adjust and retry.",
         });
+        return;
+      }
+
+      if (error.status === 400 && error.payload?.isDuplicate) {
+        const payload = error.payload;
+        const versionInfo = payload.existingVersion || {};
+
+        setStagingProgress({
+          isActive: true,
+          stage: "error",
+          message: "Data already staged",
+          pct: 0,
+          error: payload.message
+        });
+
+        showToast({
+          type: "warning",
+          title: "Already Staged",
+          message: payload.message || `The selected fiscal year data is already staged under ${versionInfo.versionName || "existing version"}.`,
+        });
+
+        setIsProcessing(false);
         return;
       }
       const errMsg = error?.message || "Could not restage GL data.";

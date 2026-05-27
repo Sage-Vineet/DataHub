@@ -17,61 +17,66 @@ export default function ProfitAndLossReport({
 }) {
   const resolvedEntityName = entityName || clientName || "Company";
   const periodText = startDate === "1970-01-01" ? "All Dates" : `${startDate || "N/A"} to ${endDate || "N/A"}`;
-  // Backend returns source="manual_gl_staged_transactions" (not "manual_staged").
-  // Accept all known manual-staged source strings to be forward-compatible.
+
   const MANUAL_STAGED_SOURCES = [
     "manual_staged",
     "manual_gl_staged_transactions",
     "manual_gl_reporting_snapshot",
     "MANUAL_STAGED",
   ];
+
   const isManualStagedSummary = Boolean(
     data && typeof data === "object" && !Array.isArray(data) &&
     MANUAL_STAGED_SOURCES.includes(data.source)
   );
+
   const isManualStagedDetail = Boolean(
     detailedData && typeof detailedData === "object" && !Array.isArray(detailedData) &&
     MANUAL_STAGED_SOURCES.includes(detailedData.source)
   );
-  const isManualMonthlyDetail = isManualStagedDetail && detailedData?.reportType === "profit_loss_monthly_detail";
+
   const summarySubtitle = sourceMode === "manual"
     ? undefined
     : `Report Period: ${periodText} | ${clientName} | ${accountingMethod} Basis`;
 
   if (reportType === "Detail") {
-    if (isManualMonthlyDetail) {
-      return (
-        <ManualProfitLossMonthlyDetail
-          data={detailedData}
-          title="Profit and Loss"
-          entityName={resolvedEntityName}
-        />
-      );
-    }
-
     if (isManualStagedDetail) {
+      if (detailedData.reportType === "profit_loss_monthly_detail") {
+        return (
+          <ManualProfitLossMonthlyDetail
+            data={detailedData}
+            entityName={resolvedEntityName}
+          />
+        );
+      }
+      if (detailedData.reportType === "profit_loss_monthly_detail") {
+        return (
+          <ManualProfitLossMonthlyDetail
+            data={detailedData}
+            entityName={resolvedEntityName}
+          />
+        );
+      }
       return (
         <ManualProfitLossDetail
           data={detailedData}
           title="Profit & Loss Detail"
-          subtitle={undefined}
           entityName={resolvedEntityName}
         />
       );
     }
 
-    // Detail View: Multi-year EBITDA/SDE analysis
     return (
       <ProfitAndLossSummary
         data={detailedData}
         title="Profit & Loss"
-        subtitle={`${clientName} | ${accountingMethod} Basis`}
+        subtitle={summarySubtitle}
         entityName={resolvedEntityName}
-        createdOn={createdOn}
       />
     );
   }
 
+  // Summary View
   if (isManualStagedSummary) {
     const hierarchicalRows = Array.isArray(data?.hierarchicalRows) ? data.hierarchicalRows : [];
     return (
@@ -83,7 +88,6 @@ export default function ProfitAndLossReport({
     );
   }
 
-  // Summary View: QuickBooks-style Summary report
   return (
     <ProfitAndLossQBSummary
       data={Array.isArray(data) ? data : []}

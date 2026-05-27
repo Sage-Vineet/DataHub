@@ -287,7 +287,7 @@ function pnlFileYear(file) {
 }
 
 function pnlFileLabel(file) {
-  const monthNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const dateStr = file?.data?.asOfDate || file?.data?.periodEnd;
   if (dateStr) {
     const parts = String(dateStr).split("-");
@@ -428,6 +428,11 @@ export async function getProfitAndLossDetail(
         ? options.manualFilters
         : {}),
     };
+
+    if (options.reportType === "DetailVendor") {
+      return getManualStagedProfitLossVendorDetail({ params });
+    }
+
     console.log("[DetailedReportUI][P&L] Requesting monthly detail with params:", JSON.stringify(params));
     const response = await getManualStagedProfitLossMonthlyDetail({ params });
     console.log("[DetailedReportUI][P&L] Received keys:", Object.keys(response || {}), "| source:", response?.source, "| reportType:", response?.reportType, "| months:", response?.months);

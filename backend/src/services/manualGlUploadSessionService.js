@@ -92,9 +92,11 @@ async function replaceActiveUploadSessions({
   }
 
   const now = new Date().toISOString();
-  const created = [];
 
-  for (const session of sessions) {
+  // Each fiscal-year session is independent — run them in parallel.
+  // Within each session the three operations (SELECT → UPDATE → UPSERT) remain
+  // sequential because the deactivation ID feeds into replaced_session_id.
+  const activateSession = async (session) => {
     const fiscalYear = toPositiveInteger(session?.fiscalYear, null);
     const versionNo = toPositiveInteger(session?.versionNo, null);
     const dataHash = String(session?.dataHash || "").trim();
@@ -172,17 +174,21 @@ async function replaceActiveUploadSessions({
       `dataHash=${dataHash.slice(0, 12)}...`,
     );
 
-    created.push(mapUploadSessionRow(data || payload));
-  }
+    return mapUploadSessionRow(data || payload);
+  };
 
-  return created;
+  const created = await Promise.all(sessions.map(activateSession));
+  return created.filter(Boolean);
 }
 
 async function findExistingStagedUploadSessionsByYearHash({
   companyId,
   yearHashes = [],
 }) {
-  if (!companyId || !Array.isArray(yearHashes) || yearHashes.length === 0) {
+  if (!Array.isArray(yearHashes) || yearHashes.length === 0) {
+    return { rows: [], matches: [] };
+  }
+  if (!companyId) {
     return { rows: [], matches: [] };
   }
 
@@ -199,12 +205,24 @@ async function findExistingStagedUploadSessionsByYearHash({
 
   const fiscalYears = Array.from(new Set(normalizedPairs.map((item) => item.fiscalYear)));
 
-  const { data, error } = await supabase
+  let query = supabase
     .from(TABLE_UPLOAD_SESSIONS)
-    .select("id, fiscal_year, version_no, data_hash, status, staging_batch_id, created_at")
-    .eq("company_id", companyId)
-    .in("fiscal_year", fiscalYears)
-    .order("created_at", { ascending: false });
+    .select(`
+      id, company_id, fiscal_year, version_no, data_hash, status, staging_batch_id, created_at,
+      manual_gl_batches!staging_batch_id (
+        id,
+        dataset_version,
+        batch_name,
+        status
+      )
+    `)
+    .in("fiscal_year", fiscalYears);
+
+  if (companyId) {
+    query = query.eq("company_id", companyId);
+  }
+
+  const { data, error } = await query.order("created_at", { ascending: false });
 
   if (error) {
     throw new Error(`Failed to query upload session duplicates: ${error.message}`);

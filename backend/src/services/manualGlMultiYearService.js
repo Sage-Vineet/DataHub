@@ -321,7 +321,7 @@ function detectCompanyInGl(sheetData, maxRows = 100) {
  * Validates whether the selected fiscal years are already staged for the company.
    * Implements strict collision detection for multi-year uploads.
    */
-async function checkExistingStagedFiscalYears(companyId, fiscalYears = [], dataHash = null) {
+async function checkExistingStagedFiscalYears(companyId, fiscalYears = [], dataHash = null, options = {}) {
   const normalizedYears = Array.from(
     new Set(
       (Array.isArray(fiscalYears) ? fiscalYears : [])
@@ -346,7 +346,7 @@ async function checkExistingStagedFiscalYears(companyId, fiscalYears = [], dataH
       : [];
 
   console.log(
-    `[ManualGL][Validation] Checking duplicates for company ${companyId}; years=[${normalizedYears.join(", ")}]; ` +
+    `[ManualGL][Validation] Checking duplicates for company ${companyId || "GLOBAL"}; years=[${normalizedYears.join(", ")}]; ` +
     `hashPairs=${requestedYearHashes.length}`,
   );
 
@@ -374,13 +374,20 @@ async function checkExistingStagedFiscalYears(companyId, fiscalYears = [], dataH
       `matchedYears=[${duplicateYears.join(", ")}]`,
     );
 
-    if (duplicateYears.length === normalizedYears.length) {
-      const firstMatch = matches[0]?.existingSession || null;
+    if (duplicateYears.length > 0) {
+      const match = matches[0]?.existingSession || null;
+      const batchInfo = match?.manual_gl_batches || {};
+
       return {
         isDuplicate: true,
-        message: "The selected fiscal year data is already staged.",
-        existingVersion: Number(firstMatch?.version_no || 0) || null,
-        activeBatchId: firstMatch?.staging_batch_id || null,
+        message: `Fiscal year${duplicateYears.length > 1 ? "s" : ""} ${duplicateYears.join(", ")} ${duplicateYears.length > 1 ? "are" : "is"} already staged under ${batchInfo.batch_name || `Version ${batchInfo.dataset_version || "N/A"}`} for this company.`,
+        existingVersion: {
+          versionId: batchInfo.id || match?.staging_batch_id || null,
+          versionName: batchInfo.batch_name || (batchInfo.dataset_version ? `Version ${batchInfo.dataset_version}` : null) || "Unknown Version",
+          years: duplicateYears,
+        },
+        activeBatchId: match?.staging_batch_id || null,
+        companyId: companyId,
         duplicateYears,
         duplicates: duplicateYears,
         matches,
@@ -674,8 +681,18 @@ async function retrySupabaseOperation(operation, maxRetries = 3, initialDelay = 
       return result;
     } catch (error) {
       lastError = error;
-      const isRetryable = error.status === 429 || error.status === 503 || error.status === 504 || error.message?.includes("timeout") || error.message?.includes("rate limit");
-      if (!isRetryable && attempt === 0) throw error; // If not retryable, fail fast on first attempt
+      const msg = String(error.message || "").toLowerCase();
+      // Statement timeouts (PG code 57014) indicate a slow query that will fail again.
+      // Retrying them doubles DB load and triggers the Supabase unhealthy spiral.
+      const isStatementTimeout = error.code === "57014" || msg.includes("statement timeout");
+      if (isStatementTimeout) throw error;
+
+      const isRetryable =
+        error.status === 429 || error.status === 503 || error.status === 504 ||
+        (msg.includes("timeout") && !isStatementTimeout) ||
+        msg.includes("rate limit") ||
+        msg.includes("connection");
+      if (!isRetryable && attempt === 0) throw error;
 
       const delay = initialDelay * Math.pow(2, attempt);
       console.warn(`[ManualGL][Retry] Attempt ${attempt + 1} failed. Retrying in ${delay}ms...`, error.message);
@@ -2650,14 +2667,19 @@ async function insertTransactions({
   console.log("[ManualGL][MultiYear] Grouped by Year:", JSON.stringify(yearGroups, null, 2));
   console.log("===============================");
 
-  let processed = 0;
-  const chunkSize = 500; // Reduced from 1000 for better stability
+  const chunkSize = 500;
+  // Process up to 3 chunks concurrently — fast enough to saturate the connection
+  // pool without overwhelming it. Sequential (1 at a time) is ~3x slower for large
+  // datasets; fully parallel (all at once) exhausts the pool on 100k+ row uploads.
+  const CHUNK_CONCURRENCY = 3;
 
-  for (let index = 0; index < rows.length; index += chunkSize) {
-    const chunk = rows.slice(index, index + chunkSize);
+  const chunks = [];
+  for (let i = 0; i < rows.length; i += chunkSize) {
+    chunks.push(rows.slice(i, i + chunkSize));
+  }
 
-    console.log(`[ManualGL][MultiYear] Upserting chunk ${index / chunkSize + 1} (${chunk.length} rows)`);
-
+  const upsertChunk = async (chunk, chunkIndex) => {
+    console.log(`[ManualGL][MultiYear] Upserting chunk ${chunkIndex + 1}/${chunks.length} (${chunk.length} rows)`);
     await retrySupabaseOperation(async () => {
       let result = await supabase
         .from(TABLES.transactions)
@@ -2681,17 +2703,6 @@ async function insertTransactions({
             ...legacy
           }) => legacy,
         );
-        rows = rows.map(
-          ({
-            source_type,
-            source_switch_version,
-            upload_session_id,
-            staged_at,
-            upload_batch_id,
-            raw_row_reference,
-            ...legacy
-          }) => legacy,
-        );
         result = await supabase
           .from(TABLES.transactions)
           .upsert(legacyChunk, {
@@ -2704,11 +2715,14 @@ async function insertTransactions({
 
       return result;
     });
+  };
 
-    processed += chunk.length;
+  for (let i = 0; i < chunks.length; i += CHUNK_CONCURRENCY) {
+    const batch = chunks.slice(i, i + CHUNK_CONCURRENCY);
+    await Promise.all(batch.map((chunk, offset) => upsertChunk(chunk, i + offset)));
   }
 
-  return { inserted: processed, duplicates: 0, yearGroups };
+  return { inserted: rows.length, duplicates: 0, yearGroups };
 }
 
 async function replaceBalanceSheetLines({
@@ -2933,8 +2947,13 @@ async function copyBatchTransactionsForYears({
   });
 
   const chunkSize = 500;
-  for (let index = 0; index < payloads.length; index += chunkSize) {
-    const chunk = payloads.slice(index, index + chunkSize);
+  const CHUNK_CONCURRENCY = 3;
+  const carryChunks = [];
+  for (let i = 0; i < payloads.length; i += chunkSize) {
+    carryChunks.push(payloads.slice(i, i + chunkSize));
+  }
+
+  const upsertCarryChunk = async (chunk) => {
     let { error } = await supabase
       .from(TABLES.transactions)
       .upsert(chunk, {
@@ -2955,7 +2974,6 @@ async function copyBatchTransactionsForYears({
           ...legacy
         }) => legacy,
       );
-
       const legacyResult = await supabase
         .from(TABLES.transactions)
         .upsert(legacyChunk, {
@@ -2964,13 +2982,16 @@ async function copyBatchTransactionsForYears({
             : "company_id,batch_id,transaction_hash",
           ignoreDuplicates: true,
         });
-
       error = legacyResult.error;
     }
 
     if (error) {
       throw new Error(`Failed to carry forward staged transactions: ${error.message}`);
     }
+  };
+
+  for (let i = 0; i < carryChunks.length; i += CHUNK_CONCURRENCY) {
+    await Promise.all(carryChunks.slice(i, i + CHUNK_CONCURRENCY).map(upsertCarryChunk));
   }
 
   return {
@@ -3047,6 +3068,35 @@ function parseMultiValue(value) {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+// In-memory row filter used by the _preloadedRows bypass in queryStagedTransactions.
+// Applies only the filters that snapshot generation actually uses: fiscal-year list
+// and date-range (the BUG2 bypass converts year filter to date range for non-explicit
+// fiscal-calendar batches). Other field-level filters (account, category, etc.) are
+// intentionally NOT applied here because snapshot generation never uses them.
+function applyInMemoryRowFilters(rows, parsedFilters) {
+  if (!Array.isArray(rows) || !rows.length) return rows;
+
+  const years = Array.isArray(parsedFilters.fiscalYears)
+    ? parsedFilters.fiscalYears.map(Number).filter(Number.isInteger)
+    : [];
+
+  if (years.length > 0) {
+    const yearSet = new Set(years);
+    return rows.filter((r) => yearSet.has(Number(r.fiscal_year)));
+  }
+
+  const start = parsedFilters.startDate || "";
+  const end = parsedFilters.endDate || "";
+  if (start || end) {
+    return rows.filter((r) => {
+      const d = String(r.txn_date || "");
+      return (!start || d >= start) && (!end || d <= end);
+    });
+  }
+
+  return rows;
 }
 
 function parseIntegerValues(value) {
@@ -3136,6 +3186,16 @@ function parseManualFilterQuery(rawFilters = {}) {
 }
 
 async function queryStagedTransactions(companyId, rawFilters = {}) {
+  // Pre-load bypass: when the caller passes _preloadedRows (an already-fetched slice
+  // of transactions for this batch), apply filters in memory and skip all DB queries.
+  // This eliminates the N full-table scans that snapshot generation previously caused
+  // (8 report functions × N fiscal years × paginated reads).
+  if (Array.isArray(rawFilters._preloadedRows)) {
+    const parsedFilters = parseManualFilterQuery(rawFilters);
+    const rows = applyInMemoryRowFilters(rawFilters._preloadedRows, parsedFilters);
+    return { filters: { ...parsedFilters, batchId: toNonEmptyString(parsedFilters.batchId) }, rows };
+  }
+
   const parsedFilters = parseManualFilterQuery(rawFilters);
   const filters = {
     ...parsedFilters,
@@ -3196,17 +3256,19 @@ async function queryStagedTransactions(companyId, rawFilters = {}) {
       .select("*")
       .eq("company_id", companyId);
 
+    // Strict priority: dataset_version_id > batchId
     if (filters.datasetVersionId) {
       query = query.eq("dataset_version_id", filters.datasetVersionId);
     } else if (filters.batchId) {
       query = query.eq(batchColumn, filters.batchId);
+    } else if (filters.datasetVersion) {
+      // Fallback for cases where datasetVersion number is provided
+      query = query.eq("dataset_version", filters.datasetVersion);
     }
 
     if (includeSourceColumns) {
       if (filters.sourceType) query = query.eq("source_type", filters.sourceType);
-      if (filters.sourceSwitchVersion) {
-        query = query.eq("source_switch_version", filters.sourceSwitchVersion);
-      }
+      // Ensure we don't leak data from other sessions if a specific one is requested
       if (filters.uploadSessionId) {
         query = query.eq("upload_session_id", filters.uploadSessionId);
       }
@@ -7151,7 +7213,7 @@ async function getStageFilterOptions(companyId, filters = {}) {
   let batchMetaForOptions = {};
   try {
     batchMetaForOptions = await loadBatchMetadata(batchId);
-  } catch (_) {}
+  } catch (_) { }
   const filterOptFiscalCalendarExplicit = batchMetaForOptions.fiscalCalendarExplicit === true;
   const correctedRows = filterOptFiscalCalendarExplicit ? rows : applyCalendarYearCorrection(rows);
 
@@ -7450,6 +7512,7 @@ function buildProfitLossMonthlyDetailPayload(transactions = [], year, filters = 
         accountType,
         monthly: {},
         total: 0,
+        transactions: [],
       });
     }
 
@@ -7461,6 +7524,18 @@ function buildProfitLossMonthlyDetailPayload(transactions = [], year, filters = 
 
     acc.monthly[monthNum] = roundMoney((acc.monthly[monthNum] || 0) + displayAmount);
     acc.total = roundMoney(acc.total + displayAmount);
+
+    acc.transactions.push({
+      id: String(tx.transactionId || tx.id || "").trim(),
+      date: tx.date,
+      vendorName: tx.vendorName || "",
+      description: tx.description || "",
+      amount: displayAmount,
+      debit: roundMoney(Number(tx.debit || 0)),
+      credit: roundMoney(Number(tx.credit || 0)),
+      reference: tx.reference || "",
+      journalType: tx.journalType || "",
+    });
   });
 
   const byCategory = { Revenue: [], COGS: [], 'Operating Expenses': [], 'Other Expenses': [] };
@@ -8259,14 +8334,65 @@ async function getCashflowMonthlyDetailFromStage(companyId, filters = {}) {
   );
 }
 
+async function getProfitLossVendorDetailFromStage(companyId, filters = {}) {
+  const preFilters = parseManualFilterQuery(filters);
+  const preBatchId = preFilters.batchId || (await resolveReportBatchId(companyId));
+  const batchMeta = await loadBatchMetadata(preBatchId);
+  const fiscalCalendarExplicit = batchMeta.fiscalCalendarExplicit === true;
+
+  const selectedYearsForBypass = preFilters.fiscalYears || [];
+  let queryFilters = { ...filters, batchId: preBatchId || filters.batchId || "" };
+
+  if (!fiscalCalendarExplicit && selectedYearsForBypass.length) {
+    const minYear = Math.min(...selectedYearsForBypass);
+    const maxYearPl = Math.max(...selectedYearsForBypass);
+    queryFilters = {
+      ...queryFilters,
+      fiscalYears: [],
+      fiscalYear: null,
+      startDate: `${minYear}-01-01`,
+      endDate: `${maxYearPl}-12-31`,
+    };
+  }
+
+  const { filters: normalizedFilters, rows: rawRows } = await queryStagedTransactions(companyId, queryFilters);
+  const correctedRows = fiscalCalendarExplicit ? rawRows : applyCalendarYearCorrection(rawRows);
+  const selectedYears = preFilters.fiscalYears || [];
+  const filteredRows = (!fiscalCalendarExplicit && selectedYears.length)
+    ? correctedRows.filter((r) => selectedYears.includes(Number(r.fiscal_year || 0)))
+    : correctedRows;
+
+  let normalized = filteredRows.map(normalizeStagedTransactionRow).filter(Boolean);
+  const effectiveBatchId = normalizedFilters.batchId || preBatchId || "";
+
+  if (effectiveBatchId) {
+    const bsLookup = await loadBsLookupForBatch(companyId, effectiveBatchId);
+    if (bsLookup.size > 0) {
+      normalized = reclassifyNormalizedTransactions(normalized, bsLookup);
+    }
+  }
+
+  // Filter only for P&L accounts (Revenue, COGS, Expense)
+  const plOnly = normalized.filter((tx) =>
+    ["income", "cogs", "expense"].includes(normalizeAccountType(tx.accountType) || ""),
+  );
+
+  return buildVendorProfitLossDetailPayload(plOnly, {
+    ...normalizedFilters,
+    fiscalYears: selectedYears.length ? selectedYears : (normalizedFilters.fiscalYears || []),
+  });
+}
+
 module.exports = {
   parseManualFilterQuery,
+  queryStagedTransactions,
   stageMultiYearGlUpload,
   getStageTransactions,
   getStageFilterOptions,
   getProfitLossSummaryFromStage,
   getProfitLossDetailFromStage,
   getProfitLossMonthlyDetailFromStage,
+  getProfitLossVendorDetailFromStage,
   getBalanceSheetSummaryFromStage,
   getBalanceSheetMonthlyDetailFromStage,
   getCashflowSummaryFromStage,

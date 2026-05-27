@@ -1,9 +1,11 @@
 ﻿const { supabase } = require("../db");
 const {
+  queryStagedTransactions,
   getStageFilterOptions,
   getProfitLossSummaryFromStage,
   getProfitLossDetailFromStage,
   getProfitLossMonthlyDetailFromStage,
+  getProfitLossVendorDetailFromStage,
   getBalanceSheetSummaryFromStage,
   getBalanceSheetMonthlyDetailFromStage,
   getCashflowSummaryFromStage,
@@ -20,6 +22,7 @@ const SNAPSHOT_REPORT_TYPES = Object.freeze({
   PROFIT_LOSS_SUMMARY: "profit_loss_summary",
   PROFIT_LOSS_DETAIL: "profit_loss_detail",
   PROFIT_LOSS_MONTHLY_DETAIL: "profit_loss_monthly_detail",
+  PROFIT_LOSS_DETAIL_VENDOR: "profit_loss_detail_vendor",
   BALANCE_SHEET_SUMMARY: "balance_sheet_summary",
   BALANCE_SHEET_MONTHLY_DETAIL: "balance_sheet_monthly_detail",
   CASHFLOW_SUMMARY: "cashflow_summary",
@@ -250,6 +253,23 @@ async function generateReportingSnapshotsForBatch(companyId, batchId) {
   });
   const years = parseYears(filterPayload?.options || {});
 
+  // Pre-fetch ALL transactions for this batch ONCE before the per-year loop.
+  // Each of the 8 report functions would otherwise call queryStagedTransactions
+  // independently (paginated full-table scans of 50k–200k+ rows). With _preloadedRows
+  // injected into the filters, queryStagedTransactions filters in memory and skips
+  // the DB entirely — turning 8×N full-table scans into a single paginated read.
+  // getCashflowSummaryFromStage internally calls getProfitLossSummaryFromStage and
+  // getBalanceSheetSummaryFromStage, which also inherit _preloadedRows via spread.
+  const preloadStart = Date.now();
+  const { rows: _preloadedRows } = await queryStagedTransactions(companyId, {
+    batchId,
+    includeArchived: true,
+    versionMode: "historical",
+  });
+  console.log(
+    `[ManualGL][Snapshots][Perf] preloadedRows=${_preloadedRows.length} in ${Date.now() - preloadStart}ms`,
+  );
+
   let snapshotCount = 0;
 
   await upsertReportingSnapshot({
@@ -270,6 +290,8 @@ async function generateReportingSnapshotsForBatch(companyId, batchId) {
   const targets = years.length ? [null, ...years] : [null];
 
   for (const year of targets) {
+    // _preloadedRows carries ALL batch transactions (no year filter).
+    // Each report function applies its own year/date filter on top in memory.
     const filters = year
       ? {
         batchId,
@@ -277,15 +299,19 @@ async function generateReportingSnapshotsForBatch(companyId, batchId) {
         versionMode: "historical",
         fiscalYear: [String(year)],
         fiscalYears: [year],
+        _preloadedRows,
       }
       : {
         batchId,
         includeArchived: true,
         versionMode: "historical",
+        _preloadedRows,
       };
 
+    const yearStart = Date.now();
+
     // Build all report payloads for this fiscal slice.
-    // Use retry logic for each report calculation to handle transient DB timeouts.
+    // With _preloadedRows in filters, these calls do no DB queries — pure in-memory.
     const [
       profitLossSummary,
       profitLossDetail,
@@ -294,19 +320,23 @@ async function generateReportingSnapshotsForBatch(companyId, batchId) {
       balanceSheetMonthlyDetail,
       cashflowSummary,
       cashflowMonthlyDetail,
+      profitLossVendorDetail,
     ] = await Promise.all([
-      retrySupabaseOperation(() => getProfitLossSummaryFromStage(companyId, filters)),
-      retrySupabaseOperation(() => getProfitLossDetailFromStage(companyId, filters)),
-      retrySupabaseOperation(() => getProfitLossMonthlyDetailFromStage(companyId, filters)),
-      retrySupabaseOperation(() => getBalanceSheetSummaryFromStage(companyId, filters)),
-      retrySupabaseOperation(() => getBalanceSheetMonthlyDetailFromStage(companyId, filters)),
-      retrySupabaseOperation(() => getCashflowSummaryFromStage(companyId, filters)),
-      retrySupabaseOperation(() => getCashflowMonthlyDetailFromStage(companyId, filters)),
+      getProfitLossSummaryFromStage(companyId, filters),
+      getProfitLossDetailFromStage(companyId, filters),
+      getProfitLossMonthlyDetailFromStage(companyId, filters),
+      getBalanceSheetSummaryFromStage(companyId, filters),
+      getBalanceSheetMonthlyDetailFromStage(companyId, filters),
+      getCashflowSummaryFromStage(companyId, filters),
+      getCashflowMonthlyDetailFromStage(companyId, filters),
+      getProfitLossVendorDetailFromStage(companyId, filters),
     ]);
 
-    // Upsert snapshots. We process these sequentially instead of in massive
-    // Promise.all blocks to avoid exhausting the DB connection pool during
-    // high-volume orchestration.
+    console.log(`[ManualGL][Snapshots][Perf] year=${year ?? "ALL"} reports=${Date.now() - yearStart}ms`);
+
+    // Upsert snapshots. These are independent rows (different report_type values) so
+    // they can safely run in parallel within a single fiscal year. Years themselves
+    // remain sequential to keep the total connection count bounded.
     const snapshotTasks = [
       { type: SNAPSHOT_REPORT_TYPES.PROFIT_LOSS_SUMMARY, payload: profitLossSummary },
       { type: SNAPSHOT_REPORT_TYPES.PROFIT_LOSS_DETAIL, payload: profitLossDetail },
@@ -315,20 +345,23 @@ async function generateReportingSnapshotsForBatch(companyId, batchId) {
       { type: SNAPSHOT_REPORT_TYPES.BALANCE_SHEET_MONTHLY_DETAIL, payload: balanceSheetMonthlyDetail },
       { type: SNAPSHOT_REPORT_TYPES.CASHFLOW_SUMMARY, payload: cashflowSummary },
       { type: SNAPSHOT_REPORT_TYPES.CASHFLOW_MONTHLY_DETAIL, payload: cashflowMonthlyDetail },
+      { type: SNAPSHOT_REPORT_TYPES.PROFIT_LOSS_DETAIL_VENDOR, payload: profitLossVendorDetail },
     ];
 
-    for (const task of snapshotTasks) {
-      await upsertReportingSnapshot({
-        companyId,
-        batchId,
-        datasetVersion: resolvedDatasetVersion,
-        reportType: task.type,
-        snapshotPayload: task.payload,
-        fiscalYear: year,
-      });
-    }
+    await Promise.all(
+      snapshotTasks.map((task) =>
+        upsertReportingSnapshot({
+          companyId,
+          batchId,
+          datasetVersion: resolvedDatasetVersion,
+          reportType: task.type,
+          snapshotPayload: task.payload,
+          fiscalYear: year,
+        }),
+      ),
+    );
 
-    snapshotCount += 7;
+    snapshotCount += snapshotTasks.length;
   }
 
   return {

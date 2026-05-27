@@ -1,117 +1,127 @@
 import { Fragment, useState } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
-import { formatCurrency } from "../../../lib/utils";
+import {
+  ChevronDown,
+  ChevronRight,
+  FileText,
+} from "lucide-react";
+import { cn } from "../../../lib/utils";
 
-function formatSourceReference(tx = {}) {
-  const fileName = String(tx.sourceFile || "").trim();
-  const rowNumber = Number.isInteger(Number(tx.rowNumber)) ? Number(tx.rowNumber) : null;
-  if (fileName && rowNumber) return `${fileName} (Row ${rowNumber})`;
-  if (fileName) return fileName;
-  if (rowNumber) return `Row ${rowNumber}`;
-  return "-";
+function formatCurrency(amount) {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+  }).format(amount || 0);
 }
 
-function AccountRow({ account, years, onToggle, isOpen }) {
+function AccountRow({ account, years, isOpen, onToggle }) {
+  const accountKey = `${account.accountNumber || ""}::${account.accountName || ""}`;
+
   return (
-    <>
+    <Fragment>
       <tr
+        className={cn(
+          "border-b border-border hover:bg-bg-card/50 transition-colors cursor-pointer group",
+          isOpen && "bg-bg-card/30"
+        )}
         onClick={() => onToggle(account.accountNumber, account.accountName)}
-        className="cursor-pointer border-b border-border-light hover:bg-bg-page/40"
       >
-        <td className="px-3 py-2 text-[13px] text-text-primary font-medium">
-          <div className="flex items-center gap-1">
-            {isOpen ? <ChevronDown size={14} className="text-text-muted" /> : <ChevronRight size={14} className="text-text-muted" />}
-            <span>{account.accountName}</span>
+        <td className="px-3 py-2.5">
+          <div className="flex items-center gap-2">
+            {isOpen ? (
+              <ChevronDown size={14} className="text-text-muted group-hover:text-primary transition-colors" />
+            ) : (
+              <ChevronRight size={14} className="text-text-muted group-hover:text-primary transition-colors" />
+            )}
+            <span className="text-[13px] font-medium text-text-primary">
+              {account.accountName || "Unnamed Account"}
+            </span>
           </div>
         </td>
-        <td className="px-3 py-2 text-[12px] text-text-muted">{account.accountNumber || "-"}</td>
-        <td className="px-3 py-2 text-[12px] text-text-muted">{account.subCategory || "-"}</td>
+        <td className="px-3 py-2.5 text-[12px] text-text-muted font-mono">
+          {account.accountNumber || "-"}
+        </td>
+        <td className="px-3 py-2.5 text-[12px] text-text-muted">
+          {account.subcategory || "-"}
+        </td>
         {years.map((year) => (
-          <td key={`${account.accountName}-${year}`} className="px-3 py-2 text-right text-[13px] tabular-nums text-text-secondary">
+          <td key={`val-${year}`} className="px-3 py-2.5 text-right text-[12px] text-text-secondary tabular-nums">
             {formatCurrency(Number(account.yearlyTotals?.[year] || 0))}
           </td>
         ))}
-        <td className={`px-3 py-2 text-right text-[13px] tabular-nums font-semibold ${Number(account.totalNet || 0) < 0 ? "text-status-error" : "text-text-primary"}`}>
-          {formatCurrency(Number(account.totalNet || 0))}
+        <td className={cn(
+          "px-3 py-2.5 text-right text-[13px] font-semibold tabular-nums",
+          Number(account.totalAmount || 0) < 0 ? "text-status-error" : "text-text-primary"
+        )}>
+          {formatCurrency(Number(account.totalAmount || 0))}
         </td>
       </tr>
-      {isOpen ? (
-        <tr className="bg-bg-page/30">
-          <td colSpan={years.length + 4} className="px-4 py-3">
-            <div className="overflow-x-auto rounded-md border border-border bg-white">
+
+      {isOpen && (
+        <tr>
+          <td colSpan={years.length + 4} className="px-0 py-0 bg-bg-page/50">
+            <div className="overflow-x-auto">
               <table className="w-full border-collapse">
                 <thead>
-                  <tr className="border-b border-border bg-bg-page">
-                    <th className="px-2 py-2 text-left text-[11px] text-text-muted">FY</th>
-                    <th className="px-2 py-2 text-left text-[11px] text-text-muted">Date</th>
-                    <th className="px-2 py-2 text-left text-[11px] text-text-muted">Vendor / Payee</th>
-                    <th className="px-2 py-2 text-left text-[11px] text-text-muted">Journal Type</th>
-                    <th className="px-2 py-2 text-left text-[11px] text-text-muted">Reference</th>
-                    <th className="px-2 py-2 text-left text-[11px] text-text-muted">Description</th>
-                    <th className="px-2 py-2 text-left text-[11px] text-text-muted">Department</th>
-                    <th className="px-2 py-2 text-left text-[11px] text-text-muted">Class</th>
-                    <th className="px-2 py-2 text-left text-[11px] text-text-muted">Location</th>
-                    <th className="px-2 py-2 text-right text-[11px] text-text-muted">Debit</th>
-                    <th className="px-2 py-2 text-right text-[11px] text-text-muted">Credit</th>
-                    <th className="px-2 py-2 text-right text-[11px] text-text-muted">Amount</th>
-                    <th className="px-2 py-2 text-left text-[11px] text-text-muted">Source Row</th>
+                  <tr className="border-b border-border text-left text-[10px] text-text-muted uppercase tracking-wider">
+                    <th className="px-3 py-2 font-semibold pl-12">Date</th>
+                    <th className="px-3 py-2 font-semibold">Vendor / Payee</th>
+                    <th className="px-3 py-2 font-semibold">Description</th>
+                    <th className="px-3 py-2 font-semibold text-right">Debit</th>
+                    <th className="px-3 py-2 font-semibold text-right">Credit</th>
+                    <th className="px-3 py-2 font-semibold text-right">Amount</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {(account.transactions || []).map((tx, index) => {
-                    const txKey = tx.id || tx.transactionId || `${account.accountNumber || account.accountName}-tx-${index}`;
-                    return (
-                      <tr key={txKey} className="border-b border-border-light">
-                        <td className="px-2 py-1.5 text-[12px] text-text-secondary">{tx.fiscalYear || "-"}</td>
-                        <td className="px-2 py-1.5 text-[12px] text-text-secondary">{tx.transactionDate || tx.date || "-"}</td>
-                        <td className="px-2 py-1.5 text-[12px] text-text-secondary">{tx.vendorName || "-"}</td>
-                        <td className="px-2 py-1.5 text-[12px] text-text-secondary">{tx.journalType || tx.transactionType || "-"}</td>
-                        <td className="px-2 py-1.5 text-[12px] text-text-secondary">{tx.reference || "-"}</td>
-                        <td className="px-2 py-1.5 text-[12px] text-text-secondary">{tx.description || tx.memo || "-"}</td>
-                        <td className="px-2 py-1.5 text-[12px] text-text-secondary">{tx.department || "-"}</td>
-                        <td className="px-2 py-1.5 text-[12px] text-text-secondary">{tx.class || "-"}</td>
-                        <td className="px-2 py-1.5 text-[12px] text-text-secondary">{tx.location || "-"}</td>
-                        <td className="px-2 py-1.5 text-right text-[12px] tabular-nums text-text-secondary">
-                          {formatCurrency(Number(tx.debit || 0))}
-                        </td>
-                        <td className="px-2 py-1.5 text-right text-[12px] tabular-nums text-text-secondary">
-                          {formatCurrency(Number(tx.credit || 0))}
-                        </td>
-                        <td className={`px-2 py-1.5 text-right text-[12px] tabular-nums ${Number(tx.signedAmount || tx.amount || 0) < 0 ? "text-status-error" : "text-text-secondary"}`}>
-                          {formatCurrency(Number(tx.signedAmount || tx.amount || 0))}
-                        </td>
-                        <td className="px-2 py-1.5 text-[12px] text-text-secondary">{formatSourceReference(tx)}</td>
-                      </tr>
-                    );
-                  })}
-                  {!(account.transactions || []).length ? (
-                    <tr>
-                      <td colSpan={13} className="px-2 py-4 text-center text-[12px] text-text-muted italic">
-                        No transactions available.
+                  {(account.transactions || []).map((tx, idx) => (
+                    <tr key={tx.id || idx} className="border-b border-border/50 hover:bg-bg-card/50 transition-colors">
+                      <td className="px-3 py-2 text-[12px] text-text-secondary pl-12">
+                        {tx.date || tx.transactionDate || "-"}
+                      </td>
+                      <td className="px-3 py-2 text-[12px] text-text-primary font-medium">
+                        {tx.vendorName || "-"}
+                      </td>
+                      <td className="px-3 py-2 text-[12px] text-text-muted max-w-[300px] truncate" title={tx.description}>
+                        {tx.description || "-"}
+                      </td>
+                      <td className="px-3 py-2 text-[12px] text-text-secondary text-right">
+                        {tx.debit ? formatCurrency(tx.debit) : ""}
+                      </td>
+                      <td className="px-3 py-2 text-[12px] text-text-secondary text-right">
+                        {tx.credit ? formatCurrency(tx.credit) : ""}
+                      </td>
+                      <td className={cn(
+                        "px-3 py-2 text-[12px] text-right font-medium",
+                        Number(tx.amount || 0) < 0 ? "text-status-error" : "text-text-primary"
+                      )}>
+                        {formatCurrency(Number(tx.amount || 0))}
                       </td>
                     </tr>
-                  ) : null}
+                  ))}
+                  {(!account.transactions || account.transactions.length === 0) && (
+                    <tr>
+                      <td colSpan={6} className="px-3 py-4 text-center text-text-muted italic text-[12px]">
+                        No transactions found for this account.
+                      </td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>
           </td>
         </tr>
-      ) : null}
-    </>
+      )}
+    </Fragment>
   );
 }
 
 export default function ManualProfitLossDetail({
   data,
   title = "Profit & Loss Detail",
-  subtitle = "",
+  subtitle,
   entityName = "Company",
 }) {
   const years = Array.isArray(data?.years) ? data.years : [];
   const categories = Array.isArray(data?.categories) ? data.categories : [];
-  const monthlyBreakdown = Array.isArray(data?.monthlyBreakdown)
-    ? data.monthlyBreakdown
-    : [];
 
   const [openAccounts, setOpenAccounts] = useState(() => new Set());
 
@@ -134,110 +144,84 @@ export default function ManualProfitLossDetail({
             {entityName}
           </h1>
           <h2 className="text-[18px] font-medium text-text-secondary mb-4">{title}</h2>
-          {subtitle ? (
+          {subtitle && (
             <div className="flex items-center gap-3 text-[12px] text-text-muted bg-bg-page px-4 py-1.5 rounded-full border border-border">
               <span>{subtitle}</span>
             </div>
-          ) : null}
+          )}
         </div>
 
         <div className="overflow-x-auto rounded-lg border border-border">
           <table className="w-full border-collapse">
             <thead>
               <tr className="bg-bg-page border-b border-border">
-                <th className="px-3 py-2 text-left text-[12px] font-medium text-text-muted">Account</th>
-                <th className="px-3 py-2 text-left text-[12px] font-medium text-text-muted">Account #</th>
-                <th className="px-3 py-2 text-left text-[12px] font-medium text-text-muted">Subcategory</th>
+                <th className="px-3 py-3 text-left text-[12px] font-medium text-text-muted uppercase tracking-wider">
+                  Account
+                </th>
+                <th className="px-3 py-3 text-left text-[12px] font-medium text-text-muted uppercase tracking-wider">Account #</th>
+                <th className="px-3 py-3 text-left text-[12px] font-medium text-text-muted uppercase tracking-wider">Subcategory</th>
                 {years.map((year) => (
-                  <th key={`year-${year}`} className="px-3 py-2 text-right text-[12px] font-medium text-text-muted">
+                  <th key={`year-${year}`} className="px-3 py-3 text-right text-[12px] font-medium text-text-muted uppercase tracking-wider">
                     FY {year}
                   </th>
                 ))}
-                <th className="px-3 py-2 text-right text-[12px] font-semibold text-text-primary">
+                <th className="px-3 py-3 text-right text-[12px] font-semibold text-text-primary uppercase tracking-wider">
                   Total
                 </th>
               </tr>
             </thead>
             <tbody>
               {categories.map((category) => {
-                const categoryTotal = Number(
+                const sectionKey = category.category;
+                const sectionTotal = Number(
                   category.total ??
+                  category.totalAmount ??
                   years.reduce((sum, year) => sum + Number(category.totalsByYear?.[year] || 0), 0),
                 );
+
                 return (
-                  <Fragment key={`cat-${category.category}`}>
-                  <tr className="bg-bg-page/50 border-b border-border">
-                    <td className="px-3 py-2 text-[13px] font-semibold text-text-primary" colSpan={3}>
-                      {category.category}
-                    </td>
-                    {years.map((year) => (
-                      <td key={`cat-${category.category}-${year}`} className="px-3 py-2 text-right text-[13px] font-semibold text-text-secondary tabular-nums">
-                        {formatCurrency(Number(category.totalsByYear?.[year] || 0))}
+                  <Fragment key={`sec-${sectionKey}`}>
+                    <tr className="bg-bg-page/50 border-b border-border">
+                      <td className="px-3 py-3 text-[14px] font-bold text-primary italic" colSpan={3}>
+                        {sectionKey}
                       </td>
-                    ))}
-                    <td className={`px-3 py-2 text-right text-[13px] font-semibold tabular-nums ${categoryTotal < 0 ? "text-status-error" : "text-text-primary"}`}>
-                      {formatCurrency(categoryTotal)}
-                    </td>
-                  </tr>
-                  {(category.accounts || []).map((account) => {
-                    const key = `${account.accountNumber || ""}::${account.accountName || ""}`;
-                    return (
+                      {years.map((year) => (
+                        <td key={`sec-${sectionKey}-${year}`} className="px-3 py-3 text-right text-[13px] font-bold text-text-secondary tabular-nums">
+                          {formatCurrency(Number(category.totalsByYear?.[year] || 0))}
+                        </td>
+                      ))}
+                      <td className={cn(
+                        "px-3 py-3 text-right text-[13px] font-bold tabular-nums",
+                        sectionTotal < 0 ? "text-status-error" : "text-text-primary"
+                      )}>
+                        {formatCurrency(sectionTotal)}
+                      </td>
+                    </tr>
+                    {(category.accounts || []).map((account) => (
                       <AccountRow
-                        key={key}
+                        key={`${account.accountNumber || ""}::${account.accountName || ""}`}
                         account={account}
                         years={years}
-                        isOpen={openAccounts.has(key)}
+                        isOpen={openAccounts.has(`${account.accountNumber || ""}::${account.accountName || ""}`)}
                         onToggle={toggleAccount}
                       />
-                    );
-                  })}
-                </Fragment>
+                    ))}
+                  </Fragment>
                 );
               })}
-              {!categories.length ? (
+              {categories.length === 0 && (
                 <tr>
-                  <td colSpan={Math.max(5, years.length + 4)} className="px-3 py-16 text-center text-text-muted italic">
-                    No staged detailed Profit & Loss data found for the selected filters.
+                  <td colSpan={years.length + 4} className="px-3 py-20 text-center text-text-muted italic">
+                    <div className="flex flex-col items-center gap-2">
+                      <FileText size={40} className="text-border mb-2" />
+                      <span>No detailed report data found for the selected filters.</span>
+                    </div>
                   </td>
                 </tr>
-              ) : null}
+              )}
             </tbody>
           </table>
         </div>
-
-        {monthlyBreakdown.length ? (
-          <div className="mt-8">
-            <h3 className="text-[14px] font-semibold text-text-primary mb-2">Monthly Totals</h3>
-            <div className="overflow-x-auto rounded-lg border border-border">
-              <table className="w-full border-collapse">
-                <thead>
-                  <tr className="bg-bg-page border-b border-border">
-                    <th className="px-3 py-2 text-left text-[12px] text-text-muted">Month</th>
-                    <th className="px-3 py-2 text-right text-[12px] text-text-muted">Revenue</th>
-                    <th className="px-3 py-2 text-right text-[12px] text-text-muted">COGS</th>
-                    <th className="px-3 py-2 text-right text-[12px] text-text-muted">Operating Expenses</th>
-                    <th className="px-3 py-2 text-right text-[12px] text-text-muted">Other Expenses</th>
-                    <th className="px-3 py-2 text-right text-[12px] text-text-muted">Net Profit</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {monthlyBreakdown.map((row) => (
-                    <tr key={row.month} className="border-b border-border-light">
-                      <td className="px-3 py-2 text-[12px] text-text-primary">{row.month}</td>
-                      <td className="px-3 py-2 text-right text-[12px] text-text-secondary tabular-nums">{formatCurrency(Number(row.Revenue || 0))}</td>
-                      <td className="px-3 py-2 text-right text-[12px] text-text-secondary tabular-nums">{formatCurrency(Number(row.COGS || 0))}</td>
-                      <td className="px-3 py-2 text-right text-[12px] text-text-secondary tabular-nums">{formatCurrency(Number(row["Operating Expenses"] || 0))}</td>
-                      <td className="px-3 py-2 text-right text-[12px] text-text-secondary tabular-nums">{formatCurrency(Number(row["Other Expenses"] || 0))}</td>
-                      <td className={`px-3 py-2 text-right text-[12px] tabular-nums ${Number(row["Net Profit"] || 0) < 0 ? "text-status-error" : "text-text-secondary"}`}>
-                        {formatCurrency(Number(row["Net Profit"] || 0))}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        ) : null}
       </div>
     </div>
   );
