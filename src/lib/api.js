@@ -905,6 +905,12 @@ export function syncQMSUploadSource(options = {}) {
   });
 }
 
+export function getQMSSyncProgress(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-report-uploads/sync-progress${query}`, options);
+}
+
 export function parseQMSDocuments({ clientId: clientIdOption, documents = [], clearFirst = false } = {}) {
   const clientId = clientIdOption ?? resolveClientIdFromLocation();
   const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
