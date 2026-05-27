@@ -133,7 +133,7 @@ export default function Companies() {
     }
     console.log('Client clicked:', company.id);
     setSelectedClient({ id: company.id, name: company.name });
-    navigate(`/broker/client/${company.id}/datahub-dashboard`, { state: { company } });
+    navigate(`/broker/client/${company.id}/connections`, { state: { company } });
   };
 
   const filtered = useMemo(() => {

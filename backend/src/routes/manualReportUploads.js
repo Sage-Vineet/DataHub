@@ -14,6 +14,7 @@ const {
   syncQMSUploadSource,
   parseAndSaveQMSDocuments,
   getSyncProgress,
+  getManualUploadProgress,
   extractAndCacheReportAsOfDate,
   extractTaxDataFromBuffer,
   clearTaxExtractCache,
@@ -165,6 +166,20 @@ router.post("/manual-report-uploads/sync-qms-source", async (req, res) => {
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
     const result = await syncQMSUploadSource(clientId);
     return res.json({ success: true, ...result });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+router.get("/manual-upload/sync-progress", async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+    const progress = getManualUploadProgress(clientId);
+    if (!progress) {
+      return res.json({ success: true, active: false, totalFiles: 0, processedFiles: 0, currentFile: "", currentStep: "idle", percentage: 0 });
+    }
+    return res.json({ success: true, active: true, ...progress });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message });
   }
