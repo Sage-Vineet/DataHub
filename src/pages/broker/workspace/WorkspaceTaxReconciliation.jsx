@@ -442,8 +442,9 @@ export default function WorkspaceTaxReconciliation() {
 
         await Promise.all(
           selectedYears.map(async (year) => {
+            const forceParam = forceRefresh ? "&force=1" : "";
             const plUrl = `${API_BASE_URL}/quickbooks-pl?start_date=${year}-01-01&end_date=${year}-12-31&accounting_method=${accountingMethod}&clientId=${clientId || ""}`;
-            const taxUrl = `${API_BASE_URL}/tax-data?start_date=${year}-01-01&clientId=${clientId || ""}`;
+            const taxUrl = `${API_BASE_URL}/tax-data?start_date=${year}-01-01&clientId=${clientId || ""}${forceParam}`;
 
             const headers = getHeaders();
 

@@ -411,7 +411,7 @@ function WorkspaceTopbar({ company, onMenuClick }) {
                     key={item.id}
                     onClick={() => {
                       setShowSwitch(false);
-                      navigate(`/broker/client/${item.id}/datahub-dashboard`, {
+                      navigate(`/broker/client/${item.id}/connections`, {
                         state: { company: item },
                       });
                     }}

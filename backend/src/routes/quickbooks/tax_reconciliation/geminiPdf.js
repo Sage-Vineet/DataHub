@@ -4,6 +4,11 @@ const path = require("path");
 const axios = require("axios");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const tokenManager = require("../../../tokenManager");
+const { supabase } = require("../../../db");
+const {
+  extractTaxDataFromBuffer,
+  buildTaxReturnResponseData,
+} = require("../../../services/manualReportUploadService");
 
 const router = express.Router();
 
@@ -437,7 +442,140 @@ router.get("/quickbooks-pl", async (req, res) => {
 });
 
 /* ===========================
-   ENDPOINT 2 — TAX DATA ONLY (Slow — Gemini)
+   DATAROOM TAX HELPERS
+=========================== */
+
+function normalizeUploadBinary(data) {
+  if (!data) return Buffer.alloc(0);
+  if (Buffer.isBuffer(data)) return data;
+  if (data instanceof Uint8Array) return Buffer.from(data);
+  if (Array.isArray(data)) return Buffer.from(data);
+  if (typeof data === "object" && data.type === "Buffer" && Array.isArray(data.data)) {
+    return Buffer.from(data.data);
+  }
+  if (typeof data === "string") {
+    const v = data.trim();
+    if (/^\\x[0-9a-f]+$/i.test(v)) return Buffer.from(v.slice(2), "hex");
+    if (/^0x[0-9a-f]+$/i.test(v)) return Buffer.from(v.slice(2), "hex");
+    return Buffer.from(v, "base64");
+  }
+  return Buffer.alloc(0);
+}
+
+// Find the DataRoom "Tax" folder for a company (top-level, not inside Manual Upload Source)
+async function findDataRoomTaxFolder(companyId) {
+  const { data: candidates } = await supabase
+    .from("folders")
+    .select("id, name, parent_id")
+    .eq("company_id", companyId)
+    .ilike("name", "tax");
+
+  if (!candidates?.length) return null;
+
+  // Prefer exact "Tax" name; exclude "Tax Return", "Tax Reconciliation"
+  return (candidates || []).find((f) => f.name.toLowerCase().trim() === "tax") || null;
+}
+
+// Load QB tax cache from qb_synced_reports
+async function loadQBTaxCache(companyId) {
+  const { data } = await supabase
+    .from("qb_synced_reports")
+    .select("id, data, updated_at")
+    .eq("company_id", companyId)
+    .eq("report_type", "tax_return")
+    .eq("source", "quickbooks")
+    .maybeSingle();
+  return data || null;
+}
+
+// Save QB tax cache to qb_synced_reports
+async function saveQBTaxCache(companyId, taxYears) {
+  const now = new Date().toISOString();
+  const payload = {
+    company_id: companyId,
+    report_type: "tax_return",
+    source: "quickbooks",
+    report_params: { source: "dataroom_tax" },
+    data: { tax_return: { taxYears, syncedAt: now } },
+    status: "synced",
+    last_synced_at: now,
+    updated_at: now,
+  };
+
+  const existing = await loadQBTaxCache(companyId);
+  if (existing?.id) {
+    await supabase.from("qb_synced_reports").update(payload).eq("id", existing.id);
+  } else {
+    await supabase.from("qb_synced_reports").insert(payload);
+  }
+}
+
+// Extract tax data from an Excel buffer by converting to text then calling Gemini
+async function extractTaxFromExcelBuffer(buffer, fileName, cacheKey) {
+  if (_taxDataCache.has(`excel_${cacheKey}`)) return _taxDataCache.get(`excel_${cacheKey}`);
+
+  let xlsx;
+  try { xlsx = require("xlsx"); } catch { throw new Error("xlsx package not available for Excel tax extraction"); }
+
+  const workbook = xlsx.read(buffer, { type: "buffer" });
+  const lines = [];
+  for (const sheetName of workbook.SheetNames) {
+    lines.push(`=== Sheet: ${sheetName} ===`);
+    const sheet = workbook.Sheets[sheetName];
+    const csv = xlsx.utils.sheet_to_csv(sheet, { blankrows: false });
+    lines.push(csv);
+  }
+  const textContent = lines.join("\n");
+
+  const excelPrompt = `You are a financial tax parser reading a US corporate tax return in spreadsheet format.
+
+The following is the text content extracted from the Excel/spreadsheet file: "${fileName}"
+
+${textContent.slice(0, 12000)}
+
+Extract the following values. Return ONLY a raw JSON object — no markdown, no explanation.
+All amounts must be plain integers (no commas, no $). Use 0 if not present. Use null for year if not found.
+
+{
+  "year": <4-digit tax year>,
+  "totalRevenue": <gross receipts / total revenue>,
+  "totalCostOfGoodsSold": <cost of goods sold>,
+  "grossProfit": <gross profit>,
+  "officerWages": <officer compensation / officer wages>,
+  "depreciation": <depreciation expense>,
+  "amortization": <amortization expense>,
+  "interestExpense": <interest expense>,
+  "allOtherExpenses": <other deductions / all other expenses>,
+  "netIncome": <net income / ordinary business income>,
+  "reconcilingItems": []
+}`;
+
+  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+  let lastError = null;
+  for (const modelName of GEMINI_MODELS) {
+    try {
+      const model = genAI.getGenerativeModel({ model: modelName });
+      const result = await model.generateContent([{ text: excelPrompt }]);
+      let text = result.response.text().trim()
+        .replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+      const parsed = JSON.parse(text);
+      ["year","totalRevenue","totalCostOfGoodsSold","grossProfit","officerWages",
+       "depreciation","amortization","interestExpense","allOtherExpenses","netIncome"]
+        .forEach((f) => { parsed[f] = Number(parsed[f]) || 0; });
+      if (!Array.isArray(parsed.reconcilingItems)) parsed.reconcilingItems = [];
+      _taxDataCache.set(`excel_${cacheKey}`, parsed);
+      return parsed;
+    } catch (err) {
+      lastError = err;
+      const msg = String(err.message || err);
+      if (msg.includes("404") || msg.toLowerCase().includes("not found")) break;
+    }
+  }
+  throw new Error(`Excel tax extraction failed: ${lastError?.message || "unknown"}`);
+}
+
+/* ===========================
+   ENDPOINT 2 — TAX DATA (QuickBooks Online + DataRoom)
    GET /tax-data
 =========================== */
 router.get("/tax-data", async (req, res) => {
@@ -445,96 +583,169 @@ router.get("/tax-data", async (req, res) => {
     const clientId = req.clientId || req.query.clientId || req.headers["x-client-id"];
     const startDate = req.query.start_date || "2023-01-01";
     const requestedYear = parseInt(startDate.split("-")[0], 10);
-    const cacheKey = `${clientId}_${requestedYear}`;
+    const forceRefresh = req.query.force === "1" || req.query.force === "true";
 
-    let tax = null;
-    let warning = null;
+    // Source isolation: only serve QB Online; all other sources get empty data
+    const requestedSource = String(req.query.source || "").trim().toLowerCase();
+    if (requestedSource && requestedSource !== "quickbooks_online" && requestedSource !== "quickbooks") {
+      return res.json({ success: true, year: requestedYear, data: [] });
+    }
 
-    // 1. Memory cache hit
-    if (_taxDataCache.has(cacheKey)) {
-      tax = _taxDataCache.get(cacheKey);
-    } else {
-      // 2. Extract via Gemini
-      const pdfPath = findPdfForYear(requestedYear);
-      if (!pdfPath) {
+    // ── Dev/test fallback: no clientId → read from local filesystem ──────────
+    if (!clientId) {
+      const cacheKey = `local_${requestedYear}`;
+      let tax = _taxDataCache.has(cacheKey) ? _taxDataCache.get(cacheKey) : null;
+      if (!tax) {
+        const pdfPath = findPdfForYear(requestedYear);
+        if (!pdfPath) return res.json({ success: true, year: requestedYear, data: [], warning: "No tax return PDF found for this year." });
+        const extracted = await extractTaxFromPDF(pdfPath);
+        if (extracted) { _taxDataCache.set(`local_${extracted.year}`, extracted); tax = Number(extracted.year) === requestedYear ? extracted : null; }
+      }
+      if (!tax) return res.json({ success: true, year: requestedYear, data: [], warning: "No tax data found" });
+      return res.json({ success: true, year: Number(tax.year), data: buildTaxReturnResponseData(tax) });
+    }
+
+    // ── Production path: read from DataRoom Tax folder ────────────────────────
+
+    const memKey = `qb_${clientId}_${requestedYear}`;
+    let allYears = null;
+
+    // 1. Memory cache
+    if (!forceRefresh && _taxDataCache.has(`qb_allYears_${clientId}`)) {
+      allYears = _taxDataCache.get(`qb_allYears_${clientId}`);
+    }
+
+    // 2. DB cache
+    if (!allYears) {
+      if (forceRefresh) {
+        const existing = await loadQBTaxCache(clientId);
+        if (existing?.id) {
+          await supabase.from("qb_synced_reports").delete()
+            .eq("company_id", clientId).eq("report_type", "tax_return").eq("source", "quickbooks");
+        }
+        _taxDataCache.delete(`qb_allYears_${clientId}`);
+      } else {
+        const cached = await loadQBTaxCache(clientId);
+        if (cached?.data?.tax_return?.taxYears && Object.keys(cached.data.tax_return.taxYears).length > 0) {
+          allYears = cached.data.tax_return.taxYears;
+          _taxDataCache.set(`qb_allYears_${clientId}`, allYears);
+          console.log(`[QB TaxData] DB cache hit: ${Object.keys(allYears).length} year(s)`);
+        }
+      }
+    }
+
+    // 3. Extract from DataRoom if no cache
+    if (!allYears) {
+      const taxFolder = await findDataRoomTaxFolder(clientId);
+      if (!taxFolder) {
         return res.json({ success: true, year: requestedYear, data: [], warning: "No tax return PDF found for this year." });
       }
-      try {
-        const extracted = await extractTaxFromPDF(pdfPath);
-        if (extracted) {
-          // Cache under the year the PDF actually covers
-          _taxDataCache.set(`${clientId}_${extracted.year}`, extracted);
-          if (Number(extracted.year) === requestedYear) {
-            tax = extracted;
-          } else {
-            warning = `PDF covers tax year ${extracted.year}, not ${requestedYear}.`;
+
+      const { data: documents } = await supabase
+        .from("documents")
+        .select("id, name, upload_id, file_url")
+        .eq("folder_id", taxFolder.id)
+        .order("name", { ascending: true });
+
+      if (!(documents || []).length) {
+        return res.json({ success: true, year: requestedYear, data: [], warning: "No tax return PDF found for this year." });
+      }
+
+      console.log(`[QB TaxData] Extracting ${documents.length} file(s) from DataRoom Tax folder`);
+      allYears = {};
+      const warnings = [];
+
+      const settlements = await Promise.allSettled(
+        documents.map(async (doc) => {
+          const fileName = String(doc.name || "");
+          let uploadId = doc.upload_id || null;
+          let uploadData = null;
+
+          if (uploadId) {
+            const { data: up } = await supabase.from("uploads")
+              .select("id, data, file_name, content_type").eq("id", uploadId).maybeSingle();
+            if (up?.data) uploadData = up;
           }
+          if (!uploadData && doc.file_url) {
+            const m = String(doc.file_url).match(/\/uploads\/([0-9a-f-]{36})\/content/i);
+            if (m) {
+              uploadId = m[1];
+              const { data: up } = await supabase.from("uploads")
+                .select("id, data, file_name, content_type").eq("id", uploadId).maybeSingle();
+              if (up?.data) uploadData = up;
+            }
+          }
+
+          if (!uploadData?.data) { console.warn(`[QB TaxData] No binary for "${fileName}"`); return null; }
+
+          const buffer = normalizeUploadBinary(uploadData.data);
+          if (!buffer?.length) { console.warn(`[QB TaxData] Empty buffer for "${fileName}"`); return null; }
+
+          const lcName = fileName.toLowerCase();
+          const ct = String(uploadData.content_type || "").toLowerCase();
+          const isExcel = /\.(xlsx|xls|csv)$/.test(lcName);
+          const isPdf = lcName.endsWith(".pdf") || ct.includes("pdf");
+
+          const cacheKey = `qb_tax_${clientId}_${uploadId || doc.id}`;
+
+          let extracted;
+          if (isPdf) {
+            console.log(`[QB TaxData] PDF → Gemini: "${fileName}"`);
+            extracted = await extractTaxDataFromBuffer(buffer, cacheKey);
+          } else if (isExcel) {
+            console.log(`[QB TaxData] Excel → Gemini text: "${fileName}"`);
+            extracted = await extractTaxFromExcelBuffer(buffer, fileName, cacheKey);
+          } else {
+            console.log(`[QB TaxData] Skipping unsupported file: "${fileName}"`);
+            return null;
+          }
+
+          return { extracted, fileName, documentId: doc.id };
+        })
+      );
+
+      for (const s of settlements) {
+        if (s.status === "fulfilled" && s.value?.extracted?.year) {
+          const { extracted, fileName, documentId } = s.value;
+          const yr = Number(extracted.year);
+          allYears[yr] = {
+            year: yr,
+            fileName,
+            documentId,
+            data: buildTaxReturnResponseData(extracted),
+          };
+          console.log(`[QB TaxData] year=${yr} from "${fileName}"`);
+        } else if (s.status === "rejected") {
+          const msg = s.reason?.message || String(s.reason);
+          warnings.push(msg);
+          console.warn(`[QB TaxData] extraction failed: ${msg}`);
         }
-      } catch (err) {
-        return res.status(500).json({ success: false, error: err.message });
+      }
+
+      if (Object.keys(allYears).length > 0) {
+        await saveQBTaxCache(clientId, allYears).catch((e) => console.warn("[QB TaxData] DB cache save failed:", e.message));
+        _taxDataCache.set(`qb_allYears_${clientId}`, allYears);
+      }
+
+      if (Object.keys(allYears).length === 0) {
+        return res.json({ success: true, year: requestedYear, data: [], warning: warnings[0] || "No tax return PDF found for this year." });
       }
     }
 
-    if (!tax) {
-      return res.json({ success: true, year: requestedYear, data: [], warning: warning || "No tax data found" });
-    }
-
-    // ── Build the response ──────────────────────────────────────────────
-
-    // All Other Expenses formula:
-    //   Gross Profit − Officer Wages − Depreciation − Amortization
-    //     − Interest Expense − Net Income
-    const computedAllOtherExpenses =
-      Number(tax.grossProfit || 0) -
-      Number(tax.officerWages || 0) -
-      Number(tax.depreciation || 0) -
-      Number(tax.amortization || 0) -
-      Number(tax.interestExpense || 0) -
-      Number(tax.netIncome || 0);
-
-    // Fixed Page 1 rows (always present, use 0 when missing)
-    const page1Map = {
-      "Total Revenue": tax.totalRevenue,
-      "Total Cost of Goods Sold": tax.totalCostOfGoodsSold,
-      "Gross Profit": tax.grossProfit,
-      "Officer Wages": tax.officerWages,
-      "Depreciation Expense": tax.depreciation,
-      "Amortization Expense": tax.amortization,
-      "Total Interest Expense": tax.interestExpense,
-      // Formula: Gross Profit − Officer Wages − Depreciation − Amortization
-      //          − Interest Expense − Interest Income (Sch K) − Net Income
-      "All Other Expenses": computedAllOtherExpenses,
-      // "All Other Income":         0,
-      "Net Income": tax.netIncome,
-    };
-
-    const data = Object.entries(page1Map).map(([label, value]) => ({
-      label,
-      taxReturn: Number(value || 0),
-      isReconcilingItem: false,
-    }));
-
-    // Dynamic Schedule K rows — ALL non-zero items extracted from page 3
-    if (Array.isArray(tax.reconcilingItems)) {
-      tax.reconcilingItems.forEach((item) => {
-        if (item.label && item.value !== 0) {
-          data.push({
-            label: item.label,
-            taxReturn: Number(item.value || 0),
-            isReconcilingItem: true,
-          });
-        }
-      });
+    // Return data for the requested year
+    const yearEntry = allYears[requestedYear];
+    if (!yearEntry) {
+      return res.json({ success: true, year: requestedYear, data: [], warning: `No tax return found for ${requestedYear}. Available years: ${Object.keys(allYears).join(", ")}.` });
     }
 
     return res.json({
       success: true,
-      year: Number(tax.year),
-      data,
-      warning: warning || undefined,
+      year: requestedYear,
+      data: yearEntry.data,
     });
+
   } catch (err) {
-    console.error("Tax data error:", err);
+    console.error("[QB TaxData] Error:", err);
     return res.status(500).json({ success: false, error: err.message });
   }
 });
