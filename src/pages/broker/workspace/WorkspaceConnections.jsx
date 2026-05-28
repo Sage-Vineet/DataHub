@@ -275,6 +275,11 @@ export default function WorkspaceConnections() {
   const activeSourceKeyRef = useRef(activeSourceKey);
   activeSourceKeyRef.current = activeSourceKey;
 
+  // Source lock — true at all times except inside executeSourceSwitch while a
+  // user-confirmed switch is in flight. Any code path that is not executeSourceSwitch
+  // must NOT change activeSource while this is true.
+  const sourceLocked = useRef(true);
+
   const quickbooksConnected = Boolean(
     sourceState.quickbooksConnected || quickbooksRecord?.isConnected,
   );
@@ -306,41 +311,59 @@ export default function WorkspaceConnections() {
   }, [clientId, setSearchParams]);
 
   const refreshSourceState = useCallback(async () => {
-    if (!clientId) {
-      setSourceState(INITIAL_SOURCE_STATE);
-      return INITIAL_SOURCE_STATE;
-    }
+    if (!clientId) return null;
 
     setIsLoadingSources(true);
     try {
       const payload = await getReportSources({ clientId });
-      const nextState = {
-        selectedSource: payload?.selectedSource || null,
-        activeSource: payload?.activeSource || null,
-        quickbooksConnected: Boolean(payload?.quickbooksConnected),
-        manualUploadActive: Boolean(payload?.manualUploadActive),
-        lastSourceSwitchAt: payload?.lastSourceSwitchAt || null,
-        sources: Array.isArray(payload?.sources) ? payload.sources : [],
-      };
-      // User's explicit localStorage choice takes priority over backend response —
-      // prevents any API call from reverting a source the user explicitly selected.
       const localSource = getLocalActiveSource(clientId);
+
+      // Metadata that can safely be refreshed from the backend on every call.
+      const metadataUpdate = {
+        sources: Array.isArray(payload?.sources) ? payload.sources : [],
+        quickbooksConnected: Boolean(payload?.quickbooksConnected),
+        lastSourceSwitchAt: payload?.lastSourceSwitchAt || null,
+      };
+
       if (localSource) {
-        nextState.activeSource = localSource;
-        nextState.manualUploadActive =
-          localSource === REPORT_SOURCE_KEYS.MANUAL_GL ||
-          localSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD ||
-          localSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
-      } else if (nextState.activeSource) {
-        // Seed localStorage on first visit so future visits use it.
-        setLocalActiveSource(clientId, normalizeReportSourceKey(nextState.activeSource) || nextState.activeSource);
+        // localStorage is authoritative — update ONLY metadata.
+        // activeSource, selectedSource, and manualUploadActive are NEVER overwritten here.
+        const serverSource = payload?.activeSource || payload?.selectedSource;
+        const serverNormalized = serverSource ? normalizeReportSourceKey(serverSource) : null;
+        if (serverNormalized && serverNormalized !== localSource) {
+          console.log("[SOURCE_CHANGE_BLOCKED]", {
+            attemptedSource: serverNormalized,
+            currentSource: localSource,
+            trigger: "refreshSourceState_backend_override",
+          });
+        }
+        setSourceState((prev) => ({ ...prev, ...metadataUpdate }));
+      } else {
+        // First visit — localStorage is empty. Seed it from the backend and set full state.
+        const serverSource = payload?.activeSource || payload?.selectedSource;
+        const normalized = serverSource
+          ? normalizeReportSourceKey(serverSource) || serverSource
+          : null;
+        if (normalized) setLocalActiveSource(clientId, normalized);
+        setSourceState((prev) => ({
+          ...prev,
+          ...metadataUpdate,
+          selectedSource: payload?.selectedSource || null,
+          activeSource: normalized,
+          manualUploadActive: Boolean(payload?.manualUploadActive),
+        }));
       }
-      setSourceState(nextState);
-      return nextState;
+
+      return payload;
     } catch (error) {
       console.error("[WorkspaceConnections] Failed to load source state:", error);
-      setSourceState(INITIAL_SOURCE_STATE);
-      return INITIAL_SOURCE_STATE;
+      // NEVER reset state on error — preserve the user's active source.
+      console.log("[SOURCE_CHANGE_BLOCKED]", {
+        attemptedSource: null,
+        currentSource: getLocalActiveSource(clientId),
+        trigger: "refreshSourceState_error_reset_blocked",
+      });
+      return null;
     } finally {
       setIsLoadingSources(false);
     }
@@ -418,6 +441,9 @@ export default function WorkspaceConnections() {
     async (targetKey, switchOptions = {}) => {
       if (!clientId || !targetKey) return;
 
+      // Unlock the source lock — this is the ONLY place where activeSource may change.
+      // The lock is re-applied in the finally block regardless of success or failure.
+      sourceLocked.current = false;
       setIsSwitchingSource(true);
       setSwitchingTargetKey(targetKey);
       let switchSucceeded = false;
@@ -473,6 +499,7 @@ export default function WorkspaceConnections() {
           message: error?.message || "Could not switch source. Please try again.",
         });
       } finally {
+        sourceLocked.current = true; // re-lock — source is frozen again
         setIsSwitchingSource(false);
         setSwitchingTargetKey(null);
         setSourceSwitchModal({

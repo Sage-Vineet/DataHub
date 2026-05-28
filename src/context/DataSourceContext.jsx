@@ -83,18 +83,25 @@ export const DataSourceProvider = ({ children }) => {
         // User's explicit localStorage choice persists over backend API response.
         // Only use backend value if user has never explicitly selected a source here.
         const localSource = getLocalSource(clientId);
-        // Server response takes precedence over stale localStorage — ensures a source
-        // switch made on another page (or via handleSourceChange) is always reflected
-        // here without waiting for localStorage to catch up.
-        const normalized = source
-          ? normalizeReportSourceKey(source)
-          : (localSource || stored || REPORT_SOURCE_KEYS.QUICKBOOKS);
+        // localStorage is the authoritative user-confirmed choice and must NEVER be
+        // overridden by the backend. The WORKSPACE_DATASOURCE_UPDATED_EVENT listener
+        // keeps this context in sync whenever the user confirms a switch on the
+        // Connections page — no need for the API response to do it.
+        const serverNormalized = source ? normalizeReportSourceKey(source) : null;
+        const normalized = localSource || serverNormalized || stored || REPORT_SOURCE_KEYS.QUICKBOOKS;
+        if (serverNormalized && localSource && serverNormalized !== localSource) {
+          console.log('[SOURCE_CHANGE_BLOCKED]', {
+            attemptedSource: serverNormalized,
+            currentSource: localSource,
+            trigger: 'DataSourceContext_api_response',
+          });
+        }
         setActiveSource(normalized);
         setQuickbooksConnected(Boolean(data?.quickbooksConnected));
         setSourceRecords(Array.isArray(data?.sources) ? data.sources : []);
         sessionStorage.setItem(sourceStorageKey(clientId), normalized);
-        // Keep localStorage in sync with the authoritative server value.
-        if (normalized) setLocalSource(clientId, normalized);
+        // Only seed localStorage on first visit — never overwrite an existing user selection.
+        if (!localSource && normalized) setLocalSource(clientId, normalized);
       })
       .catch(() => {
         if (clientIdRef.current !== clientId) return;
