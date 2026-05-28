@@ -721,6 +721,9 @@ async function reassignUserRecords(userId, replacementUserId) {
   for (const { name, column } of tables) {
     await supabase.from(name).update({ [column]: replacementUserId }).eq(column, userId);
   }
+
+  // Remove user_companies rows so the FK constraint doesn't block the user DELETE.
+  await supabase.from("user_companies").delete().eq("user_id", userId);
 }
 
 /**

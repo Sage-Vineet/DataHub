@@ -52,6 +52,10 @@ async function request(path) {
     },
   });
 
+  if (response.status === 403) {
+    return null;
+  }
+
   const payload = await response.json().catch(() => null);
   if (!response.ok) {
     throw new Error(

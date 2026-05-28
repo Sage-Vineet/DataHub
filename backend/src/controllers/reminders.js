@@ -31,7 +31,7 @@ function buildReminderStatus(request, nextReminderAt) {
 
 const listReminders = asyncHandler(async (req, res) => {
   if (!permissionService.canAccessCompany(req.user, req.params.id)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "You do not have permission to access this company's reminders." });
   }
 
   const { data: requests, error: requestsError } = await supabase

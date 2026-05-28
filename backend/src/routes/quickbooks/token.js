@@ -177,7 +177,7 @@ router.get("/refresh-token", requireAuth, async (req, res) => {
     return res.status(400).json({ error: "Missing Client ID" });
   }
   if (!canAccessCompany(req.user, clientId)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "You do not have permission to refresh the QuickBooks token for this company." });
   }
 
   await loadQBConfig(clientId);
@@ -315,7 +315,7 @@ router.get("/api/auth/quickbooks", requireAuth, async (req, res) => {
 
   if (clientId) {
     if (!canAccessCompany(req.user, clientId)) {
-      return res.status(403).json({ error: "Forbidden" });
+      return res.status(403).json({ error: "You do not have permission to connect QuickBooks for this company." });
     }
 
     try {
@@ -730,7 +730,7 @@ router.get("/api/auth/status", requireAuth, async (req, res) => {
       });
     }
     if (!canAccessCompany(req.user, clientId)) {
-      return res.status(403).json({ error: "Forbidden" });
+      return res.status(403).json({ error: "You do not have permission to view the QuickBooks connection status for this company." });
     }
 
     await loadQBConfig(clientId);
@@ -839,7 +839,7 @@ router.get("/api/auth/disconnect", requireAuth, async (req, res) => {
   const clientId = getClientId(req);
   if (!clientId) return res.status(400).json({ error: "Missing Client ID" });
   if (!canAccessCompany(req.user, clientId)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "You do not have permission to disconnect QuickBooks for this company." });
   }
 
   console.log(`[QB Disconnect] API called for client: ${clientId}`);

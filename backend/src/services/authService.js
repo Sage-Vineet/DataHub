@@ -144,9 +144,23 @@ async function authenticate(email, password) {
 
   if (isClientUser && rawPassword === CLIENT_STATIC_PASSWORD) {
     // Static-password path: sync company assignment then re-fetch.
-    if (user.company_id) {
-      await syncUserCompanyAssignment(user.id, user.company_id);
-      await ensureDefaultFolders(user.company_id, user.id);
+    // If company_id is missing (orphaned post-migration account), try to recover
+    // it by matching the user's email against companies.contact_email.
+    let resolvedCompanyId = user.company_id;
+    if (!resolvedCompanyId) {
+      const { data: matched } = await supabase
+        .from("companies")
+        .select("id")
+        .ilike("contact_email", normalizedEmail)
+        .maybeSingle();
+      if (matched?.id) {
+        resolvedCompanyId = matched.id;
+        await supabase.from("users").update({ company_id: resolvedCompanyId }).eq("id", user.id);
+      }
+    }
+    if (resolvedCompanyId) {
+      await syncUserCompanyAssignment(user.id, resolvedCompanyId);
+      await ensureDefaultFolders(resolvedCompanyId, user.id);
     }
   } else {
     // Standard credential check for all other users / passwords.
@@ -171,9 +185,23 @@ async function authenticate(email, password) {
 
     // For client/buyer users with a custom password, still sync the company
     // association so user_companies is populated after a DB migration
-    // that left the join table empty.
-    if (isClientUser && user.company_id) {
-      await syncUserCompanyAssignment(user.id, user.company_id);
+    // that left the join table empty. Also recover company_id via email if missing.
+    if (isClientUser) {
+      let resolvedCompanyId = user.company_id;
+      if (!resolvedCompanyId) {
+        const { data: matched } = await supabase
+          .from("companies")
+          .select("id")
+          .ilike("contact_email", normalizedEmail)
+          .maybeSingle();
+        if (matched?.id) {
+          resolvedCompanyId = matched.id;
+          await supabase.from("users").update({ company_id: resolvedCompanyId }).eq("id", user.id);
+        }
+      }
+      if (resolvedCompanyId) {
+        await syncUserCompanyAssignment(user.id, resolvedCompanyId);
+      }
     }
   }
 

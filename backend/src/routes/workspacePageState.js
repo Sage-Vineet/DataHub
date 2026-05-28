@@ -35,7 +35,7 @@ router.get("/workspace-page-state/:pageKey", async (req, res) => {
       });
     }
     if (!canAccessCompany(req.user, clientId)) {
-      return res.status(403).json({ error: "Forbidden" });
+      return res.status(403).json({ error: "You do not have permission to access this workspace." });
     }
 
     const state = await getWorkspacePageState(clientId, scopedPageKey);
@@ -69,7 +69,7 @@ router.put("/workspace-page-state/:pageKey", async (req, res) => {
       });
     }
     if (!canAccessCompany(req.user, clientId)) {
-      return res.status(403).json({ error: "Forbidden" });
+      return res.status(403).json({ error: "You do not have permission to access this workspace." });
     }
 
     const saved = await replaceWorkspacePageState(
@@ -106,7 +106,7 @@ router.delete("/workspace-page-state/:pageKey", async (req, res) => {
       });
     }
     if (!canAccessCompany(req.user, clientId)) {
-      return res.status(403).json({ error: "Forbidden" });
+      return res.status(403).json({ error: "You do not have permission to access this workspace." });
     }
 
     const deleted = await deleteWorkspacePageState(clientId, scopedPageKey);

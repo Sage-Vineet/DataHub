@@ -220,6 +220,11 @@ export default function Companies() {
       return;
     }
 
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) {
+      setFormError('Please enter a valid email address.');
+      return;
+    }
+
     setSubmitting(true);
     setFormError('');
     setSuccess('');

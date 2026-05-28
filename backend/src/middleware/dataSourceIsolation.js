@@ -33,7 +33,7 @@ function enforceDataSource(requiredSourceKey) {
       }
 
       if (req.user && !canAccessCompany(req.user, clientId)) {
-        return res.status(403).json({ error: "Forbidden" });
+        return res.status(403).json({ error: "You do not have permission to access the data source for this company." });
       }
 
       // 2. Validate using the service
