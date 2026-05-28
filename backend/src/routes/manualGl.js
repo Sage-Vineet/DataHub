@@ -31,7 +31,6 @@ const {
   getSnapshotForBatch,
   getSnapshotForDatasetVersion,
   getSnapshotForActiveBatch,
-  listReportingSnapshotDatasetVersions,
   generateReportingSnapshotsForBatch,
 } = require("../services/manualGlReportingSnapshotService");
 const {
@@ -47,6 +46,7 @@ const {
   getUploadJob,
   createUploadJob,
   updateUploadJob,
+  listDatasetVersions,
   activateDatasetVersion,
   rollbackToVersion,
   finalizeUploadLifecycle,
@@ -1169,24 +1169,49 @@ router.get("/manual-gl/validation/balance-sheet", enforceDataSource(REPORT_SOURC
   }
 });
 
-// === Dataset Versions & Upload Jobs (Snapshot Architecture) ===
+// === Dataset Versions & Upload Jobs (Snapshot / Dataset Version API) ===
 
 router.get("/manual-gl/dataset-versions", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
   try {
     const clientId = resolveClientId(req);
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
 
-    const requestedLimit = Math.min(Math.max(Number(req.query.limit || 50) || 50, 1), 200);
-    const versionsFromSnapshots = await listReportingSnapshotDatasetVersions(clientId, requestedLimit);
+    const requestedLimit = Math.min(Math.max(Number(req.query.limit || 200) || 200, 1), 500);
+    const datasetVersions = await listDatasetVersions(clientId, requestedLimit, {
+      sourceType: "manual_gl_upload",
+      statuses: ["finalized", "completed"],
+    });
 
-    // Map to expected API shape: [{ "value": 3, "label": "Version 3" }, ...]
-    const versions = versionsFromSnapshots.map((dataset_version) => ({
-      value: dataset_version,
-      label: `Version ${dataset_version}`,
-      dataset_version,
-      version_number: dataset_version,
-      id: String(dataset_version), // For frontend keys
-    }));
+    const versions = datasetVersions
+      .map((datasetVersion) => {
+        const versionNumber = Number(datasetVersion?.version_number || 0);
+        if (!Number.isInteger(versionNumber) || versionNumber <= 0) {
+          return null;
+        }
+
+        const status = String(datasetVersion?.status || "").toLowerCase();
+        const reportsReady = status === "finalized" || status === "completed";
+
+        return {
+          value: versionNumber,
+          label: `Version ${versionNumber}`,
+          dataset_version: versionNumber,
+          version_number: versionNumber,
+          versionNumber,
+          id: String(versionNumber),
+          datasetVersionId: datasetVersion?.id || null,
+          batchId: datasetVersion?.batch_id || null,
+          status: datasetVersion?.status || null,
+          sourceType: datasetVersion?.source_type || null,
+          fiscalYears: Array.isArray(datasetVersion?.fiscal_years) ? datasetVersion.fiscal_years : [],
+          datasetHash: datasetVersion?.dataset_hash || datasetVersion?.content_hash || null,
+          reportsReady,
+          isActive: Boolean(datasetVersion?.is_active),
+          is_active: Boolean(datasetVersion?.is_active),
+          createdAt: datasetVersion?.created_at || null,
+        };
+      })
+      .filter(Boolean);
 
     console.log(
       `[ManualGL][Versions][API][Response] company=${clientId} count=${versions.length}`,

@@ -33,6 +33,13 @@ function isStagedStatus(value) {
   return STAGED_SESSION_STATUSES.has(normalizeStatus(value));
 }
 
+function buildSessionKey(fiscalYear, dataHash) {
+  const year = toPositiveInteger(fiscalYear, null);
+  const hash = String(dataHash || "").trim().toLowerCase();
+  if (!year || !hash) return "";
+  return `${year}|${hash}`;
+}
+
 async function listActiveUploadSessions(companyId) {
   if (!companyId) return [];
 
@@ -92,6 +99,22 @@ async function replaceActiveUploadSessions({
   }
 
   const now = new Date().toISOString();
+  const requestedPairs = sessions
+    .map((session) => ({
+      fiscalYear: toPositiveInteger(session?.fiscalYear, null),
+      dataHash: String(session?.dataHash || "").trim().toLowerCase(),
+    }))
+    .filter((session) => session.fiscalYear && session.dataHash);
+
+  const existingLookup = await findExistingStagedUploadSessionsByYearHash({
+    companyId,
+    yearHashes: requestedPairs,
+  });
+  const existingSessionMap = new Map(
+    (Array.isArray(existingLookup?.matches) ? existingLookup.matches : [])
+      .map((match) => [buildSessionKey(match?.fiscalYear, match?.dataHash), match?.existingSession || null])
+      .filter(([key, session]) => key && session),
+  );
 
   // Each fiscal-year session is independent — run them in parallel.
   // Within each session the three operations (SELECT → UPDATE → UPSERT) remain
@@ -99,10 +122,21 @@ async function replaceActiveUploadSessions({
   const activateSession = async (session) => {
     const fiscalYear = toPositiveInteger(session?.fiscalYear, null);
     const versionNo = toPositiveInteger(session?.versionNo, null);
-    const dataHash = String(session?.dataHash || "").trim();
+    const dataHash = String(session?.dataHash || "").trim().toLowerCase();
 
     if (!fiscalYear || !versionNo || !dataHash) {
       throw new Error("Upload session activation requires fiscalYear, versionNo, and dataHash.");
+    }
+
+    const sessionKey = buildSessionKey(fiscalYear, dataHash);
+    const existingSession = sessionKey ? existingSessionMap.get(sessionKey) || null : null;
+    if (existingSession?.id) {
+      console.log(
+        `[ManualGL][UploadSession] Reusing existing staged session id=${existingSession.id} ` +
+        `company=${companyId} fiscalYear=${fiscalYear} versionNo=${toPositiveInteger(existingSession.version_no, versionNo) || versionNo} ` +
+        `batchId=${existingSession.staging_batch_id || batchId} dataHash=${dataHash.slice(0, 12)}...`,
+      );
+      return mapUploadSessionRow(existingSession);
     }
 
     const { data: currentActive, error: currentError } = await supabase
@@ -165,6 +199,22 @@ async function replaceActiveUploadSessions({
       .maybeSingle();
 
     if (error) {
+      if (String(error.message || "").toLowerCase().includes("duplicate key value violates unique constraint")) {
+        const { matches } = await findExistingStagedUploadSessionsByYearHash({
+          companyId,
+          yearHashes: [{ fiscalYear, dataHash }],
+        });
+        const fallbackSession = Array.isArray(matches) && matches.length > 0
+          ? matches[0]?.existingSession || null
+          : null;
+        if (fallbackSession?.id) {
+          console.log(
+            `[ManualGL][UploadSession] Reusing duplicate-staged session id=${fallbackSession.id} ` +
+            `company=${companyId} fiscalYear=${fiscalYear} versionNo=${versionNo} dataHash=${dataHash.slice(0, 12)}...`,
+          );
+          return mapUploadSessionRow(fallbackSession);
+        }
+      }
       throw new Error(`Failed to save upload session: ${error.message}`);
     }
 
