@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useParams } from 'react-router-dom';
 import {
@@ -20,14 +20,12 @@ import {
   updateUserRequest,
   updateGroup,
   deleteGroup,
-  uploadFile,
 } from '../../../lib/api';
 
 const PAGE_SIZE = 8;
-const ROLE_ORDER = ['admin', 'broker', 'buyer'];
-const CREATE_ROLE_ORDER = ['buyer'];
+const ROLE_ORDER = ['admin', 'broker', 'client', 'user'];
 const STATUS_ORDER = ['active', 'inactive'];
-const EMPTY_FORM = { name: '', companyId: '', companyIds: [], email: '', phone: '', role: 'buyer', status: 'active', password: '', profileImage: '', groupIds: [] };
+const EMPTY_FORM = { name: '', companyId: '', companyIds: [], email: '', phone: '', role: 'user', status: 'active', password: '', profileImage: '', groupIds: [] };
 
 function initials(name = '') {
   return name
@@ -42,7 +40,12 @@ function initials(name = '') {
 function formatUser(user) {
   if (!user) return null;
   const assignedCompanies = user.assigned_companies || user.assignedCompanies || [];
-  const companyIds = user.company_ids || user.companyIds || assignedCompanies.map((company) => company.id).filter(Boolean) || [];
+  const companyIds = Array.from(new Set([
+    ...(user.company_ids || user.companyIds || []),
+    ...assignedCompanies.map((company) => company.id).filter(Boolean),
+    user.company_id,
+    user.companyId,
+  ].filter(Boolean)));
   const primaryCompany = assignedCompanies.find((company) => String(company.id) === String(user.company_id)) || assignedCompanies[0] || null;
   return {
     id: user.id,
@@ -71,8 +74,8 @@ function roleMeta(role) {
   if (role === 'admin') return { label: 'Admin', bg: 'bg-purple-50', text: 'text-[#742982]', border: 'border-purple-200', Icon: Shield };
   if (role === 'broker') return { label: 'Broker', bg: 'bg-amber-50', text: 'text-[#b45e08]', border: 'border-orange-200', Icon: Briefcase };
   if (role === 'client') return { label: 'Seller', bg: 'bg-blue-50', text: 'text-[#00648F]', border: 'border-blue-200', Icon: Building2 };
-  if (role === 'user') return { label: 'User', bg: 'bg-slate-50', text: 'text-slate-700', border: 'border-slate-200', Icon: ShoppingCart };
-  return { label: 'Buyer', bg: 'bg-blue-50', text: 'text-[#00648F]', border: 'border-blue-200', Icon: ShoppingCart };
+  if (role === 'user') return { label: 'Buyer', bg: 'bg-green-50', text: 'text-[#476E2C]', border: 'border-green-200', Icon: ShoppingCart };
+  return { label: role || 'Unknown', bg: 'bg-gray-50', text: 'text-gray-600', border: 'border-gray-200', Icon: UsersIcon };
 }
 
 function Avatar({ user, size = 9 }) {
@@ -198,10 +201,11 @@ function UserFormModal({ initial, companies, companyLock, groups, onSave, onClos
     if (companyLock?.id) return { ...seed, companyId: seed.companyId || companyLock.id, companyIds: Array.from(new Set([companyLock.id, ...seedCompanyIds])) };
     return { ...seed, companyIds: seedCompanyIds };
   });
-  const [uploading, setUploading] = useState(false);
-  const [uploadError, setUploadError] = useState('');
+  const [companiesSearchQuery, setCompaniesSearchQuery] = useState('');
+  const [companiesDropdownOpen, setCompaniesDropdownOpen] = useState(false);
+  const companiesDropdownRef = useRef(null);
   const setField = (patch) => setForm((current) => ({ ...current, ...patch }));
-  const valid = form.name.trim() && form.email.trim() && form.role && form.status && (isEdit || form.password.trim());
+  const valid = form.name.trim() && form.email.trim() && (isEdit ? form.status : true) && (isEdit || form.password.trim());
 
   useEffect(() => {
     const seed = initial || EMPTY_FORM;
@@ -216,30 +220,51 @@ function UserFormModal({ initial, companies, companyLock, groups, onSave, onClos
     setForm((current) => ({ ...current, companyId: current.companyId || companyLock.id, companyIds: Array.from(new Set([companyLock.id, ...(current.companyIds || [])])) }));
   }, [companyLock?.id]);
 
-  const handleProfilePick = async (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    setUploading(true);
-    setUploadError('');
-    try {
-      const uploaded = await uploadFile(file, {
-        fileName: file.name,
-        prefix: 'profile-images',
-      });
-      setField({ profileImage: uploaded.fileUrl });
-    } catch (err) {
-      setUploadError(err.message || 'Unable to upload profile image.');
-    } finally {
-      setUploading(false);
-      event.target.value = '';
-    }
-  };
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (companiesDropdownRef.current && !companiesDropdownRef.current.contains(event.target)) {
+        setCompaniesDropdownOpen(false);
+      }
+    };
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-white/30 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-2xl z-10 animate-fadeIn max-h-[88vh] overflow-hidden flex flex-col">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const filteredCompanies = companies.filter((company) =>
+    company.name.toLowerCase().includes(companiesSearchQuery.toLowerCase())
+  );
+
+  const selectedCompanies = companies.filter((company) =>
+    (form.companyIds || []).some((id) => String(id) === String(company.id))
+  );
+
+  return createPortal(
+    <div
+      style={{
+        position: 'fixed', inset: 0, zIndex: 99999,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        padding: '2rem 1rem', boxSizing: 'border-box',
+      }}
+    >
+      {/* Backdrop */}
+      <div
+        style={{ position: 'fixed', inset: 0, background: 'rgba(255,255,255,0.35)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)' }}
+        onClick={onClose}
+      />
+      {/* Modal card */}
+      <div
+        style={{
+          position: 'relative', zIndex: 1,
+          width: '100%', maxWidth: 672,
+          maxHeight: 'calc(100vh - 4rem)',
+          display: 'flex', flexDirection: 'column',
+          borderRadius: 16, background: '#ffffff',
+          boxShadow: '0 8px 32px rgba(0,0,0,0.14)',
+          animation: 'modalFadeIn 0.15s ease',
+        }}
+      >
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100" style={{ flexShrink: 0 }}>
           <div>
             <h2 className="text-base font-bold text-[#05164D]">{isEdit ? 'Edit User' : 'Add New User'}</h2>
             <p className="text-xs text-gray-400 mt-0.5">{isEdit ? 'Update user information' : 'Create a new backend user account'}</p>
@@ -260,66 +285,105 @@ function UserFormModal({ initial, companies, companyLock, groups, onSave, onClos
             />
           </div>
 
-          <div className="col-span-2 lg:col-span-1">
-            <label className="block text-xs font-semibold text-gray-500 mb-1.5">Company</label>
-            <select
-              value={form.companyId}
-              onChange={(event) => {
-                const nextCompanyId = event.target.value;
-                setField({
-                  companyId: nextCompanyId,
-                  companyIds: nextCompanyId ? Array.from(new Set([...(form.companyIds || []), nextCompanyId])) : (form.companyIds || []),
-                  groupIds: [],
-                });
-              }}
-              disabled={!!companyLock}
-              className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] disabled:bg-gray-100 disabled:text-gray-500"
-            >
-              {companyLock ? (
-                <option value={companyLock.id}>{companyLock.name}</option>
-              ) : (
-                <>
-                  <option value="">Unassigned</option>
-                  {companies.map((company) => (
-                    <option key={company.id} value={company.id}>{company.name}</option>
-                  ))}
-                </>
-              )}
-            </select>
-          </div>
-
           <div className="col-span-2">
             <label className="block text-xs font-semibold text-gray-500 mb-1.5">Assigned Clients</label>
-            <div className="max-h-28 overflow-y-auto rounded-xl border border-gray-200 bg-gray-50 p-2">
-              {companies.length === 0 ? (
-                <p className="px-2 py-1 text-xs text-gray-400">No companies available</p>
-              ) : companies.map((company) => {
-                const active = (form.companyIds || []).some((id) => String(id) === String(company.id));
-                const locked = companyLock?.id && String(company.id) === String(companyLock.id);
-                return (
-                  <label key={company.id} className={`flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs font-semibold text-[#05164D] ${locked ? 'bg-white' : 'hover:bg-white'}`}>
-                    <input
-                      type="checkbox"
-                      checked={active}
-                      disabled={locked}
-                      onChange={(event) => {
-                        const nextIds = event.target.checked
-                          ? Array.from(new Set([...(form.companyIds || []), company.id]))
-                          : (form.companyIds || []).filter((id) => String(id) !== String(company.id));
-                        setField({
-                          companyIds: nextIds,
-                          companyId: nextIds.some((id) => String(id) === String(form.companyId)) ? form.companyId : (nextIds[0] || ''),
-                        });
-                      }}
-                      className="h-3.5 w-3.5 accent-[#8BC53D]"
-                    />
-                    {company.name}
-                  </label>
-                );
-              })}
+            <div className="relative" ref={companiesDropdownRef}>
+              <button
+                type="button"
+                onClick={() => setCompaniesDropdownOpen((open) => !open)}
+                className="flex w-full items-center justify-between rounded-xl border border-gray-200 bg-white px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]"
+              >
+                <span className="text-left text-[#05164D]">
+                  {selectedCompanies.length === 0 ? 'Select clients...' : `${selectedCompanies.length} client${selectedCompanies.length === 1 ? '' : 's'} selected`}
+                </span>
+                <ChevronDown size={16} className={`text-gray-400 transition-transform ${companiesDropdownOpen ? 'rotate-180' : ''}`} />
+              </button>
+
+              {companiesDropdownOpen && (
+                <div className="absolute top-full left-0 right-0 z-10 mt-1 max-h-64 overflow-y-auto rounded-xl border border-gray-200 bg-white shadow-lg">
+                  <div className="sticky top-0 border-b border-gray-100 bg-white p-3">
+                    <div className="relative">
+                      <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                      <input
+                        type="text"
+                        placeholder="Search clients..."
+                        value={companiesSearchQuery}
+                        onChange={(event) => setCompaniesSearchQuery(event.target.value)}
+                        className="w-full rounded-lg border border-gray-200 py-2 pl-9 pr-3 text-xs focus:outline-none focus:border-[#8BC53D]"
+                        autoFocus
+                      />
+                    </div>
+                  </div>
+
+                  <div className="p-2">
+                    {filteredCompanies.length === 0 ? (
+                      <div className="px-3 py-6 text-center text-xs text-gray-400">No clients found</div>
+                    ) : filteredCompanies.map((company) => {
+                      const active = (form.companyIds || []).some((id) => String(id) === String(company.id));
+                      const locked = companyLock?.id && String(company.id) === String(companyLock.id);
+                      return (
+                        <button
+                          key={company.id}
+                          type="button"
+                          onClick={() => {
+                            if (locked) return;
+                            const nextIds = active
+                              ? (form.companyIds || []).filter((id) => String(id) !== String(company.id))
+                              : Array.from(new Set([...(form.companyIds || []), company.id]));
+                            setField({
+                              companyIds: nextIds,
+                              companyId: nextIds.some((id) => String(id) === String(form.companyId)) ? form.companyId : (nextIds[0] || ''),
+                              groupIds: [],
+                            });
+                          }}
+                          className={`flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left text-sm transition-colors ${active ? 'bg-[#E6F3D3] text-[#8BC53D]' : 'text-gray-700 hover:bg-gray-100'
+                            } ${locked ? 'cursor-not-allowed opacity-70' : ''}`}
+                        >
+                          <div className={`flex h-4 w-4 items-center justify-center rounded border transition-all ${active ? 'border-[#8BC53D] bg-[#8BC53D]' : 'border-gray-300'
+                            }`}>
+                            {active && <Check size={12} className="text-white" />}
+                          </div>
+                          <span className="flex-1">{company.name}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
             <p className="mt-1 text-[11px] text-gray-400">A user can be assigned to multiple clients. The primary company is kept for compatibility.</p>
           </div>
+
+          {selectedCompanies.length > 0 && (
+            <div className="col-span-2">
+              <div className="flex flex-wrap gap-2">
+                {selectedCompanies.map((company) => {
+                  const locked = companyLock?.id && String(company.id) === String(companyLock.id);
+                  return (
+                    <div key={company.id} className="flex items-center gap-2 rounded-full bg-[#E6F3D3] px-3 py-1.5 text-xs font-semibold text-[#476E2C]">
+                      <span>{company.name}</span>
+                      {!locked && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const nextIds = (form.companyIds || []).filter((id) => String(id) !== String(company.id));
+                            setField({
+                              companyIds: nextIds,
+                              companyId: nextIds.some((id) => String(id) === String(form.companyId)) ? form.companyId : (nextIds[0] || ''),
+                              groupIds: [],
+                            });
+                          }}
+                          className="transition-opacity hover:opacity-70"
+                        >
+                          <X size={12} />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           <div className="col-span-2 lg:col-span-1">
             <label className="block text-xs font-semibold text-gray-500 mb-1.5">Phone No.</label>
@@ -343,24 +407,6 @@ function UserFormModal({ initial, companies, companyLock, groups, onSave, onClos
           </div>
 
           <div className="col-span-2">
-            <label className="block text-xs font-semibold text-gray-500 mb-1.5">Profile Image</label>
-            <div className="rounded-xl border border-dashed border-gray-200 p-3 bg-gray-50">
-              <input
-                type="file"
-                accept=".jpg,.jpeg,.png,.webp"
-                onChange={handleProfilePick}
-                disabled={uploading}
-                className="w-full text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-white file:px-3 file:py-2 file:text-xs file:font-semibold file:text-[#05164D] hover:file:bg-gray-100 disabled:opacity-60"
-              />
-              {form.profileImage && (
-                <p className="text-xs text-[#6D6E71] mt-2 truncate">{form.profileImage}</p>
-              )}
-              {uploadError && <p className="text-xs text-red-500 mt-2">{uploadError}</p>}
-              <p className="text-[11px] text-[#A5A5A5] mt-1">Uploads JPG, PNG, WEBP</p>
-            </div>
-          </div>
-
-          <div className="col-span-2">
             <label className="block text-xs font-semibold text-gray-500 mb-1.5">Groups</label>
             <div className="flex flex-wrap gap-2">
               {groups.length === 0 ? (
@@ -378,9 +424,8 @@ function UserFormModal({ initial, companies, companyLock, groups, onSave, onClos
                           : [...form.groupIds, group.id],
                       });
                     }}
-                    className={`px-3 py-1.5 rounded-full border text-xs font-semibold transition-all ${
-                      active ? 'bg-[#05164D] text-white border-[#05164D]' : 'bg-gray-50 text-gray-500 border-gray-200 hover:border-gray-300'
-                    }`}
+                    className={`px-3 py-1.5 rounded-full border text-xs font-semibold transition-all ${active ? 'bg-[#05164D] text-white border-[#05164D]' : 'bg-gray-50 text-gray-500 border-gray-200 hover:border-gray-300'
+                      }`}
                   >
                     {group.name || group.id}
                   </button>
@@ -400,45 +445,23 @@ function UserFormModal({ initial, companies, companyLock, groups, onSave, onClos
             />
           </div>
 
-          <div>
-            <label className="block text-xs font-semibold text-gray-500 mb-1.5">Role *</label>
-            <div className="flex gap-2">
-              {(isEdit ? ROLE_ORDER : CREATE_ROLE_ORDER).map((role) => {
-                const meta = roleMeta(role);
-                return (
-                  <button
-                    key={role}
-                    type="button"
-                    onClick={() => setField({ role })}
-                    className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl border text-xs font-semibold transition-all ${
-                      form.role === role
-                        ? 'bg-[#05164D] text-white border-[#05164D]'
-                        : 'bg-gray-50 text-gray-500 border-gray-200 hover:border-gray-300'
-                    }`}
-                  >
-                    <meta.Icon size={12} />
-                    {meta.label}
-                  </button>
-                );
-              })}
+          {isEdit && (
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 mb-1.5">Status *</label>
+              <select
+                value={form.status}
+                onChange={(event) => setField({ status: event.target.value })}
+                className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]"
+              >
+                {STATUS_ORDER.map((status) => (
+                  <option key={status} value={status}>{statusMeta(status).label}</option>
+                ))}
+              </select>
             </div>
-          </div>
-
-          <div>
-            <label className="block text-xs font-semibold text-gray-500 mb-1.5">Status *</label>
-            <select
-              value={form.status}
-              onChange={(event) => setField({ status: event.target.value })}
-              className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]"
-            >
-              {STATUS_ORDER.map((status) => (
-                <option key={status} value={status}>{statusMeta(status).label}</option>
-              ))}
-            </select>
-          </div>
+          )}
         </div>
 
-        <div className="px-6 py-4 border-t border-gray-100 bg-white flex gap-3">
+        <div className="px-6 py-4 border-t border-gray-100 bg-white flex gap-3" style={{ flexShrink: 0 }}>
           <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-gray-600 hover:bg-gray-50 transition-colors">
             Cancel
           </button>
@@ -450,8 +473,16 @@ function UserFormModal({ initial, companies, companyLock, groups, onSave, onClos
             {submitting ? 'Saving...' : isEdit ? 'Save Changes' : 'Add User'}
           </button>
         </div>
+
+        <style>{`
+          @keyframes modalFadeIn {
+            from { opacity: 0; transform: scale(0.97) translateY(6px); }
+            to   { opacity: 1; transform: scale(1)    translateY(0); }
+          }
+        `}</style>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -523,8 +554,8 @@ export default function WorkspaceUsers() {
       const normalizedUsers = usersResponse.map(formatUser).filter(Boolean);
       const selectedCompany = companiesResponse.find((entry) => String(entry.id) === String(clientId)) || null;
       setCompany(selectedCompany);
-      setCompanies(selectedCompany ? [selectedCompany] : []);
-      setData(normalizedUsers.filter((user) => (user.companyIds?.length ? user.companyIds : [user.companyId]).some((id) => String(id) === String(clientId))));
+      setCompanies(companiesResponse || []);
+      setData(normalizedUsers.filter((user) => user.role !== 'client' && (user.companyIds?.length ? user.companyIds : [user.companyId]).some((id) => String(id) === String(clientId))));
       await loadGroupsWithMembers();
     } catch (err) {
       setError(err.message || 'Unable to load users.');
@@ -543,29 +574,34 @@ export default function WorkspaceUsers() {
     return () => clearTimeout(timer);
   }, [success]);
 
+  // Only buyers (role === 'user') appear in the user list
+  const buyersData = useMemo(
+    () => data.filter((u) => ['user', 'buyer'].includes(String(u.role || '').toLowerCase())),
+    [data],
+  );
+
   const companyOptions = useMemo(
-    () => ['All Companies', ...Array.from(new Set(data.map((user) => user.company))).filter(Boolean)],
-    [data]
+    () => ['All Companies', ...Array.from(new Set(buyersData.map((user) => user.company))).filter(Boolean)],
+    [buyersData],
   );
   const roleOptions = useMemo(
-    () => ['All Roles', ...Array.from(new Set(data.map((user) => user.role))).sort((a, b) => ROLE_ORDER.indexOf(a) - ROLE_ORDER.indexOf(b))],
-    [data]
+    () => ['All Roles', ...Array.from(new Set(buyersData.map((user) => user.role))).sort((a, b) => ROLE_ORDER.indexOf(a) - ROLE_ORDER.indexOf(b))],
+    [buyersData],
   );
   const statusOptions = useMemo(
-    () => ['All Status', ...Array.from(new Set(data.map((user) => user.status))).sort((a, b) => STATUS_ORDER.indexOf(a) - STATUS_ORDER.indexOf(b))],
-    [data]
+    () => ['All Status', ...Array.from(new Set(buyersData.map((user) => user.status))).sort((a, b) => STATUS_ORDER.indexOf(a) - STATUS_ORDER.indexOf(b))],
+    [buyersData],
   );
 
   const filtered = useMemo(() => {
     const query = search.toLowerCase();
-    return data.filter((user) => {
+    return buyersData.filter((user) => {
       const matchSearch = !query || user.name.toLowerCase().includes(query) || user.email.toLowerCase().includes(query) || user.company.toLowerCase().includes(query) || user.phone.includes(query);
-      const matchRole = filterRole === 'All Roles' || user.role === filterRole;
       const matchStatus = filterStatus === 'All Status' || user.status === filterStatus;
       const matchCompany = filterCompany === 'All Companies' || user.company === filterCompany;
-      return matchSearch && matchRole && matchStatus && matchCompany;
+      return matchSearch && matchStatus && matchCompany;
     });
-  }, [data, search, filterRole, filterStatus, filterCompany]);
+  }, [buyersData, search, filterStatus, filterCompany]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const safePage = Math.min(page, totalPages);
@@ -618,11 +654,11 @@ export default function WorkspaceUsers() {
         email: form.email.trim(),
         phone: form.phone.trim() || null,
         password: form.password,
-        role: form.role,
-        profile_image: form.profileImage.trim() || null,
+        role: 'buyer',
+        profile_image: null,
         company_id: clientId || form.companyId || null,
         company_ids: Array.from(new Set([clientId || form.companyId, ...(form.companyIds || [])].filter(Boolean))),
-        status: form.status,
+        status: 'active',
       });
 
       if (created?.id) {
@@ -650,7 +686,7 @@ export default function WorkspaceUsers() {
       name: form.name.trim(),
       email: form.email.trim(),
       phone: form.phone.trim() || null,
-      role: form.role,
+      role: 'buyer',
       profile_image: form.profileImage.trim() || null,
       company_id: clientId || form.companyId || null,
       company_ids: Array.from(new Set([clientId || form.companyId, ...(form.companyIds || [])].filter(Boolean))),
@@ -723,11 +759,15 @@ export default function WorkspaceUsers() {
     }
   };
 
-  const stats = useMemo(() => ({
-    activeBuyers: data.filter((user) => user.role === 'buyer' && user.status === 'active').length,
-    totalBuyers: data.filter((user) => user.role === 'buyer').length,
-    totalGroups: groups.length,
-  }), [data, groups]);
+  const stats = useMemo(() => {
+    const isBuyer = (user) => ['user', 'buyer'].includes(String(user.role || '').toLowerCase());
+    return {
+      total: data.length,
+      activeBuyers: data.filter((user) => isBuyer(user) && String(user.status || '').toLowerCase() === 'active').length,
+      totalBuyers: data.filter((user) => isBuyer(user)).length,
+      totalGroups: groups.length,
+    };
+  }, [data, groups]);
 
   const resetFilters = () => {
     setSearch('');
@@ -737,7 +777,7 @@ export default function WorkspaceUsers() {
     setPage(1);
   };
 
-  const hasActiveFilter = search || filterRole !== 'All Roles' || filterStatus !== 'All Status' || filterCompany !== 'All Companies';
+  const hasActiveFilter = search || filterStatus !== 'All Status' || filterCompany !== 'All Companies';
 
   const handleCreateGroup = async () => {
     if (!clientId || !groupNameDraft.trim()) return;
@@ -866,23 +906,22 @@ export default function WorkspaceUsers() {
 
   return (
     <div className="p-6 space-y-6 animate-fadeIn">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-bold text-[#05164D]">Users</h1>
-            <p className="text-sm text-gray-500 mt-0.5">{stats.total} registered users for {company?.name ?? 'this client'}</p>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => { setActiveTab('groups'); startCreateGroup(); }}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-[#05164D]">Users</h1>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => { setActiveTab('groups'); startCreateGroup(); }}
             className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold border border-[#8BC53D] text-[#476E2C] hover:bg-[#E6F3D3] transition-colors shadow-sm"
-            >
-              <UsersIcon size={15} />
-              Create Group
-            </button>
-            <button
-              onClick={() => { setError(''); setEditUser({ ...EMPTY_FORM, companyId: clientId, isNew: true }); }}
-              className="inline-flex items-center gap-2 px-5 py-2.5 bg-[#8BC53D] hover:bg-[#476E2C] text-white rounded-xl text-sm font-bold transition-colors shadow-sm"
-            >
+          >
+            <UsersIcon size={15} />
+            Create Group
+          </button>
+          <button
+            onClick={() => { setError(''); setEditUser({ ...EMPTY_FORM, companyId: clientId, isNew: true }); }}
+            className="inline-flex items-center gap-2 px-5 py-2.5 bg-[#8BC53D] hover:bg-[#476E2C] text-white rounded-xl text-sm font-bold transition-colors shadow-sm"
+          >
             <Plus size={16} />
             Add User
           </button>
@@ -997,216 +1036,215 @@ export default function WorkspaceUsers() {
       </div>
 
       {activeTab === 'users' && (
-      <div className="bg-white rounded-2xl shadow-sm border border-gray-100">
-        <div className="p-4 border-b border-gray-100 flex flex-col sm:flex-row gap-3">
-          <div className="relative flex-1">
-            <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
-            <input
-              value={search}
-              onChange={(event) => { setSearch(event.target.value); setPage(1); }}
-              placeholder="Search by name, email, company or phone..."
-              className="w-full pl-9 pr-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] bg-gray-50"
-            />
-          </div>
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100">
+          <div className="p-4 border-b border-gray-100 flex flex-col sm:flex-row gap-3">
+            <div className="relative flex-1">
+              <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
+              <input
+                value={search}
+                onChange={(event) => { setSearch(event.target.value); setPage(1); }}
+                placeholder="Search by name, email, company or phone..."
+                className="w-full pl-9 pr-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] bg-gray-50"
+              />
+            </div>
 
-          <button
-            onClick={() => setShowFilters((value) => !value)}
-            className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl border text-sm font-medium transition-all ${showFilters ? 'bg-[#05164D] text-white border-[#05164D]' : 'border-gray-200 text-gray-600 hover:border-gray-300 bg-gray-50'}`}
-          >
-            <Filter size={14} />
-            Filters
-            {hasActiveFilter && <span className="w-2 h-2 rounded-full bg-[#F68C1F] flex-shrink-0" />}
-            <ChevronDown size={13} className={`transition-transform ${showFilters ? 'rotate-180' : ''}`} />
-          </button>
-
-          {hasActiveFilter && (
-            <button onClick={resetFilters} className="inline-flex items-center gap-1.5 px-3 py-2.5 text-xs text-red-500 hover:text-red-600 font-medium">
-              <X size={13} /> Clear
-            </button>
-          )}
-        </div>
-
-        {showFilters && (
-          <div className="px-4 pb-4 flex flex-wrap gap-3 border-b border-gray-100 pt-3">
-            {[
-              { label: 'Company', value: filterCompany, options: companyOptions, onChange: (value) => { setComp(value); setPage(1); } },
-              { label: 'Role', value: filterRole, options: roleOptions, onChange: (value) => { setRole(value); setPage(1); } },
-              { label: 'Status', value: filterStatus, options: statusOptions, onChange: (value) => { setStatus(value); setPage(1); } },
-            ].map(({ label, value, options, onChange }) => (
-              <div key={label} className="flex flex-col gap-1">
-                <span className="text-xs font-semibold text-gray-400 px-1">{label}</span>
-                <select
-                  value={value}
-                  onChange={(event) => onChange(event.target.value)}
-                  className="px-3 py-2 rounded-xl border border-gray-200 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/30 focus:border-[#8BC53D] min-w-[140px]"
-                >
-                  {options.map((option) => <option key={option}>{option}</option>)}
-                </select>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {selected.size > 0 && (
-          <div className="px-4 py-2.5 bg-[#05164D]/5 border-b border-gray-100 flex items-center gap-3">
-            <span className="text-sm font-semibold text-[#05164D]">{selected.size} user{selected.size > 1 ? 's' : ''} selected</span>
             <button
-              onClick={handleBulkDelete}
-              disabled={submitting}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-50 text-red-600 text-xs font-semibold hover:bg-red-100 transition-colors disabled:opacity-60"
+              onClick={() => setShowFilters((value) => !value)}
+              className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl border text-sm font-medium transition-all ${showFilters ? 'bg-[#05164D] text-white border-[#05164D]' : 'border-gray-200 text-gray-600 hover:border-gray-300 bg-gray-50'}`}
             >
-              <Trash2 size={12} /> Delete Selected
+              <Filter size={14} />
+              Filters
+              {hasActiveFilter && <span className="w-2 h-2 rounded-full bg-[#F68C1F] flex-shrink-0" />}
+              <ChevronDown size={13} className={`transition-transform ${showFilters ? 'rotate-180' : ''}`} />
             </button>
-            <button onClick={clearSelection} className="text-xs text-gray-400 hover:text-gray-600 ml-auto">Clear selection</button>
-          </div>
-        )}
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-gray-100">
-                <th className="pl-4 pr-2 py-3 text-left">
-                  <button
-                    onClick={toggleAll}
-                    className={`w-4.5 h-4.5 rounded border-2 flex items-center justify-center transition-colors ${allPageSelected ? 'bg-[#8BC53D] border-[#8BC53D]' : someSelected ? 'bg-[#8BC53D]/30 border-[#8BC53D]' : 'border-gray-300 hover:border-[#8BC53D]'}`}
-                    style={{ width: 18, height: 18 }}
+            {hasActiveFilter && (
+              <button onClick={resetFilters} className="inline-flex items-center gap-1.5 px-3 py-2.5 text-xs text-red-500 hover:text-red-600 font-medium">
+                <X size={13} /> Clear
+              </button>
+            )}
+          </div>
+
+          {showFilters && (
+            <div className="px-4 pb-4 flex flex-wrap gap-3 border-b border-gray-100 pt-3">
+              {[
+                { label: 'Company', value: filterCompany, options: companyOptions, onChange: (value) => { setComp(value); setPage(1); } },
+                { label: 'Status', value: filterStatus, options: statusOptions, onChange: (value) => { setStatus(value); setPage(1); } },
+              ].map(({ label, value, options, onChange }) => (
+                <div key={label} className="flex flex-col gap-1">
+                  <span className="text-xs font-semibold text-gray-400 px-1">{label}</span>
+                  <select
+                    value={value}
+                    onChange={(event) => onChange(event.target.value)}
+                    className="px-3 py-2 rounded-xl border border-gray-200 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/30 focus:border-[#8BC53D] min-w-[140px]"
                   >
-                    {(allPageSelected || someSelected) && <Check size={10} className="text-white" strokeWidth={3} />}
-                  </button>
-                </th>
-                {['Name', 'Company', 'Email', 'Phone No.', 'Role', 'Status', 'Actions'].map((header) => (
-                  <th key={header} className="px-3 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wide whitespace-nowrap">
-                    {header}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-50">
-              {loading ? (
-                <tr>
-                  <td colSpan={8} className="py-16 text-center text-sm text-gray-400">
-                    Loading users...
-                  </td>
-                </tr>
-              ) : paginated.length === 0 ? (
-                <tr>
-                  <td colSpan={8} className="py-16 text-center">
-                    <UsersIcon size={36} className="mx-auto text-gray-200 mb-3" />
-                    <p className="text-sm font-semibold text-gray-400">No users found</p>
-                    {hasActiveFilter && <button onClick={resetFilters} className="mt-2 text-xs text-[#8BC53D] hover:underline">Clear filters</button>}
-                  </td>
-                </tr>
-              ) : paginated.map((user) => (
-                <tr key={user.id} className={`group hover:bg-gray-50/80 transition-colors ${selected.has(user.id) ? 'bg-[#8BC53D]/5' : ''}`}>
-                  <td className="pl-4 pr-2 py-3.5">
+                    {options.map((option) => <option key={option}>{option}</option>)}
+                  </select>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {selected.size > 0 && (
+            <div className="px-4 py-2.5 bg-[#05164D]/5 border-b border-gray-100 flex items-center gap-3">
+              <span className="text-sm font-semibold text-[#05164D]">{selected.size} user{selected.size > 1 ? 's' : ''} selected</span>
+              <button
+                onClick={handleBulkDelete}
+                disabled={submitting}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-50 text-red-600 text-xs font-semibold hover:bg-red-100 transition-colors disabled:opacity-60"
+              >
+                <Trash2 size={12} /> Delete Selected
+              </button>
+              <button onClick={clearSelection} className="text-xs text-gray-400 hover:text-gray-600 ml-auto">Clear selection</button>
+            </div>
+          )}
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-100">
+                  <th className="pl-4 pr-2 py-3 text-left">
                     <button
-                      onClick={() => toggleOne(user.id)}
-                      className={`w-4.5 h-4.5 rounded border-2 flex items-center justify-center transition-colors ${selected.has(user.id) ? 'bg-[#8BC53D] border-[#8BC53D]' : 'border-gray-300 hover:border-[#8BC53D]'}`}
+                      onClick={toggleAll}
+                      className={`w-4.5 h-4.5 rounded border-2 flex items-center justify-center transition-colors ${allPageSelected ? 'bg-[#8BC53D] border-[#8BC53D]' : someSelected ? 'bg-[#8BC53D]/30 border-[#8BC53D]' : 'border-gray-300 hover:border-[#8BC53D]'}`}
                       style={{ width: 18, height: 18 }}
                     >
-                      {selected.has(user.id) && <Check size={10} className="text-white" strokeWidth={3} />}
+                      {(allPageSelected || someSelected) && <Check size={10} className="text-white" strokeWidth={3} />}
                     </button>
-                  </td>
-                  <td className="px-3 py-3.5">
-                    <div className="flex items-center gap-2.5">
-                      <Avatar user={user} size={8} />
-                      <span className="font-semibold text-[#05164D] whitespace-nowrap">{user.name}</span>
-                    </div>
-                  </td>
-                  <td className="px-3 py-3.5">
-                    <span className="text-gray-600 whitespace-nowrap">{user.company}</span>
-                  </td>
-                  <td className="px-3 py-3.5">
-                    <span className="text-gray-500 text-xs">{user.email}</span>
-                  </td>
-                  <td className="px-3 py-3.5">
-                    <span className="text-gray-600 whitespace-nowrap">{user.phone}</span>
-                  </td>
-                  <td className="px-3 py-3.5">
-                    <RoleBadge role={user.role} />
-                  </td>
-                  <td className="px-3 py-3.5">
-                    <StatusBadge status={user.status} />
-                  </td>
-                  <td className="px-3 py-3.5">
-                    <div className="flex items-center gap-1">
-                      <button
-                        title="View Details"
-                        onClick={() => setViewUser(user)}
-                        className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-[#00648F] hover:bg-blue-50 transition-colors"
-                      >
-                        <Eye size={15} />
-                      </button>
-                      <button
-                        title="Edit"
-                        onClick={() => setEditUser({ ...user, password: '', isNew: false })}
-                        className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-[#8BC53D] hover:bg-green-50 transition-colors"
-                      >
-                        <Pencil size={15} />
-                      </button>
-                      <button
-                        title="Delete"
-                        onClick={() => setDeleteUser(user)}
-                        className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors"
-                      >
-                        <Trash2 size={15} />
-                      </button>
-                    </div>
-                  </td>
+                  </th>
+                  {['Name', 'Company', 'Email', 'Phone No.', 'Role', 'Status', 'Actions'].map((header) => (
+                    <th key={header} className="px-3 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wide whitespace-nowrap">
+                      {header}
+                    </th>
+                  ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody className="divide-y divide-gray-50">
+                {loading ? (
+                  <tr>
+                    <td colSpan={8} className="py-16 text-center text-sm text-gray-400">
+                      Loading users...
+                    </td>
+                  </tr>
+                ) : paginated.length === 0 ? (
+                  <tr>
+                    <td colSpan={8} className="py-16 text-center">
+                      <UsersIcon size={36} className="mx-auto text-gray-200 mb-3" />
+                      <p className="text-sm font-semibold text-gray-400">No users found</p>
+                      {hasActiveFilter && <button onClick={resetFilters} className="mt-2 text-xs text-[#8BC53D] hover:underline">Clear filters</button>}
+                    </td>
+                  </tr>
+                ) : paginated.map((user) => (
+                  <tr key={user.id} className={`group hover:bg-gray-50/80 transition-colors ${selected.has(user.id) ? 'bg-[#8BC53D]/5' : ''}`}>
+                    <td className="pl-4 pr-2 py-3.5">
+                      <button
+                        onClick={() => toggleOne(user.id)}
+                        className={`w-4.5 h-4.5 rounded border-2 flex items-center justify-center transition-colors ${selected.has(user.id) ? 'bg-[#8BC53D] border-[#8BC53D]' : 'border-gray-300 hover:border-[#8BC53D]'}`}
+                        style={{ width: 18, height: 18 }}
+                      >
+                        {selected.has(user.id) && <Check size={10} className="text-white" strokeWidth={3} />}
+                      </button>
+                    </td>
+                    <td className="px-3 py-3.5">
+                      <div className="flex items-center gap-2.5">
+                        <Avatar user={user} size={8} />
+                        <span className="font-semibold text-[#05164D] whitespace-nowrap">{user.name}</span>
+                      </div>
+                    </td>
+                    <td className="px-3 py-3.5">
+                      <span className="text-gray-600 whitespace-nowrap">{user.company}</span>
+                    </td>
+                    <td className="px-3 py-3.5">
+                      <span className="text-gray-500 text-xs">{user.email}</span>
+                    </td>
+                    <td className="px-3 py-3.5">
+                      <span className="text-gray-600 whitespace-nowrap">{user.phone}</span>
+                    </td>
+                    <td className="px-3 py-3.5">
+                      <RoleBadge role={user.role} />
+                    </td>
+                    <td className="px-3 py-3.5">
+                      <StatusBadge status={user.status} />
+                    </td>
+                    <td className="px-3 py-3.5">
+                      <div className="flex items-center gap-1">
+                        <button
+                          title="View Details"
+                          onClick={() => setViewUser(user)}
+                          className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-[#00648F] hover:bg-blue-50 transition-colors"
+                        >
+                          <Eye size={15} />
+                        </button>
+                        <button
+                          title="Edit"
+                          onClick={() => setEditUser({ ...user, password: '', isNew: false })}
+                          className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-[#8BC53D] hover:bg-green-50 transition-colors"
+                        >
+                          <Pencil size={15} />
+                        </button>
+                        <button
+                          title="Delete"
+                          onClick={() => setDeleteUser(user)}
+                          className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors"
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
 
-        <div className="px-4 py-3.5 border-t border-gray-100 flex flex-col sm:flex-row items-center justify-between gap-3">
-          <p className="text-xs text-gray-400">
-            Showing <span className="font-semibold text-gray-600">{filtered.length === 0 ? 0 : (safePage - 1) * PAGE_SIZE + 1}-{Math.min(safePage * PAGE_SIZE, filtered.length)}</span> of <span className="font-semibold text-gray-600">{filtered.length}</span> users
-          </p>
+          <div className="px-4 py-3.5 border-t border-gray-100 flex flex-col sm:flex-row items-center justify-between gap-3">
+            <p className="text-xs text-gray-400">
+              Showing <span className="font-semibold text-gray-600">{filtered.length === 0 ? 0 : (safePage - 1) * PAGE_SIZE + 1}-{Math.min(safePage * PAGE_SIZE, filtered.length)}</span> of <span className="font-semibold text-gray-600">{filtered.length}</span> users
+            </p>
 
-          <div className="flex items-center gap-1">
-            <button
-              onClick={() => setPage((current) => Math.max(1, current - 1))}
-              disabled={safePage === 1}
-              className="w-8 h-8 rounded-lg border border-gray-200 flex items-center justify-center text-gray-500 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-            >
-              <ChevronLeft size={14} />
-            </button>
-
-            {pageRange[0] > 1 && (
-              <>
-                <button onClick={() => setPage(1)} className="w-8 h-8 rounded-lg border border-gray-200 text-xs font-semibold text-gray-500 hover:bg-gray-50 transition-colors">1</button>
-                {pageRange[0] > 2 && <span className="text-gray-300 text-sm px-1">...</span>}
-              </>
-            )}
-
-            {pageRange.map((pageNumber) => (
+            <div className="flex items-center gap-1">
               <button
-                key={pageNumber}
-                onClick={() => setPage(pageNumber)}
-                className={`w-8 h-8 rounded-lg border text-xs font-semibold transition-colors ${pageNumber === safePage ? 'bg-[#05164D] border-[#05164D] text-white' : 'border-gray-200 text-gray-500 hover:bg-gray-50'}`}
+                onClick={() => setPage((current) => Math.max(1, current - 1))}
+                disabled={safePage === 1}
+                className="w-8 h-8 rounded-lg border border-gray-200 flex items-center justify-center text-gray-500 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
               >
-                {pageNumber}
+                <ChevronLeft size={14} />
               </button>
-            ))}
 
-            {pageRange[pageRange.length - 1] < totalPages && (
-              <>
-                {pageRange[pageRange.length - 1] < totalPages - 1 && <span className="text-gray-300 text-sm px-1">...</span>}
-                <button onClick={() => setPage(totalPages)} className="w-8 h-8 rounded-lg border border-gray-200 text-xs font-semibold text-gray-500 hover:bg-gray-50 transition-colors">{totalPages}</button>
-              </>
-            )}
+              {pageRange[0] > 1 && (
+                <>
+                  <button onClick={() => setPage(1)} className="w-8 h-8 rounded-lg border border-gray-200 text-xs font-semibold text-gray-500 hover:bg-gray-50 transition-colors">1</button>
+                  {pageRange[0] > 2 && <span className="text-gray-300 text-sm px-1">...</span>}
+                </>
+              )}
 
-            <button
-              onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
-              disabled={safePage === totalPages}
-              className="w-8 h-8 rounded-lg border border-gray-200 flex items-center justify-center text-gray-500 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-            >
-              <ChevronRight size={14} />
-            </button>
+              {pageRange.map((pageNumber) => (
+                <button
+                  key={pageNumber}
+                  onClick={() => setPage(pageNumber)}
+                  className={`w-8 h-8 rounded-lg border text-xs font-semibold transition-colors ${pageNumber === safePage ? 'bg-[#05164D] border-[#05164D] text-white' : 'border-gray-200 text-gray-500 hover:bg-gray-50'}`}
+                >
+                  {pageNumber}
+                </button>
+              ))}
+
+              {pageRange[pageRange.length - 1] < totalPages && (
+                <>
+                  {pageRange[pageRange.length - 1] < totalPages - 1 && <span className="text-gray-300 text-sm px-1">...</span>}
+                  <button onClick={() => setPage(totalPages)} className="w-8 h-8 rounded-lg border border-gray-200 text-xs font-semibold text-gray-500 hover:bg-gray-50 transition-colors">{totalPages}</button>
+                </>
+              )}
+
+              <button
+                onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
+                disabled={safePage === totalPages}
+                className="w-8 h-8 rounded-lg border border-gray-200 flex items-center justify-center text-gray-500 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                <ChevronRight size={14} />
+              </button>
+            </div>
           </div>
         </div>
-      </div>
       )}
 
       {viewUser && (
@@ -1217,7 +1255,7 @@ export default function WorkspaceUsers() {
         />
       )}
 
-      {activeTab === 'users' && editUser && (
+      {editUser && (
         <UserFormModal
           initial={editUser}
           companies={companies}
@@ -1239,133 +1277,133 @@ export default function WorkspaceUsers() {
             </div>
             <div className="flex-1 overflow-y-auto px-8 pb-6">
               <div className="space-y-4">
-              <div>
-                <label className="block text-xs font-semibold text-gray-500 mb-1.5">Group Name</label>
-                <input
-                  value={groupNameDraft}
-                  onChange={(e) => setGroupNameDraft(e.target.value)}
-                  className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-gray-500 mb-1.5">Description</label>
-                <textarea
-                  rows={3}
-                  value={groupDescriptionDraft}
-                  onChange={(e) => setGroupDescriptionDraft(e.target.value)}
-                  className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm resize-none"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-gray-500 mb-1.5">Members</label>
-                {(() => {
-                  const users = data.filter((u) => u.role === 'user');
-                  const selectedSet = new Set(groupMembersDraft);
-                  const available = users.filter((u) => !selectedSet.has(u.id) && (
-                    !memberSearch.trim()
-                    || u.name.toLowerCase().includes(memberSearch.toLowerCase())
-                    || u.email.toLowerCase().includes(memberSearch.toLowerCase())
-                  ));
-                  const selected = users.filter((u) => selectedSet.has(u.id) && (
-                    !selectedSearch.trim()
-                    || u.name.toLowerCase().includes(selectedSearch.toLowerCase())
-                    || u.email.toLowerCase().includes(selectedSearch.toLowerCase())
-                  ));
+                <div>
+                  <label className="block text-xs font-semibold text-gray-500 mb-1.5">Group Name</label>
+                  <input
+                    value={groupNameDraft}
+                    onChange={(e) => setGroupNameDraft(e.target.value)}
+                    className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-gray-500 mb-1.5">Description</label>
+                  <textarea
+                    rows={3}
+                    value={groupDescriptionDraft}
+                    onChange={(e) => setGroupDescriptionDraft(e.target.value)}
+                    className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm resize-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-gray-500 mb-1.5">Members</label>
+                  {(() => {
+                    const users = data.filter((u) => u.role === 'user');
+                    const selectedSet = new Set(groupMembersDraft);
+                    const available = users.filter((u) => !selectedSet.has(u.id) && (
+                      !memberSearch.trim()
+                      || u.name.toLowerCase().includes(memberSearch.toLowerCase())
+                      || u.email.toLowerCase().includes(memberSearch.toLowerCase())
+                    ));
+                    const selected = users.filter((u) => selectedSet.has(u.id) && (
+                      !selectedSearch.trim()
+                      || u.name.toLowerCase().includes(selectedSearch.toLowerCase())
+                      || u.email.toLowerCase().includes(selectedSearch.toLowerCase())
+                    ));
 
-                  return (
-                    <div className="grid md:grid-cols-[1fr_auto_1fr] gap-4">
-                      <div className="border border-gray-200 rounded-2xl p-4 bg-[#F8FAFC] min-h-[320px]">
-                        <div className="flex items-center justify-between mb-2">
-                          <p className="text-xs font-semibold text-[#6D6E71]">Available Users</p>
-                          <span className="text-[10px] text-gray-400">{available.length}</span>
+                    return (
+                      <div className="grid md:grid-cols-[1fr_auto_1fr] gap-4">
+                        <div className="border border-gray-200 rounded-2xl p-4 bg-[#F8FAFC] min-h-[320px]">
+                          <div className="flex items-center justify-between mb-2">
+                            <p className="text-xs font-semibold text-[#6D6E71]">Available Users</p>
+                            <span className="text-[10px] text-gray-400">{available.length}</span>
+                          </div>
+                          <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-xl px-3 py-2 mb-2">
+                            <Search size={12} className="text-[#A5A5A5]" />
+                            <input
+                              value={memberSearch}
+                              onChange={(e) => setMemberSearch(e.target.value)}
+                              placeholder="Search users..."
+                              className="text-xs outline-none bg-transparent w-full"
+                            />
+                          </div>
+                          <div className="max-h-64 overflow-y-auto space-y-1">
+                            {available.length === 0 ? (
+                              <p className="text-xs text-gray-400 px-2 py-2">No users found.</p>
+                            ) : available.map((user) => (
+                              <button
+                                key={user.id}
+                                type="button"
+                                onClick={() => setGroupMembersDraft((current) => [...current, user.id])}
+                                className="w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-xl hover:bg-white border border-transparent hover:border-gray-200 text-left"
+                              >
+                                <div className="min-w-0">
+                                  <p className="text-xs font-semibold text-[#05164D] truncate">{user.name}</p>
+                                  <p className="text-[10px] text-gray-400 truncate">{user.email}</p>
+                                </div>
+                                <span className="text-[10px] font-bold text-[#05164D]">Add</span>
+                              </button>
+                            ))}
+                          </div>
                         </div>
-                        <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-xl px-3 py-2 mb-2">
-                          <Search size={12} className="text-[#A5A5A5]" />
-                          <input
-                            value={memberSearch}
-                            onChange={(e) => setMemberSearch(e.target.value)}
-                            placeholder="Search users..."
-                            className="text-xs outline-none bg-transparent w-full"
-                          />
+
+                        <div className="hidden md:flex flex-col items-center justify-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const toAdd = available.map((u) => u.id);
+                              setGroupMembersDraft((current) => Array.from(new Set([...current, ...toAdd])));
+                            }}
+                            className="px-3 py-1.5 rounded-full border border-gray-200 text-xs font-semibold text-[#05164D] hover:bg-gray-50"
+                          >
+                            Add All
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setGroupMembersDraft([])}
+                            className="px-3 py-1.5 rounded-full border border-gray-200 text-xs font-semibold text-[#6D6E71] hover:bg-gray-50"
+                          >
+                            Clear
+                          </button>
                         </div>
-                        <div className="max-h-64 overflow-y-auto space-y-1">
-                          {available.length === 0 ? (
-                            <p className="text-xs text-gray-400 px-2 py-2">No users found.</p>
-                          ) : available.map((user) => (
-                            <button
-                              key={user.id}
-                              type="button"
-                              onClick={() => setGroupMembersDraft((current) => [...current, user.id])}
-                              className="w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-xl hover:bg-white border border-transparent hover:border-gray-200 text-left"
-                            >
-                              <div className="min-w-0">
-                                <p className="text-xs font-semibold text-[#05164D] truncate">{user.name}</p>
-                                <p className="text-[10px] text-gray-400 truncate">{user.email}</p>
-                              </div>
-                              <span className="text-[10px] font-bold text-[#05164D]">Add</span>
-                            </button>
-                          ))}
+
+                        <div className="border border-gray-200 rounded-2xl p-4 bg-white min-h-[320px]">
+                          <div className="flex items-center justify-between mb-2">
+                            <p className="text-xs font-semibold text-[#6D6E71]">Selected Members</p>
+                            <span className="text-[10px] text-gray-400">{selected.length}</span>
+                          </div>
+                          <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 mb-2">
+                            <Search size={12} className="text-[#A5A5A5]" />
+                            <input
+                              value={selectedSearch}
+                              onChange={(e) => setSelectedSearch(e.target.value)}
+                              placeholder="Search selected..."
+                              className="text-xs outline-none bg-transparent w-full"
+                            />
+                          </div>
+                          <div className="max-h-64 overflow-y-auto space-y-1">
+                            {selected.length === 0 ? (
+                              <p className="text-xs text-gray-400 px-2 py-2">No members selected.</p>
+                            ) : selected.map((user) => (
+                              <button
+                                key={user.id}
+                                type="button"
+                                onClick={() => setGroupMembersDraft((current) => current.filter((id) => id !== user.id))}
+                                className="w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-xl hover:bg-gray-50 border border-transparent hover:border-gray-200 text-left"
+                              >
+                                <div className="min-w-0">
+                                  <p className="text-xs font-semibold text-[#05164D] truncate">{user.name}</p>
+                                  <p className="text-[10px] text-gray-400 truncate">{user.email}</p>
+                                </div>
+                                <span className="text-[10px] font-bold text-red-500">Remove</span>
+                              </button>
+                            ))}
+                          </div>
                         </div>
                       </div>
-
-                      <div className="hidden md:flex flex-col items-center justify-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const toAdd = available.map((u) => u.id);
-                            setGroupMembersDraft((current) => Array.from(new Set([...current, ...toAdd])));
-                          }}
-                          className="px-3 py-1.5 rounded-full border border-gray-200 text-xs font-semibold text-[#05164D] hover:bg-gray-50"
-                        >
-                          Add All
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setGroupMembersDraft([])}
-                          className="px-3 py-1.5 rounded-full border border-gray-200 text-xs font-semibold text-[#6D6E71] hover:bg-gray-50"
-                        >
-                          Clear
-                        </button>
-                      </div>
-
-                      <div className="border border-gray-200 rounded-2xl p-4 bg-white min-h-[320px]">
-                        <div className="flex items-center justify-between mb-2">
-                          <p className="text-xs font-semibold text-[#6D6E71]">Selected Members</p>
-                          <span className="text-[10px] text-gray-400">{selected.length}</span>
-                        </div>
-                        <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 mb-2">
-                          <Search size={12} className="text-[#A5A5A5]" />
-                          <input
-                            value={selectedSearch}
-                            onChange={(e) => setSelectedSearch(e.target.value)}
-                            placeholder="Search selected..."
-                            className="text-xs outline-none bg-transparent w-full"
-                          />
-                        </div>
-                        <div className="max-h-64 overflow-y-auto space-y-1">
-                          {selected.length === 0 ? (
-                            <p className="text-xs text-gray-400 px-2 py-2">No members selected.</p>
-                          ) : selected.map((user) => (
-                            <button
-                              key={user.id}
-                              type="button"
-                              onClick={() => setGroupMembersDraft((current) => current.filter((id) => id !== user.id))}
-                              className="w-full flex items-center justify-between gap-2 px-2.5 py-2 rounded-xl hover:bg-gray-50 border border-transparent hover:border-gray-200 text-left"
-                            >
-                              <div className="min-w-0">
-                                <p className="text-xs font-semibold text-[#05164D] truncate">{user.name}</p>
-                                <p className="text-[10px] text-gray-400 truncate">{user.email}</p>
-                              </div>
-                              <span className="text-[10px] font-bold text-red-500">Remove</span>
-                            </button>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })()}
+                    );
+                  })()}
+                </div>
               </div>
-            </div>
             </div>
             <div className="flex gap-3 px-8 pb-8 pt-5">
               <button

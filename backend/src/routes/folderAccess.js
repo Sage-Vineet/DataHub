@@ -5,8 +5,11 @@ const {
   updateFolderAccess,
   deleteFolderAccess,
 } = require("../controllers/folderAccess");
+const { requireAuth } = require("../middleware/auth");
 
 const router = express.Router();
+
+router.use(requireAuth);
 
 router.get("/folders/:id/access", listFolderAccess);
 router.post("/folders/:id/access", createFolderAccess);

@@ -1,10 +1,31 @@
 const jwt = require("jsonwebtoken");
-const db = require("../db");
+const { getUserById } = require("../services/userService");
 
-function rowsOf(result) {
-  if (!result) return [];
-  return Array.isArray(result) ? result : result.rows || [];
+// In-process user cache to avoid a DB round-trip on every authenticated request.
+// Entries expire after 60 s; the cache is bounded at 500 entries to limit memory use.
+const _USER_CACHE_TTL_MS = 60 * 1000;
+const _USER_CACHE_MAX = 500;
+const _userCache = new Map();
+
+function _getCachedUser(userId) {
+  const entry = _userCache.get(userId);
+  if (!entry) return null;
+  if (Date.now() - entry.ts > _USER_CACHE_TTL_MS) {
+    _userCache.delete(userId);
+    return null;
+  }
+  return entry.user;
 }
+
+function _setCachedUser(userId, user) {
+  if (_userCache.size >= _USER_CACHE_MAX) {
+    _userCache.delete(_userCache.keys().next().value);
+  }
+  _userCache.set(userId, { user, ts: Date.now() });
+}
+
+const _userPromiseCache = new Map();
+
 
 function extractToken(req) {
   const authorization = req.headers.authorization || "";
@@ -29,37 +50,6 @@ function extractToken(req) {
   return null;
 }
 
-async function attachAssignedCompanies(user) {
-  if (!user?.id) return user;
-  const companies = rowsOf(await db.query(
-    `SELECT c.id, c.name, c.industry, c.status, c.contact_email
-     FROM user_companies uc
-     JOIN companies c ON c.id = uc.company_id
-     WHERE uc.user_id = ?
-     ORDER BY c.name ASC`,
-    [user.id]
-  ));
-
-  const hasPrimary = user.company_id && companies.some((company) => String(company.id) === String(user.company_id));
-  const assignedCompanies = hasPrimary || !user.company_id
-    ? companies
-    : [{ id: user.company_id, name: user.company_name }, ...companies];
-  const normalizedEmail = String(user.email || "").trim().toLowerCase();
-  const isSeller = assignedCompanies.some((company) => (
-    String(company.contact_email || "").trim().toLowerCase() === normalizedEmail
-  ));
-  const effectiveRole = user.role === "buyer"
-    ? (isSeller ? "client" : "user")
-    : user.role;
-
-  return {
-    ...user,
-    effective_role: effectiveRole,
-    company_ids: assignedCompanies.map((company) => company.id).filter(Boolean),
-    assigned_companies: assignedCompanies,
-  };
-}
-
 async function requireAuth(req, res, next) {
   const token = extractToken(req);
 
@@ -69,19 +59,29 @@ async function requireAuth(req, res, next) {
 
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET || "change_me");
-    const { rows } = await db.query(
-      `SELECT u.id, u.name, u.email, u.role, u.company_id, u.status, c.name AS company_name
-       FROM users u
-       LEFT JOIN companies c ON c.id = u.company_id
-       WHERE u.id = ?`,
-      [payload.sub]
-    );
 
-    if (!rows || rows.length === 0) {
+    const cached = _getCachedUser(payload.sub);
+    if (cached) {
+      req.user = cached;
+      return next();
+    }
+
+    let userPromise = _userPromiseCache.get(payload.sub);
+    if (!userPromise) {
+      userPromise = getUserById(payload.sub).finally(() => {
+        _userPromiseCache.delete(payload.sub);
+      });
+      _userPromiseCache.set(payload.sub, userPromise);
+    }
+
+    const user = await userPromise;
+
+    if (!user) {
       return res.status(401).json({ error: "Invalid token" });
     }
 
-    req.user = await attachAssignedCompanies(rows[0]);
+    _setCachedUser(payload.sub, user);
+    req.user = user;
     return next();
   } catch (err) {
     return res.status(401).json({ error: "Invalid token" });
@@ -100,4 +100,11 @@ function requireRole(roles) {
   };
 }
 
-module.exports = { requireAuth, requireRole };
+function invalidateUserCache(userId) {
+  if (!userId) return;
+  const key = String(userId);
+  _userCache.delete(key);
+  _userPromiseCache.delete(key);
+}
+
+module.exports = { requireAuth, requireRole, invalidateUserCache };

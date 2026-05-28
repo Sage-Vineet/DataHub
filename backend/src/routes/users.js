@@ -1,4 +1,5 @@
 const express = require("express");
+const { requireAuth } = require("../middleware/auth");
 const {
   listUsers,
   createUser,
@@ -8,6 +9,8 @@ const {
 } = require("../controllers/users");
 
 const router = express.Router();
+
+router.use(requireAuth);
 
 router.get("/", listUsers);
 router.post("/", createUser);

@@ -5,6 +5,52 @@ const { getQBConfig } = require("../../../qbconfig");
 
 const router = express.Router();
 
+function buildMonthlySummary(invoices) {
+  const groups = {};
+
+  for (const invoice of invoices) {
+    const dateStr = invoice.TxnDate || invoice.date;
+    if (!dateStr) continue;
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) continue;
+
+    const year = d.getFullYear();
+    const month = d.getMonth() + 1;
+    const key = `${year}-${String(month).padStart(2, "0")}`;
+
+    if (!groups[key]) {
+      groups[key] = {
+        key, year, month,
+        monthName: d.toLocaleString("en-US", { month: "long" }),
+        invoiceCount: 0, invoiceAmount: 0, totalPostedAmount: 0, paidCount: 0,
+      };
+    }
+
+    const amount = Number(invoice.TotalAmt || 0);
+    const balance = Number(invoice.Balance || 0);
+    groups[key].invoiceAmount += amount;
+    groups[key].totalPostedAmount += Math.max(amount - balance, 0);
+    groups[key].invoiceCount += 1;
+    if (balance === 0) groups[key].paidCount += 1;
+  }
+
+  return Object.values(groups)
+    .sort((a, b) => a.year !== b.year ? a.year - b.year : a.month - b.month)
+    .map((g) => ({
+      key: g.key,
+      year: g.year,
+      month: g.month,
+      monthName: g.monthName,
+      invoiceCount: g.invoiceCount,
+      invoiceAmount: g.invoiceAmount,
+      totalPostedAmount: g.totalPostedAmount,
+      paidCount: g.paidCount,
+      avgPerInvoice: g.invoiceCount > 0 ? g.invoiceAmount / g.invoiceCount : 0,
+      avgPerPaidInvoice: g.paidCount > 0 ? g.totalPostedAmount / g.paidCount : 0,
+      clientFinalTotal: g.invoiceAmount,
+    }));
+}
+
 /**
  * @swagger
  * /invoices:
@@ -48,134 +94,116 @@ const router = express.Router();
  *         description: Server error
  */
 router.get("/invoices", async (req, res) => {
-  const qb = getQBConfig(req.clientId);
-
-  let { startposition, maxresults, status } = req.query;
-
-  console.log("=".repeat(60));
-  console.log("📄 INVOICES REQUEST");
-  console.log("=".repeat(60));
-  console.log(
-    `📌 Start Position: ${startposition || "Not specified (default: 1)"}`,
-  );
-  console.log(
-    `📊 Max Results: ${maxresults || "Not specified (default: 100)"}`,
-  );
-  console.log(`📌 Status Filter: ${status || "Not specified (default: All)"}`);
-  console.log("=".repeat(60));
-
-  // Set defaults and validate
-  const startPos = parseInt(startposition) || 1;
-  const maxRes = Math.min(parseInt(maxresults) || 100, 1000); // Max 1000 per QuickBooks limit
-
-  // Build the query
-  let query = `SELECT * FROM Invoice STARTPOSITION ${startPos} MAXRESULTS ${maxRes}`;
-
-  // Add status filter if provided
-  if (status && status !== "All") {
-    if (status === "Paid") {
-      query = `SELECT * FROM Invoice WHERE Balance = 0 STARTPOSITION ${startPos} MAXRESULTS ${maxRes}`;
-    } else if (status === "Unpaid") {
-      query = `SELECT * FROM Invoice WHERE Balance > 0 STARTPOSITION ${startPos} MAXRESULTS ${maxRes}`;
-    } else if (status === "Overdue") {
-      query = `SELECT * FROM Invoice WHERE Balance > 0 AND DueDate < '{current_date}' STARTPOSITION ${startPos} MAXRESULTS ${maxRes}`;
-    }
-  }
-
-  console.log(`🔍 Query: ${query}`);
+  const { serveCachedReport, REPORT_TYPES } = require("../../../services/quickbooksReportService");
 
   try {
-    const url = `${qb.baseUrl}/v3/company/${qb.realmId}/query?minorversion=75`;
-
-    console.log(`🔗 URL: ${url}`);
-    console.log(`📝 Query: ${query}`);
-
-    const response = await axios.post(url, query, {
-      headers: {
-        Authorization: `Bearer ${qb.accessToken}`,
-        Accept: "application/json",
-        "Content-Type": "application/text",
-        "User-Agent": "QuickBooks-Integration/1.0",
+    // 1. Read cached snapshot
+    const cached = await serveCachedReport(
+      req.clientId,
+      REPORT_TYPES.INVOICES,
+      {
+        startposition: req.query.startposition,
+        maxresults: req.query.maxresults,
+        status: req.query.status,
       },
-    });
+      { disconnected: Boolean(req.qbDisconnected) },
+    );
 
-    console.log("✅ Invoices fetched successfully!");
+    // 2. Extract invoice array from snapshot
+    let invoiceArray = cached?.data?.QueryResponse?.Invoice;
+    if (!Array.isArray(invoiceArray)) invoiceArray = [];
+    const snapshotCount = invoiceArray.length;
 
-    // Log summary
-    if (response.data && response.data.QueryResponse) {
-      const invoiceCount = response.data.QueryResponse.Invoice?.length || 0;
-      const totalCount = response.data.QueryResponse.totalCount || 0;
-      console.log(
-        `📊 Retrieved ${invoiceCount} invoices out of ${totalCount} total`,
-      );
+    console.log(`[INVOICES] Snapshot invoice count=${snapshotCount}`);
 
-      // Calculate total amount if invoices exist
-      if (invoiceCount > 0) {
-        let totalAmount = 0;
-        response.data.QueryResponse.Invoice.forEach((invoice) => {
-          totalAmount += parseFloat(invoice.TotalAmt || 0);
-        });
-        console.log(`💰 Total Amount: $${totalAmount.toFixed(2)}`);
-      }
-    }
+    // 3. Cache fallback: if snapshot is empty and QB is connected, fetch live
+    if (snapshotCount === 0 && !req.qbDisconnected) {
+      const qb = getQBConfig(req.clientId);
+      const isConnected = Boolean(qb?.accessToken && qb?.realmId);
 
-    // Return raw QuickBooks response
-    return res.json(response.data);
-  } catch (error) {
-    console.error("❌ Invoices API Error:", error.message);
+      console.log(`[INVOICES] QuickBooks connected=${isConnected}`);
 
-    if (error.response) {
-      console.error("📝 Status Code:", error.response.status);
-      console.error(
-        "📝 Response Data:",
-        JSON.stringify(error.response.data, null, 2),
-      );
-
-      // Handle 401 Unauthorized - Token expired
-      if (error.response.status === 401) {
-        console.log("⚠️ Token expired, attempting to refresh...");
-
+      if (isConnected) {
+        console.log(`[INVOICES] Fetching fresh invoices...`);
         try {
-          const newAccessToken = await tokenManager.refreshAccessToken(
-            req.clientId,
-          );
-          console.log("✅ Token refreshed successfully!");
+          const query = `SELECT * FROM Invoice STARTPOSITION 1 MAXRESULTS 1000`;
+          const url = `${qb.baseUrl}/v3/company/${qb.realmId}/query?minorversion=75`;
+          let response;
 
-          const retryResponse = await axios.post(
-            `${qb.baseUrl}/v3/company/${qb.realmId}/query?minorversion=75`,
-            query,
-            {
+          try {
+            response = await axios.post(url, query, {
               headers: {
-                Authorization: `Bearer ${newAccessToken}`,
+                Authorization: `Bearer ${qb.accessToken}`,
                 Accept: "application/json",
                 "Content-Type": "application/text",
-                "User-Agent": "QuickBooks-Integration/1.0",
               },
-            },
-          );
+            });
+          } catch (err) {
+            if (err.response?.status === 401) {
+              const newToken = await tokenManager.refreshAccessToken(req.clientId);
+              response = await axios.post(url, query, {
+                headers: {
+                  Authorization: `Bearer ${newToken}`,
+                  Accept: "application/json",
+                  "Content-Type": "application/text",
+                },
+              });
+            } else {
+              throw err;
+            }
+          }
 
-          console.log("✅ Retry successful with new token!");
-          return res.json(retryResponse.data);
-        } catch (refreshError) {
-          console.error("❌ Token refresh failed:", refreshError.message);
-          return res.status(401).json({
-            error: "Authentication failed. Please re-authenticate.",
-            details: refreshError.message,
-          });
+          const fresh = response.data?.QueryResponse?.Invoice;
+          if (Array.isArray(fresh)) {
+            invoiceArray = fresh;
+          }
+          console.log(`[INVOICES] Fetched invoice count=${invoiceArray.length}`);
+        } catch (fetchErr) {
+          console.warn(`[INVOICES] Fresh fetch failed: ${fetchErr.message}`);
         }
       }
-
-      // Return the exact QuickBooks error response
-      return res.status(error.response.status).json(error.response.data);
     }
 
+    // 4. Build monthly summary from whatever invoices we have
+    const monthlySummary = buildMonthlySummary(invoiceArray);
+    console.log(`[INVOICES] Grouped month count=${monthlySummary.length}`);
+
+    // 5. Case B — no invoices
+    if (invoiceArray.length === 0) {
+      return res.json({
+        success: true,
+        source: "cached_snapshot",
+        disconnected: Boolean(req.qbDisconnected),
+        lastSyncAt: cached?.lastSyncedAt || null,
+        datasetVersion: cached?.datasetVersion || null,
+        invoices: [],
+        monthlySummary: [],
+        empty: true,
+        message: "No invoices available",
+      });
+    }
+
+    // 6. Case A — invoices exist
+    return res.json({
+      success: true,
+      source: "cached_snapshot",
+      disconnected: Boolean(req.qbDisconnected),
+      lastSyncAt: cached?.lastSyncedAt || null,
+      datasetVersion: cached?.datasetVersion || null,
+      invoices: invoiceArray,
+      monthlySummary,
+    });
+  } catch (error) {
+    console.error("[Invoices] Snapshot read failed:", error.message);
     return res.status(500).json({
-      error: "Failed to fetch invoices",
-      details: error.message,
+      success: false,
+      source: "cached_snapshot",
+      disconnected: Boolean(req.qbDisconnected),
+      message: "Failed to load invoice snapshot.",
+      error: error.message,
     });
   }
 });
-
 /**
  * @swagger
  * /invoices/doc/{docNumber}:
@@ -442,3 +470,5 @@ router.put("/api/invoices/:id", async (req, res) => {
 });
 
 module.exports = router;
+
+

@@ -1,44 +1,57 @@
+import { useState, useRef, useEffect } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
+import { useMessageNotifications } from "../../context/MessageNotificationsContext";
 import {
   LayoutDashboard,
   Building2,
   Bell,
   LogOut,
-  Upload,
   ClipboardList,
-  Database,
   X,
   MoreHorizontal,
-  LifeBuoy,
+  FileText,
+  MessageSquare,
+  Settings,
 } from "lucide-react";
 import datahublogo from "../../assets/datahublogo.png";
 
 const brokerNav = [
   { label: "Dashboard", icon: LayoutDashboard, to: "/broker/dashboard" },
   { label: "Companies", icon: Building2, to: "/broker/companies" },
-  { label: "Help & Support", icon: LifeBuoy, to: "/support" },
 ];
 
 const clientNav = [
   { label: "Dashboard", icon: LayoutDashboard, to: "/client/dashboard" },
   { label: "My Requests", icon: ClipboardList, to: "/client/requests" },
-  { label: "Upload Documents", icon: Upload, to: "/client/upload" },
+  { label: "Documents", icon: FileText, to: "/client/upload" },
+  { label: "Messages", icon: MessageSquare, to: "/client/messages" },
   { label: "Reminders", icon: Bell, to: "/client/reminders" },
-  { label: "QuickBooks", icon: Database, to: "/client/connections" },
-  { label: "Help & Support", icon: LifeBuoy, to: "/support" },
 ];
 
 export default function Sidebar({ onClose }) {
   const { user, logout } = useAuth();
+  const { unreadCount } = useMessageNotifications();
   const navigate = useNavigate();
+  const [showUserMenu, setShowUserMenu] = useState(false);
+  const userMenuRef = useRef(null);
   const nav = user?.role === "broker" ? brokerNav : clientNav;
-  const accountLabel = user?.role === "broker" ? "Administrator" : user?.role === "user" ? "User" : "Seller";
+  const accountLabel = user?.role === "broker" ? "Administrator" : user?.role === "user" ? "User" : "Client";
 
-  const handleLogout = () => {
-    logout();
-    navigate("/login");
+  const handleLogout = async () => {
+    await logout();
+    navigate("/login", { replace: true });
   };
+
+  useEffect(() => {
+    function handleClickOutside(e) {
+      if (userMenuRef.current && !userMenuRef.current.contains(e.target)) {
+        setShowUserMenu(false);
+      }
+    }
+    if (showUserMenu) document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [showUserMenu]);
 
   return (
     <aside
@@ -78,9 +91,10 @@ export default function Sidebar({ onClose }) {
               to={item.to}
               onClick={onClose}
               className={({ isActive }) =>
-                `relative flex items-center gap-3 rounded-md px-3 py-2.5 text-[14px] font-medium transition-all duration-200 ${isActive
-                  ? "bg-[#EEF6E0] text-primary font-semibold"
-                  : "text-secondary hover:bg-[#F0F7E6] hover:text-text-primary"
+                `relative flex items-center gap-3 rounded-md px-3 py-2.5 text-[14px] font-medium transition-all duration-200 ${
+                  isActive
+                    ? "bg-[#EEF6E0] text-primary font-semibold"
+                    : "text-secondary hover:bg-[#F0F7E6] hover:text-text-primary"
                 }`
               }
             >
@@ -94,6 +108,11 @@ export default function Sidebar({ onClose }) {
                     className={isActive ? "text-primary" : "text-text-muted"}
                   />
                   <span>{item.label}</span>
+                  {item.label === "Messages" && unreadCount > 0 && (
+                    <span className="ml-auto inline-flex min-w-5 items-center justify-center rounded-full bg-negative px-1.5 py-0.5 text-[10px] font-bold text-white">
+                      {unreadCount > 9 ? '9+' : unreadCount}
+                    </span>
+                  )}
                 </>
               )}
             </NavLink>
@@ -102,20 +121,50 @@ export default function Sidebar({ onClose }) {
       </nav>
 
       <div className="border-t border-border px-3 pb-4 pt-4">
-        <div className="mb-1 flex items-center gap-3 rounded-md px-3 py-2.5 transition-colors hover:bg-bg-page">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary text-[12px] font-semibold text-white">
-            {user?.avatar}
-          </div>
-          <div className="min-w-0 flex-1 text-left">
-            <p className="truncate text-[14px] font-medium leading-none text-text-primary">
-              {user?.name}
-            </p>
-            <p className="mt-1 truncate text-[12px] leading-none text-text-muted">
-              {user?.role === "broker" ? accountLabel : `${accountLabel}${user?.company ? ` · ${user.company}` : ""}`}
-            </p>
-          </div>
-          <button className="text-text-muted transition-colors hover:text-text-primary">
-            <MoreHorizontal size={16} />
+        <div className="relative" ref={userMenuRef}>
+          {showUserMenu && (
+            <div
+              className="absolute bottom-full left-0 right-0 mb-1 rounded-[var(--radius-card)] border border-border bg-white p-2 animate-fadeIn"
+              style={{ boxShadow: "var(--shadow-dropdown)" }}
+            >
+              <div className="mb-1 border-b border-border px-3 py-2">
+                <p className="text-sm font-semibold text-text-primary">{user?.name}</p>
+                <p className="text-xs text-secondary">{user?.email}</p>
+              </div>
+              <button
+                className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-secondary transition-colors hover:bg-bg-page hover:text-text-primary"
+                onClick={() => {
+                  setShowUserMenu(false);
+                  if (onClose) onClose();
+                  if (user?.role === "client") {
+                    navigate("/client/profile");
+                  } else if (user?.role === "broker") {
+                    navigate("/broker/profile");
+                  }
+                }}
+              >
+                <Settings size={14} />
+                Profile Settings
+              </button>
+            </div>
+          )}
+
+          <button
+            onClick={() => setShowUserMenu((v) => !v)}
+            className="mb-1 flex w-full items-center gap-3 rounded-md px-3 py-2.5 transition-colors hover:bg-bg-page"
+          >
+            <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary text-[12px] font-semibold text-white">
+              {user?.avatar}
+            </div>
+            <div className="min-w-0 flex-1 text-left">
+              <p className="truncate text-[14px] font-medium leading-none text-text-primary">
+                {user?.name}
+              </p>
+              <p className="mt-1 truncate text-[12px] leading-none text-text-muted">
+                {user?.role === "broker" ? accountLabel : `${accountLabel}${user?.company ? ` · ${user.company}` : ""}`}
+              </p>
+            </div>
+            <MoreHorizontal size={16} className="shrink-0 text-text-muted" />
           </button>
         </div>
         <button

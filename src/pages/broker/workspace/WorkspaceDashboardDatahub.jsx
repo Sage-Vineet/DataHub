@@ -45,17 +45,29 @@ import {
   fetchDashboardKPIs,
   fetchFinancialTrends,
 } from "../../../services/reportService";
+import { loadQMSDashboard } from "../../../services/qmsManualDashboardService";
+import { loadManualUploadDashboard } from "../../../services/manualUploadDashboardService";
 import { fetchInvoices } from "../../../services/invoiceService";
 import { getProfitAndLoss } from "../../../services/profitAndLossService";
-import { refreshQuickbooksToken } from "../../../services/authService";
-import { getStoredToken } from "../../../lib/api";
+import { syncQuickbooksReports } from "../../../lib/quickbooks";
+import { getReportSources, setSelectedReportSource } from "../../../lib/api";
+import {
+  getReportSourceMode,
+  normalizeReportSourceKey,
+  REPORT_SOURCE_KEYS,
+} from "../../../lib/report-source";
 import { exportToCSV } from "../../../lib/exportCSV";
+import { useDataSource } from "../../../context/DataSourceContext";
+import { emitWorkspaceDataSourceUpdated } from "../../../lib/dataSourceEvents";
 
-const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
-const DASHBOARD_STATE_PAGE_KEY = "datahub-dashboard";
-const DASHBOARD_STATE_ENDPOINT = `${API_BASE_URL}/workspace-page-state/${DASHBOARD_STATE_PAGE_KEY}`;
 const DASHBOARD_STORAGE_PREFIX = "workspace-datahub-dashboard";
+
+const DASHBOARD_ENDPOINTS = {
+  quickbooks_manual: "/manual-report-uploads/qms-dashboard",
+  manual_upload: "/manual-report-uploads/manual-upload-dashboard",
+  quickbooks_online: "/dashboard",
+  manual_gl: "/manual-gl/dashboard",
+};
 
 const KPI_ICON_BY_LABEL = {
   "Total Revenue": CircleDollarSign,
@@ -223,6 +235,13 @@ export default function WorkspaceDashboardDatahub() {
 
   const [isLoading, setIsLoading] = useState(true);
   const [isClient, setIsClient] = useState(false);
+  const [selectedSource, setSelectedSource] = useState(REPORT_SOURCE_KEYS.QUICKBOOKS);
+  const [isManualUploadMode, setIsManualUploadMode] = useState(false);
+  const [isQBManualMode, setIsQBManualMode] = useState(false);
+  const [qmsSelectedYear, setQmsSelectedYear] = useState("all");
+  const [qmsAvailableYears, setQmsAvailableYears] = useState([]);
+  const [manualUploadSelectedYear, setManualUploadSelectedYear] = useState("all");
+  const [manualUploadAvailableYears, setManualUploadAvailableYears] = useState([]);
   const [dynamicStats, setDynamicStats] = useState([]);
   const [selectedKpiLabels, setSelectedKpiLabels] = useState([]);
   const [isKpiSelectorOpen, setIsKpiSelectorOpen] = useState(false);
@@ -246,19 +265,50 @@ export default function WorkspaceDashboardDatahub() {
   const [chartSelectedMonth, setChartSelectedMonth] = useState("");
   const [aggregationType, setAggregationType] = useState("monthly");
   const [isSyncing, setIsSyncing] = useState(false);
+  const {
+    activeSource: contextActiveSource,
+  } = useDataSource();
+  const [activeSourceKey, setActiveSourceKey] = useState(
+    REPORT_SOURCE_KEYS.QUICKBOOKS,
+  );
 
   // Tracks the last chart request so we never fire the same one twice
   const lastChartRequestKeyRef = useRef("");
+  const chartRequestSeqRef = useRef(0);
+  const kpiRequestSeqRef = useRef(0);
   const kpiSelectorRef = useRef(null);
   // True once the mount effect has run — prevents the auto-save effect from
   // firing before state is properly initialised
   const hasRestoredRef = useRef(false);
+  // Tracks the last source that the bootstrap loaded data for — used to skip
+  // redundant bootstrap re-runs when contextActiveSource fires but the live
+  // source hasn't actually changed (e.g., null → "quickbooks_manual" on init).
+  const lastBootstrappedSourceRef = useRef(null);
 
   const visibleDynamicStats = useMemo(() => {
     if (!selectedKpiLabels.length) return dynamicStats;
     return dynamicStats.filter((stat) => selectedKpiLabels.includes(stat.label));
   }, [dynamicStats, selectedKpiLabels]);
 
+  // Strip trailing months with no data so future months don't render as empty slots.
+  // A month is considered empty when revenue and expenses are both 0 or null/undefined.
+  const displayChartData = useMemo(() => {
+    if (!chartDataState.length) return chartDataState;
+    let last = chartDataState.length - 1;
+    while (
+      last >= 0 &&
+      !chartDataState[last].revenue &&
+      !chartDataState[last].expenses
+    ) {
+      last -= 1;
+    }
+    return chartDataState.slice(0, last + 1);
+  }, [chartDataState]);
+
+  const activeSourceMode = useMemo(
+    () => getReportSourceMode(activeSourceKey),
+    [activeSourceKey],
+  );
   // ── Date-range calculator ──────────────────────────────────────────────
 
   const calculateDateRangeFromYearMonth = useCallback((year, month) => {
@@ -279,31 +329,42 @@ export default function WorkspaceDashboardDatahub() {
     };
   }, []);
 
-  const getClientHeaders = useCallback(
-    (includeJson = false) => {
-      const token = getStoredToken();
+  const loadSourceState = useCallback(async () => {
+    if (!clientId) {
+      setActiveSourceKey(REPORT_SOURCE_KEYS.QUICKBOOKS);
+      return REPORT_SOURCE_KEYS.QUICKBOOKS;
+    }
 
-      return {
-        ...(token
-          ? {
-            Authorization: `Bearer ${token}`,
-            "X-Access-Token": token,
-            "X-Auth-Token": token,
-            "X-Token": token,
-          }
-          : {}),
-        ...(clientId ? { "X-Client-Id": clientId } : {}),
-        ...(includeJson ? { "Content-Type": "application/json" } : {}),
-      };
-    },
-    [clientId],
-  );
+    // Use context value when already loaded — avoids a redundant API call
+    if (contextActiveSource) {
+      const normalized = normalizeReportSourceKey(contextActiveSource);
+      setActiveSourceKey(normalized);
+      return normalized;
+    }
+
+    // Context hasn't resolved yet — fall back to a direct fetch
+    try {
+      const { getReportSources: _getReportSources } = await import("../../../lib/api");
+      const payload = await _getReportSources({ clientId });
+      const sourceKey = normalizeReportSourceKey(
+        payload?.selectedSource || payload?.activeSource,
+      );
+      setActiveSourceKey(sourceKey);
+      return sourceKey;
+    } catch (error) {
+      console.error("[DataHub] Failed to load active source:", error);
+      setActiveSourceKey(REPORT_SOURCE_KEYS.QUICKBOOKS);
+      return REPORT_SOURCE_KEYS.QUICKBOOKS;
+    }
+  }, [clientId, contextActiveSource]);
 
   // ── Snapshot builders ──────────────────────────────────────────────────
 
   // Everything we need to fully restore the page — stored in sessionStorage
   const buildSessionSnapshot = useCallback(
     (overrides = {}) => ({
+      sourceKey: overrides.sourceKey ?? activeSourceKey,
+      selectedSource: overrides.selectedSource ?? selectedSource,
       startDate: overrides.startDate ?? startDate,
       endDate: overrides.endDate ?? endDate,
       selectedYear: overrides.selectedYear ?? selectedYear,
@@ -322,8 +383,14 @@ export default function WorkspaceDashboardDatahub() {
       invoicesData: overrides.invoicesData ?? invoicesData,
       chartDataState: overrides.chartDataState ?? chartDataState,
       monthlyInsights: overrides.monthlyInsights ?? monthlyInsights,
+      qmsSelectedYear: overrides.qmsSelectedYear ?? qmsSelectedYear,
+      qmsAvailableYears: overrides.qmsAvailableYears ?? qmsAvailableYears,
+      manualUploadSelectedYear: overrides.manualUploadSelectedYear ?? manualUploadSelectedYear,
+      manualUploadAvailableYears: overrides.manualUploadAvailableYears ?? manualUploadAvailableYears,
     }),
     [
+      activeSourceKey,
+      selectedSource,
       aggregationType,
       chartDataState,
       chartEndDate,
@@ -340,53 +407,45 @@ export default function WorkspaceDashboardDatahub() {
       selectedMonth,
       selectedYear,
       startDate,
+      qmsSelectedYear,
+      qmsAvailableYears,
+      manualUploadSelectedYear,
+      manualUploadAvailableYears,
     ],
   );
 
   // Subset stored on the server (no UI-only fields like selectedYear/Month)
-  const buildRemoteSnapshot = useCallback(
-    (overrides = {}) => ({
-      startDate: overrides.startDate ?? startDate,
-      endDate: overrides.endDate ?? endDate,
-      filterType: overrides.filterType ?? filterType,
-      chartStartDate: overrides.chartStartDate ?? chartStartDate,
-      chartEndDate: overrides.chartEndDate ?? chartEndDate,
-      aggregationType: overrides.aggregationType ?? aggregationType,
-      selectedKpiLabels: overrides.selectedKpiLabels ?? selectedKpiLabels,
-      dynamicStats: stripDashboardStatsIcons(
-        overrides.dynamicStats ?? dynamicStats,
-      ),
-      invoicesData: overrides.invoicesData ?? invoicesData,
-      chartDataState: overrides.chartDataState ?? chartDataState,
-      monthlyInsights: overrides.monthlyInsights ?? monthlyInsights,
-    }),
-    [
-      aggregationType,
-      chartDataState,
-      chartEndDate,
-      chartStartDate,
-      dynamicStats,
-      endDate,
-      filterType,
-      invoicesData,
-      monthlyInsights,
-      selectedKpiLabels,
-      startDate,
-    ],
-  );
-
   // ── Snapshot restore ───────────────────────────────────────────────────
 
   /**
    * Applies a saved snapshot to all state setters.
    * Returns true if the snapshot had usable data (non-empty stats/chart).
    */
-  const applyDashboardSnapshot = useCallback((snapshot) => {
+  const applyDashboardSnapshot = useCallback((snapshot, expectedSourceKey = activeSourceKey) => {
     if (!snapshot || typeof snapshot !== "object") return false;
+    const snapshotSourceKey = normalizeReportSourceKey(snapshot.sourceKey || null);
+    if (!snapshotSourceKey) return false;
+    if (snapshotSourceKey !== normalizeReportSourceKey(expectedSourceKey)) return false;
+
+    // Restore connection source selection
+    const restoredSource = snapshot.selectedSource || REPORT_SOURCE_KEYS.QUICKBOOKS;
+    setSelectedSource(restoredSource);
+    setIsManualUploadMode(restoredSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD);
+    setIsQBManualMode(restoredSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL);
+    if (snapshot.qmsSelectedYear !== undefined) setQmsSelectedYear(snapshot.qmsSelectedYear);
+    if (Array.isArray(snapshot.qmsAvailableYears)) setQmsAvailableYears(snapshot.qmsAvailableYears);
+    if (snapshot.manualUploadSelectedYear !== undefined) setManualUploadSelectedYear(snapshot.manualUploadSelectedYear);
+    if (Array.isArray(snapshot.manualUploadAvailableYears)) setManualUploadAvailableYears(snapshot.manualUploadAvailableYears);
 
     // Only restore if there is actual data — otherwise fall through to fresh fetch
-    const hasData =
+    const isManual = restoredSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD;
+    const isQBManual = restoredSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
+    const hasStatsData =
       Array.isArray(snapshot.dynamicStats) && snapshot.dynamicStats.length > 0;
+    const hasChartData =
+      Array.isArray(snapshot.chartDataState) &&
+      snapshot.chartDataState.length > 0;
+    const hasData = hasStatsData && (isManual || isQBManual || hasChartData);
     const hydratedStats = hydrateDashboardStats(snapshot.dynamicStats || []);
     const restoredKpiLabels =
       Array.isArray(snapshot.selectedKpiLabels) &&
@@ -426,98 +485,116 @@ export default function WorkspaceDashboardDatahub() {
     setAggregationType(snapshot.aggregationType || "monthly");
     setDynamicStats(hydratedStats);
     setSelectedKpiLabels(restoredKpiLabels);
-    setInvoicesData(snapshot.invoicesData || []);
-    setChartDataState(snapshot.chartDataState || []);
-    setMonthlyInsights(snapshot.monthlyInsights || []);
+    // In manual/QMS modes invoices and insights are always blank; chart shows trends
+    setInvoicesData(isManual || isQBManual ? [] : snapshot.invoicesData || []);
+    setChartDataState(isManual ? snapshot.chartDataState || [] : isQBManual ? snapshot.chartDataState || [] : snapshot.chartDataState || []);
+    setMonthlyInsights(isManual || isQBManual ? [] : snapshot.monthlyInsights || []);
     setSearchTerm(snapshot.searchTerm || "");
 
     // Mark the chart request key so loadChartData won't re-fire for same params
     lastChartRequestKeyRef.current =
       snapshot.chartStartDate && snapshot.chartEndDate
-        ? `${snapshot.chartStartDate}|${snapshot.chartEndDate}|${snapshot.aggregationType || "monthly"}`
+        ? `${snapshot.chartStartDate}|${snapshot.chartEndDate}|${snapshot.aggregationType || "monthly"}|${getReportSourceMode(snapshotSourceKey)}`
         : "";
 
     return hasData;
-  }, []);
-
-  // ── Remote snapshot persistence ────────────────────────────────────────
-
-  const fetchRemoteDashboardSnapshot = useCallback(async () => {
-    const token = getStoredToken();
-    if (!clientId || !user?.id || !token) return null;
-    try {
-      const response = await fetch(
-        `${DASHBOARD_STATE_ENDPOINT}?clientId=${encodeURIComponent(clientId)}`,
-        { cache: "no-store", headers: getClientHeaders() },
-      );
-      if (response.status === 401) return null;
-      const payload = await response.json().catch(() => null);
-      if (!response.ok)
-        throw new Error(payload?.error || `HTTP ${response.status}`);
-      return payload?.state || null;
-    } catch (error) {
-      console.error("Failed to load saved dashboard state:", error);
-      return null;
-    }
-  }, [clientId, getClientHeaders, user?.id]);
-
-  const replaceRemoteDashboardSnapshot = useCallback(
-    async (overrides = {}) => {
-      const token = getStoredToken();
-      if (!clientId || !user?.id || !token) return;
-      try {
-        const response = await fetch(
-          `${DASHBOARD_STATE_ENDPOINT}?clientId=${encodeURIComponent(clientId)}`,
-          {
-            method: "PUT",
-            cache: "no-store",
-            headers: getClientHeaders(true),
-            body: JSON.stringify({ state: buildRemoteSnapshot(overrides) }),
-          },
-        );
-        if (response.status === 401) return;
-      } catch (error) {
-        console.error("Failed to save dashboard state:", error);
-      }
-    },
-    [buildRemoteSnapshot, clientId, getClientHeaders, user?.id],
-  );
+  }, [activeSourceKey]);
 
   // ── Data fetchers ──────────────────────────────────────────────────────
 
-  const loadChartData = useCallback(async (start, end, aggType = "monthly") => {
-    const requestKey = `${start}|${end}|${aggType}`;
+  const loadManualUploadDashboardData = useCallback(async (year = "all") => {
+    console.log(`[DASHBOARD] activeSource=manual_upload endpoint=${DASHBOARD_ENDPOINTS.manual_upload} dataSource=ManualUpload clientId=${clientId}`);
+    setIsLoading(true);
+    try {
+      const result = await loadManualUploadDashboard(year, { clientId });
+      setDynamicStats(result.kpis);
+      setSelectedKpiLabels((current) =>
+        current.length ? current : result.kpis.map((kpi) => kpi.label),
+      );
+      setManualUploadAvailableYears(result.availableYears);
+      setManualUploadSelectedYear(year);
+      setChartDataState(result.trends);
+      setInvoicesData([]);
+      setMonthlyInsights([]);
+    } catch (err) {
+      console.error("[Manual Upload Dashboard] Failed to load data:", err);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [clientId]);
+
+  const loadQMSDashboardData = useCallback(async (year = "all") => {
+    console.log(`[DASHBOARD] activeSource=quickbooks_manual endpoint=${DASHBOARD_ENDPOINTS.quickbooks_manual} dataSource=QMS clientId=${clientId}`);
+    setIsLoading(true);
+    try {
+      const result = await loadQMSDashboard(year, { clientId });
+      setDynamicStats(result.kpis);
+      setSelectedKpiLabels((current) =>
+        current.length ? current : result.kpis.map((kpi) => kpi.label),
+      );
+      setQmsAvailableYears(result.availableYears);
+      setQmsSelectedYear(year);
+      setChartDataState(result.trends);
+      setInvoicesData([]);
+      setMonthlyInsights([]);
+    } catch (err) {
+      console.error("[QMS Dashboard] Failed to load data:", err);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [clientId]);
+
+  const loadChartData = useCallback(async (
+    start,
+    end,
+    aggType = "monthly",
+    sourceModeOverride = "",
+  ) => {
+    const sourceMode = sourceModeOverride || activeSourceMode;
+    const requestKey = `${start}|${end}|${aggType}|${sourceMode}`;
     if (lastChartRequestKeyRef.current === requestKey) return;
     lastChartRequestKeyRef.current = requestKey;
+    const requestSeq = ++chartRequestSeqRef.current;
 
     setIsChartLoading(true);
     try {
-      const data = await fetchFinancialTrends(start, end, aggType);
+      const data = await fetchFinancialTrends(start, end, aggType, {
+        sourceMode,
+      });
+      if (requestSeq !== chartRequestSeqRef.current) return;
       setChartDataState(data);
     } catch (err) {
+      if (requestSeq !== chartRequestSeqRef.current) return;
       console.error("Failed to load chart data:", err);
-      setChartDataState([]);
+      // Preserve previous chart snapshot to avoid flicker/reset on transient or disconnect errors.
       lastChartRequestKeyRef.current = "";
     } finally {
-      setIsChartLoading(false);
+      if (requestSeq === chartRequestSeqRef.current) {
+        setIsChartLoading(false);
+      }
     }
-  }, []);
+  }, [activeSourceMode]);
 
-  const loadKpiData = useCallback(async (start, end) => {
+  const loadKpiData = useCallback(async (start, end, sourceModeOverride = "") => {
+    const sourceMode = sourceModeOverride || activeSourceMode;
+    const requestSeq = ++kpiRequestSeqRef.current;
     setIsLoading(true);
     try {
       const [kpiData, invsData] = await Promise.all([
-        fetchDashboardKPIs(start, end),
-        fetchInvoices(),
+        fetchDashboardKPIs(start, end, { sourceMode }),
+        sourceMode === "quickbooks" ? fetchInvoices() : Promise.resolve([]),
       ]);
+      if (requestSeq !== kpiRequestSeqRef.current) return;
 
-      const invs = Array.isArray(invsData?.QueryResponse?.Invoice)
-        ? invsData.QueryResponse.Invoice
-        : Array.isArray(invsData?.data?.QueryResponse?.Invoice)
-          ? invsData.data.QueryResponse.Invoice
-          : Array.isArray(invsData)
-            ? invsData
-            : [];
+      const invs = Array.isArray(invsData?.invoices)
+        ? invsData.invoices
+        : Array.isArray(invsData?.QueryResponse?.Invoice)
+          ? invsData.QueryResponse.Invoice
+          : Array.isArray(invsData?.data?.QueryResponse?.Invoice)
+            ? invsData.data.QueryResponse.Invoice
+            : Array.isArray(invsData)
+              ? invsData
+              : [];
 
       setInvoicesData(invs);
       setDynamicStats(kpiData);
@@ -567,8 +644,12 @@ export default function WorkspaceDashboardDatahub() {
         },
       ]);
     } catch (err) {
+      if (requestSeq !== kpiRequestSeqRef.current) return;
       console.error("Failed to load dashboard KPI data:", err);
-      const reportFallback = await getProfitAndLoss().catch(() => null);
+      const reportFallback = await getProfitAndLoss("", "", "", {
+        sourceMode,
+      }).catch(() => null);
+      if (requestSeq !== kpiRequestSeqRef.current) return;
       if (reportFallback) {
         setMonthlyInsights((current) =>
           current.length
@@ -584,25 +665,47 @@ export default function WorkspaceDashboardDatahub() {
         );
       }
     } finally {
-      setIsLoading(false);
+      if (requestSeq === kpiRequestSeqRef.current) {
+        setIsLoading(false);
+      }
     }
-  }, []);
+  }, [activeSourceMode]);
 
   // ── Manual sync (explicit user action — always re-fetches) ─────────────
 
   const handleSync = useCallback(async () => {
     setIsSyncing(true);
     try {
-      await refreshQuickbooksToken();
-      await loadKpiData(startDate, endDate);
-      lastChartRequestKeyRef.current = "";
-      await loadChartData(chartStartDate, chartEndDate, aggregationType);
+      if (activeSourceMode === "quickbooks") {
+        await syncQuickbooksReports();
+      }
+      if (isManualUploadMode) {
+        await loadManualUploadDashboardData(manualUploadSelectedYear);
+      } else if (isQBManualMode) {
+        await loadQMSDashboardData(qmsSelectedYear);
+      } else {
+        await loadKpiData(startDate, endDate, activeSourceMode);
+        lastChartRequestKeyRef.current = "";
+        await loadChartData(
+          chartStartDate,
+          chartEndDate,
+          aggregationType,
+          activeSourceMode,
+        );
+      }
     } catch (err) {
       console.error("Sync failed:", err);
     } finally {
       setIsSyncing(false);
     }
   }, [
+    activeSourceMode,
+    isManualUploadMode,
+    isQBManualMode,
+    loadManualUploadDashboardData,
+    loadQMSDashboardData,
+    manualUploadSelectedYear,
+    qmsSelectedYear,
     aggregationType,
     chartEndDate,
     chartStartDate,
@@ -610,6 +713,72 @@ export default function WorkspaceDashboardDatahub() {
     loadChartData,
     loadKpiData,
     startDate,
+  ]);
+
+  // ── Source-switch handler ──────────────────────────────────────────────
+
+  const handleSourceChange = useCallback(async (newSourceKey) => {
+    if (newSourceKey === selectedSource) return;
+
+    console.log(`[DASHBOARD] activeSource=${newSourceKey} switching — clearing stale cache`);
+
+    setSelectedSource(newSourceKey);
+    // Keep activeSourceKey in sync so session snapshots store the correct sourceKey.
+    setActiveSourceKey(newSourceKey);
+    const newIsManual = newSourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD;
+    const newIsQBManual = newSourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
+    setIsManualUploadMode(newIsManual);
+    setIsQBManualMode(newIsQBManual);
+    setDynamicStats([]);
+    setChartDataState([]);
+    setInvoicesData([]);
+    setMonthlyInsights([]);
+
+    // Clear stale session snapshot and generic dashboard cache keys so old source
+    // data can never bleed into the new source.
+    saveStoredDashboardState(clientId, user?.id, null);
+    sessionStorage.removeItem("dashboardData");
+    sessionStorage.removeItem("dashboardKpis");
+    sessionStorage.removeItem("financialTrends");
+
+    // Persist selection server-side and update DataSourceContext + localStorage
+    // so that contextActiveSource and localStorage stay in sync with the switch.
+    setSelectedReportSource(newSourceKey, { clientId, confirmSwitch: true }).catch(() => null);
+    emitWorkspaceDataSourceUpdated({ clientId, sourceKey: newSourceKey });
+
+    if (newIsManual) {
+      setManualUploadSelectedYear("all");
+      await loadManualUploadDashboardData("all");
+    } else if (newIsQBManual) {
+      setQmsSelectedYear("all");
+      await loadQMSDashboardData("all");
+    } else {
+      const currentYear = new Date().getFullYear();
+      const currentMonth = (new Date().getMonth() + 1).toString();
+      const { startDate: kpiStart, endDate: kpiEnd } =
+        calculateDateRangeFromYearMonth(currentYear, currentMonth);
+      setSelectedYear(currentYear);
+      setSelectedMonth(currentMonth);
+      setStartDate(kpiStart);
+      setEndDate(kpiEnd);
+      const { startDate: chartStart, endDate: chartEnd } =
+        calculateDateRangeFromYearMonth(currentYear);
+      setChartStartDate(chartStart);
+      setChartEndDate(chartEnd);
+      lastChartRequestKeyRef.current = "";
+      await loadKpiData(kpiStart, kpiEnd);
+      await loadChartData(chartStart, chartEnd, aggregationType);
+    }
+  }, [
+    selectedSource,
+    clientId,
+    user?.id,
+    calculateDateRangeFromYearMonth,
+    loadManualUploadDashboardData,
+    loadQMSDashboardData,
+    loadKpiData,
+    loadChartData,
+    aggregationType,
   ]);
 
   // ── Mount effect: restore → fallback to fresh fetch ───────────────────
@@ -629,42 +798,77 @@ export default function WorkspaceDashboardDatahub() {
     const currentMonth = (new Date().getMonth() + 1).toString();
 
     const bootstrap = async () => {
-      // 1. Try sessionStorage first (instant, no network)
+      const resolvedSourceKey = await loadSourceState();
+      const resolvedSourceMode = getReportSourceMode(resolvedSourceKey);
+
+      // 1. Always fetch the authoritative source from the server first.
+      //    This ensures a source change on the Connections page is immediately
+      //    reflected here, even if the session cache still has the old source.
+      const sourcesData = await getReportSources({ clientId }).catch(() => null);
+      const apiSource = normalizeReportSourceKey(sourcesData?.selectedSource) || REPORT_SOURCE_KEYS.QUICKBOOKS;
+
+      // contextActiveSource is what the user sees in the header (set from localStorage
+      // + DOM events). If it disagrees with the DB, trust the UI and sync the DB in
+      // the background — this prevents the header showing "Manual Upload" while the
+      // dashboard fetches from the QMS endpoint (or vice versa).
+      const contextNorm = contextActiveSource ? normalizeReportSourceKey(contextActiveSource) : null;
+      const liveSource = contextNorm || apiSource;
+
+      if (contextNorm && contextNorm !== apiSource) {
+        console.log(`[DASHBOARD] Source mismatch: context=${contextNorm} api=${apiSource} — syncing DB to context`);
+        setSelectedReportSource(contextNorm, { clientId, confirmSwitch: true }).catch(() => null);
+      }
+
+      // Skip re-run if we already loaded data for this exact source
+      // (prevents double-loading when contextActiveSource fires its initial
+      // null→value transition while the live source hasn't actually changed).
+      if (hasRestoredRef.current && lastBootstrappedSourceRef.current === liveSource) return;
+      lastBootstrappedSourceRef.current = liveSource;
+
+      const liveIsManual = liveSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD;
+      const liveIsQBManual = liveSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
+      setSelectedSource(liveSource);
+      setIsManualUploadMode(liveIsManual);
+      setIsQBManualMode(liveIsQBManual);
+
+      // 2. For manual upload modes, always fetch fresh data — the user may have
+      //    uploaded new files from the Connections page and the session snapshot
+      //    would still hold the stale $0 values from the previous visit.
+      if (liveIsManual) {
+        saveStoredDashboardState(clientId, user?.id, null);
+        await loadManualUploadDashboardData("all");
+        hasRestoredRef.current = true;
+        return;
+      }
+
+      if (liveIsQBManual) {
+        saveStoredDashboardState(clientId, user?.id, null);
+        await loadQMSDashboardData("all");
+        hasRestoredRef.current = true;
+        return;
+      }
+
+      // 3. Try sessionStorage — only use it if the cached source matches the live source.
+      //    If the user switched source on the Connections page the cache is stale and
+      //    must be ignored so we fetch fresh data for the new mode.
       const sessionSnap = getStoredDashboardState(clientId, user?.id);
-      if (sessionSnap) {
+      const sessionSource = sessionSnap?.selectedSource || REPORT_SOURCE_KEYS.QUICKBOOKS;
+      const sourceMatchesCache = sessionSnap && sessionSource === liveSource;
+
+      if (sourceMatchesCache) {
         const restored = applyDashboardSnapshot(sessionSnap);
         if (restored) {
           hasRestoredRef.current = true;
           setIsLoading(false);
           setIsChartLoading(false);
-          return; // ← skip all API calls
+          return; // ← full restore from session, skip all API calls
         }
+      } else if (sessionSnap && sessionSource !== liveSource) {
+        // Source changed since the session was saved — wipe stale cache
+        saveStoredDashboardState(clientId, user?.id, null);
       }
 
-      // 2. Try remote snapshot (cross-session persistence)
-      const remoteSnap = await fetchRemoteDashboardSnapshot();
-      if (remoteSnap) {
-        const restored = applyDashboardSnapshot(remoteSnap);
-        if (restored) {
-          // Mirror remote snapshot into sessionStorage so subsequent navigations
-          // are instant and don't need the network round-trip
-          saveStoredDashboardState(clientId, user?.id, {
-            ...remoteSnap,
-            selectedYear: remoteSnap.selectedYear ?? currentYear,
-            selectedMonth: remoteSnap.selectedMonth ?? "",
-            chartSelectedYear: remoteSnap.chartSelectedYear ?? currentYear,
-            chartSelectedMonth: remoteSnap.chartSelectedMonth ?? "",
-            searchTerm: remoteSnap.searchTerm ?? "",
-            selectedKpiLabels: remoteSnap.selectedKpiLabels ?? [],
-          });
-          hasRestoredRef.current = true;
-          setIsLoading(false);
-          setIsChartLoading(false);
-          return; // ← skip all API calls
-        }
-      }
-
-      // 3. No cached data found — do a fresh fetch
+      // 4. No cached data at all — fresh fetch from QuickBooks
       setSelectedYear(currentYear);
       setSelectedMonth(currentMonth);
       const { startDate: kpiStart, endDate: kpiEnd } =
@@ -679,15 +883,15 @@ export default function WorkspaceDashboardDatahub() {
       setChartStartDate(chartStart);
       setChartEndDate(chartEnd);
 
-      await loadKpiData(kpiStart, kpiEnd);
-      await loadChartData(chartStart, chartEnd, "monthly");
+      await loadKpiData(kpiStart, kpiEnd, resolvedSourceMode);
+      await loadChartData(chartStart, chartEnd, "monthly", resolvedSourceMode);
 
       hasRestoredRef.current = true;
     };
 
     bootstrap();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [clientId, user?.id]); // Re-run only when the client or signed-in user changes
+  }, [clientId, user?.id, loadManualUploadDashboardData, loadQMSDashboardData, contextActiveSource]);
 
   // ── Auto-save: persist state to sessionStorage after every meaningful change
   //
@@ -701,6 +905,7 @@ export default function WorkspaceDashboardDatahub() {
     saveStoredDashboardState(clientId, user?.id, snapshot);
   }, [
     // Only the data fields that represent actual page state worth persisting
+    selectedSource,
     dynamicStats,
     selectedKpiLabels,
     invoicesData,
@@ -732,29 +937,6 @@ export default function WorkspaceDashboardDatahub() {
       return matching.length ? matching : availableLabels;
     });
   }, [dynamicStats]);
-
-  useEffect(() => {
-    if (!hasRestoredRef.current) return;
-
-    const timeoutId = window.setTimeout(() => {
-      void replaceRemoteDashboardSnapshot();
-    }, 400);
-
-    return () => window.clearTimeout(timeoutId);
-  }, [
-    dynamicStats,
-    selectedKpiLabels,
-    invoicesData,
-    chartDataState,
-    monthlyInsights,
-    startDate,
-    endDate,
-    filterType,
-    chartStartDate,
-    chartEndDate,
-    aggregationType,
-    replaceRemoteDashboardSnapshot,
-  ]);
 
   useEffect(() => {
     if (!isKpiSelectorOpen) return undefined;
@@ -975,18 +1157,16 @@ export default function WorkspaceDashboardDatahub() {
   return (
     <>
       <Header title="Dashboard" />
-      <div className="px-6 pt-6">
-        <QBDisconnectedBanner pageName="DataHub Dashboard" />
-      </div>
       <div className="flex-1 p-6 space-y-6">
+        <QBDisconnectedBanner />
         <div className="flex items-center justify-between flex-wrap gap-4">
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
             <h1 className="text-[24px] font-bold text-text-primary">
               Dashboard
             </h1>
             <button
               onClick={handleSync}
-              disabled={isSyncing}
+              disabled={isSyncing || (activeSourceMode !== "quickbooks" && !isQBManualMode && !isManualUploadMode)}
               className="btn-secondary py-1.5 px-3"
               title="Sync data"
             >
@@ -998,7 +1178,43 @@ export default function WorkspaceDashboardDatahub() {
           </div>
 
           <div className="flex items-center gap-4 flex-wrap">
-            <div className="flex items-center gap-2 bg-bg-page rounded-lg border border-border p-2">
+            {isManualUploadMode && (
+              <div className="flex items-center gap-2 bg-bg-page rounded-lg border border-border p-2">
+                <span className="text-[13px] text-text-secondary font-medium">Year:</span>
+                <select
+                  value={manualUploadSelectedYear}
+                  onChange={(e) => {
+                    const val = e.target.value === "all" ? "all" : parseInt(e.target.value, 10);
+                    loadManualUploadDashboardData(val);
+                  }}
+                  className="px-3 py-1.5 text-[13px] font-medium bg-transparent border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
+                >
+                  <option value="all">All Files</option>
+                  {manualUploadAvailableYears.map((year) => (
+                    <option key={year} value={year}>FY {year}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {isQBManualMode && (
+              <div className="flex items-center gap-2 bg-bg-page rounded-lg border border-border p-2">
+                <span className="text-[13px] text-text-secondary font-medium">Year:</span>
+                <select
+                  value={qmsSelectedYear}
+                  onChange={(e) => {
+                    const val = e.target.value === "all" ? "all" : parseInt(e.target.value, 10);
+                    loadQMSDashboardData(val);
+                  }}
+                  className="px-3 py-1.5 text-[13px] font-medium bg-transparent border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
+                >
+                  <option value="all">All Files</option>
+                  {qmsAvailableYears.map((year) => (
+                    <option key={year} value={year}>FY {year}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {!isManualUploadMode && !isQBManualMode && <><div className="flex items-center gap-2 bg-bg-page rounded-lg border border-border p-2">
               <button
                 onClick={handlePreviousYear}
                 className="p-1.5 hover:bg-bg-page/80 rounded-md transition-colors"
@@ -1067,29 +1283,29 @@ export default function WorkspaceDashboardDatahub() {
               </button>
             </div>
 
-            <div className="text-text-muted text-[13px]">or</div>
+              <div className="text-text-muted text-[13px]">or</div>
 
-            <div className="flex items-center gap-2">
-              <input
-                type="date"
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
-                className="input-base py-1.5 text-[13px]"
-              />
-              <span className="text-text-muted">to</span>
-              <input
-                type="date"
-                value={endDate}
-                onChange={(e) => setEndDate(e.target.value)}
-                className="input-base py-1.5 text-[13px]"
-              />
-              <button
-                onClick={handleCustomDateChange}
-                className="btn-secondary py-1.5 px-3 text-[13px]"
-              >
-                Apply
-              </button>
-            </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                  className="input-base py-1.5 text-[13px]"
+                />
+                <span className="text-text-muted">to</span>
+                <input
+                  type="date"
+                  value={endDate}
+                  onChange={(e) => setEndDate(e.target.value)}
+                  className="input-base py-1.5 text-[13px]"
+                />
+                <button
+                  onClick={handleCustomDateChange}
+                  className="btn-secondary py-1.5 px-3 text-[13px]"
+                >
+                  Apply
+                </button>
+              </div></>}
 
             <div className="relative" ref={kpiSelectorRef}>
               <button
@@ -1215,7 +1431,7 @@ export default function WorkspaceDashboardDatahub() {
                 Financial Trends
               </h3>
 
-              <div className="flex items-center gap-2 flex-wrap">
+              {!isManualUploadMode && <div className="flex items-center gap-2 flex-wrap">
                 <div className="flex items-center gap-1.5 bg-bg-page rounded-lg border border-border p-1.5">
                   <button
                     onClick={handleChartPreviousYear}
@@ -1320,14 +1536,18 @@ export default function WorkspaceDashboardDatahub() {
                 >
                   Export CSV
                 </button>
-              </div>
+              </div>}
             </div>
 
             <div className="h-[300px] w-full mt-auto">
-              {isClient && !isChartLoading && chartDataState.length > 0 ? (
-                <ResponsiveContainer width="100%" height="100%">
+              {isClient && !isChartLoading && displayChartData.length > 0 ? (
+                <ResponsiveContainer
+                  key={`${activeSourceKey}-${chartSelectedYear}-${aggregationType}`}
+                  width="100%"
+                  height="100%"
+                >
                   <BarChart
-                    data={chartDataState}
+                    data={displayChartData}
                     margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
                   >
                     <CartesianGrid
@@ -1347,19 +1567,19 @@ export default function WorkspaceDashboardDatahub() {
                       dy={10}
                       angle={
                         aggregationType === "monthly" &&
-                          chartDataState.length > 6
+                          displayChartData.length > 6
                           ? -45
                           : 0
                       }
                       textAnchor={
                         aggregationType === "monthly" &&
-                          chartDataState.length > 6
+                          displayChartData.length > 6
                           ? "end"
                           : "middle"
                       }
                       height={
                         aggregationType === "monthly" &&
-                          chartDataState.length > 6
+                          displayChartData.length > 6
                           ? 60
                           : 30
                       }
@@ -1427,7 +1647,9 @@ export default function WorkspaceDashboardDatahub() {
                     <span className="ml-2 text-text-muted">
                       {isChartLoading
                         ? "Loading chart data..."
-                        : "No data available"}
+                        : activeSourceMode === "quickbooks"
+                          ? "No P&L data found — sync QuickBooks to populate trends"
+                          : "No data available"}
                     </span>
                   </div>
                 </div>
@@ -1444,7 +1666,11 @@ export default function WorkspaceDashboardDatahub() {
               <PieChart size={18} className="text-primary" />
             </div>
             <div className="flex-1 space-y-3">
-              {monthlyInsights.map((item, i) => (
+              {monthlyInsights.length === 0 ? (
+                <div className="flex items-center justify-center h-full py-10 text-[13px] text-text-muted">
+                  No insights available
+                </div>
+              ) : monthlyInsights.map((item, i) => (
                 <div
                   key={i}
                   className="p-4 rounded-lg bg-bg-page/50 hover:bg-bg-page transition-all"
@@ -1531,114 +1757,122 @@ export default function WorkspaceDashboardDatahub() {
                         </td>
                       </tr>
                     ))
-                    : invoicesData
-                      .filter((inv) => {
-                        const s = searchTerm.toLowerCase();
-                        return (
-                          (inv.DocNumber || inv.id || "")
-                            .toLowerCase()
-                            .includes(s) ||
-                          (inv.CustomerRef?.name || inv.customer || "")
-                            .toLowerCase()
-                            .includes(s)
-                        );
-                      })
-                      .slice(0, 5)
-                      .map((inv, i) => {
-                        const amount = inv.TotalAmt || inv.amount || 0;
-                        const balance = inv.Balance || inv.balance || 0;
+                    : invoicesData.length === 0
+                      ? (
+                        <tr>
+                          <td colSpan={6} className="py-10 text-center text-[13px] text-text-muted">
+                            No invoices available
+                          </td>
+                        </tr>
+                      )
+                      : invoicesData
+                        .filter((inv) => {
+                          const s = searchTerm.toLowerCase();
+                          return (
+                            (inv.DocNumber || inv.id || "")
+                              .toLowerCase()
+                              .includes(s) ||
+                            (inv.CustomerRef?.name || inv.customer || "")
+                              .toLowerCase()
+                              .includes(s)
+                          );
+                        })
+                        .slice(0, 5)
+                        .map((inv, i) => {
+                          const amount = inv.TotalAmt || inv.amount || 0;
+                          const balance = inv.Balance || inv.balance || 0;
 
-                        let status = "open";
-                        if (balance === 0) status = "paid";
-                        else if (
-                          inv.DueDate &&
-                          new Date(inv.DueDate) < new Date()
-                        )
-                          status = "overdue";
+                          let status = "open";
+                          if (balance === 0) status = "paid";
+                          else if (
+                            inv.DueDate &&
+                            new Date(inv.DueDate) < new Date()
+                          )
+                            status = "overdue";
 
-                        const STATUS_CFG = {
-                          paid: {
-                            label: "Paid",
-                            icon: CheckCircle2,
-                            color: "bg-[#8bc53d] text-white",
-                          },
-                          open: {
-                            label: "Open",
-                            icon: Clock,
-                            color: "bg-[#00648F] text-white",
-                          },
-                          overdue: {
-                            label: "Overdue",
-                            icon: AlertCircle,
-                            color: "bg-[#C62026] text-white",
-                          },
-                          draft: {
-                            label: "Draft",
-                            icon: FileText,
-                            color: "bg-[#6D6E71] text-white",
-                          },
-                        };
-                        const config = STATUS_CFG[status] || STATUS_CFG.open;
+                          const STATUS_CFG = {
+                            paid: {
+                              label: "Paid",
+                              icon: CheckCircle2,
+                              color: "bg-[#8bc53d] text-white",
+                            },
+                            open: {
+                              label: "Open",
+                              icon: Clock,
+                              color: "bg-[#00648F] text-white",
+                            },
+                            overdue: {
+                              label: "Overdue",
+                              icon: AlertCircle,
+                              color: "bg-[#C62026] text-white",
+                            },
+                            draft: {
+                              label: "Draft",
+                              icon: FileText,
+                              color: "bg-[#6D6E71] text-white",
+                            },
+                          };
+                          const config = STATUS_CFG[status] || STATUS_CFG.open;
 
-                        return (
-                          <tr
-                            key={inv.id || i}
-                            className="group hover:bg-bg-page/50 transition-colors"
-                          >
-                            <td className="py-3 px-6">
-                              <div className="flex flex-col">
-                                <span className="text-[14px] font-medium text-text-primary">
-                                  #
-                                  {inv.DocNumber ||
-                                    inv.id ||
-                                    `INV-00${i + 1}`}
-                                </span>
-                                <span className="text-[12px] text-text-muted">
-                                  {new Date(
-                                    inv.MetaData?.CreateTime ||
-                                    inv.date ||
-                                    Date.now(),
-                                  ).toLocaleDateString("en-US", {
-                                    month: "short",
-                                    day: "numeric",
-                                    year: "numeric",
-                                  })}
-                                </span>
-                              </div>
-                            </td>
-                            <td className="py-3 px-4 text-[14px] text-text-secondary">
-                              {inv.CustomerRef?.name ||
-                                inv.customer ||
-                                "Unknown Client"}
-                            </td>
-                            <td className="py-3 px-4 text-[14px] text-text-secondary">
-                              {inv.DueDate || inv.dueDate || "N/A"}
-                            </td>
-                            <td className="py-3 px-4 text-right text-[14px] font-semibold text-text-primary tabular-nums">
-                              $
-                              {Number(amount).toLocaleString("en-US", {
-                                minimumFractionDigits: 2,
-                              })}
-                            </td>
-                            <td className="py-3 px-4 text-right text-[14px] font-medium text-text-primary tabular-nums">
-                              $
-                              {Number(balance).toLocaleString("en-US", {
-                                minimumFractionDigits: 2,
-                              })}
-                            </td>
-                            <td className="py-3 px-4 text-center">
-                              <div
-                                className={cn(
-                                  "inline-flex items-center justify-center px-4 py-1.5 rounded-full text-[12px] font-bold capitalize min-w-[80px]",
-                                  config.color,
-                                )}
-                              >
-                                {config.label}
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })}
+                          return (
+                            <tr
+                              key={inv.id || i}
+                              className="group hover:bg-bg-page/50 transition-colors"
+                            >
+                              <td className="py-3 px-6">
+                                <div className="flex flex-col">
+                                  <span className="text-[14px] font-medium text-text-primary">
+                                    #
+                                    {inv.DocNumber ||
+                                      inv.id ||
+                                      `INV-00${i + 1}`}
+                                  </span>
+                                  <span className="text-[12px] text-text-muted">
+                                    {new Date(
+                                      inv.MetaData?.CreateTime ||
+                                      inv.date ||
+                                      Date.now(),
+                                    ).toLocaleDateString("en-US", {
+                                      month: "short",
+                                      day: "numeric",
+                                      year: "numeric",
+                                    })}
+                                  </span>
+                                </div>
+                              </td>
+                              <td className="py-3 px-4 text-[14px] text-text-secondary">
+                                {inv.CustomerRef?.name ||
+                                  inv.customer ||
+                                  "Unknown Client"}
+                              </td>
+                              <td className="py-3 px-4 text-[14px] text-text-secondary">
+                                {inv.DueDate || inv.dueDate || "N/A"}
+                              </td>
+                              <td className="py-3 px-4 text-right text-[14px] font-semibold text-text-primary tabular-nums">
+                                $
+                                {Number(amount).toLocaleString("en-US", {
+                                  minimumFractionDigits: 2,
+                                })}
+                              </td>
+                              <td className="py-3 px-4 text-right text-[14px] font-medium text-text-primary tabular-nums">
+                                $
+                                {Number(balance).toLocaleString("en-US", {
+                                  minimumFractionDigits: 2,
+                                })}
+                              </td>
+                              <td className="py-3 px-4 text-center">
+                                <div
+                                  className={cn(
+                                    "inline-flex items-center justify-center px-4 py-1.5 rounded-full text-[12px] font-bold capitalize min-w-[80px]",
+                                    config.color,
+                                  )}
+                                >
+                                  {config.label}
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
                 </tbody>
               </table>
             </div>

@@ -1,15 +1,13 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft,
   Bell,
   Briefcase,
   Building2,
-  Calculator,
   ChevronDown,
   ChevronRight,
   ClipboardList,
-  FileCheck,
   FolderOpen,
   LayoutDashboard,
   Link2,
@@ -23,10 +21,16 @@ import {
   BarChart3,
   Activity,
   TrendingUp,
+  MessageSquare,
+  Calculator,
+  FileCheck,
 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
+import { useMessageNotifications } from "../../context/MessageNotificationsContext";
 import { listCompaniesRequest } from "../../lib/api";
+import MessageNotificationsMenu from "./MessageNotificationsMenu";
 import datahublogo from "../../assets/datahublogo.png";
+import ActiveSourceIndicator from "../common/ActiveSourceIndicator";
 
 function companyLogo(name = "") {
   return name
@@ -43,6 +47,7 @@ function WorkspaceSidebar({ company, onClose }) {
   const navigate = useNavigate();
   const location = useLocation();
   const { user, logout } = useAuth();
+  const { notifications } = useMessageNotifications();
   const [dataroomOpen, setDataroomOpen] = useState(true);
   const isDataroomRoute = location.pathname.includes("/dataroom/");
   const isDataroomExpanded = dataroomOpen || isDataroomRoute;
@@ -82,10 +87,12 @@ function WorkspaceSidebar({ company, onClose }) {
       icon: FolderOpen,
       to: `${basePath}/dataroom/documents`,
     },
+    { label: "Messages", icon: MessageSquare, to: `${basePath}/dataroom/messages` },
     { label: "Users", icon: Users, to: `${basePath}/dataroom/users` },
     { label: "Reminders", icon: Bell, to: `${basePath}/dataroom/reminders` },
     { label: "Activity", icon: Activity, to: `${basePath}/dataroom/activity` },
   ];
+  const companyMessageCount = notifications.filter((item) => String(item.companyId) === String(clientId)).length;
 
   return (
     <aside
@@ -127,7 +134,7 @@ function WorkspaceSidebar({ company, onClose }) {
             </div>
             <div className="min-w-0">
               <p className="truncate text-[14px] font-semibold text-text-primary">
-                {company.name}
+                {company.project_name || company.name}
               </p>
               <p className="truncate text-[12px] text-text-muted">
                 {company.industry || "Client company"}
@@ -174,8 +181,8 @@ function WorkspaceSidebar({ company, onClose }) {
           <button
             onClick={() => setDataroomOpen((value) => !value)}
             className={`flex w-full items-center justify-between rounded-md px-3 py-2.5 text-[14px] font-semibold transition-all ${isDataroomRoute
-                ? "bg-[#EEF6E0] text-primary"
-                : "text-text-primary hover:bg-bg-page"
+              ? "bg-[#EEF6E0] text-primary"
+              : "text-text-primary hover:bg-bg-page"
               }`}
           >
             <span className="flex items-center gap-3">
@@ -219,6 +226,11 @@ function WorkspaceSidebar({ company, onClose }) {
                           }
                         />
                         <span>{item.label}</span>
+                        {item.label === "Messages" && companyMessageCount > 0 && (
+                          <span className="ml-auto inline-flex min-w-5 items-center justify-center rounded-full bg-negative px-1.5 py-0.5 text-[10px] font-bold text-white">
+                            {companyMessageCount > 9 ? "9+" : companyMessageCount}
+                          </span>
+                        )}
                       </>
                     )}
                   </NavLink>
@@ -247,9 +259,9 @@ function WorkspaceSidebar({ company, onClose }) {
           </button>
         </div>
         <button
-          onClick={() => {
-            logout();
-            navigate("/login");
+          onClick={async () => {
+            await logout();
+            navigate("/login", { replace: true });
           }}
           className="flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-[14px] font-medium text-secondary transition-colors hover:bg-red-50 hover:text-negative"
         >
@@ -261,25 +273,50 @@ function WorkspaceSidebar({ company, onClose }) {
   );
 }
 
+// Module-level cache so the companies list is fetched at most once per session,
+// regardless of how many times WorkspaceTopbar mounts or the company switches.
+let cachedSwitchCompanies = null;
+
 function WorkspaceTopbar({ company, onMenuClick }) {
   const navigate = useNavigate();
   const location = useLocation();
   const { user } = useAuth();
   const [showSwitch, setShowSwitch] = useState(false);
-  const [companies, setCompanies] = useState([]);
+  const [companies, setCompanies] = useState(cachedSwitchCompanies ?? []);
+  const switchRef = useRef(null);
 
   useEffect(() => {
+    if (!showSwitch) return undefined;
+
+    const handleOutsideClick = (event) => {
+      if (switchRef.current && !switchRef.current.contains(event.target)) {
+        setShowSwitch(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleOutsideClick);
+    document.addEventListener('touchstart', handleOutsideClick);
+
+    return () => {
+      document.removeEventListener('mousedown', handleOutsideClick);
+      document.removeEventListener('touchstart', handleOutsideClick);
+    };
+  }, [showSwitch]);
+
+  useEffect(() => {
+    if (cachedSwitchCompanies) return; // already populated — skip fetch
+
     let cancelled = false;
 
     listCompaniesRequest()
       .then((data) => {
         if (!cancelled) {
-          setCompanies(
-            data.map((item) => ({
-              ...item,
-              logo: item.logo || companyLogo(item.name),
-            })),
-          );
+          const mapped = data.map((item) => ({
+            ...item,
+            logo: item.logo || companyLogo(item.name),
+          }));
+          cachedSwitchCompanies = mapped;
+          setCompanies(mapped);
         }
       })
       .catch(() => {
@@ -297,10 +334,7 @@ function WorkspaceTopbar({ company, onMenuClick }) {
       return "DataHub Dashboard";
     if (location.pathname.endsWith("/invoices")) return "Client Invoices";
     if (location.pathname.endsWith("/reports")) return "Reports";
-    if (location.pathname.endsWith("/ebitda")) return "EBITDA Analysis";
     if (location.pathname.endsWith("/reconciliation")) return "Reconciliation";
-    if (location.pathname.endsWith("/tax-reconciliation"))
-      return "Tax Reconciliation";
     if (location.pathname.endsWith("/connections")) return "Connections";
     if (location.pathname.includes("/dataroom/requests"))
       return "DataRoom / Requests";
@@ -339,7 +373,7 @@ function WorkspaceTopbar({ company, onMenuClick }) {
                 className="hidden text-text-muted sm:inline"
               />
               <span className="text-[14px] font-semibold text-text-primary">
-                {company.name}
+                {company.project_name || company.name}
               </span>
             </div>
             <p className="mt-1 text-[12px] text-text-muted">{title}</p>
@@ -347,7 +381,11 @@ function WorkspaceTopbar({ company, onMenuClick }) {
         </div>
 
         <div className="flex items-center gap-3">
-          <div className="relative">
+          <MessageNotificationsMenu portal="broker" companyId={company.id} />
+
+          <ActiveSourceIndicator />
+
+          <div className="relative" ref={switchRef}>
             <button
               onClick={() => setShowSwitch((value) => !value)}
               className="flex min-w-[150px] items-center justify-between gap-2 rounded-md bg-primary px-4 text-[14px] font-semibold text-white transition-all hover:bg-primary-dark active:scale-[0.98]"
@@ -373,7 +411,9 @@ function WorkspaceTopbar({ company, onMenuClick }) {
                     key={item.id}
                     onClick={() => {
                       setShowSwitch(false);
-                      navigate(`/broker/client/${item.id}/datahub-dashboard`);
+                      navigate(`/broker/client/${item.id}/datahub-dashboard`, {
+                        state: { company: item },
+                      });
                     }}
                     className={`flex w-full items-center gap-2.5 px-4 py-2.5 text-left transition-colors hover:bg-bg-page ${item.id === company.id ? "bg-[#EEF6E0]" : ""
                       }`}
@@ -383,7 +423,7 @@ function WorkspaceTopbar({ company, onMenuClick }) {
                     </div>
                     <div className="min-w-0">
                       <p className="truncate text-xs font-semibold text-text-primary">
-                        {item.name}
+                        {item.project_name || item.name}
                       </p>
                       <p className="truncate text-[10px] text-text-muted">
                         {item.industry}

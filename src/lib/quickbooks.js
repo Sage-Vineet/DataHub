@@ -46,13 +46,16 @@ export async function request(path, options = {}) {
       payload?.message ||
       payload?.error ||
       `Request failed: ${response.status}`;
-    throw new Error(errorMessage);
+    const error = new Error(errorMessage);
+    error.status = response.status;
+    error.payload = payload;
+    throw error;
   }
 
   return payload;
 }
 
-export function connectQuickbooks(redirectHash, explicitClientId = null) {
+export function connectQuickbooks(redirectHash, explicitClientId = null, options = {}) {
   const hash = window.location.hash || "";
   // 1. Try explicit ID (passed from component)
   // 2. Try broker path
@@ -83,7 +86,9 @@ export function connectQuickbooks(redirectHash, explicitClientId = null) {
 
   const token = getStoredToken();
   const authQuery = token ? `&token=${encodeURIComponent(token)}` : "";
-  window.location.href = `${API_BASE_URL}/api/auth/quickbooks?state=${state}&clientId=${clientId || ""}${authQuery}`;
+  const timestamp = Date.now();
+  const confirmSwitch = options?.confirmSwitch !== false;
+  window.location.href = `${API_BASE_URL}/api/auth/quickbooks?state=${state}&clientId=${clientId || ""}&confirmSwitch=${confirmSwitch ? "true" : "false"}${authQuery}&t=${timestamp}`;
 }
 
 export function getConnectionStatus() {
@@ -96,6 +101,16 @@ export function disconnectQuickbooks() {
 
 export function refreshQuickbooksToken() {
   return request("/refresh-token");
+}
+
+export function syncQuickbooksReports() {
+  return request("/api/quickbooks/sync", {
+    method: "POST",
+  });
+}
+
+export function fetchQuickbooksSyncStatus() {
+  return request("/api/quickbooks/sync-status");
 }
 
 export function fetchQuickbooksCustomers() {
@@ -118,9 +133,9 @@ export function fetchBalanceSheet(params = {}) {
   return request(`/balance-sheet${query ? `?${query}` : ""}`);
 }
 
-export function fetchProfitAndLoss(params = {}) {
+export function fetchProfitAndLoss(params = {}, options = {}) {
   const query = new URLSearchParams(params).toString();
-  return request(`/profit-and-loss-statement${query ? `?${query}` : ""}`);
+  return request(`/profit-and-loss-statement${query ? `?${query}` : ""}`, options);
 }
 
 export function fetchCashflow(params = {}) {

@@ -1,8 +1,39 @@
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000').replace(/\/$/, '');
 const TOKEN_KEY = 'leo-auth-token';
+const LEGACY_TOKEN_KEY = 'leo-token';
 
 function buildUrl(path) {
   return `${API_BASE_URL}${path.startsWith('/') ? path : `/${path}`}`;
+}
+
+function resolveProtectedFileUrl(fileUrl) {
+  const raw = String(fileUrl || '').trim();
+  if (!raw) return '';
+  if (raw.startsWith('blob:')) return raw;
+
+  const hasProtocol = /^[a-zA-Z][a-zA-Z\d+\-.]*:/.test(raw);
+  if (!hasProtocol) {
+    return buildUrl(raw);
+  }
+
+  if (typeof window === 'undefined') {
+    return raw;
+  }
+
+  try {
+    const parsed = new URL(raw, window.location.origin);
+    const apiOrigin = new URL(API_BASE_URL, window.location.origin).origin;
+    const isUploadPath = /^\/uploads\/[^/]+\/content\/?$/.test(parsed.pathname || '');
+
+    // Historical data can contain app-domain upload URLs; force those to API host.
+    if (isUploadPath && parsed.origin !== apiOrigin) {
+      return `${API_BASE_URL}${parsed.pathname}${parsed.search}${parsed.hash}`;
+    }
+
+    return parsed.toString();
+  } catch {
+    return raw;
+  }
 }
 
 function unwrapPayload(payload) {
@@ -31,7 +62,11 @@ function resolveClientIdFromLocation() {
   const pathname = window.location.pathname || '';
 
   // We only want to extract an ID if it's explicitly under the broker's client workspace
-  const brokerMatch = hash.match(/\/broker\/client\/([^/?#]+)/) || pathname.match(/\/broker\/client\/([^/?#]+)/);
+  const brokerMatch =
+    hash.match(/\/broker\/client\/([^/?#]+)/) ||
+    pathname.match(/\/broker\/client\/([^/?#]+)/) ||
+    hash.match(/\/broker\/workspace\/([^/?#]+)/) ||
+    pathname.match(/\/broker\/workspace\/([^/?#]+)/);
 
   if (brokerMatch) {
     const id = decodeURIComponent(brokerMatch[1]);
@@ -41,19 +76,34 @@ function resolveClientIdFromLocation() {
     return id;
   }
 
+  const candidates = [
+    (window.location.hash || '').replace(/^#/, ''),
+    window.location.pathname || '',
+  ];
+
+  for (const candidate of candidates) {
+    if (!candidate.startsWith('/client/')) continue;
+    const match = candidate.match(/^\/client\/([^/?#]+)/);
+    if (match) {
+      return decodeURIComponent(match[1]);
+    }
+  }
+
   return null;
 }
 
 export function getStoredToken() {
-  return localStorage.getItem(TOKEN_KEY);
+  return localStorage.getItem(TOKEN_KEY) || localStorage.getItem(LEGACY_TOKEN_KEY);
 }
 
 export function setStoredToken(token) {
   if (token) {
     localStorage.setItem(TOKEN_KEY, token);
+    localStorage.removeItem(LEGACY_TOKEN_KEY);
     return;
   }
   localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(LEGACY_TOKEN_KEY);
 }
 
 
@@ -69,9 +119,6 @@ async function request(path, options = {}) {
 
   if (token) {
     headers.Authorization = `Bearer ${token}`;
-    headers['X-Access-Token'] = token;
-    headers['X-Auth-Token'] = token;
-    headers['X-Token'] = token;
   }
 
   const response = await fetch(buildUrl(path), {
@@ -89,7 +136,12 @@ async function request(path, options = {}) {
   const data = await response.json().catch(() => null);
 
   if (!response.ok) {
-    throw new Error(data?.error || 'Request failed');
+    const error = new Error(data?.error || data?.message || 'Request failed');
+    error.status = response.status;
+    if (data && typeof data === 'object') {
+      error.payload = data;
+    }
+    throw error;
   }
 
   return data;
@@ -122,8 +174,26 @@ export function loginRequest(credentials) {
   });
 }
 
-export function logoutRequest() {
-  return request('/auth/logout', { method: 'POST' });
+export function brokerSignupRequest(payload) {
+  return fetch(buildUrl('/auth/broker/signup'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+    body: JSON.stringify(payload),
+    cache: 'no-store',
+    credentials: 'omit',
+  }).then(async (response) => {
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      const error = new Error(data?.error || 'Request failed');
+      error.status = response.status;
+      throw error;
+    }
+    return data;
+  });
+}
+
+export function logoutRequest(options = {}) {
+  return request('/auth/logout', { method: 'POST', ...options });
 }
 
 export function meRequest() {
@@ -146,6 +216,10 @@ export function updateCompanyRequest(companyId, payload) {
   return request(`/companies/${companyId}`, { method: 'PATCH', body: payload }).then(unwrapPayload);
 }
 
+export function deleteCompanyRequest(companyId) {
+  return request(`/companies/${companyId}`, { method: 'DELETE' }).then(unwrapPayload);
+}
+
 export function listUsersRequest() {
   return request('/users').then(ensureArray);
 }
@@ -164,6 +238,33 @@ export function deleteUserRequest(userId) {
 
 export function listCompanyRequests(companyId) {
   return request(`/companies/${companyId}/requests`).then(ensureArray);
+}
+
+export function listMessageThreadsRequest() {
+  return request("/messages/threads").then(ensureArray);
+}
+
+export function getCompanyMessagesRequest(companyId) {
+  return request(`/companies/${companyId}/messages`);
+}
+
+export function createCompanyMessageRequest(companyId, payload) {
+  return request(`/companies/${companyId}/messages`, { method: "POST", body: payload }).then(unwrapPayload);
+}
+
+export function listCompanyDirectMessageContactsRequest(companyId) {
+  return request(`/companies/${companyId}/direct-messages/contacts`);
+}
+
+export function getCompanyDirectMessagesRequest(companyId, recipientId) {
+  return request(`/companies/${companyId}/direct-messages/${recipientId}`);
+}
+
+export function createCompanyDirectMessageRequest(companyId, recipientId, payload) {
+  return request(`/companies/${companyId}/direct-messages/${recipientId}`, {
+    method: "POST",
+    body: payload,
+  }).then(unwrapPayload);
 }
 
 export function createCompanyRequestItem(companyId, payload) {
@@ -210,6 +311,10 @@ export function updateRequest(requestId, payload) {
   return request(`/requests/${requestId}`, { method: 'PATCH', body: payload }).then(unwrapPayload);
 }
 
+export function approveRequest(requestId) {
+  return request(`/requests/${requestId}/approve`, { method: 'POST' }).then(unwrapPayload);
+}
+
 export function deleteRequest(requestId) {
   return request(`/requests/${requestId}`, { method: 'DELETE' });
 }
@@ -236,6 +341,10 @@ export function listCompanyReminders(companyId) {
 
 export function listCompanyActivity(companyId) {
   return request(`/companies/${companyId}/activity`).then(ensureArray);
+}
+
+export function listBrokerActivity(limit = 25) {
+  return request(`/broker/activity?limit=${limit}`).then(ensureArray);
 }
 
 export async function uploadFile(file, options = {}) {
@@ -281,17 +390,20 @@ export async function fetchProtectedFileBlob(fileUrl, options = {}) {
     throw new Error('Missing file URL');
   }
 
+  const resolvedUrl = resolveProtectedFileUrl(fileUrl);
   const token = options.token ?? getStoredToken();
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
   const headers = {
     'Cache-Control': 'no-store',
     ...(options.headers || {}),
+    ...(clientId ? { 'X-Client-Id': clientId } : {}),
   };
 
   if (token) {
     headers.Authorization = `Bearer ${token}`;
   }
 
-  const response = await fetch(fileUrl, {
+  const response = await fetch(resolvedUrl, {
     method: 'GET',
     headers,
     cache: 'no-store',
@@ -306,12 +418,683 @@ export async function fetchProtectedFileBlob(fileUrl, options = {}) {
   return response.blob();
 }
 
+export function listManualGlUploads(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/uploads${query}`, options).then((payload) => payload?.uploads || []);
+}
+
+export function createManualGlUpload(payload, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/uploads${query}`, {
+    method: "POST",
+    body: payload,
+    ...options,
+  }).then((data) => data?.upload || data);
+}
+
+export function uploadManualReport(payload, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/upload${query}`, {
+    method: "POST",
+    body: payload,
+    ...options,
+  });
+}
+
+export function continueManualReportProcessing(payload, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/continue${query}`, {
+    method: "POST",
+    body: payload,
+    ...options,
+  });
+}
+
+export function uploadGl(payload, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/upload-gl${query}`, {
+    method: "POST",
+    body: payload,
+    ...options,
+  }).then((data) => data?.upload || data);
+}
+
+export function generateManualGlReports(payload, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/reports/generate${query}`, {
+    method: "POST",
+    body: payload,
+    ...options,
+  });
+}
+
+export function getManualGlColumns(uploadId, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/columns/${encodeURIComponent(uploadId)}${query}`, options);
+}
+
+export function saveManualGlMapping(payload, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/save-mapping${query}`, {
+    method: "POST",
+    body: payload,
+    ...options,
+  });
+}
+
+export function saveGlMapping(payload, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/save-mapping${query}`, {
+    method: "POST",
+    body: payload,
+    ...options,
+  });
+}
+
+export function processManualGl(payload, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/process-gl${query}`, {
+    method: "POST",
+    body: payload,
+    ...options,
+  });
+}
+
+export function processGl(payload, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/process-gl${query}`, {
+    method: "POST",
+    body: payload,
+    ...options,
+  });
+}
+
+export function getLatestManualGlReport(statementType, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/reports/${encodeURIComponent(statementType)}/latest${query}`, options);
+}
+
+export function getManualGlProfitLoss(options = {}) {
+  const { params = {}, ...requestOptions } = options || {};
+  const clientId = requestOptions.clientId ?? resolveClientIdFromLocation();
+  const search = new URLSearchParams();
+
+  if (clientId) {
+    search.set("clientId", clientId);
+  }
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    if (Array.isArray(value)) {
+      if (value.length === 0) return;
+      search.set(key, value.join(","));
+      return;
+    }
+    search.set(key, String(value));
+  });
+
+  const query = search.toString();
+  return request(`/reports/pl${query ? `?${query}` : ""}`, requestOptions);
+}
+
+export function getManualGlBalanceSheet(options = {}) {
+  const { params = {}, ...requestOptions } = options || {};
+  const clientId = requestOptions.clientId ?? resolveClientIdFromLocation();
+  const search = new URLSearchParams();
+
+  if (clientId) {
+    search.set("clientId", clientId);
+  }
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    if (Array.isArray(value)) {
+      if (value.length === 0) return;
+      search.set(key, value.join(","));
+      return;
+    }
+    search.set(key, String(value));
+  });
+
+  const query = search.toString();
+  return request(`/reports/balance-sheet${query ? `?${query}` : ""}`, requestOptions);
+}
+
+export function getManualGlCashflow(options = {}) {
+  const { params = {}, ...requestOptions } = options || {};
+  const clientId = requestOptions.clientId ?? resolveClientIdFromLocation();
+  const search = new URLSearchParams();
+  if (clientId) search.set("clientId", clientId);
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    if (Array.isArray(value)) { if (value.length === 0) return; search.set(key, value.join(",")); return; }
+    search.set(key, String(value));
+  });
+  const query = search.toString();
+  return request(`/reports/cashflow${query ? `?${query}` : ""}`, requestOptions);
+}
+
+export function getManualStagedCashflowMonthlyDetail(options = {}) {
+  const { clientId: clientIdOption, params = {}, ...requestOptions } = options || {};
+  const clientId = clientIdOption ?? resolveClientIdFromLocation();
+  const search = new URLSearchParams();
+  if (clientId) search.set("clientId", clientId);
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    if (Array.isArray(value)) { if (value.length === 0) return; search.set(key, value.join(",")); return; }
+    search.set(key, String(value));
+  });
+  const query = search.toString();
+  return request(`/reports/cashflow/monthly-detail${query ? `?${query}` : ""}`, requestOptions);
+}
+
+export function stageMultiYearManualGl(payload, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/staging/multi-year${query}`, {
+    method: "POST",
+    body: payload,
+    ...options,
+  });
+}
+
+// === Snapshot Dataset Versioning APIs ===
+
+export function listManualGlDatasetVersions(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/dataset-versions${query}`, options).then((res) => {
+    // The API now returns { success: true, versions: [...] }
+    const rawList = Array.isArray(res?.versions)
+      ? res.versions
+      : Array.isArray(res)
+        ? res
+        : [];
+
+    const seen = new Set();
+    const normalized = rawList
+      .map((row) => {
+        const parsedVersion = Number(
+          row?.value ??
+          row?.dataset_version ??
+          row?.version_number ??
+          row?.versionNumber ??
+          row?.version_no ??
+          0,
+        );
+        if (!Number.isInteger(parsedVersion) || parsedVersion <= 0) return null;
+        if (seen.has(parsedVersion)) return null;
+        seen.add(parsedVersion);
+
+        return {
+          id: String(row?.id || parsedVersion),
+          value: parsedVersion,
+          label: String(row?.label || `Version ${parsedVersion}`),
+          dataset_version: parsedVersion,
+          version_number: parsedVersion,
+          versionNumber: parsedVersion,
+          is_active: Boolean(row?.is_active ?? row?.isActive),
+          isActive: Boolean(row?.is_active ?? row?.isActive),
+          created_at: row?.created_at || row?.createdAt || null,
+          createdAt: row?.created_at || row?.createdAt || null,
+          status: row?.status || "FINALIZED",
+          datasetHash: row?.dataset_hash || row?.content_hash || row?.datasetHash || null,
+          batchId: row?.batch_id || row?.batchId || null,
+          datasetVersionId: row?.dataset_version_id || row?.datasetVersionId || null,
+          fiscalYears: Array.isArray(row?.fiscal_years)
+            ? row.fiscal_years.map((year) => Number(year)).filter((year) => Number.isInteger(year) && year > 0)
+            : Array.isArray(row?.fiscalYears)
+              ? row.fiscalYears.map((year) => Number(year)).filter((year) => Number.isInteger(year) && year > 0)
+              : [],
+          reportsReady: row?.reportsReady ?? row?.reports_ready ?? null,
+        };
+      })
+      .filter(Boolean)
+      .sort((left, right) => Number(right.value || 0) - Number(left.value || 0));
+
+    return normalized;
+  });
+}
+
+export function activateManualGlDatasetVersion(versionId, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/dataset-versions/${encodeURIComponent(versionId)}/activate${query}`, {
+    method: "POST",
+    ...options,
+  });
+}
+
+export function rollbackManualGlDatasetVersion(versionId, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/dataset-versions/${encodeURIComponent(versionId)}/rollback${query}`, {
+    method: "POST",
+    ...options,
+  });
+}
+
+// === Upload Jobs APIs ===
+
+export function listManualGlUploadJobs(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/upload-jobs${query}`, options).then(res => res?.jobs || []);
+}
+
+export function getManualGlUploadJob(jobId, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/upload-jobs/${encodeURIComponent(jobId)}${query}`, options).then(res => res?.job || null);
+}
+
+export function getManualStageTransactions(options = {}) {
+  const {
+    clientId: clientIdOption,
+    params = {},
+    ...requestOptions
+  } = options || {};
+  const clientId = clientIdOption ?? resolveClientIdFromLocation();
+  const search = new URLSearchParams();
+  if (clientId) search.set("clientId", clientId);
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    if (Array.isArray(value)) {
+      if (value.length === 0) return;
+      search.set(key, value.join(","));
+      return;
+    }
+    search.set(key, String(value));
+  });
+
+  const query = search.toString();
+  return request(
+    `/manual-gl/staging/transactions${query ? `?${query}` : ""}`,
+    requestOptions,
+  );
+}
+
+export function getManualStageFilterOptions(options = {}) {
+  const {
+    clientId: clientIdOption,
+    params = {},
+    ...requestOptions
+  } = options || {};
+  const clientId = clientIdOption ?? resolveClientIdFromLocation();
+  const search = new URLSearchParams();
+  if (clientId) search.set("clientId", clientId);
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    if (Array.isArray(value)) {
+      if (value.length === 0) return;
+      search.set(key, value.join(","));
+      return;
+    }
+    search.set(key, String(value));
+  });
+
+  const query = search.toString();
+  return request(
+    `/manual-gl/staging/filter-options${query ? `?${query}` : ""}`,
+    requestOptions,
+  );
+}
+
+export function getManualGlBatches(options = {}) {
+  const {
+    clientId: clientIdOption,
+    ...requestOptions
+  } = options || {};
+  const clientId = clientIdOption ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-gl/staging/batches${query}`, requestOptions);
+}
+
+export function getManualStagedProfitLossSummary(options = {}) {
+  const {
+    clientId: clientIdOption,
+    params = {},
+    ...requestOptions
+  } = options || {};
+  const clientId = clientIdOption ?? resolveClientIdFromLocation();
+  const search = new URLSearchParams();
+  if (clientId) search.set("clientId", clientId);
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    if (Array.isArray(value)) {
+      if (value.length === 0) return;
+      search.set(key, value.join(","));
+      return;
+    }
+    search.set(key, String(value));
+  });
+
+  const query = search.toString();
+  return request(`/reports/profit-loss${query ? `?${query}` : ""}`, requestOptions);
+}
+
+export function getManualStagedProfitLossDetail(options = {}) {
+  const {
+    clientId: clientIdOption,
+    params = {},
+    ...requestOptions
+  } = options || {};
+  const clientId = clientIdOption ?? resolveClientIdFromLocation();
+  const search = new URLSearchParams();
+  if (clientId) search.set("clientId", clientId);
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    if (Array.isArray(value)) {
+      if (value.length === 0) return;
+      search.set(key, value.join(","));
+      return;
+    }
+    search.set(key, String(value));
+  });
+
+  const query = search.toString();
+  return request(
+    `/reports/profit-loss/detail${query ? `?${query}` : ""}`,
+    requestOptions,
+  );
+}
+
+export function getManualStagedProfitLossVendorDetail(options = {}) {
+  const {
+    clientId: clientIdOption,
+    params = {},
+    ...requestOptions
+  } = options || {};
+  const clientId = clientIdOption ?? resolveClientIdFromLocation();
+  const search = new URLSearchParams();
+  if (clientId) search.set("clientId", clientId);
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    if (Array.isArray(value)) {
+      if (value.length === 0) return;
+      search.set(key, value.join(","));
+      return;
+    }
+    search.set(key, String(value));
+  });
+
+  const query = search.toString();
+  return request(
+    `/reports/profit-loss/detail-vendor${query ? `?${query}` : ""}`,
+    requestOptions,
+  );
+}
+
+export function getManualStagedProfitLossMonthlyDetail(options = {}) {
+  const { clientId: clientIdOption, params = {}, ...requestOptions } = options || {};
+  const clientId = clientIdOption ?? resolveClientIdFromLocation();
+  const search = new URLSearchParams();
+  if (clientId) search.set("clientId", clientId);
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    if (Array.isArray(value)) { if (value.length === 0) return; search.set(key, value.join(",")); return; }
+    search.set(key, String(value));
+  });
+  const query = search.toString();
+  return request(`/reports/profit-loss/monthly-detail${query ? `?${query}` : ""}`, requestOptions);
+}
+
+export function getManualStagedBalanceSheetMonthlyDetail(options = {}) {
+  const { clientId: clientIdOption, params = {}, ...requestOptions } = options || {};
+  const clientId = clientIdOption ?? resolveClientIdFromLocation();
+  const search = new URLSearchParams();
+  if (clientId) search.set("clientId", clientId);
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    if (Array.isArray(value)) { if (value.length === 0) return; search.set(key, value.join(",")); return; }
+    search.set(key, String(value));
+  });
+  const query = search.toString();
+  return request(`/reports/balance-sheet/monthly-detail${query ? `?${query}` : ""}`, requestOptions);
+}
+
+export function validateManualStagedBalanceSheet(options = {}) {
+  const {
+    clientId: clientIdOption,
+    params = {},
+    ...requestOptions
+  } = options || {};
+  const clientId = clientIdOption ?? resolveClientIdFromLocation();
+  const search = new URLSearchParams();
+  if (clientId) search.set("clientId", clientId);
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    if (Array.isArray(value)) {
+      if (value.length === 0) return;
+      search.set(key, value.join(","));
+      return;
+    }
+    search.set(key, String(value));
+  });
+
+  const query = search.toString();
+  return request(
+    `/manual-gl/validation/balance-sheet${query ? `?${query}` : ""}`,
+    requestOptions,
+  );
+}
+
+export function getManualUploadSourceTree(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-report-uploads/source-tree${query}`, options).then(
+    (res) => res?.tree ?? null,
+  );
+}
+
+export function getManualFolderFiles(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const params = new URLSearchParams();
+  if (clientId) params.set("clientId", clientId);
+  if (options.folderId) params.set("folderId", options.folderId);
+  return request(`/manual-report-uploads/folder-files?${params}`, options).then(
+    (res) => res?.files ?? [],
+  );
+}
+
+export function syncManualUploadSource(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-report-uploads/sync-source${query}`, {
+    method: "POST",
+    ...options,
+  });
+}
+
+export function getQMSUploadSourceTree(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-report-uploads/qms-source-tree${query}`, options).then(
+    (res) => res?.tree ?? null,
+  );
+}
+
+export function syncQMSUploadSource(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-report-uploads/sync-qms-source${query}`, {
+    method: "POST",
+    ...options,
+  });
+}
+
+export function getQMSSyncProgress(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-report-uploads/sync-progress${query}`, options);
+}
+
+export function getManualUploadProgress(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-upload/sync-progress${query}`, options);
+}
+
+export function parseQMSDocuments({ clientId: clientIdOption, documents = [], clearFirst = false } = {}) {
+  const clientId = clientIdOption ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-report-uploads/qms-parse-documents${query}`, {
+    method: "POST",
+    body: { documents, clearFirst },
+  });
+}
+
+export function syncQMSFolder({ clientId: clientIdOption, folderId, folderName } = {}) {
+  const clientId = clientIdOption ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-report-uploads/sync${query}`, {
+    method: "POST",
+    body: { folderId, folderName: folderName || "" },
+  });
+}
+
+export function getLatestManualUploadedReport(statementType, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const params = new URLSearchParams();
+  if (clientId) params.set("clientId", clientId);
+  if (options.rowId) params.set("rowId", options.rowId);
+  const query = params.toString() ? `?${params}` : "";
+  return request(
+    `/manual-report-uploads/reports/${encodeURIComponent(statementType)}/latest${query}`,
+    options,
+  );
+}
+
+export function getAllManualUploadedReports(statementType, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(
+    `/manual-report-uploads/reports/${encodeURIComponent(statementType)}/all${query}`,
+    options,
+  );
+}
+
+export function getAllQMSUploadedReports(statementType, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(
+    `/manual-report-uploads/qms-reports/${encodeURIComponent(statementType)}/all${query}`,
+    options,
+  );
+}
+
+export function getLatestQMSUploadedReport(statementType, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const params = new URLSearchParams();
+  if (clientId) params.set("clientId", clientId);
+  if (options.rowId) params.set("rowId", options.rowId);
+  const query = params.toString() ? `?${params}` : "";
+  return request(
+    `/manual-report-uploads/qms-reports/${encodeURIComponent(statementType)}/latest${query}`,
+    options,
+  );
+}
+
+/**
+ * Returns the structured QMS (QuickBooks Manual) dashboard payload pre-computed on the server:
+ *   { years, reports, allFiles, trends }
+ */
+export function getQMSDashboard(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const base = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "?";
+  return request(`/manual-report-uploads/qms-dashboard${base}&source=quickbooks_manual`, options);
+}
+
+/**
+ * Returns the structured Manual Upload (Excel/PDF) dashboard payload pre-computed on the server:
+ *   { years, reports, allFiles, trends }
+ */
+export function getManualUploadDashboard(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const base = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "?";
+  return request(`/manual-report-uploads/manual-upload-dashboard${base}&source=manual_upload`, options);
+}
+
+/**
+ * GET /manual-upload/cashflow/periods
+ * Returns all years for which a Cash Flow can be automatically generated
+ * (i.e. BS(Y-1) + BS(Y) + P&L(Y) are all uploaded).
+ */
+export function getManualCashFlowPeriods(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/manual-upload/cashflow/periods${query}`, options);
+}
+
+/**
+ * GET /manual-upload/cashflow?period=YYYY[&force=1]
+ * Fetch (or generate) a Cash Flow statement for a specific year.
+ * Pass force: true to bypass the cache and regenerate from uploaded files.
+ */
+export function getManualGeneratedCashFlow(period, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const params = new URLSearchParams();
+  params.set("period", String(period));
+  if (clientId) params.set("clientId", clientId);
+  if (options.force) params.set("force", "1");
+  return request(`/manual-upload/cashflow?${params}`, options);
+}
+
+export function getReportSources(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/report-sources${query}`, options);
+}
+
+export function setSelectedReportSource(sourceKey, options = {}) {
+  const {
+    clientId: clientIdOption,
+    confirmSwitch = false,
+    forceDisconnectQuickbooks = false,
+    ...requestOptions
+  } = options || {};
+  const clientId = clientIdOption ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/report-sources/selected${query}`, {
+    method: "PUT",
+    body: {
+      sourceKey,
+      confirmSwitch: Boolean(confirmSwitch),
+      forceDisconnectQuickbooks: Boolean(forceDisconnectQuickbooks),
+    },
+    ...requestOptions,
+  });
+}
+
 export function listCompanyFolders(companyId) {
   return request(`/companies/${companyId}/folders`).then(ensureArray);
 }
 
-export function listFolderTree(companyId) {
-  return request(`/companies/${companyId}/folders/tree`).then(ensureArray);
+export function listFolderTree(companyId, options = {}) {
+  const qs = options.includeArchived ? '?includeArchived=true' : '';
+  return request(`/companies/${companyId}/folders/tree${qs}`).then(ensureArray);
+}
+
+export function ensureCompanyDefaultFolders(companyId) {
+  return request(`/companies/${companyId}/folders/ensure-defaults`, { method: 'POST' });
 }
 
 export function createCompanyFolder(companyId, payload) {
@@ -330,12 +1113,40 @@ export function deleteFolder(folderId) {
   return request(`/folders/${folderId}`, { method: 'DELETE' });
 }
 
-export function listFolderDocuments(folderId) {
-  return request(`/folders/${folderId}/documents`).then(ensureArray);
+export function archiveFolder(folderId) {
+  return request(`/folders/${folderId}/archive`, { method: 'POST' }).then(unwrapPayload);
+}
+
+export function unarchiveFolder(folderId) {
+  return request(`/folders/${folderId}/unarchive`, { method: 'POST' }).then(unwrapPayload);
+}
+
+export function listFolderDocuments(folderId, options = {}) {
+  const qs = options.includeArchived ? '?includeArchived=true' : '';
+  return request(`/folders/${folderId}/documents${qs}`).then(ensureArray);
 }
 
 export function deleteDocument(documentId) {
   return request(`/documents/${documentId}`, { method: 'DELETE' });
+}
+
+export function archiveDocument(documentId) {
+  return request(`/documents/${documentId}/archive`, { method: 'POST' }).then(unwrapPayload);
+}
+
+export function unarchiveDocument(documentId) {
+  return request(`/documents/${documentId}/unarchive`, { method: 'POST' }).then(unwrapPayload);
+}
+
+export function recordDocumentActivity(documentId, activityType) {
+  return request(`/documents/${documentId}/activity`, {
+    method: 'POST',
+    body: { activity_type: activityType },
+  }).then(unwrapPayload);
+}
+
+export function listDocumentActivity(documentId) {
+  return request(`/documents/${documentId}/activity`).then(ensureArray);
 }
 
 export function listFolderAccess(folderId) {

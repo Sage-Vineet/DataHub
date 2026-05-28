@@ -1,213 +1,190 @@
 const express = require("express");
-const axios = require("axios");
-const tokenManager = require("../../../tokenManager");
-const { getQBConfig } = require("../../../qbconfig");
+const {
+  serveCachedReport,
+  fetchOnDemandReport,
+  REPORT_TYPES,
+} = require("../../../services/quickbooksReportService");
 
 const router = express.Router();
 
-/**
- * @swagger
- * /profit-and-loss-statement:
- *   get:
- *     summary: Get Profit and Loss Report
- *     description: Retrieves the Profit and Loss (Income Statement) report from QuickBooks with optional filters
- *     parameters:
- *       - name: start_date
- *         in: query
- *         description: Start date for the report (YYYY-MM-DD)
- *         required: false
- *         schema:
- *           type: string
- *           format: date
- *         example: 2026-01-01
- *       - name: end_date
- *         in: query
- *         description: End date for the report (YYYY-MM-DD)
- *         required: false
- *         schema:
- *           type: string
- *           format: date
- *         example: 2026-01-30
- *       - name: accounting_method
- *         in: query
- *         description: Accounting method (Accrual or Cash)
- *         required: false
- *         schema:
- *           type: string
- *           enum: [Accrual, Cash]
- *         example: Accrual
- *     responses:
- *       200:
- *         description: Profit and Loss report retrieved successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *       400:
- *         description: Missing QuickBooks configuration or invalid parameters
- *       401:
- *         description: Authentication failed
- *       500:
- *         description: Server error
- */
+function normalizeAccountingMethod(raw) {
+  const str = String(raw || "").trim().toLowerCase();
+  if (str === "cash") return "Cash";
+  if (str === "accrual") return "Accrual";
+  return str ? String(raw).trim() : "";
+}
+
+function accountingMethodMatches(requestedMethod, storedParams, cachedData) {
+  const requested = normalizeAccountingMethod(requestedMethod);
+  if (!requested) return true;
+  const stored = normalizeAccountingMethod(storedParams && storedParams.accounting_method);
+  const basis = String((cachedData && cachedData.Header && cachedData.Header.ReportBasis) || "").trim();
+  const storedOk = !stored || stored === requested;
+  const basisOk = !basis || basis.toLowerCase() === requested.toLowerCase();
+  return storedOk && basisOk;
+}
+
+function normalizeStatementQuery(query = {}) {
+  return {
+    start_date: String(query.start_date || "").trim(),
+    end_date: String(query.end_date || "").trim(),
+    accounting_method: normalizeAccountingMethod(query.accounting_method),
+  };
+}
+
+function isExactPeriodMatch(requestedParams, storedParams = {}, cachedData = null) {
+  const { start_date, end_date, accounting_method } = requestedParams;
+  const datesMatch =
+    (!start_date || storedParams.start_date === start_date) &&
+    (!end_date || storedParams.end_date === end_date);
+  const methodMatch = accountingMethodMatches(accounting_method, storedParams, cachedData);
+  return datesMatch && methodMatch;
+}
+
 router.get("/profit-and-loss-statement", async (req, res) => {
-  const qb = getQBConfig(req.clientId);
+  const clientId = req.clientId;
+  const { start_date, end_date, summarize_columns_by } = req.query;
+  const accounting_method = normalizeAccountingMethod(req.query.accounting_method);
+  const disconnected = Boolean(req.qbDisconnected);
+  const hasDateFilter = Boolean(start_date || end_date);
 
-  // Validate QuickBooks configuration
-  if (!qb.accessToken || !qb.realmId) {
-    return res.status(400).json({
-      error: "Missing QuickBooks configuration. Please authenticate first.",
-    });
-  }
-
-  let { start_date, end_date, accounting_method } = req.query;
-
-  console.log("=".repeat(60));
-  console.log("📊 PROFIT AND LOSS REQUEST");
-  console.log("=".repeat(60));
-  console.log(`📅 Start Date: ${start_date || "Not specified"}`);
-  console.log(`📅 End Date: ${end_date || "Not specified"}`);
-  console.log(`📚 Accounting Method: ${accounting_method || "Not specified"}`);
-  console.log("=".repeat(60));
-
-  // Clean inputs
-  start_date = start_date?.trim();
-  end_date = end_date?.trim();
-  accounting_method = accounting_method?.trim();
-
-  // Validate accounting method
-  const validAccountingMethods = ["Accrual", "Cash"];
-  if (
-    accounting_method &&
-    !validAccountingMethods.includes(accounting_method)
-  ) {
-    console.warn(
-      `⚠️ Invalid accounting_method: ${accounting_method}. Removing filter.`,
-    );
-    accounting_method = undefined;
-  }
-
-  // Validate date formats if provided
-  const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
-  if (start_date && !dateRegex.test(start_date)) {
-    return res.status(400).json({
-      error: "Invalid start_date format. Please use YYYY-MM-DD format.",
-      received: start_date,
-    });
-  }
-
-  if (end_date && !dateRegex.test(end_date)) {
-    return res.status(400).json({
-      error: "Invalid end_date format. Please use YYYY-MM-DD format.",
-      received: end_date,
-    });
-  }
-
-  // Validate date range
-  if (start_date && end_date && start_date > end_date) {
-    return res.status(400).json({
-      error: "start_date cannot be later than end_date",
-      start_date,
-      end_date,
-    });
-  }
+  console.log(
+    `[P&L Statement] Request — clientId=${clientId}` +
+    ` start_date=${start_date || "(none)"} end_date=${end_date || "(none)"}` +
+    ` accounting_method=${accounting_method || "(none)"} disconnected=${disconnected}`
+  );
 
   try {
-    // Build query parameters
-    const queryParams = [];
+    // ── 1. Try cache first ────────────────────────────────────────────────────
+    const cached = await serveCachedReport(
+      clientId,
+      REPORT_TYPES.PROFIT_AND_LOSS,
+      { start_date, end_date, accounting_method, summarize_columns_by },
+      { disconnected: Boolean(req.qbDisconnected) },
+    );
 
-    if (start_date) queryParams.push(`start_date=${start_date}`);
-    if (end_date) queryParams.push(`end_date=${end_date}`);
-    if (accounting_method)
-      queryParams.push(`accounting_method=${accounting_method}`);
-    queryParams.push("minorversion=75");
+    const cachedIsExact = cached?.data && isExactPeriodMatch(
+      { start_date, end_date, accounting_method },
+      cached.reportParams,
+      cached.data,
+    );
 
-    const url = `${qb.baseUrl}/v3/company/${qb.realmId}/reports/ProfitAndLoss${queryParams.length ? `?${queryParams.join("&")}` : ""}`;
-
-    console.log(`🔗 FULL URL: ${url}`);
-    console.log("=".repeat(60));
-
-    const response = await axios.get(url, {
-      headers: {
-        Authorization: `Bearer ${qb.accessToken}`,
-        Accept: "application/json",
-        "User-Agent": "QuickBooks-Integration/1.0",
-      },
-    });
-
-    console.log("✅ Profit and Loss report fetched successfully!");
-
-    // Log report summary
-    if (response.data && response.data.Header) {
-      console.log(`📊 Report Time: ${response.data.Header.Time}`);
+    if (cachedIsExact) {
       console.log(
-        `📊 Report Basis: ${response.data.Header.ReportBasis || "Not specified"}`,
+        `[P&L Statement] Cache hit (exact) — datasetVersion=${cached.datasetVersion}` +
+        ` start_date=${cached.reportParams.start_date} end_date=${cached.reportParams.end_date}`
       );
-      if (response.data.Header.StartPeriod && response.data.Header.EndPeriod) {
-        console.log(
-          `📅 Period: ${response.data.Header.StartPeriod} to ${response.data.Header.EndPeriod}`,
+      return res.json({
+        success: true,
+        source: "cached_snapshot",
+        disconnected,
+        lastSyncAt: cached.lastSyncedAt,
+        datasetVersion: cached.datasetVersion || null,
+        reportParams: cached.reportParams,
+        data: cached.data,
+      });
+    }
+
+    // ── 2. No exact cache — fetch live from QB if connected ───────────────────
+    if (!disconnected && hasDateFilter) {
+      console.log(
+        `[P&L Statement] Cache miss (exact) — fetching live from QB` +
+        ` start_date=${start_date} end_date=${end_date}`
+      );
+      try {
+        const live = await fetchOnDemandReport(
+          clientId,
+          REPORT_TYPES.PROFIT_AND_LOSS,
+          "ProfitAndLoss",
+          { start_date, end_date, accounting_method },
         );
+
+        console.log(
+          `[P&L Statement] Live fetch success — datasetVersion=${live.datasetVersion}` +
+          ` reportParams=${JSON.stringify(live.reportParams)}`
+        );
+
+        return res.json({
+          success: true,
+          source: "live_fetch",
+          disconnected,
+          lastSyncAt: live.lastSyncedAt,
+          datasetVersion: live.datasetVersion || null,
+          reportParams: live.reportParams,
+          data: live.data,
+        });
+      } catch (liveError) {
+        console.error(
+          `[P&L Statement] Live fetch failed — falling through to coverage cache: ${liveError.message}`
+        );
+        // fall through to coverage fallback below
       }
     }
 
-    // Return raw QuickBooks response
-    return res.json(response.data);
-  } catch (error) {
-    console.error("❌ Profit and Loss API Error:", error.message);
+    // ── 3. QB disconnected (or live fetch failed) — serve coverage cache ──────
+    // The cached result may be a broader period that contains the requested range
+    // (e.g. yearly Jan–Dec when Jan–Jan was requested). Surface it with a note.
+    // Reject immediately if accounting_method does not match.
+    if (cached?.data) {
+      const storedParams = cached.reportParams || {};
+      const methodOk = accountingMethodMatches(accounting_method, storedParams, cached.data);
 
-    if (error.response) {
-      console.error("📝 Status Code:", error.response.status);
-      console.error(
-        "📝 Response Data:",
-        JSON.stringify(error.response.data, null, 2),
-      );
+      if (!methodOk) {
+        console.warn(
+          `[P&L Statement] Coverage cache rejected — accounting_method mismatch:` +
+          ` requested=${accounting_method || "(none)"}` +
+          ` stored=${storedParams.accounting_method || "(none)"}` +
+          ` ReportBasis=${cached.data?.Header?.ReportBasis || "(none)"}`
+        );
+      } else {
+        const storedStartAfter = start_date && storedParams.start_date && storedParams.start_date > start_date;
+        const storedEndBefore = end_date && storedParams.end_date && storedParams.end_date < end_date;
 
-      // Handle 401 Unauthorized - Token expired
-      if (error.response.status === 401) {
-        console.log("⚠️ Token expired, attempting to refresh...");
-
-        try {
-          const newAccessToken = await tokenManager.refreshAccessToken(
-            req.clientId,
+        if (storedStartAfter || storedEndBefore) {
+          console.warn(
+            `[P&L Statement] Coverage cache period does not contain requested range` +
+            ` — stored=${storedParams.start_date}–${storedParams.end_date}` +
+            ` requested=${start_date}–${end_date}`
           );
-          console.log("✅ Token refreshed successfully!");
-
-          // Build query parameters again for retry
-          const queryParams = [];
-          if (start_date) queryParams.push(`start_date=${start_date}`);
-          if (end_date) queryParams.push(`end_date=${end_date}`);
-          if (accounting_method)
-            queryParams.push(`accounting_method=${accounting_method}`);
-          queryParams.push("minorversion=75");
-
-          const retryUrl = `${qb.baseUrl}/v3/company/${qb.realmId}/reports/ProfitAndLoss${queryParams.length ? `?${queryParams.join("&")}` : ""}`;
-
-          const retryResponse = await axios.get(retryUrl, {
-            headers: {
-              Authorization: `Bearer ${newAccessToken}`,
-              Accept: "application/json",
-              "User-Agent": "QuickBooks-Integration/1.0",
-            },
-          });
-
-          console.log("✅ Retry successful with new token!");
-          return res.json(retryResponse.data);
-        } catch (refreshError) {
-          console.error("❌ Token refresh failed:", refreshError.message);
-          return res.status(401).json({
-            error: "Authentication failed. Please re-authenticate.",
-            details: refreshError.message,
+        } else {
+          console.log(
+            `[P&L Statement] Coverage cache hit — stored=${storedParams.start_date}–${storedParams.end_date}` +
+            ` requested=${start_date}–${end_date} accounting=${accounting_method || "(none)"} disconnected=${disconnected}`
+          );
+          return res.json({
+            success: true,
+            source: "cached_snapshot",
+            disconnected,
+            lastSyncAt: cached.lastSyncedAt,
+            datasetVersion: cached.datasetVersion || null,
+            reportParams: storedParams,
+            coverageFallback: true,
+            note: `No exact snapshot for ${start_date}–${end_date}. Returning nearest available snapshot (${storedParams.start_date}–${storedParams.end_date}).`,
+            data: cached.data,
           });
         }
       }
-
-      // Return the exact QuickBooks error response
-      return res.status(error.response.status).json(error.response.data);
     }
 
+    // ── 4. Nothing usable found ───────────────────────────────────────────────
+    console.warn(
+      `[P&L Statement] No snapshot available — clientId=${clientId}` +
+      ` start_date=${start_date || "(none)"} end_date=${end_date || "(none)"}`
+    );
+    return res.status(404).json({
+      success: false,
+      source: "cached_snapshot",
+      disconnected,
+      message: disconnected
+        ? "QuickBooks is disconnected and no cached snapshot is available for the requested period."
+        : "No Profit & Loss snapshot is available for the requested period. Run QuickBooks sync to generate one.",
+    });
+
+  } catch (error) {
+    console.error("[P&L Statement] Request failed:", error.message);
     return res.status(500).json({
-      error: "Failed to fetch Profit and Loss report",
-      details: error.message,
+      success: false,
+      message: error.message,
     });
   }
 });
