@@ -168,10 +168,25 @@ async function listRequestsByCompany(companyId) {
   } catch {
     const { data, error } = await supabase
       .from("requests")
-      .select(`*, created_by_user:users!requests_created_by_fkey(name, email), approved_by_user:users!requests_approved_by_fkey(name)`)
-      .eq("company_id", companyId).order("created_at", { ascending: false });
+      .select("*")
+      .eq("company_id", companyId)
+      .order("created_at", { ascending: false });
     if (error) throw error;
-    return (data || []).map(r => ({ ...r, created_by_name: r.created_by_user?.name, created_by_email: r.created_by_user?.email, approved_by_name: r.approved_by_user?.name }));
+    const rows = data || [];
+    const creatorIds = [...new Set(rows.map((r) => r.created_by).filter(Boolean))];
+    const approverIds = [...new Set(rows.map((r) => r.approved_by).filter(Boolean))];
+    const allUserIds = [...new Set([...creatorIds, ...approverIds])];
+    let userMap = {};
+    if (allUserIds.length) {
+      const { data: users } = await supabase.from("users").select("id, name, email").in("id", allUserIds);
+      userMap = Object.fromEntries((users || []).map((u) => [u.id, u]));
+    }
+    return rows.map((r) => ({
+      ...r,
+      created_by_name: userMap[r.created_by]?.name || null,
+      created_by_email: userMap[r.created_by]?.email || null,
+      approved_by_name: userMap[r.approved_by]?.name || null,
+    }));
   }
 }
 

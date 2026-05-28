@@ -51,7 +51,7 @@ async function checkQBAuth(req, res, next) {
   if (!canAccessCompany(req.user, clientId)) {
     return res.status(403).json({
       success: false,
-      message: "Forbidden",
+      message: "Access denied.",
       isConnected: false,
     });
   }

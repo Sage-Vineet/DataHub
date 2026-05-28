@@ -74,7 +74,7 @@ function resolveClientId(req) {
 router.use((req, res, next) => {
   const clientId = resolveClientId(req);
   if (clientId && !canAccessCompany(req.user, clientId)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "You do not have permission to access financial reports for this company." });
   }
   return next();
 });

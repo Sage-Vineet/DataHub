@@ -370,7 +370,7 @@ async function getCompanyParticipants(company) {
         user_companies!left(company_id)
       `)
       .eq("status", "active")
-      .eq("role", "buyer")
+      .in("role", ["buyer", "client"])
       .order("name", { ascending: true }),
     getRelevantBrokerIdsForCompany(company.id),
   ]);
@@ -394,7 +394,7 @@ async function getCompanyBuyerParticipants(company) {
     .from("users")
     .select("id, name, email, role, status, company_id")
     .eq("status", "active")
-    .eq("role", "buyer")
+    .in("role", ["buyer", "client"])
     .order("name", { ascending: true });
 
   if (error) return [];
@@ -494,13 +494,19 @@ async function getLatestCompanyMessages(companyIds) {
 }
 
 async function resolveDirectMessagingContext(user, companyId) {
-  if (!canAccessCompany(user, companyId)) {
-    return { error: { status: 403, body: { error: "Forbidden" } } };
-  }
-
   const company = await getCompany(companyId);
   if (!company) {
     return { error: { status: 404, body: { error: "Company not found" } } };
+  }
+
+  // Allow access if canAccessCompany passes OR the user is the company's registered contact
+  // (handles post-migration clients whose company_id may be null in the DB).
+  const userEmail = String(user?.email || "").trim().toLowerCase();
+  const contactEmail = String(company?.contact_email || "").trim().toLowerCase();
+  const isCompanyContact = Boolean(userEmail && contactEmail && userEmail === contactEmail);
+
+  if (!canAccessCompany(user, companyId) && !isCompanyContact) {
+    return { error: { status: 403, body: { error: "You do not have permission to access this company's messages." } } };
   }
 
   const messagingRole = getMessagingRole(user, company);
@@ -509,7 +515,9 @@ async function resolveDirectMessagingContext(user, companyId) {
 
   let brokerIds = [];
   if (messagingRole === "client") {
-    brokerIds = await getOnboardingBrokerIdsForCompany(companyId);
+    // Use the full relevant-broker lookup upfront — covers user_companies assignment
+    // and folder/request activity in one pass so the broker is always found.
+    brokerIds = await getRelevantBrokerIdsForCompany(companyId);
   } else if (messagingRole === "user") {
     const [
       assignedBrokerIds,
@@ -660,7 +668,7 @@ const listThreads = asyncHandler(async (req, res) => {
 const getConversation = asyncHandler(async (req, res) => {
   const companyId = req.params.id;
   if (!canAccessCompany(req.user, companyId)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "Access denied." });
   }
 
   const company = await getCompany(companyId);
@@ -687,7 +695,7 @@ const createMessage = asyncHandler(async (req, res) => {
   const body = String(req.body?.body || "").trim();
 
   if (!canAccessCompany(req.user, companyId)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "Access denied." });
   }
   if (!body) {
     return res.status(400).json({ error: "Message body is required" });
@@ -701,7 +709,7 @@ const createMessage = asyncHandler(async (req, res) => {
   const participants = await getCompanyParticipants(company);
   const participantById = buildParticipantMap(participants);
   if (!participantById[String(req.user.id)] && !isBroker(req.user)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "You are not a participant in this conversation." });
   }
 
   const { data, error } = await supabase
@@ -769,7 +777,7 @@ const getDirectConversation = asyncHandler(async (req, res) => {
 
   const participant = context.contacts.find((contact) => String(contact.id) === String(recipientId));
   if (!participant) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "Access denied." });
   }
 
   const messages = await getDirectMessageRows(companyId, req.user.id, recipientId);
@@ -796,7 +804,7 @@ const createDirectMessage = asyncHandler(async (req, res) => {
 
   const participant = context.contacts.find((contact) => String(contact.id) === String(recipientId));
   if (!participant) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "Access denied." });
   }
 
   const { data, error } = await supabase
