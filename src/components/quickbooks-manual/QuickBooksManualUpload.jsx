@@ -18,6 +18,7 @@ import {
   getManualFolderFiles,
   getQMSUploadSourceTree,
   syncQMSUploadSource,
+  getQMSSyncProgress,
   parseQMSDocuments,
   uploadFile,
 } from "../../lib/api";
@@ -421,6 +422,8 @@ export default function QuickBooksManualUpload({ companyId }) {
   const [syncProgress, setSyncProgress] = useState(null);
   // { phase: "upload"|"parse"|"sync", done: number, total: number, label: string }
   const [localFiles, setLocalFiles] = useState([]);
+  // Live progress for QMS (DataRoom source) sync — polled from backend every 1s.
+  const [qmsSyncProgress, setQmsSyncProgress] = useState(null);
   const [lastSyncResult, setLastSyncResult] = useState(() => {
     if (!companyId) return null;
     try {
@@ -544,10 +547,34 @@ export default function QuickBooksManualUpload({ companyId }) {
       }
     } else {
       // ── DataRoom source path ──
-      setSyncProgress({ phase: "sync", done: 0, total: totalFiles, label: "Reading files from Quickbooks Manual Source…" });
+      // Start the sync request (long-running) and poll progress separately.
+      setQmsSyncProgress({ totalFiles: totalFiles || 0, processedFiles: 0, currentFile: "", currentStep: "Starting", percentage: 0 });
+
+      // Poll backend progress every 1 s while sync is running.
+      let pollTimer = null;
+      const startPolling = () => {
+        pollTimer = setInterval(async () => {
+          try {
+            const p = await getQMSSyncProgress({ clientId: companyId });
+            if (p?.success) {
+              setQmsSyncProgress({
+                totalFiles: p.totalFiles || 0,
+                processedFiles: p.processedFiles || 0,
+                currentFile: p.currentFile || "",
+                currentStep: p.currentStep || "",
+                percentage: p.percentage ?? 0,
+              });
+            }
+          } catch { /* ignore poll errors */ }
+        }, 1000);
+      };
+      startPolling();
 
       try {
         const result = await syncQMSUploadSource({ clientId: companyId });
+        clearInterval(pollTimer);
+        // Show 100% briefly before clearing.
+        setQmsSyncProgress({ totalFiles: result?.processedCount || totalFiles, processedFiles: result?.processedCount || totalFiles, currentFile: "", currentStep: "Complete", percentage: 100 });
         setLastSyncResult({ ...result, syncedAt: new Date().toISOString() });
         await loadTree();
         const p = result?.processedCount || 0;
@@ -557,7 +584,10 @@ export default function QuickBooksManualUpload({ companyId }) {
           title: p > 0 ? "Sync complete" : "Sync finished with errors",
           message: f > 0 ? `${p} file(s) read, ${f} could not be processed.` : `${p} file(s) read from Quickbooks Manual Source.`,
         });
+        setTimeout(() => setQmsSyncProgress(null), 5000);
       } catch (err) {
+        clearInterval(pollTimer);
+        setQmsSyncProgress(null);
         showToast({ type: "error", title: "Sync failed", message: err?.message || "Could not sync Quickbooks Manual Source." });
       }
     }
@@ -759,7 +789,48 @@ export default function QuickBooksManualUpload({ companyId }) {
           </div>
         )}
 
-        {/* Progress bar */}
+        {/* Progress bar — QMS DataRoom sync (live polling) */}
+        {qmsSyncProgress && (
+          <div className="rounded-2xl border border-border bg-bg-card px-5 py-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-[13px] font-semibold text-text-primary">
+                {qmsSyncProgress.percentage === 100
+                  ? "Reading files from Quickbooks Manual Source..."
+                  : "Reading files from Quickbooks Manual Source..."}
+              </span>
+              <span className="text-[12px] font-semibold text-primary tabular-nums">
+                {qmsSyncProgress.percentage}%
+              </span>
+            </div>
+            <div className="h-2.5 rounded-full bg-gray-100 overflow-hidden">
+              <div
+                className="h-full rounded-full bg-primary transition-all duration-300 ease-out"
+                style={{ width: `${Math.max(2, qmsSyncProgress.percentage)}%` }}
+              />
+            </div>
+            <div className="flex items-center justify-between text-[12px] text-text-muted">
+              <span className="tabular-nums">
+                {qmsSyncProgress.processedFiles} / {qmsSyncProgress.totalFiles} files processed
+              </span>
+              {qmsSyncProgress.percentage === 100 && (
+                <span className="flex items-center gap-1 text-green-600 font-medium">
+                  <CheckCircle2 size={13} /> Sync Complete
+                </span>
+              )}
+            </div>
+            {qmsSyncProgress.currentFile && qmsSyncProgress.percentage < 100 && (
+              <div className="rounded-xl border border-border bg-bg-page px-3 py-2 space-y-0.5">
+                <p className="text-[11px] text-text-muted">Current file</p>
+                <p className="text-[12px] font-medium text-text-primary truncate">{qmsSyncProgress.currentFile}</p>
+                {qmsSyncProgress.currentStep && (
+                  <p className="text-[11px] text-text-muted">{qmsSyncProgress.currentStep}...</p>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Progress bar — Choose Folder upload (client-side tracking) */}
         {syncProgress && (
           <div className="rounded-2xl border border-border bg-bg-card px-5 py-4 space-y-2.5">
             <div className="flex items-center justify-between">

@@ -28,6 +28,38 @@ const STATEMENT_TYPES = {
   TAX_RETURN: "tax_return",
 };
 
+// ─── QMS Sync Progress Store ────────────────────────────────────────────────
+// In-memory store for live sync progress. Keyed by companyId.
+// Cleared when sync completes or errors.
+const _syncProgressStore = new Map();
+
+function _setSyncProgress(companyId, data) {
+  _syncProgressStore.set(String(companyId), { ...data, updatedAt: Date.now() });
+}
+
+function getSyncProgress(companyId) {
+  return _syncProgressStore.get(String(companyId)) || null;
+}
+
+function _clearSyncProgress(companyId) {
+  _syncProgressStore.delete(String(companyId));
+}
+
+// ─── Manual Upload (Excel/PDF) Sync Progress Store ────────────────────────────
+const _manualUploadProgressStore = new Map();
+
+function _setManualUploadProgress(companyId, data) {
+  _manualUploadProgressStore.set(String(companyId), { ...data, updatedAt: Date.now() });
+}
+
+function getManualUploadProgress(companyId) {
+  return _manualUploadProgressStore.get(String(companyId)) || null;
+}
+
+function _clearManualUploadProgress(companyId) {
+  _manualUploadProgressStore.delete(String(companyId));
+}
+
 /* =========================================================
    TAX RETURN EXTRACTION — Gemini vision (image-based PDFs)
    Sends raw PDF bytes to Gemini as inline multimodal data.
@@ -2161,6 +2193,21 @@ async function syncManualUploadSource(companyId) {
     }
   }
 
+  // ── Progress tracking ─────────────────────────────────────────────────────
+  const processableTotal = foldersToSync
+    .filter(({ folder }) => !folder.isGenerated)
+    .reduce((sum, { folder }) => sum + (folder.fileCount || 0), 0);
+  let totalFilesCount = Math.max(processableTotal, 1);
+  let processedFilesCount = 0;
+
+  _setManualUploadProgress(companyId, {
+    totalFiles: totalFilesCount,
+    processedFiles: 0,
+    currentFile: "",
+    currentStep: "Preparing sync...",
+    percentage: 0,
+  });
+
   // Clear all existing manual upload records for this company so removed/renamed
   // files don't leave stale rows behind after re-sync.
   const { error: deleteError } = await supabase
@@ -2193,6 +2240,14 @@ async function syncManualUploadSource(companyId) {
       } catch (err) {
         failed.push({ fileName: folder.name, folderName: folder.name, reason: err.message });
       }
+      processedFilesCount += folder.fileCount || 1;
+      _setManualUploadProgress(companyId, {
+        totalFiles: totalFilesCount,
+        processedFiles: Math.min(processedFilesCount, totalFilesCount),
+        currentFile: folder.name,
+        currentStep: "Bank statements processed",
+        percentage: Math.min(99, Math.round((processedFilesCount / totalFilesCount) * 100)),
+      });
       continue;
     }
 
@@ -2206,6 +2261,14 @@ async function syncManualUploadSource(companyId) {
       } catch (err) {
         failed.push({ fileName: folder.name, folderName: folder.name, reason: err.message });
       }
+      processedFilesCount += folder.fileCount || 1;
+      _setManualUploadProgress(companyId, {
+        totalFiles: totalFilesCount,
+        processedFiles: Math.min(processedFilesCount, totalFilesCount),
+        currentFile: folder.name,
+        currentStep: "Tax data extracted",
+        percentage: Math.min(99, Math.round((processedFilesCount / totalFilesCount) * 100)),
+      });
       continue;
     }
 
@@ -2234,6 +2297,13 @@ async function syncManualUploadSource(companyId) {
 
     const settlements = await Promise.allSettled(
       documents.map(async (doc) => {
+        _setManualUploadProgress(companyId, {
+          totalFiles: totalFilesCount,
+          processedFiles: processedFilesCount,
+          currentFile: doc.name,
+          currentStep: "Extracting financial data",
+          percentage: Math.min(99, Math.round((processedFilesCount / totalFilesCount) * 100)),
+        });
         let upload;
         try {
           upload = await loadUploadForDoc(doc);
@@ -2288,15 +2358,30 @@ async function syncManualUploadSource(companyId) {
 
     for (let i = 0; i < settlements.length; i++) {
       const s = settlements[i];
+      processedFilesCount++;
       if (s.status === "fulfilled") {
         s.value.failed ? failed.push(s.value) : processed.push(s.value);
       } else {
         failed.push({ folderName: folder.name, fileName: documents[i]?.name, reason: s.reason?.message });
       }
+      _setManualUploadProgress(companyId, {
+        totalFiles: totalFilesCount,
+        processedFiles: Math.min(processedFilesCount, totalFilesCount),
+        currentFile: documents[i]?.name || "",
+        currentStep: s.status === "fulfilled" && !s.value?.failed ? "Saved" : "Failed",
+        percentage: Math.min(99, Math.round((processedFilesCount / totalFilesCount) * 100)),
+      });
     }
   }
 
   // Generate Cash Flow reports via Gemini for all complete year pairs
+  _setManualUploadProgress(companyId, {
+    totalFiles: totalFilesCount,
+    processedFiles: processedFilesCount,
+    currentFile: "",
+    currentStep: "Generating cash flow reports...",
+    percentage: 99,
+  });
   try {
     const { generateAndSaveCashFlowsForAllYears } = require("./manualCashFlowService");
     const cfGenResult = await generateAndSaveCashFlowsForAllYears(companyId, now);
@@ -2328,6 +2413,15 @@ async function syncManualUploadSource(companyId) {
   }
 
   clearManualDashboardCache(companyId);
+
+  _setManualUploadProgress(companyId, {
+    totalFiles: totalFilesCount,
+    processedFiles: totalFilesCount,
+    currentFile: "",
+    currentStep: "Sync completed successfully",
+    percentage: 100,
+  });
+  setTimeout(() => _clearManualUploadProgress(companyId), 5000);
 
   return {
     sourceFolderName: SOURCE_FOLDER_NAME,
@@ -2538,6 +2632,28 @@ async function syncQMSUploadSource(companyId) {
     }
   }
 
+  // Pre-count total files across all folders for accurate progress tracking.
+  let totalFiles = 0;
+  const folderDocCounts = new Map(); // folderId → count
+  for (const { folder } of foldersToSync) {
+    const { count } = await supabase
+      .from("documents")
+      .select("id", { count: "exact", head: true })
+      .eq("folder_id", folder.id);
+    const n = count || 0;
+    folderDocCounts.set(folder.id, n);
+    totalFiles += n;
+  }
+
+  // Initialize progress store so the polling endpoint can read it immediately.
+  _setSyncProgress(companyId, {
+    totalFiles,
+    processedFiles: 0,
+    currentFile: "",
+    currentStep: "Starting",
+    percentage: 0,
+  });
+
   // Clear all existing QMS records for this company before re-syncing.
   const { error: deleteError } = await supabase
     .from("qb_synced_reports")
@@ -2545,14 +2661,38 @@ async function syncQMSUploadSource(companyId) {
     .eq("company_id", companyId)
     .eq("source", QMS_REPORT_UPLOAD_SOURCE);
 
-  if (deleteError) throw new Error(`Failed to clear QMS records: ${deleteError.message}`);
+  if (deleteError) {
+    _clearSyncProgress(companyId);
+    throw new Error(`Failed to clear QMS records: ${deleteError.message}`);
+  }
 
   const now = new Date().toISOString();
   const processed = [];
   const failed = [];
 
+  // Helper: bump processedFiles counter and recompute percentage.
+  const bumpProgress = (fileName, step, count = 1) => {
+    const cur = getSyncProgress(companyId);
+    if (!cur) return;
+    const next = Math.min(cur.processedFiles + count, cur.totalFiles);
+    _setSyncProgress(companyId, {
+      ...cur,
+      processedFiles: next,
+      currentFile: fileName || cur.currentFile,
+      currentStep: step || cur.currentStep,
+      percentage: cur.totalFiles > 0 ? Math.round((next / cur.totalFiles) * 100) : 100,
+    });
+  };
+
   for (const { folder, statementType } of foldersToSync) {
+    const folderCount = folderDocCounts.get(folder.id) || 0;
+
     if (statementType === STATEMENT_TYPES.BANK_RECONCILIATION) {
+      _setSyncProgress(companyId, {
+        ...(getSyncProgress(companyId) || {}),
+        currentFile: folder.name,
+        currentStep: "Reading bank statements",
+      });
       try {
         const bankResult = await syncBankReconciliationFolder(companyId, folder, now, QMS_REPORT_UPLOAD_SOURCE);
         processed.push(...(bankResult.processed || []));
@@ -2564,10 +2704,16 @@ async function syncQMSUploadSource(companyId) {
       } catch (err) {
         failed.push({ fileName: folder.name, folderName: folder.name, reason: err.message });
       }
+      bumpProgress(folder.name, "Bank statements read", folderCount);
       continue;
     }
 
     if (statementType === STATEMENT_TYPES.TAX_RETURN) {
+      _setSyncProgress(companyId, {
+        ...(getSyncProgress(companyId) || {}),
+        currentFile: folder.name,
+        currentStep: "Reading tax returns",
+      });
       try {
         const taxResult = await syncTaxReturnFolder(companyId, folder, now);
         processed.push(...(taxResult.processed || []));
@@ -2575,6 +2721,7 @@ async function syncQMSUploadSource(companyId) {
       } catch (err) {
         failed.push({ fileName: folder.name, folderName: folder.name, reason: err.message });
       }
+      bumpProgress(folder.name, "Tax returns read", folderCount);
       continue;
     }
 
@@ -2588,10 +2735,17 @@ async function syncQMSUploadSource(companyId) {
 
     const settlements = await Promise.allSettled(
       documents.map(async (doc) => {
+        _setSyncProgress(companyId, {
+          ...(getSyncProgress(companyId) || {}),
+          currentFile: doc.name,
+          currentStep: "Analyzing financial data",
+        });
+
         let upload;
         try {
           upload = await loadUploadForDoc(doc);
         } catch (err) {
+          bumpProgress(doc.name, "Failed");
           return { failed: true, documentId: doc.id, fileName: doc.name, folderName: folder.name, reason: err.message };
         }
         // TAX_RETURN and BANK_RECONCILIATION are handled by their own AI-powered
@@ -2599,6 +2753,7 @@ async function syncQMSUploadSource(companyId) {
         const parsed = await parseStoredReport(upload, statementType, { skipAI: true });
 
         if (!parsed?.report?.rows?.length) {
+          bumpProgress(doc.name, "Failed");
           return { failed: true, documentId: doc.id, fileName: doc.name, folderName: folder.name, reason: "No parseable data in file" };
         }
 
@@ -2638,6 +2793,7 @@ async function syncQMSUploadSource(companyId) {
           });
 
         if (insertError) throw new Error(insertError.message);
+        bumpProgress(doc.name, "Done");
         return { failed: false, documentId: doc.id, fileName: doc.name, statementType, folderName: folder.name };
       }),
     );
@@ -2648,6 +2804,7 @@ async function syncQMSUploadSource(companyId) {
         s.value.failed ? failed.push(s.value) : processed.push(s.value);
       } else {
         failed.push({ folderName: folder.name, fileName: documents[i]?.name, reason: s.reason?.message });
+        bumpProgress(documents[i]?.name, "Failed");
       }
     }
   }
@@ -2669,6 +2826,17 @@ async function syncQMSUploadSource(companyId) {
   }
 
   clearQMSDashboardCache(companyId);
+
+  // Mark sync as fully complete then clear the progress record after a short
+  // window so any in-flight polls can still read the 100% state.
+  _setSyncProgress(companyId, {
+    totalFiles,
+    processedFiles: totalFiles,
+    currentFile: "",
+    currentStep: "Complete",
+    percentage: 100,
+  });
+  setTimeout(() => _clearSyncProgress(companyId), 3000);
 
   return {
     sourceFolderName: QMS_FOLDER_NAME,
@@ -3065,6 +3233,8 @@ module.exports = {
   getQMSUploadSourceTree,
   syncQMSUploadSource,
   parseAndSaveQMSDocuments,
+  getSyncProgress,
+  getManualUploadProgress,
   getLatestManualUploadedReport,
   getAllManualUploadedReports,
   getLatestQMSUploadedReport,

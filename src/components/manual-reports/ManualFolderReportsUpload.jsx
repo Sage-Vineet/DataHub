@@ -10,7 +10,7 @@ import {
   X,
   XCircle,
 } from "lucide-react";
-import { getManualFolderFiles, getManualUploadSourceTree, syncManualUploadSource } from "../../lib/api";
+import { getManualFolderFiles, getManualUploadSourceTree, getManualUploadProgress, syncManualUploadSource } from "../../lib/api";
 import { cn } from "../../lib/utils";
 import { useToast } from "../../context/ToastContext";
 
@@ -345,6 +345,8 @@ export default function ManualFolderReportsUpload({
   const [isLoading, setIsLoading] = useState(true);
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncProgress, setSyncProgress] = useState("");
+  const [manualUploadProgress, setManualUploadProgress] = useState(null);
+  const syncPollRef = useRef(null);
   const [lastSyncResult, setLastSyncResult] = useState(() => {
     if (!companyId) return null;
     try {
@@ -398,7 +400,25 @@ export default function ManualFolderReportsUpload({
     try {
       setIsSyncing(true);
       setSyncProgress("Reading all files…");
+      setManualUploadProgress({ totalFiles: 0, processedFiles: 0, currentFile: "", currentStep: "Starting...", percentage: 0, active: true });
+
+      // Poll for live progress every second while sync runs
+      syncPollRef.current = setInterval(async () => {
+        try {
+          const prog = await getManualUploadProgress({ clientId: companyId });
+          if (prog) setManualUploadProgress(prog);
+        } catch { /* ignore poll errors */ }
+      }, 1000);
+
       const result = await syncManualUploadSource({ clientId: companyId });
+
+      clearInterval(syncPollRef.current);
+      syncPollRef.current = null;
+
+      // Show 100% briefly then clear
+      setManualUploadProgress({ totalFiles: result?.processedCount || 0, processedFiles: result?.processedCount || 0, currentFile: "", currentStep: "Sync completed successfully", percentage: 100, active: false });
+      setTimeout(() => setManualUploadProgress(null), 5000);
+
       setLastSyncResult({ ...result, syncedAt: new Date().toISOString() });
       await loadTree();
       const p = result?.processedCount || 0;
@@ -411,6 +431,9 @@ export default function ManualFolderReportsUpload({
           : `${p} file(s) read successfully from Manual Upload Source.`,
       });
     } catch (error) {
+      clearInterval(syncPollRef.current);
+      syncPollRef.current = null;
+      setManualUploadProgress(null);
       showToast({ type: "error", title: "Sync failed", message: error?.message || "Could not sync Manual Upload Source." });
     } finally {
       setIsSyncing(false);
@@ -494,6 +517,42 @@ export default function ManualFolderReportsUpload({
           )}
         </div>
 
+        {manualUploadProgress && (
+          <div className="rounded-2xl border border-border bg-bg-card px-5 py-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-[13px] font-semibold text-text-primary">
+                {manualUploadProgress.percentage === 100 ? "Sync Complete" : "Syncing files..."}
+              </span>
+              <span className="text-[12px] font-semibold text-primary tabular-nums">
+                {manualUploadProgress.percentage}%
+              </span>
+            </div>
+            <div className="h-2.5 rounded-full bg-gray-100 overflow-hidden">
+              <div
+                className="h-full rounded-full bg-primary transition-all duration-300 ease-out"
+                style={{ width: `${Math.max(2, manualUploadProgress.percentage)}%` }}
+              />
+            </div>
+            <div className="flex items-center justify-between text-[12px] text-text-muted">
+              <span>{manualUploadProgress.processedFiles} / {manualUploadProgress.totalFiles} files processed</span>
+              {manualUploadProgress.percentage === 100 && (
+                <span className="flex items-center gap-1 text-green-600 font-medium">
+                  <CheckCircle2 size={13} /> Sync Complete
+                </span>
+              )}
+            </div>
+            {manualUploadProgress.currentFile && manualUploadProgress.percentage < 100 && (
+              <div className="rounded-xl border border-border bg-bg-page px-3 py-2 space-y-0.5">
+                <p className="text-[11px] text-text-muted">Current file</p>
+                <p className="text-[12px] font-medium text-text-primary truncate">{manualUploadProgress.currentFile}</p>
+                {manualUploadProgress.currentStep && (
+                  <p className="text-[11px] text-text-muted">{manualUploadProgress.currentStep}...</p>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
         <div className="flex items-center gap-3">
           <button
             type="button"
@@ -508,9 +567,7 @@ export default function ManualFolderReportsUpload({
             )}
             {isSyncing ? "Syncing…" : "Sync All"}
           </button>
-          {isSyncing && syncProgress ? (
-            <p className="text-[13px] text-primary animate-pulse">{syncProgress}</p>
-          ) : (
+          {!isSyncing && !manualUploadProgress && (
             <p className="text-[13px] text-text-secondary">
               Reads all files from each mapped subfolder and pushes them to their respective report pages.
             </p>

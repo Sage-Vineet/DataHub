@@ -20,6 +20,7 @@ function getAuthPool() {
 }
 const { attachAssignedCompanies, flattenUser, getUserByEmail, getUserById } = require("./userService");
 const { CLIENT_STATIC_PASSWORD } = require("../config/demoUsers");
+const { invalidateUserCache } = require("../middleware/auth");
 
 /**
  * Signs a JWT token for a user
@@ -138,12 +139,17 @@ async function authenticate(email, password) {
   }
 
   let freshUser = user;
-  if (user.role === "buyer" && rawPassword === CLIENT_STATIC_PASSWORD) {
-    await syncUserCompanyAssignment(user.id, user.company_id);
-    await ensureDefaultFolders(user.company_id, user.id);
-    // Re-fetch so freshUser has the correct effective_role and company_ids after sync
-    freshUser = (await getUserById(user.id)) || user;
+
+  const isClientUser = user.role === "buyer" || user.role === "client";
+
+  if (isClientUser && rawPassword === CLIENT_STATIC_PASSWORD) {
+    // Static-password path: sync company assignment then re-fetch.
+    if (user.company_id) {
+      await syncUserCompanyAssignment(user.id, user.company_id);
+      await ensureDefaultFolders(user.company_id, user.id);
+    }
   } else {
+    // Standard credential check for all other users / passwords.
     const { data: authData } = await supabase
       .from("users")
       .select("password_hash")
@@ -162,7 +168,23 @@ async function authenticate(email, password) {
     }
 
     if (!ok) throw new Error("Invalid credentials");
+
+    // For client/buyer users with a custom password, still sync the company
+    // association so user_companies is populated after a DB migration
+    // that left the join table empty.
+    if (isClientUser && user.company_id) {
+      await syncUserCompanyAssignment(user.id, user.company_id);
+    }
   }
+
+  // Always re-fetch client/buyer users so the response and the 60-second
+  // cache both contain the correct effective_role and company_ids.
+  if (isClientUser) {
+    freshUser = (await getUserById(user.id)) || user;
+  }
+
+  // Clear any stale cached user so requireAuth fetches fresh data on the next request.
+  invalidateUserCache(freshUser.id);
 
   const token = signToken(freshUser.id);
 

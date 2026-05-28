@@ -717,13 +717,9 @@ function buildCashFlowGeminiPrompt(plRows, bsCurrRows, bsPrevRows, year) {
     ? serializeFinancialRows(bsPrevRows).join("\n")
     : "No previous year data available";
 
-  return `You are an accounting engine.
+  return `You are a highly intelligent accounting engine and financial statement normalization system.
 
-Your job:
-1. Read the entire Balance Sheet and Profit & Loss.
-2. Understand each account SEMANTICALLY — never rely on exact labels.
-3. Normalize account names to standard categories using the table below.
-4. Generate a Cash Flow Statement using the INDIRECT METHOD.
+Your task is to generate an accurate CASH FLOW STATEMENT using the uploaded financial data below.
 
 === Current Year (${year}) Profit & Loss ===
 ${pl}
@@ -735,56 +731,65 @@ ${bsCurr}
 ${bsPrev}
 
 ════════════════════════════════════════════════════════
-STEP 1 — NORMALIZE ACCOUNT NAMES
+PRIMARY OBJECTIVE
 ════════════════════════════════════════════════════════
-Map every account you find to its standard category below.
-Use accounting meaning and context — not exact string matching.
+Generate a valid INDIRECT METHOD CASH FLOW STATEMENT.
+
+IMPORTANT:
+* NEVER rely on exact account labels.
+* Understand accounts SEMANTICALLY.
+* Use accounting meaning/context.
+* Ignore formatting differences, indentation inconsistencies, OCR spelling issues if meaning is clear.
+
+════════════════════════════════════════════════════════
+STEP 1 — NORMALIZE ALL ACCOUNTS
+════════════════════════════════════════════════════════
+Map every account to a standardized category using semantic understanding:
 
 AccountsReceivable (ASSET):
-  Accounts Receivable, Accounts Receivable (A/R), Trade Receivables, Receivables,
-  Customer Receivables, Outstanding Receipts, Debtors, Trade Debtors
+  Accounts Receivable, A/R, Trade Receivables, Receivables, Debtors, Trade Debtors,
+  Customer Receivables, Outstanding Invoices, Outstanding Receipts
 
 AccountsPayable (LIABILITY):
-  Accounts Payable, Accounts Payable (A/P), Trade Payables, Payables,
-  Creditors, Trade Creditors
+  Accounts Payable, A/P, Trade Payables, Payables, Creditors, Trade Creditors,
+  Vendor Payables, Supplier Payables
 
 Inventory (ASSET):
-  Inventory, Stock, Finished Goods, Raw Material, Inventory Assets
+  Inventory, Stock, Merchandise, Finished Goods, Raw Materials, WIP
 
 AccruedExpenses (LIABILITY):
-  Accrued Expenses, Outstanding Expenses, Accrued Liabilities, Expenses Payable
+  Accrued Expenses, Accrued Liabilities, Outstanding Expenses, Expenses Payable
 
 OtherCurrentAssets (ASSET):
-  Accrued Revenue, Prepaid Expenses, Advance Payments, Deposits (asset side),
-  Current Assets Other
+  Prepaid Expenses, Prepaid Insurance, Prepaid Rent, Accrued Revenue,
+  Advance Payments, Deposits (asset side), Other Current Assets
 
 OtherCurrentLiabilities (LIABILITY):
-  American Express, Credit Card, Short Term Borrowings, Current Liabilities Other
+  Credit Card, American Express, Short Term Borrowings, Deferred Revenue,
+  Customer Deposits, Customer Advances, Other Current Liabilities
 
-Loans (LIABILITY — detail lines, one per account):
-  Loans, Borrowings, Long Term Debt, Notes Payable, Bank Loan,
-  Director Loan, Partner Loan — any named borrowing in Liabilities section
+Loans (LIABILITY — one line per named account):
+  Notes Payable, Loans Payable, Borrowings, Bank Loan, Director Loan,
+  Partner Loan, Shareholder Loan, Long-Term Debt, Line of Credit, Revolver
 
 Cash (ASSET):
-  Bank Accounts, Cash, Checking Account, Savings Account, any named bank account,
-  Cash in Hand, Petty Cash
+  Bank Accounts, Cash, Checking Account, Savings Account, Cash in Hand,
+  Petty Cash, Cash at Bank — any named bank account
 
 SecurityDeposits (ASSET):
   Security Deposit, Rental Deposit, Deposits Paid
 
 FixedAssets (ASSET):
-  Property Plant & Equipment, Fixed Assets, Equipment, Furniture,
-  Leasehold Improvements, Vehicles, net PP&E
+  Property Plant & Equipment (net), Fixed Assets, Equipment, Furniture,
+  Vehicles, Leasehold Improvements, Machinery, net PP&E
 
 EquityContribution (EQUITY — STRICT RULE):
   INCLUDE ONLY: Capital Contribution, Owner Contribution, Paid-In Capital,
-                Additional Paid-In Capital
-  EXCLUDE (NOT cash movements):
+                Additional Paid-In Capital, Owner Investment
+  EXCLUDE (not cash movements):
     • Any account with "Equity" in name but not "Contribution"
-      (e.g. "[Name] - Equity", "Owner Equity", ownership % entries like "55%", "45%")
-    • Opening Balance Equity
-    • Retained Earnings
-    • Net Income in equity section
+    • Opening Balance Equity, Retained Earnings, Net Income in equity section
+    • Ownership % entries (e.g. "55%", "45%")
 
 Dividends (from P&L):
   Owner Draws, Owner's Draw, Distributions, Dividends Paid
@@ -796,89 +801,98 @@ Depreciation (from P&L):
   Depreciation, Depreciation & Amortization, Depreciation Expense
 
 Amortization (from P&L):
-  Amortization, Amortization Expense (only if separate from Depreciation)
+  Amortization, Amortization Expense — only if listed separately from Depreciation
 
 ════════════════════════════════════════════════════════
-STEP 2 — COMPUTE CASH FLOW (INDIRECT METHOD)
+STEP 2 — REMOVE DUPLICATES & SUBTOTALS
+════════════════════════════════════════════════════════
+Do NOT double-count values.
+Ignore subtotal rows, header rows, summary rows, and parent rows when
+child detail rows already exist.
+Only use LEAF-LEVEL financial rows for calculations.
+
+════════════════════════════════════════════════════════
+STEP 3 — GENERATE INDIRECT METHOD CASH FLOW
 ════════════════════════════════════════════════════════
 Use (Current − Previous) for all BS deltas.
 If no previous year data: all deltas = 0; BeginningCash = 0.
 
 SIGN RULES:
-  Asset account change    → cash impact = -(Current − Previous)
-    [asset increase = cash used = negative]
-  Liability account change → cash impact = +(Current − Previous)
-    [liability increase = cash received = positive]
+  Asset increase    → cash outflow → NEGATIVE
+  Asset decrease    → cash inflow  → POSITIVE
+  Liability increase → cash inflow  → POSITIVE
+  Liability decrease → cash outflow → NEGATIVE
 
 ── Operating Activities ──
 NetIncome      = P&L NetIncome
 Depreciation   = P&L Depreciation (add back, positive)
-Amortization   = P&L Amortization (add back, positive; 0 if already included in Depreciation)
+Amortization   = P&L Amortization (add back, positive; 0 if already in Depreciation line)
 ARChange       = -(CurrentBS.AccountsReceivable - PreviousBS.AccountsReceivable)
 InventoryChange= -(CurrentBS.Inventory - PreviousBS.Inventory)
 APChange       = +(CurrentBS.AccountsPayable - PreviousBS.AccountsPayable)
 AccruedChange  = +(CurrentBS.AccruedExpenses - PreviousBS.AccruedExpenses)
 OCAChange      = -(CurrentBS.OtherCurrentAssets - PreviousBS.OtherCurrentAssets)
 OCLChange      = +(CurrentBS.OtherCurrentLiabilities - PreviousBS.OtherCurrentLiabilities)
-
-totalOperating = NetIncome + Depreciation + Amortization
-               + ARChange + InventoryChange + APChange + AccruedChange + OCAChange + OCLChange
+totalOperating = sum of all above
 
 ── Investing Activities ──
 FixedAssetsChange     = -(CurrentBS.FixedAssets - PreviousBS.FixedAssets)
+  Positive delta (net decrease) = asset sale = positive inflow
+  Negative delta (net increase) = asset purchase = negative outflow
 SecurityDepositChange = -(CurrentBS.SecurityDeposits - PreviousBS.SecurityDeposits)
+Investments           = -(CurrentBS.Investments - PreviousBS.Investments)
+totalInvesting = sum of all above
 
-totalInvesting = FixedAssetsChange + SecurityDepositChange
-
-── Financing Activities — LOANS (one line per account, never aggregated) ──
+── Financing Activities — LOANS (one line per account, NEVER aggregated) ──
 For EACH individual loan account found in the BS Liabilities section:
   LoanChange = CurrentBalance - PreviousBalance
-  Label it: "Loans - [Exact Account Name as it appears in the BS]"
+  Label it: "Loans - [Exact Account Name from BS]"
 
 ── Financing Activities — EQUITY ──
-EquityContribution = sum of INCLUDED equity accounts only (see normalization rules above).
-                     If no qualifying accounts: 0.
-Dividends          = P&L owner draws/distributions (use as negative outflow).
-
+EquityContribution = sum of INCLUDED equity accounts only (strict rule above); 0 if none
+Dividends          = P&L owner draws/distributions (negative outflow)
 totalFinancing = sum(all loan lines) + EquityContribution - Dividends
 
-── Cash ──
-NetIncrease  = totalOperating + totalInvesting + totalFinancing
-BeginningCash = PreviousBS.Cash  (0 if no previous year)
-EndingCash    = BeginningCash + NetIncrease
+── Cash Reconciliation ──
+netCashChange  = totalOperating + totalInvesting + totalFinancing
+BeginningCash  = PreviousBS.Cash (0 if no previous year)
+EndingCash     = BeginningCash + netCashChange
 
 ════════════════════════════════════════════════════════
-STEP 3 — VALIDATE
+STEP 4 — VALIDATE
 ════════════════════════════════════════════════════════
-Check: BeginningCash + NetIncrease ≈ CurrentBS.Cash
-If difference > 1: attempt reclassification of ambiguous accounts and recalculate.
+Check: BeginningCash + netCashChange ≈ CurrentBS.Cash
+If difference > 1: reclassify ambiguous accounts and recalculate.
+Report cashReconciled: true/false and the difference amount.
 
 ════════════════════════════════════════════════════════
-STEP 4 — RETURN JSON ONLY
+STEP 5 — RETURN JSON ONLY
 ════════════════════════════════════════════════════════
-Never return explanation, markdown, or code fences.
-Include ALL line items even if value is 0.
-Use standard English label names (not account codes).
+NEVER return explanation, markdown, code fences, or commentary.
+Include ALL line items even when value is 0.
+Use numeric values only — never formatted currency strings.
 
 {
   "year": ${year},
   "reportType": "cashflow",
-  "period": { "start": "${year}-01-01", "end": "${year}-12-31" },
+  "accountingMethod": "Indirect",
   "operatingActivities": [
-    { "label": "Net Income",                        "value": 0 },
-    { "label": "Depreciation",                      "value": 0 },
-    { "label": "Amortization",                      "value": 0 },
-    { "label": "Change in Accounts Receivable",     "value": 0 },
-    { "label": "Change in Inventory",               "value": 0 },
-    { "label": "Change in Accounts Payable",        "value": 0 },
-    { "label": "Change in Accrued Expenses",        "value": 0 },
-    { "label": "Change in Other Current Assets",    "value": 0 },
+    { "label": "Net Income",                         "value": 0 },
+    { "label": "Depreciation",                       "value": 0 },
+    { "label": "Amortization",                       "value": 0 },
+    { "label": "Change in Accounts Receivable",      "value": 0 },
+    { "label": "Change in Inventory",                "value": 0 },
+    { "label": "Change in Accounts Payable",         "value": 0 },
+    { "label": "Change in Accrued Expenses",         "value": 0 },
+    { "label": "Change in Other Current Assets",     "value": 0 },
     { "label": "Change in Other Current Liabilities","value": 0 }
   ],
   "totalOperating": 0,
   "investingActivities": [
     { "label": "Purchase of Fixed Assets", "value": 0 },
-    { "label": "Security Deposits",        "value": 0 }
+    { "label": "Sale of Fixed Assets",     "value": 0 },
+    { "label": "Security Deposits",        "value": 0 },
+    { "label": "Investments",              "value": 0 }
   ],
   "totalInvesting": 0,
   "financingActivities": [
@@ -888,13 +902,17 @@ Use standard English label names (not account codes).
     { "label": "Dividends",                "value": 0 }
   ],
   "totalFinancing": 0,
-  "netIncrease": 0,
   "beginningCash": 0,
-  "endingCash": 0
+  "netCashChange": 0,
+  "endingCash": 0,
+  "validation": {
+    "cashReconciled": true,
+    "difference": 0
+  }
 }`;
 }
 
-async function callGeminiForCashFlow(prompt) {
+async function _callGemini(prompt, tag) {
   if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY not set");
   let lastError = null;
   for (const modelName of GEMINI_CF_MODELS) {
@@ -910,14 +928,213 @@ async function callGeminiForCashFlow(prompt) {
         const msg = String(err?.message || err);
         const isQuota = msg.includes("429") || msg.toLowerCase().includes("quota");
         const isNotFound = msg.includes("404") || msg.toLowerCase().includes("not found");
-        console.warn(`[ManualCashFlow] Gemini model ${modelName} error: ${msg}`);
+        console.warn(`[ManualCashFlow][${tag}] Gemini model ${modelName} error: ${msg}`);
         if (isNotFound) break;
         if (isQuota && retries > 1) { await GEMINI_CF_SLEEP(3000); retries--; }
         else break;
       }
     }
   }
-  throw new Error(`Gemini CF generation failed: ${lastError?.message || "unknown"}`);
+  throw new Error(`Gemini ${tag} failed: ${lastError?.message || "unknown"}`);
+}
+
+const callGeminiForCashFlow = (prompt) => _callGemini(prompt, "CF-generation");
+const callGeminiForNormalization = (prompt) => _callGemini(prompt, "account-normalization");
+
+// ── Step-1 prompt: account normalization only (no arithmetic) ─────────────────
+
+function buildAccountNormalizationPrompt(plRows, bsCurrRows, bsPrevRows, year) {
+  const pl = serializeFinancialRows(plRows).join("\n") || "Not available";
+  const bsCurr = serializeFinancialRows(bsCurrRows).join("\n") || "Not available";
+  const bsPrev = (bsPrevRows || []).length > 0
+    ? serializeFinancialRows(bsPrevRows).join("\n")
+    : "Not available";
+
+  return `You are an enterprise-grade financial statement normalization engine.
+
+Your ONLY responsibility is to classify each account semantically.
+NEVER calculate totals, cash flow arithmetic, or reconciliation.
+NEVER infer or generate missing values.
+NEVER generate summaries or explanations.
+
+════════════════════════════════════════════════════
+INPUT DATA
+════════════════════════════════════════════════════
+
+=== Profit & Loss (Year ${year}) ===
+${pl}
+
+=== Balance Sheet — Current Year (${year}) ===
+${bsCurr}
+
+=== Balance Sheet — Previous Year (${year - 1}) ===
+${bsPrev}
+
+════════════════════════════════════════════════════
+RULES
+════════════════════════════════════════════════════
+1. Ignore subtotal, header, and parent rows — only classify LEAF-LEVEL rows.
+2. Never double-count. If a parent and its children both appear, skip the parent.
+3. Use semantic accounting understanding — not exact label matching.
+4. Correct obvious OCR mistakes (e.g. "Acc0unts Receivab1e" → AccountsReceivable).
+5. Each account entry must include: originalName, normalizedCategory, accountType, cashFlowSection, statementType, year, amount, confidence.
+6. For statementType use exactly: "ProfitAndLoss", "BalanceSheet".
+7. For year: use ${year} for P&L and current BS; use ${year - 1} for previous BS.
+8. For Loans in the BS: classify each named borrowing separately with its exact original name.
+
+════════════════════════════════════════════════════
+STANDARDIZED CATEGORIES
+════════════════════════════════════════════════════
+
+ASSETS:       Cash, AccountsReceivable, Inventory, FixedAssets, SecurityDeposits, Investments, OtherCurrentAssets
+LIABILITIES:  AccountsPayable, AccruedExpenses, OtherCurrentLiabilities, Loans, LongTermDebt, NotesPayable
+EQUITY:       EquityContribution, RetainedEarnings, OwnerDraw, Dividends
+P&L:          Revenue, CostOfGoodsSold, OperatingExpense, Depreciation, Amortization, InterestExpense, TaxExpense, NetIncome
+
+Equity STRICT RULE — EquityContribution ONLY for:
+  Paid-In Capital, Capital Contribution, Owner Contribution, Owner Investment, Additional Paid-In Capital
+  NEVER classify these as EquityContribution: Retained Earnings, Opening Balance Equity, Owner Equity %, Net Income in equity section
+
+════════════════════════════════════════════════════
+SEMANTIC MAPPING EXAMPLES
+════════════════════════════════════════════════════
+AccountsReceivable: Trade Debtors, Debtors, Customer Receivables, Outstanding Invoices, Receivables
+AccountsPayable:    Trade Creditors, Creditors, Vendor Payables, Supplier Payables
+Cash:               Bank Account, Checking, Savings, Cash at Bank, Petty Cash, any named bank account
+Loans:              Director Loan, Bank Loan, Shareholder Loan, Revolver, Line of Credit, Notes Payable
+FixedAssets:        PPE (net), Equipment, Machinery, Vehicles, Furniture, Leasehold Improvements
+
+════════════════════════════════════════════════════
+RETURN JSON ONLY — no markdown, no explanation
+════════════════════════════════════════════════════
+
+{
+  "accounts": [
+    {
+      "originalName": "Trade Debtors",
+      "normalizedCategory": "AccountsReceivable",
+      "accountType": "Asset",
+      "cashFlowSection": "Operating",
+      "statementType": "BalanceSheet",
+      "year": ${year},
+      "amount": 0,
+      "confidence": 0.98
+    }
+  ]
+}`;
+}
+
+// ── Step-2: compute CF deterministically from normalized accounts ──────────────
+
+function buildCashFlowFromNormalized(accounts, year) {
+  if (!Array.isArray(accounts) || accounts.length === 0) {
+    throw new Error("No normalized accounts to compute cash flow from");
+  }
+
+  const prevYear = year - 1;
+  const LOAN_CATS = new Set(["Loans", "LongTermDebt", "NotesPayable"]);
+  const MIN_CONFIDENCE = 0.5;
+
+  const pl = accounts.filter((a) => a.statementType === "ProfitAndLoss" && (a.confidence ?? 1) >= MIN_CONFIDENCE);
+  const bsCurr = accounts.filter((a) => a.statementType === "BalanceSheet" && Number(a.year) === year && (a.confidence ?? 1) >= MIN_CONFIDENCE);
+  const bsPrev = accounts.filter((a) => a.statementType === "BalanceSheet" && Number(a.year) === prevYear && (a.confidence ?? 1) >= MIN_CONFIDENCE);
+  const hasPrev = bsPrev.length > 0;
+
+  function sumCat(arr, category) {
+    return r2(arr.filter((a) => a.normalizedCategory === category).reduce((s, a) => s + (Number(a.amount) || 0), 0));
+  }
+
+  // ── P&L values ──
+  const netIncome = sumCat(pl, "NetIncome");
+  const depreciation = sumCat(pl, "Depreciation");
+  const amortization = sumCat(pl, "Amortization");
+  const dividends = r2(sumCat(pl, "OwnerDraw") + sumCat(pl, "Dividends"));
+
+  // ── Operating deltas ──
+  function wcd(category, sign) {
+    if (!hasPrev) return 0;
+    return r2(sign * (sumCat(bsCurr, category) - sumCat(bsPrev, category)));
+  }
+
+  const changeAR = wcd("AccountsReceivable", -1);
+  const changeInv = wcd("Inventory", -1);
+  const changeOCA = wcd("OtherCurrentAssets", -1);
+  const changeAP = wcd("AccountsPayable", +1);
+  const changeAccr = wcd("AccruedExpenses", +1);
+  const changeOCL = wcd("OtherCurrentLiabilities", +1);
+
+  const totalOperating = r2(netIncome + depreciation + amortization + changeAR + changeInv + changeAP + changeAccr + changeOCA + changeOCL);
+
+  // ── Investing ──
+  const fixedDelta = hasPrev ? r2(-(sumCat(bsCurr, "FixedAssets") - sumCat(bsPrev, "FixedAssets"))) : 0;
+  const purchaseOfFixed = fixedDelta < 0 ? fixedDelta : 0;
+  const saleOfFixed = fixedDelta > 0 ? fixedDelta : 0;
+  const changeDeposits = hasPrev ? r2(-(sumCat(bsCurr, "SecurityDeposits") - sumCat(bsPrev, "SecurityDeposits"))) : 0;
+  const changeInvestments = hasPrev ? r2(-(sumCat(bsCurr, "Investments") - sumCat(bsPrev, "Investments"))) : 0;
+  const totalInvesting = r2(purchaseOfFixed + saleOfFixed + changeDeposits + changeInvestments);
+
+  // ── Financing — per-named-loan ──
+  const financingActivities = [];
+  if (hasPrev) {
+    const loanNames = [...new Set(
+      [...bsCurr, ...bsPrev].filter((a) => LOAN_CATS.has(a.normalizedCategory)).map((a) => a.originalName)
+    )];
+    for (const loanName of loanNames) {
+      const getBalance = (arr) => arr.filter((a) => a.originalName === loanName && LOAN_CATS.has(a.normalizedCategory)).reduce((s, a) => s + (Number(a.amount) || 0), 0);
+      const loanChange = r2(getBalance(bsCurr) - getBalance(bsPrev));
+      if (loanChange !== 0) financingActivities.push({ label: `Loans - ${loanName}`, value: loanChange });
+    }
+  }
+
+  const equityContrib = hasPrev ? r2(sumCat(bsCurr, "EquityContribution") - sumCat(bsPrev, "EquityContribution")) : 0;
+  financingActivities.push({ label: "Equity Contribution", value: equityContrib });
+  financingActivities.push({ label: "Dividends", value: -dividends });
+  const totalFinancing = r2(financingActivities.reduce((s, a) => s + a.value, 0));
+
+  // ── Cash reconciliation ──
+  const beginningCash = hasPrev ? r2(sumCat(bsPrev, "Cash")) : 0;
+  const netCashChange = r2(totalOperating + totalInvesting + totalFinancing);
+  const endingCash = r2(beginningCash + netCashChange);
+  const bsEndingCash = r2(sumCat(bsCurr, "Cash"));
+  const cashValidated = bsEndingCash !== 0 && Math.abs(endingCash - bsEndingCash) <= 1;
+
+  if (!cashValidated && bsEndingCash !== 0) {
+    console.warn(`[ManualCashFlow][normalized] Cash mismatch year=${year}: computed=${endingCash} vs BS=${bsEndingCash} (diff=${Math.abs(endingCash - bsEndingCash).toFixed(2)})`);
+  }
+
+  return {
+    year: Number(year),
+    reportType: "cashflow",
+    accountingMethod: "Indirect",
+    data: {
+      operatingActivities: [
+        { label: "Net Income", value: netIncome },
+        { label: "Depreciation", value: depreciation },
+        { label: "Amortization", value: amortization },
+        { label: "Change in Accounts Receivable", value: changeAR },
+        { label: "Change in Inventory", value: changeInv },
+        { label: "Change in Accounts Payable", value: changeAP },
+        { label: "Change in Accrued Expenses", value: changeAccr },
+        { label: "Change in Other Current Assets", value: changeOCA },
+        { label: "Change in Other Current Liabilities", value: changeOCL },
+      ],
+      totalOperating,
+      investingActivities: [
+        { label: "Purchase of Fixed Assets", value: purchaseOfFixed },
+        { label: "Sale of Fixed Assets", value: saleOfFixed },
+        { label: "Security Deposits", value: changeDeposits },
+        { label: "Investments", value: changeInvestments },
+      ],
+      totalInvesting,
+      financingActivities,
+      totalFinancing,
+      netCashChange,
+      beginningCash,
+      endingCash,
+      cashValidated,
+      generatedBy: "gemini_normalized",
+    },
+  };
 }
 
 function parseGeminiJsonText(text = "") {
@@ -941,7 +1158,6 @@ function normalizeCfFromGemini(raw, year) {
   const investingActivities = normalize(raw.investingActivities);
   const financingActivities = normalize(raw.financingActivities);
 
-  // Trust Gemini's explicit section totals; fall back to array sum.
   // Guard against "Adjustments to Reconcile Net Income" subtotal rows that would
   // double-count individual WC items if accidentally included.
   const isAdjSubtotal = (item) => /adjustments?\s+to\s+reconcile/i.test(item.label);
@@ -956,9 +1172,9 @@ function normalizeCfFromGemini(raw, year) {
   const beginningCash = r2(raw.beginningCash ?? 0);
   const endingCash = r2(beginningCash + netCashChange);
 
-  // ── Validate against Gemini's reported values ──────────────────────────────
-  // Accept both field name variants: netIncrease (new) and netIncreaseInCash (legacy).
-  const geminiNetRaw = raw.netIncrease ?? raw.netIncreaseInCash ?? null;
+  // ── Validate against Gemini's reported values ────────────────────────────
+  // Accept all field name variants: netCashChange (new), netIncrease, netIncreaseInCash (legacy).
+  const geminiNetRaw = raw.netCashChange ?? raw.netIncrease ?? raw.netIncreaseInCash ?? null;
   if (geminiNetRaw != null) {
     const geminiNet = r2(geminiNetRaw);
     if (Math.abs(netCashChange - geminiNet) > 1) {
@@ -979,10 +1195,12 @@ function normalizeCfFromGemini(raw, year) {
     }
   }
 
+  const cashReconciled = raw.validation?.cashReconciled ?? (Math.abs((raw.validation?.difference ?? 0)) <= 1);
+
   return {
     year: Number(raw.year || year),
     reportType: "cashflow",
-    accountingMethod: "Accrual",
+    accountingMethod: raw.accountingMethod || "Indirect",
     data: {
       operatingActivities,
       totalOperating,
@@ -993,7 +1211,7 @@ function normalizeCfFromGemini(raw, year) {
       netCashChange,
       beginningCash,
       endingCash,
-      cashValidated: true,
+      cashValidated: cashReconciled,
       generatedBy: "gemini",
     },
   };
@@ -1007,6 +1225,20 @@ async function generateCashFlowWithGemini(currentPL, currentBS, previousBS, year
   if (plRows.length === 0) throw new Error(`No P&L rows for year ${year}`);
   if (bsCurrRows.length === 0) throw new Error(`No BS rows for year ${year}`);
 
+  // Step 1: normalize accounts with Gemini (classify only, no arithmetic)
+  try {
+    const normPrompt = buildAccountNormalizationPrompt(plRows, bsCurrRows, bsPrevRows, year);
+    const normText = await callGeminiForNormalization(normPrompt);
+    const normRaw = parseGeminiJsonText(normText);
+    const accounts = Array.isArray(normRaw?.accounts) ? normRaw.accounts : null;
+    if (accounts && accounts.length > 0) {
+      return buildCashFlowFromNormalized(accounts, year);
+    }
+  } catch (e) {
+    console.warn(`[ManualCashFlow] Two-step normalization failed: ${e.message}. Falling back to direct CF generation.`);
+  }
+
+  // Fallback: single-step Gemini CF generation
   const prompt = buildCashFlowGeminiPrompt(plRows, bsCurrRows, bsPrevRows, year);
   const responseText = await callGeminiForCashFlow(prompt);
 

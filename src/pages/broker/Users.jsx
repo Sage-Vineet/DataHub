@@ -423,29 +423,6 @@ function UserFormModal({ initial, companies, groups, onCompanyChange, onSave, on
             />
           </div>
 
-          <div className="col-span-2">
-            <label className="block text-xs font-semibold text-gray-500 mb-1.5">Role *</label>
-            <div className="flex gap-2">
-              {VISIBLE_ROLES.map((role) => {
-                const meta = roleMeta(role);
-                return (
-                  <button
-                    key={role}
-                    type="button"
-                    onClick={() => setField({ role })}
-                    className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl border text-xs font-semibold transition-all ${
-                      form.role === role
-                        ? 'bg-[#05164D] text-white border-[#05164D]'
-                        : 'bg-gray-50 text-gray-500 border-gray-200 hover:border-gray-300'
-                    }`}
-                  >
-                    <meta.Icon size={12} />
-                    {meta.label}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
 
           {isEdit && (
             <div>
