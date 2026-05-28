@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useParams } from 'react-router-dom';
+import { AlertCircle } from 'lucide-react';
 import {
   Search, Filter, Plus, Eye, Pencil, Trash2, X,
   ChevronLeft, ChevronRight, Users as UsersIcon,
@@ -196,6 +197,28 @@ function ViewModal({ user, onClose, onEdit }) {
   );
 }
 
+function isValidEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || '').trim());
+}
+
+function formatApiError(err) {
+  const msg = String(err?.message || err || '');
+  if (/duplicate|already exists|unique constraint|email.*taken|taken.*email|already.*use/i.test(msg)) {
+    return 'A user with this email address already exists.';
+  }
+  return msg || 'Something went wrong. Please try again.';
+}
+
+function FormError({ message }) {
+  if (!message) return null;
+  return (
+    <div className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 flex items-start gap-2.5">
+      <AlertCircle size={15} className="text-[#C62026] flex-shrink-0 mt-0.5" />
+      <p className="text-sm text-[#C62026]">{message}</p>
+    </div>
+  );
+}
+
 function UserFormModal({ initial, companies, companyLock, groups, onSave, onClose, submitting, error }) {
   const isEdit = !!initial?.id;
   const [form, setForm] = useState(() => {
@@ -207,8 +230,31 @@ function UserFormModal({ initial, companies, companyLock, groups, onSave, onClos
   const [companiesSearchQuery, setCompaniesSearchQuery] = useState('');
   const [companiesDropdownOpen, setCompaniesDropdownOpen] = useState(false);
   const companiesDropdownRef = useRef(null);
-  const setField = (patch) => setForm((current) => ({ ...current, ...patch }));
-  const valid = form.name.trim() && form.email.trim() && (isEdit ? form.status : true) && (isEdit || form.password.trim());
+  const [localError, setLocalError] = useState('');
+  const setField = (patch) => { setForm((current) => ({ ...current, ...patch })); setLocalError(''); };
+
+  const validate = () => {
+    if (!form.name.trim()) return 'Full name is required.';
+    if (!form.email.trim()) return 'Email address is required.';
+    if (!isValidEmail(form.email)) return 'Please enter a valid email address.';
+    if (!isEdit) {
+      if (!form.password.trim()) return 'Password is required.';
+      if (form.password.length < 8) return 'Password must be at least 8 characters.';
+      if (!/[A-Za-z]/.test(form.password) || !/\d/.test(form.password)) {
+        return 'Password must include at least one letter and one number.';
+      }
+    }
+    if (isEdit && !form.status) return 'Status is required.';
+    return '';
+  };
+
+  const handleSave = () => {
+    const err = validate();
+    if (err) { setLocalError(err); return; }
+    onSave(form);
+  };
+
+  const displayError = localError || error;
 
   useEffect(() => {
     const seed = initial || EMPTY_FORM;
@@ -465,16 +511,14 @@ function UserFormModal({ initial, companies, companyLock, groups, onSave, onClos
         </div>
 
         <div className="px-6 py-4 border-t border-gray-100 bg-white flex flex-col gap-3" style={{ flexShrink: 0 }}>
-          {error && (
-            <p className="text-sm text-red-600 bg-red-50 rounded-xl px-3 py-2">{error}</p>
-          )}
+          <FormError message={displayError} />
           <div className="flex gap-3">
             <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-gray-600 hover:bg-gray-50 transition-colors">
               Cancel
             </button>
             <button
-              onClick={() => valid && onSave(form)}
-              disabled={!valid || submitting}
+              onClick={handleSave}
+              disabled={submitting}
               className="flex-1 py-2.5 rounded-xl bg-[#8BC53D] hover:bg-[#476E2C] disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-bold transition-colors"
             >
               {submitting ? 'Saving...' : isEdit ? 'Save Changes' : 'Add User'}
@@ -683,7 +727,7 @@ export default function WorkspaceUsers() {
       setPage(1);
       setSuccess('User created successfully.');
     } catch (err) {
-      setFormError(err.message || 'Unable to create user.');
+      setFormError(formatApiError(err));
     } finally {
       setSubmitting(false);
     }
@@ -725,7 +769,7 @@ export default function WorkspaceUsers() {
       setEditUser(null);
       setSuccess('User updated successfully.');
     } catch (err) {
-      setFormError(err.message || 'Unable to update user.');
+      setFormError(formatApiError(err));
     } finally {
       setSubmitting(false);
     }

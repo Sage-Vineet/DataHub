@@ -72,6 +72,12 @@ function resolveClientId(req) {
 }
 
 router.use((req, res, next) => {
+  // This router is mounted at "/" so router.use() intercepts every request.
+  // Only enforce financial-report access control for paths that belong to this router.
+  const p = req.path || '';
+  if (!p.startsWith('/manual-report-uploads') && !p.startsWith('/manual-upload')) {
+    return next();
+  }
   const clientId = resolveClientId(req);
   if (clientId && !canAccessCompany(req.user, clientId)) {
     return res.status(403).json({ error: "You do not have permission to access financial reports for this company." });

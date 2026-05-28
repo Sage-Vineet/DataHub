@@ -81,11 +81,15 @@ function resolveClientIdFromLocation() {
     window.location.pathname || '',
   ];
 
+  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   for (const candidate of candidates) {
     if (!candidate.startsWith('/client/')) continue;
     const match = candidate.match(/^\/client\/([^/?#]+)/);
     if (match) {
-      return decodeURIComponent(match[1]);
+      const id = decodeURIComponent(match[1]);
+      // Must be a UUID — route names like "messages", "documents", "requests"
+      // are not valid company IDs and must never be sent as X-Client-Id.
+      if (uuidPattern.test(id)) return id;
     }
   }
 

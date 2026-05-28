@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Lock, User, Building2, ChevronRight, ShieldCheck, X, Eye, EyeOff } from 'lucide-react';
+import { Lock, User, Building2, ChevronRight, ShieldCheck, X, Eye, EyeOff, AlertCircle } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { updateUserRequest, listCompaniesRequest } from '../../lib/api';
 
@@ -39,7 +39,10 @@ function Modal({ title, onClose, onSave, saving, error, children, saveLabel = 'S
         {children}
 
         {error && (
-          <p className="mt-3 text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2">{error}</p>
+          <div className="mt-3 rounded-xl border border-red-100 bg-red-50 px-4 py-3 flex items-start gap-2.5">
+            <AlertCircle size={15} className="text-red-600 flex-shrink-0 mt-0.5" />
+            <p className="text-sm text-red-600">{error}</p>
+          </div>
         )}
 
         <div className="mt-5 flex gap-3 justify-end">
@@ -217,8 +220,11 @@ function PasswordModal({ user, onClose, onSuccess }) {
     setError('');
     if (!form.current.trim()) return setError('Please enter your current password.');
     if (!form.next.trim()) return setError('Please enter a new password.');
-    if (form.next.length < 6) return setError('New password must be at least 6 characters.');
-    if (form.next !== form.confirm) return setError('New passwords do not match. Please try again.');
+    if (form.next.length < 8) return setError('New password must be at least 8 characters.');
+    if (!/[A-Za-z]/.test(form.next) || !/\d/.test(form.next)) {
+      return setError('Password must include at least one letter and one number.');
+    }
+    if (form.next !== form.confirm) return setError('Passwords do not match. Please try again.');
 
     setSaving(true);
     try {
@@ -264,7 +270,7 @@ function PasswordModal({ user, onClose, onSuccess }) {
               type={showNext ? 'text' : 'password'}
               value={form.next}
               onChange={(e) => setField('next')(e.target.value)}
-              placeholder="Min. 6 characters"
+              placeholder="Min. 8 characters, include a letter and number"
               className="w-full rounded-lg border border-gray-300 px-3 py-2.5 pr-10 text-sm text-gray-900 placeholder-gray-400 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-colors"
             />
             <button
