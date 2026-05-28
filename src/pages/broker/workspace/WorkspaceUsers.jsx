@@ -113,7 +113,7 @@ function RoleBadge({ role }) {
   );
 }
 
-function DeleteModal({ user, onConfirm, onClose, submitting }) {
+function DeleteModal({ user, onConfirm, onClose, submitting, error }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-white/30 backdrop-blur-sm" onClick={onClose} />
@@ -125,6 +125,9 @@ function DeleteModal({ user, onConfirm, onClose, submitting }) {
         <p className="text-center text-sm text-gray-500 mb-6">
           Are you sure you want to delete <span className="font-semibold text-[#05164D]">{user.name}</span>? This action cannot be undone.
         </p>
+        {error && (
+          <p className="mb-4 text-sm text-red-600 bg-red-50 rounded-xl px-3 py-2 text-center">{error}</p>
+        )}
         <div className="flex gap-3">
           <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-gray-600 hover:bg-gray-50 transition-colors">
             Cancel
@@ -193,7 +196,7 @@ function ViewModal({ user, onClose, onEdit }) {
   );
 }
 
-function UserFormModal({ initial, companies, companyLock, groups, onSave, onClose, submitting }) {
+function UserFormModal({ initial, companies, companyLock, groups, onSave, onClose, submitting, error }) {
   const isEdit = !!initial?.id;
   const [form, setForm] = useState(() => {
     const seed = initial || EMPTY_FORM;
@@ -461,17 +464,22 @@ function UserFormModal({ initial, companies, companyLock, groups, onSave, onClos
           )}
         </div>
 
-        <div className="px-6 py-4 border-t border-gray-100 bg-white flex gap-3" style={{ flexShrink: 0 }}>
-          <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-gray-600 hover:bg-gray-50 transition-colors">
-            Cancel
-          </button>
-          <button
-            onClick={() => valid && onSave(form)}
-            disabled={!valid || submitting}
-            className="flex-1 py-2.5 rounded-xl bg-[#8BC53D] hover:bg-[#476E2C] disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-bold transition-colors"
-          >
-            {submitting ? 'Saving...' : isEdit ? 'Save Changes' : 'Add User'}
-          </button>
+        <div className="px-6 py-4 border-t border-gray-100 bg-white flex flex-col gap-3" style={{ flexShrink: 0 }}>
+          {error && (
+            <p className="text-sm text-red-600 bg-red-50 rounded-xl px-3 py-2">{error}</p>
+          )}
+          <div className="flex gap-3">
+            <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-gray-600 hover:bg-gray-50 transition-colors">
+              Cancel
+            </button>
+            <button
+              onClick={() => valid && onSave(form)}
+              disabled={!valid || submitting}
+              className="flex-1 py-2.5 rounded-xl bg-[#8BC53D] hover:bg-[#476E2C] disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-bold transition-colors"
+            >
+              {submitting ? 'Saving...' : isEdit ? 'Save Changes' : 'Add User'}
+            </button>
+          </div>
         </div>
 
         <style>{`
@@ -504,6 +512,9 @@ export default function WorkspaceUsers() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+  const [formError, setFormError] = useState('');
+  const [deleteError, setDeleteError] = useState('');
+  const [groupError, setGroupError] = useState('');
   const [success, setSuccess] = useState('');
   const [groups, setGroups] = useState([]);
   const [groupSubmitting, setGroupSubmitting] = useState(false);
@@ -645,7 +656,7 @@ export default function WorkspaceUsers() {
 
   const handleAdd = async (form) => {
     setSubmitting(true);
-    setError('');
+    setFormError('');
     setSuccess('');
 
     try {
@@ -672,7 +683,7 @@ export default function WorkspaceUsers() {
       setPage(1);
       setSuccess('User created successfully.');
     } catch (err) {
-      setError(err.message || 'Unable to create user.');
+      setFormError(err.message || 'Unable to create user.');
     } finally {
       setSubmitting(false);
     }
@@ -680,7 +691,7 @@ export default function WorkspaceUsers() {
 
   const handleEdit = async (form) => {
     setSubmitting(true);
-    setError('');
+    setFormError('');
 
     const payload = {
       name: form.name.trim(),
@@ -714,7 +725,7 @@ export default function WorkspaceUsers() {
       setEditUser(null);
       setSuccess('User updated successfully.');
     } catch (err) {
-      setError(err.message || 'Unable to update user.');
+      setFormError(err.message || 'Unable to update user.');
     } finally {
       setSubmitting(false);
     }
@@ -722,7 +733,7 @@ export default function WorkspaceUsers() {
 
   const handleDelete = async () => {
     setSubmitting(true);
-    setError('');
+    setDeleteError('');
 
     try {
       await deleteUserRequest(deleteUser.id);
@@ -735,7 +746,7 @@ export default function WorkspaceUsers() {
       if (viewUser?.id === deleteUser.id) setViewUser(null);
       setDeleteUser(null);
     } catch (err) {
-      setError(err.message || 'Unable to delete user.');
+      setDeleteError(err.message || 'Unable to delete user.');
     } finally {
       setSubmitting(false);
     }
@@ -782,6 +793,7 @@ export default function WorkspaceUsers() {
   const handleCreateGroup = async () => {
     if (!clientId || !groupNameDraft.trim()) return;
     setGroupSubmitting(true);
+    setGroupError('');
     try {
       const created = await createCompanyGroup(clientId, {
         name: groupNameDraft.trim(),
@@ -800,9 +812,8 @@ export default function WorkspaceUsers() {
       }
       await loadGroupsWithMembers();
       closeEditGroup();
-      setError('');
     } catch (err) {
-      setError(err.message || 'Unable to create group.');
+      setGroupError(err.message || 'Unable to create group.');
     } finally {
       setGroupSubmitting(false);
     }
@@ -827,6 +838,7 @@ export default function WorkspaceUsers() {
     setGroupNameDraft('');
     setGroupMembersDraft([]);
     setGroupDescriptionDraft('');
+    setGroupError('');
     setMemberSearch('');
     setSelectedSearch('');
   };
@@ -873,9 +885,8 @@ export default function WorkspaceUsers() {
       await Promise.all(toRemove.map((userId) => removeGroupMember(editingGroup.id, userId)));
       await loadGroupsWithMembers();
       closeEditGroup();
-      setError('');
     } catch (err) {
-      setError(err.message || 'Unable to update group.');
+      setGroupError(err.message || 'Unable to update group.');
     } finally {
       setGroupSubmitting(false);
     }
@@ -919,7 +930,7 @@ export default function WorkspaceUsers() {
             Create Group
           </button>
           <button
-            onClick={() => { setError(''); setEditUser({ ...EMPTY_FORM, companyId: clientId, isNew: true }); }}
+            onClick={() => { setFormError(''); setEditUser({ ...EMPTY_FORM, companyId: clientId, isNew: true }); }}
             className="inline-flex items-center gap-2 px-5 py-2.5 bg-[#8BC53D] hover:bg-[#476E2C] text-white rounded-xl text-sm font-bold transition-colors shadow-sm"
           >
             <Plus size={16} />
@@ -1177,7 +1188,7 @@ export default function WorkspaceUsers() {
                         </button>
                         <button
                           title="Edit"
-                          onClick={() => setEditUser({ ...user, password: '', isNew: false })}
+                          onClick={() => { setFormError(''); setEditUser({ ...user, password: '', isNew: false }); }}
                           className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-[#8BC53D] hover:bg-green-50 transition-colors"
                         >
                           <Pencil size={15} />
@@ -1262,8 +1273,9 @@ export default function WorkspaceUsers() {
           companyLock={company}
           groups={groups}
           onSave={editUser?.isNew ? handleAdd : handleEdit}
-          onClose={() => setEditUser(null)}
+          onClose={() => { setFormError(''); setEditUser(null); }}
           submitting={submitting}
+          error={formError}
         />
       )}
 
@@ -1405,20 +1417,25 @@ export default function WorkspaceUsers() {
                 </div>
               </div>
             </div>
-            <div className="flex gap-3 px-8 pb-8 pt-5">
-              <button
-                onClick={closeEditGroup}
-                className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-gray-600 hover:bg-gray-50 transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={editingGroup?.isNew ? handleCreateGroup : handleSaveGroup}
-                disabled={groupSubmitting}
-                className="flex-1 py-2.5 rounded-xl bg-[#05164D] hover:bg-[#0b2a79] text-white text-sm font-bold transition-colors"
-              >
-                {groupSubmitting ? 'Saving...' : editingGroup?.isNew ? 'Create Group' : 'Save Group'}
-              </button>
+            <div className="flex flex-col gap-3 px-8 pb-8 pt-5">
+              {groupError && (
+                <p className="text-sm text-red-600 bg-red-50 rounded-xl px-3 py-2">{groupError}</p>
+              )}
+              <div className="flex gap-3">
+                <button
+                  onClick={closeEditGroup}
+                  className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-gray-600 hover:bg-gray-50 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={editingGroup?.isNew ? handleCreateGroup : handleSaveGroup}
+                  disabled={groupSubmitting}
+                  className="flex-1 py-2.5 rounded-xl bg-[#05164D] hover:bg-[#0b2a79] text-white text-sm font-bold transition-colors"
+                >
+                  {groupSubmitting ? 'Saving...' : editingGroup?.isNew ? 'Create Group' : 'Save Group'}
+                </button>
+              </div>
             </div>
           </div>
         </div>,
@@ -1429,8 +1446,9 @@ export default function WorkspaceUsers() {
         <DeleteModal
           user={deleteUser}
           onConfirm={handleDelete}
-          onClose={() => setDeleteUser(null)}
+          onClose={() => { setDeleteError(''); setDeleteUser(null); }}
           submitting={submitting}
+          error={deleteError}
         />
       )}
     </div>
