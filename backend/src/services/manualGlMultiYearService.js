@@ -183,6 +183,16 @@ function isContentHashConstraintError(error) {
   );
 }
 
+function normalizeFiscalYears(value = []) {
+  return Array.from(
+    new Set(
+      (Array.isArray(value) ? value : [])
+        .map((item) => Number(item))
+        .filter((item) => Number.isInteger(item) && item > 0),
+    ),
+  ).sort((a, b) => a - b);
+}
+
 async function releaseStaleProcessingBatchLocks(
   companyId,
   sourceType = MANUAL_SOURCE_KEY,

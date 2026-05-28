@@ -55,8 +55,23 @@ function normalizeFiscalYears(value = []) {
 }
 
 function isManualGlDatasetVersion(row = {}) {
-    const sourceType = normalizeText(row?.source_type, MANUAL_GL_SOURCE_TYPE).toLowerCase();
-    return sourceType === MANUAL_GL_SOURCE_TYPE;
+    const sourceType = normalizeText(row?.source_type, "").toLowerCase();
+    if (sourceType) {
+        return sourceType === MANUAL_GL_SOURCE_TYPE;
+    }
+
+    const uploadSource = normalizeText(row?.upload_source, "").toLowerCase();
+    if (!uploadSource) {
+        return true;
+    }
+    if (uploadSource.includes("quickbooks")) {
+        return false;
+    }
+    if (uploadSource.includes("manual")) {
+        return true;
+    }
+
+    return true;
 }
 
 // ─── Upload Job Status Constants ──────────────────────────────────────────────
@@ -537,18 +552,60 @@ async function getDatasetVersion(versionId) {
 /**
  * List all dataset versions for a company, most recent first.
  */
-async function listDatasetVersions(companyId, limit = 50) {
+async function listDatasetVersions(companyId, limit = 50, options = {}) {
     if (!companyId) throw new Error("companyId is required.");
 
-    const { data, error } = await supabase
-        .from(TABLES.datasetVersions)
-        .select("*")
-        .eq("company_id", companyId)
-        .order("version_number", { ascending: false })
-        .limit(limit);
+    const normalizedLimit = Math.min(Math.max(Number(limit || 50) || 50, 1), 200);
+    const sourceType = normalizeText(options.sourceType || "", "").toLowerCase();
+    const statuses = Array.isArray(options.statuses)
+        ? Array.from(
+            new Set(
+                options.statuses
+                    .map((status) => normalizeText(status, "").toLowerCase())
+                    .filter(Boolean),
+            ),
+        )
+        : [];
+    const includeSourceTypeNull = options.includeSourceTypeNull !== false;
+
+    const buildQuery = (applySourceFilter = true) => {
+        let query = supabase
+            .from(TABLES.datasetVersions)
+            .select("*")
+            .eq("company_id", companyId);
+
+        if (applySourceFilter && sourceType) {
+            if (includeSourceTypeNull) {
+                query = query.or(`source_type.eq.${sourceType},source_type.is.null`);
+            } else {
+                query = query.eq("source_type", sourceType);
+            }
+        }
+
+        if (statuses.length > 0) {
+            query = query.in("status", statuses);
+        }
+
+        return query
+            .order("version_number", { ascending: false })
+            .order("created_at", { ascending: false })
+            .limit(normalizedLimit);
+    };
+
+    let { data, error } = await buildQuery(true);
+
+    if (error && sourceType && isMissingColumnError(error, "source_type")) {
+        ({ data, error } = await buildQuery(false));
+    }
 
     if (error) throw new Error(`Failed to list dataset versions: ${error.message}`);
-    return data || [];
+
+    let rows = Array.isArray(data) ? data : (data ? [data] : []);
+    if (sourceType === MANUAL_GL_SOURCE_TYPE) {
+        rows = rows.filter((row) => isManualGlDatasetVersion(row));
+    }
+
+    return rows;
 }
 
 /**

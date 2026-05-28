@@ -268,12 +268,25 @@ async function orchestrateManualGlUpload({
     const activated = await withTiming("activate", () => activateUploadBatch(companyId, batchId, uploadedBy || null));
     const uploadSessionPlan = buildUploadSessionActivationPlan(activated?.metadata || {}, staged);
     if (uploadSessionPlan.length > 0) {
-      await withTiming("replaceSessions", () => replaceActiveUploadSessions({
-        companyId,
-        batchId,
-        uploadedBy: uploadedBy || null,
-        sessions: uploadSessionPlan,
-      }));
+      try {
+        await withTiming("replaceSessions", () => replaceActiveUploadSessions({
+          companyId,
+          batchId,
+          uploadedBy: uploadedBy || null,
+          sessions: uploadSessionPlan,
+        }));
+      } catch (sessionError) {
+        const message = String(sessionError?.message || "").toLowerCase();
+        if (message.includes("duplicate key value violates unique constraint")) {
+          console.warn(
+            `[ManualGL][Orchestrator] Upload session replacement hit a duplicate constraint; ` +
+            "reusing the existing session rows and continuing.",
+          );
+          await trackProgress("replace_sessions_reused", 95, { batchId });
+        } else {
+          throw sessionError;
+        }
+      }
     }
 
     const now = new Date().toISOString();
