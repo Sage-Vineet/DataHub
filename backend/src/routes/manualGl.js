@@ -32,6 +32,7 @@ const {
   getSnapshotForDatasetVersion,
   getSnapshotForActiveBatch,
   listReportingSnapshotDatasetVersions,
+  generateReportingSnapshotsForBatch,
 } = require("../services/manualGlReportingSnapshotService");
 const {
   activateUploadBatch,
@@ -44,8 +45,13 @@ const { continueController } = require("../controllers/manualGl/continueControll
 const {
   listUploadJobs,
   getUploadJob,
+  createUploadJob,
+  updateUploadJob,
   activateDatasetVersion,
   rollbackToVersion,
+  finalizeUploadLifecycle,
+  failUploadLifecycle,
+  UPLOAD_JOB_STATUS,
 } = require("../services/datasetVersionService");
 const reportCache = require("../services/reportCache");
 const { supabase } = require("../db");
@@ -187,9 +193,8 @@ function hasManualDetailFilterOverrides(filters = {}) {
 
 function hasRenderableProfitLossDetailPayload(payload) {
   if (!payload || typeof payload !== "object") return false;
-  const accounts = Array.isArray(payload.accounts) ? payload.accounts : [];
-  if (accounts.length === 0) return true;
-  return accounts.every((account) => Array.isArray(account.transactions));
+  const categories = Array.isArray(payload.categories) ? payload.categories : [];
+  return categories.length > 0 && categories.some((cat) => Array.isArray(cat.accounts) && cat.accounts.length > 0);
 }
 
 async function tryLoadActiveSnapshot(companyId, reportType, filters = {}) {
@@ -455,7 +460,8 @@ router.get("/reports/pl", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async
       cacheFilters,
     );
 
-    if (snapshotResult.payload) {
+    const plHierarchicalRows = snapshotResult.payload?.hierarchicalRows;
+    if (snapshotResult.payload && Array.isArray(plHierarchicalRows) && plHierarchicalRows.length > 0) {
       const payload = {
         ...snapshotResult.payload,
         source: "manual_gl_reporting_snapshot",
@@ -500,7 +506,8 @@ router.get("/reports/balance-sheet", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL
       cacheFilters,
     );
 
-    if (snapshotResult.payload) {
+    const bsHierarchicalRows = snapshotResult.payload?.hierarchicalRows;
+    if (snapshotResult.payload && Array.isArray(bsHierarchicalRows) && bsHierarchicalRows.length > 0) {
       const payload = {
         ...snapshotResult.payload,
         source: "manual_gl_reporting_snapshot",
@@ -546,7 +553,8 @@ router.get("/reports/cashflow", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL),
       cacheFilters,
     );
 
-    if (snapshotResult.payload) {
+    const cfHierarchicalRows = snapshotResult.payload?.hierarchicalRows;
+    if (snapshotResult.payload && Array.isArray(cfHierarchicalRows) && cfHierarchicalRows.length > 0) {
       const payload = {
         ...snapshotResult.payload,
         source: "manual_gl_reporting_snapshot",
@@ -593,7 +601,8 @@ router.get("/reports/cashflow/monthly-detail", enforceDataSource(REPORT_SOURCE_K
         cacheFilters,
       );
 
-      if (snapshotResult.payload) {
+      const snapshotSections = snapshotResult.payload?.sections;
+      if (snapshotResult.payload && Array.isArray(snapshotSections) && snapshotSections.length > 0) {
         const payload = {
           ...snapshotResult.payload,
           source: "manual_gl_reporting_snapshot",
@@ -670,36 +679,109 @@ router.post("/manual-gl/staging/multi-year", enforceDataSource(REPORT_SOURCE_KEY
       batchName = "",
     } = req.body || {};
 
-    const result = await orchestrateManualGlUpload({
-      companyId: clientId,
-      glUploadIds,
-      startingBalanceSheetUploadId,
-      endingBalanceSheetUploadId,
-      mapping,
-      fiscalYearStartMonth,
-      fiscalYearStartDay,
-      uploadedBy: req.user?.id || null,
-      batchName,
+    if (!Array.isArray(glUploadIds) || !glUploadIds.length) {
+      return res.status(400).json({ success: false, error: "At least one GL upload ID is required." });
+    }
+
+    const job = await createUploadJob(
+      clientId,
+      batchName || "Multi-Year Upload",
+      req.user?.id || null,
+    );
+
+    // Transition to STAGING immediately — no worker queue needed
+    await updateUploadJob(job.id, {
+      status: UPLOAD_JOB_STATUS.STAGING,
+      progress: { stage: "orchestrating", pct: 5 },
     });
 
-    if (!result.success && result.requiresManualMapping) {
-      return res.status(400).json(result);
-    }
+    // Return 202 right away so the frontend can begin polling
+    res.status(202).json({
+      success: true,
+      message: "Upload job queued. Poll /manual-gl/upload-jobs/:id for progress.",
+      jobId: job.id,
+      versionId: null,
+    });
 
-    // New batch staged — evict all cached reports for this company so next
-    // report request reflects the fresh data.
-    if (result?.activated === true) {
-      reportCache.invalidateCompany(clientId);
-    }
+    // Orchestrate after the response is sent — snapshot failures are isolated
+    setImmediate(async () => {
+      const perfStart = Date.now();
+      try {
+        const result = await orchestrateManualGlUpload({
+          companyId: clientId,
+          glUploadIds,
+          startingBalanceSheetUploadId,
+          endingBalanceSheetUploadId,
+          mapping,
+          fiscalYearStartMonth,
+          fiscalYearStartDay,
+          uploadedBy: req.user?.id || null,
+          batchName,
+          uploadJobId: job.id,
+        });
 
-    const statusCode = result?.blockedAsDuplicate
-      ? 409
-      : result?.noChangesDetected
-        ? 200
-        : result?.pendingActivation
-          ? 202
-          : 201;
-    return res.status(statusCode).json(result);
+        const duration = Date.now() - perfStart;
+
+        if (result?.success !== false) {
+          const completionSummary = {
+            batchId:                      result?.activeBatchId || result?.batchId || null,
+            activeBatchId:                result?.activeBatchId || result?.batchId || null,
+            datasetVersionId:             result?.datasetVersionId || null,
+            versionNumber:                result?.versionNumber || result?.activeDatasetVersion || null,
+            activeDatasetVersion:         result?.activeDatasetVersion || result?.versionNumber || null,
+            alreadyStaged:                Boolean(result?.alreadyStaged),
+            reportsReady:                 result?.reportsReady !== false,
+            insertedTransactions:         result?.insertedTransactions         || 0,
+            duplicateTransactionsSkipped: result?.duplicateTransactionsSkipped || 0,
+            warnings:                     result?.warnings                     || [],
+            filesParsed:                  result?.filesParsed                  || [],
+            yearsDetected:                result?.yearsDetected || result?.snapshotYears || [],
+            noChangesDetected:            Boolean(result?.noChangesDetected),
+            snapshotsGenerated:           result?.snapshotsGenerated           || 0,
+            validation:                   result?.validation                   || null,
+            fiscalYears:                  Array.isArray(result?.fiscalYears) ? result.fiscalYears : result?.snapshotYears || [],
+            existingVersion:              result?.existingVersion || null,
+            durationMs:                   duration,
+          };
+
+          if (result?.alreadyStaged) {
+            await updateUploadJob(job.id, {
+              status: UPLOAD_JOB_STATUS.COMPLETED,
+              progress: { stage: "completed", pct: 100 },
+              metadata: { completionSummary },
+            });
+            console.log(
+              `[ManualGL][DirectExec][${job.id}] Reused existing dataset version V${completionSummary.versionNumber || "?"} ` +
+              `in ${duration}ms. batchId=${completionSummary.batchId}`,
+            );
+          } else {
+            await updateUploadJob(job.id, { metadata: { completionSummary } });
+            await finalizeUploadLifecycle(job.id, result?.datasetVersionId || null, clientId, completionSummary.batchId);
+            console.log(`[ManualGL][DirectExec][${job.id}] Completed in ${duration}ms. batchId=${completionSummary.batchId}`);
+
+            // Fire-and-forget: snapshot failures must not fail the upload lifecycle
+            if (completionSummary.batchId && clientId) {
+              setImmediate(() => {
+                generateReportingSnapshotsForBatch(clientId, completionSummary.batchId, { datasetVersionId: result?.datasetVersionId || null })
+                  .then(r => {
+                    console.log(`[ManualGL][DirectExec][${job.id}] Snapshots done: count=${r.snapshotCount} years=[${r.years.join(",")}]`);
+                  })
+                  .catch(err => {
+                    console.warn(`[ManualGL][DirectExec][${job.id}] Snapshot generation failed (non-fatal):`, err.message);
+                  });
+              });
+            }
+          }
+        } else {
+          await failUploadLifecycle(job.id, result?.datasetVersionId || null, result?.message || "Orchestration returned failure.");
+          console.warn(`[ManualGL][DirectExec][${job.id}] Orchestration failed after ${duration}ms: ${result?.message}`);
+        }
+      } catch (err) {
+        const duration = Date.now() - perfStart;
+        console.error(`[ManualGL][DirectExec][${job.id}] Critical error after ${duration}ms:`, err.message);
+        await failUploadLifecycle(job.id, null, err.message).catch(() => {});
+      }
+    });
   } catch (error) {
     const message = normalizeApiErrorMessage(error, "Failed to stage multi-year GL data.");
     const isProcessingConflict = String(message).toLowerCase().includes("currently processing");
@@ -819,7 +901,8 @@ router.get("/reports/profit-loss", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_G
       cacheFilters,
     );
 
-    if (snapshotResult.payload) {
+    const pl2HierarchicalRows = snapshotResult.payload?.hierarchicalRows;
+    if (snapshotResult.payload && Array.isArray(pl2HierarchicalRows) && pl2HierarchicalRows.length > 0) {
       const payload = {
         ...snapshotResult.payload,
         source: "manual_gl_reporting_snapshot",
@@ -941,7 +1024,10 @@ router.get("/reports/profit-loss/monthly-detail", enforceDataSource(REPORT_SOURC
         SNAPSHOT_REPORT_TYPES.PROFIT_LOSS_MONTHLY_DETAIL,
         cacheFilters,
       );
-      if (snapshotResult.payload) {
+      const snapshotSections = snapshotResult.payload?.sections;
+      const snapshotHasAccounts = Array.isArray(snapshotSections) &&
+        snapshotSections.some((s) => !s.isCalculated && Array.isArray(s.accounts) && s.accounts.length > 0);
+      if (snapshotResult.payload && snapshotHasAccounts) {
         const payload = {
           ...snapshotResult.payload,
           source: "manual_gl_reporting_snapshot",
@@ -986,7 +1072,8 @@ router.get("/reports/balance-sheet/monthly-detail", enforceDataSource(REPORT_SOU
         SNAPSHOT_REPORT_TYPES.BALANCE_SHEET_MONTHLY_DETAIL,
         cacheFilters,
       );
-      if (snapshotResult.payload) {
+      const snapshotSections = snapshotResult.payload?.sections;
+      if (snapshotResult.payload && Array.isArray(snapshotSections) && snapshotSections.length > 0) {
         const payload = {
           ...snapshotResult.payload,
           source: "manual_gl_reporting_snapshot",

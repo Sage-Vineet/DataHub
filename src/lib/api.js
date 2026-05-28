@@ -650,6 +650,15 @@ export function listManualGlDatasetVersions(options = {}) {
           created_at: row?.created_at || row?.createdAt || null,
           createdAt: row?.created_at || row?.createdAt || null,
           status: row?.status || "FINALIZED",
+          datasetHash: row?.dataset_hash || row?.content_hash || row?.datasetHash || null,
+          batchId: row?.batch_id || row?.batchId || null,
+          datasetVersionId: row?.dataset_version_id || row?.datasetVersionId || null,
+          fiscalYears: Array.isArray(row?.fiscal_years)
+            ? row.fiscal_years.map((year) => Number(year)).filter((year) => Number.isInteger(year) && year > 0)
+            : Array.isArray(row?.fiscalYears)
+              ? row.fiscalYears.map((year) => Number(year)).filter((year) => Number.isInteger(year) && year > 0)
+              : [],
+          reportsReady: row?.reportsReady ?? row?.reports_ready ?? null,
         };
       })
       .filter(Boolean)

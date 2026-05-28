@@ -13,8 +13,8 @@ const hasSupabaseCredentials = !!(supabaseUrl && (supabaseKey || process.env.SUP
 // Circuit breaker for Supabase connection issues
 let isSupabaseCircuitOpen = false;
 let circuitOpenUntil = 0;
-const CIRCUIT_BREAKER_DURATION_MS = 30000; // 30 seconds
-const CIRCUIT_BREAKER_THRESHOLD = 3; // Fail after 3 consecutive errors
+const CIRCUIT_BREAKER_DURATION_MS = 60000; // 60 seconds
+const CIRCUIT_BREAKER_THRESHOLD = 5; // Fail after 5 consecutive errors
 let consecutiveErrors = 0;
 
 function isCircuitBreakerOpen() {
@@ -29,7 +29,7 @@ function openCircuitBreaker() {
   isSupabaseCircuitOpen = true;
   circuitOpenUntil = Date.now() + CIRCUIT_BREAKER_DURATION_MS;
   consecutiveErrors = 0;
-  console.warn("[Supabase] Circuit breaker OPEN for 30s due to repeated connection failures");
+  console.warn("[Supabase] Circuit breaker OPEN for 60s due to repeated connection failures");
 }
 
 function recordSupabaseError() {
@@ -52,7 +52,10 @@ const supabase = hasSupabaseCredentials
     global: {
       fetch: (url, options = {}) => {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 300000); // 300 second timeout (5 minutes)
+        // 55 seconds: just under Cloudflare's 60s read timeout.
+        // The old 300s value caused Cloudflare 524 errors and held DB connections
+        // open for far too long, contributing to Supabase going unhealthy.
+        const timeoutId = setTimeout(() => controller.abort(), 55000);
 
         return fetch(url, {
           ...options,
@@ -64,7 +67,7 @@ const supabase = hasSupabaseCredentials
   : null;
 
 if (hasSupabaseCredentials) {
-  console.log("Supabase client initialized with connection timeout: 30s, circuit breaker: 30s");
+  console.log("Supabase client initialized with connection timeout: 55s, circuit breaker: 60s (threshold 5)");
 }
 
 module.exports = {

@@ -9,6 +9,7 @@ import {
   saveManualGlMapping,
   stageMultiYearManualGl,
   validateManualStagedBalanceSheet,
+  getManualGlUploadJob,
 } from "../../lib/api";
 import { emitManualGlStaged } from "../../lib/dataSourceEvents";
 import { useToast } from "../../context/ToastContext";
@@ -16,6 +17,106 @@ import StagingProgressModal from "../common/StagingProgressModal";
 import { useGlDocumentStore } from '../../store/glDocumentStore';
 
 const PROGRESS_IDLE = { isActive: false, stage: "upload", message: "", pct: 0, error: null };
+
+const POLL_INTERVAL_MS = 2500;
+const POLL_MAX_MS      = 12 * 60 * 1000; // 12 minutes
+
+// Maps the worker job stage → StagingProgressModal stage id.
+// Modal stages in visual order: upload → stage → validate → prepare → complete
+// Worker stages in processing order: orchestrating (20%) → checksumming → duplicate_check
+//   → generating_snapshots (40%) → validating (80%) → activating (90%) → finalizing (95%) → completed (100%)
+const JOB_STAGE_TO_MODAL = {
+  orchestrating:        "stage",
+  checksumming:         "stage",
+  duplicate_check:      "stage",
+  duplicate_detected:   "stage",
+  duplicate_blocked:    "stage",
+  generating_snapshots: "validate",  // 40%: building reports = the "validate" visual step
+  validating:           "validate",  // 80%: BS check
+  activating:           "prepare",   // 90%: making the version live = "prepare" visual step
+  replaceSessions:      "prepare",
+  finalizing:           "prepare",
+  completed:            "complete",
+};
+
+function formatFiscalYearsDisplay(years = []) {
+  const normalized = Array.from(
+    new Set(
+      (Array.isArray(years) ? years : [])
+        .map((year) => Number(year))
+        .filter((year) => Number.isInteger(year) && year > 0),
+    ),
+  ).sort((a, b) => a - b);
+
+  if (normalized.length === 0) return "-";
+  if (normalized.length === 1) return String(normalized[0]);
+
+  const isSequential = normalized.every((year, index) => index === 0 || year === normalized[index - 1] + 1);
+  return isSequential ? `${normalized[0]}\u2013${normalized[normalized.length - 1]}` : normalized.join(", ");
+}
+
+/**
+ * Poll GET /manual-gl/upload-jobs/:jobId until the job reaches a terminal state.
+ * Calls onProgress({ stage, pct, message }) on each tick so the UI stays alive.
+ * Returns a shaped result object compatible with the rest of the upload flow.
+ * Throws on failure or timeout.
+ */
+async function pollUploadJobToCompletion(jobId, clientId, onProgress, cancelRef) {
+  const deadline = Date.now() + POLL_MAX_MS;
+
+  while (Date.now() < deadline) {
+    if (cancelRef?.current) throw new Error("Upload cancelled.");
+
+    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+
+    let job;
+    try {
+      job = await getManualGlUploadJob(jobId, { clientId });
+    } catch {
+      // Transient network error — keep polling
+      continue;
+    }
+    if (!job) continue;
+
+    const pct     = Number(job.progress?.pct   || 0);
+    const rawStage = String(job.progress?.stage || "stage");
+    const modalStage = JOB_STAGE_TO_MODAL[rawStage] || "stage";
+    const label   = rawStage.replace(/_/g, " ");
+    onProgress({ stage: modalStage, pct: Math.max(20, pct), message: `Processing… (${label})` });
+
+    if (job.status === "completed") {
+      const s = job.metadata?.completionSummary || {};
+      return {
+        success:                      true,
+        jobId,
+        batchId:                      s.batchId                      || null,
+        activeBatchId:                s.activeBatchId                || s.batchId || null,
+        datasetVersionId:             s.datasetVersionId             || null,
+        versionNumber:                s.versionNumber                || s.activeDatasetVersion || null,
+        activeDatasetVersion:         s.activeDatasetVersion         || s.versionNumber || null,
+        alreadyStaged:                Boolean(s.alreadyStaged),
+        reportsReady:                 s.reportsReady !== false,
+        insertedTransactions:         s.insertedTransactions         || 0,
+        duplicateTransactionsSkipped: s.duplicateTransactionsSkipped || 0,
+        warnings:                     s.warnings                     || [],
+        filesParsed:                  s.filesParsed                  || [],
+        yearsDetected:                s.yearsDetected                || [],
+        fiscalYears:                  Array.isArray(s.fiscalYears) ? s.fiscalYears : [],
+        noChangesDetected:            Boolean(s.noChangesDetected),
+        blockedAsDuplicate:           Boolean(s.noChangesDetected || s.alreadyStaged),
+        snapshotsGenerated:           s.snapshotsGenerated           || 0,
+        validation:                   s.validation                   || null,
+        existingVersion:              s.existingVersion              || null,
+      };
+    }
+
+    if (job.status === "failed") {
+      throw new Error(job.error_message || "Upload processing failed. Please try again.");
+    }
+  }
+
+  throw new Error("Upload is taking longer than expected. It may still be processing in the background — refresh the page to check.");
+}
 
 export default function ManualGLUpload({
   companyId,
@@ -50,13 +151,21 @@ export default function ManualGLUpload({
     () => !useGlDocumentStore.getState().isFresh(companyId)
   );
 
+  // Used to cancel the job-polling loop when the component unmounts or the user
+  // navigates away mid-upload.
+  const pollCancelRef = useRef(false);
+
   // Progress overlay state — tracks upload/staging/validation pipeline.
   const [stagingProgress, setStagingProgress] = useState(PROGRESS_IDLE);
   const progressCloseTimer = useRef(null);
   const prevCompanyIdRef = useRef(companyId);
 
   useEffect(() => {
-    return () => { if (progressCloseTimer.current) clearTimeout(progressCloseTimer.current); };
+    pollCancelRef.current = false;
+    return () => {
+      pollCancelRef.current = true;
+      if (progressCloseTimer.current) clearTimeout(progressCloseTimer.current);
+    };
   }, []);
 
   // Re-initialize when broker navigates to a different client company
@@ -353,30 +462,71 @@ export default function ManualGLUpload({
       setStagingProgress((prev) => ({
         ...prev,
         stage: "stage",
-        message: "Staging transactions…",
+        message: "Queuing upload job…",
         pct: sourceMode === "manual" ? 50 : 20,
       }));
-      const staged = await stageMultiYearManualGl(stagePayload, { clientId: companyId });
-      if (staged?.blockedAsDuplicate || (staged?.success === false && staged?.noChangesDetected)) {
+
+      // Step 1: enqueue — server returns immediately with jobId (202 Accepted).
+      pollCancelRef.current = false;
+      const queued = await stageMultiYearManualGl(stagePayload, { clientId: companyId });
+      const jobId = queued?.jobId;
+      if (!jobId) throw new Error(queued?.error || "Failed to start upload job.");
+
+      setStagingProgress((prev) => ({ ...prev, pct: 25, message: "Upload queued — processing in background…" }));
+
+      // Step 2: poll until the worker marks the job completed or failed.
+      const staged = await pollUploadJobToCompletion(
+        jobId,
+        companyId,
+        ({ stage, pct, message }) => setStagingProgress((prev) => ({ ...prev, stage, pct, message })),
+        pollCancelRef,
+      );
+
+      if (staged?.alreadyStaged || staged?.blockedAsDuplicate || staged?.noChangesDetected) {
+        const nextActiveBatchId = staged.activeBatchId || staged.batchId || null;
         setPendingStageRequest(stagePayload);
         setStageResult(staged);
-        setBalanceSheetValidation(null);
+        setBalanceSheetValidation(staged?.validation || null);
         setValidationErrors([]);
         showToast({
           type: "info",
-          title: "No changes detected",
-          message: staged.message || "The selected GL data is already staged for this company and fiscal year.",
+          title: "Dataset already staged",
+          message: staged.message || "The selected GL data is already staged and reports are ready.",
         });
-        setStagingProgress({ isActive: true, stage: "complete", message: "No changes detected.", pct: 100, error: null });
+        setStagingProgress({
+          isActive: true,
+          stage: "complete",
+          message: staged.message || "Dataset already staged.",
+          pct: 100,
+          error: null,
+        });
+        setFiles([]);
+        setSelectedDocumentIds([]);
+        setSelectedStartingDocumentId("");
+        setSelectedEndingDocumentId("");
+        setStartingBalanceSheetFile(null);
+        setEndingBalanceSheetFile(null);
+        emitManualGlStaged({
+          clientId: companyId,
+          batchId: nextActiveBatchId,
+          versionNumber: staged.versionNumber || staged.activeDatasetVersion || staged.existingVersion?.versionNumber || null,
+          datasetVersionId: staged.datasetVersionId || staged.existingVersion?.versionId || null,
+          alreadyStaged: true,
+          reportsReady: staged.reportsReady !== false,
+        });
+        if (typeof onStageComplete === "function") {
+          await onStageComplete(staged);
+        }
         progressCloseTimer.current = setTimeout(() => {
           setStagingProgress(PROGRESS_IDLE);
           setStep(3);
         }, 1200);
         return;
       }
-      setStagingProgress((prev) => ({ ...prev, pct: 82, message: "Validating data…" }));
 
       setStagingProgress((prev) => ({ ...prev, stage: "validate", message: "Validating balance sheet…", pct: 88 }));
+      // Validation is pre-computed by the worker and stored in the completion summary.
+      // Fall back to a live fetch only if the worker didn't store it.
       const validation =
         staged?.validation ||
         (staged?.batchId
@@ -414,7 +564,14 @@ export default function ManualGLUpload({
           message: `Batch ${staged.batchId} staged. Inserted ${staged.insertedTransactions || 0}, skipped duplicates ${staged.duplicateTransactionsSkipped || 0}.`,
         });
       }
-      emitManualGlStaged({ clientId: companyId, batchId: nextActiveBatchId });
+      emitManualGlStaged({
+        clientId: companyId,
+        batchId: nextActiveBatchId,
+        versionNumber: staged.versionNumber || staged.activeDatasetVersion || staged.existingVersion?.versionNumber || null,
+        datasetVersionId: staged.datasetVersionId || staged.existingVersion?.versionId || null,
+        alreadyStaged: Boolean(staged.alreadyStaged),
+        reportsReady: staged.reportsReady !== false,
+      });
       if (typeof onStageComplete === "function") {
         await onStageComplete(staged);
       }
@@ -570,29 +727,61 @@ export default function ManualGLUpload({
     try {
       setIsProcessing(true);
       if (progressCloseTimer.current) clearTimeout(progressCloseTimer.current);
-      setStagingProgress({ isActive: true, stage: "stage", message: "Staging transactions…", pct: 20, error: null });
+      setStagingProgress({ isActive: true, stage: "stage", message: "Queuing upload job…", pct: 20, error: null });
 
       const payload = {
         ...pendingStageRequest,
         mapping,
       };
 
-      const staged = await stageMultiYearManualGl(payload, { clientId: companyId });
-      if (staged?.blockedAsDuplicate || (staged?.success === false && staged?.noChangesDetected)) {
+      // Step 1: enqueue
+      pollCancelRef.current = false;
+      const queued = await stageMultiYearManualGl(payload, { clientId: companyId });
+      const jobId = queued?.jobId;
+      if (!jobId) throw new Error(queued?.error || "Failed to start upload job.");
+
+      setStagingProgress((prev) => ({ ...prev, pct: 25, message: "Upload queued — processing…" }));
+
+      // Step 2: poll
+      const staged = await pollUploadJobToCompletion(
+        jobId,
+        companyId,
+        ({ stage, pct, message }) => setStagingProgress((prev) => ({ ...prev, stage, pct, message })),
+        pollCancelRef,
+      );
+
+      if (staged?.alreadyStaged || staged?.blockedAsDuplicate || staged?.noChangesDetected) {
+        const nextActiveBatchId = staged.activeBatchId || staged.batchId || null;
         setStageResult(staged);
-        setBalanceSheetValidation(null);
+        setBalanceSheetValidation(staged?.validation || null);
         setPendingStageRequest(payload);
         showToast({
           type: "info",
-          title: "No changes detected",
-          message: staged.message || "The selected GL data is already staged for this company and fiscal year.",
+          title: "Dataset already staged",
+          message: staged.message || "The selected GL data is already staged and reports are ready.",
         });
-        setStagingProgress({ isActive: true, stage: "complete", message: "No changes detected.", pct: 100, error: null });
+        setStagingProgress({
+          isActive: true,
+          stage: "complete",
+          message: staged.message || "Dataset already staged.",
+          pct: 100,
+          error: null,
+        });
+        emitManualGlStaged({
+          clientId: companyId,
+          batchId: nextActiveBatchId,
+          versionNumber: staged.versionNumber || staged.activeDatasetVersion || staged.existingVersion?.versionNumber || null,
+          datasetVersionId: staged.datasetVersionId || staged.existingVersion?.versionId || null,
+          alreadyStaged: true,
+          reportsReady: staged.reportsReady !== false,
+        });
+        if (typeof onStageComplete === "function") {
+          await onStageComplete(staged);
+        }
         progressCloseTimer.current = setTimeout(() => setStagingProgress(PROGRESS_IDLE), 1200);
         setStep(3);
         return;
       }
-      setStagingProgress((prev) => ({ ...prev, pct: 75, message: "Validating data…" }));
 
       setStagingProgress((prev) => ({ ...prev, stage: "validate", message: "Validating balance sheet…", pct: 85 }));
       const validation =
@@ -624,7 +813,14 @@ export default function ManualGLUpload({
           message: `Batch ${staged.batchId} staged. Inserted ${staged.insertedTransactions || 0}, skipped duplicates ${staged.duplicateTransactionsSkipped || 0}.`,
         });
       }
-      emitManualGlStaged({ clientId: companyId, batchId: nextActiveBatchId });
+      emitManualGlStaged({
+        clientId: companyId,
+        batchId: nextActiveBatchId,
+        versionNumber: staged.versionNumber || staged.activeDatasetVersion || staged.existingVersion?.versionNumber || null,
+        datasetVersionId: staged.datasetVersionId || staged.existingVersion?.versionId || null,
+        alreadyStaged: Boolean(staged.alreadyStaged),
+        reportsReady: staged.reportsReady !== false,
+      });
       if (typeof onStageComplete === "function") {
         await onStageComplete(staged);
       }
@@ -767,6 +963,18 @@ export default function ManualGLUpload({
       </select>
     </div>
   );
+
+  const isAlreadyStagedResult = Boolean(stageResult?.alreadyStaged || stageResult?.blockedAsDuplicate);
+  const displayFiscalYears = formatFiscalYearsDisplay(
+    stageResult?.fiscalYears || stageResult?.snapshotYears || stageResult?.existingVersion?.fiscalYears || stageResult?.yearsDetected,
+  );
+  const displayVersionNumber =
+    stageResult?.versionNumber ||
+    stageResult?.activeDatasetVersion ||
+    stageResult?.existingVersion?.versionNumber ||
+    stageResult?.datasetVersionNo ||
+    "-";
+  const displayReportStatus = stageResult?.reportsReady === false ? "Building" : "Ready";
 
   return (
     <>
@@ -1178,43 +1386,52 @@ export default function ManualGLUpload({
 
               {stageResult ? (
                 <div className="mt-4 w-full max-w-3xl rounded-lg border border-border bg-bg-card p-4 text-left">
-                  <h4 className="text-[14px] font-semibold text-text-primary mb-2">Batch Summary</h4>
-                  <div className="grid grid-cols-1 gap-1 text-[12px] text-secondary sm:grid-cols-2">
-                    <p>Batch ID: <span className="font-medium text-text-primary">{stageResult.batchId || stageResult.activeBatchId || "-"}</span></p>
-                    {stageResult.blockedAsDuplicate && (
-                      <p>Existing Version: <span className="font-semibold text-amber-600">{stageResult.existingVersion || stageResult.datasetVersionNo || "-"}</span></p>
-                    )}
-                    <p>Inserted Transactions: <span className="font-medium text-text-primary">{stageResult.insertedTransactions || 0}</span></p>
-                    <p>Duplicates Skipped: <span className="font-medium text-text-primary">{stageResult.duplicateTransactionsSkipped || 0}</span></p>
-                    <p>Warnings: <span className="font-medium text-text-primary">{Array.isArray(stageResult.warnings) ? stageResult.warnings.length : 0}</span></p>
-                    <p>GL Files Parsed: <span className="font-medium text-text-primary">{Array.isArray(stageResult.filesParsed) ? stageResult.filesParsed.length : 0}</span></p>
-                    <p>Years Detected: <span className="font-medium text-text-primary">{Array.isArray(stageResult.yearsDetected) && stageResult.yearsDetected.length ? stageResult.yearsDetected.join(", ") : (stageResult.duplicateFiscalYears?.join(", ") || "-")}</span></p>
-                  </div>
+                  {isAlreadyStagedResult ? (
+                    <>
+                      <h4 className="text-[14px] font-semibold text-text-primary mb-2">Dataset Already Staged</h4>
+                      <div className="grid grid-cols-1 gap-1 text-[12px] text-secondary sm:grid-cols-2">
+                        <p>
+                          Existing Version:{" "}
+                          <span className="font-semibold text-emerald-700">
+                            {`Version ${displayVersionNumber}`}
+                          </span>
+                        </p>
+                        <p>
+                          Fiscal Years:{" "}
+                          <span className="font-medium text-text-primary">{displayFiscalYears}</span>
+                        </p>
+                        <p>
+                          Reports:{" "}
+                          <span className="font-semibold text-emerald-700">{displayReportStatus}</span>
+                        </p>
+                        <p>
+                          Batch ID:{" "}
+                          <span className="font-medium text-text-primary">{stageResult.batchId || stageResult.activeBatchId || "-"}</span>
+                        </p>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <h4 className="text-[14px] font-semibold text-text-primary mb-2">Batch Summary</h4>
+                      <div className="grid grid-cols-1 gap-1 text-[12px] text-secondary sm:grid-cols-2">
+                        <p>Batch ID: <span className="font-medium text-text-primary">{stageResult.batchId || stageResult.activeBatchId || "-"}</span></p>
+                        <p>
+                          Dataset Version:{" "}
+                          <span className="font-semibold text-text-primary">
+                            {stageResult.versionNumber || stageResult.activeDatasetVersion || "-"}
+                          </span>
+                        </p>
+                        <p>Inserted Transactions: <span className="font-medium text-text-primary">{stageResult.insertedTransactions || 0}</span></p>
+                        <p>Duplicates Skipped: <span className="font-medium text-text-primary">{stageResult.duplicateTransactionsSkipped || 0}</span></p>
+                        <p>Warnings: <span className="font-medium text-text-primary">{Array.isArray(stageResult.warnings) ? stageResult.warnings.length : 0}</span></p>
+                        <p>GL Files Parsed: <span className="font-medium text-text-primary">{Array.isArray(stageResult.filesParsed) ? stageResult.filesParsed.length : 0}</span></p>
+                        <p>Years Detected: <span className="font-medium text-text-primary">{Array.isArray(stageResult.yearsDetected) && stageResult.yearsDetected.length ? stageResult.yearsDetected.join(", ") : (stageResult.duplicateFiscalYears?.join(", ") || "-")}</span></p>
+                      </div>
+                    </>
+                  )}
                 </div>
               ) : null}
 
-              {balanceSheetValidation ? (
-                <div className="mt-4 w-full max-w-3xl rounded-lg border border-border bg-bg-card p-4 text-left">
-                  <h4 className="text-[14px] font-semibold text-text-primary mb-2">Balance Sheet Validation</h4>
-                  <p className={`text-[13px] ${balanceSheetValidation.isValid ? "text-green-700" : "text-red-600"}`}>
-                    {balanceSheetValidation.isValid
-                      ? "Opening + Net Income +/- Adjustments matches Closing balance."
-                      : "Validation detected mismatches. Review details before final reporting."}
-                  </p>
-                  <div className="mt-2 grid grid-cols-1 gap-1 text-[12px] text-secondary sm:grid-cols-2">
-                    <p>Opening Balance: {balanceSheetValidation.openingBalance ?? 0}</p>
-                    <p>Closing Balance: {balanceSheetValidation.closingBalance ?? 0}</p>
-                    <p>Net Income: {balanceSheetValidation.netIncome ?? 0}</p>
-                    <p>Adjustments: {balanceSheetValidation.adjustments ?? 0}</p>
-                    <p>Mismatched Accounts: {Array.isArray(balanceSheetValidation.mismatches) ? balanceSheetValidation.mismatches.length : 0}</p>
-                    <p>Missing in Ending: {Array.isArray(balanceSheetValidation.missingInEnding) ? balanceSheetValidation.missingInEnding.length : 0}</p>
-                  </div>
-                </div>
-              ) : (
-                <p className="mt-4 text-[12px] text-secondary">
-                  No balance sheet validation was run because starting and ending balance sheets were not both provided.
-                </p>
-              )}
               <button type="button" onClick={resetFlow} className="btn-secondary mt-6">
                 Process Another File
               </button>

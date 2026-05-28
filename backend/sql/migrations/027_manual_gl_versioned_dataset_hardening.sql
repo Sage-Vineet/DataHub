@@ -178,3 +178,4 @@ BEGIN
    WHERE id = p_batch_id;
 END;
 $$;
+

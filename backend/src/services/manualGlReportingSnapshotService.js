@@ -92,6 +92,17 @@ async function upsertReportingSnapshot({
   if (Number.isInteger(parsedDatasetVersion) && parsedDatasetVersion > 0) {
     payload.dataset_version = parsedDatasetVersion;
   }
+
+  const existing = await getSnapshotForBatch({
+    companyId,
+    batchId,
+    reportType,
+    fiscalYear: normalizedFiscalYear,
+  });
+  if (existing?.id) {
+    return existing;
+  }
+
   const runUpsert = async (rowPayload) =>
     supabase
       .from(TABLE_SNAPSHOTS)
@@ -230,45 +241,58 @@ async function listReportingSnapshotDatasetVersions(companyId, limit = 50) {
   return versions;
 }
 
-async function generateReportingSnapshotsForBatch(companyId, batchId) {
+async function generateReportingSnapshotsForBatch(companyId, batchId, options = {}) {
   if (!companyId || !batchId) {
     throw new Error("companyId and batchId are required for snapshot generation.");
   }
 
   const now = new Date().toISOString();
+  let datasetVersionId = options.datasetVersionId || null;
+
   const { data: batchRow } = await supabase
     .from("manual_gl_batches")
-    .select("dataset_version")
+    .select("dataset_version_id, dataset_version")
     .eq("id", batchId)
     .eq("company_id", companyId)
     .maybeSingle();
-  const datasetVersion = Number(batchRow?.dataset_version);
-  const resolvedDatasetVersion =
-    Number.isInteger(datasetVersion) && datasetVersion > 0 ? datasetVersion : null;
 
-  const filterPayload = await getStageFilterOptions(companyId, {
-    batchId,
-    includeArchived: true,
-    versionMode: "historical",
-  });
-  const years = parseYears(filterPayload?.options || {});
+  if (!datasetVersionId) {
+    datasetVersionId = batchRow?.dataset_version_id || null;
+  }
+  let datasetVersionNo = Number(batchRow?.dataset_version);
 
-  // Pre-fetch ALL transactions for this batch ONCE before the per-year loop.
-  // Each of the 8 report functions would otherwise call queryStagedTransactions
-  // independently (paginated full-table scans of 50k–200k+ rows). With _preloadedRows
-  // injected into the filters, queryStagedTransactions filters in memory and skips
-  // the DB entirely — turning 8×N full-table scans into a single paginated read.
-  // getCashflowSummaryFromStage internally calls getProfitLossSummaryFromStage and
-  // getBalanceSheetSummaryFromStage, which also inherit _preloadedRows via spread.
-  const preloadStart = Date.now();
-  const { rows: _preloadedRows } = await queryStagedTransactions(companyId, {
-    batchId,
-    includeArchived: true,
-    versionMode: "historical",
-  });
+  // If the batch row doesn't have the integer version yet (written before activation
+  // back-fills it), look it up directly from dataset_versions using the UUID.
+  if ((!Number.isInteger(datasetVersionNo) || datasetVersionNo <= 0) && datasetVersionId) {
+    const { data: versionRow } = await supabase
+      .from("dataset_versions")
+      .select("version_number")
+      .eq("id", datasetVersionId)
+      .maybeSingle();
+    if (versionRow?.version_number) {
+      datasetVersionNo = Number(versionRow.version_number);
+      console.log(
+        `[ManualGL][Snapshots] Resolved version_number=${datasetVersionNo} from dataset_versions for id=${datasetVersionId}`,
+      );
+    }
+  }
+
+  const resolvedDatasetVersion = Number.isInteger(datasetVersionNo) && datasetVersionNo > 0 ? datasetVersionNo : null;
+
   console.log(
-    `[ManualGL][Snapshots][Perf] preloadedRows=${_preloadedRows.length} in ${Date.now() - preloadStart}ms`,
+    `[ManualGL][Snapshots] Starting generation for company=${companyId} batchId=${batchId} ` +
+    `datasetVersion=${resolvedDatasetVersion} datasetVersionId=${datasetVersionId}`,
   );
+
+  const sharedFilters = {
+    batchId,
+    datasetVersionId,
+    includeArchived: true,
+    versionMode: "historical",
+  };
+
+  const filterPayload = await getStageFilterOptions(companyId, sharedFilters);
+  const years = parseYears(filterPayload?.options || {});
 
   let snapshotCount = 0;
 
@@ -281,37 +305,45 @@ async function generateReportingSnapshotsForBatch(companyId, batchId) {
       ...filterPayload,
       activeBatchId: batchId,
       datasetVersion: resolvedDatasetVersion,
+      datasetVersionId: datasetVersionId,
       generatedAt: now,
     },
     fiscalYear: null,
   });
   snapshotCount += 1;
 
+  // Process each fiscal year slice independently.
+  //
+  // PREVIOUS APPROACH (memory spike): loaded ALL batch transactions into Node.js
+  // memory in a single queryStagedTransactions() call, then filtered in-memory.
+  // For 100k+ row uploads this could exhaust the Node.js heap.
+  //
+  // NEW APPROACH (chunked per year): each fiscal year gets its own scoped query.
+  // Memory usage is bounded to one year of data at a time. Years are processed
+  // sequentially to keep connection count low; reports within a year are parallel.
+  //
+  // The "all years" slice (year=null) still runs first as a cross-year summary.
   const targets = years.length ? [null, ...years] : [null];
 
   for (const year of targets) {
-    // _preloadedRows carries ALL batch transactions (no year filter).
-    // Each report function applies its own year/date filter on top in memory.
-    const filters = year
-      ? {
-        batchId,
-        includeArchived: true,
-        versionMode: "historical",
-        fiscalYear: [String(year)],
-        fiscalYears: [year],
-        _preloadedRows,
-      }
-      : {
-        batchId,
-        includeArchived: true,
-        versionMode: "historical",
-        _preloadedRows,
-      };
+    const yearFilters = {
+      ...sharedFilters,
+      ...(year ? { fiscalYear: [String(year)], fiscalYears: [year] } : {}),
+    };
+
+    const preloadStart = Date.now();
+    // Each year's transactions are loaded once and reused across all 8 report builders.
+    // This avoids 8 separate DB reads per year while keeping memory bounded per slice.
+    const { rows: _preloadedRows } = await queryStagedTransactions(companyId, yearFilters);
+    const filters = { ...yearFilters, _preloadedRows };
+
+    console.log(
+      `[ManualGL][Snapshots][Perf] year=${year ?? "ALL"} preloadedRows=${_preloadedRows.length} in ${Date.now() - preloadStart}ms`,
+    );
 
     const yearStart = Date.now();
 
-    // Build all report payloads for this fiscal slice.
-    // With _preloadedRows in filters, these calls do no DB queries — pure in-memory.
+    // All 8 report builders work from _preloadedRows — no additional DB queries.
     const [
       profitLossSummary,
       profitLossDetail,
@@ -334,9 +366,10 @@ async function generateReportingSnapshotsForBatch(companyId, batchId) {
 
     console.log(`[ManualGL][Snapshots][Perf] year=${year ?? "ALL"} reports=${Date.now() - yearStart}ms`);
 
-    // Upsert snapshots. These are independent rows (different report_type values) so
-    // they can safely run in parallel within a single fiscal year. Years themselves
-    // remain sequential to keep the total connection count bounded.
+    // Release the in-memory rows before moving to the next year.
+    // The GC will reclaim this memory before the next year's preload.
+    filters._preloadedRows = null;
+
     const snapshotTasks = [
       { type: SNAPSHOT_REPORT_TYPES.PROFIT_LOSS_SUMMARY, payload: profitLossSummary },
       { type: SNAPSHOT_REPORT_TYPES.PROFIT_LOSS_DETAIL, payload: profitLossDetail },

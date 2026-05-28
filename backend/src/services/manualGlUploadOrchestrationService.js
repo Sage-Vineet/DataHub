@@ -12,9 +12,6 @@ const {
   setUploadChecksum,
 } = require("./manualGlActiveBatchService");
 const {
-  generateReportingSnapshotsForBatch,
-} = require("./manualGlReportingSnapshotService");
-const {
   REPORT_SOURCE_KEYS,
   updateReportSourceRecord,
 } = require("./reportSourceStore");
@@ -96,6 +93,11 @@ async function patchBatchWithMergedMetadata(companyId, batchId, patch = {}, meta
   });
 }
 
+const {
+  updateUploadJob,
+  UPLOAD_JOB_STATUS,
+} = require("./datasetVersionService");
+
 async function orchestrateManualGlUpload({
   companyId,
   glUploadIds = [],
@@ -106,10 +108,22 @@ async function orchestrateManualGlUpload({
   fiscalYearStartDay = null,
   uploadedBy = null,
   batchName = "",
+  uploadJobId = null,
+  datasetVersionId = null,
 }) {
   if (!companyId) {
     throw new Error("companyId is required for Manual GL orchestration.");
   }
+
+  const trackProgress = async (stage, pct, metadata = {}) => {
+    if (uploadJobId) {
+      await updateUploadJob(uploadJobId, {
+        status: UPLOAD_JOB_STATUS.STAGING,
+        progress: { stage, pct },
+        metadata: metadata,
+      }).catch(err => console.warn("[ManualGL][Orchestrator] Failed to update job progress:", err.message));
+    }
+  };
 
   const orchestrationStartedAt = new Date().toISOString();
   const perfStart = Date.now();
@@ -124,18 +138,65 @@ async function orchestrateManualGlUpload({
     fiscalYearStartDay,
     uploadedBy,
     batchName,
-    useDatasetLifecycle: false,
+    useDatasetLifecycle: !datasetVersionId,
+    datasetVersionId: datasetVersionId,
     deferLifecycleFinalization: true,
+    uploadJobId,
   }));
 
+  if (staged?.alreadyStaged || staged?.blockedAsDuplicate) {
+    const reusedBatchId = staged?.activeBatchId || staged?.batchId || null;
+    const reusedVersionNumber = Number(staged?.versionNumber || staged?.activeDatasetVersion || 0) || null;
+    console.log(
+      `[ManualGL][Orchestrator] Existing dataset detected. Reusing dataset version V${reusedVersionNumber || "?"}. ` +
+      "Skipping staging and report generation.",
+    );
+    await trackProgress("duplicate_detected", 100, {
+      activeBatchId: reusedBatchId,
+      versionNumber: reusedVersionNumber,
+      alreadyStaged: true,
+    });
+
+    const now = new Date().toISOString();
+    updateReportSourceRecord(companyId, REPORT_SOURCE_KEYS.MANUAL_GL, {
+      isAvailable: true,
+      isConnected: false,
+      lastSyncedAt: now,
+      metadata: {
+        latestBatchId: reusedBatchId,
+        latestBatchStatus: "active",
+        latestDatasetVersion: reusedVersionNumber,
+        uploadChecksum: staged?.datasetHash || null,
+        snapshotCount: 0,
+        snapshotYears: Array.isArray(staged?.fiscalYears) ? staged.fiscalYears : [],
+        alreadyStaged: true,
+        reportsReady: true,
+      },
+    }).catch((error) => {
+      console.warn("[ManualGL][Orchestrator] Failed to update report source record:", error.message);
+    });
+
+    reportCache.invalidateCompany(companyId);
+    return {
+      ...staged,
+      alreadyStaged: true,
+      blockedAsDuplicate: true,
+      reportsReady: true,
+      activeBatchId: reusedBatchId,
+      batchId: reusedBatchId,
+      activeDatasetVersion: reusedVersionNumber,
+      versionNumber: reusedVersionNumber,
+      snapshotsGenerated: 0,
+      activated: false,
+    };
+  }
+
   if (!staged?.success || !staged?.batchId) {
-    if (staged?.blockedAsDuplicate) {
-      console.log(`[ManualGL][Orchestrator] Staging blocked as duplicate: batch ${staged.batchId}`);
-    }
     return staged;
   }
 
   const batchId = staged.batchId;
+  await trackProgress("checksumming", 20);
 
   try {
     const checksumInfo = await withTiming("checksum", () => computeUploadChecksum(companyId, batchId));
@@ -146,6 +207,7 @@ async function orchestrateManualGlUpload({
       await withTiming("setChecksum", () => setUploadChecksum(batchId, uploadChecksum, checksumRowCount));
     }
 
+    await trackProgress("duplicate_check", 30);
     const duplicateActiveBatch = uploadChecksum
       ? await withTiming("dupCheck", () => findActiveBatchByChecksum(companyId, uploadChecksum))
       : null;
@@ -172,6 +234,7 @@ async function orchestrateManualGlUpload({
       );
 
       reportCache.invalidateCompany(companyId);
+      await trackProgress("duplicate_detected", 100, { activeBatchId: duplicateActiveBatch.id });
 
       return {
         ...staged,
@@ -186,8 +249,11 @@ async function orchestrateManualGlUpload({
       };
     }
 
-    const snapshotResult = await withTiming("snapshots", () => generateReportingSnapshotsForBatch(companyId, batchId));
+    // Snapshot generation is deferred to after lifecycle finalization (in the worker)
+    // so that staging always completes successfully regardless of snapshot duration.
+    const snapshotResult = { snapshotCount: 0, years: [], datasetVersion: null, generatedAt: null };
 
+    await trackProgress("validating", 50);
     let validation = staged.validation || null;
     if (!validation) {
       try {
@@ -198,6 +264,7 @@ async function orchestrateManualGlUpload({
       }
     }
 
+    await trackProgress("activating", 90);
     const activated = await withTiming("activate", () => activateUploadBatch(companyId, batchId, uploadedBy || null));
     const uploadSessionPlan = buildUploadSessionActivationPlan(activated?.metadata || {}, staged);
     if (uploadSessionPlan.length > 0) {
@@ -210,6 +277,7 @@ async function orchestrateManualGlUpload({
     }
 
     const now = new Date().toISOString();
+    await trackProgress("finalizing", 95);
     await patchBatchWithMergedMetadata(
       companyId,
       batchId,
@@ -254,6 +322,8 @@ async function orchestrateManualGlUpload({
     }).catch((error) => {
       console.warn("[ManualGL][Orchestrator] Failed to update report source record:", error.message);
     });
+
+    await trackProgress("completed", 100);
 
     return {
       ...staged,

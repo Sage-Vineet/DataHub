@@ -402,7 +402,11 @@ export default function WorkspaceReports() {
   // so the filter options effect re-runs and picks up the new fiscal years.
   useEffect(() => {
     function handleGlStaged(event) {
-      const { clientId: eventClientId, batchId: eventBatchId } = event.detail || {};
+      const {
+        clientId: eventClientId,
+        batchId: eventBatchId,
+        versionNumber: eventVersionNumber,
+      } = event.detail || {};
       if (eventClientId && clientId && eventClientId !== clientId) return;
       setManualFilters((prev) => ({
         ...prev,
@@ -416,6 +420,10 @@ export default function WorkspaceReports() {
         fiscalYear: [],
         fiscalMonth: "",
       }));
+      const parsedVersion = Number(eventVersionNumber || 0);
+      if (Number.isInteger(parsedVersion) && parsedVersion > 0) {
+        setSelectedVersionId(String(parsedVersion));
+      }
       setFilterOptionsVersion((v) => v + 1);
     }
     window.addEventListener(MANUAL_GL_STAGED_EVENT, handleGlStaged);
