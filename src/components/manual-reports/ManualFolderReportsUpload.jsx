@@ -517,27 +517,6 @@ export default function ManualFolderReportsUpload({
           )}
         </div>
 
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={handleSync}
-            disabled={isSyncing || isLoading || !sourceTree}
-            className="btn-primary h-11 px-6 justify-center"
-          >
-            {isSyncing ? (
-              <Loader2 size={16} className="animate-spin" />
-            ) : (
-              <CheckCircle2 size={16} />
-            )}
-            {isSyncing ? "Syncing…" : "Sync All"}
-          </button>
-          {!isSyncing && !manualUploadProgress && (
-            <p className="text-[13px] text-text-secondary">
-              Reads all files from each mapped subfolder and pushes them to their respective report pages.
-            </p>
-          )}
-        </div>
-
         {manualUploadProgress && (
           <div className="rounded-2xl border border-border bg-bg-card px-5 py-4 space-y-3">
             <div className="flex items-center justify-between">
@@ -573,6 +552,27 @@ export default function ManualFolderReportsUpload({
             )}
           </div>
         )}
+
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={handleSync}
+            disabled={isSyncing || isLoading || !sourceTree}
+            className="btn-primary h-11 px-6 justify-center"
+          >
+            {isSyncing ? (
+              <Loader2 size={16} className="animate-spin" />
+            ) : (
+              <CheckCircle2 size={16} />
+            )}
+            {isSyncing ? "Syncing…" : "Sync All"}
+          </button>
+          {!isSyncing && !manualUploadProgress && (
+            <p className="text-[13px] text-text-secondary">
+              Reads all files from each mapped subfolder and pushes them to their respective report pages.
+            </p>
+          )}
+        </div>
 
         <SyncResultPanel result={lastSyncResult} />
       </div>
