@@ -650,6 +650,15 @@ export function listManualGlDatasetVersions(options = {}) {
           created_at: row?.created_at || row?.createdAt || null,
           createdAt: row?.created_at || row?.createdAt || null,
           status: row?.status || "FINALIZED",
+          datasetHash: row?.dataset_hash || row?.content_hash || row?.datasetHash || null,
+          batchId: row?.batch_id || row?.batchId || null,
+          datasetVersionId: row?.dataset_version_id || row?.datasetVersionId || null,
+          fiscalYears: Array.isArray(row?.fiscal_years)
+            ? row.fiscal_years.map((year) => Number(year)).filter((year) => Number.isInteger(year) && year > 0)
+            : Array.isArray(row?.fiscalYears)
+              ? row.fiscalYears.map((year) => Number(year)).filter((year) => Number.isInteger(year) && year > 0)
+              : [],
+          reportsReady: row?.reportsReady ?? row?.reports_ready ?? null,
         };
       })
       .filter(Boolean)
@@ -802,6 +811,33 @@ export function getManualStagedProfitLossDetail(options = {}) {
   const query = search.toString();
   return request(
     `/reports/profit-loss/detail${query ? `?${query}` : ""}`,
+    requestOptions,
+  );
+}
+
+export function getManualStagedProfitLossVendorDetail(options = {}) {
+  const {
+    clientId: clientIdOption,
+    params = {},
+    ...requestOptions
+  } = options || {};
+  const clientId = clientIdOption ?? resolveClientIdFromLocation();
+  const search = new URLSearchParams();
+  if (clientId) search.set("clientId", clientId);
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    if (Array.isArray(value)) {
+      if (value.length === 0) return;
+      search.set(key, value.join(","));
+      return;
+    }
+    search.set(key, String(value));
+  });
+
+  const query = search.toString();
+  return request(
+    `/reports/profit-loss/detail-vendor${query ? `?${query}` : ""}`,
     requestOptions,
   );
 }

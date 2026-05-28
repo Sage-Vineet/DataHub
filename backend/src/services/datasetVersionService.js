@@ -24,9 +24,45 @@ const TABLES = {
     validationErrors: "validation_errors",
 };
 
+const MANUAL_GL_SOURCE_TYPE = "manual_gl_upload";
+const FINALIZED_DATASET_STATUSES = new Set(["finalized", "completed"]);
+
+function isMissingColumnError(error, columnName = "") {
+    if (!error) return false;
+    const message = String(error.message || "").toLowerCase();
+    if (!message.includes("column")) return false;
+    if (!columnName) return true;
+    return message.includes(String(columnName).toLowerCase());
+}
+
+function normalizeText(value, fallback = "") {
+    const text = String(value || "").trim();
+    return text || fallback;
+}
+
+function normalizeDatasetHash(value) {
+    return normalizeText(value).toLowerCase() || null;
+}
+
+function normalizeFiscalYears(value = []) {
+    return Array.from(
+        new Set(
+            (Array.isArray(value) ? value : [])
+                .map((item) => Number(item))
+                .filter((item) => Number.isInteger(item) && item > 0),
+        ),
+    ).sort((a, b) => a - b);
+}
+
+function isManualGlDatasetVersion(row = {}) {
+    const sourceType = normalizeText(row?.source_type, MANUAL_GL_SOURCE_TYPE).toLowerCase();
+    return sourceType === MANUAL_GL_SOURCE_TYPE;
+}
+
 // ─── Upload Job Status Constants ──────────────────────────────────────────────
 
 const UPLOAD_JOB_STATUS = {
+    QUEUED: "queued",   // created but metadata not yet written — worker must not claim this
     PENDING: "pending",
     PARSING: "parsing",
     VALIDATING: "validating",
@@ -57,7 +93,7 @@ async function createUploadJob(companyId, uploadSource = "", createdBy = null) {
 
     const payload = {
         company_id: companyId,
-        status: UPLOAD_JOB_STATUS.PENDING,
+        status: UPLOAD_JOB_STATUS.QUEUED,
         upload_source: uploadSource || null,
         created_by: createdBy || null,
         progress: { stage: "pending", pct: 0 },
@@ -84,7 +120,9 @@ async function updateUploadJob(jobId, updates = {}) {
     if (updates.status) patch.status = updates.status;
     if (updates.error) patch.error_message = updates.error;
     if (updates.progress) patch.progress = updates.progress;
-    if (updates.metadata) patch.metadata = updates.metadata;
+    if (updates.metadata && typeof updates.metadata === "object" && Object.keys(updates.metadata).length > 0) {
+        patch.metadata = updates.metadata;
+    }
 
     const { data, error } = await supabase
         .from(TABLES.uploadJobs)
@@ -138,7 +176,7 @@ async function listUploadJobs(companyId, limit = 20) {
  * Create a new dataset version for a company.
  * Auto-increments version_number using the RPC function.
  */
-async function createDatasetVersion(companyId, uploadJobId = null, uploadSource = "") {
+async function createDatasetVersion(companyId, uploadJobId = null, uploadSource = "", options = {}) {
     if (!companyId) throw new Error("companyId is required to create a dataset version.");
 
     // Get next version number via RPC
@@ -161,6 +199,27 @@ async function createDatasetVersion(companyId, uploadJobId = null, uploadSource 
         var versionNumber = nextVersion || 1;
     }
 
+    const datasetHash = normalizeDatasetHash(options.datasetHash || options.contentHash || "");
+    const fiscalYears = normalizeFiscalYears(options.fiscalYears || []);
+    const rowCount = Number.isInteger(Number(options.rowCount)) && Number(options.rowCount) >= 0
+        ? Number(options.rowCount)
+        : null;
+    const sourceType = normalizeText(options.sourceType || MANUAL_GL_SOURCE_TYPE, MANUAL_GL_SOURCE_TYPE);
+    const metadataPatch = {
+        ...(options.metadata && typeof options.metadata === "object" ? options.metadata : {}),
+    };
+
+    if (datasetHash) {
+        metadataPatch.datasetHash = datasetHash;
+        metadataPatch.contentHash = datasetHash;
+    }
+    if (fiscalYears.length > 0) {
+        metadataPatch.fiscalYears = fiscalYears;
+    }
+    if (rowCount !== null) {
+        metadataPatch.rowCount = rowCount;
+    }
+
     const payload = {
         company_id: companyId,
         version_number: versionNumber,
@@ -168,18 +227,156 @@ async function createDatasetVersion(companyId, uploadJobId = null, uploadSource 
         status: DATASET_VERSION_STATUS.STAGING,
         upload_job_id: uploadJobId || null,
         upload_source: uploadSource || null,
+        source_type: sourceType,
+        ...(datasetHash ? { dataset_hash: datasetHash, content_hash: datasetHash } : {}),
+        ...(fiscalYears.length > 0 ? { fiscal_years: fiscalYears } : {}),
+        ...(rowCount !== null ? { row_count: rowCount } : {}),
+        metadata: Object.keys(metadataPatch).length > 0 ? metadataPatch : {},
     };
 
-    const { data, error } = await supabase
+    let { data, error } = await supabase
         .from(TABLES.datasetVersions)
         .insert(payload)
         .select()
         .single();
 
+    if (error && isMissingColumnError(error)) {
+        const legacyPayload = {
+            company_id: companyId,
+            version_number: versionNumber,
+            is_active: false,
+            status: DATASET_VERSION_STATUS.STAGING,
+            upload_job_id: uploadJobId || null,
+            upload_source: uploadSource || null,
+            metadata: Object.keys(metadataPatch).length > 0 ? metadataPatch : {},
+        };
+
+        ({ data, error } = await supabase
+            .from(TABLES.datasetVersions)
+            .insert(legacyPayload)
+            .select()
+            .single());
+    }
+
     if (error) throw new Error(`Failed to create dataset version: ${error.message}`);
 
     console.log(`[DatasetVersion] Created v${versionNumber} for company ${companyId} (id=${data.id})`);
     return data;
+}
+
+/**
+ * Find an existing Manual GL dataset version by hash.
+ * Prefers finalized versions, but can optionally return any non-failed version
+ * when includeNonFailed is true so callers can handle race conditions safely.
+ */
+async function findExistingDatasetVersionByHash(
+    companyId,
+    datasetHash,
+    options = {},
+) {
+    if (!companyId || !datasetHash) return null;
+
+    const normalizedHash = normalizeDatasetHash(datasetHash);
+    if (!normalizedHash) return null;
+
+    const includeNonFailed = options.includeNonFailed === true;
+    const sourceType = normalizeText(options.sourceType || MANUAL_GL_SOURCE_TYPE, MANUAL_GL_SOURCE_TYPE);
+    const statusFilter = includeNonFailed
+        ? null
+        : Array.isArray(options.statuses) && options.statuses.length > 0
+            ? options.statuses
+            : Array.from(FINALIZED_DATASET_STATUSES);
+
+    const lookupViaRpc = async () => {
+        const { data, error } = await supabase.rpc("find_manual_gl_dataset_version_by_hash", {
+            p_company_id: companyId,
+            p_dataset_hash: normalizedHash,
+        });
+
+        if (error) {
+            return { data: null, error };
+        }
+
+        const rows = Array.isArray(data) ? data : (data ? [data] : []);
+        return { data: rows.find((row) => isManualGlDatasetVersion(row)) || rows[0] || null, error: null };
+    };
+
+    const rpcResult = await lookupViaRpc();
+    if (!rpcResult.error) {
+        return rpcResult.data || null;
+    }
+
+    if (!isMissingColumnError(rpcResult.error, "find_manual_gl_dataset_version_by_hash")) {
+        // Fall through to table lookups; the RPC may simply be missing in older deployments.
+    }
+
+    for (const column of ["dataset_hash", "content_hash"]) {
+        let query = supabase
+            .from(TABLES.datasetVersions)
+            .select("*")
+            .eq("company_id", companyId)
+            .eq(column, normalizedHash);
+
+        if (sourceType) {
+            query = query.eq("source_type", sourceType);
+        }
+
+        if (includeNonFailed) {
+            query = query.neq("status", "failed");
+        } else if (statusFilter && statusFilter.length > 0) {
+            query = query.in("status", statusFilter);
+        }
+
+        query = query
+            .order("finalized_at", { ascending: false })
+            .order("created_at", { ascending: false })
+            .limit(20);
+
+        const { data, error } = await query;
+
+        if (error && isMissingColumnError(error, column)) {
+            continue;
+        }
+
+        if (error && isMissingColumnError(error, "source_type")) {
+            let fallbackQuery = supabase
+                .from(TABLES.datasetVersions)
+                .select("*")
+                .eq("company_id", companyId)
+                .eq(column, normalizedHash);
+
+            if (includeNonFailed) {
+                fallbackQuery = fallbackQuery.neq("status", "failed");
+            } else if (statusFilter && statusFilter.length > 0) {
+                fallbackQuery = fallbackQuery.in("status", statusFilter);
+            }
+
+            const { data: fallbackData, error: fallbackError } = await fallbackQuery
+                .order("finalized_at", { ascending: false })
+                .order("created_at", { ascending: false })
+                .limit(20);
+
+            if (fallbackError) {
+                if (isMissingColumnError(fallbackError, column)) continue;
+                throw new Error(`Failed to query dataset version by hash: ${fallbackError.message}`);
+            }
+
+            const fallbackRows = Array.isArray(fallbackData) ? fallbackData : (fallbackData ? [fallbackData] : []);
+            const fallbackMatch = fallbackRows.find((row) => isManualGlDatasetVersion(row)) || fallbackRows[0] || null;
+            if (fallbackMatch) return fallbackMatch;
+            continue;
+        }
+
+        if (error && error.code !== "PGRST116") {
+            throw new Error(`Failed to query dataset version by hash: ${error.message}`);
+        }
+
+        const rows = Array.isArray(data) ? data : (data ? [data] : []);
+        const matched = rows.find((row) => isManualGlDatasetVersion(row)) || rows[0] || null;
+        if (matched) return matched;
+    }
+
+    return null;
 }
 
 /**
@@ -191,7 +388,9 @@ async function updateDatasetVersion(versionId, updates = {}) {
     const patch = {};
     if (updates.status) patch.status = updates.status;
     if (updates.batchId) patch.batch_id = updates.batchId;
-    if (updates.metadata) patch.metadata = updates.metadata;
+    if (updates.metadata && typeof updates.metadata === "object" && Object.keys(updates.metadata).length > 0) {
+        patch.metadata = updates.metadata;
+    }
     if (updates.finalizedAt) patch.finalized_at = updates.finalizedAt;
     if (updates.rolledBackAt) patch.rolled_back_at = updates.rolledBackAt;
 
@@ -489,6 +688,30 @@ async function finalizeUploadLifecycle(jobId, versionId, companyId, batchId = nu
     // Activate the new snapshot (atomic swap)
     const activated = await activateDatasetVersion(companyId, versionId);
 
+    // Back-link the batch row to the now-known integer version number so that
+    // snapshot lookups by dataset_version integer (getSnapshotForDatasetVersion)
+    // can find the correct row after activation.
+    if (batchId && activated?.version_number) {
+        const { error: batchLinkError } = await supabase
+            .from("manual_gl_batches")
+            .update({
+                dataset_version_id: versionId,
+                dataset_version: activated.version_number,
+            })
+            .eq("id", batchId)
+            .eq("company_id", companyId);
+
+        if (batchLinkError) {
+            console.warn(
+                `[DatasetVersion] Failed to back-link batch ${batchId} to version v${activated.version_number}: ${batchLinkError.message}`
+            );
+        } else {
+            console.log(
+                `[DatasetVersion] Back-linked batch ${batchId} to version v${activated.version_number}`
+            );
+        }
+    }
+
     // Mark job as completed
     await updateUploadJob(jobId, {
         status: UPLOAD_JOB_STATUS.COMPLETED,
@@ -580,6 +803,7 @@ module.exports = {
     getActiveDatasetVersion,
     getDatasetVersion,
     listDatasetVersions,
+    findExistingDatasetVersionByHash,
     failDatasetVersion,
     rollbackToVersion,
 

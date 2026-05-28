@@ -549,31 +549,90 @@ async function findActiveBatchByChecksum(companyId, checksum) {
   const contentHash = toText(checksum);
   if (!companyId || !contentHash) return null;
 
-  let { data, error } = await supabase
-    .from(TABLE_BATCHES)
-    .select("*")
-    .eq("company_id", companyId)
-    .eq("is_active", true)
-    .eq("upload_checksum", contentHash)
-    .order("updated_at", { ascending: false })
-    .limit(50);
+  // Check dataset_hash first (migration 035/036 column, populated by SQL RPC).
+  // Fall back to upload_checksum (legacy Node.js SHA256 hash).
+  for (const column of ["dataset_hash", "upload_checksum"]) {
+    let { data, error } = await supabase
+      .from(TABLE_BATCHES)
+      .select("*")
+      .eq("company_id", companyId)
+      .eq("is_active", true)
+      .eq(column, contentHash)
+      .order("updated_at", { ascending: false })
+      .limit(50);
 
-  if (error && isMissingColumnError(error, "upload_checksum")) {
-    return null;
+    if (error && isMissingColumnError(error, column)) {
+      continue; // Column not yet migrated — try next
+    }
+    if (error && error.code !== "PGRST116") {
+      throw new Error(formatSupabaseFailure("Failed to load active checksum batch", error));
+    }
+
+    const rows = Array.isArray(data) ? data : (data ? [data] : []);
+    const matched = rows.find((row) => isManualBatchSource(row?.source_type));
+    const hit = matched || rows[0] || null;
+    if (hit) return mapBatchRow(hit);
   }
 
-  if (error && error.code !== "PGRST116") {
-    throw new Error(formatSupabaseFailure("Failed to load active checksum batch", error));
-  }
-
-  const rows = Array.isArray(data) ? data : (data ? [data] : []);
-  const matched = rows.find((row) => isManualBatchSource(row?.source_type));
-  return mapBatchRow(matched || rows[0] || null);
+  return null;
 }
 
+/**
+ * Compute a stable dataset hash via a single SQL RPC call (migration 036).
+ *
+ * The SQL function compute_batch_dataset_hash() runs entirely inside Postgres,
+ * eliminating the previous pattern of 100+ sequential paginated round-trips
+ * that caused statement timeouts, DB overload, and Supabase unhealthy states
+ * on uploads with 100k+ rows.
+ *
+ * Falls back to the legacy batch_id column if upload_batch_id is missing.
+ * Falls back to the Node.js pagination approach if the RPC function does not
+ * exist yet (schema not migrated) so old deployments keep working.
+ */
 async function computeUploadChecksum(companyId, batchId) {
   if (!companyId || !batchId) {
     throw new Error("Both companyId and batchId are required to compute upload checksum.");
+  }
+
+  // Fast path: single SQL aggregate (migration 036 required)
+  const { data: rpcData, error: rpcError } = await supabase.rpc(
+    "compute_batch_dataset_hash",
+    { p_company_id: companyId, p_batch_id: batchId },
+  );
+
+  if (!rpcError) {
+    const row = Array.isArray(rpcData) ? rpcData[0] : rpcData;
+    if (row) {
+      const checksum = String(row.dataset_hash || "").trim() || null;
+      const rowCount = Number(row.row_count || 0);
+      console.log(`[ManualGL][Checksum] SQL RPC: rows=${rowCount} checksum=${checksum ? checksum.slice(0, 12) + "..." : "null"}`);
+      return { checksum, rowCount };
+    }
+  }
+
+  // If RPC returned an error for upload_batch_id column, try legacy batch_id column
+  if (rpcError && isMissingColumnError(rpcError, "upload_batch_id")) {
+    const { data: legacyData, error: legacyError } = await supabase.rpc(
+      "compute_batch_dataset_hash_legacy",
+      { p_company_id: companyId, p_batch_id: batchId },
+    );
+    if (!legacyError) {
+      const row = Array.isArray(legacyData) ? legacyData[0] : legacyData;
+      if (row) {
+        return { checksum: String(row.dataset_hash || "").trim() || null, rowCount: Number(row.row_count || 0) };
+      }
+    }
+  }
+
+  // Slow fallback: RPC function not deployed yet (pre-migration 036 schema).
+  // Uses paginated reads — acceptable for small datasets, but logs a warning.
+  if (rpcError) {
+    const isRpcMissing = String(rpcError.message || "").toLowerCase().includes("could not find the function");
+    if (isRpcMissing) {
+      console.warn("[ManualGL][Checksum] SQL RPC not available — falling back to paginated checksum. Run migration 036.");
+    } else {
+      console.warn("[ManualGL][Checksum] SQL RPC failed, falling back to paginated:", rpcError.message);
+    }
   }
 
   const digest = crypto.createHash("sha256");
@@ -618,24 +677,24 @@ async function computeUploadChecksum(companyId, batchId) {
   digest.update(`#rows:${rowCount}`);
   const checksum = digest.digest("hex");
 
-  return {
-    checksum,
-    rowCount,
-  };
+  return { checksum, rowCount };
 }
 
 async function setUploadChecksum(batchId, checksum, rowCount = null) {
   const contentHash = toText(checksum);
   if (!batchId || !contentHash) return null;
 
+  // Store in both columns:
+  //   upload_checksum — legacy field, still used by older dedup queries
+  //   dataset_hash    — new field (migration 035), indexed for fast dedup lookup
   const patch = {
     upload_checksum: contentHash,
+    dataset_hash:    contentHash,
   };
 
   if (Number.isInteger(Number(rowCount)) && Number(rowCount) >= 0) {
-    patch.metadata = {
-      checksumRowCount: Number(rowCount),
-    };
+    patch.row_count = Number(rowCount);
+    patch.metadata  = { checksumRowCount: Number(rowCount) };
   }
 
   // Merge metadata without dropping existing keys.

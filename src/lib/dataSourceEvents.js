@@ -34,8 +34,13 @@ export function emitManualGlStaged(detail = {}) {
   window.dispatchEvent(
     new CustomEvent(MANUAL_GL_STAGED_EVENT, {
       detail: {
+        ...detail,
         clientId: detail.clientId || null,
         batchId: detail.batchId || null,
+        versionNumber: detail.versionNumber ?? null,
+        datasetVersionId: detail.datasetVersionId ?? null,
+        alreadyStaged: Boolean(detail.alreadyStaged),
+        reportsReady: Boolean(detail.reportsReady),
         timestamp: new Date().toISOString(),
       },
     }),

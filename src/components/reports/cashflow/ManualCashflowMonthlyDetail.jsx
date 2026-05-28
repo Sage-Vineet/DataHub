@@ -1,4 +1,6 @@
+import { useState } from "react";
 import { formatCurrency } from "../../../lib/utils";
+import { ChevronRight, ChevronDown } from "lucide-react";
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -11,17 +13,67 @@ function monthLabel(monthNum) {
 }
 
 function AccountRow({ account, months }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const hasTransactions = Array.isArray(account.transactions) && account.transactions.length > 0;
+
   return (
-    <tr className="border-b border-border-light hover:bg-bg-page/30">
-      <td className="px-3 py-1.5 pl-8 text-[12px] text-text-secondary">{account.accountName}</td>
-      {months.map((m) => {
-        const v = Number(account.monthly?.[m] || 0);
-        return <td key={m} className={colClass(v)}>{formatCurrency(v)}</td>;
-      })}
-      <td className={`px-3 py-1.5 text-right text-[12px] tabular-nums font-medium ${Number(account.total) < 0 ? "text-status-error" : "text-text-secondary"}`}>
-        {formatCurrency(Number(account.total || 0))}
-      </td>
-    </tr>
+    <>
+      <tr
+        className={`border-b border-border-light hover:bg-bg-page/30 cursor-pointer transition-colors ${isOpen ? "bg-bg-page/20" : ""}`}
+        onClick={() => setIsOpen(!isOpen)}
+      >
+        <td className="px-3 py-1.5 pl-8 text-[12px] text-text-secondary">
+          <div className="flex items-center gap-1.5">
+            {hasTransactions && (
+              isOpen ? <ChevronDown size={12} className="text-text-muted" /> : <ChevronRight size={12} className="text-text-muted" />
+            )}
+            {account.accountName}
+          </div>
+        </td>
+        {months.map((m) => {
+          const v = Number(account.monthly?.[m] || 0);
+          return <td key={m} className={colClass(v)}>{formatCurrency(v)}</td>;
+        })}
+        <td className={`px-3 py-1.5 text-right text-[12px] tabular-nums font-medium ${Number(account.total) < 0 ? "text-status-error" : "text-text-secondary"}`}>
+          {formatCurrency(Number(account.total || 0))}
+        </td>
+      </tr>
+
+      {isOpen && hasTransactions && (
+        <tr>
+          <td colSpan={months.length + 2} className="p-0">
+            <div className="bg-bg-page/40 px-3 py-2 animate-in fade-in slide-in-from-top-1 duration-200">
+              <table className="w-full border-collapse">
+                <thead>
+                  <tr className="border-b border-border text-left text-[10px] text-text-muted uppercase tracking-wider">
+                    <th className="px-2 py-1 font-semibold pl-12">Date</th>
+                    <th className="px-2 py-1 font-semibold">Vendor / Payee</th>
+                    <th className="px-2 py-1 font-semibold">Description</th>
+                    <th className="px-2 py-1 font-semibold text-right">Debit</th>
+                    <th className="px-2 py-1 font-semibold text-right">Credit</th>
+                    <th className="px-2 py-1 font-semibold text-right">Impact</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {account.transactions.map((tx, idx) => (
+                    <tr key={tx.id || idx} className="border-b border-border/50 hover:bg-bg-card/50 transition-colors">
+                      <td className="px-2 py-1 text-[11px] text-text-secondary pl-12">{tx.date || "-"}</td>
+                      <td className="px-2 py-1 text-[11px] text-text-primary font-medium">{tx.vendorName || "-"}</td>
+                      <td className="px-2 py-1 text-[11px] text-text-muted max-w-[300px] truncate">{tx.description || "-"}</td>
+                      <td className="px-2 py-1 text-[11px] text-text-secondary text-right">{tx.debit ? formatCurrency(tx.debit) : ""}</td>
+                      <td className="px-2 py-1 text-[11px] text-text-secondary text-right">{tx.credit ? formatCurrency(tx.credit) : ""}</td>
+                      <td className={`px-2 py-1 text-[11px] text-right font-medium ${tx.amount < 0 ? "text-status-error" : "text-text-primary"}`}>
+                        {formatCurrency(tx.amount)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
 
