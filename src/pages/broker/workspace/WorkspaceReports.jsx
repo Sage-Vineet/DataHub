@@ -12,7 +12,6 @@ import {
   getManualStageFilterOptions,
   getAllManualUploadedReports,
   getAllQMSUploadedReports,
-  listManualGlDatasetVersions,
   getManualCashFlowPeriods,
 } from "../../../lib/api";
 import { MANUAL_GL_STAGED_EVENT } from "../../../lib/dataSourceEvents";
@@ -312,9 +311,7 @@ export default function WorkspaceReports() {
     "Cashflow": null,
   });
   const [isLoadingQMSFiles, setIsLoadingQMSFiles] = useState(false);
-  const [versions, setVersions] = useState([]);
-  const [selectedVersionId, setSelectedVersionId] = useState(storedState?.selectedVersionId || "");
-  const [isLoadingVersions, setIsLoadingVersions] = useState(false);
+  // Version selector removed — single-dataset mode: each upload replaces the previous dataset.
   // Available years for the generated Cash Flow (manual_upload mode, Cashflow tab)
   const [manualCfYears, setManualCfYears] = useState([]);
   const [selectedManualCfYear, setSelectedManualCfYear] = useState(null);
@@ -372,7 +369,6 @@ export default function WorkspaceReports() {
       setAppliedAccountingMethod(nextState.appliedAccountingMethod || "Accrual");
       setManualFilters(normalizeManualFilters(nextState.manualFilters));
       setAppliedManualFilters(normalizeManualFilters(nextState.appliedManualFilters));
-      setSelectedVersionId(nextState.selectedVersionId || "");
       hasRestoredSessionRef.current = true;
     });
   }, [clientId, defaultCustomStart, todayString]);
@@ -402,28 +398,14 @@ export default function WorkspaceReports() {
   // so the filter options effect re-runs and picks up the new fiscal years.
   useEffect(() => {
     function handleGlStaged(event) {
-      const {
-        clientId: eventClientId,
-        batchId: eventBatchId,
-        versionNumber: eventVersionNumber,
-      } = event.detail || {};
+      const { clientId: eventClientId } = event.detail || {};
       if (eventClientId && clientId && eventClientId !== clientId) return;
-      setManualFilters((prev) => ({
-        ...prev,
-        batchId: String(eventBatchId || "").trim(),
-        fiscalYear: [],
-        fiscalMonth: "",
-      }));
-      setAppliedManualFilters((prev) => ({
-        ...prev,
-        batchId: String(eventBatchId || "").trim(),
-        fiscalYear: [],
-        fiscalMonth: "",
-      }));
-      const parsedVersion = Number(eventVersionNumber || 0);
-      if (Number.isInteger(parsedVersion) && parsedVersion > 0) {
-        setSelectedVersionId(String(parsedVersion));
-      }
+      // Clear fiscal year selection and stale options; filter options will
+      // be re-fetched automatically via filterOptionsVersion increment.
+      setManualFilterOptions({});
+      setManualFilters((prev) => ({ ...prev, batchId: "", fiscalYear: [], fiscalMonth: "" }));
+      setAppliedManualFilters((prev) => ({ ...prev, batchId: "", fiscalYear: [], fiscalMonth: "" }));
+      setReportsData(createInitialReportsData());
       setFilterOptionsVersion((v) => v + 1);
     }
     window.addEventListener(MANUAL_GL_STAGED_EVENT, handleGlStaged);
@@ -464,19 +446,9 @@ export default function WorkspaceReports() {
 
   useEffect(() => {
     if (selectedSourceMode !== "manual" || !clientId) return;
-    const selectedDatasetVersion = Number(selectedVersionId);
-    const optionsParams = Number.isInteger(selectedDatasetVersion) && selectedDatasetVersion > 0
-      ? {
-        datasetVersion: selectedDatasetVersion,
-        includeArchived: true,
-        versionMode: "historical",
-      }
-      : {};
 
-    getManualStageFilterOptions({
-      clientId,
-      params: optionsParams,
-    })
+    // Single-dataset mode: no version param needed — always fetch from active batch.
+    getManualStageFilterOptions({ clientId, params: {} })
       .then((payload) => {
         const activeBatchId = String(payload?.activeBatchId || "").trim();
         const resolvedBatchId = String(payload?.resolvedBatchId || activeBatchId || "").trim();
@@ -485,18 +457,11 @@ export default function WorkspaceReports() {
           : {};
         setManualFilterOptions(options);
         debugLog("[ManualGL][UI][FilterOptions]", {
-          requestedDatasetVersion:
-            Number.isInteger(selectedDatasetVersion) && selectedDatasetVersion > 0
-              ? selectedDatasetVersion
-              : null,
-          requestedBatchId: appliedManualFilters.batchId || "",
           resolvedBatchId: resolvedBatchId || null,
           activeBatchId: activeBatchId || null,
           fiscalYears: options?.fiscalYear || [],
         });
         const availableYears = Array.isArray(options.fiscalYear) ? options.fiscalYear : [];
-        // Read from ref to get the latest filters without adding manualFilters to deps,
-        // which would re-run this effect on every user filter interaction.
         const currentFilters = manualFiltersRef.current;
         let nextFilters = { ...currentFilters };
         let changed = false;
@@ -511,16 +476,11 @@ export default function WorkspaceReports() {
           const currentYear = nextFilters.fiscalYear?.[0];
           const yearMatch = availableYears.find((y) => String(y) === String(currentYear));
           if (!currentYear || !yearMatch) {
-            const sorted = [...availableYears]
-              .map(Number)
-              .filter(Number.isFinite)
-              .sort((a, b) => b - a);
+            const sorted = [...availableYears].map(Number).filter(Number.isFinite).sort((a, b) => b - a);
             if (sorted.length > 0) {
               nextFilters.fiscalYear = [String(sorted[0])];
               changed = true;
-              debugLog("[ManualGL][UI][FilterAutoSelectYear]", {
-                selectedFiscalYear: String(sorted[0]),
-              });
+              debugLog("[ManualGL][UI][FilterAutoSelectYear]", { selectedFiscalYear: String(sorted[0]) });
             }
           }
         } else if ((nextFilters.fiscalYear || []).length > 0) {
@@ -538,7 +498,7 @@ export default function WorkspaceReports() {
         setManualFilterOptions({});
       });
     // filterOptionsVersion increments when a new GL batch is staged, forcing a re-fetch.
-  }, [appliedManualFilters.batchId, clientId, selectedSourceMode, filterOptionsVersion, selectedVersionId, debugLog]);
+  }, [clientId, selectedSourceMode, filterOptionsVersion, debugLog]);
 
   // Load available uploaded files per tab when in manual_upload source mode
   useEffect(() => {
@@ -640,7 +600,6 @@ export default function WorkspaceReports() {
       selectedReportSource,
       manualFilters,
       appliedManualFilters,
-      selectedVersionId,
       savedAt: new Date().toISOString(),
     });
   }, [
@@ -658,101 +617,9 @@ export default function WorkspaceReports() {
     selectedReportSource,
     selectedTab,
     manualFilters,
-    selectedVersionId,
   ]);
 
-  // Fetch available dataset versions as soon as clientId is available
-  useEffect(() => {
-    if (!clientId) return;
-
-    debugLog("[ManualGL][UI][VersionFetch] Start version fetch", { companyId: clientId });
-    setIsLoadingVersions(true);
-
-    listManualGlDatasetVersions({ clientId })
-      .then((list) => {
-        const normalizedList = Array.isArray(list) ? list : [];
-        setVersions(normalizedList);
-
-        debugLog("[ManualGL][UI][VersionFetch][Success]", {
-          companyId: clientId,
-          count: normalizedList.length,
-          versions: normalizedList.map(v => ({ value: v.value, label: v.label, isActive: v.isActive }))
-        });
-
-        // Auto-select logic
-        const existingVersionId = String(selectedVersionId || "").trim();
-        const exists = normalizedList.some(v => String(v.id || v.value) === existingVersionId);
-
-        if (!exists || !existingVersionId) {
-          const active = normalizedList.find(v => v.isActive);
-          const fallback = normalizedList[0];
-          const nextId = String(active?.id || active?.value || fallback?.id || fallback?.value || "");
-
-          if (nextId && nextId !== existingVersionId) {
-            debugLog("[ManualGL][UI][VersionFetch][AutoSelect]", {
-              previous: existingVersionId,
-              next: nextId,
-              reason: !exists ? "previous no longer exists" : "none selected"
-            });
-            setSelectedVersionId(nextId);
-          }
-        }
-      })
-      .catch((err) => {
-        console.error("[WorkspaceReports] Failed to load versions:", err);
-        setVersions([]);
-      })
-      .finally(() => {
-        setIsLoadingVersions(false);
-        debugLog("[ManualGL][UI][VersionFetch] Completed");
-      });
-  }, [clientId, debugLog]);
-
-  // Log version selection changes
-  useEffect(() => {
-    if (!selectedVersionId) return;
-    debugLog("[ManualGL][UI][VersionSelected] Version ID changed", {
-      selectedVersionId,
-      sourceMode: selectedSourceMode
-    });
-  }, [selectedVersionId, selectedSourceMode, debugLog]);
-
-  useEffect(() => {
-    if (selectedSourceMode !== "manual") return;
-    debugLog("[ManualGL][UI][VersionDropdown][Selected]", {
-      selectedDatasetVersion: (() => {
-        const parsed = Number(selectedVersionId);
-        return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
-      })(),
-    });
-  }, [debugLog, selectedSourceMode, selectedVersionId]);
-
-  // Effect to clear data and trigger refresh when version changes
-  useEffect(() => {
-    if (selectedSourceMode !== "manual" || !selectedVersionId) return;
-
-    debugLog("[ManualGL][UI][VersionChange] Version changed, clearing state...", { selectedVersionId });
-
-    // Clear existing report data to prevent stale rendering
-    setReportsData(createInitialReportsData());
-
-    // Reset manual filters that are specific to the previous version
-    setManualFilters((prev) => ({
-      ...prev,
-      fiscalYear: [],
-      fiscalMonth: "",
-      batchId: "", // Will be re-resolved by the filter options effect
-    }));
-    setAppliedManualFilters((prev) => ({
-      ...prev,
-      fiscalYear: [],
-      fiscalMonth: "",
-      batchId: "",
-    }));
-
-    // Force a re-fetch of filter options (which will also trigger handleGenerateReport)
-    setFilterOptionsVersion((v) => v + 1);
-  }, [selectedVersionId, selectedSourceMode, debugLog]);
+  // Version selector removed — single-dataset mode has no per-version effects.
 
   const handleSync = async () => {
     setIsSyncing(true);
@@ -1056,22 +923,11 @@ export default function WorkspaceReports() {
         resolvedEnd = dateConfig.endDate;
       }
 
+      // Single-dataset mode: reports use only the currently active staged dataset.
+      // No version or batchId override is needed.
       const manualFilterParams =
         selectedSourceMode === "manual"
-          ? {
-            ...buildManualFilterParams(appliedManualFilters),
-            ...(() => {
-              const parsedVersion = Number(selectedVersionId);
-              if (!Number.isInteger(parsedVersion) || parsedVersion <= 0) return {};
-              return {
-                datasetVersion: parsedVersion,
-                dataset_version: parsedVersion,
-                includeArchived: true,
-                versionMode: "historical",
-                batchId: "",
-              };
-            })(),
-          }
+          ? { ...buildManualFilterParams(appliedManualFilters) }
           : null;
       // Summary reports must not receive a month filter — fiscalMonths applied at the DB layer
       // would restrict transactions to a single month, breaking multi-month aggregations.
@@ -1236,7 +1092,6 @@ export default function WorkspaceReports() {
     selectedManualUploadRowId[selectedTab],
     // eslint-disable-next-line react-hooks/exhaustive-deps
     selectedQMSRowId[selectedTab],
-    selectedVersionId,
     selectedManualCfYear,
   ]);
 
@@ -1415,46 +1270,7 @@ export default function WorkspaceReports() {
               </div>
             </div>
 
-            {selectedSourceMode === "manual" && (
-              <div className="flex flex-col gap-1.5">
-                <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
-                  Dataset Version
-                </label>
-                <div className="relative min-w-[180px]">
-                  <select
-                    value={selectedVersionId}
-                    onChange={(e) => {
-                      const nextVersionId = e.target.value;
-                      setSelectedVersionId(nextVersionId);
-                      debugLog("[ManualGL][UI][VersionDropdown][Change]", {
-                        selectedDatasetVersion: (() => {
-                          const parsed = Number(nextVersionId);
-                          return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
-                        })(),
-                      });
-                    }}
-                    disabled={isLoadingVersions}
-                    className="h-9 w-full appearance-none rounded-md border border-border-input bg-bg-card pl-3 pr-9 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50"
-                  >
-                    {isLoadingVersions ? (
-                      <option value="">Loading versions…</option>
-                    ) : versions.length === 0 ? (
-                      <option value="">No versions available</option>
-                    ) : (
-                      versions.map((v) => (
-                        <option key={String(v.id || v.value)} value={String(v.id || v.value)}>
-                          {v.label || `Version ${v.value ?? v.version_number ?? v.versionNumber ?? "-"}`}
-                        </option>
-                      ))
-                    )}
-                  </select>
-                  <ChevronDown
-                    size={14}
-                    className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-text-muted"
-                  />
-                </div>
-              </div>
-            )}
+            {/* Dataset Version selector removed — single-dataset mode */}
 
             {selectedSourceMode === "manual_upload" && reportType === "Summary" && (
               isLoadingManualFiles ? (

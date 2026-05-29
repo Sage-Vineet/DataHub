@@ -272,6 +272,20 @@ async function generateReportingSnapshotsForBatch(companyId, batchId, options = 
   const now = new Date().toISOString();
   let datasetVersionId = options.datasetVersionId || null;
 
+  // Single-dataset mode: wipe all previous snapshots for this company so
+  // reports are always generated exclusively from the newly staged data.
+  const { error: snapDeleteError } = await supabase
+    .from(TABLE_SNAPSHOTS)
+    .delete()
+    .eq("company_id", companyId);
+  if (snapDeleteError) {
+    console.warn(
+      `[ManualGL][Snapshots] Failed to clear previous snapshots for company=${companyId}: ${snapDeleteError.message}`,
+    );
+  } else {
+    console.log(`[ManualGL][Snapshots] Cleared previous snapshots for company=${companyId}`);
+  }
+
   const { data: batchRow } = await supabase
     .from("manual_gl_batches")
     .select("dataset_version_id, dataset_version")

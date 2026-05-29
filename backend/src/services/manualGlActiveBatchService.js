@@ -241,6 +241,12 @@ async function resolveReportBatchId(companyId, preferredBatchId = "", options = 
         `[ManualGL][ActiveBatch] dataset_version column missing; cannot resolve dataset version ` +
         `${datasetVersion} for company ${companyId}.`,
       );
+      // When the caller explicitly requested a specific version, falling through
+      // to getActiveUploadBatch would serve a completely different version's data.
+      // Return "" so callers emit empty results rather than wrong results.
+      if (allowExplicitBatch) {
+        return "";
+      }
     } else if (error && error.code !== "PGRST116") {
       throw new Error(formatSupabaseFailure("Failed to resolve report batch by dataset version", error));
     } else {
