@@ -708,44 +708,46 @@ async function getActualFiscalYearsFromDB(companyId, batchId, fiscalCalendarExpl
  *   - Generic "connect" or "ECONNREFUSED": transient network blip.
  */
 function classifyRetryError(error) {
-  const msg   = String(error?.message || "").toLowerCase();
-  const code  = String(error?.code    || "").toLowerCase();
+  const msg = String(error?.message || "").toLowerCase();
+  const code = String(error?.code || "").toLowerCase();
   const status = Number(error?.status || 0);
 
   // Permanent failures — never retry
-  const isStatementTimeout   = code === "57014" || msg.includes("statement timeout");
+  const isStatementTimeout = code === "57014" || msg.includes("statement timeout");
   const isConnectionTerminated = msg.includes("connection terminated") ||
-                                  msg.includes("connection reset") ||
-                                  msg.includes("connection closed");
-  const isSchemaCacheFailure  = msg.includes("schema cache") ||
-                                  msg.includes("failed to parse query") ||
-                                  msg.includes("pgrst");
-  const isCloudflareError     = msg.includes("cloudflare 52") ||
-                                  msg.includes("<!doctype html") ||
-                                  msg.includes("<html") ||
-                                  (status >= 520 && status <= 529);
-  const isFetchAborted        = msg.includes("aborted") ||
-                                  msg.includes("fetch failed") ||
-                                  error?.name === "AbortError";
-  const isAuthError           = status === 401 || status === 403;
-  const isNotFound            = status === 404;
+    msg.includes("connection reset") ||
+    msg.includes("connection closed");
+  const isSchemaCacheFailure = msg.includes("schema cache") ||
+    msg.includes("failed to parse query") ||
+    msg.includes("pgrst");
+  const isCloudflareError = msg.includes("cloudflare 52") ||
+    msg.includes("<!doctype html") ||
+    msg.includes("<html") ||
+    (status >= 520 && status <= 529);
+  const isFetchAborted = msg.includes("aborted") ||
+    msg.includes("fetch failed") ||
+    error?.name === "AbortError";
+  const isAuthError = status === 401 || status === 403;
+  const isNotFound = status === 404;
 
   if (
     isStatementTimeout || isConnectionTerminated || isSchemaCacheFailure ||
-    isCloudflareError  || isFetchAborted         || isAuthError          || isNotFound
+    isCloudflareError || isFetchAborted || isAuthError || isNotFound
   ) {
-    return { retryable: false, reason: isStatementTimeout ? "statement_timeout" :
-      isConnectionTerminated ? "connection_terminated" :
-      isSchemaCacheFailure   ? "schema_cache_failure"  :
-      isCloudflareError      ? "cloudflare_error"      :
-      isFetchAborted         ? "fetch_aborted"         : "non_retryable_status" };
+    return {
+      retryable: false, reason: isStatementTimeout ? "statement_timeout" :
+        isConnectionTerminated ? "connection_terminated" :
+          isSchemaCacheFailure ? "schema_cache_failure" :
+            isCloudflareError ? "cloudflare_error" :
+              isFetchAborted ? "fetch_aborted" : "non_retryable_status"
+    };
   }
 
   // Transient failures — safe to retry
-  const isRateLimit     = status === 429 || msg.includes("rate limit");
-  const isGatewayError  = status === 503 || status === 504;
+  const isRateLimit = status === 429 || msg.includes("rate limit");
+  const isGatewayError = status === 503 || status === 504;
   const isTransientConn = msg.includes("econnrefused") || msg.includes("econnreset") ||
-                          (msg.includes("connect") && !isConnectionTerminated);
+    (msg.includes("connect") && !isConnectionTerminated);
 
   if (isRateLimit || isGatewayError || isTransientConn) {
     return { retryable: true, reason: "transient" };
@@ -2830,6 +2832,7 @@ async function replaceBalanceSheetLines({
 
   const baseLines = lines.map((line) => ({
     ...line,
+    upload_batch_id: line.upload_batch_id || line.batch_id || batchId,
     line_hash: line.line_hash || buildBalanceSheetLineHash(line),
   }));
   let { error } = await supabase
@@ -2846,6 +2849,8 @@ async function replaceBalanceSheetLines({
         source_switch_version,
         upload_session_id,
         staged_at,
+        upload_batch_id,
+        dataset_version_id,
         ...legacy
       }) => legacy,
     );
@@ -3130,6 +3135,7 @@ async function copyBalanceSheetLinesFromBatch({
       carriedForwardFromBatchId: sourceBatchId,
     },
     dataset_version_id: datasetVersionId,
+    upload_batch_id: line.upload_batch_id || line.batch_id || targetBatchId,
   }));
 
   const result = await replaceBalanceSheetLines({
@@ -3321,6 +3327,17 @@ async function queryStagedTransactions(companyId, rawFilters = {}) {
     });
     if (resolvedBatchFromDatasetVersion) {
       filters.batchId = resolvedBatchFromDatasetVersion;
+    } else {
+      // The batch for this dataset version could not be found (version never
+      // existed or migration 027 hasn't run).  Return empty rows rather than
+      // falling through to the integer `dataset_version` column path (that
+      // column does not exist on the transactions table) or accidentally
+      // reading a different version's transactions.
+      console.warn(
+        `[ManualGL][queryStagedTransactions] Cannot resolve batchId for ` +
+        `dataset_version=${filters.datasetVersion} company=${companyId}; returning empty rows.`,
+      );
+      return { filters, rows: [] };
     }
   }
 
@@ -7489,12 +7506,23 @@ async function getStageFilterOptions(companyId, filters = {}) {
 }
 
 async function loadBatchBalanceSheetLines(companyId, batchId, sheetType) {
-  const { data, error } = await supabase
+  let { data, error } = await supabase
     .from(TABLES.balanceSheetLines)
     .select("*")
     .eq("company_id", companyId)
-    .eq("batch_id", batchId)
+    .eq("upload_batch_id", batchId)
     .eq("sheet_type", sheetType);
+
+  if (error && isMissingColumnError(error, "upload_batch_id")) {
+    const legacy = await supabase
+      .from(TABLES.balanceSheetLines)
+      .select("*")
+      .eq("company_id", companyId)
+      .eq("batch_id", batchId)
+      .eq("sheet_type", sheetType);
+    data = legacy.data;
+    error = legacy.error;
+  }
 
   if (error) {
     throw new Error(`Failed to load ${sheetType} balance sheet lines: ${error.message}`);
@@ -8635,18 +8663,10 @@ async function getReportPeriodDates(companyId, datasetVersionId) {
     .eq("dataset_version_id", datasetVersionId)
     .order("txn_date", { ascending: true });
 
+  // No fallback to a company-wide scan: that would mix transactions from every
+  // uploaded version and produce wrong date ranges for historical reports.
   if (error || !data?.length) {
-    const { data: fallbackData } = await supabase
-      .from("manual_gl_staged_transactions")
-      .select("txn_date")
-      .eq("company_id", companyId)
-      .order("txn_date", { ascending: true });
-
-    if (!fallbackData?.length) return { startDate: null, endDate: null };
-    return {
-      startDate: fallbackData[0].txn_date,
-      endDate: fallbackData[fallbackData.length - 1].txn_date,
-    };
+    return { startDate: null, endDate: null };
   }
 
   return {

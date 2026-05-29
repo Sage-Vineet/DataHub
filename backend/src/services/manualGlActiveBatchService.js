@@ -257,6 +257,13 @@ async function resolveReportBatchId(companyId, preferredBatchId = "", options = 
       console.warn(
         `[ManualGL][ActiveBatch] No batch found for dataset_version=${datasetVersion} company=${companyId}.`,
       );
+      // When the caller explicitly requested a specific version (allowExplicitBatch=true),
+      // returning the active batch's ID would silently serve a different version's data —
+      // cross-version contamination.  Return "" so the caller falls through to empty
+      // results rather than wrong results.
+      if (allowExplicitBatch) {
+        return "";
+      }
     }
   }
 

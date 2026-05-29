@@ -99,8 +99,31 @@ async function upsertReportingSnapshot({
     reportType,
     fiscalYear: normalizedFiscalYear,
   });
+
   if (existing?.id) {
-    return existing;
+    const existingDv = Number(existing.dataset_version || 0);
+    const needsVersionTag =
+      Number.isInteger(parsedDatasetVersion) && parsedDatasetVersion > 0 &&
+      existingDv !== parsedDatasetVersion;
+
+    if (!needsVersionTag) {
+      return existing;
+    }
+
+    // The snapshot exists but was written before dataset_version was populated
+    // (or was written with the wrong version number).  Back-fill it so that
+    // getSnapshotForDatasetVersion can find it via the integer version column.
+    const { data: tagged, error: tagError } = await supabase
+      .from(TABLE_SNAPSHOTS)
+      .update({ dataset_version: parsedDatasetVersion, updated_at: now })
+      .eq("id", existing.id)
+      .select("*")
+      .maybeSingle();
+
+    if (!tagError && tagged) {
+      return mapSnapshotRow(tagged);
+    }
+    // Fall through to upsert if the back-fill update fails.
   }
 
   const runUpsert = async (rowPayload) =>

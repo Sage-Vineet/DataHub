@@ -229,15 +229,11 @@ async function tryLoadActiveSnapshot(companyId, reportType, filters = {}) {
       }
     }
 
-    if (!snapshot) {
-      const activeResult = await getSnapshotForActiveBatch({
-        companyId,
-        reportType,
-        fiscalYear,
-      });
-      snapshot = activeResult.snapshot;
-      activeBatchId = activeBatchId || activeResult.activeBatchId || null;
-    }
+    // Intentionally no fallback to getSnapshotForActiveBatch here.
+    // That fallback caused cross-version contamination: when version N had no
+    // snapshot yet, the currently-active batch's snapshot (a different version)
+    // was returned.  The staged-data path below queryStagedTransactions is
+    // always scoped to the resolved batchId, so it is safe to fall through.
 
     if (!snapshot?.snapshot_payload) {
       return { payload: null, activeBatchId };
