@@ -45,7 +45,65 @@ const QB_ONE_BANK_ACTIVITY_ENDPOINT = `${API_BASE_URL}/qb-one-bank-activity`;
 const EXTRACT_BANK_PDF_RECORDS_ENDPOINT = `${API_BASE_URL}/extract-bank-pdf-records`;
 const QMS_BANK_DATA_ENDPOINT = `${API_BASE_URL}/manual-report-uploads/qms-bank-data`;
 const MANUAL_BANK_DATA_ENDPOINT = `${API_BASE_URL}/manual-upload/bank-data`;
+const BS_BANK_BALANCES_ENDPOINT = `${API_BASE_URL}/manual-report-uploads/bs-bank-balances`;
 const RECONCILIATION_STORAGE_PREFIX = "workspace-reconciliation";
+
+// ── BS bank-balance helpers (module-level — no React context needed) ────────
+const _bsNormName = (name) =>
+  String(name || "").trim().toLowerCase().replace(/[^a-z0-9]/g, " ").replace(/\s+/g, " ").trim();
+const _bsLastFour = (name) => {
+  const m = String(name || "").match(/\b(\d{4})\b/);
+  return m ? m[1] : "";
+};
+// Returns the matched {name, accountNumber, amount} entry or null
+function matchBsBank(queryName, bankAccounts) {
+  if (!bankAccounts?.length || !queryName) return null;
+  const qFour = _bsLastFour(queryName);
+  const qNorm = _bsNormName(queryName);
+  if (qFour) {
+    const byFour = bankAccounts.filter((b) => b.accountNumber === qFour);
+    if (byFour.length === 1) return byFour[0];
+    if (byFour.length > 1) {
+      // disambiguate by name among candidates sharing the same account number
+      const nameHit = byFour.find(
+        (b) =>
+          _bsNormName(b.name) === qNorm ||
+          qNorm.includes(_bsNormName(b.name)) ||
+          _bsNormName(b.name).includes(qNorm),
+      );
+      if (nameHit) return nameHit;
+      const qW = qNorm.split(" ").filter((w) => w.length > 2);
+      if (qW.length) {
+        let best = 0, bestMatch = null;
+        for (const b of byFour) {
+          const bW = _bsNormName(b.name).split(" ").filter((w) => w.length > 2);
+          const overlap = qW.filter((w) => bW.includes(w)).length;
+          const score = overlap / Math.max(qW.length, bW.length, 1);
+          if (score > best) { best = score; bestMatch = b; }
+        }
+        if (bestMatch && best > 0) return bestMatch;
+      }
+    }
+  }
+  const exact = bankAccounts.find((b) => _bsNormName(b.name) === qNorm);
+  if (exact) return exact;
+  const contains = bankAccounts.find(
+    (b) => _bsNormName(b.name).includes(qNorm) || qNorm.includes(_bsNormName(b.name)),
+  );
+  if (contains) return contains;
+  const qWords = qNorm.split(" ").filter((w) => w.length > 2);
+  if (qWords.length) {
+    let best = 0, bestMatch = null;
+    for (const b of bankAccounts) {
+      const bWords = _bsNormName(b.name).split(" ").filter((w) => w.length > 2);
+      const overlap = qWords.filter((w) => bWords.includes(w)).length;
+      const score = overlap / Math.max(qWords.length, bWords.length, 1);
+      if (score > best && score > 0.3) { best = score; bestMatch = b; }
+    }
+    if (bestMatch) return bestMatch;
+  }
+  return null;
+}
 
 const getErrMsg = (e) => (e instanceof Error ? e.message : String(e));
 const getWorkspaceStorageKey = (clientId) =>
@@ -307,6 +365,7 @@ export default function WorkspaceReconciliation() {
       status: "idle",
       message: "",
     });
+  const [bsBankBalances, setBsBankBalances] = useState(null);
   const [reportSources, setReportSources] = useState([]);
   const [selectedReportSource, setSelectedReportSourceState] = useState(
     normalizeReportSourceKey(
@@ -664,6 +723,38 @@ export default function WorkspaceReconciliation() {
     }
   }, [clientId, selectedReportSource, getHeaders]);
 
+  // Fetches BS bank balances for manual/QMS sources and stores in bsBankBalances state.
+  // Silently no-ops for QB Online (no manual BS files) and on errors (show "-" fallback).
+  const loadBsBankBalances = useCallback(async (sourceKey) => {
+    if (!clientId) return;
+    console.log(`[BsBankBalances] Fetching for clientId=${clientId} source=${sourceKey}`);
+    try {
+      const params = new URLSearchParams();
+      params.append("clientId", clientId);
+      if (sourceKey) params.append("source", sourceKey);
+      const resp = await fetch(`${BS_BANK_BALANCES_ENDPOINT}?${params.toString()}`, {
+        cache: "no-store",
+        headers: getHeaders(),
+      });
+      if (!resp.ok) {
+        console.warn(`[BsBankBalances] HTTP ${resp.status} from backend`);
+        setBsBankBalances(null);
+        return;
+      }
+      const data = await resp.json();
+      console.log(`[BsBankBalances] Response: source=${data.source} year=${data.year} accounts=${data.bankAccounts?.length ?? 0}`);
+      if (data?.success && data.bankAccounts?.length > 0) {
+        setBsBankBalances(data);
+      } else {
+        console.log(`[BsBankBalances] No bank accounts returned (source="${data.source}"): ${data.message || ""}`);
+        setBsBankBalances(null);
+      }
+    } catch (e) {
+      console.error(`[BsBankBalances] Fetch error: ${e?.message || e}`);
+      setBsBankBalances(null);
+    }
+  }, [clientId, getHeaders]);
+
   // Unified bank-data loader — dispatches ONLY based on server-confirmed source.
   // isSourceConfirmedByServer prevents stale storedState from triggering the wrong endpoint.
   // Never short-circuit on stored data — stored data may be from a different source.
@@ -673,15 +764,18 @@ export default function WorkspaceReconciliation() {
     if (selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD) {
       // Manual Upload → dedicated endpoint reading "Manual Upload Source" folder only
       void loadManualBankData();
+      void loadBsBankBalances("manual_upload_excel_pdf");
     } else if (selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_GL) {
       // Manual GL → PDF/Excel extraction endpoint
       void loadExtractedBankPdfData();
+      void loadBsBankBalances("manual_upload_excel_pdf");
     } else if (selectedReportSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) {
       // QuickBooks Manual ONLY → QMS endpoint reading "Quickbooks Manual Source" folder only
       void loadQMSBankData();
+      void loadBsBankBalances("quickbooks_manual");
     }
     // QUICKBOOKS (QB Online) uses its own separate data flow — no action here
-  }, [clientId, selectedReportSource, isSourceConfirmedByServer, loadExtractedBankPdfData, loadManualBankData, loadQMSBankData]);
+  }, [clientId, selectedReportSource, isSourceConfirmedByServer, loadExtractedBankPdfData, loadManualBankData, loadQMSBankData, loadBsBankBalances]);
 
   // Drive selectedReportSource from DataSourceContext.activeSource — the single source of truth
   // that the header badge also reads. This eliminates the split-brain between the badge and the
@@ -700,6 +794,7 @@ export default function WorkspaceReconciliation() {
     setExtractedBankPdfData(null);
     setExtractedBankPdfFetchStatus({ status: "idle", message: "" });
     setExtractedBankPdfError("");
+    setBsBankBalances(null);
     setIsSourceConfirmedByServer(true);
   }, [contextActiveSource, contextSourceRecords]);
 
@@ -711,6 +806,7 @@ export default function WorkspaceReconciliation() {
     setExtractedBankPdfData(null);
     setExtractedBankPdfFetchStatus({ status: "idle", message: "" });
     setExtractedBankPdfError("");
+    setBsBankBalances(null);
     setQbBankActivity(null);
     setBankActivityFetchStatus({ status: "idle", message: "" });
     setBankActivityError("");
@@ -1509,9 +1605,35 @@ export default function WorkspaceReconciliation() {
     const bankLabel = label || bank?.bankName || "Bank Account";
     const colCount = pdfMonths.length + 2;
 
+    // BS bank balance for this specific bank
+    const bsMatch = matchBsBank(bank?.bankName, bsBankBalances?.bankAccounts);
+    const bsBalance = bsMatch != null ? bsMatch.amount : null;
+    // Only the December of the BS year gets the perBalanceSheet value (year-end point-in-time)
+    const bsYearEndKey = bsBankBalances?.year != null ? `${bsBankBalances.year}-12` : null;
+
+    if (bank?.bankName) {
+      if (bsMatch) {
+        console.log(`[BsMatch] ${JSON.stringify({
+          selectedBank: bank.bankName,
+          detectedYear: bsBankBalances?.year,
+          balanceSheetSource: bsBankBalances?.source,
+          matchedBalanceSheetFile: bsBankBalances?.fileName,
+          matchedAccount: bsMatch.name,
+          extractedAmount: bsMatch.amount,
+          perBalanceSheet: bsBalance,
+        })}`);
+      } else {
+        console.warn(
+          `[BsMatch] No matching bank account found in Balance Sheet for "${bank.bankName}".`,
+          `Available: ${bsBankBalances?.bankAccounts?.map((b) => b.name).join(", ") || "none (bsBankBalances is null)"}`,
+        );
+      }
+    }
+
     // Build rows with all fields, compute derived values
     const baseRows = pdfMonths.map((monthKey) => {
       const m = monthMap[monthKey];
+      const perBalanceSheet = bsBalance != null && monthKey === bsYearEndKey ? bsBalance : null;
       return {
         month: monthKey,
         startingBalance: m?.startingBalance ?? 0,
@@ -1520,7 +1642,7 @@ export default function WorkspaceReconciliation() {
         endingBalance: m?.endingBalance ?? 0,
         intercompanyDeposits: 0,
         intercompanyWithdraws: 0,
-        perBalanceSheet: 0,
+        perBalanceSheet,
         outstandingChecks: 0,
       };
     });
@@ -1528,11 +1650,18 @@ export default function WorkspaceReconciliation() {
     const rows = baseRows.map((r, i) => {
       const footingCheck = r.endingBalance - (r.startingBalance + r.deposits - r.withdrawals);
       const priorMonthCheck = i === 0 ? 0 : baseRows[i - 1].endingBalance - r.startingBalance;
-      return { ...r, footingCheck, priorMonthCheck, variance: 0, unreconciledDollar: 0, unreconciledPct: 0 };
+      const outstandingChecks = 0;
+      const variance = r.perBalanceSheet != null ? r.endingBalance - r.perBalanceSheet : null;
+      const unreconciledDollar = variance != null ? variance - outstandingChecks : null;
+      const unreconciledPct =
+        variance != null && r.perBalanceSheet !== 0
+          ? (unreconciledDollar / r.perBalanceSheet) * 100
+          : null;
+      return { ...r, footingCheck, priorMonthCheck, variance, unreconciledDollar, unreconciledPct };
     });
 
     const ttmSlice = rows.slice(-12);
-    const ttm = ttmSlice.reduce(
+    const ttmBase = ttmSlice.reduce(
       (acc, r, i) => ({
         startingBalance: i === 0 ? r.startingBalance : acc.startingBalance,
         deposits: acc.deposits + r.deposits,
@@ -1542,14 +1671,24 @@ export default function WorkspaceReconciliation() {
         intercompanyWithdraws: 0,
         footingCheck: acc.footingCheck + r.footingCheck,
         priorMonthCheck: acc.priorMonthCheck + r.priorMonthCheck,
-        perBalanceSheet: 0,
-        variance: 0,
+        perBalanceSheet: null,
+        variance: null,
         outstandingChecks: 0,
-        unreconciledDollar: 0,
-        unreconciledPct: 0,
+        unreconciledDollar: null,
+        unreconciledPct: null,
       }),
       buildEmptyTTM(),
     );
+
+    // Override TTM perBalanceSheet with BS balance (point-in-time, not summed across months)
+    const ttm = { ...ttmBase };
+    if (bsBalance != null) {
+      ttm.perBalanceSheet = bsBalance;
+      ttm.variance = ttm.endingBalance - bsBalance;
+      ttm.unreconciledDollar = ttm.variance - ttm.outstandingChecks;
+      ttm.unreconciledPct =
+        bsBalance !== 0 ? (ttm.unreconciledDollar / bsBalance) * 100 : null;
+    }
 
     const v = (f) => [...rows.map((r) => fmtAmt(r[f])), fmtAmt(ttm[f])];
     const va = (f) => [...rows.map((r) => fmtAcct(r[f])), fmtAcct(ttm[f])];

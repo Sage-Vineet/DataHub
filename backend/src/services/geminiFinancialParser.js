@@ -390,4 +390,116 @@ async function parsePdfWithGemini(buffer, fileName = "") {
   return normalizeGeminiResult(raw);
 }
 
-module.exports = { parsePdfWithGemini };
+// ---------------------------------------------------------------------------
+// Text-only Gemini call (for Excel/CSV content)
+// ---------------------------------------------------------------------------
+
+async function callGeminiText(fullPrompt) {
+  if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY not set");
+  let lastError = null;
+
+  for (const modelName of GEMINI_MODELS) {
+    try {
+      const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+      const model = genAI.getGenerativeModel({ model: modelName });
+      const result = await model.generateContent([{ text: fullPrompt }]);
+      return result.response.text();
+    } catch (err) {
+      lastError = err;
+      console.warn(`[GeminiParser] Text model ${modelName} failed: ${err?.message || err}`);
+    }
+  }
+  const msg = String(lastError?.message || "");
+  if (msg.includes("429") || msg.toLowerCase().includes("quota")) {
+    throw new Error("Gemini API quota exceeded — enable billing at ai.google.dev or wait for daily reset");
+  }
+  throw new Error(`Gemini text extraction failed: ${msg || "unknown error"}`);
+}
+
+// ---------------------------------------------------------------------------
+// Balance Sheet — bank-account-only extraction
+// ---------------------------------------------------------------------------
+
+const BS_BANK_BALANCES_PROMPT = `You are a CPA and financial statement analyst.
+
+Read the entire Balance Sheet.
+
+Find EVERY bank account listed under Assets. Do NOT stop after the first one.
+
+Return ONLY leaf-level bank accounts.
+
+Ignore:
+
+Total Assets
+Total Current Assets
+Total Cash
+Total Bank Accounts
+Subtotals
+Headers
+
+If the Balance Sheet has 3 bank accounts, return all 3. Example with multiple accounts:
+
+{
+  "year": 2024,
+  "bankAccounts": [
+    {
+      "name": "Business Checking",
+      "accountNumber": "1234",
+      "amount": 27143.14
+    },
+    {
+      "name": "Money Market Account",
+      "accountNumber": "5678",
+      "amount": 494828.68
+    },
+    {
+      "name": "Savings Account",
+      "accountNumber": "9012",
+      "amount": 21548.20
+    }
+  ]
+}
+
+Rules:
+
+1. Extract ALL bank accounts found — not just the first one.
+2. Preserve exact account name from the Balance Sheet.
+3. Extract account number if present (typically last 4 digits shown in parentheses or after a dash). If no number is visible, use "".
+4. Extract balance amount as a plain number.
+5. Ignore totals, subtotals, and summary rows.
+6. Ignore liabilities and equity sections.
+7. Return latest year only.
+
+Return ONLY the raw JSON object. No markdown. No code fences. No explanation.`;
+
+function _normalizeBsBalancesRaw(raw) {
+  if (!raw || typeof raw !== "object") throw new Error("Gemini returned non-object for BS bank balances");
+  return {
+    year: parseInt(raw.year, 10) || null,
+    bankAccounts: Array.isArray(raw.bankAccounts)
+      ? raw.bankAccounts
+          .map((acc) => ({
+            name: String(acc.name || "").trim(),
+            accountNumber: String(acc.accountNumber || "").trim(),
+            amount: parseFloat(acc.amount) || 0,
+          }))
+          .filter((acc) => acc.name)
+      : [],
+  };
+}
+
+async function extractBsBankBalancesWithGemini(buffer, fileName = "") {
+  console.log(`[GeminiParser] Extracting BS bank balances from "${fileName}"`);
+  const base64Pdf = Buffer.from(buffer).toString("base64");
+  const responseText = await callGemini(base64Pdf, BS_BANK_BALANCES_PROMPT);
+  return _normalizeBsBalancesRaw(parseJsonFromText(responseText));
+}
+
+// For Excel/CSV content: convert the sheet text and send to Gemini as a text prompt
+async function extractBsBankBalancesFromExcelText(csvText) {
+  const fullPrompt = `${BS_BANK_BALANCES_PROMPT}\n\nHere is the Balance Sheet in CSV format:\n\n${csvText}`;
+  const responseText = await callGeminiText(fullPrompt);
+  return _normalizeBsBalancesRaw(parseJsonFromText(responseText));
+}
+
+module.exports = { parsePdfWithGemini, extractBsBankBalancesWithGemini, extractBsBankBalancesFromExcelText };

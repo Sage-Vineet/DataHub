@@ -10,7 +10,7 @@ import {
   getManualGeneratedCashFlow,
 } from "../lib/api";
 import { normalizeAccountingMethod } from "../lib/report-filters";
-import { parseSummaryReport } from "../lib/report-parsers";
+import { parseCashFlowSummaryReport } from "../lib/report-parsers";
 
 // ── Generated-CF → renderer-row transform ────────────────────────────────────
 // Converts the flat {operatingActivities, investingActivities, ...} shape
@@ -189,7 +189,7 @@ async function fetchSinglePeriodCashflow(startDate, endDate, accountingMethod, s
         ? { accounting_method: normalizeAccountingMethod(accountingMethod) }
         : {}),
     });
-    return parseSummaryReport(payload);
+    return parseCashFlowSummaryReport(payload);
   } catch (err) {
     console.warn(
       `⚠️ Failed to fetch Cash Flow for ${startDate} - ${endDate}:`,
