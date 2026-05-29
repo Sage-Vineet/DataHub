@@ -1167,7 +1167,7 @@ export default function WorkspaceUsers() {
                       {(allPageSelected || someSelected) && <Check size={10} className="text-white" strokeWidth={3} />}
                     </button>
                   </th>
-                  {['Name', 'Company', 'Email', 'Phone No.', 'Role', 'Status', 'Actions'].map((header) => (
+                  {['Name', 'Email', 'Phone No.', 'Role', 'Status', 'Actions'].map((header) => (
                     <th key={header} className="px-3 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wide whitespace-nowrap">
                       {header}
                     </th>
@@ -1177,13 +1177,13 @@ export default function WorkspaceUsers() {
               <tbody className="divide-y divide-gray-50">
                 {loading ? (
                   <tr>
-                    <td colSpan={8} className="py-16 text-center text-sm text-gray-400">
+                    <td colSpan={7} className="py-16 text-center text-sm text-gray-400">
                       Loading users...
                     </td>
                   </tr>
                 ) : paginated.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="py-16 text-center">
+                    <td colSpan={7} className="py-16 text-center">
                       <UsersIcon size={36} className="mx-auto text-gray-200 mb-3" />
                       <p className="text-sm font-semibold text-gray-400">No users found</p>
                       {hasActiveFilter && <button onClick={resetFilters} className="mt-2 text-xs text-[#8BC53D] hover:underline">Clear filters</button>}
@@ -1205,9 +1205,6 @@ export default function WorkspaceUsers() {
                         <Avatar user={user} size={8} />
                         <span className="font-semibold text-[#05164D] whitespace-nowrap">{user.name}</span>
                       </div>
-                    </td>
-                    <td className="px-3 py-3.5">
-                      <span className="text-gray-600 whitespace-nowrap">{user.company}</span>
                     </td>
                     <td className="px-3 py-3.5">
                       <span className="text-gray-500 text-xs">{user.email}</span>

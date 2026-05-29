@@ -327,6 +327,20 @@ export function updateRequestNarrative(requestId, payload) {
   return request(`/requests/${requestId}/narrative`, { method: 'PATCH', body: payload }).then(unwrapPayload);
 }
 
+export function getRequestNarrative(requestId) {
+  // Returns { content, author_name, author_role, updated_at } or a plain string (backward compat).
+  return request(`/requests/${requestId}/narrative/file`).then((res) => {
+    if (!res) return { content: '', author_name: null, author_role: null, updated_at: null };
+    if (typeof res === 'string') return { content: res, author_name: null, author_role: null, updated_at: null };
+    return {
+      content:     res.content     || '',
+      author_name: res.author_name || null,
+      author_role: res.author_role || null,
+      updated_at:  res.updated_at  || null,
+    };
+  }).catch(() => ({ content: '', author_name: null, author_role: null, updated_at: null }));
+}
+
 export function listRequestDocuments(requestId) {
   return request(`/requests/${requestId}/documents`).then(ensureArray);
 }

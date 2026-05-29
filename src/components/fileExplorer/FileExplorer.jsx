@@ -1667,6 +1667,7 @@ function DocumentActivityModal({ document: activityDocument, onClose }) {
   const [activity, setActivity] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [refreshTick, setRefreshTick] = useState(0);
 
   useEffect(() => {
     if (!activityDocument?.id) return;
@@ -1686,7 +1687,7 @@ function DocumentActivityModal({ document: activityDocument, onClose }) {
     return () => {
       cancelled = true;
     };
-  }, [activityDocument?.id]);
+  }, [activityDocument?.id, refreshTick]);
 
   if (!activityDocument) return null;
 
@@ -1701,9 +1702,19 @@ function DocumentActivityModal({ document: activityDocument, onClose }) {
             <p className="text-xs uppercase tracking-wide text-[#A5A5A5]">Document Activity</p>
             <h3 className="truncate text-xl font-bold text-[#050505]">{activityDocument.name}</h3>
           </div>
-          <button onClick={onClose} className="rounded-xl p-2 text-[#6D6E71] hover:bg-gray-100">
-            <X size={18} />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setRefreshTick((t) => t + 1)}
+              disabled={loading}
+              className="rounded-xl p-2 text-[#6D6E71] transition-colors hover:bg-gray-100 disabled:opacity-40"
+              title="Refresh activity"
+            >
+              <RotateCcw size={15} className={loading ? 'animate-spin' : ''} />
+            </button>
+            <button onClick={onClose} className="rounded-xl p-2 text-[#6D6E71] hover:bg-gray-100">
+              <X size={18} />
+            </button>
+          </div>
         </div>
         <div className="p-5">
           {loading ? (
@@ -1712,13 +1723,24 @@ function DocumentActivityModal({ document: activityDocument, onClose }) {
               Loading activity...
             </div>
           ) : error ? (
-            <div className="rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-[#C62026]">{error}</div>
+            <div className="rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-[#C62026]">
+              {error}
+              <button
+                onClick={() => setRefreshTick((t) => t + 1)}
+                className="ml-3 font-semibold underline"
+              >
+                Retry
+              </button>
+            </div>
           ) : (
             <div className="grid gap-4 md:grid-cols-2">
               <ActivityList title="Viewers" icon={Eye} people={viewers} emptyText="No users have viewed this document yet." />
               <ActivityList title="Downloaders" icon={Download} people={downloaders} emptyText="No users have downloaded this document yet." />
             </div>
           )}
+          <p className="mt-3 text-right text-[11px] text-[#A5A5A5]">
+            {viewers.length + downloaders.length} unique user{viewers.length + downloaders.length !== 1 ? 's' : ''} · {activity.length} total events
+          </p>
         </div>
       </div>
     </div>
@@ -2355,6 +2377,39 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
       : { id: currentUserId, groups: currentUserGroupIds }
   ), [currentUserGroupIds, currentUserId, role]);
 
+  // Ancestor folders that must be visible for navigation because they contain
+  // a descendant folder directly accessible by the current user.
+  const navigableAncestorIds = useMemo(() => {
+    if (role === 'broker' || role === 'client' || !currentUser) return new Set();
+
+    const directlyAccessible = new Set();
+    Object.entries(folderAccess).forEach(([folderId, entries]) => {
+      const hasAccess = entries.some(entry => {
+        const subjectId = entry.subjectId || entry.id;
+        return (
+          (entry.type === 'user' && subjectId === currentUser.id) ||
+          (entry.type === 'group' && currentUser.groups?.includes(subjectId))
+        ) && entry.permissions?.read;
+      });
+      if (hasAccess) directlyAccessible.add(folderId);
+    });
+
+    const ancestors = new Set();
+    directlyAccessible.forEach(folderId => {
+      const path = getPathTo(tree, folderId);
+      if (path && path.length > 1) {
+        for (let i = 0; i < path.length - 1; i++) {
+          const ancestorId = path[i];
+          if (ancestorId !== 'root' && !directlyAccessible.has(ancestorId)) {
+            ancestors.add(ancestorId);
+          }
+        }
+      }
+    });
+
+    return ancestors;
+  }, [folderAccess, role, currentUser, tree]);
+
   const getFolderPermissions = useCallback((folderId) => {
     if (role === 'broker') return { read: true, write: true, download: true };
     if (role === 'client') return { read: true, write: true, download: true };
@@ -2382,8 +2437,12 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
         perms.download = perms.download || entry.permissions.download;
       }
     });
+    // If no direct/inherited access, allow navigation if a descendant is accessible
+    if (!perms.read && navigableAncestorIds.has(folderId)) {
+      return { read: true, write: false, download: false };
+    }
     return perms;
-  }, [folderAccess, role, currentUser, tree]);
+  }, [folderAccess, role, currentUser, tree, navigableAncestorIds]);
 
   const getSharedMeta = useCallback((folderId) => {
     const entries = folderAccess[folderId] || [];
@@ -2507,7 +2566,9 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
 
   const recordActivity = useCallback((documentId, activityType) => {
     if (role === 'broker' || !documentId) return;
-    recordDocumentActivity(documentId, activityType).catch(() => {});
+    recordDocumentActivity(documentId, activityType).catch((err) => {
+      console.warn('[DocumentActivity] failed to record', activityType, 'for doc', documentId, '-', err?.message || err);
+    });
   }, [role]);
 
   const previewFile = useCallback((item) => {

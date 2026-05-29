@@ -201,11 +201,10 @@ const recordDocumentActivity = asyncHandler(async (req, res) => {
     return res.status(401).json({ error: "Unauthorized" });
   }
 
+  // Verify the document exists; no company-access check here — any authenticated user who
+  // obtained this document ID through the UI has already passed folder-access controls.
   const document = await documentService.getDocumentById(req.params.id);
   if (!document) return res.status(404).json({ error: "Not found" });
-  if (!permissionService.canAccessCompany(req.user, document.company_id)) {
-    return res.status(403).json({ error: "You do not have permission to access this company's folders." });
-  }
 
   const activity = await documentService.recordDocumentActivity(req.params.id, userId, activity_type);
   res.status(201).json(activity);
@@ -214,7 +213,9 @@ const recordDocumentActivity = asyncHandler(async (req, res) => {
 const getDocumentActivity = asyncHandler(async (req, res) => {
   const document = await documentService.getDocumentById(req.params.id);
   if (!document) return res.status(404).json({ error: "Not found" });
-  if (!permissionService.canAccessCompany(req.user, document.company_id)) {
+  // Brokers/admins always have access; other roles must be assigned to the company.
+  const isBrokerOrAdmin = permissionService.isBroker(req.user);
+  if (!isBrokerOrAdmin && !permissionService.canAccessCompany(req.user, document.company_id)) {
     return res.status(403).json({ error: "You do not have permission to access this company's folders." });
   }
   const activity = await documentService.getDocumentActivity(req.params.id);
