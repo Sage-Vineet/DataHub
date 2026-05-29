@@ -251,16 +251,20 @@ const updateNarrative = asyncHandler(async (req, res) => {
 
 const getNarrativeFile = asyncHandler(async (req, res) => {
   const current = await requestService.getRequestById(req.params.id);
-  if (!current) return res.status(404).send("Not found");
+  if (!current) return res.status(404).json({ error: "Not found" });
   if (!permissionService.canAccessRequest(req.user, current)) {
     return res.status(403).json({ error: "Access denied." });
   }
 
   const data = await requestService.getNarrative(req.params.id);
-  if (!data) return res.status(404).send("Not found");
-  
-  res.setHeader("Content-Type", "text/plain; charset=utf-8");
-  res.send(data.content || "");
+  // Return JSON so the frontend request() helper can parse it correctly.
+  // Includes author metadata so the UI can show who wrote the narrative.
+  res.json({
+    content:     data?.content     || "",
+    author_name: data?.author_name || null,
+    author_role: data?.author_role || null,
+    updated_at:  data?.updated_at  || null,
+  });
 });
 
 module.exports = {

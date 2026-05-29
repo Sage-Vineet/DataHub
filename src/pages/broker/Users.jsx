@@ -230,7 +230,7 @@ function UserFormModal({ initial, companies, groups, onCompanyChange, onSave, on
   const [companiesSearchQuery, setCompaniesSearchQuery] = useState('');
   const [companiesDropdownOpen, setCompaniesDropdownOpen] = useState(false);
   const companiesDropdownRef = useRef(null);
-  
+
   const [localError, setLocalError] = useState('');
   const setField = (patch) => { setForm((current) => ({ ...current, ...patch })); setLocalError(''); };
 
@@ -288,7 +288,7 @@ function UserFormModal({ initial, companies, groups, onCompanyChange, onSave, on
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-white/30 backdrop-blur-sm" onClick={onClose} />
+      <div className="absolute inset-0 bg-white/30 backdrop-blur-sm" />
       <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-2xl z-10 animate-fadeIn max-h-[88vh] overflow-hidden flex flex-col">
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
           <div>
@@ -361,13 +361,11 @@ function UserFormModal({ initial, companies, groups, onCompanyChange, onSave, on
                                 companyId: nextIds.some(id => String(id) === String(form.companyId)) ? form.companyId : (nextIds[0] || ''),
                               });
                             }}
-                            className={`w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm text-left transition-colors ${
-                              isSelected ? 'bg-[#E6F3D3] text-[#8BC53D]' : 'text-gray-700 hover:bg-gray-100'
-                            }`}
+                            className={`w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm text-left transition-colors ${isSelected ? 'bg-[#E6F3D3] text-[#8BC53D]' : 'text-gray-700 hover:bg-gray-100'
+                              }`}
                           >
-                            <div className={`w-4 h-4 rounded border flex items-center justify-center transition-all ${
-                              isSelected ? 'bg-[#8BC53D] border-[#8BC53D]' : 'border-gray-300'
-                            }`}>
+                            <div className={`w-4 h-4 rounded border flex items-center justify-center transition-all ${isSelected ? 'bg-[#8BC53D] border-[#8BC53D]' : 'border-gray-300'
+                              }`}>
                               {isSelected && <Check size={12} className="text-white" />}
                             </div>
                             <span className="flex-1">{company.name}</span>
@@ -451,9 +449,8 @@ function UserFormModal({ initial, companies, groups, onCompanyChange, onSave, on
                           : [...form.groupIds, group.id],
                       });
                     }}
-                    className={`px-3 py-1.5 rounded-full border text-xs font-semibold transition-all ${
-                      active ? 'bg-[#05164D] text-white border-[#05164D]' : 'bg-gray-50 text-gray-500 border-gray-200 hover:border-gray-300'
-                    }`}
+                    className={`px-3 py-1.5 rounded-full border text-xs font-semibold transition-all ${active ? 'bg-[#05164D] text-white border-[#05164D]' : 'bg-gray-50 text-gray-500 border-gray-200 hover:border-gray-300'
+                      }`}
                   >
                     {group.name || group.id}
                   </button>
@@ -952,8 +949,26 @@ export default function BrokerUsers() {
                       <span className="font-semibold text-[#05164D] whitespace-nowrap">{user.name}</span>
                     </div>
                   </td>
-                  <td className="px-3 py-3.5">
-                    <span className="text-gray-600 whitespace-nowrap">{user.company}</span>
+                  <td className="px-3 py-3.5 max-w-[180px]">
+                    {user.assignedCompanies && user.assignedCompanies.length > 0 ? (
+                      <div className="flex flex-wrap gap-1">
+                        {user.assignedCompanies.slice(0, 2).map((c) => (
+                          <span key={c.id} className="inline-block max-w-[120px] truncate rounded-full bg-[#E6F3D3] px-2 py-0.5 text-[11px] font-semibold text-[#476E2C]" title={c.name}>
+                            {c.name}
+                          </span>
+                        ))}
+                        {user.assignedCompanies.length > 2 && (
+                          <span
+                            className="inline-block rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-semibold text-gray-500 cursor-default"
+                            title={user.assignedCompanies.slice(2).map((c) => c.name).join(', ')}
+                          >
+                            +{user.assignedCompanies.length - 2} more
+                          </span>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="text-gray-400 text-xs">Unassigned</span>
+                    )}
                   </td>
                   <td className="px-3 py-3.5">
                     <span className="text-gray-500 text-xs">{user.email}</span>
