@@ -9,7 +9,7 @@ import {
   ChevronDown,
 } from "lucide-react";
 import { cn, formatCurrency } from "../../../lib/utils";
-import { getCompanyRequest, getReportSources, setSelectedReportSource as apiSetSelectedReportSource, getAllManualUploadedReports, getAllQMSUploadedReports, syncQMSUploadSource } from "../../../lib/api";
+import { getCompanyRequest, getReportSources, setSelectedReportSource as apiSetSelectedReportSource, getAllManualUploadedReports, getAllQMSUploadedReports, syncQMSUploadSource, getManualStageFilterOptions } from "../../../lib/api";
 import {
   getEbitdaData,
   extractEbitdaFromManualPLRows,
