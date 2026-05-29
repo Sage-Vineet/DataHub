@@ -708,44 +708,46 @@ async function getActualFiscalYearsFromDB(companyId, batchId, fiscalCalendarExpl
  *   - Generic "connect" or "ECONNREFUSED": transient network blip.
  */
 function classifyRetryError(error) {
-  const msg   = String(error?.message || "").toLowerCase();
-  const code  = String(error?.code    || "").toLowerCase();
+  const msg = String(error?.message || "").toLowerCase();
+  const code = String(error?.code || "").toLowerCase();
   const status = Number(error?.status || 0);
 
   // Permanent failures — never retry
-  const isStatementTimeout   = code === "57014" || msg.includes("statement timeout");
+  const isStatementTimeout = code === "57014" || msg.includes("statement timeout");
   const isConnectionTerminated = msg.includes("connection terminated") ||
-                                  msg.includes("connection reset") ||
-                                  msg.includes("connection closed");
-  const isSchemaCacheFailure  = msg.includes("schema cache") ||
-                                  msg.includes("failed to parse query") ||
-                                  msg.includes("pgrst");
-  const isCloudflareError     = msg.includes("cloudflare 52") ||
-                                  msg.includes("<!doctype html") ||
-                                  msg.includes("<html") ||
-                                  (status >= 520 && status <= 529);
-  const isFetchAborted        = msg.includes("aborted") ||
-                                  msg.includes("fetch failed") ||
-                                  error?.name === "AbortError";
-  const isAuthError           = status === 401 || status === 403;
-  const isNotFound            = status === 404;
+    msg.includes("connection reset") ||
+    msg.includes("connection closed");
+  const isSchemaCacheFailure = msg.includes("schema cache") ||
+    msg.includes("failed to parse query") ||
+    msg.includes("pgrst");
+  const isCloudflareError = msg.includes("cloudflare 52") ||
+    msg.includes("<!doctype html") ||
+    msg.includes("<html") ||
+    (status >= 520 && status <= 529);
+  const isFetchAborted = msg.includes("aborted") ||
+    msg.includes("fetch failed") ||
+    error?.name === "AbortError";
+  const isAuthError = status === 401 || status === 403;
+  const isNotFound = status === 404;
 
   if (
     isStatementTimeout || isConnectionTerminated || isSchemaCacheFailure ||
-    isCloudflareError  || isFetchAborted         || isAuthError          || isNotFound
+    isCloudflareError || isFetchAborted || isAuthError || isNotFound
   ) {
-    return { retryable: false, reason: isStatementTimeout ? "statement_timeout" :
-      isConnectionTerminated ? "connection_terminated" :
-      isSchemaCacheFailure   ? "schema_cache_failure"  :
-      isCloudflareError      ? "cloudflare_error"      :
-      isFetchAborted         ? "fetch_aborted"         : "non_retryable_status" };
+    return {
+      retryable: false, reason: isStatementTimeout ? "statement_timeout" :
+        isConnectionTerminated ? "connection_terminated" :
+          isSchemaCacheFailure ? "schema_cache_failure" :
+            isCloudflareError ? "cloudflare_error" :
+              isFetchAborted ? "fetch_aborted" : "non_retryable_status"
+    };
   }
 
   // Transient failures — safe to retry
-  const isRateLimit     = status === 429 || msg.includes("rate limit");
-  const isGatewayError  = status === 503 || status === 504;
+  const isRateLimit = status === 429 || msg.includes("rate limit");
+  const isGatewayError = status === 503 || status === 504;
   const isTransientConn = msg.includes("econnrefused") || msg.includes("econnreset") ||
-                          (msg.includes("connect") && !isConnectionTerminated);
+    (msg.includes("connect") && !isConnectionTerminated);
 
   if (isRateLimit || isGatewayError || isTransientConn) {
     return { retryable: true, reason: "transient" };
@@ -2759,7 +2761,11 @@ async function insertTransactions({
   }
 
   const upsertChunk = async (chunk, chunkIndex) => {
-    console.log(`[ManualGL][MultiYear] Upserting chunk ${chunkIndex + 1}/${chunks.length} (${chunk.length} rows)`);
+    const sampleBatchId = chunk[0]?.batch_id || chunk[0]?.upload_batch_id || "?";
+    console.log(
+      `[ManualGL][insertTransactions] chunk=${chunkIndex + 1}/${chunks.length} rows=${chunk.length} ` +
+      `companyId=${companyId} batchId=${sampleBatchId}`,
+    );
     await retrySupabaseOperation(async () => {
       let result = await supabase
         .from(TABLES.transactions)
@@ -2772,6 +2778,10 @@ async function insertTransactions({
         result.error &&
         (isMissingColumnError(result.error) || isConflictTargetError(result.error))
       ) {
+        console.warn(
+          `[ManualGL][insertTransactions] Primary constraint missing — using legacy fallback. ` +
+          `Error: ${result.error.message}`,
+        );
         const legacyChunk = chunk.map(
           ({
             source_type,
@@ -2784,14 +2794,24 @@ async function insertTransactions({
             ...legacy
           }) => legacy,
         );
+        // IMPORTANT: do NOT specify onConflict here.
+        // Previously the fallback used "company_id,transaction_hash" — a global
+        // constraint that spans ALL batches.  With ignoreDuplicates:true that
+        // silently dropped rows whose content already existed in a DIFFERENT
+        // batch (version), producing incomplete staged data for the new version.
+        // Omitting onConflict generates "ON CONFLICT DO NOTHING" which honours
+        // every unique constraint without specifying one as the target —
+        // idempotent within the same batch and safe across versions.
         result = await supabase
           .from(TABLES.transactions)
           .upsert(legacyChunk, {
-            onConflict: isConflictTargetError(result.error)
-              ? "company_id,transaction_hash"
-              : "company_id,batch_id,transaction_hash",
             ignoreDuplicates: true,
           });
+        if (result.error) {
+          console.warn(
+            `[ManualGL][insertTransactions] Legacy fallback upsert error (chunk ${chunkIndex + 1}): ${result.error.message}`,
+          );
+        }
       }
 
       return result;
@@ -2830,6 +2850,7 @@ async function replaceBalanceSheetLines({
 
   const baseLines = lines.map((line) => ({
     ...line,
+    upload_batch_id: line.upload_batch_id || line.batch_id || batchId,
     line_hash: line.line_hash || buildBalanceSheetLineHash(line),
   }));
   let { error } = await supabase
@@ -2846,6 +2867,8 @@ async function replaceBalanceSheetLines({
         source_switch_version,
         upload_session_id,
         staged_at,
+        upload_batch_id,
+        dataset_version_id,
         ...legacy
       }) => legacy,
     );
@@ -2962,6 +2985,11 @@ async function copyBatchTransactionsForYears({
   sourceSwitchVersion = null,
   uploadSessionId = null,
 }) {
+  console.log(
+    `[ManualGL][CarryForward] companyId=${companyId} ` +
+    `sourceBatchId=${sourceBatchId} targetBatchId=${targetBatchId} ` +
+    `years=[${(Array.isArray(fiscalYears) ? fiscalYears : []).join(",")}]`,
+  );
   const years = Array.isArray(fiscalYears)
     ? fiscalYears.map((year) => Number(year)).filter((year) => Number.isInteger(year) && year > 0)
     : [];
@@ -3056,12 +3084,14 @@ async function copyBatchTransactionsForYears({
           ...legacy
         }) => legacy,
       );
+      // Do NOT use "company_id,transaction_hash" as the conflict target.
+      // That global key spans ALL batches and would silently drop carry-forward
+      // rows whose hash already appears in the source batch, producing
+      // incomplete data for the new version.  Omitting onConflict produces
+      // "ON CONFLICT DO NOTHING" which is safe for any unique constraint.
       const legacyResult = await supabase
         .from(TABLES.transactions)
         .upsert(legacyChunk, {
-          onConflict: isConflictTargetError(error)
-            ? "company_id,transaction_hash"
-            : "company_id,batch_id,transaction_hash",
           ignoreDuplicates: true,
         });
       error = legacyResult.error;
@@ -3130,6 +3160,7 @@ async function copyBalanceSheetLinesFromBatch({
       carriedForwardFromBatchId: sourceBatchId,
     },
     dataset_version_id: datasetVersionId,
+    upload_batch_id: line.upload_batch_id || line.batch_id || targetBatchId,
   }));
 
   const result = await replaceBalanceSheetLines({
@@ -3321,6 +3352,17 @@ async function queryStagedTransactions(companyId, rawFilters = {}) {
     });
     if (resolvedBatchFromDatasetVersion) {
       filters.batchId = resolvedBatchFromDatasetVersion;
+    } else {
+      // The batch for this dataset version could not be found (version never
+      // existed or migration 027 hasn't run).  Return empty rows rather than
+      // falling through to the integer `dataset_version` column path (that
+      // column does not exist on the transactions table) or accidentally
+      // reading a different version's transactions.
+      console.warn(
+        `[ManualGL][queryStagedTransactions] Cannot resolve batchId for ` +
+        `dataset_version=${filters.datasetVersion} company=${companyId}; returning empty rows.`,
+      );
+      return { filters, rows: [] };
     }
   }
 
@@ -6135,146 +6177,32 @@ async function stageMultiYearGlUpload({
     const fiscalYearStart = uploadedYears.length > 0 ? uploadedYears[0] : null;
     const fiscalYearEnd = uploadedYears.length > 0 ? uploadedYears[uploadedYears.length - 1] : null;
 
-    const existingDatasetVersion = datasetHash
-      ? await findExistingDatasetVersionByHash(companyId, datasetHash)
-      : null;
+    // Single-dataset mode: each upload is a full replacement of the previous dataset.
+    // Skip all duplicate-detection and carry-forward logic — every year in the
+    // uploaded files is staged fresh.  Previous staged data is deleted below
+    // (after the new batch is created) so the new dataset becomes the sole source
+    // of truth for this company.
+    const stagedYears = [...uploadedYears];
+    const carryForwardYears = []; // No carry-forward in single-dataset mode
+    const exactDuplicateYears = [];
 
-    if (existingDatasetVersion?.id) {
-      const existingFiscalYears = normalizeFiscalYears(
-        existingDatasetVersion.fiscal_years ||
-        existingDatasetVersion.metadata?.fiscalYears ||
-        uploadedYears,
-      );
-      const existingVersionNumber = Number(existingDatasetVersion.version_number || 0) || null;
-      const existingBatchId = existingDatasetVersion.batch_id || null;
-
-      console.log(
-        `[ManualGL][MultiYear] Existing dataset detected for company ${companyId}. ` +
-        `Reusing dataset version V${existingVersionNumber || "?"}. Skipping staging and report generation.`,
-      );
-
+    const versionPlan = stagedYears.map((fiscalYear) => {
+      const uploadedSummary = uploadedYearSummaries[fiscalYear];
       return {
-        success: true,
-        alreadyStaged: true,
-        blockedAsDuplicate: true,
-        noChangesDetected: true,
-        reportsReady: true,
-        activated: false,
-        datasetHash,
-        datasetVersionId: existingDatasetVersion.id,
-        versionNumber: existingVersionNumber,
-        activeDatasetVersion: existingVersionNumber,
-        batchId: existingBatchId,
-        activeBatchId: existingBatchId,
-        fiscalYears: existingFiscalYears,
-        duplicateFiscalYears: existingFiscalYears,
-        duplicateYears: existingFiscalYears,
-        existingVersion: {
-          versionId: existingDatasetVersion.id,
-          versionNumber: existingVersionNumber,
-          versionName: existingVersionNumber ? `Version ${existingVersionNumber}` : "Existing Version",
-          batchId: existingBatchId,
-          fiscalYears: existingFiscalYears,
-          reportsReady: true,
-        },
-        snapshotYears: existingFiscalYears,
-        snapshotsGenerated: 0,
-        validation: null,
-        message: `Dataset already staged as Version ${existingVersionNumber || "N/A"}. Reports are ready.`,
+        fiscalYear,
+        versionNo: 1,
+        rowCount: uploadedSummary?.rowCount || 0,
+        fileHash: uploadedSummary?.fileHash || "",
+        dataHash: uploadedSummary?.dataHash || "",
+        sourceUploadIds: uploadedSummary?.sourceUploadIds || [],
+        metadata: {},
       };
-    }
+    });
 
-    // Duplicate detection MUST run before any DB writes.
-    const collisionCheck = await checkExistingStagedFiscalYears(
+    console.log("[ManualGL][MultiYear] Single-dataset mode:", {
       companyId,
       uploadedYears,
-      uploadedYearHashPairs,
-    );
-    const exactDuplicateYearSet = new Set(
-      Array.isArray(collisionCheck?.duplicateYears) ? collisionCheck.duplicateYears.map(Number) : [],
-    );
-
-    const stagedYears = [];
-    const versionPlan = [];
-
-    for (const fiscalYear of uploadedYears) {
-      if (exactDuplicateYearSet.has(fiscalYear)) {
-        continue;
-      }
-
-      const uploadedSummary = uploadedYearSummaries[fiscalYear];
-      const activeSession = activeSessionMap.get(fiscalYear) || null;
-      const fallbackActiveSummary = activeYearSummaries?.[fiscalYear] || null;
-      const activeDataHash = String(
-        activeSession?.data_hash ||
-        activeSession?.dataHash ||
-        fallbackActiveSummary?.data_hash ||
-        fallbackActiveSummary?.dataHash ||
-        "",
-      ).trim();
-
-      if (activeDataHash && uploadedSummary.dataHash === activeDataHash) {
-        exactDuplicateYearSet.add(fiscalYear);
-        continue;
-      }
-
-      let nextVersionNo = null;
-      if (Number.isInteger(Number(activeSession?.version_no)) && Number(activeSession.version_no) > 0) {
-        nextVersionNo = Number(activeSession.version_no) + 1;
-      } else {
-        const latestStoredVersion = await getLatestUploadSessionVersion(companyId, fiscalYear);
-        if (latestStoredVersion) {
-          nextVersionNo = latestStoredVersion + 1;
-        } else if (fallbackActiveSummary) {
-          nextVersionNo = 2;
-        } else {
-          nextVersionNo = 1;
-        }
-      }
-
-      stagedYears.push(fiscalYear);
-      versionPlan.push({
-        fiscalYear,
-        versionNo: nextVersionNo,
-        rowCount: uploadedSummary.rowCount,
-        fileHash: uploadedSummary.fileHash,
-        dataHash: uploadedSummary.dataHash,
-        sourceUploadIds: uploadedSummary.sourceUploadIds,
-        metadata: {
-          previousActiveSessionId: activeSession?.id || null,
-          previousActiveBatchId: activeBatch?.id || null,
-        },
-      });
-
-      console.log(
-        `[ManualGL][VersionPlan] fiscalYear=${fiscalYear} versionNo=${nextVersionNo} ` +
-        `rowCount=${uploadedSummary.rowCount} dataHash=${String(uploadedSummary.dataHash || "").slice(0, 12)}...`,
-      );
-    }
-
-    const exactDuplicateYears = Array.from(exactDuplicateYearSet).sort((a, b) => a - b);
-
-    if (stagedYears.length === 0 && exactDuplicateYears.length > 0) {
-      return {
-        success: false,
-        blockedAsDuplicate: true,
-        noChangesDetected: true,
-        duplicateFiscalYears: exactDuplicateYears,
-        duplicateYears: exactDuplicateYears,
-        existingVersion: collisionCheck?.existingVersion || null,
-        activeBatchId: collisionCheck?.activeBatchId || null,
-        message: "The selected GL data is already staged for this company and fiscal year.",
-      };
-    }
-
-    const carryForwardYears = activeYears.filter((year) => !stagedYears.includes(year));
-
-    console.log("[ManualGL][VersionPlan]", {
-      uploadedYears,
       stagedYears,
-      exactDuplicateYears,
-      carryForwardYears,
-      activeBatchId: activeBatch?.id || null,
     });
 
     if (false && useDatasetLifecycle) {
@@ -6327,6 +6255,34 @@ async function stageMultiYearGlUpload({
       console.log("[ManualGL][MultiYear] Using external datasetVersionId:", datasetVersionId);
     }
 
+    // Delete all previous staged data for this company before inserting the new
+    // dataset.  In single-dataset mode each upload fully replaces the previous
+    // one; there is no version history to preserve.
+    //
+    // We also null-out dataset_hash on all previous batch records so that the
+    // uq_manual_gl_batches_dedup unique constraint does not block the new batch
+    // from saving its own checksum when the same files are re-uploaded.
+    console.log(`[ManualGL][MultiYear] Deleting previous staged data for company=${companyId}...`);
+    const [txDel, bsDel, batchHashClear] = await Promise.all([
+      supabase.from(TABLES.transactions).delete().eq("company_id", companyId),
+      supabase.from(TABLES.balanceSheetLines).delete().eq("company_id", companyId),
+      supabase.from(TABLES.batches).update({ dataset_hash: null }).eq("company_id", companyId),
+    ]);
+    if (txDel.error) {
+      console.warn("[ManualGL][MultiYear] Failed to delete previous staged transactions:", txDel.error.message);
+    }
+    if (bsDel.error) {
+      console.warn("[ManualGL][MultiYear] Failed to delete previous BS lines:", bsDel.error.message);
+    }
+    if (batchHashClear.error) {
+      console.warn("[ManualGL][MultiYear] Failed to clear dataset_hash on previous batches:", batchHashClear.error.message);
+    }
+    console.log(`[ManualGL][MultiYear] Previous staged data deleted. Staging new dataset...`, {
+      companyId,
+      stagedYears,
+      rowCount: allClassifiedTransactions.length,
+    });
+
     console.log("[ManualGL][MultiYear] Creating batch...");
     batch = await createBatch({
       companyId,
@@ -6367,27 +6323,9 @@ async function stageMultiYearGlUpload({
       });
     }
 
-    if (activeBatch?.id && carryForwardYears.length > 0) {
-      const carryForwardStats = await copyBatchTransactionsForYears({
-        companyId,
-        sourceBatchId: activeBatch.id,
-        targetBatchId: batch.id,
-        fiscalYears: carryForwardYears,
-        datasetVersionId: datasetVersion?.id || null,
-        sourceType,
-        sourceSwitchVersion,
-        uploadSessionId,
-      });
-
-      totalInserted += carryForwardStats.inserted;
-      Object.entries(carryForwardStats.yearGroups || {}).forEach(([year, count]) => {
-        combinedYearGroups[year] = (combinedYearGroups[year] || 0) + count;
-      });
-    }
-
     console.log(
       `[ManualGL][MultiYear] Phase 3 persisted ${totalInserted} rows across years ` +
-      `[${[...stagedYears, ...carryForwardYears].sort((a, b) => a - b).join(", ")}].`,
+      `[${stagedYears.sort((a, b) => a - b).join(", ")}].`,
     );
 
     // Per-year P&L validation â€” runs calculateProfitLossBuckets on each year's
@@ -7268,6 +7206,7 @@ async function getStageFilterOptions(companyId, filters = {}) {
   );
 
   if (!batchId && !datasetVersion) {
+    console.warn(`[ManualGL][FilterOptions] No batchId or datasetVersion available for company ${companyId}. Returning empty options.`);
     return {
       source: "manual_gl_active_batch",
       activeBatchId,
@@ -7306,6 +7245,10 @@ async function getStageFilterOptions(companyId, filters = {}) {
         batchId ||
         "",
       );
+
+      const snapshotYears = Array.isArray(payload.options.fiscalYear) ? payload.options.fiscalYear : [];
+      console.log(`[ManualGL][FilterOptions] Version V${datasetVersion || "?"} snapshot found: batch=${snapshotBatchId} years=[${snapshotYears.join(', ')}]`);
+
       return {
         source: "manual_gl_reporting_snapshot",
         activeBatchId,
@@ -7316,11 +7259,12 @@ async function getStageFilterOptions(companyId, filters = {}) {
         options: payload.options || emptyOptions,
       };
     }
-  } catch (_) {
-    // reporting_snapshots may not exist until migration 026 is applied.
+  } catch (err) {
+    console.warn("[ManualGL][FilterOptions] Snapshot lookup failed:", err.message);
   }
 
   if (!batchId) {
+    console.warn(`[ManualGL][FilterOptions] Could not resolve batchId for datasetVersion ${datasetVersion}.`);
     return {
       source: "manual_gl_active_batch",
       activeBatchId,
@@ -7333,7 +7277,7 @@ async function getStageFilterOptions(companyId, filters = {}) {
   }
 
   console.log(
-    `[ManualGL][FilterOptions] Resolving options for batch ${batchId} datasetVersion=${datasetVersion || "none"}`,
+    `[ManualGL][FilterOptions] Scanning staged transactions for batch ${batchId} (version=${datasetVersion || "none"})`,
   );
 
   const DISCOVERY_COLS = [
@@ -7489,12 +7433,23 @@ async function getStageFilterOptions(companyId, filters = {}) {
 }
 
 async function loadBatchBalanceSheetLines(companyId, batchId, sheetType) {
-  const { data, error } = await supabase
+  let { data, error } = await supabase
     .from(TABLES.balanceSheetLines)
     .select("*")
     .eq("company_id", companyId)
-    .eq("batch_id", batchId)
+    .eq("upload_batch_id", batchId)
     .eq("sheet_type", sheetType);
+
+  if (error && isMissingColumnError(error, "upload_batch_id")) {
+    const legacy = await supabase
+      .from(TABLES.balanceSheetLines)
+      .select("*")
+      .eq("company_id", companyId)
+      .eq("batch_id", batchId)
+      .eq("sheet_type", sheetType);
+    data = legacy.data;
+    error = legacy.error;
+  }
 
   if (error) {
     throw new Error(`Failed to load ${sheetType} balance sheet lines: ${error.message}`);
@@ -8635,18 +8590,10 @@ async function getReportPeriodDates(companyId, datasetVersionId) {
     .eq("dataset_version_id", datasetVersionId)
     .order("txn_date", { ascending: true });
 
+  // No fallback to a company-wide scan: that would mix transactions from every
+  // uploaded version and produce wrong date ranges for historical reports.
   if (error || !data?.length) {
-    const { data: fallbackData } = await supabase
-      .from("manual_gl_staged_transactions")
-      .select("txn_date")
-      .eq("company_id", companyId)
-      .order("txn_date", { ascending: true });
-
-    if (!fallbackData?.length) return { startDate: null, endDate: null };
-    return {
-      startDate: fallbackData[0].txn_date,
-      endDate: fallbackData[fallbackData.length - 1].txn_date,
-    };
+    return { startDate: null, endDate: null };
   }
 
   return {
