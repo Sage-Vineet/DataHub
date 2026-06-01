@@ -15,7 +15,7 @@ async function validateAssignedUserForCompany(assignedUserId, companyId) {
 
 const listRequests = asyncHandler(async (req, res) => {
   if (!permissionService.canAccessCompany(req.user, req.params.id)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "Access denied." });
   }
 
   const requests = await requestService.listRequestsByCompany(req.params.id);
@@ -24,7 +24,7 @@ const listRequests = asyncHandler(async (req, res) => {
 
 const createRequest = asyncHandler(async (req, res) => {
   if (!permissionService.canAccessCompany(req.user, req.params.id)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "Access denied." });
   }
 
   const submissionSource = req.user?.effective_role === "user"
@@ -57,7 +57,7 @@ const createRequest = asyncHandler(async (req, res) => {
 
 const createRequestsBulk = asyncHandler(async (req, res) => {
   if (!permissionService.canAccessCompany(req.user, req.params.id) || !permissionService.isBroker(req.user)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "Access denied." });
   }
 
   const items = Array.isArray(req.body?.requests) ? req.body.requests : [];
@@ -91,7 +91,7 @@ const getRequest = asyncHandler(async (req, res) => {
   const request = await requestService.getRequestById(req.params.id);
   if (!request) return res.status(404).json({ error: "Not found" });
   if (!permissionService.canAccessRequest(req.user, request)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "Access denied." });
   }
   res.json(request);
 });
@@ -100,7 +100,7 @@ const updateRequest = asyncHandler(async (req, res) => {
   const current = await requestService.getRequestById(req.params.id);
   if (!current) return res.status(404).json({ error: "Not found" });
   if (!permissionService.canAccessRequest(req.user, current)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "Access denied." });
   }
   if (current.status === "completed") {
     return res.status(403).json({ error: "Completed requests cannot be edited." });
@@ -122,7 +122,7 @@ const updateRequest = asyncHandler(async (req, res) => {
         return res.status(403).json({ error: "Users can only edit request title, description, priority, and due date." });
       }
     } else {
-      return res.status(403).json({ error: "Forbidden" });
+      return res.status(403).json({ error: "Access denied." });
     }
   }
 
@@ -143,7 +143,7 @@ const approveRequest = asyncHandler(async (req, res) => {
   const current = await requestService.getRequestById(req.params.id);
   if (!current) return res.status(404).json({ error: "Not found" });
   if (!permissionService.isBroker(req.user) || !permissionService.canAccessCompany(req.user, current.company_id)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "Access denied." });
   }
 
   await requestService.approveRequest(req.params.id, req.user.id);
@@ -154,7 +154,7 @@ const deleteRequest = asyncHandler(async (req, res) => {
   const current = await requestService.getRequestById(req.params.id);
   if (!current) return res.status(404).json({ error: "Not found" });
   if (!permissionService.isBroker(req.user) || !permissionService.canAccessCompany(req.user, current.company_id)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "Access denied." });
   }
 
   await requestService.deleteRequest(req.params.id);
@@ -165,7 +165,7 @@ const addRequestReminder = asyncHandler(async (req, res) => {
   const current = await requestService.getRequestById(req.params.id);
   if (!current) return res.status(404).json({ error: "Not found" });
   if (!permissionService.isBroker(req.user) || !permissionService.canAccessCompany(req.user, current.company_id)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "Access denied." });
   }
   if (isRequestResolved(current.status)) {
     return res.status(400).json({ error: "Resolved requests do not need reminders." });
@@ -183,7 +183,7 @@ const listRequestDocuments = asyncHandler(async (req, res) => {
   const current = await requestService.getRequestById(req.params.id);
   if (!current) return res.status(404).json({ error: "Not found" });
   if (!permissionService.canAccessRequest(req.user, current)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "Access denied." });
   }
 
   const documents = await requestService.listRequestDocuments(req.params.id);
@@ -194,7 +194,7 @@ const addRequestDocument = asyncHandler(async (req, res) => {
   const current = await requestService.getRequestById(req.params.id);
   if (!current) return res.status(404).json({ error: "Not found" });
   if (!permissionService.canAccessRequest(req.user, current)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "Access denied." });
   }
   if (current.status === "completed") {
     return res.status(403).json({ error: "Completed requests cannot be edited." });
@@ -223,7 +223,7 @@ const updateNarrative = asyncHandler(async (req, res) => {
   const current = await requestService.getRequestById(req.params.id);
   if (!current) return res.status(404).json({ error: "Not found" });
   if (!permissionService.canAccessRequest(req.user, current)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "Access denied." });
   }
   if (current.status === "completed") {
     return res.status(403).json({ error: "Completed requests cannot be edited." });
@@ -251,16 +251,20 @@ const updateNarrative = asyncHandler(async (req, res) => {
 
 const getNarrativeFile = asyncHandler(async (req, res) => {
   const current = await requestService.getRequestById(req.params.id);
-  if (!current) return res.status(404).send("Not found");
+  if (!current) return res.status(404).json({ error: "Not found" });
   if (!permissionService.canAccessRequest(req.user, current)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "Access denied." });
   }
 
   const data = await requestService.getNarrative(req.params.id);
-  if (!data) return res.status(404).send("Not found");
-  
-  res.setHeader("Content-Type", "text/plain; charset=utf-8");
-  res.send(data.content || "");
+  // Return JSON so the frontend request() helper can parse it correctly.
+  // Includes author metadata so the UI can show who wrote the narrative.
+  res.json({
+    content:     data?.content     || "",
+    author_name: data?.author_name || null,
+    author_role: data?.author_role || null,
+    updated_at:  data?.updated_at  || null,
+  });
 });
 
 module.exports = {

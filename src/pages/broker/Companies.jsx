@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  Building2, Phone, Mail, Plus, Search,
+  Building2, Phone, Mail, Plus, Search, AlertCircle,
   Users, ArrowRight, Filter, Download, ChevronLeft,
   ChevronDown, Eye, X, ChevronRight, Pencil
 } from 'lucide-react';
@@ -9,6 +9,24 @@ import { useClientStore } from '../../store/clientStore';
 import StatusBadge from '../../components/common/StatusBadge';
 import Modal from '../../components/common/Modal';
 import { createCompanyRequest, deleteCompanyRequest, listCompaniesRequest, updateCompanyRequest } from '../../lib/api';
+
+function formatApiError(err) {
+  const msg = String(err?.message || err || '');
+  if (/duplicate|already exists|unique constraint|email.*taken|taken.*email|already.*use/i.test(msg)) {
+    return 'A company with this email address already exists.';
+  }
+  return msg || 'Something went wrong. Please try again.';
+}
+
+function FormError({ message }) {
+  if (!message) return null;
+  return (
+    <div className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 flex items-start gap-2.5">
+      <AlertCircle size={15} className="text-[#C62026] flex-shrink-0 mt-0.5" />
+      <p className="text-sm text-[#C62026]">{message}</p>
+    </div>
+  );
+}
 
 const PAGE_SIZE = 10;
 const EMPTY_FORM = { name: '', project_name: '', contact: '', email: '', phone: '', industry: '' };
@@ -81,6 +99,7 @@ export default function Companies() {
   const [submitting, setSubmitting] = useState(false);
   const [pageError, setPageError] = useState('');
   const [formError, setFormError] = useState('');
+  const [deleteError, setDeleteError] = useState('');
   const [success, setSuccess] = useState('');
   const [search, setSearch] = useState('');
   const [industryFilter, setIndustryFilter] = useState('All Industries');
@@ -220,6 +239,11 @@ export default function Companies() {
       return;
     }
 
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) {
+      setFormError('Please enter a valid email address.');
+      return;
+    }
+
     setSubmitting(true);
     setFormError('');
     setSuccess('');
@@ -273,7 +297,7 @@ export default function Companies() {
 
       closeFormModal();
     } catch (err) {
-      setFormError(err.message || `Unable to ${editing ? 'update' : 'create'} company.`);
+      setFormError(formatApiError(err));
     } finally {
       setSubmitting(false);
     }
@@ -282,6 +306,7 @@ export default function Companies() {
   const handleDeleteCompany = async () => {
     if (!confirmDelete) return;
     setDeleting(true);
+    setDeleteError('');
     try {
       await deleteCompanyRequest(confirmDelete.id);
       setCompanies((current) => current.filter((c) => c.id !== confirmDelete.id));
@@ -290,7 +315,7 @@ export default function Companies() {
       closeFormModal();
       setSuccess('Company deleted successfully.');
     } catch (err) {
-      setFormError(err.message || 'Unable to delete company.');
+      setDeleteError(err.message || 'Unable to delete company.');
     } finally {
       setDeleting(false);
     }
@@ -601,11 +626,7 @@ export default function Companies() {
 
       <Modal isOpen={showAdd} onClose={closeFormModal} title={editing ? 'Edit Company' : 'Add New Company'}>
         <div className="space-y-4 pt-6">
-          {formError && (
-            <div className="px-4 py-3 bg-red-50 rounded-2xl border border-red-100 text-sm text-[#C62026]">
-              {formError}
-            </div>
-          )}
+          <FormError message={formError} />
           {[
             { label: 'Project Name', key: 'project_name', placeholder: 'e.g. Project Falcon' },
             { label: 'Company Name', key: 'name', placeholder: 'e.g. Accenture India' },
@@ -686,7 +707,7 @@ export default function Companies() {
           </div>
         </div>
       </Modal>
-      <Modal isOpen={!!confirmDelete} onClose={() => setConfirmDelete(null)} title="Delete Company" size="sm">
+      <Modal isOpen={!!confirmDelete} onClose={() => { setDeleteError(''); setConfirmDelete(null); }} title="Delete Company" size="sm">
         {confirmDelete && (
           <div className="space-y-5">
             <p className="text-sm text-[#050505] leading-relaxed">
@@ -694,9 +715,10 @@ export default function Companies() {
               <span className="font-semibold">{confirmDelete.name}</span>?{' '}
               This action cannot be undone.
             </p>
+            <FormError message={deleteError} />
             <div className="flex gap-3">
               <button
-                onClick={() => setConfirmDelete(null)}
+                onClick={() => { setDeleteError(''); setConfirmDelete(null); }}
                 disabled={deleting}
                 className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-[#6D6E71] hover:bg-gray-50 transition-colors disabled:opacity-50"
               >

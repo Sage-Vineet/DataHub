@@ -30,7 +30,7 @@ export default function Modal({ isOpen, onClose, title, children, size = 'md' })
         boxSizing: 'border-box',
       }}
     >
-      {/* Backdrop — sits behind modal card */}
+      {/* Backdrop — sits behind modal card, does not close on click */}
       <div
         style={{
           position: 'fixed',
@@ -39,7 +39,6 @@ export default function Modal({ isOpen, onClose, title, children, size = 'md' })
           backdropFilter: 'blur(4px)',
           WebkitBackdropFilter: 'blur(4px)',
         }}
-        onClick={onClose}
       />
 
       {/* Modal card */}

@@ -7,6 +7,11 @@ const {
   extractBankStatementsFromExcelBuffer,
   buildBankResponseShape,
 } = require("../../../services/bankStatementExtractor");
+const {
+  extractBsBankBalancesWithGemini,
+  extractBsBankBalancesFromExcelText,
+} = require("../../../services/geminiFinancialParser");
+const XLSX = require("xlsx");
 
 const MANUAL_REPORT_UPLOAD_SOURCE = "manual_report_upload";
 const QMS_REPORT_UPLOAD_SOURCE = "quickbooks_manual_upload";
@@ -24,6 +29,286 @@ const SOURCE_CONFIG = {
   },
 };
 const DEFAULT_SOURCE_CONFIG = SOURCE_CONFIG.manual_upload_excel_pdf;
+const BS_BANK_BALANCES_CACHE_TYPE = "bs_bank_balances_cache_v2";
+const BS_BANK_SECTION_RE = /bank|checking|savings|cash/i;
+const UUID_RE_BS = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function bsLastFour(name) {
+  const m = String(name || "").match(/\b(\d{4})\b/);
+  return m ? m[1] : "";
+}
+
+// Recursively collect leaf bank account nodes from a hierarchical BS row tree
+function extractLeafBankAccounts(rows, insideBankSection = false) {
+  const result = [];
+  for (const row of (rows || [])) {
+    const isBankSection = insideBankSection || BS_BANK_SECTION_RE.test(row.name || "");
+    if (row.type === "data" && isBankSection) {
+      result.push({
+        name: row.name,
+        accountNumber: bsLastFour(row.name),
+        amount: parseFloat(row.amount) || 0,
+      });
+    }
+    if (Array.isArray(row.children) && row.children.length > 0) {
+      result.push(...extractLeafBankAccounts(row.children, isBankSection));
+    }
+  }
+  return result;
+}
+
+// Extract year from a qb_synced_reports BS record (asOfDate → filename → null)
+function extractBsYearFromRecord(record) {
+  const asOf = record?.data?.manual_report_upload?.report?.asOfDate;
+  if (asOf) {
+    const y = parseInt(String(asOf).slice(0, 4), 10);
+    if (y > 2000) return y;
+  }
+  const fn = String(record?.report_params?.fileName || record?.data?.manual_report_upload?.fileName || "");
+  const m = fn.match(/\b(20\d{2})\b/);
+  if (m) return parseInt(m[1], 10);
+  return null;
+}
+
+// ── Document location ─────────────────────────────────────────────────────────
+// Resolves the latest Balance Sheet document for the active source.
+// Tries: [Root] → Reports → Balance Sheet
+//   then: [Root] → Balance Sheet  (no intermediate "Reports" group)
+// Returns the single most-recently-uploaded document, or null.
+async function getLatestBsDocument(companyId, folderRootName) {
+  const { data: rootFolder } = await supabase
+    .from("folders").select("id")
+    .eq("company_id", companyId).is("parent_id", null)
+    .ilike("name", folderRootName).maybeSingle();
+
+  if (!rootFolder) {
+    console.log(`[BsBankBalances] Source root "${folderRootName}" not found for company ${companyId}`);
+    return null;
+  }
+
+  let bsFolderId = null;
+
+  // Primary path: Root → Reports → Balance Sheet
+  const { data: reportsFolder } = await supabase
+    .from("folders").select("id")
+    .eq("company_id", companyId).eq("parent_id", rootFolder.id)
+    .ilike("name", "Reports").maybeSingle();
+
+  if (reportsFolder) {
+    const { data: bsUnderReports } = await supabase
+      .from("folders").select("id")
+      .eq("company_id", companyId).eq("parent_id", reportsFolder.id)
+      .ilike("name", "Balance Sheet").maybeSingle();
+    if (bsUnderReports) bsFolderId = bsUnderReports.id;
+  }
+
+  // Fallback path: Root → Balance Sheet (direct)
+  if (!bsFolderId) {
+    const { data: bsDirect } = await supabase
+      .from("folders").select("id")
+      .eq("company_id", companyId).eq("parent_id", rootFolder.id)
+      .ilike("name", "Balance Sheet").maybeSingle();
+    if (bsDirect) bsFolderId = bsDirect.id;
+  }
+
+  if (!bsFolderId) {
+    console.log(`[BsBankBalances] Balance Sheet folder not found under "${folderRootName}" for company ${companyId}`);
+    return null;
+  }
+
+  const { data: docs } = await supabase
+    .from("documents").select("id, name, upload_id, file_url, uploaded_at")
+    .eq("folder_id", bsFolderId)
+    .order("uploaded_at", { ascending: false })
+    .limit(5); // take up to 5 so we can pick the best year
+
+  if (!docs?.length) {
+    console.log(`[BsBankBalances] No documents in Balance Sheet folder for company ${companyId}`);
+    return null;
+  }
+
+  console.log(`[BsBankBalances] Found ${docs.length} BS document(s) in "${folderRootName}" for company ${companyId}: ${docs.map((d) => d.name).join(", ")}`);
+  return docs; // return all so caller can pick the best year
+}
+
+// Load raw buffer from uploads table, trying multiple resolution paths
+async function loadBufferForDoc(doc) {
+  if (doc.upload_id) {
+    const { data: up } = await supabase.from("uploads").select("data").eq("id", doc.upload_id).maybeSingle();
+    if (up?.data) return normalizeBankBinary(up.data);
+  }
+  if (doc.file_url) {
+    const url = String(doc.file_url);
+    const specific = url.match(/\/uploads\/([0-9a-f-]{36})\/content/i);
+    if (specific) {
+      const { data: up2 } = await supabase.from("uploads").select("data").eq("id", specific[1]).maybeSingle();
+      if (up2?.data) return normalizeBankBinary(up2.data);
+    }
+    const uuid = url.match(UUID_RE_BS);
+    if (uuid) {
+      const { data: up3 } = await supabase.from("uploads").select("data").eq("id", uuid[0]).maybeSingle();
+      if (up3?.data) return normalizeBankBinary(up3.data);
+    }
+  }
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Main BS bank-balance extraction pipeline
+//
+// Per-request flow:
+//   1. Locate the latest Balance Sheet document(s) from the active source folder
+//   2. Cache hit? — only valid if the documentId matches the current latest file
+//   3. Load binary → Gemini PDF vision (PDF) or XLSX→CSV→Gemini text (Excel/CSV)
+//   4. Fallback: tree-walk the pre-parsed rows already stored in qb_synced_reports
+//   5. Cache result keyed by documentId; delete stale cache first
+// ─────────────────────────────────────────────────────────────────────────────
+async function runBsBankBalancesExtraction(clientId, cacheSource, folderRootName) {
+  // 1. Always locate the latest Balance Sheet document first
+  const bsDocs = await getLatestBsDocument(clientId, folderRootName);
+  if (!bsDocs?.length) {
+    return {
+      statusCode: 200,
+      body: {
+        success: true, source: "empty", year: null, bankAccounts: [],
+        message: `No Balance Sheet files found in "${folderRootName}" → Reports → Balance Sheet.`,
+      },
+    };
+  }
+
+  // Use the most recently uploaded document as the canonical file
+  const latestDoc = bsDocs[0];
+
+  // 2. Cache check — only valid if built from the SAME document
+  const { data: cached } = await supabase
+    .from("qb_synced_reports")
+    .select("data, updated_at")
+    .eq("company_id", clientId)
+    .eq("source", cacheSource)
+    .eq("report_type", BS_BANK_BALANCES_CACHE_TYPE)
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (cached?.data?.bankAccounts?.length > 0 && cached.data.documentId === latestDoc.id) {
+    console.log(`[BsBankBalances] Cache hit — file="${latestDoc.name}" for ${clientId}`);
+    return { statusCode: 200, body: { success: true, source: "cache", ...cached.data } };
+  }
+
+  // 3. Extract from the latest document via Gemini
+  let bankAccounts = [];
+  let year = null;
+  let matchedFile = null;
+
+  for (const doc of bsDocs) {
+    const fileName = String(doc.name || "balance_sheet");
+    const ext = fileName.toLowerCase().split(".").pop();
+    const isPdf = ext === "pdf";
+    const isExcel = ["xlsx", "xls", "csv"].includes(ext);
+    if (!isPdf && !isExcel) continue;
+
+    const buffer = await loadBufferForDoc(doc);
+    if (!buffer?.length) {
+      console.warn(`[BsBankBalances] No binary data for "${fileName}", skipping`);
+      continue;
+    }
+
+    try {
+      let result;
+      if (isPdf) {
+        result = await extractBsBankBalancesWithGemini(buffer, fileName);
+      } else {
+        // Excel/CSV: convert first sheet to CSV text, then send to Gemini as text
+        const workbook = XLSX.read(buffer, { type: "buffer" });
+        const csvText = XLSX.utils.sheet_to_csv(workbook.Sheets[workbook.SheetNames[0]]);
+        result = await extractBsBankBalancesFromExcelText(csvText);
+        console.log(`[BsBankBalances] Gemini Excel extraction for "${fileName}"`);
+      }
+
+      if (result?.bankAccounts?.length) {
+        bankAccounts = result.bankAccounts;
+        year = result.year;
+        matchedFile = fileName;
+        console.log(`[BsBankBalances] Extracted ${bankAccounts.length} account(s) year=${year} from "${fileName}"`);
+        break;
+      }
+      console.log(`[BsBankBalances] Gemini returned 0 accounts for "${fileName}"`);
+    } catch (err) {
+      console.error(`[BsBankBalances] Gemini extraction failed for "${fileName}": ${err.message}`);
+    }
+  }
+
+  // 4. Fallback: tree-walk the pre-parsed BS rows already stored by Sync All
+  if (!bankAccounts.length) {
+    console.log(`[BsBankBalances] Gemini extraction empty; falling back to tree-walk on synced BS records`);
+    const { data: bsRecords } = await supabase
+      .from("qb_synced_reports")
+      .select("data, report_params, updated_at")
+      .eq("company_id", clientId)
+      .eq("source", cacheSource)
+      .eq("report_type", "balance_sheet")
+      .order("updated_at", { ascending: false });
+
+    for (const record of (bsRecords || [])) {
+      const rows = record?.data?.manual_report_upload?.report?.rows;
+      if (!rows?.length) continue;
+      const extracted = extractLeafBankAccounts(rows);
+      if (extracted.length) {
+        bankAccounts = extracted;
+        year = extractBsYearFromRecord(record);
+        matchedFile = record?.report_params?.fileName || "synced_record";
+        console.log(`[BsBankBalances] Tree-walk found ${extracted.length} account(s) year=${year} from "${matchedFile}"`);
+        break;
+      }
+    }
+  }
+
+  if (!bankAccounts.length) {
+    console.log(`[BsBankBalances] No bank accounts found for ${clientId} — check that the Balance Sheet has been uploaded and synced`);
+    return {
+      statusCode: 200,
+      body: {
+        success: true, source: "empty", year: null, bankAccounts: [],
+        message: "No bank accounts found in Balance Sheet. Upload a Balance Sheet PDF or Excel file and sync.",
+      },
+    };
+  }
+
+  // 5. Cache result — delete stale entry first, then insert fresh (document-keyed)
+  const now = new Date().toISOString();
+  const cachePayload = { year, bankAccounts, documentId: latestDoc.id, fileName: matchedFile, syncedAt: now };
+  try {
+    await supabase.from("qb_synced_reports")
+      .delete()
+      .eq("company_id", clientId)
+      .eq("source", cacheSource)
+      .eq("report_type", BS_BANK_BALANCES_CACHE_TYPE);
+    await supabase.from("qb_synced_reports").insert({
+      company_id: clientId,
+      report_type: BS_BANK_BALANCES_CACHE_TYPE,
+      source: cacheSource,
+      data: cachePayload,
+      status: "synced",
+      last_synced_at: now,
+      updated_at: now,
+    });
+  } catch (cacheErr) {
+    console.warn(`[BsBankBalances] Cache write failed (non-fatal): ${cacheErr.message}`);
+  }
+
+  // Debug log — mirrors the shape the user requested
+  console.log(`[BsBankBalances] Result: ${JSON.stringify({
+    clientId,
+    detectedYear: year,
+    balanceSheetSource: cacheSource,
+    matchedBalanceSheetFile: matchedFile,
+    bankAccounts: bankAccounts.map((a) => ({ name: a.name, accountNumber: a.accountNumber, amount: a.amount })),
+  })}`);
+
+  return { statusCode: 200, body: { success: true, source: "live", ...cachePayload } };
+}
 
 // Middleware to extract clientId with multiple fallbacks
 const extractClientId = (req, res, next) => {
@@ -364,6 +649,26 @@ router.get("/manual-report-uploads/manual-bank-data", extractClientId, async (re
   } catch (error) {
     console.error("[ManualBankData] Error:", error);
     return res.status(500).json({ success: false, error: error.message || "Failed to fetch manual bank data." });
+  }
+});
+
+/* ===========================
+   GET /manual-report-uploads/bs-bank-balances
+   Returns bank account balances extracted from the Balance Sheet for a given source.
+   Source: ?source=manual_upload_excel_pdf (default) | quickbooks_manual
+   Response: { success, year, bankAccounts: [{name, accountNumber, amount}], source }
+=========================== */
+router.get("/manual-report-uploads/bs-bank-balances", extractClientId, async (req, res) => {
+  try {
+    if (!req.clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+    const sourceKey = req.query.source || "manual_upload_excel_pdf";
+    const { cacheSource, folderRootName } = SOURCE_CONFIG[sourceKey] || DEFAULT_SOURCE_CONFIG;
+    console.log(`[BsBankBalances] source="${sourceKey}" → cacheSource="${cacheSource}", folder="${folderRootName}"`);
+    const { statusCode, body } = await runBsBankBalancesExtraction(req.clientId, cacheSource, folderRootName);
+    return res.status(statusCode).json(body);
+  } catch (err) {
+    console.error("[BsBankBalances] Error:", err);
+    return res.status(500).json({ success: false, error: err.message || "Failed to fetch balance sheet bank balances." });
   }
 });
 

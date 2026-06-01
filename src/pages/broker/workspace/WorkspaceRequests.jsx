@@ -32,6 +32,7 @@ import {
   createRequestReminder,
   deleteRequest,
   getCompanyRequest,
+  getRequestNarrative,
   listFolderTree,
   listCompanyRequests,
   listRequestDocuments,
@@ -83,6 +84,93 @@ function isEmptyBulkRow(row) {
   return Object.values(row || {}).every((value) => `${value ?? ''}`.trim() === '');
 }
 
+// Excel serial date → JS Date (serial 1 = 1900-01-01 in Excel's epoch, with the
+// intentional Lotus 1-2-3 leap-year bug where day 60 = 1900-02-29).
+function excelSerialToDate(serial) {
+  const excelEpoch = new Date(Date.UTC(1899, 11, 30));
+  return new Date(excelEpoch.getTime() + serial * 86400000);
+}
+
+// Accepts any date representation that Excel/Google Sheets might produce and
+// returns a YYYY-MM-DD string, or '' if the value cannot be parsed.
+function normalizeDueDate(value) {
+  if (value === null || value === undefined || value === '') return '';
+
+  // Already a Date object (from XLSX cellDates option).
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) return '';
+    return value.toISOString().slice(0, 10);
+  }
+
+  const raw = String(value).trim();
+  if (!raw) return '';
+
+  // Excel/XLSX serial number: a plain integer or float > 1000 is almost certainly a date serial.
+  const asNum = Number(raw);
+  if (!Number.isNaN(asNum) && asNum > 1000 && asNum < 200000) {
+    const d = excelSerialToDate(asNum);
+    if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+  }
+
+  // Already YYYY-MM-DD.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+
+  // DD/MM/YYYY or DD-MM-YYYY (common European / Indian locale from Excel).
+  const dmy = raw.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})$/);
+  if (dmy) {
+    const [, d, m, y] = dmy;
+    const date = new Date(Date.UTC(Number(y), Number(m) - 1, Number(d)));
+    if (!Number.isNaN(date.getTime())) return date.toISOString().slice(0, 10);
+  }
+
+  // MM/DD/YYYY (US locale).
+  const mdy = raw.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})$/);
+  if (mdy) {
+    const [, m, d, y] = mdy;
+    const date = new Date(Date.UTC(Number(y), Number(m) - 1, Number(d)));
+    if (!Number.isNaN(date.getTime())) return date.toISOString().slice(0, 10);
+  }
+
+  // DD-Mon-YYYY or DD Mon YYYY (e.g. "01-Jun-2025", "1 June 2025").
+  const textMonth = raw.match(/^(\d{1,2})[\s\-]([A-Za-z]+)[\s\-](\d{4})$/);
+  if (textMonth) {
+    const date = new Date(`${textMonth[2]} ${textMonth[1]}, ${textMonth[3]}`);
+    if (!Number.isNaN(date.getTime())) {
+      return [
+        date.getFullYear(),
+        String(date.getMonth() + 1).padStart(2, '0'),
+        String(date.getDate()).padStart(2, '0'),
+      ].join('-');
+    }
+  }
+
+  // Last resort: let JS Date parse it and reformat.
+  const fallback = new Date(raw);
+  if (!Number.isNaN(fallback.getTime())) {
+    return [
+      fallback.getFullYear(),
+      String(fallback.getMonth() + 1).padStart(2, '0'),
+      String(fallback.getDate()).padStart(2, '0'),
+    ].join('-');
+  }
+
+  return raw; // return as-is; validation downstream will reject if invalid
+}
+
+// Force a column in a XLSX worksheet to text type so Excel/Sheets cannot
+// auto-convert the values to a date serial and reformat them.
+function forceSheetColumnToText(sheet, colIndex) {
+  const range = XLSX.utils.decode_range(sheet['!ref'] || 'A1');
+  for (let r = range.s.r + 1; r <= range.e.r; r++) {
+    const addr = XLSX.utils.encode_cell({ r, c: colIndex });
+    if (sheet[addr]) {
+      sheet[addr].t = 's';
+      sheet[addr].z = '@';
+      if (sheet[addr].w !== undefined) delete sheet[addr].w;
+    }
+  }
+}
+
 function downloadFile(blob, filename) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
@@ -122,6 +210,9 @@ function buildBulkTemplateWorkbook(folderOptions) {
     wch: header === 'description' ? 42 : 18,
   }));
 
+  // Force due_date column to text so Excel / Google Sheets cannot auto-reformat the date.
+  forceSheetColumnToText(templateSheet, BULK_TEMPLATE_HEADERS.indexOf('due_date'));
+
   const instructionsSheet = XLSX.utils.aoa_to_sheet([
     ['Field', 'Required', 'Guidance'],
     ['title', 'Yes', 'Request title shown to the client.'],
@@ -130,7 +221,7 @@ function buildBulkTemplateWorkbook(folderOptions) {
     ['category', 'Yes', `Use one of: ${CATEGORY_ORDER.join(', ')}`],
     ['response_type', 'Yes', `Use one of: ${RESPONSE_TYPE_OPTIONS.join(', ')}`],
     ['priority', 'Yes', `Use one of: ${PRIORITY_OPTIONS.join(', ')}`],
-    ['due_date', 'Yes', 'Format must be YYYY-MM-DD.'],
+    ['due_date', 'Yes', 'Enter date as YYYY-MM-DD (e.g. 2025-06-30). The column is pre-formatted as text to prevent Excel from changing the format.'],
     ['assigned_to', 'No', 'Optional user id for assignment. Leave blank if unassigned.'],
     ['visible', 'No', 'Use true or false. Blank defaults to true.'],
   ]);
@@ -174,6 +265,10 @@ function buildRequestsExportWorkbook(requests, companyName = '') {
     wch: h === 'description' ? 44 : h === 'id' ? 32 : h === 'title' ? 28 : 18,
   }));
 
+  // Force due_date and created_at columns to text so Excel cannot reformat them.
+  forceSheetColumnToText(dataSheet, EXPORT_HEADERS.indexOf('due_date'));
+  forceSheetColumnToText(dataSheet, EXPORT_HEADERS.indexOf('created_at'));
+
   // Style the read-only extra columns with a grey header (A1 offset for extra cols)
   const templateColCount = BULK_TEMPLATE_HEADERS.length;
   EXPORT_EXTRA_HEADERS.forEach((_, i) => {
@@ -192,7 +287,7 @@ function buildRequestsExportWorkbook(requests, companyName = '') {
     ['category',      'Yes', `Use one of: ${CATEGORY_ORDER.join(', ')}`],
     ['response_type', 'Yes', `Use one of: ${RESPONSE_TYPE_OPTIONS.join(', ')}`],
     ['priority',      'Yes', `Use one of: ${PRIORITY_OPTIONS.join(', ')}`],
-    ['due_date',      'Yes', 'Format must be YYYY-MM-DD.'],
+    ['due_date',      'Yes', 'Enter date as YYYY-MM-DD (e.g. 2025-06-30). Column is pre-formatted as text.'],
     ['assigned_to',   'No',  'Optional user id for assignment. Leave blank if unassigned.'],
     ['visible',       'No',  'Use true or false. Blank defaults to true.'],
     [],
@@ -221,7 +316,7 @@ function readBulkWorkbook(file) {
 
     reader.onload = (event) => {
       try {
-        const workbook = XLSX.read(event.target?.result, { type: 'array' });
+        const workbook = XLSX.read(event.target?.result, { type: 'array', cellDates: true });
         const sheetName = workbook.SheetNames[0];
         if (!sheetName) {
           reject(new Error('The uploaded workbook does not contain any sheets.'));
@@ -232,7 +327,14 @@ function readBulkWorkbook(file) {
           defval: '',
           raw: false,
         });
-        resolve(rows);
+
+        // Normalize due_date regardless of how Excel/Sheets formatted it.
+        const normalized = rows.map((row) => ({
+          ...row,
+          due_date: normalizeDueDate(row.due_date),
+        }));
+
+        resolve(normalized);
       } catch (error) {
         reject(new Error('Unable to read the uploaded Excel file.'));
       }
@@ -393,6 +495,8 @@ function mapApiRequestToUi(request) {
     requestedBy: request.created_by_name || 'Unknown user',
     approvedBy: request.approved_by_name || '',
     narrativeResponse: '',
+    narrativeAuthor: null,   // { name, role, updated_at }
+
     linkedDocuments: [],
     reminderHistory: [],
     reminderFrequencyDays,
@@ -682,9 +786,71 @@ function FileUpload({ onAddFiles, duplicateNames }) {
   );
 }
 
+function roleBadge(role) {
+  const r = String(role || '').toLowerCase();
+  if (r === 'broker' || r === 'admin') return { label: 'Broker', bg: '#E8ECF7', color: '#05164D' };
+  if (r === 'client') return { label: 'Seller', bg: '#DBEAFE', color: '#1D4ED8' };
+  return { label: 'Buyer', bg: '#DCFCE7', color: '#166534' };
+}
+
+function NarrativeCard({ content, author, canEdit, draft, onDraftChange, onSave, saving }) {
+  const hasExisting = content && content.trim().length > 0;
+  const badge = author ? roleBadge(author.role) : null;
+  const formattedTime = author?.updated_at
+    ? new Date(author.updated_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' })
+    : null;
+
+  return (
+    <div className="bg-white rounded-2xl shadow-card p-5 space-y-4">
+      <h3 className="font-semibold text-[#050505]">Narrative Response</h3>
+
+      {/* Existing narrative — always visible to all parties */}
+      {hasExisting ? (
+        <div className="rounded-xl border border-gray-100 bg-[#F8FAFC] p-4">
+          {author && (
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-[12px] font-semibold text-[#050505]">{author.name}</span>
+              <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold" style={{ background: badge.bg, color: badge.color }}>
+                {badge.label}
+              </span>
+              {formattedTime && <span className="text-[10px] text-[#A5A5A5]">{formattedTime}</span>}
+            </div>
+          )}
+          <p className="text-sm leading-relaxed text-[#4B5563] whitespace-pre-wrap">{content}</p>
+        </div>
+      ) : (
+        <p className="text-sm text-[#A5A5A5] italic">No narrative has been added yet.</p>
+      )}
+
+      {/* Edit area — only shown to eligible parties */}
+      {canEdit && (
+        <div>
+          <textarea
+            rows={4}
+            value={draft}
+            onChange={(e) => onDraftChange(e.target.value)}
+            placeholder={hasExisting ? 'Update the narrative…' : 'Enter explanation, comments, or notes…'}
+            className="w-full resize-none rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm text-[#4B5563] focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/30 focus:border-[#8BC53D]"
+          />
+          <button
+            type="button"
+            onClick={onSave}
+            disabled={saving || !draft.trim()}
+            className="mt-2 rounded-xl bg-[#05164D] px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#0b2a79] disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-[#A5A5A5]"
+          >
+            {saving ? 'Saving…' : hasExisting ? 'Update Narrative' : 'Save Narrative'}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSendReminder, onAttachDocument, onApproveRequest, approvingRequestId, onMarkReviewed, onDeleteRequest, deletingRequestId }) {
   const [duplicateWarning, setDuplicateWarning] = useState([]);
-  const [narrativeDraft, setNarrativeDraft] = useState(request?.narrativeResponse || '');
+  // Keep the draft EMPTY on load — the saved narrative is shown in the display card above.
+  // The textarea is only for typing NEW/UPDATED content before hitting Save.
+  const [narrativeDraft, setNarrativeDraft] = useState('');
   const [previewDocument, setPreviewDocument] = useState(null);
   const [requestDraft, setRequestDraft] = useState({
     name: request?.name || '',
@@ -697,7 +863,8 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
   const [unblocking, setUnblocking] = useState(false);
 
   useEffect(() => {
-    setNarrativeDraft(request?.narrativeResponse || '');
+    // Reset the draft to empty when switching requests (not pre-fill — avoids duplication with display card).
+    setNarrativeDraft('');
     setPreviewDocument(null);
     setRequestDraft({
       name: request?.name || '',
@@ -705,7 +872,7 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
       priority: request?.priority || 'high',
       dueDate: request?.dueDate || formatToday(),
     });
-  }, [request?.id, request?.narrativeResponse]);
+  }, [request?.id]);
 
   if (!request) return null;
 
@@ -774,12 +941,13 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
   };
 
   const saveNarrative = async () => {
-    if (!canEditResponse || savingNarrative) return;
+    if (!canEditResponse || savingNarrative || !narrativeDraft.trim()) return;
     setSavingNarrative(true);
     await onUpdateRequest(request.id, {
-      narrativeResponse: narrativeDraft,
+      narrativeResponse: narrativeDraft.trim(),
       updatedAt: formatToday(),
     });
+    setNarrativeDraft(''); // clear draft after save — saved text shows in the display card
     setSavingNarrative(false);
   };
 
@@ -941,31 +1109,15 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
             </div>
 
             {(request.responseType === 'Narrative' || request.responseType === 'Both') && (
-              <div className="bg-white rounded-2xl shadow-card p-5">
-                <h3 className="font-semibold text-[#050505] mb-3">Narrative Response</h3>
-                <textarea
-                  rows={5}
-                  value={narrativeDraft}
-                  readOnly={!canEditResponse}
-                  onChange={(event) => setNarrativeDraft(event.target.value)}
-                  placeholder="Enter explanation, comments, or notes related to this request"
-                  className={`w-full resize-none rounded-xl border px-4 py-3 text-sm ${
-                    canEditResponse
-                      ? 'border-gray-200 bg-white text-[#4B5563]'
-                      : 'border-gray-100 bg-gray-50 text-[#4B5563]'
-                  }`}
-                />
-                {canEditResponse && (
-                  <button
-                    type="button"
-                    onClick={saveNarrative}
-                    disabled={savingNarrative}
-                    className="mt-3 rounded-xl bg-[#05164D] px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#0b2a79] disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-[#A5A5A5]"
-                  >
-                    {savingNarrative ? 'Saving...' : 'Save Narrative'}
-                  </button>
-                )}
-              </div>
+              <NarrativeCard
+                content={request.narrativeResponse}
+                author={request.narrativeAuthor}
+                canEdit={canEditResponse}
+                draft={narrativeDraft}
+                onDraftChange={setNarrativeDraft}
+                onSave={saveNarrative}
+                saving={savingNarrative}
+              />
             )}
           </div>
 
@@ -1175,6 +1327,18 @@ export default function WorkspaceRequests() {
         }));
       })
       .catch(() => {});
+    getRequestNarrative(activeRequestId)
+      .then((result) => {
+        setRequestState((prev) => prev.map((r) => {
+          if (r.id !== activeRequestId) return r;
+          const content = typeof result === 'string' ? result : (result?.content || '');
+          const narrativeAuthor = result?.author_name
+            ? { name: result.author_name, role: result.author_role, updated_at: result.updated_at }
+            : null;
+          return { ...r, narrativeResponse: content, narrativeAuthor };
+        }));
+      })
+      .catch(() => {});
   }, [activeRequestId]);
   
   const [isNewRequestOpen, setIsNewRequestOpen] = useState(false);
@@ -1255,9 +1419,10 @@ export default function WorkspaceRequests() {
     setRequestState(prev => prev.map(r => (r.id === id ? { ...r, ...patch } : r)));
     try {
       let canonicalRequest = null;
-      if (patch.narrativeResponse !== undefined) {
-        canonicalRequest = await updateRequestNarrative(id, {
-          content: patch.narrativeResponse,
+      const narrativePatch = patch.narrativeResponse !== undefined ? patch.narrativeResponse : undefined;
+      if (narrativePatch !== undefined) {
+        await updateRequestNarrative(id, {
+          content: narrativePatch,
           updated_by: user?.id || null,
         });
       }
@@ -1267,7 +1432,17 @@ export default function WorkspaceRequests() {
       }
       if (canonicalRequest?.id) {
         const normalized = mapApiRequestToUi(canonicalRequest);
-        setRequestState(prev => prev.map(r => (r.id === id ? { ...r, ...normalized } : r)));
+        // Preserve narrativeResponse/narrativeAuthor — mapApiRequestToUi always returns '' for them
+        setRequestState(prev => prev.map(r => {
+          if (r.id !== id) return r;
+          return {
+            ...r, ...normalized,
+            narrativeResponse: narrativePatch !== undefined ? narrativePatch : r.narrativeResponse,
+            narrativeAuthor: narrativePatch !== undefined
+              ? { name: user?.name || 'You', role: user?.role || 'broker', updated_at: new Date().toISOString() }
+              : r.narrativeAuthor,
+          };
+        }));
       }
       return true;
     } catch (err) {

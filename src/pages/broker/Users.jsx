@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { AlertCircle } from 'lucide-react';
 import {
   Search, Filter, Plus, Eye, Pencil, Trash2, X,
   ChevronLeft, ChevronRight, Users as UsersIcon,
@@ -115,7 +116,7 @@ function RoleBadge({ role }) {
   );
 }
 
-function DeleteModal({ user, onConfirm, onClose, submitting }) {
+function DeleteModal({ user, onConfirm, onClose, submitting, error }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-white/30 backdrop-blur-sm" onClick={onClose} />
@@ -127,6 +128,9 @@ function DeleteModal({ user, onConfirm, onClose, submitting }) {
         <p className="text-center text-sm text-gray-500 mb-6">
           Are you sure you want to delete <span className="font-semibold text-[#05164D]">{user.name}</span>? This action cannot be undone.
         </p>
+        {error && (
+          <p className="mb-4 text-sm text-red-600 bg-red-50 rounded-xl px-3 py-2 text-center">{error}</p>
+        )}
         <div className="flex gap-3">
           <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-gray-600 hover:bg-gray-50 transition-colors">
             Cancel
@@ -195,7 +199,29 @@ function ViewModal({ user, onClose, onEdit }) {
   );
 }
 
-function UserFormModal({ initial, companies, groups, onCompanyChange, onSave, onClose, submitting }) {
+function isValidEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || '').trim());
+}
+
+function formatApiError(err) {
+  const msg = String(err?.message || err || '');
+  if (/duplicate|already exists|unique constraint|email.*taken|taken.*email|already.*use/i.test(msg)) {
+    return 'A user with this email address already exists.';
+  }
+  return msg || 'Something went wrong. Please try again.';
+}
+
+function FormError({ message }) {
+  if (!message) return null;
+  return (
+    <div className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 flex items-start gap-2.5">
+      <AlertCircle size={15} className="text-[#C62026] flex-shrink-0 mt-0.5" />
+      <p className="text-sm text-[#C62026]">{message}</p>
+    </div>
+  );
+}
+
+function UserFormModal({ initial, companies, groups, onCompanyChange, onSave, onClose, submitting, error }) {
   const isEdit = !!initial?.id;
   const [form, setForm] = useState(() => {
     const seed = initial || EMPTY_FORM;
@@ -204,9 +230,33 @@ function UserFormModal({ initial, companies, groups, onCompanyChange, onSave, on
   const [companiesSearchQuery, setCompaniesSearchQuery] = useState('');
   const [companiesDropdownOpen, setCompaniesDropdownOpen] = useState(false);
   const companiesDropdownRef = useRef(null);
-  
-  const setField = (patch) => setForm((current) => ({ ...current, ...patch }));
-  const valid = form.name.trim() && form.email.trim() && (isEdit ? form.role && form.status : true) && (form.companyIds?.length > 0) && (isEdit || form.password.trim());
+
+  const [localError, setLocalError] = useState('');
+  const setField = (patch) => { setForm((current) => ({ ...current, ...patch })); setLocalError(''); };
+
+  const validate = () => {
+    if (!form.name.trim()) return 'Full name is required.';
+    if (!form.email.trim()) return 'Email address is required.';
+    if (!isValidEmail(form.email)) return 'Please enter a valid email address.';
+    if (!form.companyIds?.length) return 'Please assign at least one company.';
+    if (!isEdit) {
+      if (!form.password.trim()) return 'Password is required.';
+      if (form.password.length < 8) return 'Password must be at least 8 characters.';
+      if (!/[A-Za-z]/.test(form.password) || !/\d/.test(form.password)) {
+        return 'Password must include at least one letter and one number.';
+      }
+    }
+    if (isEdit && (!form.role || !form.status)) return 'Role and status are required.';
+    return '';
+  };
+
+  const handleSave = () => {
+    const err = validate();
+    if (err) { setLocalError(err); return; }
+    onSave(form);
+  };
+
+  const displayError = localError || error;
 
   useEffect(() => {
     const seed = initial || EMPTY_FORM;
@@ -238,7 +288,7 @@ function UserFormModal({ initial, companies, groups, onCompanyChange, onSave, on
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-white/30 backdrop-blur-sm" onClick={onClose} />
+      <div className="absolute inset-0 bg-white/30 backdrop-blur-sm" />
       <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-2xl z-10 animate-fadeIn max-h-[88vh] overflow-hidden flex flex-col">
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
           <div>
@@ -311,13 +361,11 @@ function UserFormModal({ initial, companies, groups, onCompanyChange, onSave, on
                                 companyId: nextIds.some(id => String(id) === String(form.companyId)) ? form.companyId : (nextIds[0] || ''),
                               });
                             }}
-                            className={`w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm text-left transition-colors ${
-                              isSelected ? 'bg-[#E6F3D3] text-[#8BC53D]' : 'text-gray-700 hover:bg-gray-100'
-                            }`}
+                            className={`w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm text-left transition-colors ${isSelected ? 'bg-[#E6F3D3] text-[#8BC53D]' : 'text-gray-700 hover:bg-gray-100'
+                              }`}
                           >
-                            <div className={`w-4 h-4 rounded border flex items-center justify-center transition-all ${
-                              isSelected ? 'bg-[#8BC53D] border-[#8BC53D]' : 'border-gray-300'
-                            }`}>
+                            <div className={`w-4 h-4 rounded border flex items-center justify-center transition-all ${isSelected ? 'bg-[#8BC53D] border-[#8BC53D]' : 'border-gray-300'
+                              }`}>
                               {isSelected && <Check size={12} className="text-white" />}
                             </div>
                             <span className="flex-1">{company.name}</span>
@@ -401,9 +449,8 @@ function UserFormModal({ initial, companies, groups, onCompanyChange, onSave, on
                           : [...form.groupIds, group.id],
                       });
                     }}
-                    className={`px-3 py-1.5 rounded-full border text-xs font-semibold transition-all ${
-                      active ? 'bg-[#05164D] text-white border-[#05164D]' : 'bg-gray-50 text-gray-500 border-gray-200 hover:border-gray-300'
-                    }`}
+                    className={`px-3 py-1.5 rounded-full border text-xs font-semibold transition-all ${active ? 'bg-[#05164D] text-white border-[#05164D]' : 'bg-gray-50 text-gray-500 border-gray-200 hover:border-gray-300'
+                      }`}
                   >
                     {group.name || group.id}
                   </button>
@@ -440,17 +487,20 @@ function UserFormModal({ initial, companies, groups, onCompanyChange, onSave, on
           )}
         </div>
 
-        <div className="px-6 py-4 border-t border-gray-100 bg-white flex gap-3">
-          <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-gray-600 hover:bg-gray-50 transition-colors">
-            Cancel
-          </button>
-          <button
-            onClick={() => valid && onSave(form)}
-            disabled={!valid || submitting}
-            className="flex-1 py-2.5 rounded-xl bg-[#8BC53D] hover:bg-[#476E2C] disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-bold transition-colors"
-          >
-            {submitting ? 'Saving...' : isEdit ? 'Save Changes' : 'Add User'}
-          </button>
+        <div className="px-6 py-4 border-t border-gray-100 bg-white flex flex-col gap-3">
+          <FormError message={displayError} />
+          <div className="flex gap-3">
+            <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-gray-600 hover:bg-gray-50 transition-colors">
+              Cancel
+            </button>
+            <button
+              onClick={handleSave}
+              disabled={submitting}
+              className="flex-1 py-2.5 rounded-xl bg-[#8BC53D] hover:bg-[#476E2C] disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-bold transition-colors"
+            >
+              {submitting ? 'Saving...' : isEdit ? 'Save Changes' : 'Add User'}
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -473,6 +523,8 @@ export default function BrokerUsers() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+  const [formError, setFormError] = useState('');
+  const [deleteError, setDeleteError] = useState('');
   const [success, setSuccess] = useState('');
   const [groupsByCompany, setGroupsByCompany] = useState({});
 
@@ -584,7 +636,7 @@ export default function BrokerUsers() {
 
   const handleAdd = async (form) => {
     setSubmitting(true);
-    setError('');
+    setFormError('');
     setSuccess('');
 
     try {
@@ -611,7 +663,7 @@ export default function BrokerUsers() {
       setPage(1);
       setSuccess('User created successfully.');
     } catch (err) {
-      setError(err.message || 'Unable to create user.');
+      setFormError(formatApiError(err));
     } finally {
       setSubmitting(false);
     }
@@ -619,7 +671,7 @@ export default function BrokerUsers() {
 
   const handleEdit = async (form) => {
     setSubmitting(true);
-    setError('');
+    setFormError('');
 
     const payload = {
       name: form.name.trim(),
@@ -653,7 +705,7 @@ export default function BrokerUsers() {
       setEditUser(null);
       setSuccess('User updated successfully.');
     } catch (err) {
-      setError(err.message || 'Unable to update user.');
+      setFormError(formatApiError(err));
     } finally {
       setSubmitting(false);
     }
@@ -661,7 +713,7 @@ export default function BrokerUsers() {
 
   const handleDelete = async () => {
     setSubmitting(true);
-    setError('');
+    setDeleteError('');
 
     try {
       await deleteUserRequest(deleteUser.id);
@@ -674,7 +726,7 @@ export default function BrokerUsers() {
       if (viewUser?.id === deleteUser.id) setViewUser(null);
       setDeleteUser(null);
     } catch (err) {
-      setError(err.message || 'Unable to delete user.');
+      setDeleteError(err.message || 'Unable to delete user.');
     } finally {
       setSubmitting(false);
     }
@@ -723,7 +775,7 @@ export default function BrokerUsers() {
           <p className="text-sm text-gray-500 mt-0.5">{stats.total} registered user{stats.total !== 1 ? 's' : ''} across all companies</p>
         </div>
         <button
-          onClick={() => { setError(''); setEditUser({ ...EMPTY_FORM, isNew: true }); }}
+          onClick={() => { setFormError(''); setEditUser({ ...EMPTY_FORM, isNew: true }); }}
           className="inline-flex items-center gap-2 px-5 py-2.5 bg-[#8BC53D] hover:bg-[#476E2C] text-white rounded-xl text-sm font-bold transition-colors shadow-sm"
         >
           <Plus size={16} />
@@ -897,8 +949,26 @@ export default function BrokerUsers() {
                       <span className="font-semibold text-[#05164D] whitespace-nowrap">{user.name}</span>
                     </div>
                   </td>
-                  <td className="px-3 py-3.5">
-                    <span className="text-gray-600 whitespace-nowrap">{user.company}</span>
+                  <td className="px-3 py-3.5 max-w-[180px]">
+                    {user.assignedCompanies && user.assignedCompanies.length > 0 ? (
+                      <div className="flex flex-wrap gap-1">
+                        {user.assignedCompanies.slice(0, 2).map((c) => (
+                          <span key={c.id} className="inline-block max-w-[120px] truncate rounded-full bg-[#E6F3D3] px-2 py-0.5 text-[11px] font-semibold text-[#476E2C]" title={c.name}>
+                            {c.name}
+                          </span>
+                        ))}
+                        {user.assignedCompanies.length > 2 && (
+                          <span
+                            className="inline-block rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-semibold text-gray-500 cursor-default"
+                            title={user.assignedCompanies.slice(2).map((c) => c.name).join(', ')}
+                          >
+                            +{user.assignedCompanies.length - 2} more
+                          </span>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="text-gray-400 text-xs">Unassigned</span>
+                    )}
                   </td>
                   <td className="px-3 py-3.5">
                     <span className="text-gray-500 text-xs">{user.email}</span>
@@ -923,7 +993,7 @@ export default function BrokerUsers() {
                       </button>
                       <button
                         title="Edit"
-                        onClick={() => setEditUser({ ...user, password: '' })}
+                        onClick={() => { setFormError(''); setEditUser({ ...user, password: '' }); }}
                         className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-[#8BC53D] hover:bg-green-50 transition-colors"
                       >
                         <Pencil size={15} />
@@ -1007,8 +1077,9 @@ export default function BrokerUsers() {
           groups={editUser?.companyId ? (groupsByCompany[editUser.companyId] || []) : []}
           onCompanyChange={(companyId) => loadGroupsForCompany(companyId)}
           onSave={editUser?.isNew ? handleAdd : handleEdit}
-          onClose={() => setEditUser(null)}
+          onClose={() => { setFormError(''); setEditUser(null); }}
           submitting={submitting}
+          error={formError}
         />
       )}
 
@@ -1016,8 +1087,9 @@ export default function BrokerUsers() {
         <DeleteModal
           user={deleteUser}
           onConfirm={handleDelete}
-          onClose={() => setDeleteUser(null)}
+          onClose={() => { setDeleteError(''); setDeleteUser(null); }}
           submitting={submitting}
+          error={deleteError}
         />
       )}
     </div>

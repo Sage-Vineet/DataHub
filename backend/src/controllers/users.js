@@ -27,7 +27,7 @@ const createUser = asyncHandler(async (req, res) => {
 
   const requesterRole = String(req.user?.role || "").toLowerCase();
   if (!["broker", "admin"].includes(requesterRole)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "Only broker or admin accounts can create users." });
   }
   if (requesterRole !== "admin" && ["admin", "broker"].includes(String(role || "").toLowerCase())) {
     return res.status(403).json({ error: "Brokers can only create company user accounts." });
@@ -65,7 +65,7 @@ const getUser = asyncHandler(async (req, res) => {
   const user = await userService.getUserById(req.params.id);
   if (!user) return res.status(404).json({ error: "Not found" });
   if (!canViewUser(req.user, user)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "You do not have permission to view this user's profile." });
   }
   res.json(user);
 });
@@ -80,7 +80,7 @@ const getPublicUser = asyncHandler(async (req, res) => {
   const user = await userService.getUserById(req.params.id);
   if (!user) return res.status(404).json({ error: "Not found" });
   if (!canViewUser(req.user, user)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "You do not have permission to view this user's profile." });
   }
 
   const publicUser = {
@@ -106,7 +106,7 @@ const updateUser = asyncHandler(async (req, res) => {
   const canManageUsers = ["broker", "admin"].includes(requesterRole);
 
   if (!isSelf && !canManageUsers) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "You can only update your own profile or users in your company." });
   }
 
   if (req.body?.current_password !== undefined && !isSelf) {
@@ -118,7 +118,7 @@ const updateUser = asyncHandler(async (req, res) => {
     if (!target) return res.status(404).json({ error: "Not found" });
     const requesterCompanyIds = new Set(userService.getUserCompanyIds(req.user).map(String));
     const sharesCompany = userService.getUserCompanyIds(target).some((companyId) => requesterCompanyIds.has(String(companyId)));
-    if (!sharesCompany) return res.status(403).json({ error: "Forbidden" });
+    if (!sharesCompany) return res.status(403).json({ error: "You do not have permission to update users outside your company." });
   }
   if (requesterRole !== "admin") {
     if (req.body?.role !== undefined && String(req.body.role || "").toLowerCase() !== "buyer") {
@@ -153,7 +153,7 @@ const deleteUser = asyncHandler(async (req, res) => {
   const requesterCompanyIds = new Set(userService.getUserCompanyIds(req.user).map(String));
   const sharesCompany = userService.getUserCompanyIds(user).some((companyId) => requesterCompanyIds.has(String(companyId)));
   if (requesterRole !== "admin" && !(requesterRole === "broker" && sharesCompany)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "Only admins or brokers sharing a company can delete users." });
   }
 
   const replacementUserId = await userService.resolveReplacementUserId(req.user?.id, user);

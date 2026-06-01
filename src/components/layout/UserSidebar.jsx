@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { LayoutDashboard, Building2, FolderOpen, LogOut, X, MoreHorizontal, MessageSquare, ClipboardList } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
@@ -15,6 +16,7 @@ export default function UserSidebar({ onClose }) {
   const { user, logout } = useAuth();
   const { unreadCount } = useMessageNotifications();
   const navigate = useNavigate();
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
 
   const handleLogout = async () => {
     await logout();
@@ -77,12 +79,34 @@ export default function UserSidebar({ onClose }) {
           </button>
         </div>
         <button
-          onClick={handleLogout}
+          onClick={() => setShowLogoutConfirm(true)}
           className="flex w-full items-center justify-center gap-2 rounded-xl border border-[#E5E7EF] px-3 py-2.5 text-sm font-semibold text-[#6D6E71] transition-colors hover:bg-red-50 hover:text-[#C62026]"
         >
           <LogOut size={16} />
           Sign Out
         </button>
+        {showLogoutConfirm && (
+          <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-white/40 backdrop-blur-sm">
+            <div className="w-full max-w-sm rounded-2xl border border-[#E5E7EF] bg-white p-6 shadow-2xl">
+              <h3 className="text-base font-bold text-[#05164D]">Sign out?</h3>
+              <p className="mt-1 text-sm text-[#6D6E71]">You will be returned to the login screen.</p>
+              <div className="mt-5 flex gap-3">
+                <button
+                  onClick={() => setShowLogoutConfirm(false)}
+                  className="flex-1 rounded-xl border border-[#E5E7EF] py-2.5 text-sm font-semibold text-[#6D6E71] transition-colors hover:bg-[#F4F6FA]"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleLogout}
+                  className="flex-1 rounded-xl bg-[#C62026] py-2.5 text-sm font-semibold text-white transition-colors hover:opacity-90"
+                >
+                  Sign Out
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </aside>
   );

@@ -36,7 +36,7 @@ const getCompany = asyncHandler(async (req, res) => {
   const company = await companyService.getCompanyById(req.params.id);
   if (!company) return res.status(404).json({ error: "Not found" });
   if (!permissionService.canAccessCompany(req.user, company.id)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "You do not have permission to access this company." });
   }
   res.json(company);
 });
@@ -45,7 +45,7 @@ const updateCompany = asyncHandler(async (req, res) => {
   const existingCompany = await companyService.getCompanyById(req.params.id);
   if (!existingCompany) return res.status(404).json({ error: "Not found" });
   if (!permissionService.canAccessCompany(req.user, existingCompany.id)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "You do not have permission to update this company." });
   }
 
   const updated = await companyService.updateCompany(req.params.id, req.body);
@@ -59,7 +59,7 @@ const deleteCompany = asyncHandler(async (req, res) => {
   const existing = await companyService.getCompanyById(req.params.id);
   if (!existing) return res.status(404).json({ error: "Not found" });
   if (!permissionService.canAccessCompany(req.user, existing.id)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "You do not have permission to delete this company." });
   }
 
   await companyService.deleteCompany(req.params.id);

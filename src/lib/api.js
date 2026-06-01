@@ -81,11 +81,15 @@ function resolveClientIdFromLocation() {
     window.location.pathname || '',
   ];
 
+  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   for (const candidate of candidates) {
     if (!candidate.startsWith('/client/')) continue;
     const match = candidate.match(/^\/client\/([^/?#]+)/);
     if (match) {
-      return decodeURIComponent(match[1]);
+      const id = decodeURIComponent(match[1]);
+      // Must be a UUID — route names like "messages", "documents", "requests"
+      // are not valid company IDs and must never be sent as X-Client-Id.
+      if (uuidPattern.test(id)) return id;
     }
   }
 
@@ -321,6 +325,20 @@ export function deleteRequest(requestId) {
 
 export function updateRequestNarrative(requestId, payload) {
   return request(`/requests/${requestId}/narrative`, { method: 'PATCH', body: payload }).then(unwrapPayload);
+}
+
+export function getRequestNarrative(requestId) {
+  // Returns { content, author_name, author_role, updated_at } or a plain string (backward compat).
+  return request(`/requests/${requestId}/narrative/file`).then((res) => {
+    if (!res) return { content: '', author_name: null, author_role: null, updated_at: null };
+    if (typeof res === 'string') return { content: res, author_name: null, author_role: null, updated_at: null };
+    return {
+      content:     res.content     || '',
+      author_name: res.author_name || null,
+      author_role: res.author_role || null,
+      updated_at:  res.updated_at  || null,
+    };
+  }).catch(() => ({ content: '', author_name: null, author_role: null, updated_at: null }));
 }
 
 export function listRequestDocuments(requestId) {

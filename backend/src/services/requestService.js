@@ -168,10 +168,25 @@ async function listRequestsByCompany(companyId) {
   } catch {
     const { data, error } = await supabase
       .from("requests")
-      .select(`*, created_by_user:users!requests_created_by_fkey(name, email), approved_by_user:users!requests_approved_by_fkey(name)`)
-      .eq("company_id", companyId).order("created_at", { ascending: false });
+      .select("*")
+      .eq("company_id", companyId)
+      .order("created_at", { ascending: false });
     if (error) throw error;
-    return (data || []).map(r => ({ ...r, created_by_name: r.created_by_user?.name, created_by_email: r.created_by_user?.email, approved_by_name: r.approved_by_user?.name }));
+    const rows = data || [];
+    const creatorIds = [...new Set(rows.map((r) => r.created_by).filter(Boolean))];
+    const approverIds = [...new Set(rows.map((r) => r.approved_by).filter(Boolean))];
+    const allUserIds = [...new Set([...creatorIds, ...approverIds])];
+    let userMap = {};
+    if (allUserIds.length) {
+      const { data: users } = await supabase.from("users").select("id, name, email").in("id", allUserIds);
+      userMap = Object.fromEntries((users || []).map((u) => [u.id, u]));
+    }
+    return rows.map((r) => ({
+      ...r,
+      created_by_name: userMap[r.created_by]?.name || null,
+      created_by_email: userMap[r.created_by]?.email || null,
+      approved_by_name: userMap[r.approved_by]?.name || null,
+    }));
   }
 }
 
@@ -337,7 +352,7 @@ async function listRequestDocuments(requestId) {
   const documentIds = links.map((l) => l.document_id).filter(Boolean);
   const { data: documents, error: docsError } = await supabase
     .from("documents")
-    .select("id, name, file_url, status, upload_id")
+    .select("id, name, file_url, status, upload_id, ext, size")
     .in("id", documentIds);
 
   if (docsError) throw docsError;
@@ -353,6 +368,8 @@ async function listRequestDocuments(requestId) {
       file_url: doc.file_url,
       status: doc.status,
       upload_id: doc.upload_id,
+      ext: doc.ext || '',
+      size: doc.size || '',
     };
   });
 }
@@ -392,13 +409,39 @@ async function updateNarrative(requestId, content, updatedBy) {
 }
 
 async function getNarrative(requestId) {
+  // Returns { content, updated_by, updated_at, author_name, author_role } or null.
   try {
-    const rows = await pgQuery("SELECT content FROM request_narratives WHERE request_id=$1 LIMIT 1", [requestId]);
+    const rows = await pgQuery(
+      `SELECT rn.content, rn.updated_by, rn.updated_at,
+              u.name  AS author_name,
+              u.role  AS author_role
+       FROM request_narratives rn
+       LEFT JOIN users u ON u.id = rn.updated_by
+       WHERE rn.request_id = $1 LIMIT 1`,
+      [requestId],
+    );
     return rows[0] || null;
   } catch {
-    const { data, error } = await supabase.from("request_narratives").select("content").eq("request_id", requestId).maybeSingle();
+    const { data, error } = await supabase
+      .from("request_narratives")
+      .select("content, updated_by, updated_at")
+      .eq("request_id", requestId)
+      .maybeSingle();
     if (error) throw error;
-    return data;
+    if (!data) return null;
+    // Resolve author name via a second query.
+    let author_name = null;
+    let author_role = null;
+    if (data.updated_by) {
+      const { data: user } = await supabase
+        .from("users")
+        .select("name, role")
+        .eq("id", data.updated_by)
+        .maybeSingle();
+      author_name = user?.name || null;
+      author_role = user?.role || null;
+    }
+    return { ...data, author_name, author_role };
   }
 }
 

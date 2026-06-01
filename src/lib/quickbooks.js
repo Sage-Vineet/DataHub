@@ -41,6 +41,10 @@ export async function request(path, options = {}) {
     ? await response.json().catch(() => null)
     : await response.text().catch(() => null);
 
+  if (response.status === 403) {
+    return null;
+  }
+
   if (!response.ok) {
     const errorMessage =
       payload?.message ||
