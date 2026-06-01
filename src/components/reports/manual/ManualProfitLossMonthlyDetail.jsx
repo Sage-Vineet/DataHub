@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { formatCurrency } from "../../../lib/utils";
 import { ChevronRight, ChevronDown } from "lucide-react";
 
@@ -16,6 +16,26 @@ function monthLabel(monthNum, year) {
 function AccountRow({ account, months, year }) {
   const [isOpen, setIsOpen] = useState(false);
   const hasTransactions = Array.isArray(account.transactions) && account.transactions.length > 0;
+
+  // Group the account's transactions into per-vendor subtotals (vendor-level
+  // total dollar amount), replacing the per-transaction detail. Sorted by the
+  // largest absolute amount first.
+  const vendorGroups = useMemo(() => {
+    const map = new Map();
+    (account.transactions || []).forEach((tx) => {
+      const name = String(tx.vendorName || "").trim() || "No vendor / —";
+      if (!map.has(name)) {
+        map.set(name, { vendorName: name, debit: 0, credit: 0, amount: 0 });
+      }
+      const g = map.get(name);
+      g.debit += Number(tx.debit || 0);
+      g.credit += Number(tx.credit || 0);
+      g.amount += Number(tx.amount || 0);
+    });
+    return Array.from(map.values()).sort(
+      (a, b) => Math.abs(b.amount) - Math.abs(a.amount),
+    );
+  }, [account.transactions]);
 
   return (
     <>
@@ -49,24 +69,20 @@ function AccountRow({ account, months, year }) {
               <table className="w-full border-collapse">
                 <thead>
                   <tr className="border-b border-border text-left text-[10px] text-text-muted uppercase tracking-wider">
-                    <th className="px-2 py-1 font-semibold pl-12">Date</th>
-                    <th className="px-2 py-1 font-semibold">Vendor / Payee</th>
-                    <th className="px-2 py-1 font-semibold">Description</th>
+                    <th className="px-2 py-1 font-semibold pl-12">Vendor / Payee</th>
                     <th className="px-2 py-1 font-semibold text-right">Debit</th>
                     <th className="px-2 py-1 font-semibold text-right">Credit</th>
                     <th className="px-2 py-1 font-semibold text-right">Amount</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {account.transactions.map((tx, idx) => (
-                    <tr key={tx.id || idx} className="border-b border-border/50 hover:bg-bg-card/50 transition-colors">
-                      <td className="px-2 py-1 text-[11px] text-text-secondary pl-12">{tx.date || "-"}</td>
-                      <td className="px-2 py-1 text-[11px] text-text-primary font-medium">{tx.vendorName || "-"}</td>
-                      <td className="px-2 py-1 text-[11px] text-text-muted max-w-[300px] truncate">{tx.description || "-"}</td>
-                      <td className="px-2 py-1 text-[11px] text-text-secondary text-right">{tx.debit ? formatCurrency(tx.debit) : ""}</td>
-                      <td className="px-2 py-1 text-[11px] text-text-secondary text-right">{tx.credit ? formatCurrency(tx.credit) : ""}</td>
-                      <td className={`px-2 py-1 text-[11px] text-right font-medium ${tx.amount < 0 ? "text-status-error" : "text-text-primary"}`}>
-                        {formatCurrency(tx.amount)}
+                  {vendorGroups.map((g, idx) => (
+                    <tr key={g.vendorName || idx} className="border-b border-border/50 hover:bg-bg-card/50 transition-colors">
+                      <td className="px-2 py-1 text-[11px] text-text-primary font-medium pl-12">{g.vendorName}</td>
+                      <td className="px-2 py-1 text-[11px] text-text-secondary text-right">{g.debit ? formatCurrency(g.debit) : ""}</td>
+                      <td className="px-2 py-1 text-[11px] text-text-secondary text-right">{g.credit ? formatCurrency(g.credit) : ""}</td>
+                      <td className={`px-2 py-1 text-[11px] text-right font-medium ${g.amount < 0 ? "text-status-error" : "text-text-primary"}`}>
+                        {formatCurrency(g.amount)}
                       </td>
                     </tr>
                   ))}
@@ -199,14 +215,17 @@ export default function ManualProfitLossMonthlyDetail({
         <div className="overflow-x-auto rounded-md border border-border">
           <table className="w-full border-collapse text-sm">
             <thead>
-              <tr className="border-b-2 border-text-primary bg-bg-page sticky top-0 z-10">
-                <th className="px-3 py-2.5 text-left text-[12px] font-semibold text-text-primary min-w-[220px]" />
+              {/* Heavy divider lives on the cells (not the <tr>): a border-b on a
+                  sticky row with border-collapse renders through/over the labels,
+                  which made the dates overlap the line. */}
+              <tr className="bg-bg-page sticky top-0 z-10">
+                <th className="px-3 pt-2.5 pb-3 text-left text-[12px] font-semibold text-text-primary min-w-[220px] border-b-2 border-text-primary" />
                 {months.map((m) => (
-                  <th key={m} className="px-3 py-2.5 text-right text-[12px] font-semibold text-text-primary whitespace-nowrap min-w-[90px]">
+                  <th key={m} className="px-3 pt-2.5 pb-3 text-right text-[12px] font-semibold text-text-primary whitespace-nowrap min-w-[90px] border-b-2 border-text-primary">
                     {monthLabel(m, year)}
                   </th>
                 ))}
-                <th className="px-3 py-2.5 text-right text-[12px] font-semibold text-text-primary min-w-[100px]">
+                <th className="px-3 pt-2.5 pb-3 text-right text-[12px] font-semibold text-text-primary min-w-[100px] border-b-2 border-text-primary">
                   Total
                 </th>
               </tr>

@@ -7,7 +7,12 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { cn } from "../../../lib/utils";
-import { getCompanyRequest, getStoredToken } from "../../../lib/api";
+import {
+  getCompanyRequest,
+  getStoredToken,
+  getManualStagedProfitLossSummary,
+  getManualStageFilterOptions,
+} from "../../../lib/api";
 import { useDataSource } from "../../../context/DataSourceContext";
 
 const API_BASE_URL =
@@ -179,6 +184,10 @@ export default function WorkspaceTaxReconciliation() {
     message: Object.keys(storedState?.matrixData ?? {}).length > 0 ? "Restored saved data." : "",
   }));
 
+  // Manual GL (staged General Ledger) sources its P&L from the platform's GL
+  // reports — not from a separately uploaded P&L document. It's handled by its
+  // own branch (checked before isManualMode) so the uploaded-file path is unchanged.
+  const isManualGL = activeSourceMode === 'manual';
   const isManualMode = activeSourceMode === 'manual_upload' || activeSourceMode === 'manual';
   const isQBManual = activeSourceMode === 'quickbooks_manual';
 
@@ -262,7 +271,109 @@ export default function WorkspaceTaxReconciliation() {
     setSyncStatus({ status: "loading", message: isManualMode ? "Fetching P&L data…" : "Fetching P&L & Tax Data…" });
 
     try {
-      if (isManualMode) {
+      if (isManualGL) {
+        // ── Manual GL: P&L sourced from the platform's staged-GL reports ──
+        // (no separate P&L upload). Tax returns still come from the DataRoom.
+        const headers = getHeaders();
+        const allWarnings = [];
+        const forceParam = forceRefresh ? "&force=1" : "";
+
+        setSyncStatus({ status: "loading", message: "Reading manual GL P&L…" });
+
+        // Tax returns (uploaded) + available GL fiscal years, in parallel.
+        const [taxRes, filterRes] = await Promise.all([
+          fetch(`${API_BASE_URL}/manual-report-uploads/tax-data?clientId=${clientId || ""}${forceParam}`, { headers })
+            .then((r) => r.json()).catch(() => ({ success: false })),
+          getManualStageFilterOptions({ clientId, params: {} }).catch(() => ({})),
+        ]);
+
+        const taxYears = (taxRes.success && taxRes.years) ? taxRes.years : {};
+        if (taxRes.warning) allWarnings.push(taxRes.warning);
+        if (Array.isArray(taxRes.warnings)) allWarnings.push(...taxRes.warnings);
+
+        const glYears = Array.isArray(filterRes?.options?.fiscalYear)
+          ? filterRes.options.fiscalYear.map(Number).filter(Boolean)
+          : [];
+
+        // Fetch the GL P&L summary per year and map its hierarchicalRows to the
+        // tax line items using the existing extractTaxRowsFromManualPL helper.
+        const plYears = {};
+        await Promise.all(glYears.map(async (year) => {
+          try {
+            const payload = await getManualStagedProfitLossSummary({
+              clientId,
+              params: { fiscalYear: [String(year)] },
+            });
+            const rows = Array.isArray(payload?.hierarchicalRows) ? payload.hierarchicalRows : [];
+            if (rows.length) {
+              plYears[year] = { year, data: extractTaxRowsFromManualPL(rows) };
+            }
+          } catch {
+            /* skip this year on failure */
+          }
+        }));
+
+        const allYears = [...new Set([
+          ...Object.keys(plYears).map(Number),
+          ...Object.keys(taxYears).map(Number),
+        ])].sort();
+
+        if (!allYears.length) {
+          throw new Error("No manual GL P&L or tax return data found. Upload a GL via Manual GL Upload and tax returns to the data room.");
+        }
+
+        const results = {};
+        for (const year of allYears) {
+          const mergedMap = new Map();
+
+          MAIN_LINE_ITEMS.forEach((item) => {
+            mergedMap.set(item.label, { label: item.label, pl: 0, taxReturn: 0, isReconcilingItem: false });
+          });
+
+          // Overlay P&L (from manual GL) for matching year
+          (plYears[year]?.data || []).forEach((item) => {
+            if (mergedMap.has(item.label)) {
+              mergedMap.get(item.label).pl = Number(item.pl || 0);
+            } else {
+              mergedMap.set(item.label, { label: item.label, pl: Number(item.pl || 0), taxReturn: 0, isReconcilingItem: false });
+            }
+          });
+
+          // Overlay tax return data for matching year
+          (taxYears[year]?.data || []).forEach((item) => {
+            if (mergedMap.has(item.label)) {
+              const row = mergedMap.get(item.label);
+              row.taxReturn = Number(item.taxReturn || 0);
+              if (item.isReconcilingItem) row.isReconcilingItem = true;
+            } else {
+              mergedMap.set(item.label, {
+                label: item.label,
+                pl: 0,
+                taxReturn: Number(item.taxReturn || 0),
+                isReconcilingItem: !!item.isReconcilingItem,
+              });
+            }
+          });
+
+          results[year] = {
+            success: true,
+            taxYear: year,
+            data: Array.from(mergedMap.values()).map((row) => ({
+              ...row,
+              variance: (row.taxReturn || 0) - (row.pl || 0),
+            })),
+            warnings: [],
+          };
+        }
+
+        const loadedYears = Object.keys(results).map(Number).sort();
+        setMatrixData(results);
+        setWarnings(allWarnings);
+        setSyncStatus({
+          status: "success",
+          message: `Loaded ${loadedYears.length} year(s) from manual GL: FY ${loadedYears.join(", FY ")}.`,
+        });
+      } else if (isManualMode) {
         // ── Manual Upload: P&L + Tax Returns both from DataRoom via Gemini ─
         const headers = getHeaders();
         const allWarnings = [];
@@ -510,7 +621,7 @@ export default function WorkspaceTaxReconciliation() {
     } finally {
       setIsLoading(false);
     }
-  }, [selectedYears, accountingMethod, clientId, getHeaders, isManualMode, isQBManual, currentYear]);
+  }, [selectedYears, accountingMethod, clientId, getHeaders, isManualGL, isManualMode, isQBManual, currentYear]);
 
   useEffect(() => {
     if (!activeSource) return;
