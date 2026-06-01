@@ -15,6 +15,7 @@ export default function CashflowReport({
   clientName = "All Clients",
   entityName,
   isPreview = false,
+  selectedMonths = [],
 }) {
   const resolvedEntityName = entityName || clientName || "Company";
   const periodText = startDate === "1970-01-01" ? "All Dates" : `${startDate || "N/A"} to ${endDate || "N/A"}`;
@@ -33,6 +34,7 @@ export default function CashflowReport({
           data={detailedData}
           title="Cash Flow Statement"
           entityName={resolvedEntityName}
+          selectedMonths={selectedMonths}
         />
       );
     }

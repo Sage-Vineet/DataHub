@@ -155,7 +155,7 @@ function createDefaultManualFilters() {
   return {
     batchId: "",
     fiscalYear: [],
-    fiscalMonth: "",
+    fiscalMonth: [],
     startDate: "",
     endDate: "",
     accountName: [],
@@ -187,6 +187,9 @@ const MONTH_OPTIONS = [
   { value: "11", label: "November" },
   { value: "12", label: "December" },
 ];
+
+const MONTH_LABELS = MONTH_OPTIONS.map((opt) => opt.label);
+const MONTH_LABEL_TO_VALUE = Object.fromEntries(MONTH_OPTIONS.map((opt) => [opt.label, opt.value]));
 
 function normalizeManualFilters(input = {}) {
   const defaults = createDefaultManualFilters();
@@ -404,8 +407,8 @@ export default function WorkspaceReports() {
       // Clear fiscal year selection and stale options; filter options will
       // be re-fetched automatically via filterOptionsVersion increment.
       setManualFilterOptions({});
-      setManualFilters((prev) => ({ ...prev, batchId: "", fiscalYear: [], fiscalMonth: "" }));
-      setAppliedManualFilters((prev) => ({ ...prev, batchId: "", fiscalYear: [], fiscalMonth: "" }));
+      setManualFilters((prev) => ({ ...prev, batchId: "", fiscalYear: [], fiscalMonth: [] }));
+      setAppliedManualFilters((prev) => ({ ...prev, batchId: "", fiscalYear: [], fiscalMonth: [] }));
       setReportsData(createInitialReportsData());
       // Invalidate the tab-switch cache so reports refetch against the new batch.
       reportSignaturesRef.current = {};
@@ -512,7 +515,7 @@ export default function WorkspaceReports() {
 
         if (resolvedBatchId && currentFilters.batchId !== resolvedBatchId) {
           nextFilters.batchId = resolvedBatchId;
-          nextFilters.fiscalMonth = "";
+          nextFilters.fiscalMonth = [];
           changed = true;
         }
 
@@ -930,12 +933,32 @@ export default function WorkspaceReports() {
       const next = {
         ...manualFiltersRef.current,
         fiscalYear: nextYears,
-        fiscalMonth: "",
+        fiscalMonth: [],
       };
       setManualFilters(next);
       setAppliedManualFilters(next);
       debugLog("[ManualGL][UI][FilterChange][FiscalYears]", {
         selectedFiscalYears: nextYears,
+      });
+    },
+    [debugLog],
+  );
+
+  const handleFiscalMonthsChange = useCallback(
+    (monthLabels) => {
+      // Convert month labels (January, February, etc.) back to values (1, 2, etc.)
+      const monthValues = (monthLabels || [])
+        .map((label) => MONTH_LABEL_TO_VALUE[String(label)])
+        .filter(Boolean)
+        .sort((a, b) => Number(a) - Number(b));
+      const next = {
+        ...manualFiltersRef.current,
+        fiscalMonth: monthValues,
+      };
+      setManualFilters(next);
+      setAppliedManualFilters(next);
+      debugLog("[ManualGL][UI][FilterChange][FiscalMonths]", {
+        selectedFiscalMonths: monthValues,
       });
     },
     [debugLog],
@@ -1256,8 +1279,8 @@ export default function WorkspaceReports() {
                 <button
                   onClick={() => {
                     setReportType("Summary");
-                    if (manualFilters.fiscalMonth) {
-                      const cleared = { ...manualFilters, fiscalMonth: "" };
+                    if (Array.isArray(manualFilters.fiscalMonth) && manualFilters.fiscalMonth.length > 0) {
+                      const cleared = { ...manualFilters, fiscalMonth: [] };
                       setManualFilters(cleared);
                       setAppliedManualFilters(cleared);
                     }
@@ -1503,34 +1526,17 @@ export default function WorkspaceReports() {
                 {reportType === "Detail" && (
                   <div className="flex flex-col gap-1.5">
                     <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
-                      Month
+                      Months
                     </label>
-                    <div className="relative min-w-[130px]">
-                      <select
-                        value={manualFilters.fiscalMonth || ""}
-                        onChange={(event) => {
-                          const month = event.target.value;
-                          const next = { ...manualFilters, fiscalMonth: month };
-                          setManualFilters(next);
-                          setAppliedManualFilters(next);
-                          debugLog("[ManualGL][UI][FilterChange][FiscalMonth]", {
-                            selectedFiscalMonth: month || null,
-                          });
-                        }}
-                        className="h-9 w-full appearance-none rounded-md border border-border-input bg-bg-card pl-3 pr-9 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-                      >
-                        <option value="">All months</option>
-                        {MONTH_OPTIONS.map((opt) => (
-                          <option key={opt.value} value={opt.value}>
-                            {opt.label}
-                          </option>
-                        ))}
-                      </select>
-                      <ChevronDown
-                        size={14}
-                        className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-text-muted"
-                      />
-                    </div>
+                    <MultiSelectDropdown
+                      className="min-w-[160px]"
+                      options={MONTH_LABELS}
+                      values={(manualFilters.fiscalMonth || [])
+                        .map((val) => MONTH_OPTIONS.find((opt) => opt.value === String(val))?.label)
+                        .filter(Boolean)}
+                      onChange={handleFiscalMonthsChange}
+                      placeholder="Select months…"
+                    />
                   </div>
                 )}
               </>
@@ -1562,6 +1568,7 @@ export default function WorkspaceReports() {
                       entityName={company?.name || clientName}
                       createdOn={createdOn}
                       isPreview={true}
+                      selectedMonths={appliedManualFilters?.fiscalMonth || []}
                     />
                   ) : selectedTab === "Profit & Loss" ? (
                     <ProfitAndLossReport
@@ -1576,6 +1583,7 @@ export default function WorkspaceReports() {
                       entityName={company?.name || clientName}
                       createdOn={createdOn}
                       isPreview={true}
+                      selectedMonths={appliedManualFilters?.fiscalMonth || []}
                     />
                   ) : (
                     <CashflowReport
@@ -1590,6 +1598,7 @@ export default function WorkspaceReports() {
                       entityName={company?.name || clientName}
                       createdOn={createdOn}
                       isPreview={true}
+                      selectedMonths={appliedManualFilters?.fiscalMonth || []}
                     />
                   )}
                 </div>

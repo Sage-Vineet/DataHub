@@ -7762,14 +7762,18 @@ const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Se
 
 // â”€â”€â”€ Monthly Detail: Profit & Loss â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-function buildProfitLossMonthlyDetailPayload(transactions = [], year, filters = {}, selectedMonth = null) {
-  const resolvedSelectedMonth = (Number.isInteger(Number(selectedMonth)) && Number(selectedMonth) >= 1 && Number(selectedMonth) <= 12)
-    ? Number(selectedMonth) : null;
-  const months = resolvedSelectedMonth !== null ? [resolvedSelectedMonth] : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+function buildProfitLossMonthlyDetailPayload(transactions = [], year, filters = {}, selectedMonths = null) {
+  // Normalise: accept a single number, an array, or null/empty → fall back to all months.
+  const resolvedMonthsSet = (() => {
+    const raw = Array.isArray(selectedMonths) ? selectedMonths : (selectedMonths != null ? [selectedMonths] : []);
+    const valid = raw.map(Number).filter(n => Number.isInteger(n) && n >= 1 && n <= 12);
+    return valid.length > 0 ? new Set(valid) : null;
+  })();
+  const months = resolvedMonthsSet !== null ? [...resolvedMonthsSet].sort((a, b) => a - b) : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
   const accountMap = new Map();
 
-  if (resolvedSelectedMonth !== null) {
-    console.log(`[ManualGL][PL-Monthly][Filter] Period-only month: ${resolvedSelectedMonth} of year ${year}`);
+  if (resolvedMonthsSet !== null) {
+    console.log(`[ManualGL][PL-Monthly][Filter] Period-only months: ${[...resolvedMonthsSet].join(',')} of year ${year}`);
   }
 
   transactions.forEach((tx) => {
@@ -7783,8 +7787,8 @@ function buildProfitLossMonthlyDetailPayload(transactions = [], year, filters = 
     const monthNum = txDate.length >= 7 ? parseInt(txDate.slice(5, 7), 10) : 0;
     if (!monthNum || monthNum < 1 || monthNum > 12) return;
 
-    // Period-only filter: skip months outside selected month
-    if (resolvedSelectedMonth !== null && monthNum !== resolvedSelectedMonth) return;
+    // Period-only filter: skip months outside selected set
+    if (resolvedMonthsSet !== null && !resolvedMonthsSet.has(monthNum)) return;
 
     const category = normalizeProfitLossCategory(tx.category, tx.accountName, tx.accountType);
     if (!category) return;
@@ -7968,25 +7972,30 @@ async function getProfitLossMonthlyDetailFromStage(companyId, filters = {}) {
       )
       : null);
 
-  const selectedMonth = Array.isArray(normalizedFilters.fiscalMonths) && normalizedFilters.fiscalMonths.length > 0
-    ? normalizedFilters.fiscalMonths[0] : null;
-  console.log(`[ManualGL][PL-Monthly][Filter] selectedMonth: ${selectedMonth}`);
+  const selectedMonths = Array.isArray(normalizedFilters.fiscalMonths) && normalizedFilters.fiscalMonths.length > 0
+    ? normalizedFilters.fiscalMonths : null;
+  console.log(`[ManualGL][PL-Monthly][Filter] selectedMonths: ${selectedMonths ? selectedMonths.join(',') : 'all'}`);
 
-  return buildProfitLossMonthlyDetailPayload(normalized, fallbackYear, normalizedFilters, selectedMonth);
+  return buildProfitLossMonthlyDetailPayload(normalized, fallbackYear, normalizedFilters, selectedMonths);
 }
 
 // â”€â”€â”€ Monthly Detail: Balance Sheet â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-function buildBalanceSheetMonthlyDetailPayload(transactions = [], year, filters = {}, startingLines = [], netProfitByYear = {}, selectedMonth = null, fiscalCalendar = {}) {
-  const resolvedSelectedMonth = (Number.isInteger(Number(selectedMonth)) && Number(selectedMonth) >= 1 && Number(selectedMonth) <= 12)
-    ? Number(selectedMonth) : null;
-  // For BS, months are cumulative: always show from Jan up to (and including) selectedMonth
+function buildBalanceSheetMonthlyDetailPayload(transactions = [], year, filters = {}, startingLines = [], netProfitByYear = {}, selectedMonths = null, fiscalCalendar = {}) {
+  // Normalise: accept a single number, an array, or null/empty → fall back to all months.
+  const resolvedMonthsSet = (() => {
+    const raw = Array.isArray(selectedMonths) ? selectedMonths : (selectedMonths != null ? [selectedMonths] : []);
+    const valid = raw.map(Number).filter(n => Number.isInteger(n) && n >= 1 && n <= 12);
+    return valid.length > 0 ? new Set(valid) : null;
+  })();
   const allMonths = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-  const months = resolvedSelectedMonth !== null ? allMonths.slice(0, resolvedSelectedMonth) : allMonths;
-  const lastMonth = resolvedSelectedMonth !== null ? resolvedSelectedMonth : 12;
+  // Show only the specifically selected months; cumulative balances are still computed
+  // internally for all months (needed for correctness), but only the selected months are output.
+  const months = resolvedMonthsSet !== null ? [...resolvedMonthsSet].sort((a, b) => a - b) : allMonths;
+  const lastMonth = months.length > 0 ? months[months.length - 1] : 12;
 
-  if (resolvedSelectedMonth !== null) {
-    console.log(`[ManualGL][BS-Monthly][Filter] Cumulative through month: ${resolvedSelectedMonth} of year ${year}`);
+  if (resolvedMonthsSet !== null) {
+    console.log(`[ManualGL][BS-Monthly][Filter] Showing months: ${months.join(',')} of year ${year}`);
   }
 
   const derivedYears = Array.from(
@@ -8351,9 +8360,9 @@ async function getBalanceSheetMonthlyDetailFromStage(companyId, filters = {}) {
     normalized = normalized.filter((tx) => Number(tx.fiscalYear || 0) <= targetYear);
   }
 
-  const selectedMonth = Array.isArray(normalizedFilters.fiscalMonths) && normalizedFilters.fiscalMonths.length > 0
-    ? normalizedFilters.fiscalMonths[0] : null;
-  console.log(`[ManualGL][BS-Monthly][Filter] targetYear: ${targetYear}, selectedMonth: ${selectedMonth}`);
+  const selectedMonths = Array.isArray(normalizedFilters.fiscalMonths) && normalizedFilters.fiscalMonths.length > 0
+    ? normalizedFilters.fiscalMonths : null;
+  console.log(`[ManualGL][BS-Monthly][Filter] targetYear: ${targetYear}, selectedMonths: ${selectedMonths ? selectedMonths.join(',') : 'all'}`);
 
   const batchFiscalCalendarMonthly = fiscalCalendarExplicitMonthly
     ? { fiscalYearStartMonth: batchMetaMonthly.fiscalYearStartMonth, fiscalYearStartDay: batchMetaMonthly.fiscalYearStartDay }
@@ -8365,19 +8374,22 @@ async function getBalanceSheetMonthlyDetailFromStage(companyId, filters = {}) {
     { ...normalizedFilters, batchId: normalizedFilters.batchId || effectiveBatchId || "" },
     startingLines,
     pnlPayload.netProfitByYear || {},
-    selectedMonth,
+    selectedMonths,
     batchFiscalCalendarMonthly,
   );
 }
 
 // â”€â”€â”€ Monthly Detail: Cash Flow â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-function buildCashflowMonthlyDetailPayload(transactions = [], year, filters = {}, startingLines = [], selectedMonth = null) {
-  const resolvedSelectedMonth = (Number.isInteger(Number(selectedMonth)) && Number(selectedMonth) >= 1 && Number(selectedMonth) <= 12)
-    ? Number(selectedMonth) : null;
+function buildCashflowMonthlyDetailPayload(transactions = [], year, filters = {}, startingLines = [], selectedMonths = null) {
+  const resolvedMonthsSet = (() => {
+    const raw = Array.isArray(selectedMonths) ? selectedMonths : (selectedMonths != null ? [selectedMonths] : []);
+    const valid = raw.map(Number).filter(n => Number.isInteger(n) && n >= 1 && n <= 12);
+    return valid.length > 0 ? new Set(valid) : null;
+  })();
   const allMonths = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-  const months = resolvedSelectedMonth !== null ? allMonths.slice(0, resolvedSelectedMonth) : allMonths;
-  const lastMonth = resolvedSelectedMonth !== null ? resolvedSelectedMonth : 12;
+  const months = resolvedMonthsSet !== null ? [...resolvedMonthsSet].sort((a, b) => a - b) : allMonths;
+  const lastMonth = months.length > 0 ? months[months.length - 1] : 12;
   const selectedYear = (Number.isInteger(Number(year)) && Number(year) > 0) ? Number(year) : null;
 
   if (!selectedYear) {
@@ -8607,16 +8619,16 @@ async function getCashflowMonthlyDetailFromStage(companyId, filters = {}) {
     normalized = reclassifyNormalizedTransactions(normalized, bsLookup);
   }
 
-  const selectedMonth = Array.isArray(normalizedFilters.fiscalMonths) && normalizedFilters.fiscalMonths.length > 0
-    ? normalizedFilters.fiscalMonths[0] : null;
-  console.log(`[ManualGL][CF-Monthly][Filter] targetYear: ${targetYear}, selectedMonth: ${selectedMonth}`);
+  const selectedMonths = Array.isArray(normalizedFilters.fiscalMonths) && normalizedFilters.fiscalMonths.length > 0
+    ? normalizedFilters.fiscalMonths : null;
+  console.log(`[ManualGL][CF-Monthly][Filter] targetYear: ${targetYear}, selectedMonths: ${selectedMonths ? selectedMonths.join(',') : 'all'}`);
 
   return buildCashflowMonthlyDetailPayload(
     normalized,
     targetYear,
     { ...normalizedFilters, batchId: normalizedFilters.batchId || effectiveBatchId || "" },
     startingLines,
-    selectedMonth,
+    selectedMonths,
   );
 }
 

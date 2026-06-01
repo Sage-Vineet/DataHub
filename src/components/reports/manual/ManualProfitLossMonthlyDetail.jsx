@@ -169,8 +169,10 @@ export default function ManualProfitLossMonthlyDetail({
   title = "Profit and Loss",
   subtitle = "",
   entityName = "Company",
+  selectedMonths = [],
 }) {
   const year = data?.year || null;
+  // The backend already filters to the selected months; just use data.months directly.
   const months = Array.isArray(data?.months) ? data.months : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
   const sections = Array.isArray(data?.sections) ? data.sections : [];
   const monthNames = data?.monthNames || ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];

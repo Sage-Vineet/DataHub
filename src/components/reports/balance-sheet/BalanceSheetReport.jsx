@@ -14,6 +14,7 @@ export default function BalanceSheetReport({
   entityName,
   createdOn,
   isPreview = false,
+  selectedMonths = [],
 }) {
   const resolvedEntityName = entityName || clientName || "Company";
   const periodText = startDate === "1970-01-01" ? "All Dates" : `${startDate || "N/A"} to ${endDate || "N/A"}`;
@@ -42,6 +43,7 @@ export default function BalanceSheetReport({
           title="Balance Sheet"
           subtitle={summarySubtitle}
           entityName={resolvedEntityName}
+          selectedMonths={selectedMonths}
         />
       );
     }

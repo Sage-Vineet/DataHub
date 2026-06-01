@@ -14,6 +14,7 @@ export default function ProfitAndLossReport({
   clientName = "All Clients",
   entityName,
   createdOn,
+  selectedMonths = [],
 }) {
   const resolvedEntityName = entityName || clientName || "Company";
   const periodText = startDate === "1970-01-01" ? "All Dates" : `${startDate || "N/A"} to ${endDate || "N/A"}`;
@@ -45,6 +46,7 @@ export default function ProfitAndLossReport({
             data={detailedData}
             entityName={resolvedEntityName}
             subtitle={summarySubtitle}
+            selectedMonths={selectedMonths}
           />
         );
       }

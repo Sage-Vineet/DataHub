@@ -98,8 +98,10 @@ export default function ManualBalanceSheetMonthlyDetail({
   title = "Balance Sheet",
   subtitle = "",
   entityName = "Company",
+  selectedMonths = [],
 }) {
   const year = data?.year || null;
+  // The backend already filters to the selected months; just use data.months directly.
   const months = Array.isArray(data?.months) ? data.months : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
   const sections = data?.sections || {};
   const hasSections = Object.keys(sections).length > 0;
