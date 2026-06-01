@@ -448,6 +448,9 @@ export async function getBalanceSheet(startDate, endDate, accountingMethod, opti
     if (rows.length > 0 || source) {
       return {
         rows,
+        // Per-year comparative columns (present only when multiple fiscal years
+        // are selected); passed through to the renderer via BalanceSheetReport.
+        yearCols: Array.isArray(response?.yearCols) ? response.yearCols : undefined,
         source,
         sourceLabel: resolveSourceLabel(source),
         asOfDate: response?.asOfDate || endDate || null,

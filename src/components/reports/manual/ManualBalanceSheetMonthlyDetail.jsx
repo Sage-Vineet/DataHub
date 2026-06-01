@@ -63,7 +63,7 @@ function CategoryBlock({ category, months }) {
 function SectionBlock({ sectionKey, section, months }) {
   const totalLabel = sectionKey === "Assets" ? "Total Assets"
     : sectionKey === "Liabilities" ? "Total Liabilities"
-    : "Total Equity";
+      : "Total Equity";
 
   return (
     <>
@@ -96,20 +96,24 @@ function SectionBlock({ sectionKey, section, months }) {
 export default function ManualBalanceSheetMonthlyDetail({
   data,
   title = "Balance Sheet",
+  subtitle = "",
   entityName = "Company",
+  selectedMonths = [],
 }) {
   const year = data?.year || null;
+  // The backend already filters to the selected months; just use data.months directly.
   const months = Array.isArray(data?.months) ? data.months : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
   const sections = data?.sections || {};
   const hasSections = Object.keys(sections).length > 0;
 
   const lastMonth = months.length > 0 ? months[months.length - 1] : 12;
-  const monthNames = data?.monthNames || ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const monthNames = data?.monthNames || ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const lastMonthName = monthNames[lastMonth - 1] || "Dec";
   const lastDayOfMonth = year ? new Date(year, lastMonth, 0).getDate() : 31;
-  const subtitle = year
+  const fallbackSubtitle = year
     ? `As of ${lastMonthName} ${lastDayOfMonth}, ${year}`
     : "All Dates";
+  const displaySubtitle = subtitle || fallbackSubtitle;
 
   if (!hasSections) {
     return (
@@ -137,23 +141,30 @@ export default function ManualBalanceSheetMonthlyDetail({
       <div className="max-w-[1600px] mx-auto card-base p-6 min-h-[900px] flex flex-col rounded-sm shadow-xl">
 
         {/* Report Header */}
-        <div className="flex flex-col items-center mb-8">
-          <h1 className="text-[20px] font-bold text-text-primary tracking-tight">{entityName}</h1>
-          <h2 className="text-[17px] font-semibold text-text-secondary mt-1">{title}</h2>
-          <p className="text-[13px] text-text-muted mt-1">{subtitle}</p>
+        <div className="flex flex-col items-center mb-10 relative">
+          <div className="w-12 h-1 bg-primary rounded-full mb-6" />
+          <h1 className="text-[22px] font-bold text-text-primary tracking-tight leading-none mb-2">
+            {entityName}
+          </h1>
+          <h2 className="text-[18px] font-medium text-text-secondary mb-4">{title}</h2>
+          {displaySubtitle && (
+            <div className="flex items-center gap-3 text-[12px] text-text-muted bg-bg-page px-4 py-1.5 rounded-full border border-border">
+              <span>{displaySubtitle}</span>
+            </div>
+          )}
         </div>
 
         <div className="overflow-x-auto rounded-md border border-border">
           <table className="w-full border-collapse text-sm">
             <thead>
-              <tr className="border-b-2 border-text-primary bg-bg-page sticky top-0 z-10">
-                <th className="px-3 py-2.5 text-left text-[12px] font-semibold text-text-primary min-w-[220px]" />
+              <tr className="bg-bg-page sticky top-0 z-10">
+                <th className="px-3 pt-2.5 pb-3 text-left text-[12px] font-semibold text-text-primary min-w-[220px] border-b-2 border-text-primary" />
                 {months.map((m) => (
-                  <th key={m} className="px-3 py-2.5 text-right text-[12px] font-semibold text-text-primary whitespace-nowrap min-w-[90px]">
+                  <th key={m} className="px-3 pt-2.5 pb-3 text-right text-[12px] font-semibold text-text-primary whitespace-nowrap min-w-[90px] border-b-2 border-text-primary">
                     {monthLabel(m, year)}
                   </th>
                 ))}
-                <th className="px-3 py-2.5 text-right text-[12px] font-semibold text-text-primary min-w-[100px]">
+                <th className="px-3 pt-2.5 pb-3 text-right text-[12px] font-semibold text-text-primary min-w-[100px] border-b-2 border-text-primary">
                   Total
                 </th>
               </tr>

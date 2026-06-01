@@ -4,14 +4,7 @@ import {
   ChevronRight,
   FileText,
 } from "lucide-react";
-import { cn } from "../../../lib/utils";
-
-function formatCurrency(amount) {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-  }).format(amount || 0);
-}
+import { cn, formatCurrency } from "../../../lib/utils";
 
 function AccountRow({ account, years, isOpen, onToggle }) {
   const accountKey = `${account.accountNumber || ""}::${account.accountName || ""}`;
