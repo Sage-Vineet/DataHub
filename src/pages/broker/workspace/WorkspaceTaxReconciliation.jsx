@@ -436,14 +436,15 @@ export default function WorkspaceTaxReconciliation() {
         setWarnings(allWarnings);
         setSyncStatus({ status: "success", message: `Loaded ${loadedYears.length} year(s): FY ${loadedYears.join(", FY ")}.` });
       } else {
-        // ── QuickBooks mode: existing multi-year fetch ────────────────────
+        // ── QuickBooks Online mode: QB P&L + DataRoom tax return ─────────────
         const allWarnings = new Set();
         const results = {};
+        const forceParam = forceRefresh ? "&force=1" : "";
 
         await Promise.all(
           selectedYears.map(async (year) => {
             const plUrl = `${API_BASE_URL}/quickbooks-pl?start_date=${year}-01-01&end_date=${year}-12-31&accounting_method=${accountingMethod}&clientId=${clientId || ""}`;
-            const taxUrl = `${API_BASE_URL}/tax-data?start_date=${year}-01-01&clientId=${clientId || ""}`;
+            const taxUrl = `${API_BASE_URL}/tax-data?start_date=${year}-01-01&clientId=${clientId || ""}${forceParam}`;
 
             const headers = getHeaders();
 
@@ -484,24 +485,37 @@ export default function WorkspaceTaxReconciliation() {
               variance: (row.taxReturn || 0) - (row.pl || 0),
             }));
 
+            // Suppress the "no PDF found" warning if tax data actually loaded
+            const taxHasData = taxRes.success && Array.isArray(taxRes.data) && taxRes.data.length > 0;
+            const taxWarnings = taxHasData
+              ? (taxRes.warnings || [])
+              : [
+                  ...(taxRes.warning ? [taxRes.warning] : []),
+                  ...(taxRes.warnings || []),
+                ];
+
             results[year] = {
               success: true,
-              taxYear: taxRes.success ? taxRes.year : year,
+              taxYear: taxRes.success && taxRes.year ? taxRes.year : year,
               data: finalData,
-              warnings: [
-                ...(plRes.warnings || []),
-                ...(taxRes.warning ? [taxRes.warning] : []),
-                ...(taxRes.warnings || []),
-              ],
+              warnings: [...(plRes.warnings || []), ...taxWarnings],
             };
 
             (results[year].warnings || []).forEach((w) => allWarnings.add(w));
           })
         );
 
+        // Build success message — mention which years have tax data loaded
+        const yearsWithTax = selectedYears.filter(
+          (yr) => results[yr]?.data?.some((r) => r.taxReturn !== 0),
+        );
+        const taxMsg = yearsWithTax.length > 0
+          ? ` | Tax return loaded for FY ${yearsWithTax.join(", FY ")}`
+          : "";
+
         setMatrixData(results);
         setWarnings(Array.from(allWarnings));
-        setSyncStatus({ status: "success", message: `Refreshed ${selectedYears.length} year(s).` });
+        setSyncStatus({ status: "success", message: `Refreshed ${selectedYears.length} year(s).${taxMsg}` });
       }
     } catch (err) {
       console.error("Load Error:", err);

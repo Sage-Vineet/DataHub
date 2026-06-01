@@ -673,3 +673,6 @@ router.get("/manual-report-uploads/bs-bank-balances", extractClientId, async (re
 });
 
 module.exports = router;
+module.exports.runBsBankBalancesExtraction = runBsBankBalancesExtraction;
+module.exports.SOURCE_CONFIG = SOURCE_CONFIG;
+module.exports.DEFAULT_SOURCE_CONFIG = DEFAULT_SOURCE_CONFIG;

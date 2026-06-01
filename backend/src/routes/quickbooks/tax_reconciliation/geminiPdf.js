@@ -4,8 +4,21 @@ const path = require("path");
 const axios = require("axios");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const tokenManager = require("../../../tokenManager");
+const { supabase } = require("../../../db");
+const {
+  extractTaxDataFromBuffer,
+  buildTaxReturnResponseData,
+} = require("../../../services/manualReportUploadService");
 
 const router = express.Router();
+
+// ── QB-Online tax-extraction constants ───────────────────────────────────────
+const QB_ONLINE_SOURCE = "quickbooks_online";
+const TAX_RETURN_REPORT_TYPE = "tax_return";
+const UUID_RE_TAX = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+const SUPPORTED_TAX_EXTS = new Set(["pdf"]);
+// Prevent duplicate DataRoom extractions when the frontend fires N parallel /tax-data calls
+const _qbOnlineTaxInProgress = new Map();
 
 /* ===========================
    CONFIG
@@ -361,7 +374,7 @@ JSON output:
 }
 
 /* ===========================
-   HELPER: find PDF for year
+   HELPER: find PDF for year (legacy — local filesystem, kept for dev fallback)
 =========================== */
 function findPdfForYear(requestedYear) {
   const pdfDir = path.dirname(DEFAULT_PDF_PATH);
@@ -371,6 +384,144 @@ function findPdfForYear(requestedYear) {
     if (match) return path.join(pdfDir, match);
   } catch (e) { }
   return null;
+}
+
+/* ===========================
+   DATAROOM — Tax folder scan helpers (QB Online mode)
+=========================== */
+
+function normalizeTaxBuffer(data) {
+  if (!data) return null;
+  if (Buffer.isBuffer(data)) return data;
+  if (data instanceof Uint8Array) return Buffer.from(data);
+  if (Array.isArray(data)) return Buffer.from(data);
+  if (typeof data === "object" && data.type === "Buffer" && Array.isArray(data.data)) {
+    return Buffer.from(data.data);
+  }
+  if (typeof data === "string") {
+    const v = data.trim();
+    if (/^\\x[0-9a-f]+$/i.test(v)) return Buffer.from(v.slice(2), "hex");
+    if (/^0x[0-9a-f]+$/i.test(v)) return Buffer.from(v.slice(2), "hex");
+    return Buffer.from(v, "base64");
+  }
+  return null;
+}
+
+async function loadTaxDocBuffer(doc) {
+  if (doc.upload_id) {
+    const { data: up } = await supabase.from("uploads").select("data").eq("id", doc.upload_id).maybeSingle();
+    if (up?.data) {
+      const buf = normalizeTaxBuffer(up.data);
+      if (buf?.length) return buf;
+    }
+  }
+  if (doc.file_url) {
+    const url = String(doc.file_url);
+    const specific = url.match(/\/uploads\/([0-9a-f-]{36})\/content/i);
+    if (specific) {
+      const { data: up2 } = await supabase.from("uploads").select("data").eq("id", specific[1]).maybeSingle();
+      if (up2?.data) { const buf = normalizeTaxBuffer(up2.data); if (buf?.length) return buf; }
+    }
+    const anyUuid = url.match(UUID_RE_TAX);
+    if (anyUuid) {
+      const { data: up3 } = await supabase.from("uploads").select("data").eq("id", anyUuid[0]).maybeSingle();
+      if (up3?.data) { const buf = normalizeTaxBuffer(up3.data); if (buf?.length) return buf; }
+    }
+  }
+  return null;
+}
+
+// Locate all tax-return folders for a company across the entire DataRoom
+async function scanDataRoomForTaxFiles(clientId) {
+  // Find every folder whose name starts with "Tax" (case-insensitive) for this company
+  const { data: candidates } = await supabase
+    .from("folders")
+    .select("id, name")
+    .eq("company_id", clientId)
+    .ilike("name", "tax%");
+
+  if (!candidates?.length) {
+    console.log(`[Tax Folder Scan] No tax-related folders found for company ${clientId}`);
+    return [];
+  }
+
+  console.log(`[Tax Folder Scan] Candidate folders: ${candidates.map((f) => f.name).join(", ")}`);
+
+  const allDocs = [];
+  for (const folder of candidates) {
+    const { data: docs } = await supabase
+      .from("documents")
+      .select("id, name, upload_id, file_url, uploaded_at")
+      .eq("folder_id", folder.id)
+      .order("uploaded_at", { ascending: false });
+
+    if (!docs?.length) continue;
+
+    const supported = docs.filter((d) => {
+      const ext = String(d.name || "").toLowerCase().split(".").pop();
+      return SUPPORTED_TAX_EXTS.has(ext);
+    });
+
+    console.log(`[Tax Folder Scan] "${folder.name}": ${docs.length} file(s), ${supported.length} supported (PDF)`);
+    allDocs.push(...supported);
+  }
+
+  console.log(`[Tax Folder Scan] Found ${allDocs.length} supported file(s) for company ${clientId}`);
+  return allDocs;
+}
+
+// Extract all tax years from DataRoom for a company.
+// Returns { taxYears: { "2024": { year, fileName, data } }, warnings: [] }
+async function extractAllTaxFromDataRoom(clientId) {
+  const docs = await scanDataRoomForTaxFiles(clientId);
+  if (!docs.length) return { taxYears: {}, warnings: [] };
+
+  const taxYears = {};
+  const warnings = [];
+
+  for (const doc of docs) {
+    const fileName = String(doc.name || "unknown");
+    console.log(`[Tax Parser] Reading file: ${fileName}`);
+
+    const buffer = await loadTaxDocBuffer(doc);
+    if (!buffer?.length) {
+      const msg = `Failed to load binary data for "${fileName}"`;
+      console.warn(`[Tax Parser] ${msg}`);
+      warnings.push(msg);
+      continue;
+    }
+
+    try {
+      const cacheKey = `qb_online_${clientId}_${doc.id}`;
+      const extracted = await extractTaxDataFromBuffer(buffer, cacheKey);
+
+      if (!extracted?.year) {
+        const msg = `Could not detect tax year in "${fileName}"`;
+        console.warn(`[Tax Parser] ${msg}`);
+        warnings.push(msg);
+        continue;
+      }
+
+      const yr = Number(extracted.year);
+      console.log(`[Tax Parser] Detected Year: ${yr} | File: ${fileName}`);
+
+      const data = buildTaxReturnResponseData(extracted);
+      console.log(`[Tax Parser] Extracted Fields: ${data.length} | FY ${yr}`);
+
+      // Keep newest file per year
+      const existing = taxYears[String(yr)];
+      if (!existing || new Date(doc.uploaded_at) > new Date(existing.uploadedAt || 0)) {
+        taxYears[String(yr)] = { year: yr, fileName, data, uploadedAt: doc.uploaded_at };
+        console.log(`[Tax Reconciliation] Populating FY ${yr}`);
+      }
+    } catch (err) {
+      const msg = `Failed to parse "${fileName}": ${err.message || err}`;
+      console.error(`[Tax Parser] ${msg}`);
+      warnings.push(msg);
+    }
+  }
+
+  return { taxYears, warnings };
 }
 
 router.get("/quickbooks-pl", async (req, res) => {
@@ -437,104 +588,110 @@ router.get("/quickbooks-pl", async (req, res) => {
 });
 
 /* ===========================
-   ENDPOINT 2 — TAX DATA ONLY (Slow — Gemini)
-   GET /tax-data
+   ENDPOINT 2 — TAX DATA (QB Online — DataRoom scan via Gemini)
+   GET /tax-data?start_date=YYYY-01-01&clientId=UUID[&force=1]
 =========================== */
 router.get("/tax-data", async (req, res) => {
   try {
     const clientId = req.clientId || req.query.clientId || req.headers["x-client-id"];
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId" });
+
     const startDate = req.query.start_date || "2023-01-01";
     const requestedYear = parseInt(startDate.split("-")[0], 10);
-    const cacheKey = `${clientId}_${requestedYear}`;
+    const forceRefresh = req.query.force === "1" || req.query.force_refresh === "true";
 
-    let tax = null;
-    let warning = null;
+    // ── 1. DB cache check ────────────────────────────────────────────────────
+    if (!forceRefresh) {
+      const { data: cached } = await supabase
+        .from("qb_synced_reports")
+        .select("data, updated_at")
+        .eq("company_id", clientId)
+        .eq("source", QB_ONLINE_SOURCE)
+        .eq("report_type", TAX_RETURN_REPORT_TYPE)
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
 
-    // 1. Memory cache hit
-    if (_taxDataCache.has(cacheKey)) {
-      tax = _taxDataCache.get(cacheKey);
-    } else {
-      // 2. Extract via Gemini
-      const pdfPath = findPdfForYear(requestedYear);
-      if (!pdfPath) {
-        return res.json({ success: true, year: requestedYear, data: [], warning: "No tax return PDF found for this year." });
-      }
-      try {
-        const extracted = await extractTaxFromPDF(pdfPath);
-        if (extracted) {
-          // Cache under the year the PDF actually covers
-          _taxDataCache.set(`${clientId}_${extracted.year}`, extracted);
-          if (Number(extracted.year) === requestedYear) {
-            tax = extracted;
-          } else {
-            warning = `PDF covers tax year ${extracted.year}, not ${requestedYear}.`;
-          }
+      if (cached?.data?.taxYears) {
+        const yearData = cached.data.taxYears[String(requestedYear)];
+        if (yearData) {
+          console.log(`[Tax Reconciliation] Cache hit — FY ${requestedYear} for company ${clientId}`);
+          return res.json({ success: true, year: requestedYear, data: yearData.data || [], source: "db_cache" });
         }
-      } catch (err) {
-        return res.status(500).json({ success: false, error: err.message });
+        // Cache exists but year not found — return graceful empty (no re-extract)
+        const foundYears = Object.keys(cached.data.taxYears).join(", ");
+        return res.json({
+          success: true, year: requestedYear, data: [],
+          warning: `Tax return data found for FY ${foundYears}, but not for FY ${requestedYear}. Upload a tax return for that year.`,
+          source: "db_cache",
+        });
       }
     }
 
-    if (!tax) {
-      return res.json({ success: true, year: requestedYear, data: [], warning: warning || "No tax data found" });
+    // ── 2. DataRoom extraction (dedup concurrent calls per company) ──────────
+    let extraction = _qbOnlineTaxInProgress.get(clientId);
+    if (!extraction) {
+      extraction = extractAllTaxFromDataRoom(clientId)
+        .finally(() => _qbOnlineTaxInProgress.delete(clientId));
+      _qbOnlineTaxInProgress.set(clientId, extraction);
     }
 
-    // ── Build the response ──────────────────────────────────────────────
+    const { taxYears, warnings } = await extraction;
 
-    // All Other Expenses formula:
-    //   Gross Profit − Officer Wages − Depreciation − Amortization
-    //     − Interest Expense − Net Income
-    const computedAllOtherExpenses =
-      Number(tax.grossProfit || 0) -
-      Number(tax.officerWages || 0) -
-      Number(tax.depreciation || 0) -
-      Number(tax.amortization || 0) -
-      Number(tax.interestExpense || 0) -
-      Number(tax.netIncome || 0);
+    if (!Object.keys(taxYears).length) {
+      return res.json({
+        success: true, year: requestedYear, data: [],
+        warning: "No tax return PDF found. Upload a tax return PDF to DataRoom → Tax folder.",
+        warnings: warnings.length ? warnings : undefined,
+        source: "empty",
+      });
+    }
 
-    // Fixed Page 1 rows (always present, use 0 when missing)
-    const page1Map = {
-      "Total Revenue": tax.totalRevenue,
-      "Total Cost of Goods Sold": tax.totalCostOfGoodsSold,
-      "Gross Profit": tax.grossProfit,
-      "Officer Wages": tax.officerWages,
-      "Depreciation Expense": tax.depreciation,
-      "Amortization Expense": tax.amortization,
-      "Total Interest Expense": tax.interestExpense,
-      // Formula: Gross Profit − Officer Wages − Depreciation − Amortization
-      //          − Interest Expense − Interest Income (Sch K) − Net Income
-      "All Other Expenses": computedAllOtherExpenses,
-      // "All Other Income":         0,
-      "Net Income": tax.netIncome,
-    };
+    // ── 3. Persist all years to DB ───────────────────────────────────────────
+    const now = new Date().toISOString();
+    try {
+      await supabase.from("qb_synced_reports")
+        .delete()
+        .eq("company_id", clientId)
+        .eq("source", QB_ONLINE_SOURCE)
+        .eq("report_type", TAX_RETURN_REPORT_TYPE);
+      await supabase.from("qb_synced_reports").insert({
+        company_id: clientId,
+        report_type: TAX_RETURN_REPORT_TYPE,
+        source: QB_ONLINE_SOURCE,
+        data: { taxYears, syncedAt: now },
+        status: "synced",
+        last_synced_at: now,
+        updated_at: now,
+      });
+      console.log(`[Tax Reconciliation] Data Saved Successfully — ${Object.keys(taxYears).length} year(s) cached`);
+    } catch (cacheErr) {
+      console.warn(`[Tax Reconciliation] Cache write failed (non-fatal): ${cacheErr.message}`);
+    }
 
-    const data = Object.entries(page1Map).map(([label, value]) => ({
-      label,
-      taxReturn: Number(value || 0),
-      isReconcilingItem: false,
-    }));
-
-    // Dynamic Schedule K rows — ALL non-zero items extracted from page 3
-    if (Array.isArray(tax.reconcilingItems)) {
-      tax.reconcilingItems.forEach((item) => {
-        if (item.label && item.value !== 0) {
-          data.push({
-            label: item.label,
-            taxReturn: Number(item.value || 0),
-            isReconcilingItem: true,
-          });
-        }
+    // ── 4. Return requested year ─────────────────────────────────────────────
+    const yearData = taxYears[String(requestedYear)];
+    if (!yearData) {
+      const foundYears = Object.keys(taxYears).join(", ");
+      return res.json({
+        success: true, year: requestedYear, data: [],
+        warning: `Tax return loaded for FY ${foundYears}. No data found for FY ${requestedYear}.`,
+        warnings: warnings.length ? warnings : undefined,
+        source: "live",
       });
     }
 
     return res.json({
       success: true,
-      year: Number(tax.year),
-      data,
-      warning: warning || undefined,
+      year: requestedYear,
+      data: yearData.data || [],
+      fileName: yearData.fileName,
+      source: "live",
+      warnings: warnings.length ? warnings : undefined,
     });
+
   } catch (err) {
-    console.error("Tax data error:", err);
+    console.error("[Tax data error]:", err);
     return res.status(500).json({ success: false, error: err.message });
   }
 });

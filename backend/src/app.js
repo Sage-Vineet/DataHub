@@ -28,7 +28,6 @@ const tokenRoutes = require("./routes/quickbooks/token");
 const generalLedgerRoutes = require("./routes/quickbooks/account_detail/generalLedger");
 const profitAndLossRoutes = require("./routes/quickbooks/profit_and_loss/profitAndLoss");
 const profitAndLossStatementRoutes = require("./routes/quickbooks/profit_and_loss/profitAndLossStatement");
-const customerFinanceRoutes = require("./routes/quickbooks/customers/customers");
 const invoiceFinanceRoutes = require("./routes/quickbooks/invoices/invoices");
 const cashflowRoutes = require("./routes/quickbooks/cash_flow/cash_flow");
 const reconciliationRoutes = require("./routes/quickbooks/reconciliation/Reconciliation");
@@ -133,7 +132,6 @@ const financialRoutes = [
   generalLedgerRoutes,
   profitAndLossRoutes,
   profitAndLossStatementRoutes,
-  customerFinanceRoutes,
   invoiceFinanceRoutes,
   cashflowRoutes,
   reconciliationRoutes,

@@ -25,7 +25,6 @@ import {
   getInvoiceByDocNumber,
   updateInvoice,
 } from "../../../services/invoiceService";
-import { fetchCustomers } from "../../../services/customerService";
 import {
   getConnectionStatus,
 } from "../../../services/authService";
@@ -124,21 +123,6 @@ function getInvoicesArray(payload) {
   return [];
 }
 
-function getCustomersArray(payload) {
-  if (Array.isArray(payload?.QueryResponse?.Customer)) {
-    return payload.QueryResponse.Customer;
-  }
-
-  if (Array.isArray(payload?.data?.QueryResponse?.Customer)) {
-    return payload.data.QueryResponse.Customer;
-  }
-
-  if (Array.isArray(payload)) {
-    return payload;
-  }
-
-  return [];
-}
 
 function deriveInvoiceStatus(invoice) {
   const balance = Number(invoice?.Balance ?? invoice?.balance ?? 0);
@@ -698,43 +682,11 @@ function useInvoices() {
   return { invoices, setInvoices, isLoading, error, sourceKey };
 }
 
-function useCustomers() {
-  const [customers, setCustomers] = useState([]);
-
-  useEffect(() => {
-    let isMounted = true;
-
-    async function loadCustomers() {
-      try {
-        const payload = await fetchCustomers();
-        const normalized = getCustomersArray(payload).map((customer) => ({
-          id: customer?.Id || customer?.id || "",
-          Id: customer?.Id || customer?.id || "",
-          name: customer?.DisplayName || customer?.name || "",
-        }));
-
-        if (isMounted) {
-          setCustomers(normalized);
-        }
-      } catch {
-        // Keep the previously loaded customer list instead of wiping UI state.
-      }
-    }
-
-    loadCustomers();
-
-    return () => {
-      isMounted = false;
-    };
-  }, []);
-
-  return { customers };
-}
 
 export default function WorkspaceInvoices() {
   const { invoices, setInvoices, isLoading, error, sourceKey } = useInvoices();
   const isQuickBooksManual = sourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
-  const { customers } = useCustomers();
+  const customers = [];
 
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [searchTerm, setSearchTerm] = useState("");

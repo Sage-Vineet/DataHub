@@ -27,6 +27,11 @@ const {
 } = require("../services/manualReportUploadService");
 const { parsePdfWithGemini } = require("../services/geminiFinancialParser");
 const {
+  runBsBankBalancesExtraction,
+  SOURCE_CONFIG: BS_SOURCE_CONFIG,
+  DEFAULT_SOURCE_CONFIG: BS_DEFAULT_SOURCE_CONFIG,
+} = require("./quickbooks/reconciliation/bankVsBooks");
+const {
   normalizeBankBinary,
   extractBankStatementsFromPdfBase64,
   extractBankStatementsFromExcelBuffer,
@@ -1287,6 +1292,27 @@ router.get("/manual-upload/bank-data", async (req, res) => {
   } catch (error) {
     console.error("[BANK SOURCE] Error:", error);
     return res.status(500).json({ success: false, error: error.message || "Failed to fetch manual upload bank data." });
+  }
+});
+
+/* ===========================
+   GET /manual-report-uploads/bs-bank-balances
+   Returns bank account balances extracted from the Balance Sheet for a given source.
+   Registered here (in addition to bankVsBooks.js) so the path resolves correctly
+   under the manualReportUploadRoutes middleware chain.
+=========================== */
+router.get("/manual-report-uploads/bs-bank-balances", async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+    const sourceKey = req.query.source || "manual_upload_excel_pdf";
+    const { cacheSource, folderRootName } = BS_SOURCE_CONFIG[sourceKey] || BS_DEFAULT_SOURCE_CONFIG;
+    console.log(`[BsBankBalances] source="${sourceKey}" → cacheSource="${cacheSource}", folder="${folderRootName}"`);
+    const { statusCode, body } = await runBsBankBalancesExtraction(clientId, cacheSource, folderRootName);
+    return res.status(statusCode).json(body);
+  } catch (err) {
+    console.error("[BsBankBalances] Error:", err);
+    return res.status(500).json({ success: false, error: err.message || "Failed to fetch balance sheet bank balances." });
   }
 });
 

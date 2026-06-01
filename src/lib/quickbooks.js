@@ -117,16 +117,6 @@ export function fetchQuickbooksSyncStatus() {
   return request("/api/quickbooks/sync-status");
 }
 
-export function fetchQuickbooksCustomers() {
-  return request("/customers");
-}
-
-export function createQuickbooksCustomer(body) {
-  return request("/customers", {
-    method: "POST",
-    body: JSON.stringify(body),
-  });
-}
 
 export function fetchQuickbooksInvoices() {
   return request("/invoices");
