@@ -34,7 +34,7 @@ function CashflowRow({
           <div className="flex items-center">
             <div className="flex shrink-0">
               {Array.from({ length: depth }).map((_, index) => (
-                <div key={index} className="w-6 h-5 border-r border-border-light mr-[-1px]" />
+                <div key={index} className="w-6 h-5" />
               ))}
             </div>
 

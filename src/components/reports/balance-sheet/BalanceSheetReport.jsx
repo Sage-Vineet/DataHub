@@ -21,15 +21,18 @@ export default function BalanceSheetReport({
   const source = data?.source || null;
   const sourceLabel = data?.sourceLabel || null;
   const noDataText = data?.noDataText || null;
+  // Per-year comparative columns: only render multiple columns when the user
+  // selected more than one fiscal year. Absent/single yearCols → single-column
+  // (preserves the original look and keeps old snapshots rendering correctly).
+  const yearCols = Array.isArray(data?.yearCols) ? data.yearCols : null;
+  const summaryColumns = yearCols && yearCols.length > 1 ? { yearCols } : undefined;
   // Backend returns source="manual_gl_staged_transactions" (not "manual_staged").
   // Accept all known manual-staged source strings to be forward-compatible.
   const MANUAL_STAGED_SOURCES = ["manual_staged", "manual_gl_staged_transactions", "manual_gl_reporting_snapshot", "MANUAL_STAGED"];
   const isManualMonthlyDetail = Boolean(
     MANUAL_STAGED_SOURCES.includes(detailedData?.source) && detailedData?.reportType === "balance_sheet_monthly_detail"
   );
-  const summarySubtitle = sourceMode === "manual"
-    ? undefined
-    : `Report Period: ${periodText} | ${clientName} | ${accountingMethod} Basis`;
+  const summarySubtitle = `Report Period: ${periodText} | ${clientName} | ${accountingMethod} Basis`;
 
   if (reportType === "Detail") {
     if (isManualMonthlyDetail) {
@@ -37,6 +40,7 @@ export default function BalanceSheetReport({
         <ManualBalanceSheetMonthlyDetail
           data={detailedData}
           title="Balance Sheet"
+          subtitle={summarySubtitle}
           entityName={resolvedEntityName}
         />
       );
@@ -63,6 +67,7 @@ export default function BalanceSheetReport({
   return (
     <BalanceSheetQBSummary
       data={summaryRows}
+      columns={summaryColumns}
       title="Balance Sheet"
       subtitle={summarySubtitle}
       entityName={resolvedEntityName}

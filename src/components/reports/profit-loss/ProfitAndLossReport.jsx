@@ -35,9 +35,7 @@ export default function ProfitAndLossReport({
     MANUAL_STAGED_SOURCES.includes(detailedData.source)
   );
 
-  const summarySubtitle = sourceMode === "manual"
-    ? undefined
-    : `Report Period: ${periodText} | ${clientName} | ${accountingMethod} Basis`;
+  const summarySubtitle = `Report Period: ${periodText} | ${clientName} | ${accountingMethod} Basis`;
 
   if (reportType === "Detail") {
     if (isManualStagedDetail) {
@@ -46,14 +44,7 @@ export default function ProfitAndLossReport({
           <ManualProfitLossMonthlyDetail
             data={detailedData}
             entityName={resolvedEntityName}
-          />
-        );
-      }
-      if (detailedData.reportType === "profit_loss_monthly_detail") {
-        return (
-          <ManualProfitLossMonthlyDetail
-            data={detailedData}
-            entityName={resolvedEntityName}
+            subtitle={summarySubtitle}
           />
         );
       }
@@ -62,6 +53,7 @@ export default function ProfitAndLossReport({
           data={detailedData}
           title="Profit & Loss Detail"
           entityName={resolvedEntityName}
+          subtitle={summarySubtitle}
         />
       );
     }
@@ -79,10 +71,15 @@ export default function ProfitAndLossReport({
   // Summary View
   if (isManualStagedSummary) {
     const hierarchicalRows = Array.isArray(data?.hierarchicalRows) ? data.hierarchicalRows : [];
+    // Per-year comparative columns when more than one fiscal year is selected.
+    const yearCols = Array.isArray(data?.yearCols) ? data.yearCols : null;
+    const summaryColumns = yearCols && yearCols.length > 1 ? { yearCols } : undefined;
     return (
       <ProfitAndLossQBSummary
         data={hierarchicalRows}
+        columns={summaryColumns}
         title="Profit & Loss"
+        subtitle={summarySubtitle}
         entityName={resolvedEntityName}
       />
     );

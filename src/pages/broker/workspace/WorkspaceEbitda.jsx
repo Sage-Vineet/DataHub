@@ -119,8 +119,45 @@ function LoadingState() {
 
 
 /* ------------------------------------------------------------------ */
-/*  Main Component                                                    */
+/*  Helpers & Sub-components                                         */
 /* ------------------------------------------------------------------ */
+
+function FormattedNumericInput({ value, apiValue, isFromPL, linkedToPL, onChange, className, ...props }) {
+  const [isFocused, setIsFocused] = useState(false);
+  const showPLAsterisk = Boolean(isFromPL && linkedToPL && value === null && apiValue !== null);
+  const valToFormat = value !== null ? value : apiValue;
+
+  const getDisplayValue = () => {
+    if (isFocused) {
+      if (value === null) return "";
+      return String(value);
+    }
+    const formatted = formatCurrency(valToFormat);
+    return showPLAsterisk && formatted !== "-" && !formatted.startsWith("*")
+      ? `*${formatted}`
+      : formatted;
+  };
+
+  return (
+    <input
+      {...props}
+      type="text"
+      value={getDisplayValue()}
+      onFocus={() => setIsFocused(true)}
+      onBlur={() => setIsFocused(false)}
+      onChange={(e) => {
+        const val = e.target.value.replace(/[\*,]/g, "").trim();
+        onChange(val);
+      }}
+      className={cn(
+        "w-full bg-transparent text-right font-medium focus:outline-none focus:ring-1 focus:ring-[#8bc53d] rounded px-2 py-1 transition-all",
+        (value !== null || apiValue !== null) ? "text-text-primary" : "text-gray-300",
+        className
+      )}
+      placeholder={apiValue !== null ? formatCurrency(apiValue) : "-"}
+    />
+  );
+}
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
 
@@ -569,7 +606,7 @@ export default function WorkspaceEbitda() {
   const updateAddbackValue = (id, year, value) => {
     setDynamicAddbacks(prev => prev.map(ab => {
       if (ab.id === id) {
-        const normalizedInput = typeof value === "string" ? value.replace(/\*/g, "").trim() : value;
+        const normalizedInput = typeof value === "string" ? value.replace(/[\*,]/g, "").trim() : value;
         const numericValue = normalizedInput === "" ? null : Number(normalizedInput);
         const latestYear = years[0];
         const nextValues = {
@@ -693,10 +730,10 @@ export default function WorkspaceEbitda() {
               {isManualGl
                 ? `Powered by staged GL data${company?.name ? ` — ${company.name}` : ""}`
                 : isManualUpload
-                ? `Powered by your uploaded Profit & Loss file${company?.name ? ` — ${company.name}` : ""}`
-                : isQBManual
-                ? `Powered by your QuickBooks Manual P&L reports${company?.name ? ` — ${company.name}` : ""}`
-                : `Dynamic earnings analysis powered by your Profit & Loss data${company?.name ? ` — ${company.name}` : ""}`}
+                  ? `Powered by your uploaded Profit & Loss file${company?.name ? ` — ${company.name}` : ""}`
+                  : isQBManual
+                    ? `Powered by your QuickBooks Manual P&L reports${company?.name ? ` — ${company.name}` : ""}`
+                    : `Dynamic earnings analysis powered by your Profit & Loss data${company?.name ? ` — ${company.name}` : ""}`}
             </p>
           </div>
           <button
@@ -896,7 +933,8 @@ export default function WorkspaceEbitda() {
                         </td>
                         {years.map((year) => {
                           const { apiValue, userValue } = row.values[year] || { apiValue: null, userValue: null };
-                          const rawDisplayValue = userValue !== null ? String(userValue) : (apiValue !== null ? String(apiValue) : "");
+                          const valToFormat = userValue !== null ? userValue : apiValue;
+                          const formattedValue = formatCurrency(valToFormat);
                           const showPLAsterisk = Boolean(
                             row.isFromPL &&
                             row.linkedToPL &&
@@ -904,22 +942,19 @@ export default function WorkspaceEbitda() {
                             apiValue !== null
                           );
                           const displayValue =
-                            showPLAsterisk && rawDisplayValue && !rawDisplayValue.startsWith("*")
-                              ? `*${rawDisplayValue}`
-                              : rawDisplayValue;
+                            showPLAsterisk && formattedValue !== "-" && !formattedValue.startsWith("*")
+                              ? `*${formattedValue}`
+                              : formattedValue;
 
                           return (
                             <td key={year} className="p-1.5 text-right">
-                              <input
-                                type="text"
-                                value={displayValue}
-                                onChange={(e) => updateAddbackValue(row.id, year, e.target.value)}
+                              <FormattedNumericInput
+                                value={userValue}
+                                apiValue={apiValue}
+                                isFromPL={row.isFromPL}
+                                linkedToPL={row.linkedToPL}
+                                onChange={(val) => updateAddbackValue(row.id, year, val)}
                                 title={showPLAsterisk ? "This value is sourced from Profit & Loss" : undefined}
-                                className={cn(
-                                  "w-full bg-transparent text-right font-medium focus:outline-none focus:ring-1 focus:ring-[#8bc53d] rounded px-2 py-1",
-                                  (userValue !== null || apiValue !== null) ? "text-text-primary" : "text-gray-300"
-                                )}
-                                placeholder={apiValue !== null ? String(apiValue) : "-"}
                               />
                             </td>
                           );
@@ -1006,12 +1041,12 @@ export default function WorkspaceEbitda() {
                 <div className="p-8 space-y-6">
                   <div className="flex justify-between items-center bg-gray-50 border border-gray-100 rounded-lg p-3">
                     <span className="font-bold text-slate-800">SDE Per CIM</span>
-                    <input
-                      type="number"
-                      value={sdePerCim}
-                      onChange={(e) => setSdePerCim(e.target.value)}
+                    <FormattedNumericInput
+                      value={sdePerCim || null}
+                      apiValue={null}
+                      onChange={(val) => setSdePerCim(val)}
                       placeholder="Enter value..."
-                      className="w-32 bg-white border border-gray-200 rounded px-2 py-1 text-right font-mono focus:ring-1 focus:ring-[#8bc53d] outline-none"
+                      className="w-32 bg-white border border-gray-200"
                     />
                   </div>
 

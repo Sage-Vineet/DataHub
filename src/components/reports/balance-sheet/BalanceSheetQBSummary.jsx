@@ -1,35 +1,17 @@
 import React, { useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { cn } from "../../../lib/utils";
+import { cn, formatCurrency } from "../../../lib/utils";
 
-const formatBalanceSheetValue = (value) => {
-  if (value === null || value === undefined || value === "") {
-    return "";
-  }
-
-  const numeric = typeof value === "string"
-    ? Number(value.replace(/,/g, "").replace(/[^\d.-]/g, ""))
-    : Number(value);
-
-  if (!Number.isFinite(numeric)) {
-    return "";
-  }
-
-  const formatter = new Intl.NumberFormat("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-
-  const formatted = formatter.format(Math.abs(numeric));
-  return numeric < 0 ? `(${formatted})` : formatted;
-};
-
-const QBRow = ({ line, depth = 0 }) => {
+const QBRow = ({ line, depth = 0, columns }) => {
   const [isOpen, setIsOpen] = useState(true);
   const hasChildren = Boolean(line.children?.length);
   const isHeader = line.type === "header";
   const isTotal = line.type === "total" || line.name.toLowerCase().startsWith("total");
-  const amountText = isHeader ? "" : formatBalanceSheetValue(line.amount);
+  const yearCols = columns?.yearCols;
+
+  // Header rows intentionally render a blank amount (the section's value lives on
+  // its "Total …" child), so we never show "-" there.
+  const cellText = (value) => (isHeader ? "" : formatCurrency(value));
 
   const toggle = (e) => {
     if (!hasChildren) return;
@@ -52,7 +34,7 @@ const QBRow = ({ line, depth = 0 }) => {
           <div className="flex items-center">
             <div className="flex shrink-0">
               {Array.from({ length: depth }).map((_, index) => (
-                <div key={index} className="w-6 h-5 border-r border-border-light mr-[-1px]" />
+                <div key={index} className="w-6 h-5" />
               ))}
             </div>
 
@@ -75,20 +57,38 @@ const QBRow = ({ line, depth = 0 }) => {
             </div>
           </div>
         </td>
-        <td
-          className={cn(
-            "py-2.5 px-4 text-right tabular-nums text-[14px] font-medium",
-            !isHeader && Number(line.amount) < 0 ? "text-status-error" : "text-text-primary",
-            isHeader && "text-transparent",
-          )}
-        >
-          {amountText}
-        </td>
+        {yearCols ? (
+          yearCols.map((col) => {
+            const value = line.amounts?.[col.key];
+            return (
+              <td
+                key={col.key}
+                className={cn(
+                  "py-2.5 px-4 text-right tabular-nums text-[14px] font-medium whitespace-nowrap",
+                  !isHeader && Number(value) < 0 ? "text-status-error" : "text-text-primary",
+                  isHeader && "text-transparent",
+                )}
+              >
+                {cellText(value)}
+              </td>
+            );
+          })
+        ) : (
+          <td
+            className={cn(
+              "py-2.5 px-4 text-right tabular-nums text-[14px] font-medium",
+              !isHeader && Number(line.amount) < 0 ? "text-status-error" : "text-text-primary",
+              isHeader && "text-transparent",
+            )}
+          >
+            {cellText(line.amount)}
+          </td>
+        )}
       </tr>
 
       {hasChildren && isOpen && (
         line.children.map((child, index) => (
-          <QBRow key={child.id || `row-${depth}-${index}`} line={child} depth={depth + 1} />
+          <QBRow key={child.id || `row-${depth}-${index}`} line={child} depth={depth + 1} columns={columns} />
         ))
       )}
     </>
@@ -97,6 +97,7 @@ const QBRow = ({ line, depth = 0 }) => {
 
 export default function BalanceSheetQBSummary({
   data = [],
+  columns,
   title = "Balance Sheet",
   subtitle,
   entityName = "Company",
@@ -104,6 +105,8 @@ export default function BalanceSheetQBSummary({
   sourceLabel = null,
   noDataText = "No data available for the selected period.",
 }) {
+  const hasColumns = Array.isArray(columns?.yearCols) && columns.yearCols.length > 0;
+  const totalColCount = hasColumns ? columns.yearCols.length + 1 : 2;
   const resolvedSourceLabel =
     sourceLabel ||
     (source === "MANUAL_UPLOAD"
@@ -143,24 +146,32 @@ export default function BalanceSheetQBSummary({
         </div>
 
         <div className="overflow-x-auto flex-1">
-          <table className="w-full border-collapse">
+          <table className={cn("border-collapse", hasColumns ? "min-w-max" : "w-full")}>
             <thead>
               <tr className="border-b-2 border-text-primary sticky top-0 bg-bg-card z-20">
-                <th className="pb-3 pt-2 px-4 text-left text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider">
+                <th className="pb-3 pt-2 px-4 text-left text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider min-w-[400px]">
                   Account
                 </th>
-                <th className="pb-3 pt-2 px-4 text-right text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider">
-                  Total
-                </th>
+                {hasColumns ? (
+                  columns.yearCols.map((col) => (
+                    <th key={col.key} className="pb-3 pt-2 px-4 text-right text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider min-w-[110px]">
+                      {col.label}
+                    </th>
+                  ))
+                ) : (
+                  <th className="pb-3 pt-2 px-4 text-right text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider">
+                    Total
+                  </th>
+                )}
               </tr>
             </thead>
             <tbody>
               {data.map((row, index) => (
-                <QBRow key={row.id || index} line={row} depth={0} />
+                <QBRow key={row.id || index} line={row} depth={0} columns={hasColumns ? columns : undefined} />
               ))}
               {data.length === 0 && (
                 <tr>
-                  <td colSpan={2} className="py-20 text-center text-text-muted italic">
+                  <td colSpan={totalColCount} className="py-20 text-center text-text-muted italic">
                     {noDataText}
                   </td>
                 </tr>

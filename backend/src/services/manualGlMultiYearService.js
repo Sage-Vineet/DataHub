@@ -3902,22 +3902,43 @@ function buildYearComparison(yearlyRows = []) {
   });
 }
 
-function buildProfitLossHierarchicalRows(transactions = [], yearlyRows = [], displayYear = null) {
-  // Resolve displayYear to the last available year so account-level rows always
-  // match the header totals. Without this guard, a null displayYear would let ALL
-  // years' transaction amounts accumulate into account rows while the section
-  // totals (pulled from yearlyRows) would only reflect the last year â€” producing
-  // inflated account-level numbers in a multi-year GL view.
-  const resolvedDisplayYear =
-    (Number.isInteger(displayYear) && displayYear > 0)
-      ? displayYear
-      : (yearlyRows.length > 0 ? yearlyRows[yearlyRows.length - 1].fiscalYear : null);
+// ── Per-year comparative-column helpers ──────────────────────────────────────
+// Shared by the P&L, Balance Sheet and Cash Flow summary builders so all three
+// statements emit an identical { yearCols, amounts } contract. Column keys MUST
+// match the keys written into each node's `amounts` map (the frontend renderer
+// reads line.amounts[col.key]); using these helpers everywhere prevents drift.
+function buildYearColumns(years = []) {
+  return years.map((y) => ({ key: `y${y}`, label: String(y) }));
+}
+function amountsFromByYear(byYear = {}, years = []) {
+  const out = {};
+  years.forEach((y) => {
+    out[`y${y}`] = roundMoney(Number(byYear?.[y] || 0));
+  });
+  return out;
+}
 
+function buildProfitLossHierarchicalRows(transactions = [], yearlyRows = [], years = null) {
+  // `years` is the set of fiscal years to expose as comparative columns. When a
+  // single year (or null) is given the output is a one-column table identical to
+  // the legacy single-`displayYear` behavior. Multiple years produce one
+  // per-year value in each node's `amounts` map.
+  let selectedYears = Array.isArray(years)
+    ? years.map(Number).filter((y) => Number.isInteger(y) && y > 0)
+    : [];
+  if (selectedYears.length === 0) {
+    const fallback = yearlyRows.length > 0 ? yearlyRows[yearlyRows.length - 1].fiscalYear : null;
+    selectedYears = fallback ? [fallback] : [];
+  }
+  selectedYears = Array.from(new Set(selectedYears)).sort((a, b) => a - b);
+  const yearSet = new Set(selectedYears);
+  const displayYear = selectedYears.length > 0 ? selectedYears[selectedYears.length - 1] : null;
+
+  // Per-account, per-year totals (only for the selected years).
   const accountMap = new Map();
-
   transactions.forEach((tx) => {
     const txFY = Number(tx.fiscalYear || 0);
-    if (resolvedDisplayYear && txFY !== resolvedDisplayYear) return;
+    if (!yearSet.has(txFY)) return;
 
     const accountType = normalizeAccountType(tx.accountType) || inferAccountType(tx.accountName, tx.accountNumber);
     if (!['income', 'cogs', 'expense'].includes(accountType)) return;
@@ -3927,73 +3948,95 @@ function buildProfitLossHierarchicalRows(transactions = [], yearlyRows = [], dis
 
     const key = `${category}::${tx.accountNumber || ''}::${tx.accountName}`;
     if (!accountMap.has(key)) {
-      accountMap.set(key, { accountName: tx.accountName, accountNumber: tx.accountNumber || '', category, total: 0 });
+      accountMap.set(key, { accountName: tx.accountName, accountNumber: tx.accountNumber || '', category, totalsByYear: {} });
     }
     const netAmount = roundMoney(Number(tx.netAmount || 0));
-    accountMap.get(key).total = roundMoney(accountMap.get(key).total + (category === 'Revenue' ? netAmount : -netAmount));
+    const signed = category === 'Revenue' ? netAmount : -netAmount;
+    const acc = accountMap.get(key);
+    acc.totalsByYear[txFY] = roundMoney((acc.totalsByYear[txFY] || 0) + signed);
   });
 
   const byCategory = { Revenue: [], COGS: [], 'Operating Expenses': [], 'Other Expenses': [] };
   accountMap.forEach((acc) => { if (byCategory[acc.category]) byCategory[acc.category].push(acc); });
   Object.values(byCategory).forEach((arr) => arr.sort((a, b) => a.accountName.localeCompare(b.accountName)));
 
-  const yearRow = resolvedDisplayYear ? yearlyRows.find(r => r.fiscalYear === resolvedDisplayYear) : (yearlyRows[yearlyRows.length - 1] || null);
-  const get = (key) => yearRow ? roundMoney(yearRow[key] || 0) : 0;
+  // Per-year section metric lookup from yearlyRows (Revenue, COGS, Gross Profit, …).
+  const metricByYear = (metric) => {
+    const out = {};
+    selectedYears.forEach((y) => {
+      const row = yearlyRows.find((r) => r.fiscalYear === y);
+      out[y] = row ? roundMoney(Number(row[metric] || 0)) : 0;
+    });
+    return out;
+  };
+  const negateByYear = (byYear) => {
+    const out = {};
+    selectedYears.forEach((y) => { out[y] = roundMoney(-Number(byYear[y] || 0)); });
+    return out;
+  };
+  // Latest-selected-year scalar for a byYear map (back-compat single `amount`).
+  const scalar = (byYear) => (displayYear ? roundMoney(Number(byYear[displayYear] || 0)) : 0);
 
   const toAccountRows = (accounts, prefix) => accounts.map((acc, i) => ({
     id: `${prefix}-${i}-${acc.accountNumber}`,
     name: acc.accountName,
-    amount: acc.total,
+    amount: scalar(acc.totalsByYear),
+    amounts: amountsFromByYear(acc.totalsByYear, selectedYears),
     type: 'data',
   }));
 
+  const sectionNode = (byYear) => ({
+    amount: scalar(byYear),
+    amounts: amountsFromByYear(byYear, selectedYears),
+  });
+
   const rows = [];
 
-  const incomeTotal = get('Revenue');
+  const incomeByYear = metricByYear('Revenue');
   rows.push({
-    id: 'income', name: 'Income', type: 'header', amount: incomeTotal,
+    id: 'income', name: 'Income', type: 'header', ...sectionNode(incomeByYear),
     children: [
       ...toAccountRows(byCategory.Revenue, 'inc'),
-      { id: 'total-income', name: 'Total Income', amount: incomeTotal, type: 'total' },
+      { id: 'total-income', name: 'Total Income', type: 'total', ...sectionNode(incomeByYear) },
     ],
   });
 
   if (byCategory.COGS.length > 0) {
-    const cogsTotal = get('COGS');
+    const cogsByYear = metricByYear('COGS');
     rows.push({
-      id: 'cogs', name: 'Cost of Goods Sold', type: 'header', amount: cogsTotal,
+      id: 'cogs', name: 'Cost of Goods Sold', type: 'header', ...sectionNode(cogsByYear),
       children: [
         ...toAccountRows(byCategory.COGS, 'cogs'),
-        { id: 'total-cogs', name: 'Total Cost of Goods Sold', amount: cogsTotal, type: 'total' },
+        { id: 'total-cogs', name: 'Total Cost of Goods Sold', type: 'total', ...sectionNode(cogsByYear) },
       ],
     });
   }
 
-  rows.push({ id: 'gross-profit', name: 'Gross Profit', amount: get('Gross Profit'), type: 'total' });
+  rows.push({ id: 'gross-profit', name: 'Gross Profit', type: 'total', ...sectionNode(metricByYear('Gross Profit')) });
 
-  const expenseTotal = get('Operating Expenses');
+  const expenseByYear = metricByYear('Operating Expenses');
   rows.push({
-    id: 'expenses', name: 'Expenses', type: 'header', amount: expenseTotal,
+    id: 'expenses', name: 'Expenses', type: 'header', ...sectionNode(expenseByYear),
     children: [
       ...toAccountRows(byCategory['Operating Expenses'], 'exp'),
-      { id: 'total-expenses', name: 'Total Expenses', amount: expenseTotal, type: 'total' },
+      { id: 'total-expenses', name: 'Total Expenses', type: 'total', ...sectionNode(expenseByYear) },
     ],
   });
 
-  rows.push({ id: 'net-operating-income', name: 'Net Operating Income', amount: get('Operating Income'), type: 'total' });
+  rows.push({ id: 'net-operating-income', name: 'Net Operating Income', type: 'total', ...sectionNode(metricByYear('Operating Income')) });
 
   if (byCategory['Other Expenses'].length > 0) {
-    const otherTotal = get('Other Expenses');
+    const otherDisplayByYear = negateByYear(metricByYear('Other Expenses'));
     rows.push({
-      id: 'other-income-expense', name: 'Other Income/Expense', type: 'header', amount: -otherTotal,
+      id: 'other-income-expense', name: 'Other Income/Expense', type: 'header', ...sectionNode(otherDisplayByYear),
       children: [
         ...toAccountRows(byCategory['Other Expenses'], 'other'),
-        { id: 'total-other', name: 'Total Other Income/Expense', amount: -otherTotal, type: 'total' },
+        { id: 'total-other', name: 'Total Other Income/Expense', type: 'total', ...sectionNode(otherDisplayByYear) },
       ],
     });
   }
 
-  rows.push({ id: 'net-income', name: 'Net Income', amount: get('Net Profit'), type: 'total' });
+  rows.push({ id: 'net-income', name: 'Net Income', type: 'total', ...sectionNode(metricByYear('Net Profit')) });
 
   return rows;
 }
@@ -4008,21 +4051,32 @@ function buildProfitLossSummaryPayload(transactions = [], filters = {}) {
     netProfitByYear[row.fiscalYear] = row["Net Profit"] || 0;
   });
 
-  const selectedYears = Array.isArray(filters.fiscalYears) && filters.fiscalYears.length > 0
-    ? filters.fiscalYears : summary.years;
-  const displayYear = selectedYears.length > 0 ? selectedYears[selectedYears.length - 1] : null;
-  const hierarchicalRows = buildProfitLossHierarchicalRows(transactions, yearlyRows, displayYear);
+  // Years the user explicitly selected (multi-select). When present, the summary
+  // renders one comparative column per year; otherwise it falls back to the
+  // latest year only (single column — unchanged legacy behavior).
+  const explicitYears = Array.isArray(filters.fiscalYears) && filters.fiscalYears.length > 0
+    ? filters.fiscalYears.map(Number).filter((y) => Number.isInteger(y) && y > 0).sort((a, b) => a - b)
+    : [];
+  const displayYear = explicitYears.length > 0
+    ? explicitYears[explicitYears.length - 1]
+    : (summary.years.length > 0 ? summary.years[summary.years.length - 1] : null);
+  const rowYears = explicitYears.length > 0 ? explicitYears : (displayYear ? [displayYear] : []);
+  const hierarchicalRows = buildProfitLossHierarchicalRows(transactions, yearlyRows, rowYears);
+  // Only expose comparative columns when the user explicitly selected years.
+  const yearCols = explicitYears.length > 0 ? buildYearColumns(explicitYears) : undefined;
 
   return {
     source: "manual_gl_staged_transactions",
     reportType: "profit_loss_summary",
     filters,
     years: summary.years,
+    displayYear,
     lines: summary.lines,
     monthlyBreakdown: monthlyRows,
     yearComparison,
     netProfitByYear,
     hierarchicalRows,
+    ...(yearCols ? { yearCols } : {}),
   };
 }
 
@@ -4590,11 +4644,33 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
   const displayAmount = (sectionKey, label) =>
     displayYear ? Number(byCategory(sectionKey, label)?.totalByYear?.[displayYear] || 0) : 0;
 
+  // Per-year comparative columns. We build `amounts` over the full internal
+  // `years` set here; restrictBsPayloadToSelectedYears() later prunes these maps
+  // (and adds `yearCols`) down to the user's selected years on output.
+  const categoryAmounts = (sectionKey, label) =>
+    amountsFromByYear(byCategory(sectionKey, label)?.totalByYear || {}, years);
+  const sectionAmounts = (sectionKey) =>
+    amountsFromByYear(sections[sectionKey]?.totalByYear || {}, years);
+  const sumCategoryAmounts = (sectionKey, labels) => {
+    const out = {};
+    years.forEach((y) => { out[`y${y}`] = sumCategory(sectionKey, labels, y); });
+    return out;
+  };
+  const sumAmountMaps = (...maps) => {
+    const out = {};
+    years.forEach((y) => {
+      const k = `y${y}`;
+      out[k] = roundMoney(maps.reduce((sum, m) => sum + Number(m?.[k] || 0), 0));
+    });
+    return out;
+  };
+
   const toAccountRows = (category, prefix) =>
     (category?.accounts || []).map((account, index) => ({
       id: `${prefix}-${index}`,
       name: account.name,
       amount: displayYear ? Number(account.balancesByYear?.[displayYear] || 0) : 0,
+      amounts: amountsFromByYear(account.balancesByYear || {}, years),
       type: "data",
     }));
 
@@ -4602,10 +4678,12 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
     const category = byCategory(sectionKey, label);
     if (!category) return null;
     const amount = displayAmount(sectionKey, label);
+    const amounts = categoryAmounts(sectionKey, label);
     return {
       id: `${prefix}-${normalizeKey(label).replace(/\s+/g, "-")}`,
       name: label,
       amount,
+      amounts,
       type: "header",
       children: [
         ...toAccountRows(category, `${prefix}-acc`),
@@ -4613,6 +4691,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
           id: `${prefix}-total-${normalizeKey(label).replace(/\s+/g, "-")}`,
           name: `Total for ${label}`,
           amount,
+          amounts,
           type: "total",
         },
       ],
@@ -4630,10 +4709,19 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
   const equityTotal = displayYear ? getYearValue(sections.Equity.totalByYear, displayYear) : 0;
   const liabilitiesAndEquityTotal = roundMoney(liabilitiesTotal + equityTotal);
 
+  // Per-year amount maps for the synthetic aggregate rows.
+  const currentAssetsAmounts = sumCategoryAmounts("Assets", ["Bank Accounts", "Other Current Assets"]);
+  const currentLiabilitiesAmounts = sumCategoryAmounts("Liabilities", ["Credit Cards", "Other Current Liabilities"]);
+  const assetsAmounts = sectionAmounts("Assets");
+  const liabilitiesAmounts = sectionAmounts("Liabilities");
+  const equityAmounts = sectionAmounts("Equity");
+  const liabilitiesAndEquityAmounts = sumAmountMaps(liabilitiesAmounts, equityAmounts);
+
   const currentAssetsNode = {
     id: "current-assets",
     name: "Current Assets",
     amount: currentAssetsTotal,
+    amounts: currentAssetsAmounts,
     type: "header",
     children: [
       categoryNode("Assets", "Bank Accounts", "assets-bank"),
@@ -4642,6 +4730,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
         id: "current-assets-total",
         name: "Total for Current Assets",
         amount: currentAssetsTotal,
+        amounts: currentAssetsAmounts,
         type: "total",
       },
     ].filter(Boolean),
@@ -4651,6 +4740,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
     id: "current-liabilities",
     name: "Current Liabilities",
     amount: currentLiabilitiesTotal,
+    amounts: currentLiabilitiesAmounts,
     type: "header",
     children: [
       categoryNode("Liabilities", "Credit Cards", "liab-cc"),
@@ -4659,6 +4749,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
         id: "current-liabilities-total",
         name: "Total for Current Liabilities",
         amount: currentLiabilitiesTotal,
+        amounts: currentLiabilitiesAmounts,
         type: "total",
       },
     ].filter(Boolean),
@@ -4668,6 +4759,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
     id: "assets",
     name: "Assets",
     amount: assetsTotal,
+    amounts: assetsAmounts,
     type: "header",
     children: [
       currentAssetsNode,
@@ -4677,6 +4769,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
         id: "assets-total",
         name: "Total for Assets",
         amount: assetsTotal,
+        amounts: assetsAmounts,
         type: "total",
       },
     ].filter(Boolean),
@@ -4686,6 +4779,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
     id: "liabilities",
     name: "Liabilities",
     amount: liabilitiesTotal,
+    amounts: liabilitiesAmounts,
     type: "header",
     children: [
       currentLiabilitiesNode,
@@ -4694,6 +4788,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
         id: "liabilities-total",
         name: "Total for Liabilities",
         amount: liabilitiesTotal,
+        amounts: liabilitiesAmounts,
         type: "total",
       },
     ].filter(Boolean),
@@ -4703,6 +4798,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
     id: "equity",
     name: "Equity",
     amount: equityTotal,
+    amounts: equityAmounts,
     type: "header",
     children: [
       categoryNode("Equity", "Owner Equity", "eq-owner"),
@@ -4712,6 +4808,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
         id: "equity-total",
         name: "Total for Equity",
         amount: equityTotal,
+        amounts: equityAmounts,
         type: "total",
       },
     ].filter(Boolean),
@@ -4721,6 +4818,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
     id: "liabilities-and-equity",
     name: "Liabilities and Equity",
     amount: liabilitiesAndEquityTotal,
+    amounts: liabilitiesAndEquityAmounts,
     type: "header",
     children: [
       liabilitiesNode,
@@ -4729,6 +4827,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
         id: "liabilities-and-equity-total",
         name: "Total for Liabilities and Equity",
         amount: liabilitiesAndEquityTotal,
+        amounts: liabilitiesAndEquityAmounts,
         type: "total",
       },
     ],
@@ -6754,6 +6853,29 @@ function restrictBsPayloadToSelectedYears(payload, selectedYears) {
 
   const filteredAudit = (payload.audit || []).filter((a) => keepYear(a.year));
 
+  // Prune each hierarchicalRows node's per-year `amounts` map to the selected
+  // years and reset the scalar `amount` to the latest selected year (so the
+  // single-column back-compat field reflects the latest *selected* year, not the
+  // latest internally-computed carry-forward year).
+  const orderedSelected = filteredYears.slice().sort((a, b) => Number(a) - Number(b));
+  const latestSelected = orderedSelected.length ? orderedSelected[orderedSelected.length - 1] : null;
+  const pruneRowAmounts = (nodes) => {
+    if (!Array.isArray(nodes)) return nodes;
+    return nodes.map((node) => {
+      const next = { ...node };
+      if (node.amounts && typeof node.amounts === "object") {
+        next.amounts = Object.fromEntries(
+          Object.entries(node.amounts).filter(([k]) => yearsSet.has(Number(String(k).replace(/^y/, "")))),
+        );
+        if (latestSelected != null && Object.prototype.hasOwnProperty.call(next.amounts, `y${latestSelected}`)) {
+          next.amount = next.amounts[`y${latestSelected}`];
+        }
+      }
+      if (Array.isArray(node.children)) next.children = pruneRowAmounts(node.children);
+      return next;
+    });
+  };
+
   console.log(
     `[ManualGL][YearRestrict] BS response years restricted from [${(payload.years || []).join(", ")}] â†’ [${filteredYears.join(", ")}]`,
   );
@@ -6763,6 +6885,8 @@ function restrictBsPayloadToSelectedYears(payload, selectedYears) {
     years: filteredYears,
     sections: filterSections(payload.sections),
     audit: filteredAudit,
+    hierarchicalRows: pruneRowAmounts(payload.hierarchicalRows),
+    yearCols: buildYearColumns(orderedSelected),
   };
 }
 
@@ -6907,14 +7031,11 @@ async function getCashflowSummaryFromStage(companyId, filters = {}) {
   });
 
   // Build frontend-ready hierarchicalRows for CashflowSummary component.
-  // yearCols uses String keys to match amounts map keys in the component.
-  const yearCols = selectedYears.map((y) => ({ key: String(y), label: `FY ${y}` }));
+  // Uses the shared `y<year>` column-key convention so BS / P&L / CF are uniform;
+  // yearCols keys must match the keys written into each node's `amounts` map.
+  const yearCols = buildYearColumns(selectedYears);
 
-  const buildAmounts = (valuesByYear) => {
-    const amounts = {};
-    selectedYears.forEach((y) => { amounts[String(y)] = valuesByYear[y] || 0; });
-    return amounts;
-  };
+  const buildAmounts = (valuesByYear) => amountsFromByYear(valuesByYear, selectedYears);
 
   const SECTION_KEYS = ["Operating", "Investing", "Financing"];
   const SECTION_TOTAL_LABELS = {
@@ -6979,8 +7100,8 @@ async function getCashflowSummaryFromStage(companyId, filters = {}) {
   selectedYears.forEach((year) => {
     const priorYearIdx = allBsYears.indexOf(year) - 1;
     const priorYear = priorYearIdx >= 0 ? allBsYears[priorYearIdx] : null;
-    beginningCashAmounts[String(year)] = priorYear != null ? (cashBalanceByYear[priorYear] || 0) : 0;
-    endingCashAmounts[String(year)] = cashBalanceByYear[year] || 0;
+    beginningCashAmounts[`y${year}`] = priorYear != null ? roundMoney(cashBalanceByYear[priorYear] || 0) : 0;
+    endingCashAmounts[`y${year}`] = roundMoney(cashBalanceByYear[year] || 0);
   });
 
   hierarchicalRows.push({ id: "beginning-cash", name: "Beginning Cash", amounts: beginningCashAmounts });

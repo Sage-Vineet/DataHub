@@ -63,7 +63,7 @@ function CategoryBlock({ category, months }) {
 function SectionBlock({ sectionKey, section, months }) {
   const totalLabel = sectionKey === "Assets" ? "Total Assets"
     : sectionKey === "Liabilities" ? "Total Liabilities"
-    : "Total Equity";
+      : "Total Equity";
 
   return (
     <>
@@ -96,6 +96,7 @@ function SectionBlock({ sectionKey, section, months }) {
 export default function ManualBalanceSheetMonthlyDetail({
   data,
   title = "Balance Sheet",
+  subtitle = "",
   entityName = "Company",
 }) {
   const year = data?.year || null;
@@ -104,12 +105,13 @@ export default function ManualBalanceSheetMonthlyDetail({
   const hasSections = Object.keys(sections).length > 0;
 
   const lastMonth = months.length > 0 ? months[months.length - 1] : 12;
-  const monthNames = data?.monthNames || ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const monthNames = data?.monthNames || ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const lastMonthName = monthNames[lastMonth - 1] || "Dec";
   const lastDayOfMonth = year ? new Date(year, lastMonth, 0).getDate() : 31;
-  const subtitle = year
+  const fallbackSubtitle = year
     ? `As of ${lastMonthName} ${lastDayOfMonth}, ${year}`
     : "All Dates";
+  const displaySubtitle = subtitle || fallbackSubtitle;
 
   if (!hasSections) {
     return (
@@ -137,10 +139,17 @@ export default function ManualBalanceSheetMonthlyDetail({
       <div className="max-w-[1600px] mx-auto card-base p-6 min-h-[900px] flex flex-col rounded-sm shadow-xl">
 
         {/* Report Header */}
-        <div className="flex flex-col items-center mb-8">
-          <h1 className="text-[20px] font-bold text-text-primary tracking-tight">{entityName}</h1>
-          <h2 className="text-[17px] font-semibold text-text-secondary mt-1">{title}</h2>
-          <p className="text-[13px] text-text-muted mt-1">{subtitle}</p>
+        <div className="flex flex-col items-center mb-10 relative">
+          <div className="w-12 h-1 bg-primary rounded-full mb-6" />
+          <h1 className="text-[22px] font-bold text-text-primary tracking-tight leading-none mb-2">
+            {entityName}
+          </h1>
+          <h2 className="text-[18px] font-medium text-text-secondary mb-4">{title}</h2>
+          {displaySubtitle && (
+            <div className="flex items-center gap-3 text-[12px] text-text-muted bg-bg-page px-4 py-1.5 rounded-full border border-border">
+              <span>{displaySubtitle}</span>
+            </div>
+          )}
         </div>
 
         <div className="overflow-x-auto rounded-md border border-border">
