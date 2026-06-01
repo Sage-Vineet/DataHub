@@ -3307,6 +3307,46 @@ function parseManualFilterQuery(rawFilters = {}) {
   };
 }
 
+/**
+ * Resolve the batch a report should read from, honoring an explicitly-requested
+ * dataset version.
+ *
+ * CRITICAL for version isolation: when a specific version (datasetVersion or
+ * versionId/uploadSessionId) was requested but cannot be resolved to a batch,
+ * this returns "" so the report renders EMPTY — it must NEVER silently fall back
+ * to the company's active batch.  Falling back would leak a different version's
+ * data into the selected version's report (the exact cross-version contamination
+ * this isolation work prevents).
+ *
+ * Only when no specific version/batch was requested at all do we default to the
+ * active/latest batch (the normal "open the Reports page" path).
+ */
+async function resolveEffectiveReportBatchId(companyId, filters = {}) {
+  const explicitBatchId = toNonEmptyString(filters.batchId);
+  if (explicitBatchId) return explicitBatchId;
+
+  const datasetVersion = Number(filters.datasetVersion || filters.dataset_version || 0);
+  const versionId = toNonEmptyString(filters.versionId || filters.uploadSessionId || "");
+  const hasVersionRequest =
+    (Number.isInteger(datasetVersion) && datasetVersion > 0) || !!versionId;
+
+  if (hasVersionRequest) {
+    const resolved = await resolveReportBatchId(companyId, "", {
+      ...filters,
+      datasetVersion: Number.isInteger(datasetVersion) && datasetVersion > 0 ? datasetVersion : undefined,
+      versionId,
+      allowExplicitBatch: true,
+      includeArchived: true,
+      versionMode: REPORT_BATCH_MODE.HISTORICAL,
+    });
+    // Empty => version not found.  Return "" (empty report), NOT the active batch.
+    return resolved || "";
+  }
+
+  // No specific version requested → default to the active/latest batch.
+  return (await resolveReportBatchId(companyId)) || "";
+}
+
 async function queryStagedTransactions(companyId, rawFilters = {}) {
   // Pre-load bypass: when the caller passes _preloadedRows (an already-fetched slice
   // of transactions for this batch), apply filters in memory and skip all DB queries.
@@ -4883,8 +4923,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
 }
 
 async function getBalanceSheetSummaryFromStage(companyId, filters = {}) {
-  const effectiveBatchId =
-    filters.batchId || (await resolveReportBatchId(companyId));
+  const effectiveBatchId = await resolveEffectiveReportBatchId(companyId, filters);
 
   // Load starting + ending BS lines and batch metadata in parallel.
   let startingLines = [];
@@ -6273,6 +6312,53 @@ async function stageMultiYearGlUpload({
       "[ManualGL][MultiYear] Generated year hashes:",
       uploadedYearHashPairs.map((item) => `${item.fiscalYear}:${item.dataHash.slice(0, 12)}`).join(", "),
     );
+
+    // ── Multi-version dedup: reuse existing version on identical re-stage ──────
+    // Every staged upload is preserved as its own immutable dataset version.  If
+    // the EXACT same dataset (identical content hash) was already staged and
+    // finalized, reuse that existing version instead of creating a duplicate.
+    // This satisfies "reuse existing version" semantics while keeping every
+    // distinct upload as its own isolated version.  We bail out BEFORE creating a
+    // new batch or touching any data, so existing versions are never disturbed.
+    try {
+      const existingVersion = await findExistingDatasetVersionByHash(companyId, datasetHash, { sourceType });
+      const existingBatchId = existingVersion?.batch_id || null;
+      const existingVersionNo = Number(existingVersion?.version_number || 0) || null;
+      if (existingVersion && existingBatchId && existingVersionNo) {
+        console.log(
+          `[ManualGL][MultiYear] Identical dataset already staged as version V${existingVersionNo} ` +
+          `(batch=${existingBatchId}); reusing existing version and skipping re-staging.`,
+        );
+        return {
+          success: true,
+          alreadyStaged: true,
+          blockedAsDuplicate: true,
+          reportsReady: true,
+          batchId: existingBatchId,
+          activeBatchId: existingBatchId,
+          datasetVersionId: existingVersion.id || null,
+          versionNumber: existingVersionNo,
+          activeDatasetVersion: existingVersionNo,
+          datasetHash,
+          existingVersion: {
+            id: existingVersion.id || null,
+            versionNumber: existingVersionNo,
+            batchId: existingBatchId,
+          },
+          fiscalYears: uploadedYears,
+          stagedFiscalYears: [],
+          fiscalCalendar,
+          fiscalCalendarExplicit: isFiscalCalendarExplicit,
+          warnings: parsingWarnings.slice(0, 500),
+        };
+      }
+    } catch (dedupError) {
+      console.warn(
+        "[ManualGL][MultiYear] Dedup lookup failed; continuing with fresh staging:",
+        dedupError.message,
+      );
+    }
+
     const fiscalYearStart = uploadedYears.length > 0 ? uploadedYears[0] : null;
     const fiscalYearEnd = uploadedYears.length > 0 ? uploadedYears[uploadedYears.length - 1] : null;
 
@@ -6354,29 +6440,15 @@ async function stageMultiYearGlUpload({
       console.log("[ManualGL][MultiYear] Using external datasetVersionId:", datasetVersionId);
     }
 
-    // Delete all previous staged data for this company before inserting the new
-    // dataset.  In single-dataset mode each upload fully replaces the previous
-    // one; there is no version history to preserve.
-    //
-    // We also null-out dataset_hash on all previous batch records so that the
-    // uq_manual_gl_batches_dedup unique constraint does not block the new batch
-    // from saving its own checksum when the same files are re-uploaded.
-    console.log(`[ManualGL][MultiYear] Deleting previous staged data for company=${companyId}...`);
-    const [txDel, bsDel, batchHashClear] = await Promise.all([
-      supabase.from(TABLES.transactions).delete().eq("company_id", companyId),
-      supabase.from(TABLES.balanceSheetLines).delete().eq("company_id", companyId),
-      supabase.from(TABLES.batches).update({ dataset_hash: null }).eq("company_id", companyId),
-    ]);
-    if (txDel.error) {
-      console.warn("[ManualGL][MultiYear] Failed to delete previous staged transactions:", txDel.error.message);
-    }
-    if (bsDel.error) {
-      console.warn("[ManualGL][MultiYear] Failed to delete previous BS lines:", bsDel.error.message);
-    }
-    if (batchHashClear.error) {
-      console.warn("[ManualGL][MultiYear] Failed to clear dataset_hash on previous batches:", batchHashClear.error.message);
-    }
-    console.log(`[ManualGL][MultiYear] Previous staged data deleted. Staging new dataset...`, {
+    // Multi-version retention: each upload becomes its own isolated dataset
+    // version.  We DO NOT delete prior staged data — every previous version's
+    // transactions and balance-sheet lines must remain intact and independently
+    // selectable on the Reports page.  The new dataset is inserted under a fresh
+    // upload_batch_id (created below); reports are always scoped by that batch /
+    // dataset_version, so versions never mix.  Identical re-uploads are short-
+    // circuited earlier by the content-hash dedup check, so we never reach here
+    // with a dataset that already exists.
+    console.log(`[ManualGL][MultiYear] Staging new isolated dataset version (prior versions preserved)...`, {
       companyId,
       stagedYears,
       rowCount: allClassifiedTransactions.length,
@@ -7132,8 +7204,7 @@ async function getProfitLossSummaryFromStage(companyId, filters = {}) {
   // may hold wrong April-offset labels (BUG2). We bypass the fiscal_year DB filter and
   // instead fetch by date range, then correct + filter in memory.
   const preFilters = parseManualFilterQuery(filters);
-  const preBatchId = preFilters.batchId ||
-    (await resolveReportBatchId(companyId));
+  const preBatchId = await resolveEffectiveReportBatchId(companyId, preFilters);
   const batchMeta = await loadBatchMetadata(preBatchId);
   const fiscalCalendarExplicit = batchMeta.fiscalCalendarExplicit === true;
 
@@ -7219,8 +7290,7 @@ async function getProfitLossSummaryFromStage(companyId, filters = {}) {
 
 async function getProfitLossDetailFromStage(companyId, filters = {}) {
   const preFilters = parseManualFilterQuery(filters);
-  const preBatchId = preFilters.batchId ||
-    (await resolveReportBatchId(companyId));
+  const preBatchId = await resolveEffectiveReportBatchId(companyId, preFilters);
   const batchMeta = await loadBatchMetadata(preBatchId);
   const fiscalCalendarExplicit = batchMeta.fiscalCalendarExplicit === true;
 
@@ -7908,8 +7978,7 @@ function buildProfitLossMonthlyDetailPayload(transactions = [], year, filters = 
 
 async function getProfitLossMonthlyDetailFromStage(companyId, filters = {}) {
   const preFilters = parseManualFilterQuery(filters);
-  const preBatchId = preFilters.batchId ||
-    (await resolveReportBatchId(companyId));
+  const preBatchId = await resolveEffectiveReportBatchId(companyId, preFilters);
   const batchMeta = await loadBatchMetadata(preBatchId);
   const fiscalCalendarExplicit = batchMeta.fiscalCalendarExplicit === true;
 
@@ -8310,8 +8379,7 @@ function buildBalanceSheetMonthlyDetailPayload(transactions = [], year, filters 
 
 async function getBalanceSheetMonthlyDetailFromStage(companyId, filters = {}) {
   const normalizedFilters = parseManualFilterQuery(filters);
-  const effectiveBatchId =
-    normalizedFilters.batchId || (await resolveReportBatchId(companyId));
+  const effectiveBatchId = await resolveEffectiveReportBatchId(companyId, normalizedFilters);
   const targetYear =
     Array.isArray(normalizedFilters.fiscalYears) && normalizedFilters.fiscalYears.length > 0
       ? Math.max(...normalizedFilters.fiscalYears.map((value) => Number(value)).filter((value) => Number.isInteger(value) && value > 0))
@@ -8583,7 +8651,7 @@ function buildCashflowMonthlyDetailPayload(transactions = [], year, filters = {}
 
 async function getCashflowMonthlyDetailFromStage(companyId, filters = {}) {
   const normalizedFilters = parseManualFilterQuery(filters);
-  const effectiveBatchId = normalizedFilters.batchId || (await resolveReportBatchId(companyId));
+  const effectiveBatchId = await resolveEffectiveReportBatchId(companyId, normalizedFilters);
   const targetYear = Array.isArray(normalizedFilters.fiscalYears) && normalizedFilters.fiscalYears.length > 0
     ? Math.max(...normalizedFilters.fiscalYears.map(Number).filter((y) => Number.isInteger(y) && y > 0))
     : null;
@@ -8634,7 +8702,7 @@ async function getCashflowMonthlyDetailFromStage(companyId, filters = {}) {
 
 async function getProfitLossVendorDetailFromStage(companyId, filters = {}) {
   const preFilters = parseManualFilterQuery(filters);
-  const preBatchId = preFilters.batchId || (await resolveReportBatchId(companyId));
+  const preBatchId = await resolveEffectiveReportBatchId(companyId, preFilters);
   const batchMeta = await loadBatchMetadata(preBatchId);
   const fiscalCalendarExplicit = batchMeta.fiscalCalendarExplicit === true;
 

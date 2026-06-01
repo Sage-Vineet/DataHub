@@ -13,6 +13,7 @@ import {
   getAllManualUploadedReports,
   getAllQMSUploadedReports,
   getManualCashFlowPeriods,
+  listManualGlDatasetVersions,
 } from "../../../lib/api";
 import { MANUAL_GL_STAGED_EVENT } from "../../../lib/dataSourceEvents";
 import { useDataSource } from "../../../context/DataSourceContext";
@@ -154,6 +155,7 @@ const DATE_RANGE_OPTIONS = [
 function createDefaultManualFilters() {
   return {
     batchId: "",
+    datasetVersion: "",
     fiscalYear: [],
     fiscalMonth: [],
     startDate: "",
@@ -293,6 +295,9 @@ export default function WorkspaceReports() {
   );
   const [manualFilterOptions, setManualFilterOptions] = useState({});
   const [filterOptionsVersion, setFilterOptionsVersion] = useState(0);
+  // Dataset versions available for the selected company (manual GL source).
+  // Drives the Version dropdown; every staged upload is its own isolated version.
+  const [manualVersions, setManualVersions] = useState([]);
   const [manualUploadFiles, setManualUploadFiles] = useState({
     "Balance Sheet": [],
     "Profit & Loss": [],
@@ -407,8 +412,10 @@ export default function WorkspaceReports() {
       // Clear fiscal year selection and stale options; filter options will
       // be re-fetched automatically via filterOptionsVersion increment.
       setManualFilterOptions({});
-      setManualFilters((prev) => ({ ...prev, batchId: "", fiscalYear: [], fiscalMonth: [] }));
-      setAppliedManualFilters((prev) => ({ ...prev, batchId: "", fiscalYear: [], fiscalMonth: [] }));
+      // Reset datasetVersion too so the version-load effect re-selects the newly
+      // staged (latest) version by default after an upload completes.
+      setManualFilters((prev) => ({ ...prev, batchId: "", datasetVersion: "", fiscalYear: [], fiscalMonth: [] }));
+      setAppliedManualFilters((prev) => ({ ...prev, batchId: "", datasetVersion: "", fiscalYear: [], fiscalMonth: [] }));
       setReportsData(createInitialReportsData());
       // Invalidate the tab-switch cache so reports refetch against the new batch.
       reportSignaturesRef.current = {};
@@ -491,11 +498,55 @@ export default function WorkspaceReports() {
   const currentSignatureRef = useRef(currentSignature);
   currentSignatureRef.current = currentSignature;
 
+  // Load available dataset versions for the company.  Defaults the selection to
+  // the latest version and refreshes after every new upload (filterOptionsVersion
+  // increments on a successful stage).  Every version is preserved and selectable.
+  useEffect(() => {
+    if (selectedSourceMode !== "manual" || !clientId) return;
+    let cancelled = false;
+    listManualGlDatasetVersions({ clientId })
+      .then((versions) => {
+        if (cancelled) return;
+        const list = Array.isArray(versions) ? versions : [];
+        setManualVersions(list);
+        const available = list.map((v) => String(v.value));
+        const current = String(manualFiltersRef.current.datasetVersion || "");
+        // The list is newest-first, so available[0] is the latest version.
+        const nextVersion =
+          current && available.includes(current) ? current : (available[0] || "");
+        if (nextVersion !== current) {
+          const next = {
+            ...manualFiltersRef.current,
+            datasetVersion: nextVersion,
+            batchId: "",
+            fiscalYear: [],
+            fiscalMonth: [],
+          };
+          setManualFilters(next);
+          setAppliedManualFilters(next);
+          debugLog("[ManualGL][UI][VersionAutoSelect]", { selectedVersion: nextVersion });
+        }
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.error("[WorkspaceReports] Failed to load dataset versions:", error);
+        setManualVersions([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [clientId, selectedSourceMode, filterOptionsVersion, debugLog]);
+
   useEffect(() => {
     if (selectedSourceMode !== "manual" || !clientId) return;
 
-    // Single-dataset mode: no version param needed — always fetch from active batch.
-    getManualStageFilterOptions({ clientId, params: {} })
+    // Scope filter options (years, accounts, etc.) to the SELECTED version so the
+    // dropdowns reflect only that version's data — never another version's.
+    const selectedVersion = String(manualFiltersRef.current.datasetVersion || "");
+    getManualStageFilterOptions({
+      clientId,
+      params: selectedVersion ? { datasetVersion: selectedVersion } : {},
+    })
       .then((payload) => {
         const activeBatchId = String(payload?.activeBatchId || "").trim();
         const resolvedBatchId = String(payload?.resolvedBatchId || activeBatchId || "").trim();
@@ -551,7 +602,8 @@ export default function WorkspaceReports() {
         setManualFilterOptions({});
       });
     // filterOptionsVersion increments when a new GL batch is staged, forcing a re-fetch.
-  }, [clientId, selectedSourceMode, filterOptionsVersion, debugLog]);
+    // manualFilters.datasetVersion re-fetches the year list when the user switches version.
+  }, [clientId, selectedSourceMode, filterOptionsVersion, manualFilters.datasetVersion, debugLog]);
 
   // Load available uploaded files per tab when in manual_upload source mode
   useEffect(() => {
@@ -940,6 +992,28 @@ export default function WorkspaceReports() {
       debugLog("[ManualGL][UI][FilterChange][FiscalYears]", {
         selectedFiscalYears: nextYears,
       });
+    },
+    [debugLog],
+  );
+
+  // Switch the active dataset version. Clears batch + year/month so the
+  // filter-options effect re-derives them for the newly selected version,
+  // preventing stale cross-version selections. The datasetVersion flows into
+  // every report request (via buildManualFilterParams), so reports refresh
+  // using ONLY the selected version's dataset.
+  const handleVersionChange = useCallback(
+    (versionValue) => {
+      const nextVersion = String(versionValue || "");
+      const next = {
+        ...manualFiltersRef.current,
+        datasetVersion: nextVersion,
+        batchId: "",
+        fiscalYear: [],
+        fiscalMonth: [],
+      };
+      setManualFilters(next);
+      setAppliedManualFilters(next);
+      debugLog("[ManualGL][UI][FilterChange][Version]", { selectedVersion: nextVersion });
     },
     [debugLog],
   );
@@ -1509,6 +1583,32 @@ export default function WorkspaceReports() {
 
             {selectedSourceMode === "manual" && (
               <>
+
+                {manualVersions.length > 0 && (
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
+                      Version
+                    </label>
+                    <div className="relative">
+                      <select
+                        value={String(manualFilters.datasetVersion || "")}
+                        onChange={(e) => handleVersionChange(e.target.value)}
+                        className="h-9 w-full min-w-[160px] appearance-none rounded-md border border-border-input bg-bg-card pl-3 pr-9 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                      >
+                        {manualVersions.map((v) => (
+                          <option key={String(v.value)} value={String(v.value)}>
+                            {v.label || `Version ${v.value}`}
+                            {v.isActive ? " (active)" : ""}
+                          </option>
+                        ))}
+                      </select>
+                      <ChevronDown
+                        size={14}
+                        className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-text-muted"
+                      />
+                    </div>
+                  </div>
+                )}
 
                 <div className="flex flex-col gap-1.5">
                   <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
