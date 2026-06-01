@@ -121,18 +121,18 @@ export default function ProfitAndLossQBSummary({
         <div className="overflow-x-auto flex-1">
           <table className={cn("border-collapse", hasColumns ? "min-w-max" : "w-full")}>
             <thead>
-              <tr className="border-b-2 border-text-primary sticky top-0 bg-bg-card z-20">
-                <th className="pb-3 pt-2 px-4 text-left text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider min-w-[400px]">
+              <tr className="bg-bg-card sticky top-0 z-20 text-text-muted">
+                <th className="pb-4 pt-2.5 px-4 text-left text-[12px] font-medium whitespace-nowrap uppercase tracking-wider min-w-[400px] border-b-2 border-text-primary">
                   Account
                 </th>
                 {hasColumns ? (
                   columns.yearCols.map((col) => (
-                    <th key={col.key} className="pb-3 pt-2 px-4 text-right text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider min-w-[110px]">
+                    <th key={col.key} className="pb-4 pt-2.5 px-4 text-right text-[12px] font-medium whitespace-nowrap uppercase tracking-wider min-w-[110px] border-b-2 border-text-primary">
                       {col.label}
                     </th>
                   ))
                 ) : (
-                  <th className="pb-3 pt-2 px-4 text-right text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider">
+                  <th className="pb-4 pt-2.5 px-4 text-right text-[12px] font-medium whitespace-nowrap uppercase tracking-wider border-b-2 border-text-primary">
                     Total
                   </th>
                 )}

@@ -266,8 +266,13 @@ export default function ProfitAndLossSummary({
         <div className="overflow-x-auto flex-1">
           <table className="min-w-max border-collapse">
             <thead>
-              <tr className="border-b-2 border-text-primary sticky top-0 bg-bg-card z-20">
-                <th rowSpan={2} className="pb-3 pt-2 px-4 text-left text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider min-w-[320px]">
+              {/* Row-level border-b on sticky <tr> elements renders through column
+                  labels with border-collapse, making dates appear to sit on the
+                  divider line. The fix: put border-b-2 on the <th> cells in the
+                  SECOND row (date/year labels) and on the rowSpan=2 Description
+                  cell, so the thick line sits cleanly BELOW all headers. */}
+              <tr className="sticky top-0 bg-bg-card z-20">
+                <th rowSpan={2} className="pt-3 pb-5 px-4 text-left text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider min-w-[320px] border-b-2 border-text-primary">
                   Description
                 </th>
                 <th colSpan={hasYTD ? yearCols.length + 1 : yearCols.length} className="pb-1 text-center text-[10px] font-bold text-text-muted/60 uppercase border-b border-border-light">Actuals</th>
@@ -285,39 +290,39 @@ export default function ProfitAndLossSummary({
                   <th colSpan={3} className="pb-1 text-right text-[10px] font-bold text-primary uppercase border-b border-border-light border-l border-border-light">YTD Analysis</th>
                 )}
               </tr>
-              <tr className="bg-bg-page/20 border-b border-border-light sticky top-[38px] z-20">
+              <tr className="bg-bg-page/20 sticky top-[38px] z-20">
                 {yearCols.map((col, idx) => (
-                  <th key={idx} className="py-2 px-3 text-right text-[12px] font-medium text-text-muted uppercase whitespace-nowrap min-w-[90px]">
+                  <th key={idx} className="pt-3 pb-5 px-3 text-right text-[12px] font-medium text-text-muted uppercase whitespace-nowrap min-w-[90px] border-b-2 border-text-primary">
                     {col.label}
                   </th>
                 ))}
                 {hasYTD && (
-                  <th className="py-2 px-3 text-right text-[12px] font-bold text-text-primary bg-blue-50/30">
+                  <th className="pt-3 pb-5 px-3 text-right text-[12px] font-bold text-text-primary bg-blue-50/30 border-b-2 border-text-primary">
                     {ytdComp.currentLabel || "Current YTD"}
                   </th>
                 )}
 
                 {yearCols.length > 1 && hasYTD && (
                   <>
-                    <th className="py-2 px-3 text-right text-[11px] font-medium text-text-muted">$ Δ</th>
-                    <th className="py-2 px-3 text-right text-[11px] font-medium text-text-muted border-r border-border-light">% Δ</th>
+                    <th className="pt-3 pb-5 px-3 text-right text-[11px] font-medium text-text-muted border-b-2 border-text-primary">$ Δ</th>
+                    <th className="pt-3 pb-5 px-3 text-right text-[11px] font-medium text-text-muted border-r border-border-light border-b-2 border-text-primary">% Δ</th>
                   </>
                 )}
 
                 {yearCols.length > 2 && hasYTD && (
                   <>
-                    <th className="py-2 px-3 text-right text-[11px] font-medium text-text-muted">$ Δ</th>
-                    <th className="py-2 px-3 text-right text-[11px] font-medium text-text-muted border-r border-border-light">% Δ</th>
+                    <th className="pt-3 pb-5 px-3 text-right text-[11px] font-medium text-text-muted border-b-2 border-text-primary">$ Δ</th>
+                    <th className="pt-3 pb-5 px-3 text-right text-[11px] font-medium text-text-muted border-r border-border-light border-b-2 border-text-primary">% Δ</th>
                   </>
                 )}
 
                 {hasYTD && (
                   <>
-                    <th className="py-2 px-3 text-right text-[12px] font-medium text-text-muted">
+                    <th className="pt-3 pb-5 px-3 text-right text-[12px] font-medium text-text-muted border-b-2 border-text-primary">
                       {ytdComp.prevLabel || "Prev YTD"}
                     </th>
-                    <th className="py-2 px-3 text-right text-[12px] font-bold text-primary">$ Δ</th>
-                    <th className="py-2 px-4 text-right text-[12px] font-bold text-text-primary">% Δ</th>
+                    <th className="pt-3 pb-5 px-3 text-right text-[12px] font-bold text-primary border-b-2 border-text-primary">$ Δ</th>
+                    <th className="pt-3 pb-5 px-4 text-right text-[12px] font-bold text-text-primary border-b-2 border-text-primary">% Δ</th>
                   </>
                 )}
               </tr>

@@ -40,19 +40,19 @@ export default function ManualProfitLossSummary({
         <div className="overflow-x-auto">
           <table className="w-full border-collapse">
             <thead>
-              <tr className="border-b-2 border-text-primary sticky top-0 bg-bg-card z-20">
-                <th className="pb-3 pt-2 px-4 text-left text-[12px] font-medium text-text-muted uppercase tracking-wider">
+              <tr className="bg-bg-page sticky top-0 z-10">
+                <th className="pt-2.5 pb-4 px-4 text-left text-[12px] font-medium text-text-muted uppercase tracking-wider border-b-2 border-text-primary">
                   Metric
                 </th>
                 {years.map((year) => (
                   <th
                     key={`year-${year}`}
-                    className="pb-3 pt-2 px-4 text-right text-[12px] font-medium text-text-muted uppercase tracking-wider"
+                    className="pt-2.5 pb-4 px-4 text-right text-[12px] font-medium text-text-muted uppercase tracking-wider border-b-2 border-text-primary"
                   >
                     FY {year}
                   </th>
                 ))}
-                <th className="pb-3 pt-2 px-4 text-right text-[12px] font-semibold text-text-primary uppercase tracking-wider">
+                <th className="pt-2.5 pb-4 px-4 text-right text-[12px] font-semibold text-text-primary uppercase tracking-wider border-b-2 border-text-primary">
                   Consolidated
                 </th>
               </tr>

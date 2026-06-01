@@ -157,14 +157,14 @@ export default function ManualBalanceSheetMonthlyDetail({
         <div className="overflow-x-auto rounded-md border border-border">
           <table className="w-full border-collapse text-sm">
             <thead>
-              <tr className="border-b-2 border-text-primary bg-bg-page sticky top-0 z-10">
-                <th className="px-3 py-2.5 text-left text-[12px] font-semibold text-text-primary min-w-[220px]" />
+              <tr className="bg-bg-page sticky top-0 z-10">
+                <th className="px-3 pt-2.5 pb-3 text-left text-[12px] font-semibold text-text-primary min-w-[220px] border-b-2 border-text-primary" />
                 {months.map((m) => (
-                  <th key={m} className="px-3 py-2.5 text-right text-[12px] font-semibold text-text-primary whitespace-nowrap min-w-[90px]">
+                  <th key={m} className="px-3 pt-2.5 pb-3 text-right text-[12px] font-semibold text-text-primary whitespace-nowrap min-w-[90px] border-b-2 border-text-primary">
                     {monthLabel(m, year)}
                   </th>
                 ))}
-                <th className="px-3 py-2.5 text-right text-[12px] font-semibold text-text-primary min-w-[100px]">
+                <th className="px-3 pt-2.5 pb-3 text-right text-[12px] font-semibold text-text-primary min-w-[100px] border-b-2 border-text-primary">
                   Total
                 </th>
               </tr>
