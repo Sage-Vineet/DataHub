@@ -15,6 +15,7 @@ import { ToastProvider, useToast } from "./context/ToastContext";
 import { DataSourceProvider } from "./context/DataSourceContext";
 import ErrorBoundary from "./components/common/ErrorBoundary";
 import Layout from "./components/layout/Layout";
+import BrokerLayout from "./components/layout/BrokerLayout";
 import ClientWorkspaceLayout from "./components/layout/ClientWorkspaceLayout";
 import UserLayout from "./components/layout/UserLayout";
 import Login from "./pages/Login";
@@ -91,6 +92,7 @@ function ProtectedRoute({ children, allowedRole, allowedRoles }) {
       />
     );
   if (user.role === "user") return <UserLayout>{children}</UserLayout>;
+  if (user.role === "broker") return <BrokerLayout>{children}</BrokerLayout>;
   return <Layout>{children}</Layout>;
 }
 

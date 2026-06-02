@@ -230,11 +230,7 @@ export default function ClientReminders() {
                         {reminder.priority}
                       </span>
                     </div>
-                    <div className="mt-4 grid gap-3 text-xs text-[#6D6E71] sm:grid-cols-2 xl:grid-cols-4">
-                      <div>
-                        <p className="text-[#A5A5A5]">Request ID</p>
-                        <p className="mt-1 font-semibold text-[#050505]">{reminder.request_id}</p>
-                      </div>
+                    <div className="mt-4 grid gap-3 text-xs text-[#6D6E71] sm:grid-cols-2 xl:grid-cols-3">
                       <div>
                         <p className="text-[#A5A5A5]">Reminder Cadence</p>
                         <p className="mt-1 font-semibold text-[#050505]">{reminder.frequency_label}</p>

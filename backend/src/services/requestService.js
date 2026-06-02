@@ -352,13 +352,23 @@ async function listRequestDocuments(requestId) {
   const documentIds = links.map((l) => l.document_id).filter(Boolean);
   const { data: documents, error: docsError } = await supabase
     .from("documents")
-    .select("id, name, file_url, status, upload_id, ext, size")
+    .select("id, name, file_url, status, upload_id, ext, size, uploaded_by")
     .in("id", documentIds);
 
   if (docsError) throw docsError;
 
   const docMap = {};
   (documents || []).forEach((doc) => { docMap[doc.id] = doc; });
+
+  const uploaderIds = [...new Set((documents || []).map((d) => d.uploaded_by).filter(Boolean))];
+  let nameById = new Map();
+  if (uploaderIds.length) {
+    const { data: users } = await supabase
+      .from("users")
+      .select("id, name, email")
+      .in("id", uploaderIds);
+    nameById = new Map((users || []).map((u) => [u.id, u.name || u.email || "User"]));
+  }
 
   return links.map((rd) => {
     const doc = docMap[rd.document_id] || {};
@@ -370,6 +380,7 @@ async function listRequestDocuments(requestId) {
       upload_id: doc.upload_id,
       ext: doc.ext || '',
       size: doc.size || '',
+      uploaded_by_name: nameById.get(doc.uploaded_by) || null,
     };
   });
 }

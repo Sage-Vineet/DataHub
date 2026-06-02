@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   Building2, Phone, Mail, Plus, Search, AlertCircle,
   Users, ArrowRight, Filter, Download, ChevronLeft,
-  ChevronDown, Eye, X, ChevronRight, Pencil
+  ChevronDown, Eye, X, ChevronRight, Pencil,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useClientStore } from '../../store/clientStore';

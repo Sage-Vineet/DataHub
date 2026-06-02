@@ -8,7 +8,7 @@ export default function BrokerConnections() {
     <div className="space-y-5">
       <div>
         <h1 className="text-2xl font-bold text-[#050505]">Connections</h1>
-        <p className="mt-0.5 text-sm text-[#6D6E71]">Data Hub connection status has been merged into the broker workspace as a dedicated overview.</p>
+        <p className="mt-0.5 text-sm text-[#6D6E71]">M&A Hub connection status has been merged into the broker workspace as a dedicated overview.</p>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
@@ -49,7 +49,7 @@ export default function BrokerConnections() {
       <div className="rounded-2xl border border-[#F68C1F]/20 bg-[#FFF8F0] p-5">
         <h2 className="text-lg font-semibold text-[#050505]">About this merge</h2>
         <p className="mt-2 text-sm leading-6 text-[#6D6E71]">
-          The navigation, finance-facing pages, and dashboard insights from Data Hub are now part of the Leo broker app. Existing broker, company, reminder, and client workspace logic remains in place, and any future external accounting integrations can be wired into this screen without changing the merged UI structure.
+          The navigation, finance-facing pages, and dashboard insights from M&A Hub are now part of the Leo broker app. Existing broker, company, reminder, and client workspace logic remains in place, and any future external accounting integrations can be wired into this screen without changing the merged UI structure.
         </p>
       </div>
     </div>

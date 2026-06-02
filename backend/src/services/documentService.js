@@ -102,7 +102,18 @@ async function listDocumentsByFolder(folderId, options = {}) {
 
   const { data, error } = await query;
   if (error) throw error;
-  return data || [];
+  const docs = data || [];
+
+  const uploaderIds = [...new Set(docs.map((d) => d.uploaded_by).filter(Boolean))];
+  if (uploaderIds.length) {
+    const { data: users } = await supabase
+      .from("users")
+      .select("id, name, email")
+      .in("id", uploaderIds);
+    const nameById = new Map((users || []).map((u) => [u.id, u.name || u.email || "User"]));
+    return docs.map((d) => ({ ...d, uploaded_by_name: nameById.get(d.uploaded_by) || null }));
+  }
+  return docs;
 }
 
 async function getDocumentById(id) {
