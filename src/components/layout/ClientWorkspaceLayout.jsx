@@ -117,7 +117,7 @@ function WorkspaceSidebar({ company, onClose }) {
         <div className="relative flex items-center justify-center">
           <img
             src={datahublogo}
-            alt="DataHub"
+            alt="M&A Hub"
             className="h-10 w-auto object-contain"
           />
 
@@ -389,7 +389,7 @@ function WorkspaceTopbar({ company, onMenuClick }) {
   const title = useMemo(() => {
     if (location.pathname.endsWith("/dashboard")) return "Dashboard";
     if (location.pathname.endsWith("/datahub-dashboard"))
-      return "DataHub Dashboard";
+      return "M&A Hub Dashboard";
     if (location.pathname.endsWith("/invoices")) return "Client Invoices";
     if (location.pathname.endsWith("/reports")) return "Reports";
     if (location.pathname.endsWith("/reconciliation")) return "Reconciliation";

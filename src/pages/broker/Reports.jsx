@@ -75,7 +75,7 @@ export default function BrokerReports() {
 
     XLSX.utils.book_append_sheet(workbook, clientSheet, 'Clients');
     XLSX.utils.book_append_sheet(workbook, invoiceSheet, 'Invoices');
-    XLSX.writeFile(workbook, 'datahub-merged-reports.xlsx');
+    XLSX.writeFile(workbook, 'ma-hub-merged-reports.xlsx');
   };
 
   return (
@@ -83,7 +83,7 @@ export default function BrokerReports() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-[#050505]">Reports</h1>
-          <p className="mt-0.5 text-sm text-[#6D6E71]">A lightweight reporting workspace built from the merged Leo and Data Hub views.</p>
+          <p className="mt-0.5 text-sm text-[#6D6E71]">A lightweight reporting workspace built from the merged Leo and M&A Hub views.</p>
         </div>
         <button
           onClick={handleExportWorkbook}

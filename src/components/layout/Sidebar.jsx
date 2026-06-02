@@ -67,7 +67,7 @@ export default function Sidebar({ onClose }) {
           >
             <img
               src={datahublogo}
-              alt="DataHub"
+              alt="M&A Hub"
               className="h-10 w-auto object-contain"
             />
           </button>
@@ -121,83 +121,82 @@ export default function Sidebar({ onClose }) {
         })}
       </nav>
 
-      <div className="border-t border-border px-3 pb-4 pt-4">
-        <div className="relative" ref={userMenuRef}>
-          {showUserMenu && (
-            <div
-              className="absolute bottom-full left-0 right-0 mb-1 rounded-[var(--radius-card)] border border-border bg-white p-2 animate-fadeIn"
-              style={{ boxShadow: "var(--shadow-dropdown)" }}
-            >
-              <div className="mb-1 border-b border-border px-3 py-2">
-                <p className="text-sm font-semibold text-text-primary">{user?.name}</p>
-                <p className="text-xs text-secondary">{user?.email}</p>
-              </div>
-              <button
-                className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-secondary transition-colors hover:bg-bg-page hover:text-text-primary"
-                onClick={() => {
-                  setShowUserMenu(false);
-                  if (onClose) onClose();
-                  if (user?.role === "client") {
-                    navigate("/client/profile");
-                  } else if (user?.role === "broker") {
-                    navigate("/broker/profile");
-                  }
-                }}
+      {/* Client/non-broker users keep the bottom user section in the sidebar */}
+      {user?.role !== "broker" && (
+        <div className="border-t border-border px-3 pb-4 pt-4">
+          <div className="relative" ref={userMenuRef}>
+            {showUserMenu && (
+              <div
+                className="absolute bottom-full left-0 right-0 mb-1 rounded-[var(--radius-card)] border border-border bg-white p-2 animate-fadeIn"
+                style={{ boxShadow: "var(--shadow-dropdown)" }}
               >
-                <Settings size={14} />
-                Profile Settings
-              </button>
+                <div className="mb-1 border-b border-border px-3 py-2">
+                  <p className="text-sm font-semibold text-text-primary">{user?.name}</p>
+                  <p className="text-xs text-secondary">{user?.email}</p>
+                </div>
+                <button
+                  className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-secondary transition-colors hover:bg-bg-page hover:text-text-primary"
+                  onClick={() => {
+                    setShowUserMenu(false);
+                    if (onClose) onClose();
+                    navigate("/client/profile");
+                  }}
+                >
+                  <Settings size={14} />
+                  Profile Settings
+                </button>
+              </div>
+            )}
+
+            <button
+              onClick={() => setShowUserMenu((v) => !v)}
+              className="mb-1 flex w-full items-center gap-3 rounded-md px-3 py-2.5 transition-colors hover:bg-bg-page"
+            >
+              <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary text-[12px] font-semibold text-white">
+                {user?.avatar}
+              </div>
+              <div className="min-w-0 flex-1 text-left">
+                <p className="truncate text-[14px] font-medium leading-none text-text-primary">
+                  {user?.name}
+                </p>
+                <p className="mt-1 truncate text-[12px] leading-none text-text-muted">
+                  {`${accountLabel}${user?.company ? ` · ${user.company}` : ""}`}
+                </p>
+              </div>
+              <MoreHorizontal size={16} className="shrink-0 text-text-muted" />
+            </button>
+          </div>
+          <button
+            onClick={() => setShowLogoutConfirm(true)}
+            className="flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-[14px] font-medium text-secondary transition-colors hover:bg-red-50 hover:text-negative"
+          >
+            <LogOut size={16} />
+            Sign Out
+          </button>
+          {showLogoutConfirm && (
+            <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-white/40 backdrop-blur-sm">
+              <div className="w-full max-w-sm rounded-2xl border border-border bg-white p-6 shadow-2xl">
+                <h3 className="text-base font-bold text-text-primary">Sign out?</h3>
+                <p className="mt-1 text-sm text-secondary">You will be returned to the login screen.</p>
+                <div className="mt-5 flex gap-3">
+                  <button
+                    onClick={() => setShowLogoutConfirm(false)}
+                    className="flex-1 rounded-xl border border-border py-2.5 text-sm font-semibold text-secondary transition-colors hover:bg-bg-page"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleLogout}
+                    className="flex-1 rounded-xl bg-negative py-2.5 text-sm font-semibold text-white transition-colors hover:opacity-90"
+                  >
+                    Sign Out
+                  </button>
+                </div>
+              </div>
             </div>
           )}
-
-          <button
-            onClick={() => setShowUserMenu((v) => !v)}
-            className="mb-1 flex w-full items-center gap-3 rounded-md px-3 py-2.5 transition-colors hover:bg-bg-page"
-          >
-            <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-primary text-[12px] font-semibold text-white">
-              {user?.avatar}
-            </div>
-            <div className="min-w-0 flex-1 text-left">
-              <p className="truncate text-[14px] font-medium leading-none text-text-primary">
-                {user?.name}
-              </p>
-              <p className="mt-1 truncate text-[12px] leading-none text-text-muted">
-                {user?.role === "broker" ? accountLabel : `${accountLabel}${user?.company ? ` · ${user.company}` : ""}`}
-              </p>
-            </div>
-            <MoreHorizontal size={16} className="shrink-0 text-text-muted" />
-          </button>
         </div>
-        <button
-          onClick={() => setShowLogoutConfirm(true)}
-          className="flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-[14px] font-medium text-secondary transition-colors hover:bg-red-50 hover:text-negative"
-        >
-          <LogOut size={16} />
-          Sign Out
-        </button>
-        {showLogoutConfirm && (
-          <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-white/40 backdrop-blur-sm">
-            <div className="w-full max-w-sm rounded-2xl border border-border bg-white p-6 shadow-2xl">
-              <h3 className="text-base font-bold text-text-primary">Sign out?</h3>
-              <p className="mt-1 text-sm text-secondary">You will be returned to the login screen.</p>
-              <div className="mt-5 flex gap-3">
-                <button
-                  onClick={() => setShowLogoutConfirm(false)}
-                  className="flex-1 rounded-xl border border-border py-2.5 text-sm font-semibold text-secondary transition-colors hover:bg-bg-page"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleLogout}
-                  className="flex-1 rounded-xl bg-negative py-2.5 text-sm font-semibold text-white transition-colors hover:opacity-90"
-                >
-                  Sign Out
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
+      )}
     </aside>
   );
 }

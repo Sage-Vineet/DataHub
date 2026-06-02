@@ -1,10 +1,17 @@
-import { useMemo } from 'react';
-import { Menu, Building2 } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
+import { Building2, ChevronDown, LayoutGrid, List, LogOut, Menu, Settings } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import MessageNotificationsMenu from './MessageNotificationsMenu';
+import datahublogo from '../../assets/datahublogo.png';
 
 export default function Navbar({ onMenuClick }) {
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
+  const [showUserMenu, setShowUserMenu] = useState(false);
+  const [showSignoutConfirm, setShowSignoutConfirm] = useState(false);
+  const menuRef = useRef(null);
+
   const workspaceLabel = useMemo(() => {
     if (!user) return '';
     if (user.company) return user.company;
@@ -15,32 +22,163 @@ export default function Navbar({ onMenuClick }) {
     return user.role || '';
   }, [user]);
 
+  useEffect(() => {
+    function handleClickOutside(e) {
+      if (menuRef.current && !menuRef.current.contains(e.target)) {
+        setShowUserMenu(false);
+      }
+    }
+    if (showUserMenu) document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showUserMenu]);
+
+  const handleLogout = async () => {
+    setShowSignoutConfirm(false);
+    await logout();
+    navigate('/login', { replace: true });
+  };
+
+  const location = useLocation();
+  const isBroker = user?.role === 'broker';
+
+  // Show toggle only on the two main broker entry screens
+  const showBrokerToggle = isBroker && (
+    location.pathname === '/broker/dashboard' ||
+    location.pathname === '/broker/companies'
+  );
+  const isCompaniesActive = location.pathname === '/broker/companies';
+
   return (
-    <header className="sticky top-0 z-20 border-b border-border bg-bg-card">
-      <div className="flex items-center justify-between px-4 py-4 lg:px-6">
-        <div className="flex items-center gap-3">
-          <button
-            onClick={onMenuClick}
-            className="rounded-md border border-border bg-bg-card p-2 text-secondary transition-colors hover:bg-bg-page lg:hidden"
-          >
-            <Menu size={18} />
-          </button>
+    <>
+      <header className="sticky top-0 z-20 border-b border-border bg-bg-card">
+        <div className="flex items-center justify-between px-4 py-3 lg:px-6">
+          {/* Left — logo (broker) or mobile menu trigger (others) */}
+          <div className="flex items-center gap-3">
+            {isBroker ? (
+              <button onClick={() => navigate('/broker/dashboard')} className="flex items-center">
+                <img src={datahublogo} alt="M&A Hub" className="h-9 w-auto object-contain" />
+              </button>
+            ) : (
+              <button
+                onClick={onMenuClick}
+                className="rounded-md border border-border bg-bg-card p-2 text-secondary transition-colors hover:bg-bg-page lg:hidden"
+              >
+                <Menu size={18} />
+              </button>
+            )}
+          </div>
+
+          {/* Right */}
+          <div className="flex items-center gap-3">
+            <MessageNotificationsMenu portal={isBroker ? 'broker' : 'client'} />
+
+            {/* View toggle — sits right next to the notification icon */}
+            {showBrokerToggle && (
+              <div className="flex items-center gap-1 rounded-xl border border-[#E8EDF5] bg-bg-page p-1 shadow-sm">
+                <button
+                  onClick={() => navigate('/broker/dashboard')}
+                  className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
+                    !isCompaniesActive ? 'bg-[#05164D] text-white shadow-sm' : 'text-[#6D6E71] hover:text-[#050505]'
+                  }`}
+                >
+                  <LayoutGrid size={14} />
+                  <span className="hidden sm:inline">Dashboard</span>
+                </button>
+                <button
+                  onClick={() => navigate('/broker/companies')}
+                  className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
+                    isCompaniesActive ? 'bg-[#05164D] text-white shadow-sm' : 'text-[#6D6E71] hover:text-[#050505]'
+                  }`}
+                >
+                  <List size={14} />
+                  <span className="hidden sm:inline">Companies</span>
+                </button>
+              </div>
+            )}
+
+            {/* Company label for non-broker roles */}
+            {!isBroker && workspaceLabel && (
+              <div className="flex items-center gap-1.5 text-sm font-medium text-text-primary">
+                <Building2 size={15} className="text-text-muted" />
+                <span>{workspaceLabel}</span>
+              </div>
+            )}
+
+            {/* Broker user menu */}
+            {isBroker && (
+              <div className="relative" ref={menuRef}>
+                <button
+                  onClick={() => setShowUserMenu((v) => !v)}
+                  className="flex items-center gap-2.5 rounded-xl border border-border bg-bg-card px-3 py-2 text-sm transition-colors hover:bg-bg-page"
+                >
+                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#05164D] text-[11px] font-bold text-white">
+                    {user?.avatar}
+                  </div>
+                  <div className="hidden text-left sm:block">
+                    <p className="text-[13px] font-semibold leading-none text-text-primary">{user?.name}</p>
+                    <p className="mt-0.5 text-[11px] leading-none text-text-muted">Administrator</p>
+                  </div>
+                  <ChevronDown
+                    size={14}
+                    className={`text-text-muted transition-transform duration-200 ${showUserMenu ? 'rotate-180' : ''}`}
+                  />
+                </button>
+
+                {showUserMenu && (
+                  <div
+                    className="absolute right-0 top-full z-50 mt-2 w-56 rounded-2xl border border-border bg-white py-1 animate-fadeIn"
+                    style={{ boxShadow: 'var(--shadow-dropdown)' }}
+                  >
+                    <div className="border-b border-border px-4 py-3">
+                      <p className="text-sm font-semibold text-text-primary">{user?.name}</p>
+                      <p className="mt-0.5 text-xs text-text-muted">{user?.email}</p>
+                    </div>
+                    <button
+                      onClick={() => { setShowUserMenu(false); navigate('/broker/profile'); }}
+                      className="flex w-full items-center gap-2.5 px-4 py-2.5 text-left text-sm text-secondary transition-colors hover:bg-bg-page hover:text-text-primary"
+                    >
+                      <Settings size={15} />
+                      Profile Settings
+                    </button>
+                    <div className="mx-3 my-1 border-t border-border" />
+                    <button
+                      onClick={() => { setShowUserMenu(false); setShowSignoutConfirm(true); }}
+                      className="flex w-full items-center gap-2.5 px-4 py-2.5 text-left text-sm text-[#C62026] transition-colors hover:bg-red-50"
+                    >
+                      <LogOut size={15} />
+                      Sign Out
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
+      </header>
 
-        <div className="flex items-center gap-3">
-          <MessageNotificationsMenu portal={user?.role === 'broker' ? 'broker' : 'client'} />
-
-          {workspaceLabel && (
-            <div
-              className="flex items-center gap-2 rounded-md bg-primary px-4 text-[14px] font-semibold text-white"
-              style={{ height: 40 }}
-            >
-              <Building2 size={16} />
-              <span>{workspaceLabel}</span>
+      {/* Sign-out confirm modal */}
+      {showSignoutConfirm && (
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-white/40 backdrop-blur-sm">
+          <div className="w-full max-w-sm rounded-2xl border border-border bg-white p-6 shadow-2xl">
+            <h3 className="text-base font-bold text-text-primary">Sign out?</h3>
+            <p className="mt-1 text-sm text-secondary">You will be returned to the login screen.</p>
+            <div className="mt-5 flex gap-3">
+              <button
+                onClick={() => setShowSignoutConfirm(false)}
+                className="flex-1 rounded-xl border border-border py-2.5 text-sm font-semibold text-secondary transition-colors hover:bg-bg-page"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleLogout}
+                className="flex-1 rounded-xl bg-[#C62026] py-2.5 text-sm font-semibold text-white transition-colors hover:opacity-90"
+              >
+                Sign Out
+              </button>
             </div>
-          )}
+          </div>
         </div>
-      </div>
-    </header>
+      )}
+    </>
   );
 }

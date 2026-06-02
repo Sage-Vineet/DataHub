@@ -28,7 +28,7 @@ export default function UserSidebar({ onClose }) {
       <div className="border-b border-[#EEF0F5] px-4 pb-5 pt-4">
         <div className="flex items-center justify-between gap-3">
           <button onClick={() => navigate('/user/portal-dashboard')} className="flex items-center gap-3 text-left">
-            <img src={datahublogo} alt="DataHub" className="h-10 w-auto object-contain" />
+            <img src={datahublogo} alt="M&A Hub" className="h-10 w-auto object-contain" />
           </button>
           {onClose && (
             <button onClick={onClose} className="rounded-md p-1 text-[#6D6E71] transition-colors hover:bg-[#F4F6FA] hover:text-[#05164D]">

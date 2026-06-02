@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
-import { Lock, User, Building2, ChevronRight, ShieldCheck, X, Eye, EyeOff, AlertCircle } from 'lucide-react';
+import { ArrowLeft, Lock, User, Building2, ChevronRight, ShieldCheck, X, Eye, EyeOff, AlertCircle } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { updateUserRequest, listCompaniesRequest } from '../../lib/api';
 
@@ -659,6 +660,7 @@ function DataPrivacyPage() {
 
 export default function BrokerProfile() {
   const { user, refreshUser } = useAuth();
+  const navigate = useNavigate();
   const [activePage, setActivePage] = useState('overview');
 
   const renderPage = () => {
@@ -679,26 +681,37 @@ export default function BrokerProfile() {
   };
 
   return (
-    <div className="flex min-h-full gap-8">
-      <aside className="w-48 flex-shrink-0">
-        <nav className="space-y-0.5">
-          {NAV_ITEMS.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => setActivePage(item.id)}
-              className={`w-full rounded-md px-3 py-2 text-left text-sm transition-colors ${
-                activePage === item.id
-                  ? 'bg-gray-100 font-semibold text-gray-900'
-                  : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
-              }`}
-            >
-              {item.label}
-            </button>
-          ))}
-        </nav>
-      </aside>
+    <div className="space-y-5">
+      {/* Back button */}
+      <button
+        onClick={() => navigate('/broker/dashboard')}
+        className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm font-medium text-[#6D6E71] transition-colors hover:bg-[#F4F6FA] hover:text-[#050505]"
+      >
+        <ArrowLeft size={15} />
+        Back to Dashboard
+      </button>
 
-      <main className="min-w-0 flex-1">{renderPage()}</main>
+      <div className="flex min-h-full gap-8">
+        <aside className="w-48 flex-shrink-0">
+          <nav className="space-y-0.5">
+            {NAV_ITEMS.map((item) => (
+              <button
+                key={item.id}
+                onClick={() => setActivePage(item.id)}
+                className={`w-full rounded-md px-3 py-2 text-left text-sm transition-colors ${
+                  activePage === item.id
+                    ? 'bg-gray-100 font-semibold text-gray-900'
+                    : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </nav>
+        </aside>
+
+        <main className="min-w-0 flex-1">{renderPage()}</main>
+      </div>
     </div>
   );
 }

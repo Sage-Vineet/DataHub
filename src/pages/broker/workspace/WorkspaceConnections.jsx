@@ -537,7 +537,7 @@ export default function WorkspaceConnections() {
       isOpen: true,
       title: "Switch To QuickBooks?",
       message:
-        "QuickBooks will become the active source for reports, dashboards, and DataHub. Continue?",
+        "QuickBooks will become the active source for reports, dashboards, and M&A Hub. Continue?",
       targetSourceKey: REPORT_SOURCE_KEYS.QUICKBOOKS,
       switchOptions: { confirmSwitch: true },
     });
@@ -553,7 +553,7 @@ export default function WorkspaceConnections() {
       title: "Switch To Manual GL Upload?",
       message: quickbooksConnected
         ? "Manual GL Upload will become active. QuickBooks connection is kept for cached history, but sync stays inactive until you switch back."
-        : "Manual GL Upload will become the active source for reports, dashboards, and DataHub. Continue?",
+        : "Manual GL Upload will become the active source for reports, dashboards, and M&A Hub. Continue?",
       targetSourceKey: REPORT_SOURCE_KEYS.MANUAL_GL,
       switchOptions: { confirmSwitch: true },
     });
@@ -569,7 +569,7 @@ export default function WorkspaceConnections() {
       title: "Switch To Manual Upload (Excel/PDF)?",
       message: quickbooksConnected
         ? "Manual Upload (Excel/PDF) will become active. QuickBooks connection is kept for cached history, but sync stays inactive until you switch back."
-        : "Manual Upload (Excel/PDF) will become the active source for reports, dashboards, and DataHub. Continue?",
+        : "Manual Upload (Excel/PDF) will become the active source for reports, dashboards, and M&A Hub. Continue?",
       targetSourceKey: REPORT_SOURCE_KEYS.MANUAL_UPLOAD,
       switchOptions: { confirmSwitch: true },
     });

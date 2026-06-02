@@ -52,7 +52,7 @@ const Support = () => {
     "How do I reset my password?",
     "What payment methods do you accept?",
     "Can I add multiple users to my workspace?",
-    "How secure is my data on DataHub?"
+    "How secure is my data on M&A Hub?"
   ];
 
   const getCategoryIcon = (category) => {
@@ -78,7 +78,7 @@ const Support = () => {
             How can we <span className="text-primary italic">help</span> you today?
           </h1>
           <p className="text-secondary/60 text-lg max-w-2xl mx-auto">
-            Search our knowledge base or get in touch with our team. We're here to help you get the most out of DataHub.
+            Search our knowledge base or get in touch with our team. We're here to help you get the most out of M&A Hub.
           </p>
           
           {/* Search Bar */}

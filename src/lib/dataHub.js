@@ -132,7 +132,7 @@ export function buildConnectionCards() {
     },
     {
       id: 'datahub-finance',
-      name: 'Data Hub Finance Layer',
+      name: 'M&A Hub Finance Layer',
       status: CONNECTION_STATES[1],
       detail: 'Finance pages are merged into the broker navigation.',
       lastChecked: 'Today',

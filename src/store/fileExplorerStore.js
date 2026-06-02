@@ -125,7 +125,7 @@ function mapDocumentNode(doc) {
     name: doc.name,
     type: 'file',
     size: formatFileSize(sizeNum),
-    uploadedBy: doc.uploaded_by || 'Unknown',
+    uploadedBy: doc.uploaded_by_name || 'Unknown',
     uploadedAt: doc.uploaded_at ? doc.uploaded_at.slice(0, 10) : new Date().toISOString().slice(0, 10),
     archivedAt: doc.archived_at || null,
     status: doc.status || 'under-review',

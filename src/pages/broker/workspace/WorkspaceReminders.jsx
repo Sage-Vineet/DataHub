@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { AlertCircle, Bell, CheckCircle2, Clock3, Filter, Loader2, Search, Send, X } from 'lucide-react';
 import { createRequestReminder, getCompanyRequest, listCompanyReminders } from '../../../lib/api';
+import { useToast } from '../../../context/ToastContext';
 import {
   filterAndSortReminders,
   getWorkflowStatusOptions,
@@ -45,6 +46,7 @@ function getNextReminderDate(reminder) {
 }
 
 export default function WorkspaceReminders() {
+  const { showToast } = useToast();
   const { clientId } = useParams();
   const [company, setCompany] = useState(null);
   const [reminders, setReminders] = useState([]);
@@ -92,6 +94,7 @@ export default function WorkspaceReminders() {
         sent_at: new Date().toISOString(),
       });
       await loadReminders();
+      showToast({ type: 'success', title: 'Reminder sent', message: `A reminder has been sent for "${reminder.title}".` });
     } catch (err) {
       setError(err.message || 'Unable to send reminder.');
     } finally {
@@ -223,11 +226,7 @@ export default function WorkspaceReminders() {
                         {reminder.priority}
                       </span>
                     </div>
-                    <div className="mt-4 grid gap-3 text-xs text-[#6D6E71] sm:grid-cols-2 xl:grid-cols-4">
-                      <div>
-                        <p className="text-[#A5A5A5]">Request ID</p>
-                        <p className="mt-1 font-semibold text-[#050505]">{reminder.request_id}</p>
-                      </div>
+                    <div className="mt-4 grid gap-3 text-xs text-[#6D6E71] sm:grid-cols-2 xl:grid-cols-3">
                       <div>
                         <p className="text-[#A5A5A5]">Workflow Status</p>
                         <p className="mt-1 font-semibold capitalize text-[#050505]">{`${reminder.workflow_status || 'active'}`.replace('-', ' ')}</p>

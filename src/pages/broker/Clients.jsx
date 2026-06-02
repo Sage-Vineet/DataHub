@@ -101,7 +101,7 @@ export default function BrokerClients() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-[#050505]">Clients</h1>
-          <p className="mt-0.5 text-sm text-[#6D6E71]">Data Hub client operations merged into the broker workspace.</p>
+          <p className="mt-0.5 text-sm text-[#6D6E71]">M&A Hub client operations merged into the broker workspace.</p>
         </div>
         <div className="flex items-center gap-2">
           <button
