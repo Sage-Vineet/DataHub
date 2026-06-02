@@ -387,9 +387,9 @@ function WorkspaceTopbar({ company, onMenuClick }) {
   }, []);
 
   const title = useMemo(() => {
+    if (location.pathname.endsWith("/analytics")) return "Analytics";
     if (location.pathname.endsWith("/dashboard")) return "Dashboard";
-    if (location.pathname.endsWith("/datahub-dashboard"))
-      return "M&A Hub Dashboard";
+    if (location.pathname.endsWith("/analytics")) return "Analytics";
     if (location.pathname.endsWith("/invoices")) return "Client Invoices";
     if (location.pathname.endsWith("/reports")) return "Reports";
     if (location.pathname.endsWith("/reconciliation")) return "Reconciliation";
@@ -469,7 +469,7 @@ function WorkspaceTopbar({ company, onMenuClick }) {
                     key={item.id}
                     onClick={() => {
                       setShowSwitch(false);
-                      navigate(`/broker/client/${item.id}/datahub-dashboard`, {
+                      navigate(`/broker/client/${item.id}/analytics`, {
                         state: { company: item },
                       });
                     }}

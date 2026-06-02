@@ -26,7 +26,19 @@ import {
 const PAGE_SIZE = 8;
 const ROLE_ORDER = ['admin', 'broker', 'client', 'user'];
 const STATUS_ORDER = ['active', 'inactive'];
-const EMPTY_FORM = { name: '', companyId: '', companyIds: [], email: '', phone: '', role: 'user', status: 'active', password: '', profileImage: '', groupIds: [] };
+const EMPTY_FORM = { firstName: '', lastName: '', companyId: '', companyIds: [], email: '', phone: '', role: 'user', status: 'active', password: '', profileImage: '', groupIds: [] };
+
+function formatUSPhone(raw) {
+  const digits = raw.replace(/\D/g, '').slice(0, 10);
+  if (digits.length <= 3) return digits;
+  if (digits.length <= 6) return `(${digits.slice(0, 3)}) ${digits.slice(3)}`;
+  return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+}
+
+function splitName(full = '') {
+  const parts = (full || '').trim().split(/\s+/);
+  return { firstName: parts[0] || '', lastName: parts.slice(1).join(' ') || '' };
+}
 
 function initials(name = '') {
   return name
@@ -223,9 +235,10 @@ function UserFormModal({ initial, companies, companyLock, groups, onSave, onClos
   const isEdit = !!initial?.id;
   const [form, setForm] = useState(() => {
     const seed = initial || EMPTY_FORM;
+    const { firstName, lastName } = seed.name ? splitName(seed.name) : { firstName: seed.firstName || '', lastName: seed.lastName || '' };
     const seedCompanyIds = seed.companyIds?.length ? seed.companyIds : [seed.companyId].filter(Boolean);
-    if (companyLock?.id) return { ...seed, companyId: seed.companyId || companyLock.id, companyIds: Array.from(new Set([companyLock.id, ...seedCompanyIds])) };
-    return { ...seed, companyIds: seedCompanyIds };
+    if (companyLock?.id) return { ...seed, firstName, lastName, companyId: seed.companyId || companyLock.id, companyIds: Array.from(new Set([companyLock.id, ...seedCompanyIds])) };
+    return { ...seed, firstName, lastName, companyIds: seedCompanyIds };
   });
   const [companiesSearchQuery, setCompaniesSearchQuery] = useState('');
   const [companiesDropdownOpen, setCompaniesDropdownOpen] = useState(false);
@@ -234,7 +247,8 @@ function UserFormModal({ initial, companies, companyLock, groups, onSave, onClos
   const setField = (patch) => { setForm((current) => ({ ...current, ...patch })); setLocalError(''); };
 
   const validate = () => {
-    if (!form.name.trim()) return 'Full name is required.';
+    if (!form.firstName.trim()) return 'First name is required.';
+    if (!form.lastName.trim()) return 'Last name is required.';
     if (!form.email.trim()) return 'Email address is required.';
     if (!isValidEmail(form.email)) return 'Please enter a valid email address.';
     if (!isEdit) {
@@ -251,17 +265,19 @@ function UserFormModal({ initial, companies, companyLock, groups, onSave, onClos
   const handleSave = () => {
     const err = validate();
     if (err) { setLocalError(err); return; }
-    onSave(form);
+    const name = `${form.firstName.trim()} ${form.lastName.trim()}`.trim();
+    onSave({ ...form, name });
   };
 
   const displayError = localError || error;
 
   useEffect(() => {
     const seed = initial || EMPTY_FORM;
+    const { firstName, lastName } = seed.name ? splitName(seed.name) : { firstName: seed.firstName || '', lastName: seed.lastName || '' };
     const seedCompanyIds = seed.companyIds?.length ? seed.companyIds : [seed.companyId].filter(Boolean);
     setForm(companyLock?.id
-      ? { ...seed, companyId: seed.companyId || companyLock.id, companyIds: Array.from(new Set([companyLock.id, ...seedCompanyIds])) }
-      : { ...seed, companyIds: seedCompanyIds });
+      ? { ...seed, firstName, lastName, companyId: seed.companyId || companyLock.id, companyIds: Array.from(new Set([companyLock.id, ...seedCompanyIds])) }
+      : { ...seed, firstName, lastName, companyIds: seedCompanyIds });
   }, [initial, companyLock?.id]);
 
   useEffect(() => {
@@ -324,12 +340,21 @@ function UserFormModal({ initial, companies, companyLock, groups, onSave, onClos
         </div>
 
         <div className="flex-1 overflow-y-auto p-6 grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="col-span-2">
-            <label className="block text-xs font-semibold text-gray-500 mb-1.5">Full Name *</label>
+          <div className="col-span-1">
+            <label className="block text-xs font-semibold text-gray-500 mb-1.5">First Name *</label>
             <input
-              value={form.name}
-              onChange={(event) => setField({ name: event.target.value })}
-              placeholder="e.g. Ananya Mehta"
+              value={form.firstName}
+              onChange={(e) => setField({ firstName: e.target.value })}
+              placeholder="Jane"
+              className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]"
+            />
+          </div>
+          <div className="col-span-1">
+            <label className="block text-xs font-semibold text-gray-500 mb-1.5">Last Name *</label>
+            <input
+              value={form.lastName}
+              onChange={(e) => setField({ lastName: e.target.value })}
+              placeholder="Smith"
               className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]"
             />
           </div>
@@ -436,12 +461,17 @@ function UserFormModal({ initial, companies, companyLock, groups, onSave, onClos
 
           <div className="col-span-2 lg:col-span-1">
             <label className="block text-xs font-semibold text-gray-500 mb-1.5">Phone No.</label>
-            <input
-              value={form.phone}
-              onChange={(event) => setField({ phone: event.target.value })}
-              placeholder="+91 98765 43210"
-              className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]"
-            />
+            <div className="flex">
+              <span className="flex h-[42px] items-center rounded-l-xl border border-r-0 border-gray-200 bg-gray-50 px-3 text-sm font-medium text-gray-500">+1</span>
+              <input
+                type="tel"
+                value={form.phone}
+                onChange={(e) => setField({ phone: formatUSPhone(e.target.value) })}
+                placeholder="(555) 000-0000"
+                maxLength={14}
+                className="min-w-0 flex-1 rounded-l-none rounded-r-xl border border-gray-200 px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]"
+              />
+            </div>
           </div>
 
           <div className="col-span-2">

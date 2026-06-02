@@ -29,8 +29,20 @@ function FormError({ message }) {
 }
 
 const PAGE_SIZE = 10;
-const EMPTY_FORM = { name: '', project_name: '', contact: '', email: '', phone: '', industry: '' };
+const EMPTY_FORM = { name: '', project_name: '', contactFirst: '', contactLast: '', email: '', phone: '', industry: '' };
 const OTHER_INDUSTRY_OPTION = 'Other';
+
+function formatUSPhone(raw) {
+  const digits = raw.replace(/\D/g, '').slice(0, 10);
+  if (digits.length <= 3) return digits;
+  if (digits.length <= 6) return `(${digits.slice(0, 3)}) ${digits.slice(3)}`;
+  return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+}
+
+function splitName(full = '') {
+  const parts = full.trim().split(/\s+/);
+  return { contactFirst: parts[0] || '', contactLast: parts.slice(1).join(' ') || '' };
+}
 
 const INDUSTRY_OPTIONS = [
   'Technology & Software',
@@ -222,19 +234,22 @@ export default function Companies() {
     setEditing(company);
     const industry = company.industry || '';
     setUseCustomIndustry(Boolean(industry) && !INDUSTRY_OPTIONS.includes(industry));
+    const { contactFirst, contactLast } = splitName(company.contact || '');
     setForm({
       name: company.name || '',
       project_name: company.projectName || '',
-      contact: company.contact || '',
+      contactFirst,
+      contactLast,
       email: company.email || '',
-      phone: company.phone || '',
+      phone: formatUSPhone(company.phone || ''),
       industry,
     });
     setShowAdd(true);
   };
 
   const handleSaveCompany = async () => {
-    if (!form.name.trim() || !form.project_name.trim() || !form.contact.trim() || !form.email.trim() || !form.phone.trim() || !form.industry.trim()) {
+    const contactName = `${form.contactFirst.trim()} ${form.contactLast.trim()}`.trim();
+    if (!form.name.trim() || !form.project_name.trim() || !form.contactFirst.trim() || !form.contactLast.trim() || !form.email.trim() || !form.phone.trim() || !form.industry.trim()) {
       setFormError('Please fill in all required fields, including Project Name and Industry.');
       return;
     }
@@ -252,7 +267,7 @@ export default function Companies() {
       name: form.name.trim(),
       project_name: form.project_name.trim(),
       industry: form.industry.trim(),
-      contact_name: form.contact.trim(),
+      contact_name: contactName,
       contact_email: form.email.trim(),
       contact_phone: form.phone.trim(),
       logo: getInitials(form.name),
@@ -627,19 +642,18 @@ export default function Companies() {
       <Modal isOpen={showAdd} onClose={closeFormModal} title={editing ? 'Edit Company' : 'Add New Company'}>
         <div className="space-y-4 pt-6">
           <FormError message={formError} />
+
+          {/* Project Name */}
           {[
             { label: 'Project Name', key: 'project_name', placeholder: 'e.g. Project Falcon' },
-            { label: 'Company Name', key: 'name', placeholder: 'e.g. Accenture India' },
-            { label: 'Contact Person', key: 'contact', placeholder: 'Full name' },
-            { label: 'Email Address', key: 'email', placeholder: 'contact@company.com', type: 'email' },
-            { label: 'Phone Number', key: 'phone', placeholder: '+91 98765 43210' },
+            { label: 'Company Name', key: 'name', placeholder: 'e.g. Acme Corp' },
           ].map((field) => (
             <div key={field.key}>
               <label className="block text-sm font-medium text-[#050505] mb-1.5">
                 {field.label} <span className="text-[#C62026]">*</span>
               </label>
               <input
-                type={field.type || 'text'}
+                type="text"
                 value={form[field.key]}
                 onChange={(event) => setForm((current) => ({ ...current, [field.key]: event.target.value }))}
                 placeholder={field.placeholder}
@@ -647,6 +661,68 @@ export default function Companies() {
               />
             </div>
           ))}
+
+          {/* Contact First / Last Name */}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-sm font-medium text-[#050505] mb-1.5">
+                First Name <span className="text-[#C62026]">*</span>
+              </label>
+              <input
+                type="text"
+                value={form.contactFirst}
+                onChange={(e) => setForm((c) => ({ ...c, contactFirst: e.target.value }))}
+                placeholder="Jane"
+                className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all placeholder-[#A5A5A5]"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-[#050505] mb-1.5">
+                Last Name <span className="text-[#C62026]">*</span>
+              </label>
+              <input
+                type="text"
+                value={form.contactLast}
+                onChange={(e) => setForm((c) => ({ ...c, contactLast: e.target.value }))}
+                placeholder="Smith"
+                className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all placeholder-[#A5A5A5]"
+              />
+            </div>
+          </div>
+
+          {/* Email */}
+          <div>
+            <label className="block text-sm font-medium text-[#050505] mb-1.5">
+              Email Address <span className="text-[#C62026]">*</span>
+            </label>
+            <input
+              type="email"
+              value={form.email}
+              onChange={(e) => setForm((c) => ({ ...c, email: e.target.value }))}
+              placeholder="contact@company.com"
+              className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all placeholder-[#A5A5A5]"
+            />
+          </div>
+
+          {/* US Phone */}
+          <div>
+            <label className="block text-sm font-medium text-[#050505] mb-1.5">
+              Phone Number <span className="text-[#C62026]">*</span>
+            </label>
+            <div className="flex">
+              <span className="flex h-[42px] items-center rounded-l-xl border border-r-0 border-gray-200 bg-gray-50 px-3 text-sm font-medium text-[#6D6E71]">
+                +1
+              </span>
+              <input
+                type="tel"
+                value={form.phone}
+                onChange={(e) => setForm((c) => ({ ...c, phone: formatUSPhone(e.target.value) }))}
+                placeholder="(555) 000-0000"
+                maxLength={14}
+                className="min-w-0 flex-1 rounded-l-none rounded-r-xl border border-gray-200 px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all placeholder-[#A5A5A5]"
+              />
+            </div>
+          </div>
           <div>
             <label className="block text-sm font-medium text-[#050505] mb-1.5">
               Industry <span className="text-[#C62026]">*</span>

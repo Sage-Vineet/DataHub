@@ -48,7 +48,7 @@ function isValidEmail(value) {
 function isValidPhone(value) {
   if (!value) return true;
   const digits = value.replace(/\D/g, "");
-  return /^\+?[0-9][0-9\s().-]{6,19}$/.test(value) && digits.length >= 7 && digits.length <= 15;
+  return digits.length >= 7 && digits.length <= 15;
 }
 
 async function setBrokerCompanyProfile(userId, brokerCompany) {

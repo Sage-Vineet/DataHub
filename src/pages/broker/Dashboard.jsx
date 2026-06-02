@@ -89,7 +89,7 @@ export default function BrokerDashboard() {
   );
 
   const openWorkspace = (company) =>
-    navigate(`/broker/client/${company.id}/datahub-dashboard`, { state: { company } });
+    navigate(`/broker/client/${company.id}/analytics`, { state: { company } });
 
   return (
     <div className="space-y-5">
