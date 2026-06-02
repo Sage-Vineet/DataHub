@@ -107,6 +107,51 @@ function saveStoredReportsState(clientId, state) {
   }
 }
 
+const MANUAL_DATE_RANGE_OPTIONS = [
+  "All Dates",
+  "Custom dates",
+  "Today",
+  "This week",
+  "This week to date",
+  "This fiscal week",
+  "This month",
+  "This month to date",
+  "This quarter",
+  "This quarter to date",
+  "This fiscal quarter",
+  "This fiscal quarter to date",
+  "This year",
+  "This year to date",
+  "This year to last month",
+  "This fiscal year",
+  "This fiscal year to date",
+  "This fiscal year to last month",
+  "Last 6 months",
+  "Yesterday",
+  "Recent",
+  "Last week",
+  "Last week to date",
+  "Last week to today",
+  "Last month",
+  "Last month to date",
+  "Last month to today",
+  "Last quarter",
+  "Last quarter to date",
+  "Last quarter to today",
+  "Last fiscal quarter",
+  "Last fiscal quarter to date",
+  "Last year",
+  "Last year to date",
+  "Last year to today",
+  "Last fiscal year",
+  "Last fiscal year to date",
+  "Last 7 days",
+  "Last 30 days",
+  "Last 90 days",
+  "Last 12 months",
+  "Since 30 days ago",
+];
+
 const DATE_RANGE_OPTIONS = [
   "All Dates",
   "Custom dates",
@@ -261,6 +306,9 @@ export default function WorkspaceReports() {
   });
   const [accountingMethod, setAccountingMethod] = useState(
     storedState?.accountingMethod || "Accrual",
+  );
+  const [manualDateRange, setManualDateRange] = useState(
+    storedState?.manualDateRange || "All Dates",
   );
   const [reportsData, setReportsData] = useState({
     ...createInitialReportsData(),
@@ -697,6 +745,7 @@ export default function WorkspaceReports() {
       dateRange,
       customRange,
       accountingMethod,
+      manualDateRange,
       reportsData,
       appliedStartDate,
       appliedEndDate,
@@ -709,6 +758,7 @@ export default function WorkspaceReports() {
     });
   }, [
     accountingMethod,
+    manualDateRange,
     appliedManualFilters,
     appliedAccountingMethod,
     appliedEndDate,
@@ -1440,6 +1490,31 @@ export default function WorkspaceReports() {
                   </div>
                 )}
               </>
+            )}
+
+            {(selectedSourceMode === "manual_upload" || selectedSourceMode === "quickbooks_manual") && (
+              <div className="flex flex-col gap-1.5">
+                <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
+                  Date Range
+                </label>
+                <div className="relative min-w-[160px]">
+                  <select
+                    value={manualDateRange}
+                    onChange={(event) => setManualDateRange(event.target.value)}
+                    className="h-9 w-full appearance-none rounded-md border border-border-input bg-bg-card pl-3 pr-9 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                  >
+                    {MANUAL_DATE_RANGE_OPTIONS.map((option) => (
+                      <option key={option} value={option}>
+                        {option}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown
+                    size={14}
+                    className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-text-muted"
+                  />
+                </div>
+              </div>
             )}
 
             <div className="flex flex-col gap-1.5">
