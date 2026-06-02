@@ -52,12 +52,36 @@ export default function Navbar({ onMenuClick }) {
     <>
       <header className="sticky top-0 z-20 border-b border-border bg-bg-card">
         <div className="flex items-center justify-between px-4 py-3 lg:px-6">
-          {/* Left — logo (broker) or mobile menu trigger (others) */}
+          {/* Left — logo + toggle (broker) or mobile menu trigger (others) */}
           <div className="flex items-center gap-3">
             {isBroker ? (
-              <button onClick={() => navigate('/broker/dashboard')} className="flex items-center">
-                <img src={datahublogo} alt="M&A Hub" className="h-9 w-auto object-contain" />
-              </button>
+              <>
+                <button onClick={() => navigate('/broker/dashboard')} className="flex items-center">
+                  <img src={datahublogo} alt="M&A Hub" className="h-9 w-auto object-contain" />
+                </button>
+                {showBrokerToggle && (
+                  <div className="flex items-center gap-1 rounded-xl border border-[#E8EDF5] bg-bg-page p-1 shadow-sm">
+                    <button
+                      onClick={() => navigate('/broker/dashboard')}
+                      className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
+                        !isCompaniesActive ? 'bg-[#05164D] text-white shadow-sm' : 'text-[#6D6E71] hover:text-[#050505]'
+                      }`}
+                    >
+                      <LayoutGrid size={14} />
+                      <span className="hidden sm:inline">Dashboard</span>
+                    </button>
+                    <button
+                      onClick={() => navigate('/broker/companies')}
+                      className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
+                        isCompaniesActive ? 'bg-[#05164D] text-white shadow-sm' : 'text-[#6D6E71] hover:text-[#050505]'
+                      }`}
+                    >
+                      <List size={14} />
+                      <span className="hidden sm:inline">Companies</span>
+                    </button>
+                  </div>
+                )}
+              </>
             ) : (
               <button
                 onClick={onMenuClick}
@@ -71,30 +95,6 @@ export default function Navbar({ onMenuClick }) {
           {/* Right */}
           <div className="flex items-center gap-3">
             <MessageNotificationsMenu portal={isBroker ? 'broker' : 'client'} />
-
-            {/* View toggle — sits right next to the notification icon */}
-            {showBrokerToggle && (
-              <div className="flex items-center gap-1 rounded-xl border border-[#E8EDF5] bg-bg-page p-1 shadow-sm">
-                <button
-                  onClick={() => navigate('/broker/dashboard')}
-                  className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
-                    !isCompaniesActive ? 'bg-[#05164D] text-white shadow-sm' : 'text-[#6D6E71] hover:text-[#050505]'
-                  }`}
-                >
-                  <LayoutGrid size={14} />
-                  <span className="hidden sm:inline">Dashboard</span>
-                </button>
-                <button
-                  onClick={() => navigate('/broker/companies')}
-                  className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
-                    isCompaniesActive ? 'bg-[#05164D] text-white shadow-sm' : 'text-[#6D6E71] hover:text-[#050505]'
-                  }`}
-                >
-                  <List size={14} />
-                  <span className="hidden sm:inline">Companies</span>
-                </button>
-              </div>
-            )}
 
             {/* Company label for non-broker roles */}
             {!isBroker && workspaceLabel && (

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Activity, ArrowRight, Bell, Briefcase, Building2, Clock,
-  FileText, MessageSquare, ClipboardList, Users,
+  FileText, MessageSquare, ClipboardList, Plus, Users,
 } from 'lucide-react';
 import { listCompaniesRequest, listBrokerActivity } from '../../lib/api';
 
@@ -93,9 +93,18 @@ export default function BrokerDashboard() {
 
   return (
     <div className="space-y-5">
-      <div>
-        <h1 className="text-2xl font-bold text-[#050505]">Your Deals</h1>
-        <p className="mt-0.5 text-sm text-[#6D6E71]">Overview of your portfolio and recent activity.</p>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-[#050505]">Your Deals</h1>
+          <p className="mt-0.5 text-sm text-[#6D6E71]">Overview of your portfolio and recent activity.</p>
+        </div>
+        <button
+          onClick={() => navigate('/broker/companies', { state: { openAdd: true } })}
+          className="flex items-center gap-2 rounded-xl bg-[#8BC53D] px-5 py-2.5 text-sm font-semibold text-white shadow-md transition-all hover:bg-[#476E2C] hover:scale-[1.02]"
+        >
+          <Plus size={15} />
+          Add Company
+        </button>
       </div>
 
       {/* Summary cards */}

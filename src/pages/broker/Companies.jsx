@@ -4,7 +4,7 @@ import {
   Users, ArrowRight, Filter, Download, ChevronLeft,
   ChevronDown, Eye, X, ChevronRight, Pencil,
 } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { useClientStore } from '../../store/clientStore';
 import StatusBadge from '../../components/common/StatusBadge';
 import Modal from '../../components/common/Modal';
@@ -105,6 +105,7 @@ function formatCompany(company) {
 
 export default function Companies() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { setSelectedClient } = useClientStore();
   const [companies, setCompanies] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -140,6 +141,15 @@ export default function Companies() {
 
   useEffect(() => {
     loadCompanies();
+  }, []);
+
+  useEffect(() => {
+    if (location.state?.openAdd) {
+      openAddModal();
+      // Clear the state so refreshing doesn't reopen the modal
+      navigate(location.pathname, { replace: true, state: {} });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
