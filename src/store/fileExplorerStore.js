@@ -496,7 +496,7 @@ export const useFileExplorerStore = create(
               name: createdDoc.name,
               type: 'file',
               size: formatFileSize(parseFloat(createdDoc.size) || fileItem.file.size),
-              uploadedBy: createdDoc.uploaded_by || 'Current User',
+              uploadedBy: createdDoc.uploaded_by_name || 'Current User',
               uploadedAt: createdDoc.uploaded_at ? createdDoc.uploaded_at.slice(0, 10) : new Date().toISOString().split('T')[0],
               status: createdDoc.status || 'under-review',
               ext: createdDoc.ext || fileItem.ext,

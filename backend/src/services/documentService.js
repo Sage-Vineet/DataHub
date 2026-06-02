@@ -24,6 +24,22 @@ async function pgQuery(sql, params = []) {
   return rows;
 }
 
+function roleLabel(role) {
+  if (!role) return null;
+  if (role === "broker" || role === "admin") return "Broker";
+  if (role === "client") return "Client";
+  if (role === "user") return "Buyer";
+  if (role === "provider") return "Provider";
+  return null;
+}
+
+function formatUploaderDisplay(user) {
+  if (!user) return null;
+  const name = user.name || user.email || "User";
+  const label = roleLabel(user.role);
+  return label ? `${name} (${label})` : name;
+}
+
 // Tracks the one-time init promise so every caller can await the same work.
 let _activityTableReady = null;
 
@@ -108,10 +124,10 @@ async function listDocumentsByFolder(folderId, options = {}) {
   if (uploaderIds.length) {
     const { data: users } = await supabase
       .from("users")
-      .select("id, name, email")
+      .select("id, name, email, role")
       .in("id", uploaderIds);
-    const nameById = new Map((users || []).map((u) => [u.id, u.name || u.email || "User"]));
-    return docs.map((d) => ({ ...d, uploaded_by_name: nameById.get(d.uploaded_by) || null }));
+    const displayById = new Map((users || []).map((u) => [u.id, formatUploaderDisplay(u)]));
+    return docs.map((d) => ({ ...d, uploaded_by_name: displayById.get(d.uploaded_by) || null }));
   }
   return docs;
 }

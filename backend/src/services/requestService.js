@@ -18,6 +18,22 @@ async function pgQuery(sql, params = []) {
   return rows;
 }
 
+function roleLabel(role) {
+  if (!role) return null;
+  if (role === "broker" || role === "admin") return "Broker";
+  if (role === "client") return "Client";
+  if (role === "user") return "Buyer";
+  if (role === "provider") return "Provider";
+  return null;
+}
+
+function formatUploaderDisplay(user) {
+  if (!user) return null;
+  const name = user.name || user.email || "User";
+  const label = roleLabel(user.role);
+  return label ? `${name} (${label})` : name;
+}
+
 const REQUEST_CATEGORIES = ["Finance", "Legal", "Compliance", "HR", "Tax", "M&A", "Other"];
 const RESPONSE_TYPES = ["Upload", "Narrative", "Both"];
 const REQUEST_STATUSES = ["pending", "in-review", "completed", "blocked"];
@@ -361,13 +377,13 @@ async function listRequestDocuments(requestId) {
   (documents || []).forEach((doc) => { docMap[doc.id] = doc; });
 
   const uploaderIds = [...new Set((documents || []).map((d) => d.uploaded_by).filter(Boolean))];
-  let nameById = new Map();
+  let displayById = new Map();
   if (uploaderIds.length) {
     const { data: users } = await supabase
       .from("users")
-      .select("id, name, email")
+      .select("id, name, email, role")
       .in("id", uploaderIds);
-    nameById = new Map((users || []).map((u) => [u.id, u.name || u.email || "User"]));
+    displayById = new Map((users || []).map((u) => [u.id, formatUploaderDisplay(u)]));
   }
 
   return links.map((rd) => {
@@ -380,7 +396,7 @@ async function listRequestDocuments(requestId) {
       upload_id: doc.upload_id,
       ext: doc.ext || '',
       size: doc.size || '',
-      uploaded_by_name: nameById.get(doc.uploaded_by) || null,
+      uploaded_by_name: displayById.get(doc.uploaded_by) || null,
     };
   });
 }
