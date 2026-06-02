@@ -45,10 +45,8 @@ function isValidEmail(value) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
-function isValidPhone(value) {
-  if (!value) return true;
-  const digits = value.replace(/\D/g, "");
-  return digits.length >= 7 && digits.length <= 15;
+function isValidPhone() {
+  return true;
 }
 
 async function setBrokerCompanyProfile(userId, brokerCompany) {
