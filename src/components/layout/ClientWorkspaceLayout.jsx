@@ -70,13 +70,13 @@ function WorkspaceSidebar({ company, onClose }) {
   const mainNav = [
     // { label: "Dashboard", icon: LayoutDashboard, to: `${basePath}/dashboard` },
     {
-      label: "Dashboard",
+      label: "Analytics",
       icon: TrendingUp,
-      to: `${basePath}/datahub-dashboard`,
+      to: `${basePath}/analytics`,
     },
     { label: "Invoices", icon: Receipt, to: `${basePath}/invoices` },
     { label: "Reports", icon: BarChart3, to: `${basePath}/reports` },
-    { label: "EBITDA", icon: Calculator, to: `${basePath}/ebitda` },
+    { label: "EBITDA Calculation", icon: Calculator, to: `${basePath}/ebitda` },
     {
       label: "Bank Reconciliation",
       icon: Scale,

@@ -1,9 +1,10 @@
+import { memo } from "react";
 import ProfitAndLossSummary from "./ProfitAndLossSummary";
 import ProfitAndLossQBSummary from "./ProfitAndLossQBSummary";
 import ManualProfitLossDetail from "../manual/ManualProfitLossDetail";
 import ManualProfitLossMonthlyDetail from "../manual/ManualProfitLossMonthlyDetail";
 
-export default function ProfitAndLossReport({
+function ProfitAndLossReport({
   reportType,
   data,
   detailedData,
@@ -96,3 +97,7 @@ export default function ProfitAndLossReport({
     />
   );
 }
+
+// Memoized: see BalanceSheetReport — avoids re-rendering the report tree on
+// unrelated parent state changes (loading toggles, sibling-tab prefetch).
+export default memo(ProfitAndLossReport);

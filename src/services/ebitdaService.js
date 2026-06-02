@@ -526,11 +526,12 @@ function buildEbitdaFromFlatRows(flatRows, periodMeta = {}) {
   };
 }
 
-async function getEbitdaDataManual(startDate, endDate) {
+async function getEbitdaDataManual(startDate, endDate, datasetVersion) {
   const payload = await getManualStagedProfitLossSummary({
     params: {
       ...(startDate ? { startDate } : {}),
       ...(endDate ? { endDate } : {}),
+      ...(datasetVersion ? { datasetVersion: String(datasetVersion) } : {}),
     },
   });
 
@@ -578,10 +579,10 @@ export function extractEbitdaFromManualPLRows(rows, asOfDate) {
  * @param {string} sourceMode – "quickbooks" | "manual"
  * @returns {Promise<Object>} EBITDA breakdown
  */
-export async function getEbitdaData(startDate, endDate, accountingMethod, sourceMode = 'quickbooks') {
+export async function getEbitdaData(startDate, endDate, accountingMethod, sourceMode = 'quickbooks', datasetVersion) {
   if (sourceMode === 'manual') {
     try {
-      return await getEbitdaDataManual(startDate, endDate);
+      return await getEbitdaDataManual(startDate, endDate, datasetVersion);
     } catch (error) {
       console.error('[EBITDA Service] Manual staged fetch failed:', error);
       throw error;

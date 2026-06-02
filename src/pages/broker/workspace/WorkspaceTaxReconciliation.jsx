@@ -1,8 +1,9 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
   AlertCircle,
   CheckCircle2,
+  ChevronDown,
   LoaderCircle,
   RefreshCw,
 } from "lucide-react";
@@ -12,8 +13,10 @@ import {
   getStoredToken,
   getManualStagedProfitLossSummary,
   getManualStageFilterOptions,
+  listManualGlDatasetVersions,
 } from "../../../lib/api";
 import { useDataSource } from "../../../context/DataSourceContext";
+import { useDatasetVersionStore } from "../../../store/useDatasetVersionStore";
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
@@ -184,6 +187,13 @@ export default function WorkspaceTaxReconciliation() {
     message: Object.keys(storedState?.matrixData ?? {}).length > 0 ? "Restored saved data." : "",
   }));
 
+  // Dataset version selection — Manual GL only.
+  // Seeded from the shared store so the same version selected in Reports is
+  // used here automatically; user can override locally with the dropdown.
+  const sharedSelectedVersion = useDatasetVersionStore((s) => s.selectedVersion);
+  const [glVersions, setGlVersions] = useState([]);
+  const [selectedVersion, setSelectedVersion] = useState(null);
+
   // Manual GL (staged General Ledger) sources its P&L from the platform's GL
   // reports — not from a separately uploaded P&L document. It's handled by its
   // own branch (checked before isManualMode) so the uploaded-file path is unchanged.
@@ -250,6 +260,28 @@ export default function WorkspaceTaxReconciliation() {
     });
   }, [clientId, currentYear]);
 
+  // ── Manual GL version loading ─────────────────────────────────────────
+
+  useEffect(() => {
+    if (!isManualGL || !clientId) return;
+    let cancelled = false;
+    listManualGlDatasetVersions({ clientId })
+      .then((versions) => {
+        if (cancelled) return;
+        setGlVersions(versions);
+        setSelectedVersion((prev) => {
+          const available = versions.map((v) => String(v.value));
+          if (prev && available.includes(String(prev))) return prev;
+          const fromStore = sharedSelectedVersion && available.includes(String(sharedSelectedVersion))
+            ? sharedSelectedVersion : null;
+          const active = versions.find((v) => v.isActive) || versions[0];
+          return fromStore ?? (active ? String(active.value) : null);
+        });
+      })
+      .catch(() => { if (!cancelled) setGlVersions([]); });
+    return () => { cancelled = true; };
+  }, [isManualGL, clientId, sharedSelectedVersion]);
+
   // ── Persist ───────────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -280,11 +312,14 @@ export default function WorkspaceTaxReconciliation() {
 
         setSyncStatus({ status: "loading", message: "Reading manual GL P&L…" });
 
-        // Tax returns (uploaded) + available GL fiscal years, in parallel.
+        // Tax returns (uploaded) + available GL fiscal years for the selected
+        // version, in parallel. Passing datasetVersion scopes both the year
+        // list and every subsequent P&L fetch to that version's transactions.
+        const versionParam = selectedVersion ? { datasetVersion: String(selectedVersion) } : {};
         const [taxRes, filterRes] = await Promise.all([
           fetch(`${API_BASE_URL}/manual-report-uploads/tax-data?clientId=${clientId || ""}${forceParam}`, { headers })
             .then((r) => r.json()).catch(() => ({ success: false })),
-          getManualStageFilterOptions({ clientId, params: {} }).catch(() => ({})),
+          getManualStageFilterOptions({ clientId, params: versionParam }).catch(() => ({})),
         ]);
 
         const taxYears = (taxRes.success && taxRes.years) ? taxRes.years : {};
@@ -295,14 +330,14 @@ export default function WorkspaceTaxReconciliation() {
           ? filterRes.options.fiscalYear.map(Number).filter(Boolean)
           : [];
 
-        // Fetch the GL P&L summary per year and map its hierarchicalRows to the
-        // tax line items using the existing extractTaxRowsFromManualPL helper.
+        // Fetch the GL P&L summary per year — version-scoped so each version
+        // produces independent, isolated tax reconciliation line items.
         const plYears = {};
         await Promise.all(glYears.map(async (year) => {
           try {
             const payload = await getManualStagedProfitLossSummary({
               clientId,
-              params: { fiscalYear: [String(year)] },
+              params: { fiscalYear: [String(year)], ...versionParam },
             });
             const rows = Array.isArray(payload?.hierarchicalRows) ? payload.hierarchicalRows : [];
             if (rows.length) {
@@ -390,12 +425,12 @@ export default function WorkspaceTaxReconciliation() {
         ]);
 
         // plYears: { 2023: { year, data: [{label, pl}] }, ... }
-        const plYears  = (plRes.success  && plRes.years)  ? plRes.years  : {};
+        const plYears = (plRes.success && plRes.years) ? plRes.years : {};
         // taxYears: { 2022: { year, data: [{label, taxReturn, isReconcilingItem}] }, ... }
         const taxYears = (taxRes.success && taxRes.years) ? taxRes.years : {};
 
-        if (plRes.warning)  allWarnings.push(plRes.warning);
-        if (Array.isArray(plRes.warnings))  allWarnings.push(...plRes.warnings);
+        if (plRes.warning) allWarnings.push(plRes.warning);
+        if (Array.isArray(plRes.warnings)) allWarnings.push(...plRes.warnings);
         if (taxRes.warning) allWarnings.push(taxRes.warning);
         if (Array.isArray(taxRes.warnings)) allWarnings.push(...taxRes.warnings);
 
@@ -480,7 +515,7 @@ export default function WorkspaceTaxReconciliation() {
           throw new Error("No synced P&L reports found. Please sync your files on the Connections page first.");
         }
 
-        if (taxRes.warning)  allWarnings.push(taxRes.warning);
+        if (taxRes.warning) allWarnings.push(taxRes.warning);
         if (Array.isArray(taxRes.warnings)) allWarnings.push(...taxRes.warnings);
 
         // Detect fiscal year from file date metadata or filename
@@ -621,7 +656,7 @@ export default function WorkspaceTaxReconciliation() {
     } finally {
       setIsLoading(false);
     }
-  }, [selectedYears, accountingMethod, clientId, getHeaders, isManualGL, isManualMode, isQBManual, currentYear]);
+  }, [selectedYears, accountingMethod, clientId, getHeaders, isManualGL, isManualMode, isQBManual, currentYear, selectedVersion]);
 
   useEffect(() => {
     if (!activeSource) return;
@@ -629,6 +664,22 @@ export default function WorkspaceTaxReconciliation() {
     void loadData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSource]);
+
+  // Re-generate when the selected version changes so Tax Reconciliation always
+  // reflects the chosen version's transactions with no cross-version leakage.
+  const prevTaxVersionRef = useRef(selectedVersion);
+  useEffect(() => {
+    if (!isManualGL) return;
+    if (prevTaxVersionRef.current === selectedVersion) return;
+    prevTaxVersionRef.current = selectedVersion;
+    if (!selectedVersion) return;
+    try { window.sessionStorage.removeItem(getStorageKey(clientId)); } catch { /* ignore */ }
+    setMatrixData({});
+    setError("");
+    setWarnings([]);
+    setSyncStatus({ status: "idle", message: "" });
+    void loadData(true);
+  }, [isManualGL, selectedVersion, clientId, loadData]);
 
   // ── Data helpers ──────────────────────────────────────────────────────
 
@@ -684,9 +735,31 @@ export default function WorkspaceTaxReconciliation() {
     <div className="space-y-6">
       {isManualMode && (
         <div className="space-y-3">
-          <div className="flex items-center justify-between gap-4">
-            <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="flex flex-wrap items-center gap-3">
               {syncStatus?.message && <SyncStatus sync={syncStatus} />}
+              {/* Version selector — Manual GL only */}
+              {isManualGL && glVersions.length > 0 && (
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
+                    Version
+                  </label>
+                  <div className="relative">
+                    <select
+                      value={selectedVersion ? String(selectedVersion) : ""}
+                      onChange={(e) => setSelectedVersion(e.target.value || null)}
+                      className="h-9 w-full min-w-[160px] appearance-none rounded-md border border-border-input bg-bg-card pl-3 pr-9 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                    >
+                      {glVersions.map((v) => (
+                        <option key={String(v.value)} value={String(v.value)}>
+                          {v.label || `Version ${v.value}`}{v.isActive ? " (active)" : ""}
+                        </option>
+                      ))}
+                    </select>
+                    <ChevronDown size={14} className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-text-muted" />
+                  </div>
+                </div>
+              )}
             </div>
             <button
               type="button"

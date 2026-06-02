@@ -9,7 +9,7 @@ import {
   ChevronDown,
 } from "lucide-react";
 import { cn, formatCurrency } from "../../../lib/utils";
-import { getCompanyRequest, getReportSources, setSelectedReportSource as apiSetSelectedReportSource, getAllManualUploadedReports, getAllQMSUploadedReports, syncQMSUploadSource, getManualStageFilterOptions } from "../../../lib/api";
+import { getCompanyRequest, getReportSources, setSelectedReportSource as apiSetSelectedReportSource, getAllManualUploadedReports, getAllQMSUploadedReports, syncQMSUploadSource, getManualStageFilterOptions, listManualGlDatasetVersions } from "../../../lib/api";
 import {
   getEbitdaData,
   extractEbitdaFromManualPLRows,
@@ -19,6 +19,7 @@ import { refreshQuickbooksToken } from "../../../lib/quickbooks";
 import QBDisconnectedBanner from "../../../components/common/QBDisconnectedBanner";
 import Modal from "../../../components/common/Modal";
 import { useDataSource } from "../../../context/DataSourceContext";
+import { useDatasetVersionStore } from "../../../store/useDatasetVersionStore";
 
 function formatPercent(value) {
   if (!Number.isFinite(value)) return "-";
@@ -185,6 +186,13 @@ export default function WorkspaceEbitda() {
   const [sdePerCim, setSdePerCim] = useState("");
   const [isTypeDialogOpen, setIsTypeDialogOpen] = useState(false);
 
+  // Dataset version selection — Manual GL only.
+  // Seeded from the shared store (kept in sync by WorkspaceReports) so the
+  // same version is used across all reports without the user having to reselect.
+  const sharedSelectedVersion = useDatasetVersionStore((s) => s.selectedVersion);
+  const [glVersions, setGlVersions] = useState([]);
+  const [selectedVersion, setSelectedVersion] = useState(null);
+
   const activeSourceRef = useRef(reportSource);
   activeSourceRef.current = reportSource;
   const prevReportSourceForClearRef = useRef(reportSource);
@@ -277,10 +285,42 @@ export default function WorkspaceEbitda() {
     setError("");
     setIsLoading(false);
     setIsDataInitialized(false);
-  }, [reportSource]);
+    // Clear version list when switching away from Manual GL
+    if (!isManualGl) {
+      setGlVersions([]);
+      setSelectedVersion(null);
+    }
+  }, [reportSource, isManualGl]);
 
+  // Load available dataset versions for Manual GL.
+  // Seeds the selection from the shared store (written by WorkspaceReports)
+  // so the same version is active across all reports automatically.
+  useEffect(() => {
+    if (!isManualGl || !clientId) return;
+    let cancelled = false;
+    listManualGlDatasetVersions({ clientId })
+      .then((versions) => {
+        if (cancelled) return;
+        setGlVersions(versions);
+        setSelectedVersion((prev) => {
+          // Keep current selection if still valid; otherwise prefer the shared
+          // store value (Reports' selection), then fall back to latest/active.
+          const available = versions.map((v) => String(v.value));
+          if (prev && available.includes(String(prev))) return prev;
+          const fromStore = sharedSelectedVersion && available.includes(String(sharedSelectedVersion))
+            ? sharedSelectedVersion : null;
+          const active = versions.find((v) => v.isActive) || versions[0];
+          return fromStore ?? (active ? String(active.value) : null);
+        });
+      })
+      .catch(() => { if (!cancelled) setGlVersions([]); });
+    return () => { cancelled = true; };
+  }, [isManualGl, clientId, sharedSelectedVersion]);
+
+  // Cache key includes version so switching versions always fetches fresh data
+  // and never serves a cached result from a different version.
   const ebitdaCacheKey = clientId && reportSource
-    ? `ebitda_data_${clientId}_${reportSource}`
+    ? `ebitda_data_${clientId}_${reportSource}${isManualGl && selectedVersion ? `_v${selectedVersion}` : ""}`
     : null;
 
   const handleGenerate = useCallback(async (skipCache = false) => {
@@ -306,8 +346,11 @@ export default function WorkspaceEbitda() {
       const currentYear = new Date().getFullYear();
 
       if (isManualGl) {
-        // Staged GL: discover available fiscal years, then fetch EBITDA per year
-        const filterOpts = await getManualStageFilterOptions({ clientId });
+        // Staged GL: discover available fiscal years for the selected version,
+        // then fetch EBITDA per year — version-scoped so different versions
+        // produce independent, isolated EBITDA calculations.
+        const versionParam = selectedVersion ? { datasetVersion: String(selectedVersion) } : {};
+        const filterOpts = await getManualStageFilterOptions({ clientId, params: versionParam });
         const yearStrings = filterOpts?.options?.fiscalYear || [];
         const availableYears = yearStrings
           .map((y) => parseInt(y, 10))
@@ -322,7 +365,11 @@ export default function WorkspaceEbitda() {
         await Promise.all(
           availableYears.map(async (year) => {
             try {
-              results[year] = await getEbitdaData(`${year}-01-01`, `${year}-12-31`, accountingMethod, "manual");
+              results[year] = await getEbitdaData(
+                `${year}-01-01`, `${year}-12-31`,
+                accountingMethod, "manual",
+                selectedVersion,
+              );
             } catch {
               results[year] = null;
             }
@@ -496,11 +543,29 @@ export default function WorkspaceEbitda() {
     } finally {
       if (activeSourceRef.current === requestSource) setIsLoading(false);
     }
-  }, [isManualGl, isManualUpload, isQBManual, clientId, ebitdaCacheKey, accountingMethod]);
+  }, [isManualGl, isManualUpload, isQBManual, clientId, ebitdaCacheKey, accountingMethod, selectedVersion]);
 
   useEffect(() => {
     handleGenerate(isManualUpload || isQBManual);
   }, [handleGenerate]);
+
+  // When the selected Manual GL version changes, discard any cached result and
+  // re-generate so EBITDA always reflects the chosen version's transactions.
+  const prevVersionRef = useRef(selectedVersion);
+  useEffect(() => {
+    if (!isManualGl) return;
+    if (prevVersionRef.current === selectedVersion) return;
+    prevVersionRef.current = selectedVersion;
+    if (!selectedVersion) return;
+    // Bust the old cache entry so handleGenerate doesn't serve stale data.
+    if (ebitdaCacheKey) {
+      try { sessionStorage.removeItem(ebitdaCacheKey); } catch { /* ignore */ }
+    }
+    setMultiYearData(null);
+    setYears([]);
+    setIsDataInitialized(false);
+    setError("");
+  }, [isManualGl, selectedVersion, ebitdaCacheKey]);
 
   // Handle Dynamic Addbacks Initialization and Persistence
   useEffect(() => {
@@ -721,7 +786,7 @@ export default function WorkspaceEbitda() {
     <div className="page-container">
       <div className="page-content">
         {/* Header */}
-        <div className="mb-6 flex items-center justify-between">
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
           <div>
             <h1 className="text-2xl font-bold text-[#050505]">
               EBITDA Analysis
@@ -736,17 +801,41 @@ export default function WorkspaceEbitda() {
                     : `Dynamic earnings analysis powered by your Profit & Loss data${company?.name ? ` — ${company.name}` : ""}`}
             </p>
           </div>
-          <button
-            onClick={handleSync}
-            disabled={isSyncing || isLoading}
-            className="btn-secondary"
-          >
-            <RefreshCw
-              size={16}
-              className={isSyncing ? "animate-spin" : ""}
-            />
-            {isSyncing ? "Refreshing..." : "Refresh"}
-          </button>
+          <div className="flex flex-wrap items-center gap-3">
+            {/* Version selector — Manual GL only */}
+            {isManualGl && glVersions.length > 0 && (
+              <div className="flex flex-col gap-1.5">
+                <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
+                  Version
+                </label>
+                <div className="relative">
+                  <select
+                    value={selectedVersion ? String(selectedVersion) : ""}
+                    onChange={(e) => setSelectedVersion(e.target.value || null)}
+                    className="h-9 w-full min-w-[160px] appearance-none rounded-md border border-border-input bg-bg-card pl-3 pr-9 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                  >
+                    {glVersions.map((v) => (
+                      <option key={String(v.value)} value={String(v.value)}>
+                        {v.label || `Version ${v.value}`}{v.isActive ? " (active)" : ""}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown size={14} className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-text-muted" />
+                </div>
+              </div>
+            )}
+            <button
+              onClick={handleSync}
+              disabled={isSyncing || isLoading}
+              className="btn-secondary"
+            >
+              <RefreshCw
+                size={16}
+                className={isSyncing ? "animate-spin" : ""}
+              />
+              {isSyncing ? "Refreshing..." : "Refresh"}
+            </button>
+          </div>
         </div>
 
         <QBDisconnectedBanner pageName="EBITDA Analysis" />

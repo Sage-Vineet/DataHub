@@ -1,10 +1,11 @@
+import { memo } from "react";
 import CashflowQBSummary from "./CashflowQBSummary";
 import CashflowSummary from "./CashflowSummary";
 import ManualCashflowMonthlyDetail from "./ManualCashflowMonthlyDetail";
 
 const MANUAL_STAGED_SOURCES = ["MANUAL_STAGED", "manual_staged", "manual_gl_staged_transactions", "manual_gl_reporting_snapshot"];
 
-export default function CashflowReport({
+function CashflowReport({
   reportType,
   data,
   detailedData,
@@ -80,3 +81,7 @@ export default function CashflowReport({
     />
   );
 }
+
+// Memoized: see BalanceSheetReport — avoids re-rendering the report tree on
+// unrelated parent state changes (loading toggles, sibling-tab prefetch).
+export default memo(CashflowReport);
