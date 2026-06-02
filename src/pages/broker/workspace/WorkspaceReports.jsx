@@ -17,6 +17,7 @@ import {
 } from "../../../lib/api";
 import { MANUAL_GL_STAGED_EVENT } from "../../../lib/dataSourceEvents";
 import { useDataSource } from "../../../context/DataSourceContext";
+import { useDatasetVersionStore } from "../../../store/useDatasetVersionStore";
 import {
   getBalanceSheet,
   getBalanceSheetDetail,
@@ -233,6 +234,9 @@ export default function WorkspaceReports() {
   const {
     activeSource: contextActiveSource,
   } = useDataSource();
+  // Publish the selected dataset version to the shared store so other pages
+  // (Bank Reconciliation) report against the SAME version the user picked here.
+  const setSharedSelectedVersion = useDatasetVersionStore((s) => s.setSelectedVersion);
   const todayString = useMemo(() => formatDateForInput(new Date()), []);
   const defaultCustomStart = useMemo(() => `${todayString.slice(0, 7)}-01`, [todayString]);
   const storedState = getStoredReportsState(clientId);
@@ -537,6 +541,15 @@ export default function WorkspaceReports() {
     };
   }, [clientId, selectedSourceMode, filterOptionsVersion, debugLog]);
 
+  // Mirror the active dataset-version selection into the shared store so the
+  // Bank Reconciliation page reconciles against the same version. Cleared when
+  // not in manual GL mode so a stale version can't leak into other sources.
+  useEffect(() => {
+    setSharedSelectedVersion(
+      selectedSourceMode === "manual" ? (manualFilters.datasetVersion || null) : null,
+    );
+  }, [selectedSourceMode, manualFilters.datasetVersion, setSharedSelectedVersion]);
+
   useEffect(() => {
     if (selectedSourceMode !== "manual" || !clientId) return;
 
@@ -732,7 +745,7 @@ export default function WorkspaceReports() {
       if (selectedSourceMode === "quickbooks") {
         await syncQuickbooksReports();
       }
-      await handleGenerateReport();
+      await generateReport(selectedTab, reportType);
     } catch (error) {
       console.error("Sync failed:", error);
       alert("Sync failed. Please try again.");
@@ -1038,253 +1051,287 @@ export default function WorkspaceReports() {
     [debugLog],
   );
 
-  const handleGenerateReport = useCallback(async () => {
-    // Capture the slot + signature at the start so we can cache the result and
-    // guard against a stale write if filters change mid-flight.
-    const slotKey = `${selectedTab}|${reportType}`;
-    const signatureAtStart = currentSignatureRef.current;
-    setIsLoading(true);
+  // Core report fetch + state write, parameterised by tab/reportType so it can
+  // serve both the foreground (actively-viewed tab) and the background prefetch
+  // of sibling tabs. When background=true it skips the loading spinner and the
+  // shared "applied*" header state — it only fills reportsData[tab] and records
+  // the slot signature, so a later switch to that tab renders instantly with no
+  // network round-trip.
+  const generateReport = useCallback(
+    async (tab, rType, { background = false } = {}) => {
+      const slotKey = `${tab}|${rType}`;
+      // Signature for THIS slot. Mirrors currentSignature field-for-field (so the
+      // string is byte-identical for the foreground case) but for the supplied
+      // tab/reportType and that tab's per-tab file selections.
+      const slotSignature = JSON.stringify({
+        clientId,
+        tab,
+        reportType: rType,
+        accountingMethod,
+        source: selectedSourceMode,
+        manualFilters: buildManualFilterParams(appliedManualFilters),
+        dateRange,
+        customRange,
+        manualUploadRowId: selectedManualUploadRowId[tab] || null,
+        qmsRowId: selectedQMSRowId[tab] || null,
+        manualCfYear: selectedManualCfYear || null,
+      });
 
-    try {
-      const rawDates = getDates();
-      const { startDate: userStart, endDate: userEnd } = sanitizeDateRange(
-        rawDates.startDate,
-        rawDates.endDate,
-      );
-      const normalizedAccountingMethod =
-        normalizeAccountingMethod(accountingMethod);
+      // Prefetch no-op: this slot is already cached for the exact inputs.
+      if (background && reportSignaturesRef.current[slotKey] === slotSignature) {
+        return;
+      }
 
-      // In manual-upload / QMS mode, resolve the fiscal year from the selected file
-      // (avoids an extra API call — file list was already fetched by the files effect).
-      let resolvedStart;
-      let resolvedEnd;
-      if (selectedSourceMode === "manual_upload") {
-        const selectedRowId = selectedManualUploadRowId[selectedTab];
-        const fileEntry = manualUploadFiles[selectedTab]?.find(
-          (f) => f.rowId === selectedRowId,
-        ) || manualUploadFiles[selectedTab]?.[0];
-        const year = resolveManualUploadYear({
-          data: fileEntry?.data,
-          reportParams: { fileName: fileEntry?.fileName },
-        });
-        if (year) {
-          resolvedStart = `${year}-01-01`;
-          resolvedEnd = `${year}-12-31`;
+      if (!background) setIsLoading(true);
+
+      try {
+        const rawDates = getDates();
+        const { startDate: userStart, endDate: userEnd } = sanitizeDateRange(
+          rawDates.startDate,
+          rawDates.endDate,
+        );
+        const normalizedAccountingMethod =
+          normalizeAccountingMethod(accountingMethod);
+
+        // In manual-upload / QMS mode, resolve the fiscal year from the selected file
+        // (avoids an extra API call — file list was already fetched by the files effect).
+        let resolvedStart;
+        let resolvedEnd;
+        if (selectedSourceMode === "manual_upload") {
+          const selectedRowId = selectedManualUploadRowId[tab];
+          const fileEntry = manualUploadFiles[tab]?.find(
+            (f) => f.rowId === selectedRowId,
+          ) || manualUploadFiles[tab]?.[0];
+          const year = resolveManualUploadYear({
+            data: fileEntry?.data,
+            reportParams: { fileName: fileEntry?.fileName },
+          });
+          if (year) {
+            resolvedStart = `${year}-01-01`;
+            resolvedEnd = `${year}-12-31`;
+          }
         }
-      }
-      if (selectedSourceMode === "quickbooks_manual") {
-        const selectedRowId = selectedQMSRowId[selectedTab];
-        const fileEntry = qmsFiles[selectedTab]?.find(
-          (f) => f.rowId === selectedRowId,
-        ) || qmsFiles[selectedTab]?.[0];
-        const year = resolveManualUploadYear({
-          data: fileEntry?.data,
-          reportParams: { fileName: fileEntry?.fileName },
-        });
-        if (year) {
-          resolvedStart = `${year}-01-01`;
-          resolvedEnd = `${year}-12-31`;
+        if (selectedSourceMode === "quickbooks_manual") {
+          const selectedRowId = selectedQMSRowId[tab];
+          const fileEntry = qmsFiles[tab]?.find(
+            (f) => f.rowId === selectedRowId,
+          ) || qmsFiles[tab]?.[0];
+          const year = resolveManualUploadYear({
+            data: fileEntry?.data,
+            reportParams: { fileName: fileEntry?.fileName },
+          });
+          if (year) {
+            resolvedStart = `${year}-01-01`;
+            resolvedEnd = `${year}-12-31`;
+          }
         }
-      }
 
-      if (!resolvedStart || !resolvedEnd) {
-        const dateConfig = getDateRange({
-          reportType: selectedTab,
-          viewType: reportType,
-          filters: { startDate: userStart, endDate: userEnd },
-        });
-        resolvedStart = dateConfig.startDate;
-        resolvedEnd = dateConfig.endDate;
-      }
-
-      // Single-dataset mode: reports use only the currently active staged dataset.
-      // No version or batchId override is needed.
-      const manualFilterParams =
-        selectedSourceMode === "manual"
-          ? { ...buildManualFilterParams(appliedManualFilters) }
-          : null;
-      // Summary reports must not receive a month filter — fiscalMonths applied at the DB layer
-      // would restrict transactions to a single month, breaking multi-month aggregations.
-      const summaryFilterParams = manualFilterParams
-        ? { ...manualFilterParams, fiscalMonth: undefined }
-        : null;
-      if (selectedSourceMode === "manual") {
-        debugLog("[ManualGL][UI][GenerateReport][Request]", {
-          selectedTab,
-          reportType,
-          manualFilterParams,
-        });
-      }
-
-      // For manual GL mode: derive display dates from the selected fiscal year.
-      let effectiveStartDate = resolvedStart;
-      let effectiveEndDate = resolvedEnd;
-      if (selectedSourceMode === "manual") {
-        const selectedYears = (
-          appliedManualFilters?.fiscalYear?.length
-            ? appliedManualFilters.fiscalYear
-            : (manualFilterParams?.fiscalYear || [])
-        )
-          .map(Number)
-          .filter(Number.isFinite);
-        if (selectedYears.length > 0) {
-          effectiveStartDate = `${Math.min(...selectedYears)}-01-01`;
-          effectiveEndDate = `${Math.max(...selectedYears)}-12-31`;
+        if (!resolvedStart || !resolvedEnd) {
+          const dateConfig = getDateRange({
+            reportType: tab,
+            viewType: rType,
+            filters: { startDate: userStart, endDate: userEnd },
+          });
+          resolvedStart = dateConfig.startDate;
+          resolvedEnd = dateConfig.endDate;
         }
-      }
-      // For manual_upload Cash Flow: period must reflect the selected CF year,
-      // not the QB date-range picker (which is hidden on this tab).
-      if (selectedSourceMode === "manual_upload" && selectedTab === "Cashflow" && selectedManualCfYear) {
-        effectiveStartDate = `${selectedManualCfYear}-01-01`;
-        effectiveEndDate = `${selectedManualCfYear}-12-31`;
-      }
 
-      setAppliedStartDate(effectiveStartDate || "");
-      setAppliedEndDate(effectiveEndDate || "");
-      setAppliedReportType(reportType);
-      setAppliedAccountingMethod(accountingMethod);
-      let summary = [];
-      let detail = { groups: [] };
-
-      const manualUploadRowId =
-        selectedSourceMode === "manual_upload"
-          ? selectedManualUploadRowId[selectedTab]
-          : selectedSourceMode === "quickbooks_manual"
-            ? selectedQMSRowId[selectedTab]
+        // Single-dataset mode: reports use only the currently active staged dataset.
+        // No version or batchId override is needed.
+        const manualFilterParams =
+          selectedSourceMode === "manual"
+            ? { ...buildManualFilterParams(appliedManualFilters) }
             : null;
-
-      if (selectedTab === "Balance Sheet") {
-        if (reportType === "Summary") {
-          summary = await getBalanceSheet(
-            effectiveStartDate,
-            effectiveEndDate,
-            normalizedAccountingMethod,
-            {
-              sourceMode: selectedSourceMode,
-              manualFilters: summaryFilterParams,
-              manualUploadRowId,
-            },
-          );
-        } else {
-          detail = await getBalanceSheetDetail(
-            effectiveStartDate,
-            effectiveEndDate,
-            normalizedAccountingMethod,
-            {
-              sourceMode: selectedSourceMode,
-              manualFilters: manualFilterParams,
-            },
-          );
+        // Summary reports must not receive a month filter — fiscalMonths applied at the DB layer
+        // would restrict transactions to a single month, breaking multi-month aggregations.
+        const summaryFilterParams = manualFilterParams
+          ? { ...manualFilterParams, fiscalMonth: undefined }
+          : null;
+        if (selectedSourceMode === "manual") {
+          debugLog("[ManualGL][UI][GenerateReport][Request]", {
+            selectedTab: tab,
+            reportType: rType,
+            background,
+            manualFilterParams,
+          });
         }
-      } else if (selectedTab === "Profit & Loss") {
-        if (reportType === "Summary") {
-          summary = await getProfitAndLoss(
-            effectiveStartDate,
-            effectiveEndDate,
-            normalizedAccountingMethod,
-            {
-              sourceMode: selectedSourceMode,
-              manualFilters: summaryFilterParams,
-              manualUploadRowId,
-            },
-          );
-        } else {
-          detail = await getProfitAndLossDetail(
-            effectiveStartDate,
-            effectiveEndDate,
-            normalizedAccountingMethod,
-            {
-              sourceMode: selectedSourceMode,
-              manualFilters: manualFilterParams,
-              reportType,
-            },
-          );
+
+        // For manual GL mode: derive display dates from the selected fiscal year.
+        let effectiveStartDate = resolvedStart;
+        let effectiveEndDate = resolvedEnd;
+        if (selectedSourceMode === "manual") {
+          const selectedYears = (
+            appliedManualFilters?.fiscalYear?.length
+              ? appliedManualFilters.fiscalYear
+              : (manualFilterParams?.fiscalYear || [])
+          )
+            .map(Number)
+            .filter(Number.isFinite);
+          if (selectedYears.length > 0) {
+            effectiveStartDate = `${Math.min(...selectedYears)}-01-01`;
+            effectiveEndDate = `${Math.max(...selectedYears)}-12-31`;
+          }
         }
-      } else {
-        if (reportType === "Summary") {
-          summary = await getCashflow(
-            effectiveStartDate,
-            effectiveEndDate,
-            normalizedAccountingMethod,
-            {
-              sourceMode: selectedSourceMode,
-              manualFilters: summaryFilterParams,
-              manualUploadRowId,
-              year: selectedManualCfYear,
-              // Always regenerate for manual_upload CF so stale cache (generated
-              // before a previous-year BS was uploaded) is never served.
-              force: selectedSourceMode === "manual_upload",
-            },
-          );
-        } else {
-          detail = await getCashflowDetail(
-            effectiveStartDate,
-            effectiveEndDate,
-            normalizedAccountingMethod,
-            {
-              sourceMode: selectedSourceMode,
-              manualFilters: manualFilterParams,
-            },
-          );
+        // For manual_upload Cash Flow: period must reflect the selected CF year,
+        // not the QB date-range picker (which is hidden on this tab).
+        if (selectedSourceMode === "manual_upload" && tab === "Cashflow" && selectedManualCfYear) {
+          effectiveStartDate = `${selectedManualCfYear}-01-01`;
+          effectiveEndDate = `${selectedManualCfYear}-12-31`;
         }
+
+        // The shared "applied*" header/subtitle state reflects only the actively
+        // viewed tab — never a background prefetch.
+        if (!background) {
+          setAppliedStartDate(effectiveStartDate || "");
+          setAppliedEndDate(effectiveEndDate || "");
+          setAppliedReportType(rType);
+          setAppliedAccountingMethod(accountingMethod);
+        }
+        let summary = [];
+        let detail = { groups: [] };
+
+        const manualUploadRowId =
+          selectedSourceMode === "manual_upload"
+            ? selectedManualUploadRowId[tab]
+            : selectedSourceMode === "quickbooks_manual"
+              ? selectedQMSRowId[tab]
+              : null;
+
+        if (tab === "Balance Sheet") {
+          if (rType === "Summary") {
+            summary = await getBalanceSheet(
+              effectiveStartDate,
+              effectiveEndDate,
+              normalizedAccountingMethod,
+              {
+                sourceMode: selectedSourceMode,
+                manualFilters: summaryFilterParams,
+                manualUploadRowId,
+              },
+            );
+          } else {
+            detail = await getBalanceSheetDetail(
+              effectiveStartDate,
+              effectiveEndDate,
+              normalizedAccountingMethod,
+              {
+                sourceMode: selectedSourceMode,
+                manualFilters: manualFilterParams,
+              },
+            );
+          }
+        } else if (tab === "Profit & Loss") {
+          if (rType === "Summary") {
+            summary = await getProfitAndLoss(
+              effectiveStartDate,
+              effectiveEndDate,
+              normalizedAccountingMethod,
+              {
+                sourceMode: selectedSourceMode,
+                manualFilters: summaryFilterParams,
+                manualUploadRowId,
+              },
+            );
+          } else {
+            detail = await getProfitAndLossDetail(
+              effectiveStartDate,
+              effectiveEndDate,
+              normalizedAccountingMethod,
+              {
+                sourceMode: selectedSourceMode,
+                manualFilters: manualFilterParams,
+                reportType: rType,
+              },
+            );
+          }
+        } else {
+          if (rType === "Summary") {
+            summary = await getCashflow(
+              effectiveStartDate,
+              effectiveEndDate,
+              normalizedAccountingMethod,
+              {
+                sourceMode: selectedSourceMode,
+                manualFilters: summaryFilterParams,
+                manualUploadRowId,
+                year: selectedManualCfYear,
+                // Always regenerate for manual_upload CF so stale cache (generated
+                // before a previous-year BS was uploaded) is never served.
+                force: selectedSourceMode === "manual_upload",
+              },
+            );
+          } else {
+            detail = await getCashflowDetail(
+              effectiveStartDate,
+              effectiveEndDate,
+              normalizedAccountingMethod,
+              {
+                sourceMode: selectedSourceMode,
+                manualFilters: manualFilterParams,
+              },
+            );
+          }
+        }
+
+        setReportsData((previous) => ({
+          ...previous,
+          [tab]: {
+            ...previous[tab],
+            ...(rType === "Summary" ? { summary } : { detail }),
+          },
+        }));
+
+        // Record the slot signature on success so re-selecting this tab with
+        // identical filters renders instantly without a network round-trip.
+        // Foreground records only when filters didn't change mid-flight; a
+        // background prefetch's inputs are fixed for its lifetime so it always
+        // records.
+        if (background || currentSignatureRef.current === slotSignature) {
+          reportSignaturesRef.current[slotKey] = slotSignature;
+        }
+
+        if (selectedSourceMode === "manual" && rType === "Summary") {
+          debugLog("[ManualGL][UI][GenerateReport][SummaryResponse]", {
+            tab,
+            background,
+            source: summary?.source ?? (Array.isArray(summary) ? "array" : typeof summary),
+            hierarchicalRowsCount: Array.isArray(summary?.hierarchicalRows) ? summary.hierarchicalRows.length : "n/a",
+            rowsCount: Array.isArray(summary) ? summary.length : "n/a",
+            years: summary?.years || [],
+            audit: summary?.audit || [],
+            appliedFilters: manualFilterParams,
+          });
+        }
+
+        console.log(
+          `✅ [Reports] ${tab} / ${rType} generated successfully${background ? " (prefetch)" : ""}`,
+        );
+      } catch (error) {
+        console.error("[WorkspaceReports] Generation failed:", error);
+      } finally {
+        if (!background) setIsLoading(false);
       }
+    },
+    [
+      accountingMethod,
+      appliedManualFilters,
+      clientId,
+      getDates,
+      debugLog,
+      selectedSourceMode,
+      selectedManualUploadRowId,
+      selectedQMSRowId,
+      manualUploadFiles,
+      qmsFiles,
+      selectedManualCfYear,
+      dateRange,
+      customRange,
+    ],
+  );
 
-      setReportsData((previous) => ({
-        ...previous,
-        [selectedTab]: {
-          ...previous[selectedTab],
-          ...(reportType === "Summary" ? { summary } : { detail }),
-        },
-      }));
-
-      // Cache the signature on success so re-selecting this tab with identical
-      // filters renders instantly without a network round-trip. Only record when
-      // the signature still matches (filters didn't change while in flight).
-      if (currentSignatureRef.current === signatureAtStart) {
-        reportSignaturesRef.current[slotKey] = signatureAtStart;
-      }
-
-      if (selectedSourceMode === "manual" && reportType === "Summary") {
-        debugLog("[ManualGL][UI][GenerateReport][SummaryResponse]", {
-          tab: selectedTab,
-          source: summary?.source ?? (Array.isArray(summary) ? "array" : typeof summary),
-          hierarchicalRowsCount: Array.isArray(summary?.hierarchicalRows) ? summary.hierarchicalRows.length : "n/a",
-          rowsCount: Array.isArray(summary) ? summary.length : "n/a",
-          years: summary?.years || [],
-          audit: summary?.audit || [],
-          appliedFilters: manualFilterParams,
-        });
-      }
-
-      console.log(
-        `✅ [Reports] ${selectedTab} / ${reportType} generated successfully`,
-      );
-    } catch (error) {
-      console.error("[WorkspaceReports] Generation failed:", error);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [
-    accountingMethod,
-    appliedManualFilters,
-    clientId,
-    getDates,
-    debugLog,
-    reportType,
-    selectedSourceMode,
-    selectedTab,
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    selectedManualUploadRowId[selectedTab],
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    selectedQMSRowId[selectedTab],
-    selectedManualCfYear,
-  ]);
-
-  // Auto-generate report when dependencies change.
+  // Auto-generate report for the active tab when dependencies change.
   // Debounced 80ms to prevent double-fetch when multiple state updates arrive
   // in the same tick (e.g. session restore followed by filter auto-selection).
-  // handleGenerateReport is memoized with useCallback so this effect only fires
-  // when the underlying filter/tab/source values actually change.
   useEffect(() => {
     if (!clientId) return undefined;
     const slotKey = `${selectedTab}|${reportType}`;
@@ -1294,12 +1341,57 @@ export default function WorkspaceReports() {
       setIsLoading(false);
       return undefined;
     }
-    const timer = setTimeout(handleGenerateReport, 80);
+    const timer = setTimeout(() => generateReport(selectedTab, reportType), 80);
     return () => clearTimeout(timer);
-  }, [handleGenerateReport, clientId, currentSignature, selectedTab, reportType]);
+  }, [generateReport, clientId, currentSignature, selectedTab, reportType]);
+
+  // Prefetch the sibling tabs in the background once the active report is ready,
+  // so switching between Balance Sheet / P&L / Cash Flow is near-instant. Scoped
+  // to manual GL, where report inputs are global to the dataset version (no
+  // per-tab lazy file selection), making a cross-tab prefetch safe and correct.
+  useEffect(() => {
+    if (!clientId || selectedSourceMode !== "manual") return undefined;
+    const activeSlot = `${selectedTab}|${reportType}`;
+    // Wait until the active report for the current filters is loaded/cached so
+    // we never compete with the foreground fetch for the same data.
+    if (reportSignaturesRef.current[activeSlot] !== currentSignature) return undefined;
+
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      if (cancelled) return;
+      REPORT_TABS.forEach(({ key }) => {
+        if (key === selectedTab) return;
+        generateReport(key, reportType, { background: true });
+      });
+    }, 200);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+    // reportsData is included so this re-evaluates once the active tab's data
+    // lands after an async (cache-miss) fetch — the signature is recorded on a
+    // ref, which alone wouldn't re-trigger the effect. Re-runs from sibling
+    // prefetch writes are harmless: those slots are already cached, so the
+    // background generateReport calls return immediately as no-ops.
+  }, [
+    clientId,
+    selectedSourceMode,
+    selectedTab,
+    reportType,
+    currentSignature,
+    reportsData,
+    generateReport,
+    REPORT_TABS,
+  ]);
 
 
   const currentReport = reportsData[selectedTab];
+  // Stable reference so React.memo on the report components isn't defeated by a
+  // fresh [] literal on every render.
+  const selectedMonths = useMemo(
+    () => appliedManualFilters?.fiscalMonth || [],
+    [appliedManualFilters],
+  );
 
   return (
     <div className="page-container">
@@ -1668,7 +1760,7 @@ export default function WorkspaceReports() {
                       entityName={company?.name || clientName}
                       createdOn={createdOn}
                       isPreview={true}
-                      selectedMonths={appliedManualFilters?.fiscalMonth || []}
+                      selectedMonths={selectedMonths}
                     />
                   ) : selectedTab === "Profit & Loss" ? (
                     <ProfitAndLossReport
@@ -1683,7 +1775,7 @@ export default function WorkspaceReports() {
                       entityName={company?.name || clientName}
                       createdOn={createdOn}
                       isPreview={true}
-                      selectedMonths={appliedManualFilters?.fiscalMonth || []}
+                      selectedMonths={selectedMonths}
                     />
                   ) : (
                     <CashflowReport
@@ -1698,7 +1790,7 @@ export default function WorkspaceReports() {
                       entityName={company?.name || clientName}
                       createdOn={createdOn}
                       isPreview={true}
-                      selectedMonths={appliedManualFilters?.fiscalMonth || []}
+                      selectedMonths={selectedMonths}
                     />
                   )}
                 </div>

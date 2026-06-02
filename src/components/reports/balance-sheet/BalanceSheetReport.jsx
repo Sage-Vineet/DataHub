@@ -1,8 +1,9 @@
+import { memo } from "react";
 import BalanceSheetSummary from "./BalanceSheetSummary";
 import BalanceSheetQBSummary from "./BalanceSheetQBSummary";
 import ManualBalanceSheetMonthlyDetail from "../manual/ManualBalanceSheetMonthlyDetail";
 
-export default function BalanceSheetReport({
+function BalanceSheetReport({
   reportType,
   data,
   detailedData,
@@ -79,3 +80,8 @@ export default function BalanceSheetReport({
     />
   );
 }
+
+// Memoized: the report tree is expensive to render and its props are stable
+// between unrelated parent state changes (loading toggles, sibling-tab prefetch,
+// filter-dropdown interaction), so re-rendering it then is wasted work.
+export default memo(BalanceSheetReport);
