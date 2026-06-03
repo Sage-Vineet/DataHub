@@ -465,17 +465,7 @@ function normalizeOptionalText(value) {
 }
 
 function normalizePhone(value) {
-  const normalized = normalizeOptionalText(value);
-  if (!normalized) return normalized;
-
-  const digits = normalized.replace(/\D/g, "");
-  const validShape = /^\+?[0-9][0-9\s().-]{6,19}$/.test(normalized);
-  if (!validShape || digits.length < 7 || digits.length > 15) {
-    const err = new Error("Please enter a valid phone number.");
-    err.status = 400;
-    throw err;
-  }
-  return normalized;
+  return normalizeOptionalText(value);
 }
 
 function normalizeDateOfBirth(value) {
