@@ -193,6 +193,10 @@ export default function WorkspaceTaxReconciliation() {
   const sharedSelectedVersion = useDatasetVersionStore((s) => s.selectedVersion);
   const [glVersions, setGlVersions] = useState([]);
   const [selectedVersion, setSelectedVersion] = useState(null);
+  // Tracks the live selection so an in-flight load for a previous version can
+  // be discarded if the user switches mid-fetch (last-write-wins guard).
+  const latestVersionRef = useRef(selectedVersion);
+  latestVersionRef.current = selectedVersion;
 
   // Manual GL (staged General Ledger) sources its P&L from the platform's GL
   // reports — not from a separately uploaded P&L document. It's handled by its
@@ -297,6 +301,7 @@ export default function WorkspaceTaxReconciliation() {
   // ── Loader ────────────────────────────────────────────────────────────
 
   const loadData = useCallback(async (forceRefresh = false) => {
+    const requestVersion = selectedVersion;
     setIsLoading(true);
     setError("");
     setIsQBDisconnected(false);
@@ -401,6 +406,9 @@ export default function WorkspaceTaxReconciliation() {
           };
         }
 
+        // Discard if the user switched versions while this load was in flight,
+        // so a slow previous-version response can't overwrite fresh data.
+        if (latestVersionRef.current !== requestVersion) return;
         const loadedYears = Object.keys(results).map(Number).sort();
         setMatrixData(results);
         setWarnings(allWarnings);
@@ -658,12 +666,18 @@ export default function WorkspaceTaxReconciliation() {
     }
   }, [selectedYears, accountingMethod, clientId, getHeaders, isManualGL, isManualMode, isQBManual, currentYear, selectedVersion]);
 
+  // Auto-load on first visit. In Manual GL mode, wait until the version is
+  // resolved before loading — and include selectedVersion in the deps so this
+  // re-fires once the version becomes available (without it, the effect ran
+  // once with a null version and never again, leaving an empty screen even
+  // though an active version with data existed).
   useEffect(() => {
     if (!activeSource) return;
+    if (isManualGL && !selectedVersion) return;
     if (Object.keys(matrixData).length > 0) return;
     void loadData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSource]);
+  }, [activeSource, isManualGL, selectedVersion]);
 
   // Re-generate when the selected version changes so Tax Reconciliation always
   // reflects the chosen version's transactions with no cross-version leakage.

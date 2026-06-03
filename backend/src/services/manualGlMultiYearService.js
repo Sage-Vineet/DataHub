@@ -3288,6 +3288,10 @@ function parseManualFilterQuery(rawFilters = {}) {
     accountName: rawFilters.accountName || rawFilters.account_name || "",
     accountNumber: rawFilters.accountNumber || rawFilters.account_number || "",
     accountType: rawFilters.accountType || rawFilters.account_type || "",
+    vendorName: rawFilters.vendorName || rawFilters.vendor_name || "",
+    statementType: String(
+      rawFilters.statementType || rawFilters.statement_type || rawFilters.bsPl || rawFilters.bs_pl || "",
+    ).toLowerCase(),
     category: rawFilters.category || "",
     subCategory: rawFilters.subCategory || rawFilters.sub_category || "",
     department: rawFilters.department || "",
@@ -3458,6 +3462,7 @@ async function queryStagedTransactions(companyId, rawFilters = {}) {
 
     query = applyTextFilter(query, "account_name", filters.accountName);
     query = applyTextFilter(query, "account_number", filters.accountNumber);
+    query = applyTextFilter(query, "vendor_name", filters.vendorName);
     query = applyTextFilter(query, "account_type", filters.accountType, true);
     query = applyTextFilter(query, "category", filters.category, true);
     query = applyTextFilter(query, "sub_category", filters.subCategory, true);
@@ -7474,7 +7479,7 @@ async function getStageFilterOptions(companyId, filters = {}) {
   const DISCOVERY_COLS = [
     "fiscal_year", "txn_date", "account_name", "account_number", "account_type",
     "category", "sub_category", "department", "class", "location",
-    "source_file", "transaction_type", "journal_type",
+    "source_file", "transaction_type", "journal_type", "vendor_name",
   ].join(", ");
 
   const fetchNarrow = async (includeSourceType = true) => {
@@ -7582,6 +7587,7 @@ async function getStageFilterOptions(companyId, filters = {}) {
     sourceFile: new Set(),
     transactionType: new Set(),
     journalType: new Set(),
+    vendorName: new Set(),
     reportType: new Set(["profit_loss", "balance_sheet"]),
   };
 
@@ -7605,6 +7611,7 @@ async function getStageFilterOptions(companyId, filters = {}) {
     addValue(options.sourceFile, row.source_file);
     addValue(options.transactionType, row.transaction_type);
     addValue(options.journalType, row.journal_type);
+    addValue(options.vendorName, row.vendor_name);
   });
 
   return {
@@ -8749,9 +8756,168 @@ async function getProfitLossVendorDetailFromStage(companyId, filters = {}) {
   });
 }
 
+/**
+ * Maps a statementType filter value to the set of normalized account types it covers.
+ * Defaults to Profit & Loss (the report's primary focus).
+ */
+function resolveStatementTypeAccountTypes(statementType) {
+  const value = String(statementType || "").toLowerCase();
+  if (value === "all") return null; // no restriction
+  if (value === "balance_sheet" || value === "bs") return ["asset", "liability", "equity"];
+  // "profit_loss" | "pl" | "" (default)
+  return ["income", "cogs", "expense"];
+}
+
+/**
+ * Builds the Vendor Analysis payload.
+ * Hierarchy: Account -> Vendor -> Account Total
+ * Columns: dynamic fiscal years + a grand Total per row.
+ * Cell value uses the raw signed amount (credits positive, debits negative),
+ * consistent with the existing Manual GL report builders.
+ */
+function buildVendorAnalysisPayload(transactions = [], filters = {}) {
+  const accountMap = new Map();
+  const years = new Set();
+
+  transactions.forEach((tx) => {
+    const accountName = tx.accountName || "Uncategorized Account";
+    const vendorName = tx.vendorName || "Unknown Vendor";
+    const year = Number(tx.fiscalYear);
+    if (year > 0) years.add(year);
+
+    if (!accountMap.has(accountName)) {
+      accountMap.set(accountName, {
+        accountName,
+        accountNumber: tx.accountNumber || "",
+        accountType: tx.accountType || "",
+        category: tx.category || "",
+        subCategory: tx.subCategory || "",
+        vendors: new Map(),
+        yearlyTotals: {},
+        totalAmount: 0,
+      });
+    }
+
+    const account = accountMap.get(accountName);
+    if (!account.vendors.has(vendorName)) {
+      account.vendors.set(vendorName, {
+        vendorName,
+        yearlyTotals: {},
+        totalAmount: 0,
+      });
+    }
+
+    const vendor = account.vendors.get(vendorName);
+    // normalizeStagedTransactionRow exposes the signed value as `netAmount`
+    // (credit - debit). Fall back to signedAmount/amount for any other caller.
+    const amount = Number(tx.netAmount ?? tx.signedAmount ?? tx.amount ?? 0) || 0;
+
+    vendor.totalAmount += amount;
+    account.totalAmount += amount;
+    if (year > 0) {
+      vendor.yearlyTotals[year] = (vendor.yearlyTotals[year] || 0) + amount;
+      account.yearlyTotals[year] = (account.yearlyTotals[year] || 0) + amount;
+    }
+  });
+
+  const sortedYears = Array.from(years).sort((a, b) => a - b);
+
+  const accounts = Array.from(accountMap.values())
+    .map((account) => ({
+      accountName: account.accountName,
+      accountNumber: account.accountNumber,
+      accountType: account.accountType,
+      category: account.category,
+      subCategory: account.subCategory,
+      totalAmount: roundMoney(account.totalAmount),
+      yearlyTotals: roundYearlyTotals(account.yearlyTotals),
+      vendors: Array.from(account.vendors.values())
+        .map((v) => ({
+          vendorName: v.vendorName,
+          totalAmount: roundMoney(v.totalAmount),
+          yearlyTotals: roundYearlyTotals(v.yearlyTotals),
+        }))
+        .sort((a, b) => Math.abs(b.totalAmount) - Math.abs(a.totalAmount)),
+    }))
+    .sort((a, b) => a.accountName.localeCompare(b.accountName));
+
+  return {
+    source: "manual_gl_staged_transactions",
+    reportType: "vendor_analysis",
+    filters,
+    years: sortedYears,
+    accounts,
+  };
+}
+
+function roundYearlyTotals(map) {
+  const out = {};
+  Object.keys(map || {}).forEach((year) => {
+    out[year] = roundMoney(map[year]);
+  });
+  return out;
+}
+
+/**
+ * Vendor Analysis entry point. Mirrors getProfitLossVendorDetailFromStage's
+ * version-scoped, calendar-year-corrected data loading, then groups
+ * Account -> Vendor and applies the BS/P&L statementType filter.
+ */
+async function getVendorAnalysisFromStage(companyId, filters = {}) {
+  const preFilters = parseManualFilterQuery(filters);
+  const preBatchId = await resolveEffectiveReportBatchId(companyId, preFilters);
+  const batchMeta = await loadBatchMetadata(preBatchId);
+  const fiscalCalendarExplicit = batchMeta.fiscalCalendarExplicit === true;
+
+  const selectedYearsForBypass = preFilters.fiscalYears || [];
+  let queryFilters = { ...filters, batchId: preBatchId || filters.batchId || "" };
+
+  if (!fiscalCalendarExplicit && selectedYearsForBypass.length) {
+    const minYear = Math.min(...selectedYearsForBypass);
+    const maxYear = Math.max(...selectedYearsForBypass);
+    queryFilters = {
+      ...queryFilters,
+      fiscalYears: [],
+      fiscalYear: null,
+      startDate: `${minYear}-01-01`,
+      endDate: `${maxYear}-12-31`,
+    };
+  }
+
+  const { filters: normalizedFilters, rows: rawRows } = await queryStagedTransactions(companyId, queryFilters);
+  const correctedRows = fiscalCalendarExplicit ? rawRows : applyCalendarYearCorrection(rawRows);
+  const selectedYears = preFilters.fiscalYears || [];
+  const filteredRows = (!fiscalCalendarExplicit && selectedYears.length)
+    ? correctedRows.filter((r) => selectedYears.includes(Number(r.fiscal_year || 0)))
+    : correctedRows;
+
+  let normalized = filteredRows.map(normalizeStagedTransactionRow).filter(Boolean);
+  const effectiveBatchId = normalizedFilters.batchId || preBatchId || "";
+
+  if (effectiveBatchId) {
+    const bsLookup = await loadBsLookupForBatch(companyId, effectiveBatchId);
+    if (bsLookup.size > 0) {
+      normalized = reclassifyNormalizedTransactions(normalized, bsLookup);
+    }
+  }
+
+  const allowedTypes = resolveStatementTypeAccountTypes(preFilters.statementType);
+  const scoped = allowedTypes
+    ? normalized.filter((tx) => allowedTypes.includes(normalizeAccountType(tx.accountType) || ""))
+    : normalized;
+
+  return buildVendorAnalysisPayload(scoped, {
+    ...normalizedFilters,
+    statementType: preFilters.statementType || "profit_loss",
+    fiscalYears: selectedYears.length ? selectedYears : (normalizedFilters.fiscalYears || []),
+  });
+}
+
 module.exports = {
   parseManualFilterQuery,
   queryStagedTransactions,
+  getVendorAnalysisFromStage,
+  buildVendorAnalysisPayload,
   stageMultiYearGlUpload,
   getStageTransactions,
   getStageFilterOptions,
