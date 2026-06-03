@@ -1,5 +1,5 @@
 {
-  "name": "datahub",
+  "name": "M&A Hub",
   "version": "1.0.0",
   "description": "Express + PostgreSQL REST API scaffold for Leo",
   "main": "src/server.js",

@@ -691,7 +691,12 @@ export default function BrokerUsers() {
       await loadData();
       setEditUser(null);
       setPage(1);
-      setSuccess('User created successfully.');
+
+      if (created?.emailSent === false) {
+        setSuccess('User created successfully, but invitation email could not be sent.');
+      } else {
+        setSuccess('User created successfully. A welcome email has been sent to ' + (form.email.trim() || 'the user') + '.');
+      }
     } catch (err) {
       setFormError(formatApiError(err));
     } finally {

@@ -178,6 +178,42 @@ export function loginRequest(credentials) {
   });
 }
 
+export function sendVerificationOtpRequest(payload) {
+  return fetch(buildUrl('/auth/send-verification-otp'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+    body: JSON.stringify(payload),
+    cache: 'no-store',
+    credentials: 'omit',
+  }).then(async (response) => {
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      const error = new Error(data?.error || 'Failed to send verification code.');
+      error.status = response.status;
+      throw error;
+    }
+    return data;
+  });
+}
+
+export function verifyVerificationOtpRequest(payload) {
+  return fetch(buildUrl('/auth/verify-verification-otp'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+    body: JSON.stringify(payload),
+    cache: 'no-store',
+    credentials: 'omit',
+  }).then(async (response) => {
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      const error = new Error(data?.error || 'Verification failed.');
+      error.status = response.status;
+      throw error;
+    }
+    return data;
+  });
+}
+
 export function brokerSignupRequest(payload) {
   return fetch(buildUrl('/auth/broker/signup'), {
     method: 'POST',
