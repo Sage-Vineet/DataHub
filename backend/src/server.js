@@ -59,10 +59,16 @@ async function ensureEmailVerificationsTable() {
 (async () => {
   try {
     await db.ready;
-    await ensureEmailVerificationsTable();
+    // Start listening immediately — do NOT block on table creation.
+    // The server must be ready to accept connections (including Render's health
+    // check probe) before we run any slow startup tasks.
     app.listen(port, () => {
       // eslint-disable-next-line no-console
       console.log(`Leo backend running on port ${port}`);
+      // Run table creation in background after the server is already live.
+      ensureEmailVerificationsTable().catch((err) =>
+        console.warn("[Startup] email_verifications table init failed:", err.message)
+      );
     });
   } catch (error) {
     console.error("Failed to start backend:", error.message);

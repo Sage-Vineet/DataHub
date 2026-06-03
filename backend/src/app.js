@@ -63,8 +63,8 @@ function isAllowedVercelPreview(origin) {
       protocol === "https:" &&
       (
         hostname.endsWith(".vercel.app") ||
-        hostname === "centuriuum.com" ||
-        hostname === "www.centuriuum.com"
+        hostname === "centurium.com" ||
+        hostname === "www.centurium.com"
       )
     );
   } catch (_error) {
@@ -78,6 +78,8 @@ const allowedOrigins = Array.from(
     process.env.APP_URL,
     process.env.CORS_ORIGIN,
     ...parseOriginList(process.env.CORS_ORIGIN),
+    "https://centurium.com",
+    "https://www.centurium.com",
     "https://data-hub-fawn.vercel.app",
     "https://datahub-sl3y.onrender.com",
     "http://localhost:5173",

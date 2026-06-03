@@ -80,6 +80,22 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
+  // Keepalive: ping the backend every 14 minutes so Render (free tier) never
+  // spins down the server. Fires immediately on mount to wake the server as
+  // soon as the user opens the app, eliminating the cold-start delay.
+  useEffect(() => {
+    const API_BASE = (
+      import.meta.env.VITE_API_BASE_URL || "http://localhost:4000"
+    ).replace(/\/$/, "");
+    const ping = () =>
+      fetch(`${API_BASE}/health`, { method: "GET", credentials: "omit" }).catch(
+        () => {}
+      );
+    ping();
+    const keepalive = setInterval(ping, 14 * 60 * 1000); // 14 minutes
+    return () => clearInterval(keepalive);
+  }, []);
+
   // Check for existing token on app load
   useEffect(() => {
     const checkAuth = async () => {
