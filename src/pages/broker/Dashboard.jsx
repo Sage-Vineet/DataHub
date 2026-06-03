@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  ArrowRight, Bell, Briefcase, Building2, Clock,
-  FileText, MessageSquare, ClipboardList, Users, Activity,
+  Activity, ArrowRight, Bell, Briefcase, Building2, Clock,
+  FileText, MessageSquare, ClipboardList, Plus, Users,
 } from 'lucide-react';
 import { listCompaniesRequest, listBrokerActivity } from '../../lib/api';
 
@@ -11,8 +11,10 @@ function normalizeCompany(company) {
     id: company.id,
     name: company.name,
     projectName: company.project_name || '',
-    industry: company.industry,
-    status: company.status,
+    industry: company.industry || 'General',
+    status: company.status || 'active',
+    contact: company.contact || company.contact_name || '—',
+    email: company.email || company.contact_email || '—',
     pendingCount: Number(company.pending_request_count || company.pendingCount || 0),
     completedCount: Number(company.completed_request_count || company.completedCount || 0),
     logo: company.logo || company.name?.slice(0, 2)?.toUpperCase(),
@@ -49,7 +51,7 @@ function timeAgo(isoString) {
   if (hrs < 24) return `${hrs}h ago`;
   const days = Math.floor(hrs / 24);
   if (days < 7) return `${days}d ago`;
-  return new Date(isoString).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+  return new Date(isoString).toLocaleDateString('en-US', { day: 'numeric', month: 'short' });
 }
 
 export default function BrokerDashboard() {
@@ -58,7 +60,6 @@ export default function BrokerDashboard() {
   const [activity, setActivity] = useState([]);
   const [loadingCompanies, setLoadingCompanies] = useState(true);
   const [loadingActivity, setLoadingActivity] = useState(true);
-
   useEffect(() => {
     let cancelled = false;
 
@@ -87,10 +88,26 @@ export default function BrokerDashboard() {
     [companies]
   );
 
-  return (
-    <div className="space-y-6">
-      <h1 className="text-2xl font-bold text-[#050505]">Broker Dashboard</h1>
+  const openWorkspace = (company) =>
+    navigate(`/broker/client/${company.id}/analytics`, { state: { company } });
 
+  return (
+    <div className="space-y-5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-[#050505]">Your Deals</h1>
+          <p className="mt-0.5 text-sm text-[#6D6E71]">Overview of your portfolio and recent activity.</p>
+        </div>
+        <button
+          onClick={() => navigate('/broker/companies', { state: { openAdd: true } })}
+          className="flex items-center gap-2 rounded-xl bg-[#8BC53D] px-5 py-2.5 text-sm font-semibold text-white shadow-md transition-all hover:bg-[#476E2C] hover:scale-[1.02]"
+        >
+          <Plus size={15} />
+          Add Company
+        </button>
+      </div>
+
+      {/* Summary cards */}
       <div className="grid gap-4 md:grid-cols-3">
         {[
           { label: 'Active Companies', value: summary.activeCompanies, icon: Building2, tone: '#476E2C', bg: '#E8F3D8' },
@@ -123,10 +140,13 @@ export default function BrokerDashboard() {
             </button>
           </div>
           <div className="divide-y divide-gray-50">
+            {loadingCompanies && (
+              <p className="px-5 py-10 text-center text-sm text-[#A5A5A5]">Loading…</p>
+            )}
             {spotlightCompanies.map((company) => (
               <button
                 key={company.id}
-                onClick={() => navigate(`/broker/client/${company.id}/datahub-dashboard`, { state: { company } })}
+                onClick={() => openWorkspace(company)}
                 className="flex w-full items-center justify-between px-5 py-4 text-left transition-colors hover:bg-[#FAFBF7]"
               >
                 <div className="flex items-center gap-3">
@@ -156,13 +176,12 @@ export default function BrokerDashboard() {
         </div>
 
         {/* Recent Activity */}
-        <div className="rounded-2xl bg-white shadow-card flex flex-col">
+        <div className="flex flex-col rounded-2xl bg-white shadow-card">
           <div className="border-b border-gray-100 px-5 py-4">
             <h2 className="font-semibold text-[#050505]">Recent Activity</h2>
             <p className="mt-1 text-xs text-[#A5A5A5]">Latest events across all companies.</p>
           </div>
-
-          <div className="flex-1 overflow-y-auto divide-y divide-gray-50">
+          <div className="flex-1 divide-y divide-gray-50 overflow-y-auto">
             {loadingActivity && (
               <p className="px-5 py-10 text-center text-sm text-[#A5A5A5]">Loading activity…</p>
             )}
@@ -184,7 +203,7 @@ export default function BrokerDashboard() {
                     <Icon size={14} style={{ color: color.tone }} />
                   </div>
                   <div className="min-w-0 flex-1">
-                    <p className="text-[13px] font-medium leading-snug text-[#050505] truncate">
+                    <p className="truncate text-[13px] font-medium leading-snug text-[#050505]">
                       {event.message}
                     </p>
                     <div className="mt-0.5 flex items-center gap-1.5 text-xs text-[#A5A5A5]">
@@ -196,7 +215,7 @@ export default function BrokerDashboard() {
                       )}
                       {event.detail && (
                         <>
-                          <span className="truncate max-w-[100px]">{event.detail}</span>
+                          <span className="max-w-[100px] truncate">{event.detail}</span>
                           <span>·</span>
                         </>
                       )}

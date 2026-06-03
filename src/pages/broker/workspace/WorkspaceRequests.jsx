@@ -304,7 +304,7 @@ function buildRequestsExportWorkbook(requests, companyName = '') {
   XLSX.utils.book_append_sheet(workbook, instructionsSheet, 'Instructions');
 
   if (companyName) {
-    workbook.Props = { Title: `${companyName} — Requests Export`, Author: 'DataHub' };
+    workbook.Props = { Title: `${companyName} — Requests Export`, Author: 'M&A Hub' };
   }
 
   return workbook;

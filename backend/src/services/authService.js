@@ -14,7 +14,7 @@ function getAuthPool() {
       connectionTimeoutMillis: 10000,
       idleTimeoutMillis: 30000,
     });
-    _authPool.on("error", () => {});
+    _authPool.on("error", () => { });
   }
   return _authPool;
 }
@@ -45,10 +45,8 @@ function isValidEmail(value) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
-function isValidPhone(value) {
-  if (!value) return true;
-  const digits = value.replace(/\D/g, "");
-  return /^\+?[0-9][0-9\s().-]{6,19}$/.test(value) && digits.length >= 7 && digits.length <= 15;
+function isValidPhone() {
+  return true;
 }
 
 async function setBrokerCompanyProfile(userId, brokerCompany) {

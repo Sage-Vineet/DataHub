@@ -15,6 +15,7 @@ import { ToastProvider, useToast } from "./context/ToastContext";
 import { DataSourceProvider } from "./context/DataSourceContext";
 import ErrorBoundary from "./components/common/ErrorBoundary";
 import Layout from "./components/layout/Layout";
+import BrokerLayout from "./components/layout/BrokerLayout";
 import ClientWorkspaceLayout from "./components/layout/ClientWorkspaceLayout";
 import UserLayout from "./components/layout/UserLayout";
 import Login from "./pages/Login";
@@ -91,6 +92,7 @@ function ProtectedRoute({ children, allowedRole, allowedRoles }) {
       />
     );
   if (user.role === "user") return <UserLayout>{children}</UserLayout>;
+  if (user.role === "broker") return <BrokerLayout>{children}</BrokerLayout>;
   return <Layout>{children}</Layout>;
 }
 
@@ -184,7 +186,7 @@ function ClientWorkspaceWrapper() {
               message:
                 "That company was not found. Opened the first available company instead.",
             });
-            navigate(`/broker/client/${fallbackCompany.id}/datahub-dashboard`, {
+            navigate(`/broker/client/${fallbackCompany.id}/analytics`, {
               replace: true,
               state: { company: fallbackCompany },
             });
@@ -309,9 +311,10 @@ function AppRoutes() {
         path="/broker/client/:clientId"
         element={<ClientWorkspaceWrapper />}
       >
-        <Route index element={<Navigate to="dashboard" replace />} />
+        <Route index element={<Navigate to="analytics" replace />} />
+        <Route path="analytics" element={<WorkspaceDashboardDatahub />} />
+        <Route path="datahub-dashboard" element={<Navigate to="../analytics" replace />} />
         <Route path="dashboard" element={<WorkspaceDashboard />} />
-        <Route path="datahub-dashboard" element={<WorkspaceDashboardDatahub />} />
         <Route path="invoices" element={<WorkspaceInvoices />} />
         <Route path="reports" element={<WorkspaceReports />} />
         <Route path="reconciliation" element={<WorkspaceReconciliation />} />

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { NavLink, useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -6,7 +6,6 @@ import {
   Briefcase,
   Building2,
   ChevronDown,
-  ChevronRight,
   ClipboardList,
   FolderOpen,
   LayoutDashboard,
@@ -117,7 +116,7 @@ function WorkspaceSidebar({ company, onClose }) {
         <div className="relative flex items-center justify-center">
           <img
             src={datahublogo}
-            alt="DataHub"
+            alt="M&A Hub"
             className="h-10 w-auto object-contain"
           />
 
@@ -337,7 +336,6 @@ let cachedSwitchCompanies = null;
 
 function WorkspaceTopbar({ company, onMenuClick }) {
   const navigate = useNavigate();
-  const location = useLocation();
   const { user } = useAuth();
   const [showSwitch, setShowSwitch] = useState(false);
   const [companies, setCompanies] = useState(cachedSwitchCompanies ?? []);
@@ -386,27 +384,6 @@ function WorkspaceTopbar({ company, onMenuClick }) {
     };
   }, []);
 
-  const title = useMemo(() => {
-    if (location.pathname.endsWith("/dashboard")) return "Dashboard";
-    if (location.pathname.endsWith("/datahub-dashboard"))
-      return "DataHub Dashboard";
-    if (location.pathname.endsWith("/invoices")) return "Client Invoices";
-    if (location.pathname.endsWith("/reports")) return "Reports";
-    if (location.pathname.endsWith("/reconciliation")) return "Reconciliation";
-    if (location.pathname.endsWith("/connections")) return "Connections";
-    if (location.pathname.includes("/dataroom/requests"))
-      return "DataRoom / Requests";
-    if (location.pathname.includes("/dataroom/documents"))
-      return "DataRoom / Documents";
-    if (location.pathname.includes("/dataroom/users"))
-      return "DataRoom / Users";
-    if (location.pathname.includes("/dataroom/reminders"))
-      return "DataRoom / Reminders";
-    if (location.pathname.includes("/dataroom/activity"))
-      return "DataRoom / Activity";
-    return "Company Workspace";
-  }, [location.pathname]);
-
   return (
     <header className="sticky top-0 z-20 border-b border-border bg-bg-card">
       <div className="flex items-center justify-between px-4 py-4 lg:px-6">
@@ -418,24 +395,6 @@ function WorkspaceTopbar({ company, onMenuClick }) {
             <Menu size={18} />
           </button>
 
-          <div>
-            <div className="flex items-center gap-2 text-sm">
-              <button
-                onClick={() => navigate("/broker/companies")}
-                className="hidden text-[13px] font-medium text-text-muted transition-colors hover:text-text-primary sm:inline"
-              >
-                Companies
-              </button>
-              <ChevronRight
-                size={14}
-                className="hidden text-text-muted sm:inline"
-              />
-              <span className="text-[14px] font-semibold text-text-primary">
-                {company.project_name || company.name}
-              </span>
-            </div>
-            <p className="mt-1 text-[12px] text-text-muted">{title}</p>
-          </div>
         </div>
 
         <div className="flex items-center gap-3">
@@ -469,7 +428,7 @@ function WorkspaceTopbar({ company, onMenuClick }) {
                     key={item.id}
                     onClick={() => {
                       setShowSwitch(false);
-                      navigate(`/broker/client/${item.id}/datahub-dashboard`, {
+                      navigate(`/broker/client/${item.id}/analytics`, {
                         state: { company: item },
                       });
                     }}

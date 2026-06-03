@@ -134,8 +134,36 @@ const addFolderDocument = asyncHandler(async (req, res) => {
     uploaded_by
   });
 
+  // Resolve the uploader's display name (name + role label) for the immediate response
+  // so the front-end never has to show a raw UUID.
+  let uploaded_by_name = null;
+  try {
+    const { supabase } = require("../db");
+    const uploaderUser = req.user?.id === uploaded_by ? req.user : null;
+    if (uploaderUser && (uploaderUser.name || uploaderUser.email)) {
+      const role = uploaderUser.role || "";
+      const label = role === "broker" || role === "admin" ? "Broker"
+        : role === "client" ? "Client"
+        : role === "user" ? "Buyer"
+        : role === "provider" ? "Provider" : null;
+      const displayName = uploaderUser.name || uploaderUser.email || "User";
+      uploaded_by_name = label ? `${displayName} (${label})` : displayName;
+    } else if (uploaded_by) {
+      const { data: u } = await supabase.from("users").select("name, email, role").eq("id", uploaded_by).maybeSingle();
+      if (u) {
+        const label = u.role === "broker" || u.role === "admin" ? "Broker"
+          : u.role === "client" ? "Client"
+          : u.role === "user" ? "Buyer"
+          : u.role === "provider" ? "Provider" : null;
+        const displayName = u.name || u.email || "User";
+        uploaded_by_name = label ? `${displayName} (${label})` : displayName;
+      }
+    }
+  } catch (_) { /* non-fatal — front-end will fall back */ }
+
   res.status(201).json({
     ...doc,
+    uploaded_by_name,
     folder_name: targetFolderId === req.params.id ? null : "General Uploads",
   });
 });

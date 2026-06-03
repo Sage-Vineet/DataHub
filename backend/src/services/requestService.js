@@ -18,6 +18,22 @@ async function pgQuery(sql, params = []) {
   return rows;
 }
 
+function roleLabel(role) {
+  if (!role) return null;
+  if (role === "broker" || role === "admin") return "Broker";
+  if (role === "client") return "Client";
+  if (role === "user") return "Buyer";
+  if (role === "provider") return "Provider";
+  return null;
+}
+
+function formatUploaderDisplay(user) {
+  if (!user) return null;
+  const name = user.name || user.email || "User";
+  const label = roleLabel(user.role);
+  return label ? `${name} (${label})` : name;
+}
+
 const REQUEST_CATEGORIES = ["Finance", "Legal", "Compliance", "HR", "Tax", "M&A", "Other"];
 const RESPONSE_TYPES = ["Upload", "Narrative", "Both"];
 const REQUEST_STATUSES = ["pending", "in-review", "completed", "blocked"];
@@ -352,13 +368,23 @@ async function listRequestDocuments(requestId) {
   const documentIds = links.map((l) => l.document_id).filter(Boolean);
   const { data: documents, error: docsError } = await supabase
     .from("documents")
-    .select("id, name, file_url, status, upload_id, ext, size")
+    .select("id, name, file_url, status, upload_id, ext, size, uploaded_by")
     .in("id", documentIds);
 
   if (docsError) throw docsError;
 
   const docMap = {};
   (documents || []).forEach((doc) => { docMap[doc.id] = doc; });
+
+  const uploaderIds = [...new Set((documents || []).map((d) => d.uploaded_by).filter(Boolean))];
+  let displayById = new Map();
+  if (uploaderIds.length) {
+    const { data: users } = await supabase
+      .from("users")
+      .select("id, name, email, role")
+      .in("id", uploaderIds);
+    displayById = new Map((users || []).map((u) => [u.id, formatUploaderDisplay(u)]));
+  }
 
   return links.map((rd) => {
     const doc = docMap[rd.document_id] || {};
@@ -370,6 +396,7 @@ async function listRequestDocuments(requestId) {
       upload_id: doc.upload_id,
       ext: doc.ext || '',
       size: doc.size || '',
+      uploaded_by_name: displayById.get(doc.uploaded_by) || null,
     };
   });
 }

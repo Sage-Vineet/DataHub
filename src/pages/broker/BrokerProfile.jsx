@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
-import { Lock, User, Building2, ChevronRight, ShieldCheck, X, Eye, EyeOff, AlertCircle } from 'lucide-react';
+import { ArrowLeft, Lock, User, Building2, ChevronRight, ShieldCheck, X, Eye, EyeOff, AlertCircle } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { updateUserRequest, listCompaniesRequest } from '../../lib/api';
 
@@ -84,18 +85,17 @@ function FieldInput({ label, value, onChange, type = 'text', placeholder, requir
   );
 }
 
-function normalizePhone(value) {
-  return String(value || '').trim();
+function formatUSPhone(raw) {
+  const digits = String(raw || '').replace(/\D/g, '').slice(0, 10);
+  if (digits.length <= 3) return digits;
+  if (digits.length <= 6) return `(${digits.slice(0, 3)}) ${digits.slice(3)}`;
+  return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
 }
 
-function validatePhone(value) {
-  const phone = normalizePhone(value);
-  if (!phone) return '';
-  const digits = phone.replace(/\D/g, '');
-  const validShape = /^\+?[0-9][0-9\s().-]{6,19}$/.test(phone);
-  if (!validShape || digits.length < 7 || digits.length > 15) {
-    return 'Please enter a valid phone number.';
-  }
+function validateUSPhone(value) {
+  if (!value || !String(value).trim()) return '';
+  const digits = String(value).replace(/\D/g, '');
+  if (digits.length !== 10) return 'Please enter a valid 10-digit US phone number, e.g. (555) 000-0000.';
   return '';
 }
 
@@ -301,19 +301,24 @@ function PasswordModal({ user, onClose, onSuccess }) {
 }
 
 function PhoneModal({ user, onClose, onSuccess }) {
-  const [phone, setPhone] = useState(user?.phone || '');
+  const [phone, setPhone] = useState(formatUSPhone(user?.phone || ''));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+
+  const handlePhoneChange = (raw) => {
+    setPhone(formatUSPhone(raw));
+    if (error) setError('');
+  };
 
   const handleSave = async () => {
     if (saving) return;
     setError('');
-    const validationError = validatePhone(phone);
+    const validationError = validateUSPhone(phone);
     if (validationError) return setError(validationError);
 
     setSaving(true);
     try {
-      const updatedUser = await updateUserRequest(user.id, { phone: normalizePhone(phone) || null });
+      const updatedUser = await updateUserRequest(user.id, { phone: phone.trim() || null });
       await onSuccess(updatedUser, 'Phone number updated successfully.');
     } catch (err) {
       setError(err.message || 'Failed to update phone number. Please try again.');
@@ -323,14 +328,23 @@ function PhoneModal({ user, onClose, onSuccess }) {
 
   return (
     <Modal title="Phone number" onClose={onClose} onSave={handleSave} saving={saving} error={error}>
-      <FieldInput
-        label="Phone number"
-        value={phone}
-        onChange={setPhone}
-        type="tel"
-        placeholder="+1 (555) 000-0000"
-        hint="This field is optional. Leave empty to remove your phone number."
-      />
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1.5">Phone number</label>
+        <div className="flex">
+          <span className="flex h-[42px] items-center rounded-l-lg border border-r-0 border-gray-300 bg-gray-50 px-3 text-sm font-medium text-gray-500 select-none">
+            +1
+          </span>
+          <input
+            type="tel"
+            value={phone}
+            onChange={(e) => handlePhoneChange(e.target.value)}
+            placeholder="(555) 000-0000"
+            maxLength={14}
+            className="min-w-0 flex-1 rounded-l-none rounded-r-lg border border-gray-300 px-3 py-2.5 text-sm text-gray-900 placeholder-gray-400 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 transition-colors"
+          />
+        </div>
+        <p className="mt-1.5 text-xs text-gray-500">Optional. Leave empty to remove your phone number.</p>
+      </div>
     </Modal>
   );
 }
@@ -659,6 +673,7 @@ function DataPrivacyPage() {
 
 export default function BrokerProfile() {
   const { user, refreshUser } = useAuth();
+  const navigate = useNavigate();
   const [activePage, setActivePage] = useState('overview');
 
   const renderPage = () => {
@@ -679,26 +694,37 @@ export default function BrokerProfile() {
   };
 
   return (
-    <div className="flex min-h-full gap-8">
-      <aside className="w-48 flex-shrink-0">
-        <nav className="space-y-0.5">
-          {NAV_ITEMS.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => setActivePage(item.id)}
-              className={`w-full rounded-md px-3 py-2 text-left text-sm transition-colors ${
-                activePage === item.id
-                  ? 'bg-gray-100 font-semibold text-gray-900'
-                  : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
-              }`}
-            >
-              {item.label}
-            </button>
-          ))}
-        </nav>
-      </aside>
+    <div className="space-y-5">
+      {/* Back button */}
+      <button
+        onClick={() => navigate('/broker/dashboard')}
+        className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm font-medium text-[#6D6E71] transition-colors hover:bg-[#F4F6FA] hover:text-[#050505]"
+      >
+        <ArrowLeft size={15} />
+        Back to Dashboard
+      </button>
 
-      <main className="min-w-0 flex-1">{renderPage()}</main>
+      <div className="flex min-h-full gap-8">
+        <aside className="w-48 flex-shrink-0">
+          <nav className="space-y-0.5">
+            {NAV_ITEMS.map((item) => (
+              <button
+                key={item.id}
+                onClick={() => setActivePage(item.id)}
+                className={`w-full rounded-md px-3 py-2 text-left text-sm transition-colors ${
+                  activePage === item.id
+                    ? 'bg-gray-100 font-semibold text-gray-900'
+                    : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </nav>
+        </aside>
+
+        <main className="min-w-0 flex-1">{renderPage()}</main>
+      </div>
     </div>
   );
 }

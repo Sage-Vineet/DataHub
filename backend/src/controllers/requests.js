@@ -3,6 +3,8 @@ const permissionService = require("../services/permissionService");
 const userService = require("../services/userService");
 const folderService = require("../services/folderService");
 const documentService = require("../services/documentService");
+const companyService = require("../services/companyService");
+const { sendReminderEmail } = require("../services/emailService");
 const asyncHandler = require("../utils");
 const { buildAppBaseUrl } = require("../utils/uploadStorage");
 const { isRequestResolved } = require("../utils/requestReminders");
@@ -176,6 +178,25 @@ const addRequestReminder = asyncHandler(async (req, res) => {
   if (!sentBy) return res.status(400).json({ error: "sent_by required" });
 
   const reminder = await requestService.createReminderEvent(req.params.id, sentBy, sentAt);
+
+  // Send email notification to the company contact — fire-and-forget, don't fail the request if email fails
+  try {
+    const company = await companyService.getCompanyById(current.company_id);
+    if (company?.contact_email) {
+      const sender = await userService.getUserById(sentBy);
+      await sendReminderEmail({
+        toName: company.contact_name || null,
+        toEmail: company.contact_email,
+        requestTitle: current.title,
+        dueDate: current.due_date || null,
+        senderName: sender?.name || null,
+        companyName: company.name || null,
+      });
+    }
+  } catch (emailErr) {
+    console.error("[addRequestReminder] Failed to send reminder email:", emailErr.message);
+  }
+
   res.status(201).json(reminder);
 });
 
