@@ -195,6 +195,11 @@ export default function WorkspaceEbitda() {
 
   const activeSourceRef = useRef(reportSource);
   activeSourceRef.current = reportSource;
+  // Tracks the currently-selected version so an in-flight request for a
+  // previous version can be discarded if the user switches mid-fetch
+  // (last-write-wins guard — prevents stale-version data overwriting fresh).
+  const latestVersionRef = useRef(selectedVersion);
+  latestVersionRef.current = selectedVersion;
   const prevReportSourceForClearRef = useRef(reportSource);
 
   // Extract unique P&L accounts for addback dropdown (dynamic from API data)
@@ -325,6 +330,7 @@ export default function WorkspaceEbitda() {
 
   const handleGenerate = useCallback(async (skipCache = false) => {
     const requestSource = reportSource;
+    const requestVersion = selectedVersion;
     if (!skipCache && ebitdaCacheKey) {
       try {
         const cached = sessionStorage.getItem(ebitdaCacheKey);
@@ -375,7 +381,10 @@ export default function WorkspaceEbitda() {
             }
           })
         );
-        if (activeSourceRef.current !== requestSource) return;
+        // Discard if the source OR the selected version changed while this
+        // request was in flight — otherwise a slow old-version response would
+        // overwrite the newer version's data (stale-data-until-refresh bug).
+        if (activeSourceRef.current !== requestSource || latestVersionRef.current !== requestVersion) return;
         setYears(availableYears);
         setMultiYearData(results);
         if (ebitdaCacheKey) {

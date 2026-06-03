@@ -6,6 +6,7 @@ const {
   getProfitLossDetailFromStage,
   getProfitLossMonthlyDetailFromStage,
   getProfitLossVendorDetailFromStage,
+  getVendorAnalysisFromStage,
   getBalanceSheetSummaryFromStage,
   getBalanceSheetMonthlyDetailFromStage,
   getCashflowSummaryFromStage,
@@ -23,6 +24,7 @@ const SNAPSHOT_REPORT_TYPES = Object.freeze({
   PROFIT_LOSS_DETAIL: "profit_loss_detail",
   PROFIT_LOSS_MONTHLY_DETAIL: "profit_loss_monthly_detail",
   PROFIT_LOSS_DETAIL_VENDOR: "profit_loss_detail_vendor",
+  VENDOR_ANALYSIS: "vendor_analysis",
   BALANCE_SHEET_SUMMARY: "balance_sheet_summary",
   BALANCE_SHEET_MONTHLY_DETAIL: "balance_sheet_monthly_detail",
   CASHFLOW_SUMMARY: "cashflow_summary",
@@ -384,7 +386,7 @@ async function generateReportingSnapshotsForBatch(companyId, batchId, options = 
 
     const yearStart = Date.now();
 
-    // All 8 report builders work from _preloadedRows — no additional DB queries.
+    // All report builders work from _preloadedRows — no additional DB queries.
     const [
       profitLossSummary,
       profitLossDetail,
@@ -394,6 +396,7 @@ async function generateReportingSnapshotsForBatch(companyId, batchId, options = 
       cashflowSummary,
       cashflowMonthlyDetail,
       profitLossVendorDetail,
+      vendorAnalysis,
     ] = await Promise.all([
       getProfitLossSummaryFromStage(companyId, filters),
       getProfitLossDetailFromStage(companyId, filters),
@@ -403,6 +406,7 @@ async function generateReportingSnapshotsForBatch(companyId, batchId, options = 
       getCashflowSummaryFromStage(companyId, filters),
       getCashflowMonthlyDetailFromStage(companyId, filters),
       getProfitLossVendorDetailFromStage(companyId, filters),
+      getVendorAnalysisFromStage(companyId, filters),
     ]);
 
     console.log(`[ManualGL][Snapshots][Perf] year=${year ?? "ALL"} reports=${Date.now() - yearStart}ms`);
@@ -420,6 +424,7 @@ async function generateReportingSnapshotsForBatch(companyId, batchId, options = 
       { type: SNAPSHOT_REPORT_TYPES.CASHFLOW_SUMMARY, payload: cashflowSummary },
       { type: SNAPSHOT_REPORT_TYPES.CASHFLOW_MONTHLY_DETAIL, payload: cashflowMonthlyDetail },
       { type: SNAPSHOT_REPORT_TYPES.PROFIT_LOSS_DETAIL_VENDOR, payload: profitLossVendorDetail },
+      { type: SNAPSHOT_REPORT_TYPES.VENDOR_ANALYSIS, payload: vendorAnalysis },
     ];
 
     await Promise.all(

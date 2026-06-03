@@ -527,8 +527,16 @@ function buildEbitdaFromFlatRows(flatRows, periodMeta = {}) {
 }
 
 async function getEbitdaDataManual(startDate, endDate, datasetVersion) {
+  // Derive the fiscal year from the per-year start date (callers pass
+  // `${year}-01-01`). Passing fiscalYear — instead of relying on the raw date
+  // range — makes the backend resolve THIS year's reporting snapshot. Without
+  // it, the date-range request falls through to the "all years" snapshot, whose
+  // amounts only reflect the latest year, so every year returned identical
+  // EBITDA. fiscalYear also routes through the faster per-year snapshot path.
+  const fiscalYear = startDate ? String(startDate).slice(0, 4) : "";
   const payload = await getManualStagedProfitLossSummary({
     params: {
+      ...(fiscalYear ? { fiscalYear: [fiscalYear] } : {}),
       ...(startDate ? { startDate } : {}),
       ...(endDate ? { endDate } : {}),
       ...(datasetVersion ? { datasetVersion: String(datasetVersion) } : {}),

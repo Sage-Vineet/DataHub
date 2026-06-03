@@ -165,7 +165,7 @@ async function loadBufferForDoc(doc) {
 //   4. Fallback: tree-walk the pre-parsed rows already stored in qb_synced_reports
 //   5. Cache result keyed by documentId; delete stale cache first
 // ─────────────────────────────────────────────────────────────────────────────
-async function runBsBankBalancesExtraction(clientId, cacheSource, folderRootName) {
+async function runBsBankBalancesExtraction(clientId, cacheSource, folderRootName, fiscalYear = null) {
   // 1. Always locate the latest Balance Sheet document first
   const bsDocs = await getLatestBsDocument(clientId, folderRootName);
   if (!bsDocs?.length) {
@@ -178,10 +178,25 @@ async function runBsBankBalancesExtraction(clientId, cacheSource, folderRootName
     };
   }
 
+  // When a fiscal year is requested (Manual GL), prefer the Balance Sheet file
+  // whose name carries that year so the "per Balance Sheet" column reflects the
+  // selected version's year — not merely the most-recent upload. V8's sort is
+  // stable, so files without the year keep their recency order behind it.
+  if (fiscalYear) {
+    const yr = String(fiscalYear);
+    bsDocs.sort(
+      (a, b) =>
+        (String(a.name || "").includes(yr) ? 0 : 1) -
+        (String(b.name || "").includes(yr) ? 0 : 1),
+    );
+  }
+
   // Use the most recently uploaded document as the canonical file
   const latestDoc = bsDocs[0];
 
-  // 2. Cache check — only valid if built from the SAME document
+  // 2. Cache check — only valid if built from the SAME document, and (when a
+  //    fiscal year is requested) for that same year, so a cached other-year
+  //    balance sheet is never served for the selected version's year.
   const { data: cached } = await supabase
     .from("qb_synced_reports")
     .select("data, updated_at")
@@ -192,7 +207,11 @@ async function runBsBankBalancesExtraction(clientId, cacheSource, folderRootName
     .limit(1)
     .maybeSingle();
 
-  if (cached?.data?.bankAccounts?.length > 0 && cached.data.documentId === latestDoc.id) {
+  if (
+    cached?.data?.bankAccounts?.length > 0 &&
+    cached.data.documentId === latestDoc.id &&
+    (!fiscalYear || String(cached.data.year) === String(fiscalYear))
+  ) {
     console.log(`[BsBankBalances] Cache hit — file="${latestDoc.name}" for ${clientId}`);
     return { statusCode: 200, body: { success: true, source: "cache", ...cached.data } };
   }
@@ -605,6 +624,50 @@ async function runBankExtraction(clientId, cacheSource, folderRootName) {
   return { statusCode: 200, body: { success: true, source: "live", bank_count: banks.length, banks, months, totals } };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Scope a bank-reconciliation response to a single fiscal (calendar) year.
+//
+// Used when the caller (Manual GL reconciliation) selects a dataset version +
+// fiscal year so the table reflects only that year's bank activity and never
+// mixes months from another staged version's year. Filtering is keyed on the
+// canonical ISO `monthKey` ("YYYY-MM"); per-account and per-month totals are
+// recomputed from the surviving months so the response stays self-consistent.
+// ─────────────────────────────────────────────────────────────────────────────
+function filterBankReconByYear(body, fiscalYear) {
+  if (!fiscalYear || !body || !Array.isArray(body.banks)) return body;
+  const yr = String(fiscalYear);
+  const inYear = (monthKey) => String(monthKey || "").slice(0, 4) === yr;
+
+  const banks = body.banks.map((bank) => ({
+    ...bank,
+    accounts: (bank.accounts || []).map((acct) => {
+      const months = (acct.months || []).filter((m) => inYear(m.monthKey));
+      const totals = months.reduce(
+        (acc, m) => ({
+          startingBalance: acc.startingBalance + (m.startingBalance || 0),
+          deposits: acc.deposits + (m.deposits || 0),
+          withdrawals: acc.withdrawals + (m.withdrawals || 0),
+          endingBalance: acc.endingBalance + (m.endingBalance || 0),
+        }),
+        { startingBalance: 0, deposits: 0, withdrawals: 0, endingBalance: 0 },
+      );
+      return { ...acct, months, totals };
+    }),
+  }));
+
+  const totals = (body.totals || []).filter((t) => inYear(t.monthKey));
+  // `totals` carries both monthKey and the display label, so derive the display
+  // months from it; fall back to parsing the year out of the display strings.
+  const months = (body.totals || []).length
+    ? totals.map((t) => t.month)
+    : (body.months || []).filter((disp) => {
+        const m = String(disp).match(/(20\d{2})/);
+        return m ? m[1] === yr : true;
+      });
+
+  return { ...body, banks, months, totals };
+}
+
 /**
  * @swagger
  * /api/extract-bank-pdf-records:
@@ -618,10 +681,16 @@ router.get("/extract-bank-pdf-records", extractClientId, async (req, res) => {
       return res.status(400).json({ success: false, error: "Missing clientId." });
     }
     const sourceKey = req.query.source || "manual_upload_excel_pdf";
+    // Optional Manual GL scoping: restrict the response to the selected dataset
+    // version's fiscal year so versions never mix. datasetVersion is logged for
+    // traceability; fiscalYear is the actual data filter.
+    const fiscalYear = String(req.query.fiscalYear || "").trim() || null;
+    const datasetVersion = String(req.query.datasetVersion || "").trim() || null;
     const { cacheSource, folderRootName } = SOURCE_CONFIG[sourceKey] || DEFAULT_SOURCE_CONFIG;
-    console.log(`[BankPDF] source="${sourceKey}" → cacheSource="${cacheSource}", folder="${folderRootName}"`);
+    console.log(`[BankPDF] source="${sourceKey}" → cacheSource="${cacheSource}", folder="${folderRootName}", datasetVersion=${datasetVersion}, fiscalYear=${fiscalYear}`);
     const { statusCode, body } = await runBankExtraction(req.clientId, cacheSource, folderRootName);
-    return res.status(statusCode).json(body);
+    const scoped = fiscalYear ? filterBankReconByYear(body, fiscalYear) : body;
+    return res.status(statusCode).json(scoped);
   } catch (error) {
     console.error("[BankPDF] Extraction error:", error);
     return res.status(500).json({ success: false, error: error.message || "Failed to extract bank PDF records." });
@@ -662,9 +731,11 @@ router.get("/manual-report-uploads/bs-bank-balances", extractClientId, async (re
   try {
     if (!req.clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
     const sourceKey = req.query.source || "manual_upload_excel_pdf";
+    const fiscalYear = String(req.query.fiscalYear || "").trim() || null;
+    const datasetVersion = String(req.query.datasetVersion || "").trim() || null;
     const { cacheSource, folderRootName } = SOURCE_CONFIG[sourceKey] || DEFAULT_SOURCE_CONFIG;
-    console.log(`[BsBankBalances] source="${sourceKey}" → cacheSource="${cacheSource}", folder="${folderRootName}"`);
-    const { statusCode, body } = await runBsBankBalancesExtraction(req.clientId, cacheSource, folderRootName);
+    console.log(`[BsBankBalances] source="${sourceKey}" → cacheSource="${cacheSource}", folder="${folderRootName}", datasetVersion=${datasetVersion}, fiscalYear=${fiscalYear}`);
+    const { statusCode, body } = await runBsBankBalancesExtraction(req.clientId, cacheSource, folderRootName, fiscalYear);
     return res.status(statusCode).json(body);
   } catch (err) {
     console.error("[BsBankBalances] Error:", err);

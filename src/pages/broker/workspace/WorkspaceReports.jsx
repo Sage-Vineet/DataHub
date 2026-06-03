@@ -5,6 +5,7 @@ import QBDisconnectedBanner from "../../../components/common/QBDisconnectedBanne
 import {
   ChevronDown,
   RefreshCw,
+  RotateCcw,
 } from "lucide-react";
 import { cn } from "../../../lib/utils";
 import {
@@ -1032,13 +1033,8 @@ export default function WorkspaceReports() {
       const nextYears = Array.from(new Set((years || []).map(String)))
         .filter(Boolean)
         .sort((a, b) => Number(b) - Number(a));
-      const next = {
-        ...manualFiltersRef.current,
-        fiscalYear: nextYears,
-        fiscalMonth: [],
-      };
-      setManualFilters(next);
-      setAppliedManualFilters(next);
+      // Only update the draft — report refetches only when Apply is clicked.
+      setManualFilters((prev) => ({ ...prev, fiscalYear: nextYears, fiscalMonth: [] }));
       debugLog("[ManualGL][UI][FilterChange][FiscalYears]", {
         selectedFiscalYears: nextYears,
       });
@@ -1075,12 +1071,8 @@ export default function WorkspaceReports() {
         .map((label) => MONTH_LABEL_TO_VALUE[String(label)])
         .filter(Boolean)
         .sort((a, b) => Number(a) - Number(b));
-      const next = {
-        ...manualFiltersRef.current,
-        fiscalMonth: monthValues,
-      };
-      setManualFilters(next);
-      setAppliedManualFilters(next);
+      // Only update the draft — report refetches only when Apply is clicked.
+      setManualFilters((prev) => ({ ...prev, fiscalMonth: monthValues }));
       debugLog("[ManualGL][UI][FilterChange][FiscalMonths]", {
         selectedFiscalMonths: monthValues,
       });
@@ -1088,6 +1080,30 @@ export default function WorkspaceReports() {
     [debugLog],
   );
 
+  const handleApplyManualFilters = useCallback(() => {
+    setAppliedManualFilters({ ...manualFiltersRef.current });
+    debugLog("[ManualGL][UI][FilterApply]", manualFiltersRef.current);
+  }, [debugLog]);
+
+  const handleResetManualFilters = useCallback(() => {
+    // Reset years and months only; preserve version and batchId so the
+    // version isolation context is not disturbed.
+    const next = {
+      ...manualFiltersRef.current,
+      fiscalYear: [],
+      fiscalMonth: [],
+    };
+    setManualFilters(next);
+    setAppliedManualFilters(next);
+    debugLog("[ManualGL][UI][FilterReset]");
+  }, [debugLog]);
+
+  // Core report fetch + state write, parameterised by tab/reportType so it can
+  // serve both the foreground (actively-viewed tab) and the background prefetch
+  // of sibling tabs. When background=true it skips the loading spinner and the
+  // shared "applied*" header state — it only fills reportsData[tab] and records
+  // the slot signature, so a later switch to that tab renders instantly with no
+  // network round-trip.
   const handleGenerateReport = useCallback(async () => {
     // Capture the slot + signature at the start so we can cache the result and
     // guard against a stale write if filters change mid-flight.
@@ -1714,6 +1730,25 @@ export default function WorkspaceReports() {
                     />
                   </div>
                 )}
+
+                <div className="flex items-center gap-2 self-end">
+                  <button
+                    type="button"
+                    onClick={handleApplyManualFilters}
+                    disabled={isLoading}
+                    className="h-9 rounded-md bg-primary px-4 text-[13px] font-medium text-white transition-all hover:opacity-90 disabled:opacity-50"
+                  >
+                    Apply
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleResetManualFilters}
+                    className="flex h-9 items-center gap-1.5 rounded-md border border-border-input bg-bg-card px-3 text-[13px] font-medium text-text-secondary transition-all hover:bg-bg-page"
+                  >
+                    <RotateCcw size={14} />
+                    Reset
+                  </button>
+                </div>
               </>
             )}
 
@@ -1746,20 +1781,22 @@ export default function WorkspaceReports() {
                       selectedMonths={appliedManualFilters?.fiscalMonth || []}
                     />
                   ) : selectedTab === "Profit & Loss" ? (
-                    <ProfitAndLossReport
-                      reportType={appliedReportType}
-                      data={currentReport.summary}
-                      detailedData={currentReport.detail}
-                      startDate={appliedStartDate}
-                      endDate={appliedEndDate}
-                      accountingMethod={appliedAccountingMethod}
-                      sourceMode={selectedSourceMode}
-                      clientName={clientName}
-                      entityName={company?.name || clientName}
-                      createdOn={createdOn}
-                      isPreview={true}
-                      selectedMonths={appliedManualFilters?.fiscalMonth || []}
-                    />
+                    <>
+                      <ProfitAndLossReport
+                        reportType={appliedReportType}
+                        data={currentReport.summary}
+                        detailedData={currentReport.detail}
+                        startDate={appliedStartDate}
+                        endDate={appliedEndDate}
+                        accountingMethod={appliedAccountingMethod}
+                        sourceMode={selectedSourceMode}
+                        clientName={clientName}
+                        entityName={company?.name || clientName}
+                        createdOn={createdOn}
+                        isPreview={true}
+                        selectedMonths={appliedManualFilters?.fiscalMonth || []}
+                      />
+                    </>
                   ) : (
                     <CashflowReport
                       reportType={appliedReportType}
