@@ -1,5 +1,5 @@
 {
-  "name": "datahub",
+  "name": "M&A Hub",
   "version": "1.0.0",
   "description": "Express + PostgreSQL REST API scaffold for Leo",
   "main": "src/server.js",
@@ -22,6 +22,7 @@
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.10.0",
     "multer": "^2.0.2",
+    "nodemailer": "^8.0.10",
     "pdf-parse": "^1.1.4",
     "pg": "^8.20.0",
     "xlsx": "^0.18.5"

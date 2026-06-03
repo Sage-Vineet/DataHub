@@ -2,6 +2,8 @@ const asyncHandler = require("../utils");
 const userService = require("../services/userService");
 const { hasSupabaseCredentials } = require("../lib/supabaseClient");
 const { invalidateUserCache } = require("../middleware/auth");
+const { sendWelcomeEmail } = require("../services/emailService");
+const { createWelcomeNotification } = require("../services/notificationService");
 
 const localPublicUsers = [];
 
@@ -34,7 +36,65 @@ const createUser = asyncHandler(async (req, res) => {
   }
 
   const user = await userService.createUser({ ...req.body, created_by: req.user });
-  res.status(201).json(user);
+
+  const now = new Date().toISOString();
+  console.log(
+    `[Audit] [User Creation] id=${user.id} email=${email} role=${role} ` +
+      `created_by=${req.user?.id} (${req.user?.email}) at=${now}`
+  );
+
+  // Capture company names from the enriched user object for the email.
+  const companyNames = (user.assigned_companies || [])
+    .map((c) => c.name)
+    .filter(Boolean);
+
+  // Send welcome email — failure is non-fatal; user creation always succeeds.
+  const emailResult = await sendWelcomeEmail({
+    userId: user.id,
+    userName: user.name || name,
+    email: user.email || email,
+    password,           // plain-text password from req.body, before it was hashed
+    companyNames,
+  });
+
+  if (emailResult.sent) {
+    console.log(
+      `[Audit] [Email Service] Welcome email delivered email=${email} user=${user.id} at=${now}`
+    );
+  } else {
+    console.warn(
+      `[Audit] [Email Service] Welcome email NOT sent email=${email} user=${user.id} ` +
+        `reason=${emailResult.reason || "unknown"} error=${emailResult.error || ""} at=${now}`
+    );
+  }
+
+  // Create in-app notification — also non-fatal.
+  const notificationResult = await createWelcomeNotification(user.id, req.user);
+
+  if (notificationResult.created) {
+    console.log(
+      `[Audit] [Notification Service] Welcome notification created user=${user.id} at=${now}`
+    );
+  } else {
+    console.warn(
+      `[Audit] [Notification Service] Notification skipped user=${user.id} ` +
+        `error=${notificationResult.error || ""} at=${now}`
+    );
+  }
+
+  console.log(
+    `[Audit] [Audit Trail] userCreated=true emailSent=${emailResult.sent} ` +
+      `notificationCreated=${notificationResult.created} userId=${user.id} ` +
+      `createdBy=${req.user?.id} at=${now}`
+  );
+
+  res.status(201).json({
+    ...user,
+    success: true,
+    userCreated: true,
+    emailSent: emailResult.sent,
+    notificationCreated: notificationResult.created,
+  });
 });
 
 const listPublicUsers = asyncHandler(async (_req, res) => {
