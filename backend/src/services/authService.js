@@ -14,7 +14,7 @@ function getAuthPool() {
       connectionTimeoutMillis: 10000,
       idleTimeoutMillis: 30000,
     });
-    _authPool.on("error", () => {});
+    _authPool.on("error", () => { });
   }
   return _authPool;
 }
