@@ -1,3 +1,10 @@
+// Force IPv4 DNS resolution globally.
+// Render's free tier does not support IPv6 outbound connections. Without this,
+// every outgoing TCP connection (Postgres, Supabase, Gmail SMTP) that resolves
+// to an IPv6 address fails with ENETUNREACH.
+const dns = require("dns");
+dns.setDefaultResultOrder("ipv4first");
+
 require("dotenv").config();
 const app = require("./app");
 const db = require("./db");
