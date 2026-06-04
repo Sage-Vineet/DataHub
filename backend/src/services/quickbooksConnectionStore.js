@@ -134,7 +134,7 @@ async function getQuickBooksConnectionByRealmId(realmId) {
   return mapRowToConnection(data);
 }
 
-async function upsertQuickBooksConnection(connection) {
+async function upsertQuickBooksConnection(connection, { skipRealmConflictCheck = false } = {}) {
   const {
     companyId,
     userId,
@@ -167,13 +167,14 @@ async function upsertQuickBooksConnection(connection) {
     );
   }
 
-  const existingByRealm = await getQuickBooksConnectionByRealmId(realmId);
+  const existingByRealm = skipRealmConflictCheck ? null : await getQuickBooksConnectionByRealmId(realmId);
   if (existingByRealm && existingByRealm.dataHubCompanyId !== companyId) {
     console.error(`[QB Store] ❌ Realm conflict detected! Realm ${realmId} is already linked to company ${existingByRealm.dataHubCompanyId}. Cannot link to ${companyId}.`);
     const realmConflictError = new Error(
       `QuickBooks realm ${realmId} is already linked to another DataHub company.`,
     );
     realmConflictError.code = "QB_REALM_ALREADY_LINKED";
+    realmConflictError.conflictingCompanyId = existingByRealm.dataHubCompanyId;
     throw realmConflictError;
   }
 
@@ -268,7 +269,7 @@ async function upsertQuickBooksConnection(connection) {
   return savedConnection;
 }
 
-async function deleteQuickBooksConnection(companyId) {
+async function deleteQuickBooksConnection(companyId, { disconnectedReason = "deleted", metadata = {} } = {}) {
   if (!companyId) return false;
   const now = new Date().toISOString();
 
@@ -283,7 +284,8 @@ async function deleteQuickBooksConnection(companyId) {
   }
 
   logQuickBooksDebug("db_connection_delete", {
-    companyId
+    companyId,
+    disconnectedReason,
   });
 
   try {
@@ -301,8 +303,8 @@ async function deleteQuickBooksConnection(companyId) {
   await upsertConnectionStatus(companyId, {
     isConnected: false,
     disconnectedAt: now,
-    disconnectedReason: "deleted",
-    metadata: { deleted: true },
+    disconnectedReason,
+    metadata: { ...metadata, disconnectedAt: now },
   });
 
   return true;
@@ -362,11 +364,81 @@ async function softDisconnectQuickBooks(companyId) {
   return true;
 }
 
+/**
+ * Atomically transfers a QB realm connection from one DataHub company to another.
+ * The old company's row is hard-deleted (freeing the realm_id UNIQUE slot) and a
+ * fresh row is inserted for the new company using the newly-issued OAuth tokens.
+ * connection_status for both companies is updated for audit purposes.
+ */
+async function transferQuickBooksConnectionToNewCompany(fromCompanyId, toCompanyId, newConnectionData, options = {}) {
+  const { realmId, performedBy } = options;
+  const now = new Date().toISOString();
+
+  console.log(`[QB Transfer] Transferring realm ${realmId || newConnectionData.realmId} from company ${fromCompanyId} → ${toCompanyId}`);
+
+  // 1. Archive the outgoing company in connection_status before the hard delete
+  //    so the audit reason is preserved (deleteQuickBooksConnection would overwrite it).
+  await upsertConnectionStatus(fromCompanyId, {
+    isConnected: false,
+    disconnectedAt: now,
+    disconnectedReason: "transferred",
+    metadata: {
+      transferredToCompanyId: toCompanyId,
+      realmId: realmId || newConnectionData.realmId,
+      transferredAt: now,
+      performedBy: performedBy || null,
+    },
+  });
+
+  // 2. Hard-delete the old company's QB row so the realm_id UNIQUE constraint is freed.
+  //    We pass a custom reason so the status table update from deleteQuickBooksConnection
+  //    matches what we just wrote above.
+  const deleted = await deleteQuickBooksConnection(fromCompanyId, {
+    disconnectedReason: "transferred",
+    metadata: {
+      transferredToCompanyId: toCompanyId,
+      realmId: realmId || newConnectionData.realmId,
+      transferredAt: now,
+      performedBy: performedBy || null,
+    },
+  });
+
+  if (!deleted) {
+    throw new Error(`[QB Transfer] Failed to remove old QB connection for company ${fromCompanyId}.`);
+  }
+
+  // 3. Insert the new connection for the target company.
+  //    skipRealmConflictCheck is safe here because we just deleted the conflicting row.
+  const savedConnection = await upsertQuickBooksConnection(
+    { ...newConnectionData, companyId: toCompanyId, connectedAt: now },
+    { skipRealmConflictCheck: true },
+  );
+
+  // 4. Stamp the new company's connection_status with transfer provenance.
+  await upsertConnectionStatus(toCompanyId, {
+    isConnected: true,
+    disconnectedAt: null,
+    disconnectedReason: null,
+    metadata: {
+      realmId: newConnectionData.realmId,
+      environment: newConnectionData.environment || null,
+      connectedAt: now,
+      transferredFromCompanyId: fromCompanyId,
+      transferredAt: now,
+      performedBy: performedBy || null,
+    },
+  });
+
+  console.log(`[QB Transfer] ✅ Transfer complete: realm ${newConnectionData.realmId} → company ${toCompanyId}`);
+  return savedConnection;
+}
+
 module.exports = {
   deleteQuickBooksConnection,
   softDisconnectQuickBooks,
   getQuickBooksConnectionByCompanyId,
   getQuickBooksConnectionByRealmId,
   upsertQuickBooksConnection,
+  transferQuickBooksConnectionToNewCompany,
 };
 

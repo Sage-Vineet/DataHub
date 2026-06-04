@@ -11,6 +11,7 @@ import {
   Zap,
 } from "lucide-react";
 import {
+  confirmQuickBooksTransfer,
   connectQuickbooks,
   disconnectQuickbooks,
   fetchQuickbooksSyncStatus,
@@ -76,6 +77,10 @@ export default function QuickBooksConnection({
   const [isDisconnecting, setIsDisconnecting] = useState(false);
   const [showDisconnectModal, setShowDisconnectModal] = useState(false);
 
+  const [showTransferModal, setShowTransferModal] = useState(false);
+  const [transferState, setTransferState] = useState(null); // { transferToken, fromCompanyName }
+  const [isTransferring, setIsTransferring] = useState(false);
+
   // Fetch real connection status from backend
   const fetchStatus = useCallback(async (showLoader = true) => {
     if (showLoader) setPageState("loading");
@@ -131,6 +136,15 @@ export default function QuickBooksConnection({
         `${window.location.pathname}${window.location.hash || ""}`,
       );
     };
+
+    if (qbStatus === "transfer_required") {
+      const transferToken = params.get("transferToken");
+      const fromCompanyName = decodeURIComponent(params.get("fromCompanyName") || "another company");
+      setTransferState({ transferToken, fromCompanyName });
+      setShowTransferModal(true);
+      clearSearch();
+      return;
+    }
 
     if (qbStatus === "error") {
       showToast({
@@ -224,6 +238,42 @@ export default function QuickBooksConnection({
       setErrorMessage("Failed to disconnect. Please try again.");
     } finally {
       setIsDisconnecting(false);
+    }
+  };
+
+  const handleTransferConfirm = async () => {
+    if (!transferState?.transferToken) return;
+    setIsTransferring(true);
+    try {
+      await confirmQuickBooksTransfer(transferState.transferToken);
+      setShowTransferModal(false);
+      setTransferState(null);
+      showToast({
+        type: "success",
+        title: "Transfer Complete",
+        message: "QuickBooks account successfully transferred and connected to this company.",
+      });
+      await fetchStatus(false);
+      if (typeof onConnectionStateChange === "function") {
+        await onConnectionStateChange();
+      }
+      if (isSourceActive) {
+        await syncQuickbooksReports();
+        showToast({
+          type: "success",
+          title: "Reports Ready",
+          message: "Latest QuickBooks reports have been synced.",
+        });
+      }
+    } catch (err) {
+      console.error("Transfer failed:", err);
+      showToast({
+        type: "error",
+        title: "Transfer Failed",
+        message: err.message || "Failed to transfer QuickBooks connection. Please try reconnecting.",
+      });
+    } finally {
+      setIsTransferring(false);
     }
   };
 
@@ -710,6 +760,59 @@ export default function QuickBooksConnection({
             </div>
           </div>
         </>
+      )}
+
+      {/* ─── Transfer Confirmation Modal ────────────────── */}
+      {showTransferModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div
+            className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+            onClick={() => !isTransferring && setShowTransferModal(false)}
+          />
+          <div className="relative bg-bg-card rounded-xl border border-border w-full max-w-md p-6 shadow-2xl">
+            <div className="w-12 h-12 bg-yellow-50 rounded-full flex items-center justify-center mx-auto mb-4 text-yellow-600">
+              <AlertCircle size={24} />
+            </div>
+            <h3 className="text-[18px] font-semibold text-center text-text-primary mb-2">
+              Transfer QuickBooks Connection?
+            </h3>
+            <p className="text-[14px] text-text-secondary text-center leading-relaxed">
+              This QuickBooks account is currently connected to{" "}
+              <span className="font-semibold text-text-primary">
+                {transferState?.fromCompanyName || "another company"}
+              </span>
+              . Do you want to transfer the connection to this company?
+            </p>
+            <p className="text-[12px] text-text-muted text-center mt-2">
+              The previous connection will be disconnected and all future syncs will run for this company only.
+            </p>
+            <div className="mt-6 flex gap-3">
+              <button
+                onClick={() => {
+                  setShowTransferModal(false);
+                  setTransferState(null);
+                }}
+                disabled={isTransferring}
+                className="flex-1 h-10 rounded-md border border-border font-medium text-[14px] hover:bg-bg-page transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleTransferConfirm}
+                disabled={isTransferring}
+                className="flex-1 h-10 rounded-md bg-primary text-white font-semibold text-[14px] hover:opacity-90 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {isTransferring ? (
+                  <>
+                    <Loader2 size={14} className="animate-spin" /> Transferring...
+                  </>
+                ) : (
+                  "Transfer Connection"
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* ─── Disconnect Confirmation Modal ──────────────── */}
