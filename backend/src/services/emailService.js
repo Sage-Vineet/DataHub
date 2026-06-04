@@ -26,7 +26,13 @@ function createTransporter() {
 
   if (!host || !user || !pass) return null;
 
-  return nodemailer.createTransport({ host, port, secure, auth: { user, pass } });
+  return nodemailer.createTransport({
+    host,
+    port,
+    secure,
+    auth: { user, pass },
+    family: 4, // Force IPv4 — Render free tier blocks outbound IPv6 connections
+  });
 }
 
 function _from() {
