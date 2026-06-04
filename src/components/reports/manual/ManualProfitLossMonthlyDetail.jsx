@@ -25,11 +25,9 @@ function AccountRow({ account, months, year }) {
     (account.transactions || []).forEach((tx) => {
       const name = String(tx.vendorName || "").trim() || "No vendor / —";
       if (!map.has(name)) {
-        map.set(name, { vendorName: name, debit: 0, credit: 0, amount: 0 });
+        map.set(name, { vendorName: name, amount: 0 });
       }
       const g = map.get(name);
-      g.debit += Number(tx.debit || 0);
-      g.credit += Number(tx.credit || 0);
       g.amount += Number(tx.amount || 0);
     });
     return Array.from(map.values()).sort(
@@ -70,8 +68,6 @@ function AccountRow({ account, months, year }) {
                 <thead>
                   <tr className="border-b border-border text-left text-[10px] text-text-muted uppercase tracking-wider">
                     <th className="px-2 py-1 font-semibold pl-12">Vendor / Payee</th>
-                    <th className="px-2 py-1 font-semibold text-right">Debit</th>
-                    <th className="px-2 py-1 font-semibold text-right">Credit</th>
                     <th className="px-2 py-1 font-semibold text-right">Amount</th>
                   </tr>
                 </thead>
@@ -79,8 +75,6 @@ function AccountRow({ account, months, year }) {
                   {vendorGroups.map((g, idx) => (
                     <tr key={g.vendorName || idx} className="border-b border-border/50 hover:bg-bg-card/50 transition-colors">
                       <td className="px-2 py-1 text-[11px] text-text-primary font-medium pl-12">{g.vendorName}</td>
-                      <td className="px-2 py-1 text-[11px] text-text-secondary text-right">{g.debit ? formatCurrency(g.debit) : ""}</td>
-                      <td className="px-2 py-1 text-[11px] text-text-secondary text-right">{g.credit ? formatCurrency(g.credit) : ""}</td>
                       <td className={`px-2 py-1 text-[11px] text-right font-medium ${g.amount < 0 ? "text-status-error" : "text-text-primary"}`}>
                         {formatCurrency(g.amount)}
                       </td>
