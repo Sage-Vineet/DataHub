@@ -250,6 +250,10 @@ function buildOtpEmailText(otp) {
  * @returns {Promise<{ sent: boolean, messageId?: string, reason?: string }>}
  */
 async function sendOtpEmail(email, otp) {
+  console.log("EMAIL_HOST:", process.env.EMAIL_HOST);
+  console.log("EMAIL_USER:", process.env.EMAIL_USER);
+  console.log("EMAIL_PASS exists:", !!process.env.EMAIL_PASS);
+
   if (!isEmailConfigured()) {
     console.warn("[Email Service] SMTP not configured — cannot send OTP email.");
     return { sent: false, reason: "not_configured" };
