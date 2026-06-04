@@ -9,6 +9,7 @@ require("dotenv").config();
 const app = require("./app");
 const db = require("./db");
 const { Pool } = require("pg");
+const { checkEmailHealth } = require("./services/emailService");
 
 const port = process.env.PORT || 4000;
 
@@ -72,9 +73,12 @@ async function ensureEmailVerificationsTable() {
     app.listen(port, () => {
       // eslint-disable-next-line no-console
       console.log(`Leo backend running on port ${port}`);
-      // Run table creation in background after the server is already live.
+      // Run background startup tasks — neither blocks the server.
       ensureEmailVerificationsTable().catch((err) =>
         console.warn("[Startup] email_verifications table init failed:", err.message)
+      );
+      checkEmailHealth().catch((err) =>
+        console.warn("[Startup] Email health check threw:", err.message)
       );
     });
   } catch (error) {

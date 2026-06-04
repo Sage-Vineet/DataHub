@@ -1,242 +1,300 @@
 "use strict";
 
-const nodemailer = require("nodemailer");
+/**
+ * emailService.js — Production-hardened email delivery
+ *
+ * Transport priority (first that works wins):
+ *   1. Resend API  — HTTPS port 443, works on Render/any host (set RESEND_API_KEY)
+ *   2. SMTP port 587 — Gmail TLS  (blocked on Render free tier)
+ *   3. SMTP port 465 — Gmail SSL  (also blocked on Render free tier)
+ *
+ * Render blocks outbound SMTP (ports 587/465). For production set RESEND_API_KEY.
+ * Resend free tier: 3 000 emails/month · sign up at https://resend.com
+ */
 
-// In-process dedup guard — prevents double-send within the same server lifetime.
+const nodemailer = require("nodemailer");
+const axios      = require("axios");
+const dns        = require("dns");
+const { promisify } = require("util");
+
+const dnsLookup = promisify(dns.lookup);
+
+// In-process dedup guard — prevents double welcome-send per server lifetime.
 const _sentWelcomeEmails = new Set();
 
-// ── Configuration check ───────────────────────────────────────────────────────
-// Supports both EMAIL_* (primary) and SMTP_* (legacy) env var sets.
+// ── Configuration helpers ─────────────────────────────────────────────────────
 
-function isEmailConfigured() {
-  return !!(
-    (process.env.EMAIL_HOST || process.env.SMTP_HOST) &&
-    (process.env.EMAIL_USER || process.env.SMTP_USER) &&
-    (process.env.EMAIL_PASS || process.env.SMTP_PASS)
-  );
+function _smtpCfg() {
+  return {
+    host:   process.env.EMAIL_HOST   || process.env.SMTP_HOST   || "",
+    port:   parseInt(process.env.EMAIL_PORT   || process.env.SMTP_PORT   || "587", 10),
+    secure: (process.env.EMAIL_SECURE || process.env.SMTP_SECURE) === "true",
+    user:   process.env.EMAIL_USER   || process.env.SMTP_USER   || "",
+    pass:   process.env.EMAIL_PASS   || process.env.SMTP_PASS   || "",
+  };
 }
 
-function createTransporter() {
-  // Prefer EMAIL_* vars; fall back to SMTP_* for backward compatibility.
-  const host   = process.env.EMAIL_HOST   || process.env.SMTP_HOST;
-  const port   = parseInt(process.env.EMAIL_PORT   || process.env.SMTP_PORT   || "587", 10);
-  const secure = (process.env.EMAIL_SECURE || process.env.SMTP_SECURE) === "true";
-  const user   = process.env.EMAIL_USER   || process.env.SMTP_USER;
-  const pass   = process.env.EMAIL_PASS   || process.env.SMTP_PASS;
+function isSmtpConfigured() {
+  const { host, user, pass } = _smtpCfg();
+  return !!(host && user && pass);
+}
 
-  if (!host || !user || !pass) return null;
-
-  return nodemailer.createTransport({
-    host,
-    port,
-    secure,
-    auth: { user, pass },
-    family: 4, // Force IPv4 — Render free tier blocks outbound IPv6 connections
-  });
+function isResendConfigured() {
+  return !!process.env.RESEND_API_KEY;
 }
 
 function _from() {
   return (
-    process.env.EMAIL_FROM  ||
-    process.env.SMTP_FROM   ||
+    process.env.EMAIL_FROM ||
+    process.env.SMTP_FROM  ||
     `"M&A Hub" <${process.env.EMAIL_USER || process.env.SMTP_USER}>`
   );
 }
 
-// ── Internal retry helper ─────────────────────────────────────────────────────
+// ── IPv4 DNS resolver ─────────────────────────────────────────────────────────
 
-async function _sendWithRetry(transporter, mailOptions, maxRetries = 3) {
-  let lastError;
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+async function _resolveIPv4(hostname) {
+  // If already an IP address, use as-is.
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(hostname)) return hostname;
+  try {
+    const { address, family } = await dnsLookup(hostname, { family: 4 });
+    console.log(`[SMTP] DNS ${hostname} → ${address} (IPv${family})`);
+    return address;
+  } catch (err) {
+    console.warn(`[SMTP] DNS IPv4 lookup failed for ${hostname}: ${err.message} — using hostname directly`);
+    return hostname;
+  }
+}
+
+// ── Transporter factory ───────────────────────────────────────────────────────
+
+async function _buildTransporter(host, port, secure) {
+  const { user, pass } = _smtpCfg();
+  const resolvedHost = await _resolveIPv4(host);
+
+  console.log(`[SMTP] Creating transporter → host=${resolvedHost} port=${port} secure=${secure}`);
+
+  return nodemailer.createTransport({
+    host:             resolvedHost,
+    port,
+    secure,
+    auth:             { user, pass },
+    family:           4,          // redundant safety net after DNS resolution
+    connectionTimeout: 10000,
+    greetingTimeout:   10000,
+    socketTimeout:     15000,
+    tls:              { rejectUnauthorized: false },
+  });
+}
+
+// ── Resend API sender ─────────────────────────────────────────────────────────
+
+async function _sendViaResend(to, subject, html, text) {
+  console.log(`[Email Service] Trying Resend API for <${to}>`);
+  const response = await axios.post(
+    "https://api.resend.com/emails",
+    { from: _from(), to: [to], subject, html, text },
+    {
+      headers: {
+        Authorization:  `Bearer ${process.env.RESEND_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      timeout: 15000,
+    }
+  );
+  return response.data; // { id: "..." }
+}
+
+// ── SMTP sender with per-port retry ──────────────────────────────────────────
+
+async function _smtpSend(transporter, mailOptions, label, maxRetries = 3) {
+  let lastErr;
+  for (let i = 1; i <= maxRetries; i++) {
     try {
       const info = await transporter.sendMail(mailOptions);
-      return { info, attempt };
+      return { info, attempt: i };
     } catch (err) {
-      lastError = err;
-      console.error(
-        `[Email Service] Attempt ${attempt}/${maxRetries} failed for <${mailOptions.to}>: ${err.message}`
-      );
-      if (attempt < maxRetries) {
-        await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
+      lastErr = err;
+      console.error(`[SMTP][${label}] Attempt ${i}/${maxRetries} failed: ${err.message}`);
+      if (i < maxRetries) await new Promise(r => setTimeout(r, i * 1000));
+    }
+  }
+  throw lastErr;
+}
+
+// ── Core delivery router ──────────────────────────────────────────────────────
+
+async function _deliver(to, subject, html, text) {
+  const mailOptions = { from: _from(), to, subject, html, text };
+
+  // ── 1. Resend API (always works on Render — HTTPS port 443) ─────────────────
+  if (isResendConfigured()) {
+    try {
+      const result = await _sendViaResend(to, subject, html, text);
+      console.log(`[Email Service] ✓ Delivered via Resend API to <${to}> id=${result.id}`);
+      return { sent: true, provider: "resend", messageId: result.id };
+    } catch (err) {
+      console.error(`[Email Service] Resend API failed for <${to}>: ${err.message}`);
+      if (err.response) {
+        console.error(`[Email Service] Resend HTTP ${err.response.status}:`, JSON.stringify(err.response.data));
+      }
+      // fall through to SMTP
+    }
+  }
+
+  // ── 2. SMTP port 587 (TLS STARTTLS) ─────────────────────────────────────────
+  if (isSmtpConfigured()) {
+    const { host, user } = _smtpCfg();
+    console.log(`[SMTP] Attempting port 587 (TLS) — host=${host} user=${user}`);
+
+    try {
+      const t587 = await _buildTransporter(host, 587, false);
+      await t587.verify();
+      console.log("[SMTP] verify() passed on port 587");
+      const { info, attempt } = await _smtpSend(t587, mailOptions, "587", 3);
+      console.log(`[Email Service] ✓ Delivered via SMTP 587 to <${to}> attempt=${attempt} id=${info.messageId}`);
+      return { sent: true, provider: "smtp", port: 587, messageId: info.messageId };
+    } catch (err587) {
+      console.error(`[SMTP] Port 587 failed: ${err587.message}`);
+      console.error(`[SMTP] Stack: ${err587.stack}`);
+      if (err587.code === "ENETUNREACH" || err587.code === "ECONNREFUSED" || err587.code === "ETIMEDOUT") {
+        console.error("[SMTP] Network diagnosis: Render likely blocks outbound SMTP port 587. Set RESEND_API_KEY.");
+      }
+
+      // ── 3. SMTP port 465 (SSL) fallback ───────────────────────────────────
+      console.log(`[SMTP] Falling back to port 465 (SSL) — host=${host}`);
+      try {
+        const t465 = await _buildTransporter(host, 465, true);
+        await t465.verify();
+        console.log("[SMTP] verify() passed on port 465");
+        const { info, attempt } = await _smtpSend(t465, mailOptions, "465", 2);
+        console.log(`[Email Service] ✓ Delivered via SMTP 465 to <${to}> attempt=${attempt} id=${info.messageId}`);
+        return { sent: true, provider: "smtp", port: 465, messageId: info.messageId };
+      } catch (err465) {
+        console.error(`[SMTP] Port 465 also failed: ${err465.message}`);
+        if (err465.code === "ENETUNREACH" || err465.code === "ECONNREFUSED" || err465.code === "ETIMEDOUT") {
+          console.error(
+            "[SMTP] CONCLUSION: Render is blocking outbound SMTP on both port 587 and 465.\n" +
+            "[SMTP] FIX: Add RESEND_API_KEY to Render environment variables.\n" +
+            "[SMTP] Sign up free at https://resend.com — 3000 emails/month included."
+          );
+        }
+        throw err465;
       }
     }
   }
-  throw lastError;
+
+  throw new Error(
+    "No email transport available. " +
+    "Set RESEND_API_KEY (recommended for Render) or EMAIL_HOST + EMAIL_USER + EMAIL_PASS."
+  );
+}
+
+// ── SMTP / Resend health check (called at startup) ────────────────────────────
+
+async function checkEmailHealth() {
+  console.log("[EMAIL HEALTH CHECK] Starting...");
+  console.log(`[EMAIL HEALTH CHECK] RESEND_API_KEY configured: ${isResendConfigured()}`);
+  console.log(`[EMAIL HEALTH CHECK] SMTP configured: ${isSmtpConfigured()}`);
+
+  if (isResendConfigured()) {
+    // Verify Resend key by calling the /domains endpoint (read-only, no email sent)
+    try {
+      await axios.get("https://api.resend.com/domains", {
+        headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}` },
+        timeout: 8000,
+      });
+      console.log("[EMAIL HEALTH CHECK] SUCCESS — Resend API key is valid");
+      return true;
+    } catch (err) {
+      const status = err.response?.status;
+      if (status === 401) {
+        console.error("[EMAIL HEALTH CHECK] FAILED — Resend API key is invalid (401 Unauthorized)");
+      } else {
+        console.error(`[EMAIL HEALTH CHECK] FAILED — Resend API unreachable: ${err.message}`);
+      }
+      return false;
+    }
+  }
+
+  if (isSmtpConfigured()) {
+    const { host, user } = _smtpCfg();
+    console.log(`[EMAIL HEALTH CHECK] Testing SMTP — host=${host} user=${user} (password hidden)`);
+    try {
+      const transporter = await _buildTransporter(host, 587, false);
+      await transporter.verify();
+      console.log("[EMAIL HEALTH CHECK] SUCCESS — SMTP port 587 reachable and authenticated");
+      return true;
+    } catch (err) {
+      console.error(`[EMAIL HEALTH CHECK] FAILED — SMTP port 587: ${err.message}`);
+      try {
+        const t465 = await _buildTransporter(host, 465, true);
+        await t465.verify();
+        console.log("[EMAIL HEALTH CHECK] SUCCESS — SMTP port 465 reachable and authenticated");
+        return true;
+      } catch (err2) {
+        console.error(`[EMAIL HEALTH CHECK] FAILED — SMTP port 465: ${err2.message}`);
+        console.error(
+          "[EMAIL HEALTH CHECK] CONCLUSION: All SMTP ports blocked (likely Render restriction).\n" +
+          "[EMAIL HEALTH CHECK] ACTION REQUIRED: Set RESEND_API_KEY in Render environment.\n" +
+          "[EMAIL HEALTH CHECK] Free signup: https://resend.com"
+        );
+        return false;
+      }
+    }
+  }
+
+  console.error("[EMAIL HEALTH CHECK] FAILED — No email transport configured at all.");
+  return false;
 }
 
 // ── HTML helpers ──────────────────────────────────────────────────────────────
 
 function escapeHtml(str) {
   return String(str || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#039;");
 }
 
-// ── Welcome email (sent when broker adds a new user) ─────────────────────────
+// ── OTP email templates ───────────────────────────────────────────────────────
 
-function buildWelcomeEmailHtml(userName, email, password, companyDisplay, loginUrl) {
+function _buildOtpHtml(otp) {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Welcome to M&A Hub</title>
-  <style>
-    body { margin: 0; padding: 0; background: #f4f6f9; font-family: Arial, Helvetica, sans-serif; }
-    .wrapper { max-width: 560px; margin: 40px auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,.08); }
-    .header { background: #05164D; padding: 32px 40px; text-align: center; }
-    .header h1 { color: #ffffff; margin: 0; font-size: 22px; letter-spacing: .5px; }
-    .body { padding: 36px 40px; }
-    .greeting { font-size: 16px; color: #1a1a2e; margin-bottom: 16px; }
-    .intro { font-size: 14px; color: #444; line-height: 1.6; margin-bottom: 28px; }
-    .credentials { background: #f8f9fc; border: 1px solid #e0e4ef; border-radius: 6px; padding: 20px 24px; margin-bottom: 28px; }
-    .credentials table { width: 100%; border-collapse: collapse; }
-    .credentials td { padding: 6px 0; font-size: 14px; vertical-align: top; }
-    .credentials td:first-child { color: #6b7a99; width: 160px; font-weight: 600; }
-    .credentials td:last-child { color: #1a1a2e; word-break: break-all; }
-    .tip { background: #eef6ff; border: 1px solid #c3daf9; border-radius: 6px; padding: 12px 16px; margin-bottom: 20px; font-size: 13px; color: #1a4d8f; line-height: 1.6; }
-    .tip-icon { margin-right: 6px; }
-    .cta { text-align: center; margin-bottom: 28px; }
-    .cta a { display: inline-block; background: #8BC53D; color: #ffffff; text-decoration: none; padding: 12px 32px; border-radius: 6px; font-size: 14px; font-weight: 700; }
-    .note { font-size: 13px; color: #888; line-height: 1.6; border-top: 1px solid #f0f0f0; padding-top: 20px; }
-    .footer { background: #f4f6f9; padding: 20px 40px; text-align: center; font-size: 12px; color: #aaa; }
-  </style>
-</head>
-<body>
-  <div class="wrapper">
-    <div class="header"><h1>Welcome to M&A Hub</h1></div>
-    <div class="body">
-      <p class="greeting">Hello ${escapeHtml(userName)},</p>
-      <p class="intro">Your M&A Hub account has been created successfully. Use the credentials below to sign in.</p>
-      <div class="credentials">
-        <table>
-          <tr><td>Company</td><td>${escapeHtml(companyDisplay)}</td></tr>
-          <tr><td>Login Email</td><td>${escapeHtml(email)}</td></tr>
-          <tr><td>Password</td><td>${escapeHtml(password)}</td></tr>
-          <tr><td>Login URL</td><td><a href="${escapeHtml(loginUrl)}" style="color:#05164D">${escapeHtml(loginUrl)}</a></td></tr>
-        </table>
-      </div>
-      <div class="tip">
-        <span class="tip-icon">&#128273;</span>
-        After signing in, you can change your password anytime from <strong>Profile Settings</strong>.
-      </div>
-      <div class="cta"><a href="${escapeHtml(loginUrl)}">Sign In to M&A Hub</a></div>
-      <p class="note">
-        For security, please update your password immediately after your first login.<br />
-        If you did not expect this email, please contact your M&A Hub administrator.
-      </p>
-    </div>
-    <div class="footer">M&A Hub Team &mdash; This is an automated message, please do not reply.</div>
-  </div>
-</body>
-</html>`;
-}
-
-function buildWelcomeEmailText(userName, email, password, companyDisplay, loginUrl) {
-  return [
-    `Hello ${userName},`,
-    "",
-    "Your M&A Hub account has been created successfully.",
-    "",
-    `Company:            ${companyDisplay}`,
-    `Login Email:        ${email}`,
-    `Temporary Password: ${password}`,
-    `Login URL:          ${loginUrl}`,
-    "",
-    "Please sign in and update your password after your first login.",
-    "",
-    "Regards,",
-    "M&A Hub Team",
-  ].join("\n");
-}
-
-/**
- * Sends a welcome/invitation email to a newly created user.
- * @returns {Promise<{ sent: boolean, messageId?: string, reason?: string, error?: string }>}
- */
-async function sendWelcomeEmail({ userId, userName, email, password, companyNames }) {
-  const dedupeKey = `welcome:${userId}`;
-  if (_sentWelcomeEmails.has(dedupeKey)) {
-    console.log(`[Email Service] Skipping duplicate welcome email for user ${userId}`);
-    return { sent: false, reason: "duplicate" };
-  }
-
-  if (!isEmailConfigured()) {
-    console.warn("[Email Service] SMTP not configured — skipping welcome email.");
-    return { sent: false, reason: "not_configured" };
-  }
-
-  const loginUrl = process.env.FRONTEND_URL || "http://localhost:5173";
-  const companyDisplay =
-    Array.isArray(companyNames) && companyNames.length ? companyNames.join(", ") : "N/A";
-
-  const mailOptions = {
-    from: _from(),
-    to: email,
-    subject: "Welcome to M&A Hub – Your Account Has Been Created",
-    html: buildWelcomeEmailHtml(userName, email, password, companyDisplay, loginUrl),
-    text: buildWelcomeEmailText(userName, email, password, companyDisplay, loginUrl),
-  };
-
-  try {
-    const transporter = createTransporter();
-    const { info, attempt } = await _sendWithRetry(transporter, mailOptions, 3);
-    _sentWelcomeEmails.add(dedupeKey);
-    console.log(
-      `[Email Service] Welcome email sent to <${email}> (user ${userId}, attempt ${attempt}, messageId: ${info.messageId})`
-    );
-    return { sent: true, messageId: info.messageId };
-  } catch (err) {
-    console.error(`[Email Service] All retries exhausted for <${email}> (user ${userId}): ${err.message}`);
-    return { sent: false, reason: "delivery_failed", error: err.message };
-  }
-}
-
-// ── OTP verification email ────────────────────────────────────────────────────
-
-function buildOtpEmailHtml(otp) {
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
   <title>Verification Code</title>
   <style>
-    body { margin: 0; padding: 0; background: #f4f6f9; font-family: Arial, Helvetica, sans-serif; }
-    .wrapper { max-width: 480px; margin: 40px auto; background: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,.08); }
-    .header { background: #05164D; padding: 28px 40px; text-align: center; }
-    .header h1 { color: #ffffff; margin: 0; font-size: 20px; letter-spacing: .5px; }
-    .body { padding: 36px 40px; text-align: center; }
-    .label { font-size: 14px; color: #555; margin-bottom: 24px; line-height: 1.6; }
-    .otp-box { display: inline-block; background: #f0f4ff; border: 2px solid #c3d0f0; border-radius: 10px; padding: 20px 44px; margin-bottom: 24px; }
-    .otp { font-size: 40px; font-weight: 800; letter-spacing: 12px; color: #05164D; font-family: 'Courier New', monospace; }
-    .expiry { font-size: 13px; color: #888; margin-bottom: 24px; }
-    .warning { font-size: 12px; color: #aaa; border-top: 1px solid #f0f0f0; padding-top: 20px; line-height: 1.6; }
-    .footer { background: #f4f6f9; padding: 16px 40px; text-align: center; font-size: 12px; color: #aaa; }
+    body{margin:0;padding:0;background:#f4f6f9;font-family:Arial,Helvetica,sans-serif}
+    .wrap{max-width:480px;margin:40px auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08)}
+    .hdr{background:#05164D;padding:28px 40px;text-align:center}
+    .hdr h1{color:#fff;margin:0;font-size:20px;letter-spacing:.5px}
+    .bdy{padding:36px 40px;text-align:center}
+    .lbl{font-size:14px;color:#555;margin-bottom:24px;line-height:1.6}
+    .box{display:inline-block;background:#f0f4ff;border:2px solid #c3d0f0;border-radius:10px;padding:20px 44px;margin-bottom:24px}
+    .otp{font-size:40px;font-weight:800;letter-spacing:12px;color:#05164D;font-family:'Courier New',monospace}
+    .exp{font-size:13px;color:#888;margin-bottom:24px}
+    .wrn{font-size:12px;color:#aaa;border-top:1px solid #f0f0f0;padding-top:20px;line-height:1.6}
+    .ftr{background:#f4f6f9;padding:16px 40px;text-align:center;font-size:12px;color:#aaa}
   </style>
 </head>
 <body>
-  <div class="wrapper">
-    <div class="header"><h1>Email Verification</h1></div>
-    <div class="body">
-      <p class="label">Your M&A Hub verification code is:</p>
-      <div class="otp-box"><div class="otp">${otp}</div></div>
-      <p class="expiry">This code expires in <strong>10 minutes</strong>.</p>
-      <p class="warning">
-        If you did not request this, please ignore this email.<br />
-        Never share this code with anyone.
-      </p>
+  <div class="wrap">
+    <div class="hdr"><h1>Email Verification</h1></div>
+    <div class="bdy">
+      <p class="lbl">Your M&amp;A Hub verification code is:</p>
+      <div class="box"><div class="otp">${otp}</div></div>
+      <p class="exp">This code expires in <strong>10 minutes</strong>.</p>
+      <p class="wrn">If you did not request this, please ignore this email.<br/>Never share this code with anyone.</p>
     </div>
-    <div class="footer">M&A Hub Team &mdash; Automated message, do not reply.</div>
+    <div class="ftr">M&amp;A Hub Team &mdash; Automated message, do not reply.</div>
   </div>
 </body>
 </html>`;
 }
 
-function buildOtpEmailText(otp) {
+function _buildOtpText(otp) {
   return [
     "M&A Hub Email Verification Code",
     "",
@@ -251,51 +309,132 @@ function buildOtpEmailText(otp) {
   ].join("\n");
 }
 
+// ── Welcome email templates ───────────────────────────────────────────────────
+
+function _buildWelcomeHtml(userName, email, password, companyDisplay, loginUrl) {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>Welcome to M&amp;A Hub</title>
+  <style>
+    body{margin:0;padding:0;background:#f4f6f9;font-family:Arial,Helvetica,sans-serif}
+    .wrap{max-width:560px;margin:40px auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08)}
+    .hdr{background:#05164D;padding:32px 40px;text-align:center}
+    .hdr h1{color:#fff;margin:0;font-size:22px;letter-spacing:.5px}
+    .bdy{padding:36px 40px}
+    .creds{background:#f8f9fc;border:1px solid #e0e4ef;border-radius:6px;padding:20px 24px;margin-bottom:28px}
+    .creds table{width:100%;border-collapse:collapse}
+    .creds td{padding:6px 0;font-size:14px;vertical-align:top}
+    .creds td:first-child{color:#6b7a99;width:160px;font-weight:600}
+    .tip{background:#eef6ff;border:1px solid #c3daf9;border-radius:6px;padding:12px 16px;margin-bottom:20px;font-size:13px;color:#1a4d8f;line-height:1.6}
+    .cta{text-align:center;margin-bottom:28px}
+    .cta a{display:inline-block;background:#8BC53D;color:#fff;text-decoration:none;padding:12px 32px;border-radius:6px;font-size:14px;font-weight:700}
+    .note{font-size:13px;color:#888;line-height:1.6;border-top:1px solid #f0f0f0;padding-top:20px}
+    .ftr{background:#f4f6f9;padding:20px 40px;text-align:center;font-size:12px;color:#aaa}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hdr"><h1>Welcome to M&amp;A Hub</h1></div>
+    <div class="bdy">
+      <p style="font-size:16px;color:#1a1a2e;margin-bottom:16px">Hello ${escapeHtml(userName)},</p>
+      <p style="font-size:14px;color:#444;line-height:1.6;margin-bottom:28px">Your M&amp;A Hub account has been created. Use the credentials below to sign in.</p>
+      <div class="creds">
+        <table>
+          <tr><td>Company</td><td>${escapeHtml(companyDisplay)}</td></tr>
+          <tr><td>Login Email</td><td>${escapeHtml(email)}</td></tr>
+          <tr><td>Password</td><td>${escapeHtml(password)}</td></tr>
+          <tr><td>Login URL</td><td><a href="${escapeHtml(loginUrl)}" style="color:#05164D">${escapeHtml(loginUrl)}</a></td></tr>
+        </table>
+      </div>
+      <div class="tip">&#128273; After signing in, you can change your password from <strong>Profile Settings</strong>.</div>
+      <div class="cta"><a href="${escapeHtml(loginUrl)}">Sign In to M&amp;A Hub</a></div>
+      <p class="note">For security, update your password after your first login.<br/>If you did not expect this email, contact your M&amp;A Hub administrator.</p>
+    </div>
+    <div class="ftr">M&amp;A Hub Team &mdash; Automated message, do not reply.</div>
+  </div>
+</body>
+</html>`;
+}
+
+function _buildWelcomeText(userName, email, password, companyDisplay, loginUrl) {
+  return [
+    `Hello ${userName},`,
+    "",
+    "Your M&A Hub account has been created successfully.",
+    "",
+    `Company:            ${companyDisplay}`,
+    `Login Email:        ${email}`,
+    `Temporary Password: ${password}`,
+    `Login URL:          ${loginUrl}`,
+    "",
+    "Please sign in and update your password after your first login.",
+    "",
+    "Regards, M&A Hub Team",
+  ].join("\n");
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
 /**
  * Sends a 6-digit OTP verification email.
- * @returns {Promise<{ sent: boolean, messageId?: string, reason?: string }>}
  */
 async function sendOtpEmail(email, otp) {
   console.log("EMAIL_HOST:", process.env.EMAIL_HOST);
   console.log("EMAIL_USER:", process.env.EMAIL_USER);
-  console.log("EMAIL_PASS exists:", !!process.env.EMAIL_PASS);
-
-  if (!isEmailConfigured()) {
-    console.warn("[Email Service] SMTP not configured — cannot send OTP email.");
-    return { sent: false, reason: "not_configured" };
-  }
-
-  const mailOptions = {
-    from: _from(),
-    to: email,
-    subject: "M&A Hub Email Verification Code",
-    html: buildOtpEmailHtml(otp),
-    text: buildOtpEmailText(otp),
-  };
+  console.log(`[Email Service] EMAIL_PASS exists: ${!!process.env.EMAIL_PASS}`);
+  console.log(`[Email Service] RESEND_API_KEY configured: ${isResendConfigured()}`);
 
   try {
-    const transporter = createTransporter();
-    const { info, attempt } = await _sendWithRetry(transporter, mailOptions, 3);
-    console.log(`[Email Service] OTP email sent to <${email}> (attempt ${attempt}, messageId: ${info.messageId})`);
-    return { sent: true, messageId: info.messageId };
+    const result = await _deliver(
+      email,
+      "M&A Hub Email Verification Code",
+      _buildOtpHtml(otp),
+      _buildOtpText(otp)
+    );
+    return result;
   } catch (err) {
-    console.error(`[Email Service] OTP email failed for <${email}>: ${err.message}`);
+    console.error(`[Email Service] OTP delivery completely failed for <${email}>: ${err.message}`);
     return { sent: false, reason: "delivery_failed", error: err.message };
   }
 }
 
-// ── Reminder email (document request reminders) ───────────────────────────────
-
 /**
- * Sends a document-request reminder email to a client/user.
+ * Sends a welcome/invitation email to a newly created user.
  */
-async function sendReminderEmail({ toName, toEmail, requestTitle, dueDate, senderName, companyName }) {
-  const transporter = createTransporter();
-  if (!transporter) {
-    console.warn("[Email Service] SMTP not configured — skipping reminder email.");
-    return;
+async function sendWelcomeEmail({ userId, userName, email, password, companyNames }) {
+  const dedupeKey = `welcome:${userId}`;
+  if (_sentWelcomeEmails.has(dedupeKey)) {
+    console.log(`[Email Service] Skipping duplicate welcome email for user ${userId}`);
+    return { sent: false, reason: "duplicate" };
   }
 
+  const loginUrl       = process.env.FRONTEND_URL || "http://localhost:5173";
+  const companyDisplay = Array.isArray(companyNames) && companyNames.length
+    ? companyNames.join(", ")
+    : "N/A";
+
+  try {
+    const result = await _deliver(
+      email,
+      "Welcome to M&A Hub – Your Account Has Been Created",
+      _buildWelcomeHtml(userName, email, password, companyDisplay, loginUrl),
+      _buildWelcomeText(userName, email, password, companyDisplay, loginUrl)
+    );
+    if (result.sent) _sentWelcomeEmails.add(dedupeKey);
+    return result;
+  } catch (err) {
+    console.error(`[Email Service] Welcome email failed for <${email}>: ${err.message}`);
+    return { sent: false, reason: "delivery_failed", error: err.message };
+  }
+}
+
+/**
+ * Sends a document-request reminder email.
+ */
+async function sendReminderEmail({ toName, toEmail, requestTitle, dueDate, senderName, companyName }) {
   const formattedDue = dueDate
     ? new Date(dueDate).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })
     : null;
@@ -305,43 +444,38 @@ async function sendReminderEmail({ toName, toEmail, requestTitle, dueDate, sende
   const html = `
     <div style="font-family:sans-serif;max-width:560px;margin:0 auto;color:#333">
       <p>${greeting}</p>
-      <p>${sentBy} has sent you a reminder regarding the following document request:</p>
+      <p>${sentBy} has sent you a reminder for the following document request:</p>
       <table style="border-collapse:collapse;width:100%;margin:16px 0">
-        <tr>
-          <td style="padding:8px 12px;background:#f5f7fa;font-weight:600;width:140px">Request</td>
-          <td style="padding:8px 12px;border-bottom:1px solid #e8edf5">${requestTitle || "Document Request"}</td>
-        </tr>
+        <tr><td style="padding:8px 12px;background:#f5f7fa;font-weight:600;width:140px">Request</td>
+            <td style="padding:8px 12px;border-bottom:1px solid #e8edf5">${requestTitle || "Document Request"}</td></tr>
         ${companyName ? `<tr><td style="padding:8px 12px;background:#f5f7fa;font-weight:600">Company</td><td style="padding:8px 12px;border-bottom:1px solid #e8edf5">${companyName}</td></tr>` : ""}
         ${formattedDue ? `<tr><td style="padding:8px 12px;background:#f5f7fa;font-weight:600">Due Date</td><td style="padding:8px 12px;border-bottom:1px solid #e8edf5">${formattedDue}</td></tr>` : ""}
       </table>
-      <p>Please log in to the M&A Hub portal to complete and submit any outstanding documents.</p>
-      <p style="margin-top:24px;color:#6d6e71;font-size:13px">This is an automated reminder. Please do not reply to this email.</p>
-    </div>
-  `;
+      <p>Please log in to the M&amp;A Hub portal to complete any outstanding documents.</p>
+      <p style="margin-top:24px;color:#6d6e71;font-size:13px">Automated reminder — do not reply.</p>
+    </div>`;
 
   const text = [
-    greeting,
-    "",
+    greeting, "",
     `${sentBy} has sent you a reminder for: ${requestTitle || "Document Request"}`,
     formattedDue ? `Due: ${formattedDue}` : "",
-    "",
-    "Please log in to the M&A Hub portal to complete any outstanding documents.",
-  ].filter((l) => l !== undefined).join("\n");
+    "", "Please log in to the M&A Hub portal to complete any outstanding documents.",
+  ].filter(Boolean).join("\n");
 
-  await transporter.sendMail({
-    from: _from(),
-    to: toEmail,
-    subject: `Reminder: ${requestTitle || "Document Request"}`,
-    text,
-    html,
-  });
+  try {
+    await _deliver(toEmail, `Reminder: ${requestTitle || "Document Request"}`, html, text);
+  } catch (err) {
+    console.error(`[Email Service] Reminder email failed for <${toEmail}>: ${err.message}`);
+  }
 }
 
 // ── Exports ───────────────────────────────────────────────────────────────────
 
 module.exports = {
-  sendWelcomeEmail,
   sendOtpEmail,
+  sendWelcomeEmail,
   sendReminderEmail,
-  isEmailConfigured,
+  checkEmailHealth,
+  isSmtpConfigured,
+  isResendConfigured,
 };
