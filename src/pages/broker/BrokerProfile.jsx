@@ -489,9 +489,11 @@ function ProfilePage({ user, onRefresh }) {
     // (the auth cache may still hold pre-update data for up to 60 s)
     const refreshedUser = await onRefresh();
     if (refreshedUser) {
-      setLocalValues((prev) => ({ ...prev, ...Object.fromEntries(
-        Object.entries(refreshedUser).filter(([k]) => k !== field),
-      ), [field]: savedValue ?? '' }));
+      setLocalValues((prev) => ({
+        ...prev, ...Object.fromEntries(
+          Object.entries(refreshedUser).filter(([k]) => k !== field),
+        ), [field]: savedValue ?? ''
+      }));
     }
     const fieldLabel = fields.find((f) => f.key === field)?.label || 'Profile';
     setSuccess(`${fieldLabel} updated successfully.`);
@@ -638,11 +640,10 @@ function BusinessProfilePage() {
               </div>
               {company.status && (
                 <span
-                  className={`flex-shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${
-                    company.status === 'active'
-                      ? 'bg-green-50 text-green-700'
-                      : 'bg-gray-100 text-gray-600'
-                  }`}
+                  className={`flex-shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold ${company.status === 'active'
+                    ? 'bg-green-50 text-green-700'
+                    : 'bg-gray-100 text-gray-600'
+                    }`}
                 >
                   {company.status.charAt(0).toUpperCase() + company.status.slice(1)}
                 </span>
@@ -711,11 +712,10 @@ export default function BrokerProfile() {
               <button
                 key={item.id}
                 onClick={() => setActivePage(item.id)}
-                className={`w-full rounded-md px-3 py-2 text-left text-sm transition-colors ${
-                  activePage === item.id
-                    ? 'bg-gray-100 font-semibold text-gray-900'
-                    : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
-                }`}
+                className={`w-full rounded-md px-3 py-2 text-left text-sm transition-colors ${activePage === item.id
+                  ? 'bg-gray-100 font-semibold text-gray-900'
+                  : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                  }`}
               >
                 {item.label}
               </button>

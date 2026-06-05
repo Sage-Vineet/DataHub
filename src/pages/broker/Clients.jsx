@@ -105,7 +105,7 @@ export default function BrokerClients() {
         </div>
         <div className="flex items-center gap-2">
           <button
-            onClick={() => navigate('/broker/companies')}
+            onClick={() => navigate('/broker/dashboard')}
             className="flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm font-semibold text-[#050505] shadow-sm transition-all hover:bg-gray-50"
           >
             <Building2 size={15} className="text-[#6D6E71]" />

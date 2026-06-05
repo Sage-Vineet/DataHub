@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, Loader2, X } from 'lucide-react';
+import { AlertTriangle, Loader2, User, X } from 'lucide-react';
 
 const CATEGORY_OPTIONS = ['Finance', 'Legal', 'Compliance', 'HR', 'Tax', 'M&A', 'Other'];
 const REQUEST_TYPES = ['Document', 'Information'];
@@ -19,6 +19,7 @@ const DEFAULT_FORM = {
   file: null,
   priority: 'high',
   dueDate: '',
+  assignedTo: '',   // user id of client team member; '' = unassigned
 };
 
 export default function NewRequestModal({
@@ -28,6 +29,8 @@ export default function NewRequestModal({
   folderOptions = [],
   foldersLoading = false,
   extraContent = null,
+  // When provided, shows the "Assign To" dropdown (broker-only feature)
+  clientTeamUsers = null,
 }) {
   const [form, setForm] = useState(DEFAULT_FORM);
   const [errors, setErrors] = useState({});
@@ -245,6 +248,29 @@ export default function NewRequestModal({
                   ? <p className="text-xs text-red-500">{errors.dueDate}</p>
                   : <p className="text-[11px] text-[#A5A5A5]">Required for notification logic</p>}
               </div>
+
+              {/* Assign To — shown only when broker passes clientTeamUsers */}
+              {Array.isArray(clientTeamUsers) && clientTeamUsers.length > 0 && (
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-[#6D6E71] uppercase tracking-wide flex items-center gap-1.5">
+                    <User size={12} />
+                    Assign To (Client Team)
+                  </label>
+                  <select
+                    value={form.assignedTo}
+                    onChange={(e) => setForm(s => ({ ...s, assignedTo: e.target.value }))}
+                    className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm"
+                  >
+                    <option value="">— Unassigned (visible to all) —</option>
+                    {clientTeamUsers.map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {u.name}{u.role_label ? ` · ${u.role_label}` : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-[11px] text-[#A5A5A5]">Only the selected member will see this request in their portal. Leave blank to make it visible to all client team members.</p>
+                </div>
+              )}
 
               <div className="rounded-xl border border-gray-200 bg-gray-50 p-4">
                 <p className="text-xs font-semibold text-[#6D6E71] uppercase tracking-wide mb-3">Priority-Based Notification Logic</p>

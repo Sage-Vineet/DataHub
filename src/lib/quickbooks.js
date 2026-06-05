@@ -81,7 +81,7 @@ export function connectQuickbooks(redirectHash, explicitClientId = null, options
 
   const state = encodeURIComponent(
     JSON.stringify({
-      redirect: redirectHash || (isClient ? "/client/connections" : "/broker/companies"),
+      redirect: redirectHash || (isClient ? "/client/connections" : "/broker/dashboard"),
       companyId: clientId,
       clientId: clientId, // backward compat
       role: role

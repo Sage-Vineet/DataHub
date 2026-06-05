@@ -148,7 +148,13 @@ const approveRequest = asyncHandler(async (req, res) => {
     return res.status(403).json({ error: "Access denied." });
   }
 
-  await requestService.approveRequest(req.params.id, req.user.id);
+  // Optional: broker can route the request to a specific client team member on approval
+  const assignedTo = req.body?.assigned_to || null;
+  if (assignedTo && !(await validateAssignedUserForCompany(assignedTo, current.company_id))) {
+    return res.status(400).json({ error: "Assigned user is not part of this company." });
+  }
+
+  await requestService.approveRequest(req.params.id, req.user.id, assignedTo);
   res.json(await requestService.getRequestById(req.params.id));
 });
 

@@ -57,8 +57,17 @@ const userSelect = `
 const userSelectWithProfile =
   userSelect.trimEnd() + `,\n  date_of_birth,\n  occupation,\n  address,\n  broker_company\n`;
 
+// Extended select including multi-role columns from migration 041.
+// Falls back gracefully — callers must handle the case where these columns
+// are absent (supabase schema cache not yet refreshed).
+const userSelectWithRoles =
+  userSelectWithProfile.trimEnd() +
+  `,\n  sub_role,\n  designation,\n  buyer_company_name,\n  parent_user_id\n`;
+
 async function selectUserRow(buildQuery) {
-  let result = await buildQuery(userSelectWithProfile);
+  // Try fullest select first, fall back on schema-cache misses
+  let result = await buildQuery(userSelectWithRoles);
+  if (result.error) result = await buildQuery(userSelectWithProfile);
   if (result.error) result = await buildQuery(userSelect);
   return result;
 }
@@ -141,6 +150,8 @@ async function updateSqlProfileByEmail(email, profileUpdates) {
 const _SAFE_UPDATE_COLS = new Set([
   "name", "email", "phone", "role", "status", "company_id",
   "date_of_birth", "occupation", "address", "broker_company", "password_hash",
+  // multi-role columns (migration 041)
+  "sub_role", "designation", "buyer_company_name", "parent_user_id",
 ]);
 
 async function updateSqlById(id, updates) {
@@ -721,7 +732,10 @@ async function reassignUserRecords(userId, replacementUserId) {
  * @returns {Promise<Array>}
  */
 async function listAllUsers(viewer = null) {
-  let result = await supabase.from("users").select(userSelectWithProfile).order("created_at", { ascending: false });
+  // Try fullest select first (includes sub_role, designation, buyer_company_name, parent_user_id),
+  // fall back through progressively simpler selects on schema-cache misses.
+  let result = await supabase.from("users").select(userSelectWithRoles).order("created_at", { ascending: false });
+  if (result.error) result = await supabase.from("users").select(userSelectWithProfile).order("created_at", { ascending: false });
   if (result.error) result = await supabase.from("users").select(userSelect).order("created_at", { ascending: false });
   const { data, error } = result;
   if (error) throw error;
@@ -748,7 +762,11 @@ async function listAllUsers(viewer = null) {
  * @returns {Promise<Object>} Created user
  */
 async function createUser(userData) {
-  const { name, email, phone, password, role, company_id, company_ids, status, created_by } = userData;
+  const {
+    name, email, phone, password, role, company_id, company_ids, status, created_by,
+    // multi-role fields (migration 041)
+    sub_role, designation, buyer_company_name, parent_user_id,
+  } = userData;
   const assignedCompanyIds = normalizeCompanyIds(company_id, company_ids);
 
   if (created_by && !isAdmin(created_by)) {
@@ -765,17 +783,26 @@ async function createUser(userData) {
   const passwordHash = await bcrypt.hash(String(password || ""), 10);
   const resolvedStatus = status || "active";
 
+  const insertPayload = {
+    name,
+    email,
+    phone: phone || null,
+    password_hash: passwordHash,
+    role,
+    company_id: primaryCompanyId,
+    status: resolvedStatus,
+  };
+
+  // Conditionally attach multi-role fields so existing DB rows without these
+  // columns are not affected when migration 041 hasn't run yet.
+  if (sub_role !== undefined && sub_role !== null) insertPayload.sub_role = sub_role;
+  if (designation !== undefined && designation !== null) insertPayload.designation = designation;
+  if (buyer_company_name !== undefined && buyer_company_name !== null) insertPayload.buyer_company_name = buyer_company_name;
+  if (parent_user_id !== undefined && parent_user_id !== null) insertPayload.parent_user_id = parent_user_id;
+
   const { data: created, error } = await supabase
     .from("users")
-    .insert({
-      name,
-      email,
-      phone: phone || null,
-      password_hash: passwordHash,
-      role,
-      company_id: primaryCompanyId,
-      status: resolvedStatus
-    })
+    .insert(insertPayload)
     .select("id")
     .single();
 
@@ -797,6 +824,8 @@ async function updateUser(id, userData) {
     date_of_birth, occupation, address, broker_company,
     password, current_password,
     role, company_id, company_ids, status,
+    // multi-role fields (migration 041)
+    sub_role, designation, buyer_company_name, parent_user_id,
   } = userData;
 
   const hasCompanyAssignments = company_id !== undefined || company_ids !== undefined;
@@ -816,6 +845,11 @@ async function updateUser(id, userData) {
   if (role !== undefined) coreUpdates.role = role;
   if (status !== undefined) coreUpdates.status = status;
   if (hasCompanyAssignments) coreUpdates.company_id = company_id || assignedCompanyIds[0] || null;
+  // multi-role fields
+  if (sub_role !== undefined) coreUpdates.sub_role = sub_role || null;
+  if (designation !== undefined) coreUpdates.designation = designation || null;
+  if (buyer_company_name !== undefined) coreUpdates.buyer_company_name = buyer_company_name || null;
+  if (parent_user_id !== undefined) coreUpdates.parent_user_id = parent_user_id || null;
 
   if (password !== undefined) {
     const nextPassword = String(password || "");

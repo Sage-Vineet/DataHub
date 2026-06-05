@@ -357,8 +357,9 @@ export function updateRequest(requestId, payload) {
   return request(`/requests/${requestId}`, { method: 'PATCH', body: payload }).then(unwrapPayload);
 }
 
-export function approveRequest(requestId) {
-  return request(`/requests/${requestId}/approve`, { method: 'POST' }).then(unwrapPayload);
+export function approveRequest(requestId, assignedTo = null) {
+  const body = assignedTo ? { assigned_to: assignedTo } : undefined;
+  return request(`/requests/${requestId}/approve`, { method: 'POST', body }).then(unwrapPayload);
 }
 
 export function deleteRequest(requestId) {
@@ -1254,4 +1255,45 @@ export function deleteFolderAccess(accessId) {
 
 export function createFolderDocument(folderId, payload) {
   return request(`/folders/${folderId}/documents`, { method: 'POST', body: payload }).then(unwrapPayload);
+}
+
+// ─── Message Groups (multi-role architecture) ────────────────────────────────
+
+export function listMessageGroupsForCompany(companyId) {
+  return request(`/companies/${companyId}/message-groups`).then(ensureArray);
+}
+
+export function listMyMessageGroups() {
+  return request('/my-groups').then(ensureArray);
+}
+
+export function triggerAutoCreateMessageGroups(companyId) {
+  return request(`/companies/${companyId}/message-groups/auto-create`, { method: 'POST' }).then(unwrapPayload);
+}
+
+export function addMessageGroupMember(groupId, userId) {
+  return request(`/message-groups/${groupId}/members`, { method: 'POST', body: { user_id: userId } }).then(unwrapPayload);
+}
+
+export function removeMessageGroupMember(groupId, userId) {
+  return request(`/message-groups/${groupId}/members/${userId}`, { method: 'DELETE' });
+}
+
+// ─── Group messages (migration 042) ──────────────────────────────────────────
+
+export function listGroupMessages(groupId, params = {}) {
+  const qs = Object.entries(params).filter(([, v]) => v != null).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
+  return request(`/message-groups/${groupId}/messages${qs ? `?${qs}` : ''}`).then(ensureArray);
+}
+
+export function sendGroupMessage(groupId, body) {
+  return request(`/message-groups/${groupId}/messages`, { method: 'POST', body: { body } }).then(unwrapPayload);
+}
+
+export function markGroupMessagesRead(groupId) {
+  return request(`/message-groups/${groupId}/messages/mark-read`, { method: 'POST' }).then(unwrapPayload);
+}
+
+export function getGroupUnreadCount(groupId) {
+  return request(`/message-groups/${groupId}/messages/unread-count`).then(unwrapPayload);
 }

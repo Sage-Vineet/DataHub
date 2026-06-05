@@ -133,7 +133,7 @@ function WorkspaceSidebar({ company, onClose }) {
 
       <div className="border-b border-border px-3 py-4">
         <button
-          onClick={() => navigate("/broker/companies")}
+          onClick={() => navigate("/broker/dashboard")}
           className="mb-3 flex w-full items-center gap-2 rounded-md px-3 py-2 text-xs font-medium text-secondary transition-colors hover:bg-bg-page hover:text-text-primary"
         >
           <ArrowLeft size={13} />
