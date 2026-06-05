@@ -36,9 +36,11 @@ import {
   listFolderTree,
   listCompanyRequests,
   listRequestDocuments,
+  listUsersRequest,
   updateRequest,
   updateRequestNarrative,
 } from '../../../lib/api';
+import { CLIENT_SUB_ROLES, ROLE_META, inferSubRole } from '../../../lib/roles';
 import NewRequestModal from '../../../components/NewRequestModal';
 import RequestDocumentPreviewModal from '../../../components/RequestDocumentPreviewModal';
 import { buildFolderOptionsFromTree } from '../../../lib/folderOptions';
@@ -535,7 +537,7 @@ function buildCreateRequestPayload(form) {
       priority: normalizePriority(form.priority),
       status: 'pending',
       due_date: form.dueDate,
-      assigned_to: null,
+      assigned_to: form.assignedTo || null,
     visible: true,
   };
 }
@@ -1273,6 +1275,10 @@ export default function WorkspaceRequests() {
   const [bulkUploading, setBulkUploading] = useState(false);
   const [approvingRequestId, setApprovingRequestId] = useState(null);
   const [deletingRequestId, setDeletingRequestId] = useState(null);
+  // Client team users for the "Assign To" dropdown
+  const [clientTeamUsers, setClientTeamUsers] = useState([]);
+  // Approval-with-assign flow: holds the request being approved so broker can pick assignee
+  const [pendingApproval, setPendingApproval] = useState(null); // { requestId, assignedTo: '' }
 
   const loadRequests = async () => {
     if (!clientId) return;
@@ -1301,6 +1307,23 @@ export default function WorkspaceRequests() {
     getCompanyRequest(clientId)
       .then((data) => setCompany(data))
       .catch(() => setCompany(null));
+
+    // Load client team members for the "Assign To" dropdown
+    listUsersRequest()
+      .then((users) => {
+        const companyClients = users.filter((u) => {
+          const sub = u.sub_role || inferSubRole(u);
+          const assignedIds = (u.company_ids || u.companyIds || [u.company_id]).filter(Boolean);
+          const inCompany = assignedIds.some((id) => String(id) === String(clientId));
+          return inCompany && CLIENT_SUB_ROLES.includes(sub);
+        }).map((u) => ({
+          id: u.id,
+          name: u.name || u.email || 'Unknown',
+          role_label: ROLE_META[u.sub_role || inferSubRole(u)]?.label || '',
+        }));
+        setClientTeamUsers(companyClients);
+      })
+      .catch(() => setClientTeamUsers([]));
   }, [clientId]);
 
   useEffect(() => {
@@ -1484,16 +1507,25 @@ export default function WorkspaceRequests() {
     }
   };
 
-  const handleApproveRequest = async (requestOrId) => {
+  // Step 1: broker clicks "Approve" → open assign-to dialog
+  const handleApproveRequest = (requestOrId) => {
     const requestId = typeof requestOrId === 'object' ? requestOrId?.id : requestOrId;
     if (!requestId) return;
+    setPendingApproval({ requestId, assignedTo: '' });
+  };
+
+  // Step 2: broker confirms approval (with optional assignee)
+  const confirmApproveRequest = async () => {
+    if (!pendingApproval?.requestId) return;
+    const { requestId, assignedTo } = pendingApproval;
 
     setApprovingRequestId(requestId);
     setError('');
     setSuccess('');
+    setPendingApproval(null);
 
     try {
-      const approved = await approveRequest(requestId);
+      const approved = await approveRequest(requestId, assignedTo || null);
       const normalized = mapApiRequestToUi(approved);
       setRequestState((prev) => prev.map((item) => (item.id === requestId ? { ...item, ...normalized } : item)));
       setSuccess('Request approved and sent to the client portal.');
@@ -1843,12 +1875,57 @@ export default function WorkspaceRequests() {
         </div>
       )}
 
+      {/* ── Approve-with-assign modal ── */}
+      {pendingApproval && (
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-white/30 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 space-y-4">
+            <h3 className="text-base font-bold text-[#05164D]">Approve & Assign Request</h3>
+            <p className="text-sm text-gray-500">Optionally assign this request to a specific client team member. Leave blank to make it visible to all.</p>
+            {clientTeamUsers.length > 0 && (
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Assign To (Client Team)</label>
+                <select
+                  value={pendingApproval.assignedTo}
+                  onChange={(e) => setPendingApproval((p) => ({ ...p, assignedTo: e.target.value }))}
+                  className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm"
+                >
+                  <option value="">— Unassigned (visible to all) —</option>
+                  {clientTeamUsers.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.name}{u.role_label ? ` · ${u.role_label}` : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {clientTeamUsers.length === 0 && (
+              <p className="text-xs text-[#A5A5A5]">No client team members found for this company. The request will be visible to all.</p>
+            )}
+            <div className="flex gap-3 pt-1">
+              <button
+                onClick={() => setPendingApproval(null)}
+                className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-gray-600 hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmApproveRequest}
+                className="flex-1 py-2.5 rounded-xl bg-[#8BC53D] hover:bg-[#476E2C] text-white text-sm font-semibold"
+              >
+                Approve & Send
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <NewRequestModal
         isOpen={isNewRequestOpen}
         onClose={() => setIsNewRequestOpen(false)}
         onCreate={createRequest}
         folderOptions={folderOptions}
         foldersLoading={foldersLoading}
+        clientTeamUsers={clientTeamUsers}
         extraContent={(
           <div className="rounded-2xl border border-[#BFDBFE] bg-[#EFF6FF] p-4 space-y-3">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">

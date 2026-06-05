@@ -321,18 +321,23 @@ async function createRequestsBulk(companyId, items, createdBy) {
 /**
  * Approves a request
  */
-async function approveRequest(requestId, approvedBy) {
+async function approveRequest(requestId, approvedBy, assignedTo = null) {
   const now = new Date().toISOString();
   try {
-    const rows = await pgQuery(
-      "UPDATE requests SET approval_status='approved', approved_by=$1, approved_at=$2, updated_at=$3 WHERE id=$4 RETURNING *",
-      [approvedBy, now, now, requestId],
-    );
+    const query = assignedTo
+      ? "UPDATE requests SET approval_status='approved', approved_by=$1, approved_at=$2, updated_at=$3, assigned_to=$5 WHERE id=$4 RETURNING *"
+      : "UPDATE requests SET approval_status='approved', approved_by=$1, approved_at=$2, updated_at=$3 WHERE id=$4 RETURNING *";
+    const params = assignedTo
+      ? [approvedBy, now, now, requestId, assignedTo]
+      : [approvedBy, now, now, requestId];
+    const rows = await pgQuery(query, params);
     await createReminderEvent(requestId, approvedBy);
     return rows[0];
   } catch {
+    const updatePayload = { approval_status: "approved", approved_by: approvedBy, approved_at: now, updated_at: now };
+    if (assignedTo) updatePayload.assigned_to = assignedTo;
     const { data, error } = await supabase.from("requests")
-      .update({ approval_status: "approved", approved_by: approvedBy, approved_at: now, updated_at: now })
+      .update(updatePayload)
       .eq("id", requestId).select("*").single();
     if (error) throw error;
     await createReminderEvent(requestId, approvedBy);

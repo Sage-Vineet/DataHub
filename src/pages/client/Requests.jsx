@@ -31,6 +31,7 @@ import {
 } from '../../lib/api';
 import { buildFolderMapFromTree } from '../../lib/folderOptions';
 import RequestDocumentPreviewModal from '../../components/RequestDocumentPreviewModal';
+import { CLIENT_SUB_ROLES, SUB_ROLE, inferSubRole } from '../../lib/roles';
 
 const CATEGORY_META = {
   Finance: { icon: TrendingUp, color: '#476E2C', bg: '#E6F3D3' },
@@ -653,14 +654,27 @@ export default function ClientRequests() {
     setError('');
     try {
       const list = await listCompanyRequests(companyId);
-      setRequestState((Array.isArray(list) ? list : []).map(mapApiRequestToUi).filter(Boolean));
+      let mapped = (Array.isArray(list) ? list : []).map(mapApiRequestToUi).filter(Boolean);
+
+      // Isolate requests per client team member.
+      // Company owners see all requests (backward compat).
+      // Client team members / accountants only see:
+      //   • requests explicitly assigned to them, OR
+      //   • requests with no assignee (visible to all).
+      const userSubRole = user?.sub_role || inferSubRole(user);
+      const isTeamMember = userSubRole && userSubRole !== SUB_ROLE.COMPANY_OWNER && CLIENT_SUB_ROLES.includes(userSubRole);
+      if (isTeamMember && user?.id) {
+        mapped = mapped.filter((r) => !r.assignedTo || r.assignedTo === 'Unassigned' || r.assignedTo === user.id);
+      }
+
+      setRequestState(mapped);
     } catch (err) {
       setError(err.message || 'Unable to load requests.');
       setRequestState([]);
     } finally {
       setLoading(false);
     }
-  }, [companyId]);
+  }, [companyId, user]);
 
   useEffect(() => {
     loadRequests();

@@ -31,8 +31,20 @@ const createUser = asyncHandler(async (req, res) => {
   if (!["broker", "admin"].includes(requesterRole)) {
     return res.status(403).json({ error: "Only broker or admin accounts can create users." });
   }
-  if (requesterRole !== "admin" && ["admin", "broker"].includes(String(role || "").toLowerCase())) {
-    return res.status(403).json({ error: "Brokers can only create company user accounts." });
+
+  // Brokers cannot create top-level broker or admin accounts, BUT they are
+  // allowed to create broker-team sub-roles (broker_team_member, banker,
+  // loan_broker) which carry DB role = 'broker'.
+  // Only block when role is 'broker' AND no recognised team sub_role is set.
+  const { sub_role } = req.body || {};
+  const BROKER_TEAM_SUB_ROLES = ["broker_team_member", "banker", "loan_broker"];
+  const isBrokerTeamMember = BROKER_TEAM_SUB_ROLES.includes(String(sub_role || "").toLowerCase());
+
+  if (requesterRole !== "admin" && String(role || "").toLowerCase() === "admin") {
+    return res.status(403).json({ error: "Brokers cannot create admin accounts." });
+  }
+  if (requesterRole !== "admin" && String(role || "").toLowerCase() === "broker" && !isBrokerTeamMember) {
+    return res.status(403).json({ error: "Brokers cannot create primary broker accounts. Use a broker team sub-role (broker_team_member, banker, loan_broker)." });
   }
 
   const user = await userService.createUser({ ...req.body, created_by: req.user });
@@ -111,6 +123,10 @@ const listPublicUsers = asyncHandler(async (_req, res) => {
     phone: user.phone,
     role: user.role,
     effective_role: user.effective_role,
+    sub_role: user.sub_role || null,
+    designation: user.designation || null,
+    buyer_company_name: user.buyer_company_name || null,
+    parent_user_id: user.parent_user_id || null,
     company_id: user.company_id,
     company_name: user.company_name,
     status: user.status,
@@ -150,6 +166,10 @@ const getPublicUser = asyncHandler(async (req, res) => {
     phone: user.phone,
     role: user.role,
     effective_role: user.effective_role,
+    sub_role: user.sub_role || null,
+    designation: user.designation || null,
+    buyer_company_name: user.buyer_company_name || null,
+    parent_user_id: user.parent_user_id || null,
     company_id: user.company_id,
     company_name: user.company_name,
     status: user.status,

@@ -20,7 +20,6 @@ import ClientWorkspaceLayout from "./components/layout/ClientWorkspaceLayout";
 import UserLayout from "./components/layout/UserLayout";
 import Login from "./pages/Login";
 import BrokerDashboard from "./pages/broker/Dashboard";
-import BrokerCompanies from "./pages/broker/Companies";
 import BrokerRequests from "./pages/broker/Requests";
 import BrokerDocuments from "./pages/broker/Documents";
 import BrokerReminders from "./pages/broker/Reminders";
@@ -225,7 +224,7 @@ function ClientWorkspaceWrapper() {
   if (user.role !== "broker")
     return <Navigate to={getHomeRoute(user.role)} replace />;
   if (loading) return <PageLoader message="Loading company workspace..." />;
-  if (!company) return <Navigate to="/broker/companies" replace />;
+  if (!company) return <Navigate to="/broker/dashboard" replace />;
 
   return (
     <ClientWorkspaceLayout company={company}>
@@ -265,14 +264,8 @@ function AppRoutes() {
           </ProtectedRoute>
         }
       />
-      <Route
-        path="/broker/companies"
-        element={
-          <ProtectedRoute allowedRole="broker">
-            <BrokerCompanies />
-          </ProtectedRoute>
-        }
-      />
+      {/* /broker/companies is now merged into the dashboard */}
+      <Route path="/broker/companies" element={<Navigate to="/broker/dashboard" replace />} />
       <Route
         path="/broker/requests"
         element={

@@ -18,7 +18,6 @@ import datahublogo from "../../assets/datahublogo.png";
 
 const brokerNav = [
   { label: "Dashboard", icon: LayoutDashboard, to: "/broker/dashboard" },
-  { label: "Companies", icon: Building2, to: "/broker/companies" },
 ];
 
 const clientNav = [

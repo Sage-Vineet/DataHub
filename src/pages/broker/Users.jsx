@@ -1,226 +1,114 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle } from 'lucide-react';
 import {
-  Search, Filter, Plus, Eye, Pencil, Trash2, X,
-  ChevronLeft, ChevronRight, Users as UsersIcon,
-  CheckCircle, XCircle, Shield, ShoppingCart,
-  Phone, Mail, Building2, Calendar, ChevronDown, Check, Briefcase
+  AlertCircle, Plus, X, Pencil, Trash2,
+  Phone, Mail, Building2, Calendar, ChevronDown, Check,
+  Search, Users as UsersIcon, Briefcase, ShoppingCart,
+  ArrowLeft, ChevronRight,
 } from 'lucide-react';
+import { useAuth } from '../../context/AuthContext';
 import {
-  createUserRequest,
-  deleteUserRequest,
-  listCompaniesRequest,
-  listCompanyGroups,
-  addGroupMember,
-  removeGroupMember,
-  listUsersRequest,
-  updateUserRequest,
+  createUserRequest, deleteUserRequest, listCompaniesRequest,
+  listUsersRequest, updateUserRequest, triggerAutoCreateMessageGroups,
 } from '../../lib/api';
+import {
+  SUB_ROLE, BROKER_SUB_ROLES, CLIENT_SUB_ROLES, BUYER_SUB_ROLES,
+  ROLE_META, BROKER_TEAM_ROLE_OPTIONS, CLIENT_TEAM_ROLE_OPTIONS,
+  BUYER_TEAM_ROLE_OPTIONS, getRoleMeta, inferSubRole,
+} from '../../lib/roles';
 
-const PAGE_SIZE = 8;
-// Roles visible in the user list (broker/admin are hidden — they own the data room)
-const VISIBLE_ROLES = ['client', 'user', 'provider'];
-const STATUS_ORDER = ['active', 'inactive'];
-const ROLE_FILTER_OPTIONS = [
-  { label: 'All Roles', value: 'All Roles' },
-  { label: 'Seller', value: 'client' },
-  { label: 'Buyer', value: 'user' },
-  { label: 'Third-party Provider', value: 'provider' },
-];
-const EMPTY_FORM = { firstName: '', lastName: '', companyId: '', companyIds: [], email: '', phone: '', role: 'user', status: 'active', password: '', profileImage: '', groupIds: [] };
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function formatUSPhone(raw) {
-  const digits = raw.replace(/\D/g, '').slice(0, 10);
-  if (digits.length <= 3) return digits;
-  if (digits.length <= 6) return `(${digits.slice(0, 3)}) ${digits.slice(3)}`;
-  return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
-}
+const palette = ['#8BC53D', '#05164D', '#F68C1F', '#742982', '#00648F', '#476E2C'];
 
-function splitName(full = '') {
-  const parts = (full || '').trim().split(/\s+/);
-  return { firstName: parts[0] || '', lastName: parts.slice(1).join(' ') || '' };
+function getColor(name = '') {
+  return palette[name.length % palette.length];
 }
 
 function initials(name = '') {
-  return name
-    .split(' ')
-    .filter(Boolean)
-    .map((part) => part[0])
-    .join('')
-    .slice(0, 2)
-    .toUpperCase();
+  return name.split(' ').filter(Boolean).map((p) => p[0]).join('').slice(0, 2).toUpperCase();
 }
 
-function formatUser(user) {
-  if (!user) return null;
-  const assignedCompanies = user.assigned_companies || user.assignedCompanies || [];
-  const companyIds = Array.from(new Set([
-    ...(user.company_ids || user.companyIds || []),
-    ...assignedCompanies.map((company) => company.id).filter(Boolean),
-    user.company_id,
-    user.companyId,
-  ].filter(Boolean)));
-  const primaryCompany = assignedCompanies.find((company) => String(company.id) === String(user.company_id)) || assignedCompanies[0] || null;
-  return {
-    id: user.id,
-    name: user.name,
-    email: user.email,
-    phone: user.phone || 'N/A',
-    role: user.effective_role || user.role,
-    status: user.status,
-    companyId: user.company_id || primaryCompany?.id || '',
-    companyIds,
-    assignedCompanies,
-    company: user.company_name || primaryCompany?.name || (assignedCompanies.length ? assignedCompanies.map((company) => company.name).join(', ') : 'Unassigned'),
-    joinedAt: user.created_at,
-    profileImage: user.profile_image || user.profileImage || '',
-    groupIds: user.group_ids || user.groupIds || (user.groups ? user.groups.map((g) => g.id) : []),
-    avatar: initials(user.name),
-  };
+function formatUSPhone(raw) {
+  const d = raw.replace(/\D/g, '').slice(0, 10);
+  if (d.length <= 3) return d;
+  if (d.length <= 6) return `(${d.slice(0, 3)}) ${d.slice(3)}`;
+  return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`;
 }
 
-function statusMeta(status) {
-  if (status === 'active') return { label: 'Active', bg: 'bg-green-100', text: 'text-green-700', dot: 'bg-green-500', Icon: CheckCircle };
-  return { label: 'Inactive', bg: 'bg-gray-100', text: 'text-gray-500', dot: 'bg-gray-400', Icon: XCircle };
-}
-
-function roleMeta(role) {
-  if (role === 'admin') return { label: 'Admin', bg: 'bg-purple-50', text: 'text-[#742982]', border: 'border-purple-200', Icon: Shield };
-  if (role === 'broker') return { label: 'Broker', bg: 'bg-amber-50', text: 'text-[#b45e08]', border: 'border-orange-200', Icon: Briefcase };
-  if (role === 'client') return { label: 'Seller', bg: 'bg-blue-50', text: 'text-[#00648F]', border: 'border-blue-200', Icon: Building2 };
-  if (role === 'user') return { label: 'Buyer', bg: 'bg-green-50', text: 'text-[#476E2C]', border: 'border-green-200', Icon: ShoppingCart };
-  if (role === 'provider') return { label: 'Third-party Provider', bg: 'bg-purple-50', text: 'text-[#742982]', border: 'border-purple-200', Icon: Briefcase };
-  return { label: role || 'Unknown', bg: 'bg-gray-50', text: 'text-gray-600', border: 'border-gray-200', Icon: UsersIcon };
-}
-
-function Avatar({ user, size = 9 }) {
-  const palette = ['#8BC53D', '#05164D', '#F68C1F', '#742982', '#00648F', '#476E2C'];
-  const colorSeed = user.name.length % palette.length;
-  const dimensions = size * 4;
-
-  return (
-    <div
-      className="rounded-full flex items-center justify-center text-xs font-bold text-white flex-shrink-0"
-      style={{ background: palette[colorSeed], width: dimensions, height: dimensions }}
-    >
-      {user.avatar}
-    </div>
-  );
-}
-
-function StatusBadge({ status }) {
-  const meta = statusMeta(status);
-  return (
-    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold ${meta.bg} ${meta.text}`}>
-      <span className={`w-1.5 h-1.5 rounded-full ${meta.dot}`} />
-      {meta.label}
-    </span>
-  );
-}
-
-function RoleBadge({ role }) {
-  const meta = roleMeta(role);
-  return (
-    <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold border ${meta.bg} ${meta.text} ${meta.border}`}>
-      <meta.Icon size={11} />
-      {meta.label}
-    </span>
-  );
-}
-
-function DeleteModal({ user, onConfirm, onClose, submitting, error }) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-white/30 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 z-10 animate-fadeIn">
-        <div className="flex items-center justify-center w-14 h-14 rounded-full bg-red-100 mx-auto mb-4">
-          <Trash2 size={24} className="text-red-500" />
-        </div>
-        <h3 className="text-center text-lg font-bold text-[#05164D] mb-1">Delete User</h3>
-        <p className="text-center text-sm text-gray-500 mb-6">
-          Are you sure you want to delete <span className="font-semibold text-[#05164D]">{user.name}</span>? This action cannot be undone.
-        </p>
-        {error && (
-          <p className="mb-4 text-sm text-red-600 bg-red-50 rounded-xl px-3 py-2 text-center">{error}</p>
-        )}
-        <div className="flex gap-3">
-          <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-gray-600 hover:bg-gray-50 transition-colors">
-            Cancel
-          </button>
-          <button onClick={onConfirm} disabled={submitting} className="flex-1 py-2.5 rounded-xl bg-red-500 hover:bg-red-600 text-white text-sm font-semibold transition-colors disabled:opacity-60">
-            {submitting ? 'Deleting...' : 'Delete'}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ViewModal({ user, onClose, onEdit }) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-white/30 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-md z-10 animate-fadeIn overflow-hidden">
-        <div className="bg-gradient-to-r from-[#05164D] to-[#0a2266] px-6 py-5">
-          <button onClick={onClose} className="absolute top-4 right-4 text-white/60 hover:text-white transition-colors">
-            <X size={18} />
-          </button>
-          <div className="flex items-center gap-4">
-            <Avatar user={user} size={14} />
-            <div>
-              <h2 className="text-white text-lg font-bold">{user.name}</h2>
-              <p className="text-white/60 text-sm">{user.company}</p>
-            </div>
-          </div>
-          <div className="flex gap-2 mt-4">
-            <RoleBadge role={user.role} />
-            <StatusBadge status={user.status} />
-          </div>
-        </div>
-
-        <div className="p-6 space-y-4">
-          {[
-            { icon: Mail, label: 'Email', value: user.email },
-            { icon: Phone, label: 'Phone', value: user.phone },
-            { icon: Building2, label: 'Company', value: user.company },
-            { icon: Calendar, label: 'Joined', value: new Date(user.joinedAt).toLocaleDateString('en-IN', { year: 'numeric', month: 'long', day: 'numeric' }) },
-          ].map((item) => {
-            const Icon = item.icon;
-
-            return (
-              <div key={item.label} className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-xl bg-[#05164D]/6 flex items-center justify-center flex-shrink-0">
-                  <Icon size={15} className="text-[#05164D]" />
-                </div>
-                <div>
-                  <p className="text-xs text-gray-400 mb-0.5">{item.label}</p>
-                  <p className="text-sm font-semibold text-[#05164D]">{item.value}</p>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-
-        <div className="px-6 pb-6">
-          <button onClick={onEdit} className="w-full py-2.5 rounded-xl bg-[#8BC53D] hover:bg-[#476E2C] text-white text-sm font-bold transition-colors">
-            Edit User
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function isValidEmail(value) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || '').trim());
+function isValidEmail(v) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v || '').trim());
 }
 
 function formatApiError(err) {
   const msg = String(err?.message || err || '');
-  if (/duplicate|already exists|unique constraint|email.*taken|taken.*email|already.*use/i.test(msg)) {
-    return 'A user with this email address already exists.';
+  if (/duplicate|already exists|unique constraint|email.*taken/i.test(msg)) {
+    return 'A user with this email already exists.';
   }
   return msg || 'Something went wrong. Please try again.';
+}
+
+function normalizeUser(u) {
+  if (!u) return null;
+  const assignedCompanies = u.assigned_companies || u.assignedCompanies || [];
+  const companyIds = Array.from(new Set([
+    ...(u.company_ids || u.companyIds || []),
+    ...assignedCompanies.map((c) => c.id).filter(Boolean),
+    u.company_id,
+  ].filter(Boolean)));
+  const sub = u.sub_role || inferSubRole(u);
+  return {
+    id: u.id,
+    name: u.name || '',
+    email: u.email || '',
+    phone: u.phone || '',
+    role: u.role,
+    sub_role: sub,
+    designation: u.designation || '',
+    buyer_company_name: u.buyer_company_name || '',
+    parent_user_id: u.parent_user_id || null,
+    status: u.status || 'active',
+    companyId: u.company_id || companyIds[0] || '',
+    companyIds,
+    assignedCompanies,
+    company: u.company_name || (assignedCompanies[0]?.name) || (assignedCompanies.map((c) => c.name).join(', ')) || 'Unassigned',
+    joinedAt: u.created_at,
+    avatar: initials(u.name || ''),
+    meta: getRoleMeta({ ...u, sub_role: sub }),
+  };
+}
+
+// ─── Mini components ──────────────────────────────────────────────────────────
+
+function Avatar({ name, size = 36 }) {
+  return (
+    <div
+      className="rounded-full flex items-center justify-center text-xs font-bold text-white flex-shrink-0"
+      style={{ width: size, height: size, background: getColor(name) }}
+    >
+      {initials(name)}
+    </div>
+  );
+}
+
+function RoleBadge({ subRole }) {
+  const meta = ROLE_META[subRole] || { label: subRole, color: '#6B7280', bg: '#F9FAFB', border: '#E5E7EB' };
+  return (
+    <span
+      className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold border"
+      style={{ color: meta.color, background: meta.bg, borderColor: meta.border }}
+    >
+      {meta.label}
+    </span>
+  );
+}
+
+function StatusDot({ status }) {
+  return (
+    <span className={`inline-flex items-center gap-1.5 text-xs font-medium ${status === 'active' ? 'text-green-600' : 'text-gray-400'}`}>
+      <span className={`w-1.5 h-1.5 rounded-full ${status === 'active' ? 'bg-green-500' : 'bg-gray-300'}`} />
+      {status === 'active' ? 'Active' : 'Inactive'}
+    </span>
+  );
 }
 
 function FormError({ message }) {
@@ -233,34 +121,290 @@ function FormError({ message }) {
   );
 }
 
-function UserFormModal({ initial, companies, groups, onCompanyChange, onSave, onClose, submitting, error }) {
+// ─── User card (used in team detail view) ─────────────────────────────────────
+
+function UserCard({ user, onEdit, onDelete }) {
+  return (
+    <div className="bg-white rounded-2xl border border-gray-100 p-4 shadow-sm hover:shadow-md transition-shadow">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <Avatar name={user.name} size={44} />
+          <div>
+            <p className="font-semibold text-[#05164D] text-sm">{user.name}</p>
+            {user.designation && <p className="text-xs text-gray-400">{user.designation}</p>}
+            <div className="mt-1">
+              <RoleBadge subRole={user.sub_role} />
+            </div>
+          </div>
+        </div>
+        <StatusDot status={user.status} />
+      </div>
+
+      <div className="mt-3 space-y-1.5">
+        <div className="flex items-center gap-2 text-xs text-gray-500">
+          <Mail size={12} className="text-gray-400 flex-shrink-0" />
+          <span className="truncate">{user.email}</span>
+        </div>
+        {user.phone && (
+          <div className="flex items-center gap-2 text-xs text-gray-500">
+            <Phone size={12} className="text-gray-400 flex-shrink-0" />
+            <span>{user.phone}</span>
+          </div>
+        )}
+        {user.buyer_company_name && (
+          <div className="flex items-center gap-2 text-xs text-gray-500">
+            <Building2 size={12} className="text-gray-400 flex-shrink-0" />
+            <span>{user.buyer_company_name}</span>
+          </div>
+        )}
+        <div className="flex items-center gap-2 text-xs text-gray-500">
+          <Calendar size={12} className="text-gray-400 flex-shrink-0" />
+          <span>Joined {new Date(user.joinedAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
+        </div>
+      </div>
+
+      <div className="mt-3 pt-3 border-t border-gray-100 flex items-center gap-2">
+        <button
+          onClick={() => onEdit(user)}
+          className="flex-1 py-1.5 rounded-lg border border-gray-200 text-xs font-semibold text-gray-600 hover:bg-gray-50 flex items-center justify-center gap-1 transition-colors"
+        >
+          <Pencil size={12} /> Edit
+        </button>
+        <button
+          onClick={() => onDelete(user)}
+          className="flex-1 py-1.5 rounded-lg border border-red-100 text-xs font-semibold text-red-500 hover:bg-red-50 flex items-center justify-center gap-1 transition-colors"
+        >
+          <Trash2 size={12} /> Delete
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Buyer card (summary) ──────────────────────────────────────────────────────
+
+function BuyerCard({ buyer, teamMembers, onViewTeam, onEdit, onDelete }) {
+  const teamCount = teamMembers.filter((m) => m.sub_role === SUB_ROLE.BUYER_TEAM_MEMBER).length;
+  const accountantCount = teamMembers.filter((m) => m.sub_role === SUB_ROLE.BUYER_ACCOUNTANT).length;
+
+  return (
+    <div className="bg-white rounded-2xl border border-gray-100 p-4 shadow-sm hover:shadow-md transition-shadow">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <Avatar name={buyer.name} size={44} />
+          <div>
+            <p className="font-semibold text-[#05164D] text-sm">{buyer.name}</p>
+            {buyer.buyer_company_name && (
+              <p className="text-xs text-[#476E2C] font-medium">{buyer.buyer_company_name}</p>
+            )}
+            {buyer.designation && <p className="text-xs text-gray-400">{buyer.designation}</p>}
+          </div>
+        </div>
+        <StatusDot status={buyer.status} />
+      </div>
+
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <div className="rounded-xl bg-[#E8F3D8] px-3 py-2 text-center">
+          <p className="text-lg font-bold text-[#476E2C]">{teamCount}</p>
+          <p className="text-[10px] text-[#476E2C] font-medium">Team Members</p>
+        </div>
+        <div className="rounded-xl bg-[#ECFDF5] px-3 py-2 text-center">
+          <p className="text-lg font-bold text-[#059669]">{accountantCount}</p>
+          <p className="text-[10px] text-[#059669] font-medium">Accountants</p>
+        </div>
+      </div>
+
+      <div className="mt-3 space-y-1.5">
+        <div className="flex items-center gap-2 text-xs text-gray-500">
+          <Mail size={12} className="text-gray-400 flex-shrink-0" />
+          <span className="truncate">{buyer.email}</span>
+        </div>
+        {buyer.phone && (
+          <div className="flex items-center gap-2 text-xs text-gray-500">
+            <Phone size={12} className="text-gray-400 flex-shrink-0" />
+            <span>{buyer.phone}</span>
+          </div>
+        )}
+      </div>
+
+      <div className="mt-3 pt-3 border-t border-gray-100 flex items-center gap-2">
+        <button
+          onClick={() => onViewTeam(buyer)}
+          className="flex-1 py-1.5 rounded-lg bg-[#E8F3D8] text-xs font-semibold text-[#476E2C] hover:bg-[#d4ebbf] flex items-center justify-center gap-1 transition-colors"
+        >
+          <UsersIcon size={12} /> View Team
+        </button>
+        <button
+          onClick={() => onEdit(buyer)}
+          className="py-1.5 px-3 rounded-lg border border-gray-200 text-xs font-semibold text-gray-600 hover:bg-gray-50 flex items-center justify-center gap-1 transition-colors"
+        >
+          <Pencil size={12} />
+        </button>
+        <button
+          onClick={() => onDelete(buyer)}
+          className="py-1.5 px-3 rounded-lg border border-red-100 text-xs font-semibold text-red-500 hover:bg-red-50 flex items-center justify-center gap-1 transition-colors"
+        >
+          <Trash2 size={12} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Summary card (Broker Team / Client Team) ─────────────────────────────────
+
+function TeamSummaryCard({ title, icon: Icon, color, bg, users, subRoles, onViewTeam, ownerName, ownerLabel, companyName }) {
+  const members = users.filter((u) => subRoles.includes(u.sub_role));
+  const active = members.filter((u) => u.status === 'active').length;
+  const breakdown = subRoles.map((sr) => ({
+    label: ROLE_META[sr]?.label || sr,
+    count: members.filter((u) => u.sub_role === sr).length,
+  })).filter((r) => r.count > 0);
+
+  return (
+    <div
+      className="rounded-2xl border p-5 cursor-pointer hover:shadow-md transition-all"
+      style={{ background: bg, borderColor: `${color}30` }}
+      onClick={onViewTeam}
+    >
+      <div className="flex items-start justify-between mb-4">
+        <div className="flex items-center gap-3">
+          <div className="w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: `${color}22` }}>
+            <Icon size={20} style={{ color }} />
+          </div>
+          <div>
+            <p className="font-bold text-[#05164D] text-sm">{title}</p>
+            {ownerName && <p className="text-xs font-semibold mt-0.5" style={{ color }}>{ownerLabel}: {ownerName}</p>}
+            {companyName && <p className="text-xs text-gray-400 truncate max-w-[160px]">{companyName}</p>}
+          </div>
+        </div>
+        <ChevronRight size={16} className="text-gray-400 flex-shrink-0 mt-1" />
+      </div>
+
+      <div className="grid grid-cols-2 gap-2 mb-3">
+        <div className="rounded-xl bg-white/70 px-3 py-2.5 text-center">
+          <p className="text-xl font-bold" style={{ color }}>{members.length}</p>
+          <p className="text-[10px] text-gray-500 font-medium">Total</p>
+        </div>
+        <div className="rounded-xl bg-white/70 px-3 py-2.5 text-center">
+          <p className="text-xl font-bold text-green-600">{active}</p>
+          <p className="text-[10px] text-gray-500 font-medium">Active</p>
+        </div>
+      </div>
+
+      {breakdown.length > 0 && (
+        <div className="bg-white/50 rounded-xl px-3 py-2.5 space-y-1.5">
+          {breakdown.map((r) => (
+            <div key={r.label} className="flex items-center justify-between text-xs">
+              <span className="text-gray-500">{r.label}</span>
+              <span className="font-bold" style={{ color }}>{r.count}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Add/Edit user modal ──────────────────────────────────────────────────────
+
+const EMPTY_FORM = {
+  firstName: '', lastName: '', email: '', phone: '', password: '',
+  sub_role: '', designation: '', buyer_company_name: '',
+  companyIds: [], companyId: '', status: 'active',
+};
+
+function splitName(full = '') {
+  const parts = (full || '').trim().split(/\s+/);
+  return { firstName: parts[0] || '', lastName: parts.slice(1).join(' ') || '' };
+}
+
+function TeamMemberRow({ member, onChange, onRemove, roleOptions }) {
+  return (
+    <div className="flex flex-col sm:flex-row gap-2 p-3 rounded-xl bg-gray-50 border border-gray-100">
+      <input
+        value={member.name}
+        onChange={(e) => onChange({ ...member, name: e.target.value })}
+        placeholder="Full Name *"
+        className="flex-1 px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]"
+      />
+      <input
+        value={member.email}
+        onChange={(e) => onChange({ ...member, email: e.target.value })}
+        placeholder="Email *"
+        className="flex-1 px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]"
+      />
+      <input
+        value={member.phone}
+        onChange={(e) => onChange({ ...member, phone: formatUSPhone(e.target.value) })}
+        placeholder="Phone"
+        maxLength={14}
+        className="flex-1 px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]"
+      />
+      <select
+        value={member.sub_role}
+        onChange={(e) => onChange({ ...member, sub_role: e.target.value })}
+        className="px-3 py-2 rounded-lg border border-gray-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]"
+      >
+        <option value="">Select Role</option>
+        {roleOptions.map((opt) => (
+          <option key={opt.value} value={opt.value}>{opt.label}</option>
+        ))}
+      </select>
+      <input
+        value={member.password}
+        onChange={(e) => onChange({ ...member, password: e.target.value })}
+        type="password"
+        placeholder="Password *"
+        className="flex-1 px-3 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]"
+      />
+      <button
+        type="button"
+        onClick={onRemove}
+        className="flex-shrink-0 w-8 h-8 rounded-lg border border-red-100 text-red-400 hover:bg-red-50 flex items-center justify-center"
+      >
+        <X size={14} />
+      </button>
+    </div>
+  );
+}
+
+function UserFormModal({ initial, companies, roleOptions, dbRole, onSave, onClose, submitting, error, showTeamMembers = false, teamMemberRoleOptions = [] }) {
   const isEdit = !!initial?.id;
   const [form, setForm] = useState(() => {
-    const seed = initial || EMPTY_FORM;
-    const { firstName, lastName } = seed.name ? splitName(seed.name) : { firstName: seed.firstName || '', lastName: seed.lastName || '' };
-    return { ...seed, firstName, lastName, companyIds: seed.companyIds?.length ? seed.companyIds : [seed.companyId].filter(Boolean) };
+    const s = initial || EMPTY_FORM;
+    const { firstName, lastName } = s.name ? splitName(s.name) : { firstName: s.firstName || '', lastName: s.lastName || '' };
+    return { ...s, firstName, lastName, companyIds: s.companyIds?.length ? s.companyIds : [s.companyId].filter(Boolean) };
   });
-  const [companiesSearchQuery, setCompaniesSearchQuery] = useState('');
-  const [companiesDropdownOpen, setCompaniesDropdownOpen] = useState(false);
-  const companiesDropdownRef = useRef(null);
-
+  const [teamMembers, setTeamMembers] = useState([]);
   const [localError, setLocalError] = useState('');
-  const setField = (patch) => { setForm((current) => ({ ...current, ...patch })); setLocalError(''); };
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [dropdownSearch, setDropdownSearch] = useState('');
+  const dropdownRef = useRef(null);
+
+  const setField = (patch) => { setForm((c) => ({ ...c, ...patch })); setLocalError(''); };
+
+  useEffect(() => {
+    const handler = (e) => { if (dropdownRef.current && !dropdownRef.current.contains(e.target)) setDropdownOpen(false); };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
 
   const validate = () => {
     if (!form.firstName.trim()) return 'First name is required.';
     if (!form.lastName.trim()) return 'Last name is required.';
-    if (!form.email.trim()) return 'Email address is required.';
-    if (!isValidEmail(form.email)) return 'Please enter a valid email address.';
-    if (!form.companyIds?.length) return 'Please assign at least one company.';
-    if (!isEdit) {
-      if (!form.password.trim()) return 'Password is required.';
-      if (form.password.length < 8) return 'Password must be at least 8 characters.';
-      if (!/[A-Za-z]/.test(form.password) || !/\d/.test(form.password)) {
-        return 'Password must include at least one letter and one number.';
+    if (!isValidEmail(form.email)) return 'Valid email is required.';
+    if (!form.companyIds?.length) return 'Assign at least one company.';
+    if (!form.sub_role) return 'Role is required.';
+    if (!isEdit && (!form.password.trim() || form.password.length < 8)) return 'Password must be at least 8 characters.';
+    if (showTeamMembers) {
+      for (const m of teamMembers) {
+        if (!m.name?.trim()) return 'Team member name is required.';
+        if (!isValidEmail(m.email)) return 'Team member email is invalid.';
+        if (!m.sub_role) return 'Team member role is required.';
+        if (!m.password?.trim()) return 'Team member password is required.';
       }
     }
-    if (isEdit && (!form.role || !form.status)) return 'Role and status are required.';
     return '';
   };
 
@@ -268,251 +412,175 @@ function UserFormModal({ initial, companies, groups, onCompanyChange, onSave, on
     const err = validate();
     if (err) { setLocalError(err); return; }
     const name = `${form.firstName.trim()} ${form.lastName.trim()}`.trim();
-    onSave({ ...form, name });
+    onSave({ ...form, name, teamMembers });
   };
 
+  const filteredCompanies = companies.filter((c) => c.name.toLowerCase().includes(dropdownSearch.toLowerCase()));
+  const selectedCompanies = companies.filter((c) => (form.companyIds || []).some((id) => String(id) === String(c.id)));
+
   const displayError = localError || error;
-
-  useEffect(() => {
-    const seed = initial || EMPTY_FORM;
-    const { firstName, lastName } = seed.name ? splitName(seed.name) : { firstName: seed.firstName || '', lastName: seed.lastName || '' };
-    setForm({ ...seed, firstName, lastName, companyIds: seed.companyIds?.length ? seed.companyIds : [seed.companyId].filter(Boolean) });
-  }, [initial]);
-
-  useEffect(() => {
-    const handleClickOutside = (event) => {
-      if (companiesDropdownRef.current && !companiesDropdownRef.current.contains(event.target)) {
-        setCompaniesDropdownOpen(false);
-      }
-    };
-
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
-  useEffect(() => {
-    if (form.companyId) {
-      onCompanyChange?.(form.companyId);
-    }
-  }, [form.companyId, onCompanyChange]);
-
-  const filteredCompanies = companies.filter((company) =>
-    company.name.toLowerCase().includes(companiesSearchQuery.toLowerCase())
-  );
-
-  const selectedCompanies = companies.filter(c => (form.companyIds || []).some(id => String(id) === String(c.id)));
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-white/30 backdrop-blur-sm" />
-      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-2xl z-10 animate-fadeIn max-h-[88vh] overflow-hidden flex flex-col">
+      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-2xl z-10 animate-fadeIn max-h-[90vh] overflow-hidden flex flex-col">
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
           <div>
-            <h2 className="text-base font-bold text-[#05164D]">{isEdit ? 'Edit User' : 'Add New User'}</h2>
-            <p className="text-xs text-gray-400 mt-0.5">{isEdit ? 'Update user information' : 'Create a new backend user account'}</p>
+            <h2 className="text-base font-bold text-[#05164D]">{isEdit ? 'Edit User' : 'Add User'}</h2>
+            <p className="text-xs text-gray-400 mt-0.5">{isEdit ? 'Update user information' : 'Create a new user account'}</p>
           </div>
-          <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-gray-100 flex items-center justify-center text-gray-400 hover:text-gray-600 transition-colors">
+          <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-gray-100 flex items-center justify-center text-gray-400">
             <X size={16} />
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-6 grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="col-span-1">
-            <label className="block text-xs font-semibold text-gray-500 mb-1.5">First Name *</label>
-            <input
-              value={form.firstName}
-              onChange={(e) => setField({ firstName: e.target.value })}
-              placeholder="Jane"
-              className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]"
-            />
-          </div>
-          <div className="col-span-1">
-            <label className="block text-xs font-semibold text-gray-500 mb-1.5">Last Name *</label>
-            <input
-              value={form.lastName}
-              onChange={(e) => setField({ lastName: e.target.value })}
-              placeholder="Smith"
-              className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]"
-            />
+        <div className="flex-1 overflow-y-auto p-6 space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 mb-1.5">First Name *</label>
+              <input value={form.firstName} onChange={(e) => setField({ firstName: e.target.value })} placeholder="Jane"
+                className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]" />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 mb-1.5">Last Name *</label>
+              <input value={form.lastName} onChange={(e) => setField({ lastName: e.target.value })} placeholder="Smith"
+                className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]" />
+            </div>
           </div>
 
-          {/* Searchable Multiselect Dropdown for Companies */}
-          <div className="col-span-2">
+          <div>
+            <label className="block text-xs font-semibold text-gray-500 mb-1.5">Email *</label>
+            <input type="email" value={form.email} onChange={(e) => setField({ email: e.target.value })} placeholder="user@company.com"
+              className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]" />
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 mb-1.5">Phone</label>
+              <div className="flex">
+                <span className="flex h-[42px] items-center rounded-l-xl border border-r-0 border-gray-200 bg-gray-50 px-3 text-sm text-gray-500">+1</span>
+                <input type="tel" value={form.phone} onChange={(e) => setField({ phone: formatUSPhone(e.target.value) })} placeholder="(555) 000-0000" maxLength={14}
+                  className="min-w-0 flex-1 rounded-l-none rounded-r-xl border border-gray-200 px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]" />
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 mb-1.5">Designation</label>
+              <input value={form.designation} onChange={(e) => setField({ designation: e.target.value })} placeholder="e.g. CFO"
+                className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]" />
+            </div>
+          </div>
+
+          {/* Buyer company name — shown only for buyer sub-roles */}
+          {[SUB_ROLE.BUYER_PRIMARY, SUB_ROLE.BUYER_TEAM_MEMBER, SUB_ROLE.BUYER_ACCOUNTANT].includes(form.sub_role) && (
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 mb-1.5">Buyer Company Name *</label>
+              <input value={form.buyer_company_name} onChange={(e) => setField({ buyer_company_name: e.target.value })} placeholder="Buyer Company Pvt Ltd"
+                className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]" />
+            </div>
+          )}
+
+          {/* Role picker */}
+          <div>
+            <label className="block text-xs font-semibold text-gray-500 mb-1.5">Role *</label>
+            <select value={form.sub_role} onChange={(e) => setField({ sub_role: e.target.value })}
+              className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]">
+              <option value="">Select Role</option>
+              {roleOptions.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+            </select>
+          </div>
+
+          {/* Company assignment */}
+          <div>
             <label className="block text-xs font-semibold text-gray-500 mb-1.5">Assign Companies *</label>
-            <div className="relative" ref={companiesDropdownRef}>
-              <button
-                type="button"
-                onClick={() => setCompaniesDropdownOpen(!companiesDropdownOpen)}
-                className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]"
-              >
-                <span className="text-left">
-                  {selectedCompanies.length === 0 ? 'Select companies...' : `${selectedCompanies.length} compan${selectedCompanies.length === 1 ? 'y' : 'ies'} selected`}
-                </span>
-                <ChevronDown size={16} className={`text-gray-400 transition-transform ${companiesDropdownOpen ? 'rotate-180' : ''}`} />
+            <div className="relative" ref={dropdownRef}>
+              <button type="button" onClick={() => setDropdownOpen((v) => !v)}
+                className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]">
+                <span>{selectedCompanies.length === 0 ? 'Select companies...' : `${selectedCompanies.length} compan${selectedCompanies.length === 1 ? 'y' : 'ies'} selected`}</span>
+                <ChevronDown size={16} className={`text-gray-400 transition-transform ${dropdownOpen ? 'rotate-180' : ''}`} />
               </button>
-
-              {companiesDropdownOpen && (
-                <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-xl shadow-lg z-10 max-h-56 overflow-y-auto">
-                  {/* Search Input */}
+              {dropdownOpen && (
+                <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-xl shadow-lg z-10 max-h-48 overflow-y-auto">
                   <div className="sticky top-0 bg-white border-b border-gray-100 p-3">
                     <div className="relative">
                       <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                      <input
-                        type="text"
-                        placeholder="Search companies..."
-                        value={companiesSearchQuery}
-                        onChange={(e) => setCompaniesSearchQuery(e.target.value)}
-                        className="w-full pl-9 pr-3 py-2 rounded-lg border border-gray-200 text-xs focus:outline-none focus:border-[#8BC53D]"
-                        autoFocus
-                      />
+                      <input type="text" placeholder="Search companies..." value={dropdownSearch} onChange={(e) => setDropdownSearch(e.target.value)} autoFocus
+                        className="w-full pl-9 pr-3 py-2 rounded-lg border border-gray-200 text-xs focus:outline-none focus:border-[#8BC53D]" />
                     </div>
                   </div>
-
-                  {/* Company Options */}
                   <div className="p-2">
-                    {filteredCompanies.length > 0 ? (
-                      filteredCompanies.map((company) => {
-                        const isSelected = (form.companyIds || []).some(id => String(id) === String(company.id));
-                        return (
-                          <button
-                            key={company.id}
-                            type="button"
-                            onClick={() => {
-                              const nextIds = isSelected
-                                ? (form.companyIds || []).filter(id => String(id) !== String(company.id))
-                                : Array.from(new Set([...(form.companyIds || []), company.id]));
-                              setField({
-                                companyIds: nextIds,
-                                companyId: nextIds.some(id => String(id) === String(form.companyId)) ? form.companyId : (nextIds[0] || ''),
-                              });
-                            }}
-                            className={`w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm text-left transition-colors ${isSelected ? 'bg-[#E6F3D3] text-[#8BC53D]' : 'text-gray-700 hover:bg-gray-100'
-                              }`}
-                          >
-                            <div className={`w-4 h-4 rounded border flex items-center justify-center transition-all ${isSelected ? 'bg-[#8BC53D] border-[#8BC53D]' : 'border-gray-300'
-                              }`}>
-                              {isSelected && <Check size={12} className="text-white" />}
-                            </div>
-                            <span className="flex-1">{company.name}</span>
-                          </button>
-                        );
-                      })
-                    ) : (
-                      <div className="px-3 py-6 text-center text-xs text-gray-400">
-                        No companies found
-                      </div>
-                    )}
+                    {filteredCompanies.map((c) => {
+                      const sel = (form.companyIds || []).some((id) => String(id) === String(c.id));
+                      return (
+                        <button key={c.id} type="button" onClick={() => {
+                          const next = sel ? (form.companyIds || []).filter((id) => String(id) !== String(c.id)) : [...(form.companyIds || []), c.id];
+                          setField({ companyIds: next, companyId: next[0] || '' });
+                        }}
+                          className={`w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm text-left transition-colors ${sel ? 'bg-[#E6F3D3] text-[#8BC53D]' : 'text-gray-700 hover:bg-gray-100'}`}>
+                          <div className={`w-4 h-4 rounded border flex items-center justify-center ${sel ? 'bg-[#8BC53D] border-[#8BC53D]' : 'border-gray-300'}`}>
+                            {sel && <Check size={12} className="text-white" />}
+                          </div>
+                          <span className="flex-1">{c.name}</span>
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
               )}
             </div>
-            <p className="mt-1 text-[11px] text-gray-400">Users can be assigned to multiple companies</p>
-          </div>
-
-          {/* Selected Companies Tags */}
-          {selectedCompanies.length > 0 && (
-            <div className="col-span-2">
-              <div className="flex flex-wrap gap-2">
-                {selectedCompanies.map(company => (
-                  <div key={company.id} className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#E6F3D3] text-[#8BC53D] text-xs font-semibold">
-                    <span>{company.name}</span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const nextIds = (form.companyIds || []).filter(id => String(id) !== String(company.id));
-                        setField({
-                          companyIds: nextIds,
-                          companyId: nextIds.some(id => String(id) === String(form.companyId)) ? form.companyId : (nextIds[0] || ''),
-                        });
-                      }}
-                      className="hover:opacity-70 transition-opacity"
-                    >
-                      <X size={12} />
-                    </button>
+            {selectedCompanies.length > 0 && (
+              <div className="flex flex-wrap gap-2 mt-2">
+                {selectedCompanies.map((c) => (
+                  <div key={c.id} className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-[#E6F3D3] text-[#8BC53D] text-xs font-semibold">
+                    <span>{c.name}</span>
+                    <button type="button" onClick={() => {
+                      const next = (form.companyIds || []).filter((id) => String(id) !== String(c.id));
+                      setField({ companyIds: next, companyId: next[0] || '' });
+                    }}><X size={12} /></button>
                   </div>
                 ))}
               </div>
-            </div>
-          )}
-
-          <div className="col-span-2 lg:col-span-1">
-            <label className="block text-xs font-semibold text-gray-500 mb-1.5">Phone No.</label>
-            <div className="flex">
-              <span className="flex h-[42px] items-center rounded-l-xl border border-r-0 border-gray-200 bg-gray-50 px-3 text-sm font-medium text-gray-500">+1</span>
-              <input
-                type="tel"
-                value={form.phone}
-                onChange={(e) => setField({ phone: formatUSPhone(e.target.value) })}
-                placeholder="(555) 000-0000"
-                maxLength={14}
-                className="min-w-0 flex-1 rounded-l-none rounded-r-xl border border-gray-200 px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]"
-              />
-            </div>
+            )}
           </div>
 
-          <div className="col-span-2">
-            <label className="block text-xs font-semibold text-gray-500 mb-1.5">Email *</label>
-            <input
-              type="email"
-              value={form.email}
-              onChange={(event) => setField({ email: event.target.value })}
-              placeholder="user@company.com"
-              className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]"
-            />
+          <div>
+            <label className="block text-xs font-semibold text-gray-500 mb-1.5">{isEdit ? 'Password Reset' : 'Password'}{!isEdit && ' *'}</label>
+            <input type="password" value={form.password} onChange={(e) => setField({ password: e.target.value })}
+              placeholder={isEdit ? 'Leave blank to keep existing' : 'Set a password (min 8 chars)'}
+              className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]" />
           </div>
-
-          <div className="col-span-2">
-            <label className="block text-xs font-semibold text-gray-500 mb-1.5">Groups {form.companyId && `(for ${companies.find(c => String(c.id) === String(form.companyId))?.name})`}</label>
-            <div className="flex flex-wrap gap-2">
-              {groups.length === 0 ? (
-                <span className="text-xs text-gray-400">{form.companyId ? 'No groups available for this company' : 'Select at least one company to view groups'}</span>
-              ) : groups.map((group) => {
-                const active = form.groupIds.includes(group.id);
-                return (
-                  <button
-                    key={group.id}
-                    type="button"
-                    onClick={() => {
-                      setField({
-                        groupIds: active
-                          ? form.groupIds.filter((id) => id !== group.id)
-                          : [...form.groupIds, group.id],
-                      });
-                    }}
-                    className={`px-3 py-1.5 rounded-full border text-xs font-semibold transition-all ${active ? 'bg-[#05164D] text-white border-[#05164D]' : 'bg-gray-50 text-gray-500 border-gray-200 hover:border-gray-300'
-                      }`}
-                  >
-                    {group.name || group.id}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="col-span-2">
-            <label className="block text-xs font-semibold text-gray-500 mb-1.5">{isEdit ? 'Password Reset' : 'Password'} {!isEdit && '*'}</label>
-            <input
-              type="password"
-              value={form.password}
-              onChange={(event) => setField({ password: event.target.value })}
-              placeholder={isEdit ? 'Leave blank to keep existing password' : 'Set an initial password'}
-              className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]"
-            />
-          </div>
-
 
           {isEdit && (
             <div>
               <label className="block text-xs font-semibold text-gray-500 mb-1.5">Status *</label>
-              <select
-                value={form.status}
-                onChange={(event) => setField({ status: event.target.value })}
-                className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]"
-              >
-                {STATUS_ORDER.map((status) => (
-                  <option key={status} value={status}>{statusMeta(status).label}</option>
-                ))}
+              <select value={form.status} onChange={(e) => setField({ status: e.target.value })}
+                className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]">
+                <option value="active">Active</option>
+                <option value="inactive">Inactive</option>
               </select>
+            </div>
+          )}
+
+          {/* Team members section (only for primary buyer/client owner during creation) */}
+          {showTeamMembers && !isEdit && (
+            <div>
+              <div className="flex items-center justify-between mb-3">
+                <label className="text-xs font-semibold text-gray-500">Team Members</label>
+                <button type="button" onClick={() => setTeamMembers((m) => [...m, { id: Date.now(), name: '', email: '', phone: '', sub_role: teamMemberRoleOptions[0]?.value || '', password: '' }])}
+                  className="inline-flex items-center gap-1 text-xs font-semibold text-[#8BC53D] hover:text-[#476E2C] transition-colors">
+                  <Plus size={14} /> Add Member
+                </button>
+              </div>
+              {teamMembers.length === 0 ? (
+                <p className="text-xs text-gray-400 py-2">No team members added yet.</p>
+              ) : (
+                <div className="space-y-2">
+                  {teamMembers.map((m, idx) => (
+                    <TeamMemberRow key={m.id} member={m} roleOptions={teamMemberRoleOptions}
+                      onChange={(updated) => setTeamMembers((list) => list.map((x) => x.id === m.id ? updated : x))}
+                      onRemove={() => setTeamMembers((list) => list.filter((x) => x.id !== m.id))} />
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -520,14 +588,9 @@ function UserFormModal({ initial, companies, groups, onCompanyChange, onSave, on
         <div className="px-6 py-4 border-t border-gray-100 bg-white flex flex-col gap-3">
           <FormError message={displayError} />
           <div className="flex gap-3">
-            <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-gray-600 hover:bg-gray-50 transition-colors">
-              Cancel
-            </button>
-            <button
-              onClick={handleSave}
-              disabled={submitting}
-              className="flex-1 py-2.5 rounded-xl bg-[#8BC53D] hover:bg-[#476E2C] disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-bold transition-colors"
-            >
+            <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-gray-600 hover:bg-gray-50">Cancel</button>
+            <button onClick={handleSave} disabled={submitting}
+              className="flex-1 py-2.5 rounded-xl bg-[#8BC53D] hover:bg-[#476E2C] disabled:opacity-50 text-white text-sm font-bold transition-colors">
               {submitting ? 'Saving...' : isEdit ? 'Save Changes' : 'Add User'}
             </button>
           </div>
@@ -537,51 +600,161 @@ function UserFormModal({ initial, companies, groups, onCompanyChange, onSave, on
   );
 }
 
-export default function BrokerUsers() {
-  const [data, setData] = useState([]);
-  const [companies, setCompanies] = useState([]);
+// ─── Delete modal ─────────────────────────────────────────────────────────────
+
+function DeleteModal({ user, onConfirm, onClose, submitting, error }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-white/30 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 z-10">
+        <div className="flex items-center justify-center w-14 h-14 rounded-full bg-red-100 mx-auto mb-4">
+          <Trash2 size={24} className="text-red-500" />
+        </div>
+        <h3 className="text-center text-lg font-bold text-[#05164D] mb-1">Delete User</h3>
+        <p className="text-center text-sm text-gray-500 mb-6">
+          Are you sure you want to delete <span className="font-semibold text-[#05164D]">{user.name}</span>? This action cannot be undone.
+        </p>
+        {error && <p className="mb-4 text-sm text-red-600 bg-red-50 rounded-xl px-3 py-2 text-center">{error}</p>}
+        <div className="flex gap-3">
+          <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-gray-600 hover:bg-gray-50">Cancel</button>
+          <button onClick={onConfirm} disabled={submitting} className="flex-1 py-2.5 rounded-xl bg-red-500 hover:bg-red-600 text-white text-sm font-semibold disabled:opacity-60">
+            {submitting ? 'Deleting...' : 'Delete'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Team detail view ─────────────────────────────────────────────────────────
+
+function TeamDetailView({ title, users, subRoles, onBack, onAdd, onEdit, onDelete }) {
   const [search, setSearch] = useState('');
-  const [filterRole, setRole] = useState('All Roles');
-  const [filterStatus, setStatus] = useState('All Status');
-  const [filterCompany, setComp] = useState('All Companies');
-  const [selected, setSelected] = useState(new Set());
-  const [page, setPage] = useState(1);
-  const [viewUser, setViewUser] = useState(null);
+  const filtered = users.filter((u) =>
+    subRoles.includes(u.sub_role) &&
+    (!search || u.name.toLowerCase().includes(search.toLowerCase()) || u.email.toLowerCase().includes(search.toLowerCase()))
+  );
+
+  return (
+    <div className="space-y-6 animate-fadeIn">
+      <div className="flex items-center gap-4">
+        <button onClick={onBack} className="w-9 h-9 rounded-xl border border-gray-200 flex items-center justify-center text-gray-500 hover:bg-gray-50">
+          <ArrowLeft size={16} />
+        </button>
+        <div>
+          <h2 className="text-xl font-bold text-[#05164D]">{title}</h2>
+          <p className="text-sm text-gray-500">{filtered.length} member{filtered.length !== 1 ? 's' : ''}</p>
+        </div>
+        <div className="ml-auto">
+          <button onClick={onAdd} className="inline-flex items-center gap-2 px-4 py-2 bg-[#8BC53D] hover:bg-[#476E2C] text-white rounded-xl text-sm font-bold transition-colors">
+            <Plus size={15} /> Add Member
+          </button>
+        </div>
+      </div>
+
+      <div className="relative">
+        <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
+        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search members..."
+          className="w-full pl-9 pr-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] bg-gray-50" />
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="py-16 text-center">
+          <UsersIcon size={36} className="mx-auto text-gray-200 mb-3" />
+          <p className="text-sm font-semibold text-gray-400">No members found</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+          {filtered.map((u) => (
+            <UserCard key={u.id} user={u} onEdit={onEdit} onDelete={onDelete} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Buyer team detail view ───────────────────────────────────────────────────
+
+function BuyerTeamView({ buyer, teamMembers, onBack, onAddMember, onEdit, onDelete }) {
+  const members = teamMembers.filter((m) => m.parent_user_id === buyer.id || m.id === buyer.id);
+  const [search, setSearch] = useState('');
+  const filtered = members.filter((m) =>
+    !search || m.name.toLowerCase().includes(search.toLowerCase()) || m.email.toLowerCase().includes(search.toLowerCase())
+  );
+
+  return (
+    <div className="space-y-6 animate-fadeIn">
+      <div className="flex items-center gap-4">
+        <button onClick={onBack} className="w-9 h-9 rounded-xl border border-gray-200 flex items-center justify-center text-gray-500 hover:bg-gray-50">
+          <ArrowLeft size={16} />
+        </button>
+        <div className="flex items-center gap-3">
+          <Avatar name={buyer.name} size={40} />
+          <div>
+            <h2 className="text-xl font-bold text-[#05164D]">{buyer.buyer_company_name || buyer.name}</h2>
+            <p className="text-sm text-gray-500">{filtered.length} team member{filtered.length !== 1 ? 's' : ''}</p>
+          </div>
+        </div>
+        <div className="ml-auto">
+          <button onClick={onAddMember} className="inline-flex items-center gap-2 px-4 py-2 bg-[#8BC53D] hover:bg-[#476E2C] text-white rounded-xl text-sm font-bold transition-colors">
+            <Plus size={15} /> Add Team Member
+          </button>
+        </div>
+      </div>
+
+      <div className="relative">
+        <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
+        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search team members..."
+          className="w-full pl-9 pr-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] bg-gray-50" />
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="py-12 text-center">
+          <UsersIcon size={36} className="mx-auto text-gray-200 mb-3" />
+          <p className="text-sm font-semibold text-gray-400">No team members yet</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+          {filtered.map((m) => (
+            <UserCard key={m.id} user={m} onEdit={onEdit} onDelete={onDelete} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Main page ────────────────────────────────────────────────────────────────
+
+// view: 'overview' | 'broker-team' | 'client-team' | 'buyer-team'
+export default function BrokerUsers() {
+  const { user: authUser } = useAuth();
+  const [allUsers, setAllUsers] = useState([]);
+  const [companies, setCompanies] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+
+  const [view, setView] = useState('overview');
+  const [selectedBuyer, setSelectedBuyer] = useState(null);
+
   const [editUser, setEditUser] = useState(null);
   const [deleteUser, setDeleteUser] = useState(null);
-  const [showFilters, setShowFilters] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState('');
   const [formError, setFormError] = useState('');
   const [deleteError, setDeleteError] = useState('');
-  const [success, setSuccess] = useState('');
-  const [groupsByCompany, setGroupsByCompany] = useState({});
+  const [submitting, setSubmitting] = useState(false);
 
-  const loadGroupsForCompany = async (companyId) => {
-    if (!companyId) return [];
-    if (groupsByCompany[companyId]) return groupsByCompany[companyId];
-    try {
-      const groups = await listCompanyGroups(companyId);
-      setGroupsByCompany((current) => ({ ...current, [companyId]: groups }));
-      return groups;
-    } catch (err) {
-      return [];
-    }
-  };
+  // What role context to open "Add User" in
+  const [addContext, setAddContext] = useState(null); // 'broker' | 'client' | 'buyer' | 'buyer-member'
 
   const loadData = async () => {
     setLoading(true);
     setError('');
-
     try {
-      const [usersResponse, companiesResponse] = await Promise.all([
-        listUsersRequest(),
-        listCompaniesRequest(),
-      ]);
-
-      setData(usersResponse.map(formatUser).filter(Boolean).filter((u) => VISIBLE_ROLES.includes(u.role)));
-      setCompanies(companiesResponse);
+      const [usersRes, companiesRes] = await Promise.all([listUsersRequest(), listCompaniesRequest()]);
+      setAllUsers(usersRes.map(normalizeUser).filter(Boolean));
+      setCompanies(companiesRes);
     } catch (err) {
       setError(err.message || 'Unable to load users.');
     } finally {
@@ -589,114 +762,109 @@ export default function BrokerUsers() {
     }
   };
 
-  useEffect(() => {
-    loadData();
-  }, []);
+  useEffect(() => { loadData(); }, []);
+  useEffect(() => { if (!success) return; const t = setTimeout(() => setSuccess(''), 3500); return () => clearTimeout(t); }, [success]);
 
-  useEffect(() => {
-    if (!success) return undefined;
-    const timer = setTimeout(() => setSuccess(''), 3000);
-    return () => clearTimeout(timer);
-  }, [success]);
-
-  useEffect(() => {
-    if (!editUser?.companyId) return;
-    loadGroupsForCompany(editUser.companyId);
-  }, [editUser?.companyId]);
-
-  const companyOptions = useMemo(
-    () => ['All Companies', ...Array.from(new Set(data.map((user) => user.company))).filter(Boolean)],
-    [data]
-  );
-  const statusOptions = useMemo(
-    () => ['All Status', ...Array.from(new Set(data.map((user) => user.status))).sort((a, b) => STATUS_ORDER.indexOf(a) - STATUS_ORDER.indexOf(b))],
-    [data]
-  );
-
-  const filtered = useMemo(() => {
-    const query = search.toLowerCase();
-    return data.filter((user) => {
-      const matchSearch = !query || user.name.toLowerCase().includes(query) || user.email.toLowerCase().includes(query) || user.company.toLowerCase().includes(query) || user.phone.includes(query) || roleMeta(user.role).label.toLowerCase().includes(query);
-      const matchRole = filterRole === 'All Roles' || user.role === filterRole;
-      const matchStatus = filterStatus === 'All Status' || user.status === filterStatus;
-      const matchCompany = filterCompany === 'All Companies' || user.company === filterCompany;
-      return matchSearch && matchRole && matchStatus && matchCompany;
-    });
-  }, [data, search, filterRole, filterStatus, filterCompany]);
-
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const safePage = Math.min(page, totalPages);
-  const paginated = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
-
-  const pageRange = useMemo(() => {
-    const range = [];
-    const delta = 2;
-    for (let index = Math.max(1, safePage - delta); index <= Math.min(totalPages, safePage + delta); index += 1) {
-      range.push(index);
-    }
-    return range;
-  }, [safePage, totalPages]);
-
-  const pageIds = paginated.map((user) => user.id);
-  const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selected.has(id));
-  const someSelected = pageIds.some((id) => selected.has(id)) && !allPageSelected;
-
-  const toggleAll = () => {
-    setSelected((current) => {
-      const next = new Set(current);
-      if (allPageSelected) {
-        pageIds.forEach((id) => next.delete(id));
-      } else {
-        pageIds.forEach((id) => next.add(id));
-      }
-      return next;
-    });
+  // Grouped users
+  // Robust classification — same logic as WorkspaceUsers so both pages agree.
+  const classifyUser = (u) => {
+    const sub = u.sub_role;
+    if (BROKER_SUB_ROLES.includes(sub)) return 'broker';
+    if (BUYER_SUB_ROLES.includes(sub))  return 'buyer';
+    if (CLIENT_SUB_ROLES.includes(sub)) return 'client';
+    if (u.buyer_company_name && String(u.buyer_company_name).trim()) return 'buyer';
+    if (u.parent_user_id) return 'buyer';
+    if (u.role === 'broker' || u.role === 'admin') return 'broker';
+    return 'client';
   };
 
-  const toggleOne = (id) => {
-    setSelected((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+  const brokerUsers    = useMemo(() => allUsers.filter((u) => classifyUser(u) === 'broker'), [allUsers]);
+  const clientUsers    = useMemo(() => allUsers.filter((u) => classifyUser(u) === 'client'), [allUsers]);
+  const buyerPrimaries = useMemo(() => allUsers.filter((u) => classifyUser(u) === 'buyer' && !u.parent_user_id), [allUsers]);
+  const buyerTeamMembers = useMemo(() => allUsers.filter((u) => classifyUser(u) === 'buyer' && !!u.parent_user_id), [allUsers]);
+  const allBuyerUsers  = useMemo(() => allUsers.filter((u) => classifyUser(u) === 'buyer'), [allUsers]);
+
+  // Derived summary names
+  const primaryBroker = useMemo(() => brokerUsers.find((u) => u.sub_role === SUB_ROLE.BROKER_PRIMARY) || brokerUsers[0], [brokerUsers]);
+  const companyOwner = useMemo(() => clientUsers.find((u) => u.sub_role === SUB_ROLE.COMPANY_OWNER) || clientUsers[0], [clientUsers]);
+  const brokerCompanyName = authUser?.broker_company || authUser?.company || primaryBroker?.company || '';
+  const clientCompanyName = companyOwner?.company || companies.find((c) => c.id === companyOwner?.companyId)?.name || '';
+
+  // Role options per context
+  const roleOptionsMap = {
+    broker: [
+      { value: SUB_ROLE.BROKER_TEAM_MEMBER, label: 'Broker Team Member' },
+      { value: SUB_ROLE.BANKER, label: 'Banker' },
+      { value: SUB_ROLE.LOAN_BROKER, label: 'Loan Broker' },
+    ],
+    client: [
+      { value: SUB_ROLE.COMPANY_OWNER, label: 'Company Owner' },
+      { value: SUB_ROLE.CLIENT_TEAM_MEMBER, label: 'Client Team Member' },
+      { value: SUB_ROLE.CLIENT_ACCOUNTANT, label: 'Client Accountant' },
+    ],
+    buyer: [
+      { value: SUB_ROLE.BUYER_PRIMARY, label: 'Buyer (Primary)' },
+    ],
+    'buyer-member': BUYER_TEAM_ROLE_OPTIONS,
   };
 
-  const clearSelection = () => setSelected(new Set());
+  const dbRoleMap = {
+    broker: 'broker',
+    client: 'buyer',
+    buyer: 'buyer',
+    'buyer-member': 'buyer',
+  };
+
+  const teamMemberRoleOptions = addContext === 'buyer' ? BUYER_TEAM_ROLE_OPTIONS
+    : addContext === 'client' ? CLIENT_TEAM_ROLE_OPTIONS
+    : [];
 
   const handleAdd = async (form) => {
     setSubmitting(true);
     setFormError('');
-    setSuccess('');
-
     try {
-      const created = await createUserRequest({
+      const dbRole = dbRoleMap[addContext] || 'buyer';
+      const payload = {
         name: form.name.trim(),
         email: form.email.trim(),
-        phone: form.phone.trim() || null,
+        phone: form.phone?.trim() || null,
         password: form.password,
-        role: ['user', 'client'].includes(form.role) ? 'buyer' : form.role,
-        profile_image: null,
+        role: dbRole,
+        sub_role: form.sub_role,
+        designation: form.designation?.trim() || null,
+        buyer_company_name: form.buyer_company_name?.trim() || null,
+        parent_user_id: form.parent_user_id || null,
         company_id: form.companyId || null,
         company_ids: Array.from(new Set([form.companyId, ...(form.companyIds || [])].filter(Boolean))),
         status: 'active',
-      });
-
-      if (created?.id) {
-        if (form.groupIds?.length) {
-          await Promise.all(form.groupIds.map((groupId) => addGroupMember(groupId, { user_id: created.id })));
-        }
-        setData((current) => [formatUser(created), ...current].filter(Boolean));
+      };
+      const created = await createUserRequest(payload);
+      if (created?.id && form.teamMembers?.length) {
+        await Promise.all(
+          form.teamMembers.map((m) =>
+            createUserRequest({
+              name: m.name.trim(),
+              email: m.email.trim(),
+              phone: m.phone?.trim() || null,
+              password: m.password,
+              role: dbRole,
+              sub_role: m.sub_role,
+              parent_user_id: created.id,
+              company_id: payload.company_id,
+              company_ids: payload.company_ids,
+              status: 'active',
+            })
+          )
+        );
       }
+      // Trigger message group auto-creation for all affected companies (non-fatal)
+      const affectedCompanyIds = Array.from(new Set([payload.company_id, ...(payload.company_ids || [])].filter(Boolean)));
+      await Promise.allSettled(affectedCompanyIds.map((cid) => triggerAutoCreateMessageGroups(cid)));
+
       await loadData();
       setEditUser(null);
-      setPage(1);
-
-      if (created?.emailSent === false) {
-        setSuccess('User created successfully, but invitation email could not be sent.');
-      } else {
-        setSuccess('User created successfully. A welcome email has been sent to ' + (form.email.trim() || 'the user') + '.');
-      }
+      setAddContext(null);
+      setSuccess('User created successfully.');
     } catch (err) {
       setFormError(formatApiError(err));
     } finally {
@@ -707,35 +875,20 @@ export default function BrokerUsers() {
   const handleEdit = async (form) => {
     setSubmitting(true);
     setFormError('');
-
-    const payload = {
-      name: form.name.trim(),
-      email: form.email.trim(),
-      phone: form.phone.trim() || null,
-      role: ['user', 'client'].includes(form.role) ? 'buyer' : form.role,
-      profile_image: form.profileImage.trim() || null,
-      company_id: form.companyId || null,
-      company_ids: Array.from(new Set([form.companyId, ...(form.companyIds || [])].filter(Boolean))),
-      status: form.status,
-    };
-
-    if (form.password.trim()) {
-      payload.password = form.password;
-    }
-
     try {
-      const updated = await updateUserRequest(form.id, payload);
-      if (updated?.id) {
-        const originalGroups = editUser?.groupIds || [];
-        const nextGroups = form.groupIds || [];
-        const toAdd = nextGroups.filter((id) => !originalGroups.includes(id));
-        const toRemove = originalGroups.filter((id) => !nextGroups.includes(id));
-        await Promise.all(toAdd.map((groupId) => addGroupMember(groupId, { user_id: form.id })));
-        await Promise.all(toRemove.map((groupId) => removeGroupMember(groupId, form.id)));
-        const nextUser = formatUser(updated);
-        setData((current) => current.map((user) => user.id === form.id ? nextUser : user).filter(Boolean));
-        if (viewUser?.id === form.id) setViewUser(nextUser);
-      }
+      const payload = {
+        name: form.name.trim(),
+        email: form.email.trim(),
+        phone: form.phone?.trim() || null,
+        sub_role: form.sub_role,
+        designation: form.designation?.trim() || null,
+        buyer_company_name: form.buyer_company_name?.trim() || null,
+        company_id: form.companyId || null,
+        company_ids: Array.from(new Set([form.companyId, ...(form.companyIds || [])].filter(Boolean))),
+        status: form.status,
+      };
+      if (form.password?.trim()) payload.password = form.password;
+      await updateUserRequest(form.id, payload);
       await loadData();
       setEditUser(null);
       setSuccess('User updated successfully.');
@@ -749,17 +902,11 @@ export default function BrokerUsers() {
   const handleDelete = async () => {
     setSubmitting(true);
     setDeleteError('');
-
     try {
       await deleteUserRequest(deleteUser.id);
-      setData((current) => current.filter((user) => user.id !== deleteUser.id));
-      setSelected((current) => {
-        const next = new Set(current);
-        next.delete(deleteUser.id);
-        return next;
-      });
-      if (viewUser?.id === deleteUser.id) setViewUser(null);
+      await loadData();
       setDeleteUser(null);
+      setSuccess('User deleted.');
     } catch (err) {
       setDeleteError(err.message || 'Unable to delete user.');
     } finally {
@@ -767,354 +914,160 @@ export default function BrokerUsers() {
     }
   };
 
-  const handleBulkDelete = async () => {
-    const ids = Array.from(selected);
-    if (ids.length === 0) return;
+  const openEdit = (user) => { setFormError(''); setEditUser({ ...user, password: '' }); };
+  const openAdd = (ctx) => { setFormError(''); setAddContext(ctx); setEditUser({ ...EMPTY_FORM, isNew: true }); };
 
-    setSubmitting(true);
-    setError('');
+  // ── Render views ──────────────────────────────────────────────────────────
 
-    try {
-      await Promise.all(ids.map((id) => deleteUserRequest(id)));
-      setData((current) => current.filter((user) => !selected.has(user.id)));
-      setSelected(new Set());
-    } catch (err) {
-      setError(err.message || 'Unable to delete selected users.');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const stats = useMemo(() => ({
-    total: data.length,
-    sellers: data.filter((user) => user.role === 'client').length,
-    buyers: data.filter((user) => user.role === 'user').length,
-    providers: data.filter((user) => user.role === 'provider').length,
-  }), [data]);
-
-  const resetFilters = () => {
-    setSearch('');
-    setRole('All Roles');
-    setStatus('All Status');
-    setComp('All Companies');
-    setPage(1);
-  };
-
-  const hasActiveFilter = search || filterRole !== 'All Roles' || filterStatus !== 'All Status' || filterCompany !== 'All Companies';
+  if (loading) {
+    return (
+      <div className="p-6 flex items-center justify-center py-32">
+        <div className="text-sm text-gray-400 animate-pulse">Loading users...</div>
+      </div>
+    );
+  }
 
   return (
     <div className="p-6 space-y-6 animate-fadeIn">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-[#05164D]">Users</h1>
-          <p className="text-sm text-gray-500 mt-0.5">{stats.total} registered user{stats.total !== 1 ? 's' : ''} across all companies</p>
-        </div>
-        <button
-          onClick={() => { setFormError(''); setEditUser({ ...EMPTY_FORM, isNew: true }); }}
-          className="inline-flex items-center gap-2 px-5 py-2.5 bg-[#8BC53D] hover:bg-[#476E2C] text-white rounded-xl text-sm font-bold transition-colors shadow-sm"
-        >
-          <Plus size={16} />
-          Add User
-        </button>
-      </div>
-
-      {error && (
-        <div className="px-4 py-3 bg-red-50 rounded-2xl border border-red-100 text-sm text-[#C62026]">
-          {error}
-        </div>
-      )}
+      {/* Toast */}
       {success && (
-        <div className="px-4 py-3 bg-green-50 rounded-2xl border border-green-100 text-sm text-green-700">
-          {success}
-        </div>
+        <div className="px-4 py-3 bg-green-50 rounded-2xl border border-green-100 text-sm text-green-700">{success}</div>
+      )}
+      {error && (
+        <div className="px-4 py-3 bg-red-50 rounded-2xl border border-red-100 text-sm text-[#C62026]">{error}</div>
       )}
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        {[
-          { label: 'Total Users', value: stats.total, color: '#05164D', icon: UsersIcon },
-          { label: 'Sellers', value: stats.sellers, color: '#00648F', icon: Building2 },
-          { label: 'Buyers', value: stats.buyers, color: '#476E2C', icon: ShoppingCart },
-          { label: 'Third-party Providers', value: stats.providers, color: '#742982', icon: Briefcase },
-        ].map((item) => {
-          const Icon = item.icon;
-
-          return (
-            <div key={item.label} className="bg-white rounded-2xl p-4 shadow-sm border border-gray-100 flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: `${item.color}15` }}>
-                <Icon size={18} style={{ color: item.color }} />
-              </div>
-              <div>
-                <p className="text-2xl font-bold" style={{ color: item.color }}>{item.value}</p>
-                <p className="text-xs text-gray-500">{item.label}</p>
-              </div>
+      {/* ── Overview ── */}
+      {view === 'overview' && (
+        <>
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-2xl font-bold text-[#05164D]">Users</h1>
+              <p className="text-sm text-gray-500 mt-0.5">{allUsers.length} registered user{allUsers.length !== 1 ? 's' : ''}</p>
             </div>
-          );
-        })}
-      </div>
+          </div>
 
-      <div className="bg-white rounded-2xl shadow-sm border border-gray-100">
-        <div className="p-4 border-b border-gray-100 flex flex-col sm:flex-row gap-3">
-          <div className="relative flex-1">
-            <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
-            <input
-              value={search}
-              onChange={(event) => { setSearch(event.target.value); setPage(1); }}
-              placeholder="Search by name, email, company or phone..."
-              className="w-full pl-9 pr-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] bg-gray-50"
+          {/* Team Summary Cards */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+            <TeamSummaryCard
+              title="Broker Team"
+              icon={Briefcase}
+              color="#b45e08"
+              bg="#FFFAF5"
+              users={allUsers}
+              subRoles={BROKER_SUB_ROLES}
+              onViewTeam={() => setView('broker-team')}
+              ownerName={primaryBroker?.name || authUser?.name}
+              ownerLabel="Broker"
+              companyName={brokerCompanyName}
+            />
+            <TeamSummaryCard
+              title="Client Team"
+              icon={Building2}
+              color="#00648F"
+              bg="#F0F9FF"
+              users={allUsers}
+              subRoles={CLIENT_SUB_ROLES}
+              onViewTeam={() => setView('client-team')}
+              ownerName={companyOwner?.name}
+              ownerLabel="Owner"
+              companyName={clientCompanyName}
             />
           </div>
 
-          <button
-            onClick={() => setShowFilters((value) => !value)}
-            className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl border text-sm font-medium transition-all ${showFilters ? 'bg-[#05164D] text-white border-[#05164D]' : 'border-gray-200 text-gray-600 hover:border-gray-300 bg-gray-50'}`}
-          >
-            <Filter size={14} />
-            Filters
-            {hasActiveFilter && <span className="w-2 h-2 rounded-full bg-[#F68C1F] flex-shrink-0" />}
-            <ChevronDown size={13} className={`transition-transform ${showFilters ? 'rotate-180' : ''}`} />
-          </button>
-
-          {hasActiveFilter && (
-            <button onClick={resetFilters} className="inline-flex items-center gap-1.5 px-3 py-2.5 text-xs text-red-500 hover:text-red-600 font-medium">
-              <X size={13} /> Clear
-            </button>
-          )}
-        </div>
-
-        {showFilters && (
-          <div className="px-4 pb-4 flex flex-wrap gap-3 border-b border-gray-100 pt-3">
-            <div className="flex flex-col gap-1">
-              <span className="text-xs font-semibold text-gray-400 px-1">Company</span>
-              <select
-                value={filterCompany}
-                onChange={(e) => { setComp(e.target.value); setPage(1); }}
-                className="px-3 py-2 rounded-xl border border-gray-200 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/30 focus:border-[#8BC53D] min-w-[140px]"
-              >
-                {companyOptions.map((opt) => <option key={opt}>{opt}</option>)}
-              </select>
-            </div>
-            <div className="flex flex-col gap-1">
-              <span className="text-xs font-semibold text-gray-400 px-1">Role</span>
-              <select
-                value={filterRole}
-                onChange={(e) => { setRole(e.target.value); setPage(1); }}
-                className="px-3 py-2 rounded-xl border border-gray-200 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/30 focus:border-[#8BC53D] min-w-[160px]"
-              >
-                {ROLE_FILTER_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </select>
-            </div>
-            <div className="flex flex-col gap-1">
-              <span className="text-xs font-semibold text-gray-400 px-1">Status</span>
-              <select
-                value={filterStatus}
-                onChange={(e) => { setStatus(e.target.value); setPage(1); }}
-                className="px-3 py-2 rounded-xl border border-gray-200 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/30 focus:border-[#8BC53D] min-w-[140px]"
-              >
-                {statusOptions.map((opt) => <option key={opt}>{opt}</option>)}
-              </select>
-            </div>
-          </div>
-        )}
-
-        {selected.size > 0 && (
-          <div className="px-4 py-2.5 bg-[#05164D]/5 border-b border-gray-100 flex items-center gap-3">
-            <span className="text-sm font-semibold text-[#05164D]">{selected.size} user{selected.size > 1 ? 's' : ''} selected</span>
-            <button
-              onClick={handleBulkDelete}
-              disabled={submitting}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-50 text-red-600 text-xs font-semibold hover:bg-red-100 transition-colors disabled:opacity-60"
-            >
-              <Trash2 size={12} /> Delete Selected
-            </button>
-            <button onClick={clearSelection} className="text-xs text-gray-400 hover:text-gray-600 ml-auto">Clear selection</button>
-          </div>
-        )}
-
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-gray-100">
-                <th className="pl-4 pr-2 py-3 text-left">
-                  <button
-                    onClick={toggleAll}
-                    className={`w-4.5 h-4.5 rounded border-2 flex items-center justify-center transition-colors ${allPageSelected ? 'bg-[#8BC53D] border-[#8BC53D]' : someSelected ? 'bg-[#8BC53D]/30 border-[#8BC53D]' : 'border-gray-300 hover:border-[#8BC53D]'}`}
-                    style={{ width: 18, height: 18 }}
-                  >
-                    {(allPageSelected || someSelected) && <Check size={10} className="text-white" strokeWidth={3} />}
-                  </button>
-                </th>
-                {['Name', 'Company', 'Email', 'Phone No.', 'Role', 'Status', 'Actions'].map((header) => (
-                  <th key={header} className="px-3 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wide whitespace-nowrap">
-                    {header}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-50">
-              {loading ? (
-                <tr>
-                  <td colSpan={8} className="py-16 text-center text-sm text-gray-400">
-                    Loading users...
-                  </td>
-                </tr>
-              ) : paginated.length === 0 ? (
-                <tr>
-                  <td colSpan={8} className="py-16 text-center">
-                    <UsersIcon size={36} className="mx-auto text-gray-200 mb-3" />
-                    <p className="text-sm font-semibold text-gray-400">No users found</p>
-                    {hasActiveFilter && <button onClick={resetFilters} className="mt-2 text-xs text-[#8BC53D] hover:underline">Clear filters</button>}
-                  </td>
-                </tr>
-              ) : paginated.map((user) => (
-                <tr key={user.id} className={`group hover:bg-gray-50/80 transition-colors ${selected.has(user.id) ? 'bg-[#8BC53D]/5' : ''}`}>
-                  <td className="pl-4 pr-2 py-3.5">
-                    <button
-                      onClick={() => toggleOne(user.id)}
-                      className={`w-4.5 h-4.5 rounded border-2 flex items-center justify-center transition-colors ${selected.has(user.id) ? 'bg-[#8BC53D] border-[#8BC53D]' : 'border-gray-300 hover:border-[#8BC53D]'}`}
-                      style={{ width: 18, height: 18 }}
-                    >
-                      {selected.has(user.id) && <Check size={10} className="text-white" strokeWidth={3} />}
-                    </button>
-                  </td>
-                  <td className="px-3 py-3.5">
-                    <div className="flex items-center gap-2.5">
-                      <Avatar user={user} size={8} />
-                      <span className="font-semibold text-[#05164D] whitespace-nowrap">{user.name}</span>
-                    </div>
-                  </td>
-                  <td className="px-3 py-3.5 max-w-[180px]">
-                    {user.assignedCompanies && user.assignedCompanies.length > 0 ? (
-                      <div className="flex flex-wrap gap-1">
-                        {user.assignedCompanies.slice(0, 2).map((c) => (
-                          <span key={c.id} className="inline-block max-w-[120px] truncate rounded-full bg-[#E6F3D3] px-2 py-0.5 text-[11px] font-semibold text-[#476E2C]" title={c.name}>
-                            {c.name}
-                          </span>
-                        ))}
-                        {user.assignedCompanies.length > 2 && (
-                          <span
-                            className="inline-block rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-semibold text-gray-500 cursor-default"
-                            title={user.assignedCompanies.slice(2).map((c) => c.name).join(', ')}
-                          >
-                            +{user.assignedCompanies.length - 2} more
-                          </span>
-                        )}
-                      </div>
-                    ) : (
-                      <span className="text-gray-400 text-xs">Unassigned</span>
-                    )}
-                  </td>
-                  <td className="px-3 py-3.5">
-                    <span className="text-gray-500 text-xs">{user.email}</span>
-                  </td>
-                  <td className="px-3 py-3.5">
-                    <span className="text-gray-600 whitespace-nowrap">{user.phone}</span>
-                  </td>
-                  <td className="px-3 py-3.5">
-                    <RoleBadge role={user.role} />
-                  </td>
-                  <td className="px-3 py-3.5">
-                    <StatusBadge status={user.status} />
-                  </td>
-                  <td className="px-3 py-3.5">
-                    <div className="flex items-center gap-1">
-                      <button
-                        title="View Details"
-                        onClick={() => setViewUser(user)}
-                        className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-[#00648F] hover:bg-blue-50 transition-colors"
-                      >
-                        <Eye size={15} />
-                      </button>
-                      <button
-                        title="Edit"
-                        onClick={() => { setFormError(''); setEditUser({ ...user, password: '' }); }}
-                        className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-[#8BC53D] hover:bg-green-50 transition-colors"
-                      >
-                        <Pencil size={15} />
-                      </button>
-                      <button
-                        title="Delete"
-                        onClick={() => setDeleteUser(user)}
-                        className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors"
-                      >
-                        <Trash2 size={15} />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        <div className="px-4 py-3.5 border-t border-gray-100 flex flex-col sm:flex-row items-center justify-between gap-3">
-          <p className="text-xs text-gray-400">
-            Showing <span className="font-semibold text-gray-600">{filtered.length === 0 ? 0 : (safePage - 1) * PAGE_SIZE + 1}-{Math.min(safePage * PAGE_SIZE, filtered.length)}</span> of <span className="font-semibold text-gray-600">{filtered.length}</span> users
-          </p>
-
-          <div className="flex items-center gap-1">
-            <button
-              onClick={() => setPage((current) => Math.max(1, current - 1))}
-              disabled={safePage === 1}
-              className="w-8 h-8 rounded-lg border border-gray-200 flex items-center justify-center text-gray-500 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-            >
-              <ChevronLeft size={14} />
-            </button>
-
-            {pageRange[0] > 1 && (
-              <>
-                <button onClick={() => setPage(1)} className="w-8 h-8 rounded-lg border border-gray-200 text-xs font-semibold text-gray-500 hover:bg-gray-50 transition-colors">1</button>
-                {pageRange[0] > 2 && <span className="text-gray-300 text-sm px-1">...</span>}
-              </>
-            )}
-
-            {pageRange.map((pageNumber) => (
+          {/* Buyers Section */}
+          <div>
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-lg font-bold text-[#05164D]">Buyers</h2>
+                <p className="text-sm text-gray-500">{buyerPrimaries.length} buyer{buyerPrimaries.length !== 1 ? 's' : ''} · {buyerTeamMembers.length} team member{buyerTeamMembers.length !== 1 ? 's' : ''}</p>
+              </div>
               <button
-                key={pageNumber}
-                onClick={() => setPage(pageNumber)}
-                className={`w-8 h-8 rounded-lg border text-xs font-semibold transition-colors ${pageNumber === safePage ? 'bg-[#05164D] border-[#05164D] text-white' : 'border-gray-200 text-gray-500 hover:bg-gray-50'}`}
+                onClick={() => openAdd('buyer')}
+                className="inline-flex items-center gap-2 px-4 py-2 bg-[#8BC53D] hover:bg-[#476E2C] text-white rounded-xl text-sm font-bold transition-colors shadow-sm"
               >
-                {pageNumber}
+                <Plus size={15} /> Add New Buyer
               </button>
-            ))}
+            </div>
 
-            {pageRange[pageRange.length - 1] < totalPages && (
-              <>
-                {pageRange[pageRange.length - 1] < totalPages - 1 && <span className="text-gray-300 text-sm px-1">...</span>}
-                <button onClick={() => setPage(totalPages)} className="w-8 h-8 rounded-lg border border-gray-200 text-xs font-semibold text-gray-500 hover:bg-gray-50 transition-colors">{totalPages}</button>
-              </>
+            {buyerPrimaries.length === 0 ? (
+              <div className="py-16 text-center bg-white rounded-2xl border border-gray-100">
+                <ShoppingCart size={36} className="mx-auto text-gray-200 mb-3" />
+                <p className="text-sm font-semibold text-gray-400">No buyers yet</p>
+                <button onClick={() => openAdd('buyer')} className="mt-3 text-xs text-[#8BC53D] hover:underline font-semibold">Add first buyer</button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                {buyerPrimaries.map((buyer) => {
+                  const team = allBuyerUsers.filter((u) => u.parent_user_id === buyer.id);
+                  return (
+                    <BuyerCard
+                      key={buyer.id}
+                      buyer={buyer}
+                      teamMembers={team}
+                      onViewTeam={(b) => { setSelectedBuyer(b); setView('buyer-team'); }}
+                      onEdit={openEdit}
+                      onDelete={(u) => { setDeleteError(''); setDeleteUser(u); }}
+                    />
+                  );
+                })}
+              </div>
             )}
-
-            <button
-              onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
-              disabled={safePage === totalPages}
-              className="w-8 h-8 rounded-lg border border-gray-200 flex items-center justify-center text-gray-500 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-            >
-              <ChevronRight size={14} />
-            </button>
           </div>
-        </div>
-      </div>
+        </>
+      )}
 
-      {viewUser && (
-        <ViewModal
-          user={viewUser}
-          onClose={() => setViewUser(null)}
-          onEdit={() => { setEditUser({ ...viewUser, password: '' }); setViewUser(null); }}
+      {/* ── Broker Team Detail ── */}
+      {view === 'broker-team' && (
+        <TeamDetailView
+          title="Broker Team"
+          users={allUsers}
+          subRoles={BROKER_SUB_ROLES}
+          onBack={() => setView('overview')}
+          onAdd={() => openAdd('broker')}
+          onEdit={openEdit}
+          onDelete={(u) => { setDeleteError(''); setDeleteUser(u); }}
         />
       )}
 
+      {/* ── Client Team Detail ── */}
+      {view === 'client-team' && (
+        <TeamDetailView
+          title="Client Team"
+          users={allUsers}
+          subRoles={CLIENT_SUB_ROLES}
+          onBack={() => setView('overview')}
+          onAdd={() => openAdd('client')}
+          onEdit={openEdit}
+          onDelete={(u) => { setDeleteError(''); setDeleteUser(u); }}
+        />
+      )}
+
+      {/* ── Buyer Team Detail ── */}
+      {view === 'buyer-team' && selectedBuyer && (
+        <BuyerTeamView
+          buyer={selectedBuyer}
+          teamMembers={allBuyerUsers}
+          onBack={() => { setView('overview'); setSelectedBuyer(null); }}
+          onAddMember={() => openAdd('buyer-member')}
+          onEdit={openEdit}
+          onDelete={(u) => { setDeleteError(''); setDeleteUser(u); }}
+        />
+      )}
+
+      {/* ── Modals ── */}
       {editUser && (
         <UserFormModal
           initial={editUser}
           companies={companies}
-          groups={editUser?.companyId ? (groupsByCompany[editUser.companyId] || []) : []}
-          onCompanyChange={(companyId) => loadGroupsForCompany(companyId)}
+          roleOptions={roleOptionsMap[addContext || 'broker'] || []}
+          dbRole={dbRoleMap[addContext || 'broker']}
           onSave={editUser?.isNew ? handleAdd : handleEdit}
-          onClose={() => { setFormError(''); setEditUser(null); }}
+          onClose={() => { setFormError(''); setEditUser(null); setAddContext(null); }}
           submitting={submitting}
           error={formError}
+          showTeamMembers={!editUser?.id && (addContext === 'buyer' || addContext === 'client')}
+          teamMemberRoleOptions={teamMemberRoleOptions}
         />
       )}
 
