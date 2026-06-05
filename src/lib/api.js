@@ -214,6 +214,12 @@ export function verifyVerificationOtpRequest(payload) {
   });
 }
 
+export function loadSavedQBBankActivityRequest(clientId) {
+  const params = new URLSearchParams();
+  if (clientId) params.append("clientId", clientId);
+  return request(`/qb-bank-activity/saved?${params}`);
+}
+
 export function brokerSignupRequest(payload) {
   return fetch(buildUrl('/auth/broker/signup'), {
     method: 'POST',

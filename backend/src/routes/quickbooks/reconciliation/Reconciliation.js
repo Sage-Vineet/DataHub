@@ -3,6 +3,7 @@ const axios = require("axios");
 const { getQBConfig, loadQBConfig } = require("../../../qbconfig");
 const tokenManager = require("../../../tokenManager");
 const { supabase } = require("../../../db");
+const qbBankReconService = require("../../../services/qbBankReconciliationService");
 const router = express.Router();
 
 /**
@@ -571,6 +572,38 @@ router.get("/qb-bank-accounts", async (req, res) => {
  *         in: query
  *         schema: { type: string, enum: [Accrual, Cash], default: Accrual }
  */
+/**
+ * GET /qb-bank-activity/saved
+ * Returns the last persisted QB Online bank reconciliation snapshot for a company.
+ * Called on page load so the UI can restore data without requiring a live QB connection.
+ */
+router.get("/qb-bank-activity/saved", async (req, res) => {
+  let clientId = req.clientId || req.query.clientId;
+  if (!clientId && req.headers.referer) {
+    const m = req.headers.referer.match(/\/client\/([^/]+)/);
+    if (m) clientId = m[1];
+  }
+  if (!clientId) return res.status(400).json({ error: "Missing Client ID." });
+
+  try {
+    const snapshot = await qbBankReconService.loadSnapshot(clientId);
+    if (!snapshot) return res.json({ found: false });
+
+    console.log(`[Bank Recon] Serving saved snapshot for company=${clientId} updatedAt=${snapshot.updated_at}`);
+    return res.json({
+      found:       true,
+      updatedAt:   snapshot.updated_at,
+      startDate:   snapshot.start_date,
+      endDate:     snapshot.end_date,
+      accountingMethod: snapshot.accounting_method,
+      data:        snapshot.data,
+    });
+  } catch (err) {
+    console.error("[Bank Recon] Load snapshot error:", err.message);
+    return res.status(500).json({ error: "Failed to load saved bank reconciliation data." });
+  }
+});
+
 router.get("/qb-bank-activity", async (req, res) => {
   // ── resolve clientId ────────────────────────────────────────────────────────
   let clientId = req.clientId || req.query.clientId;
@@ -826,16 +859,35 @@ router.get("/qb-bank-activity", async (req, res) => {
     return { success: true, accounts: result, months };
   };
 
+  const saveAndRespond = async (data) => {
+    // Persist snapshot in background — never block the response.
+    qbBankReconService.saveSnapshot({
+      companyId:        clientId,
+      fetchedBy:        req.user?.id || null,
+      accountingMethod: req.query.accounting_method || "Accrual",
+      startDate:        start_date,
+      endDate:          end_date,
+      data,
+    }).catch((saveErr) =>
+      console.error("[Bank Recon] Auto-save failed:", saveErr.message)
+    );
+
+    console.log(
+      `[Audit] [Bank Recon] company=${clientId} accounts=${data?.accounts?.length ?? 0} months=${data?.months?.length ?? 0} fetchedBy=${req.user?.id || "unknown"} at=${new Date().toISOString()}`
+    );
+    return res.json(data);
+  };
+
   try {
     try {
       const data = await performFetch();
-      return res.json(data);
+      return saveAndRespond(data);
     } catch (err) {
       if (err.response?.status !== 401) throw err;
       console.log("⚠️ /qb-bank-activity token expired, refreshing...");
       qb.accessToken = await tokenManager.refreshAccessToken(clientId);
       const retryData = await performFetch();
-      return res.json(retryData);
+      return saveAndRespond(retryData);
     }
   } catch (error) {
     console.error(

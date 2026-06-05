@@ -897,7 +897,7 @@ export default function WorkspaceTaxReconciliation() {
       {/* ── Single unified table ── */}
       <section className="rounded-[var(--radius-card)] border border-border bg-white shadow-[0_10px_30px_rgba(15,23,42,0.04)]">
         <div className="border-b border-border px-5 py-4">
-          <h2 className="text-[16px] font-semibold text-text-primary">Data Source Reconciliation</h2>
+          <h2 className="text-[16px] font-semibold text-text-primary">Tax Reconciliation</h2>
           <p className="mt-1 text-[13px] text-text-secondary">
             {isManualMode
               ? activeYears.length > 0
