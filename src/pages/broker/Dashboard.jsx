@@ -5,6 +5,9 @@ import {
   FileText, MessageSquare, ClipboardList, Plus, Users,
 } from 'lucide-react';
 import { listCompaniesRequest, listBrokerActivity } from '../../lib/api';
+//new
+
+
 
 function normalizeCompany(company) {
   return {

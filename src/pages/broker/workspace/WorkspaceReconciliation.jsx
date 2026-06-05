@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import Header from "../../../components/Header";
 
-import { getStoredToken, setSelectedReportSource, getManualStageFilterOptions } from "../../../lib/api";
+import { getStoredToken, setSelectedReportSource, getManualStageFilterOptions, loadSavedQBBankActivityRequest } from "../../../lib/api";
 import { useDataSource } from "../../../context/DataSourceContext";
 import { useDatasetVersionStore } from "../../../store/useDatasetVersionStore";
 import { emitWorkspaceDataSourceUpdated } from "../../../lib/dataSourceEvents";
@@ -42,6 +42,7 @@ const YEARS = Array.from({ length: 10 }, (_, i) => 2020 + i);
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
 const QB_BANK_ACTIVITY_ENDPOINT = `${API_BASE_URL}/qb-bank-activity`;
+const QB_BANK_ACTIVITY_SAVED_ENDPOINT = `${API_BASE_URL}/qb-bank-activity/saved`;
 const QB_ONE_BANK_ACTIVITY_ENDPOINT = `${API_BASE_URL}/qb-one-bank-activity`;
 const EXTRACT_BANK_PDF_RECORDS_ENDPOINT = `${API_BASE_URL}/extract-bank-pdf-records`;
 const QMS_BANK_DATA_ENDPOINT = `${API_BASE_URL}/manual-report-uploads/qms-bank-data`;
@@ -166,6 +167,80 @@ const monthLabel = (ym) => {
     month: "short",
   });
 };
+
+/**
+ * FreezeTable — Excel-style freeze panes for month-column reconciliation tables.
+ *
+ * Separates <thead> and <tbody> into two sibling DOM elements so the header can
+ * use `position: sticky; top: 0` relative to the PAGE scroll, while the body
+ * uses `overflow-x: auto` for independent horizontal scrolling.
+ * JavaScript keeps the header's scrollLeft in sync with the body's scrollLeft,
+ * giving true row+column freeze pane behavior across all sections.
+ */
+function FreezeTable({ months, label, containerClass, children }) {
+  const bodyRef = useRef(null);
+  const headRef = useRef(null);
+
+  const onBodyScroll = useCallback((e) => {
+    if (headRef.current) headRef.current.scrollLeft = e.currentTarget.scrollLeft;
+  }, []);
+
+  const colGroup = (
+    <colgroup>
+      <col className={TABLE_LABEL_COL_WIDTH} />
+      {months.map((m) => <col key={m} className={TABLE_VALUE_COL_WIDTH} />)}
+      <col className={TABLE_VALUE_COL_WIDTH} />
+    </colgroup>
+  );
+
+  return (
+    <div className={containerClass}>
+      {/* Frozen header — sticky top-0 relative to page viewport */}
+      <div ref={headRef} className="sticky top-0 z-20 overflow-hidden border-b border-primary/15">
+        <table className="min-w-full table-fixed border-collapse text-[13px]">
+          {colGroup}
+          <thead>
+            <tr className="bg-[#F8FBF1]">
+              <th className={cn(
+                "sticky left-0 z-30 border border-border bg-[#F8FBF1] px-4 py-3 text-left text-[12px] font-semibold text-primary",
+                TABLE_LABEL_COL_WIDTH,
+              )}>
+                {label}
+              </th>
+              {months.map((m) => (
+                <th
+                  key={m}
+                  className={cn(
+                    "whitespace-nowrap border border-border bg-[#F8FBF1] px-4 py-3 text-center text-[12px] font-semibold text-primary",
+                    TABLE_VALUE_COL_WIDTH,
+                  )}
+                >
+                  {monthLabel(m)}
+                </th>
+              ))}
+              <th className={cn(
+                "border border-border bg-[#F8FBF1] px-4 py-3 text-center text-[12px] font-semibold text-primary",
+                TABLE_VALUE_COL_WIDTH,
+              )}>
+                TTM
+              </th>
+            </tr>
+          </thead>
+        </table>
+      </div>
+
+      {/* Scrollable body — first column sticky left-0, horizontal scroll synced to header */}
+      <div ref={bodyRef} className="overflow-x-auto" onScroll={onBodyScroll}>
+        <table className="min-w-full table-fixed border-collapse bg-white text-[13px]">
+          {colGroup}
+          <tbody>
+            {children}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
 
 /**
  * Normalize the API response into the shape consumed by the table renderer.
@@ -345,6 +420,7 @@ export default function WorkspaceReconciliation() {
   );
   const [isLoadingBankActivity, setIsLoadingBankActivity] = useState(false);
   const [bankActivityError, setBankActivityError] = useState("");
+  const [lastSyncedAt, setLastSyncedAt] = useState(storedState?.lastSyncedAt || null);
   const [bankActivityFetchStatus, setBankActivityFetchStatus] = useState({
     status: storedState?.qbBankActivity ? "success" : "idle",
     message: storedState?.qbBankActivity
@@ -439,6 +515,7 @@ export default function WorkspaceReconciliation() {
         : "",
     });
     setBankActivityError("");
+    setLastSyncedAt(nextState?.lastSyncedAt || null);
     setSelectedBalanceBankId(nextState?.selectedBalanceBankId || "");
     setOneBankAccountId(nextState?.oneBankAccountId || "");
     setQbOneBankActivity(nextState?.qbOneBankActivity || null);
@@ -474,6 +551,7 @@ export default function WorkspaceReconciliation() {
           bankActivityEndMonth,
           bankActivityAccountingMethod,
           qbBankActivity: qbBankActivity ?? existing.qbBankActivity ?? null,
+          lastSyncedAt: lastSyncedAt ?? existing.lastSyncedAt ?? null,
           selectedBalanceBankId,
           oneBankAccountId,
           qbOneBankActivity:
@@ -495,12 +573,40 @@ export default function WorkspaceReconciliation() {
     bankActivityEndMonth,
     bankActivityAccountingMethod,
     qbBankActivity,
+    lastSyncedAt,
     selectedBalanceBankId,
     oneBankAccountId,
     qbOneBankActivity,
     extractedBankPdfData,
     selectedReportSource,
   ]);
+
+  // ── Load saved snapshot from DB (no QB connection needed) ─────────────────
+  const loadSavedQBBankActivity = useCallback(async () => {
+    if (!clientId) return;
+    try {
+      const params = new URLSearchParams({ clientId });
+      const resp = await fetch(`${QB_BANK_ACTIVITY_SAVED_ENDPOINT}?${params}`, {
+        cache: "no-store",
+        headers: getHeaders(),
+      });
+      if (!resp.ok) return;
+      const result = await resp.json();
+      if (!result?.found || !result?.data) return;
+
+      setQbBankActivity(result.data);
+      setLastSyncedAt(result.updatedAt || null);
+      const syncLabel = result.updatedAt
+        ? new Date(result.updatedAt).toLocaleString()
+        : "previously";
+      setBankActivityFetchStatus({
+        status: "success",
+        message: `Restored saved data (last synced: ${syncLabel}).`,
+      });
+    } catch {
+      // Non-fatal — page still works, user can click Fetch Activity
+    }
+  }, [clientId, getHeaders]);
 
   const loadQBBankActivity = async () => {
     setIsLoadingBankActivity(true);
@@ -530,11 +636,12 @@ export default function WorkspaceReconciliation() {
       const data = await resp.json();
       if (!resp.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
 
+      const now = new Date().toISOString();
       setQbBankActivity(data);
+      setLastSyncedAt(now);
       setBankActivityFetchStatus({
         status: "success",
-        message: `Loaded ${data?.months?.length ?? 0} month(s) across ${data?.accounts?.length ?? 0
-          } account(s).`,
+        message: `Fetched ${data?.months?.length ?? 0} month(s) across ${data?.accounts?.length ?? 0} account(s). Last synced: ${new Date(now).toLocaleString()}.`,
       });
     } catch (e) {
       setBankActivityError(getErrMsg(e));
@@ -807,6 +914,18 @@ export default function WorkspaceReconciliation() {
     }
     // QUICKBOOKS (QB Online) uses its own separate data flow — no action here
   }, [clientId, selectedReportSource, isSourceConfirmedByServer, glSelectedVersion, glFiscalYear, loadExtractedBankPdfData, loadManualBankData, loadQMSBankData, loadBsBankBalances]);
+
+  // Auto-restore QB Online bank activity from DB on page load.
+  // Fires when the server confirms the source is QB Online and there is no
+  // session-cached data already loaded.  This way a page refresh or QBO
+  // disconnect never leaves the table empty — the last successfully saved
+  // snapshot is shown immediately without a fresh QBO API call.
+  useEffect(() => {
+    if (!isSourceConfirmedByServer) return;
+    if (selectedReportSource !== REPORT_SOURCE_KEYS.QUICKBOOKS) return;
+    if (qbBankActivity) return; // session already has data — no need to hit DB
+    void loadSavedQBBankActivity();
+  }, [isSourceConfirmedByServer, selectedReportSource, qbBankActivity, loadSavedQBBankActivity]);
 
   // Drive selectedReportSource from DataSourceContext.activeSource — the single source of truth
   // that the header badge also reads. This eliminates the split-brain between the badge and the
@@ -1285,7 +1404,7 @@ export default function WorkspaceReconciliation() {
     <tr className="border-b border-primary/15 bg-[#F8FBF1]">
       <th
         className={cn(
-          "sticky left-0 z-10 border border-border bg-[#F8FBF1] px-4 py-3 text-left text-[12px] font-semibold text-primary",
+          "sticky left-0 top-0 z-30 border border-border bg-[#F8FBF1] px-4 py-3 text-left text-[12px] font-semibold text-primary",
           TABLE_LABEL_COL_WIDTH,
         )}
       >
@@ -1295,7 +1414,7 @@ export default function WorkspaceReconciliation() {
         <th
           key={m}
           className={cn(
-            "whitespace-nowrap border border-border px-4 py-3 text-center text-[12px] font-semibold text-primary",
+            "sticky top-0 z-20 whitespace-nowrap border border-border bg-[#F8FBF1] px-4 py-3 text-center text-[12px] font-semibold text-primary",
             TABLE_VALUE_COL_WIDTH,
           )}
         >
@@ -1304,7 +1423,7 @@ export default function WorkspaceReconciliation() {
       ))}
       <th
         className={cn(
-          "border border-border px-4 py-3 text-center text-[12px] font-semibold text-primary",
+          "sticky top-0 z-20 border border-border bg-[#F8FBF1] px-4 py-3 text-center text-[12px] font-semibold text-primary",
           TABLE_VALUE_COL_WIDTH,
         )}
       >
@@ -1382,8 +1501,9 @@ export default function WorkspaceReconciliation() {
       >
         <td
           className={cn(
-            "border border-border px-3 py-[7px] text-[12px] text-text-primary whitespace-nowrap",
+            "sticky left-0 z-[1] border border-border px-3 py-[7px] text-[12px] text-text-primary whitespace-nowrap",
             TABLE_LABEL_COL_WIDTH,
+            bold ? "bg-white" : check ? "bg-amber-50/40" : "bg-white",
             indent && "pl-7",
             bold && "font-semibold",
             check && "text-amber-700 italic",
@@ -1445,26 +1565,26 @@ export default function WorkspaceReconciliation() {
     const monthIndexMap = Object.fromEntries(months.map((m, i) => [m.key, i]));
 
     return (
-      <div className="overflow-x-auto rounded-xl border border-border shadow-sm">
+      <div className="overflow-auto max-h-[600px] rounded-xl border border-border shadow-sm">
         <table className="min-w-full border-collapse bg-white text-[13px]">
           {/* ── Header ── */}
           <thead>
             <tr className="border-b border-primary/15 bg-[#F8FBF1]">
-              <th className="sticky left-0 z-10 w-40 border border-border bg-[#F8FBF1] px-4 py-3 text-left text-[12px] font-semibold text-primary">
+              <th className="sticky left-0 top-0 z-30 w-40 border border-border bg-[#F8FBF1] px-4 py-3 text-left text-[12px] font-semibold text-primary">
                 Bank
               </th>
-              <th className="w-36 border border-border bg-[#F8FBF1] px-4 py-3 text-left text-[12px] font-semibold text-primary">
+              <th className="sticky left-[160px] top-0 z-20 w-36 border border-border bg-[#F8FBF1] px-4 py-3 text-left text-[12px] font-semibold text-primary">
                 Metric
               </th>
               {months.map((m) => (
                 <th
                   key={m.key}
-                  className="min-w-[110px] whitespace-nowrap border border-border px-4 py-3 text-center text-[12px] font-semibold text-primary"
+                  className="sticky top-0 z-20 min-w-[110px] whitespace-nowrap border border-border bg-[#F8FBF1] px-4 py-3 text-center text-[12px] font-semibold text-primary"
                 >
                   {m.label}
                 </th>
               ))}
-              <th className="min-w-[110px] border border-border px-4 py-3 text-center text-[12px] font-semibold text-primary">
+              <th className="sticky top-0 z-20 min-w-[110px] border border-border bg-[#F8FBF1] px-4 py-3 text-center text-[12px] font-semibold text-primary">
                 Total
               </th>
             </tr>
@@ -1489,7 +1609,7 @@ export default function WorkspaceReconciliation() {
                   {mi === 0 && (
                     <td
                       rowSpan={METRICS.length}
-                      className="border border-border px-3 py-[7px] text-[12px] font-semibold text-text-primary align-middle"
+                      className="sticky left-0 z-[1] bg-white border border-border px-3 py-[7px] text-[12px] font-semibold text-text-primary align-middle"
                     >
                       {bank.bankName}
                     </td>
@@ -1498,7 +1618,7 @@ export default function WorkspaceReconciliation() {
                   {/* Metric label */}
                   <td
                     className={cn(
-                      "border border-border px-3 py-[7px] text-[12px] text-text-primary whitespace-nowrap",
+                      "sticky left-[160px] z-[1] bg-white border border-border px-3 py-[7px] text-[12px] text-text-primary whitespace-nowrap",
                       metric.bold && "font-semibold",
                     )}
                   >
@@ -1569,7 +1689,7 @@ export default function WorkspaceReconciliation() {
                   {metric.key === "startingBalance" && (
                     <td
                       rowSpan={METRICS.length}
-                      className="border border-border px-3 py-[7px] text-[12px] font-semibold text-primary align-middle"
+                      className="sticky left-0 z-[1] bg-[#F8FBF1] border border-border px-3 py-[7px] text-[12px] font-semibold text-primary align-middle"
                     >
                       All Banks
                     </td>
@@ -1578,7 +1698,7 @@ export default function WorkspaceReconciliation() {
 
                   <td
                     className={cn(
-                      "border border-border px-3 py-[7px] text-[12px] text-primary whitespace-nowrap",
+                      "sticky left-[160px] z-[1] bg-[#F8FBF1] border border-border px-3 py-[7px] text-[12px] text-primary whitespace-nowrap",
                       metric.bold && "font-semibold",
                     )}
                   >
@@ -1619,23 +1739,23 @@ export default function WorkspaceReconciliation() {
     if (!rows.length) return null;
 
     return (
-      <div className="mt-4 overflow-x-auto rounded-xl border border-border shadow-sm">
+      <div className="mt-4 overflow-auto max-h-[600px] rounded-xl border border-border shadow-sm">
         <table className="min-w-full border-collapse bg-white text-[13px]">
           <thead>
             <tr className="border-b border-primary/15 bg-[#F8FBF1]">
-              <th className="min-w-[110px] border border-border px-4 py-3 text-left text-[12px] font-semibold text-primary">
+              <th className="sticky left-0 top-0 z-30 min-w-[110px] border border-border bg-[#F8FBF1] px-4 py-3 text-left text-[12px] font-semibold text-primary">
                 Month
               </th>
-              <th className="min-w-[140px] border border-border px-4 py-3 text-right text-[12px] font-semibold text-primary">
+              <th className="sticky top-0 z-20 min-w-[140px] border border-border bg-[#F8FBF1] px-4 py-3 text-right text-[12px] font-semibold text-primary">
                 Starting Balance
               </th>
-              <th className="min-w-[110px] border border-border px-4 py-3 text-right text-[12px] font-semibold text-primary">
+              <th className="sticky top-0 z-20 min-w-[110px] border border-border bg-[#F8FBF1] px-4 py-3 text-right text-[12px] font-semibold text-primary">
                 Deposits
               </th>
-              <th className="min-w-[110px] border border-border px-4 py-3 text-right text-[12px] font-semibold text-primary">
+              <th className="sticky top-0 z-20 min-w-[110px] border border-border bg-[#F8FBF1] px-4 py-3 text-right text-[12px] font-semibold text-primary">
                 Withdrawals
               </th>
-              <th className="min-w-[130px] border border-border px-4 py-3 text-right text-[12px] font-semibold text-primary">
+              <th className="sticky top-0 z-20 min-w-[130px] border border-border bg-[#F8FBF1] px-4 py-3 text-right text-[12px] font-semibold text-primary">
                 Ending Balance
               </th>
             </tr>
@@ -1643,7 +1763,7 @@ export default function WorkspaceReconciliation() {
           <tbody>
             {rows.map((row) => (
               <tr key={row.month} className="bg-white hover:bg-slate-50/60">
-                <td className="border border-border px-3 py-[7px] text-[12px] text-text-primary">
+                <td className="sticky left-0 z-[1] bg-white border border-border px-3 py-[7px] text-[12px] text-text-primary">
                   {monthLabel(row.month)}
                 </td>
                 <td className="border border-border px-3 py-[7px] text-right text-[12px] tabular-nums text-text-primary">
@@ -1768,7 +1888,7 @@ export default function WorkspaceReconciliation() {
     const overallStatus = bank?.status || (rows.every((r) => Math.abs(r.footingCheck) <= 1) ? "Verified" : "Needs Review");
 
     return (
-      <div className="mb-4 overflow-hidden rounded-[var(--radius-card)] border border-border bg-white shadow-[0_10px_30px_rgba(15,23,42,0.04)]">
+      <div className="mb-4 overflow-clip rounded-[var(--radius-card)] border border-border bg-white shadow-[0_10px_30px_rgba(15,23,42,0.04)]">
         <div className="flex w-full items-center justify-between border-b border-primary/15 bg-[#F8FBF1] px-4 py-3">
           <div className="flex items-center gap-3 flex-wrap">
             <span className="text-[14px] font-semibold text-primary">{bankLabel}</span>
@@ -1791,61 +1911,53 @@ export default function WorkspaceReconciliation() {
             </span>
           )}
         </div>
-        <div className="overflow-x-auto border-t border-border bg-white">
-          {isLoadingExtractedBankPdfData ? (
-            <div className="flex items-center gap-2 px-4 py-5 text-[13px] text-text-secondary">
-              <LoaderCircle size={15} className="animate-spin" />
-              Loading bank statement data...
-            </div>
-          ) : pdfMonths.length === 0 ? (
-            <div className="px-4 py-5 text-[13px] text-text-muted">No data available.</div>
-          ) : (
-            <table className="min-w-full table-fixed border-collapse bg-white text-[13px]">
-              <TableColGroup months={pdfMonths} />
-              <thead>
-                <TableHeader label={bankLabel} months={pdfMonths} />
-              </thead>
-              <tbody>
-                <DR label="Starting Balance" values={v("startingBalance")} bold />
-                <DR label="Deposits" values={v("deposits")} />
-                <DR label="Withdrawals" values={v("withdrawals")} />
-                <DR label="Ending Balance" values={v("endingBalance")} bold />
-                <SpacerRow colCount={colCount} />
+        {isLoadingExtractedBankPdfData ? (
+          <div className="border-t border-border bg-white flex items-center gap-2 px-4 py-5 text-[13px] text-text-secondary">
+            <LoaderCircle size={15} className="animate-spin" />
+            Loading bank statement data...
+          </div>
+        ) : pdfMonths.length === 0 ? (
+          <div className="border-t border-border bg-white px-4 py-5 text-[13px] text-text-muted">No data available.</div>
+        ) : (
+          <FreezeTable months={pdfMonths} label={bankLabel} containerClass="border-t border-border bg-white">
+            <DR label="Starting Balance" values={v("startingBalance")} bold />
+            <DR label="Deposits" values={v("deposits")} />
+            <DR label="Withdrawals" values={v("withdrawals")} />
+            <DR label="Ending Balance" values={v("endingBalance")} bold />
+            <SpacerRow colCount={colCount} />
 
-                <DR label="Intercompany Deposits" values={v("intercompanyDeposits")} indent />
-                <DR label="Intercompany Withdraws" values={v("intercompanyWithdraws")} indent />
-                <SpacerRow colCount={colCount} />
+            <DR label="Intercompany Deposits" values={v("intercompanyDeposits")} indent />
+            <DR label="Intercompany Withdraws" values={v("intercompanyWithdraws")} indent />
+            <SpacerRow colCount={colCount} />
 
-                <DR label="Footing Check" values={va("footingCheck")} check />
-                <DR label="Prior Month Check" values={va("priorMonthCheck")} check />
-                <SpacerRow colCount={colCount} />
+            <DR label="Footing Check" values={va("footingCheck")} check />
+            <DR label="Prior Month Check" values={va("priorMonthCheck")} check />
+            <SpacerRow colCount={colCount} />
 
-                <DR label="Per Balance Sheet" values={v("perBalanceSheet")} bold />
-                <DR
-                  label="Variance"
-                  values={rawNums("variance")}
-                  rawValues={rawNums("variance")}
-                  rowType="variance-amt"
-                />
-                <SpacerRow colCount={colCount} />
+            <DR label="Per Balance Sheet" values={v("perBalanceSheet")} bold />
+            <DR
+              label="Variance"
+              values={rawNums("variance")}
+              rawValues={rawNums("variance")}
+              rowType="variance-amt"
+            />
+            <SpacerRow colCount={colCount} />
 
-                <DR label="Outstanding Checks" values={v("outstandingChecks")} />
-                <DR
-                  label="Unreconciled $ Variance"
-                  values={rawNums("unreconciledDollar")}
-                  rawValues={rawNums("unreconciledDollar")}
-                  rowType="variance-amt"
-                />
-                <DR
-                  label="Unreconciled % Variance"
-                  values={rawNums("unreconciledPct")}
-                  rawValues={rawNums("unreconciledPct")}
-                  rowType="variance-pct"
-                />
-              </tbody>
-            </table>
-          )}
-        </div>
+            <DR label="Outstanding Checks" values={v("outstandingChecks")} />
+            <DR
+              label="Unreconciled $ Variance"
+              values={rawNums("unreconciledDollar")}
+              rawValues={rawNums("unreconciledDollar")}
+              rowType="variance-amt"
+            />
+            <DR
+              label="Unreconciled % Variance"
+              values={rawNums("unreconciledPct")}
+              rawValues={rawNums("unreconciledPct")}
+              rowType="variance-pct"
+            />
+          </FreezeTable>
+        )}
       </div>
     );
   };
@@ -1863,7 +1975,7 @@ export default function WorkspaceReconciliation() {
     return (
       <div
         key={account.accountId}
-        className="mb-4 overflow-hidden rounded-[var(--radius-card)] border border-border bg-white shadow-[0_10px_30px_rgba(15,23,42,0.04)]"
+        className="mb-4 overflow-clip rounded-[var(--radius-card)] border border-border bg-white shadow-[0_10px_30px_rgba(15,23,42,0.04)]"
       >
         <button
           type="button"
@@ -1885,86 +1997,55 @@ export default function WorkspaceReconciliation() {
         </button>
 
         {isExpanded && (
-          <div className="overflow-x-auto border-t border-border bg-white">
-            {isLoadingBankActivity ? (
-              <div className="flex items-center gap-2 px-4 py-5 text-[13px] text-text-secondary">
-                <LoaderCircle size={15} className="animate-spin" />
-                Loading QuickBooks bank activity...
-              </div>
-            ) : rows.length === 0 ? (
-              <div className="px-4 py-5 text-[13px] text-text-muted">
-                No data for this bank account.
-              </div>
-            ) : (
-              <table className="min-w-full table-fixed border-collapse bg-white text-[13px]">
-                <TableColGroup months={reportMonths} />
-                <thead>
-                  <TableHeader label={account.accountName} months={reportMonths} />
-                </thead>
-                <tbody>
-                  <DR
-                    label="Starting Balance"
-                    values={v("startingBalance")}
-                    bold
-                  />
-                  <DR label="Deposits" values={v("deposits")} />
-                  <DR label="Withdrawals" values={v("withdrawals")} />
-                  <DR label="Ending Balance" values={v("endingBalance")} bold />
-                  <SpacerRow colCount={colCount} />
+          isLoadingBankActivity ? (
+            <div className="border-t border-border bg-white flex items-center gap-2 px-4 py-5 text-[13px] text-text-secondary">
+              <LoaderCircle size={15} className="animate-spin" />
+              Loading QuickBooks bank activity...
+            </div>
+          ) : rows.length === 0 ? (
+            <div className="border-t border-border bg-white px-4 py-5 text-[13px] text-text-muted">
+              No data for this bank account.
+            </div>
+          ) : (
+            <FreezeTable months={reportMonths} label={account.accountName} containerClass="border-t border-border bg-white">
+              <DR label="Starting Balance" values={v("startingBalance")} bold />
+              <DR label="Deposits" values={v("deposits")} />
+              <DR label="Withdrawals" values={v("withdrawals")} />
+              <DR label="Ending Balance" values={v("endingBalance")} bold />
+              <SpacerRow colCount={colCount} />
 
-                  <DR
-                    label="Intercompany Deposits"
-                    values={v("intercompanyDeposits")}
-                    indent
-                  />
-                  <DR
-                    label="Intercompany Withdraws"
-                    values={v("intercompanyWithdraws")}
-                    indent
-                  />
-                  <SpacerRow colCount={colCount} />
+              <DR label="Intercompany Deposits" values={v("intercompanyDeposits")} indent />
+              <DR label="Intercompany Withdraws" values={v("intercompanyWithdraws")} indent />
+              <SpacerRow colCount={colCount} />
 
-                  <DR label="Footing Check" values={va("footingCheck")} check />
-                  <DR
-                    label="Prior Month Check"
-                    values={va("priorMonthCheck")}
-                    check
-                  />
-                  <SpacerRow colCount={colCount} />
+              <DR label="Footing Check" values={va("footingCheck")} check />
+              <DR label="Prior Month Check" values={va("priorMonthCheck")} check />
+              <SpacerRow colCount={colCount} />
 
-                  <DR
-                    label="Per Balance Sheet"
-                    values={v("perBalanceSheet")}
-                    bold
-                  />
-                  <DR
-                    label="Variance"
-                    values={rawNums("variance")}
-                    rawValues={rawNums("variance")}
-                    rowType="variance-amt"
-                  />
-                  <SpacerRow colCount={colCount} />
+              <DR label="Per Balance Sheet" values={v("perBalanceSheet")} bold />
+              <DR
+                label="Variance"
+                values={rawNums("variance")}
+                rawValues={rawNums("variance")}
+                rowType="variance-amt"
+              />
+              <SpacerRow colCount={colCount} />
 
-                  <DR
-                    label="Outstanding Checks"
-                    values={v("outstandingChecks")}
-                  />
-                  <DR
-                    label="Unreconciled $ Variance"
-                    values={rawNums("unreconciledDollar")}
-                    rawValues={rawNums("unreconciledDollar")}
-                    rowType="variance-amt"
-                  />
-                  <DR
-                    label="Unreconciled % Variance"
-                    values={rawNums("unreconciledPct")}
-                    rawValues={rawNums("unreconciledPct")}
-                    rowType="variance-pct"
-                  />
-                </tbody>
-              </table>
-            )}
-          </div>
+              <DR label="Outstanding Checks" values={v("outstandingChecks")} />
+              <DR
+                label="Unreconciled $ Variance"
+                values={rawNums("unreconciledDollar")}
+                rawValues={rawNums("unreconciledDollar")}
+                rowType="variance-amt"
+              />
+              <DR
+                label="Unreconciled % Variance"
+                values={rawNums("unreconciledPct")}
+                rawValues={rawNums("unreconciledPct")}
+                rowType="variance-pct"
+              />
+            </FreezeTable>
+          )
         )}
       </div>
     );
@@ -1978,144 +2059,42 @@ export default function WorkspaceReconciliation() {
     const avRaw = (f) => [...rows.map((r) => r[f] ?? null), ttm[f] ?? null];
 
     return (
-      <div className="overflow-x-auto rounded-xl border border-border shadow-sm">
-        <table className="min-w-full table-fixed border-collapse bg-white text-[13px]">
-          <TableColGroup months={months} />
-          <thead>
-            <TableHeader label="Activity Review" months={months} />
-          </thead>
-          <tbody>
-            <DR label="Total Deposits" values={av("totalDeposits")} bold />
-            <DR
-              label="Intercompany Transfers"
-              values={av("withdrawIntercompanyTransfers")}
-              indent
-            />
-            <DR
-              label="External Deposits"
-              values={av("externalDeposits")}
-              bold
-            />
-            <DR
-              label="Sales per Financials"
-              values={av("salesPerFinancials")}
-            />
-            <DR
-              label="$ Variance"
-              values={avRaw("depositsDollarVar")}
-              rawValues={avRaw("depositsDollarVar")}
-              rowType="variance-amt"
-            />
-            <DR
-              label="% Variance"
-              values={avRaw("depositsPctVar")}
-              rawValues={avRaw("depositsPctVar")}
-              rowType="variance-pct"
-            />
-            <SpacerRow colCount={colCount} />
+      <FreezeTable months={months} label="Activity Review" containerClass="rounded-xl border border-border shadow-sm">
+        <DR label="Total Deposits" values={av("totalDeposits")} bold />
+        <DR label="Intercompany Transfers" values={av("withdrawIntercompanyTransfers")} indent />
+        <DR label="External Deposits" values={av("externalDeposits")} bold />
+        <DR label="Sales per Financials" values={av("salesPerFinancials")} />
+        <DR label="$ Variance" values={avRaw("depositsDollarVar")} rawValues={avRaw("depositsDollarVar")} rowType="variance-amt" />
+        <DR label="% Variance" values={avRaw("depositsPctVar")} rawValues={avRaw("depositsPctVar")} rowType="variance-pct" />
+        <SpacerRow colCount={colCount} />
 
-            <DR label="Change in AR" values={av("changeInAR")} indent />
-            <DR
-              label="Change in Accts Receivable- Retentions"
-              values={av("changeInARRetentions")}
-              indent
-            />
-            <DR
-              label="Fixed Asset Disposals"
-              values={av("fixedAssetDisposals")}
-              indent
-            />
-            <DR label="Other" values={av("depositsOther")} indent />
-            <DR
-              label="Unreconciled Variance $"
-              values={avRaw("depositsUnreconciledDollar")}
-              rawValues={avRaw("depositsUnreconciledDollar")}
-              rowType="variance-amt"
-            />
-            <DR
-              label="Unreconciled Variance %"
-              values={avRaw("depositsUnreconciledPct")}
-              rawValues={avRaw("depositsUnreconciledPct")}
-              rowType="variance-pct"
-            />
-            <SpacerRow colCount={colCount} />
+        <DR label="Change in AR" values={av("changeInAR")} indent />
+        <DR label="Change in Accts Receivable- Retentions" values={av("changeInARRetentions")} indent />
+        <DR label="Fixed Asset Disposals" values={av("fixedAssetDisposals")} indent />
+        <DR label="Other" values={av("depositsOther")} indent />
+        <DR label="Unreconciled Variance $" values={avRaw("depositsUnreconciledDollar")} rawValues={avRaw("depositsUnreconciledDollar")} rowType="variance-amt" />
+        <DR label="Unreconciled Variance %" values={avRaw("depositsUnreconciledPct")} rawValues={avRaw("depositsUnreconciledPct")} rowType="variance-pct" />
+        <SpacerRow colCount={colCount} />
 
-            <DR
-              label="Total Withdrawals"
-              values={av("totalWithdrawals")}
-              bold
-            />
-            <DR
-              label="Intercompany Transfers"
-              values={av("intercompanyTransfers")}
-              indent
-            />
-            <DR
-              label="External Withdraws"
-              values={av("externalWithdraws")}
-              bold
-            />
-            <DR
-              label="Expenses per Financials"
-              values={av("expensesPerFinancials")}
-            />
-            <DR
-              label="$ Variance"
-              values={avRaw("withdrawsDollarVar")}
-              rawValues={avRaw("withdrawsDollarVar")}
-              rowType="variance-amt"
-            />
-            <DR
-              label="% Variance"
-              values={avRaw("withdrawsPctVar")}
-              rawValues={avRaw("withdrawsPctVar")}
-              rowType="variance-pct"
-            />
-            <SpacerRow colCount={colCount} />
+        <DR label="Total Withdrawals" values={av("totalWithdrawals")} bold />
+        <DR label="Intercompany Transfers" values={av("intercompanyTransfers")} indent />
+        <DR label="External Withdraws" values={av("externalWithdraws")} bold />
+        <DR label="Expenses per Financials" values={av("expensesPerFinancials")} />
+        <DR label="$ Variance" values={avRaw("withdrawsDollarVar")} rawValues={avRaw("withdrawsDollarVar")} rowType="variance-amt" />
+        <DR label="% Variance" values={avRaw("withdrawsPctVar")} rawValues={avRaw("withdrawsPctVar")} rowType="variance-pct" />
+        <SpacerRow colCount={colCount} />
 
-            <DR label="Owner Withdraws" values={av("ownerWithdraws")} indent />
-            <DR
-              label="Change in Current Liabilities"
-              values={av("changeInCurrentLiabilities")}
-              indent
-            />
-            <DR
-              label="Change in LT Liabilities"
-              values={av("changeInLTLiabilities")}
-              indent
-            />
-            <DR
-              label="Depreciation Expense"
-              values={av("depreciationExpense")}
-              indent
-            />
-            <DR
-              label="Amortization Expense"
-              values={av("amortizationExpense")}
-              indent
-            />
-            <DR label="Bad Debt Expense" values={av("badDebtExpense")} indent />
-            <DR
-              label="Fixed Asset Purchases"
-              values={av("fixedAssetPurchases")}
-              indent
-            />
-            <DR label="Other" values={av("withdrawsOther")} indent />
-            <DR
-              label="Unreconciled Variance $"
-              values={avRaw("withdrawsUnreconciledDollar")}
-              rawValues={avRaw("withdrawsUnreconciledDollar")}
-              rowType="variance-amt"
-            />
-            <DR
-              label="Unreconciled Variance %"
-              values={avRaw("withdrawsUnreconciledPct")}
-              rawValues={avRaw("withdrawsUnreconciledPct")}
-              rowType="variance-pct"
-            />
-          </tbody>
-        </table>
-      </div>
+        <DR label="Owner Withdraws" values={av("ownerWithdraws")} indent />
+        <DR label="Change in Current Liabilities" values={av("changeInCurrentLiabilities")} indent />
+        <DR label="Change in LT Liabilities" values={av("changeInLTLiabilities")} indent />
+        <DR label="Depreciation Expense" values={av("depreciationExpense")} indent />
+        <DR label="Amortization Expense" values={av("amortizationExpense")} indent />
+        <DR label="Bad Debt Expense" values={av("badDebtExpense")} indent />
+        <DR label="Fixed Asset Purchases" values={av("fixedAssetPurchases")} indent />
+        <DR label="Other" values={av("withdrawsOther")} indent />
+        <DR label="Unreconciled Variance $" values={avRaw("withdrawsUnreconciledDollar")} rawValues={avRaw("withdrawsUnreconciledDollar")} rowType="variance-amt" />
+        <DR label="Unreconciled Variance %" values={avRaw("withdrawsUnreconciledPct")} rawValues={avRaw("withdrawsUnreconciledPct")} rowType="variance-pct" />
+      </FreezeTable>
     );
   };
 
