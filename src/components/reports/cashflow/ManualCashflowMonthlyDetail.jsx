@@ -145,6 +145,7 @@ function CalculatedRow({ section, months }) {
 export default function ManualCashflowMonthlyDetail({
   data,
   title = "Cash Flow Statement",
+  subtitle: propSubtitle,
   entityName = "Company",
   selectedMonths = [],
 }) {
@@ -157,9 +158,10 @@ export default function ManualCashflowMonthlyDetail({
   const firstMonth = months.length > 0 ? months[0] : 1;
   const lastMonth = months.length > 0 ? months[months.length - 1] : 12;
   const lastDayOfMonth = year ? new Date(year, lastMonth, 0).getDate() : 31;
-  const subtitle = year
+  const fallbackSubtitle = year
     ? `${monthNamesData[firstMonth - 1]} 1–${monthNamesData[lastMonth - 1]} ${lastDayOfMonth}, ${year}`
     : "All Dates";
+  const displaySubtitle = propSubtitle === null ? null : (propSubtitle || fallbackSubtitle);
 
   if (!sections.length) {
     return (
@@ -180,7 +182,7 @@ export default function ManualCashflowMonthlyDetail({
         <div className="flex flex-col items-center mb-8">
           <h1 className="text-[20px] font-bold text-text-primary tracking-tight">{entityName}</h1>
           <h2 className="text-[17px] font-semibold text-text-secondary mt-1">{title}</h2>
-          <p className="text-[13px] text-text-muted mt-1">{subtitle}</p>
+          {displaySubtitle && <p className="text-[13px] text-text-muted mt-1">{displaySubtitle}</p>}
         </div>
 
         <div className="overflow-x-auto rounded-md border border-border">

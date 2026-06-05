@@ -8102,6 +8102,7 @@ function buildBalanceSheetMonthlyDetailPayload(transactions = [], year, filters 
         openingBalance: 0,
         monthlyDelta: {},
         monthlyBalance: {},
+        transactions: [],
         sources: new Set([source]),
       });
     }
@@ -8168,6 +8169,15 @@ function buildBalanceSheetMonthlyDetailPayload(transactions = [], year, filters 
 
     if (txMonth >= 1 && txMonth <= 12) {
       account.monthlyDelta[txMonth] = roundMoney((account.monthlyDelta[txMonth] || 0) + delta);
+
+      if (txYear === selectedYear) {
+        account.transactions.push({
+          date: tx.date,
+          vendorName: tx.vendorName || tx.vendor_name || "",
+          amount: delta,
+          fiscalMonth: txMonth,
+        });
+      }
     }
   });
 
@@ -8290,6 +8300,7 @@ function buildBalanceSheetMonthlyDetailPayload(transactions = [], year, filters 
       name: account.accountName,
       number: account.accountNumber || "",
       monthly: {},
+      transactions: account.transactions || [],
       total: 0,
     };
 
