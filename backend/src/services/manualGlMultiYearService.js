@@ -8102,6 +8102,7 @@ function buildBalanceSheetMonthlyDetailPayload(transactions = [], year, filters 
         openingBalance: 0,
         monthlyDelta: {},
         monthlyBalance: {},
+        transactions: [],
         sources: new Set([source]),
       });
     }
@@ -8168,6 +8169,15 @@ function buildBalanceSheetMonthlyDetailPayload(transactions = [], year, filters 
 
     if (txMonth >= 1 && txMonth <= 12) {
       account.monthlyDelta[txMonth] = roundMoney((account.monthlyDelta[txMonth] || 0) + delta);
+
+      if (txYear === selectedYear) {
+        account.transactions.push({
+          date: tx.date,
+          vendorName: tx.vendorName || tx.vendor_name || "",
+          amount: delta,
+          fiscalMonth: txMonth,
+        });
+      }
     }
   });
 
@@ -8290,6 +8300,7 @@ function buildBalanceSheetMonthlyDetailPayload(transactions = [], year, filters 
       name: account.accountName,
       number: account.accountNumber || "",
       monthly: {},
+      transactions: account.transactions || [],
       total: 0,
     };
 
@@ -8770,44 +8781,44 @@ function resolveStatementTypeAccountTypes(statementType) {
 
 /**
  * Builds the Vendor Analysis payload.
- * Hierarchy: Account -> Vendor -> Account Total
+ * Hierarchy: Vendor -> Account -> Account Total
  * Columns: dynamic fiscal years + a grand Total per row.
  * Cell value uses the raw signed amount (credits positive, debits negative),
  * consistent with the existing Manual GL report builders.
  */
 function buildVendorAnalysisPayload(transactions = [], filters = {}) {
-  const accountMap = new Map();
+  const vendorMap = new Map();
   const years = new Set();
 
   transactions.forEach((tx) => {
+    const vendorName = tx.vendorName || "No Vendor";
     const accountName = tx.accountName || "Uncategorized Account";
-    const vendorName = tx.vendorName || "Unknown Vendor";
     const year = Number(tx.fiscalYear);
     if (year > 0) years.add(year);
 
-    if (!accountMap.has(accountName)) {
-      accountMap.set(accountName, {
+    if (!vendorMap.has(vendorName)) {
+      vendorMap.set(vendorName, {
+        vendorName,
+        accounts: new Map(),
+        yearlyTotals: {},
+        totalAmount: 0,
+      });
+    }
+
+    const vendor = vendorMap.get(vendorName);
+    if (!vendor.accounts.has(accountName)) {
+      vendor.accounts.set(accountName, {
         accountName,
         accountNumber: tx.accountNumber || "",
         accountType: tx.accountType || "",
         category: tx.category || "",
         subCategory: tx.subCategory || "",
-        vendors: new Map(),
         yearlyTotals: {},
         totalAmount: 0,
       });
     }
 
-    const account = accountMap.get(accountName);
-    if (!account.vendors.has(vendorName)) {
-      account.vendors.set(vendorName, {
-        vendorName,
-        yearlyTotals: {},
-        totalAmount: 0,
-      });
-    }
-
-    const vendor = account.vendors.get(vendorName);
+    const account = vendor.accounts.get(accountName);
     // normalizeStagedTransactionRow exposes the signed value as `netAmount`
     // (credit - debit). Fall back to signedAmount/amount for any other caller.
     const amount = Number(tx.netAmount ?? tx.signedAmount ?? tx.amount ?? 0) || 0;
@@ -8822,31 +8833,31 @@ function buildVendorAnalysisPayload(transactions = [], filters = {}) {
 
   const sortedYears = Array.from(years).sort((a, b) => a - b);
 
-  const accounts = Array.from(accountMap.values())
-    .map((account) => ({
-      accountName: account.accountName,
-      accountNumber: account.accountNumber,
-      accountType: account.accountType,
-      category: account.category,
-      subCategory: account.subCategory,
-      totalAmount: roundMoney(account.totalAmount),
-      yearlyTotals: roundYearlyTotals(account.yearlyTotals),
-      vendors: Array.from(account.vendors.values())
-        .map((v) => ({
-          vendorName: v.vendorName,
-          totalAmount: roundMoney(v.totalAmount),
-          yearlyTotals: roundYearlyTotals(v.yearlyTotals),
+  const vendors = Array.from(vendorMap.values())
+    .map((vendor) => ({
+      vendorName: vendor.vendorName,
+      totalAmount: roundMoney(vendor.totalAmount),
+      yearlyTotals: roundYearlyTotals(vendor.yearlyTotals),
+      accounts: Array.from(vendor.accounts.values())
+        .map((a) => ({
+          accountName: a.accountName,
+          accountNumber: a.accountNumber,
+          accountType: a.accountType,
+          category: a.category,
+          subCategory: a.subCategory,
+          totalAmount: roundMoney(a.totalAmount),
+          yearlyTotals: roundYearlyTotals(a.yearlyTotals),
         }))
-        .sort((a, b) => Math.abs(b.totalAmount) - Math.abs(a.totalAmount)),
+        .sort((a, b) => a.accountName.localeCompare(b.accountName)),
     }))
-    .sort((a, b) => a.accountName.localeCompare(b.accountName));
+    .sort((a, b) => Math.abs(b.totalAmount) - Math.abs(a.totalAmount));
 
   return {
     source: "manual_gl_staged_transactions",
     reportType: "vendor_analysis",
     filters,
     years: sortedYears,
-    accounts,
+    vendors,
   };
 }
 

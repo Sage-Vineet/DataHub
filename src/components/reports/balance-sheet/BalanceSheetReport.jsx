@@ -34,7 +34,7 @@ function BalanceSheetReport({
   const isManualMonthlyDetail = Boolean(
     MANUAL_STAGED_SOURCES.includes(detailedData?.source) && detailedData?.reportType === "balance_sheet_monthly_detail"
   );
-  const summarySubtitle = `Report Period: ${periodText} | ${clientName} | ${accountingMethod} Basis`;
+  const summarySubtitle = null;
 
   if (reportType === "Detail") {
     if (isManualMonthlyDetail) {
@@ -59,7 +59,7 @@ function BalanceSheetReport({
         columns={columns}
         endDate={endDate}
         title="Balance Sheet"
-        subtitle={`${clientName} | ${accountingMethod} Basis`}
+        subtitle={null}
         entityName={resolvedEntityName}
         createdOn={createdOn}
       />

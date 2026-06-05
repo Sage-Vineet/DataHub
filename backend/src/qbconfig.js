@@ -233,6 +233,12 @@ function isConnected(clientId) {
   return !!(config && config.accessToken && config.realmId);
 }
 
+function evictQBConfig(companyId) {
+  if (companyId && qbStates[companyId]) {
+    delete qbStates[companyId];
+  }
+}
+
 module.exports = {
   getQBConfig,
   loadQBConfig,
@@ -240,5 +246,6 @@ module.exports = {
   setQBConfig,
   updateTokens,
   disconnectConfig,
+  evictQBConfig,
   isConnected,
 };

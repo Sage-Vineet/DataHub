@@ -10,6 +10,7 @@ const {
   updateTokens,
   setQBConfig,
   disconnectConfig,
+  evictQBConfig,
 } = require("../../qbconfig");
 const { logQuickBooksDebug, maskValue } = require("../../quickbooksLogger");
 
@@ -169,6 +170,24 @@ async function getWorkspaceCompanyName(clientId) {
   }
 }
 
+
+// ─── Pending Transfer Store ─────────────────────────────────────────────────
+// Short-lived in-memory store for QB realm transfers that require user confirmation.
+// Entries expire after 15 minutes.  A UUID transfer token ties the OAuth callback
+// to the subsequent POST /api/auth/transfer-confirm request.
+
+const TRANSFER_TTL_MS = 15 * 60 * 1000;
+const pendingTransfers = new Map();
+
+function cleanupExpiredTransfers() {
+  const now = Date.now();
+  for (const [id, data] of pendingTransfers.entries()) {
+    if (now - data.createdAt > TRANSFER_TTL_MS) {
+      pendingTransfers.delete(id);
+    }
+  }
+}
+// ────────────────────────────────────────────────────────────────────────────
 
 // GET /refresh-token - Refresh access token for a specific client
 router.get("/refresh-token", requireAuth, async (req, res) => {
@@ -460,6 +479,11 @@ router.get("/api/auth/callback", async (req, res) => {
   const redirectUri =
     process.env.QB_REDIRECT_URI || `${appBaseUrl}/api/auth/callback`;
 
+  // Declared here so the catch block can reference them when handling QB_REALM_ALREADY_LINKED
+  // (variables declared with let/const inside a try block are not in scope in the catch block).
+  let quickbooksCompanyName = null;
+  let tokenData = null;
+
   try {
     logQuickBooksDebug("oauth_token_exchange_started", {
       clientId,
@@ -504,7 +528,6 @@ router.get("/api/auth/callback", async (req, res) => {
       }
     }
 
-    let quickbooksCompanyName = null;
     try {
       const companyRes = await axios.get(
         `${qb.baseUrl}/v3/company/${realmId}/companyinfo/${realmId}?minorversion=75`,
@@ -646,7 +669,7 @@ router.get("/api/auth/callback", async (req, res) => {
       Date.now() + (tokenResponse.data.expires_in || 3600) * 1000,
     ).toISOString();
 
-    const tokenData = {
+    tokenData = {
       userId,
       realmId,
       accessToken: tokenResponse.data.access_token,
@@ -701,13 +724,51 @@ router.get("/api/auth/callback", async (req, res) => {
       stack: error.stack,
     });
 
-    const qbMessage =
-      error.code === "QB_REALM_ALREADY_LINKED"
-        ? encodeURIComponent(
-          "This QuickBooks company is already linked to another DataHub company.",
-        )
-        : encodeURIComponent(`OAuth exchange failed: ${error.message}`);
+    if (error.code === "QB_REALM_ALREADY_LINKED") {
+      const fromCompanyId = error.conflictingCompanyId;
+      const fromCompanyName = fromCompanyId
+        ? await getWorkspaceCompanyName(fromCompanyId)
+        : null;
 
+      cleanupExpiredTransfers();
+      const transferId = crypto.randomBytes(16).toString("hex");
+
+      pendingTransfers.set(transferId, {
+        fromCompanyId,
+        fromCompanyName: fromCompanyName || "another company",
+        toCompanyId: clientId,
+        realmId,
+        quickbooksCompanyName,
+        userId,
+        newConnectionData: {
+          companyId: clientId,
+          userId,
+          realmId,
+          companyName: quickbooksCompanyName,
+          accessToken: tokenData.accessToken,
+          refreshToken: tokenData.refreshToken,
+          tokenExpiresAt: tokenData.tokenExpiresAt,
+          connectedAt: tokenData.connectedAt,
+          environment: tokenData.environment,
+          syncedEntities: tokenData.syncedEntities || [],
+          oauthClientId: tokenData.oauthClientId,
+          redirectUri: tokenData.redirectUri,
+        },
+        createdAt: Date.now(),
+      });
+
+      console.log(`[QB Transfer] Realm conflict for ${realmId}: stored pending transfer ${transferId} (${fromCompanyName || fromCompanyId} → ${clientId})`);
+
+      return res.redirect(
+        buildFrontendHashUrl(
+          frontendUrl,
+          redirectHash,
+          `?qbStatus=transfer_required&transferToken=${transferId}&fromCompanyName=${encodeURIComponent(fromCompanyName || "another company")}`,
+        ),
+      );
+    }
+
+    const qbMessage = encodeURIComponent(`OAuth exchange failed: ${error.message}`);
     return res.redirect(
       buildFrontendHashUrl(
         frontendUrl,
@@ -855,6 +916,72 @@ router.get("/api/auth/disconnect", requireAuth, async (req, res) => {
   } catch (err) {
     console.error(`[QB Disconnect] API error for client ${clientId}:`, err.message);
     return res.status(500).json({ success: false, error: "Disconnect failed", message: err.message });
+  }
+});
+
+// POST /api/auth/transfer-confirm - Complete a pending QB realm transfer
+router.post("/api/auth/transfer-confirm", requireAuth, async (req, res) => {
+  const { transferToken } = req.body || {};
+
+  if (!transferToken) {
+    return res.status(400).json({ error: "Missing transfer token." });
+  }
+
+  cleanupExpiredTransfers();
+  const pending = pendingTransfers.get(transferToken);
+
+  if (!pending) {
+    return res.status(404).json({
+      error: "Transfer session not found or expired. Please reconnect QuickBooks to start again.",
+      code: "TRANSFER_TOKEN_EXPIRED",
+    });
+  }
+
+  if (Date.now() - pending.createdAt > TRANSFER_TTL_MS) {
+    pendingTransfers.delete(transferToken);
+    return res.status(410).json({
+      error: "Transfer session expired. Please reconnect QuickBooks to start again.",
+      code: "TRANSFER_TOKEN_EXPIRED",
+    });
+  }
+
+  const { fromCompanyId, toCompanyId, realmId, quickbooksCompanyName, newConnectionData } = pending;
+
+  if (!canAccessCompany(req.user, toCompanyId)) {
+    return res.status(403).json({ error: "You do not have permission to connect QuickBooks for this company." });
+  }
+
+  try {
+    const { transferQuickBooksConnectionToNewCompany } = require("../../services/quickbooksConnectionStore");
+
+    await transferQuickBooksConnectionToNewCompany(
+      fromCompanyId,
+      toCompanyId,
+      newConnectionData,
+      { realmId, performedBy: req.user.id },
+    );
+
+    // Sync in-memory QB state: evict the old company so it no longer has live tokens,
+    // then load the new company's connection from DB into the in-memory cache.
+    evictQBConfig(fromCompanyId);
+    await loadQBConfig(toCompanyId);
+
+    pendingTransfers.delete(transferToken);
+
+    console.log(`[QB Transfer] ✅ Confirmed by user ${req.user.id}: realm ${realmId} → company ${toCompanyId}`);
+
+    return res.json({
+      success: true,
+      message: "QuickBooks account successfully transferred and connected to this company.",
+      realmId,
+      companyName: quickbooksCompanyName,
+    });
+  } catch (err) {
+    console.error("[QB Transfer] Confirm failed:", err.message);
+    return res.status(500).json({
+      error: "Failed to transfer QuickBooks connection.",
+      details: err.message,
+    });
   }
 });
 

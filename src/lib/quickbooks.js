@@ -156,3 +156,10 @@ export function fetchBankVsBooks() {
   return request("/bank-vs-books");
 }
 
+export function confirmQuickBooksTransfer(transferToken) {
+  return request("/api/auth/transfer-confirm", {
+    method: "POST",
+    body: JSON.stringify({ transferToken }),
+  });
+}
+

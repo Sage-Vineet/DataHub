@@ -20,9 +20,7 @@ function CashflowReport({
 }) {
   const resolvedEntityName = entityName || clientName || "Company";
   const periodText = startDate === "1970-01-01" ? "All Dates" : `${startDate || "N/A"} to ${endDate || "N/A"}`;
-  const summarySubtitle = sourceMode === "manual"
-    ? undefined
-    : `Report Period: ${periodText} | ${clientName} | ${accountingMethod} Basis`;
+  const summarySubtitle = null;
 
   if (reportType === "Detail") {
     // Manual staged monthly detail
@@ -34,6 +32,7 @@ function CashflowReport({
         <ManualCashflowMonthlyDetail
           data={detailedData}
           title="Cash Flow Statement"
+          subtitle={summarySubtitle}
           entityName={resolvedEntityName}
           selectedMonths={selectedMonths}
         />
@@ -49,7 +48,7 @@ function CashflowReport({
         data={rows}
         columns={columns}
         title="Cash Flow"
-        subtitle={`${clientName} | ${accountingMethod} Basis`}
+        subtitle={null}
         entityName={resolvedEntityName}
       />
     );
