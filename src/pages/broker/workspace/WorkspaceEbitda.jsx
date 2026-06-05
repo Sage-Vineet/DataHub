@@ -1,7 +1,6 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useParams } from "react-router-dom";
 import {
-  RefreshCw,
   TrendingUp,
   AlertCircle,
   Plus,
@@ -177,13 +176,11 @@ export default function WorkspaceEbitda() {
   const [multiYearData, setMultiYearData] = useState(null);
   const [years, setYears] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [isSyncing, setIsSyncing] = useState(false);
   const [error, setError] = useState("");
   const [company, setCompany] = useState(null);
   const [dynamicAddbacks, setDynamicAddbacks] = useState([]);
   const [isDataInitialized, setIsDataInitialized] = useState(false);
   const [rowComments, setRowComments] = useState({});
-  const [sdePerCim, setSdePerCim] = useState("");
   const [isTypeDialogOpen, setIsTypeDialogOpen] = useState(false);
 
   // Dataset version selection — Manual GL only.
@@ -566,12 +563,27 @@ export default function WorkspaceEbitda() {
     if (prevVersionRef.current === selectedVersion) return;
     prevVersionRef.current = selectedVersion;
     if (!selectedVersion) return;
-    // Bust the old cache entry so handleGenerate doesn't serve stale data.
+
+    // Check cache before clearing/loading to minimize UI jumps
+    let inCache = false;
     if (ebitdaCacheKey) {
-      try { sessionStorage.removeItem(ebitdaCacheKey); } catch { /* ignore */ }
+      try {
+        const cached = sessionStorage.getItem(ebitdaCacheKey);
+        if (cached) {
+          const { multiYearData: cd, years: cy } = JSON.parse(cached);
+          if (cd && cy?.length) inCache = true;
+        }
+      } catch { /* ignore */ }
     }
-    setMultiYearData(null);
-    setYears([]);
+
+    if (!inCache) {
+      // Clear old state and show spinner IMMEDIATELY (prevents EmptyState flicker
+      // while handleGenerate is waiting to be triggered in the next tick).
+      setMultiYearData(null);
+      setYears([]);
+      setIsLoading(true);
+    }
+
     setIsDataInitialized(false);
     setError("");
   }, [isManualGl, selectedVersion, ebitdaCacheKey]);
@@ -621,7 +633,6 @@ export default function WorkspaceEbitda() {
         });
 
         setDynamicAddbacks(initialized);
-        if (parsed.sdePerCim) setSdePerCim(parsed.sdePerCim);
         if (parsed.rowComments) setRowComments(parsed.rowComments);
         setIsDataInitialized(true);
         return;
@@ -641,11 +652,10 @@ export default function WorkspaceEbitda() {
     if (isDataInitialized && clientId) {
       localStorage.setItem(`ebitda_addbacks_${clientId}`, JSON.stringify({
         addbacks: dynamicAddbacks,
-        sdePerCim: sdePerCim,
         rowComments: rowComments
       }));
     }
-  }, [dynamicAddbacks, sdePerCim, rowComments, clientId, isDataInitialized]);
+  }, [dynamicAddbacks, rowComments, clientId, isDataInitialized]);
 
   const handleAddAddback = ({ type, accountLabel = "" } = {}) => {
     const newId = `custom_${Date.now()}`;
@@ -770,25 +780,7 @@ export default function WorkspaceEbitda() {
   };
 
 
-  const handleSync = async () => {
-    setIsSyncing(true);
-    if (ebitdaCacheKey) {
-      try { sessionStorage.removeItem(ebitdaCacheKey); } catch { /* ignore */ }
-    }
-    try {
-      if (isQBManual) {
-        // Re-sync all QMS files so the latest parser fixes apply, then re-fetch EBITDA.
-        await syncQMSUploadSource({ clientId });
-      } else if (!isManualMode) {
-        await refreshQuickbooksToken();
-      }
-      await handleGenerate(true);
-    } catch {
-      setError("Sync failed. Please try again.");
-    } finally {
-      setIsSyncing(false);
-    }
-  };
+  // handleSync removed
 
 
   return (
@@ -833,17 +825,7 @@ export default function WorkspaceEbitda() {
                 </div>
               </div>
             )}
-            <button
-              onClick={handleSync}
-              disabled={isSyncing || isLoading}
-              className="btn-secondary"
-            >
-              <RefreshCw
-                size={16}
-                className={isSyncing ? "animate-spin" : ""}
-              />
-              {isSyncing ? "Refreshing..." : "Refresh"}
-            </button>
+            {/* Refresh button removed */}
           </div>
         </div>
 
@@ -981,7 +963,7 @@ export default function WorkspaceEbitda() {
                               className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#8bc53d] text-white text-[11px] font-bold hover:bg-[#78ab34] transition-colors"
                             >
                               <Plus size={12} strokeWidth={3} />
-                              ADD ROW
+                              ADD ADDBACK
                             </button>
                           </div>
                           <p className="mt-1 text-[11px] text-slate-500">
@@ -1130,57 +1112,7 @@ export default function WorkspaceEbitda() {
               </div>
             </div>
 
-            {/* Summary Analysis Box */}
-            <div className="flex justify-start mt-8 pb-12">
-              <div className="rounded-xl border border-[#cbd5e1] p-0 overflow-hidden bg-white shadow-lg max-w-md w-full">
-                <div className="border-b border-[#cbd5e1] bg-[#8bc53d] p-3 px-4 font-bold text-white text-[15px]">
-                  Summary Analysis
-                </div>
-                <div className="p-8 space-y-6">
-                  <div className="flex justify-between items-center bg-gray-50 border border-gray-100 rounded-lg p-3">
-                    <span className="font-bold text-slate-800">SDE Per CIM</span>
-                    <FormattedNumericInput
-                      value={sdePerCim || null}
-                      apiValue={null}
-                      onChange={(val) => setSdePerCim(val)}
-                      placeholder="Enter value..."
-                      className="w-32 bg-white border border-gray-200"
-                    />
-                  </div>
-
-                  {(() => {
-                    const latestYear = years[0];
-                    const baseEbitda = calculateBaseEbitda(latestYear);
-                    const addbacksSum = dynamicAddbacks.reduce((sum, ab) => {
-                      const { apiValue, userValue } = ab.values[latestYear] || { apiValue: null, userValue: null };
-                      const val = userValue !== null ? userValue : (apiValue || 0);
-                      return sum + val;
-                    }, 0);
-                    const currentSde = baseEbitda + addbacksSum;
-                    const cimVal = Number(sdePerCim) || 0;
-                    const diff = currentSde - cimVal;
-                    const pctDiff = cimVal !== 0 ? (diff / cimVal) * 100 : 0;
-
-                    return (
-                      <>
-                        <div className="flex justify-between items-center border-b border-gray-100 pb-3">
-                          <span className="font-bold text-slate-800">$ Difference</span>
-                          <span className={cn("font-mono font-bold text-[15px]", diff < 0 ? "text-red-500" : "text-green-600")}>
-                            {cimVal ? formatCurrency(diff) : "-"}
-                          </span>
-                        </div>
-                        <div className="flex justify-between items-center">
-                          <span className="font-bold text-slate-800">% Difference</span>
-                          <span className={cn("font-mono font-bold text-[15px]", pctDiff < 0 ? "text-red-500" : "text-green-600")}>
-                            {cimVal ? formatPercent(pctDiff) : "-"}
-                          </span>
-                        </div>
-                      </>
-                    );
-                  })()}
-                </div>
-              </div>
-            </div>
+            {/* Summary Analysis Box removed */}
           </div>
         ) : (
           <EmptyState />

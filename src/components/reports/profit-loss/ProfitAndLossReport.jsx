@@ -37,7 +37,7 @@ function ProfitAndLossReport({
     MANUAL_STAGED_SOURCES.includes(detailedData.source)
   );
 
-  const summarySubtitle = `Report Period: ${periodText} | ${clientName} | ${accountingMethod} Basis`;
+  const summarySubtitle = null;
 
   if (reportType === "Detail") {
     if (isManualStagedDetail) {
