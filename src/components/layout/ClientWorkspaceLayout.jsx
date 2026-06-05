@@ -400,7 +400,7 @@ function WorkspaceTopbar({ company, onMenuClick }) {
         <div className="flex items-center gap-3">
           <MessageNotificationsMenu portal="broker" companyId={company.id} />
 
-          <ActiveSourceIndicator />
+          {/* <ActiveSourceIndicator /> */}
 
           <div className="relative" ref={switchRef}>
             <button
