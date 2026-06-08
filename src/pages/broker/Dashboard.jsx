@@ -29,7 +29,7 @@ const INDUSTRY_OPTIONS = [
   'Media & Entertainment', 'Energy & Natural Resources', 'Transportation & Logistics',
   'Business Services', 'Education & Training', 'Telecommunications',
   'Food & Beverage', 'Agriculture', 'Government & Non-Profit',
-]
+];
 // ─── Helpers ─────────────────────────────
 
 
