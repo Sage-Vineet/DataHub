@@ -169,69 +169,75 @@ const monthLabel = (ym) => {
 };
 
 /**
- * FreezeTable — Excel-style freeze panes for month-column reconciliation tables.
+ * FreezeTable — frozen month header row with horizontally-scrollable body.
  *
- * Separates <thead> and <tbody> into two sibling DOM elements so the header can
- * use `position: sticky; top: 0` relative to the PAGE scroll, while the body
- * uses `overflow-x: auto` for independent horizontal scrolling.
- * JavaScript keeps the header's scrollLeft in sync with the body's scrollLeft,
- * giving true row+column freeze pane behavior across all sections.
+ * Two-div approach: a sticky wrapper (no overflow) holds the header table so
+ * position:sticky fires relative to the page scroll container (main).
+ * The body div has overflow-x:auto; horizontal scrollLeft is kept in sync
+ * with the header via a JS scroll listener.
+ *
+ * IMPORTANT: card containers must NOT use overflow:clip (Chrome bug blocks
+ * sticky propagation). Use overflow-clip only on the card header child, not
+ * the card outer div.
  */
 function FreezeTable({ months, label, containerClass, children }) {
-  const bodyRef = useRef(null);
-  const headRef = useRef(null);
-
+  const headScrollRef = useRef(null);
   const onBodyScroll = useCallback((e) => {
-    if (headRef.current) headRef.current.scrollLeft = e.currentTarget.scrollLeft;
+    if (headScrollRef.current) headScrollRef.current.scrollLeft = e.currentTarget.scrollLeft;
   }, []);
 
+  // Inline styles guarantee identical pixel widths in both tables regardless
+  // of how each container computes min-w-full. Tailwind classes on <col> can
+  // yield different effective widths when the two scroll containers differ.
   const colGroup = (
     <colgroup>
-      <col className={TABLE_LABEL_COL_WIDTH} />
-      {months.map((m) => <col key={m} className={TABLE_VALUE_COL_WIDTH} />)}
-      <col className={TABLE_VALUE_COL_WIDTH} />
+      <col style={{ width: 280, minWidth: 280 }} />
+      {months.map((m) => <col key={m} style={{ width: 150, minWidth: 150 }} />)}
+      <col style={{ width: 150, minWidth: 150 }} />
     </colgroup>
   );
 
   return (
     <div className={containerClass}>
-      {/* Frozen header — sticky top-0 relative to page viewport */}
-      <div ref={headRef} className="sticky top-0 z-20 overflow-hidden border-b border-primary/15">
-        <table className="min-w-full table-fixed border-collapse text-[13px]">
-          {colGroup}
-          <thead>
-            <tr className="bg-[#F8FBF1]">
-              <th className={cn(
-                "sticky left-0 z-30 border border-border bg-[#F8FBF1] px-4 py-3 text-left text-[12px] font-semibold text-primary",
-                TABLE_LABEL_COL_WIDTH,
-              )}>
-                {label}
-              </th>
-              {months.map((m) => (
-                <th
-                  key={m}
-                  className={cn(
-                    "whitespace-nowrap border border-border bg-[#F8FBF1] px-4 py-3 text-center text-[12px] font-semibold text-primary",
-                    TABLE_VALUE_COL_WIDTH,
-                  )}
-                >
-                  {monthLabel(m)}
+      {/* Sticky month header — sticks at top of main scroll container */}
+      <div className="sticky top-0 z-20">
+        <div ref={headScrollRef} className="no-scrollbar overflow-x-auto">
+          <table className="table-fixed border-collapse text-[13px]">
+            {colGroup}
+            <thead>
+              <tr className="bg-[#F8FBF1]">
+                <th className={cn(
+                  "sticky left-0 z-30 border border-border bg-[#F8FBF1] px-4 py-3 text-left text-[12px] font-semibold text-primary",
+                  TABLE_LABEL_COL_WIDTH,
+                )}>
+                  {label}
                 </th>
-              ))}
-              <th className={cn(
-                "border border-border bg-[#F8FBF1] px-4 py-3 text-center text-[12px] font-semibold text-primary",
-                TABLE_VALUE_COL_WIDTH,
-              )}>
-                TTM
-              </th>
-            </tr>
-          </thead>
-        </table>
+                {months.map((m) => (
+                  <th
+                    key={m}
+                    className={cn(
+                      "whitespace-nowrap border border-border bg-[#F8FBF1] px-4 py-3 text-center text-[12px] font-semibold text-primary",
+                      TABLE_VALUE_COL_WIDTH,
+                    )}
+                  >
+                    {monthLabel(m)}
+                  </th>
+                ))}
+                <th className={cn(
+                  "border border-border bg-[#F8FBF1] px-4 py-3 text-center text-[12px] font-semibold text-primary",
+                  TABLE_VALUE_COL_WIDTH,
+                )}>
+                  TTM
+                </th>
+              </tr>
+            </thead>
+          </table>
+        </div>
       </div>
 
-      {/* Scrollable body — first column sticky left-0, horizontal scroll synced to header */}
-      <div ref={bodyRef} className="overflow-x-auto" onScroll={onBodyScroll}>
-        <table className="min-w-full table-fixed border-collapse bg-white text-[13px]">
+      {/* Scrollable body — syncs horizontal scroll to the header above */}
+      <div className="overflow-x-auto rounded-b-[var(--radius-card)]" onScroll={onBodyScroll}>
+        <table className="table-fixed border-collapse bg-white text-[13px]">
           {colGroup}
           <tbody>
             {children}
@@ -1888,8 +1894,8 @@ export default function WorkspaceReconciliation() {
     const overallStatus = bank?.status || (rows.every((r) => Math.abs(r.footingCheck) <= 1) ? "Verified" : "Needs Review");
 
     return (
-      <div className="mb-4 overflow-clip rounded-[var(--radius-card)] border border-border bg-white shadow-[0_10px_30px_rgba(15,23,42,0.04)]">
-        <div className="flex w-full items-center justify-between border-b border-primary/15 bg-[#F8FBF1] px-4 py-3">
+      <div className="mb-4 rounded-[var(--radius-card)] border border-border bg-white shadow-[0_10px_30px_rgba(15,23,42,0.04)]">
+        <div className="flex w-full items-center justify-between overflow-clip rounded-t-[var(--radius-card)] border-b border-primary/15 bg-[#F8FBF1] px-4 py-3">
           <div className="flex items-center gap-3 flex-wrap">
             <span className="text-[14px] font-semibold text-primary">{bankLabel}</span>
             {bank?.accountName && (
@@ -1975,11 +1981,11 @@ export default function WorkspaceReconciliation() {
     return (
       <div
         key={account.accountId}
-        className="mb-4 overflow-clip rounded-[var(--radius-card)] border border-border bg-white shadow-[0_10px_30px_rgba(15,23,42,0.04)]"
+        className="mb-4 rounded-[var(--radius-card)] border border-border bg-white shadow-[0_10px_30px_rgba(15,23,42,0.04)]"
       >
         <button
           type="button"
-          className="flex w-full items-center justify-between border-b border-primary/15 bg-[#F8FBF1] px-4 py-3 font-semibold text-primary transition-colors hover:bg-[#F2F8E7]"
+          className="flex w-full items-center justify-between overflow-clip rounded-t-[var(--radius-card)] border-b border-primary/15 bg-[#F8FBF1] px-4 py-3 font-semibold text-primary transition-colors hover:bg-[#F2F8E7]"
           onClick={() =>
             setExpandedAccounts((p) => ({
               ...p,
