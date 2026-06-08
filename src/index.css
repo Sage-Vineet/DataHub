@@ -95,6 +95,15 @@ textarea {
   background: var(--color-secondary);
 }
 
+/* Utility: hide scrollbar visually while keeping programmatic scroll */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
 @keyframes fadeIn {
   from {
     opacity: 0;
