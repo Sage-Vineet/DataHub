@@ -31,6 +31,7 @@ const INDUSTRY_OPTIONS = [
   'Food & Beverage', 'Agriculture', 'Government & Non-Profit',
 ];
 
+wefwf
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function getInitials(name = '') {
