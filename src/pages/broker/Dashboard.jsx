@@ -29,10 +29,9 @@ const INDUSTRY_OPTIONS = [
   'Media & Entertainment', 'Energy & Natural Resources', 'Transportation & Logistics',
   'Business Services', 'Education & Training', 'Telecommunications',
   'Food & Beverage', 'Agriculture', 'Government & Non-Profit',
-];
+]
+// ─── Helpers ─────────────────────────────
 
-wefwf
-// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function getInitials(name = '') {
   return name.split(' ').filter(Boolean).map((p) => p[0]).join('').slice(0, 2).toUpperCase();
