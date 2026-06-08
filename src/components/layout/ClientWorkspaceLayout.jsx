@@ -19,11 +19,11 @@ import {
   Users,
   X,
   BarChart3,
-  Activity,
   TrendingUp,
   MessageSquare,
   Calculator,
   FileCheck,
+  Target,
 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 import { useMessageNotifications } from "../../context/MessageNotificationsContext";
@@ -90,20 +90,12 @@ function WorkspaceSidebar({ company, onClose }) {
   ];
 
   const dataroomNav = [
-    {
-      label: "Requests",
-      icon: ClipboardList,
-      to: `${basePath}/dataroom/requests`,
-    },
-    {
-      label: "Documents",
-      icon: FolderOpen,
-      to: `${basePath}/dataroom/documents`,
-    },
-    { label: "Messages", icon: MessageSquare, to: `${basePath}/dataroom/messages` },
-    { label: "Users", icon: Users, to: `${basePath}/dataroom/users` },
-    { label: "Reminders", icon: Bell, to: `${basePath}/dataroom/reminders` },
-    { label: "Activity", icon: Activity, to: `${basePath}/dataroom/activity` },
+    { label: "Deal Tracker", icon: Target,       to: `${basePath}/dataroom/deal-tracker` },
+    { label: "Deal Team",    icon: Users,        to: `${basePath}/dataroom/users` },
+    { label: "Requests",     icon: ClipboardList,to: `${basePath}/dataroom/requests` },
+    { label: "Documents",    icon: FolderOpen,   to: `${basePath}/dataroom/documents` },
+    { label: "Messages",     icon: MessageSquare,to: `${basePath}/dataroom/messages` },
+    { label: "Reminders",    icon: Bell,         to: `${basePath}/dataroom/reminders` },
   ];
   const companyMessageCount = notifications.filter((item) => String(item.companyId) === String(clientId)).length;
 
@@ -158,39 +150,8 @@ function WorkspaceSidebar({ company, onClose }) {
       </div>
 
       <nav className="flex-1 overflow-y-auto px-3 py-3">
-        <div className="space-y-0.5">
-          {mainNav.map((item) => {
-            const Icon = item.icon;
-            return (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                onClick={onClose}
-                className={({ isActive }) =>
-                  `relative flex items-center gap-3 rounded-md px-3 py-2.5 text-[14px] font-medium transition-all duration-200 ${isActive
-                    ? "bg-[#EEF6E0] text-primary font-semibold"
-                    : "text-secondary hover:bg-[#F0F7E6] hover:text-text-primary"
-                  }`
-                }
-              >
-                {({ isActive }) => (
-                  <>
-                    {isActive && (
-                      <div className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r-full bg-primary" />
-                    )}
-                    <Icon
-                      size={18}
-                      className={isActive ? "text-primary" : "text-text-muted"}
-                    />
-                    <span>{item.label}</span>
-                  </>
-                )}
-              </NavLink>
-            );
-          })}
-        </div>
-
-        <div className="mt-5">
+        {/* ── DataRoom (top) ── */}
+        <div>
           <button
             onClick={() => setDataroomOpen((value) => !value)}
             className={`flex w-full items-center justify-between rounded-md px-3 py-2.5 text-[14px] font-semibold transition-all ${isDataroomRoute
@@ -251,6 +212,39 @@ function WorkspaceSidebar({ company, onClose }) {
               })}
             </div>
           )}
+        </div>
+
+        {/* ── Rest of nav ── */}
+        <div className="mt-3 space-y-0.5">
+          {mainNav.map((item) => {
+            const Icon = item.icon;
+            return (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                onClick={onClose}
+                className={({ isActive }) =>
+                  `relative flex items-center gap-3 rounded-md px-3 py-2.5 text-[14px] font-medium transition-all duration-200 ${isActive
+                    ? "bg-[#EEF6E0] text-primary font-semibold"
+                    : "text-secondary hover:bg-[#F0F7E6] hover:text-text-primary"
+                  }`
+                }
+              >
+                {({ isActive }) => (
+                  <>
+                    {isActive && (
+                      <div className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r-full bg-primary" />
+                    )}
+                    <Icon
+                      size={18}
+                      className={isActive ? "text-primary" : "text-text-muted"}
+                    />
+                    <span>{item.label}</span>
+                  </>
+                )}
+              </NavLink>
+            );
+          })}
         </div>
       </nav>
 
@@ -428,7 +422,7 @@ function WorkspaceTopbar({ company, onMenuClick }) {
                     key={item.id}
                     onClick={() => {
                       setShowSwitch(false);
-                      navigate(`/broker/client/${item.id}/analytics`, {
+                      navigate(`/broker/client/${item.id}/dataroom/deal-tracker`, {
                         state: { company: item },
                       });
                     }}

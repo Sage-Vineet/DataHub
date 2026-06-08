@@ -447,7 +447,7 @@ export default function BrokerDashboard() {
   const openWorkspace = (company) => {
     if (!company?.id) return;
     setSelectedClient({ id: company.id, name: company.name });
-    navigate(`/broker/client/${company.id}/connections`, { state: { company } });
+    navigate(`/broker/client/${company.id}/dataroom/deal-tracker`, { state: { company } });
   };
 
   // ─────────────────────────────────────────────────────────────────────────────

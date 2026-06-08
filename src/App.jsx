@@ -37,6 +37,7 @@ import UserMessages from "./pages/user/Messages";
 import UserRequests from "./pages/user/Requests";
 import WorkspaceDashboard from "./pages/broker/workspace/WorkspaceDashboard";
 import WorkspaceDashboardDatahub from "./pages/broker/workspace/WorkspaceDashboardDatahub";
+import WorkspaceDealTracker from "./pages/broker/workspace/WorkspaceDealTracker";
 import WorkspaceRequests from "./pages/broker/workspace/WorkspaceRequests";
 import WorkspaceDocuments from "./pages/broker/workspace/WorkspaceDocuments";
 import WorkspaceMessages from "./pages/broker/workspace/WorkspaceMessages";
@@ -318,7 +319,8 @@ function AppRoutes() {
         <Route path="connections" element={<WorkspaceConnections />} />
         <Route path="ebitda" element={<WorkspaceEbitda />} />
         <Route path="connections" element={<WorkspaceConnections />} />
-        <Route path="dataroom" element={<Navigate to="requests" replace />} />
+        <Route path="dataroom" element={<Navigate to="deal-tracker" replace />} />
+        <Route path="dataroom/deal-tracker" element={<WorkspaceDealTracker />} />
         <Route path="dataroom/requests" element={<WorkspaceRequests />} />
         <Route path="dataroom/documents" element={<WorkspaceDocuments />} />
         <Route path="dataroom/messages" element={<WorkspaceMessages />} />
