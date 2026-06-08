@@ -1,28 +1,30 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Building2, MessageSquare, RefreshCw, Search, Send,
-  Users, Lock, Loader2, ChevronRight, Hash,
+  Users, Lock, Loader2, ChevronRight, Hash, X, ChevronDown,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import {
   listMessageGroupsForCompany,
+  listMyMessageGroups,
   listGroupMessages,
   sendGroupMessage,
   markGroupMessagesRead,
+  getGroupMembers,
 } from '../../lib/api';
 import { MSG_GROUP_TYPE, ROLE_META, inferSubRole } from '../../lib/roles';
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
 
-const POLL_MS = 8000; // re-fetch messages every 8 seconds
+const POLL_MS = 8000;
 
 const GROUP_TYPE_META = {
-  [MSG_GROUP_TYPE.BROKER_INTERNAL]: { label: 'Broker Internal', icon: Lock,         color: '#b45e08', bg: '#FFF8F0' },
-  [MSG_GROUP_TYPE.DEAL_TEAM]:       { label: 'Deal Team',       icon: Users,         color: '#05164D', bg: '#EEF1FA' },
-  [MSG_GROUP_TYPE.BROKER_CLIENT]:   { label: 'Broker ↔ Client', icon: Building2,     color: '#00648F', bg: '#EEF7FC' },
-  [MSG_GROUP_TYPE.BROKER_BUYER]:    { label: 'Broker ↔ Buyer',  icon: MessageSquare, color: '#476E2C', bg: '#EDF6E2' },
-  [MSG_GROUP_TYPE.CLIENT_INTERNAL]: { label: 'Client Internal', icon: Lock,          color: '#00648F', bg: '#EEF7FC' },
-  [MSG_GROUP_TYPE.BUYER_INTERNAL]:  { label: 'Buyer Internal',  icon: Lock,          color: '#476E2C', bg: '#EDF6E2' },
+  [MSG_GROUP_TYPE.BROKER_INTERNAL]: { label: 'Broker Team',        icon: Lock,         color: '#b45e08', bg: '#FFF8F0' },
+  [MSG_GROUP_TYPE.DEAL_TEAM]:       { label: 'Deal Team',          icon: Users,         color: '#05164D', bg: '#EEF1FA' },
+  [MSG_GROUP_TYPE.BROKER_CLIENT]:   { label: 'Broker & Client',    icon: Building2,     color: '#00648F', bg: '#EEF7FC' },
+  [MSG_GROUP_TYPE.BROKER_BUYER]:    { label: 'Broker & Buyer',     icon: MessageSquare, color: '#476E2C', bg: '#EDF6E2' },
+  [MSG_GROUP_TYPE.CLIENT_INTERNAL]: { label: 'Client Team',        icon: Lock,          color: '#00648F', bg: '#EEF7FC' },
+  [MSG_GROUP_TYPE.BUYER_INTERNAL]:  { label: 'Buyer Team',         icon: Lock,          color: '#476E2C', bg: '#EDF6E2' },
 };
 
 function getGroupMeta(group) {
@@ -67,9 +69,7 @@ function GroupItem({ group, isActive, onClick }) {
     <button
       onClick={onClick}
       className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl transition-all text-left ${
-        isActive
-          ? 'bg-[#05164D] text-white'
-          : 'hover:bg-gray-100 text-[#050505]'
+        isActive ? 'bg-[#05164D] text-white' : 'hover:bg-gray-100 text-[#050505]'
       }`}
     >
       <div
@@ -117,7 +117,7 @@ function MessageBubble({ message, isOwn }) {
         }`}>
           <p className="whitespace-pre-wrap break-words">{message.body}</p>
         </div>
-        <p className={`text-[10px] mt-1 ${isOwn ? 'text-gray-400' : 'text-gray-400'}`}>{formatTime(message.created_at)}</p>
+        <p className="text-[10px] mt-1 text-gray-400">{formatTime(message.created_at)}</p>
       </div>
     </div>
   );
@@ -143,9 +143,69 @@ function DateSeparator({ date }) {
   );
 }
 
+// ─── Members panel ────────────────────────────────────────────────────────────
+
+function MembersPanel({ groupId, onClose }) {
+  const [members, setMembers] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!groupId) return;
+    setLoading(true);
+    getGroupMembers(groupId)
+      .then((data) => setMembers(data || []))
+      .catch(() => setMembers([]))
+      .finally(() => setLoading(false));
+  }, [groupId]);
+
+  return (
+    <div className="w-64 flex-shrink-0 flex flex-col border-l border-gray-100 bg-gray-50/50">
+      <div className="px-4 py-3.5 border-b border-gray-100 flex items-center justify-between flex-shrink-0">
+        <div>
+          <h3 className="text-sm font-bold text-[#05164D]">Members</h3>
+          {!loading && <p className="text-xs text-gray-400 mt-0.5">{members.length} member{members.length !== 1 ? 's' : ''}</p>}
+        </div>
+        <button onClick={onClose} className="w-7 h-7 rounded-lg hover:bg-gray-200 flex items-center justify-center text-gray-400">
+          <X size={14} />
+        </button>
+      </div>
+      <div className="flex-1 overflow-y-auto px-3 py-3 space-y-1">
+        {loading ? (
+          <div className="py-8 text-center"><Loader2 size={18} className="mx-auto text-gray-300 animate-spin" /></div>
+        ) : members.length === 0 ? (
+          <p className="text-xs text-gray-400 text-center py-6">No members found.</p>
+        ) : members.map((m) => {
+          const roleLabel = roleLabelFromUser(m);
+          const displayName = m.name || m.email || 'Unknown';
+          return (
+            <div key={m.id} className="flex items-center gap-2.5 px-2.5 py-2 rounded-xl hover:bg-white transition-colors">
+              <div
+                className="w-8 h-8 rounded-full flex items-center justify-center text-[11px] font-bold text-white flex-shrink-0"
+                style={{ background: avatarColor(displayName) }}
+              >
+                {initials(displayName)}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-[13px] font-semibold text-[#05164D] truncate">{displayName}</p>
+                {roleLabel && <p className="text-[11px] text-gray-400 truncate">{roleLabel}</p>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export default function GroupMessagesWorkspace({ companyId, title = 'Messages' }) {
+/**
+ * @param {string}  companyId   – required when useMyGroups=false (broker view)
+ * @param {boolean} useMyGroups – when true, loads groups the current user is a
+ *                                member of (for client / buyer portals)
+ * @param {string}  title
+ */
+export default function GroupMessagesWorkspace({ companyId, useMyGroups = false, title = 'Messages' }) {
   const { user } = useAuth();
   const [groups, setGroups] = useState([]);
   const [activeGroupId, setActiveGroupId] = useState(null);
@@ -157,29 +217,31 @@ export default function GroupMessagesWorkspace({ companyId, title = 'Messages' }
   const [searchQuery, setSearchQuery] = useState('');
   const [groupError, setGroupError] = useState('');
   const [msgError, setMsgError] = useState('');
+  const [showMembers, setShowMembers] = useState(false);
   const messagesEndRef = useRef(null);
   const textareaRef = useRef(null);
   const pollRef = useRef(null);
 
   // ── Load groups ─────────────────────────────────────────────────────────────
   const loadGroups = useCallback(async () => {
-    if (!companyId) return;
+    if (!useMyGroups && !companyId) return;
     try {
       setGroupError('');
-      const data = await listMessageGroupsForCompany(companyId);
+      const data = useMyGroups
+        ? await listMyMessageGroups()
+        : await listMessageGroupsForCompany(companyId);
       setGroups(data || []);
-      // Auto-select first group if none selected
       if (!activeGroupId && data?.length) setActiveGroupId(data[0].id);
-    } catch (err) {
+    } catch {
       setGroupError('Could not load message groups. Try refreshing.');
     } finally {
       setLoadingGroups(false);
     }
-  }, [companyId, activeGroupId]);
+  }, [companyId, useMyGroups, activeGroupId]);
 
-  useEffect(() => { loadGroups(); }, [companyId]);
+  useEffect(() => { loadGroups(); }, [companyId, useMyGroups]);
 
-  // ── Load messages for active group ──────────────────────────────────────────
+  // ── Load messages ───────────────────────────────────────────────────────────
   const loadMessages = useCallback(async (groupId, silent = false) => {
     if (!groupId) return;
     if (!silent) setLoadingMessages(true);
@@ -187,7 +249,6 @@ export default function GroupMessagesWorkspace({ companyId, title = 'Messages' }
     try {
       const data = await listGroupMessages(groupId);
       setMessages(data || []);
-      // Mark as read
       markGroupMessagesRead(groupId).catch(() => {});
     } catch {
       if (!silent) setMsgError('Could not load messages.');
@@ -204,12 +265,14 @@ export default function GroupMessagesWorkspace({ companyId, title = 'Messages' }
     return () => clearInterval(pollRef.current);
   }, [activeGroupId, loadMessages]);
 
-  // Scroll to bottom on new messages
+  // Reset member panel when switching groups
+  useEffect(() => { setShowMembers(false); }, [activeGroupId]);
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages.length]);
 
-  // ── Send message ─────────────────────────────────────────────────────────────
+  // ── Send ─────────────────────────────────────────────────────────────────────
   const handleSend = async () => {
     const text = body.trim();
     if (!text || !activeGroupId || sending) return;
@@ -219,7 +282,7 @@ export default function GroupMessagesWorkspace({ companyId, title = 'Messages' }
       const sent = await sendGroupMessage(activeGroupId, text);
       if (sent) setMessages((prev) => [...prev, sent]);
     } catch {
-      setBody(text); // restore on failure
+      setBody(text);
     } finally {
       setSending(false);
       textareaRef.current?.focus();
@@ -230,14 +293,12 @@ export default function GroupMessagesWorkspace({ companyId, title = 'Messages' }
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
   };
 
-  // ── Filtered groups (search) ─────────────────────────────────────────────────
   const filteredGroups = groups.filter((g) =>
     !searchQuery || g.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
   const activeGroup = groups.find((g) => g.id === activeGroupId);
 
-  // Insert date separators between messages
   const messagesWithDates = (() => {
     const result = [];
     let lastDate = null;
@@ -249,7 +310,6 @@ export default function GroupMessagesWorkspace({ companyId, title = 'Messages' }
     return result;
   })();
 
-  // ── Empty state if no groups ─────────────────────────────────────────────────
   if (!loadingGroups && groups.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-full min-h-[400px] gap-4 text-center px-6">
@@ -306,7 +366,7 @@ export default function GroupMessagesWorkspace({ companyId, title = 'Messages' }
         </div>
       </div>
 
-      {/* ── Right: message area ── */}
+      {/* ── Centre: message area ── */}
       <div className="flex-1 flex flex-col min-w-0">
         {!activeGroup ? (
           <div className="flex-1 flex items-center justify-center text-center px-6">
@@ -328,6 +388,20 @@ export default function GroupMessagesWorkspace({ companyId, title = 'Messages' }
                 <p className="text-sm font-bold text-[#05164D] truncate">{activeGroup.name}</p>
                 <p className="text-xs text-gray-400">{getGroupMeta(activeGroup).label} · {activeGroup.message_group_members?.length || 0} members</p>
               </div>
+              {/* Members toggle */}
+              <button
+                onClick={() => setShowMembers((v) => !v)}
+                title="View members"
+                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all border ${
+                  showMembers
+                    ? 'bg-[#05164D] text-white border-[#05164D]'
+                    : 'bg-white text-[#05164D] border-gray-200 hover:border-[#05164D]'
+                }`}
+              >
+                <Users size={13} />
+                Members
+                <ChevronDown size={12} className={`transition-transform ${showMembers ? 'rotate-180' : ''}`} />
+              </button>
               <button onClick={() => loadMessages(activeGroupId)} className="w-8 h-8 rounded-lg hover:bg-gray-100 flex items-center justify-center text-gray-400 flex-shrink-0" title="Refresh">
                 <RefreshCw size={14} />
               </button>
@@ -381,6 +455,11 @@ export default function GroupMessagesWorkspace({ companyId, title = 'Messages' }
           </>
         )}
       </div>
+
+      {/* ── Right: members panel ── */}
+      {showMembers && activeGroupId && (
+        <MembersPanel groupId={activeGroupId} onClose={() => setShowMembers(false)} />
+      )}
     </div>
   );
 }

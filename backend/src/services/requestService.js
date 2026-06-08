@@ -172,10 +172,12 @@ async function getRequestById(requestId) {
 async function listRequestsByCompany(companyId) {
   try {
     const rows = await pgQuery(
-      `SELECT r.*, u1.name AS created_by_name, u1.email AS created_by_email, u2.name AS approved_by_name
+      `SELECT r.*, u1.name AS created_by_name, u1.email AS created_by_email, u2.name AS approved_by_name,
+              u3.name AS assigned_to_name, u3.sub_role AS assigned_to_sub_role
        FROM requests r
        LEFT JOIN users u1 ON r.created_by = u1.id
        LEFT JOIN users u2 ON r.approved_by = u2.id
+       LEFT JOIN users u3 ON r.assigned_to = u3.id
        WHERE r.company_id = $1
        ORDER BY r.created_at DESC`,
       [companyId],
@@ -191,10 +193,11 @@ async function listRequestsByCompany(companyId) {
     const rows = data || [];
     const creatorIds = [...new Set(rows.map((r) => r.created_by).filter(Boolean))];
     const approverIds = [...new Set(rows.map((r) => r.approved_by).filter(Boolean))];
-    const allUserIds = [...new Set([...creatorIds, ...approverIds])];
+    const assigneeIds = [...new Set(rows.map((r) => r.assigned_to).filter(Boolean))];
+    const allUserIds = [...new Set([...creatorIds, ...approverIds, ...assigneeIds])];
     let userMap = {};
     if (allUserIds.length) {
-      const { data: users } = await supabase.from("users").select("id, name, email").in("id", allUserIds);
+      const { data: users } = await supabase.from("users").select("id, name, email, sub_role").in("id", allUserIds);
       userMap = Object.fromEntries((users || []).map((u) => [u.id, u]));
     }
     return rows.map((r) => ({
@@ -202,6 +205,8 @@ async function listRequestsByCompany(companyId) {
       created_by_name: userMap[r.created_by]?.name || null,
       created_by_email: userMap[r.created_by]?.email || null,
       approved_by_name: userMap[r.approved_by]?.name || null,
+      assigned_to_name: userMap[r.assigned_to]?.name || null,
+      assigned_to_sub_role: userMap[r.assigned_to]?.sub_role || null,
     }));
   }
 }

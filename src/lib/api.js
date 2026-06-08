@@ -1279,6 +1279,10 @@ export function removeMessageGroupMember(groupId, userId) {
   return request(`/message-groups/${groupId}/members/${userId}`, { method: 'DELETE' });
 }
 
+export function getGroupMembers(groupId) {
+  return request(`/message-groups/${groupId}/members`).then(ensureArray);
+}
+
 // ─── Group messages (migration 042) ──────────────────────────────────────────
 
 export function listGroupMessages(groupId, params = {}) {

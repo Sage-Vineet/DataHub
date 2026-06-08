@@ -31,7 +31,7 @@ import {
 } from '../../lib/api';
 import { buildFolderMapFromTree } from '../../lib/folderOptions';
 import RequestDocumentPreviewModal from '../../components/RequestDocumentPreviewModal';
-import { CLIENT_SUB_ROLES, SUB_ROLE, inferSubRole } from '../../lib/roles';
+import { CLIENT_SUB_ROLES, ROLE_META, SUB_ROLE, inferSubRole } from '../../lib/roles';
 
 const CATEGORY_META = {
   Finance: { icon: TrendingUp, color: '#476E2C', bg: '#E6F3D3' },
@@ -194,7 +194,13 @@ function mapApiRequestToUi(request) {
       : request.created_at
       ? request.created_at.slice(0, 10)
       : formatToday(),
-    assignedTo: request.assigned_to || 'Unassigned',
+    assignedTo: request.assigned_to || null,
+    assignedToDisplay: (() => {
+      if (!request.assigned_to) return 'Unassigned';
+      const name = request.assigned_to_name || request.assigned_to;
+      const roleLabel = request.assigned_to_sub_role ? (ROLE_META[request.assigned_to_sub_role]?.label || '') : '';
+      return roleLabel ? `${name} · ${roleLabel}` : name;
+    })(),
     visible: request.visible !== false,
     narrativeResponse: '',
     narrativeAuthor: null,
@@ -211,7 +217,7 @@ function mapUiPatchToApi(patch) {
   if (patch.priority !== undefined) apiPatch.priority = patch.priority;
   if (patch.workflowStatus !== undefined) apiPatch.status = patch.workflowStatus;
   if (patch.dueDate !== undefined) apiPatch.due_date = patch.dueDate;
-  if (patch.assignedTo !== undefined && patch.assignedTo !== 'Unassigned') apiPatch.assigned_to = patch.assignedTo;
+  if (patch.assignedTo !== undefined && patch.assignedTo !== null) apiPatch.assigned_to = patch.assignedTo;
   if (patch.visible !== undefined) apiPatch.visible = patch.visible;
   return apiPatch;
 }
@@ -611,7 +617,7 @@ function RequestDetailPage({ onBack, request, allRequests, onSubmitResponse, err
                   { label: 'Category', value: <span className="inline-flex items-center gap-1.5 font-semibold text-[#050505]"><CategoryIcon size={14} style={{ color: catMeta.color }} />{request.category}</span> },
                   { label: 'Due Date', value: <span className={`font-semibold ${isOverdue ? 'text-[#B91C1C]' : 'text-[#050505]'}`}>{request.dueDate}</span> },
                   { label: 'Response Type', value: <span className="font-semibold text-[#050505]">{request.responseType}</span> },
-                  { label: 'Assigned To', value: <span className="font-semibold text-[#050505]">{request.assignedTo}</span> },
+                  { label: 'Assigned To', value: <span className="font-semibold text-[#050505]">{request.assignedToDisplay}</span> },
                   { label: 'Created Date', value: <span className="font-semibold text-[#050505]">{request.createdAt}</span> },
                   { label: 'Last Updated', value: <span className="font-semibold text-[#050505]">{request.updatedAt}</span> },
                 ].map((item) => (
@@ -664,7 +670,7 @@ export default function ClientRequests() {
       const userSubRole = user?.sub_role || inferSubRole(user);
       const isTeamMember = userSubRole && userSubRole !== SUB_ROLE.COMPANY_OWNER && CLIENT_SUB_ROLES.includes(userSubRole);
       if (isTeamMember && user?.id) {
-        mapped = mapped.filter((r) => !r.assignedTo || r.assignedTo === 'Unassigned' || r.assignedTo === user.id);
+        mapped = mapped.filter((r) => !r.assignedTo || r.assignedTo === user.id);
       }
 
       setRequestState(mapped);

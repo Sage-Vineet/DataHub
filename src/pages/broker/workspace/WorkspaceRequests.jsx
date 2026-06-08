@@ -490,7 +490,13 @@ function mapApiRequestToUi(request) {
     dueDate: request.due_date ? request.due_date.slice(0, 10) : formatToday(),
     createdAt: request.created_at ? request.created_at.slice(0, 10) : formatToday(),
     updatedAt: request.updated_at ? request.updated_at.slice(0, 10) : (request.created_at ? request.created_at.slice(0, 10) : formatToday()),
-    assignedTo: request.assigned_to || 'Unassigned',
+    assignedTo: request.assigned_to || null,
+    assignedToDisplay: (() => {
+      if (!request.assigned_to) return 'Unassigned';
+      const name = request.assigned_to_name || request.assigned_to;
+      const roleLabel = request.assigned_to_sub_role ? (ROLE_META[request.assigned_to_sub_role]?.label || '') : '';
+      return roleLabel ? `${name} · ${roleLabel}` : name;
+    })(),
     visible: request.visible !== false,
     approvalStatus: request.approval_status || 'approved',
     submissionSource: request.submission_source || 'broker',
@@ -513,7 +519,7 @@ function mapUiPatchToApi(patch) {
   if (patch.priority !== undefined) apiPatch.priority = patch.priority;
   if (patch.workflowStatus !== undefined) apiPatch.status = patch.workflowStatus;
   if (patch.dueDate !== undefined) apiPatch.due_date = patch.dueDate;
-  if (patch.assignedTo !== undefined && patch.assignedTo !== 'Unassigned') apiPatch.assigned_to = patch.assignedTo;
+  if (patch.assignedTo !== undefined && patch.assignedTo !== null) apiPatch.assigned_to = patch.assignedTo;
   if (patch.visible !== undefined) apiPatch.visible = patch.visible;
   return apiPatch;
 }
@@ -1133,7 +1139,7 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
                   { label: 'Category', value: <span className="inline-flex items-center gap-1.5 font-semibold text-[#050505]"><CategoryIcon size={14} style={{ color: CATEGORY_META[request.category].color }} />{request.category}</span> },
                   { label: 'Due Date', value: <span className={`font-semibold ${isOverdue ? 'text-[#B91C1C]' : 'text-[#050505]'}`}>{request.dueDate}</span> },
                   { label: 'Response Type', value: <span className="font-semibold text-[#050505]">{request.responseType}</span> },
-                  { label: 'Assigned To', value: <span className="font-semibold text-[#050505]">{request.assignedTo}</span> },
+                  { label: 'Assigned To', value: <span className="font-semibold text-[#050505]">{request.assignedToDisplay}</span> },
                   { label: 'Created Date', value: <span className="font-semibold text-[#050505]">{request.createdAt}</span> },
                   { label: 'Last Updated', value: <span className="font-semibold text-[#050505]">{request.updatedAt}</span> },
                 ].map((item) => (

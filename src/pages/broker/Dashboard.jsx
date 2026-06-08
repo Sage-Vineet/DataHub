@@ -457,7 +457,7 @@ export default function BrokerDashboard() {
       {/* ── Header ── */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-[#05164D]">Dashboard</h1>
+          <h1 className="text-2xl font-bold text-[#05164D]">Your Deals</h1>
           <p className="mt-0.5 text-sm text-[#6D6E71]">
             {companies.length} compan{companies.length !== 1 ? 'ies' : 'y'} registered
           </p>

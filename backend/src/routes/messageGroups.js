@@ -11,6 +11,7 @@ router.get("/companies/:companyId/message-groups",                 requireAuth, 
 router.post("/companies/:companyId/message-groups/auto-create",    requireAuth, ctrl.triggerAutoCreate);
 router.post("/message-groups/:groupId/members",                    requireAuth, ctrl.addMemberToGroup);
 router.delete("/message-groups/:groupId/members/:userId",          requireAuth, ctrl.removeMemberFromGroup);
+router.get("/message-groups/:groupId/members",                     requireAuth, ctrl.getGroupMembers);
 
 // ─── Group messages ───────────────────────────────────────────────────────────
 router.get("/message-groups/:groupId/messages",                    requireAuth, ctrl.listGroupMessages);

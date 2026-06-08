@@ -68,6 +68,14 @@ async function assertGroupMember(userId, groupId) {
   }
 }
 
+const getGroupMembers = asyncHandler(async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+  const { groupId } = req.params;
+  await assertGroupMember(req.user.id, groupId);
+  const members = await messageGroupService.getGroupMembersWithDetails(groupId);
+  res.json(members);
+});
+
 const listGroupMessages = asyncHandler(async (req, res) => {
   if (!req.user) return res.status(401).json({ error: "Unauthorized" });
   const { groupId } = req.params;
@@ -157,6 +165,7 @@ module.exports = {
   triggerAutoCreate,
   addMemberToGroup,
   removeMemberFromGroup,
+  getGroupMembers,
   listGroupMessages,
   sendGroupMessage,
   markGroupRead,
