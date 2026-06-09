@@ -1,427 +1,547 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Loader2,
-  MessageSquare,
-  RefreshCw,
-  Search,
-  Send,
-  Users,
-} from "lucide-react";
-import { useAuth } from "../../context/AuthContext";
+  ArrowLeft, CheckCheck, Loader2, MessageSquare,
+  RefreshCw, Search, Send, UserRound, X,
+} from 'lucide-react';
+import { useAuth } from '../../context/AuthContext';
 import {
-  createDirectMessageRequest,
-  getDirectMessagesRequest,
-  listDirectMessageThreadsRequest,
-} from "../../lib/api";
+  listMyDirectContactsRequest,
+  listCompanyDirectMessageContactsRequest,
+  getCompanyDirectMessagesRequest,
+  createCompanyDirectMessageRequest,
+} from '../../lib/api';
 
-function initials(name = "") {
-  return name
-    .split(" ")
-    .filter(Boolean)
-    .map((part) => part[0])
-    .join("")
-    .slice(0, 2)
-    .toUpperCase();
+const POLL_MS = 6000;
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function initials(name = '') {
+  return name.split(' ').filter(Boolean).map((p) => p[0]).join('').slice(0, 2).toUpperCase() || '?';
 }
 
-function formatThreadTime(value) {
-  if (!value) return "No messages yet";
-  const date = new Date(value);
+const PALETTE = ['#8BC53D', '#05164D', '#F68C1F', '#742982', '#00648F', '#476E2C', '#e05c2a'];
+const colorFor = (str = '') =>
+  PALETTE[Math.abs(str.split('').reduce((a, c) => a + c.charCodeAt(0), 0)) % PALETTE.length];
+
+function formatTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
   const now = new Date();
-  const sameDay = date.toDateString() === now.toDateString();
-  return sameDay
-    ? date.toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" })
-    : date.toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
+  if (d.toDateString() === now.toDateString())
+    return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (d.toDateString() === yesterday.toDateString()) return 'Yesterday';
+  return d.toLocaleDateString('en-US', { day: 'numeric', month: 'short' });
 }
 
-function roleLabel(role) {
-  if (role === "broker") return "Broker";
-  if (role === "client") return "Client";
-  if (role === "admin") return "Admin";
-  if (role === "user" || role === "buyer") return "Buyer";
-  return role ? role.charAt(0).toUpperCase() + role.slice(1) : "Buyer";
+function formatFullDate(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const now = new Date();
+  if (d.toDateString() === now.toDateString()) return 'Today';
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  if (d.toDateString() === yesterday.toDateString()) return 'Yesterday';
+  return d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
 }
 
-function ParticipantPill({ participant }) {
+function roleLabel(role, subRole) {
+  if (subRole === 'company_owner') return 'Client Owner';
+  if (subRole === 'client_team_member') return 'Client Team';
+  if (subRole === 'client_accountant') return 'Client Accountant';
+  if (subRole === 'buyer_primary') return 'Buyer';
+  if (subRole === 'buyer_team_member') return 'Buyer Team';
+  if (subRole === 'buyer_accountant') return 'Buyer Accountant';
+  if (subRole === 'broker_primary' || subRole === 'banker' || subRole === 'loan_broker') return 'Broker';
+  if (subRole === 'broker_team_member') return 'Broker Team';
+  if (role === 'broker' || role === 'admin') return 'Broker';
+  if (role === 'client') return 'Client';
+  return role ? role.charAt(0).toUpperCase() + role.slice(1) : '';
+}
+
+// ─── ContactListItem ──────────────────────────────────────────────────────────
+
+function ContactListItem({ contact, isActive, onClick }) {
+  const displayName = contact.name || contact.email || 'Unknown';
+  const label = roleLabel(contact.role, contact.sub_role);
+  const lastMsg = contact.last_message;
+  const timeLabel = formatTime(lastMsg?.created_at || '');
+
   return (
-    <div className="inline-flex items-center gap-2 rounded-full bg-[#F4F7FB] px-3 py-1.5 text-xs font-medium text-[#51607A]">
-      <span className="flex h-6 w-6 items-center justify-center rounded-full bg-[#DDE7F4] text-[10px] font-bold text-[#05164D]">
-        {initials(participant.name)}
-      </span>
-      <span>{participant.name}</span>
-      <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#8A94A6]">
-        {roleLabel(participant.role)}
-      </span>
-    </div>
+    <button
+      onClick={onClick}
+      className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-colors border-b border-gray-100/80 ${
+        isActive ? 'bg-[#F0F2F5]' : 'hover:bg-[#F5F5F5]'
+      }`}
+    >
+      <div
+        className="w-[46px] h-[46px] rounded-full flex items-center justify-center text-white text-[14px] font-bold flex-shrink-0"
+        style={{ background: colorFor(displayName) }}
+      >
+        {initials(displayName)}
+      </div>
+
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center justify-between gap-1 mb-0.5">
+          <span className={`text-[14px] font-semibold truncate ${isActive ? 'text-[#05164D]' : 'text-[#111B21]'}`}>
+            {displayName}
+          </span>
+          {timeLabel && (
+            <span className="text-[11px] text-gray-400 flex-shrink-0">{timeLabel}</span>
+          )}
+        </div>
+        <p className="text-[13px] text-gray-500 truncate leading-tight">
+          {lastMsg ? lastMsg.body : <span className="italic text-gray-400">{label}</span>}
+        </p>
+      </div>
+    </button>
   );
 }
 
+// ─── MessageBubble ────────────────────────────────────────────────────────────
+
 function MessageBubble({ message, isOwn }) {
+  const sender = message.sender || {};
+  const name = sender.name || 'Unknown';
+
   return (
-    <div className={`flex ${isOwn ? "justify-end" : "justify-start"}`}>
-      <div className={`max-w-[82%] rounded-2xl px-4 py-3 shadow-sm ${
-        isOwn
-          ? "bg-[#8BC53D] text-white"
-          : "border border-[#E5E7EF] bg-white text-[#05164D]"
-      }`}>
-        {!isOwn && (
-          <div className="mb-1 flex items-center gap-2 text-[11px] font-semibold">
-            <span>{message.sender?.name || "Unknown"}</span>
-            <span className={`${isOwn ? "text-white/70" : "text-[#94A3B8]"}`}>
-              {roleLabel(message.sender?.role)}
+    <div className={`flex gap-2 px-3 ${isOwn ? 'justify-end' : 'justify-start'} mb-0.5`}>
+      {!isOwn && (
+        <div
+          className="w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold text-white flex-shrink-0 mt-1 self-end"
+          style={{ background: colorFor(name) }}
+        >
+          {initials(name)}
+        </div>
+      )}
+      <div className={`max-w-[65%] flex flex-col ${isOwn ? 'items-end' : 'items-start'}`}>
+        <div
+          className={`relative px-3 py-2 rounded-2xl shadow-sm text-sm leading-relaxed ${
+            isOwn
+              ? 'bg-[#D9FDD3] text-[#111B21] rounded-br-sm'
+              : 'bg-white text-[#111B21] rounded-bl-sm border border-gray-100'
+          }`}
+        >
+          <p className="whitespace-pre-wrap break-words pr-12">{message.body}</p>
+          <div className={`absolute bottom-2 right-2.5 flex items-center gap-1 ${isOwn ? 'text-gray-500' : 'text-gray-400'}`}>
+            <span className="text-[10px] whitespace-nowrap">
+              {new Date(message.created_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
             </span>
+            {isOwn && <CheckCheck size={12} className="text-[#53BDEB]" />}
           </div>
-        )}
-        <p className="whitespace-pre-wrap break-words text-sm leading-6">{message.body}</p>
-        <div className={`mt-2 text-[11px] ${isOwn ? "text-white/80" : "text-[#94A3B8]"}`}>
-          {formatThreadTime(message.created_at)}
         </div>
       </div>
     </div>
   );
 }
 
+// ─── DateSeparator ────────────────────────────────────────────────────────────
+
+function DateSeparator({ date }) {
+  return (
+    <div className="flex items-center justify-center my-3 px-3">
+      <span className="bg-white text-[11px] font-semibold text-gray-500 px-3 py-1 rounded-full shadow-sm border border-gray-100">
+        {formatFullDate(date)}
+      </span>
+    </div>
+  );
+}
+
+// ─── DmChatHeader ─────────────────────────────────────────────────────────────
+
+function DmChatHeader({ contact, onBack }) {
+  const displayName = contact?.name || 'Direct Message';
+  const label = roleLabel(contact?.role, contact?.sub_role);
+
+  return (
+    <div className="flex items-center gap-3 px-4 py-3 bg-[#F0F2F5] border-b border-gray-200 flex-shrink-0">
+      {onBack && (
+        <button
+          onClick={onBack}
+          className="w-8 h-8 rounded-full hover:bg-gray-200 flex items-center justify-center text-gray-600 flex-shrink-0 transition-colors"
+        >
+          <ArrowLeft size={18} />
+        </button>
+      )}
+      <div
+        className="w-10 h-10 rounded-full flex items-center justify-center text-white text-[13px] font-bold flex-shrink-0"
+        style={{ background: colorFor(displayName) }}
+      >
+        {initials(displayName)}
+      </div>
+      <div className="flex-1 min-w-0">
+        <p className="text-[14px] font-bold text-[#111B21] truncate">{displayName}</p>
+        {label && <p className="text-[12px] text-gray-500 truncate">{label}</p>}
+      </div>
+    </div>
+  );
+}
+
+// ─── ChatInput ────────────────────────────────────────────────────────────────
+
+function ChatInput({ onSend, disabled }) {
+  const [body, setBody] = useState('');
+  const [sending, setSending] = useState(false);
+  const textareaRef = useRef(null);
+
+  const doSend = async () => {
+    const text = body.trim();
+    if (!text || sending || disabled) return;
+    setSending(true);
+    setBody('');
+    if (textareaRef.current) textareaRef.current.style.height = 'auto';
+    const ok = await onSend(text);
+    if (!ok) setBody(text);
+    setSending(false);
+    textareaRef.current?.focus();
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSend(); }
+  };
+
+  const handleChange = (e) => {
+    setBody(e.target.value);
+    e.target.style.height = 'auto';
+    e.target.style.height = `${Math.min(e.target.scrollHeight, 120)}px`;
+  };
+
+  return (
+    <div className="px-4 py-3 bg-[#F0F2F5] border-t border-gray-200 flex-shrink-0">
+      <div className="flex items-end gap-2 bg-white rounded-full border border-gray-200 px-4 py-2 shadow-sm focus-within:border-[#8BC53D] transition-colors">
+        <textarea
+          ref={textareaRef}
+          rows={1}
+          value={body}
+          onChange={handleChange}
+          onKeyDown={handleKeyDown}
+          placeholder="Type a message"
+          disabled={disabled}
+          className="flex-1 text-[14px] outline-none bg-transparent resize-none leading-5 text-[#111B21] placeholder-gray-400 py-0.5 max-h-[120px] overflow-y-auto disabled:opacity-50"
+          style={{ minHeight: 24 }}
+        />
+        <button
+          onClick={doSend}
+          disabled={!body.trim() || sending || disabled}
+          className="w-9 h-9 rounded-full flex items-center justify-center bg-[#8BC53D] disabled:opacity-40 hover:bg-[#476E2C] transition-colors flex-shrink-0"
+        >
+          {sending
+            ? <Loader2 size={16} className="text-white animate-spin" />
+            : <Send size={16} className="text-white" />
+          }
+        </button>
+      </div>
+      <p className="text-[10px] text-gray-400 mt-1.5 text-center">
+        Enter to send · Shift+Enter for new line
+      </p>
+    </div>
+  );
+}
+
+// ─── Main Component ───────────────────────────────────────────────────────────
+
+/**
+ * WhatsApp-style 1-to-1 direct messages workspace.
+ *
+ * Props:
+ *   companyId     – when provided (broker portal), loads contacts for that specific deal company
+ *   useMyContacts – when true (client/buyer portals), loads /my-direct-contacts across all companies
+ *   title         – sidebar header title
+ */
 export default function DirectMessagesWorkspace({
-  title = "Direct Messages",
-  description = "Personal one-to-one conversations",
-  availableUsers = [],
+  companyId,
+  useMyContacts = false,
+  title = 'Chats',
 }) {
   const { user } = useAuth();
-  const [threads, setThreads] = useState([]);
-  const [threadsLoading, setThreadsLoading] = useState(true);
-  const [conversation, setConversation] = useState(null);
-  const [conversationLoading, setConversationLoading] = useState(false);
-  const [selectedUserId, setSelectedUserId] = useState("");
-  const [error, setError] = useState("");
-  const [search, setSearch] = useState("");
-  const [draft, setDraft] = useState("");
-  const [sending, setSending] = useState(false);
-  const messagesRef = useRef(null);
 
-  const displayUsers = useMemo(() => {
-    if (availableUsers.length > 0) {
-      return availableUsers.filter((u) => String(u.id) !== String(user?.id));
-    }
-    return threads.map((thread) => thread.participant).filter(Boolean);
-  }, [availableUsers, threads, user?.id]);
+  const [contacts, setContacts] = useState([]);
+  const [contactCompanyMap, setContactCompanyMap] = useState({});
+  const [selectedContactId, setSelectedContactId] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [loadingContacts, setLoadingContacts] = useState(true);
+  const [loadingMessages, setLoadingMessages] = useState(false);
+  const [contactsError, setContactsError] = useState('');
+  const [msgError, setMsgError] = useState('');
+  const [search, setSearch] = useState('');
+  const [mobileShowChat, setMobileShowChat] = useState(false);
 
-  const filteredUsers = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    if (!query) return displayUsers;
-    return displayUsers.filter(
-      (u) =>
-        u.name?.toLowerCase().includes(query) ||
-        u.email?.toLowerCase().includes(query)
-    );
-  }, [displayUsers, search]);
+  const messagesEndRef = useRef(null);
+  const pollRef = useRef(null);
 
-  const selectedThread = useMemo(
-    () =>
-      threads.find(
-        (thread) => String(thread.participant?.id) === String(selectedUserId)
-      ) || null,
-    [threads, selectedUserId]
-  );
+  const activeCompanyId = selectedContactId
+    ? (contactCompanyMap[String(selectedContactId)] || companyId || null)
+    : null;
 
-  const loadThreads = async () => {
-    setThreadsLoading(true);
+  // ── Load contacts ─────────────────────────────────────────────────────────────
+  const loadContacts = useCallback(async () => {
+    if (!useMyContacts && !companyId) return;
+    setContactsError('');
     try {
-      const data = await listDirectMessageThreadsRequest();
-      setThreads(data || []);
-      if (availableUsers.length === 0) {
-        setSelectedUserId((current) => {
-          if (current && (data || []).some((thread) => String(thread.participant?.id) === String(current))) {
-            return current;
-          }
-          return data?.[0]?.participant?.id || "";
-        });
+      let allContacts = [];
+      const companyMap = {};
+
+      if (useMyContacts) {
+        const data = await listMyDirectContactsRequest();
+        for (const entry of (data || [])) {
+          const cid = String(entry.company?.id || '');
+          for (const c of (entry.contacts || [])) companyMap[String(c.id)] = cid;
+          allContacts.push(...(entry.contacts || []));
+        }
+      } else {
+        const data = await listCompanyDirectMessageContactsRequest(companyId);
+        allContacts = data?.contacts || [];
+        const cid = String(companyId);
+        for (const c of allContacts) companyMap[String(c.id)] = cid;
       }
-      setError("");
-    } catch (err) {
-      setError(err.message || "Unable to load conversations.");
-    } finally {
-      setThreadsLoading(false);
-    }
-  };
 
-  const loadConversation = async (recipientId) => {
-    if (!recipientId) {
-      setConversation(null);
-      return;
-    }
-    setConversationLoading(true);
-    try {
-      const data = await getDirectMessagesRequest(recipientId);
-      setConversation(data);
-      setError("");
-    } catch (err) {
-      setError(err.message || "Unable to load messages.");
+      setContacts(allContacts);
+      setContactCompanyMap(companyMap);
+      setSelectedContactId((prev) => {
+        if (prev && allContacts.some((c) => String(c.id) === String(prev))) return prev;
+        return allContacts[0]?.id ? String(allContacts[0].id) : null;
+      });
+    } catch {
+      setContactsError('Could not load contacts.');
     } finally {
-      setConversationLoading(false);
+      setLoadingContacts(false);
     }
-  };
+  }, [companyId, useMyContacts]);
 
   useEffect(() => {
-    loadThreads();
+    setLoadingContacts(true);
+    loadContacts();
+  }, [companyId, useMyContacts]); // intentionally not including loadContacts to avoid double-fire
+
+  // ── Load messages ─────────────────────────────────────────────────────────────
+  const loadMessages = useCallback(async (contactId, cid, silent = false) => {
+    if (!contactId || !cid) return;
+    if (!silent) setLoadingMessages(true);
+    setMsgError('');
+    try {
+      const data = await getCompanyDirectMessagesRequest(cid, contactId);
+      setMessages(data?.messages || []);
+    } catch {
+      if (!silent) setMsgError('Could not load messages.');
+    } finally {
+      if (!silent) setLoadingMessages(false);
+    }
   }, []);
 
   useEffect(() => {
-    if (selectedUserId) {
-      loadConversation(selectedUserId);
+    if (!selectedContactId || !activeCompanyId) {
+      setMessages([]);
+      return;
     }
-  }, [selectedUserId]);
+    loadMessages(selectedContactId, activeCompanyId);
+    clearInterval(pollRef.current);
+    pollRef.current = setInterval(
+      () => loadMessages(selectedContactId, activeCompanyId, true),
+      POLL_MS,
+    );
+    return () => clearInterval(pollRef.current);
+  }, [selectedContactId, activeCompanyId, loadMessages]);
 
   useEffect(() => {
-    const interval = window.setInterval(() => {
-      loadThreads();
-      if (selectedUserId) {
-        loadConversation(selectedUserId);
-      }
-    }, 10000);
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages.length]);
 
-    return () => window.clearInterval(interval);
-  }, [selectedUserId]);
+  // ── Handlers ──────────────────────────────────────────────────────────────────
+  const handleSelectContact = (contactId) => {
+    setSelectedContactId(String(contactId));
+    setMobileShowChat(true);
+  };
 
-  useEffect(() => {
-    if (!messagesRef.current) return;
-    messagesRef.current.scrollTop = messagesRef.current.scrollHeight;
-  }, [conversation?.messages?.length]);
-
-  const handleSend = async () => {
-    if (!selectedUserId || !draft.trim()) return;
-    setSending(true);
+  const handleSend = async (text) => {
+    if (!selectedContactId || !activeCompanyId) return false;
     try {
-      const created = await createDirectMessageRequest(selectedUserId, { body: draft.trim() });
-      setConversation((current) => ({
-        ...(current || {}),
-        participant2: current?.participant2 || selectedThread?.participant || { id: selectedUserId },
-        messages: [...(current?.messages || []), created],
-      }));
-      setThreads((current) => {
-        const next = [...current];
-        const index = next.findIndex(
-          (thread) => String(thread.participant?.id) === String(selectedUserId)
-        );
-        if (index >= 0) {
-          const existing = next[index];
-          next[index] = {
-            ...existing,
-            last_message: {
-              id: created.id,
-              body: created.body,
-              created_at: created.created_at,
-              sender_id: created.sender_id,
-            },
-          };
-          const [moved] = next.splice(index, 1);
-          next.unshift(moved);
-          return next;
-        }
-        return current;
+      const sent = await createCompanyDirectMessageRequest(activeCompanyId, selectedContactId, { body: text });
+      const newMsg = sent?.id ? sent : {
+        id: `temp-${Date.now()}`,
+        body: text,
+        created_at: new Date().toISOString(),
+        sender_id: user?.id,
+        sender: { id: user?.id, name: user?.name, role: user?.role },
+      };
+      setMessages((prev) => [...prev, newMsg]);
+      setContacts((prev) => {
+        const idx = prev.findIndex((c) => String(c.id) === String(selectedContactId));
+        if (idx === -1) return prev;
+        const updated = {
+          ...prev[idx],
+          last_message: { body: text, created_at: newMsg.created_at, sender_id: user?.id },
+        };
+        const next = [...prev];
+        next.splice(idx, 1);
+        return [updated, ...next];
       });
-      setDraft("");
-    } catch (err) {
-      setError(err.message || "Unable to send message.");
-    } finally {
-      setSending(false);
+      return true;
+    } catch {
+      return false;
     }
   };
 
-  const getOtherParticipant = () => {
-    if (conversation?.participant2 && String(conversation.participant2.id) === String(selectedUserId)) {
-      return conversation.participant2;
+  // ── Derived ───────────────────────────────────────────────────────────────────
+  const filteredContacts = contacts.filter(
+    (c) => !search || (c.name || '').toLowerCase().includes(search.toLowerCase()),
+  );
+  const activeContact = contacts.find((c) => String(c.id) === String(selectedContactId)) || null;
+  const isMobileChat = mobileShowChat && activeContact;
+
+  const messagesWithDates = (() => {
+    const result = [];
+    let lastDate = null;
+    for (const msg of messages) {
+      const d = new Date(msg.created_at).toDateString();
+      if (d !== lastDate) {
+        result.push({ _type: 'date', date: msg.created_at, _key: `date-${msg.created_at}` });
+        lastDate = d;
+      }
+      result.push({ _type: 'msg', ...msg, _key: msg.id });
     }
-    if (conversation?.participant1 && String(conversation.participant1.id) === String(selectedUserId)) {
-      return conversation.participant1;
-    }
-    return selectedThread?.participant || displayUsers.find((u) => String(u.id) === String(selectedUserId));
-  };
+    return result;
+  })();
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-[#05164D]">{title}</h1>
-          <p className="mt-1 text-sm text-[#6D6E71]">{description}</p>
-        </div>
-        <button
-          type="button"
-          onClick={() => {
-            loadThreads();
-            if (selectedUserId) loadConversation(selectedUserId);
-          }}
-          className="inline-flex items-center gap-2 rounded-xl border border-[#E5E7EF] bg-white px-3.5 py-2.5 text-sm font-semibold text-[#51607A] transition-colors hover:bg-[#F8FAFC]"
-        >
-          <RefreshCw size={15} />
-          Refresh
-        </button>
-      </div>
+    <div className="flex h-full min-h-0 overflow-hidden rounded-2xl border border-gray-200 shadow-sm bg-white">
 
-      {error && (
-        <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
-          {error}
-        </div>
-      )}
-
-      <div className="grid gap-6 lg:grid-cols-[300px_minmax(0,1fr)]">
-        <div className="overflow-hidden rounded-3xl border border-[#E5E7EF] bg-white shadow-sm">
-          <div className="border-b border-[#EEF0F5] p-4">
-            <div className="flex items-center gap-2 text-sm font-semibold text-[#05164D]">
-              <MessageSquare size={16} />
-              People
-            </div>
-            <div className="relative mt-3">
-              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#A5A5A5]" />
-              <input
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                placeholder="Search people..."
-                className="w-full rounded-xl border border-[#E5E7EF] py-2.5 pl-9 pr-3 text-sm focus:border-[#8BC53D] focus:outline-none"
-              />
-            </div>
+      {/* ══ LEFT SIDEBAR ════════════════════════════════════════════════════════ */}
+      <div
+        className={`flex-shrink-0 flex flex-col border-r border-gray-200 bg-white ${
+          isMobileChat ? 'hidden md:flex md:w-80' : 'w-full md:w-80'
+        }`}
+      >
+        {/* Header */}
+        <div className="px-4 py-3.5 bg-[#F0F2F5] border-b border-gray-200 flex items-center gap-3 flex-shrink-0">
+          <div className="w-9 h-9 rounded-full bg-[#05164D] flex items-center justify-center flex-shrink-0">
+            <UserRound size={17} className="text-white" />
           </div>
+          <div className="flex-1 min-w-0">
+            <h2 className="text-[14px] font-bold text-[#111B21] truncate">{title}</h2>
+            {!loadingContacts && (
+              <p className="text-[11px] text-gray-500">
+                {contacts.length} conversation{contacts.length !== 1 ? 's' : ''}
+              </p>
+            )}
+          </div>
+          <button
+            onClick={loadContacts}
+            disabled={loadingContacts}
+            className="w-8 h-8 rounded-full hover:bg-gray-200 flex items-center justify-center text-gray-500 transition-colors flex-shrink-0"
+          >
+            {loadingContacts
+              ? <Loader2 size={15} className="animate-spin" />
+              : <RefreshCw size={15} />
+            }
+          </button>
+        </div>
 
-          <div className="max-h-[70vh] overflow-y-auto">
-            {threadsLoading && availableUsers.length === 0 ? (
-              <div className="flex items-center justify-center px-4 py-10 text-sm text-[#6D6E71]">
-                <Loader2 size={18} className="mr-2 animate-spin" />
-                Loading people...
-              </div>
-            ) : filteredUsers.length === 0 ? (
-              <div className="px-4 py-10 text-center text-sm text-[#6D6E71]">
-                No people available for direct messaging.
-              </div>
-            ) : filteredUsers.map((participant) => {
-              const active = String(participant.id) === String(selectedUserId);
-              const threadForUser = threads.find(
-                (thread) => String(thread.participant?.id) === String(participant.id)
-              );
-              return (
-                <button
-                  key={participant.id}
-                  type="button"
-                  onClick={() => setSelectedUserId(participant.id || "")}
-                  className={`w-full border-b border-[#F4F6FA] px-4 py-4 text-left transition-colors ${
-                    active ? "bg-[#EEF6E0]" : "hover:bg-[#F8FAFC]"
-                  }`}
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-semibold text-[#05164D]">
-                        {participant.name}
-                      </p>
-                      <p className="mt-0.5 truncate text-xs text-[#8A94A6]">
-                        {roleLabel(participant.role)}
-                      </p>
-                      {threadForUser?.last_message && (
-                        <p className="mt-1 truncate text-xs text-[#6D6E71]">
-                          {threadForUser.last_message.body}
-                        </p>
-                      )}
-                    </div>
-                    {threadForUser?.last_message && (
-                      <span className="shrink-0 text-[11px] text-[#A5A5A5]">
-                        {formatThreadTime(threadForUser.last_message.created_at)}
-                      </span>
-                    )}
-                  </div>
-                </button>
-              );
-            })}
+        {/* Search */}
+        <div className="px-3 py-2 bg-[#F0F2F5] border-b border-gray-200 flex-shrink-0">
+          <div className="flex items-center gap-2 bg-white rounded-full px-3.5 py-2 border border-gray-200">
+            <Search size={13} className="text-gray-400 flex-shrink-0" />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search contacts"
+              className="text-[13px] outline-none bg-transparent w-full text-[#111B21] placeholder-gray-400"
+            />
+            {search && (
+              <button onClick={() => setSearch('')} className="text-gray-400 hover:text-gray-600 flex-shrink-0">
+                <X size={12} />
+              </button>
+            )}
           </div>
         </div>
 
-        <div className="flex min-h-[70vh] flex-col overflow-hidden rounded-3xl border border-[#E5E7EF] bg-white shadow-sm">
-          {!selectedUserId ? (
-            <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
-              <MessageSquare size={36} className="text-[#CBD5E1]" />
-              <p className="mt-4 text-base font-semibold text-[#05164D]">
-                Select a person to message
-              </p>
-              <p className="mt-1 text-sm text-[#6D6E71]">
-                Choose from the list to start a direct conversation.
-              </p>
+        {/* Contact list */}
+        <div className="flex-1 overflow-y-auto">
+          {loadingContacts ? (
+            <div className="py-12 text-center">
+              <Loader2 size={22} className="mx-auto text-gray-300 animate-spin" />
             </div>
-          ) : conversationLoading ? (
-            <div className="flex flex-1 items-center justify-center text-sm text-[#6D6E71]">
-              <Loader2 size={18} className="mr-2 animate-spin" />
-              Loading messages...
+          ) : contactsError ? (
+            <p className="px-4 py-6 text-[13px] text-red-400 text-center">{contactsError}</p>
+          ) : filteredContacts.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-12 px-4 text-center gap-3">
+              <UserRound size={32} className="text-gray-200" />
+              <p className="text-[13px] text-gray-400">
+                {contacts.length ? 'No matching contacts' : 'No contacts available'}
+              </p>
             </div>
           ) : (
-            <>
-              <div className="border-b border-[#EEF0F5] px-6 py-5">
-                <div className="flex flex-wrap items-start justify-between gap-4">
-                  <div>
-                    <div className="flex items-center gap-2 text-lg font-bold text-[#05164D]">
-                      <Users size={18} />
-                      {getOtherParticipant()?.name || "Direct Message"}
-                    </div>
-                    <p className="mt-1 text-sm text-[#6D6E71]">
-                      {getOtherParticipant()?.email || "Personal conversation"}
-                    </p>
-                  </div>
-                </div>
-                <div className="mt-4">
-                  {getOtherParticipant() && (
-                    <ParticipantPill participant={getOtherParticipant()} />
-                  )}
-                </div>
-              </div>
+            filteredContacts.map((contact) => (
+              <ContactListItem
+                key={contact.id}
+                contact={contact}
+                isActive={String(contact.id) === String(selectedContactId)}
+                onClick={() => handleSelectContact(contact.id)}
+              />
+            ))
+          )}
+        </div>
+      </div>
 
-              <div
-                ref={messagesRef}
-                className="flex-1 space-y-4 overflow-y-auto bg-[#F8FAFC] px-4 py-5 sm:px-6"
-              >
-                {conversation?.messages?.length ? (
-                  conversation.messages.map((message) => (
-                    <MessageBubble
-                      key={message.id}
-                      message={message}
-                      isOwn={String(message.sender_id) === String(user?.id)}
-                    />
-                  ))
-                ) : (
-                  <div className="flex h-full min-h-[240px] flex-col items-center justify-center text-center">
-                    <MessageSquare size={36} className="text-[#CBD5E1]" />
-                    <p className="mt-4 text-base font-semibold text-[#05164D]">
-                      No messages yet
-                    </p>
-                    <p className="mt-1 text-sm text-[#6D6E71]">
+      {/* ══ RIGHT: CHAT AREA ════════════════════════════════════════════════════ */}
+      <div
+        className={`flex-1 flex flex-col min-w-0 ${
+          isMobileChat ? 'flex' : 'hidden md:flex'
+        }`}
+      >
+        {!activeContact ? (
+          <div className="flex-1 flex flex-col items-center justify-center text-center px-6 bg-[#F0F2F5]">
+            <div className="w-20 h-20 rounded-full bg-white border-2 border-gray-200 flex items-center justify-center mb-4 shadow-sm">
+              <MessageSquare size={36} className="text-[#05164D]/30" />
+            </div>
+            <h3 className="text-[15px] font-bold text-[#41525D]">Direct Messages</h3>
+            <p className="text-[13px] text-gray-400 mt-2 max-w-xs">
+              Select a contact from the left to start a one-to-one conversation.
+            </p>
+          </div>
+        ) : (
+          <>
+            <DmChatHeader
+              contact={activeContact}
+              onBack={isMobileChat ? () => setMobileShowChat(false) : undefined}
+            />
+
+            {/* Messages area — same WhatsApp tan background as group chat */}
+            <div
+              className="flex-1 overflow-y-auto py-3 space-y-px"
+              style={{
+                background: "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='80' height='80'%3E%3Ccircle cx='40' cy='40' r='35' fill='none' stroke='%23e0e0e0' stroke-width='0.5' opacity='0.3'/%3E%3C/svg%3E\") #E5DDD5",
+              }}
+            >
+              {loadingMessages ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 size={24} className="text-white/80 animate-spin drop-shadow" />
+                </div>
+              ) : msgError ? (
+                <p className="text-center text-sm text-white bg-red-400/70 mx-6 py-2 rounded-lg mt-4">{msgError}</p>
+              ) : messagesWithDates.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-12 text-center">
+                  <div className="bg-white/80 rounded-xl px-5 py-4 shadow-sm">
+                    <MessageSquare size={28} className="text-gray-300 mb-2 mx-auto" />
+                    <p className="text-[13px] font-semibold text-gray-500">No messages yet</p>
+                    <p className="text-[12px] text-gray-400 mt-0.5">
                       Start the conversation by sending the first message.
                     </p>
                   </div>
-                )}
-              </div>
-
-              <div className="border-t border-[#EEF0F5] bg-white px-4 py-4 sm:px-6">
-                <div className="flex items-end gap-3">
-                  <textarea
-                    rows={3}
-                    value={draft}
-                    onChange={(event) => setDraft(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" && !event.shiftKey) {
-                        event.preventDefault();
-                        handleSend();
-                      }
-                    }}
-                    placeholder={`Write a message to ${getOtherParticipant()?.name || "this person"}...`}
-                    className="min-h-[92px] flex-1 rounded-2xl border border-[#E5E7EF] px-4 py-3 text-sm text-[#05164D] focus:border-[#8BC53D] focus:outline-none"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleSend}
-                    disabled={sending || !draft.trim()}
-                    className="inline-flex items-center gap-2 rounded-2xl bg-[#8BC53D] px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-[#476E2C] disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {sending ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
-                    Send
-                  </button>
                 </div>
-              </div>
-            </>
-          )}
-        </div>
+              ) : (
+                messagesWithDates.map((item) => {
+                  if (item._type === 'date') return <DateSeparator key={item._key} date={item.date} />;
+                  const isOwn = String(item.sender_id) === String(user?.id);
+                  return <MessageBubble key={item._key} message={item} isOwn={isOwn} />;
+                })
+              )}
+              <div ref={messagesEndRef} className="h-2" />
+            </div>
+
+            <ChatInput onSend={handleSend} disabled={!!msgError} />
+          </>
+        )}
       </div>
     </div>
   );

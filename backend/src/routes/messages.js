@@ -5,6 +5,7 @@ const {
   getConversation,
   createMessage,
   listDirectContacts,
+  listMyDirectContacts,
   getDirectConversation,
   createDirectMessage,
 } = require("../controllers/messages");
@@ -12,6 +13,7 @@ const {
 const router = express.Router();
 
 router.get("/messages/threads", requireAuth, listThreads);
+router.get("/my-direct-contacts", requireAuth, listMyDirectContacts);
 router.get("/companies/:id/messages", requireAuth, getConversation);
 router.post("/companies/:id/messages", requireAuth, createMessage);
 router.get("/companies/:id/direct-messages/contacts", requireAuth, listDirectContacts);

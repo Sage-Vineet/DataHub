@@ -48,6 +48,8 @@ function buildParticipantFromUserRow(userRow, company) {
     name: userRow.name,
     email: userRow.email,
     role: normalizeParticipantRole(userRow, company),
+    sub_role: userRow.sub_role || null,
+    company_id: userRow.company_id || null,
     status: userRow.status,
   };
 }
@@ -511,7 +513,6 @@ async function resolveDirectMessagingContext(user, companyId) {
 
   const messagingRole = getMessagingRole(user, company);
   const buyerParticipants = await getCompanyBuyerParticipants(company);
-  const contactsForBroker = buyerParticipants.filter((participant) => String(participant.id) !== String(user.id));
 
   let brokerIds = [];
   if (messagingRole === "client") {
@@ -576,9 +577,25 @@ async function resolveDirectMessagingContext(user, companyId) {
     participants = dedupeParticipants([...participants, selfParticipant]);
   }
 
-  const contacts = (messagingRole === "broker" ? contactsForBroker : brokerParticipants)
-    .filter((participant) => String(participant.id) !== String(user.id))
-    .sort((a, b) => compareNameAsc(a.name, b.name));
+  // ── Role-based DM contact filtering ──────────────────────────────────────────
+  // Broker/broker team → everyone (all buy-side + all broker team)
+  // Client/client team → own client team (same company_id) + broker team only
+  // Buyer/buyer team   → own buyer team (same company_id) + broker team only
+  let contacts;
+  if (messagingRole === "broker") {
+    contacts = dedupeParticipants([...buyerParticipants, ...brokerParticipants])
+      .filter((p) => String(p.id) !== String(user.id));
+  } else {
+    const userCompId = String(user.company_id || user.companyId || "");
+    const ownTeam = userCompId
+      ? buyerParticipants.filter(
+          (p) => String(p.company_id) === userCompId && String(p.id) !== String(user.id),
+        )
+      : [];
+    contacts = dedupeParticipants([...ownTeam, ...brokerParticipants])
+      .filter((p) => String(p.id) !== String(user.id));
+  }
+  contacts = contacts.sort((a, b) => compareNameAsc(a.name, b.name));
 
   const participantById = buildParticipantMap(participants);
 
@@ -827,11 +844,48 @@ const createDirectMessage = asyncHandler(async (req, res) => {
   });
 });
 
+/**
+ * GET /my-direct-contacts
+ * Returns all DM contacts for the current user across all their companies.
+ * Response: Array<{ company, contacts: Contact[] }>
+ */
+const listMyDirectContacts = asyncHandler(async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+
+  const companyIds = getUserCompanyIds(req.user);
+  if (!companyIds.length) return res.json([]);
+
+  const results = [];
+  for (const cid of companyIds) {
+    const context = await resolveDirectMessagingContext(req.user, cid);
+    if (context.error) continue;
+
+    const latestByContact = await getLatestDirectMessagesByContact(
+      cid,
+      req.user.id,
+      context.contacts.map((c) => c.id),
+    );
+
+    const enrichedContacts = context.contacts
+      .map((c) => ({ ...c, last_message: latestByContact[String(c.id)] || null }))
+      .sort((a, b) => {
+        const aDate = a.last_message?.created_at || "";
+        const bDate = b.last_message?.created_at || "";
+        return compareIsoDesc(aDate, bDate) || compareNameAsc(a.name, b.name);
+      });
+
+    results.push({ company: context.company, contacts: enrichedContacts });
+  }
+
+  return res.json(results);
+});
+
 module.exports = {
   listThreads,
   getConversation,
   createMessage,
   listDirectContacts,
+  listMyDirectContacts,
   getDirectConversation,
   createDirectMessage,
 };

@@ -1,3 +1,5 @@
+import { isSessionExpired, triggerSessionExpired } from './session';
+
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000').replace(/\/$/, '');
 const TOKEN_KEY = 'leo-auth-token';
 const LEGACY_TOKEN_KEY = 'leo-token';
@@ -113,6 +115,18 @@ export function setStoredToken(token) {
 
 async function request(path, options = {}) {
   const token = options.token ?? getStoredToken();
+
+  // Reject every authenticated request once the 8-hour session window has closed.
+  // triggerSessionExpired() notifies AuthContext synchronously so the UI redirects
+  // to /login. The thrown error propagates up to the calling component.
+  if (token && isSessionExpired()) {
+    triggerSessionExpired();
+    const err = new Error('Session expired. Please log in again.');
+    err.status = 401;
+    err.sessionExpired = true;
+    throw err;
+  }
+
   const clientId = options.clientId ?? resolveClientIdFromLocation();
   const headers = {
     ...(options.body ? { 'Content-Type': 'application/json' } : {}),
@@ -317,6 +331,10 @@ export function getCompanyMessagesRequest(companyId) {
 
 export function createCompanyMessageRequest(companyId, payload) {
   return request(`/companies/${companyId}/messages`, { method: "POST", body: payload }).then(unwrapPayload);
+}
+
+export function listMyDirectContactsRequest() {
+  return request("/my-direct-contacts");
 }
 
 export function listCompanyDirectMessageContactsRequest(companyId) {

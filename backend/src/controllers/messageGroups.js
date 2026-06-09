@@ -3,34 +3,86 @@
 const asyncHandler = require("../utils");
 const messageGroupService = require("../services/messageGroupService");
 const userService = require("../services/userService");
+const companyService = require("../services/companyService");
 const { supabase } = require("../db");
 
 // ─── Group management ─────────────────────────────────────────────────────────
 
+/**
+ * GET /companies/:companyId/message-groups
+ * Returns enriched groups (with last_message + unread_count) for the company.
+ * Auto-creates groups on first visit if none exist yet.
+ */
 const listGroupsForCompany = asyncHandler(async (req, res) => {
   const { companyId } = req.params;
   if (!req.user) return res.status(401).json({ error: "Unauthorized" });
   if (!userService.canAccessCompany(req.user, companyId)) {
     return res.status(403).json({ error: "Access denied" });
   }
-  const groups = await messageGroupService.getGroupsForCompany(companyId);
-  res.json(groups);
+
+  let groups = await messageGroupService.getGroupsForCompany(companyId);
+
+  // First-visit bootstrap: create the standard groups if none exist yet.
+  if (!groups.length) {
+    try {
+      const company = await companyService.getCompanyById(companyId);
+      if (company) {
+        await messageGroupService.autoCreateGroupsForCompany(company.id, company.name);
+        groups = await messageGroupService.getGroupsForCompany(companyId);
+      }
+    } catch (err) {
+      console.error("[listGroupsForCompany] auto-create failed:", err.message);
+    }
+  }
+
+  res.json(await messageGroupService.enrichGroups(groups, req.user.id));
 });
 
+/**
+ * GET /my-groups
+ * Returns all groups the current user is a member of, enriched.
+ * For each company the user belongs to, auto-creates groups if none exist.
+ */
 const listGroupsForUser = asyncHandler(async (req, res) => {
   if (!req.user) return res.status(401).json({ error: "Unauthorized" });
-  const groups = await messageGroupService.getGroupsForUser(req.user.id);
-  res.json(groups);
+
+  let groups = await messageGroupService.getGroupsForUser(req.user.id);
+
+  // First-visit bootstrap for all companies the user belongs to.
+  if (!groups.length) {
+    const companyIds = userService.getUserCompanyIds(req.user);
+    for (const cid of companyIds) {
+      try {
+        const company = await companyService.getCompanyById(cid);
+        if (company) {
+          await messageGroupService.autoCreateGroupsForCompany(company.id, company.name);
+        }
+      } catch (err) {
+        console.error("[listGroupsForUser] auto-create failed for", cid, ":", err.message);
+      }
+    }
+    groups = await messageGroupService.getGroupsForUser(req.user.id);
+  }
+
+  res.json(await messageGroupService.enrichGroups(groups, req.user.id));
 });
 
+/**
+ * POST /companies/:companyId/message-groups/auto-create
+ * Any authenticated user who can access the company can trigger group regeneration.
+ * (Previously broker-only — opened up so clients and buyers also get groups.)
+ */
 const triggerAutoCreate = asyncHandler(async (req, res) => {
   const { companyId } = req.params;
   if (!req.user) return res.status(401).json({ error: "Unauthorized" });
-  const requesterRole = String(req.user?.role || "").toLowerCase();
-  if (!["broker", "admin"].includes(requesterRole)) {
-    return res.status(403).json({ error: "Only brokers can trigger group creation." });
+  if (!userService.canAccessCompany(req.user, companyId)) {
+    return res.status(403).json({ error: "Access denied" });
   }
-  const { data: company } = await supabase.from("companies").select("id, name").eq("id", companyId).single();
+  const { data: company } = await supabase
+    .from("companies")
+    .select("id, name")
+    .eq("id", companyId)
+    .single();
   if (!company) return res.status(404).json({ error: "Company not found" });
   const result = await messageGroupService.autoCreateGroupsForCompany(company.id, company.name);
   res.json({ success: true, ...result });
@@ -50,7 +102,7 @@ const removeMemberFromGroup = asyncHandler(async (req, res) => {
   res.json({ success: true });
 });
 
-// ─── Group messages (migration 042) ──────────────────────────────────────────
+// ─── Group messages ───────────────────────────────────────────────────────────
 
 /** Verify the requesting user is a member of the group. */
 async function assertGroupMember(userId, groupId) {
@@ -79,7 +131,7 @@ const getGroupMembers = asyncHandler(async (req, res) => {
 const listGroupMessages = asyncHandler(async (req, res) => {
   if (!req.user) return res.status(401).json({ error: "Unauthorized" });
   const { groupId } = req.params;
-  const limit = Math.min(Number(req.query.limit) || 100, 200);
+  const limit  = Math.min(Number(req.query.limit) || 100, 200);
   const before = req.query.before; // ISO timestamp for pagination
 
   await assertGroupMember(req.user.id, groupId);
@@ -125,7 +177,10 @@ const markGroupRead = asyncHandler(async (req, res) => {
 
   const { error } = await supabase
     .from("group_message_reads")
-    .upsert({ group_id: groupId, user_id: req.user.id, last_read_at: new Date().toISOString() }, { onConflict: "group_id,user_id" });
+    .upsert(
+      { group_id: groupId, user_id: req.user.id, last_read_at: new Date().toISOString() },
+      { onConflict: "group_id,user_id" },
+    );
 
   if (error) throw error;
   res.json({ success: true });
@@ -136,7 +191,6 @@ const getGroupUnreadCount = asyncHandler(async (req, res) => {
   const { groupId } = req.params;
   await assertGroupMember(req.user.id, groupId);
 
-  // Get last-read timestamp
   const { data: readRow } = await supabase
     .from("group_message_reads")
     .select("last_read_at")
