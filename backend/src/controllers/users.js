@@ -248,4 +248,83 @@ const deleteUser = asyncHandler(async (req, res) => {
   res.status(204).send();
 });
 
-module.exports = { listUsers, listPublicUsers, createUser, getUser, getPublicUser, updateUser, deleteUser };
+const inviteBrokerToTeam = asyncHandler(async (req, res) => {
+  const requesterRole = String(req.user?.role || "").toLowerCase();
+  if (!["broker", "admin"].includes(requesterRole)) {
+    return res.status(403).json({ error: "Only broker or admin can invite brokers." });
+  }
+  const { invited_broker_id } = req.body || {};
+  if (!invited_broker_id) return res.status(400).json({ error: "invited_broker_id required" });
+
+  const invitedUser = await userService.getUserById(invited_broker_id);
+  if (!invitedUser) return res.status(404).json({ error: "Invited broker not found." });
+
+  const invitedRole = String(invitedUser.role || "").toLowerCase();
+  if (!["broker", "admin"].includes(invitedRole)) {
+    return res.status(400).json({ error: "The invited user is not a broker account." });
+  }
+  if (String(invited_broker_id) === String(req.user.id)) {
+    return res.status(400).json({ error: "Cannot invite yourself to your own team." });
+  }
+
+  await userService.inviteBrokerToTeam(req.user.id, invited_broker_id);
+  res.status(201).json({ success: true });
+});
+
+const removeBrokerFromTeam = asyncHandler(async (req, res) => {
+  const requesterRole = String(req.user?.role || "").toLowerCase();
+  if (!["broker", "admin"].includes(requesterRole)) {
+    return res.status(403).json({ error: "Only broker or admin can remove brokers from team." });
+  }
+  const invitedBrokerId = req.params.invitedBrokerId;
+  if (!invitedBrokerId) return res.status(400).json({ error: "invitedBrokerId param required" });
+
+  await userService.removeBrokerFromTeam(req.user.id, invitedBrokerId);
+  res.status(204).send();
+});
+
+const findByEmail = asyncHandler(async (req, res) => {
+  const email = String(req.query.email || '').trim();
+  if (!email) return res.status(400).json({ error: "email query parameter required" });
+  const user = await userService.getUserByEmail(email);
+  if (!user) return res.status(404).json({ error: "No user found with that email." });
+  res.json(user);
+});
+
+const addUserToCompanies = asyncHandler(async (req, res) => {
+  const { company_ids } = req.body || {};
+  if (!Array.isArray(company_ids) || !company_ids.length) {
+    return res.status(400).json({ error: "company_ids array required" });
+  }
+  const requesterRole = String(req.user?.role || "").toLowerCase();
+  if (!["broker", "admin"].includes(requesterRole)) {
+    return res.status(403).json({ error: "Only broker or admin can perform this action." });
+  }
+  if (requesterRole !== "admin") {
+    const requesterCompanyIds = new Set(userService.getUserCompanyIds(req.user).map(String));
+    const invalid = company_ids.find((id) => !requesterCompanyIds.has(String(id)));
+    if (invalid) return res.status(403).json({ error: "Cannot assign users to a company outside your account." });
+  }
+  const user = await userService.getUserById(req.params.id);
+  if (!user) return res.status(404).json({ error: "Not found" });
+  await userService.addUserToCompanies(req.params.id, company_ids);
+  const updated = await userService.getUserById(req.params.id);
+  res.json(updated);
+});
+
+const removeUserFromCompanies = asyncHandler(async (req, res) => {
+  const { company_ids } = req.body || {};
+  if (!Array.isArray(company_ids) || !company_ids.length) {
+    return res.status(400).json({ error: "company_ids array required" });
+  }
+  const requesterRole = String(req.user?.role || "").toLowerCase();
+  if (!["broker", "admin"].includes(requesterRole)) {
+    return res.status(403).json({ error: "Only broker or admin can perform this action." });
+  }
+  const user = await userService.getUserById(req.params.id);
+  if (!user) return res.status(404).json({ error: "Not found" });
+  await userService.removeUserFromCompanies(req.params.id, company_ids);
+  res.status(204).send();
+});
+
+module.exports = { listUsers, listPublicUsers, createUser, getUser, getPublicUser, updateUser, deleteUser, findByEmail, addUserToCompanies, removeUserFromCompanies, inviteBrokerToTeam, removeBrokerFromTeam };

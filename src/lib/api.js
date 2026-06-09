@@ -282,6 +282,27 @@ export function deleteUserRequest(userId) {
   return request(`/users/${userId}`, { method: 'DELETE' });
 }
 
+export function findUserByEmailRequest(email) {
+  return request(`/users/find-by-email?email=${encodeURIComponent(email)}`).then(unwrapPayload);
+}
+
+export function addUserToCompaniesRequest(userId, companyIds) {
+  return request(`/users/${userId}/add-companies`, { method: 'POST', body: { company_ids: companyIds } }).then(unwrapPayload);
+}
+
+export function removeUserFromCompaniesRequest(userId, companyIds) {
+  return request(`/users/${userId}/remove-companies`, { method: 'DELETE', body: { company_ids: companyIds } });
+}
+
+// Feature 1: Broker-team invite relationship (does NOT modify invited broker's company associations)
+export function inviteBrokerToTeamRequest(invitedBrokerId) {
+  return request('/users/broker-team/invite', { method: 'POST', body: { invited_broker_id: invitedBrokerId } });
+}
+
+export function removeBrokerFromTeamRequest(invitedBrokerId) {
+  return request(`/users/broker-team/invite/${invitedBrokerId}`, { method: 'DELETE' });
+}
+
 export function listCompanyRequests(companyId) {
   return request(`/companies/${companyId}/requests`).then(ensureArray);
 }
