@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Activity, ArrowRight, Bell, Briefcase, Building2, CheckCircle, Clock,
+  Activity, ArrowRight, Bell, Briefcase, Building2, Calendar, CheckCircle, Clock,
   FileText, MessageSquare, ClipboardList, Plus, Users,
   Search, Filter, X, ChevronDown, AlertCircle,
   Eye, Pencil, Download, Phone, Mail, ChevronLeft,
@@ -21,7 +21,12 @@ import { SUB_ROLE, CLIENT_TEAM_ROLE_OPTIONS } from '../../lib/roles';
 
 const PAGE_SIZE = 9; // 3-column grid looks best with multiples of 3
 const OTHER_INDUSTRY = 'Other';
-const EMPTY_FORM = { name: '', project_name: '', contactFirst: '', contactLast: '', email: '', phone: '', industry: '' };
+const EMPTY_FORM = { name: '', project_name: '', contactFirst: '', contactLast: '', email: '', phone: '', industry: '', year_type: 'calendar' };
+
+const YEAR_TYPE_OPTIONS = [
+  { value: 'calendar', label: 'Calendar Year', description: 'Jan 1 – Dec 31' },
+  { value: 'fiscal', label: 'Fiscal Year', description: 'Custom fiscal period' },
+];
 
 const INDUSTRY_OPTIONS = [
   'Technology & Software', 'Healthcare & Life Sciences', 'Financial Services',
@@ -66,6 +71,7 @@ function formatCompany(c) {
     email: c.contact_email || c.email || '—',
     phone: c.contact_phone || c.phone || '—',
     industry: c.industry || '',
+    yearType: c.year_type || 'calendar',
     status: c.status || 'active',
     since: formatDate(c.created_at || c.since),
     logo: c.logo || getInitials(c.name),
@@ -235,6 +241,7 @@ export default function BrokerDashboard() {
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [deleteError, setDeleteError] = useState('');
   const [deleting, setDeleting] = useState(false);
+  const submittingRef = useRef(false);
 
   // ── Load data ────────────────────────────────────────────────────────────────
   const loadCompanies = async () => {
@@ -350,7 +357,7 @@ export default function BrokerDashboard() {
     const industry = company.industry || '';
     setUseCustomIndustry(Boolean(industry) && !INDUSTRY_OPTIONS.includes(industry));
     const { contactFirst, contactLast } = splitName(company.contact || '');
-    setForm({ name: company.name || '', project_name: company.projectName || '', contactFirst, contactLast, email: company.email || '', phone: formatUSPhone(company.phone || ''), industry });
+    setForm({ name: company.name || '', project_name: company.projectName || '', contactFirst, contactLast, email: company.email || '', phone: formatUSPhone(company.phone || ''), industry, year_type: company.yearType || 'calendar' });
     setTeamMembers([]);
     setShowAdd(true);
   };
@@ -363,6 +370,7 @@ export default function BrokerDashboard() {
 
   // ── Save company ──────────────────────────────────────────────────────────────
   const handleSaveCompany = async () => {
+    if (submittingRef.current) return;
     const contactName = `${(form.contactFirst || '').trim()} ${(form.contactLast || '').trim()}`.trim();
     if (!form.name.trim() || !form.project_name.trim() || !form.contactFirst.trim() || !form.contactLast.trim() || !form.email.trim() || !form.phone.trim() || !form.industry.trim()) {
       setFormError('Please fill in all required fields, including Project Name and Industry.');
@@ -373,6 +381,7 @@ export default function BrokerDashboard() {
       return;
     }
 
+    submittingRef.current = true;
     setSubmitting(true);
     setFormError('');
 
@@ -384,6 +393,7 @@ export default function BrokerDashboard() {
       contact_email: form.email.trim(),
       contact_phone: form.phone.trim(),
       logo: getInitials(form.name),
+      year_type: form.year_type || 'calendar',
     };
 
     try {
@@ -397,30 +407,34 @@ export default function BrokerDashboard() {
           await loadCompanies();
         }
         setSuccess('Company updated successfully.');
+        closeFormModal();
       } else {
         const created = await createCompanyRequest(payload);
         if (created?.id) {
           const formatted = formatCompany({ ...created, request_count: 0, pending_request_count: 0, completed_request_count: 0 });
           setCompanies((prev) => [formatted, ...prev]);
           setPage(1);
-          // Create team members
+          setSuccess('Company created successfully.');
+          closeFormModal();
+          // Create team members (background, non-blocking)
           if (teamMembers.length > 0) {
             const valid = teamMembers.filter((m) => m.name?.trim() && m.email?.trim() && m.password?.trim());
-            await Promise.allSettled(valid.map((m) =>
+            Promise.allSettled(valid.map((m) =>
               createUserRequest({ name: m.name.trim(), email: m.email.trim(), phone: m.phone?.trim() || null, password: m.password, role: 'buyer', sub_role: m.sub_role, company_id: created.id, company_ids: [created.id], status: 'active' })
             ));
           }
-          // Auto-create message groups (non-fatal)
-          try { await triggerAutoCreateMessageGroups(created.id); } catch { /* ignore */ }
+          // Auto-create message groups (fire-and-forget)
+          triggerAutoCreateMessageGroups(created.id).catch(() => {});
         } else {
           await loadCompanies();
+          setSuccess('Company created successfully.');
+          closeFormModal();
         }
-        setSuccess('Company created successfully.');
       }
-      closeFormModal();
     } catch (err) {
       setFormError(formatApiError(err));
     } finally {
+      submittingRef.current = false;
       setSubmitting(false);
     }
   };
@@ -704,6 +718,20 @@ export default function BrokerDashboard() {
                 </div>
               ))}
             </div>
+            <div className={`flex items-center gap-3 rounded-xl p-3 ${selected.yearType === 'fiscal' ? 'bg-[#FFF8EC] border border-[#F68C1F]/20' : 'bg-[#EEF6E0] border border-[#8BC53D]/20'}`}>
+              <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${selected.yearType === 'fiscal' ? 'bg-[#F68C1F]/10' : 'bg-[#8BC53D]/10'}`}>
+                <Calendar size={14} className={selected.yearType === 'fiscal' ? 'text-[#F68C1F]' : 'text-[#476E2C]'} />
+              </div>
+              <div>
+                <p className="text-xs text-[#A5A5A5] font-medium">Fiscal Year Type</p>
+                <p className={`text-sm font-semibold ${selected.yearType === 'fiscal' ? 'text-[#b45e08]' : 'text-[#476E2C]'}`}>
+                  {selected.yearType === 'fiscal' ? 'Fiscal Year' : 'Calendar Year'}
+                  <span className="ml-2 text-[10px] font-medium text-[#A5A5A5]">
+                    {selected.yearType === 'fiscal' ? 'Custom fiscal period' : 'Jan 1 – Dec 31'}
+                  </span>
+                </p>
+              </div>
+            </div>
             <div className="space-y-2">
               <p className="text-xs font-semibold uppercase tracking-wide text-[#6D6E71]">Request Summary</p>
               <div className="grid grid-cols-3 gap-3">
@@ -738,7 +766,7 @@ export default function BrokerDashboard() {
       </Modal>
 
       {/* ── Add / Edit Company Modal ── */}
-      <Modal isOpen={showAdd} onClose={closeFormModal} title={editing ? 'Edit Company' : 'Add New Company'}>
+      <Modal isOpen={showAdd} onClose={submitting ? () => {} : closeFormModal} title={editing ? 'Edit Company' : 'Add New Company'}>
         <div className="space-y-4 pt-6">
           <FormError message={formError} />
 
@@ -755,7 +783,8 @@ export default function BrokerDashboard() {
                 value={form[field.key]}
                 onChange={(e) => setForm((c) => ({ ...c, [field.key]: e.target.value }))}
                 placeholder={field.placeholder}
-                className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all placeholder-[#A5A5A5]"
+                disabled={submitting}
+                className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all placeholder-[#A5A5A5] disabled:bg-gray-50 disabled:cursor-not-allowed"
               />
             </div>
           ))}
@@ -774,7 +803,8 @@ export default function BrokerDashboard() {
                   value={form[field.key]}
                   onChange={(e) => setForm((c) => ({ ...c, [field.key]: e.target.value }))}
                   placeholder={field.placeholder}
-                  className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all placeholder-[#A5A5A5]"
+                  disabled={submitting}
+                  className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all placeholder-[#A5A5A5] disabled:bg-gray-50 disabled:cursor-not-allowed"
                 />
               </div>
             ))}
@@ -787,7 +817,8 @@ export default function BrokerDashboard() {
               value={form.email}
               onChange={(e) => setForm((c) => ({ ...c, email: e.target.value }))}
               placeholder="contact@company.com"
-              className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all placeholder-[#A5A5A5]"
+              disabled={submitting}
+              className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all placeholder-[#A5A5A5] disabled:bg-gray-50 disabled:cursor-not-allowed"
             />
           </div>
 
@@ -801,7 +832,8 @@ export default function BrokerDashboard() {
                 onChange={(e) => setForm((c) => ({ ...c, phone: formatUSPhone(e.target.value) }))}
                 placeholder="(555) 000-0000"
                 maxLength={14}
-                className="min-w-0 flex-1 rounded-l-none rounded-r-xl border border-gray-200 px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all placeholder-[#A5A5A5]"
+                disabled={submitting}
+                className="min-w-0 flex-1 rounded-l-none rounded-r-xl border border-gray-200 px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all placeholder-[#A5A5A5] disabled:bg-gray-50 disabled:cursor-not-allowed"
               />
             </div>
           </div>
@@ -819,7 +851,8 @@ export default function BrokerDashboard() {
                   setForm((c) => ({ ...c, industry: e.target.value }));
                 }
               }}
-              className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all text-[#050505] bg-white"
+              disabled={submitting}
+              className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all text-[#050505] bg-white disabled:bg-gray-50 disabled:cursor-not-allowed"
             >
               <option value="">Select industry…</option>
               {INDUSTRY_OPTIONS.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
@@ -831,9 +864,38 @@ export default function BrokerDashboard() {
                 value={form.industry}
                 onChange={(e) => setForm((c) => ({ ...c, industry: e.target.value }))}
                 placeholder="Enter industry name"
-                className="mt-3 w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all placeholder-[#A5A5A5]"
+                disabled={submitting}
+                className="mt-3 w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all placeholder-[#A5A5A5] disabled:bg-gray-50 disabled:cursor-not-allowed"
               />
             )}
+          </div>
+
+          {/* Fiscal Year Type */}
+          <div>
+            <label className="block text-sm font-medium text-[#050505] mb-1.5">
+              Fiscal Year Type <span className="text-[#C62026]">*</span>
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              {YEAR_TYPE_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  disabled={submitting}
+                  onClick={() => setForm((c) => ({ ...c, year_type: opt.value }))}
+                  className={`flex items-center gap-2.5 px-4 py-3 rounded-xl border text-left transition-all disabled:cursor-not-allowed disabled:opacity-50 ${
+                    form.year_type === opt.value
+                      ? 'border-[#8BC53D] bg-[#EEF6E0] text-[#476E2C]'
+                      : 'border-gray-200 text-[#6D6E71] hover:border-gray-300 hover:bg-gray-50'
+                  }`}
+                >
+                  <Calendar size={15} className={form.year_type === opt.value ? 'text-[#8BC53D] flex-shrink-0' : 'text-[#A5A5A5] flex-shrink-0'} />
+                  <div>
+                    <p className="text-sm font-semibold leading-tight">{opt.label}</p>
+                    <p className="text-[10px] text-[#A5A5A5] mt-0.5">{opt.description}</p>
+                  </div>
+                </button>
+              ))}
+            </div>
           </div>
 
           {/* Team Members — creation only */}
@@ -847,7 +909,8 @@ export default function BrokerDashboard() {
                 <button
                   type="button"
                   onClick={addTeamMember}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#E6F3D3] text-[#476E2C] text-xs font-semibold hover:bg-[#d4ebbf] transition-colors"
+                  disabled={submitting}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#E6F3D3] text-[#476E2C] text-xs font-semibold hover:bg-[#d4ebbf] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <UserPlus size={13} /> Add Member
                 </button>
@@ -891,7 +954,7 @@ export default function BrokerDashboard() {
                 Delete
               </button>
             )}
-            <button onClick={closeFormModal} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-[#6D6E71] hover:bg-gray-50 transition-colors">
+            <button onClick={closeFormModal} disabled={submitting} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-[#6D6E71] hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
               Cancel
             </button>
             <button
