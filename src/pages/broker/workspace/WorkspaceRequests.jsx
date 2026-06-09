@@ -519,7 +519,7 @@ function mapUiPatchToApi(patch) {
   if (patch.priority !== undefined) apiPatch.priority = patch.priority;
   if (patch.workflowStatus !== undefined) apiPatch.status = patch.workflowStatus;
   if (patch.dueDate !== undefined) apiPatch.due_date = patch.dueDate;
-  if (patch.assignedTo !== undefined && patch.assignedTo !== null) apiPatch.assigned_to = patch.assignedTo;
+  if (patch.assignedTo !== undefined) apiPatch.assigned_to = patch.assignedTo || null;
   if (patch.visible !== undefined) apiPatch.visible = patch.visible;
   return apiPatch;
 }
@@ -854,7 +854,7 @@ function NarrativeCard({ content, author, canEdit, draft, onDraftChange, onSave,
   );
 }
 
-function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSendReminder, onAttachDocument, onApproveRequest, approvingRequestId, onMarkReviewed, onDeleteRequest, deletingRequestId }) {
+function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSendReminder, onAttachDocument, onApproveRequest, approvingRequestId, onMarkReviewed, onDeleteRequest, deletingRequestId, clientTeamUsers = [] }) {
   const [duplicateWarning, setDuplicateWarning] = useState([]);
   // Keep the draft EMPTY on load — the saved narrative is shown in the display card above.
   // The textarea is only for typing NEW/UPDATED content before hitting Save.
@@ -869,6 +869,8 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
   const [savingRequestDetails, setSavingRequestDetails] = useState(false);
   const [savingNarrative, setSavingNarrative] = useState(false);
   const [unblocking, setUnblocking] = useState(false);
+  const [assignedToDraft, setAssignedToDraft] = useState(request?.assignedTo || '');
+  const [savingAssignment, setSavingAssignment] = useState(false);
 
   useEffect(() => {
     // Reset the draft to empty when switching requests (not pre-fill — avoids duplication with display card).
@@ -880,6 +882,7 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
       priority: request?.priority || 'high',
       dueDate: request?.dueDate || formatToday(),
     });
+    setAssignedToDraft(request?.assignedTo || '');
   }, [request?.id]);
 
   if (!request) return null;
@@ -957,6 +960,16 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
     });
     setNarrativeDraft(''); // clear draft after save — saved text shows in the display card
     setSavingNarrative(false);
+  };
+
+  const saveAssignment = async (newAssignedTo) => {
+    if (savingAssignment) return;
+    setSavingAssignment(true);
+    await onUpdateRequest(request.id, {
+      assignedTo: newAssignedTo || null,
+      updatedAt: formatToday(),
+    });
+    setSavingAssignment(false);
   };
 
   const handleUnblock = async () => {
@@ -1139,7 +1152,28 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
                   { label: 'Category', value: <span className="inline-flex items-center gap-1.5 font-semibold text-[#050505]"><CategoryIcon size={14} style={{ color: CATEGORY_META[request.category].color }} />{request.category}</span> },
                   { label: 'Due Date', value: <span className={`font-semibold ${isOverdue ? 'text-[#B91C1C]' : 'text-[#050505]'}`}>{request.dueDate}</span> },
                   { label: 'Response Type', value: <span className="font-semibold text-[#050505]">{request.responseType}</span> },
-                  { label: 'Assigned To', value: <span className="font-semibold text-[#050505]">{request.assignedToDisplay}</span> },
+                  { label: 'Assigned To', value: (
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={assignedToDraft}
+                        onChange={async (e) => {
+                          const val = e.target.value;
+                          setAssignedToDraft(val);
+                          await saveAssignment(val);
+                        }}
+                        disabled={savingAssignment}
+                        className="flex-1 min-w-0 rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs font-semibold text-[#050505] focus:outline-none focus:ring-1 focus:ring-[#8BC53D] disabled:opacity-60"
+                      >
+                        <option value="">— Unassigned —</option>
+                        {clientTeamUsers.map((u) => (
+                          <option key={u.id} value={u.id}>
+                            {u.name}{u.role_label ? ` · ${u.role_label}` : ''}
+                          </option>
+                        ))}
+                      </select>
+                      {savingAssignment && <span className="text-[10px] text-[#A5A5A5] flex-shrink-0">Saving…</span>}
+                    </div>
+                  ) },
                   { label: 'Created Date', value: <span className="font-semibold text-[#050505]">{request.createdAt}</span> },
                   { label: 'Last Updated', value: <span className="font-semibold text-[#050505]">{request.updatedAt}</span> },
                 ].map((item) => (
@@ -1638,6 +1672,7 @@ export default function WorkspaceRequests() {
         onMarkReviewed={handleMarkReviewed}
         onDeleteRequest={handleDeleteRequest}
         deletingRequestId={deletingRequestId}
+        clientTeamUsers={clientTeamUsers}
         onSendReminder={(id) => createRequestReminder(id, {
           sent_at: new Date().toISOString(),
           sent_by: user?.id || null,
