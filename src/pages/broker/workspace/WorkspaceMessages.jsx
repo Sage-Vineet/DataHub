@@ -6,49 +6,51 @@ import CompanyDirectMessagesWorkspace from "../../../components/messages/Company
 
 export default function WorkspaceMessages() {
   const { clientId } = useParams();
-  const [tab, setTab] = useState("groups"); // "groups" | "direct"
+  const [tab, setTab] = useState("groups");
+
+  const toggle = (
+    <div className="flex items-center gap-0.5 bg-gray-100 rounded-lg p-0.5 self-start">
+      <button
+        onClick={() => setTab("groups")}
+        className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold transition-all ${
+          tab === "groups"
+            ? "bg-white text-[#05164D] shadow-sm"
+            : "text-gray-400 hover:text-[#05164D]"
+        }`}
+      >
+        <Users size={11} />
+        Groups
+      </button>
+      <button
+        onClick={() => setTab("direct")}
+        className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold transition-all ${
+          tab === "direct"
+            ? "bg-white text-[#05164D] shadow-sm"
+            : "text-gray-400 hover:text-[#05164D]"
+        }`}
+      >
+        <MessageSquare size={11} />
+        Direct
+      </button>
+    </div>
+  );
 
   return (
-    <div className="flex flex-col h-full min-h-0 space-y-4">
-      {/* Tab switcher */}
-      <div className="flex items-center gap-1 bg-gray-100 rounded-xl p-1 self-start">
-        <button
-          onClick={() => setTab("groups")}
-          className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all ${
-            tab === "groups"
-              ? "bg-white text-[#05164D] shadow-sm"
-              : "text-gray-500 hover:text-[#05164D]"
-          }`}
-        >
-          <Users size={15} />
-          Group Messages
-        </button>
-        <button
-          onClick={() => setTab("direct")}
-          className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all ${
-            tab === "direct"
-              ? "bg-white text-[#05164D] shadow-sm"
-              : "text-gray-500 hover:text-[#05164D]"
-          }`}
-        >
-          <MessageSquare size={15} />
-          Direct Messages
-        </button>
-      </div>
-
-      {/* Content */}
-      <div className="flex-1 min-h-0" style={{ height: "calc(100vh - 220px)" }}>
-        {tab === "groups" ? (
-          <GroupMessagesWorkspace companyId={clientId} title="Group Messages" />
-        ) : (
-          <CompanyDirectMessagesWorkspace
-            fixedCompanyId={clientId}
-            title="Direct Messages"
-            contactLabel="Assigned Contacts"
-            contactEmptyState="No assigned users or client contact are available for this company."
-          />
-        )}
-      </div>
+    <div className="h-full min-h-0" style={{ height: "calc(100vh - 220px)" }}>
+      {tab === "groups" ? (
+        <GroupMessagesWorkspace
+          companyId={clientId}
+          headerSlot={toggle}
+        />
+      ) : (
+        <CompanyDirectMessagesWorkspace
+          fixedCompanyId={clientId}
+          showPageHeader={false}
+          headerSlot={toggle}
+          contactLabel="Assigned Contacts"
+          contactEmptyState="No assigned users or client contacts are available for this company."
+        />
+      )}
     </div>
   );
 }

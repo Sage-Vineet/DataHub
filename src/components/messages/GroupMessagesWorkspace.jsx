@@ -205,7 +205,7 @@ function MembersPanel({ groupId, onClose }) {
  *                                member of (for client / buyer portals)
  * @param {string}  title
  */
-export default function GroupMessagesWorkspace({ companyId, useMyGroups = false, title = 'Messages' }) {
+export default function GroupMessagesWorkspace({ companyId, useMyGroups = false, title = 'Messages', headerSlot }) {
   const { user } = useAuth();
   const [groups, setGroups] = useState([]);
   const [activeGroupId, setActiveGroupId] = useState(null);
@@ -331,9 +331,11 @@ export default function GroupMessagesWorkspace({ companyId, useMyGroups = false,
     <div className="flex h-full min-h-0 overflow-hidden rounded-2xl border border-gray-100 shadow-sm bg-white">
       {/* ── Left sidebar: group list ── */}
       <div className="w-72 flex-shrink-0 flex flex-col border-r border-gray-100 bg-gray-50/50">
-        <div className="px-4 py-3.5 border-b border-gray-100 flex-shrink-0">
-          <h2 className="text-sm font-bold text-[#05164D]">{title}</h2>
-          <p className="text-xs text-gray-400 mt-0.5">{groups.length} group{groups.length !== 1 ? 's' : ''}</p>
+        <div className="px-4 py-3 border-b border-gray-100 flex-shrink-0 flex items-center justify-between gap-3">
+          {headerSlot ?? <h2 className="text-sm font-bold text-[#05164D]">{title}</h2>}
+          <p className="text-xs text-gray-400 whitespace-nowrap flex-shrink-0">
+            {groups.length} group{groups.length !== 1 ? 's' : ''}
+          </p>
         </div>
 
         <div className="px-3 py-2.5 border-b border-gray-100 flex-shrink-0">
