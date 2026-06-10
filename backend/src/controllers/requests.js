@@ -4,7 +4,7 @@ const userService = require("../services/userService");
 const folderService = require("../services/folderService");
 const documentService = require("../services/documentService");
 const companyService = require("../services/companyService");
-const { sendReminderEmail } = require("../services/emailService");
+const { sendReminderEmail, sendRequestNotificationEmail } = require("../services/emailService");
 const asyncHandler = require("../utils");
 const { buildAppBaseUrl } = require("../utils/uploadStorage");
 const { isRequestResolved } = require("../utils/requestReminders");
@@ -55,6 +55,38 @@ const createRequest = asyncHandler(async (req, res) => {
     await requestService.createReminderEvent(created.id, req.user?.id || normalized.value.approved_by || normalized.value.created_by);
   }
   res.status(201).json(await requestService.getRequestById(created.id));
+
+  // Fire-and-forget: notify assigned member or all client team members — must not fail the request
+  setImmediate(async () => {
+    try {
+      const companyId = req.params.id;
+      const assignedTo = normalized.value.assigned_to || null;
+      let recipients;
+      if (assignedTo) {
+        const user = await userService.getUserById(assignedTo);
+        recipients = user?.email ? [{ name: user.name, email: user.email }] : [];
+      } else {
+        recipients = await userService.getClientTeamMembersForCompany(companyId);
+      }
+      if (!recipients.length) return;
+      const [company, sender] = await Promise.all([
+        companyService.getCompanyById(companyId),
+        userService.getUserById(req.user?.id),
+      ]);
+      for (const r of recipients) {
+        await sendRequestNotificationEmail({
+          toName: r.name || null,
+          toEmail: r.email,
+          requestTitle: created.title,
+          dueDate: created.due_date || null,
+          senderName: sender?.name || null,
+          companyName: company?.name || null,
+        });
+      }
+    } catch (emailErr) {
+      console.error("[createRequest] Email notification failed:", emailErr.message);
+    }
+  });
 });
 
 const createRequestsBulk = asyncHandler(async (req, res) => {
@@ -87,6 +119,45 @@ const createRequestsBulk = asyncHandler(async (req, res) => {
   }
 
   res.status(201).json({ message: `Successfully created ${result.count} requests` });
+
+  // Fire-and-forget: notify per-item recipients — must not fail the request
+  setImmediate(async () => {
+    try {
+      const companyId = req.params.id;
+      const [company, sender] = await Promise.all([
+        companyService.getCompanyById(companyId),
+        userService.getUserById(req.user.id),
+      ]);
+      let allClientMembers = null;
+      for (const item of items) {
+        const assignedTo = typeof item.assigned_to === "string" && item.assigned_to.trim()
+          ? item.assigned_to.trim()
+          : null;
+        let recipients;
+        if (assignedTo) {
+          const user = await userService.getUserById(assignedTo);
+          recipients = user?.email ? [{ name: user.name, email: user.email }] : [];
+        } else {
+          if (!allClientMembers) {
+            allClientMembers = await userService.getClientTeamMembersForCompany(companyId);
+          }
+          recipients = allClientMembers;
+        }
+        for (const r of recipients) {
+          await sendRequestNotificationEmail({
+            toName: r.name || null,
+            toEmail: r.email,
+            requestTitle: item.title || "Document Request",
+            dueDate: item.due_date || null,
+            senderName: sender?.name || null,
+            companyName: company?.name || null,
+          });
+        }
+      }
+    } catch (emailErr) {
+      console.error("[createRequestsBulk] Email notification failed:", emailErr.message);
+    }
+  });
 });
 
 const getRequest = asyncHandler(async (req, res) => {
@@ -184,26 +255,56 @@ const addRequestReminder = asyncHandler(async (req, res) => {
   if (!sentBy) return res.status(400).json({ error: "sent_by required" });
 
   const reminder = await requestService.createReminderEvent(req.params.id, sentBy, sentAt);
-
-  // Send email notification to the company contact — fire-and-forget, don't fail the request if email fails
-  try {
-    const company = await companyService.getCompanyById(current.company_id);
-    if (company?.contact_email) {
-      const sender = await userService.getUserById(sentBy);
-      await sendReminderEmail({
-        toName: company.contact_name || null,
-        toEmail: company.contact_email,
-        requestTitle: current.title,
-        dueDate: current.due_date || null,
-        senderName: sender?.name || null,
-        companyName: company.name || null,
-      });
-    }
-  } catch (emailErr) {
-    console.error("[addRequestReminder] Failed to send reminder email:", emailErr.message);
-  }
-
   res.status(201).json(reminder);
+
+  // Fire-and-forget: send reminder emails to request recipients — must not fail the reminder creation
+  setImmediate(async () => {
+    try {
+      const companyId = current.company_id;
+      const assignedTo = current.assigned_to || null;
+
+      let recipients;
+      if (assignedTo) {
+        const user = await userService.getUserById(assignedTo);
+        recipients = user?.email ? [{ name: user.name, email: user.email }] : [];
+      } else {
+        recipients = await userService.getClientTeamMembersForCompany(companyId);
+      }
+
+      if (!recipients.length) return;
+
+      const [company, sender] = await Promise.all([
+        companyService.getCompanyById(companyId),
+        userService.getUserById(sentBy),
+      ]);
+
+      const portalUrl = process.env.APP_BASE_URL
+        ? process.env.APP_BASE_URL.replace(/\/$/, "")
+        : null;
+
+      const seen = new Set();
+      for (const r of recipients) {
+        if (seen.has(r.email)) continue;
+        seen.add(r.email);
+        await sendReminderEmail({
+          toName: r.name || null,
+          toEmail: r.email,
+          requestTitle: current.title,
+          dueDate: current.due_date || null,
+          senderName: sender?.name || null,
+          companyName: company?.name || null,
+          requestType: current.category || current.response_type || null,
+          description: current.description || null,
+          priority: current.priority || null,
+          status: current.status || null,
+          reminderAt: sentAt,
+          portalUrl,
+        });
+      }
+    } catch (emailErr) {
+      console.error("[addRequestReminder] Email notification failed:", emailErr.message);
+    }
+  });
 });
 
 const listRequestDocuments = asyncHandler(async (req, res) => {

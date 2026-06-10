@@ -63,8 +63,8 @@ function AccountRow({ account, months, year, partyLabel = "Vendor" }) {
             <td key={m} className={colClass(v)}>{formatCurrency(v)}</td>
           );
         })}
-        <td className={`px-3 py-1.5 text-right text-[12px] tabular-nums font-medium ${Number(account.total) < 0 ? "text-status-error" : "text-text-secondary"}`}>
-          {formatCurrency(Number(account.total || 0))}
+        <td className={`px-3 py-1.5 text-right text-[12px] tabular-nums font-medium ${months.reduce((s,m)=>s+Number(account.monthly?.[m]||0),0) < 0 ? "text-status-error" : "text-text-secondary"}`}>
+          {formatCurrency(months.reduce((s,m)=>s+Number(account.monthly?.[m]||0),0))}
         </td>
       </tr>
 
@@ -99,9 +99,9 @@ function AccountRow({ account, months, year, partyLabel = "Vendor" }) {
                 );
               })}
               <td
-                className={`px-3 py-1 text-right text-[11px] tabular-nums font-medium ${g.total < 0 ? "text-status-error" : "text-text-secondary"}`}
+                className={`px-3 py-1 text-right text-[11px] tabular-nums font-medium ${months.reduce((s,m)=>s+Number(g.monthly?.[m]||0),0) < 0 ? "text-status-error" : "text-text-secondary"}`}
               >
-                {formatCurrency(g.total)}
+                {formatCurrency(months.reduce((s,m)=>s+Number(g.monthly?.[m]||0),0))}
               </td>
             </tr>
           ))}
@@ -146,8 +146,8 @@ function SectionBlock({ section, months, year }) {
               </td>
             );
           })}
-          <td className={`px-3 py-1.5 text-right text-[12px] tabular-nums font-semibold ${Number(section.total) < 0 ? "text-status-error" : "text-text-primary"}`}>
-            {formatCurrency(Number(section.total || 0))}
+          <td className={`px-3 py-1.5 text-right text-[12px] tabular-nums font-semibold ${months.reduce((s,m)=>s+Number(section.monthlyTotals?.[m]||0),0) < 0 ? "text-status-error" : "text-text-primary"}`}>
+            {formatCurrency(months.reduce((s,m)=>s+Number(section.monthlyTotals?.[m]||0),0))}
           </td>
         </tr>
       )}
@@ -175,8 +175,8 @@ function CalculatedRow({ section, months }) {
           </td>
         );
       })}
-      <td className={`px-3 py-2 text-right text-[12px] tabular-nums font-bold ${Number(section.total) < 0 ? "text-status-error" : "text-text-primary"}`}>
-        {formatCurrency(Number(section.total || 0))}
+      <td className={`px-3 py-2 text-right text-[12px] tabular-nums font-bold ${months.reduce((s,m)=>s+Number(section.monthlyTotals?.[m]||0),0) < 0 ? "text-status-error" : "text-text-primary"}`}>
+        {formatCurrency(months.reduce((s,m)=>s+Number(section.monthlyTotals?.[m]||0),0))}
       </td>
     </tr>
   );
@@ -190,8 +190,10 @@ export default function ManualProfitLossMonthlyDetail({
   selectedMonths = [],
 }) {
   const year = data?.year || null;
-  // The backend already filters to the selected months; just use data.months directly.
-  const months = Array.isArray(data?.months) ? data.months : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+  const allMonths = Array.isArray(data?.months) ? data.months : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+  const months = selectedMonths && selectedMonths.length > 0
+    ? allMonths.filter((m) => selectedMonths.includes(m))
+    : allMonths;
   const sections = Array.isArray(data?.sections) ? data.sections : [];
   const monthNames = data?.monthNames || ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 

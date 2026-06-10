@@ -202,14 +202,11 @@ function FreezeTable({ months, label, containerClass, children }) {
       {/* Sticky month header — sticks at top of main scroll container */}
       <div className="sticky top-0 z-20">
         <div ref={headScrollRef} className="no-scrollbar overflow-x-auto">
-          <table className="table-fixed border-collapse text-[13px]">
+          <table className="w-full table-fixed border-collapse text-[13px]">
             {colGroup}
             <thead>
               <tr className="bg-[#F8FBF1]">
-                <th className={cn(
-                  "sticky left-0 z-30 border border-border bg-[#F8FBF1] px-4 py-3 text-left text-[12px] font-semibold text-primary",
-                  TABLE_LABEL_COL_WIDTH,
-                )}>
+                <th className="sticky left-0 z-30 border border-border bg-[#F8FBF1] px-4 py-3 text-left text-[12px] font-semibold text-primary">
                   {label}
                 </th>
                 {months.map((m) => (
@@ -237,7 +234,7 @@ function FreezeTable({ months, label, containerClass, children }) {
 
       {/* Scrollable body — syncs horizontal scroll to the header above */}
       <div className="overflow-x-auto rounded-b-[var(--radius-card)]" onScroll={onBodyScroll}>
-        <table className="table-fixed border-collapse bg-white text-[13px]">
+        <table className="w-full table-fixed border-collapse bg-white text-[13px]">
           {colGroup}
           <tbody>
             {children}
@@ -461,6 +458,8 @@ export default function WorkspaceReconciliation() {
       status: "idle",
       message: "",
     });
+  const [manualMonthStart, setManualMonthStart] = useState(null);
+  const [manualMonthEnd, setManualMonthEnd] = useState(null);
   const [bsBankBalances, setBsBankBalances] = useState(null);
   const [reportSources, setReportSources] = useState([]);
   const [selectedReportSource, setSelectedReportSourceState] = useState(
@@ -994,6 +993,28 @@ export default function WorkspaceReconciliation() {
   const isManualGl = selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_GL;
   const isQBManual = selectedReportSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
   const isQBOnline = selectedReportSource === REPORT_SOURCE_KEYS.QUICKBOOKS;
+
+  const allPdfMonths = useMemo(
+    () => (extractedBankPdfData?.months || []).map((m) => m.key).sort(),
+    [extractedBankPdfData],
+  );
+
+  useEffect(() => {
+    if (!allPdfMonths.length) {
+      setManualMonthStart(null);
+      setManualMonthEnd(null);
+    } else {
+      setManualMonthStart(allPdfMonths[0]);
+      setManualMonthEnd(allPdfMonths[allPdfMonths.length - 1]);
+    }
+  }, [allPdfMonths]);
+
+  const filteredPdfMonths = useMemo(() => {
+    if (!allPdfMonths.length) return [];
+    const start = manualMonthStart || allPdfMonths[0];
+    const end = manualMonthEnd || allPdfMonths[allPdfMonths.length - 1];
+    return allPdfMonths.filter((m) => m >= start && m <= end);
+  }, [allPdfMonths, manualMonthStart, manualMonthEnd]);
 
   // ── Manual GL version + fiscal-year scoping ─────────────────────────────────
   // Load available dataset versions (shared store, cached per company).
@@ -1795,7 +1816,7 @@ export default function WorkspaceReconciliation() {
   // ── Balance account table renderer ───────────────────────────────────────
 
   const renderManualBalanceAccountTable = (bank, label) => {
-    const pdfMonths = (extractedBankPdfData?.months || []).map((m) => m.key);
+    const pdfMonths = filteredPdfMonths;
     const monthMap = bank
       ? Object.fromEntries((bank.months || []).map((m) => [m.monthKey, m]))
       : {};
@@ -2111,9 +2132,8 @@ export default function WorkspaceReconciliation() {
 
   // Build activity rows from extracted PDF data (manual upload / manual GL)
   const manualActivityRows = (() => {
-    if (!extractedBankPdfData?.months?.length) return [];
-    return extractedBankPdfData.months.map((monthObj) => {
-      const mk = monthObj.key;
+    if (!filteredPdfMonths.length || !extractedBankPdfData) return [];
+    return filteredPdfMonths.map((mk) => {
       const totalDeposits = (extractedBankPdfData.banks || []).reduce((sum, bank) => {
         const m = (bank.months || []).find((x) => x.monthKey === mk);
         return sum + (m?.deposits || 0);
@@ -2171,8 +2191,7 @@ export default function WorkspaceReconciliation() {
   );
 
   const renderManualActivityTable = () => {
-    const months = (extractedBankPdfData?.months || []).map((m) => m.key);
-    return renderActivityTableCore(manualActivityRows, manualActivityTTM, months);
+    return renderActivityTableCore(manualActivityRows, manualActivityTTM, filteredPdfMonths);
   };
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -2330,6 +2349,47 @@ export default function WorkspaceReconciliation() {
               </p>
             </div>
             <div className="flex items-end gap-3">
+              {/* Month Range Filter — Manual Upload, Manual GL, QuickBooks Manual */}
+              {(isManualUpload || isManualGl || isQBManual) && allPdfMonths.length > 0 && (
+                <>
+                  <div>
+                    <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
+                      Start Month
+                    </label>
+                    <select
+                      className="input-base h-10 w-auto min-w-[120px]"
+                      value={manualMonthStart || ""}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setManualMonthStart(val);
+                        if (manualMonthEnd && val > manualMonthEnd) setManualMonthEnd(val);
+                      }}
+                    >
+                      {allPdfMonths.map((m) => (
+                        <option key={m} value={m}>{monthLabel(m)}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
+                      End Month
+                    </label>
+                    <select
+                      className="input-base h-10 w-auto min-w-[120px]"
+                      value={manualMonthEnd || ""}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setManualMonthEnd(val);
+                        if (manualMonthStart && val < manualMonthStart) setManualMonthStart(val);
+                      }}
+                    >
+                      {allPdfMonths.map((m) => (
+                        <option key={m} value={m}>{monthLabel(m)}</option>
+                      ))}
+                    </select>
+                  </div>
+                </>
+              )}
               {(isManualUpload || isManualGl || isQBManual) && (
                 <button
                   type="button"
