@@ -144,35 +144,36 @@ function CompanyCard({ company, onOpenWorkspace, onView, onEdit }) {
   const s = STATUS_META[company.status] || STATUS_META.inactive;
 
   return (
-    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-all flex flex-col">
+    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-all flex flex-col min-w-0">
       {/* Clickable body → opens workspace */}
       <div
         className="p-4 flex-1 cursor-pointer group"
         onClick={() => onOpenWorkspace(company)}
       >
-        <div className="flex items-start justify-between gap-2 mb-3">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-[#05164D] flex items-center justify-center text-sm font-bold text-white flex-shrink-0">
+        {/* Header: logo + name (min-w-0 flex-1) + status badge (flex-shrink-0) */}
+        <div className="flex items-start gap-2 mb-3">
+          <div className="flex items-start gap-2.5 min-w-0 flex-1">
+            <div className="w-10 h-10 rounded-xl bg-[#05164D] flex items-center justify-center text-sm font-bold text-white flex-shrink-0 mt-0.5">
               {company.logo}
             </div>
-            <div className="min-w-0">
-              <p className="font-semibold text-[#05164D] text-sm truncate group-hover:text-[#8BC53D] transition-colors">
+            <div className="min-w-0 flex-1">
+              <p className="font-semibold text-[#05164D] text-sm truncate group-hover:text-[#8BC53D] transition-colors leading-tight">
                 {company.name}
               </p>
               {company.projectName && (
-                <span className="inline-block rounded-full bg-[#05164D]/10 px-2 py-0.5 text-[10px] font-semibold text-[#05164D]">
+                <span className="inline-block rounded-full bg-[#05164D]/10 px-2 py-0.5 text-[10px] font-semibold text-[#05164D] mt-0.5 max-w-full truncate">
                   {company.projectName}
                 </span>
               )}
             </div>
           </div>
-          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold flex-shrink-0 ${s.bg} ${s.text}`}>
+          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold flex-shrink-0 whitespace-nowrap ${s.bg} ${s.text}`}>
             <span className={`w-1.5 h-1.5 rounded-full ${s.dot}`} />
             {s.label}
           </span>
         </div>
 
-        <p className="text-xs text-gray-400 mb-3">{company.industry || '—'}</p>
+        <p className="text-xs text-gray-400 mb-3 truncate">{company.industry || '—'}</p>
 
         <div className="grid grid-cols-2 gap-2 mb-3">
           <div className="rounded-xl bg-[#FFF1E2] px-2.5 py-2 text-center">
@@ -185,7 +186,27 @@ function CompanyCard({ company, onOpenWorkspace, onView, onEdit }) {
           </div>
         </div>
 
-        <div className="text-xs text-gray-500 truncate">{company.contact} · {company.email}</div>
+        {/* Contact details */}
+        <div className="mt-2 pt-2 border-t border-gray-50 space-y-0.5">
+          {company.contact && company.contact !== '—' && (
+            <div className="flex items-center gap-1 overflow-hidden">
+              <Users size={11} className="flex-shrink-0 text-gray-300" />
+              <span className="text-[11px] text-gray-600 font-medium truncate leading-snug">{company.contact}</span>
+            </div>
+          )}
+          {company.email && company.email !== '—' && (
+            <div className="flex items-center gap-1 overflow-hidden">
+              <Mail size={11} className="flex-shrink-0 text-gray-300" />
+              <span className="text-[11px] text-gray-400 truncate leading-snug">{company.email}</span>
+            </div>
+          )}
+          {company.phone && company.phone !== '—' && (
+            <div className="flex items-center gap-1 overflow-hidden">
+              <Phone size={11} className="flex-shrink-0 text-gray-300" />
+              <span className="text-[11px] text-gray-400 truncate leading-snug">{company.phone}</span>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Action buttons */}
@@ -225,6 +246,7 @@ export default function BrokerDashboard() {
 
   // ── Filter / pagination state ────────────────────────────────────────────────
   const [search, setSearch] = useState('');
+  const [showSuggestions, setShowSuggestions] = useState(false);
   const [industryFilter, setIndustryFilter] = useState('All Industries');
   const [statusFilter, setStatusFilter] = useState('All Status');
   const [page, setPage] = useState(1);
@@ -242,6 +264,7 @@ export default function BrokerDashboard() {
   const [deleteError, setDeleteError] = useState('');
   const [deleting, setDeleting] = useState(false);
   const submittingRef = useRef(false);
+  const searchRef = useRef(null);
 
   // ── Load data ────────────────────────────────────────────────────────────────
   const loadCompanies = async () => {
@@ -277,6 +300,16 @@ export default function BrokerDashboard() {
     return () => clearTimeout(t);
   }, [success]);
 
+  useEffect(() => {
+    const handleOutside = (e) => {
+      if (searchRef.current && !searchRef.current.contains(e.target)) {
+        setShowSuggestions(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutside);
+    return () => document.removeEventListener('mousedown', handleOutside);
+  }, []);
+
   // ── Analytics ────────────────────────────────────────────────────────────────
   const analytics = useMemo(() => {
     const active = companies.filter((c) => c.status === 'active').length;
@@ -284,6 +317,18 @@ export default function BrokerDashboard() {
     const completed = companies.reduce((s, c) => s + c.completedCount, 0);
     return { total: companies.length, active, pending, completed };
   }, [companies]);
+
+  // ── Search suggestions ───────────────────────────────────────────────────────
+  const suggestions = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return [];
+    return companies
+      .filter((c) =>
+        c.name.toLowerCase().includes(q) ||
+        (c.projectName || '').toLowerCase().includes(q),
+      )
+      .slice(0, 6);
+  }, [companies, search]);
 
   // ── Filter options ────────────────────────────────────────────────────────────
   const industryOptions = useMemo(
@@ -528,19 +573,50 @@ export default function BrokerDashboard() {
           {/* Toolbar */}
           <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
             <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center">
-              {/* Search */}
-              <div className="flex items-center gap-2 border border-gray-200 rounded-xl px-3 py-2 focus-within:ring-2 focus-within:ring-[#8BC53D]/30 flex-1 min-w-0">
-                <Search size={15} className="text-[#A5A5A5] flex-shrink-0" />
-                <input
-                  value={search}
-                  onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-                  placeholder="Search by project, company, industry, contact, email or phone..."
-                  className="text-sm outline-none text-[#050505] placeholder-[#A5A5A5] bg-transparent w-full"
-                />
-                {search && (
-                  <button onClick={() => { setSearch(''); setPage(1); }} className="text-[#A5A5A5] hover:text-[#050505]">
-                    <X size={13} />
-                  </button>
+              {/* Search with autocomplete */}
+              <div className="relative flex-1 min-w-0" ref={searchRef}>
+                <div className="flex items-center gap-2 border border-gray-200 rounded-xl px-3 py-2 focus-within:ring-2 focus-within:ring-[#8BC53D]/30">
+                  <Search size={15} className="text-[#A5A5A5] flex-shrink-0" />
+                  <input
+                    value={search}
+                    onChange={(e) => { setSearch(e.target.value); setPage(1); setShowSuggestions(true); }}
+                    onFocus={() => { if (search.trim()) setShowSuggestions(true); }}
+                    placeholder="Search by project, company, industry, contact, email or phone..."
+                    className="text-sm outline-none text-[#050505] placeholder-[#A5A5A5] bg-transparent w-full"
+                  />
+                  {search && (
+                    <button onClick={() => { setSearch(''); setPage(1); setShowSuggestions(false); }} className="text-[#A5A5A5] hover:text-[#050505]">
+                      <X size={13} />
+                    </button>
+                  )}
+                </div>
+                {/* Suggestions dropdown */}
+                {showSuggestions && suggestions.length > 0 && (
+                  <div className="absolute top-full left-0 right-0 mt-1.5 bg-white rounded-xl border border-gray-200 shadow-lg z-50 overflow-hidden">
+                    {suggestions.map((c) => (
+                      <button
+                        key={c.id}
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => { setSearch(c.name); setPage(1); setShowSuggestions(false); }}
+                        className="w-full px-3 py-2.5 text-left hover:bg-[#F8FAFC] flex items-center gap-2.5 border-b border-gray-50 last:border-0 transition-colors"
+                      >
+                        <div className="w-7 h-7 rounded-lg bg-[#05164D] flex items-center justify-center text-[11px] font-bold text-white flex-shrink-0">
+                          {c.logo}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-semibold text-[#05164D] truncate">{c.name}</p>
+                          {c.projectName && (
+                            <p className="text-[11px] text-gray-400 truncate">{c.projectName}</p>
+                          )}
+                        </div>
+                        {c.industry && (
+                          <span className="text-[10px] text-gray-400 flex-shrink-0 bg-gray-50 rounded-full px-2 py-0.5 hidden sm:block">
+                            {c.industry}
+                          </span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
                 )}
               </div>
               {/* Industry filter */}

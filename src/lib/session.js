@@ -1,5 +1,5 @@
 const LOGIN_TIMESTAMP_KEY = 'leo-login-timestamp';
-const SESSION_EXPIRY_KEY  = 'leo-session-expiry';
+const SESSION_EXPIRY_KEY = 'leo-session-expiry';
 const SESSION_DURATION_MS = 8 * 60 * 60 * 1000; // 8 hours, never reset by activity
 
 // Single callback invoked when the API layer detects an expired session mid-request.
