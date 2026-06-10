@@ -726,10 +726,17 @@ export default function WorkspaceUsers() {
     try {
       const [usersRes, companiesRes] = await Promise.all([listUsersRequest(), listCompaniesRequest()]);
       const normalized = usersRes.map(normalizeUser).filter(Boolean);
-      // Filter to users belonging to this company (including broker team)
+      const thisCompany = companiesRes.find((c) => String(c.id) === String(clientId));
+      const contactEmail = (thisCompany?.contact_email || '').trim().toLowerCase();
+
+      // Filter to users belonging to this company (including broker team).
+      // Also include the company's primary contact by email — catches cases where
+      // the contact user's company_id association wasn't saved correctly.
       const companyUsers = normalized.filter((u) => {
-        const userCompanyIds = u.companyIds || [u.companyId];
-        return userCompanyIds.some((id) => String(id) === String(clientId));
+        const userCompanyIds = (u.companyIds && u.companyIds.length > 0) ? u.companyIds : (u.companyId ? [u.companyId] : []);
+        const matchesCompany = userCompanyIds.some((id) => String(id) === String(clientId));
+        const isContact = contactEmail && (u.email || '').trim().toLowerCase() === contactEmail;
+        return matchesCompany || isContact;
       });
       setAllUsers(companyUsers);
       setCompanies(companiesRes);

@@ -195,6 +195,7 @@ async function syncCompanyClientRepresentative(company, previousCompany = null) 
     const { error: updateErr } = await supabase.from("users").update({
       name: company.contact_name, email: normalizedEmail,
       phone: company.contact_phone || null, company_id: company.id,
+      sub_role: existingUser.sub_role || "company_owner",
       status: "active", updated_at: new Date().toISOString(),
     }).eq("id", existingUser.id);
 
@@ -234,7 +235,7 @@ async function syncCompanyClientRepresentative(company, previousCompany = null) 
     .insert({
       name: company.contact_name, email: normalizedEmail,
       phone: company.contact_phone || null, password_hash: passwordHash,
-      role: "buyer", company_id: company.id, status: "active",
+      role: "buyer", sub_role: "company_owner", company_id: company.id, status: "active",
     })
     .select("id")
     .single();
@@ -247,8 +248,8 @@ async function syncCompanyClientRepresentative(company, previousCompany = null) 
     if (pool) {
       try {
         const { rows } = await pool.query(
-          `INSERT INTO users (name, email, phone, password_hash, role, company_id, status)
-           VALUES ($1, $2, $3, $4, 'buyer', $5, 'active') RETURNING id`,
+          `INSERT INTO users (name, email, phone, password_hash, role, sub_role, company_id, status)
+           VALUES ($1, $2, $3, $4, 'buyer', 'company_owner', $5, 'active') RETURNING id`,
           [company.contact_name, normalizedEmail, company.contact_phone || null, passwordHash, company.id],
         );
         userId = rows[0]?.id || null;
