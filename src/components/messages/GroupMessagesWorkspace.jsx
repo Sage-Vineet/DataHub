@@ -5,6 +5,7 @@ import {
   MessageSquare, RefreshCw, Search, Send, Users, X,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { useMessageNotifications } from '../../context/MessageNotificationsContext';
 import {
   listMessageGroupsForCompany,
   listMyMessageGroups,
@@ -447,6 +448,7 @@ export default function GroupMessagesWorkspace({
   onTabChange,
 }) {
   const { user } = useAuth();
+  const { markGroupRead } = useMessageNotifications();
 
   const [groups,          setGroups         ] = useState([]);
   const [activeGroupId,   setActiveGroupId  ] = useState(null);
@@ -477,8 +479,7 @@ export default function GroupMessagesWorkspace({
       );
       const sorted = sortGroups(filtered);
       setGroups(sorted);
-      // Auto-select first group if nothing active
-      setActiveGroupId((prev) => prev || sorted[0]?.id || null);
+      setActiveGroupId((prev) => prev ?? null);
     } catch {
       setGroupError('Could not load message groups.');
     } finally {
@@ -500,7 +501,7 @@ export default function GroupMessagesWorkspace({
       const data = await listGroupMessages(groupId);
       setMessages(data || []);
       markGroupMessagesRead(groupId).catch(() => {});
-      // Update unread_count in sidebar for this group
+      markGroupRead(groupId);
       setGroups((prev) =>
         prev.map((g) => g.id === groupId ? { ...g, unread_count: 0 } : g),
       );

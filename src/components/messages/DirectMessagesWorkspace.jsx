@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft, Loader2, MessageSquare,
   RefreshCw, Search, Send, UserRound, X,
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
+import { useMessageNotifications } from '../../context/MessageNotificationsContext';
 import {
   listMyDirectContactsRequest,
   listCompanyDirectMessageContactsRequest,
@@ -65,11 +66,12 @@ function roleLabel(role, subRole) {
 
 // ─── ContactListItem ──────────────────────────────────────────────────────────
 
-function ContactListItem({ contact, isActive, onClick }) {
+function ContactListItem({ contact, isActive, onClick, unreadCount = 0 }) {
   const displayName = contact.name || contact.email || 'Unknown';
   const label = roleLabel(contact.role, contact.sub_role);
   const lastMsg = contact.last_message;
   const timeLabel = formatTime(lastMsg?.created_at || '');
+  const hasUnread = unreadCount > 0 && !isActive;
 
   return (
     <button
@@ -78,11 +80,18 @@ function ContactListItem({ contact, isActive, onClick }) {
         isActive ? 'bg-[#F0F2F5]' : 'hover:bg-[#F5F5F5]'
       }`}
     >
-      <div
-        className="w-[46px] h-[46px] rounded-full flex items-center justify-center text-white text-[14px] font-bold flex-shrink-0"
-        style={{ background: colorFor(displayName) }}
-      >
-        {initials(displayName)}
+      <div className="relative flex-shrink-0">
+        <div
+          className="w-[46px] h-[46px] rounded-full flex items-center justify-center text-white text-[14px] font-bold"
+          style={{ background: colorFor(displayName) }}
+        >
+          {initials(displayName)}
+        </div>
+        {hasUnread && (
+          <span className="absolute -top-0.5 -right-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-[#25D366] text-white text-[9px] font-bold flex items-center justify-center">
+            {unreadCount > 9 ? '9+' : unreadCount}
+          </span>
+        )}
       </div>
 
       <div className="flex-1 min-w-0">
@@ -91,11 +100,11 @@ function ContactListItem({ contact, isActive, onClick }) {
             {displayName}
           </span>
           {timeLabel && (
-            <span className="text-[11px] text-gray-400 flex-shrink-0">{timeLabel}</span>
+            <span className={`text-[11px] flex-shrink-0 ${hasUnread ? 'text-[#25D366] font-semibold' : 'text-gray-400'}`}>{timeLabel}</span>
           )}
         </div>
-        <p className="text-[13px] text-gray-500 truncate leading-tight">
-          {lastMsg ? lastMsg.body : <span className="italic text-gray-400">{label}</span>}
+        <p className={`text-[13px] truncate leading-tight ${hasUnread ? 'font-semibold text-[#111B21]' : 'text-gray-500'}`}>
+          {lastMsg ? lastMsg.body : <span className="italic text-gray-400 font-normal">{label}</span>}
         </p>
       </div>
     </button>
@@ -259,6 +268,16 @@ export default function DirectMessagesWorkspace({
   onTabChange,
 }) {
   const { user } = useAuth();
+  const { notifications, markConversationRead } = useMessageNotifications();
+
+  // Build contactId → unread count from DM notifications
+  const unreadMap = useMemo(() => {
+    const map = new Map();
+    for (const n of notifications) {
+      if (n.type !== 'group') map.set(String(n.participantId), (map.get(String(n.participantId)) || 0) + 1);
+    }
+    return map;
+  }, [notifications]);
 
   const [contacts, setContacts] = useState([]);
   const [contactCompanyMap, setContactCompanyMap] = useState({});
@@ -314,7 +333,7 @@ export default function DirectMessagesWorkspace({
       setContactCompanyMap(companyMap);
       setSelectedContactId((prev) => {
         if (prev && allContacts.some((c) => String(c.id) === String(prev))) return prev;
-        return allContacts[0]?.id ? String(allContacts[0].id) : null;
+        return null; // don't auto-select on load
       });
     } catch {
       setContactsError('Could not load contacts.');
@@ -335,13 +354,15 @@ export default function DirectMessagesWorkspace({
     setMsgError('');
     try {
       const data = await getCompanyDirectMessagesRequest(cid, contactId);
-      setMessages(data?.messages || []);
+      const msgs = data?.messages || [];
+      setMessages(msgs);
+      markConversationRead(cid, String(contactId));
     } catch {
       if (!silent) setMsgError('Could not load messages.');
     } finally {
       if (!silent) setLoadingMessages(false);
     }
-  }, []);
+  }, [markConversationRead]);
 
   useEffect(() => {
     if (!selectedContactId || !activeCompanyId) {
@@ -493,6 +514,7 @@ export default function DirectMessagesWorkspace({
                 contact={contact}
                 isActive={String(contact.id) === String(selectedContactId)}
                 onClick={() => handleSelectContact(contact.id)}
+                unreadCount={unreadMap.get(String(contact.id)) || 0}
               />
             ))
           )}
