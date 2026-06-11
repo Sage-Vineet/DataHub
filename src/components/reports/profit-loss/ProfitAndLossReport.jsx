@@ -61,6 +61,19 @@ function ProfitAndLossReport({
       );
     }
 
+    // manual_upload / quickbooks_manual monthly view — data already has rows + columns.yearCols
+    if (sourceMode === "manual_upload" || sourceMode === "quickbooks_manual") {
+      return (
+        <ProfitAndLossQBSummary
+          data={Array.isArray(detailedData?.rows) ? detailedData.rows : []}
+          columns={detailedData?.columns}
+          title="Profit & Loss"
+          subtitle={summarySubtitle}
+          entityName={resolvedEntityName}
+        />
+      );
+    }
+
     return (
       <ProfitAndLossSummary
         data={detailedData}
