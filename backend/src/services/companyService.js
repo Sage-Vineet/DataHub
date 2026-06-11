@@ -2,6 +2,10 @@ const { supabase } = require("../db");
 const { Pool } = require("pg");
 const bcrypt = require("bcryptjs");
 const CLIENT_STATIC_PASSWORD = process.env.CLIENT_STATIC_PASSWORD || "123456";
+const PROFIT_METRIC_VALUES = Object.freeze({
+  ADJUSTED_EBITDA: "adjusted_ebitda",
+  SDE: "sde",
+});
 
 let _pool = null;
 function getPool() {
@@ -17,6 +21,31 @@ function getPool() {
     _pool.on("error", (err) => console.error("[companyService] pg pool error:", err.message));
   }
   return _pool;
+}
+
+function normalizeProfitMetric(value, fallback = PROFIT_METRIC_VALUES.ADJUSTED_EBITDA) {
+  const normalized = String(value ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+  if (!normalized) return fallback;
+
+  if (
+    normalized === PROFIT_METRIC_VALUES.SDE ||
+    normalized === "seller_discretionary_earnings" ||
+    normalized === "sellers_discretionary_earnings" ||
+    normalized === "seller's_discretionary_earnings"
+  ) {
+    return PROFIT_METRIC_VALUES.SDE;
+  }
+
+  if (
+    normalized === PROFIT_METRIC_VALUES.ADJUSTED_EBITDA ||
+    normalized === "adj_ebitda" ||
+    normalized === "adjusted_ebitda" ||
+    normalized === "ebitda"
+  ) {
+    return PROFIT_METRIC_VALUES.ADJUSTED_EBITDA;
+  }
+
+  return fallback;
 }
 
 async function getAllCompanies() {
@@ -78,6 +107,7 @@ async function createCompany(companyData) {
       contact_name: companyData.contact_name,
       contact_email: companyData.contact_email,
       contact_phone: companyData.contact_phone || null,
+      profit_metric: normalizeProfitMetric(companyData.profit_metric ?? companyData.profitMetric),
     })
     .select("*")
     .single();
@@ -113,10 +143,13 @@ async function updateCompany(id, companyData) {
     contact_name: companyData.contact_name,
     contact_email: companyData.contact_email,
     contact_phone: companyData.contact_phone,
+    profit_metric: companyData.profit_metric ?? companyData.profitMetric,
   };
 
   for (const [key, value] of Object.entries(mappable)) {
-    if (value !== undefined) patch[key] = value ?? null;
+    if (value !== undefined) {
+      patch[key] = key === "profit_metric" ? normalizeProfitMetric(value) : value ?? null;
+    }
   }
 
   const { data, error } = await supabase

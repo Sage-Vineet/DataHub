@@ -96,8 +96,8 @@ function ensureActivityTable() {
   return _activityTableReady;
 }
 
-// Kick off at module load — non-blocking.
-ensureActivityTable();
+// Note: ensureActivityTable() is called lazily inside recordDocumentActivity()
+// and getDocumentActivity() — no eager init needed at module load.
 
 /**
  * Lists all documents in a folder
@@ -331,7 +331,7 @@ async function validateUpload(uploadId) {
 async function recordDocumentActivity(documentId, userId, activityType) {
   // Best-effort table init — if it fails we still try the insert so the error
   // message is descriptive rather than "table does not exist".
-  await ensureActivityTable().catch(() => {});
+  await ensureActivityTable().catch(() => { });
 
   const pool = getPool();
   if (pool) {

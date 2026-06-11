@@ -12,6 +12,7 @@ import {
   createCompanyRequest, updateCompanyRequest, deleteCompanyRequest,
   createUserRequest, triggerAutoCreateMessageGroups,
 } from '../../lib/api';
+import { getProfitMetricConfig, normalizeProfitMetric, PROFIT_METRIC_OPTIONS } from '../../lib/profitMetric';
 import { useClientStore } from '../../store/clientStore';
 import StatusBadge from '../../components/common/StatusBadge';
 import Modal from '../../components/common/Modal';
@@ -21,7 +22,7 @@ import { SUB_ROLE, CLIENT_TEAM_ROLE_OPTIONS } from '../../lib/roles';
 
 const PAGE_SIZE = 9; // 3-column grid looks best with multiples of 3
 const OTHER_INDUSTRY = 'Other';
-const EMPTY_FORM = { name: '', project_name: '', contactFirst: '', contactLast: '', email: '', phone: '', industry: '' };
+const EMPTY_FORM = { name: '', project_name: '', contactFirst: '', contactLast: '', email: '', phone: '', industry: '', profit_metric: 'adjusted_ebitda' };
 
 const INDUSTRY_OPTIONS = [
   'Technology & Software', 'Healthcare & Life Sciences', 'Financial Services',
@@ -58,6 +59,7 @@ function formatDate(value) {
 
 function formatCompany(c) {
   if (!c) return null;
+  const profitMetricConfig = getProfitMetricConfig(c);
   return {
     id: c.id,
     name: c.name,
@@ -67,6 +69,9 @@ function formatCompany(c) {
     phone: c.contact_phone || c.phone || '—',
     industry: c.industry || '',
     status: c.status || 'active',
+    profitMetric: normalizeProfitMetric(c.profit_metric ?? c.profitMetric),
+    profitMetricLabel: profitMetricConfig.shortLabel,
+    profitMetricLongLabel: profitMetricConfig.longLabel,
     since: formatDate(c.created_at || c.since),
     logo: c.logo || getInitials(c.name),
     requestCount: Number(c.request_count || 0),
@@ -167,6 +172,13 @@ function CompanyCard({ company, onOpenWorkspace, onView, onEdit }) {
         </div>
 
         <p className="text-xs text-gray-400 mb-3">{company.industry || '—'}</p>
+        {company.profitMetricLabel && (
+          <div className="mb-3">
+            <span className="inline-flex items-center rounded-full bg-[#EEF6E0] px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#476E2C]">
+              {company.profitMetricLongLabel || company.profitMetricLabel}
+            </span>
+          </div>
+        )}
 
         <div className="grid grid-cols-2 gap-2 mb-3">
           <div className="rounded-xl bg-[#FFF1E2] px-2.5 py-2 text-center">
@@ -350,7 +362,16 @@ export default function BrokerDashboard() {
     const industry = company.industry || '';
     setUseCustomIndustry(Boolean(industry) && !INDUSTRY_OPTIONS.includes(industry));
     const { contactFirst, contactLast } = splitName(company.contact || '');
-    setForm({ name: company.name || '', project_name: company.projectName || '', contactFirst, contactLast, email: company.email || '', phone: formatUSPhone(company.phone || ''), industry });
+    setForm({
+      name: company.name || '',
+      project_name: company.projectName || '',
+      contactFirst,
+      contactLast,
+      email: company.email || '',
+      phone: formatUSPhone(company.phone || ''),
+      industry,
+      profit_metric: normalizeProfitMetric(company.profitMetric ?? company.profit_metric),
+    });
     setTeamMembers([]);
     setShowAdd(true);
   };
@@ -380,6 +401,7 @@ export default function BrokerDashboard() {
       name: form.name.trim(),
       project_name: form.project_name.trim(),
       industry: form.industry.trim(),
+      profit_metric: normalizeProfitMetric(form.profit_metric),
       contact_name: contactName,
       contact_email: form.email.trim(),
       contact_phone: form.phone.trim(),
@@ -685,7 +707,14 @@ export default function BrokerDashboard() {
                 )}
                 <h3 className="text-lg font-bold text-[#050505]">{selected.name}</h3>
                 <p className="text-sm text-[#6D6E71]">{selected.industry}</p>
-                <StatusBadge value={selected.status} />
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <StatusBadge value={selected.status} />
+                  {selected.profitMetricLongLabel && (
+                    <span className="inline-flex items-center rounded-full bg-[#EEF6E0] px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-[#476E2C]">
+                      {selected.profitMetricLongLabel}
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
             <div className="grid grid-cols-2 gap-4">
@@ -834,6 +863,24 @@ export default function BrokerDashboard() {
                 className="mt-3 w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all placeholder-[#A5A5A5]"
               />
             )}
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-[#050505] mb-1.5">Profit Metric</label>
+            <select
+              value={form.profit_metric}
+              onChange={(e) => setForm((c) => ({ ...c, profit_metric: normalizeProfitMetric(e.target.value) }))}
+              className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all text-[#050505] bg-white"
+            >
+              {PROFIT_METRIC_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-xs text-[#A5A5A5]">
+              This controls whether the earnings workspace labels the final metric as EBITDA or SDE.
+            </p>
           </div>
 
           {/* Team Members — creation only */}

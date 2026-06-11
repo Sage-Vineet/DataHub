@@ -28,6 +28,7 @@ import {
 import { useAuth } from "../../context/AuthContext";
 import { useMessageNotifications } from "../../context/MessageNotificationsContext";
 import { listCompaniesRequest } from "../../lib/api";
+import { getProfitMetricConfig } from "../../lib/profitMetric";
 import MessageNotificationsMenu from "./MessageNotificationsMenu";
 import datahublogo from "../../assets/datahublogo.png";
 import ActiveSourceIndicator from "../common/ActiveSourceIndicator";
@@ -62,20 +63,27 @@ function WorkspaceSidebar({ company, onClose }) {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [showUserMenu]);
   const [dataroomOpen, setDataroomOpen] = useState(true);
+  const [qoeOpen, setQoeOpen] = useState(false);
+
   const isDataroomRoute = location.pathname.includes("/dataroom/");
   const isDataroomExpanded = dataroomOpen || isDataroomRoute;
 
+  const isQoeRoute = location.pathname.includes("/reconciliation") || location.pathname.includes("/tax-reconciliation");
+  const isQoeExpanded = qoeOpen || isQoeRoute;
+  const profitMetricConfig = getProfitMetricConfig(company);
+
   const basePath = `/broker/client/${clientId}`;
   const mainNav = [
-    // { label: "Dashboard", icon: LayoutDashboard, to: `${basePath}/dashboard` },
     {
       label: "Analytics",
       icon: TrendingUp,
       to: `${basePath}/analytics`,
     },
-    { label: "Invoices", icon: Receipt, to: `${basePath}/invoices` },
     { label: "Reports", icon: BarChart3, to: `${basePath}/reports` },
-    { label: "EBITDA Calculation", icon: Calculator, to: `${basePath}/ebitda` },
+    { label: profitMetricConfig.navLabel, icon: Calculator, to: `${basePath}/ebitda` },
+  ];
+
+  const qoeNav = [
     {
       label: "Bank Reconciliation",
       icon: Scale,
@@ -86,16 +94,19 @@ function WorkspaceSidebar({ company, onClose }) {
       icon: FileCheck,
       to: `${basePath}/tax-reconciliation`,
     },
+  ];
+
+  const bottomNav = [
     { label: "Connections", icon: Link2, to: `${basePath}/connections` },
   ];
 
   const dataroomNav = [
-    { label: "Deal Tracker", icon: Target,       to: `${basePath}/dataroom/deal-tracker` },
-    { label: "Deal Team",    icon: Users,        to: `${basePath}/dataroom/users` },
-    { label: "Requests",     icon: ClipboardList,to: `${basePath}/dataroom/requests` },
-    { label: "Documents",    icon: FolderOpen,   to: `${basePath}/dataroom/documents` },
-    { label: "Messages",     icon: MessageSquare,to: `${basePath}/dataroom/messages` },
-    { label: "Reminders",    icon: Bell,         to: `${basePath}/dataroom/reminders` },
+    { label: "Deal Tracker", icon: Target, to: `${basePath}/dataroom/deal-tracker` },
+    { label: "Deal Team", icon: Users, to: `${basePath}/dataroom/users` },
+    { label: "Requests", icon: ClipboardList, to: `${basePath}/dataroom/requests` },
+    { label: "Documents", icon: FolderOpen, to: `${basePath}/dataroom/documents` },
+    { label: "Messages", icon: MessageSquare, to: `${basePath}/dataroom/messages` },
+    { label: "Reminders", icon: Bell, to: `${basePath}/dataroom/reminders` },
   ];
   const companyMessageCount = notifications.filter((item) => String(item.companyId) === String(clientId)).length;
 
@@ -214,9 +225,101 @@ function WorkspaceSidebar({ company, onClose }) {
           )}
         </div>
 
-        {/* ── Rest of nav ── */}
+        {/* ── Main Nav ── */}
         <div className="mt-3 space-y-0.5">
           {mainNav.map((item) => {
+            const Icon = item.icon;
+            return (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                onClick={onClose}
+                className={({ isActive }) =>
+                  `relative flex items-center gap-3 rounded-md px-3 py-2.5 text-[14px] font-medium transition-all duration-200 ${isActive
+                    ? "bg-[#EEF6E0] text-primary font-semibold"
+                    : "text-secondary hover:bg-[#F0F7E6] hover:text-text-primary"
+                  }`
+                }
+              >
+                {({ isActive }) => (
+                  <>
+                    {isActive && (
+                      <div className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r-full bg-primary" />
+                    )}
+                    <Icon
+                      size={18}
+                      className={isActive ? "text-primary" : "text-text-muted"}
+                    />
+                    <span>{item.label}</span>
+                  </>
+                )}
+              </NavLink>
+            );
+          })}
+        </div>
+
+        {/* ── Quality of Earnings (nested) ── */}
+        <div className="mt-0.5">
+          <button
+            onClick={() => setQoeOpen((value) => !value)}
+            className={`flex w-full items-center justify-between rounded-md px-3 py-2.5 text-[14px] font-medium transition-all ${isQoeRoute
+              ? "bg-[#EEF6E0] text-primary font-semibold"
+              : "text-secondary hover:bg-[#F0F7E6] hover:text-text-primary"
+              }`}
+          >
+            <span className="flex items-center gap-3">
+              <Scale
+                size={18}
+                className={isQoeRoute ? "text-primary" : "text-text-muted"}
+              />
+              Quality of Earnings
+            </span>
+            <ChevronDown
+              size={16}
+              className={`transition-transform ${isQoeExpanded ? "rotate-180" : ""}`}
+            />
+          </button>
+
+          {isQoeExpanded && (
+            <div className="mt-1 space-y-0.5 pl-3">
+              {qoeNav.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <NavLink
+                    key={item.to}
+                    to={item.to}
+                    onClick={onClose}
+                    className={({ isActive }) =>
+                      `relative flex items-center gap-3 rounded-md px-3 py-2.5 text-[13px] font-medium transition-all duration-200 ${isActive
+                        ? "bg-[#EEF6E0] text-primary font-semibold"
+                        : "text-secondary hover:bg-[#F0F7E6] hover:text-text-primary"
+                      }`
+                    }
+                  >
+                    {({ isActive }) => (
+                      <>
+                        {isActive && (
+                          <div className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r-full bg-primary" />
+                        )}
+                        <Icon
+                          size={16}
+                          className={
+                            isActive ? "text-primary" : "text-text-muted"
+                          }
+                        />
+                        <span>{item.label}</span>
+                      </>
+                    )}
+                  </NavLink>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* ── Bottom Nav ── */}
+        <div className="mt-0.5 space-y-0.5">
+          {bottomNav.map((item) => {
             const Icon = item.icon;
             return (
               <NavLink

@@ -479,6 +479,66 @@ export async function fetchProtectedFileBlob(fileUrl, options = {}) {
   return response.blob();
 }
 
+function buildEbitdaAdjustmentScopeParams(options = {}) {
+  const params = new URLSearchParams();
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  if (clientId) params.set("clientId", clientId);
+
+  const fields = [
+    ["versionId", options.versionId],
+    ["sourceKey", options.sourceKey],
+    ["datasetVersionId", options.datasetVersionId],
+    ["uploadBatchId", options.uploadBatchId],
+  ];
+
+  fields.forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    params.set(key, String(value));
+  });
+
+  return params.toString();
+}
+
+export function listEbitdaAdjustmentTypes(options = {}) {
+  const query = buildEbitdaAdjustmentScopeParams(options);
+  return request(`/ebitda-adjustment-types${query ? `?${query}` : ""}`, options).then(
+    (payload) => payload?.types || [],
+  );
+}
+
+export function listEbitdaAdjustments(options = {}) {
+  const query = buildEbitdaAdjustmentScopeParams(options);
+  return request(`/ebitda-adjustments${query ? `?${query}` : ""}`, options).then(
+    (payload) => payload?.adjustments || [],
+  );
+}
+
+export function saveEbitdaAdjustmentsBatch(payload, options = {}) {
+  const query = buildEbitdaAdjustmentScopeParams(options);
+  return request(`/ebitda-adjustments/batch${query ? `?${query}` : ""}`, {
+    method: "POST",
+    body: payload,
+    ...options,
+  });
+}
+
+export function deleteEbitdaAdjustment(adjustmentId, options = {}) {
+  const query = buildEbitdaAdjustmentScopeParams(options);
+  return request(`/ebitda-adjustments/${encodeURIComponent(adjustmentId)}${query ? `?${query}` : ""}`, {
+    method: "DELETE",
+    ...options,
+  });
+}
+
+export function addEbitdaAdjustmentComment(adjustmentId, payload, options = {}) {
+  const query = buildEbitdaAdjustmentScopeParams(options);
+  return request(`/ebitda-adjustments/${encodeURIComponent(adjustmentId)}/comments${query ? `?${query}` : ""}`, {
+    method: "POST",
+    body: payload,
+    ...options,
+  }).then((res) => res?.comment || res);
+}
+
 export function listManualGlUploads(options = {}) {
   const clientId = options.clientId ?? resolveClientIdFromLocation();
   const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
