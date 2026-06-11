@@ -249,13 +249,14 @@ async function autoCreateGroupsForCompany(companyId, companyName) {
 
   // Helper: find-or-create a group, update its name if it changed, then sync members.
   async function upsertGroup(name, groupType, buyerUserId = null) {
-    const { data: existing } = await supabase
+    let q = supabase
       .from("message_groups")
       .select("id, name")
       .eq("company_id", companyId)
-      .eq("group_type", groupType)
-      .eq("buyer_user_id", buyerUserId ?? null)
-      .maybeSingle();
+      .eq("group_type", groupType);
+    // .eq(col, null) does NOT match SQL IS NULL in PostgREST — must use .is()
+    q = buyerUserId ? q.eq("buyer_user_id", buyerUserId) : q.is("buyer_user_id", null);
+    const { data: existing } = await q.limit(1).maybeSingle();
 
     let groupId;
     if (existing?.id) {
@@ -284,12 +285,6 @@ async function autoCreateGroupsForCompany(companyId, companyName) {
       MSG_GROUP_TYPE.BROKER_CLIENT,
     );
     await addGroupMembers(gid, [...brokerIds, ...clientIds]);
-  }
-
-  // 3. Client internal — client team only
-  if (clientIds.length) {
-    const gid = await upsertGroup(companyName, MSG_GROUP_TYPE.CLIENT_INTERNAL);
-    await addGroupMembers(gid, clientIds);
   }
 
   // 4. DealTeam — ONE group per company containing EVERYONE (broker + all clients + all buyers).
@@ -328,9 +323,6 @@ async function autoCreateGroupsForCompany(companyId, companyName) {
       await addGroupMembers(gid, [...brokerIds, ...buyerMemberIds]);
     }
 
-    // 6. Buyer internal — this buyer's team only
-    const gid = await upsertGroup(buyerCompanyName, MSG_GROUP_TYPE.BUYER_INTERNAL, buyerParentId);
-    await addGroupMembers(gid, buyerMemberIds);
   }
 
   return { created };

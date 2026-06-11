@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ArrowLeft, Building2, CheckCheck,
+  ArrowLeft, Building2,
   ChevronRight, Hash, Loader2, Lock,
   MessageSquare, RefreshCw, Search, Send, Users, X,
 } from 'lucide-react';
@@ -35,7 +35,6 @@ const GROUP_ORDER = [
   MSG_GROUP_TYPE.BROKER_CLIENT,
   MSG_GROUP_TYPE.BROKER_BUYER,
   MSG_GROUP_TYPE.BROKER_INTERNAL,
-  MSG_GROUP_TYPE.CLIENT_INTERNAL,
   MSG_GROUP_TYPE.BUYER_INTERNAL,
 ];
 
@@ -170,25 +169,29 @@ function MessageBubble({ message, isOwn, showSenderInfo }) {
   const name   = sender?.name || 'Unknown';
 
   return (
-    <div className={`flex gap-2 px-3 ${isOwn ? 'justify-end' : 'justify-start'} mb-0.5`}>
+    <div className={`flex gap-2 px-3 ${isOwn ? 'justify-end' : 'justify-start'} ${showSenderInfo && !isOwn ? 'mt-8' : 'mt-0.5'}`}>
       {!isOwn && (
-        <div
-          className="w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold text-white flex-shrink-0 mt-1 self-end"
-          style={{ background: colorFor(name) }}
-        >
-          {initials(name)}
-        </div>
+        showSenderInfo
+          ? (
+            <div
+              className="w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold text-white flex-shrink-0 self-start mt-0"
+              style={{ background: colorFor(name) }}
+            >
+              {initials(name)}
+            </div>
+          )
+          : <div className="w-7 flex-shrink-0" />
       )}
 
       <div className={`max-w-[65%] flex flex-col ${isOwn ? 'items-end' : 'items-start'}`}>
         {!isOwn && showSenderInfo && (
           <span
-            className="text-[12px] font-semibold mb-0.5 px-1"
+            className="text-[10px] font-semibold mb-0.5 px-1"
             style={{ color: colorFor(name) }}
           >
             {name}
             {roleLabelFromUser(sender) && (
-              <span className="text-gray-400 font-normal ml-1.5 text-[11px]">
+              <span className="text-gray-400 font-normal ml-1.5 text-[10px]">
                 {roleLabelFromUser(sender)}
               </span>
             )}
@@ -196,19 +199,17 @@ function MessageBubble({ message, isOwn, showSenderInfo }) {
         )}
 
         <div
-          className={`relative px-3 py-2 rounded-2xl shadow-sm text-sm leading-relaxed ${
+          className={`px-3 pt-2 pb-1.5 rounded-2xl shadow-sm text-sm leading-relaxed ${
             isOwn
               ? 'bg-[#D9FDD3] text-[#111B21] rounded-br-sm'
-              : 'bg-white text-[#111B21] rounded-bl-sm border border-gray-100'
+              : 'bg-white text-[#111B21] rounded-tl-sm border border-gray-100'
           }`}
         >
-          <p className="whitespace-pre-wrap break-words pr-12">{message.body}</p>
-          {/* Time + read indicator inside bubble — bottom right */}
-          <div className={`absolute bottom-2 right-2.5 flex items-center gap-1 ${isOwn ? 'text-gray-500' : 'text-gray-400'}`}>
+          <p className="whitespace-pre-wrap break-words">{message.body}</p>
+          <div className={`flex justify-end mt-1 ${isOwn ? 'text-gray-500' : 'text-gray-400'}`}>
             <span className="text-[10px] whitespace-nowrap">
               {new Date(message.created_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
             </span>
-            {isOwn && <CheckCheck size={12} className="text-[#53BDEB]" />}
           </div>
         </div>
       </div>
@@ -370,7 +371,7 @@ function ChatInput({ onSend, disabled }) {
 
   return (
     <div className="px-4 py-3 bg-[#F0F2F5] border-t border-gray-200 flex-shrink-0">
-      <div className="flex items-end gap-2 bg-white rounded-full border border-gray-200 px-4 py-2 shadow-sm focus-within:border-[#8BC53D] transition-colors">
+      <div className="flex items-end gap-2 bg-white rounded-xl border border-gray-200 px-4 py-2.5 shadow-sm focus-within:border-[#8BC53D] transition-colors">
         <textarea
           ref={textareaRef}
           rows={1}
@@ -379,7 +380,7 @@ function ChatInput({ onSend, disabled }) {
           onKeyDown={handleKeyDown}
           placeholder="Type a message"
           disabled={disabled}
-          className="flex-1 text-[14px] outline-none bg-transparent resize-none leading-5 text-[#111B21] placeholder-gray-400 py-0.5 max-h-[120px] overflow-y-auto disabled:opacity-50"
+          className="flex-1 text-[14px] outline-none bg-transparent resize-none leading-5 text-[#111B21] placeholder-gray-400 py-1 max-h-[120px] overflow-y-auto disabled:opacity-50"
           style={{ minHeight: 24 }}
         />
         <button
@@ -442,6 +443,8 @@ export default function GroupMessagesWorkspace({
   useMyGroups = false,
   title = 'Messages',
   headerSlot,
+  tab,
+  onTabChange,
 }) {
   const { user } = useAuth();
 
@@ -467,7 +470,12 @@ export default function GroupMessagesWorkspace({
       const raw = useMyGroups
         ? await listMyMessageGroups()
         : await listMessageGroupsForCompany(companyId);
-      const sorted = sortGroups(raw || []);
+      // CLIENT_INTERNAL and BUYER_INTERNAL are member-only groups — brokers must not see them
+      const filtered = (raw || []).filter((g) =>
+        g.group_type !== MSG_GROUP_TYPE.CLIENT_INTERNAL &&
+        g.group_type !== MSG_GROUP_TYPE.BUYER_INTERNAL,
+      );
+      const sorted = sortGroups(filtered);
       setGroups(sorted);
       // Auto-select first group if nothing active
       setActiveGroupId((prev) => prev || sorted[0]?.id || null);
@@ -602,17 +610,19 @@ export default function GroupMessagesWorkspace({
         <div className="px-4 py-3.5 bg-[#F0F2F5] border-b border-gray-200 flex items-center gap-3 flex-shrink-0">
           {headerSlot ?? (
             <>
-              <div className="w-9 h-9 rounded-full bg-[#05164D] flex items-center justify-center flex-shrink-0">
-                <MessageSquare size={17} className="text-white" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <h2 className="text-[14px] font-bold text-[#111B21] truncate">{title}</h2>
-                {!loadingGroups && (
-                  <p className="text-[11px] text-gray-500">
-                    {groups.length} group{groups.length !== 1 ? 's' : ''}
-                  </p>
-                )}
-              </div>
+              {onTabChange && (
+                <div className="flex items-center gap-0.5 p-0.5 bg-white rounded-full border border-gray-200 flex-shrink-0">
+                  <button
+                    onClick={() => onTabChange('groups')}
+                    className={`px-3 py-1 rounded-full text-[11px] font-semibold transition-all ${tab === 'groups' ? 'bg-[#05164D] text-white' : 'text-gray-500 hover:text-[#05164D]'}`}
+                  >Groups</button>
+                  <button
+                    onClick={() => onTabChange('chats')}
+                    className={`px-3 py-1 rounded-full text-[11px] font-semibold transition-all ${tab === 'chats' ? 'bg-[#05164D] text-white' : 'text-gray-500 hover:text-[#05164D]'}`}
+                  >Chats</button>
+                </div>
+              )}
+              <div className="flex-1 min-w-0" />
               <button
                 onClick={loadGroups}
                 disabled={loadingGroups}
