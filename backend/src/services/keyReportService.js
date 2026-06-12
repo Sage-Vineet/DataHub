@@ -437,6 +437,28 @@ async function getActiveResolvedBatch(companyId) {
   };
 }
 
+// Returns documents linked in the active version for a given category.
+async function getActiveLinkedDocuments(companyId, reportCategory) {
+  const active = await getActiveVersion(companyId);
+  if (!active) {
+    return { versionId: null, documents: [] };
+  }
+
+  const mappings = await listMappings(active.id);
+  const categoryMappings = mappings.filter((m) => m.reportCategory === reportCategory);
+
+  const documents = [];
+  for (const mapping of categoryMappings) {
+    if (!mapping.documentId) continue;
+    const doc = await documentService.getDocumentById(mapping.documentId);
+    if (doc) {
+      documents.push(doc);
+    }
+  }
+
+  return { versionId: active.id, documents };
+}
+
 module.exports = {
   REPORT_CATEGORIES,
   VALID_CATEGORIES,
@@ -456,4 +478,5 @@ module.exports = {
   syncVersion,
   listSyncLogs,
   getActiveResolvedBatch,
+  getActiveLinkedDocuments,
 };
