@@ -490,6 +490,34 @@ async function runBankExtraction(clientId, cacheSource = MANUAL_REPORT_UPLOAD_SO
   const documents = await getBankReconciliationDocuments(clientId, folderRootName);
 
   if (!documents.length) {
+    // Fall back to data synced via the connection page (Sync All).
+    // Sync All stores extracted bank data in qb_synced_reports under
+    // report_type="bank_reconciliation" with the source-specific key.
+    const { data: synced } = await supabase
+      .from("qb_synced_reports")
+      .select("data, updated_at")
+      .eq("company_id", clientId)
+      .eq("source", cacheSource)
+      .eq("report_type", BANK_RECONCILIATION_TYPE)
+      .order("updated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const sbd = synced?.data?.bank_reconciliation;
+    if (sbd?.banks?.length > 0) {
+      console.log(`[BankPDF] No KR mapping — using connection-page synced bank data for ${clientId} (source=${cacheSource}, ${sbd.banks.length} bank(s))`);
+      return {
+        statusCode: 200,
+        body: {
+          success: true,
+          source: "synced",
+          banks: sbd.banks,
+          months: sbd.months || [],
+          totals: sbd.totals || [],
+          syncedAt: sbd.syncedAt || synced.updated_at,
+          documentCount: sbd.documentCount || sbd.banks.length,
+        },
+      };
+    }
     return {
       statusCode: 200,
       body: {
@@ -498,7 +526,7 @@ async function runBankExtraction(clientId, cacheSource = MANUAL_REPORT_UPLOAD_SO
         months: [],
         totals: [],
         source: "empty",
-        message: "No Bank Statement is linked in the active Key Reports version. Link a Bank Statement in Key Reports and sync before using Bank Reconciliation.",
+        message: "No bank statements found. Upload PDF or Excel files via the Connections page and sync, or link a Bank Statement in Key Reports.",
       },
     };
   }

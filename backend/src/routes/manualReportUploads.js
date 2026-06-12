@@ -741,11 +741,33 @@ router.get("/manual-report-uploads/tax-data", async (req, res) => {
     const documentSignature = linkedDocs.map((d) => d.id).filter(Boolean).sort().join(",");
 
     if (!linkedDocs.length) {
+      // Fall back to tax return data synced via the connection page (Sync All).
+      // Both manual_upload and quickbooks_manual sync tax returns with
+      // source=MANUAL_REPORT_UPLOAD_SOURCE and report_type="tax_return".
+      const { data: synced } = await supabase
+        .from("qb_synced_reports")
+        .select("data, updated_at")
+        .eq("company_id", clientId)
+        .eq("source", MANUAL_REPORT_UPLOAD_SOURCE)
+        .eq("report_type", STATEMENT_TYPES.TAX_RETURN)
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      const taxYears = synced?.data?.tax_return?.taxYears;
+      if (taxYears && Object.keys(taxYears).length > 0) {
+        console.log(`[TaxData] No KR mapping — using connection-page synced tax data for ${clientId} (${Object.keys(taxYears).length} year(s))`);
+        return res.json({
+          success: true,
+          years: taxYears,
+          source: "synced",
+          updatedAt: synced.updated_at,
+        });
+      }
       return res.json({
         success: true,
         years: {},
         source: "empty",
-        warning: "No Tax Return is linked in the active Key Reports version. Link a Tax Return in Key Reports and sync before using Tax Reconciliation.",
+        warning: "No tax return data found. Upload tax return PDFs via the Connections page and sync, or link a Tax Return in Key Reports.",
       });
     }
 
