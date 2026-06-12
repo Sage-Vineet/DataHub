@@ -188,6 +188,11 @@ const monthLabel = (ym) => {
     month: "short",
   });
 };
+// "2025-01" → "01-01-2025"  (dd-mm-yyyy, day fixed to 01 for month selectors)
+const monthLabelDMY = (ym) => {
+  const [y, m] = ym.split("-");
+  return `01-${String(m).padStart(2, "0")}-${y}`;
+};
 
 /**
  * FreezeTable — frozen month header row with horizontally-scrollable body.
@@ -2403,10 +2408,10 @@ export default function WorkspaceReconciliation() {
                 <>
                   <div>
                     <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
-                      Start Month
+                      Start Date
                     </label>
                     <select
-                      className="input-base h-10 w-auto min-w-[120px]"
+                      className="input-base h-10 w-auto min-w-[140px]"
                       value={manualMonthStart || ""}
                       onChange={(e) => {
                         const val = e.target.value;
@@ -2415,16 +2420,16 @@ export default function WorkspaceReconciliation() {
                       }}
                     >
                       {allPdfMonths.map((m) => (
-                        <option key={m} value={m}>{monthLabel(m)}</option>
+                        <option key={m} value={m}>{monthLabelDMY(m)}</option>
                       ))}
                     </select>
                   </div>
                   <div>
                     <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
-                      End Month
+                      End Date
                     </label>
                     <select
-                      className="input-base h-10 w-auto min-w-[120px]"
+                      className="input-base h-10 w-auto min-w-[140px]"
                       value={manualMonthEnd || ""}
                       onChange={(e) => {
                         const val = e.target.value;
@@ -2433,7 +2438,7 @@ export default function WorkspaceReconciliation() {
                       }}
                     >
                       {allPdfMonths.map((m) => (
-                        <option key={m} value={m}>{monthLabel(m)}</option>
+                        <option key={m} value={m}>{monthLabelDMY(m)}</option>
                       ))}
                     </select>
                   </div>
