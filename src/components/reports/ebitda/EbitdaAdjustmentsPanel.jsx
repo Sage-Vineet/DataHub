@@ -50,9 +50,10 @@ function formatPercent(value) {
   return `${value.toFixed(2)}%`;
 }
 
-function formatAbsoluteCurrency(formatCurrency, value) {
-  const numeric = Math.abs(toNumber(value, 0));
-  return formatCurrency?.(numeric) ?? numeric;
+function formatSignedCurrency(formatCurrency, value) {
+  const numeric = toNumber(value, 0);
+  const formatted = formatCurrency?.(Math.abs(numeric)) ?? Math.abs(numeric).toFixed(2);
+  return numeric < 0 ? `(${formatted})` : formatted;
 }
 
 function getAdjustmentTypeLabel(adjustment, typeOptionsByKey, fallbackLabel = "Addback") {
@@ -324,7 +325,7 @@ export default function EbitdaAdjustmentsPanel({
         </tr>
       ) : null}
 
-      {adjustments.map((adjustment) => {
+      {approvedAdjustments.map((adjustment) => {
         const isExpanded = expandedIds.has(adjustment.id);
         const isDuplicate = duplicateIdSet.has(adjustment.id);
         const commentCount = getCommentCount(adjustment);
@@ -398,10 +399,10 @@ export default function EbitdaAdjustmentsPanel({
                 return (
                   <td key={year} className="p-3 text-right">
                     <div className="flex flex-col items-end gap-0.5">
-                      <span className="font-bold text-[#050505]">{formatAbsoluteCurrency(formatCurrency, yearValue)}</span>
+                      <span className="font-bold text-[#050505]">{formatSignedCurrency(formatCurrency, yearValue)}</span>
                       {sourceValue !== yearValue ? (
                         <span className="text-[10px] font-medium uppercase tracking-wide text-text-muted">
-                          {formatAbsoluteCurrency(formatCurrency, sourceValue)}
+                          {formatSignedCurrency(formatCurrency, sourceValue)}
                         </span>
                       ) : null}
                       {hasOverride ? (
@@ -553,7 +554,7 @@ export default function EbitdaAdjustmentsPanel({
           const yearTotal = toNumber(totalsByYear[String(year)] ?? 0, 0);
           return (
             <td key={year} className="p-3 text-right font-bold text-[#050505]">
-              {formatCurrency?.(yearTotal) ?? `$${yearTotal.toFixed(2)}`}
+              {formatSignedCurrency(formatCurrency, yearTotal)}
             </td>
           );
         })}
@@ -568,7 +569,7 @@ export default function EbitdaAdjustmentsPanel({
           const adjustedValue = toNumber(adjustedEbitdaByYear[String(year)] ?? 0, 0);
           return (
             <td key={year} className="p-4 text-right font-bold text-[#8bc53d] text-[16px]">
-              {formatCurrency?.(adjustedValue) ?? `$${adjustedValue.toFixed(2)}`}
+              {formatSignedCurrency(formatCurrency, adjustedValue)}
             </td>
           );
         })}
