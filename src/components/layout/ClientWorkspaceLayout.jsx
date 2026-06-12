@@ -23,6 +23,7 @@ import {
   MessageSquare,
   Calculator,
   FileCheck,
+  FileText,
   Target,
 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
@@ -96,17 +97,18 @@ function WorkspaceSidebar({ company, onClose }) {
     },
   ];
 
-  const bottomNav = [
-    { label: "Connections", icon: Link2, to: `${basePath}/connections` },
-  ];
+  // Connections now lives under the Data Room group (see dataroomNav).
+  const bottomNav = [];
 
   const dataroomNav = [
     { label: "Deal Tracker", icon: Target, to: `${basePath}/dataroom/deal-tracker` },
     { label: "Deal Team", icon: Users, to: `${basePath}/dataroom/users` },
     { label: "Requests", icon: ClipboardList, to: `${basePath}/dataroom/requests` },
     { label: "Documents", icon: FolderOpen, to: `${basePath}/dataroom/documents` },
+    { label: "Key Reports", icon: FileText, to: `${basePath}/dataroom/key-reports` },
     { label: "Messages", icon: MessageSquare, to: `${basePath}/dataroom/messages` },
     { label: "Reminders", icon: Bell, to: `${basePath}/dataroom/reminders` },
+    { label: "Connections", icon: Link2, to: `${basePath}/dataroom/connections` },
   ];
   const companyMessageCount = notifications.filter((item) => String(item.companyId) === String(clientId)).length;
 

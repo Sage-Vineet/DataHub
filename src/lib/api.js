@@ -1297,6 +1297,70 @@ export function listDocumentActivity(documentId) {
   return request(`/documents/${documentId}/activity`).then(ensureArray);
 }
 
+// ---- Key Reports -----------------------------------------------------------
+// The X-Client-Id header is attached automatically from the workspace URL.
+
+export function getKeyReportVersions() {
+  return request('/key-reports/versions');
+}
+
+export function createKeyReportVersion(companyId, payload = {}) {
+  return request('/key-reports/versions', {
+    method: 'POST',
+    body: { companyId, ...payload },
+  });
+}
+
+export function getKeyReportVersion(versionId) {
+  return request(`/key-reports/versions/${versionId}`);
+}
+
+export function updateKeyReportVersion(versionId, payload) {
+  return request(`/key-reports/versions/${versionId}`, { method: 'PUT', body: payload });
+}
+
+export function duplicateKeyReportVersion(versionId, payload = {}) {
+  return request(`/key-reports/versions/${versionId}/duplicate`, { method: 'POST', body: payload });
+}
+
+export function activateKeyReportVersion(versionId) {
+  return request(`/key-reports/versions/${versionId}/activate`, { method: 'POST', body: {} });
+}
+
+export function deleteKeyReportVersion(versionId) {
+  return request(`/key-reports/versions/${versionId}`, { method: 'DELETE' });
+}
+
+export function addKeyReportMapping(versionId, payload) {
+  return request(`/key-reports/versions/${versionId}/mappings`, { method: 'POST', body: payload });
+}
+
+export function removeKeyReportMapping(mappingId) {
+  return request(`/key-reports/mappings/${mappingId}`, { method: 'DELETE' });
+}
+
+export function syncKeyReportVersion(versionId) {
+  return request(`/key-reports/versions/${versionId}/sync`, { method: 'POST', body: {} });
+}
+
+export function getKeyReportSyncLogs(versionId) {
+  return request(`/key-reports/versions/${versionId}/sync-logs`);
+}
+
+export function getKeyReportFileReferences(documentIds = []) {
+  const ids = (Array.isArray(documentIds) ? documentIds : [documentIds]).filter(Boolean);
+  const qs = ids.length ? `?documentIds=${encodeURIComponent(ids.join(','))}` : '';
+  return request(`/key-reports/file-references${qs}`);
+}
+
+export function getKeyReportPopupPreference() {
+  return request('/key-reports/popup-preference');
+}
+
+export function setKeyReportPopupPreference(dismissed) {
+  return request('/key-reports/popup-preference', { method: 'PUT', body: { dismissed } });
+}
+
 export function listFolderAccess(folderId) {
   return request(`/folders/${folderId}/access`).then(ensureArray);
 }

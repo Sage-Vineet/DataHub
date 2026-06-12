@@ -384,19 +384,41 @@ export const useFileExplorerStore = create(
 
       deleteItems: async (ids) => {
         const tree = get().tree;
-        await Promise.all(ids.map(async (id) => {
+        const deletedIds = [];
+        const blockedMessages = [];
+        // Sequential so a link-protected item (409) blocks only itself, not the batch.
+        for (const id of ids) {
           const node = findById(tree, id);
-          if (node?.type === 'folder') {
-            await deleteFolder(id);
-          } else if (node?.type === 'file') {
-            await deleteDocument(id);
+          try {
+            if (node?.type === 'folder') {
+              await deleteFolder(id);
+            } else if (node?.type === 'file') {
+              await deleteDocument(id);
+            }
+            deletedIds.push(id);
+          } catch (err) {
+            const isLinkProtected =
+              err?.status === 409 || err?.payload?.code === 'FILE_LINKED';
+            if (isLinkProtected) {
+              // Never silently delete a linked file — keep it in the tree and warn.
+              blockedMessages.push(
+                err?.payload?.error ||
+                  err?.message ||
+                  'This item is linked to Key Reports. Unlink it first.'
+              );
+            } else {
+              throw err;
+            }
           }
-        }));
+        }
         set(s => ({
-          tree: removeByIds(s.tree, ids),
-          selectedItems: s.selectedItems.filter(i => !ids.includes(i)),
+          tree: removeByIds(s.tree, deletedIds),
+          selectedItems: s.selectedItems.filter(i => !deletedIds.includes(i)),
           contextMenu: null,
         }));
+        if (blockedMessages.length && typeof window !== 'undefined') {
+          window.alert([...new Set(blockedMessages)].join('\n'));
+        }
       },
 
       archiveItems: async (ids) => {

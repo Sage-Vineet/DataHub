@@ -349,9 +349,16 @@ async function unarchiveFolder(id) {
  * Deletes a folder
  */
 async function deleteFolder(id) {
+  // File-link protection: refuse to delete a folder whose subtree contains a
+  // document linked to a module (e.g. Key Reports). Throws FileLinkedError (409).
+  const { assertFolderDeletable } = require("./fileReferenceService");
+  await assertFolderDeletable(id);
+
   try {
     await pgQuery("DELETE FROM folders WHERE id=$1", [id]);
-  } catch {
+  } catch (err) {
+    // Preserve the 409 link-protection error instead of masking it as a delete fallback.
+    if (err && err.code === "FILE_LINKED") throw err;
     const { error } = await supabase.from("folders").delete().eq("id", id);
     if (error) throw error;
   }
