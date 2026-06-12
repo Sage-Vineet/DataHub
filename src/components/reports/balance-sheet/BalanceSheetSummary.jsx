@@ -4,8 +4,8 @@ import { cn, formatCurrency } from "../../../lib/utils";
 
 // ─── Utility Functions ──────────────────────────────────────────────────────
 
-// Shared US-standard formatter (comma thousands, period decimal,
-// "-" for null/empty, "0.00" for zero) lives in lib/utils.
+// Shared US-standard formatter (comma thousands, period decimal, parens for
+// negatives, "-" for zero/empty) lives in lib/utils. Alias kept for readability.
 const formatBSCurrency = formatCurrency;
 
 function calculateChange(current, previous) {

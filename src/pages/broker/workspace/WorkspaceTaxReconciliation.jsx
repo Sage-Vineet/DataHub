@@ -7,7 +7,7 @@ import {
   LoaderCircle,
   RefreshCw,
 } from "lucide-react";
-import { cn, formatNumber } from "../../../lib/utils";
+import { cn } from "../../../lib/utils";
 import {
   getCompanyRequest,
   getStoredToken,
@@ -110,7 +110,11 @@ function formatAmount(value) {
   if (value == null || value === "") return "-";
   const numericValue = Number(value);
   if (isNaN(numericValue) || numericValue === 0) return "-";
-  return formatNumber(numericValue, 0);
+  const abs = new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  }).format(Math.abs(numericValue));
+  return numericValue < 0 ? `(${abs})` : abs;
 }
 
 function getVarianceClass(value) {
@@ -667,9 +671,15 @@ export default function WorkspaceTaxReconciliation() {
   }, [selectedYears, accountingMethod, clientId, getHeaders, isManualGL, isManualMode, isQBManual, currentYear, selectedVersion]);
 
   // Key Reports tax return gate — validates that a tax return is linked before
-  // loading any reconciliation data. Fails open on API error to avoid blocking.
+  // loading any reconciliation data. For manual_upload and quickbooks_manual modes
+  // the backend now falls back to connection-page synced files, so the gate is
+  // bypassed; it only applies to QB Online where KR linking is the sole data path.
   useEffect(() => {
     if (!activeSource || !clientId) return;
+    if (isManualMode || isQBManual) {
+      setKrTaxGate({ status: "ok" });
+      return;
+    }
     let cancelled = false;
     setKrTaxGate({ status: "loading" });
     getActiveKeyReportMappings()
@@ -689,7 +699,7 @@ export default function WorkspaceTaxReconciliation() {
         if (!cancelled) setKrTaxGate({ status: "ok" }); // fail open
       });
     return () => { cancelled = true; };
-  }, [activeSource, clientId]);
+  }, [activeSource, clientId, isManualMode, isQBManual]);
 
   // Auto-load on first visit. In Manual GL mode, wait until the version is
   // resolved before loading — and include selectedVersion in the deps so this
