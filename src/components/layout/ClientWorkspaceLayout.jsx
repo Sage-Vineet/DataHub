@@ -397,7 +397,7 @@ function WorkspaceTopbar({ company, onMenuClick }) {
               </div>
 
               {/* Company info */}
-              <div className="hidden min-w-0 sm:block">
+              <div className="hidden min-w-0 flex-1 sm:block">
                 <p className="max-w-[160px] truncate text-[13px] font-semibold text-text-primary leading-tight">
                   {company.name}
                 </p>
@@ -420,7 +420,7 @@ function WorkspaceTopbar({ company, onMenuClick }) {
 
               <ChevronDown
                 size={14}
-                className={`flex-shrink-0 text-text-muted transition-transform duration-200 ${showSwitch ? 'rotate-180' : ''}`}
+                className={`ml-auto flex-shrink-0 text-text-muted transition-transform duration-200 ${showSwitch ? 'rotate-180' : ''}`}
               />
             </button>
 
