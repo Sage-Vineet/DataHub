@@ -938,6 +938,13 @@ export default function WorkspaceReconciliation() {
     }
   }, [clientId, getHeaders]);
 
+  const isManualUpload =
+    selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD;
+  const isManualGl = selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_GL;
+  const isQBManual =
+    selectedReportSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
+  const isQBOnline = selectedReportSource === REPORT_SOURCE_KEYS.QUICKBOOKS;
+
   // Key Reports bank statement gate — runs whenever the confirmed source changes.
   // QB Online uses live QB data and does not require a Key Reports bank statement.
   // All other sources (Manual GL, Manual Upload, QB Manual) need one linked in Key Reports.
@@ -1061,10 +1068,6 @@ export default function WorkspaceReconciliation() {
     return REPORT_SOURCE_OPTIONS.map((o) => ({ key: o.key, label: o.label }));
   }, [reportSources]);
 
-  const isManualUpload = selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD;
-  const isManualGl = selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_GL;
-  const isQBManual = selectedReportSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
-  const isQBOnline = selectedReportSource === REPORT_SOURCE_KEYS.QUICKBOOKS;
 
   const allPdfMonths = useMemo(
     () => (extractedBankPdfData?.months || []).map((m) => m.key).sort(),
