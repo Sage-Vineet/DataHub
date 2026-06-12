@@ -64,6 +64,36 @@ async function ensureEmailVerificationsTable() {
   }
 }
 
+async function ensureBrokerTeamInvitesTable() {
+  if (!process.env.DATABASE_URL) return;
+  const isLocal = process.env.DATABASE_URL.includes("localhost") ||
+                  process.env.DATABASE_URL.includes("127.0.0.1");
+  const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: isLocal ? false : { rejectUnauthorized: false },
+    connectionTimeoutMillis: 8000,
+    idleTimeoutMillis: 5000,
+  });
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS broker_team_invites (
+        id                uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+        team_owner_id     uuid        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        invited_broker_id uuid        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        invited_at        timestamptz NOT NULL DEFAULT now(),
+        UNIQUE (team_owner_id, invited_broker_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_bti_owner   ON broker_team_invites(team_owner_id);
+      CREATE INDEX IF NOT EXISTS idx_bti_invited ON broker_team_invites(invited_broker_id);
+    `);
+    console.log("[Startup] broker_team_invites table ready");
+  } catch (err) {
+    console.warn("[Startup] Could not auto-create broker_team_invites table:", err.message);
+  } finally {
+    await pool.end().catch(() => {});
+  }
+}
+
 (async () => {
   try {
     await db.ready;
@@ -76,6 +106,9 @@ async function ensureEmailVerificationsTable() {
       // Run background startup tasks — neither blocks the server.
       ensureEmailVerificationsTable().catch((err) =>
         console.warn("[Startup] email_verifications table init failed:", err.message)
+      );
+      ensureBrokerTeamInvitesTable().catch((err) =>
+        console.warn("[Startup] broker_team_invites table init failed:", err.message)
       );
       checkEmailHealth().catch((err) =>
         console.warn("[Startup] Email health check threw:", err.message)

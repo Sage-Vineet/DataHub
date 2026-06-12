@@ -9,6 +9,8 @@ import { useAuth } from '../../context/AuthContext';
 import {
   createUserRequest, deleteUserRequest, listCompaniesRequest,
   listUsersRequest, updateUserRequest, triggerAutoCreateMessageGroups,
+  findUserByEmailRequest, addUserToCompaniesRequest,
+  inviteBrokerToTeamRequest, removeBrokerFromTeamRequest,
 } from '../../lib/api';
 import {
   SUB_ROLE, BROKER_SUB_ROLES, CLIENT_SUB_ROLES, BUYER_SUB_ROLES,
@@ -74,6 +76,8 @@ function normalizeUser(u) {
     joinedAt: u.created_at,
     avatar: initials(u.name || ''),
     meta: getRoleMeta({ ...u, sub_role: sub }),
+    // Broker team invite flag: true = added via explicit invite, remove-only (no account delete)
+    is_team_invite: u.is_team_invite === true,
   };
 }
 
@@ -123,7 +127,11 @@ function FormError({ message }) {
 
 // ─── User card (used in team detail view) ─────────────────────────────────────
 
-function UserCard({ user, onEdit, onDelete }) {
+function UserCard({ user, onEdit, onDelete, onRemoveFromTeam }) {
+  // is_team_invite users were added via broker-team invite (not company assignment).
+  // They get "Remove from Team" (relationship-only) instead of "Delete" (account deletion).
+  const showRemove = user.is_team_invite && onRemoveFromTeam;
+
   return (
     <div className="bg-white rounded-2xl border border-gray-100 p-4 shadow-sm hover:shadow-md transition-shadow">
       <div className="flex items-start justify-between gap-3">
@@ -132,8 +140,13 @@ function UserCard({ user, onEdit, onDelete }) {
           <div>
             <p className="font-semibold text-[#05164D] text-sm">{user.name}</p>
             {user.designation && <p className="text-xs text-gray-400">{user.designation}</p>}
-            <div className="mt-1">
+            <div className="mt-1 flex items-center gap-1.5 flex-wrap">
               <RoleBadge subRole={user.sub_role} />
+              {user.is_team_invite && (
+                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-50 text-amber-600 border border-amber-200">
+                  Invited
+                </span>
+              )}
             </div>
           </div>
         </div>
@@ -164,18 +177,29 @@ function UserCard({ user, onEdit, onDelete }) {
       </div>
 
       <div className="mt-3 pt-3 border-t border-gray-100 flex items-center gap-2">
-        <button
-          onClick={() => onEdit(user)}
-          className="flex-1 py-1.5 rounded-lg border border-gray-200 text-xs font-semibold text-gray-600 hover:bg-gray-50 flex items-center justify-center gap-1 transition-colors"
-        >
-          <Pencil size={12} /> Edit
-        </button>
-        <button
-          onClick={() => onDelete(user)}
-          className="flex-1 py-1.5 rounded-lg border border-red-100 text-xs font-semibold text-red-500 hover:bg-red-50 flex items-center justify-center gap-1 transition-colors"
-        >
-          <Trash2 size={12} /> Delete
-        </button>
+        {!showRemove && (
+          <button
+            onClick={() => onEdit(user)}
+            className="flex-1 py-1.5 rounded-lg border border-gray-200 text-xs font-semibold text-gray-600 hover:bg-gray-50 flex items-center justify-center gap-1 transition-colors"
+          >
+            <Pencil size={12} /> Edit
+          </button>
+        )}
+        {showRemove ? (
+          <button
+            onClick={() => onRemoveFromTeam(user)}
+            className="w-full py-1.5 rounded-lg border border-orange-100 text-xs font-semibold text-orange-500 hover:bg-orange-50 flex items-center justify-center gap-1 transition-colors"
+          >
+            <X size={12} /> Remove from Team
+          </button>
+        ) : (
+          <button
+            onClick={() => onDelete(user)}
+            className="flex-1 py-1.5 rounded-lg border border-red-100 text-xs font-semibold text-red-500 hover:bg-red-50 flex items-center justify-center gap-1 transition-colors"
+          >
+            <Trash2 size={12} /> Delete
+          </button>
+        )}
       </div>
     </div>
   );
@@ -600,6 +624,157 @@ function UserFormModal({ initial, companies, roleOptions, dbRole, onSave, onClos
   );
 }
 
+// ─── Existing-user confirmation modal (Features 2 & 3) ────────────────────────
+
+const CONTEXT_META = {
+  broker:       { title: 'Broker Already Exists',  label: 'broker',  verb: 'Add to Broker Team' },
+  client:       { title: 'Client Already Exists',  label: 'client',  verb: 'Add Existing Account' },
+  buyer:        { title: 'Buyer Already Exists',   label: 'buyer',   verb: 'Add Existing Account' },
+  'buyer-member': { title: 'Buyer Already Exists', label: 'buyer',   verb: 'Add Existing Account' },
+};
+
+function ExistingUserConfirmModal({ foundUser, context, companyNames, onConfirm, onClose, submitting }) {
+  const meta = CONTEXT_META[context] || CONTEXT_META.client;
+  const detail = (context === 'buyer' || context === 'buyer-member') && foundUser.buyer_company_name
+    ? `${foundUser.name} (${foundUser.buyer_company_name})`
+    : foundUser.name;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-white/30 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 z-10 animate-fadeIn">
+        <div className="flex items-center justify-center w-14 h-14 rounded-full bg-blue-50 mx-auto mb-4">
+          <UsersIcon size={24} className="text-[#00648F]" />
+        </div>
+        <h3 className="text-center text-base font-bold text-[#05164D] mb-2">{meta.title}</h3>
+        <p className="text-center text-sm text-gray-500 mb-1">
+          This email is already linked to a {meta.label}:
+        </p>
+        <p className="text-center text-sm font-semibold text-[#05164D] mb-4">{detail}</p>
+        {companyNames?.length > 0 && (
+          <p className="text-center text-xs text-gray-400 mb-4">
+            They will be added to: {companyNames.join(', ')}
+          </p>
+        )}
+        <p className="text-center text-xs text-gray-400 mb-5">
+          Would you like to add this existing account to your team?
+        </p>
+        <div className="flex gap-3">
+          <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-gray-600 hover:bg-gray-50">
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={submitting}
+            className="flex-1 py-2.5 rounded-xl bg-[#8BC53D] hover:bg-[#476E2C] text-white text-sm font-bold disabled:opacity-50 transition-colors"
+          >
+            {submitting ? 'Adding...' : meta.verb}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Invite existing broker modal (Feature 1) ─────────────────────────────────
+
+function InviteBrokerModal({ onConfirm, onClose, submitting }) {
+  const [email, setEmail] = useState('');
+  const [foundUser, setFoundUser] = useState(null);
+  const [lookupError, setLookupError] = useState('');
+  const [looking, setLooking] = useState(false);
+
+  const handleLookup = async () => {
+    const trimmed = email.trim();
+    if (!isValidEmail(trimmed)) { setLookupError('Enter a valid email address.'); return; }
+    setLooking(true);
+    setLookupError('');
+    setFoundUser(null);
+    try {
+      const user = await findUserByEmailRequest(trimmed);
+      if (!user?.id) { setLookupError('No account found with this email.'); return; }
+      if (!BROKER_SUB_ROLES.includes(user.sub_role) && user.role !== 'broker' && user.role !== 'admin') {
+        setLookupError('This email is registered but is not a broker account.');
+        return;
+      }
+      setFoundUser(user);
+    } catch (err) {
+      setLookupError(err?.message?.includes('not found') || err?.status === 404
+        ? 'No account found with this email.'
+        : (err?.message || 'Lookup failed. Please try again.'));
+    } finally {
+      setLooking(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-white/30 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 z-10 animate-fadeIn">
+        <div className="flex items-center justify-between mb-5">
+          <h3 className="text-base font-bold text-[#05164D]">Add Existing Broker</h3>
+          <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-gray-100 flex items-center justify-center text-gray-400">
+            <X size={16} />
+          </button>
+        </div>
+
+        <p className="text-xs text-gray-500 mb-4">
+          Enter the email of a broker who already has an account on the platform to invite them to your team.
+        </p>
+
+        <div className="flex gap-2 mb-3">
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => { setEmail(e.target.value); setLookupError(''); setFoundUser(null); }}
+            onKeyDown={(e) => e.key === 'Enter' && handleLookup()}
+            placeholder="broker@company.com"
+            className="flex-1 px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]"
+          />
+          <button
+            onClick={handleLookup}
+            disabled={looking}
+            className="px-4 py-2.5 rounded-xl bg-[#05164D] hover:bg-[#0a2470] text-white text-sm font-semibold disabled:opacity-50 transition-colors"
+          >
+            {looking ? '...' : 'Find'}
+          </button>
+        </div>
+
+        {lookupError && (
+          <div className="mb-3 flex items-start gap-2 rounded-xl border border-red-100 bg-red-50 px-3 py-2.5">
+            <AlertCircle size={14} className="text-[#C62026] flex-shrink-0 mt-0.5" />
+            <p className="text-xs text-[#C62026]">{lookupError}</p>
+          </div>
+        )}
+
+        {foundUser && (
+          <div className="mb-4 rounded-xl border border-[#8BC53D]/40 bg-[#F4FBE8] px-4 py-3 flex items-center gap-3">
+            <Avatar name={foundUser.name} size={40} />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-[#05164D] truncate">{foundUser.name}</p>
+              <p className="text-xs text-gray-500 truncate">{foundUser.email}</p>
+              {foundUser.designation && <p className="text-xs text-gray-400">{foundUser.designation}</p>}
+            </div>
+          </div>
+        )}
+
+        <div className="flex gap-3 mt-2">
+          <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-gray-600 hover:bg-gray-50">
+            Cancel
+          </button>
+          <button
+            onClick={() => foundUser && onConfirm(foundUser)}
+            disabled={!foundUser || submitting}
+            className="flex-1 py-2.5 rounded-xl bg-[#8BC53D] hover:bg-[#476E2C] text-white text-sm font-bold disabled:opacity-50 transition-colors"
+          >
+            {submitting ? 'Adding...' : 'Add to Team'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Delete modal ─────────────────────────────────────────────────────────────
 
 function DeleteModal({ user, onConfirm, onClose, submitting, error }) {
@@ -628,7 +803,7 @@ function DeleteModal({ user, onConfirm, onClose, submitting, error }) {
 
 // ─── Team detail view ─────────────────────────────────────────────────────────
 
-function TeamDetailView({ title, users, subRoles, onBack, onAdd, onEdit, onDelete }) {
+function TeamDetailView({ title, users, subRoles, onBack, onAdd, onEdit, onDelete, isBrokerTeam, onInviteExisting, onRemoveFromTeam }) {
   const [search, setSearch] = useState('');
   const filtered = users.filter((u) =>
     subRoles.includes(u.sub_role) &&
@@ -637,7 +812,7 @@ function TeamDetailView({ title, users, subRoles, onBack, onAdd, onEdit, onDelet
 
   return (
     <div className="space-y-6 animate-fadeIn">
-      <div className="flex items-center gap-4">
+      <div className="flex items-center gap-4 flex-wrap">
         <button onClick={onBack} className="w-9 h-9 rounded-xl border border-gray-200 flex items-center justify-center text-gray-500 hover:bg-gray-50">
           <ArrowLeft size={16} />
         </button>
@@ -645,7 +820,15 @@ function TeamDetailView({ title, users, subRoles, onBack, onAdd, onEdit, onDelet
           <h2 className="text-xl font-bold text-[#05164D]">{title}</h2>
           <p className="text-sm text-gray-500">{filtered.length} member{filtered.length !== 1 ? 's' : ''}</p>
         </div>
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-2">
+          {isBrokerTeam && (
+            <button
+              onClick={onInviteExisting}
+              className="inline-flex items-center gap-2 px-4 py-2 border border-[#b45e08] text-[#b45e08] hover:bg-[#FFF5EC] rounded-xl text-sm font-bold transition-colors"
+            >
+              <Mail size={15} /> Add Existing Broker
+            </button>
+          )}
           <button onClick={onAdd} className="inline-flex items-center gap-2 px-4 py-2 bg-[#8BC53D] hover:bg-[#476E2C] text-white rounded-xl text-sm font-bold transition-colors">
             <Plus size={15} /> Add Member
           </button>
@@ -666,7 +849,13 @@ function TeamDetailView({ title, users, subRoles, onBack, onAdd, onEdit, onDelet
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
           {filtered.map((u) => (
-            <UserCard key={u.id} user={u} onEdit={onEdit} onDelete={onDelete} />
+            <UserCard
+              key={u.id}
+              user={u}
+              onEdit={onEdit}
+              onDelete={onDelete}
+              onRemoveFromTeam={isBrokerTeam ? onRemoveFromTeam : undefined}
+            />
           ))}
         </div>
       )}
@@ -748,6 +937,12 @@ export default function BrokerUsers() {
   // What role context to open "Add User" in
   const [addContext, setAddContext] = useState(null); // 'broker' | 'client' | 'buyer' | 'buyer-member'
 
+  // Existing-user confirmation (Features 2 & 3)
+  const [existingUserConfirm, setExistingUserConfirm] = useState(null); // { user, companyIds, context }
+
+  // Broker invite modal (Feature 1)
+  const [brokerInviteOpen, setBrokerInviteOpen] = useState(false);
+
   const loadData = async () => {
     setLoading(true);
     setError('');
@@ -824,6 +1019,7 @@ export default function BrokerUsers() {
     setFormError('');
     try {
       const dbRole = dbRoleMap[addContext] || 'buyer';
+      const companyIds = Array.from(new Set([form.companyId, ...(form.companyIds || [])].filter(Boolean)));
       const payload = {
         name: form.name.trim(),
         email: form.email.trim(),
@@ -835,7 +1031,7 @@ export default function BrokerUsers() {
         buyer_company_name: form.buyer_company_name?.trim() || null,
         parent_user_id: form.parent_user_id || null,
         company_id: form.companyId || null,
-        company_ids: Array.from(new Set([form.companyId, ...(form.companyIds || [])].filter(Boolean))),
+        company_ids: companyIds,
         status: 'active',
       };
       const created = await createUserRequest(payload);
@@ -865,6 +1061,71 @@ export default function BrokerUsers() {
       setEditUser(null);
       setAddContext(null);
       setSuccess('User created successfully.');
+    } catch (err) {
+      const isDuplicate = /duplicate|already exists|unique constraint|email.*taken/i.test(String(err?.message || ''));
+      if (isDuplicate) {
+        try {
+          const existing = await findUserByEmailRequest(form.email.trim());
+          if (existing?.id) {
+            // Determine which sub-role groups are compatible with the current add context
+            const compatibleSubRoles = {
+              broker:         BROKER_SUB_ROLES,
+              client:         CLIENT_SUB_ROLES,
+              buyer:          BUYER_SUB_ROLES,
+              'buyer-member': BUYER_SUB_ROLES,
+            }[addContext] || [];
+
+            const existingSub = existing.sub_role || '';
+            const existingRole = String(existing.role || '').toLowerCase();
+
+            // Broker context also accepts users with role=broker/admin but no sub_role yet
+            const brokerRoleMatch = addContext === 'broker' &&
+              (existingRole === 'broker' || existingRole === 'admin');
+
+            const isCompatible = compatibleSubRoles.includes(existingSub) || brokerRoleMatch;
+
+            if (!isCompatible) {
+              // Cross-role: figure out what type this user actually is for the error message
+              let existingType = 'a different role type';
+              if (BROKER_SUB_ROLES.includes(existingSub) || existingRole === 'broker') existingType = 'a broker';
+              else if (CLIENT_SUB_ROLES.includes(existingSub)) existingType = 'a client';
+              else if (BUYER_SUB_ROLES.includes(existingSub)) existingType = 'a buyer';
+              setFormError(`This email is already registered as ${existingType} and cannot be added here.`);
+              return;
+            }
+
+            const companyIds = Array.from(new Set([form.companyId, ...(form.companyIds || [])].filter(Boolean)));
+            setExistingUserConfirm({ user: existing, companyIds, context: addContext });
+            return;
+          }
+        } catch (lookupErr) {
+          console.warn('[duplicate-check] user lookup failed:', lookupErr?.message);
+        }
+      }
+      setFormError(formatApiError(err));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleAddExisting = async () => {
+    if (!existingUserConfirm) return;
+    setSubmitting(true);
+    const { user: existingUser, companyIds, context } = existingUserConfirm;
+    try {
+      if (context === 'broker') {
+        // Feature 1: broker invite — relationship record only, no company changes
+        await inviteBrokerToTeamRequest(existingUser.id);
+      } else {
+        // Features 2 & 3: client/buyer — add to user_companies (correct relational approach)
+        await addUserToCompaniesRequest(existingUser.id, companyIds);
+        await Promise.allSettled(companyIds.map((cid) => triggerAutoCreateMessageGroups(cid)));
+      }
+      await loadData();
+      setExistingUserConfirm(null);
+      setEditUser(null);
+      setAddContext(null);
+      setSuccess(`${existingUser.name} has been added to your team.`);
     } catch (err) {
       setFormError(formatApiError(err));
     } finally {
@@ -909,6 +1170,35 @@ export default function BrokerUsers() {
       setSuccess('User deleted.');
     } catch (err) {
       setDeleteError(err.message || 'Unable to delete user.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleBrokerInvite = async (foundUser) => {
+    setSubmitting(true);
+    try {
+      // Feature 1: creates a broker_team_invites record — does NOT touch company associations
+      await inviteBrokerToTeamRequest(foundUser.id);
+      await loadData();
+      setBrokerInviteOpen(false);
+      setSuccess(`${foundUser.name} has been added to your broker team.`);
+    } catch (err) {
+      setFormError(formatApiError(err));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleRemoveFromTeam = async (user) => {
+    setSubmitting(true);
+    try {
+      // Deletes the broker_team_invites record only — account and company assignments untouched
+      await removeBrokerFromTeamRequest(user.id);
+      await loadData();
+      setSuccess(`${user.name} has been removed from your broker team.`);
+    } catch (err) {
+      setError(err.message || 'Unable to remove broker from team.');
     } finally {
       setSubmitting(false);
     }
@@ -1027,6 +1317,9 @@ export default function BrokerUsers() {
           onAdd={() => openAdd('broker')}
           onEdit={openEdit}
           onDelete={(u) => { setDeleteError(''); setDeleteUser(u); }}
+          isBrokerTeam
+          onInviteExisting={() => setBrokerInviteOpen(true)}
+          onRemoveFromTeam={handleRemoveFromTeam}
         />
       )}
 
@@ -1056,7 +1349,7 @@ export default function BrokerUsers() {
       )}
 
       {/* ── Modals ── */}
-      {editUser && (
+      {editUser && !existingUserConfirm && (
         <UserFormModal
           initial={editUser}
           companies={companies}
@@ -1068,6 +1361,25 @@ export default function BrokerUsers() {
           error={formError}
           showTeamMembers={!editUser?.id && (addContext === 'buyer' || addContext === 'client')}
           teamMemberRoleOptions={teamMemberRoleOptions}
+        />
+      )}
+
+      {existingUserConfirm && (
+        <ExistingUserConfirmModal
+          foundUser={existingUserConfirm.user}
+          context={existingUserConfirm.context}
+          companyNames={companies.filter((c) => existingUserConfirm.companyIds.some((id) => String(id) === String(c.id))).map((c) => c.name)}
+          onConfirm={handleAddExisting}
+          onClose={() => setExistingUserConfirm(null)}
+          submitting={submitting}
+        />
+      )}
+
+      {brokerInviteOpen && (
+        <InviteBrokerModal
+          onConfirm={handleBrokerInvite}
+          onClose={() => setBrokerInviteOpen(false)}
+          submitting={submitting}
         />
       )}
 

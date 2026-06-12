@@ -162,14 +162,34 @@ async function authenticate(email, password) {
     }
   } else {
     // Standard credential check for all other users / passwords.
-    const { data: authData } = await supabase
-      .from("users")
-      .select("password_hash")
-      .eq("id", user.id)
-      .single();
+    // password_hash is already present when the Postgres fallback was used
+    // inside getUserByEmail. Only query Supabase when it's absent, and fall
+    // back to a direct Postgres query if Supabase is unavailable.
+    let storedPassword = user.password_hash || null;
 
-    const storedPassword = authData?.password_hash;
-    let ok = rawPassword === storedPassword;
+    if (!storedPassword) {
+      const { data: authData } = await supabase
+        .from("users")
+        .select("password_hash")
+        .eq("id", user.id)
+        .single();
+      storedPassword = authData?.password_hash || null;
+    }
+
+    if (!storedPassword) {
+      const pool = getAuthPool();
+      if (pool) {
+        try {
+          const { rows } = await pool.query(
+            "SELECT password_hash FROM users WHERE id = $1 LIMIT 1",
+            [user.id],
+          );
+          storedPassword = rows[0]?.password_hash || null;
+        } catch { /* ignore — will throw Invalid credentials below */ }
+      }
+    }
+
+    let ok = storedPassword ? rawPassword === storedPassword : false;
 
     if (storedPassword && /^\$2[aby]\$/.test(storedPassword)) {
       try {

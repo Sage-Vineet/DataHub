@@ -26,15 +26,24 @@ function canAccessCompany(user, companyId) {
   return normalizeCompanyIds(user).includes(String(companyId));
 }
 
+// Returns true when a client-portal user should only see requests assigned to them.
+// company_owner sees everything; team_member and accountant see only their requests.
+function isClientTeamRestricted(user) {
+  const sub = user?.sub_role || "";
+  return sub === "client_team_member" || sub === "client_accountant";
+}
+
 function canAccessRequest(user, request) {
   if (!user || !request) return false;
   if (!canAccessCompany(user, request.company_id)) return false;
   if (isBroker(user)) return true;
-  
+
   if (user?.effective_role === "client") {
-    return request.approval_status === "approved" && request.visible !== false && request.visible !== 0;
+    if (request.approval_status !== "approved" || request.visible === false || request.visible === 0) return false;
+    if (!isClientTeamRestricted(user)) return true;
+    return !request.assigned_to || String(request.assigned_to) === String(user.id);
   }
-  
+
   return request.approval_status === "approved" || String(request.created_by) === String(user.id);
 }
 
@@ -46,9 +55,12 @@ function filterRequestsForUser(user, requests) {
   }
 
   if (user?.effective_role === "client") {
-    return requests.filter(
-      (request) => request.approval_status === "approved" && request.visible !== false && request.visible !== 0,
-    );
+    const restricted = isClientTeamRestricted(user);
+    return requests.filter((request) => {
+      if (request.approval_status !== "approved" || request.visible === false || request.visible === 0) return false;
+      if (!restricted) return true;
+      return !request.assigned_to || String(request.assigned_to) === String(user.id);
+    });
   }
 
   return requests.filter(
