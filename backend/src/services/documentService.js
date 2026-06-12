@@ -96,8 +96,8 @@ function ensureActivityTable() {
   return _activityTableReady;
 }
 
-// Kick off at module load — non-blocking.
-ensureActivityTable();
+// Note: ensureActivityTable() is called lazily inside recordDocumentActivity()
+// and getDocumentActivity() — no eager init needed at module load.
 
 /**
  * Lists all documents in a folder
@@ -147,53 +147,6 @@ async function getDocumentById(id) {
  * Creates a new document
  */
 async function createDocument(docData) {
-  const { data, error } = await supabase
-    .from("documents")
-    .insert({
-      company_id: docData.company_id,
-      folder_id: docData.folder_id,
-      name: docData.name,
-      file_url: docData.file_url,
-      upload_id: docData.upload_id || null,
-      size: docData.size,
-      ext: docData.ext,
-      status: docData.status,
-      uploaded_by: docData.uploaded_by
-    })
-    .select("*")
-    .single();
-
-  if (error) throw error;
-  return data;
-}
-
-/**
- * Deletes a document and its associated upload if no other documents reference it
- */
-async function deleteDocument(id) {
-  const { data: document, error: findError } = await supabase
-    .from("documents")
-    .select("upload_id")
-    .eq("id", id)
-    .maybeSingle();
-
-  if (findError) throw findError;
-  if (!document) return;
-
-  await supabase.from("documents").delete().eq("id", id);
-
-  if (document.upload_id) {
-    const { data: linked } = await supabase
-      .from("documents")
-      .select("*")
-      .eq("folder_id", folderId)
-      .order("uploaded_at", { ascending: false });
-    if (error) throw error;
-    return data || [];
-  }
-}
-
-async function createDocument(docData) {
   try {
     const rows = await pgQuery(
       `INSERT INTO documents (company_id, folder_id, name, file_url, upload_id, size, ext, status, uploaded_by)
@@ -233,6 +186,11 @@ async function createDocument(docData) {
 }
 
 async function deleteDocument(id) {
+  // File-link protection: refuse to delete a document that is linked to a
+  // module (e.g. Key Reports). Throws FileLinkedError (409) — unlink first.
+  const { assertDocumentDeletable } = require("./fileReferenceService");
+  await assertDocumentDeletable(id);
+
   let uploadId = null;
 
   try {
@@ -331,7 +289,7 @@ async function validateUpload(uploadId) {
 async function recordDocumentActivity(documentId, userId, activityType) {
   // Best-effort table init — if it fails we still try the insert so the error
   // message is descriptive rather than "table does not exist".
-  await ensureActivityTable().catch(() => {});
+  await ensureActivityTable().catch(() => { });
 
   const pool = getPool();
   if (pool) {

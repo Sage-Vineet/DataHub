@@ -21,11 +21,13 @@ import {
   MessageSquare,
   Calculator,
   FileCheck,
+  FileText,
   Target,
 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 import { useMessageNotifications } from "../../context/MessageNotificationsContext";
 import { listCompaniesRequest } from "../../lib/api";
+import { getProfitMetricConfig } from "../../lib/profitMetric";
 import MessageNotificationsMenu from "./MessageNotificationsMenu";
 import datahublogo from "../../assets/datahublogo.png";
 import ActiveSourceIndicator from "../common/ActiveSourceIndicator";
@@ -43,7 +45,6 @@ function companyLogo(name = "") {
 function WorkspaceSidebar({ company, onClose }) {
   const { clientId } = useParams();
   const navigate = useNavigate();
-  const location = useLocation();
   const { user, logout } = useAuth();
   const { notifications } = useMessageNotifications();
   const [showUserMenu, setShowUserMenu] = useState(false);
@@ -59,22 +60,25 @@ function WorkspaceSidebar({ company, onClose }) {
     if (showUserMenu) document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [showUserMenu]);
+
   const basePath = `/broker/client/${clientId}`;
   const allNav = [
-    { label: "Deal Tracker",        icon: Target,        to: `${basePath}/dataroom/deal-tracker` },
-    { label: "Deal Team",           icon: Users,         to: `${basePath}/dataroom/users` },
-    { label: "Requests",            icon: ClipboardList, to: `${basePath}/dataroom/requests` },
-    { label: "Documents",           icon: FolderOpen,    to: `${basePath}/dataroom/documents` },
-    { label: "Messages",            icon: MessageSquare, to: `${basePath}/dataroom/messages` },
-    { label: "Reminders",           icon: Bell,          to: `${basePath}/dataroom/reminders` },
-    { label: "Analytics",           icon: TrendingUp,    to: `${basePath}/analytics` },
-    { label: "Invoices",            icon: Receipt,       to: `${basePath}/invoices` },
-    { label: "Reports",             icon: BarChart3,     to: `${basePath}/reports` },
-    { label: "EBITDA Calculation",  icon: Calculator,    to: `${basePath}/ebitda` },
-    { label: "Bank Reconciliation", icon: Scale,         to: `${basePath}/reconciliation` },
-    { label: "Tax Reconciliation",  icon: FileCheck,     to: `${basePath}/tax-reconciliation` },
-    { label: "Connections",         icon: Link2,         to: `${basePath}/connections` },
+    { label: "Deal Tracker", icon: Target, to: `${basePath}/dataroom/deal-tracker` },
+    { label: "Deal Team", icon: Users, to: `${basePath}/dataroom/users` },
+    { label: "Requests", icon: ClipboardList, to: `${basePath}/dataroom/requests` },
+    { label: "Documents", icon: FolderOpen, to: `${basePath}/dataroom/documents` },
+    { label: "Key Reports", icon: FileText, to: `${basePath}/dataroom/key-reports` },
+    { label: "Messages", icon: MessageSquare, to: `${basePath}/dataroom/messages` },
+    { label: "Reminders", icon: Bell, to: `${basePath}/dataroom/reminders` },
+    { label: "Analytics", icon: TrendingUp, to: `${basePath}/analytics` },
+    { label: "Invoices", icon: Receipt, to: `${basePath}/invoices` },
+    { label: "Reports", icon: BarChart3, to: `${basePath}/reports` },
+    { label: "EBITDA Calculation", icon: Calculator, to: `${basePath}/ebitda` },
+    { label: "Bank Reconciliation", icon: Scale, to: `${basePath}/reconciliation` },
+    { label: "Tax Reconciliation", icon: FileCheck, to: `${basePath}/tax-reconciliation` },
+    { label: "Connections", icon: Link2, to: `${basePath}/connections` },
   ];
+
   const companyMessageCount = notifications.filter((item) => String(item.companyId) === String(clientId)).length;
 
   return (

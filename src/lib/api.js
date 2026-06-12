@@ -518,6 +518,66 @@ export async function fetchProtectedFileBlob(fileUrl, options = {}) {
   return response.blob();
 }
 
+function buildEbitdaAdjustmentScopeParams(options = {}) {
+  const params = new URLSearchParams();
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  if (clientId) params.set("clientId", clientId);
+
+  const fields = [
+    ["versionId", options.versionId],
+    ["sourceKey", options.sourceKey],
+    ["datasetVersionId", options.datasetVersionId],
+    ["uploadBatchId", options.uploadBatchId],
+  ];
+
+  fields.forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    params.set(key, String(value));
+  });
+
+  return params.toString();
+}
+
+export function listEbitdaAdjustmentTypes(options = {}) {
+  const query = buildEbitdaAdjustmentScopeParams(options);
+  return request(`/ebitda-adjustment-types${query ? `?${query}` : ""}`, options).then(
+    (payload) => payload?.types || [],
+  );
+}
+
+export function listEbitdaAdjustments(options = {}) {
+  const query = buildEbitdaAdjustmentScopeParams(options);
+  return request(`/ebitda-adjustments${query ? `?${query}` : ""}`, options).then(
+    (payload) => payload?.adjustments || [],
+  );
+}
+
+export function saveEbitdaAdjustmentsBatch(payload, options = {}) {
+  const query = buildEbitdaAdjustmentScopeParams(options);
+  return request(`/ebitda-adjustments/batch${query ? `?${query}` : ""}`, {
+    method: "POST",
+    body: payload,
+    ...options,
+  });
+}
+
+export function deleteEbitdaAdjustment(adjustmentId, options = {}) {
+  const query = buildEbitdaAdjustmentScopeParams(options);
+  return request(`/ebitda-adjustments/${encodeURIComponent(adjustmentId)}${query ? `?${query}` : ""}`, {
+    method: "DELETE",
+    ...options,
+  });
+}
+
+export function addEbitdaAdjustmentComment(adjustmentId, payload, options = {}) {
+  const query = buildEbitdaAdjustmentScopeParams(options);
+  return request(`/ebitda-adjustments/${encodeURIComponent(adjustmentId)}/comments${query ? `?${query}` : ""}`, {
+    method: "POST",
+    body: payload,
+    ...options,
+  }).then((res) => res?.comment || res);
+}
+
 export function listManualGlUploads(options = {}) {
   const clientId = options.clientId ?? resolveClientIdFromLocation();
   const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
@@ -1274,6 +1334,79 @@ export function recordDocumentActivity(documentId, activityType) {
 
 export function listDocumentActivity(documentId) {
   return request(`/documents/${documentId}/activity`).then(ensureArray);
+}
+
+// ---- Key Reports -----------------------------------------------------------
+// The X-Client-Id header is attached automatically from the workspace URL.
+
+export function getKeyReportVersions() {
+  return request('/key-reports/versions');
+}
+
+export function createKeyReportVersion(companyId, payload = {}) {
+  return request('/key-reports/versions', {
+    method: 'POST',
+    body: { companyId, ...payload },
+  });
+}
+
+export function getKeyReportVersion(versionId) {
+  return request(`/key-reports/versions/${versionId}`);
+}
+
+export function updateKeyReportVersion(versionId, payload) {
+  return request(`/key-reports/versions/${versionId}`, { method: 'PUT', body: payload });
+}
+
+export function duplicateKeyReportVersion(versionId, payload = {}) {
+  return request(`/key-reports/versions/${versionId}/duplicate`, { method: 'POST', body: payload });
+}
+
+export function activateKeyReportVersion(versionId) {
+  return request(`/key-reports/versions/${versionId}/activate`, { method: 'POST', body: {} });
+}
+
+export function deleteKeyReportVersion(versionId) {
+  return request(`/key-reports/versions/${versionId}`, { method: 'DELETE' });
+}
+
+export function addKeyReportMapping(versionId, payload) {
+  return request(`/key-reports/versions/${versionId}/mappings`, { method: 'POST', body: payload });
+}
+
+export function removeKeyReportMapping(mappingId) {
+  return request(`/key-reports/mappings/${mappingId}`, { method: 'DELETE' });
+}
+
+export function syncKeyReportVersion(versionId) {
+  return request(`/key-reports/versions/${versionId}/sync`, { method: 'POST', body: {} });
+}
+
+export async function getActiveKeyReportMappings() {
+  const res = await getKeyReportVersions();
+  const versions = res?.versions || [];
+  const active = versions.find(v => v.isActive) || versions[0];
+  if (!active?.id) return null;
+  const detail = await getKeyReportVersion(active.id);
+  return detail?.mappingsByCategory || null;
+}
+
+export function getKeyReportSyncLogs(versionId) {
+  return request(`/key-reports/versions/${versionId}/sync-logs`);
+}
+
+export function getKeyReportFileReferences(documentIds = []) {
+  const ids = (Array.isArray(documentIds) ? documentIds : [documentIds]).filter(Boolean);
+  const qs = ids.length ? `?documentIds=${encodeURIComponent(ids.join(','))}` : '';
+  return request(`/key-reports/file-references${qs}`);
+}
+
+export function getKeyReportPopupPreference() {
+  return request('/key-reports/popup-preference');
+}
+
+export function setKeyReportPopupPreference(dismissed) {
+  return request('/key-reports/popup-preference', { method: 'PUT', body: { dismissed } });
 }
 
 export function listFolderAccess(folderId) {
