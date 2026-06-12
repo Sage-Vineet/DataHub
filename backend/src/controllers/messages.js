@@ -69,7 +69,7 @@ async function getBrokerParticipantsByIds(company, brokerIds) {
 
   const { data, error } = await supabase
     .from("users")
-    .select("id, name, email, role, status")
+    .select("id, name, email, role, sub_role, status")
     .in("id", uniqueBrokerIds)
     .eq("status", "active");
 
@@ -368,7 +368,7 @@ async function getCompanyParticipants(company) {
     supabase
       .from("users")
       .select(`
-        id, name, email, role, status, company_id,
+        id, name, email, role, sub_role, status, company_id,
         user_companies!left(company_id)
       `)
       .eq("status", "active")
@@ -394,7 +394,7 @@ async function getCompanyBuyerParticipants(company) {
   // Instead: two separate queries that work without schema relationships.
   const { data: users, error } = await supabase
     .from("users")
-    .select("id, name, email, role, status, company_id")
+    .select("id, name, email, role, sub_role, status, company_id")
     .eq("status", "active")
     .in("role", ["buyer", "client"])
     .order("name", { ascending: true });
