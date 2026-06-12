@@ -12,9 +12,9 @@
  * Resend free tier: 3 000 emails/month · sign up at https://resend.com
  */
 
-const nodemailer = require("nodemailer");
-const axios      = require("axios");
-const dns        = require("dns");
+const nodemailer  = require("nodemailer");
+const { Resend }  = require("resend");
+const dns         = require("dns");
 const { promisify } = require("util");
 
 const dnsLookup = promisify(dns.lookup);
@@ -91,18 +91,20 @@ async function _buildTransporter(host, port, secure) {
 
 async function _sendViaResend(to, subject, html, text) {
   console.log(`[Email Service] Trying Resend API for <${to}>`);
-  const response = await axios.post(
-    "https://api.resend.com/emails",
-    { from: _from(), to: [to], subject, html, text },
-    {
-      headers: {
-        Authorization:  `Bearer ${process.env.RESEND_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      timeout: 15000,
-    }
-  );
-  return response.data; // { id: "..." }
+  const client = new Resend(process.env.RESEND_API_KEY);
+  const { data, error } = await client.emails.send({
+    from: _from(),
+    to:   [to],
+    subject,
+    html,
+    text,
+  });
+  if (error) {
+    const err = new Error(error.message || "Resend API error");
+    err.statusCode = error.statusCode;
+    throw err;
+  }
+  return { id: data.id };
 }
 
 // ── SMTP sender with per-port retry ──────────────────────────────────────────
@@ -198,21 +200,22 @@ async function checkEmailHealth() {
   console.log(`[EMAIL HEALTH CHECK] SMTP configured: ${isSmtpConfigured()}`);
 
   if (isResendConfigured()) {
-    // Verify Resend key by calling the /domains endpoint (read-only, no email sent)
+    // Verify Resend key by listing domains (read-only, no email sent)
     try {
-      await axios.get("https://api.resend.com/domains", {
-        headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}` },
-        timeout: 8000,
-      });
-      console.log("[EMAIL HEALTH CHECK] SUCCESS — Resend API key is valid");
+      const client = new Resend(process.env.RESEND_API_KEY);
+      const { data, error } = await client.domains.list();
+      if (error) {
+        if (error.statusCode === 401) {
+          console.error("[EMAIL HEALTH CHECK] FAILED — Resend API key is invalid (401 Unauthorized)");
+        } else {
+          console.error(`[EMAIL HEALTH CHECK] FAILED — Resend API error: ${error.message}`);
+        }
+        return false;
+      }
+      console.log(`[EMAIL HEALTH CHECK] SUCCESS — Resend API key is valid (${data?.data?.length ?? 0} domain(s) configured)`);
       return true;
     } catch (err) {
-      const status = err.response?.status;
-      if (status === 401) {
-        console.error("[EMAIL HEALTH CHECK] FAILED — Resend API key is invalid (401 Unauthorized)");
-      } else {
-        console.error(`[EMAIL HEALTH CHECK] FAILED — Resend API unreachable: ${err.message}`);
-      }
+      console.error(`[EMAIL HEALTH CHECK] FAILED — Resend SDK error: ${err.message}`);
       return false;
     }
   }

@@ -14,9 +14,8 @@ const formatValue = (value) => {
 };
 
 const formatPercentage = (value) => {
-  if (value === undefined || value === null || value === "" || value === 0) return "0.0%";
-  const num = Number(value);
-  return `${num.toFixed(1)}%`;
+  if (value === undefined || value === null || value === "") return "-";
+  return `${formatNumber(value, 1)}%`;
 };
 
 const calculateChange = (current, previous) => (current || 0) - (previous || 0);

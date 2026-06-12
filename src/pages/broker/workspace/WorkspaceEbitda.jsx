@@ -7,7 +7,7 @@ import {
   Trash2,
   ChevronDown,
 } from "lucide-react";
-import { cn, formatCurrency } from "../../../lib/utils";
+import { cn, formatCurrency, formatNumber } from "../../../lib/utils";
 import {
   getCompanyRequest,
   getAllManualUploadedReports,
@@ -25,6 +25,10 @@ import {
 import {
   loadAdjustmentWorkspaceData,
   loadVendorReferenceData,
+  buildAdjustmentDraft,
+  applyReferenceValues,
+  normalizeAdjustmentRecord,
+  getAdjustmentTypeOptions,
 } from "../../../services/ebitdaAdjustmentService";
 import { getProfitMetricConfig } from "../../../lib/profitMetric";
 import { REPORT_SOURCE_KEYS, normalizeReportSourceKey } from "../../../lib/report-source";
@@ -34,10 +38,6 @@ import EbitdaAdjustmentsPanel from "../../../components/reports/ebitda/EbitdaAdj
 import { useDataSource } from "../../../context/DataSourceContext";
 import { useDatasetVersionStore } from "../../../store/useDatasetVersionStore";
 
-function formatPercent(value) {
-  if (!Number.isFinite(value)) return "-";
-  return `${value.toFixed(2)}%`;
-}
 
 function toNumber(value, fallback = 0) {
   if (value === null || value === undefined || value === "") return fallback;
@@ -165,7 +165,7 @@ function FormattedNumericInput({ value, apiValue, isFromPL, linkedToPL, onChange
       if (value === null) return "";
       return String(toAbsoluteNumber(value, 0));
     }
-    const formatted = normalizedValue === null ? "-" : formatCurrency(normalizedValue);
+    const formatted = normalizedValue === null ? "-" : formatNumber(normalizedValue, 2);
     return showPLAsterisk && formatted !== "-" && !formatted.startsWith("*")
       ? `*${formatted}`
       : formatted;
@@ -187,7 +187,7 @@ function FormattedNumericInput({ value, apiValue, isFromPL, linkedToPL, onChange
         (value !== null || apiValue !== null) ? "text-text-primary" : "text-gray-300",
         className
       )}
-      placeholder={apiValue !== null ? formatCurrency(toAbsoluteNumber(apiValue, 0)) : "-"}
+      placeholder={apiValue !== null ? formatNumber(toAbsoluteNumber(apiValue, 0), 2) : "-"}
     />
   );
 }
@@ -213,7 +213,6 @@ export default function WorkspaceEbitda() {
   const [dynamicAddbacks, setDynamicAddbacks] = useState([]);
   const [isDataInitialized, setIsDataInitialized] = useState(false);
   const [rowComments, setRowComments] = useState({});
-  const [isTypeDialogOpen, setIsTypeDialogOpen] = useState(false);
   const [manualGlAdjustments, setManualGlAdjustments] = useState([]);
   const [manualGlAdjustmentTypes, setManualGlAdjustmentTypes] = useState([]);
   const [manualGlReferenceIndex, setManualGlReferenceIndex] = useState(null);
@@ -752,38 +751,16 @@ export default function WorkspaceEbitda() {
         const parsed = JSON.parse(saved);
         const savedAddbacks = Array.isArray(parsed) ? parsed : (parsed.addbacks || []);
 
-        // Step 6: Multi-Year Handling - Store per-year apiValue
         const initialized = savedAddbacks.map(ab => {
-          const inferredType = ab.type || (ab.linkedToPL ? "PL" : "RECAST");
-          const isFromPL = inferredType === "PL";
-          const normalizedLabel = (ab.label || "").trim();
-          const vals = {};
-          Object.keys(multiYearData).forEach(year => {
-            const apiVal = isFromPL ? toAbsoluteNumber(getValueFromPL(year, normalizedLabel), 0) : null;
-            const existing = ab.values?.[year] || {};
-            const existingUserValue = existing.userValue;
-            const hasExistingUserValue = existingUserValue !== null && existingUserValue !== undefined && String(existingUserValue).trim() !== "";
-            vals[year] = {
-              apiValue: apiVal,
-              userValue: hasExistingUserValue ? toAbsoluteNumber(existingUserValue, 0) : null
-            };
-            // If it was old format (just number), migrate it to userValue
-            if (typeof existing === 'number') {
-              vals[year].userValue = toAbsoluteNumber(existing, 0);
-            }
+          // Ensure it's a "standard" adjustment record
+          let record = normalizeAdjustmentRecord(ab);
+
+          // Re-calculate derived values from P&L if matched
+          record = applyReferenceValues(record, years, {
+            fallbackLookup: fallbackAdjustmentLookup,
           });
-          const latestYear = years[0] || Object.keys(multiYearData)[0];
-          const latestVals = vals[latestYear] || { apiValue: null, userValue: null };
-          return {
-            ...ab,
-            type: inferredType,
-            label: normalizedLabel,
-            isFromPL,
-            accountId: ab.accountId || (isFromPL ? getAccountIdByLabel(normalizedLabel) : null),
-            linkedToPL: isFromPL,
-            value: latestVals.userValue !== null ? toAbsoluteNumber(latestVals.userValue, 0) : toAbsoluteNumber(latestVals.apiValue, 0),
-            values: vals,
-          };
+
+          return record;
         });
 
         setDynamicAddbacks(initialized);
@@ -812,127 +789,28 @@ export default function WorkspaceEbitda() {
     }
   }, [dynamicAddbacks, rowComments, clientId, isDataInitialized, isManualGl]);
 
-  const handleAddAddback = ({ type, accountLabel = "" } = {}) => {
-    const newId = `custom_${Date.now()}`;
-    const newVals = {};
-    const isPL = type === "PL";
-    const label = isPL ? accountLabel : "";
+  // Reactive Re-hydration: Keep dynamic addbacks in sync with latest P&L data if it changes
+  useEffect(() => {
+    if (isManualGl || !isDataInitialized || !multiYearData) return;
 
-    years.forEach(year => {
-      const apiVal = isPL && label ? toAbsoluteNumber(getValueFromPL(year, label), 0) : null;
-      newVals[year] = {
-        apiValue: apiVal,
-        userValue: null
-      };
+    setDynamicAddbacks(prev => {
+      let changed = false;
+      const next = prev.map(ab => {
+        const updated = applyReferenceValues(ab, years, {
+          fallbackLookup: fallbackAdjustmentLookup,
+        });
+
+        // Simple check to see if api values changed
+        if (JSON.stringify(updated.values) !== JSON.stringify(ab.values)) {
+          changed = true;
+          return updated;
+        }
+        return ab;
+      });
+
+      return changed ? next : prev;
     });
-
-    const latestYear = years[0];
-    const latestVals = newVals[latestYear] || { apiValue: null, userValue: null };
-
-    setDynamicAddbacks([...dynamicAddbacks, {
-      id: newId,
-      type: isPL ? "PL" : "RECAST",
-      label,
-      value: latestVals.userValue !== null ? toAbsoluteNumber(latestVals.userValue, 0) : toAbsoluteNumber(latestVals.apiValue, 0),
-      isFromPL: isPL,
-      accountId: isPL && label ? getAccountIdByLabel(label) : null,
-      values: newVals,
-      isUserAdded: true,
-      linkedToPL: isPL
-    }]);
-  };
-
-  const updateAddbackValue = (id, year, value) => {
-    setDynamicAddbacks(prev => prev.map(ab => {
-      if (ab.id === id) {
-        const normalizedInput = typeof value === "string" ? value.replace(/[*,]/g, "").trim() : value;
-        const numericValue = normalizedInput === "" ? null : toAbsoluteNumber(normalizedInput, 0);
-        const latestYear = years[0];
-        const nextValues = {
-          ...ab.values,
-          [year]: {
-            ...ab.values[year],
-            userValue: numericValue
-          }
-        };
-        const latestVals = nextValues[latestYear] || { apiValue: null, userValue: null };
-        return {
-          ...ab,
-          value: latestVals.userValue !== null ? toAbsoluteNumber(latestVals.userValue, 0) : toAbsoluteNumber(latestVals.apiValue, 0),
-          values: nextValues
-        };
-      }
-      return ab;
-    }));
-  };
-
-  const updateAddbackLabel = (id, label) => {
-    setDynamicAddbacks(prev => prev.map(ab => {
-      if (ab.id === id) {
-        const newValues = { ...ab.values };
-        const apiMatch = getValueFromPL(years[0], label);
-        const isLinked = apiMatch !== null;
-        years.forEach(year => {
-          newValues[year] = {
-            ...newValues[year],
-            apiValue: toAbsoluteNumber(getValueFromPL(year, label), 0)
-          };
-        });
-        const latestYear = years[0];
-        const latestVals = newValues[latestYear] || { apiValue: null, userValue: null };
-        return {
-          ...ab,
-          label,
-          type: isLinked ? "PL" : "RECAST",
-          isFromPL: isLinked,
-          accountId: isLinked ? getAccountIdByLabel(label) : null,
-          value: latestVals.userValue !== null ? toAbsoluteNumber(latestVals.userValue, 0) : toAbsoluteNumber(latestVals.apiValue, 0),
-          values: newValues,
-          linkedToPL: isLinked,
-        };
-      }
-      return ab;
-    }));
-  };
-
-  const handleAccountSelection = (id, selectedValue) => {
-    setDynamicAddbacks(prev => prev.map(ab => {
-      if (ab.id === id) {
-        const newValues = { ...ab.values };
-        years.forEach(year => {
-          newValues[year] = {
-            ...newValues[year],
-            apiValue: toAbsoluteNumber(getValueFromPL(year, selectedValue), 0),
-            userValue: null
-          };
-        });
-        const latestYear = years[0];
-        const latestVals = newValues[latestYear] || { apiValue: null, userValue: null };
-        return {
-          ...ab,
-          type: "PL",
-          label: selectedValue,
-          isFromPL: true,
-          accountId: getAccountIdByLabel(selectedValue),
-          value: latestVals.userValue !== null ? toAbsoluteNumber(latestVals.userValue, 0) : toAbsoluteNumber(latestVals.apiValue, 0),
-          linkedToPL: true,
-          values: newValues,
-        };
-      }
-      return ab;
-    }));
-  };
-
-  const deleteAddback = (id) => {
-    setDynamicAddbacks(prev => prev.filter(ab => ab.id !== id));
-  };
-
-  const updateRowComment = (key, value) => {
-    setRowComments(prev => ({
-      ...prev,
-      [key]: value
-    }));
-  };
+  }, [multiYearData, years, fallbackAdjustmentLookup, isManualGl, isDataInitialized]);
 
   const uploadAdjustmentAttachments = useCallback(async (files = []) => {
     const pendingFiles = Array.isArray(files) ? files.filter(Boolean) : [];
@@ -960,6 +838,48 @@ export default function WorkspaceEbitda() {
 
     return uploaded.filter((item) => item.fileUrl);
   }, []);
+
+  const handleDynamicSaveAdjustment = useCallback(async (draft) => {
+    if (!draft) return;
+    setIsSavingAdjustment(true);
+
+    try {
+      const uploadedAttachments = await uploadAdjustmentAttachments(draft.pendingFiles || []);
+      const nextAdjustment = {
+        ...draft,
+        attachments: [
+          ...(Array.isArray(draft.attachments) ? draft.attachments : []),
+          ...uploadedAttachments,
+        ],
+      };
+      delete nextAdjustment.pendingFiles;
+
+      setDynamicAddbacks(prev => {
+        const exists = prev.some(item => String(item.id) === String(nextAdjustment.id));
+        if (exists) {
+          return prev.map(item => String(item.id) === String(nextAdjustment.id) ? nextAdjustment : item);
+        }
+        return [...prev, nextAdjustment];
+      });
+    } catch (err) {
+      console.error("Failed to save adjustment", err);
+      throw err;
+    } finally {
+      setIsSavingAdjustment(false);
+    }
+  }, [uploadAdjustmentAttachments]);
+
+  const handleDynamicDeleteAdjustment = useCallback(async (adjustmentId) => {
+    if (!adjustmentId) return;
+    setDynamicAddbacks(prev => prev.filter(item => String(item.id) !== String(adjustmentId)));
+  }, []);
+
+  const updateRowComment = (key, value) => {
+    setRowComments(prev => ({
+      ...prev,
+      [key]: value
+    }));
+  };
 
   const persistManualGlAdjustments = useCallback(async (nextAdjustments = []) => {
     if (!adjustmentScope.clientId) throw new Error("Missing clientId.");
@@ -1203,216 +1123,27 @@ export default function WorkspaceEbitda() {
                           </td>
                         );
                       })}
-                      <td className="p-1 bg-[#f8fafc]" style={{ borderLeft: "2px solid #cbd5e1" }}>
-                        <input
-                          value={rowComments['ebitda'] || ""}
-                          onChange={(e) => updateRowComment('ebitda', e.target.value)}
-                          placeholder="EBITDA remarks..."
-                          className="w-full bg-transparent border-none font-bold focus:ring-0 text-[13px] px-3 placeholder:italic placeholder:font-normal text-slate-800"
-                        />
-                      </td>
+                      <td className="p-1 bg-[#f8fafc]" style={{ borderLeft: "2px solid #cbd5e1" }}></td>
                     </tr>
 
-                    {isManualGl ? (
-                      <EbitdaAdjustmentsPanel
-                        years={years}
-                        adjustments={manualGlAdjustments}
-                        typeOptions={manualGlAdjustmentTypes}
-                        accountOptions={adjustmentAccountOptions}
-                        vendorOptions={adjustmentVendorOptions}
-                        referenceIndex={manualGlReferenceIndex}
-                        fallbackLookup={fallbackAdjustmentLookup}
-                        baseEbitdaByYear={baseEbitdaByYear}
-                        revenueByYear={revenueByYear}
-                        formatCurrency={formatCurrency}
-                        loading={Boolean(adjustmentVersionId) && !manualGlAdjustmentError && manualGlAdjustments.length === 0 && manualGlAdjustmentTypes.length === 0}
-                        error={manualGlAdjustmentError}
-                        isSaving={isSavingAdjustment}
-                        onSaveAdjustment={handleManualGlSaveAdjustment}
-                        onDeleteAdjustment={handleManualGlDeleteAdjustment}
-                        profitMetricConfig={profitMetricConfig}
-                      />
-                    ) : (
-                      <>
-
-                        {/* ── Addbacks Section Header ──────────────────────── */}
-                        <tr className="bg-gray-100">
-                          <td colSpan={1 + years.length} className="p-0">
-                            <div className="px-4 py-3">
-                              <div className="flex items-center justify-between font-bold text-[#050505]">
-                                <span>{sectionLabel}</span>
-                                <button
-                                  onClick={() => setIsTypeDialogOpen(true)}
-                                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#8bc53d] text-white text-[11px] font-bold hover:bg-[#78ab34] transition-colors"
-                                >
-                                  <Plus size={12} strokeWidth={3} />
-                                  ADD {itemSingularLabel.toUpperCase()}
-                                </button>
-                              </div>
-                              <p className="mt-1 text-[11px] text-slate-500">
-                                * Values marked with an asterisk (*) are automatically fetched from the Profit &amp; Loss statement. Values without (*) are manually added.
-                              </p>
-                            </div>
-                          </td>
-                          {/* Comment cell for the Addbacks header — intentionally blank */}
-                          <td className="bg-gray-100" style={{ borderLeft: "2px solid #cbd5e1" }}></td>
-                        </tr>
-
-                        {/* ── Dynamic Addback Rows ─────────────────────────── */}
-                        {dynamicAddbacks.map((row) => (
-                          <tr key={row.id} className="group border-b border-[#f1f5f9] hover:bg-slate-50 transition-colors">
-                            <td className="p-3 pl-6 text-text-primary">
-                              <div className="flex items-center gap-2">
-                                {row.type === "PL" ? (
-                                  <div className="relative flex-1">
-                                    <select
-                                      value={row.label}
-                                      onChange={(e) => handleAccountSelection(row.id, e.target.value)}
-                                      className="appearance-none w-full bg-transparent border-b border-transparent hover:border-gray-300 focus:border-[#8bc53d] focus:outline-none transition-all py-0.5 pr-5 text-[13px] cursor-pointer"
-                                    >
-                                      <option value="" disabled>Select account...</option>
-                                      {plAccountNames.map(name => (
-                                        <option key={name} value={name}>{name}</option>
-                                      ))}
-                                    </select>
-                                    <ChevronDown size={11} className="pointer-events-none absolute right-0 top-1/2 -translate-y-1/2 text-slate-400" />
-                                  </div>
-                                ) : (
-                                  <input
-                                    value={row.label}
-                                    onChange={(e) => updateAddbackLabel(row.id, e.target.value)}
-                                    className="flex-1 bg-transparent border-b border-transparent hover:border-gray-300 focus:border-[#8bc53d] focus:outline-none transition-all py-0.5 text-[13px]"
-                                    placeholder="Enter label…"
-                                  />
-                                )}
-                                <button
-                                  onClick={() => deleteAddback(row.id)}
-                                  className="opacity-0 group-hover:opacity-100 p-1 text-red-500 hover:bg-red-50 rounded transition-all flex-shrink-0"
-                                  title="Delete Row"
-                                >
-                                  <Trash2 size={14} />
-                                </button>
-                              </div>
-                            </td>
-                            {years.map((year) => {
-                              const { apiValue, userValue } = row.values[year] || { apiValue: null, userValue: null };
-                              const showPLAsterisk = Boolean(
-                                row.isFromPL &&
-                                row.linkedToPL &&
-                                userValue === null &&
-                                apiValue !== null
-                              );
-                              return (
-                                <td key={year} className="p-1.5 text-right">
-                                  <FormattedNumericInput
-                                    value={userValue}
-                                    apiValue={apiValue}
-                                    isFromPL={row.isFromPL}
-                                    linkedToPL={row.linkedToPL}
-                                    onChange={(val) => updateAddbackValue(row.id, year, val)}
-                                    title={showPLAsterisk ? "This value is sourced from Profit & Loss" : undefined}
-                                  />
-                                </td>
-                              );
-                            })}
-                            <td className="p-1" style={{ borderLeft: "2px solid #f1f5f9" }}>
-                              <input
-                                value={rowComments[row.id] || ""}
-                                onChange={(e) => updateRowComment(row.id, e.target.value)}
-                                placeholder={`${row.label || itemSingularLabel} remarks...`}
-                                className="w-full bg-transparent border-none focus:ring-0 text-[13px] px-3 placeholder:italic text-slate-600"
-                              />
-                            </td>
-                          </tr>
-                        ))}
-
-                        {/* ── Total Adjustments ──────────────────────────── */}
-                        <tr className="border-t border-[#cbd5e1] bg-[#eef6e0]">
-                          <td className="p-3 font-bold text-[#050505]">{sectionLabel} Total</td>
-                          {years.map(year => {
-                            const addbacksSum = dynamicAddbacks.reduce((sum, ab) => {
-                              const { apiValue, userValue } = ab.values[year] || { apiValue: null, userValue: null };
-                              const val = userValue !== null ? userValue : apiValue;
-                              return sum + toAbsoluteNumber(val, 0);
-                            }, 0);
-                            return (
-                              <td key={year} className="p-3 text-right font-bold text-[#050505]">
-                                {formatCurrency(addbacksSum)}
-                              </td>
-                            );
-                          })}
-                          <td className="p-2 text-[12px] font-semibold text-slate-600" style={{ borderLeft: "2px solid #d6e7b5" }}>
-                            Total {itemPluralLabel.toLowerCase()} sum
-                          </td>
-                        </tr>
-                        <tr className="border-t-2 border-[#8bc53d] bg-[#f8fafc]">
-                          <td className="p-4 font-bold text-[#050505] text-[15px]">{profitMetricConfig.finalRowLabel}</td>
-                          {years.map(year => {
-                            const baseEbitda = calculateBaseEbitda(year);
-                            const addbacksSum = dynamicAddbacks.reduce((sum, ab) => {
-                              const { apiValue, userValue } = ab.values[year] || { apiValue: null, userValue: null };
-                              const val = userValue !== null ? userValue : apiValue;
-                              return sum + toAbsoluteNumber(val, 0);
-                            }, 0);
-                            const finalSde = baseEbitda + addbacksSum;
-                            return (
-                              <td key={year} className="p-4 text-right font-bold text-[#8bc53d] text-[16px]">
-                                {formatCurrency(finalSde)}
-                              </td>
-                            );
-                          })}
-                          <td className="p-2 bg-[#f8fafc]" style={{ borderLeft: "2px solid #8bc53d" }}>
-                            <textarea
-                              value={rowComments['totalSde'] || ""}
-                              onChange={(e) => updateRowComment('totalSde', e.target.value)}
-                              placeholder={`Story of ${profitMetricConfig.finalRowLabel}...`}
-                              className="w-full bg-transparent border-none focus:ring-0 text-[12px] px-2 leading-tight resize-none overflow-hidden placeholder:italic font-semibold text-slate-800"
-                              rows={2}
-                            />
-                          </td>
-                        </tr>
-
-                        {/* ── SDE % of Sales ───────────────────────────────── */}
-                        <tr className="border-b border-[#cbd5e1] bg-white">
-                          <td className="p-3 font-bold text-[#050505]">{profitMetricConfig.percentRowLabel}</td>
-                          {years.map(year => {
-                            const baseEbitda = calculateBaseEbitda(year);
-                            const addbacksSum = dynamicAddbacks.reduce((sum, ab) => {
-                              const { apiValue, userValue } = ab.values[year] || { apiValue: null, userValue: null };
-                              const val = userValue !== null ? userValue : apiValue;
-                              return sum + toAbsoluteNumber(val, 0);
-                            }, 0);
-                            const finalSde = baseEbitda + addbacksSum;
-                            const revenue = multiYearData[year]?.revenue || 0;
-                            const sdePct = revenue > 0 ? (finalSde / revenue) * 100 : 0;
-
-                            // Debug logging as requested
-                            console.log(`[EBITDA Analysis][${year}]`, {
-                              ebitda: baseEbitda,
-                              adjustments: dynamicAddbacks,
-                              totalAdjustments: addbacksSum,
-                              adjustedEbitda: finalSde,
-                              ebitdaPercent: sdePct
-                            });
-
-                            return (
-                              <td key={year} className="p-3 text-right font-bold text-text-primary">
-                                {formatPercent(sdePct)}
-                              </td>
-                            );
-                          })}
-                          <td className="p-1 bg-white" style={{ borderLeft: "2px solid #cbd5e1" }}>
-                            <input
-                              value={rowComments['sdePercent'] || ""}
-                              onChange={(e) => updateRowComment('sdePercent', e.target.value)}
-                              placeholder="Margin analysis..."
-                              className="w-full bg-transparent border-none focus:ring-0 text-[13px] px-3 placeholder:italic text-slate-600"
-                            />
-                          </td>
-                        </tr>
-
-                      </>
-                    )}
+                    <EbitdaAdjustmentsPanel
+                      years={years}
+                      adjustments={isManualGl ? manualGlAdjustments : dynamicAddbacks}
+                      typeOptions={isManualGl ? manualGlAdjustmentTypes : getAdjustmentTypeOptions()}
+                      accountOptions={adjustmentAccountOptions}
+                      vendorOptions={adjustmentVendorOptions}
+                      referenceIndex={manualGlReferenceIndex}
+                      fallbackLookup={fallbackAdjustmentLookup}
+                      baseEbitdaByYear={baseEbitdaByYear}
+                      revenueByYear={revenueByYear}
+                      formatCurrency={formatCurrency}
+                      loading={isManualGl ? (Boolean(adjustmentVersionId) && !manualGlAdjustmentError && manualGlAdjustments.length === 0 && manualGlAdjustmentTypes.length === 0) : false}
+                      error={isManualGl ? manualGlAdjustmentError : ""}
+                      isSaving={isSavingAdjustment}
+                      onSaveAdjustment={isManualGl ? handleManualGlSaveAdjustment : handleDynamicSaveAdjustment}
+                      onDeleteAdjustment={isManualGl ? handleManualGlDeleteAdjustment : handleDynamicDeleteAdjustment}
+                      profitMetricConfig={profitMetricConfig}
+                    />
 
                   </tbody>
                 </table>
@@ -1425,45 +1156,6 @@ export default function WorkspaceEbitda() {
           <EmptyState analysisLabel={analysisLabel} />
         )}
 
-        <Modal
-          isOpen={isTypeDialogOpen}
-          onClose={() => setIsTypeDialogOpen(false)}
-          title={`Select ${itemSingularLabel} Type`}
-          size="sm"
-        >
-          <div className="space-y-2">
-            <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-border px-4 py-3 text-[13px] font-semibold text-text-primary hover:bg-bg-page transition-colors">
-              <input
-                type="radio"
-                name="addback-type"
-                className="h-4 w-4 accent-[#8bc53d]"
-                disabled={plAccountNames.length === 0}
-                onChange={() => {
-                  handleAddAddback({ type: "PL" });
-                  setIsTypeDialogOpen(false);
-                }}
-              />
-              Profit &amp; Loss
-            </label>
-            <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-border px-4 py-3 text-[13px] font-semibold text-text-primary hover:bg-bg-page transition-colors">
-              <input
-                type="radio"
-                name="addback-type"
-                className="h-4 w-4 accent-[#8bc53d]"
-                onChange={() => {
-                  handleAddAddback({ type: "RECAST" });
-                  setIsTypeDialogOpen(false);
-                }}
-              />
-              Recast {itemSingularLabel}
-            </label>
-            {plAccountNames.length === 0 && (
-              <p className="text-[12px] text-text-muted">
-                Profit &amp; Loss accounts are unavailable for the selected range.
-              </p>
-            )}
-          </div>
-        </Modal>
       </div>
     </div>
   );
