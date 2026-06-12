@@ -39,7 +39,7 @@ export default function QBDisconnectedBanner() {
 
   if (!show || dismissed || activeSourceMode !== 'quickbooks') return null;
 
-  const connectionsPath = clientId ? `/broker/client/${clientId}/connections` : null;
+  const connectionsPath = clientId ? `/broker/client/${clientId}/dataroom/connections` : null;
 
   const handleGoToConnections = () => {
     setDismissed(true);

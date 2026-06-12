@@ -119,7 +119,7 @@ function resolveRequestedRedirect(req, clientId) {
   }
 
   return clientId
-    ? `/broker/client/${clientId}/connections`
+    ? `/broker/client/${clientId}/dataroom/connections`
     : "/broker/companies";
 }
 

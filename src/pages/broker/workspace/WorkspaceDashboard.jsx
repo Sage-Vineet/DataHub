@@ -152,7 +152,7 @@ export default function WorkspaceDashboard() {
         </div>
         <div className="flex items-center gap-2">
           <button
-            onClick={() => navigate(`/broker/client/${clientId}/connections`)}
+            onClick={() => navigate(`/broker/client/${clientId}/dataroom/connections`)}
             className="flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm font-semibold text-[#050505]"
           >
             <Link2 size={15} />

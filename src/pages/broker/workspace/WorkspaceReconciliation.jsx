@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useNavigate } from "react-router-dom";
 import Header from "../../../components/Header";
 
-import { getStoredToken, setSelectedReportSource, getManualStageFilterOptions, loadSavedQBBankActivityRequest } from "../../../lib/api";
+import { getStoredToken, setSelectedReportSource, getManualStageFilterOptions, loadSavedQBBankActivityRequest, getActiveKeyReportMappings } from "../../../lib/api";
 import { useDataSource } from "../../../context/DataSourceContext";
 import { useDatasetVersionStore } from "../../../store/useDatasetVersionStore";
 import { emitWorkspaceDataSourceUpdated } from "../../../lib/dataSourceEvents";
@@ -414,6 +414,7 @@ function buildEmptyActivityReviewRow() {
 
 export default function WorkspaceReconciliation() {
   const { clientId } = useParams();
+  const navigate = useNavigate();
   // Use the global DataSourceContext as the single source of truth for the active source.
   // This is the same value the header badge shows (localStorage-backed, survives refreshes).
   // WorkspaceReconciliation must never call getReportSources independently — doing so reads
@@ -497,6 +498,8 @@ export default function WorkspaceReconciliation() {
   // True only after getReportSources API confirms the actual source.
   // Prevents stale storedState from triggering the wrong endpoint on mount.
   const [isSourceConfirmedByServer, setIsSourceConfirmedByServer] = useState(false);
+  // Key Reports bank statement gate: 'idle' | 'loading' | 'ok' | 'missing'
+  const [krBankGate, setKrBankGate] = useState({ status: "idle" });
 
   // Always reflects the latest selectedReportSource — used to discard in-flight fetch results
   // that started under a different source (race condition: user switches source while a fetch
@@ -935,11 +938,42 @@ export default function WorkspaceReconciliation() {
     }
   }, [clientId, getHeaders]);
 
+  // Key Reports bank statement gate — runs whenever the confirmed source changes.
+  // QB Online uses live QB data and does not require a Key Reports bank statement.
+  // All other sources (Manual GL, Manual Upload, QB Manual) need one linked in Key Reports.
+  useEffect(() => {
+    if (!isSourceConfirmedByServer || !clientId) return;
+    if (isQBOnline) {
+      setKrBankGate({ status: "ok" });
+      return;
+    }
+    let cancelled = false;
+    setKrBankGate({ status: "loading" });
+    getActiveKeyReportMappings()
+      .then((mappings) => {
+        if (cancelled) return;
+        const hasBankStatement = (mappings?.bank_statement?.length || 0) > 0;
+        setKrBankGate({ status: hasBankStatement ? "ok" : "missing" });
+        if (!hasBankStatement) {
+          // Clear any previously loaded bank data when gate transitions to missing
+          setExtractedBankPdfData(null);
+          setExtractedBankPdfFetchStatus({ status: "idle", message: "" });
+          setBsBankBalances(null);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setKrBankGate({ status: "ok" }); // fail open — don't block on API error
+      });
+    return () => { cancelled = true; };
+  }, [isSourceConfirmedByServer, isQBOnline, clientId]);
+
   // Unified bank-data loader — dispatches ONLY based on server-confirmed source.
   // isSourceConfirmedByServer prevents stale storedState from triggering the wrong endpoint.
   // Never short-circuit on stored data — stored data may be from a different source.
   useEffect(() => {
     if (!clientId || !selectedReportSource || !isSourceConfirmedByServer) return;
+    // Gate: non-QB-Online sources require a bank statement linked in Key Reports
+    if (!isQBOnline && krBankGate.status !== "ok") return;
 
     if (selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD) {
       // Manual Upload → single endpoint returns both bank data and balanceSheetBankAccounts
@@ -956,7 +990,7 @@ export default function WorkspaceReconciliation() {
       void loadBsBankBalances("quickbooks_manual");
     }
     // QUICKBOOKS (QB Online) uses its own separate data flow — no action here
-  }, [clientId, selectedReportSource, isSourceConfirmedByServer, glSelectedVersion, glFiscalYear, loadExtractedBankPdfData, loadManualBankData, loadQMSBankData, loadBsBankBalances]);
+  }, [clientId, selectedReportSource, isSourceConfirmedByServer, isQBOnline, krBankGate.status, glSelectedVersion, glFiscalYear, loadExtractedBankPdfData, loadManualBankData, loadQMSBankData, loadBsBankBalances]);
 
   // Auto-restore QB Online bank activity from DB on page load.
   // Fires when the server confirms the source is QB Online and there is no
@@ -2261,6 +2295,29 @@ export default function WorkspaceReconciliation() {
         </div>
         <QBDisconnectedBanner pageName="Reconciliation" />
 
+        {/* Key Reports bank statement gate — shown for non-QB-Online sources when no bank statement is linked */}
+        {!isQBOnline && krBankGate.status === "missing" && (
+          <div className="rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4">
+            <div className="flex items-start gap-3">
+              <AlertCircle size={18} className="mt-0.5 shrink-0 text-amber-600" />
+              <div>
+                <p className="text-sm font-semibold text-amber-800">
+                  Bank Statement required in Key Reports
+                </p>
+                <p className="mt-1 text-sm text-amber-700">
+                  To load Bank Reconciliation data, link a Bank Statement document in the Key Reports
+                  Bank Statements category for this client.
+                </p>
+                <button
+                  onClick={() => navigate(`/broker/client/${clientId}/dataroom/key-reports`)}
+                  className="mt-2 text-sm font-semibold text-amber-800 underline hover:text-amber-900"
+                >
+                  Go to Key Reports →
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* QB Bank Activity — only for QuickBooks Online */}
         {isQBOnline && (
