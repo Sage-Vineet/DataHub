@@ -27,19 +27,19 @@ const {
 } = require("../services/manualReportUploadService");
 const { parsePdfWithGemini } = require("../services/geminiFinancialParser");
 const {
-  normalizeBankBinary,
-  extractBankStatementsFromPdfBase64,
-  extractBankStatementsFromExcelBuffer,
-  buildBankResponseShape,
-} = require("../services/bankStatementExtractor");
-const {
   getCachedCashFlow,
   listAvailablePeriods,
   generatedCfToRows,
 } = require("../services/manualCashFlowService");
 const { supabase } = require("../db");
 const { canAccessCompany } = require("../services/permissionService");
-const { runBsBankBalancesExtraction } = require("./quickbooks/reconciliation/bankVsBooks");
+const { runBsBankBalancesExtraction, runBankExtraction } = require("./quickbooks/reconciliation/bankVsBooks");
+const keyReportService = require("../services/keyReportService");
+
+// Version-aware cache for Key Reports-resolved tax return extraction. Kept
+// separate from the Sync All tax_return cache so existing data is untouched;
+// keyed by the linked document set so switching the active version refreshes it.
+const TAX_RETURN_KR_CACHE_TYPE = "tax_return_kr_v1";
 
 // Extracts monthly Total Income and Total Expenses from the latest P&L stored in qb_synced_reports.
 // Returns { totalIncome: { "YYYY-MM": number }, totalExpenses: { "YYYY-MM": number } } or null.
@@ -572,27 +572,19 @@ router.get("/manual-report-uploads/qms-bank-data", async (req, res) => {
     const clientId = resolveClientId(req);
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
 
-    const [{ data: row, error }, plFinancials] = await Promise.all([
-      supabase
-        .from("qb_synced_reports")
-        .select("data")
-        .eq("company_id", clientId)
-        .eq("source", "quickbooks_manual_upload")
-        .eq("report_type", STATEMENT_TYPES.BANK_RECONCILIATION)
-        .order("last_synced_at", { ascending: false })
-        .limit(1)
-        .maybeSingle(),
+    // Bank statement is resolved from the active Key Reports version (single
+    // source of truth); P&L financials remain QMS-source-scoped.
+    const [{ body: bankBody }, plFinancials] = await Promise.all([
+      runBankExtraction(clientId, "quickbooks_manual_upload"),
       extractPlFinancials(clientId, "quickbooks_manual_upload").catch(() => null),
     ]);
 
-    if (error) throw new Error(error.message);
-
-    const bankData = row?.data?.bank_reconciliation || {};
     return res.json({
       success: true,
-      banks: bankData.banks || [],
-      months: bankData.months || [],
-      totals: bankData.totals || [],
+      banks: bankBody?.banks || [],
+      months: bankBody?.months || [],
+      totals: bankBody?.totals || [],
+      message: bankBody?.message,
       plFinancials,
     });
   } catch (error) {
@@ -739,19 +731,64 @@ router.get("/manual-report-uploads/tax-data", async (req, res) => {
     const clientId = resolveClientId(req);
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
 
-    // ── Fast path: return data already stored by Sync All ─────────────────
+    // ── Resolve the source tax return(s) strictly from the active Key Reports
+    //    version. The linked document set keys the cache, so switching the active
+    //    version (Version 1 → Tax_2024.pdf, Version 2 → Tax_2025.pdf) refreshes it.
+    const { versionId, documents: linkedDocs } = await keyReportService.getActiveLinkedDocuments(
+      clientId,
+      "tax_return",
+    );
+    const documentSignature = linkedDocs.map((d) => d.id).filter(Boolean).sort().join(",");
+
+    if (!linkedDocs.length) {
+      // Fall back to tax return data synced via the connection page (Sync All).
+      // Both manual_upload and quickbooks_manual sync tax returns with
+      // source=MANUAL_REPORT_UPLOAD_SOURCE and report_type="tax_return".
+      const { data: synced } = await supabase
+        .from("qb_synced_reports")
+        .select("data, updated_at")
+        .eq("company_id", clientId)
+        .eq("source", MANUAL_REPORT_UPLOAD_SOURCE)
+        .eq("report_type", STATEMENT_TYPES.TAX_RETURN)
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      const taxYears = synced?.data?.tax_return?.taxYears;
+      if (taxYears && Object.keys(taxYears).length > 0) {
+        console.log(`[TaxData] No KR mapping — using connection-page synced tax data for ${clientId} (${Object.keys(taxYears).length} year(s))`);
+        return res.json({
+          success: true,
+          years: taxYears,
+          source: "synced",
+          updatedAt: synced.updated_at,
+        });
+      }
+      return res.json({
+        success: true,
+        years: {},
+        source: "empty",
+        warning: "No tax return data found. Upload tax return PDFs via the Connections page and sync, or link a Tax Return in Key Reports.",
+      });
+    }
+
+    const forceRefresh = req.query.force === "1" || req.query.force === "true";
+
+    // ── Fast path: version-aware Key Reports cache ─────────────────────────
     const { data: stored } = await supabase
       .from("qb_synced_reports")
       .select("data, updated_at")
       .eq("company_id", clientId)
-      .eq("report_type", STATEMENT_TYPES.TAX_RETURN)
+      .eq("report_type", TAX_RETURN_KR_CACHE_TYPE)
       .eq("source", MANUAL_REPORT_UPLOAD_SOURCE)
       .maybeSingle();
 
-    const forceRefresh = req.query.force === "1" || req.query.force === "true";
-
-    if (!forceRefresh && stored?.data?.tax_return?.taxYears && Object.keys(stored.data.tax_return.taxYears).length > 0) {
-      console.log(`[TaxData] Serving ${Object.keys(stored.data.tax_return.taxYears).length} year(s) from DB cache`);
+    if (
+      !forceRefresh &&
+      stored?.data?.tax_return?.documentSignature === documentSignature &&
+      stored?.data?.tax_return?.taxYears &&
+      Object.keys(stored.data.tax_return.taxYears).length > 0
+    ) {
+      console.log(`[TaxData] Serving ${Object.keys(stored.data.tax_return.taxYears).length} year(s) from KR cache (version=${versionId})`);
       return res.json({
         success: true,
         years: stored.data.tax_return.taxYears,
@@ -761,68 +798,20 @@ router.get("/manual-report-uploads/tax-data", async (req, res) => {
     }
 
     if (forceRefresh) {
-      console.log(`[TaxData] force=1 — clearing DB + in-memory cache for fresh extraction`);
+      console.log(`[TaxData] force=1 — clearing in-memory cache for fresh extraction`);
       clearTaxExtractCache();
-      if (stored?.id) {
-        await supabase.from("qb_synced_reports").delete()
-          .eq("company_id", clientId).eq("report_type", STATEMENT_TYPES.TAX_RETURN)
-          .eq("source", MANUAL_REPORT_UPLOAD_SOURCE);
-      }
     }
 
-    // ── Slow path: real-time extraction from DataRoom ──────────────────────
-    // Find "Manual Upload Source" root folder
-    const { data: sourceFolder, error: sfErr } = await supabase
-      .from("folders")
-      .select("id, name")
-      .eq("company_id", clientId)
-      .is("parent_id", null)
-      .ilike("name", "Manual Upload Source")
-      .maybeSingle();
-
-    if (sfErr) throw new Error(sfErr.message);
-    if (!sourceFolder) {
-      return res.json({ success: true, years: {}, warning: "No 'Manual Upload Source' folder found. Run Sync All first." });
-    }
-
-    // Find "Tax Return" (or legacy "Tax Reconciliation") folder (direct child or inside a Reports group)
-    let taxFolder = null;
-    const { data: directChildren } = await supabase
-      .from("folders").select("id, name").eq("parent_id", sourceFolder.id);
-
-    for (const child of (directChildren || [])) {
-      const lc = child.name.toLowerCase().trim();
-      if (lc === "tax return" || lc === "tax reconciliation") { taxFolder = child; break; }
-    }
-    if (!taxFolder) {
-      for (const child of (directChildren || [])) {
-        const { data: gc } = await supabase.from("folders").select("id, name")
-          .eq("parent_id", child.id).or("name.ilike.Tax Return,name.ilike.Tax Reconciliation").maybeSingle();
-        if (gc) { taxFolder = gc; break; }
-      }
-    }
-
-    if (!taxFolder) {
-      return res.json({ success: true, years: {}, warning: "No 'Tax Return' subfolder found. Run Sync All first." });
-    }
-
-    // Get all documents (no upload_id filter — some docs use file_url)
-    const { data: documents } = await supabase
-      .from("documents").select("id, name, upload_id, file_url")
-      .eq("folder_id", taxFolder.id).order("name", { ascending: true });
-
-    console.log(`[TaxData] Realtime extraction: ${(documents || []).length} doc(s) in folder id=${taxFolder.id}`);
-    (documents || []).forEach((d) => console.log(`  "${d.name}" upload_id=${d.upload_id} file_url=${d.file_url}`));
-
-    if (!(documents || []).length) {
-      return res.json({ success: true, years: {}, warning: "No documents in Tax Return folder." });
-    }
+    // ── Real-time extraction over the Key Reports-linked documents ─────────
+    const documents = linkedDocs;
+    console.log(`[TaxData] Realtime extraction over ${documents.length} Key Reports-linked tax return document(s) (version=${versionId})`);
+    documents.forEach((d) => console.log(`  "${d.name}" upload_id=${d.upload_id} file_url=${d.file_url}`));
 
     const years = {};
     const warnings = [];
 
     const settlements = await Promise.allSettled(
-      (documents || []).map(async (doc) => {
+      documents.map(async (doc) => {
         const fileName = String(doc.name || "");
         let uploadId = doc.upload_id || null;
         let uploadData = null;
@@ -877,11 +866,34 @@ router.get("/manual-report-uploads/tax-data", async (req, res) => {
       }
     }
 
+    // Persist a version-aware cache so subsequent loads of the same active
+    // version are instant (delete stale entry first, then insert fresh).
+    if (Object.keys(years).length > 0) {
+      const now = new Date().toISOString();
+      try {
+        await supabase.from("qb_synced_reports").delete()
+          .eq("company_id", clientId)
+          .eq("report_type", TAX_RETURN_KR_CACHE_TYPE)
+          .eq("source", MANUAL_REPORT_UPLOAD_SOURCE);
+        await supabase.from("qb_synced_reports").insert({
+          company_id: clientId,
+          report_type: TAX_RETURN_KR_CACHE_TYPE,
+          source: MANUAL_REPORT_UPLOAD_SOURCE,
+          data: { tax_return: { taxYears: years, documentSignature } },
+          status: "synced",
+          last_synced_at: now,
+          updated_at: now,
+        });
+      } catch (cacheErr) {
+        console.warn(`[TaxData] KR cache write failed (non-fatal): ${cacheErr.message}`);
+      }
+    }
+
     return res.json({
       success: true,
       years,
       source: "realtime",
-      documentCount: (documents || []).length,
+      documentCount: documents.length,
       warnings: warnings.length ? warnings : undefined,
     });
   } catch (err) {
@@ -1265,176 +1277,38 @@ router.get("/manual-upload/bank-data", async (req, res) => {
       return null;
     });
 
-    console.log(`[BANK SOURCE] source=manual_upload clientId=${clientId} — checking cache...`);
+    console.log(`[BANK SOURCE] source=manual_upload clientId=${clientId} — resolving bank statement from active Key Reports version...`);
 
-    // 1. Check source-isolated cache (manual_report_upload only)
-    const { data: cached } = await supabase
-      .from("qb_synced_reports")
-      .select("data, updated_at")
-      .eq("company_id", clientId)
-      .eq("source", MANUAL_REPORT_UPLOAD_SOURCE)
-      .eq("report_type", STATEMENT_TYPES.BANK_RECONCILIATION)
-      .order("updated_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    // Bank statement is resolved strictly from the active Key Reports version
+    // (version-aware cache + live extraction handled by runBankExtraction). BS
+    // bank accounts and P&L financials remain manual_upload-source-scoped.
+    const { body: bankBody } = await runBankExtraction(clientId, MANUAL_REPORT_UPLOAD_SOURCE, "Manual Upload Source");
+    const [balanceSheetBankAccounts, plFinancials] = await Promise.all([bsBankAccountsPromise, plFinancialsPromise]);
 
-    if (cached?.data?.bank_reconciliation?.banks?.length > 0) {
-      const bd = cached.data.bank_reconciliation;
-      console.log(`[BANK SOURCE] Cache hit — ${bd.banks.length} bank(s) for ${clientId}`);
-      const [balanceSheetBankAccounts, plFinancials] = await Promise.all([bsBankAccountsPromise, plFinancialsPromise]);
+    if (!bankBody?.banks?.length) {
       return res.json({
         success: true,
+        empty: true,
         source: "manual_upload",
-        banks: bd.banks,
-        months: bd.months || [],
-        totals: bd.totals || [],
-        syncedAt: bd.syncedAt || cached.updated_at,
+        banks: [],
+        months: [],
+        totals: [],
+        message: bankBody?.message || "No Bank Statement is linked in the active Key Reports version. Link a Bank Statement in Key Reports and sync before using Bank Reconciliation.",
         balanceSheetBankAccounts,
         plFinancials,
       });
     }
 
-    // 2. Live extraction from "Manual Upload Source" DataRoom folder
-    console.log(`[BANK SOURCE] Cache miss — live extraction from "Manual Upload Source" for ${clientId}`);
-
-    const { data: sourceFolder } = await supabase
-      .from("folders")
-      .select("id")
-      .eq("company_id", clientId)
-      .is("parent_id", null)
-      .ilike("name", "Manual Upload Source")
-      .maybeSingle();
-
-    if (!sourceFolder) {
-      console.log(`[BANK SOURCE] "Manual Upload Source" folder not found for ${clientId}`);
-      return res.json({
-        success: true,
-        empty: true,
-        source: "manual_upload",
-        banks: [],
-        months: [],
-        totals: [],
-        message: "No bank statements uploaded. Upload PDF or Excel files to Manual Upload Source → Bank Statement in the Data Room.",
-        balanceSheetBankAccounts: await bsBankAccountsPromise,
-        plFinancials: await plFinancialsPromise,
-      });
-    }
-
-    // Find "Bank Statement" (or legacy "Bank Reconciliation") subfolder
-    let bankFolder = null;
-    for (const folderName of ["Bank Statement", "Bank Reconciliation"]) {
-      const { data: found } = await supabase
-        .from("folders")
-        .select("id")
-        .eq("company_id", clientId)
-        .ilike("name", folderName)
-        .or(`parent_id.eq.${sourceFolder.id}`)
-        .maybeSingle();
-      if (found) { bankFolder = found; break; }
-    }
-
-    if (!bankFolder) {
-      console.log(`[BANK SOURCE] "Bank Statement" subfolder not found for ${clientId}`);
-      return res.json({
-        success: true,
-        empty: true,
-        source: "manual_upload",
-        banks: [],
-        months: [],
-        totals: [],
-        message: "No bank statements uploaded. Create a Bank Statement folder under Manual Upload Source in the Data Room.",
-        balanceSheetBankAccounts: await bsBankAccountsPromise,
-        plFinancials: await plFinancialsPromise,
-      });
-    }
-
-    const { data: documents } = await supabase
-      .from("documents")
-      .select("id, name, upload_id, file_url")
-      .eq("folder_id", bankFolder.id)
-      .order("uploaded_at", { ascending: false });
-
-    if (!documents?.length) {
-      console.log(`[BANK SOURCE] No documents in Bank Statement folder for ${clientId}`);
-      return res.json({
-        success: true,
-        empty: true,
-        source: "manual_upload",
-        banks: [],
-        months: [],
-        totals: [],
-        message: "No bank statements uploaded. Upload PDF or Excel files to Manual Upload Source → Bank Statement in the Data Room.",
-        balanceSheetBankAccounts: await bsBankAccountsPromise,
-        plFinancials: await plFinancialsPromise,
-      });
-    }
-
-    const allStatements = [];
-    const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
-
-    for (const doc of documents) {
-      const fileName = String(doc.name || "bank_statement");
-      const ext = fileName.toLowerCase().split(".").pop();
-      const isPdf = ext === "pdf";
-      const isExcel = ["xlsx", "xls", "csv"].includes(ext);
-      if (!isPdf && !isExcel) continue;
-
-      let buffer = null;
-      if (doc.upload_id) {
-        const { data: upload } = await supabase
-          .from("uploads").select("data").eq("id", doc.upload_id).maybeSingle();
-        if (upload?.data) buffer = normalizeBankBinary(upload.data);
-      }
-      if (!buffer && doc.file_url) {
-        const m = String(doc.file_url).match(/\/uploads\/([0-9a-f-]{36})\/content/i);
-        if (m) {
-          const { data: upload2 } = await supabase
-            .from("uploads").select("data").eq("id", m[1]).maybeSingle();
-          if (upload2?.data) buffer = normalizeBankBinary(upload2.data);
-        }
-      }
-      if (!buffer && doc.file_url) {
-        const uuidMatch = String(doc.file_url).match(UUID_RE);
-        if (uuidMatch) {
-          const { data: upload3 } = await supabase
-            .from("uploads").select("data").eq("id", uuidMatch[0]).maybeSingle();
-          if (upload3?.data) buffer = normalizeBankBinary(upload3.data);
-        }
-      }
-      if (!buffer?.length) {
-        console.warn(`[BANK SOURCE] No binary data for "${fileName}", skipping`);
-        continue;
-      }
-
-      try {
-        const statements = isExcel
-          ? await extractBankStatementsFromExcelBuffer(buffer, fileName)
-          : await extractBankStatementsFromPdfBase64(buffer.toString("base64"), fileName);
-        allStatements.push(...statements);
-      } catch (err) {
-        console.error(`[BANK SOURCE] Extraction failed for "${fileName}": ${err.message}`);
-      }
-    }
-
-    if (!allStatements.length) {
-      console.log(`[BANK SOURCE] No extractable bank data in ${documents.length} file(s) for ${clientId}`);
-      return res.json({
-        success: true,
-        empty: true,
-        source: "manual_upload",
-        banks: [],
-        months: [],
-        totals: [],
-        message: "No bank statement data could be extracted from the uploaded files.",
-        balanceSheetBankAccounts: await bsBankAccountsPromise,
-        plFinancials: await plFinancialsPromise,
-      });
-    }
-
-    const { banks, months, totals } = buildBankResponseShape(allStatements);
-    console.log(`[BANK SOURCE] Extracted ${banks.length} bank(s) from ${documents.length} file(s) for ${clientId}`);
-    const [balanceSheetBankAccounts, plFinancials] = await Promise.all([bsBankAccountsPromise, plFinancialsPromise]);
-    return res.json({ success: true, source: "manual_upload", banks, months, totals, balanceSheetBankAccounts, plFinancials });
+    return res.json({
+      success: true,
+      source: "manual_upload",
+      banks: bankBody.banks,
+      months: bankBody.months || [],
+      totals: bankBody.totals || [],
+      syncedAt: bankBody.syncedAt,
+      balanceSheetBankAccounts,
+      plFinancials,
+    });
   } catch (error) {
     console.error("[BANK SOURCE] Error:", error);
     return res.status(500).json({ success: false, error: error.message || "Failed to fetch manual upload bank data." });
