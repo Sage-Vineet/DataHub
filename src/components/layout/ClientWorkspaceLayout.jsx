@@ -3,12 +3,10 @@ import { NavLink, useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft,
   Bell,
-  Briefcase,
   Building2,
   ChevronDown,
   ClipboardList,
   FolderOpen,
-  LayoutDashboard,
   Link2,
   LogOut,
   Menu,
@@ -47,7 +45,6 @@ function companyLogo(name = "") {
 function WorkspaceSidebar({ company, onClose }) {
   const { clientId } = useParams();
   const navigate = useNavigate();
-  const location = useLocation();
   const { user, logout } = useAuth();
   const { notifications } = useMessageNotifications();
   const [showUserMenu, setShowUserMenu] = useState(false);
@@ -63,44 +60,9 @@ function WorkspaceSidebar({ company, onClose }) {
     if (showUserMenu) document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, [showUserMenu]);
-  const [dataroomOpen, setDataroomOpen] = useState(true);
-  const [qoeOpen, setQoeOpen] = useState(false);
-
-  const isDataroomRoute = location.pathname.includes("/dataroom/");
-  const isDataroomExpanded = dataroomOpen || isDataroomRoute;
-
-  const isQoeRoute = location.pathname.includes("/reconciliation") || location.pathname.includes("/tax-reconciliation");
-  const isQoeExpanded = qoeOpen || isQoeRoute;
-  const profitMetricConfig = getProfitMetricConfig(company);
 
   const basePath = `/broker/client/${clientId}`;
-  const mainNav = [
-    {
-      label: "Analytics",
-      icon: TrendingUp,
-      to: `${basePath}/analytics`,
-    },
-    { label: "Reports", icon: BarChart3, to: `${basePath}/reports` },
-    { label: profitMetricConfig.navLabel, icon: Calculator, to: `${basePath}/ebitda` },
-  ];
-
-  const qoeNav = [
-    {
-      label: "Bank Reconciliation",
-      icon: Scale,
-      to: `${basePath}/reconciliation`,
-    },
-    {
-      label: "Tax Reconciliation",
-      icon: FileCheck,
-      to: `${basePath}/tax-reconciliation`,
-    },
-  ];
-
-  // Connections now lives under the Data Room group (see dataroomNav).
-  const bottomNav = [];
-
-  const dataroomNav = [
+  const allNav = [
     { label: "Deal Tracker", icon: Target, to: `${basePath}/dataroom/deal-tracker` },
     { label: "Deal Team", icon: Users, to: `${basePath}/dataroom/users` },
     { label: "Requests", icon: ClipboardList, to: `${basePath}/dataroom/requests` },
@@ -108,8 +70,15 @@ function WorkspaceSidebar({ company, onClose }) {
     { label: "Key Reports", icon: FileText, to: `${basePath}/dataroom/key-reports` },
     { label: "Messages", icon: MessageSquare, to: `${basePath}/dataroom/messages` },
     { label: "Reminders", icon: Bell, to: `${basePath}/dataroom/reminders` },
-    { label: "Connections", icon: Link2, to: `${basePath}/dataroom/connections` },
+    { label: "Analytics", icon: TrendingUp, to: `${basePath}/analytics` },
+    { label: "Invoices", icon: Receipt, to: `${basePath}/invoices` },
+    { label: "Reports", icon: BarChart3, to: `${basePath}/reports` },
+    { label: "EBITDA Calculation", icon: Calculator, to: `${basePath}/ebitda` },
+    { label: "Bank Reconciliation", icon: Scale, to: `${basePath}/reconciliation` },
+    { label: "Tax Reconciliation", icon: FileCheck, to: `${basePath}/tax-reconciliation` },
+    { label: "Connections", icon: Link2, to: `${basePath}/connections` },
   ];
+
   const companyMessageCount = notifications.filter((item) => String(item.companyId) === String(clientId)).length;
 
   return (
@@ -163,73 +132,8 @@ function WorkspaceSidebar({ company, onClose }) {
       </div>
 
       <nav className="flex-1 overflow-y-auto px-3 py-3">
-        {/* ── DataRoom (top) ── */}
-        <div>
-          <button
-            onClick={() => setDataroomOpen((value) => !value)}
-            className={`flex w-full items-center justify-between rounded-md px-3 py-2.5 text-[14px] font-semibold transition-all ${isDataroomRoute
-              ? "bg-[#EEF6E0] text-primary"
-              : "text-text-primary hover:bg-bg-page"
-              }`}
-          >
-            <span className="flex items-center gap-3">
-              <FolderOpen
-                size={18}
-                className={isDataroomRoute ? "text-primary" : "text-text-muted"}
-              />
-              DataRoom
-            </span>
-            <ChevronDown
-              size={16}
-              className={`transition-transform ${isDataroomExpanded ? "rotate-180" : ""}`}
-            />
-          </button>
-
-          {isDataroomExpanded && (
-            <div className="mt-1 space-y-0.5 pl-3">
-              {dataroomNav.map((item) => {
-                const Icon = item.icon;
-                return (
-                  <NavLink
-                    key={item.to}
-                    to={item.to}
-                    onClick={onClose}
-                    className={({ isActive }) =>
-                      `relative flex items-center gap-3 rounded-md px-3 py-2.5 text-[13px] font-medium transition-all duration-200 ${isActive
-                        ? "bg-[#EEF6E0] text-primary font-semibold"
-                        : "text-secondary hover:bg-[#F0F7E6] hover:text-text-primary"
-                      }`
-                    }
-                  >
-                    {({ isActive }) => (
-                      <>
-                        {isActive && (
-                          <div className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r-full bg-primary" />
-                        )}
-                        <Icon
-                          size={16}
-                          className={
-                            isActive ? "text-primary" : "text-text-muted"
-                          }
-                        />
-                        <span>{item.label}</span>
-                        {item.label === "Messages" && companyMessageCount > 0 && (
-                          <span className="ml-auto inline-flex min-w-5 items-center justify-center rounded-full bg-negative px-1.5 py-0.5 text-[10px] font-bold text-white">
-                            {companyMessageCount > 9 ? "9+" : companyMessageCount}
-                          </span>
-                        )}
-                      </>
-                    )}
-                  </NavLink>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        {/* ── Main Nav ── */}
-        <div className="mt-3 space-y-0.5">
-          {mainNav.map((item) => {
+        <div className="space-y-0.5">
+          {allNav.map((item) => {
             const Icon = item.icon;
             return (
               <NavLink
@@ -253,98 +157,11 @@ function WorkspaceSidebar({ company, onClose }) {
                       className={isActive ? "text-primary" : "text-text-muted"}
                     />
                     <span>{item.label}</span>
-                  </>
-                )}
-              </NavLink>
-            );
-          })}
-        </div>
-
-        {/* ── Quality of Earnings (nested) ── */}
-        <div className="mt-0.5">
-          <button
-            onClick={() => setQoeOpen((value) => !value)}
-            className={`flex w-full items-center justify-between rounded-md px-3 py-2.5 text-[14px] font-medium transition-all ${isQoeRoute
-              ? "bg-[#EEF6E0] text-primary font-semibold"
-              : "text-secondary hover:bg-[#F0F7E6] hover:text-text-primary"
-              }`}
-          >
-            <span className="flex items-center gap-3">
-              <Scale
-                size={18}
-                className={isQoeRoute ? "text-primary" : "text-text-muted"}
-              />
-              Quality of Earnings
-            </span>
-            <ChevronDown
-              size={16}
-              className={`transition-transform ${isQoeExpanded ? "rotate-180" : ""}`}
-            />
-          </button>
-
-          {isQoeExpanded && (
-            <div className="mt-1 space-y-0.5 pl-3">
-              {qoeNav.map((item) => {
-                const Icon = item.icon;
-                return (
-                  <NavLink
-                    key={item.to}
-                    to={item.to}
-                    onClick={onClose}
-                    className={({ isActive }) =>
-                      `relative flex items-center gap-3 rounded-md px-3 py-2.5 text-[13px] font-medium transition-all duration-200 ${isActive
-                        ? "bg-[#EEF6E0] text-primary font-semibold"
-                        : "text-secondary hover:bg-[#F0F7E6] hover:text-text-primary"
-                      }`
-                    }
-                  >
-                    {({ isActive }) => (
-                      <>
-                        {isActive && (
-                          <div className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r-full bg-primary" />
-                        )}
-                        <Icon
-                          size={16}
-                          className={
-                            isActive ? "text-primary" : "text-text-muted"
-                          }
-                        />
-                        <span>{item.label}</span>
-                      </>
+                    {item.label === "Messages" && companyMessageCount > 0 && (
+                      <span className="ml-auto inline-flex min-w-5 items-center justify-center rounded-full bg-negative px-1.5 py-0.5 text-[10px] font-bold text-white">
+                        {companyMessageCount > 9 ? "9+" : companyMessageCount}
+                      </span>
                     )}
-                  </NavLink>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        {/* ── Bottom Nav ── */}
-        <div className="mt-0.5 space-y-0.5">
-          {bottomNav.map((item) => {
-            const Icon = item.icon;
-            return (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                onClick={onClose}
-                className={({ isActive }) =>
-                  `relative flex items-center gap-3 rounded-md px-3 py-2.5 text-[14px] font-medium transition-all duration-200 ${isActive
-                    ? "bg-[#EEF6E0] text-primary font-semibold"
-                    : "text-secondary hover:bg-[#F0F7E6] hover:text-text-primary"
-                  }`
-                }
-              >
-                {({ isActive }) => (
-                  <>
-                    {isActive && (
-                      <div className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r-full bg-primary" />
-                    )}
-                    <Icon
-                      size={18}
-                      className={isActive ? "text-primary" : "text-text-muted"}
-                    />
-                    <span>{item.label}</span>
                   </>
                 )}
               </NavLink>

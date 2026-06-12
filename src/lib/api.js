@@ -1,3 +1,5 @@
+import { isSessionExpired, triggerSessionExpired } from './session';
+
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000').replace(/\/$/, '');
 const TOKEN_KEY = 'leo-auth-token';
 const LEGACY_TOKEN_KEY = 'leo-token';
@@ -113,6 +115,18 @@ export function setStoredToken(token) {
 
 async function request(path, options = {}) {
   const token = options.token ?? getStoredToken();
+
+  // Reject every authenticated request once the 8-hour session window has closed.
+  // triggerSessionExpired() notifies AuthContext synchronously so the UI redirects
+  // to /login. The thrown error propagates up to the calling component.
+  if (token && isSessionExpired()) {
+    triggerSessionExpired();
+    const err = new Error('Session expired. Please log in again.');
+    err.status = 401;
+    err.sessionExpired = true;
+    throw err;
+  }
+
   const clientId = options.clientId ?? resolveClientIdFromLocation();
   const headers = {
     ...(options.body ? { 'Content-Type': 'application/json' } : {}),
@@ -282,6 +296,27 @@ export function deleteUserRequest(userId) {
   return request(`/users/${userId}`, { method: 'DELETE' });
 }
 
+export function findUserByEmailRequest(email) {
+  return request(`/users/find-by-email?email=${encodeURIComponent(email)}`).then(unwrapPayload);
+}
+
+export function addUserToCompaniesRequest(userId, companyIds) {
+  return request(`/users/${userId}/add-companies`, { method: 'POST', body: { company_ids: companyIds } }).then(unwrapPayload);
+}
+
+export function removeUserFromCompaniesRequest(userId, companyIds) {
+  return request(`/users/${userId}/remove-companies`, { method: 'DELETE', body: { company_ids: companyIds } });
+}
+
+// Feature 1: Broker-team invite relationship (does NOT modify invited broker's company associations)
+export function inviteBrokerToTeamRequest(invitedBrokerId) {
+  return request('/users/broker-team/invite', { method: 'POST', body: { invited_broker_id: invitedBrokerId } });
+}
+
+export function removeBrokerFromTeamRequest(invitedBrokerId) {
+  return request(`/users/broker-team/invite/${invitedBrokerId}`, { method: 'DELETE' });
+}
+
 export function listCompanyRequests(companyId) {
   return request(`/companies/${companyId}/requests`).then(ensureArray);
 }
@@ -296,6 +331,10 @@ export function getCompanyMessagesRequest(companyId) {
 
 export function createCompanyMessageRequest(companyId, payload) {
   return request(`/companies/${companyId}/messages`, { method: "POST", body: payload }).then(unwrapPayload);
+}
+
+export function listMyDirectContactsRequest() {
+  return request("/my-direct-contacts");
 }
 
 export function listCompanyDirectMessageContactsRequest(companyId) {

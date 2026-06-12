@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  Activity, ArrowRight, Bell, Briefcase, Building2, CheckCircle, Clock,
+  Activity, ArrowRight, Bell, Briefcase, Building2, Calendar, CheckCircle, Clock,
   FileText, MessageSquare, ClipboardList, Plus, Users,
   Search, Filter, X, ChevronDown, AlertCircle,
   Eye, Pencil, Download, Phone, Mail, ChevronLeft,
@@ -22,7 +22,12 @@ import { SUB_ROLE, CLIENT_TEAM_ROLE_OPTIONS } from '../../lib/roles';
 
 const PAGE_SIZE = 9; // 3-column grid looks best with multiples of 3
 const OTHER_INDUSTRY = 'Other';
-const EMPTY_FORM = { name: '', project_name: '', contactFirst: '', contactLast: '', email: '', phone: '', industry: '', profit_metric: 'adjusted_ebitda' };
+const EMPTY_FORM = { name: '', project_name: '', contactFirst: '', contactLast: '', email: '', phone: '', industry: '', profit_metric: 'adjusted_ebitda', year_type: 'calendar' };
+
+const YEAR_TYPE_OPTIONS = [
+  { value: 'calendar', label: 'Calendar Year', description: 'Jan 1 – Dec 31' },
+  { value: 'fiscal', label: 'Fiscal Year', description: 'Custom fiscal period' },
+];
 
 const INDUSTRY_OPTIONS = [
   'Technology & Software', 'Healthcare & Life Sciences', 'Financial Services',
@@ -68,6 +73,7 @@ function formatCompany(c) {
     email: c.contact_email || c.email || '—',
     phone: c.contact_phone || c.phone || '—',
     industry: c.industry || '',
+    yearType: c.year_type || 'calendar',
     status: c.status || 'active',
     profitMetric: normalizeProfitMetric(c.profit_metric ?? c.profitMetric),
     profitMetricLabel: profitMetricConfig.shortLabel,
@@ -143,35 +149,36 @@ function CompanyCard({ company, onOpenWorkspace, onView, onEdit }) {
   const s = STATUS_META[company.status] || STATUS_META.inactive;
 
   return (
-    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-all flex flex-col">
+    <div className="bg-white rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-all flex flex-col min-w-0">
       {/* Clickable body → opens workspace */}
       <div
         className="p-4 flex-1 cursor-pointer group"
         onClick={() => onOpenWorkspace(company)}
       >
-        <div className="flex items-start justify-between gap-2 mb-3">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-[#05164D] flex items-center justify-center text-sm font-bold text-white flex-shrink-0">
+        {/* Header: logo + name (min-w-0 flex-1) + status badge (flex-shrink-0) */}
+        <div className="flex items-start gap-2 mb-3">
+          <div className="flex items-start gap-2.5 min-w-0 flex-1">
+            <div className="w-10 h-10 rounded-xl bg-[#05164D] flex items-center justify-center text-sm font-bold text-white flex-shrink-0 mt-0.5">
               {company.logo}
             </div>
-            <div className="min-w-0">
-              <p className="font-semibold text-[#05164D] text-sm truncate group-hover:text-[#8BC53D] transition-colors">
+            <div className="min-w-0 flex-1">
+              <p className="font-semibold text-[#05164D] text-sm truncate group-hover:text-[#8BC53D] transition-colors leading-tight">
                 {company.name}
               </p>
               {company.projectName && (
-                <span className="inline-block rounded-full bg-[#05164D]/10 px-2 py-0.5 text-[10px] font-semibold text-[#05164D]">
+                <span className="inline-block rounded-full bg-[#05164D]/10 px-2 py-0.5 text-[10px] font-semibold text-[#05164D] mt-0.5 max-w-full truncate">
                   {company.projectName}
                 </span>
               )}
             </div>
           </div>
-          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold flex-shrink-0 ${s.bg} ${s.text}`}>
+          <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold flex-shrink-0 whitespace-nowrap ${s.bg} ${s.text}`}>
             <span className={`w-1.5 h-1.5 rounded-full ${s.dot}`} />
             {s.label}
           </span>
         </div>
 
-        <p className="text-xs text-gray-400 mb-3">{company.industry || '—'}</p>
+        <p className="text-xs text-gray-400 mb-3 truncate">{company.industry || '—'}</p>
         {company.profitMetricLabel && (
           <div className="mb-3">
             <span className="inline-flex items-center rounded-full bg-[#EEF6E0] px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[#476E2C]">
@@ -191,7 +198,27 @@ function CompanyCard({ company, onOpenWorkspace, onView, onEdit }) {
           </div>
         </div>
 
-        <div className="text-xs text-gray-500 truncate">{company.contact} · {company.email}</div>
+        {/* Contact details */}
+        <div className="mt-2 pt-2 border-t border-gray-50 space-y-0.5">
+          {company.contact && company.contact !== '—' && (
+            <div className="flex items-center gap-1 overflow-hidden">
+              <Users size={11} className="flex-shrink-0 text-gray-300" />
+              <span className="text-[11px] text-gray-600 font-medium truncate leading-snug">{company.contact}</span>
+            </div>
+          )}
+          {company.email && company.email !== '—' && (
+            <div className="flex items-center gap-1 overflow-hidden">
+              <Mail size={11} className="flex-shrink-0 text-gray-300" />
+              <span className="text-[11px] text-gray-400 truncate leading-snug">{company.email}</span>
+            </div>
+          )}
+          {company.phone && company.phone !== '—' && (
+            <div className="flex items-center gap-1 overflow-hidden">
+              <Phone size={11} className="flex-shrink-0 text-gray-300" />
+              <span className="text-[11px] text-gray-400 truncate leading-snug">{company.phone}</span>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Action buttons */}
@@ -231,6 +258,7 @@ export default function BrokerDashboard() {
 
   // ── Filter / pagination state ────────────────────────────────────────────────
   const [search, setSearch] = useState('');
+  const [showSuggestions, setShowSuggestions] = useState(false);
   const [industryFilter, setIndustryFilter] = useState('All Industries');
   const [statusFilter, setStatusFilter] = useState('All Status');
   const [page, setPage] = useState(1);
@@ -247,6 +275,8 @@ export default function BrokerDashboard() {
   const [confirmDelete, setConfirmDelete] = useState(null);
   const [deleteError, setDeleteError] = useState('');
   const [deleting, setDeleting] = useState(false);
+  const submittingRef = useRef(false);
+  const searchRef = useRef(null);
 
   // ── Load data ────────────────────────────────────────────────────────────────
   const loadCompanies = async () => {
@@ -282,6 +312,16 @@ export default function BrokerDashboard() {
     return () => clearTimeout(t);
   }, [success]);
 
+  useEffect(() => {
+    const handleOutside = (e) => {
+      if (searchRef.current && !searchRef.current.contains(e.target)) {
+        setShowSuggestions(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutside);
+    return () => document.removeEventListener('mousedown', handleOutside);
+  }, []);
+
   // ── Analytics ────────────────────────────────────────────────────────────────
   const analytics = useMemo(() => {
     const active = companies.filter((c) => c.status === 'active').length;
@@ -289,6 +329,18 @@ export default function BrokerDashboard() {
     const completed = companies.reduce((s, c) => s + c.completedCount, 0);
     return { total: companies.length, active, pending, completed };
   }, [companies]);
+
+  // ── Search suggestions ───────────────────────────────────────────────────────
+  const suggestions = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return [];
+    return companies
+      .filter((c) =>
+        c.name.toLowerCase().includes(q) ||
+        (c.projectName || '').toLowerCase().includes(q),
+      )
+      .slice(0, 6);
+  }, [companies, search]);
 
   // ── Filter options ────────────────────────────────────────────────────────────
   const industryOptions = useMemo(
@@ -371,6 +423,7 @@ export default function BrokerDashboard() {
       phone: formatUSPhone(company.phone || ''),
       industry,
       profit_metric: normalizeProfitMetric(company.profitMetric ?? company.profit_metric),
+      year_type: company.yearType || 'calendar',
     });
     setTeamMembers([]);
     setShowAdd(true);
@@ -384,6 +437,7 @@ export default function BrokerDashboard() {
 
   // ── Save company ──────────────────────────────────────────────────────────────
   const handleSaveCompany = async () => {
+    if (submittingRef.current) return;
     const contactName = `${(form.contactFirst || '').trim()} ${(form.contactLast || '').trim()}`.trim();
     if (!form.name.trim() || !form.project_name.trim() || !form.contactFirst.trim() || !form.contactLast.trim() || !form.email.trim() || !form.phone.trim() || !form.industry.trim()) {
       setFormError('Please fill in all required fields, including Project Name and Industry.');
@@ -394,6 +448,7 @@ export default function BrokerDashboard() {
       return;
     }
 
+    submittingRef.current = true;
     setSubmitting(true);
     setFormError('');
 
@@ -406,6 +461,7 @@ export default function BrokerDashboard() {
       contact_email: form.email.trim(),
       contact_phone: form.phone.trim(),
       logo: getInitials(form.name),
+      year_type: form.year_type || 'calendar',
     };
 
     try {
@@ -419,30 +475,34 @@ export default function BrokerDashboard() {
           await loadCompanies();
         }
         setSuccess('Company updated successfully.');
+        closeFormModal();
       } else {
         const created = await createCompanyRequest(payload);
         if (created?.id) {
           const formatted = formatCompany({ ...created, request_count: 0, pending_request_count: 0, completed_request_count: 0 });
           setCompanies((prev) => [formatted, ...prev]);
           setPage(1);
-          // Create team members
+          setSuccess('Company created successfully.');
+          closeFormModal();
+          // Create team members (background, non-blocking)
           if (teamMembers.length > 0) {
             const valid = teamMembers.filter((m) => m.name?.trim() && m.email?.trim() && m.password?.trim());
-            await Promise.allSettled(valid.map((m) =>
+            Promise.allSettled(valid.map((m) =>
               createUserRequest({ name: m.name.trim(), email: m.email.trim(), phone: m.phone?.trim() || null, password: m.password, role: 'buyer', sub_role: m.sub_role, company_id: created.id, company_ids: [created.id], status: 'active' })
             ));
           }
-          // Auto-create message groups (non-fatal)
-          try { await triggerAutoCreateMessageGroups(created.id); } catch { /* ignore */ }
+          // Auto-create message groups (fire-and-forget)
+          triggerAutoCreateMessageGroups(created.id).catch(() => { });
         } else {
           await loadCompanies();
+          setSuccess('Company created successfully.');
+          closeFormModal();
         }
-        setSuccess('Company created successfully.');
       }
-      closeFormModal();
     } catch (err) {
       setFormError(formatApiError(err));
     } finally {
+      submittingRef.current = false;
       setSubmitting(false);
     }
   };
@@ -536,19 +596,50 @@ export default function BrokerDashboard() {
           {/* Toolbar */}
           <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
             <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center">
-              {/* Search */}
-              <div className="flex items-center gap-2 border border-gray-200 rounded-xl px-3 py-2 focus-within:ring-2 focus-within:ring-[#8BC53D]/30 flex-1 min-w-0">
-                <Search size={15} className="text-[#A5A5A5] flex-shrink-0" />
-                <input
-                  value={search}
-                  onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-                  placeholder="Search by project, company, industry, contact, email or phone..."
-                  className="text-sm outline-none text-[#050505] placeholder-[#A5A5A5] bg-transparent w-full"
-                />
-                {search && (
-                  <button onClick={() => { setSearch(''); setPage(1); }} className="text-[#A5A5A5] hover:text-[#050505]">
-                    <X size={13} />
-                  </button>
+              {/* Search with autocomplete */}
+              <div className="relative flex-1 min-w-0" ref={searchRef}>
+                <div className="flex items-center gap-2 border border-gray-200 rounded-xl px-3 py-2 focus-within:ring-2 focus-within:ring-[#8BC53D]/30">
+                  <Search size={15} className="text-[#A5A5A5] flex-shrink-0" />
+                  <input
+                    value={search}
+                    onChange={(e) => { setSearch(e.target.value); setPage(1); setShowSuggestions(true); }}
+                    onFocus={() => { if (search.trim()) setShowSuggestions(true); }}
+                    placeholder="Search by project, company, industry, contact, email or phone..."
+                    className="text-sm outline-none text-[#050505] placeholder-[#A5A5A5] bg-transparent w-full"
+                  />
+                  {search && (
+                    <button onClick={() => { setSearch(''); setPage(1); setShowSuggestions(false); }} className="text-[#A5A5A5] hover:text-[#050505]">
+                      <X size={13} />
+                    </button>
+                  )}
+                </div>
+                {/* Suggestions dropdown */}
+                {showSuggestions && suggestions.length > 0 && (
+                  <div className="absolute top-full left-0 right-0 mt-1.5 bg-white rounded-xl border border-gray-200 shadow-lg z-50 overflow-hidden">
+                    {suggestions.map((c) => (
+                      <button
+                        key={c.id}
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => { setSearch(c.name); setPage(1); setShowSuggestions(false); }}
+                        className="w-full px-3 py-2.5 text-left hover:bg-[#F8FAFC] flex items-center gap-2.5 border-b border-gray-50 last:border-0 transition-colors"
+                      >
+                        <div className="w-7 h-7 rounded-lg bg-[#05164D] flex items-center justify-center text-[11px] font-bold text-white flex-shrink-0">
+                          {c.logo}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-semibold text-[#05164D] truncate">{c.name}</p>
+                          {c.projectName && (
+                            <p className="text-[11px] text-gray-400 truncate">{c.projectName}</p>
+                          )}
+                        </div>
+                        {c.industry && (
+                          <span className="text-[10px] text-gray-400 flex-shrink-0 bg-gray-50 rounded-full px-2 py-0.5 hidden sm:block">
+                            {c.industry}
+                          </span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
                 )}
               </div>
               {/* Industry filter */}
@@ -733,6 +824,20 @@ export default function BrokerDashboard() {
                 </div>
               ))}
             </div>
+            <div className={`flex items-center gap-3 rounded-xl p-3 ${selected.yearType === 'fiscal' ? 'bg-[#FFF8EC] border border-[#F68C1F]/20' : 'bg-[#EEF6E0] border border-[#8BC53D]/20'}`}>
+              <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${selected.yearType === 'fiscal' ? 'bg-[#F68C1F]/10' : 'bg-[#8BC53D]/10'}`}>
+                <Calendar size={14} className={selected.yearType === 'fiscal' ? 'text-[#F68C1F]' : 'text-[#476E2C]'} />
+              </div>
+              <div>
+                <p className="text-xs text-[#A5A5A5] font-medium">Fiscal Year Type</p>
+                <p className={`text-sm font-semibold ${selected.yearType === 'fiscal' ? 'text-[#b45e08]' : 'text-[#476E2C]'}`}>
+                  {selected.yearType === 'fiscal' ? 'Fiscal Year' : 'Calendar Year'}
+                  <span className="ml-2 text-[10px] font-medium text-[#A5A5A5]">
+                    {selected.yearType === 'fiscal' ? 'Custom fiscal period' : 'Jan 1 – Dec 31'}
+                  </span>
+                </p>
+              </div>
+            </div>
             <div className="space-y-2">
               <p className="text-xs font-semibold uppercase tracking-wide text-[#6D6E71]">Request Summary</p>
               <div className="grid grid-cols-3 gap-3">
@@ -767,7 +872,7 @@ export default function BrokerDashboard() {
       </Modal>
 
       {/* ── Add / Edit Company Modal ── */}
-      <Modal isOpen={showAdd} onClose={closeFormModal} title={editing ? 'Edit Company' : 'Add New Company'}>
+      <Modal isOpen={showAdd} onClose={submitting ? () => { } : closeFormModal} title={editing ? 'Edit Company' : 'Add New Company'}>
         <div className="space-y-4 pt-6">
           <FormError message={formError} />
 
@@ -784,7 +889,8 @@ export default function BrokerDashboard() {
                 value={form[field.key]}
                 onChange={(e) => setForm((c) => ({ ...c, [field.key]: e.target.value }))}
                 placeholder={field.placeholder}
-                className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all placeholder-[#A5A5A5]"
+                disabled={submitting}
+                className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all placeholder-[#A5A5A5] disabled:bg-gray-50 disabled:cursor-not-allowed"
               />
             </div>
           ))}
@@ -803,7 +909,8 @@ export default function BrokerDashboard() {
                   value={form[field.key]}
                   onChange={(e) => setForm((c) => ({ ...c, [field.key]: e.target.value }))}
                   placeholder={field.placeholder}
-                  className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all placeholder-[#A5A5A5]"
+                  disabled={submitting}
+                  className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all placeholder-[#A5A5A5] disabled:bg-gray-50 disabled:cursor-not-allowed"
                 />
               </div>
             ))}
@@ -816,7 +923,8 @@ export default function BrokerDashboard() {
               value={form.email}
               onChange={(e) => setForm((c) => ({ ...c, email: e.target.value }))}
               placeholder="contact@company.com"
-              className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all placeholder-[#A5A5A5]"
+              disabled={submitting}
+              className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all placeholder-[#A5A5A5] disabled:bg-gray-50 disabled:cursor-not-allowed"
             />
           </div>
 
@@ -830,7 +938,8 @@ export default function BrokerDashboard() {
                 onChange={(e) => setForm((c) => ({ ...c, phone: formatUSPhone(e.target.value) }))}
                 placeholder="(555) 000-0000"
                 maxLength={14}
-                className="min-w-0 flex-1 rounded-l-none rounded-r-xl border border-gray-200 px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all placeholder-[#A5A5A5]"
+                disabled={submitting}
+                className="min-w-0 flex-1 rounded-l-none rounded-r-xl border border-gray-200 px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all placeholder-[#A5A5A5] disabled:bg-gray-50 disabled:cursor-not-allowed"
               />
             </div>
           </div>
@@ -848,7 +957,8 @@ export default function BrokerDashboard() {
                   setForm((c) => ({ ...c, industry: e.target.value }));
                 }
               }}
-              className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all text-[#050505] bg-white"
+              disabled={submitting}
+              className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all text-[#050505] bg-white disabled:bg-gray-50 disabled:cursor-not-allowed"
             >
               <option value="">Select industry…</option>
               {INDUSTRY_OPTIONS.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
@@ -860,7 +970,8 @@ export default function BrokerDashboard() {
                 value={form.industry}
                 onChange={(e) => setForm((c) => ({ ...c, industry: e.target.value }))}
                 placeholder="Enter industry name"
-                className="mt-3 w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all placeholder-[#A5A5A5]"
+                disabled={submitting}
+                className="mt-3 w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all placeholder-[#A5A5A5] disabled:bg-gray-50 disabled:cursor-not-allowed"
               />
             )}
           </div>
@@ -883,6 +994,33 @@ export default function BrokerDashboard() {
             </p>
           </div>
 
+          {/* Fiscal Year Type */}
+          <div>
+            <label className="block text-sm font-medium text-[#050505] mb-1.5">
+              Fiscal Year Type <span className="text-[#C62026]">*</span>
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              {YEAR_TYPE_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  disabled={submitting}
+                  onClick={() => setForm((c) => ({ ...c, year_type: opt.value }))}
+                  className={`flex items-center gap-2.5 px-4 py-3 rounded-xl border text-left transition-all disabled:cursor-not-allowed disabled:opacity-50 ${form.year_type === opt.value
+                    ? 'border-[#8BC53D] bg-[#EEF6E0] text-[#476E2C]'
+                    : 'border-gray-200 text-[#6D6E71] hover:border-gray-300 hover:bg-gray-50'
+                    }`}
+                >
+                  <Calendar size={15} className={form.year_type === opt.value ? 'text-[#8BC53D] flex-shrink-0' : 'text-[#A5A5A5] flex-shrink-0'} />
+                  <div>
+                    <p className="text-sm font-semibold leading-tight">{opt.label}</p>
+                    <p className="text-[10px] text-[#A5A5A5] mt-0.5">{opt.description}</p>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+
           {/* Team Members — creation only */}
           {!editing && (
             <div className="border border-dashed border-gray-200 rounded-2xl p-4">
@@ -894,7 +1032,8 @@ export default function BrokerDashboard() {
                 <button
                   type="button"
                   onClick={addTeamMember}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#E6F3D3] text-[#476E2C] text-xs font-semibold hover:bg-[#d4ebbf] transition-colors"
+                  disabled={submitting}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#E6F3D3] text-[#476E2C] text-xs font-semibold hover:bg-[#d4ebbf] transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <UserPlus size={13} /> Add Member
                 </button>
@@ -938,7 +1077,7 @@ export default function BrokerDashboard() {
                 Delete
               </button>
             )}
-            <button onClick={closeFormModal} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-[#6D6E71] hover:bg-gray-50 transition-colors">
+            <button onClick={closeFormModal} disabled={submitting} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-[#6D6E71] hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
               Cancel
             </button>
             <button

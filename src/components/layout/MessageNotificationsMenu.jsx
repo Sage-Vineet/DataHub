@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Bell, MessageSquare, X } from 'lucide-react';
+import { Bell, MessageSquare, Users, X } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useMessageNotifications } from '../../context/MessageNotificationsContext';
 
@@ -39,6 +39,19 @@ export default function MessageNotificationsMenu({ portal = 'client', companyId 
       return;
     }
     navigate('/client/messages');
+  };
+
+  const getNotificationIcon = (notification) => {
+    if (notification.type === 'group') return <Users size={16} />;
+    return <MessageSquare size={16} />;
+  };
+
+  const getNotificationSubtitle = (notification) => {
+    if (notification.type === 'group') {
+      const count = notification.unreadCount > 1 ? `${notification.unreadCount} unread` : '';
+      return [notification.groupName, count].filter(Boolean).join(' · ');
+    }
+    return `${notification.companyName} · ${notification.participantRole}`;
   };
 
   return (
@@ -94,18 +107,24 @@ export default function MessageNotificationsMenu({ portal = 'client', companyId 
                   className="w-full border-b border-border-light px-4 py-3 text-left transition-colors hover:bg-bg-page"
                 >
                   <div className="flex items-start gap-3">
-                    <div className="mt-0.5 flex h-9 w-9 items-center justify-center rounded-full bg-[#EEF6E0] text-[#476E2C]">
-                      <MessageSquare size={16} />
+                    <div className={`mt-0.5 flex h-9 w-9 items-center justify-center rounded-full flex-shrink-0 ${notification.type === 'group' ? 'bg-[#E8ECF5] text-[#05164D]' : 'bg-[#EEF6E0] text-[#476E2C]'}`}>
+                      {getNotificationIcon(notification)}
                     </div>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center justify-between gap-2">
-                        <p className="truncate text-sm font-semibold text-text-primary">{notification.participantName}</p>
+                        <p className="truncate text-sm font-semibold text-text-primary">
+                          {notification.type === 'group' ? notification.groupName : notification.participantName}
+                        </p>
                         <span className="text-[10px] text-text-muted">{formatTime(notification.createdAt)}</span>
                       </div>
                       <p className="mt-0.5 text-[11px] font-medium text-secondary">
-                        {notification.companyName} · {notification.participantRole}
+                        {getNotificationSubtitle(notification)}
                       </p>
-                      <p className="mt-1 line-clamp-2 text-xs text-text-muted">{notification.body}</p>
+                      <p className="mt-1 line-clamp-2 text-xs text-text-muted">
+                        {notification.type === 'group' && notification.senderName
+                          ? `${notification.senderName}: ${notification.body}`
+                          : notification.body}
+                      </p>
                     </div>
                   </div>
                 </button>

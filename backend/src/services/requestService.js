@@ -167,6 +167,45 @@ async function getRequestById(requestId) {
 }
 
 /**
+ * Enriches a single request row with user name/sub_role fields for
+ * created_by, approved_by, and assigned_to. Safe to call after any UPDATE
+ * that returns a raw RETURNING * row without joined user data.
+ * Falls back gracefully to the original row if user lookup fails.
+ */
+async function enrichRequestRow(row) {
+  if (!row) return row;
+  const ids = [...new Set([row.created_by, row.approved_by, row.assigned_to].filter(Boolean))];
+  if (!ids.length) return row;
+  try {
+    const users = await pgQuery('SELECT id, name, email, sub_role FROM users WHERE id = ANY($1)', [ids]);
+    const map = Object.fromEntries(users.map((u) => [String(u.id), u]));
+    return {
+      ...row,
+      created_by_name: map[String(row.created_by)]?.name ?? row.created_by_name ?? null,
+      created_by_email: map[String(row.created_by)]?.email ?? row.created_by_email ?? null,
+      approved_by_name: map[String(row.approved_by)]?.name ?? row.approved_by_name ?? null,
+      assigned_to_name: map[String(row.assigned_to)]?.name ?? row.assigned_to_name ?? null,
+      assigned_to_sub_role: map[String(row.assigned_to)]?.sub_role ?? row.assigned_to_sub_role ?? null,
+    };
+  } catch {
+    try {
+      const { data: users } = await supabase.from('users').select('id, name, email, sub_role').in('id', ids);
+      const map = Object.fromEntries((users || []).map((u) => [String(u.id), u]));
+      return {
+        ...row,
+        created_by_name: map[String(row.created_by)]?.name ?? row.created_by_name ?? null,
+        created_by_email: map[String(row.created_by)]?.email ?? row.created_by_email ?? null,
+        approved_by_name: map[String(row.approved_by)]?.name ?? row.approved_by_name ?? null,
+        assigned_to_name: map[String(row.assigned_to)]?.name ?? row.assigned_to_name ?? null,
+        assigned_to_sub_role: map[String(row.assigned_to)]?.sub_role ?? row.assigned_to_sub_role ?? null,
+      };
+    } catch {
+      return row;
+    }
+  }
+}
+
+/**
  * Lists requests for a company
  */
 async function listRequestsByCompany(companyId) {
@@ -236,6 +275,7 @@ async function createRequest(companyId, payload) {
  * Updates an existing request
  */
 async function updateRequest(requestId, payload) {
+  let raw;
   try {
     const keys = Object.keys(payload);
     if (!keys.length) throw new Error("Nothing to update");
@@ -244,12 +284,13 @@ async function updateRequest(requestId, payload) {
       `UPDATE requests SET ${set} WHERE id=$${keys.length + 1} RETURNING *`,
       [...keys.map((k) => payload[k]), requestId],
     );
-    return rows[0];
+    raw = rows[0];
   } catch {
     const { data, error } = await supabase.from("requests").update(payload).eq("id", requestId).select("*").single();
     if (error) throw error;
-    return data;
+    raw = data;
   }
+  return enrichRequestRow(raw);
 }
 
 /**
@@ -328,6 +369,7 @@ async function createRequestsBulk(companyId, items, createdBy) {
  */
 async function approveRequest(requestId, approvedBy, assignedTo = null) {
   const now = new Date().toISOString();
+  let raw;
   try {
     const query = assignedTo
       ? "UPDATE requests SET approval_status='approved', approved_by=$1, approved_at=$2, updated_at=$3, assigned_to=$5 WHERE id=$4 RETURNING *"
@@ -337,7 +379,7 @@ async function approveRequest(requestId, approvedBy, assignedTo = null) {
       : [approvedBy, now, now, requestId];
     const rows = await pgQuery(query, params);
     await createReminderEvent(requestId, approvedBy);
-    return rows[0];
+    raw = rows[0];
   } catch {
     const updatePayload = { approval_status: "approved", approved_by: approvedBy, approved_at: now, updated_at: now };
     if (assignedTo) updatePayload.assigned_to = assignedTo;
@@ -346,8 +388,9 @@ async function approveRequest(requestId, approvedBy, assignedTo = null) {
       .eq("id", requestId).select("*").single();
     if (error) throw error;
     await createReminderEvent(requestId, approvedBy);
-    return data;
+    raw = data;
   }
+  return enrichRequestRow(raw);
 }
 
 async function deleteRequest(requestId) {

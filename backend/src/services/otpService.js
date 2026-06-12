@@ -5,10 +5,10 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { supabase } = require("../db");
 
-const OTP_EXPIRY_MS       = 10 * 60 * 1000;  // 10 minutes
-const MAX_ATTEMPTS        = 5;
-const MAX_RESENDS         = 3;
-const RESEND_WINDOW_MS    = 10 * 60 * 1000;  // per 10-minute window
+const OTP_EXPIRY_MS = 10 * 60 * 1000;  // 10 minutes
+const MAX_ATTEMPTS = 5;
+const MAX_RESENDS = 3;
+const RESEND_WINDOW_MS = 10 * 60 * 1000;  // per 10-minute window
 const VERIFICATION_TOKEN_TTL = "15m";
 
 // ── In-memory fallback ────────────────────────────────────────────────────────
@@ -93,12 +93,12 @@ async function _storeOtp(email, otpHash, resendCount) {
   try {
     const { error } = await supabase.from("email_verifications").insert({
       email,
-      otp_hash:     otpHash,
-      attempts:     0,
+      otp_hash: otpHash,
+      attempts: 0,
       resend_count: resendCount,
-      verified:     false,
-      created_at:   now.toISOString(),
-      expires_at:   expiresAt.toISOString(),
+      verified: false,
+      created_at: now.toISOString(),
+      expires_at: expiresAt.toISOString(),
     });
     if (error) {
       if (_isTableMissing(error)) {

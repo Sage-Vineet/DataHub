@@ -547,9 +547,9 @@ function TopBar({ tree, currentPath, onUpload, role, currentFolderPermissions, a
   };
 
   return (
-    <div className="bg-white border-b border-gray-100 px-4 py-3 flex items-center gap-3 flex-wrap flex-shrink-0">
-      {/* Back + Breadcrumbs */}
-      <div className="flex items-center gap-2 flex-1 min-w-0">
+    <div className="bg-white border-b border-gray-100 flex-shrink-0">
+      {/* Row 1: Breadcrumbs */}
+      <div className="px-4 pt-2.5 pb-2 flex items-center gap-2 border-b border-gray-50">
         {currentPath.length > 1 && (
           <button
             onClick={goBack}
@@ -561,6 +561,8 @@ function TopBar({ tree, currentPath, onUpload, role, currentFolderPermissions, a
         <Breadcrumbs tree={tree} currentPath={currentPath} />
       </div>
 
+      {/* Row 2: Controls */}
+      <div className="px-4 py-2 flex items-center gap-3 flex-wrap">
       {/* Search */}
       <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-xl px-3 py-2 w-56 focus-within:ring-2 focus-within:ring-[#8BC53D]/30 focus-within:border-[#8BC53D] transition-all">
         <Search size={14} className="text-[#A5A5A5] flex-shrink-0" />
@@ -668,6 +670,7 @@ function TopBar({ tree, currentPath, onUpload, role, currentFolderPermissions, a
       >
         <Upload size={14} /> Upload
       </button>
+      </div>
     </div>
   );
 }
@@ -882,7 +885,7 @@ function FileCard({ item, role, permissions, sharedMeta, onShareAccess, onMoveFo
 
       {/* Hover Actions */}
       {item.type === 'file' && (
-        <div className="absolute top-2 right-2 hidden group-hover:flex gap-1">
+        <div className="absolute top-2 right-2 hidden group-hover:flex gap-1 items-center">
           <button
             onClick={e => { e.stopPropagation(); if (canRead) onPreviewFile(item); }}
             disabled={!canRead}
@@ -908,6 +911,14 @@ function FileCard({ item, role, permissions, sharedMeta, onShareAccess, onMoveFo
           >
             <Download size={11} className="text-[#6D6E71]" />
           </button>
+          {canManage && (
+            <FileActionMenu
+              onRename={() => startRenaming(item.id)}
+              onMove={() => onMoveFolder(item)}
+              onDelete={() => useFileExplorerStore.getState().deleteItems([item.id])}
+              isArchiveView={isArchiveView}
+            />
+          )}
         </div>
       )}
 
@@ -1068,16 +1079,13 @@ function FileRow({ item, role, permissions, sharedMeta, onShareAccess, onMoveFol
             />
           )}
           {item.type === 'file' && canManage && (
-            <>
-              <button
-                onClick={e => { e.stopPropagation(); startRenaming(item.id); }}
-                className="p-1 rounded-lg hover:bg-gray-100 text-[#6D6E71]"
-              ><Pencil size={13} /></button>
-              <button
-                onClick={e => { e.stopPropagation(); useFileExplorerStore.getState().deleteItems([item.id]); }}
-                className="p-1 rounded-lg hover:bg-red-50 text-red-400"
-              ><Trash2 size={13} /></button>
-            </>
+            <FileActionMenu
+              onRename={() => startRenaming(item.id)}
+              onMove={() => onMoveFolder(item)}
+              onDelete={() => useFileExplorerStore.getState().deleteItems([item.id])}
+              isArchiveView={isArchiveView}
+              className="opacity-100"
+            />
           )}
         </div>
       </td>
@@ -1247,6 +1255,62 @@ function FolderActionMenu({ onShareAccess, onRename, onMove, onDelete, isArchive
           >
             <Trash2 size={14} />
             Delete Folder
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FileActionMenu({ onRename, onMove, onDelete, isArchiveView, className }) {
+  const [open, setOpen] = useState(false);
+  const menuRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const handle = (e) => {
+      if (menuRef.current && !menuRef.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handle);
+    return () => document.removeEventListener('mousedown', handle);
+  }, [open]);
+
+  return (
+    <div className={`relative ${className || ''}`} ref={menuRef}>
+      <button
+        onClick={(e) => { e.stopPropagation(); setOpen(o => !o); }}
+        className="w-7 h-7 rounded-lg bg-white border border-gray-100 shadow-sm flex items-center justify-center hover:bg-gray-50"
+        aria-label="File actions"
+      >
+        <MoreVertical size={13} className="text-[#6D6E71]" />
+      </button>
+      {open && (
+        <div className="absolute right-0 mt-2 w-44 bg-white rounded-2xl shadow-xl border border-gray-100 py-2 z-20 animate-fadeIn">
+          {!isArchiveView && (
+            <>
+              <button
+                onClick={() => { onRename(); setOpen(false); }}
+                className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-gray-50"
+              >
+                <Pencil size={14} className="text-[#6D6E71]" />
+                Rename File
+              </button>
+              <button
+                onClick={() => { onMove(); setOpen(false); }}
+                className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left hover:bg-gray-50"
+              >
+                <ArrowUpDown size={14} className="text-[#6D6E71]" />
+                Move File
+              </button>
+            </>
+          )}
+          {!isArchiveView && <div className="my-1 border-t border-gray-100" />}
+          <button
+            onClick={() => { onDelete(); setOpen(false); }}
+            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-left text-red-500 hover:bg-red-50"
+          >
+            <Trash2 size={14} />
+            Delete File
           </button>
         </div>
       )}
@@ -1477,7 +1541,7 @@ function MoveFolderModal({ isOpen, folder, tree, onMove, onClose }) {
       <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg mx-4 overflow-hidden">
         <div className="flex items-center justify-between p-5 border-b border-gray-100">
           <div>
-            <p className="text-xs text-[#A5A5A5] uppercase tracking-wide">Move Folder</p>
+            <p className="text-xs text-[#A5A5A5] uppercase tracking-wide">{folder.type === 'folder' ? 'Move Folder' : 'Move File'}</p>
             <h3 className="text-xl font-bold text-[#050505]">{folder.name}</h3>
           </div>
           <button onClick={onClose} className="p-2 rounded-xl hover:bg-gray-100 text-[#6D6E71]">
@@ -1509,7 +1573,7 @@ function MoveFolderModal({ isOpen, folder, tree, onMove, onClose }) {
             onClick={() => onMove(folder.id, targetId)}
             className="px-5 py-2.5 rounded-xl bg-[#05164D] text-white text-sm font-semibold hover:bg-[#041240]"
           >
-            Move Folder
+            {folder.type === 'folder' ? 'Move Folder' : 'Move File'}
           </button>
         </div>
       </div>
@@ -2559,9 +2623,9 @@ export default function FileExplorer({ role = 'broker', title, companyId, curren
     setShareModal({ folderId: folder.id });
   };
 
-  const openMoveFolder = (folder) => {
-    if (!canManageAccess || folder?.type !== 'folder') return;
-    setMoveModal({ folderId: folder.id });
+  const openMoveFolder = (item) => {
+    if (!canManageAccess) return;
+    setMoveModal({ folderId: item.id });
   };
 
   const recordActivity = useCallback((documentId, activityType) => {
