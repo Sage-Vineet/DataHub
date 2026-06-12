@@ -188,11 +188,6 @@ const monthLabel = (ym) => {
     month: "short",
   });
 };
-// "2025-01" → "01-01-2025"  (dd-mm-yyyy, day fixed to 01 for month selectors)
-const monthLabelDMY = (ym) => {
-  const [y, m] = ym.split("-");
-  return `01-${String(m).padStart(2, "0")}-${y}`;
-};
 
 /**
  * FreezeTable — frozen month header row with horizontally-scrollable body.
@@ -2403,44 +2398,40 @@ export default function WorkspaceReconciliation() {
               </p>
             </div>
             <div className="flex items-end gap-3">
-              {/* Month Range Filter — Manual Upload, Manual GL, QuickBooks Manual */}
+              {/* Date Range Filter — Manual Upload, Manual GL, QuickBooks Manual */}
               {(isManualUpload || isManualGl || isQBManual) && allPdfMonths.length > 0 && (
                 <>
                   <div>
                     <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
                       Start Date
                     </label>
-                    <select
-                      className="input-base h-10 w-auto min-w-[140px]"
-                      value={manualMonthStart || ""}
+                    <input
+                      type="date"
+                      className="input-base h-10 w-auto min-w-[150px]"
+                      value={manualMonthStart ? `${manualMonthStart}-01` : ""}
                       onChange={(e) => {
-                        const val = e.target.value;
-                        setManualMonthStart(val);
-                        if (manualMonthEnd && val > manualMonthEnd) setManualMonthEnd(val);
+                        if (!e.target.value) return;
+                        const isoKey = e.target.value.slice(0, 7);
+                        setManualMonthStart(isoKey);
+                        if (manualMonthEnd && isoKey > manualMonthEnd) setManualMonthEnd(isoKey);
                       }}
-                    >
-                      {allPdfMonths.map((m) => (
-                        <option key={m} value={m}>{monthLabelDMY(m)}</option>
-                      ))}
-                    </select>
+                    />
                   </div>
                   <div>
                     <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
                       End Date
                     </label>
-                    <select
-                      className="input-base h-10 w-auto min-w-[140px]"
-                      value={manualMonthEnd || ""}
+                    <input
+                      type="date"
+                      className="input-base h-10 w-auto min-w-[150px]"
+                      value={manualMonthEnd ? `${manualMonthEnd}-01` : ""}
                       onChange={(e) => {
-                        const val = e.target.value;
-                        setManualMonthEnd(val);
-                        if (manualMonthStart && val < manualMonthStart) setManualMonthStart(val);
+                        if (!e.target.value) return;
+                        const isoKey = e.target.value.slice(0, 7);
+                        setManualMonthEnd(isoKey);
+                        if (manualMonthStart && isoKey < manualMonthStart) setManualMonthStart(isoKey);
                       }}
-                    >
-                      {allPdfMonths.map((m) => (
-                        <option key={m} value={m}>{monthLabelDMY(m)}</option>
-                      ))}
-                    </select>
+                    />
                   </div>
                 </>
               )}
