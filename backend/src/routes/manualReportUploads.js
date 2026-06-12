@@ -39,6 +39,124 @@ const {
 } = require("../services/manualCashFlowService");
 const { supabase } = require("../db");
 const { canAccessCompany } = require("../services/permissionService");
+const { runBsBankBalancesExtraction } = require("./quickbooks/reconciliation/bankVsBooks");
+
+// Extracts monthly Total Income and Total Expenses from the latest P&L stored in qb_synced_reports.
+// Returns { totalIncome: { "YYYY-MM": number }, totalExpenses: { "YYYY-MM": number } } or null.
+async function extractPlFinancials(clientId, source) {
+  try {
+    const { data: row } = await supabase
+      .from("qb_synced_reports")
+      .select("data")
+      .eq("company_id", clientId)
+      .eq("source", source)
+      .eq("report_type", "profit_and_loss")
+      .order("updated_at", { ascending: false })
+      .order("last_synced_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (!row?.data?.manual_report_upload?.report) return null;
+    const report = row.data.manual_report_upload.report;
+    const rows = report.rows || [];
+    const periods = report.periods || [];
+
+    const flat = [];
+    const flatten = (items) => {
+      for (const item of (items || [])) {
+        flat.push(item);
+        if (item.children) flatten(item.children);
+      }
+    };
+    flatten(rows);
+
+    const lc = (s) => String(s || "").toLowerCase().trim();
+
+    // Find the best matching row: prefer type="total", then any match.
+    // Also fall back to section header (type="header") when no explicit total row exists.
+    const findRow = (totalPatterns, headerPatterns) => {
+      const hits = flat.filter((r) => totalPatterns.some((p) => lc(r.name).includes(p)));
+      if (hits.length) {
+        const totals = hits.filter((r) => r.type === "total");
+        return totals.length ? totals[totals.length - 1] : hits[hits.length - 1];
+      }
+      // Fallback: exact-name section header (e.g. "Income", "Revenue", "Expenses")
+      if (headerPatterns) {
+        return flat.find((r) => r.type === "header" && headerPatterns.some((p) => lc(r.name) === p)) || null;
+      }
+      return null;
+    };
+
+    const incomeRow   = findRow(
+      ["total income", "total revenue", "net revenue", "total sales", "gross revenue", "operating revenue"],
+      ["income", "revenue", "sales", "gross profit"],
+    );
+    const expensesRow = findRow(
+      ["total expenses", "total operating expenses", "total expense"],
+      ["expenses", "operating expenses", "expense"],
+    );
+    if (!incomeRow && !expensesRow) return null;
+
+    const MONTHS = { jan:"01",feb:"02",mar:"03",apr:"04",may:"05",jun:"06",
+                     jul:"07",aug:"08",sep:"09",oct:"10",nov:"11",dec:"12" };
+
+    // Infer year from report dates — used when period labels lack a year component (e.g. "Jan", "Feb")
+    const baseYear = (() => {
+      const d = report.asOfDate || report.periodEnd || report.periodStart;
+      return d ? parseInt(String(d).split("-")[0], 10) : null;
+    })();
+
+    const periodToKey = (label) => {
+      const s = String(label || "").trim();
+      // "Jan 25", "Jan-25", "January 2025", etc.
+      const m = s.match(/^([a-z]+)[\s.\-_]*(\d{2,4})$/i);
+      if (m) {
+        const mm = MONTHS[m[1].slice(0,3).toLowerCase()];
+        if (mm) { let yr = parseInt(m[2], 10); if (yr < 100) yr += 2000; return `${yr}-${mm}`; }
+      }
+      // "2025-01" ISO format
+      const m2 = s.match(/^(\d{4})-(\d{1,2})$/);
+      if (m2) return `${m2[1]}-${String(m2[2]).padStart(2,"0")}`;
+      // Year-less label ("Jan", "February") — use inferred base year
+      if (baseYear) {
+        const mm = MONTHS[s.slice(0,3).toLowerCase()];
+        if (mm) return `${baseYear}-${mm}`;
+      }
+      return null;
+    };
+
+    if (periods.length > 0) {
+      const totalIncome = {}, totalExpenses = {};
+      periods.forEach((label, i) => {
+        if (/^total$/i.test(String(label).trim())) return;
+        const k = periodToKey(label);
+        if (!k) return;
+        const inc = incomeRow?.colAmounts?.[i];
+        if (inc != null) totalIncome[k] = inc;
+        const exp = expensesRow?.colAmounts?.[i];
+        if (exp != null) totalExpenses[k] = exp;
+      });
+      if (Object.keys(totalIncome).length || Object.keys(totalExpenses).length) {
+        return { totalIncome, totalExpenses };
+      }
+      // colAmounts may be missing — fall through to single-amount path
+    }
+
+    // Annual P&L (no period columns) — map single total to December of detected year
+    const asOfDate = report.asOfDate || report.periodEnd;
+    const year = asOfDate ? String(asOfDate).split("-")[0] : (baseYear ? String(baseYear) : null);
+    const income  = typeof incomeRow?.amount   === "number" ? incomeRow.amount   : null;
+    const expense = typeof expensesRow?.amount === "number" ? expensesRow.amount : null;
+    if (!year || (income == null && expense == null)) return null;
+    return {
+      totalIncome:   income  != null ? { [`${year}-12`]: income  } : {},
+      totalExpenses: expense != null ? { [`${year}-12`]: expense } : {},
+    };
+  } catch (e) {
+    console.warn(`[PLFinancials] extractPlFinancials failed (non-fatal): ${e.message}`);
+    return null;
+  }
+}
 
 const router = express.Router();
 router.use(requireAuth);
@@ -454,15 +572,18 @@ router.get("/manual-report-uploads/qms-bank-data", async (req, res) => {
     const clientId = resolveClientId(req);
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
 
-    const { data: row, error } = await supabase
-      .from("qb_synced_reports")
-      .select("data")
-      .eq("company_id", clientId)
-      .eq("source", "quickbooks_manual_upload")
-      .eq("report_type", STATEMENT_TYPES.BANK_RECONCILIATION)
-      .order("last_synced_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    const [{ data: row, error }, plFinancials] = await Promise.all([
+      supabase
+        .from("qb_synced_reports")
+        .select("data")
+        .eq("company_id", clientId)
+        .eq("source", "quickbooks_manual_upload")
+        .eq("report_type", STATEMENT_TYPES.BANK_RECONCILIATION)
+        .order("last_synced_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+      extractPlFinancials(clientId, "quickbooks_manual_upload").catch(() => null),
+    ]);
 
     if (error) throw new Error(error.message);
 
@@ -472,6 +593,7 @@ router.get("/manual-report-uploads/qms-bank-data", async (req, res) => {
       banks: bankData.banks || [],
       months: bankData.months || [],
       totals: bankData.totals || [],
+      plFinancials,
     });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message || "Failed to fetch QMS bank data." });
@@ -1126,6 +1248,23 @@ router.get("/manual-upload/bank-data", async (req, res) => {
     const clientId = resolveClientId(req);
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
 
+    // Fetch P&L financials in parallel — merges Sales/Expenses per Financials into this response
+    const plFinancialsPromise = extractPlFinancials(clientId, MANUAL_REPORT_UPLOAD_SOURCE).catch(() => null);
+
+    // Start BS bank accounts fetch in parallel — merges /bs-bank-balances into this response
+    const bsBankAccountsPromise = runBsBankBalancesExtraction(
+      clientId, MANUAL_REPORT_UPLOAD_SOURCE, "Manual Upload Source"
+    ).then(r => {
+      const b = r?.body;
+      if (b?.bankAccounts?.length > 0) {
+        return { year: b.year ?? null, fileName: b.fileName ?? null, documentId: b.documentId ?? null, bankAccounts: b.bankAccounts };
+      }
+      return null;
+    }).catch(e => {
+      console.warn(`[BANK SOURCE] BS bank accounts non-fatal: ${e.message}`);
+      return null;
+    });
+
     console.log(`[BANK SOURCE] source=manual_upload clientId=${clientId} — checking cache...`);
 
     // 1. Check source-isolated cache (manual_report_upload only)
@@ -1142,6 +1281,7 @@ router.get("/manual-upload/bank-data", async (req, res) => {
     if (cached?.data?.bank_reconciliation?.banks?.length > 0) {
       const bd = cached.data.bank_reconciliation;
       console.log(`[BANK SOURCE] Cache hit — ${bd.banks.length} bank(s) for ${clientId}`);
+      const [balanceSheetBankAccounts, plFinancials] = await Promise.all([bsBankAccountsPromise, plFinancialsPromise]);
       return res.json({
         success: true,
         source: "manual_upload",
@@ -1149,6 +1289,8 @@ router.get("/manual-upload/bank-data", async (req, res) => {
         months: bd.months || [],
         totals: bd.totals || [],
         syncedAt: bd.syncedAt || cached.updated_at,
+        balanceSheetBankAccounts,
+        plFinancials,
       });
     }
 
@@ -1173,6 +1315,8 @@ router.get("/manual-upload/bank-data", async (req, res) => {
         months: [],
         totals: [],
         message: "No bank statements uploaded. Upload PDF or Excel files to Manual Upload Source → Bank Statement in the Data Room.",
+        balanceSheetBankAccounts: await bsBankAccountsPromise,
+        plFinancials: await plFinancialsPromise,
       });
     }
 
@@ -1199,6 +1343,8 @@ router.get("/manual-upload/bank-data", async (req, res) => {
         months: [],
         totals: [],
         message: "No bank statements uploaded. Create a Bank Statement folder under Manual Upload Source in the Data Room.",
+        balanceSheetBankAccounts: await bsBankAccountsPromise,
+        plFinancials: await plFinancialsPromise,
       });
     }
 
@@ -1218,6 +1364,8 @@ router.get("/manual-upload/bank-data", async (req, res) => {
         months: [],
         totals: [],
         message: "No bank statements uploaded. Upload PDF or Excel files to Manual Upload Source → Bank Statement in the Data Room.",
+        balanceSheetBankAccounts: await bsBankAccountsPromise,
+        plFinancials: await plFinancialsPromise,
       });
     }
 
@@ -1278,12 +1426,15 @@ router.get("/manual-upload/bank-data", async (req, res) => {
         months: [],
         totals: [],
         message: "No bank statement data could be extracted from the uploaded files.",
+        balanceSheetBankAccounts: await bsBankAccountsPromise,
+        plFinancials: await plFinancialsPromise,
       });
     }
 
     const { banks, months, totals } = buildBankResponseShape(allStatements);
     console.log(`[BANK SOURCE] Extracted ${banks.length} bank(s) from ${documents.length} file(s) for ${clientId}`);
-    return res.json({ success: true, source: "manual_upload", banks, months, totals });
+    const [balanceSheetBankAccounts, plFinancials] = await Promise.all([bsBankAccountsPromise, plFinancialsPromise]);
+    return res.json({ success: true, source: "manual_upload", banks, months, totals, balanceSheetBankAccounts, plFinancials });
   } catch (error) {
     console.error("[BANK SOURCE] Error:", error);
     return res.status(500).json({ success: false, error: error.message || "Failed to fetch manual upload bank data." });

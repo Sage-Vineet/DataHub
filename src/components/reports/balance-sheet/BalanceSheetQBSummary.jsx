@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useRef, useEffect, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { cn, formatCurrency } from "../../../lib/utils";
 
@@ -30,7 +30,10 @@ const QBRow = ({ line, depth = 0, columns }) => {
           (isTotal || (isHeader && depth === 0)) && "bg-bg-page/60 font-semibold border-b-2 border-text-primary",
         )}
       >
-        <td className="py-2.5 px-4 text-left bg-inherit z-10 min-w-[400px]">
+        <td className={cn(
+          "py-2.5 px-4 text-left z-10 min-w-[400px] sticky left-0",
+          (isTotal || (isHeader && depth === 0)) ? "bg-bg-page" : "bg-bg-card",
+        )}>
           <div className="flex items-center">
             <div className="flex shrink-0">
               {Array.from({ length: depth }).map((_, index) => (
@@ -107,6 +110,25 @@ export default function BalanceSheetQBSummary({
 }) {
   const hasColumns = Array.isArray(columns?.yearCols) && columns.yearCols.length > 0;
   const totalColCount = hasColumns ? columns.yearCols.length + 1 : 2;
+  const tableRef = useRef(null);
+  const theadRef = useRef(null);
+  useEffect(() => {
+    const mainEl = document.querySelector("main");
+    if (!mainEl) return;
+    const onScroll = () => {
+      if (!tableRef.current || !theadRef.current) return;
+      const tableTop = tableRef.current.getBoundingClientRect().top;
+      const mainTop = mainEl.getBoundingClientRect().top;
+      if (tableTop < mainTop) {
+        const offset = Math.min(mainTop - tableTop, tableRef.current.offsetHeight - theadRef.current.offsetHeight);
+        theadRef.current.style.transform = `translateY(${Math.max(0, offset)}px)`;
+      } else {
+        theadRef.current.style.transform = "";
+      }
+    };
+    mainEl.addEventListener("scroll", onScroll, { passive: true });
+    return () => mainEl.removeEventListener("scroll", onScroll);
+  }, []);
   const resolvedSourceLabel =
     sourceLabel ||
     (source === "MANUAL_UPLOAD"
@@ -118,8 +140,8 @@ export default function BalanceSheetQBSummary({
           : null);
 
   return (
-    <div className="flex-1 overflow-y-auto bg-bg-page/50 p-10 lg:p-16 font-inter">
-      <div className="max-w-[1000px] mx-auto card-base p-10 min-h-[800px] flex flex-col rounded-sm shadow-xl">
+    <div className="bg-bg-page/50 p-4 lg:p-8 font-inter">
+      <div className="card-base p-6 min-h-[800px] rounded-sm shadow-xl">
         <div className="flex flex-col items-center mb-12 relative">
           <div className="w-12 h-1 bg-primary rounded-full mb-6" />
           <h1 className="text-[22px] font-bold text-text-primary tracking-tight leading-none mb-2">
@@ -145,21 +167,21 @@ export default function BalanceSheetQBSummary({
           ) : null}
         </div>
 
-        <div className="overflow-x-auto flex-1">
-          <table className={cn("border-collapse", hasColumns ? "min-w-max" : "w-full")}>
-            <thead>
-              <tr className="bg-bg-card sticky top-0 z-20 text-text-muted">
-                <th className="pb-4 pt-2.5 px-4 text-left text-[12px] font-medium whitespace-nowrap uppercase tracking-wider min-w-[400px] border-b-2 border-text-primary">
+        <div className="overflow-x-auto w-full">
+          <table ref={tableRef} className={cn("border-collapse", hasColumns ? "min-w-max" : "w-full")}>
+            <thead ref={theadRef} style={{ position: "relative", zIndex: 20 }}>
+              <tr className="text-text-muted">
+                <th className="sticky top-0 left-0 z-30 bg-bg-card pb-4 pt-2.5 px-4 text-left text-[12px] font-medium whitespace-nowrap uppercase tracking-wider min-w-[400px] border-b-2 border-text-primary">
                   Account
                 </th>
                 {hasColumns ? (
                   columns.yearCols.map((col) => (
-                    <th key={col.key} className="pb-4 pt-2.5 px-4 text-right text-[12px] font-medium whitespace-nowrap uppercase tracking-wider min-w-[110px] border-b-2 border-text-primary">
+                    <th key={col.key} className="sticky top-0 z-20 bg-bg-card pb-4 pt-2.5 px-4 text-right text-[12px] font-medium whitespace-nowrap uppercase tracking-wider min-w-[110px] border-b-2 border-text-primary">
                       {col.label}
                     </th>
                   ))
                 ) : (
-                  <th className="pb-4 pt-2.5 px-4 text-right text-[12px] font-medium whitespace-nowrap uppercase tracking-wider border-b-2 border-text-primary">
+                  <th className="sticky top-0 z-20 bg-bg-card pb-4 pt-2.5 px-4 text-right text-[12px] font-medium whitespace-nowrap uppercase tracking-wider border-b-2 border-text-primary">
                     Total
                   </th>
                 )}
