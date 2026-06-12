@@ -1127,14 +1127,7 @@ export default function WorkspaceEbitda() {
                           </td>
                         );
                       })}
-                      <td className="p-1 bg-[#f8fafc]" style={{ borderLeft: "2px solid #cbd5e1" }}>
-                        <input
-                          value={rowComments['ebitda'] || ""}
-                          onChange={(e) => updateRowComment('ebitda', e.target.value)}
-                          placeholder="EBITDA remarks..."
-                          className="w-full bg-transparent border-none font-bold focus:ring-0 text-[13px] px-3 placeholder:italic placeholder:font-normal text-slate-800"
-                        />
-                      </td>
+                      <td className="p-1 bg-[#f8fafc]" style={{ borderLeft: "2px solid #cbd5e1" }}></td>
                     </tr>
 
                     <EbitdaAdjustmentsPanel
