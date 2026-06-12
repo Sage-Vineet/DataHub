@@ -3,6 +3,7 @@ import ProfitAndLossSummary from "./ProfitAndLossSummary";
 import ProfitAndLossQBSummary from "./ProfitAndLossQBSummary";
 import ManualProfitLossDetail from "../manual/ManualProfitLossDetail";
 import ManualProfitLossMonthlyDetail from "../manual/ManualProfitLossMonthlyDetail";
+import { reclassifyOtherIncomeRows } from "../../../services/profitAndLossService";
 
 function ProfitAndLossReport({
   reportType,
@@ -86,7 +87,8 @@ function ProfitAndLossReport({
 
   // Summary View
   if (isManualStagedSummary) {
-    const hierarchicalRows = Array.isArray(data?.hierarchicalRows) ? data.hierarchicalRows : [];
+    const rawRows = Array.isArray(data?.hierarchicalRows) ? data.hierarchicalRows : [];
+    const hierarchicalRows = reclassifyOtherIncomeRows(rawRows);
     // Per-year comparative columns when more than one fiscal year is selected.
     const yearCols = Array.isArray(data?.yearCols) ? data.yearCols : null;
     const summaryColumns = yearCols && yearCols.length > 1 ? { yearCols } : undefined;

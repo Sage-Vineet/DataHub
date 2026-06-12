@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import Header from "../../../components/Header";
 
-import { getStoredToken, setSelectedReportSource, getManualStageFilterOptions, loadSavedQBBankActivityRequest, getActiveKeyReportMappings } from "../../../lib/api";
+import { getStoredToken, setSelectedReportSource, getManualStageFilterOptions, loadSavedQBBankActivityRequest } from "../../../lib/api";
 import { useDataSource } from "../../../context/DataSourceContext";
 import { useDatasetVersionStore } from "../../../store/useDatasetVersionStore";
 import { emitWorkspaceDataSourceUpdated } from "../../../lib/dataSourceEvents";
@@ -177,11 +177,6 @@ const monthLabel = (ym) => {
     year: "2-digit",
     month: "short",
   });
-};
-// "2025-01" → "01-01-2025"  (dd-mm-yyyy, day fixed to 01 for month selectors)
-const monthLabelDMY = (ym) => {
-  const [y, m] = ym.split("-");
-  return `01-${String(m).padStart(2, "0")}-${y}`;
 };
 
 /**
@@ -404,7 +399,6 @@ function buildEmptyActivityReviewRow() {
 
 export default function WorkspaceReconciliation() {
   const { clientId } = useParams();
-  const navigate = useNavigate();
   // Use the global DataSourceContext as the single source of truth for the active source.
   // This is the same value the header badge shows (localStorage-backed, survives refreshes).
   // WorkspaceReconciliation must never call getReportSources independently — doing so reads
@@ -488,8 +482,6 @@ export default function WorkspaceReconciliation() {
   // True only after getReportSources API confirms the actual source.
   // Prevents stale storedState from triggering the wrong endpoint on mount.
   const [isSourceConfirmedByServer, setIsSourceConfirmedByServer] = useState(false);
-  // Key Reports bank statement gate: 'idle' | 'loading' | 'ok' | 'missing'
-  const [krBankGate, setKrBankGate] = useState({ status: "idle" });
 
   // Always reflects the latest selectedReportSource — used to discard in-flight fetch results
   // that started under a different source (race condition: user switches source while a fetch
@@ -928,49 +920,11 @@ export default function WorkspaceReconciliation() {
     }
   }, [clientId, getHeaders]);
 
-  const isManualUpload =
-    selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD;
-  const isManualGl = selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_GL;
-  const isQBManual =
-    selectedReportSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
-  const isQBOnline = selectedReportSource === REPORT_SOURCE_KEYS.QUICKBOOKS;
-
-  // Key Reports bank statement gate — runs whenever the confirmed source changes.
-  // QB Online uses live QB data and does not require a Key Reports bank statement.
-  // All other sources (Manual GL, Manual Upload, QB Manual) need one linked in Key Reports.
-  useEffect(() => {
-    if (!isSourceConfirmedByServer || !clientId) return;
-    if (isQBOnline) {
-      setKrBankGate({ status: "ok" });
-      return;
-    }
-    let cancelled = false;
-    setKrBankGate({ status: "loading" });
-    getActiveKeyReportMappings()
-      .then((mappings) => {
-        if (cancelled) return;
-        const hasBankStatement = (mappings?.bank_statement?.length || 0) > 0;
-        setKrBankGate({ status: hasBankStatement ? "ok" : "missing" });
-        if (!hasBankStatement) {
-          // Clear any previously loaded bank data when gate transitions to missing
-          setExtractedBankPdfData(null);
-          setExtractedBankPdfFetchStatus({ status: "idle", message: "" });
-          setBsBankBalances(null);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setKrBankGate({ status: "ok" }); // fail open — don't block on API error
-      });
-    return () => { cancelled = true; };
-  }, [isSourceConfirmedByServer, isQBOnline, clientId]);
-
   // Unified bank-data loader — dispatches ONLY based on server-confirmed source.
   // isSourceConfirmedByServer prevents stale storedState from triggering the wrong endpoint.
   // Never short-circuit on stored data — stored data may be from a different source.
   useEffect(() => {
     if (!clientId || !selectedReportSource || !isSourceConfirmedByServer) return;
-    // Gate: non-QB-Online sources require a bank statement linked in Key Reports
-    if (!isQBOnline && krBankGate.status !== "ok") return;
 
     if (selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD) {
       // Manual Upload → single endpoint returns both bank data and balanceSheetBankAccounts
@@ -987,7 +941,7 @@ export default function WorkspaceReconciliation() {
       void loadBsBankBalances("quickbooks_manual");
     }
     // QUICKBOOKS (QB Online) uses its own separate data flow — no action here
-  }, [clientId, selectedReportSource, isSourceConfirmedByServer, isQBOnline, krBankGate.status, glSelectedVersion, glFiscalYear, loadExtractedBankPdfData, loadManualBankData, loadQMSBankData, loadBsBankBalances]);
+  }, [clientId, selectedReportSource, isSourceConfirmedByServer, glSelectedVersion, glFiscalYear, loadExtractedBankPdfData, loadManualBankData, loadQMSBankData, loadBsBankBalances]);
 
   // Auto-restore QB Online bank activity from DB on page load.
   // Fires when the server confirms the source is QB Online and there is no
@@ -1058,6 +1012,10 @@ export default function WorkspaceReconciliation() {
     return REPORT_SOURCE_OPTIONS.map((o) => ({ key: o.key, label: o.label }));
   }, [reportSources]);
 
+  const isManualUpload = selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD;
+  const isManualGl = selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_GL;
+  const isQBManual = selectedReportSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
+  const isQBOnline = selectedReportSource === REPORT_SOURCE_KEYS.QUICKBOOKS;
 
   const allPdfMonths = useMemo(
     () => (extractedBankPdfData?.months || []).map((m) => m.key).sort(),
@@ -2281,37 +2239,7 @@ export default function WorkspaceReconciliation() {
     <>
       <Header title="Reconciliation" />
       <div className="page-content">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <h1 className="text-[24px] font-bold text-text-primary">
-            Reconciliation
-          </h1>
-        </div>
         <QBDisconnectedBanner pageName="Reconciliation" />
-
-        {/* Key Reports bank statement gate — shown for non-QB-Online sources when no bank statement is linked */}
-        {!isQBOnline && krBankGate.status === "missing" && (
-          <div className="rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4">
-            <div className="flex items-start gap-3">
-              <AlertCircle size={18} className="mt-0.5 shrink-0 text-amber-600" />
-              <div>
-                <p className="text-sm font-semibold text-amber-800">
-                  Bank Statement required in Key Reports
-                </p>
-                <p className="mt-1 text-sm text-amber-700">
-                  To load Bank Reconciliation data, link a Bank Statement document in the Key Reports
-                  Bank Statements category for this client.
-                </p>
-                <button
-                  onClick={() => navigate(`/broker/client/${clientId}/dataroom/key-reports`)}
-                  className="mt-2 text-sm font-semibold text-amber-800 underline hover:text-amber-900"
-                >
-                  Go to Key Reports →
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
         {/* QB Bank Activity — only for QuickBooks Online */}
         {isQBOnline && (
           <section className="card-base w-full p-5">
@@ -2453,44 +2381,40 @@ export default function WorkspaceReconciliation() {
               </p>
             </div>
             <div className="flex items-end gap-3">
-              {/* Month Range Filter — Manual Upload, Manual GL, QuickBooks Manual */}
+              {/* Date Range Filter — Manual Upload, Manual GL, QuickBooks Manual */}
               {(isManualUpload || isManualGl || isQBManual) && allPdfMonths.length > 0 && (
                 <>
                   <div>
                     <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
                       Start Date
                     </label>
-                    <select
-                      className="input-base h-10 w-auto min-w-[140px]"
-                      value={manualMonthStart || ""}
+                    <input
+                      type="date"
+                      className="input-base h-10 w-auto min-w-[150px]"
+                      value={manualMonthStart ? `${manualMonthStart}-01` : ""}
                       onChange={(e) => {
-                        const val = e.target.value;
-                        setManualMonthStart(val);
-                        if (manualMonthEnd && val > manualMonthEnd) setManualMonthEnd(val);
+                        if (!e.target.value) return;
+                        const isoKey = e.target.value.slice(0, 7);
+                        setManualMonthStart(isoKey);
+                        if (manualMonthEnd && isoKey > manualMonthEnd) setManualMonthEnd(isoKey);
                       }}
-                    >
-                      {allPdfMonths.map((m) => (
-                        <option key={m} value={m}>{monthLabelDMY(m)}</option>
-                      ))}
-                    </select>
+                    />
                   </div>
                   <div>
                     <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
                       End Date
                     </label>
-                    <select
-                      className="input-base h-10 w-auto min-w-[140px]"
-                      value={manualMonthEnd || ""}
+                    <input
+                      type="date"
+                      className="input-base h-10 w-auto min-w-[150px]"
+                      value={manualMonthEnd ? `${manualMonthEnd}-01` : ""}
                       onChange={(e) => {
-                        const val = e.target.value;
-                        setManualMonthEnd(val);
-                        if (manualMonthStart && val < manualMonthStart) setManualMonthStart(val);
+                        if (!e.target.value) return;
+                        const isoKey = e.target.value.slice(0, 7);
+                        setManualMonthEnd(isoKey);
+                        if (manualMonthStart && isoKey < manualMonthStart) setManualMonthStart(isoKey);
                       }}
-                    >
-                      {allPdfMonths.map((m) => (
-                        <option key={m} value={m}>{monthLabelDMY(m)}</option>
-                      ))}
-                    </select>
+                    />
                   </div>
                 </>
               )}
