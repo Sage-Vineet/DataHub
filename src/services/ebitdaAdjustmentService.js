@@ -43,42 +43,23 @@ function resolveAdjustmentAnnualValueSnapshot(entry = {}) {
   const currentNumber = toNumber(currentCandidate, NaN);
   const sourceNumber = toNumber(sourceCandidate, NaN);
 
-  const overrideValue = Number.isFinite(overrideNumber) ? toNumber(overrideNumber, 0) : null;
-  const currentValue = Number.isFinite(currentNumber) ? toNumber(currentNumber, 0) : null;
-  const sourceValue = Number.isFinite(sourceNumber) ? toNumber(sourceNumber, 0) : null;
+  const overrideValue = Number.isFinite(overrideNumber) ? toAbsoluteNumber(overrideNumber, 0) : null;
+  const currentValue = Number.isFinite(currentNumber) ? toAbsoluteNumber(currentNumber, 0) : null;
+  const sourceValue = Number.isFinite(sourceNumber) ? toAbsoluteNumber(sourceNumber, 0) : null;
   const monthlyValues = entry.monthlyValues && typeof entry.monthlyValues === "object"
     ? Object.values(entry.monthlyValues)
     : [];
   const monthlyTotal = monthlyValues.length > 0
-    ? monthlyValues.reduce((sum, item) => sum + toNumber(item?.value, 0), 0)
+    ? monthlyValues.reduce((sum, item) => sum + toAbsoluteNumber(item?.value, 0), 0)
     : null;
 
-  // An override of exactly 0 while a non-zero source exists is a stale snapshot,
-  // not a deliberate zero — ignore it so the real figure wins.
   const staleZeroOverride = overrideValue === 0 && sourceValue !== null && sourceValue !== 0;
-  const validOverride = overrideValue !== null && !staleZeroOverride ? overrideValue : null;
-
-  // Best real figure to fall back to when the annual `value` is missing or a
-  // placeholder 0: prefer a non-zero monthly total, then the source value.
-  const nonZeroFallback =
-    monthlyTotal !== null && monthlyTotal !== 0
-      ? monthlyTotal
-      : sourceValue !== null && sourceValue !== 0
-        ? sourceValue
-        : null;
 
   let effectiveValue;
-  if (validOverride !== null) {
-    // Deliberate user override (a genuine 0 is kept when no source disputes it).
-    effectiveValue = validOverride;
-  } else if (currentValue !== null && currentValue !== 0) {
+  if (overrideValue !== null && !staleZeroOverride) {
+    effectiveValue = overrideValue;
+  } else if (currentValue !== null && (!staleZeroOverride || currentValue !== 0)) {
     effectiveValue = currentValue;
-  } else if (nonZeroFallback !== null) {
-    // currentValue is null or a stale/placeholder 0 while a real figure exists —
-    // use the real figure instead of collapsing the row (and the total) to 0.
-    effectiveValue = nonZeroFallback;
-  } else if (currentValue !== null) {
-    effectiveValue = currentValue; // genuine zero with no other data
   } else if (monthlyTotal !== null) {
     effectiveValue = monthlyTotal;
   } else if (sourceValue !== null) {
@@ -87,9 +68,13 @@ function resolveAdjustmentAnnualValueSnapshot(entry = {}) {
     effectiveValue = 0;
   }
 
+  if (staleZeroOverride && effectiveValue === 0 && sourceValue !== null) {
+    effectiveValue = sourceValue;
+  }
+
   return {
     effectiveValue,
-    overrideValue: validOverride,
+    overrideValue: staleZeroOverride ? null : overrideValue,
     currentValue,
     sourceValue,
     monthlyTotal,
@@ -452,7 +437,7 @@ export function calculateAdjustmentTotalsByYear(adjustments = [], years = [], st
     const yearKey = String(year);
     totals[yearKey] = filtered.reduce((sum, adjustment) => {
       const val = getAdjustmentYearValue(adjustment, year);
-      return sum + toNumber(val, 0);
+      return sum + toAbsoluteNumber(val, 0);
     }, 0);
   }
   return totals;

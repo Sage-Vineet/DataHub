@@ -3,33 +3,33 @@ export function cn(...values) {
 }
 
 /**
- * Formats a number to US locale (en-US).
- * - Thousand separator: comma (,)
- * - Decimal separator: period (.)
- * - Handles null, undefined, NaN as '-'
- * - Zero as '0.00' (or as specified by decimals)
- */
-export const formatNumber = (value, decimals = 2) => {
-  if (value === null || value === undefined || value === "") return "-";
-
-  const numericValue = Number(value);
-  if (isNaN(numericValue)) return "-";
-
-  return numericValue.toLocaleString("en-US", {
-    minimumFractionDigits: decimals,
-    maximumFractionDigits: decimals,
-  });
-};
-
-/**
  * Standardized Financial Number Formatter
- * 0 -> "0.00"
- * null, undefined -> "-"
+ * 0, null, undefined -> "-"
  * Positive -> "1,234.56"
- * Negative -> "-1,234.56"
+ * Negative -> "(1,234.56)"
  */
 export function formatCurrency(amount) {
-  return formatNumber(amount, 2);
+  if (amount === null || amount === undefined || amount === "" || Number(amount) === 0) {
+    return "-";
+  }
+
+  const numeric = typeof amount === "string"
+    ? Number(amount.replace(/,/g, "").replace(/[^\d.-]/g, ""))
+    : Number(amount);
+
+  if (isNaN(numeric) || numeric === 0) {
+    return "-";
+  }
+
+  const formatter = new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+
+  const absValue = Math.abs(numeric);
+  const formatted = formatter.format(absValue);
+
+  return numeric < 0 ? `(${formatted})` : formatted;
 }
 
 export function formatDate(dateStr) {

@@ -154,172 +154,6 @@ function normalizeKey(name) {
   return PNL_SECTION_SYNONYMS[basic] || basic;
 }
 
-// Accounts whose QB/upload-level classification is "Income" but that accounting
-// standards place in "Other Income" (non-operating income).
-const OTHER_INCOME_ACCOUNT_RES = [
-  /^interest\s+income\b/i,
-  /\binterest\s+earned\b/i,
-  /^dividend\s+income\b/i,
-  /\binvestment\s+income\b/i,
-  /\bgain\s+on\s+sale\b/i,
-  /\bgain\s+on\s+disposal\b/i,
-  /\bgain\s+on\s+investments?\b/i,
-];
-
-function isOtherIncomeAccount(name) {
-  const n = String(name || "").trim();
-  return OTHER_INCOME_ACCOUNT_RES.some((re) => re.test(n));
-}
-
-function addAmountsMap(a, b) {
-  const result = { ...a };
-  Object.keys(b).forEach((k) => { result[k] = (result[k] || 0) + (b[k] || 0); });
-  return result;
-}
-
-function subtractAmountsMap(a, b) {
-  const result = { ...a };
-  Object.keys(b).forEach((k) => { result[k] = (result[k] || 0) - (b[k] || 0); });
-  return result;
-}
-
-function lastAmountValue(amounts) {
-  const vals = Object.values(amounts || {});
-  return vals.length ? vals[vals.length - 1] : 0;
-}
-
-// Moves accounts matching other-income patterns (e.g. Interest Income, Dividend Income)
-// from the operating Income section to the Other Income section so they appear under
-// Net Other Income rather than inflating operating Income / Gross Profit.
-// Works for all connection types (QB, manual upload, QB manual).
-export function reclassifyOtherIncomeRows(rows) {
-  if (!Array.isArray(rows) || rows.length === 0) return rows;
-
-  // 1. Find the top-level Income section
-  const incomeIdx = rows.findIndex(
-    (r) => r.type === "header" && normalizeKey(r.name) === "income",
-  );
-  if (incomeIdx === -1) return rows;
-
-  const incomeNode = rows[incomeIdx];
-  const incomeChildren = incomeNode.children || [];
-
-  // 2. Split direct children into kept (regular) and extracted (other-income)
-  const keptChildren = [];
-  const extracted = [];
-  let extractedAmounts = {};
-
-  for (const child of incomeChildren) {
-    const isTotal = child.type === "total" || /^total\b/i.test(String(child.name));
-    if (!isTotal && isOtherIncomeAccount(child.name)) {
-      extracted.push(child);
-      extractedAmounts = addAmountsMap(extractedAmounts, child.amounts || {});
-    } else {
-      keptChildren.push(child);
-    }
-  }
-
-  if (extracted.length === 0) return rows;
-
-  // 3. Update income section: remove extracted rows, shrink total row(s)
-  const updatedIncomeChildren = keptChildren.map((child) => {
-    const isTotal = child.type === "total" || /^total\b/i.test(String(child.name));
-    if (!isTotal) return child;
-    const a = subtractAmountsMap(child.amounts || {}, extractedAmounts);
-    return { ...child, amounts: a, amount: lastAmountValue(a) };
-  });
-
-  const incomeNewAmounts = subtractAmountsMap(incomeNode.amounts || {}, extractedAmounts);
-
-  const result = [...rows];
-  result[incomeIdx] = {
-    ...incomeNode,
-    amounts: incomeNewAmounts,
-    amount: lastAmountValue(incomeNewAmounts),
-    children: updatedIncomeChildren,
-  };
-
-  // 4. Reduce downstream calculated rows that roll up from operating income
-  const DOWNSTREAM = new Set(["gross profit", "net operating income", "operating income"]);
-  for (let i = 0; i < result.length; i++) {
-    if (DOWNSTREAM.has(normalizeName(result[i].name))) {
-      const a = subtractAmountsMap(result[i].amounts || {}, extractedAmounts);
-      result[i] = { ...result[i], amounts: a, amount: lastAmountValue(a) };
-    }
-  }
-
-  // 5. Find an existing Other Income / Net Other Income node or create one
-  const otherIdx = result.findIndex(
-    (r, i) =>
-      i !== incomeIdx &&
-      (normalizeKey(r.name) === "other income" ||
-        normalizeName(r.name) === "net other income" ||
-        normalizeName(r.name) === "other income"),
-  );
-
-  if (otherIdx !== -1) {
-    const existing = result[otherIdx];
-    const existingChildren = Array.isArray(existing.children) ? existing.children : [];
-    const totalChildIdx = existingChildren.findIndex(
-      (c) => c.type === "total" || /^total\b/i.test(String(c.name)),
-    );
-    const newChildren =
-      totalChildIdx >= 0
-        ? [
-            ...existingChildren.slice(0, totalChildIdx),
-            ...extracted,
-            ...existingChildren.slice(totalChildIdx).map((c) => {
-              if (c.type === "total" || /^total\b/i.test(String(c.name))) {
-                const a = addAmountsMap(c.amounts || {}, extractedAmounts);
-                return { ...c, amounts: a, amount: lastAmountValue(a) };
-              }
-              return c;
-            }),
-          ]
-        : [...existingChildren, ...extracted];
-
-    const newAmounts = addAmountsMap(existing.amounts || {}, extractedAmounts);
-    result[otherIdx] = {
-      ...existing,
-      type: existingChildren.length === 0 ? "header" : existing.type,
-      amounts: newAmounts,
-      amount: lastAmountValue(newAmounts),
-      children: newChildren,
-    };
-  } else {
-    // Insert a new "Other Income" section after Net Operating Income (or before Net Income)
-    const netOpIdx = result.findIndex(
-      (r) => normalizeName(r.name) === "net operating income" || normalizeName(r.name) === "operating income",
-    );
-    const netIncomeIdx = result.findIndex((r) => normalizeName(r.name) === "net income");
-    const insertAfter =
-      netOpIdx !== -1 ? netOpIdx
-      : netIncomeIdx !== -1 ? netIncomeIdx - 1
-      : result.length - 1;
-
-    const sectionAmounts = { ...extractedAmounts };
-    result.splice(insertAfter + 1, 0, {
-      id: "_reclassified_other_income",
-      name: "Other Income",
-      type: "header",
-      amounts: sectionAmounts,
-      amount: lastAmountValue(sectionAmounts),
-      children: [
-        ...extracted,
-        {
-          id: "_total_other_income",
-          name: "Total Other Income",
-          type: "total",
-          amounts: sectionAmounts,
-          amount: lastAmountValue(sectionAmounts),
-        },
-      ],
-    });
-  }
-
-  return result;
-}
-
 // Union-merges tree nodes from N files into one tree.
 // Every row that exists in ANY file appears in the output.
 // amounts[fileKey] = value from that file (0 if not present).
@@ -440,7 +274,7 @@ export async function getProfitAndLoss(
     options?.sourceMode || "quickbooks",
     options,
   );
-  return reclassifyOtherIncomeRows(rows);
+  return rows;
 }
 
 function pnlFileYear(file) {
@@ -537,7 +371,7 @@ function buildPNLFromPeriodColumns(sortedFiles) {
     });
 
   return {
-    rows: reclassifyOtherIncomeRows(enrich(unionStructure)),
+    rows: enrich(unionStructure),
     columns: { yearCols: allCols, ytdComparison: null },
   };
 }
@@ -576,7 +410,7 @@ async function buildPNLMultiFileDetail(sourceMode = "manual_upload") {
   const yearCols = filePeriods.map((p) => ({ key: p.key, label: p.label }));
 
   return {
-    rows: reclassifyOtherIncomeRows(rows),
+    rows,
     columns: { yearCols, ytdComparison: null },
   };
 }
@@ -627,7 +461,7 @@ export async function getProfitAndLossDetail(
     ),
   );
 
-  const rows = reclassifyOtherIncomeRows(mergePNLPeriods(results, periods));
+  const rows = mergePNLPeriods(results, periods);
 
   const yearCols = periods
     .filter((p) => !p.key.includes("_ytd"))

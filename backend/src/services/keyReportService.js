@@ -437,35 +437,6 @@ async function getActiveResolvedBatch(companyId) {
   };
 }
 
-// Resolves the Data Room documents linked to a given category in the company's
-// ACTIVE Key Report version. This is the source-of-truth pointer consumed by
-// downstream modules (Bank Reconciliation → "bank_statement", Tax Reconciliation
-// → "tax_return"): switching the active version switches which document is used.
-//
-// Returns full document rows ({ id, name, upload_id, file_url, uploaded_at }) so
-// callers can load the binary via either upload_id or file_url. Returns an empty
-// list (never throws on a missing mapping) when nothing is linked, so the caller
-// can surface the "link a document in Key Reports" message.
-async function getActiveLinkedDocuments(companyId, reportCategory) {
-  if (!companyId) return { versionId: null, documents: [] };
-  const active = await getActiveVersion(companyId);
-  if (!active?.id) return { versionId: null, documents: [] };
-
-  const mappings = await listMappings(active.id);
-  const docIds = mappings
-    .filter((m) => m.reportCategory === reportCategory && m.documentId)
-    .map((m) => m.documentId);
-  if (!docIds.length) return { versionId: active.id, documents: [] };
-
-  const { data: docs, error } = await supabase
-    .from("documents")
-    .select("id, name, upload_id, file_url, uploaded_at")
-    .in("id", docIds)
-    .order("uploaded_at", { ascending: false });
-  if (error) throw error;
-  return { versionId: active.id, documents: docs || [] };
-}
-
 module.exports = {
   REPORT_CATEGORIES,
   VALID_CATEGORIES,
@@ -485,5 +456,4 @@ module.exports = {
   syncVersion,
   listSyncLogs,
   getActiveResolvedBatch,
-  getActiveLinkedDocuments,
 };

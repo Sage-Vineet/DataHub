@@ -4,7 +4,7 @@ import Link from "../../../components/compat/NextLink";
 import Header from "../../../components/Header";
 import QBDisconnectedBanner from "../../../components/common/QBDisconnectedBanner";
 import { useAuth } from "../../../context/AuthContext";
-import { cn, formatNumber, formatCurrency } from "../../../lib/utils";
+import { cn } from "../../../lib/utils";
 import {
   FileText,
   TrendingUp,
@@ -550,7 +550,7 @@ export default function WorkspaceDashboardDatahub() {
       })
       .catch(() => { /* silently ignore — no staged data */ });
     return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSourceMode, clientId]);
 
   const loadQMSDashboardData = useCallback(async (year = "all") => {
@@ -645,11 +645,13 @@ export default function WorkspaceDashboardDatahub() {
         totalRevenue > 0
           ? ((totalRevenue - totalExpenses) / totalRevenue) * 100
           : 0;
+      const formatCurrency = (num) =>
+        "$" + num.toLocaleString("en-US", { maximumFractionDigits: 0 });
 
       setMonthlyInsights([
         {
           label: "Operating Margin",
-          value: `${formatNumber(margin, 1)}%`,
+          value: `${margin.toFixed(1)}%`,
           color: "#8bc53d",
           desc:
             margin > 20
@@ -1157,8 +1159,8 @@ export default function WorkspaceDashboardDatahub() {
       `financial_trends_${aggregationType}`,
       (item) => [
         item.name,
-        formatNumber(Number(item.revenue || 0)),
-        formatNumber(Number(item.expenses || 0)),
+        Number(item.revenue || 0).toFixed(2),
+        Number(item.expenses || 0).toFixed(2),
       ],
     );
   };
@@ -1931,10 +1933,16 @@ export default function WorkspaceDashboardDatahub() {
                                 {inv.DueDate || inv.dueDate || "N/A"}
                               </td>
                               <td className="py-3 px-4 text-right text-[14px] font-semibold text-text-primary tabular-nums">
-                                {formatCurrency(amount)}
+                                $
+                                {Number(amount).toLocaleString("en-US", {
+                                  minimumFractionDigits: 2,
+                                })}
                               </td>
                               <td className="py-3 px-4 text-right text-[14px] font-medium text-text-primary tabular-nums">
-                                {formatCurrency(balance)}
+                                $
+                                {Number(balance).toLocaleString("en-US", {
+                                  minimumFractionDigits: 2,
+                                })}
                               </td>
                               <td className="py-3 px-4 text-center">
                                 <div

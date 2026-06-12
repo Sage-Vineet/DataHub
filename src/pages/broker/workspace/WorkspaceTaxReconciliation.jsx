@@ -7,7 +7,7 @@ import {
   LoaderCircle,
   RefreshCw,
 } from "lucide-react";
-import { cn, formatNumber } from "../../../lib/utils";
+import { cn } from "../../../lib/utils";
 import {
   getCompanyRequest,
   getStoredToken,
@@ -110,7 +110,11 @@ function formatAmount(value) {
   if (value == null || value === "") return "-";
   const numericValue = Number(value);
   if (isNaN(numericValue) || numericValue === 0) return "-";
-  return formatNumber(numericValue, 0);
+  const abs = new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  }).format(Math.abs(numericValue));
+  return numericValue < 0 ? `(${abs})` : abs;
 }
 
 function getVarianceClass(value) {
