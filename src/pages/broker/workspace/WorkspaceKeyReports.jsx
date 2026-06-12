@@ -10,7 +10,12 @@ import {
   FileText,
   Loader2,
   Star,
+  X,
+  Database,
+  Upload,
 } from "lucide-react";
+import ManualGLUpload from "../../../components/manual-gl/ManualGLUpload";
+import ManualFolderReportsUpload from "../../../components/manual-reports/ManualFolderReportsUpload";
 import {
   getKeyReportVersions,
   createKeyReportVersion,
@@ -47,6 +52,9 @@ export default function WorkspaceKeyReports() {
   const [syncing, setSyncing] = useState(false);
   const [pickerCategory, setPickerCategory] = useState(null);
   const [showPopup, setShowPopup] = useState(false);
+  // null → nothing; 'choose' → method selector; 'manual_gl' → GL upload panel; 'manual_upload' → folder upload panel
+  const [syncView, setSyncView] = useState(null);
+  const [syncModalErrors, setSyncModalErrors] = useState([]);
 
   const notify = useCallback(
     (msg, type = "info") => {
@@ -174,6 +182,37 @@ export default function WorkspaceKeyReports() {
     }
   };
 
+  const getMissingGLDocs = () => {
+    const cats = detail?.mappingsByCategory || {};
+    const missing = [];
+    if (!(cats.general_ledger?.length > 0)) missing.push("General Ledger");
+    const bsCount = cats.balance_sheet?.length || 0;
+    if (bsCount === 0) {
+      missing.push("Starting Balance Sheet");
+      missing.push("Ending Balance Sheet");
+    } else if (bsCount === 1) {
+      missing.push("Ending Balance Sheet");
+    }
+    return missing;
+  };
+
+  const handleSyncClick = () => {
+    setSyncModalErrors([]);
+    setSyncView("choose");
+  };
+
+  // Document IDs from the active Key Report version, pre-populated into ManualGLUpload
+  const krDocIds = useMemo(() => {
+    const cats = detail?.mappingsByCategory || {};
+    const glDocIds = (cats.general_ledger || []).map((m) => m.documentId).filter(Boolean);
+    const bsArr = cats.balance_sheet || [];
+    return {
+      glDocIds,
+      startingBSDocId: bsArr[0]?.documentId || null,
+      endingBSDocId: bsArr[1]?.documentId || null,
+    };
+  }, [detail]);
+
   const handleLinkFiles = async (docs) => {
     if (!selectedVersionId || !pickerCategory || !docs?.length) return;
     try {
@@ -220,6 +259,137 @@ export default function WorkspaceKeyReports() {
         onClose={() => setPickerCategory(null)}
         onSelect={handleLinkFiles}
       />
+
+      {/* ── Sync workflow: method selection ─────────────────────────────── */}
+      {syncView === "choose" && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="relative w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
+            <button
+              onClick={() => setSyncView(null)}
+              className="absolute right-4 top-4 text-text-muted hover:text-text-primary"
+              aria-label="Close"
+            >
+              <X size={18} />
+            </button>
+            <h2 className="mb-1 text-lg font-bold text-text-primary">Choose Upload Type</h2>
+            <p className="mb-5 text-sm text-secondary">
+              Select how you would like to upload and sync financial data using the files linked in this Key Report version.
+            </p>
+
+            {syncModalErrors.length > 0 && (
+              <div className="mb-4 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+                <p className="mb-1.5 font-semibold">Missing required documents in Key Reports:</p>
+                <ul className="list-inside list-disc space-y-0.5">
+                  {syncModalErrors.map((err) => (
+                    <li key={err}>{err}</li>
+                  ))}
+                </ul>
+                <p className="mt-2 text-xs text-red-600">
+                  Link the missing files using the categories on this page before proceeding.
+                </p>
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                onClick={() => {
+                  const missing = getMissingGLDocs();
+                  if (missing.length > 0) {
+                    setSyncModalErrors(missing);
+                  } else {
+                    setSyncView("manual_gl");
+                  }
+                }}
+                className="flex flex-col items-center gap-2 rounded-xl border border-border p-4 text-sm font-medium text-text-primary transition-colors hover:border-primary hover:bg-[#F0F7E6]"
+              >
+                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10">
+                  <Database size={20} className="text-primary" />
+                </div>
+                <span className="font-semibold">Manual GL Upload</span>
+                <span className="text-center text-xs font-normal text-secondary">
+                  Requires General Ledger and Balance Sheets
+                </span>
+              </button>
+
+              <button
+                onClick={() => setSyncView("manual_upload")}
+                className="flex flex-col items-center gap-2 rounded-xl border border-border p-4 text-sm font-medium text-text-primary transition-colors hover:border-primary hover:bg-[#F0F7E6]"
+              >
+                <div className="flex h-10 w-10 items-center justify-center rounded-full bg-primary/10">
+                  <Upload size={20} className="text-primary" />
+                </div>
+                <span className="font-semibold">Manual Upload</span>
+                <span className="text-center text-xs font-normal text-secondary">
+                  Sync all files from the Manual Upload Source folder
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Sync workflow: Manual GL Upload (embedded, no navigation) ────── */}
+      {syncView === "manual_gl" && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-black/50 p-4">
+          <div className="mx-auto my-8 w-full max-w-4xl rounded-2xl bg-white shadow-xl">
+            <div className="flex items-center justify-between border-b border-border px-5 py-4">
+              <div>
+                <h2 className="text-base font-bold text-text-primary">Manual GL Upload</h2>
+                <p className="text-xs text-secondary">
+                  Pre-selected files are from this Key Report version — verify and click Stage to process.
+                </p>
+              </div>
+              <button
+                onClick={() => setSyncView(null)}
+                className="rounded-lg p-1.5 text-text-muted hover:bg-bg-page hover:text-text-primary"
+                aria-label="Close"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="p-1">
+              <ManualGLUpload
+                companyId={clientId}
+                initialGlDocumentIds={krDocIds.glDocIds}
+                initialStartingBSDocumentId={krDocIds.startingBSDocId}
+                initialEndingBSDocumentId={krDocIds.endingBSDocId}
+                onStageComplete={() => {
+                  // Refresh Key Reports version data after staging; let the component
+                  // advance to Step 3 naturally so the user sees the completion summary.
+                  void loadDetail(selectedVersionId);
+                  void loadVersions();
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Sync workflow: Manual Upload (embedded, no navigation) ─────── */}
+      {syncView === "manual_upload" && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-black/50 p-4">
+          <div className="mx-auto my-8 w-full max-w-3xl rounded-2xl bg-white shadow-xl">
+            <div className="flex items-center justify-between border-b border-border px-5 py-4">
+              <div>
+                <h2 className="text-base font-bold text-text-primary">Manual Upload</h2>
+                <p className="text-xs text-secondary">
+                  Sync all files from the Manual Upload Source folder in Data Room.
+                </p>
+              </div>
+              <button
+                onClick={() => setSyncView(null)}
+                className="rounded-lg p-1.5 text-text-muted hover:bg-bg-page hover:text-text-primary"
+                aria-label="Close"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="p-1">
+              <ManualFolderReportsUpload companyId={clientId} />
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Header */}
       <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
@@ -312,12 +482,12 @@ export default function WorkspaceKeyReports() {
                 </button>
               )}
               <button
-                onClick={handleSync}
-                disabled={syncing}
+                onClick={handleSyncClick}
+                disabled={!selectedVersionId}
                 className="flex items-center gap-1.5 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
               >
-                {syncing ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}
-                {syncing ? "Syncing…" : "Sync"}
+                <RefreshCw size={15} />
+                Sync
               </button>
             </div>
           </div>

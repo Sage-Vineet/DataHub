@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useNavigate } from "react-router-dom";
 import {
   AlertCircle,
   CheckCircle2,
@@ -14,6 +14,7 @@ import {
   getManualStagedProfitLossSummary,
   getManualStageFilterOptions,
   listManualGlDatasetVersions,
+  getActiveKeyReportMappings,
 } from "../../../lib/api";
 import { useDataSource } from "../../../context/DataSourceContext";
 import { useDatasetVersionStore } from "../../../store/useDatasetVersionStore";
@@ -167,6 +168,7 @@ const MAIN_LINE_ITEMS = [
 
 export default function WorkspaceTaxReconciliation() {
   const { clientId } = useParams();
+  const navigate = useNavigate();
   const { activeSource, activeSourceMode } = useDataSource();
   const storedState = useMemo(() => getStoredState(clientId), [clientId]);
 
@@ -186,6 +188,8 @@ export default function WorkspaceTaxReconciliation() {
     status: Object.keys(storedState?.matrixData ?? {}).length > 0 ? "success" : "idle",
     message: Object.keys(storedState?.matrixData ?? {}).length > 0 ? "Restored saved data." : "",
   }));
+  // Key Reports tax return gate: 'idle' | 'loading' | 'ok' | 'missing'
+  const [krTaxGate, setKrTaxGate] = useState({ status: "idle" });
 
   // Dataset version selection — Manual GL only.
   // Seeded from the shared store so the same version selected in Reports is
@@ -666,6 +670,31 @@ export default function WorkspaceTaxReconciliation() {
     }
   }, [selectedYears, accountingMethod, clientId, getHeaders, isManualGL, isManualMode, isQBManual, currentYear, selectedVersion]);
 
+  // Key Reports tax return gate — validates that a tax return is linked before
+  // loading any reconciliation data. Fails open on API error to avoid blocking.
+  useEffect(() => {
+    if (!activeSource || !clientId) return;
+    let cancelled = false;
+    setKrTaxGate({ status: "loading" });
+    getActiveKeyReportMappings()
+      .then((mappings) => {
+        if (cancelled) return;
+        const hasTaxReturn = (mappings?.tax_return?.length || 0) > 0;
+        setKrTaxGate({ status: hasTaxReturn ? "ok" : "missing" });
+        if (!hasTaxReturn) {
+          // Clear any cached data when gate transitions to missing
+          setMatrixData({});
+          setError("");
+          setWarnings([]);
+          setSyncStatus({ status: "idle", message: "" });
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setKrTaxGate({ status: "ok" }); // fail open
+      });
+    return () => { cancelled = true; };
+  }, [activeSource, clientId]);
+
   // Auto-load on first visit. In Manual GL mode, wait until the version is
   // resolved before loading — and include selectedVersion in the deps so this
   // re-fires once the version becomes available (without it, the effect ran
@@ -675,9 +704,10 @@ export default function WorkspaceTaxReconciliation() {
     if (!activeSource) return;
     if (isManualGL && !selectedVersion) return;
     if (Object.keys(matrixData).length > 0) return;
+    if (krTaxGate.status !== "ok") return; // gate: wait for Key Reports validation
     void loadData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSource, isManualGL, selectedVersion]);
+  }, [activeSource, isManualGL, selectedVersion, krTaxGate.status]);
 
   // Re-generate when the selected version changes so Tax Reconciliation always
   // reflects the chosen version's transactions with no cross-version leakage.
@@ -687,13 +717,14 @@ export default function WorkspaceTaxReconciliation() {
     if (prevTaxVersionRef.current === selectedVersion) return;
     prevTaxVersionRef.current = selectedVersion;
     if (!selectedVersion) return;
+    if (krTaxGate.status !== "ok") return; // gate: don't reload if tax return is missing
     try { window.sessionStorage.removeItem(getStorageKey(clientId)); } catch { /* ignore */ }
     setMatrixData({});
     setError("");
     setWarnings([]);
     setSyncStatus({ status: "idle", message: "" });
     void loadData(true);
-  }, [isManualGL, selectedVersion, clientId, loadData]);
+  }, [isManualGL, selectedVersion, clientId, loadData, krTaxGate.status]);
 
   // ── Data helpers ──────────────────────────────────────────────────────
 
@@ -747,6 +778,30 @@ export default function WorkspaceTaxReconciliation() {
 
   return (
     <div className="space-y-6">
+      {/* Key Reports tax return gate — shown when no tax return is linked */}
+      {krTaxGate.status === "missing" && (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4">
+          <div className="flex items-start gap-3">
+            <AlertCircle size={18} className="mt-0.5 shrink-0 text-amber-600" />
+            <div>
+              <p className="text-sm font-semibold text-amber-800">
+                Tax Return required in Key Reports
+              </p>
+              <p className="mt-1 text-sm text-amber-700">
+                To load Tax Reconciliation data, link a Tax Return document in the Key Reports
+                Tax Returns category for this client.
+              </p>
+              <button
+                onClick={() => navigate(`/broker/client/${clientId}/dataroom/key-reports`)}
+                className="mt-2 text-sm font-semibold text-amber-800 underline hover:text-amber-900"
+              >
+                Go to Key Reports →
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {isManualMode && (
         <div className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-4">
@@ -778,11 +833,12 @@ export default function WorkspaceTaxReconciliation() {
             <button
               type="button"
               onClick={() => {
+                if (krTaxGate.status !== "ok") return;
                 try { window.sessionStorage.removeItem(getStorageKey(clientId)); } catch { /* ignore */ }
                 setMatrixData({});
                 void loadData(true);
               }}
-              disabled={isLoading}
+              disabled={isLoading || krTaxGate.status !== "ok"}
               className="inline-flex h-9 items-center justify-center gap-2 rounded-xl bg-primary px-4 text-[13px] font-semibold text-white transition hover:bg-primary-dark disabled:cursor-not-allowed disabled:opacity-70"
             >
               <RefreshCw size={14} className={cn(isLoading && "animate-spin")} />
@@ -858,11 +914,12 @@ export default function WorkspaceTaxReconciliation() {
               <button
                 type="button"
                 onClick={() => {
+                  if (krTaxGate.status !== "ok") return;
                   try { window.sessionStorage.removeItem(getStorageKey(clientId)); } catch { /* ignore */ }
                   setMatrixData({});
                   void loadData(true);
                 }}
-                disabled={isLoading}
+                disabled={isLoading || krTaxGate.status !== "ok"}
                 className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-primary px-4 text-[14px] font-semibold text-white transition hover:bg-primary-dark disabled:cursor-not-allowed disabled:opacity-70"
               >
                 <RefreshCw size={16} className={cn(isLoading && "animate-spin")} />

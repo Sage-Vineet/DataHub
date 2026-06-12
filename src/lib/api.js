@@ -1382,6 +1382,15 @@ export function syncKeyReportVersion(versionId) {
   return request(`/key-reports/versions/${versionId}/sync`, { method: 'POST', body: {} });
 }
 
+export async function getActiveKeyReportMappings() {
+  const res = await getKeyReportVersions();
+  const versions = res?.versions || [];
+  const active = versions.find(v => v.isActive) || versions[0];
+  if (!active?.id) return null;
+  const detail = await getKeyReportVersion(active.id);
+  return detail?.mappingsByCategory || null;
+}
+
 export function getKeyReportSyncLogs(versionId) {
   return request(`/key-reports/versions/${versionId}/sync-logs`);
 }
