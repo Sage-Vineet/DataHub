@@ -433,8 +433,72 @@ async function sendWelcomeEmail({ userId, userName, email, password, companyName
 
 /**
  * Sends a document-request reminder email.
+ * Optional enhanced fields: requestType, description, priority, status, reminderAt, portalUrl.
  */
-async function sendReminderEmail({ toName, toEmail, requestTitle, dueDate, senderName, companyName }) {
+async function sendReminderEmail({
+  toName, toEmail, requestTitle, dueDate, senderName, companyName,
+  requestType, description, priority, status, reminderAt, portalUrl,
+}) {
+  const formattedDue = dueDate
+    ? new Date(dueDate).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })
+    : null;
+  const formattedReminderAt = reminderAt
+    ? new Date(reminderAt).toLocaleString("en-US", { year: "numeric", month: "long", day: "numeric", hour: "2-digit", minute: "2-digit" })
+    : null;
+  const greeting = toName ? `Hi ${toName},` : "Hi,";
+  const sentBy   = senderName || "Your broker";
+  const title    = escapeHtml(requestTitle || "Document Request");
+
+  const detailRows = [
+    companyName    ? `<tr><td style="padding:8px 12px;background:#f5f7fa;font-weight:600;width:140px">Company</td><td style="padding:8px 12px;border-bottom:1px solid #e8edf5">${escapeHtml(companyName)}</td></tr>` : "",
+    requestType    ? `<tr><td style="padding:8px 12px;background:#f5f7fa;font-weight:600">Type</td><td style="padding:8px 12px;border-bottom:1px solid #e8edf5">${escapeHtml(requestType)}</td></tr>` : "",
+    description    ? `<tr><td style="padding:8px 12px;background:#f5f7fa;font-weight:600;vertical-align:top">Description</td><td style="padding:8px 12px;border-bottom:1px solid #e8edf5">${escapeHtml(description)}</td></tr>` : "",
+    priority       ? `<tr><td style="padding:8px 12px;background:#f5f7fa;font-weight:600">Priority</td><td style="padding:8px 12px;border-bottom:1px solid #e8edf5;text-transform:capitalize">${escapeHtml(priority)}</td></tr>` : "",
+    formattedDue   ? `<tr><td style="padding:8px 12px;background:#f5f7fa;font-weight:600">Due Date</td><td style="padding:8px 12px;border-bottom:1px solid #e8edf5">${formattedDue}</td></tr>` : "",
+    status         ? `<tr><td style="padding:8px 12px;background:#f5f7fa;font-weight:600">Status</td><td style="padding:8px 12px;border-bottom:1px solid #e8edf5;text-transform:capitalize">${escapeHtml(status)}</td></tr>` : "",
+    formattedReminderAt ? `<tr><td style="padding:8px 12px;background:#f5f7fa;font-weight:600">Reminder Sent</td><td style="padding:8px 12px;border-bottom:1px solid #e8edf5">${formattedReminderAt}</td></tr>` : "",
+  ].filter(Boolean).join("\n");
+
+  const html = `
+    <div style="font-family:sans-serif;max-width:560px;margin:0 auto;color:#333">
+      <p>${greeting}</p>
+      <p>${escapeHtml(sentBy)} has sent you a reminder for the following document request:</p>
+      <table style="border-collapse:collapse;width:100%;margin:16px 0">
+        <tr><td style="padding:8px 12px;background:#f5f7fa;font-weight:600;width:140px">Request</td>
+            <td style="padding:8px 12px;border-bottom:1px solid #e8edf5">${title}</td></tr>
+        ${detailRows}
+      </table>
+      <p>Please log in to the M&amp;A Hub portal to complete any outstanding documents.</p>
+      ${portalUrl ? `<p style="margin:16px 0"><a href="${escapeHtml(portalUrl)}" style="background:#05164D;color:#fff;padding:10px 24px;border-radius:6px;text-decoration:none;font-weight:600;display:inline-block">Open Request Portal</a></p>` : ""}
+      <p style="margin-top:24px;color:#6d6e71;font-size:13px">Automated reminder — do not reply.</p>
+    </div>`;
+
+  const textLines = [
+    greeting, "",
+    `${sentBy} has sent you a reminder for: ${requestTitle || "Document Request"}`,
+    companyName        ? `Company:      ${companyName}` : "",
+    requestType        ? `Type:         ${requestType}` : "",
+    priority           ? `Priority:     ${priority}` : "",
+    formattedDue       ? `Due:          ${formattedDue}` : "",
+    status             ? `Status:       ${status}` : "",
+    formattedReminderAt ? `Reminder Sent: ${formattedReminderAt}` : "",
+    description        ? `\nDescription:\n${description}` : "",
+    "",
+    "Please log in to the M&A Hub portal to complete any outstanding documents.",
+    portalUrl ? `Portal: ${portalUrl}` : "",
+  ].filter(Boolean).join("\n");
+
+  try {
+    await _deliver(toEmail, `Reminder: Action Required for Request - ${requestTitle || "Document Request"}`, html, textLines);
+  } catch (err) {
+    console.error(`[Email Service] Reminder email failed for <${toEmail}>: ${err.message}`);
+  }
+}
+
+/**
+ * Sends a new-request assignment notification email to a client team member.
+ */
+async function sendRequestNotificationEmail({ toName, toEmail, requestTitle, dueDate, senderName, companyName }) {
   const formattedDue = dueDate
     ? new Date(dueDate).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })
     : null;
@@ -444,28 +508,121 @@ async function sendReminderEmail({ toName, toEmail, requestTitle, dueDate, sende
   const html = `
     <div style="font-family:sans-serif;max-width:560px;margin:0 auto;color:#333">
       <p>${greeting}</p>
-      <p>${sentBy} has sent you a reminder for the following document request:</p>
+      <p>${escapeHtml(sentBy)} has created a new document request for you:</p>
       <table style="border-collapse:collapse;width:100%;margin:16px 0">
         <tr><td style="padding:8px 12px;background:#f5f7fa;font-weight:600;width:140px">Request</td>
-            <td style="padding:8px 12px;border-bottom:1px solid #e8edf5">${requestTitle || "Document Request"}</td></tr>
-        ${companyName ? `<tr><td style="padding:8px 12px;background:#f5f7fa;font-weight:600">Company</td><td style="padding:8px 12px;border-bottom:1px solid #e8edf5">${companyName}</td></tr>` : ""}
+            <td style="padding:8px 12px;border-bottom:1px solid #e8edf5">${escapeHtml(requestTitle || "Document Request")}</td></tr>
+        ${companyName ? `<tr><td style="padding:8px 12px;background:#f5f7fa;font-weight:600">Company</td><td style="padding:8px 12px;border-bottom:1px solid #e8edf5">${escapeHtml(companyName)}</td></tr>` : ""}
         ${formattedDue ? `<tr><td style="padding:8px 12px;background:#f5f7fa;font-weight:600">Due Date</td><td style="padding:8px 12px;border-bottom:1px solid #e8edf5">${formattedDue}</td></tr>` : ""}
       </table>
-      <p>Please log in to the M&amp;A Hub portal to complete any outstanding documents.</p>
-      <p style="margin-top:24px;color:#6d6e71;font-size:13px">Automated reminder — do not reply.</p>
+      <p>Please log in to the M&amp;A Hub portal to view and complete this request.</p>
+      <p style="margin-top:24px;color:#6d6e71;font-size:13px">Automated notification — do not reply.</p>
     </div>`;
 
   const text = [
     greeting, "",
-    `${sentBy} has sent you a reminder for: ${requestTitle || "Document Request"}`,
+    `${sentBy} has created a new document request: ${requestTitle || "Document Request"}`,
     formattedDue ? `Due: ${formattedDue}` : "",
-    "", "Please log in to the M&A Hub portal to complete any outstanding documents.",
+    "", "Please log in to the M&A Hub portal to view and complete this request.",
   ].filter(Boolean).join("\n");
 
   try {
-    await _deliver(toEmail, `Reminder: ${requestTitle || "Document Request"}`, html, text);
+    await _deliver(toEmail, `New Request: ${requestTitle || "Document Request"}`, html, text);
   } catch (err) {
-    console.error(`[Email Service] Reminder email failed for <${toEmail}>: ${err.message}`);
+    console.error(`[Email Service] Request notification failed for <${toEmail}>: ${err.message}`);
+  }
+}
+
+/**
+ * Sends a company-created notification email to the primary contact.
+ * Does NOT include credentials — the contact's login details are provided
+ * separately by the welcome email sent when the user account is created.
+ */
+async function sendCompanyCreatedEmail({ toName, toEmail, companyName, projectName, brokerName, portalUrl }) {
+  const greeting = toName ? `Hi ${toName},` : "Hi,";
+  const sentBy   = brokerName || "Your M&A Hub broker";
+  const portal   = portalUrl || (process.env.FRONTEND_URL || process.env.APP_BASE_URL || "");
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>Company Created – M&amp;A Hub</title>
+  <style>
+    body{margin:0;padding:0;background:#f4f6f9;font-family:Arial,Helvetica,sans-serif}
+    .wrap{max-width:560px;margin:40px auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08)}
+    .hdr{background:#05164D;padding:32px 40px;text-align:center}
+    .hdr h1{color:#fff;margin:0;font-size:22px;letter-spacing:.5px}
+    .bdy{padding:36px 40px}
+    .detail{background:#f8f9fc;border:1px solid #e0e4ef;border-radius:6px;padding:20px 24px;margin-bottom:28px}
+    .detail table{width:100%;border-collapse:collapse}
+    .detail td{padding:6px 0;font-size:14px;vertical-align:top}
+    .detail td:first-child{color:#6b7a99;width:140px;font-weight:600}
+    .steps{background:#eef6ff;border:1px solid #c3daf9;border-radius:6px;padding:14px 20px;margin-bottom:24px;font-size:13px;color:#1a4d8f;line-height:1.8}
+    .cta{text-align:center;margin-bottom:28px}
+    .cta a{display:inline-block;background:#8BC53D;color:#fff;text-decoration:none;padding:12px 32px;border-radius:6px;font-size:14px;font-weight:700}
+    .note{font-size:13px;color:#888;line-height:1.6;border-top:1px solid #f0f0f0;padding-top:20px}
+    .ftr{background:#f4f6f9;padding:20px 40px;text-align:center;font-size:12px;color:#aaa}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hdr"><h1>Company Created – M&amp;A Hub</h1></div>
+    <div class="bdy">
+      <p style="font-size:16px;color:#1a1a2e;margin-bottom:16px">${greeting}</p>
+      <p style="font-size:14px;color:#444;line-height:1.6;margin-bottom:24px">
+        Your company has been successfully created in M&amp;A Hub by ${escapeHtml(sentBy)}.
+      </p>
+      <div class="detail">
+        <table>
+          ${companyName ? `<tr><td>Company</td><td>${escapeHtml(companyName)}</td></tr>` : ""}
+          ${projectName ? `<tr><td>Project Name</td><td>${escapeHtml(projectName)}</td></tr>` : ""}
+          ${brokerName  ? `<tr><td>Created By</td><td>${escapeHtml(brokerName)}</td></tr>` : ""}
+        </table>
+      </div>
+      <div class="steps">
+        <strong>Next Steps:</strong><br/>
+        &#10003; Log in using your registered email address<br/>
+        &#10003; Access requests, documents, and reports<br/>
+        &#10003; Collaborate with your broker team<br/>
+        &#10003; Track reminders and deal progress
+      </div>
+      ${portal ? `<div class="cta"><a href="${escapeHtml(portal)}">Access M&amp;A Hub Portal</a></div>` : ""}
+      <p class="note">
+        If you have not yet set up your login credentials, please contact your broker.<br/>
+        For any questions, reply to your broker or contact the M&amp;A Hub support team.
+      </p>
+    </div>
+    <div class="ftr">M&amp;A Hub Team &mdash; Automated message, do not reply.</div>
+  </div>
+</body>
+</html>`;
+
+  const text = [
+    greeting, "",
+    `Your company has been successfully created in M&A Hub by ${sentBy}.`, "",
+    companyName ? `Company:      ${companyName}` : "",
+    projectName ? `Project Name: ${projectName}` : "",
+    brokerName  ? `Created By:   ${brokerName}`  : "",
+    "",
+    "Next Steps:",
+    "- Log in using your registered email address",
+    "- Access requests, documents, and reports",
+    "- Collaborate with your broker team",
+    "- Track reminders and deal progress",
+    portal ? `\nPortal: ${portal}` : "",
+    "",
+    "If you have not yet set up your login credentials, please contact your broker.",
+  ].filter(Boolean).join("\n");
+
+  try {
+    const result = await _deliver(toEmail, "Welcome to M&A Hub – Company Created Successfully", html, text);
+    console.log(`[Audit] [Email Service] Company created notification delivered to <${toEmail}> provider=${result?.provider || "unknown"}`);
+    return result;
+  } catch (err) {
+    console.error(`[Audit] [Email Service] Company created notification failed for <${toEmail}>: ${err.message}`);
+    return { sent: false, reason: "delivery_failed", error: err.message };
   }
 }
 
@@ -475,6 +632,8 @@ module.exports = {
   sendOtpEmail,
   sendWelcomeEmail,
   sendReminderEmail,
+  sendRequestNotificationEmail,
+  sendCompanyCreatedEmail,
   checkEmailHealth,
   isSmtpConfigured,
   isResendConfigured,

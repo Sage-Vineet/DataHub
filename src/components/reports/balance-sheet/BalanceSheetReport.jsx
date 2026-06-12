@@ -49,6 +49,20 @@ function BalanceSheetReport({
       );
     }
 
+    // manual_upload / quickbooks_manual monthly view — data already has rows + columns.yearCols
+    if (sourceMode === "manual_upload" || sourceMode === "quickbooks_manual") {
+      const rows = Array.isArray(detailedData?.rows) ? detailedData.rows : (Array.isArray(detailedData) ? detailedData : []);
+      return (
+        <BalanceSheetQBSummary
+          data={rows}
+          columns={detailedData?.columns}
+          title="Balance Sheet"
+          subtitle={summarySubtitle}
+          entityName={resolvedEntityName}
+        />
+      );
+    }
+
     // Detail View: Multi-year EBITDA/SDE analysis
     const rows = Array.isArray(detailedData?.rows) ? detailedData.rows : (Array.isArray(detailedData) ? detailedData : []);
     const columns = detailedData?.columns || undefined;

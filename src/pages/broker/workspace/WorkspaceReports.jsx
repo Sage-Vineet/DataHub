@@ -276,6 +276,19 @@ function pad2(n) {
   return String(n).padStart(2, "0");
 }
 
+function reportMonthLabel(isoMonth) {
+  const [y, m] = isoMonth.split("-");
+  return `${["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][Number(m)-1]} ${y}`;
+}
+
+const MONTH_COL_MAP = {JAN:1,FEB:2,MAR:3,APR:4,MAY:5,JUN:6,JUL:7,AUG:8,SEP:9,OCT:10,NOV:11,DEC:12};
+function colLabelToISO(label) {
+  if (!label) return null;
+  const m = /^([A-Z]{3})\s+(\d{2})$/.exec(String(label).trim().toUpperCase());
+  if (!m || !MONTH_COL_MAP[m[1]]) return null;
+  return `${2000 + Number(m[2])}-${String(MONTH_COL_MAP[m[1]]).padStart(2, "0")}`;
+}
+
 // Derive the Date From / Date To month pickers (YYYY-MM) from the fiscalYear[] +
 // fiscalMonth[] backend filters (the source of truth). fiscalMonth is a flat
 // month list applied to the selected year(s); empty means the full year.
@@ -397,6 +410,8 @@ export default function WorkspaceReports() {
   // Export (Excel / PDF) dropdown + in-flight state.
   const [exportOpen, setExportOpen] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [reportStartMonth, setReportStartMonth] = useState(null);
+  const [reportEndMonth, setReportEndMonth] = useState(null);
   const [filterOptionsVersion, setFilterOptionsVersion] = useState(0);
   // Dataset versions available for the selected company (manual GL source).
   // Drives the Version dropdown; every staged upload is its own isolated version.
@@ -1509,6 +1524,71 @@ export default function WorkspaceReports() {
 
   const currentReport = reportsData[selectedTab];
 
+  const isManualReportMode = selectedSourceMode === "manual_upload" || selectedSourceMode === "quickbooks_manual";
+  const availableReportMonths = useMemo(() => {
+    if (!isManualReportMode) return [];
+    const detail = currentReport?.detail;
+    if (!detail) return [];
+    // manual_upload / quickbooks_manual: yearCols with "MMM YY" labels
+    const yearCols = detail?.columns?.yearCols;
+    if (Array.isArray(yearCols) && yearCols.length > 0) {
+      return [...new Set(yearCols.map((c) => colLabelToISO(c.label)).filter(Boolean))].sort();
+    }
+    // Manual GL: detail.months (int array) + detail.year
+    if (Array.isArray(detail?.months) && detail?.year) {
+      return detail.months.map((m) => `${detail.year}-${String(m).padStart(2, "0")}`).sort();
+    }
+    return [];
+  }, [currentReport, isManualReportMode]);
+  useEffect(() => {
+    if (!availableReportMonths.length) {
+      setReportStartMonth(null);
+      setReportEndMonth(null);
+    } else {
+      setReportStartMonth(availableReportMonths[0]);
+      setReportEndMonth(availableReportMonths[availableReportMonths.length - 1]);
+    }
+  }, [availableReportMonths]);
+  const filteredReportMonthNums = useMemo(() => {
+    if (!availableReportMonths.length) return [];
+    const start = reportStartMonth || availableReportMonths[0];
+    const end = reportEndMonth || availableReportMonths[availableReportMonths.length - 1];
+    return availableReportMonths
+      .filter((m) => m >= start && m <= end)
+      .map((m) => Number(m.split("-")[1]));
+  }, [availableReportMonths, reportStartMonth, reportEndMonth]);
+
+  // Pre-filter detailedData for manual_upload / quickbooks_manual: strip yearCols
+  // and row amounts that fall outside the selected month range, so all downstream
+  // components (BalanceSheetSummary, ProfitAndLossSummary, CashflowSummary) only
+  // see the selected columns without needing any prop changes.
+  const filteredDetailedData = useMemo(() => {
+    const detail = currentReport?.detail;
+    if (!isManualReportMode || !detail) return detail;
+    const yearCols = detail?.columns?.yearCols;
+    if (!Array.isArray(yearCols) || !availableReportMonths.length) return detail;
+    const start = reportStartMonth || availableReportMonths[0];
+    const end = reportEndMonth || availableReportMonths[availableReportMonths.length - 1];
+    const filteredCols = yearCols.filter((col) => {
+      const iso = colLabelToISO(col.label);
+      if (!iso) return true; // non-month columns (e.g. "FY 2025") always shown
+      return iso >= start && iso <= end;
+    });
+    const filteredKeys = new Set(filteredCols.map((c) => c.key));
+    const filterNode = (node) => ({
+      ...node,
+      amounts: Object.fromEntries(
+        Object.entries(node.amounts || {}).filter(([k]) => filteredKeys.has(k))
+      ),
+      children: node.children ? node.children.map(filterNode) : undefined,
+    });
+    return {
+      ...detail,
+      columns: { ...detail.columns, yearCols: filteredCols },
+      rows: (detail.rows || []).map(filterNode),
+    };
+  }, [currentReport, isManualReportMode, reportStartMonth, reportEndMonth, availableReportMonths]);
+
   return (
     <div className="page-container">
       <Header title="Reports" />
@@ -1762,29 +1842,47 @@ export default function WorkspaceReports() {
               </>
             )}
 
-            {(selectedSourceMode === "manual_upload" || selectedSourceMode === "quickbooks_manual") && (
-              <div className="flex flex-col gap-1.5">
-                <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
-                  Date Range
-                </label>
-                <div className="relative min-w-[160px]">
-                  <select
-                    value={manualDateRange}
-                    onChange={(event) => setManualDateRange(event.target.value)}
-                    className="h-9 w-full appearance-none rounded-md border border-border-input bg-bg-card pl-3 pr-9 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-                  >
-                    {MANUAL_DATE_RANGE_OPTIONS.map((option) => (
-                      <option key={option} value={option}>
-                        {option}
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown
-                    size={14}
-                    className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-text-muted"
+            {isManualReportMode && reportPeriod === "Month" && availableReportMonths.length > 0 && (
+              <>
+                <div>
+                  <label className="block text-[11px] font-semibold uppercase tracking-wide text-text-muted mb-1">
+                    Start Month
+                  </label>
+                  <input
+                    type="date"
+                    value={reportStartMonth ? `${reportStartMonth}-01` : ""}
+                    min={availableReportMonths[0] ? `${availableReportMonths[0]}-01` : undefined}
+                    max={reportEndMonth ? `${reportEndMonth}-01` : undefined}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (!val) return;
+                      const isoMonth = val.slice(0, 7);
+                      setReportStartMonth(isoMonth);
+                      if (reportEndMonth && isoMonth > reportEndMonth) setReportEndMonth(isoMonth);
+                    }}
+                    className="h-9 w-full rounded-md border border-border-input bg-bg-card px-3 text-[13px] text-text-primary"
                   />
                 </div>
-              </div>
+                <div>
+                  <label className="block text-[11px] font-semibold uppercase tracking-wide text-text-muted mb-1">
+                    End Month
+                  </label>
+                  <input
+                    type="date"
+                    value={reportEndMonth ? `${reportEndMonth}-01` : ""}
+                    min={reportStartMonth ? `${reportStartMonth}-01` : undefined}
+                    max={availableReportMonths[availableReportMonths.length - 1] ? `${availableReportMonths[availableReportMonths.length - 1]}-01` : undefined}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (!val) return;
+                      const isoMonth = val.slice(0, 7);
+                      setReportEndMonth(isoMonth);
+                      if (reportStartMonth && isoMonth < reportStartMonth) setReportStartMonth(isoMonth);
+                    }}
+                    className="h-9 w-full rounded-md border border-border-input bg-bg-card px-3 text-[13px] text-text-primary"
+                  />
+                </div>
+              </>
             )}
 
             {selectedSourceMode === "quickbooks" && (
@@ -2006,7 +2104,7 @@ export default function WorkspaceReports() {
                     <BalanceSheetReport
                       reportType={resolveEffectiveReportType(selectedTab, reportType, reportPeriod)}
                       data={currentReport.summary}
-                      detailedData={currentReport.detail}
+                      detailedData={filteredDetailedData}
                       startDate={appliedStartDate}
                       endDate={appliedEndDate}
                       accountingMethod={appliedAccountingMethod}
@@ -2015,13 +2113,13 @@ export default function WorkspaceReports() {
                       entityName={company?.name || clientName}
                       createdOn={createdOn}
                       isPreview={true}
-                      selectedMonths={appliedManualFilters?.fiscalMonth || []}
+                      selectedMonths={isManualReportMode ? filteredReportMonthNums : (appliedManualFilters?.fiscalMonth || [])}
                     />
                   ) : selectedTab === "Profit & Loss" ? (
                     <ProfitAndLossReport
                       reportType={resolveEffectiveReportType(selectedTab, reportType, reportPeriod)}
                       data={currentReport.summary}
-                      detailedData={currentReport.detail}
+                      detailedData={filteredDetailedData}
                       startDate={appliedStartDate}
                       endDate={appliedEndDate}
                       accountingMethod={appliedAccountingMethod}
@@ -2030,13 +2128,13 @@ export default function WorkspaceReports() {
                       entityName={company?.name || clientName}
                       createdOn={createdOn}
                       isPreview={true}
-                      selectedMonths={appliedManualFilters?.fiscalMonth || []}
+                      selectedMonths={isManualReportMode ? filteredReportMonthNums : (appliedManualFilters?.fiscalMonth || [])}
                     />
                   ) : (
                     <CashflowReport
                       reportType={resolveEffectiveReportType(selectedTab, reportType, reportPeriod)}
                       data={currentReport.summary}
-                      detailedData={currentReport.detail}
+                      detailedData={filteredDetailedData}
                       startDate={appliedStartDate}
                       endDate={appliedEndDate}
                       accountingMethod={appliedAccountingMethod}
@@ -2045,7 +2143,7 @@ export default function WorkspaceReports() {
                       entityName={company?.name || clientName}
                       createdOn={createdOn}
                       isPreview={true}
-                      selectedMonths={appliedManualFilters?.fiscalMonth || []}
+                      selectedMonths={isManualReportMode ? filteredReportMonthNums : (appliedManualFilters?.fiscalMonth || [])}
                     />
                   )}
                 </div>

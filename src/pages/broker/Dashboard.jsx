@@ -459,9 +459,9 @@ export default function BrokerDashboard() {
           const formatted = formatCompany({ ...created, request_count: 0, pending_request_count: 0, completed_request_count: 0 });
           setCompanies((prev) => [formatted, ...prev]);
           setPage(1);
-          setSuccess('Company created successfully.');
+          setSuccess('Company created successfully. Notification emails have been sent to all company contacts.');
           closeFormModal();
-          // Create team members (background, non-blocking)
+          // Create team members (background, non-blocking) — each triggers a welcome email via users endpoint
           if (teamMembers.length > 0) {
             const valid = teamMembers.filter((m) => m.name?.trim() && m.email?.trim() && m.password?.trim());
             Promise.allSettled(valid.map((m) =>
@@ -472,7 +472,7 @@ export default function BrokerDashboard() {
           triggerAutoCreateMessageGroups(created.id).catch(() => {});
         } else {
           await loadCompanies();
-          setSuccess('Company created successfully.');
+          setSuccess('Company created successfully. Notification emails have been sent to all company contacts.');
           closeFormModal();
         }
       }

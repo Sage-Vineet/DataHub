@@ -57,8 +57,8 @@ function AccountRow({ account, months, partyLabel = "Vendor / Customer" }) {
           const v = Number(account.monthly?.[m] || 0);
           return <td key={m} className={colClass(v)}>{formatCurrency(v)}</td>;
         })}
-        <td className={`px-3 py-1.5 text-right text-[12px] tabular-nums font-medium ${Number(account.total) < 0 ? "text-status-error" : "text-text-secondary"}`}>
-          {formatCurrency(Number(account.total || 0))}
+        <td className={`px-3 py-1.5 text-right text-[12px] tabular-nums font-medium ${Number(account.monthly?.[months[months.length-1]] ?? account.total ?? 0) < 0 ? "text-status-error" : "text-text-secondary"}`}>
+          {formatCurrency(Number(account.monthly?.[months[months.length-1]] ?? account.total ?? 0))}
         </td>
       </tr>
 
@@ -122,8 +122,8 @@ function CategoryBlock({ category, months, partyLabel }) {
             </td>
           );
         })}
-        <td className={`px-3 py-1.5 text-right text-[12px] tabular-nums font-semibold ${Number(category.total) < 0 ? "text-status-error" : "text-text-primary"}`}>
-          {formatCurrency(Number(category.total || 0))}
+        <td className={`px-3 py-1.5 text-right text-[12px] tabular-nums font-semibold ${Number(category.monthlyTotals?.[months[months.length-1]] ?? category.total ?? 0) < 0 ? "text-status-error" : "text-text-primary"}`}>
+          {formatCurrency(Number(category.monthlyTotals?.[months[months.length-1]] ?? category.total ?? 0))}
         </td>
       </tr>
     </>
@@ -156,8 +156,8 @@ function SectionBlock({ sectionKey, section, months }) {
             </td>
           );
         })}
-        <td className={`px-3 py-2 text-right text-[12px] tabular-nums font-bold ${Number(section.total) < 0 ? "text-status-error" : "text-text-primary"}`}>
-          {formatCurrency(Number(section.total || 0))}
+        <td className={`px-3 py-2 text-right text-[12px] tabular-nums font-bold ${Number(section.monthlyTotals?.[months[months.length-1]] ?? section.total ?? 0) < 0 ? "text-status-error" : "text-text-primary"}`}>
+          {formatCurrency(Number(section.monthlyTotals?.[months[months.length-1]] ?? section.total ?? 0))}
         </td>
       </tr>
     </>
@@ -172,8 +172,10 @@ export default function ManualBalanceSheetMonthlyDetail({
   selectedMonths = [],
 }) {
   const year = data?.year || null;
-  // The backend already filters to the selected months; just use data.months directly.
-  const months = Array.isArray(data?.months) ? data.months : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+  const allMonths = Array.isArray(data?.months) ? data.months : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+  const months = selectedMonths && selectedMonths.length > 0
+    ? allMonths.filter((m) => selectedMonths.includes(m))
+    : allMonths;
   const sections = data?.sections || {};
   const hasSections = Object.keys(sections).length > 0;
 
@@ -205,7 +207,10 @@ export default function ManualBalanceSheetMonthlyDetail({
   months.forEach((m) => {
     totalLEByMonth[m] = (liabSection.monthlyTotals?.[m] || 0) + (eqSection.monthlyTotals?.[m] || 0);
   });
-  const totalLETotal = (liabSection.total || 0) + (eqSection.total || 0);
+  const lastVisibleMonth = months[months.length - 1];
+  const totalLETotal = lastVisibleMonth != null
+    ? (totalLEByMonth[lastVisibleMonth] || 0)
+    : (liabSection.total || 0) + (eqSection.total || 0);
 
   return (
     <div className="flex-1 overflow-y-auto bg-bg-page/50 p-6 lg:p-10 font-inter">

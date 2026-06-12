@@ -1,6 +1,7 @@
 const { supabase } = require("../db");
 const bcrypt = require("bcryptjs");
 const { Pool } = require("pg");
+const { CLIENT_SUB_ROLES } = require("../constants/roles");
 
 // Sub-roles that belong to the client side of the platform.
 // Users with these sub_roles always receive effective_role = "client",
@@ -1034,6 +1035,29 @@ async function updateUser(id, userData) {
   return await getUserById(id);
 }
 
+/**
+ * Returns all client-side users (company_owner, client_team_member, client_accountant)
+ * associated with the given company. Used for request-assignment email notifications.
+ */
+async function getClientTeamMembersForCompany(companyId) {
+  const { data: links } = await supabase
+    .from("user_companies")
+    .select("user_id")
+    .eq("company_id", companyId);
+
+  if (!links?.length) return [];
+
+  const userIds = links.map((l) => l.user_id).filter(Boolean);
+
+  const { data: users } = await supabase
+    .from("users")
+    .select("id, name, email, sub_role")
+    .in("id", userIds)
+    .in("sub_role", CLIENT_SUB_ROLES);
+
+  return (users || []).filter((u) => u.email);
+}
+
 module.exports = {
   supabase,
   userSelect,
@@ -1056,5 +1080,6 @@ module.exports = {
   createUser,
   updateUser,
   resolveReplacementUserId,
-  reassignUserRecords
+  reassignUserRecords,
+  getClientTeamMembersForCompany,
 };
