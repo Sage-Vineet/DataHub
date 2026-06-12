@@ -1,4 +1,4 @@
-import { formatCurrency } from "../../../lib/utils";
+import { formatCurrency, formatNumber } from "../../../lib/utils";
 
 function formatMetric(metric) {
   return String(metric || "")
@@ -125,7 +125,7 @@ export default function ManualProfitLossSummary({
                       <td className="px-3 py-2 text-right text-[13px] text-text-secondary tabular-nums">
                         {row.netProfitDeltaPctVsPreviousYear === null || row.netProfitDeltaPctVsPreviousYear === undefined
                           ? "-"
-                          : `${Number(row.netProfitDeltaPctVsPreviousYear).toFixed(2)}%`}
+                          : `${formatNumber(row.netProfitDeltaPctVsPreviousYear, 2)}%`}
                       </td>
                     </tr>
                   ))}

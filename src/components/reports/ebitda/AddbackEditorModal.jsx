@@ -4,6 +4,7 @@ import Modal from "../../../components/common/Modal";
 import FileUpload from "../../../components/common/FileUpload";
 import MultiSelectDropdown from "../../../components/common/MultiSelectDropdown";
 import { getProfitMetricConfig } from "../../../lib/profitMetric";
+import { formatCurrency, formatNumber } from "../../../lib/utils";
 import {
   applyReferenceValues,
   buildAdjustmentDraft,
@@ -16,21 +17,15 @@ function toNumber(value, fallback = 0) {
   return Number.isFinite(numeric) ? numeric : fallback;
 }
 
-function formatCurrency(value) {
-  const numeric = toNumber(value, 0);
-  if (!Number.isFinite(numeric) || numeric === 0) return "-";
-  return new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Math.abs(numeric));
-}
-
 function buildInitialDraft(adjustment, typeOptions) {
   return adjustment
     ? buildAdjustmentDraft(adjustment)
     : buildAdjustmentDraft({
-        name: "",
-        typeKey: typeOptions?.[0]?.typeKey || "other_addback",
-        values: {},
-        vendorScope: [],
-      });
+      name: "",
+      typeKey: typeOptions?.[0]?.typeKey || "other_addback",
+      values: {},
+      vendorScope: [],
+    });
 }
 
 export default function AddbackEditorModal({

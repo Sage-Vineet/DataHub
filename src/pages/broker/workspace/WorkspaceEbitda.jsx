@@ -7,7 +7,7 @@ import {
   Trash2,
   ChevronDown,
 } from "lucide-react";
-import { cn, formatCurrency } from "../../../lib/utils";
+import { cn, formatCurrency, formatNumber } from "../../../lib/utils";
 import {
   getCompanyRequest,
   getAllManualUploadedReports,
@@ -38,10 +38,6 @@ import EbitdaAdjustmentsPanel from "../../../components/reports/ebitda/EbitdaAdj
 import { useDataSource } from "../../../context/DataSourceContext";
 import { useDatasetVersionStore } from "../../../store/useDatasetVersionStore";
 
-function formatPercent(value) {
-  if (!Number.isFinite(value)) return "-";
-  return `${value.toFixed(2)}%`;
-}
 
 function toNumber(value, fallback = 0) {
   if (value === null || value === undefined || value === "") return fallback;
@@ -169,7 +165,7 @@ function FormattedNumericInput({ value, apiValue, isFromPL, linkedToPL, onChange
       if (value === null) return "";
       return String(toAbsoluteNumber(value, 0));
     }
-    const formatted = normalizedValue === null ? "-" : formatCurrency(normalizedValue);
+    const formatted = normalizedValue === null ? "-" : formatNumber(normalizedValue, 2);
     return showPLAsterisk && formatted !== "-" && !formatted.startsWith("*")
       ? `*${formatted}`
       : formatted;
@@ -191,7 +187,7 @@ function FormattedNumericInput({ value, apiValue, isFromPL, linkedToPL, onChange
         (value !== null || apiValue !== null) ? "text-text-primary" : "text-gray-300",
         className
       )}
-      placeholder={apiValue !== null ? formatCurrency(toAbsoluteNumber(apiValue, 0)) : "-"}
+      placeholder={apiValue !== null ? formatNumber(toAbsoluteNumber(apiValue, 0), 2) : "-"}
     />
   );
 }

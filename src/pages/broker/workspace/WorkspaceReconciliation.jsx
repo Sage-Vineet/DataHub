@@ -6,7 +6,7 @@ import { getStoredToken, setSelectedReportSource, getManualStageFilterOptions, l
 import { useDataSource } from "../../../context/DataSourceContext";
 import { useDatasetVersionStore } from "../../../store/useDatasetVersionStore";
 import { emitWorkspaceDataSourceUpdated } from "../../../lib/dataSourceEvents";
-import { cn } from "../../../lib/utils";
+import { cn, formatNumber, formatCurrency } from "../../../lib/utils";
 import {
   REPORT_SOURCE_KEYS,
   REPORT_SOURCE_OPTIONS,
@@ -148,38 +148,28 @@ const getStoredWorkspaceState = (clientId) => {
 };
 const fmtAmt = (val) => {
   if (val == null || val === 0) return "-";
-  return new Intl.NumberFormat("en-IN", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(val);
+  return formatNumber(val, 2);
 };
 const fmtAcct = (val) => {
   if (val == null || val === 0) return "-";
-  const abs = new Intl.NumberFormat("en-IN", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(Math.abs(val));
-  return val < 0 ? `(${abs})` : abs;
+  return formatNumber(val, 2);
 };
 const fmtVarianceAmt = (val) => {
   if (val == null || val === 0)
     return { display: "-", colorClass: "text-text-muted" };
-  const abs = new Intl.NumberFormat("en-IN", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(Math.abs(val));
+  const formatted = formatNumber(Math.abs(val), 2);
   if (val < 0)
-    return { display: `-${abs}`, colorClass: "text-red-600 font-medium" };
-  return { display: `+${abs}`, colorClass: "text-green-600 font-medium" };
+    return { display: `-${formatted}`, colorClass: "text-red-600 font-medium" };
+  return { display: `+${formatted}`, colorClass: "text-green-600 font-medium" };
 };
 const fmtVariancePct = (val) => {
   if (val == null) return { display: "-", colorClass: "text-text-muted" };
-  const fixed = parseFloat(val).toFixed(1);
-  if (parseFloat(fixed) === 0)
+  const formatted = formatNumber(val, 1);
+  if (parseFloat(formatted) === 0)
     return { display: "0.0%", colorClass: "text-text-muted" };
   if (val < 0)
-    return { display: `${fixed}%`, colorClass: "text-red-600 font-medium" };
-  return { display: `+${fixed}%`, colorClass: "text-green-600 font-medium" };
+    return { display: `${formatted}%`, colorClass: "text-red-600 font-medium" };
+  return { display: `+${formatted}%`, colorClass: "text-green-600 font-medium" };
 };
 const monthLabel = (ym) => {
   const [y, m] = ym.split("-");

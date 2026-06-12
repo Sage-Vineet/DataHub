@@ -12,6 +12,7 @@ import {
   Scale,
   Wallet,
 } from "lucide-react";
+import { formatNumber, formatCurrency } from "../lib/utils";
 import {
   fetchBalanceSheet,
   fetchProfitAndLoss,
@@ -99,12 +100,7 @@ function toNumber(value) {
 }
 
 function formatMoney(value) {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(Number(value || 0));
+  return formatNumber(value, 2);
 }
 
 function formatLocalDate(date) {
@@ -293,7 +289,7 @@ function hasNoReportData(payload) {
           : [];
       if (opts.some(
         (o) => String(o?.Name || "").trim() === "NoReportData" &&
-               String(o?.Value || "").trim().toLowerCase() === "true",
+          String(o?.Value || "").trim().toLowerCase() === "true",
       )) return true;
     }
     const d = current.data;
@@ -1093,18 +1089,18 @@ export async function fetchDashboardKPIsFromManualUpload() {
       : cashBank + receivable + inventoryValue - accountPayable;
 
   const cards = [
-    { label: "Total Revenue",       value: formatMoney(revenue),          rawValue: revenue,          desc: "Total gross income",             color: "#8bc53d", icon: CircleDollarSign },
-    { label: "Total Expenses",      value: formatMoney(expenses),         rawValue: expenses,         desc: "Total operating costs",          color: "#C62026", icon: CreditCard },
-    { label: "Net Profit",          value: formatMoney(netProfit),        rawValue: netProfit,        desc: "Bottom-line earnings",           color: "#00648F", icon: TrendingUp },
-    { label: "Total Assets",        value: formatMoney(totalAssets),      rawValue: totalAssets,      desc: "Company's total valuation",      color: "#8bc53d", icon: Building2 },
-    { label: "Total Liabilities",   value: formatMoney(totalLiabilities), rawValue: totalLiabilities, desc: "Current total obligations",      color: "#F68C1F", icon: Wallet },
-    { label: "Total Equity",        value: formatMoney(totalEquity),      rawValue: totalEquity,      desc: "Net asset value",                color: "#00648F", icon: Scale },
-    { label: "Working Capital",     value: formatMoney(workingCapital),   rawValue: workingCapital,   desc: "Available operating liquidity",  color: "#8bc53d", icon: RefreshCw },
-    { label: "Cash & Bank Balance", value: formatMoney(cashBank),         rawValue: cashBank,         desc: "Liquid funds available",         color: "#8bc53d", icon: PiggyBank },
-    { label: "Account Receivable",  value: formatMoney(receivable),       rawValue: receivable,       desc: "Unpaid client invoices",         color: "#00A3FF", icon: ArrowDownToLine },
-    { label: "Inventory Value",     value: formatMoney(inventoryValue),   rawValue: inventoryValue,   desc: "Current stock valuation",        color: "#6D6E71", icon: Package },
-    { label: "Account Payable",     value: formatMoney(accountPayable),   rawValue: accountPayable,   desc: "Outstanding vendor bills",       color: "#EF4444", icon: ArrowUpToLine },
-    { label: "Long-Term Debt",      value: formatMoney(longTermDebt),     rawValue: longTermDebt,     desc: "Non-current liabilities",        color: "#DC2626", icon: Landmark },
+    { label: "Total Revenue", value: formatMoney(revenue), rawValue: revenue, desc: "Total gross income", color: "#8bc53d", icon: CircleDollarSign },
+    { label: "Total Expenses", value: formatMoney(expenses), rawValue: expenses, desc: "Total operating costs", color: "#C62026", icon: CreditCard },
+    { label: "Net Profit", value: formatMoney(netProfit), rawValue: netProfit, desc: "Bottom-line earnings", color: "#00648F", icon: TrendingUp },
+    { label: "Total Assets", value: formatMoney(totalAssets), rawValue: totalAssets, desc: "Company's total valuation", color: "#8bc53d", icon: Building2 },
+    { label: "Total Liabilities", value: formatMoney(totalLiabilities), rawValue: totalLiabilities, desc: "Current total obligations", color: "#F68C1F", icon: Wallet },
+    { label: "Total Equity", value: formatMoney(totalEquity), rawValue: totalEquity, desc: "Net asset value", color: "#00648F", icon: Scale },
+    { label: "Working Capital", value: formatMoney(workingCapital), rawValue: workingCapital, desc: "Available operating liquidity", color: "#8bc53d", icon: RefreshCw },
+    { label: "Cash & Bank Balance", value: formatMoney(cashBank), rawValue: cashBank, desc: "Liquid funds available", color: "#8bc53d", icon: PiggyBank },
+    { label: "Account Receivable", value: formatMoney(receivable), rawValue: receivable, desc: "Unpaid client invoices", color: "#00A3FF", icon: ArrowDownToLine },
+    { label: "Inventory Value", value: formatMoney(inventoryValue), rawValue: inventoryValue, desc: "Current stock valuation", color: "#6D6E71", icon: Package },
+    { label: "Account Payable", value: formatMoney(accountPayable), rawValue: accountPayable, desc: "Outstanding vendor bills", color: "#EF4444", icon: ArrowUpToLine },
+    { label: "Long-Term Debt", value: formatMoney(longTermDebt), rawValue: longTermDebt, desc: "Non-current liabilities", color: "#DC2626", icon: Landmark },
   ];
 
   return cards.map((card) => ({ ...card, rawValue: Number(card.rawValue || 0) }));

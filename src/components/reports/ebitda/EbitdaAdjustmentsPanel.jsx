@@ -10,13 +10,14 @@ import {
 } from "lucide-react";
 import AddbackEditorModal from "./AddbackEditorModal";
 import { getProfitMetricConfig } from "../../../lib/profitMetric";
-import { cn } from "../../../lib/utils";
+import { formatNumber, formatCurrency, cn } from "../../../lib/utils";
 import {
   calculateAdjustedEbitdaByYear,
   calculateAdjustmentTotalsByYear,
   filterAdjustmentsByApprovalStatus,
   getAdjustmentYearSourceValue,
   getAdjustmentYearValue,
+  normalizeVendorScope,
 } from "../../../services/ebitdaAdjustmentService";
 
 function toNumber(value, fallback = 0) {
@@ -28,32 +29,6 @@ function toNumber(value, fallback = 0) {
 function normalizeText(value, fallback = "") {
   const text = String(value ?? "").trim();
   return text || fallback;
-}
-
-function normalizeVendorScope(scope = []) {
-  const values = Array.isArray(scope) ? scope : [scope];
-  return Array.from(
-    new Set(
-      values
-        .map((item) => {
-          if (typeof item === "string") return normalizeText(item);
-          if (!item || typeof item !== "object") return "";
-          return normalizeText(item.vendorName || item.vendor_name || item.name || item.label || item.value);
-        })
-        .filter(Boolean),
-    ),
-  );
-}
-
-function formatPercent(value) {
-  if (!Number.isFinite(value)) return "-";
-  return `${value.toFixed(2)}%`;
-}
-
-function formatSignedCurrency(formatCurrency, value) {
-  const numeric = toNumber(value, 0);
-  const formatted = formatCurrency?.(Math.abs(numeric)) ?? Math.abs(numeric).toFixed(2);
-  return numeric < 0 ? `(${formatted})` : formatted;
 }
 
 function getAdjustmentTypeLabel(adjustment, typeOptionsByKey, fallbackLabel = "Addback") {
@@ -399,10 +374,10 @@ export default function EbitdaAdjustmentsPanel({
                 return (
                   <td key={year} className="p-3 text-right">
                     <div className="flex flex-col items-end gap-0.5">
-                      <span className="font-bold text-[#050505]">{formatSignedCurrency(formatCurrency, yearValue)}</span>
+                      <span className="font-bold text-[#050505]">{formatCurrency(yearValue)}</span>
                       {sourceValue !== yearValue ? (
                         <span className="text-[10px] font-medium uppercase tracking-wide text-text-muted">
-                          {formatSignedCurrency(formatCurrency, sourceValue)}
+                          {formatCurrency(sourceValue)}
                         </span>
                       ) : null}
                       {hasOverride ? (
@@ -554,7 +529,7 @@ export default function EbitdaAdjustmentsPanel({
           const yearTotal = toNumber(totalsByYear[String(year)] ?? 0, 0);
           return (
             <td key={year} className="p-3 text-right font-bold text-[#050505]">
-              {formatSignedCurrency(formatCurrency, yearTotal)}
+              {formatCurrency(yearTotal)}
             </td>
           );
         })}
@@ -569,7 +544,7 @@ export default function EbitdaAdjustmentsPanel({
           const adjustedValue = toNumber(adjustedEbitdaByYear[String(year)] ?? 0, 0);
           return (
             <td key={year} className="p-4 text-right font-bold text-[#8bc53d] text-[16px]">
-              {formatSignedCurrency(formatCurrency, adjustedValue)}
+              {formatCurrency(adjustedValue)}
             </td>
           );
         })}
@@ -589,7 +564,7 @@ export default function EbitdaAdjustmentsPanel({
 
           return (
             <td key={year} className="p-3 text-right font-bold text-text-primary">
-              {formatPercent(ebitdaPercent)}
+              {formatNumber(ebitdaPercent, 2)}%
             </td>
           );
         })}

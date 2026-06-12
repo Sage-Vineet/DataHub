@@ -1,15 +1,9 @@
+import { formatCurrency } from './utils';
+
 const HEALTH_SCORES = [94, 88, 81, 76, 91, 84];
 const PAYMENT_WINDOWS = ['On track', '2 days late', 'Review needed', '7 days late', 'On track', '5 days late'];
 const RELATIONSHIP_TIERS = ['Strategic', 'Growth', 'Standard', 'Watchlist', 'Strategic', 'Growth'];
 const CONNECTION_STATES = ['Connected', 'Connected', 'Pending setup', 'Attention needed'];
-
-function formatCurrency(amount) {
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    maximumFractionDigits: 0,
-  }).format(amount);
-}
 
 export function buildClientLedger(companies = []) {
   return companies.map((company, index) => {

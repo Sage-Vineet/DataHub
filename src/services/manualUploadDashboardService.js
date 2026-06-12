@@ -33,14 +33,10 @@ import {
   Wallet,
 } from "lucide-react";
 import { getManualUploadDashboard } from "../lib/api";
+import { formatNumber } from "../lib/utils";
 
 function formatMoney(value) {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(Number(value || 0));
+  return formatNumber(value, 2);
 }
 
 function buildKpiCards(kpis = {}) {
