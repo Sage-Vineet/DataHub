@@ -731,12 +731,17 @@ router.get("/manual-report-uploads/tax-data", async (req, res) => {
     const clientId = resolveClientId(req);
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
 
-    // ── Resolve the source tax return(s) strictly from the active Key Reports
-    //    version. The linked document set keys the cache, so switching the active
-    //    version (Version 1 → Tax_2024.pdf, Version 2 → Tax_2025.pdf) refreshes it.
-    const { versionId, documents: linkedDocs } = await keyReportService.getActiveLinkedDocuments(
+    // ── Resolve the source tax return(s) from the SELECTED Key Reports version
+    //    (from the chosen Manual GL dataset version), falling back to the active
+    //    version when none is selected. The linked document set keys the cache, so
+    //    switching versions (Version 1 → Tax_2024.pdf, Version 2 → Tax_2025.pdf)
+    //    refreshes it.
+    const datasetVersion = String(req.query.datasetVersion || "").trim() || null;
+    // Centralised resolver: one call yields the selected version's full document
+    // context; the tax_return field is the source set for this reconciliation.
+    const { versionId, taxReturn: linkedDocs } = await keyReportService.getVersionReportContext(
       clientId,
-      "tax_return",
+      { datasetVersion },
     );
     const documentSignature = linkedDocs.map((d) => d.id).filter(Boolean).sort().join(",");
 

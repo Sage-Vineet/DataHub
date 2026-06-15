@@ -5,6 +5,7 @@ import QBDisconnectedBanner from "../../../components/common/QBDisconnectedBanne
 import {
   ChevronDown,
   Download,
+  FileText,
   RefreshCw,
   RotateCcw,
 } from "lucide-react";
@@ -203,10 +204,10 @@ function createDefaultManualFilters() {
   return {
     batchId: "",
     datasetVersion: "",
-    fiscalYear: [],
-    fiscalMonth: [],
-    startDate: "",
-    endDate: "",
+    // Direct date-range fields — replaces the old fiscalYear[]/fiscalMonth[] round-trip.
+    fromDate: "",
+    toDate: "",
+    // Keep fiscalYear/fiscalMonth as supplemental multi-select filters (not used for date-range anymore).
     accountName: [],
     accountNumber: [],
     accountType: [],
@@ -252,8 +253,13 @@ function buildManualFilterParams(filters) {
     if (value) params[key] = value;
   });
 
-  // QB date fallback intentionally removed: manual reports are filtered by
-  // fiscalYear only; QB date ranges must not pollute staged GL sub-queries.
+  // Map fromDate/toDate → startDate/endDate for the backend.
+  if (normalized.fromDate) params.startDate = normalized.fromDate;
+  if (normalized.toDate) params.endDate = normalized.toDate;
+  // Remove the internal field names so the backend never sees "fromDate"/"toDate".
+  delete params.fromDate;
+  delete params.toDate;
+
   return params;
 }
 
@@ -278,10 +284,10 @@ function pad2(n) {
 
 function reportMonthLabel(isoMonth) {
   const [y, m] = isoMonth.split("-");
-  return `${["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][Number(m)-1]} ${y}`;
+  return `${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][Number(m) - 1]} ${y}`;
 }
 
-const MONTH_COL_MAP = {JAN:1,FEB:2,MAR:3,APR:4,MAY:5,JUN:6,JUL:7,AUG:8,SEP:9,OCT:10,NOV:11,DEC:12};
+const MONTH_COL_MAP = { JAN: 1, FEB: 2, MAR: 3, APR: 4, MAY: 5, JUN: 6, JUL: 7, AUG: 8, SEP: 9, OCT: 10, NOV: 11, DEC: 12 };
 function colLabelToISO(label) {
   if (!label) return null;
   const m = /^([A-Z]{3})\s+(\d{2})$/.exec(String(label).trim().toUpperCase());
@@ -527,13 +533,13 @@ export default function WorkspaceReports() {
     function handleGlStaged(event) {
       const { clientId: eventClientId } = event.detail || {};
       if (eventClientId && clientId && eventClientId !== clientId) return;
-      // Clear fiscal year selection and stale options; filter options will
+      // Clear date range, fiscal year, and stale options; filter options will
       // be re-fetched automatically via filterOptionsVersion increment.
       setManualFilterOptions({});
-      // Reset datasetVersion too so the version-load effect re-selects the newly
-      // staged (latest) version by default after an upload completes.
-      setManualFilters((prev) => ({ ...prev, batchId: "", datasetVersion: "", fiscalYear: [], fiscalMonth: [] }));
-      setAppliedManualFilters((prev) => ({ ...prev, batchId: "", datasetVersion: "", fiscalYear: [], fiscalMonth: [] }));
+      // Reset datasetVersion and date range so the version-load + options effects
+      // re-derive the full span of the newly staged dataset.
+      setManualFilters((prev) => ({ ...prev, batchId: "", datasetVersion: "", fromDate: "", toDate: "", fiscalYear: [], fiscalMonth: [] }));
+      setAppliedManualFilters((prev) => ({ ...prev, batchId: "", datasetVersion: "", fromDate: "", toDate: "", fiscalYear: [], fiscalMonth: [] }));
       setReportsData(createInitialReportsData());
       // Invalidate the tab-switch cache so reports refetch against the new batch.
       reportSignaturesRef.current = {};
@@ -617,16 +623,7 @@ export default function WorkspaceReports() {
   const currentSignatureRef = useRef(currentSignature);
   currentSignatureRef.current = currentSignature;
 
-  // Date From / Date To month pickers (manual mode) derive from fiscalYear/fiscalMonth.
-  const manualDateRangeValue = filtersToDateRange(manualFilters.fiscalYear, manualFilters.fiscalMonth);
-  const manualAvailableYears = (manualFilterOptions?.fiscalYear || [])
-    .map(Number)
-    .filter(Number.isFinite)
-    .sort((a, b) => a - b);
-  const manualDateMin = manualAvailableYears.length ? `${manualAvailableYears[0]}-01-01` : undefined;
-  const manualDateMax = manualAvailableYears.length
-    ? `${manualAvailableYears[manualAvailableYears.length - 1]}-12-31`
-    : undefined;
+  // Date From / Date To pickers now read directly from fromDate/toDate — no year round-trip.
 
   // Load available dataset versions for the company.  Defaults the selection to
   // the latest version and refreshes after every new upload (filterOptionsVersion
@@ -700,20 +697,28 @@ export default function WorkspaceReports() {
           changed = true;
         }
 
+        // Auto-populate fromDate/toDate from the full span of available data
+        // when no date range has been manually selected yet.
         if (availableYears.length > 0) {
+          const sortedYears = [...availableYears].map(Number).filter(Number.isFinite).sort((a, b) => a - b);
+          const spanFrom = `${sortedYears[0]}-01-01`;
+          const spanTo = `${sortedYears[sortedYears.length - 1]}-12-31`;
+
+          const hasFromDate = String(nextFilters.fromDate || "").trim();
+          const hasToDate = String(nextFilters.toDate || "").trim();
+
+          if (!hasFromDate || !hasToDate) {
+            nextFilters.fromDate = hasFromDate || spanFrom;
+            nextFilters.toDate = hasToDate || spanTo;
+            changed = true;
+            debugLog("[ManualGL][UI][FilterAutoSelectDateRange]", { fromDate: nextFilters.fromDate, toDate: nextFilters.toDate });
+          }
+
+          // Keep fiscalYear in sync with available years (still used as supplemental multi-select).
           const availableSet = new Set(availableYears.map((y) => String(y)));
           const currentSelection = (nextFilters.fiscalYear || []).map(String);
           const stillValid = currentSelection.filter((y) => availableSet.has(y));
-          if (stillValid.length === 0) {
-            // No valid selection — default to the latest available year.
-            const sorted = [...availableYears].map(Number).filter(Number.isFinite).sort((a, b) => b - a);
-            if (sorted.length > 0) {
-              nextFilters.fiscalYear = [String(sorted[0])];
-              changed = true;
-              debugLog("[ManualGL][UI][FilterAutoSelectYear]", { selectedFiscalYear: String(sorted[0]) });
-            }
-          } else if (stillValid.length !== currentSelection.length) {
-            // Drop stale years but preserve the rest of the multi-year selection.
+          if (stillValid.length !== currentSelection.length) {
             nextFilters.fiscalYear = stillValid;
             changed = true;
           }
@@ -1131,13 +1136,11 @@ export default function WorkspaceReports() {
   // Date From / Date To pickers are pure views over fiscalYear[] + fiscalMonth[]
   // (the backend source of truth). They update the DRAFT only — the report
   // refetches when Apply is clicked, matching the previous multi-select behavior.
+  // Direct date-range handlers — no fiscal-year round-trip.
   const handleDateFromChange = useCallback(
     (value) => {
       setManualFilters((prev) => {
-        const cur = filtersToDateRange(prev.fiscalYear, prev.fiscalMonth);
-        const { fiscalYear, fiscalMonth } = dateRangeToFilters(value, cur.to);
-        const next = { ...prev, fiscalYear, fiscalMonth };
-        // Apply immediately
+        const next = { ...prev, fromDate: value };
         setAppliedManualFilters(next);
         return next;
       });
@@ -1149,10 +1152,7 @@ export default function WorkspaceReports() {
   const handleDateToChange = useCallback(
     (value) => {
       setManualFilters((prev) => {
-        const cur = filtersToDateRange(prev.fiscalYear, prev.fiscalMonth);
-        const { fiscalYear, fiscalMonth } = dateRangeToFilters(cur.from, value);
-        const next = { ...prev, fiscalYear, fiscalMonth };
-        // Apply immediately
+        const next = { ...prev, toDate: value };
         setAppliedManualFilters(next);
         return next;
       });
@@ -1161,11 +1161,8 @@ export default function WorkspaceReports() {
     [debugLog],
   );
 
-  // Switch the active dataset version. Clears batch + year/month so the
-  // filter-options effect re-derives them for the newly selected version,
-  // preventing stale cross-version selections. The datasetVersion flows into
-  // every report request (via buildManualFilterParams), so reports refresh
-  // using ONLY the selected version's dataset.
+  // Switch the active dataset version. Clears batch + date range + year/month so the
+  // filter-options effect re-derives the full span for the newly selected version.
   const handleVersionChange = useCallback(
     (versionValue) => {
       const nextVersion = String(versionValue || "");
@@ -1173,6 +1170,8 @@ export default function WorkspaceReports() {
         ...manualFiltersRef.current,
         datasetVersion: nextVersion,
         batchId: "",
+        fromDate: "",
+        toDate: "",
         fiscalYear: [],
         fiscalMonth: [],
       };
@@ -1182,8 +1181,6 @@ export default function WorkspaceReports() {
     },
     [debugLog],
   );
-
-  // handleApplyManualFilters removed
 
 
   // Core report fetch + state write, parameterised by tab/reportType so it can
@@ -1273,21 +1270,14 @@ export default function WorkspaceReports() {
         });
       }
 
-      // For manual GL mode: derive display dates from the selected fiscal year.
+      // For manual GL mode: derive display dates from fromDate/toDate.
       let effectiveStartDate = resolvedStart;
       let effectiveEndDate = resolvedEnd;
       if (selectedSourceMode === "manual") {
-        const selectedYears = (
-          appliedManualFilters?.fiscalYear?.length
-            ? appliedManualFilters.fiscalYear
-            : (manualFilterParams?.fiscalYear || [])
-        )
-          .map(Number)
-          .filter(Number.isFinite);
-        if (selectedYears.length > 0) {
-          effectiveStartDate = `${Math.min(...selectedYears)}-01-01`;
-          effectiveEndDate = `${Math.max(...selectedYears)}-12-31`;
-        }
+        const fromDate = String(appliedManualFilters?.fromDate || "").trim();
+        const toDate = String(appliedManualFilters?.toDate || "").trim();
+        if (fromDate) effectiveStartDate = fromDate;
+        if (toDate) effectiveEndDate = toDate;
       }
       // For manual_upload Cash Flow: period must reflect the selected CF year,
       // not the QB date-range picker (which is hidden on this tab).
@@ -1524,6 +1514,24 @@ export default function WorkspaceReports() {
 
   const currentReport = reportsData[selectedTab];
 
+  // Detect empty state for manual GL: report was fetched but returned no data
+  // for the selected date range. Show a clear message instead of a blank report.
+  const isManualGlEmptyState = useMemo(() => {
+    if (selectedSourceMode !== "manual" || isLoading) return false;
+    const from = String(appliedManualFilters?.fromDate || "").trim();
+    const to = String(appliedManualFilters?.toDate || "").trim();
+    if (!from && !to) return false; // no filter applied yet
+    const report = reportsData[selectedTab];
+    const summaryEmpty =
+      !report?.summary ||
+      (Array.isArray(report.summary) && report.summary.length === 0) ||
+      (report.summary?.rows && report.summary.rows.length === 0);
+    const detailEmpty =
+      !report?.detail ||
+      (Array.isArray(report.detail?.groups) && report.detail.groups.length === 0);
+    return summaryEmpty && detailEmpty;
+  }, [selectedSourceMode, isLoading, appliedManualFilters, reportsData, selectedTab]);
+
   const isManualReportMode = selectedSourceMode === "manual_upload" || selectedSourceMode === "quickbooks_manual";
   const availableReportMonths = useMemo(() => {
     if (!isManualReportMode) return [];
@@ -1687,8 +1695,8 @@ export default function WorkspaceReports() {
               <span className="truncate text-[12px] text-text-muted">
                 {[
                   selectedSourceMode === "quickbooks" ? accountingMethod : null,
-                  manualDateRangeValue.from && manualDateRangeValue.to
-                    ? `${manualDateRangeValue.from} → ${manualDateRangeValue.to}`
+                  selectedSourceMode === "manual" && (manualFilters.fromDate || manualFilters.toDate)
+                    ? `${manualFilters.fromDate || "…"} → ${manualFilters.toDate || "…"}`
                     : null,
                 ]
                   .filter(Boolean)
@@ -2061,9 +2069,7 @@ export default function WorkspaceReports() {
                   </label>
                   <input
                     type="date"
-                    min={manualDateMin}
-                    max={manualDateMax}
-                    value={manualDateRangeValue.from}
+                    value={manualFilters.fromDate || ""}
                     onChange={(e) => handleDateFromChange(e.target.value)}
                     className="h-9 min-w-[150px] rounded-md border border-border-input bg-bg-card px-3 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
                   />
@@ -2075,15 +2081,13 @@ export default function WorkspaceReports() {
                   </label>
                   <input
                     type="date"
-                    min={manualDateMin}
-                    max={manualDateMax}
-                    value={manualDateRangeValue.to}
+                    value={manualFilters.toDate || ""}
                     onChange={(e) => handleDateToChange(e.target.value)}
                     className="h-9 min-w-[150px] rounded-md border border-border-input bg-bg-card px-3 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
                   />
                 </div>
 
-                {/* Apply button removed — filters are now reactive */}
+                {/* Filters are reactive — no Apply button needed */}
               </>
             )}
 
@@ -2095,6 +2099,18 @@ export default function WorkspaceReports() {
                 <div className="mb-6 h-12 w-12 animate-spin rounded-full border-4 border-border border-t-primary" />
                 <p className="animate-pulse text-[14px] font-medium text-text-muted">
                   Fetching latest financial records from {selectedSourceLabel}...
+                </p>
+              </div>
+            ) : isManualGlEmptyState ? (
+              <div className="flex flex-1 flex-col items-center justify-center py-24 text-center">
+                <div className="mb-4 h-12 w-12 rounded-full border-2 border-border flex items-center justify-center">
+                  <FileText size={22} className="text-text-muted" />
+                </div>
+                <p className="text-[15px] font-semibold text-text-primary mb-1">
+                  No data available for the selected date range.
+                </p>
+                <p className="text-[13px] text-text-muted">
+                  Try adjusting the Date From and Date To filters above.
                 </p>
               </div>
             ) : (

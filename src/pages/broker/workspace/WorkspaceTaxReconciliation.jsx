@@ -325,8 +325,13 @@ export default function WorkspaceTaxReconciliation() {
         // version, in parallel. Passing datasetVersion scopes both the year
         // list and every subsequent P&L fetch to that version's transactions.
         const versionParam = selectedVersion ? { datasetVersion: String(selectedVersion) } : {};
+        // Scope the tax return document resolution to the SELECTED version's Key
+        // Reports mapping so it never mixes another version's (or staging's) returns.
+        const taxVersionParam = selectedVersion
+          ? `&datasetVersion=${encodeURIComponent(String(selectedVersion))}`
+          : "";
         const [taxRes, filterRes] = await Promise.all([
-          fetch(`${API_BASE_URL}/manual-report-uploads/tax-data?clientId=${clientId || ""}${forceParam}`, { headers })
+          fetch(`${API_BASE_URL}/manual-report-uploads/tax-data?clientId=${clientId || ""}${forceParam}${taxVersionParam}`, { headers })
             .then((r) => r.json()).catch(() => ({ success: false })),
           getManualStageFilterOptions({ clientId, params: versionParam }).catch(() => ({})),
         ]);

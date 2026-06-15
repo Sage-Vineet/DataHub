@@ -437,26 +437,142 @@ async function getActiveResolvedBatch(companyId) {
   };
 }
 
-// Returns documents linked in the active version for a given category.
-async function getActiveLinkedDocuments(companyId, reportCategory) {
-  const active = await getActiveVersion(companyId);
-  if (!active) {
-    return { versionId: null, documents: [] };
+// Returns the Key Report version pinned to a given Manual GL dataset version
+// number (key_report_versions.resolved_dataset_version). Used to resolve the
+// SELECTED version's linked documents — not merely the active one — so report
+// consumers (Bank / Tax Reconciliation) stay isolated to the chosen version.
+async function getVersionByDatasetVersion(companyId, datasetVersion) {
+  if (!companyId || datasetVersion == null || datasetVersion === "") return null;
+  const dv = Number(datasetVersion);
+  if (!Number.isFinite(dv)) return null;
+  const { data, error } = await supabase
+    .from("key_report_versions")
+    .select("*")
+    .eq("company_id", companyId)
+    .eq("resolved_dataset_version", dv)
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return normalizeVersion(data);
+}
+
+// Resolves the single Key Report version a consumer should read from, given a
+// company and an optional SELECTED dataset version (the Manual GL version the UI
+// has chosen). Resolution order:
+//   1. The version pinned to the selected dataset version (true isolation), else
+//   2. The company's ACTIVE version (keeps single-version setups working and
+//      avoids blank screens when nothing is pinned to the selected version).
+// Centralised here so getLinkedDocuments and getVersionReportContext share one
+// resolution code path and can never diverge.
+async function resolveVersionFor(companyId, { datasetVersion } = {}) {
+  if (!companyId) return null;
+  if (datasetVersion != null && datasetVersion !== "") {
+    const pinned = await getVersionByDatasetVersion(companyId, datasetVersion);
+    if (pinned) return pinned;
+    console.log(
+      `[KeyReports] No version pinned to dataset version ${datasetVersion} for company ${companyId}; falling back to active version.`,
+    );
   }
+  return getActiveVersion(companyId);
+}
 
-  const mappings = await listMappings(active.id);
-  const categoryMappings = mappings.filter((m) => m.reportCategory === reportCategory);
+// Loads the Data Room documents linked to a version, grouped by report category.
+// Each document is fetched at most once even if linked under several categories.
+async function loadDocumentsByCategory(versionId) {
+  const byCategory = {};
+  for (const key of VALID_CATEGORIES) byCategory[key] = [];
 
-  const documents = [];
-  for (const mapping of categoryMappings) {
+  const mappings = await listMappings(versionId);
+  const docCache = new Map();
+  for (const mapping of mappings) {
+    if (!byCategory[mapping.reportCategory]) byCategory[mapping.reportCategory] = [];
     if (!mapping.documentId) continue;
-    const doc = await documentService.getDocumentById(mapping.documentId);
-    if (doc) {
-      documents.push(doc);
+    let doc;
+    if (docCache.has(mapping.documentId)) {
+      doc = docCache.get(mapping.documentId);
+    } else {
+      doc = await documentService.getDocumentById(mapping.documentId);
+      docCache.set(mapping.documentId, doc);
     }
+    if (doc) byCategory[mapping.reportCategory].push(doc);
   }
+  return byCategory;
+}
 
-  return { versionId: active.id, documents };
+function emptyReportContext() {
+  const documents = {};
+  for (const key of VALID_CATEGORIES) documents[key] = [];
+  return {
+    versionId: null,
+    datasetVersion: null,
+    flowType: null,
+    resolvedBatchId: null,
+    documents,
+    pnlDocument: documents[REPORT_CATEGORIES.PROFIT_LOSS],
+    balanceSheet: documents[REPORT_CATEGORIES.BALANCE_SHEET],
+    glDocument: documents[REPORT_CATEGORIES.GENERAL_LEDGER],
+    bankStatement: documents[REPORT_CATEGORIES.BANK_STATEMENT],
+    taxReturn: documents[REPORT_CATEGORIES.TAX_RETURN],
+  };
+}
+
+// ── CENTRALISED VERSION REPORT CONTEXT ──────────────────────────────────────
+// The single resolver every report consumer should use. Given a company and an
+// optional SELECTED dataset version, it resolves the one source-of-truth Key
+// Report version and returns ALL of its linked documents in one object — so no
+// report independently queries uploads / staging / document tables, and Bank,
+// Tax and Balance-Sheet reconciliations stay isolated to the chosen version.
+//
+// `flowType` is DERIVED (not yet persisted, so no schema change is required): a
+// version that has produced a Manual GL batch (`resolvedBatchId`) or that has a
+// General Ledger document linked is treated as the "manual_gl" flow; otherwise
+// "manual_upload". This lets consumers assert flow isolation without a migration.
+//
+// Report categories support multiple files, so each spec-named field is an
+// ARRAY of documents:
+//   { versionId, datasetVersion, flowType, resolvedBatchId,
+//     documents: { profit_loss, balance_sheet, general_ledger, bank_statement, tax_return },
+//     pnlDocument, balanceSheet, glDocument, bankStatement, taxReturn }
+async function getVersionReportContext(companyId, { datasetVersion } = {}) {
+  const version = await resolveVersionFor(companyId, { datasetVersion });
+  if (!version) return emptyReportContext();
+
+  const documents = await loadDocumentsByCategory(version.id);
+  const glDocs = documents[REPORT_CATEGORIES.GENERAL_LEDGER] || [];
+  const flowType = version.resolvedBatchId || glDocs.length ? "manual_gl" : "manual_upload";
+
+  return {
+    versionId: version.id,
+    datasetVersion: version.resolvedDatasetVersion ?? null,
+    flowType,
+    resolvedBatchId: version.resolvedBatchId || null,
+    documents,
+    pnlDocument: documents[REPORT_CATEGORIES.PROFIT_LOSS] || [],
+    balanceSheet: documents[REPORT_CATEGORIES.BALANCE_SHEET] || [],
+    glDocument: documents[REPORT_CATEGORIES.GENERAL_LEDGER] || [],
+    bankStatement: documents[REPORT_CATEGORIES.BANK_STATEMENT] || [],
+    taxReturn: documents[REPORT_CATEGORIES.TAX_RETURN] || [],
+  };
+}
+
+// Returns the linked documents for a SINGLE category — a thin convenience
+// wrapper over the centralised getVersionReportContext so there is exactly one
+// version-resolution + document-loading code path. Resolved from the SELECTED
+// dataset version when supplied, otherwise the company's ACTIVE version.
+async function getLinkedDocuments(companyId, reportCategory, { datasetVersion } = {}) {
+  if (!companyId) return { versionId: null, documents: [] };
+  const context = await getVersionReportContext(companyId, { datasetVersion });
+  return {
+    versionId: context.versionId,
+    documents: context.documents[reportCategory] || [],
+  };
+}
+
+// Returns documents linked in the active version for a given category.
+// Thin wrapper over getLinkedDocuments for callers that don't scope by version.
+async function getActiveLinkedDocuments(companyId, reportCategory) {
+  return getLinkedDocuments(companyId, reportCategory);
 }
 
 module.exports = {
@@ -479,4 +595,7 @@ module.exports = {
   listSyncLogs,
   getActiveResolvedBatch,
   getActiveLinkedDocuments,
+  getVersionByDatasetVersion,
+  getLinkedDocuments,
+  getVersionReportContext,
 };
