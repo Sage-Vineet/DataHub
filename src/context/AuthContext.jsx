@@ -195,7 +195,7 @@ export function AuthProvider({ children }) {
     try {
       setError('');
 
-      const response = await loginRequest({ email, password });
+      const response = await loginRequest({ email: email ? String(email).trim().toLowerCase() : email, password });
       const token = extractToken(response);
       const userData = unwrapUser(response);
 

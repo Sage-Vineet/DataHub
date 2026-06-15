@@ -375,10 +375,14 @@ export default function BrokerDashboard() {
 
   // ── Export CSV ───────────────────────────────────────────────────────────────
   const handleExport = () => {
-    const headers = ['Project Name', 'Company Name', 'Industry', 'Contact Person', 'Email', 'Phone', 'Status', 'Since', 'Total Requests', 'Pending'];
-    const rows = filtered.map((c) => [
-      c.projectName, c.name, c.industry, c.contact, c.email, c.phone, c.status, c.since, c.requestCount, c.pendingCount,
-    ]);
+    const headers = ['Project Name', 'Company Name', 'Industry', 'Profit Metric', 'Fiscal Year Type', 'Contact Person', 'Email', 'Phone', 'Status', 'Since', 'Total Requests', 'Pending'];
+    const rows = filtered.map((c) => {
+      const yearLabel = YEAR_TYPE_OPTIONS.find((o) => o.value === c.yearType)?.label || c.yearType;
+      return [
+        c.projectName, c.name, c.industry, c.profitMetricLongLabel, yearLabel,
+        c.contact, c.email, c.phone, c.status, c.since, c.requestCount, c.pendingCount,
+      ];
+    });
     const csv = [headers, ...rows].map((row) => row.map((v) => `"${v ?? ''}"`).join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
@@ -458,7 +462,7 @@ export default function BrokerDashboard() {
       industry: form.industry.trim(),
       profit_metric: normalizeProfitMetric(form.profit_metric),
       contact_name: contactName,
-      contact_email: form.email.trim(),
+      contact_email: form.email.trim().toLowerCase(),
       contact_phone: form.phone.trim(),
       logo: getInitials(form.name),
       year_type: form.year_type || 'calendar',
@@ -488,7 +492,7 @@ export default function BrokerDashboard() {
           if (teamMembers.length > 0) {
             const valid = teamMembers.filter((m) => m.name?.trim() && m.email?.trim() && m.password?.trim());
             Promise.allSettled(valid.map((m) =>
-              createUserRequest({ name: m.name.trim(), email: m.email.trim(), phone: m.phone?.trim() || null, password: m.password, role: 'buyer', sub_role: m.sub_role, company_id: created.id, company_ids: [created.id], status: 'active' })
+              createUserRequest({ name: m.name.trim(), email: m.email.trim().toLowerCase(), phone: m.phone?.trim() || null, password: m.password, role: 'buyer', sub_role: m.sub_role, company_id: created.id, company_ids: [created.id], status: 'active' })
             ));
           }
           // Auto-create message groups (fire-and-forget)
