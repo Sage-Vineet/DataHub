@@ -158,37 +158,84 @@ export function AuthProvider({ children }) {
   // Session expiry is validated before hitting the server so a stale token
   // with a valid JWT signature (but an expired 8-hour window) never reaches /auth/me.
   useEffect(() => {
+    // cancelled flag prevents a stale async chain (e.g. React StrictMode double-invoke
+    // or a slow in-flight request) from clearing auth after the effect has been cleaned up.
+    let cancelled = false;
+
     const checkAuth = async () => {
       try {
         const token = getStoredToken();
         if (!token) return;
 
+        // If the session expiry key is present and legitimately past → expire.
+        // If the key is ABSENT but a valid token exists (storage trimmed, migrated
+        // from an older build, browser backup restore), repair the session window
+        // instead of logging the user out — the server will confirm validity below.
         if (isSessionExpired()) {
-          expireSession();
-          return;
+          let keyExists = false;
+          try { keyExists = localStorage.getItem('leo-session-expiry') !== null; } catch { /* ignore */ }
+          if (keyExists) {
+            // Key is present and in the past — genuine expiry.
+            expireSession();
+            return;
+          }
+          // Key absent: repair the window and proceed to server validation.
+          startSession();
         }
 
+        let payload;
         try {
-          const payload = await meRequest();
-          const userData = unwrapUser(payload);
-          if (!userData) {
+          payload = await meRequest();
+        } catch (firstErr) {
+          if (cancelled) return;
+
+          // 401 = the server explicitly rejected the token (revoked, tampered, wrong secret).
+          // Clear auth immediately — keeping the token would loop infinitely.
+          if (firstErr?.status === 401) {
             setStoredToken(null);
             setUser(null);
-          } else {
-            setUser(normalizeUser(userData));
-            scheduleExpiryLogout(); // re-arm timer after browser refresh
+            return;
           }
-        } catch (err) {
+
+          // Any other failure (network error, 5xx, server cold-starting on Render free tier)
+          // is TRANSIENT. Wait briefly and retry once before giving up.
+          // We must NOT clear the token here — it is still valid.
+          await new Promise((res) => setTimeout(res, 1500));
+          if (cancelled) return;
+
+          try {
+            payload = await meRequest();
+          } catch (retryErr) {
+            if (cancelled) return;
+            if (retryErr?.status === 401) {
+              setStoredToken(null);
+              setUser(null);
+            }
+            // Non-401 on retry as well: token is preserved.
+            // The route guard will redirect to login, but the token stays in
+            // localStorage so the very next hard refresh succeeds normally.
+            return;
+          }
+        }
+
+        if (cancelled) return;
+
+        const userData = unwrapUser(payload);
+        if (!userData) {
           setStoredToken(null);
           setUser(null);
-          console.log('Invalid token, clearing auth');
+        } else {
+          setUser(normalizeUser(userData));
+          scheduleExpiryLogout(); // re-arm timer after browser refresh
         }
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     };
 
     checkAuth();
+
+    return () => { cancelled = true; };
   }, []); // expireSession and scheduleExpiryLogout are stable (useCallback [])
 
   const login = async (email, password) => {
