@@ -389,6 +389,85 @@ export function parseSummaryReport(payload) {
   return parseSummaryRows(extractRows(payload));
 }
 
+// ── Cash Flow specific: always render Operating/Investing/Financing ───────────
+
+const CF_STANDARD_SECTIONS = [
+  {
+    id: "section-operating-activities",
+    key: "operating",
+    pattern: /operat/i,
+    name: "Operating Activities",
+    totalName: "Net cash provided by operating activities",
+    totalId: "total-operating-activities",
+  },
+  {
+    id: "section-investing-activities",
+    key: "investing",
+    pattern: /invest/i,
+    name: "Investing Activities",
+    totalName: "Net cash used in investing activities",
+    totalId: "total-investing-activities",
+  },
+  {
+    id: "section-financing-activities",
+    key: "financing",
+    pattern: /financ/i,
+    name: "Financing Activities",
+    totalName: "Net cash from financing activities",
+    totalId: "total-financing-activities",
+  },
+];
+
+function placeholderSection(sec) {
+  return {
+    id: sec.id,
+    name: sec.name,
+    amount: null,
+    amounts: { y5: null },
+    type: "header",
+    children: [
+      {
+        id: sec.totalId,
+        name: sec.totalName,
+        amount: null,
+        amounts: { y5: null },
+        type: "total",
+      },
+    ],
+  };
+}
+
+function ensureStandardCFSections(rows) {
+  const sectionRows = (rows || []).filter((r) => r.type === "header");
+  const footerRows = (rows || []).filter((r) => r.type !== "header");
+
+  const matched = new Map();
+  const unmatched = [];
+
+  for (const row of sectionRows) {
+    let found = false;
+    for (const sec of CF_STANDARD_SECTIONS) {
+      if (sec.pattern.test(row.name) && !matched.has(sec.key)) {
+        matched.set(sec.key, row);
+        found = true;
+        break;
+      }
+    }
+    if (!found) unmatched.push(row);
+  }
+
+  const standardPart = CF_STANDARD_SECTIONS.map((sec) =>
+    matched.has(sec.key) ? matched.get(sec.key) : placeholderSection(sec),
+  );
+
+  return [...standardPart, ...unmatched, ...footerRows];
+}
+
+export function parseCashFlowSummaryReport(payload) {
+  const rows = parseSummaryRows(extractRows(payload));
+  return ensureStandardCFSections(rows);
+}
+
 function balanceSheetCollectAccounts(row, reportDate, ledgerIndex) {
   const collected = [];
   const childRows = asArray(row?.Rows?.Row);

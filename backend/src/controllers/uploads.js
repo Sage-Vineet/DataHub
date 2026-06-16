@@ -242,9 +242,9 @@ const getUploadContent = asyncHandler(async (req, res) => {
     const linkedCompanyIds = Array.from(new Set((documentRows || []).map((row) => row.company_id).filter(Boolean)));
     if (linkedCompanyIds.length) {
       const allowed = linkedCompanyIds.some((companyId) => permissionService.canAccessCompany(req.user, companyId));
-      if (!allowed) return res.status(403).json({ error: "Forbidden" });
+      if (!allowed) return res.status(403).json({ error: "You do not have permission to access the documents for this company." });
     } else if (upload.uploaded_by && String(upload.uploaded_by) !== String(req.user?.id)) {
-      return res.status(403).json({ error: "Forbidden" });
+      return res.status(403).json({ error: "You do not have permission to download this file." });
     }
   }
 

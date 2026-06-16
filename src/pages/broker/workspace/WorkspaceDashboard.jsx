@@ -147,12 +147,12 @@ export default function WorkspaceDashboard() {
         <div>
           <h1 className="text-2xl font-bold text-[#050505]">{company?.name || 'Company'} Dashboard</h1>
           <p className="mt-0.5 text-sm text-[#6D6E71]">
-            Merged company workspace view across DataRoom operations and Data Hub finance tools.
+            Merged company workspace view across DataRoom operations and M&A Hub finance tools.
           </p>
         </div>
         <div className="flex items-center gap-2">
           <button
-            onClick={() => navigate(`/broker/client/${clientId}/connections`)}
+            onClick={() => navigate(`/broker/client/${clientId}/dataroom/connections`)}
             className="flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm font-semibold text-[#050505]"
           >
             <Link2 size={15} />
@@ -247,7 +247,7 @@ export default function WorkspaceDashboard() {
             <div className="mb-4 flex items-center justify-between">
               <div>
                 <h2 className="font-semibold text-[#050505]">Finance Snapshot</h2>
-                <p className="mt-1 text-xs text-[#A5A5A5]">Company-level finance cues from the merged Data Hub layer.</p>
+                <p className="mt-1 text-xs text-[#A5A5A5]">Company-level finance cues from the merged M&A Hub layer.</p>
               </div>
               {financeConnected && (
                 <button

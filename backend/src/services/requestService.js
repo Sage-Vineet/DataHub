@@ -18,6 +18,22 @@ async function pgQuery(sql, params = []) {
   return rows;
 }
 
+function roleLabel(role) {
+  if (!role) return null;
+  if (role === "broker" || role === "admin") return "Broker";
+  if (role === "client") return "Client";
+  if (role === "user") return "Buyer";
+  if (role === "provider") return "Provider";
+  return null;
+}
+
+function formatUploaderDisplay(user) {
+  if (!user) return null;
+  const name = user.name || user.email || "User";
+  const label = roleLabel(user.role);
+  return label ? `${name} (${label})` : name;
+}
+
 const REQUEST_CATEGORIES = ["Finance", "Legal", "Compliance", "HR", "Tax", "M&A", "Other"];
 const RESPONSE_TYPES = ["Upload", "Narrative", "Both"];
 const REQUEST_STATUSES = ["pending", "in-review", "completed", "blocked"];
@@ -151,15 +167,56 @@ async function getRequestById(requestId) {
 }
 
 /**
+ * Enriches a single request row with user name/sub_role fields for
+ * created_by, approved_by, and assigned_to. Safe to call after any UPDATE
+ * that returns a raw RETURNING * row without joined user data.
+ * Falls back gracefully to the original row if user lookup fails.
+ */
+async function enrichRequestRow(row) {
+  if (!row) return row;
+  const ids = [...new Set([row.created_by, row.approved_by, row.assigned_to].filter(Boolean))];
+  if (!ids.length) return row;
+  try {
+    const users = await pgQuery('SELECT id, name, email, sub_role FROM users WHERE id = ANY($1)', [ids]);
+    const map = Object.fromEntries(users.map((u) => [String(u.id), u]));
+    return {
+      ...row,
+      created_by_name: map[String(row.created_by)]?.name ?? row.created_by_name ?? null,
+      created_by_email: map[String(row.created_by)]?.email ?? row.created_by_email ?? null,
+      approved_by_name: map[String(row.approved_by)]?.name ?? row.approved_by_name ?? null,
+      assigned_to_name: map[String(row.assigned_to)]?.name ?? row.assigned_to_name ?? null,
+      assigned_to_sub_role: map[String(row.assigned_to)]?.sub_role ?? row.assigned_to_sub_role ?? null,
+    };
+  } catch {
+    try {
+      const { data: users } = await supabase.from('users').select('id, name, email, sub_role').in('id', ids);
+      const map = Object.fromEntries((users || []).map((u) => [String(u.id), u]));
+      return {
+        ...row,
+        created_by_name: map[String(row.created_by)]?.name ?? row.created_by_name ?? null,
+        created_by_email: map[String(row.created_by)]?.email ?? row.created_by_email ?? null,
+        approved_by_name: map[String(row.approved_by)]?.name ?? row.approved_by_name ?? null,
+        assigned_to_name: map[String(row.assigned_to)]?.name ?? row.assigned_to_name ?? null,
+        assigned_to_sub_role: map[String(row.assigned_to)]?.sub_role ?? row.assigned_to_sub_role ?? null,
+      };
+    } catch {
+      return row;
+    }
+  }
+}
+
+/**
  * Lists requests for a company
  */
 async function listRequestsByCompany(companyId) {
   try {
     const rows = await pgQuery(
-      `SELECT r.*, u1.name AS created_by_name, u1.email AS created_by_email, u2.name AS approved_by_name
+      `SELECT r.*, u1.name AS created_by_name, u1.email AS created_by_email, u2.name AS approved_by_name,
+              u3.name AS assigned_to_name, u3.sub_role AS assigned_to_sub_role
        FROM requests r
        LEFT JOIN users u1 ON r.created_by = u1.id
        LEFT JOIN users u2 ON r.approved_by = u2.id
+       LEFT JOIN users u3 ON r.assigned_to = u3.id
        WHERE r.company_id = $1
        ORDER BY r.created_at DESC`,
       [companyId],
@@ -168,10 +225,28 @@ async function listRequestsByCompany(companyId) {
   } catch {
     const { data, error } = await supabase
       .from("requests")
-      .select(`*, created_by_user:users!requests_created_by_fkey(name, email), approved_by_user:users!requests_approved_by_fkey(name)`)
-      .eq("company_id", companyId).order("created_at", { ascending: false });
+      .select("*")
+      .eq("company_id", companyId)
+      .order("created_at", { ascending: false });
     if (error) throw error;
-    return (data || []).map(r => ({ ...r, created_by_name: r.created_by_user?.name, created_by_email: r.created_by_user?.email, approved_by_name: r.approved_by_user?.name }));
+    const rows = data || [];
+    const creatorIds = [...new Set(rows.map((r) => r.created_by).filter(Boolean))];
+    const approverIds = [...new Set(rows.map((r) => r.approved_by).filter(Boolean))];
+    const assigneeIds = [...new Set(rows.map((r) => r.assigned_to).filter(Boolean))];
+    const allUserIds = [...new Set([...creatorIds, ...approverIds, ...assigneeIds])];
+    let userMap = {};
+    if (allUserIds.length) {
+      const { data: users } = await supabase.from("users").select("id, name, email, sub_role").in("id", allUserIds);
+      userMap = Object.fromEntries((users || []).map((u) => [u.id, u]));
+    }
+    return rows.map((r) => ({
+      ...r,
+      created_by_name: userMap[r.created_by]?.name || null,
+      created_by_email: userMap[r.created_by]?.email || null,
+      approved_by_name: userMap[r.approved_by]?.name || null,
+      assigned_to_name: userMap[r.assigned_to]?.name || null,
+      assigned_to_sub_role: userMap[r.assigned_to]?.sub_role || null,
+    }));
   }
 }
 
@@ -200,6 +275,7 @@ async function createRequest(companyId, payload) {
  * Updates an existing request
  */
 async function updateRequest(requestId, payload) {
+  let raw;
   try {
     const keys = Object.keys(payload);
     if (!keys.length) throw new Error("Nothing to update");
@@ -208,12 +284,13 @@ async function updateRequest(requestId, payload) {
       `UPDATE requests SET ${set} WHERE id=$${keys.length + 1} RETURNING *`,
       [...keys.map((k) => payload[k]), requestId],
     );
-    return rows[0];
+    raw = rows[0];
   } catch {
     const { data, error } = await supabase.from("requests").update(payload).eq("id", requestId).select("*").single();
     if (error) throw error;
-    return data;
+    raw = data;
   }
+  return enrichRequestRow(raw);
 }
 
 /**
@@ -290,23 +367,30 @@ async function createRequestsBulk(companyId, items, createdBy) {
 /**
  * Approves a request
  */
-async function approveRequest(requestId, approvedBy) {
+async function approveRequest(requestId, approvedBy, assignedTo = null) {
   const now = new Date().toISOString();
+  let raw;
   try {
-    const rows = await pgQuery(
-      "UPDATE requests SET approval_status='approved', approved_by=$1, approved_at=$2, updated_at=$3 WHERE id=$4 RETURNING *",
-      [approvedBy, now, now, requestId],
-    );
+    const query = assignedTo
+      ? "UPDATE requests SET approval_status='approved', approved_by=$1, approved_at=$2, updated_at=$3, assigned_to=$5 WHERE id=$4 RETURNING *"
+      : "UPDATE requests SET approval_status='approved', approved_by=$1, approved_at=$2, updated_at=$3 WHERE id=$4 RETURNING *";
+    const params = assignedTo
+      ? [approvedBy, now, now, requestId, assignedTo]
+      : [approvedBy, now, now, requestId];
+    const rows = await pgQuery(query, params);
     await createReminderEvent(requestId, approvedBy);
-    return rows[0];
+    raw = rows[0];
   } catch {
+    const updatePayload = { approval_status: "approved", approved_by: approvedBy, approved_at: now, updated_at: now };
+    if (assignedTo) updatePayload.assigned_to = assignedTo;
     const { data, error } = await supabase.from("requests")
-      .update({ approval_status: "approved", approved_by: approvedBy, approved_at: now, updated_at: now })
+      .update(updatePayload)
       .eq("id", requestId).select("*").single();
     if (error) throw error;
     await createReminderEvent(requestId, approvedBy);
-    return data;
+    raw = data;
   }
+  return enrichRequestRow(raw);
 }
 
 async function deleteRequest(requestId) {
@@ -337,13 +421,23 @@ async function listRequestDocuments(requestId) {
   const documentIds = links.map((l) => l.document_id).filter(Boolean);
   const { data: documents, error: docsError } = await supabase
     .from("documents")
-    .select("id, name, file_url, status, upload_id")
+    .select("id, name, file_url, status, upload_id, ext, size, uploaded_by")
     .in("id", documentIds);
 
   if (docsError) throw docsError;
 
   const docMap = {};
   (documents || []).forEach((doc) => { docMap[doc.id] = doc; });
+
+  const uploaderIds = [...new Set((documents || []).map((d) => d.uploaded_by).filter(Boolean))];
+  let displayById = new Map();
+  if (uploaderIds.length) {
+    const { data: users } = await supabase
+      .from("users")
+      .select("id, name, email, role")
+      .in("id", uploaderIds);
+    displayById = new Map((users || []).map((u) => [u.id, formatUploaderDisplay(u)]));
+  }
 
   return links.map((rd) => {
     const doc = docMap[rd.document_id] || {};
@@ -353,6 +447,9 @@ async function listRequestDocuments(requestId) {
       file_url: doc.file_url,
       status: doc.status,
       upload_id: doc.upload_id,
+      ext: doc.ext || '',
+      size: doc.size || '',
+      uploaded_by_name: displayById.get(doc.uploaded_by) || null,
     };
   });
 }
@@ -392,13 +489,39 @@ async function updateNarrative(requestId, content, updatedBy) {
 }
 
 async function getNarrative(requestId) {
+  // Returns { content, updated_by, updated_at, author_name, author_role } or null.
   try {
-    const rows = await pgQuery("SELECT content FROM request_narratives WHERE request_id=$1 LIMIT 1", [requestId]);
+    const rows = await pgQuery(
+      `SELECT rn.content, rn.updated_by, rn.updated_at,
+              u.name  AS author_name,
+              u.role  AS author_role
+       FROM request_narratives rn
+       LEFT JOIN users u ON u.id = rn.updated_by
+       WHERE rn.request_id = $1 LIMIT 1`,
+      [requestId],
+    );
     return rows[0] || null;
   } catch {
-    const { data, error } = await supabase.from("request_narratives").select("content").eq("request_id", requestId).maybeSingle();
+    const { data, error } = await supabase
+      .from("request_narratives")
+      .select("content, updated_by, updated_at")
+      .eq("request_id", requestId)
+      .maybeSingle();
     if (error) throw error;
-    return data;
+    if (!data) return null;
+    // Resolve author name via a second query.
+    let author_name = null;
+    let author_role = null;
+    if (data.updated_by) {
+      const { data: user } = await supabase
+        .from("users")
+        .select("name, role")
+        .eq("id", data.updated_by)
+        .maybeSingle();
+      author_name = user?.name || null;
+      author_role = user?.role || null;
+    }
+    return { ...data, author_name, author_role };
   }
 }
 

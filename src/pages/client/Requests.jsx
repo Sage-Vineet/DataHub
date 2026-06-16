@@ -21,6 +21,7 @@ import {
   attachRequestDocument,
   createCompanyFolder,
   createFolderDocument,
+  getRequestNarrative,
   listFolderTree,
   listCompanyRequests,
   listRequestDocuments,
@@ -30,6 +31,7 @@ import {
 } from '../../lib/api';
 import { buildFolderMapFromTree } from '../../lib/folderOptions';
 import RequestDocumentPreviewModal from '../../components/RequestDocumentPreviewModal';
+import { CLIENT_SUB_ROLES, ROLE_META, SUB_ROLE, inferSubRole } from '../../lib/roles';
 
 const CATEGORY_META = {
   Finance: { icon: TrendingUp, color: '#476E2C', bg: '#E6F3D3' },
@@ -192,9 +194,16 @@ function mapApiRequestToUi(request) {
       : request.created_at
       ? request.created_at.slice(0, 10)
       : formatToday(),
-    assignedTo: request.assigned_to || 'Unassigned',
+    assignedTo: request.assigned_to || null,
+    assignedToDisplay: (() => {
+      if (!request.assigned_to) return 'Unassigned';
+      const name = request.assigned_to_name || request.assigned_to;
+      const roleLabel = request.assigned_to_sub_role ? (ROLE_META[request.assigned_to_sub_role]?.label || '') : '';
+      return roleLabel ? `${name} · ${roleLabel}` : name;
+    })(),
     visible: request.visible !== false,
     narrativeResponse: '',
+    narrativeAuthor: null,
     linkedDocuments: [],
     reminderHistory: [],
     notificationFrequency: getReminderFrequencyLabel(request.priority),
@@ -208,7 +217,7 @@ function mapUiPatchToApi(patch) {
   if (patch.priority !== undefined) apiPatch.priority = patch.priority;
   if (patch.workflowStatus !== undefined) apiPatch.status = patch.workflowStatus;
   if (patch.dueDate !== undefined) apiPatch.due_date = patch.dueDate;
-  if (patch.assignedTo !== undefined && patch.assignedTo !== 'Unassigned') apiPatch.assigned_to = patch.assignedTo;
+  if (patch.assignedTo !== undefined && patch.assignedTo !== null) apiPatch.assigned_to = patch.assignedTo;
   if (patch.visible !== undefined) apiPatch.visible = patch.visible;
   return apiPatch;
 }
@@ -394,19 +403,70 @@ function FileUpload({ onAddFiles, duplicateNames }) {
   );
 }
 
+function roleBadgeClient(role) {
+  const r = String(role || '').toLowerCase();
+  if (r === 'broker' || r === 'admin') return { label: 'Broker', bg: '#E8ECF7', color: '#05164D' };
+  if (r === 'client') return { label: 'Seller', bg: '#DBEAFE', color: '#1D4ED8' };
+  return { label: 'Buyer', bg: '#DCFCE7', color: '#166534' };
+}
+
+function NarrativeCard({ content, author, canEdit, draft, onDraftChange, onSave, saving }) {
+  const hasExisting = content && content.trim().length > 0;
+  const badge = author ? roleBadgeClient(author.role) : null;
+  const formattedTime = author?.updated_at
+    ? new Date(author.updated_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' })
+    : null;
+
+  return (
+    <div className="rounded-2xl bg-white p-5 shadow-card space-y-4">
+      <h3 className="font-semibold text-[#050505]">Narrative Response</h3>
+
+      {hasExisting ? (
+        <div className="rounded-xl border border-gray-100 bg-[#F8FAFC] p-4">
+          {author && (
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-[12px] font-semibold text-[#050505]">{author.name}</span>
+              <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold" style={{ background: badge.bg, color: badge.color }}>
+                {badge.label}
+              </span>
+              {formattedTime && <span className="text-[10px] text-[#A5A5A5]">{formattedTime}</span>}
+            </div>
+          )}
+          <p className="text-sm leading-relaxed text-[#4B5563] whitespace-pre-wrap">{content}</p>
+        </div>
+      ) : (
+        <p className="text-sm text-[#A5A5A5] italic">No narrative has been added yet.</p>
+      )}
+
+      {canEdit && (
+        <div>
+          <textarea
+            rows={5}
+            value={draft}
+            onChange={(e) => onDraftChange(e.target.value)}
+            placeholder={hasExisting ? 'Update the narrative…' : 'Enter explanation, comments, or notes…'}
+            className="w-full resize-none rounded-xl border border-gray-200 px-4 py-3 text-sm text-[#4B5563] focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]"
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function RequestDetailPage({ onBack, request, allRequests, onSubmitResponse, error, success }) {
   const [duplicateWarning, setDuplicateWarning] = useState([]);
-  const [narrativeDraft, setNarrativeDraft] = useState(request?.narrativeResponse || '');
+  // Start empty — existing narrative is shown in the display card, not pre-filled in the textarea.
+  const [narrativeDraft, setNarrativeDraft] = useState('');
   const [pendingFiles, setPendingFiles] = useState([]);
   const [submitting, setSubmitting] = useState(false);
   const [previewDocument, setPreviewDocument] = useState(null);
 
   useEffect(() => {
-    setNarrativeDraft(request?.narrativeResponse || '');
+    setNarrativeDraft('');
     setPendingFiles([]);
     setDuplicateWarning([]);
     setPreviewDocument(null);
-  }, [request?.id, request?.narrativeResponse]);
+  }, [request?.id]);
 
   if (!request) return null;
 
@@ -437,6 +497,7 @@ function RequestDetailPage({ onBack, request, allRequests, onSubmitResponse, err
     const ok = await onSubmitResponse?.(request, { narrative: narrativeDraft.trim(), files: pendingFiles });
     if (ok) {
       setPendingFiles([]);
+      setNarrativeDraft(''); // clear draft — saved text now shows in the display card
       setSubmitting(false);
       onBack?.();
       return;
@@ -518,17 +579,15 @@ function RequestDetailPage({ onBack, request, allRequests, onSubmitResponse, err
             </div>
 
             {canNarrative && (
-              <div className="rounded-2xl bg-white p-5 shadow-card">
-                <h3 className="font-semibold text-[#050505] mb-3">Narrative Response</h3>
-                <textarea
-                  rows={6}
-                  value={narrativeDraft}
-                  onChange={(e) => setNarrativeDraft(e.target.value)}
-                  placeholder="Enter explanation, comments, or notes related to this request"
-                  disabled={isReadOnly}
-                  className={`w-full px-4 py-3 rounded-xl border text-sm resize-none ${isReadOnly ? 'bg-gray-50 text-[#6D6E71] border-gray-100' : 'border-gray-200 focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D]'}`}
-                />
-              </div>
+              <NarrativeCard
+                content={request.narrativeResponse}
+                author={request.narrativeAuthor}
+                canEdit={!isReadOnly}
+                draft={narrativeDraft}
+                onDraftChange={setNarrativeDraft}
+                onSave={null}
+                saving={false}
+              />
             )}
 
             {!isReadOnly && (
@@ -558,7 +617,7 @@ function RequestDetailPage({ onBack, request, allRequests, onSubmitResponse, err
                   { label: 'Category', value: <span className="inline-flex items-center gap-1.5 font-semibold text-[#050505]"><CategoryIcon size={14} style={{ color: catMeta.color }} />{request.category}</span> },
                   { label: 'Due Date', value: <span className={`font-semibold ${isOverdue ? 'text-[#B91C1C]' : 'text-[#050505]'}`}>{request.dueDate}</span> },
                   { label: 'Response Type', value: <span className="font-semibold text-[#050505]">{request.responseType}</span> },
-                  { label: 'Assigned To', value: <span className="font-semibold text-[#050505]">{request.assignedTo}</span> },
+                  { label: 'Assigned To', value: <span className="font-semibold text-[#050505]">{request.assignedToDisplay}</span> },
                   { label: 'Created Date', value: <span className="font-semibold text-[#050505]">{request.createdAt}</span> },
                   { label: 'Last Updated', value: <span className="font-semibold text-[#050505]">{request.updatedAt}</span> },
                 ].map((item) => (
@@ -601,14 +660,27 @@ export default function ClientRequests() {
     setError('');
     try {
       const list = await listCompanyRequests(companyId);
-      setRequestState((Array.isArray(list) ? list : []).map(mapApiRequestToUi).filter(Boolean));
+      let mapped = (Array.isArray(list) ? list : []).map(mapApiRequestToUi).filter(Boolean);
+
+      // Isolate requests per client team member.
+      // Company owners see all requests (backward compat).
+      // Client team members / accountants only see:
+      //   • requests explicitly assigned to them, OR
+      //   • requests with no assignee (visible to all).
+      const userSubRole = user?.sub_role || inferSubRole(user);
+      const isTeamMember = userSubRole && userSubRole !== SUB_ROLE.COMPANY_OWNER && CLIENT_SUB_ROLES.includes(userSubRole);
+      if (isTeamMember && user?.id) {
+        mapped = mapped.filter((r) => !r.assignedTo || r.assignedTo === user.id);
+      }
+
+      setRequestState(mapped);
     } catch (err) {
       setError(err.message || 'Unable to load requests.');
       setRequestState([]);
     } finally {
       setLoading(false);
     }
-  }, [companyId]);
+  }, [companyId, user]);
 
   useEffect(() => {
     loadRequests();
@@ -645,6 +717,18 @@ export default function ClientRequests() {
         setRequestState((prev) => prev.map((r) => {
           if (r.id !== activeRequestId) return r;
           return { ...r, linkedDocuments: (Array.isArray(docs) ? docs : []).map((d) => mapRequestDocumentToUi(d, 'Client')) };
+        }));
+      })
+      .catch(() => {});
+    getRequestNarrative(activeRequestId)
+      .then((result) => {
+        setRequestState((prev) => prev.map((r) => {
+          if (r.id !== activeRequestId) return r;
+          const content = typeof result === 'string' ? result : (result?.content || '');
+          const narrativeAuthor = result?.author_name
+            ? { name: result.author_name, role: result.author_role, updated_at: result.updated_at }
+            : null;
+          return { ...r, narrativeResponse: content, narrativeAuthor };
         }));
       })
       .catch(() => {});
@@ -735,6 +819,7 @@ export default function ClientRequests() {
         setRequestState((prev) => prev.map((r) => r.id !== request.id ? r : {
           ...r,
           narrativeResponse: narrative,
+          narrativeAuthor: user ? { name: user.name || user.email || 'You', role: user.role, updated_at: new Date().toISOString() } : r.narrativeAuthor,
           workflowStatus: updatedRequest?.status ? normalizeWorkflowStatus(updatedRequest.status) : r.workflowStatus,
           updatedAt: updatedRequest?.updated_at ? updatedRequest.updated_at.slice(0, 10) : formatToday(),
         }));

@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
-import { listCompaniesRequest, listCompanyDirectMessageContactsRequest } from '../lib/api';
+import { listCompaniesRequest, listCompanyDirectMessageContactsRequest, listMyMessageGroups } from '../lib/api';
 import { useAuth } from './AuthContext';
 
 const MessageNotificationsContext = createContext(null);
@@ -155,59 +155,72 @@ export function MessageNotificationsProvider({ children }) {
 
     if (!silent) setLoading(true);
     const requestPromise = (async () => {
-      const companyIds = await resolveCompanyIds(user, force);
-      if (!companyIds.length) {
-        return {
-          notifications: [],
-          lastUpdatedAt: new Date().toISOString(),
-          fetchedAt: Date.now(),
-        };
-      }
-
-      const seenMap = readSeenMap(userId);
-
-      const payloadChunks = [];
-      const CHUNK_SIZE = 5;
-      for (let i = 0; i < companyIds.length; i += CHUNK_SIZE) {
-        const chunk = companyIds.slice(i, i + CHUNK_SIZE);
-        const results = await Promise.all(
-          chunk.map((companyId) =>
-            listCompanyDirectMessageContactsRequest(companyId)
-              .then((payload) => ({
-                companyId,
-                company: payload?.company || null,
-                contacts: payload?.contacts || [],
-              }))
-              .catch(() => ({ companyId, company: null, contacts: [] }))
-          )
-        );
-        payloadChunks.push(...results);
-      }
-      const contactPayloads = payloadChunks;
-
       const nextNotifications = [];
-      contactPayloads.forEach(({ companyId, company, contacts }) => {
-        contacts.forEach((contact) => {
-          const latest = contact.last_message;
-          if (!latest?.created_at) return;
-          if (String(latest.sender_id) === userId) return;
 
-          const key = threadKey(companyId, contact.id);
-          const seenAt = seenMap[key];
-          if (seenAt && String(seenAt) >= String(latest.created_at)) return;
-
-          nextNotifications.push({
-            id: key,
-            companyId: String(companyId),
-            companyName: company?.name || 'Company',
-            participantId: String(contact.id),
-            participantName: contact.name || 'Contact',
-            participantRole: contact.role || 'user',
-            body: latest.body || 'New message received',
-            createdAt: latest.created_at,
+      // ── DM notifications (per-company contacts) ─────────────────────────────
+      const companyIds = await resolveCompanyIds(user, force);
+      if (companyIds.length) {
+        const seenMap = readSeenMap(userId);
+        const CHUNK_SIZE = 5;
+        const payloadChunks = [];
+        for (let i = 0; i < companyIds.length; i += CHUNK_SIZE) {
+          const chunk = companyIds.slice(i, i + CHUNK_SIZE);
+          const results = await Promise.all(
+            chunk.map((companyId) =>
+              listCompanyDirectMessageContactsRequest(companyId)
+                .then((payload) => ({
+                  companyId,
+                  company: payload?.company || null,
+                  contacts: payload?.contacts || [],
+                }))
+                .catch(() => ({ companyId, company: null, contacts: [] }))
+            )
+          );
+          payloadChunks.push(...results);
+        }
+        payloadChunks.forEach(({ companyId, company, contacts }) => {
+          contacts.forEach((contact) => {
+            const latest = contact.last_message;
+            if (!latest?.created_at) return;
+            if (String(latest.sender_id) === userId) return;
+            const key = threadKey(companyId, contact.id);
+            const seenAt = seenMap[key];
+            if (seenAt && String(seenAt) >= String(latest.created_at)) return;
+            nextNotifications.push({
+              id: key,
+              type: 'dm',
+              companyId: String(companyId),
+              companyName: company?.name || 'Company',
+              participantId: String(contact.id),
+              participantName: contact.name || 'Contact',
+              participantRole: contact.role || 'user',
+              body: latest.body || 'New message received',
+              createdAt: latest.created_at,
+            });
           });
         });
-      });
+      }
+
+      // ── Group notifications — server unread_count is authoritative ──────────
+      try {
+        const myGroups = await listMyMessageGroups();
+        for (const g of (myGroups || [])) {
+          if ((g.unread_count || 0) > 0) {
+            nextNotifications.push({
+              id: `group:${g.id}`,
+              type: 'group',
+              groupId: String(g.id),
+              companyId: String(g.company_id || ''),
+              groupName: g.name,
+              groupType: g.group_type,
+              body: g.last_message?.body || 'New message in group',
+              senderName: g.last_message?.sender_name || '',
+              createdAt: g.last_message?.created_at || g.updated_at || '',
+              unreadCount: g.unread_count || 0,
+            });
+          }
+        }
+      } catch {}
 
       nextNotifications.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
       return {
@@ -332,6 +345,17 @@ export function MessageNotificationsProvider({ children }) {
     };
   }, [ensureFresh, userId]);
 
+  const markGroupRead = useCallback((groupId) => {
+    if (!userId || !groupId) return;
+    const key = `group:${groupId}`;
+    const cached = getCachedState(userId);
+    if (cached) {
+      setCachedState(userId, { ...cached, notifications: cached.notifications.filter((n) => n.id !== key) });
+    }
+    setNotifications((current) => current.filter((n) => n.id !== key));
+    window.dispatchEvent(new Event('leo-message-notifications-updated'));
+  }, [userId]);
+
   const markConversationRead = useCallback((companyId, participantId, seenAt = null) => {
     if (!userId || !companyId || !participantId) return;
     const nextSeenAt = seenAt || new Date().toISOString();
@@ -363,7 +387,8 @@ export function MessageNotificationsProvider({ children }) {
     requestRefresh,
     ensureFresh,
     markConversationRead,
-  }), [notifications, unreadCount, loading, lastUpdatedAt, refresh, requestRefresh, ensureFresh, markConversationRead]);
+    markGroupRead,
+  }), [notifications, unreadCount, loading, lastUpdatedAt, refresh, requestRefresh, ensureFresh, markConversationRead, markGroupRead]);
 
   return (
     <MessageNotificationsContext.Provider value={value}>

@@ -125,7 +125,7 @@ function mapDocumentNode(doc) {
     name: doc.name,
     type: 'file',
     size: formatFileSize(sizeNum),
-    uploadedBy: doc.uploaded_by || 'Unknown',
+    uploadedBy: doc.uploaded_by_name || 'Unknown',
     uploadedAt: doc.uploaded_at ? doc.uploaded_at.slice(0, 10) : new Date().toISOString().slice(0, 10),
     archivedAt: doc.archived_at || null,
     status: doc.status || 'under-review',
@@ -384,19 +384,41 @@ export const useFileExplorerStore = create(
 
       deleteItems: async (ids) => {
         const tree = get().tree;
-        await Promise.all(ids.map(async (id) => {
+        const deletedIds = [];
+        const blockedMessages = [];
+        // Sequential so a link-protected item (409) blocks only itself, not the batch.
+        for (const id of ids) {
           const node = findById(tree, id);
-          if (node?.type === 'folder') {
-            await deleteFolder(id);
-          } else if (node?.type === 'file') {
-            await deleteDocument(id);
+          try {
+            if (node?.type === 'folder') {
+              await deleteFolder(id);
+            } else if (node?.type === 'file') {
+              await deleteDocument(id);
+            }
+            deletedIds.push(id);
+          } catch (err) {
+            const isLinkProtected =
+              err?.status === 409 || err?.payload?.code === 'FILE_LINKED';
+            if (isLinkProtected) {
+              // Never silently delete a linked file — keep it in the tree and warn.
+              blockedMessages.push(
+                err?.payload?.error ||
+                  err?.message ||
+                  'This item is linked to Key Reports. Unlink it first.'
+              );
+            } else {
+              throw err;
+            }
           }
-        }));
+        }
         set(s => ({
-          tree: removeByIds(s.tree, ids),
-          selectedItems: s.selectedItems.filter(i => !ids.includes(i)),
+          tree: removeByIds(s.tree, deletedIds),
+          selectedItems: s.selectedItems.filter(i => !deletedIds.includes(i)),
           contextMenu: null,
         }));
+        if (blockedMessages.length && typeof window !== 'undefined') {
+          window.alert([...new Set(blockedMessages)].join('\n'));
+        }
       },
 
       archiveItems: async (ids) => {
@@ -496,7 +518,7 @@ export const useFileExplorerStore = create(
               name: createdDoc.name,
               type: 'file',
               size: formatFileSize(parseFloat(createdDoc.size) || fileItem.file.size),
-              uploadedBy: createdDoc.uploaded_by || 'Current User',
+              uploadedBy: createdDoc.uploaded_by_name || 'Current User',
               uploadedAt: createdDoc.uploaded_at ? createdDoc.uploaded_at.slice(0, 10) : new Date().toISOString().split('T')[0],
               status: createdDoc.status || 'under-review',
               ext: createdDoc.ext || fileItem.ext,

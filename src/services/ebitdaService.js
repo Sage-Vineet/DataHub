@@ -526,11 +526,20 @@ function buildEbitdaFromFlatRows(flatRows, periodMeta = {}) {
   };
 }
 
-async function getEbitdaDataManual(startDate, endDate) {
+async function getEbitdaDataManual(startDate, endDate, datasetVersion) {
+  // Derive the fiscal year from the per-year start date (callers pass
+  // `${year}-01-01`). Passing fiscalYear — instead of relying on the raw date
+  // range — makes the backend resolve THIS year's reporting snapshot. Without
+  // it, the date-range request falls through to the "all years" snapshot, whose
+  // amounts only reflect the latest year, so every year returned identical
+  // EBITDA. fiscalYear also routes through the faster per-year snapshot path.
+  const fiscalYear = startDate ? String(startDate).slice(0, 4) : "";
   const payload = await getManualStagedProfitLossSummary({
     params: {
+      ...(fiscalYear ? { fiscalYear: [fiscalYear] } : {}),
       ...(startDate ? { startDate } : {}),
       ...(endDate ? { endDate } : {}),
+      ...(datasetVersion ? { datasetVersion: String(datasetVersion) } : {}),
     },
   });
 
@@ -578,10 +587,10 @@ export function extractEbitdaFromManualPLRows(rows, asOfDate) {
  * @param {string} sourceMode – "quickbooks" | "manual"
  * @returns {Promise<Object>} EBITDA breakdown
  */
-export async function getEbitdaData(startDate, endDate, accountingMethod, sourceMode = 'quickbooks') {
+export async function getEbitdaData(startDate, endDate, accountingMethod, sourceMode = 'quickbooks', datasetVersion) {
   if (sourceMode === 'manual') {
     try {
-      return await getEbitdaDataManual(startDate, endDate);
+      return await getEbitdaDataManual(startDate, endDate, datasetVersion);
     } catch (error) {
       console.error('[EBITDA Service] Manual staged fetch failed:', error);
       throw error;

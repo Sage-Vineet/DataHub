@@ -116,7 +116,7 @@ function buildCanonicalTransactionFingerprint(row = {}) {
 
 function shouldAllowExplicitBatch(options = {}) {
   if (!options || typeof options !== "object") return false;
-  if (toText(options.versionId || options.uploadSessionId || "")) return true;
+  if (toText(options.keyReportVersionId || options.versionId || options.uploadSessionId || "")) return true;
   const datasetVersion = Number(
     options.datasetVersion || options.dataset_version || options.versionNumber || options.version_number || 0,
   );
@@ -180,7 +180,7 @@ async function getUploadBatchById(companyId, batchId) {
 async function resolveReportBatchId(companyId, preferredBatchId = "", options = {}) {
   if (!companyId) return "";
   const allowExplicitBatch = shouldAllowExplicitBatch(options);
-  const explicit = toText(preferredBatchId || options.versionId || options.uploadSessionId || "");
+  const explicit = toText(preferredBatchId || options.keyReportVersionId || options.versionId || options.uploadSessionId || "");
   const datasetVersion = Number(
     options.datasetVersion || options.dataset_version || options.versionNumber || options.version_number || 0,
   );
@@ -241,6 +241,12 @@ async function resolveReportBatchId(companyId, preferredBatchId = "", options = 
         `[ManualGL][ActiveBatch] dataset_version column missing; cannot resolve dataset version ` +
         `${datasetVersion} for company ${companyId}.`,
       );
+      // When the caller explicitly requested a specific version, falling through
+      // to getActiveUploadBatch would serve a completely different version's data.
+      // Return "" so callers emit empty results rather than wrong results.
+      if (allowExplicitBatch) {
+        return "";
+      }
     } else if (error && error.code !== "PGRST116") {
       throw new Error(formatSupabaseFailure("Failed to resolve report batch by dataset version", error));
     } else {
@@ -257,6 +263,13 @@ async function resolveReportBatchId(companyId, preferredBatchId = "", options = 
       console.warn(
         `[ManualGL][ActiveBatch] No batch found for dataset_version=${datasetVersion} company=${companyId}.`,
       );
+      // When the caller explicitly requested a specific version (allowExplicitBatch=true),
+      // returning the active batch's ID would silently serve a different version's data —
+      // cross-version contamination.  Return "" so the caller falls through to empty
+      // results rather than wrong results.
+      if (allowExplicitBatch) {
+        return "";
+      }
     }
   }
 
@@ -285,7 +298,11 @@ async function resolveReportBatchId(companyId, preferredBatchId = "", options = 
 
   const rows = Array.isArray(data) ? data : (data ? [data] : []);
   const matched = rows.find((row) => isManualBatchSource(row?.source_type));
-  return matched?.id || rows[0]?.id || "";
+  // Only ever return a Manual GL batch. A row with a foreign source_type must
+  // never leak into Manual GL / Key Reports reports (cross-flow contamination),
+  // so we drop the unconditional rows[0] fallback. isManualBatchSource() still
+  // treats a null/empty source_type as Manual GL, preserving legacy rows.
+  return matched?.id || "";
 }
 
 async function listUploadBatches(companyId, limit = 100) {
@@ -689,12 +706,12 @@ async function setUploadChecksum(batchId, checksum, rowCount = null) {
   //   dataset_hash    — new field (migration 035), indexed for fast dedup lookup
   const patch = {
     upload_checksum: contentHash,
-    dataset_hash:    contentHash,
+    dataset_hash: contentHash,
   };
 
   if (Number.isInteger(Number(rowCount)) && Number(rowCount) >= 0) {
     patch.row_count = Number(rowCount);
-    patch.metadata  = { checksumRowCount: Number(rowCount) };
+    patch.metadata = { checksumRowCount: Number(rowCount) };
   }
 
   // Merge metadata without dropping existing keys.

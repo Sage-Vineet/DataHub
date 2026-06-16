@@ -553,7 +553,7 @@ async function buildCompanyActivity(companyId, limit) {
 
 const listActivity = asyncHandler(async (req, res) => {
   if (!permissionService.canAccessCompany(req.user, req.params.id)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "You do not have permission to access this company's activity." });
   }
 
   const activity = await buildCompanyActivity(req.params.id, clampLimit(req.query.limit));
@@ -768,7 +768,7 @@ async function buildBrokerActivity(user, limit) {
 const listBrokerActivity = asyncHandler(async (req, res) => {
   const role = String(req.user?.role || "").toLowerCase();
   if (!["broker", "admin"].includes(role)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "Broker or admin access is required to view the broker activity feed." });
   }
   const activity = await buildBrokerActivity(req.user, clampLimit(req.query.limit));
   res.set("Cache-Control", "private, max-age=15");

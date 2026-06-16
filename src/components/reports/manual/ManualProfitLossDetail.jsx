@@ -1,115 +1,175 @@
-import { Fragment, useState } from "react";
-import {
-  ChevronDown,
-  ChevronRight,
-  FileText,
-} from "lucide-react";
-import { cn } from "../../../lib/utils";
+import { Fragment, useMemo, useState } from "react";
+import { ChevronDown, ChevronRight, FileText } from "lucide-react";
+import { cn, formatCurrency } from "../../../lib/utils";
 
-function formatCurrency(amount) {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-  }).format(amount || 0);
+function buildCategoryVendorRows(accounts) {
+  const vendorMap = new Map();
+
+  (accounts || []).forEach((account) => {
+    (account.transactions || []).forEach((tx) => {
+      const vendor = tx.vendorName || tx.vendor_name || "No Vendor";
+      const year = Number(tx.fiscalYear || tx.fiscal_year || 0);
+      const amount = Number(tx.netAmount ?? tx.net_amount ?? tx.amount ?? 0) || 0;
+
+      if (!vendorMap.has(vendor)) {
+        vendorMap.set(vendor, {
+          vendorName: vendor,
+          yearlyTotals: {},
+          totalAmount: 0,
+          accountMap: new Map(),
+        });
+      }
+
+      const vendorRow = vendorMap.get(vendor);
+      vendorRow.totalAmount += amount;
+      if (year > 0) {
+        vendorRow.yearlyTotals[year] = (vendorRow.yearlyTotals[year] || 0) + amount;
+      }
+
+      const accountKey = `${account.accountNumber || ""}::${account.accountName || ""}`;
+      if (!vendorRow.accountMap.has(accountKey)) {
+        vendorRow.accountMap.set(accountKey, {
+          accountName: account.accountName || "Unnamed Account",
+          accountNumber: account.accountNumber || "",
+          yearlyTotals: {},
+          totalAmount: 0,
+        });
+      }
+
+      const acctRow = vendorRow.accountMap.get(accountKey);
+      acctRow.totalAmount += amount;
+      if (year > 0) {
+        acctRow.yearlyTotals[year] = (acctRow.yearlyTotals[year] || 0) + amount;
+      }
+    });
+  });
+
+  return Array.from(vendorMap.values())
+    .map(({ accountMap, ...v }) => ({
+      ...v,
+      accounts: Array.from(accountMap.values()).sort((a, b) =>
+        a.accountName.localeCompare(b.accountName),
+      ),
+    }))
+    .sort((a, b) => Math.abs(b.totalAmount) - Math.abs(a.totalAmount));
 }
 
-function AccountRow({ account, years, isOpen, onToggle }) {
-  const accountKey = `${account.accountNumber || ""}::${account.accountName || ""}`;
+function AmountCell({ value, bold = false, className = "" }) {
+  const num = Number(value || 0);
+  return (
+    <td
+      className={cn(
+        "px-4 py-2 text-right tabular-nums text-[13px]",
+        bold ? "font-semibold text-text-primary" : "font-normal text-text-secondary",
+        num < 0 && "text-status-error",
+        className,
+      )}
+    >
+      {num !== 0 ? formatCurrency(num) : "—"}
+    </td>
+  );
+}
 
+/** Primary expandable row: Vendor. Child rows: Accounts. */
+function VendorRow({ vendor, years, isOpen, onToggle }) {
   return (
     <Fragment>
       <tr
+        onClick={() => onToggle(vendor.vendorName)}
         className={cn(
-          "border-b border-border hover:bg-bg-card/50 transition-colors cursor-pointer group",
-          isOpen && "bg-bg-card/30"
+          "border-b border-border cursor-pointer group transition-colors",
+          isOpen ? "bg-bg-card/30" : "hover:bg-bg-page/50",
         )}
-        onClick={() => onToggle(account.accountNumber, account.accountName)}
       >
-        <td className="px-3 py-2.5">
+        <td className="px-4 py-2.5">
           <div className="flex items-center gap-2">
             {isOpen ? (
-              <ChevronDown size={14} className="text-text-muted group-hover:text-primary transition-colors" />
+              <ChevronDown size={13} className="shrink-0 text-text-muted group-hover:text-primary transition-colors" />
             ) : (
-              <ChevronRight size={14} className="text-text-muted group-hover:text-primary transition-colors" />
+              <ChevronRight size={13} className="shrink-0 text-text-muted group-hover:text-primary transition-colors" />
             )}
-            <span className="text-[13px] font-medium text-text-primary">
-              {account.accountName || "Unnamed Account"}
+            <span className="text-[13px] font-semibold text-text-primary">
+              {vendor.vendorName || "No Vendor"}
             </span>
           </div>
         </td>
-        <td className="px-3 py-2.5 text-[12px] text-text-muted font-mono">
-          {account.accountNumber || "-"}
-        </td>
-        <td className="px-3 py-2.5 text-[12px] text-text-muted">
-          {account.subcategory || "-"}
-        </td>
         {years.map((year) => (
-          <td key={`val-${year}`} className="px-3 py-2.5 text-right text-[12px] text-text-secondary tabular-nums">
-            {formatCurrency(Number(account.yearlyTotals?.[year] || 0))}
+          <AmountCell key={year} value={vendor.yearlyTotals?.[year]} bold />
+        ))}
+        <AmountCell value={vendor.totalAmount} bold />
+      </tr>
+
+      {isOpen &&
+        vendor.accounts.map((account) => (
+          <tr
+            key={`${account.accountNumber}::${account.accountName}`}
+            className="border-b border-border/40 bg-bg-page/20 hover:bg-bg-page/50 transition-colors"
+          >
+            <td className="px-4 py-1.5 pl-10 text-[12px] text-text-secondary">
+              {account.accountName || <span className="italic text-text-muted">—</span>}
+            </td>
+            {years.map((year) => (
+              <AmountCell key={year} value={account.yearlyTotals?.[year]} />
+            ))}
+            <AmountCell value={account.totalAmount} />
+          </tr>
+        ))}
+    </Fragment>
+  );
+}
+
+/**
+ * One P&L section (e.g. "Revenue", "Cost of Goods Sold").
+ * Extracts its own useMemo so hooks rules are satisfied even though
+ * the parent renders a list of these.
+ */
+function CategorySection({ category, years, openVendors, onToggle }) {
+  const vendorRows = useMemo(
+    () => buildCategoryVendorRows(category.accounts),
+    [category.accounts],
+  );
+
+  const sectionTotal = Number(
+    category.total ??
+      category.totalAmount ??
+      years.reduce((sum, yr) => sum + Number(category.totalsByYear?.[yr] || 0), 0),
+  );
+
+  return (
+    <Fragment>
+      {/* Category section header */}
+      <tr className="border-b border-border bg-bg-page/60">
+        <td className="px-4 py-2.5 text-[13px] font-bold text-text-primary">
+          {category.category}
+        </td>
+        {years.map((yr) => (
+          <td
+            key={yr}
+            className="px-4 py-2.5 text-right text-[13px] font-bold text-text-primary tabular-nums"
+          >
+            {formatCurrency(Number(category.totalsByYear?.[yr] || 0))}
           </td>
         ))}
-        <td className={cn(
-          "px-3 py-2.5 text-right text-[13px] font-semibold tabular-nums",
-          Number(account.totalAmount || 0) < 0 ? "text-status-error" : "text-text-primary"
-        )}>
-          {formatCurrency(Number(account.totalAmount || 0))}
+        <td
+          className={cn(
+            "px-4 py-2.5 text-right text-[13px] font-bold tabular-nums",
+            sectionTotal < 0 ? "text-status-error" : "text-text-primary",
+          )}
+        >
+          {formatCurrency(sectionTotal)}
         </td>
       </tr>
 
-      {isOpen && (
-        <tr>
-          <td colSpan={years.length + 4} className="px-0 py-0 bg-bg-page/50">
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse">
-                <thead>
-                  <tr className="border-b border-border text-left text-[10px] text-text-muted uppercase tracking-wider">
-                    <th className="px-3 py-2 font-semibold pl-12">Date</th>
-                    <th className="px-3 py-2 font-semibold">Vendor / Payee</th>
-                    <th className="px-3 py-2 font-semibold">Description</th>
-                    <th className="px-3 py-2 font-semibold text-right">Debit</th>
-                    <th className="px-3 py-2 font-semibold text-right">Credit</th>
-                    <th className="px-3 py-2 font-semibold text-right">Amount</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(account.transactions || []).map((tx, idx) => (
-                    <tr key={tx.id || idx} className="border-b border-border/50 hover:bg-bg-card/50 transition-colors">
-                      <td className="px-3 py-2 text-[12px] text-text-secondary pl-12">
-                        {tx.date || tx.transactionDate || "-"}
-                      </td>
-                      <td className="px-3 py-2 text-[12px] text-text-primary font-medium">
-                        {tx.vendorName || "-"}
-                      </td>
-                      <td className="px-3 py-2 text-[12px] text-text-muted max-w-[300px] truncate" title={tx.description}>
-                        {tx.description || "-"}
-                      </td>
-                      <td className="px-3 py-2 text-[12px] text-text-secondary text-right">
-                        {tx.debit ? formatCurrency(tx.debit) : ""}
-                      </td>
-                      <td className="px-3 py-2 text-[12px] text-text-secondary text-right">
-                        {tx.credit ? formatCurrency(tx.credit) : ""}
-                      </td>
-                      <td className={cn(
-                        "px-3 py-2 text-[12px] text-right font-medium",
-                        Number(tx.amount || 0) < 0 ? "text-status-error" : "text-text-primary"
-                      )}>
-                        {formatCurrency(Number(tx.amount || 0))}
-                      </td>
-                    </tr>
-                  ))}
-                  {(!account.transactions || account.transactions.length === 0) && (
-                    <tr>
-                      <td colSpan={6} className="px-3 py-4 text-center text-text-muted italic text-[12px]">
-                        No transactions found for this account.
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </td>
-        </tr>
-      )}
+      {/* Vendor rows — each expands to show account sub-rows */}
+      {vendorRows.map((vendor) => (
+        <VendorRow
+          key={vendor.vendorName}
+          vendor={vendor}
+          years={years}
+          isOpen={openVendors.has(vendor.vendorName)}
+          onToggle={onToggle}
+        />
+      ))}
     </Fragment>
   );
 }
@@ -123,21 +183,24 @@ export default function ManualProfitLossDetail({
   const years = Array.isArray(data?.years) ? data.years : [];
   const categories = Array.isArray(data?.categories) ? data.categories : [];
 
-  const [openAccounts, setOpenAccounts] = useState(() => new Set());
+  const [openVendors, setOpenVendors] = useState(() => new Set());
 
-  const toggleAccount = (accountNumber, accountName) => {
-    const key = `${accountNumber || ""}::${accountName || ""}`;
-    setOpenAccounts((previous) => {
-      const next = new Set(previous);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
+  const toggleVendor = (vendorName) => {
+    setOpenVendors((prev) => {
+      const next = new Set(prev);
+      if (next.has(vendorName)) next.delete(vendorName);
+      else next.add(vendorName);
       return next;
     });
   };
 
+  const colSpanAll = years.length + 2;
+
   return (
     <div className="flex-1 overflow-y-auto bg-bg-page/50 p-10 lg:p-16 font-inter">
       <div className="max-w-[1300px] mx-auto card-base p-10 min-h-[900px] flex flex-col rounded-sm shadow-xl">
+
+        {/* Report header */}
         <div className="flex flex-col items-center mb-10 relative">
           <div className="w-12 h-1 bg-primary rounded-full mb-6" />
           <h1 className="text-[22px] font-bold text-text-primary tracking-tight leading-none mb-2">
@@ -154,64 +217,41 @@ export default function ManualProfitLossDetail({
         <div className="overflow-x-auto rounded-lg border border-border">
           <table className="w-full border-collapse">
             <thead>
-              <tr className="bg-bg-page border-b border-border">
-                <th className="px-3 py-3 text-left text-[12px] font-medium text-text-muted uppercase tracking-wider">
-                  Account
+              <tr className="bg-bg-page border-b-2 border-border sticky top-0 z-10">
+                <th className="px-4 py-3 text-left text-[12px] font-semibold text-text-primary uppercase tracking-wider min-w-[260px]">
+                  Vendor / Account
                 </th>
-                <th className="px-3 py-3 text-left text-[12px] font-medium text-text-muted uppercase tracking-wider">Account #</th>
-                <th className="px-3 py-3 text-left text-[12px] font-medium text-text-muted uppercase tracking-wider">Subcategory</th>
                 {years.map((year) => (
-                  <th key={`year-${year}`} className="px-3 py-3 text-right text-[12px] font-medium text-text-muted uppercase tracking-wider">
-                    FY {year}
+                  <th
+                    key={year}
+                    className="px-4 py-3 text-right text-[12px] font-semibold text-text-primary uppercase tracking-wider min-w-[110px]"
+                  >
+                    {year}
                   </th>
                 ))}
-                <th className="px-3 py-3 text-right text-[12px] font-semibold text-text-primary uppercase tracking-wider">
-                  Total
+                <th className="px-4 py-3 text-right text-[12px] font-semibold text-text-primary uppercase tracking-wider min-w-[110px]">
+                  Grand Total
                 </th>
               </tr>
             </thead>
-            <tbody>
-              {categories.map((category) => {
-                const sectionKey = category.category;
-                const sectionTotal = Number(
-                  category.total ??
-                  category.totalAmount ??
-                  years.reduce((sum, year) => sum + Number(category.totalsByYear?.[year] || 0), 0),
-                );
 
-                return (
-                  <Fragment key={`sec-${sectionKey}`}>
-                    <tr className="bg-bg-page/50 border-b border-border">
-                      <td className="px-3 py-3 text-[14px] font-bold text-primary italic" colSpan={3}>
-                        {sectionKey}
-                      </td>
-                      {years.map((year) => (
-                        <td key={`sec-${sectionKey}-${year}`} className="px-3 py-3 text-right text-[13px] font-bold text-text-secondary tabular-nums">
-                          {formatCurrency(Number(category.totalsByYear?.[year] || 0))}
-                        </td>
-                      ))}
-                      <td className={cn(
-                        "px-3 py-3 text-right text-[13px] font-bold tabular-nums",
-                        sectionTotal < 0 ? "text-status-error" : "text-text-primary"
-                      )}>
-                        {formatCurrency(sectionTotal)}
-                      </td>
-                    </tr>
-                    {(category.accounts || []).map((account) => (
-                      <AccountRow
-                        key={`${account.accountNumber || ""}::${account.accountName || ""}`}
-                        account={account}
-                        years={years}
-                        isOpen={openAccounts.has(`${account.accountNumber || ""}::${account.accountName || ""}`)}
-                        onToggle={toggleAccount}
-                      />
-                    ))}
-                  </Fragment>
-                );
-              })}
+            <tbody>
+              {categories.map((category) => (
+                <CategorySection
+                  key={category.category}
+                  category={category}
+                  years={years}
+                  openVendors={openVendors}
+                  onToggle={toggleVendor}
+                />
+              ))}
+
               {categories.length === 0 && (
                 <tr>
-                  <td colSpan={years.length + 4} className="px-3 py-20 text-center text-text-muted italic">
+                  <td
+                    colSpan={colSpanAll}
+                    className="px-4 py-20 text-center text-text-muted italic"
+                  >
                     <div className="flex flex-col items-center gap-2">
                       <FileText size={40} className="text-border mb-2" />
                       <span>No detailed report data found for the selected filters.</span>

@@ -1,10 +1,11 @@
+import { memo } from "react";
 import CashflowQBSummary from "./CashflowQBSummary";
 import CashflowSummary from "./CashflowSummary";
 import ManualCashflowMonthlyDetail from "./ManualCashflowMonthlyDetail";
 
 const MANUAL_STAGED_SOURCES = ["MANUAL_STAGED", "manual_staged", "manual_gl_staged_transactions", "manual_gl_reporting_snapshot"];
 
-export default function CashflowReport({
+function CashflowReport({
   reportType,
   data,
   detailedData,
@@ -15,12 +16,11 @@ export default function CashflowReport({
   clientName = "All Clients",
   entityName,
   isPreview = false,
+  selectedMonths = [],
 }) {
   const resolvedEntityName = entityName || clientName || "Company";
   const periodText = startDate === "1970-01-01" ? "All Dates" : `${startDate || "N/A"} to ${endDate || "N/A"}`;
-  const summarySubtitle = sourceMode === "manual"
-    ? undefined
-    : `Report Period: ${periodText} | ${clientName} | ${accountingMethod} Basis`;
+  const summarySubtitle = null;
 
   if (reportType === "Detail") {
     // Manual staged monthly detail
@@ -32,7 +32,9 @@ export default function CashflowReport({
         <ManualCashflowMonthlyDetail
           data={detailedData}
           title="Cash Flow Statement"
+          subtitle={summarySubtitle}
           entityName={resolvedEntityName}
+          selectedMonths={selectedMonths}
         />
       );
     }
@@ -46,7 +48,7 @@ export default function CashflowReport({
         data={rows}
         columns={columns}
         title="Cash Flow"
-        subtitle={`${clientName} | ${accountingMethod} Basis`}
+        subtitle={null}
         entityName={resolvedEntityName}
       />
     );
@@ -78,3 +80,7 @@ export default function CashflowReport({
     />
   );
 }
+
+// Memoized: see BalanceSheetReport — avoids re-rendering the report tree on
+// unrelated parent state changes (loading toggles, sibling-tab prefetch).
+export default memo(CashflowReport);

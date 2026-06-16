@@ -1,17 +1,16 @@
-import { useAuth } from "../../context/AuthContext";
-import CompanyDirectMessagesWorkspace from "../../components/messages/CompanyDirectMessagesWorkspace";
+import { useState } from 'react';
+import GroupMessagesWorkspace from '../../components/messages/GroupMessagesWorkspace';
+import DirectMessagesWorkspace from '../../components/messages/DirectMessagesWorkspace';
 
 export default function ClientMessages() {
-  const { user } = useAuth();
-  const companyId = user?.company_id || user?.companyId || user?.company_ids?.[0] || user?.companyIds?.[0] || "";
+  const [tab, setTab] = useState('groups');
 
   return (
-    <CompanyDirectMessagesWorkspace
-      fixedCompanyId={companyId}
-      title="Messages"
-      description="Message your broker directly for this company."
-      contactLabel="Broker"
-      contactEmptyState="No broker is available for this company right now."
-    />
+    <div className="flex flex-col h-full min-h-0" style={{ height: 'calc(100vh - 130px)' }}>
+      {tab === 'groups'
+        ? <GroupMessagesWorkspace useMyGroups title="Groups" tab={tab} onTabChange={setTab} />
+        : <DirectMessagesWorkspace useMyContacts title="Chats" tab={tab} onTabChange={setTab} />
+      }
+    </div>
   );
 }

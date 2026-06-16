@@ -48,6 +48,8 @@ function buildParticipantFromUserRow(userRow, company) {
     name: userRow.name,
     email: userRow.email,
     role: normalizeParticipantRole(userRow, company),
+    sub_role: userRow.sub_role || null,
+    company_id: userRow.company_id || null,
     status: userRow.status,
   };
 }
@@ -67,7 +69,7 @@ async function getBrokerParticipantsByIds(company, brokerIds) {
 
   const { data, error } = await supabase
     .from("users")
-    .select("id, name, email, role, status")
+    .select("id, name, email, role, sub_role, status")
     .in("id", uniqueBrokerIds)
     .eq("status", "active");
 
@@ -366,11 +368,11 @@ async function getCompanyParticipants(company) {
     supabase
       .from("users")
       .select(`
-        id, name, email, role, status, company_id,
+        id, name, email, role, sub_role, status, company_id,
         user_companies!left(company_id)
       `)
       .eq("status", "active")
-      .eq("role", "buyer")
+      .in("role", ["buyer", "client"])
       .order("name", { ascending: true }),
     getRelevantBrokerIdsForCompany(company.id),
   ]);
@@ -392,9 +394,9 @@ async function getCompanyBuyerParticipants(company) {
   // Instead: two separate queries that work without schema relationships.
   const { data: users, error } = await supabase
     .from("users")
-    .select("id, name, email, role, status, company_id")
+    .select("id, name, email, role, sub_role, status, company_id")
     .eq("status", "active")
-    .eq("role", "buyer")
+    .in("role", ["buyer", "client"])
     .order("name", { ascending: true });
 
   if (error) return [];
@@ -494,22 +496,29 @@ async function getLatestCompanyMessages(companyIds) {
 }
 
 async function resolveDirectMessagingContext(user, companyId) {
-  if (!canAccessCompany(user, companyId)) {
-    return { error: { status: 403, body: { error: "Forbidden" } } };
-  }
-
   const company = await getCompany(companyId);
   if (!company) {
     return { error: { status: 404, body: { error: "Company not found" } } };
   }
 
+  // Allow access if canAccessCompany passes OR the user is the company's registered contact
+  // (handles post-migration clients whose company_id may be null in the DB).
+  const userEmail = String(user?.email || "").trim().toLowerCase();
+  const contactEmail = String(company?.contact_email || "").trim().toLowerCase();
+  const isCompanyContact = Boolean(userEmail && contactEmail && userEmail === contactEmail);
+
+  if (!canAccessCompany(user, companyId) && !isCompanyContact) {
+    return { error: { status: 403, body: { error: "You do not have permission to access this company's messages." } } };
+  }
+
   const messagingRole = getMessagingRole(user, company);
   const buyerParticipants = await getCompanyBuyerParticipants(company);
-  const contactsForBroker = buyerParticipants.filter((participant) => String(participant.id) !== String(user.id));
 
   let brokerIds = [];
   if (messagingRole === "client") {
-    brokerIds = await getOnboardingBrokerIdsForCompany(companyId);
+    // Use the full relevant-broker lookup upfront — covers user_companies assignment
+    // and folder/request activity in one pass so the broker is always found.
+    brokerIds = await getRelevantBrokerIdsForCompany(companyId);
   } else if (messagingRole === "user") {
     const [
       assignedBrokerIds,
@@ -568,9 +577,25 @@ async function resolveDirectMessagingContext(user, companyId) {
     participants = dedupeParticipants([...participants, selfParticipant]);
   }
 
-  const contacts = (messagingRole === "broker" ? contactsForBroker : brokerParticipants)
-    .filter((participant) => String(participant.id) !== String(user.id))
-    .sort((a, b) => compareNameAsc(a.name, b.name));
+  // ── Role-based DM contact filtering ──────────────────────────────────────────
+  // Broker/broker team → everyone (all buy-side + all broker team)
+  // Client/client team → own client team (same company_id) + broker team only
+  // Buyer/buyer team   → own buyer team (same company_id) + broker team only
+  let contacts;
+  if (messagingRole === "broker") {
+    contacts = dedupeParticipants([...buyerParticipants, ...brokerParticipants])
+      .filter((p) => String(p.id) !== String(user.id));
+  } else {
+    const userCompId = String(user.company_id || user.companyId || "");
+    const ownTeam = userCompId
+      ? buyerParticipants.filter(
+          (p) => String(p.company_id) === userCompId && String(p.id) !== String(user.id),
+        )
+      : [];
+    contacts = dedupeParticipants([...ownTeam, ...brokerParticipants])
+      .filter((p) => String(p.id) !== String(user.id));
+  }
+  contacts = contacts.sort((a, b) => compareNameAsc(a.name, b.name));
 
   const participantById = buildParticipantMap(participants);
 
@@ -660,7 +685,7 @@ const listThreads = asyncHandler(async (req, res) => {
 const getConversation = asyncHandler(async (req, res) => {
   const companyId = req.params.id;
   if (!canAccessCompany(req.user, companyId)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "Access denied." });
   }
 
   const company = await getCompany(companyId);
@@ -687,7 +712,7 @@ const createMessage = asyncHandler(async (req, res) => {
   const body = String(req.body?.body || "").trim();
 
   if (!canAccessCompany(req.user, companyId)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "Access denied." });
   }
   if (!body) {
     return res.status(400).json({ error: "Message body is required" });
@@ -701,7 +726,7 @@ const createMessage = asyncHandler(async (req, res) => {
   const participants = await getCompanyParticipants(company);
   const participantById = buildParticipantMap(participants);
   if (!participantById[String(req.user.id)] && !isBroker(req.user)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "You are not a participant in this conversation." });
   }
 
   const { data, error } = await supabase
@@ -769,7 +794,7 @@ const getDirectConversation = asyncHandler(async (req, res) => {
 
   const participant = context.contacts.find((contact) => String(contact.id) === String(recipientId));
   if (!participant) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "Access denied." });
   }
 
   const messages = await getDirectMessageRows(companyId, req.user.id, recipientId);
@@ -796,7 +821,7 @@ const createDirectMessage = asyncHandler(async (req, res) => {
 
   const participant = context.contacts.find((contact) => String(contact.id) === String(recipientId));
   if (!participant) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "Access denied." });
   }
 
   const { data, error } = await supabase
@@ -819,11 +844,48 @@ const createDirectMessage = asyncHandler(async (req, res) => {
   });
 });
 
+/**
+ * GET /my-direct-contacts
+ * Returns all DM contacts for the current user across all their companies.
+ * Response: Array<{ company, contacts: Contact[] }>
+ */
+const listMyDirectContacts = asyncHandler(async (req, res) => {
+  if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+
+  const companyIds = getUserCompanyIds(req.user);
+  if (!companyIds.length) return res.json([]);
+
+  const results = [];
+  for (const cid of companyIds) {
+    const context = await resolveDirectMessagingContext(req.user, cid);
+    if (context.error) continue;
+
+    const latestByContact = await getLatestDirectMessagesByContact(
+      cid,
+      req.user.id,
+      context.contacts.map((c) => c.id),
+    );
+
+    const enrichedContacts = context.contacts
+      .map((c) => ({ ...c, last_message: latestByContact[String(c.id)] || null }))
+      .sort((a, b) => {
+        const aDate = a.last_message?.created_at || "";
+        const bDate = b.last_message?.created_at || "";
+        return compareIsoDesc(aDate, bDate) || compareNameAsc(a.name, b.name);
+      });
+
+    results.push({ company: context.company, contacts: enrichedContacts });
+  }
+
+  return res.json(results);
+});
+
 module.exports = {
   listThreads,
   getConversation,
   createMessage,
   listDirectContacts,
+  listMyDirectContacts,
   getDirectConversation,
   createDirectMessage,
 };

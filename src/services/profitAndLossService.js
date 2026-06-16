@@ -68,10 +68,13 @@ async function fetchSinglePeriodPNL(
   options = {},
 ) {
   try {
+    const keyReportVersionId = options?.keyReportVersionId || null;
+
     if (sourceMode === "manual_upload" || sourceMode === "quickbooks_manual") {
       const fetchFn = sourceMode === "quickbooks_manual" ? getLatestQMSUploadedReport : getLatestManualUploadedReport;
       const payload = await fetchFn("profit_and_loss", {
         rowId: options?.manualUploadRowId,
+        keyReportVersionId,
       });
       const rows = Array.isArray(payload?.data?.rows) ? payload.data.rows : [];
       const periods = payload?.data?.periods || [];
@@ -421,13 +424,19 @@ export async function getProfitAndLossDetail(
   accountingMethod,
   options = {},
 ) {
-  if ((options?.sourceMode || "quickbooks") === "manual") {
+  const sourceMode = options?.sourceMode || "quickbooks";
+  const keyReportVersionId = options?.keyReportVersionId || null;
+
+  if (sourceMode === "manual") {
     // Only pass manual filters — QB date params not used for staged GL data
     const params = {
       ...((options?.manualFilters && typeof options.manualFilters === "object")
         ? options.manualFilters
         : {}),
     };
+    if (keyReportVersionId) {
+      params.keyReportVersionId = keyReportVersionId;
+    }
 
     if (options.reportType === "DetailVendor") {
       return getManualStagedProfitLossVendorDetail({ params });
@@ -442,8 +451,8 @@ export async function getProfitAndLossDetail(
     return response;
   }
 
-  if (options?.sourceMode === "manual_upload" || options?.sourceMode === "quickbooks_manual") {
-    return buildPNLMultiFileDetail(options.sourceMode);
+  if (sourceMode === "manual_upload" || sourceMode === "quickbooks_manual") {
+    return buildPNLMultiFileDetail(sourceMode);
   }
 
   // Detail now uses system-defined multi-year comparison (EBITDA analysis)
@@ -455,8 +464,8 @@ export async function getProfitAndLossDetail(
         p.start,
         p.end,
         accountingMethod,
-        options?.sourceMode || "quickbooks",
-        options,
+        sourceMode,
+        { ...options, keyReportVersionId },
       ),
     ),
   );

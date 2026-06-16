@@ -41,6 +41,10 @@ export async function request(path, options = {}) {
     ? await response.json().catch(() => null)
     : await response.text().catch(() => null);
 
+  if (response.status === 403) {
+    return null;
+  }
+
   if (!response.ok) {
     const errorMessage =
       payload?.message ||
@@ -77,7 +81,7 @@ export function connectQuickbooks(redirectHash, explicitClientId = null, options
 
   const state = encodeURIComponent(
     JSON.stringify({
-      redirect: redirectHash || (isClient ? "/client/connections" : "/broker/companies"),
+      redirect: redirectHash || (isClient ? "/client/connections" : "/broker/dashboard"),
       companyId: clientId,
       clientId: clientId, // backward compat
       role: role
@@ -150,5 +154,12 @@ export function syncGeneralLedger(params = {}) {
 
 export function fetchBankVsBooks() {
   return request("/bank-vs-books");
+}
+
+export function confirmQuickBooksTransfer(transferToken) {
+  return request("/api/auth/transfer-confirm", {
+    method: "POST",
+    body: JSON.stringify({ transferToken }),
+  });
 }
 

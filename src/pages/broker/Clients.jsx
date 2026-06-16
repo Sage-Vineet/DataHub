@@ -101,11 +101,11 @@ export default function BrokerClients() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-[#050505]">Clients</h1>
-          <p className="mt-0.5 text-sm text-[#6D6E71]">Data Hub client operations merged into the broker workspace.</p>
+          <p className="mt-0.5 text-sm text-[#6D6E71]">M&A Hub client operations merged into the broker workspace.</p>
         </div>
         <div className="flex items-center gap-2">
           <button
-            onClick={() => navigate('/broker/companies')}
+            onClick={() => navigate('/broker/dashboard')}
             className="flex items-center gap-2 rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm font-semibold text-[#050505] shadow-sm transition-all hover:bg-gray-50"
           >
             <Building2 size={15} className="text-[#6D6E71]" />
@@ -190,7 +190,7 @@ export default function BrokerClients() {
                   <td className="px-4 py-4 text-sm text-[#6D6E71]">{client.lastFinanceSync}</td>
                   <td className="px-4 py-4 text-right">
                     <button
-                      onClick={() => navigate(`/broker/client/${client.id}/datahub-dashboard`, { state: { company: client } })}
+                      onClick={() => navigate(`/broker/client/${client.id}/analytics`, { state: { company: client } })}
                       className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-xs font-semibold text-[#050505] transition-all hover:border-[#8BC53D]/50 hover:bg-[#F8FBF1]"
                     >
                       Open Workspace

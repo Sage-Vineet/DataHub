@@ -2,10 +2,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import Header from "../../../components/Header";
 
-import { getStoredToken, setSelectedReportSource } from "../../../lib/api";
+import { getStoredToken, setSelectedReportSource, loadSavedQBBankActivityRequest } from "../../../lib/api";
 import { useDataSource } from "../../../context/DataSourceContext";
+import { useDatasetVersionStore } from "../../../store/useDatasetVersionStore";
+import {
+  useKeyReportContextStore,
+  selectKeyReportContext,
+} from "../../../store/useKeyReportContextStore";
+import { useShallow } from "zustand/react/shallow";
+import KeyReportVersionSelector from "../../../components/key-reports/KeyReportVersionSelector";
 import { emitWorkspaceDataSourceUpdated } from "../../../lib/dataSourceEvents";
-import { cn } from "../../../lib/utils";
+import { cn, formatNumber, formatCurrency } from "../../../lib/utils";
 import {
   REPORT_SOURCE_KEYS,
   REPORT_SOURCE_OPTIONS,
@@ -41,11 +48,91 @@ const YEARS = Array.from({ length: 10 }, (_, i) => 2020 + i);
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
 const QB_BANK_ACTIVITY_ENDPOINT = `${API_BASE_URL}/qb-bank-activity`;
+const QB_BANK_ACTIVITY_SAVED_ENDPOINT = `${API_BASE_URL}/qb-bank-activity/saved`;
 const QB_ONE_BANK_ACTIVITY_ENDPOINT = `${API_BASE_URL}/qb-one-bank-activity`;
 const EXTRACT_BANK_PDF_RECORDS_ENDPOINT = `${API_BASE_URL}/extract-bank-pdf-records`;
 const QMS_BANK_DATA_ENDPOINT = `${API_BASE_URL}/manual-report-uploads/qms-bank-data`;
 const MANUAL_BANK_DATA_ENDPOINT = `${API_BASE_URL}/manual-upload/bank-data`;
+const BS_BANK_BALANCES_ENDPOINT = `${API_BASE_URL}/manual-report-uploads/bs-bank-balances`;
 const RECONCILIATION_STORAGE_PREFIX = "workspace-reconciliation";
+
+// ── BS bank-balance helpers (module-level — no React context needed) ────────
+const _bsNormName = (name) =>
+  String(name || "").trim().toLowerCase().replace(/[^a-z0-9]/g, " ").replace(/\s+/g, " ").trim();
+const _bsLastFour = (name) => {
+  const m = String(name || "").match(/\b(\d{4})\b/);
+  return m ? m[1] : "";
+};
+// Returns the matched {name, accountNumber, amount} entry or null
+function matchBsBank(queryName, bankAccounts) {
+  if (!bankAccounts?.length || !queryName) return null;
+  const qFour = _bsLastFour(queryName);
+  const qNorm = _bsNormName(queryName);
+  if (qFour) {
+    const byFour = bankAccounts.filter((b) => b.accountNumber === qFour);
+    if (byFour.length === 1) return byFour[0];
+    if (byFour.length > 1) {
+      // disambiguate by name among candidates sharing the same account number
+      const nameHit = byFour.find(
+        (b) =>
+          _bsNormName(b.name) === qNorm ||
+          qNorm.includes(_bsNormName(b.name)) ||
+          _bsNormName(b.name).includes(qNorm),
+      );
+      if (nameHit) return nameHit;
+      const qW = qNorm.split(" ").filter((w) => w.length > 2);
+      if (qW.length) {
+        let best = 0, bestMatch = null;
+        for (const b of byFour) {
+          const bW = _bsNormName(b.name).split(" ").filter((w) => w.length > 2);
+          const overlap = qW.filter((w) => bW.includes(w)).length;
+          const score = overlap / Math.max(qW.length, bW.length, 1);
+          if (score > best) { best = score; bestMatch = b; }
+        }
+        if (bestMatch && best > 0) return bestMatch;
+      }
+    }
+  }
+  const exact = bankAccounts.find((b) => _bsNormName(b.name) === qNorm);
+  if (exact) return exact;
+  const contains = bankAccounts.find(
+    (b) => _bsNormName(b.name).includes(qNorm) || qNorm.includes(_bsNormName(b.name)),
+  );
+  if (contains) return contains;
+  // Stop-word aware word overlap: generic banking words (e.g. "bank") must not
+  // decide a match when a more specific identifier (e.g. "needham") is present.
+  // Numeric tokens (account number digits embedded in display names) are excluded.
+  const BS_STOP = new Set(["bank", "banks", "banking", "financial", "corp", "inc",
+    "llc", "ltd", "national", "savings", "credit", "union", "trust", "services",
+    "group", "company"]);
+  const allW = (s) => s.split(" ").filter((w) => w.length > 2 && !/^\d+$/.test(w));
+  const sigW = (s) => allW(s).filter((w) => !BS_STOP.has(w));
+  const qAll = allW(qNorm);
+  const qSig = sigW(qNorm);
+  if (qAll.length) {
+    // First pass — only significant (non-stop, non-numeric) words
+    if (qSig.length) {
+      let best = 0, bestMatch = null;
+      for (const b of bankAccounts) {
+        const bSig = sigW(_bsNormName(b.name));
+        const overlap = qSig.filter((w) => bSig.includes(w)).length;
+        const score = overlap / Math.max(qSig.length, bSig.length, 1);
+        if (score > best) { best = score; bestMatch = b; }
+      }
+      if (bestMatch && best > 0) return bestMatch;
+    }
+    // Second pass — all non-numeric words (fallback when no significant hit)
+    let best = 0, bestMatch = null;
+    for (const b of bankAccounts) {
+      const bWords = allW(_bsNormName(b.name));
+      const overlap = qAll.filter((w) => bWords.includes(w)).length;
+      const score = overlap / Math.max(qAll.length, bWords.length, 1);
+      if (score > best && score > 0.3) { best = score; bestMatch = b; }
+    }
+    if (bestMatch) return bestMatch;
+  }
+  return null;
+}
 
 const getErrMsg = (e) => (e instanceof Error ? e.message : String(e));
 const getWorkspaceStorageKey = (clientId) =>
@@ -67,38 +154,28 @@ const getStoredWorkspaceState = (clientId) => {
 };
 const fmtAmt = (val) => {
   if (val == null || val === 0) return "-";
-  return new Intl.NumberFormat("en-IN", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(val);
+  return formatNumber(val, 2);
 };
 const fmtAcct = (val) => {
   if (val == null || val === 0) return "-";
-  const abs = new Intl.NumberFormat("en-IN", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(Math.abs(val));
-  return val < 0 ? `(${abs})` : abs;
+  return formatNumber(val, 2);
 };
 const fmtVarianceAmt = (val) => {
   if (val == null || val === 0)
     return { display: "-", colorClass: "text-text-muted" };
-  const abs = new Intl.NumberFormat("en-IN", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(Math.abs(val));
+  const formatted = formatNumber(Math.abs(val), 2);
   if (val < 0)
-    return { display: `-${abs}`, colorClass: "text-red-600 font-medium" };
-  return { display: `+${abs}`, colorClass: "text-green-600 font-medium" };
+    return { display: `-${formatted}`, colorClass: "text-red-600 font-medium" };
+  return { display: `+${formatted}`, colorClass: "text-green-600 font-medium" };
 };
 const fmtVariancePct = (val) => {
   if (val == null) return { display: "-", colorClass: "text-text-muted" };
-  const fixed = parseFloat(val).toFixed(1);
-  if (parseFloat(fixed) === 0)
+  const formatted = formatNumber(val, 1);
+  if (parseFloat(formatted) === 0)
     return { display: "0.0%", colorClass: "text-text-muted" };
   if (val < 0)
-    return { display: `${fixed}%`, colorClass: "text-red-600 font-medium" };
-  return { display: `+${fixed}%`, colorClass: "text-green-600 font-medium" };
+    return { display: `${formatted}%`, colorClass: "text-red-600 font-medium" };
+  return { display: `+${formatted}%`, colorClass: "text-green-600 font-medium" };
 };
 const monthLabel = (ym) => {
   const [y, m] = ym.split("-");
@@ -107,6 +184,83 @@ const monthLabel = (ym) => {
     month: "short",
   });
 };
+
+/**
+ * FreezeTable — frozen month header row with horizontally-scrollable body.
+ *
+ * Two-div approach: a sticky wrapper (no overflow) holds the header table so
+ * position:sticky fires relative to the page scroll container (main).
+ * The body div has overflow-x:auto; horizontal scrollLeft is kept in sync
+ * with the header via a JS scroll listener.
+ *
+ * IMPORTANT: card containers must NOT use overflow:clip (Chrome bug blocks
+ * sticky propagation). Use overflow-clip only on the card header child, not
+ * the card outer div.
+ */
+function FreezeTable({ months, label, containerClass, children }) {
+  const headScrollRef = useRef(null);
+  const onBodyScroll = useCallback((e) => {
+    if (headScrollRef.current) headScrollRef.current.scrollLeft = e.currentTarget.scrollLeft;
+  }, []);
+
+  // Inline styles guarantee identical pixel widths in both tables regardless
+  // of how each container computes min-w-full. Tailwind classes on <col> can
+  // yield different effective widths when the two scroll containers differ.
+  const colGroup = (
+    <colgroup>
+      <col style={{ width: 280, minWidth: 280 }} />
+      {months.map((m) => <col key={m} style={{ width: 150, minWidth: 150 }} />)}
+      <col style={{ width: 150, minWidth: 150 }} />
+    </colgroup>
+  );
+
+  return (
+    <div className={containerClass}>
+      {/* Sticky month header — sticks at top of main scroll container */}
+      <div className="sticky top-0 z-20">
+        <div ref={headScrollRef} className="no-scrollbar overflow-x-auto">
+          <table className="w-full table-fixed border-collapse text-[13px]">
+            {colGroup}
+            <thead>
+              <tr className="bg-[#F8FBF1]">
+                <th className="sticky left-0 z-30 border border-border bg-[#F8FBF1] px-4 py-3 text-left text-[12px] font-semibold text-primary">
+                  {label}
+                </th>
+                {months.map((m) => (
+                  <th
+                    key={m}
+                    className={cn(
+                      "whitespace-nowrap border border-border bg-[#F8FBF1] px-4 py-3 text-center text-[12px] font-semibold text-primary",
+                      TABLE_VALUE_COL_WIDTH,
+                    )}
+                  >
+                    {monthLabel(m)}
+                  </th>
+                ))}
+                <th className={cn(
+                  "border border-border bg-[#F8FBF1] px-4 py-3 text-center text-[12px] font-semibold text-primary",
+                  TABLE_VALUE_COL_WIDTH,
+                )}>
+                  TTM
+                </th>
+              </tr>
+            </thead>
+          </table>
+        </div>
+      </div>
+
+      {/* Scrollable body — syncs horizontal scroll to the header above */}
+      <div className="overflow-x-auto rounded-b-[var(--radius-card)]" onScroll={onBodyScroll}>
+        <table className="w-full table-fixed border-collapse bg-white text-[13px]">
+          {colGroup}
+          <tbody>
+            {children}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
 
 /**
  * Normalize the API response into the shape consumed by the table renderer.
@@ -121,8 +275,8 @@ const monthLabel = (ym) => {
  */
 
 // Convert "Jan-2025" display key ↔ "2025-01" ISO key
-const _DISP_MONTH_MAP = {Jan:"01",Feb:"02",Mar:"03",Apr:"04",May:"05",Jun:"06",Jul:"07",Aug:"08",Sep:"09",Oct:"10",Nov:"11",Dec:"12"};
-const _ISO_TO_SHORT = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const _DISP_MONTH_MAP = { Jan: "01", Feb: "02", Mar: "03", Apr: "04", May: "05", Jun: "06", Jul: "07", Aug: "08", Sep: "09", Oct: "10", Nov: "11", Dec: "12" };
+const _ISO_TO_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const displayMonthToIso = (d) => {
   const [mon, year] = String(d || "").split("-");
   return _DISP_MONTH_MAP[mon] ? `${year}-${_DISP_MONTH_MAP[mon]}` : d;
@@ -256,6 +410,19 @@ export default function WorkspaceReconciliation() {
   // WorkspaceReconciliation must never call getReportSources independently — doing so reads
   // only the DB value and can be stale relative to the localStorage cache in DataSourceContext.
   const { activeSource: contextActiveSource, sourceRecords: contextSourceRecords } = useDataSource();
+  const kr = useKeyReportContextStore(useShallow(selectKeyReportContext));
+  // Shared dataset-version selection (same store Reports writes to) removed — 
+  // consolidated into the unified Key Report Version selector.
+  // Track the live GL scope (selected dataset version) so an in-flight bank-data
+  // fetch for a previous version can be discarded if the user switches mid-fetch —
+  // prevents stale-version data overwriting fresh (needs F5) data.
+  const glScopeRef = useRef({ datasetVersion: kr.resolvedDatasetVersion });
+  glScopeRef.current = { datasetVersion: kr.resolvedDatasetVersion };
+  // Key Reports is the single source of truth: when a Key Report Version is
+  // selected, the bank reconciliation resolves its documents from THAT Version
+  // (via keyReportVersionId) instead of the Connections-page active source.
+  const krVersionIdRef = useRef(null);
+  krVersionIdRef.current = kr.krActive ? kr.selectedVersionId : null;
   const storedState = getStoredWorkspaceState(clientId);
   const [expandedAccounts, setExpandedAccounts] = useState(
     storedState?.expandedAccounts || getDefaultExpandedAccounts(),
@@ -273,6 +440,7 @@ export default function WorkspaceReconciliation() {
   );
   const [isLoadingBankActivity, setIsLoadingBankActivity] = useState(false);
   const [bankActivityError, setBankActivityError] = useState("");
+  const [lastSyncedAt, setLastSyncedAt] = useState(storedState?.lastSyncedAt || null);
   const [bankActivityFetchStatus, setBankActivityFetchStatus] = useState({
     status: storedState?.qbBankActivity ? "success" : "idle",
     message: storedState?.qbBankActivity
@@ -307,12 +475,27 @@ export default function WorkspaceReconciliation() {
       status: "idle",
       message: "",
     });
+  const [manualMonthStart, setManualMonthStart] = useState(null);
+  const [manualMonthEnd, setManualMonthEnd] = useState(null);
+  const [bsBankBalances, setBsBankBalances] = useState(null);
+  const [plFinancials, setPlFinancials] = useState(null);
   const [reportSources, setReportSources] = useState([]);
+  // Key Reports is the single source of truth: when the company has a selected
+  // Key Report Version, the report source is derived from that Version's flow —
+  // NOT from the Connections-page active data source. Falls back to the legacy
+  // DataSourceContext behavior only when no Key Report versions exist.
   const [selectedReportSource, setSelectedReportSourceState] = useState(
-    normalizeReportSourceKey(
-      storedState?.selectedReportSource || REPORT_SOURCE_KEYS.QUICKBOOKS,
-    ),
+    kr.krActive && kr.effectiveSource
+      ? kr.effectiveSource
+      : normalizeReportSourceKey(contextActiveSource || REPORT_SOURCE_KEYS.QUICKBOOKS)
   );
+  // Keep the local source state in sync with the authoritative Key Reports flow
+  useEffect(() => {
+    if (!kr.krActive || !kr.effectiveSource) return;
+    if (selectedReportSource !== kr.effectiveSource) {
+      setSelectedReportSourceState(kr.effectiveSource);
+    }
+  }, [kr.krActive, kr.effectiveSource, selectedReportSource]);
   // True only after getReportSources API confirms the actual source.
   // Prevents stale storedState from triggering the wrong endpoint on mount.
   const [isSourceConfirmedByServer, setIsSourceConfirmedByServer] = useState(false);
@@ -366,6 +549,7 @@ export default function WorkspaceReconciliation() {
         : "",
     });
     setBankActivityError("");
+    setLastSyncedAt(nextState?.lastSyncedAt || null);
     setSelectedBalanceBankId(nextState?.selectedBalanceBankId || "");
     setOneBankAccountId(nextState?.oneBankAccountId || "");
     setQbOneBankActivity(nextState?.qbOneBankActivity || null);
@@ -401,6 +585,7 @@ export default function WorkspaceReconciliation() {
           bankActivityEndMonth,
           bankActivityAccountingMethod,
           qbBankActivity: qbBankActivity ?? existing.qbBankActivity ?? null,
+          lastSyncedAt: lastSyncedAt ?? existing.lastSyncedAt ?? null,
           selectedBalanceBankId,
           oneBankAccountId,
           qbOneBankActivity:
@@ -422,12 +607,40 @@ export default function WorkspaceReconciliation() {
     bankActivityEndMonth,
     bankActivityAccountingMethod,
     qbBankActivity,
+    lastSyncedAt,
     selectedBalanceBankId,
     oneBankAccountId,
     qbOneBankActivity,
     extractedBankPdfData,
     selectedReportSource,
   ]);
+
+  // ── Load saved snapshot from DB (no QB connection needed) ─────────────────
+  const loadSavedQBBankActivity = useCallback(async () => {
+    if (!clientId) return;
+    try {
+      const params = new URLSearchParams({ clientId });
+      const resp = await fetch(`${QB_BANK_ACTIVITY_SAVED_ENDPOINT}?${params}`, {
+        cache: "no-store",
+        headers: getHeaders(),
+      });
+      if (!resp.ok) return;
+      const result = await resp.json();
+      if (!result?.found || !result?.data) return;
+
+      setQbBankActivity(result.data);
+      setLastSyncedAt(result.updatedAt || null);
+      const syncLabel = result.updatedAt
+        ? new Date(result.updatedAt).toLocaleString()
+        : "previously";
+      setBankActivityFetchStatus({
+        status: "success",
+        message: `Restored saved data (last synced: ${syncLabel}).`,
+      });
+    } catch {
+      // Non-fatal — page still works, user can click Fetch Activity
+    }
+  }, [clientId, getHeaders]);
 
   const loadQBBankActivity = async () => {
     setIsLoadingBankActivity(true);
@@ -457,11 +670,12 @@ export default function WorkspaceReconciliation() {
       const data = await resp.json();
       if (!resp.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
 
+      const now = new Date().toISOString();
       setQbBankActivity(data);
+      setLastSyncedAt(now);
       setBankActivityFetchStatus({
         status: "success",
-        message: `Loaded ${data?.months?.length ?? 0} month(s) across ${data?.accounts?.length ?? 0
-          } account(s).`,
+        message: `Fetched ${data?.months?.length ?? 0} month(s) across ${data?.accounts?.length ?? 0} account(s). Last synced: ${new Date(now).toLocaleString()}.`,
       });
     } catch (e) {
       setBankActivityError(getErrMsg(e));
@@ -526,7 +740,7 @@ export default function WorkspaceReconciliation() {
     }
   };
 
-  const loadExtractedBankPdfData = useCallback(async () => {
+  const loadExtractedBankPdfData = useCallback(async (opts = {}) => {
     setIsLoadingExtractedBankPdfData(true);
     setExtractedBankPdfError("");
     setExtractedBankPdfFetchStatus({
@@ -539,6 +753,12 @@ export default function WorkspaceReconciliation() {
       if (clientId) params.append("clientId", clientId);
       // Pass the active source so the backend reads from the correct folder + cache partition.
       if (selectedReportSource) params.append("source", selectedReportSource);
+      // Manual GL scoping: restrict to the selected dataset version (all years).
+      // The From/To date pickers narrow the displayed months client-side.
+      if (opts.datasetVersion) params.append("datasetVersion", String(opts.datasetVersion));
+      // Key Reports scoping (highest priority): resolve the bank statement from
+      // the SELECTED Key Report Version's linked documents.
+      if (opts.keyReportVersionId) params.append("keyReportVersionId", String(opts.keyReportVersionId));
       const url = `${EXTRACT_BANK_PDF_RECORDS_ENDPOINT}?${params.toString()}`;
       const resp = await fetch(url, {
         cache: "no-store",
@@ -548,8 +768,11 @@ export default function WorkspaceReconciliation() {
       if (!resp.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
 
       const normalized = normalizeExtractedBankPdfData(data);
-      // Discard result if source changed while this fetch was in-flight.
+      // Discard result if source changed while this fetch was in-flight, or —
+      // for Manual GL — if the selected version changed mid-fetch.
       if (activeSourceRef.current !== selectedReportSource) return;
+      if (opts.datasetVersion != null &&
+        String(glScopeRef.current.datasetVersion) !== String(opts.datasetVersion)) return;
       setExtractedBankPdfData(normalized);
       setExtractedBankPdfFetchStatus({
         status: "success",
@@ -582,6 +805,7 @@ export default function WorkspaceReconciliation() {
 
     setIsLoadingExtractedBankPdfData(true);
     setExtractedBankPdfError("");
+    setPlFinancials(null);
     setExtractedBankPdfFetchStatus({
       status: "loading",
       message: "Loading bank statement data from QuickBooks Manual source...",
@@ -590,6 +814,7 @@ export default function WorkspaceReconciliation() {
     try {
       const params = new URLSearchParams();
       if (clientId) params.append("clientId", clientId);
+      if (krVersionIdRef.current) params.append("keyReportVersionId", String(krVersionIdRef.current));
       const url = `${QMS_BANK_DATA_ENDPOINT}?${params.toString()}`;
       const resp = await fetch(url, { cache: "no-store", headers: getHeaders() });
       const data = await resp.json();
@@ -599,6 +824,8 @@ export default function WorkspaceReconciliation() {
       // Discard result if source changed while this fetch was in-flight.
       if (activeSourceRef.current !== selectedReportSource) return;
       setExtractedBankPdfData(normalized);
+      // Set P&L financials from merged response (Sales/Expenses per Financials for Activity Review)
+      setPlFinancials(data.plFinancials ?? null);
       setExtractedBankPdfFetchStatus({
         status: normalized ? "success" : "idle",
         message: normalized
@@ -624,6 +851,7 @@ export default function WorkspaceReconciliation() {
     }
     setIsLoadingExtractedBankPdfData(true);
     setExtractedBankPdfError("");
+    setPlFinancials(null);
     setExtractedBankPdfFetchStatus({
       status: "loading",
       message: "Loading bank statement data from Manual Upload source...",
@@ -631,11 +859,21 @@ export default function WorkspaceReconciliation() {
     try {
       const params = new URLSearchParams();
       if (clientId) params.append("clientId", clientId);
+      // Key Reports scoping: resolve documents from the SELECTED Version.
+      if (krVersionIdRef.current) params.append("keyReportVersionId", String(krVersionIdRef.current));
       const url = `${MANUAL_BANK_DATA_ENDPOINT}?${params.toString()}`;
       const resp = await fetch(url, { cache: "no-store", headers: getHeaders() });
       const data = await resp.json();
       if (!resp.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
       if (activeSourceRef.current !== selectedReportSource) return;
+      // Set BS bank accounts from the merged response (always, even for empty cases)
+      if (data.balanceSheetBankAccounts?.bankAccounts?.length > 0) {
+        setBsBankBalances({ success: true, ...data.balanceSheetBankAccounts });
+      } else {
+        setBsBankBalances(null);
+      }
+      // Set P&L financials (Sales/Expenses per Financials for Activity Review)
+      setPlFinancials(data.plFinancials ?? null);
       if (data.empty) {
         setExtractedBankPdfData(null);
         setExtractedBankPdfFetchStatus({
@@ -664,6 +902,47 @@ export default function WorkspaceReconciliation() {
     }
   }, [clientId, selectedReportSource, getHeaders]);
 
+  // Fetches BS bank balances for manual/QMS sources and stores in bsBankBalances state.
+  // Silently no-ops for QB Online (no manual BS files) and on errors (show "-" fallback).
+  const loadBsBankBalances = useCallback(async (sourceKey, opts = {}) => {
+    if (!clientId) return;
+    console.log(`[BsBankBalances] Fetching for clientId=${clientId} source=${sourceKey}`);
+    try {
+      const params = new URLSearchParams();
+      params.append("clientId", clientId);
+      if (sourceKey) params.append("source", sourceKey);
+      // Manual GL scoping: pick the Balance Sheet for the selected version.
+      if (opts.datasetVersion) params.append("datasetVersion", String(opts.datasetVersion));
+      // Key Reports scoping (highest priority): pick the Balance Sheet linked to
+      // the SELECTED Key Report Version.
+      if (opts.keyReportVersionId) params.append("keyReportVersionId", String(opts.keyReportVersionId));
+      const resp = await fetch(`${BS_BANK_BALANCES_ENDPOINT}?${params.toString()}`, {
+        cache: "no-store",
+        headers: getHeaders(),
+      });
+      if (!resp.ok) {
+        console.warn(`[BsBankBalances] HTTP ${resp.status} from backend`);
+        setBsBankBalances(null);
+        return;
+      }
+      const data = await resp.json();
+      console.log(`[BsBankBalances] Response: source=${data.source} year=${data.year} accounts=${data.bankAccounts?.length ?? 0}`);
+      // For Manual GL, discard if the selected version changed while this fetch
+      // was in-flight (last-write-wins guard).
+      if (opts.datasetVersion != null &&
+        String(glScopeRef.current.datasetVersion) !== String(opts.datasetVersion)) return;
+      if (data?.success && data.bankAccounts?.length > 0) {
+        setBsBankBalances(data);
+      } else {
+        console.log(`[BsBankBalances] No bank accounts returned (source="${data.source}"): ${data.message || ""}`);
+        setBsBankBalances(null);
+      }
+    } catch (e) {
+      console.error(`[BsBankBalances] Fetch error: ${e?.message || e}`);
+      setBsBankBalances(null);
+    }
+  }, [clientId, getHeaders]);
+
   // Unified bank-data loader — dispatches ONLY based on server-confirmed source.
   // isSourceConfirmedByServer prevents stale storedState from triggering the wrong endpoint.
   // Never short-circuit on stored data — stored data may be from a different source.
@@ -671,22 +950,47 @@ export default function WorkspaceReconciliation() {
     if (!clientId || !selectedReportSource || !isSourceConfirmedByServer) return;
 
     if (selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD) {
-      // Manual Upload → dedicated endpoint reading "Manual Upload Source" folder only
+      // Manual Upload → single endpoint returns both bank data and balanceSheetBankAccounts
       void loadManualBankData();
     } else if (selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_GL) {
-      // Manual GL → PDF/Excel extraction endpoint
-      void loadExtractedBankPdfData();
+      // Manual GL → PDF/Excel extraction endpoint, scoped to the selected dataset
+      // version so a different version's data never mixes in. All of the version's
+      // months are fetched; the From/To date pickers narrow the view client-side.
+      // keyReportVersionId (when a Version is selected) is the highest-priority
+      // scope — the bank statement / balance sheet come from that Version.
+      const glScope = {
+        datasetVersion: kr.resolvedDatasetVersion,
+        keyReportVersionId: krVersionIdRef.current,
+      };
+      void loadExtractedBankPdfData(glScope);
+      void loadBsBankBalances("manual_upload_excel_pdf", glScope);
     } else if (selectedReportSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) {
       // QuickBooks Manual ONLY → QMS endpoint reading "Quickbooks Manual Source" folder only
       void loadQMSBankData();
+      void loadBsBankBalances("quickbooks_manual", { keyReportVersionId: krVersionIdRef.current });
     }
     // QUICKBOOKS (QB Online) uses its own separate data flow — no action here
-  }, [clientId, selectedReportSource, isSourceConfirmedByServer, loadExtractedBankPdfData, loadManualBankData, loadQMSBankData]);
+  }, [clientId, selectedReportSource, isSourceConfirmedByServer, kr.resolvedDatasetVersion, kr.selectedVersionId, loadExtractedBankPdfData, loadManualBankData, loadQMSBankData, loadBsBankBalances]);
+
+  // Auto-restore QB Online bank activity from DB on page load.
+  // Fires when the server confirms the source is QB Online and there is no
+  // session-cached data already loaded.  This way a page refresh or QBO
+  // disconnect never leaves the table empty — the last successfully saved
+  // snapshot is shown immediately without a fresh QBO API call.
+  useEffect(() => {
+    if (!isSourceConfirmedByServer) return;
+    if (selectedReportSource !== REPORT_SOURCE_KEYS.QUICKBOOKS) return;
+    if (qbBankActivity) return; // session already has data — no need to hit DB
+    void loadSavedQBBankActivity();
+  }, [isSourceConfirmedByServer, selectedReportSource, qbBankActivity, loadSavedQBBankActivity]);
 
   // Drive selectedReportSource from DataSourceContext.activeSource — the single source of truth
   // that the header badge also reads. This eliminates the split-brain between the badge and the
   // reconciliation page that was causing qms-bank-data to fire in Manual Upload mode.
   useEffect(() => {
+    // Key Reports (when a Version is selected) is authoritative — skip the
+    // Connections-driven source here so the active data source has zero impact.
+    if (kr.krActive) return;
     if (!contextActiveSource) return;
     const confirmed = normalizeReportSourceKey(contextActiveSource);
     if (!confirmed) return;
@@ -700,8 +1004,29 @@ export default function WorkspaceReconciliation() {
     setExtractedBankPdfData(null);
     setExtractedBankPdfFetchStatus({ status: "idle", message: "" });
     setExtractedBankPdfError("");
+    setBsBankBalances(null);
     setIsSourceConfirmedByServer(true);
-  }, [contextActiveSource, contextSourceRecords]);
+  }, [contextActiveSource, contextSourceRecords, kr.krActive]);
+
+  // Key Reports-driven source: the selected Version's flow determines the report
+  // source, and its pinned dataset version scopes the books/balance-sheet side.
+  // This makes Bank Reconciliation depend solely on the selected Version.
+  useEffect(() => {
+    if (!kr.krActive || !kr.effectiveSource) return;
+    setSelectedReportSourceState(kr.effectiveSource);
+    // Clear cross-version data before the unified loader refetches.
+    setExtractedBankPdfData(null);
+    setExtractedBankPdfFetchStatus({ status: "idle", message: "" });
+    setExtractedBankPdfError("");
+    setBsBankBalances(null);
+    setIsSourceConfirmedByServer(true);
+  }, [
+    kr.krActive,
+    kr.effectiveSource,
+    kr.flowType,
+    kr.resolvedDatasetVersion,
+    kr.selectedVersionId,
+  ]);
 
   const handleReportSourceChange = async (sourceKey) => {
     const normalized = normalizeReportSourceKey(sourceKey);
@@ -711,6 +1036,7 @@ export default function WorkspaceReconciliation() {
     setExtractedBankPdfData(null);
     setExtractedBankPdfFetchStatus({ status: "idle", message: "" });
     setExtractedBankPdfError("");
+    setBsBankBalances(null);
     setQbBankActivity(null);
     setBankActivityFetchStatus({ status: "idle", message: "" });
     setBankActivityError("");
@@ -742,6 +1068,36 @@ export default function WorkspaceReconciliation() {
   const isManualGl = selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_GL;
   const isQBManual = selectedReportSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
   const isQBOnline = selectedReportSource === REPORT_SOURCE_KEYS.QUICKBOOKS;
+
+  const allPdfMonths = useMemo(
+    () => (extractedBankPdfData?.months || []).map((m) => m.key).sort(),
+    [extractedBankPdfData],
+  );
+
+  useEffect(() => {
+    if (!allPdfMonths.length) {
+      setManualMonthStart(null);
+      setManualMonthEnd(null);
+    } else {
+      setManualMonthStart(allPdfMonths[0]);
+      setManualMonthEnd(allPdfMonths[allPdfMonths.length - 1]);
+    }
+  }, [allPdfMonths]);
+
+  const filteredPdfMonths = useMemo(() => {
+    if (!allPdfMonths.length) return [];
+    const start = manualMonthStart || allPdfMonths[0];
+    const end = manualMonthEnd || allPdfMonths[allPdfMonths.length - 1];
+    return allPdfMonths.filter((m) => m >= start && m <= end);
+  }, [allPdfMonths, manualMonthStart, manualMonthEnd]);
+
+  // Manual GL internal version selection removed — consolidated into Key Reports.
+
+
+
+  // Fiscal-year scoping removed for Bank Reconciliation — the From/To date pickers
+  // are now the sole time filter. All of the selected version's months are fetched
+  // and narrowed client-side via manualMonthStart / manualMonthEnd.
 
   // QMS loading is now handled in the unified bank-data loader effect above
 
@@ -1118,7 +1474,7 @@ export default function WorkspaceReconciliation() {
     <tr className="border-b border-primary/15 bg-[#F8FBF1]">
       <th
         className={cn(
-          "sticky left-0 z-10 border border-border bg-[#F8FBF1] px-4 py-3 text-left text-[12px] font-semibold text-primary",
+          "sticky left-0 top-0 z-30 border border-border bg-[#F8FBF1] px-4 py-3 text-left text-[12px] font-semibold text-primary",
           TABLE_LABEL_COL_WIDTH,
         )}
       >
@@ -1128,7 +1484,7 @@ export default function WorkspaceReconciliation() {
         <th
           key={m}
           className={cn(
-            "whitespace-nowrap border border-border px-4 py-3 text-center text-[12px] font-semibold text-primary",
+            "sticky top-0 z-20 whitespace-nowrap border border-border bg-[#F8FBF1] px-4 py-3 text-center text-[12px] font-semibold text-primary",
             TABLE_VALUE_COL_WIDTH,
           )}
         >
@@ -1137,7 +1493,7 @@ export default function WorkspaceReconciliation() {
       ))}
       <th
         className={cn(
-          "border border-border px-4 py-3 text-center text-[12px] font-semibold text-primary",
+          "sticky top-0 z-20 border border-border bg-[#F8FBF1] px-4 py-3 text-center text-[12px] font-semibold text-primary",
           TABLE_VALUE_COL_WIDTH,
         )}
       >
@@ -1215,8 +1571,9 @@ export default function WorkspaceReconciliation() {
       >
         <td
           className={cn(
-            "border border-border px-3 py-[7px] text-[12px] text-text-primary whitespace-nowrap",
+            "sticky left-0 z-[1] border border-border px-3 py-[7px] text-[12px] text-text-primary whitespace-nowrap",
             TABLE_LABEL_COL_WIDTH,
+            bold ? "bg-white" : check ? "bg-amber-50/40" : "bg-white",
             indent && "pl-7",
             bold && "font-semibold",
             check && "text-amber-700 italic",
@@ -1278,26 +1635,26 @@ export default function WorkspaceReconciliation() {
     const monthIndexMap = Object.fromEntries(months.map((m, i) => [m.key, i]));
 
     return (
-      <div className="overflow-x-auto rounded-xl border border-border shadow-sm">
+      <div className="overflow-auto max-h-[600px] rounded-xl border border-border shadow-sm">
         <table className="min-w-full border-collapse bg-white text-[13px]">
           {/* ── Header ── */}
           <thead>
             <tr className="border-b border-primary/15 bg-[#F8FBF1]">
-              <th className="sticky left-0 z-10 w-40 border border-border bg-[#F8FBF1] px-4 py-3 text-left text-[12px] font-semibold text-primary">
+              <th className="sticky left-0 top-0 z-30 w-40 border border-border bg-[#F8FBF1] px-4 py-3 text-left text-[12px] font-semibold text-primary">
                 Bank
               </th>
-              <th className="w-36 border border-border bg-[#F8FBF1] px-4 py-3 text-left text-[12px] font-semibold text-primary">
+              <th className="sticky left-[160px] top-0 z-20 w-36 border border-border bg-[#F8FBF1] px-4 py-3 text-left text-[12px] font-semibold text-primary">
                 Metric
               </th>
               {months.map((m) => (
                 <th
                   key={m.key}
-                  className="min-w-[110px] whitespace-nowrap border border-border px-4 py-3 text-center text-[12px] font-semibold text-primary"
+                  className="sticky top-0 z-20 min-w-[110px] whitespace-nowrap border border-border bg-[#F8FBF1] px-4 py-3 text-center text-[12px] font-semibold text-primary"
                 >
                   {m.label}
                 </th>
               ))}
-              <th className="min-w-[110px] border border-border px-4 py-3 text-center text-[12px] font-semibold text-primary">
+              <th className="sticky top-0 z-20 min-w-[110px] border border-border bg-[#F8FBF1] px-4 py-3 text-center text-[12px] font-semibold text-primary">
                 Total
               </th>
             </tr>
@@ -1322,7 +1679,7 @@ export default function WorkspaceReconciliation() {
                   {mi === 0 && (
                     <td
                       rowSpan={METRICS.length}
-                      className="border border-border px-3 py-[7px] text-[12px] font-semibold text-text-primary align-middle"
+                      className="sticky left-0 z-[1] bg-white border border-border px-3 py-[7px] text-[12px] font-semibold text-text-primary align-middle"
                     >
                       {bank.bankName}
                     </td>
@@ -1331,7 +1688,7 @@ export default function WorkspaceReconciliation() {
                   {/* Metric label */}
                   <td
                     className={cn(
-                      "border border-border px-3 py-[7px] text-[12px] text-text-primary whitespace-nowrap",
+                      "sticky left-[160px] z-[1] bg-white border border-border px-3 py-[7px] text-[12px] text-text-primary whitespace-nowrap",
                       metric.bold && "font-semibold",
                     )}
                   >
@@ -1402,7 +1759,7 @@ export default function WorkspaceReconciliation() {
                   {metric.key === "startingBalance" && (
                     <td
                       rowSpan={METRICS.length}
-                      className="border border-border px-3 py-[7px] text-[12px] font-semibold text-primary align-middle"
+                      className="sticky left-0 z-[1] bg-[#F8FBF1] border border-border px-3 py-[7px] text-[12px] font-semibold text-primary align-middle"
                     >
                       All Banks
                     </td>
@@ -1411,7 +1768,7 @@ export default function WorkspaceReconciliation() {
 
                   <td
                     className={cn(
-                      "border border-border px-3 py-[7px] text-[12px] text-primary whitespace-nowrap",
+                      "sticky left-[160px] z-[1] bg-[#F8FBF1] border border-border px-3 py-[7px] text-[12px] text-primary whitespace-nowrap",
                       metric.bold && "font-semibold",
                     )}
                   >
@@ -1452,23 +1809,23 @@ export default function WorkspaceReconciliation() {
     if (!rows.length) return null;
 
     return (
-      <div className="mt-4 overflow-x-auto rounded-xl border border-border shadow-sm">
+      <div className="mt-4 overflow-auto max-h-[600px] rounded-xl border border-border shadow-sm">
         <table className="min-w-full border-collapse bg-white text-[13px]">
           <thead>
             <tr className="border-b border-primary/15 bg-[#F8FBF1]">
-              <th className="min-w-[110px] border border-border px-4 py-3 text-left text-[12px] font-semibold text-primary">
+              <th className="sticky left-0 top-0 z-30 min-w-[110px] border border-border bg-[#F8FBF1] px-4 py-3 text-left text-[12px] font-semibold text-primary">
                 Month
               </th>
-              <th className="min-w-[140px] border border-border px-4 py-3 text-right text-[12px] font-semibold text-primary">
+              <th className="sticky top-0 z-20 min-w-[140px] border border-border bg-[#F8FBF1] px-4 py-3 text-right text-[12px] font-semibold text-primary">
                 Starting Balance
               </th>
-              <th className="min-w-[110px] border border-border px-4 py-3 text-right text-[12px] font-semibold text-primary">
+              <th className="sticky top-0 z-20 min-w-[110px] border border-border bg-[#F8FBF1] px-4 py-3 text-right text-[12px] font-semibold text-primary">
                 Deposits
               </th>
-              <th className="min-w-[110px] border border-border px-4 py-3 text-right text-[12px] font-semibold text-primary">
+              <th className="sticky top-0 z-20 min-w-[110px] border border-border bg-[#F8FBF1] px-4 py-3 text-right text-[12px] font-semibold text-primary">
                 Withdrawals
               </th>
-              <th className="min-w-[130px] border border-border px-4 py-3 text-right text-[12px] font-semibold text-primary">
+              <th className="sticky top-0 z-20 min-w-[130px] border border-border bg-[#F8FBF1] px-4 py-3 text-right text-[12px] font-semibold text-primary">
                 Ending Balance
               </th>
             </tr>
@@ -1476,7 +1833,7 @@ export default function WorkspaceReconciliation() {
           <tbody>
             {rows.map((row) => (
               <tr key={row.month} className="bg-white hover:bg-slate-50/60">
-                <td className="border border-border px-3 py-[7px] text-[12px] text-text-primary">
+                <td className="sticky left-0 z-[1] bg-white border border-border px-3 py-[7px] text-[12px] text-text-primary">
                   {monthLabel(row.month)}
                 </td>
                 <td className="border border-border px-3 py-[7px] text-right text-[12px] tabular-nums text-text-primary">
@@ -1502,16 +1859,42 @@ export default function WorkspaceReconciliation() {
   // ── Balance account table renderer ───────────────────────────────────────
 
   const renderManualBalanceAccountTable = (bank, label) => {
-    const pdfMonths = (extractedBankPdfData?.months || []).map((m) => m.key);
+    const pdfMonths = filteredPdfMonths;
     const monthMap = bank
       ? Object.fromEntries((bank.months || []).map((m) => [m.monthKey, m]))
       : {};
     const bankLabel = label || bank?.bankName || "Bank Account";
     const colCount = pdfMonths.length + 2;
 
+    // BS bank balance for this specific bank
+    const bsMatch = matchBsBank(bank?.bankName, bsBankBalances?.bankAccounts);
+    const bsBalance = bsMatch != null ? bsMatch.amount : null;
+    // Only the December of the BS year gets the perBalanceSheet value (year-end point-in-time)
+    const bsYearEndKey = bsBankBalances?.year != null ? `${bsBankBalances.year}-12` : null;
+
+    if (bank?.bankName) {
+      if (bsMatch) {
+        console.log(`[BsMatch] ${JSON.stringify({
+          selectedBank: bank.bankName,
+          detectedYear: bsBankBalances?.year,
+          balanceSheetSource: bsBankBalances?.source,
+          matchedBalanceSheetFile: bsBankBalances?.fileName,
+          matchedAccount: bsMatch.name,
+          extractedAmount: bsMatch.amount,
+          perBalanceSheet: bsBalance,
+        })}`);
+      } else {
+        console.warn(
+          `[BsMatch] No matching bank account found in Balance Sheet for "${bank.bankName}".`,
+          `Available: ${bsBankBalances?.bankAccounts?.map((b) => b.name).join(", ") || "none (bsBankBalances is null)"}`,
+        );
+      }
+    }
+
     // Build rows with all fields, compute derived values
     const baseRows = pdfMonths.map((monthKey) => {
       const m = monthMap[monthKey];
+      const perBalanceSheet = bsBalance != null && monthKey === bsYearEndKey ? bsBalance : null;
       return {
         month: monthKey,
         startingBalance: m?.startingBalance ?? 0,
@@ -1520,7 +1903,7 @@ export default function WorkspaceReconciliation() {
         endingBalance: m?.endingBalance ?? 0,
         intercompanyDeposits: 0,
         intercompanyWithdraws: 0,
-        perBalanceSheet: 0,
+        perBalanceSheet,
         outstandingChecks: 0,
       };
     });
@@ -1528,11 +1911,18 @@ export default function WorkspaceReconciliation() {
     const rows = baseRows.map((r, i) => {
       const footingCheck = r.endingBalance - (r.startingBalance + r.deposits - r.withdrawals);
       const priorMonthCheck = i === 0 ? 0 : baseRows[i - 1].endingBalance - r.startingBalance;
-      return { ...r, footingCheck, priorMonthCheck, variance: 0, unreconciledDollar: 0, unreconciledPct: 0 };
+      const outstandingChecks = 0;
+      const variance = r.perBalanceSheet != null ? r.endingBalance - r.perBalanceSheet : null;
+      const unreconciledDollar = variance != null ? variance - outstandingChecks : null;
+      const unreconciledPct =
+        variance != null && r.perBalanceSheet !== 0
+          ? (unreconciledDollar / r.perBalanceSheet) * 100
+          : null;
+      return { ...r, footingCheck, priorMonthCheck, variance, unreconciledDollar, unreconciledPct };
     });
 
     const ttmSlice = rows.slice(-12);
-    const ttm = ttmSlice.reduce(
+    const ttmBase = ttmSlice.reduce(
       (acc, r, i) => ({
         startingBalance: i === 0 ? r.startingBalance : acc.startingBalance,
         deposits: acc.deposits + r.deposits,
@@ -1542,14 +1932,24 @@ export default function WorkspaceReconciliation() {
         intercompanyWithdraws: 0,
         footingCheck: acc.footingCheck + r.footingCheck,
         priorMonthCheck: acc.priorMonthCheck + r.priorMonthCheck,
-        perBalanceSheet: 0,
-        variance: 0,
+        perBalanceSheet: null,
+        variance: null,
         outstandingChecks: 0,
-        unreconciledDollar: 0,
-        unreconciledPct: 0,
+        unreconciledDollar: null,
+        unreconciledPct: null,
       }),
       buildEmptyTTM(),
     );
+
+    // Override TTM perBalanceSheet with BS balance (point-in-time, not summed across months)
+    const ttm = { ...ttmBase };
+    if (bsBalance != null) {
+      ttm.perBalanceSheet = bsBalance;
+      ttm.variance = ttm.endingBalance - bsBalance;
+      ttm.unreconciledDollar = ttm.variance - ttm.outstandingChecks;
+      ttm.unreconciledPct =
+        bsBalance !== 0 ? (ttm.unreconciledDollar / bsBalance) * 100 : null;
+    }
 
     const v = (f) => [...rows.map((r) => fmtAmt(r[f])), fmtAmt(ttm[f])];
     const va = (f) => [...rows.map((r) => fmtAcct(r[f])), fmtAcct(ttm[f])];
@@ -1558,8 +1958,8 @@ export default function WorkspaceReconciliation() {
     const overallStatus = bank?.status || (rows.every((r) => Math.abs(r.footingCheck) <= 1) ? "Verified" : "Needs Review");
 
     return (
-      <div className="mb-4 overflow-hidden rounded-[var(--radius-card)] border border-border bg-white shadow-[0_10px_30px_rgba(15,23,42,0.04)]">
-        <div className="flex w-full items-center justify-between border-b border-primary/15 bg-[#F8FBF1] px-4 py-3">
+      <div className="mb-4 rounded-[var(--radius-card)] border border-border bg-white shadow-[0_10px_30px_rgba(15,23,42,0.04)]">
+        <div className="flex w-full items-center justify-between overflow-clip rounded-t-[var(--radius-card)] border-b border-primary/15 bg-[#F8FBF1] px-4 py-3">
           <div className="flex items-center gap-3 flex-wrap">
             <span className="text-[14px] font-semibold text-primary">{bankLabel}</span>
             {bank?.accountName && (
@@ -1572,70 +1972,61 @@ export default function WorkspaceReconciliation() {
             )}
           </div>
           {bank && (
-            <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${
-              overallStatus === "Verified"
-                ? "bg-green-100 text-green-700"
-                : "bg-amber-100 text-amber-700"
-            }`}>
+            <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${overallStatus === "Verified"
+              ? "bg-green-100 text-green-700"
+              : "bg-amber-100 text-amber-700"
+              }`}>
               {overallStatus}
             </span>
           )}
         </div>
-        <div className="overflow-x-auto border-t border-border bg-white">
-          {isLoadingExtractedBankPdfData ? (
-            <div className="flex items-center gap-2 px-4 py-5 text-[13px] text-text-secondary">
-              <LoaderCircle size={15} className="animate-spin" />
-              Loading bank statement data...
-            </div>
-          ) : pdfMonths.length === 0 ? (
-            <div className="px-4 py-5 text-[13px] text-text-muted">No data available.</div>
-          ) : (
-            <table className="min-w-full table-fixed border-collapse bg-white text-[13px]">
-              <TableColGroup months={pdfMonths} />
-              <thead>
-                <TableHeader label={bankLabel} months={pdfMonths} />
-              </thead>
-              <tbody>
-                <DR label="Starting Balance" values={v("startingBalance")} bold />
-                <DR label="Deposits" values={v("deposits")} />
-                <DR label="Withdrawals" values={v("withdrawals")} />
-                <DR label="Ending Balance" values={v("endingBalance")} bold />
-                <SpacerRow colCount={colCount} />
+        {isLoadingExtractedBankPdfData ? (
+          <div className="border-t border-border bg-white flex items-center gap-2 px-4 py-5 text-[13px] text-text-secondary">
+            <LoaderCircle size={15} className="animate-spin" />
+            Loading bank statement data...
+          </div>
+        ) : pdfMonths.length === 0 ? (
+          <div className="border-t border-border bg-white px-4 py-5 text-[13px] text-text-muted">No data available.</div>
+        ) : (
+          <FreezeTable months={pdfMonths} label={bankLabel} containerClass="border-t border-border bg-white">
+            <DR label="Starting Balance" values={v("startingBalance")} bold />
+            <DR label="Deposits" values={v("deposits")} />
+            <DR label="Withdrawals" values={v("withdrawals")} />
+            <DR label="Ending Balance" values={v("endingBalance")} bold />
+            <SpacerRow colCount={colCount} />
 
-                <DR label="Intercompany Deposits" values={v("intercompanyDeposits")} indent />
-                <DR label="Intercompany Withdraws" values={v("intercompanyWithdraws")} indent />
-                <SpacerRow colCount={colCount} />
+            <DR label="Intercompany Deposits" values={v("intercompanyDeposits")} indent />
+            <DR label="Intercompany Withdraws" values={v("intercompanyWithdraws")} indent />
+            <SpacerRow colCount={colCount} />
 
-                <DR label="Footing Check" values={va("footingCheck")} check />
-                <DR label="Prior Month Check" values={va("priorMonthCheck")} check />
-                <SpacerRow colCount={colCount} />
+            <DR label="Footing Check" values={va("footingCheck")} check />
+            <DR label="Prior Month Check" values={va("priorMonthCheck")} check />
+            <SpacerRow colCount={colCount} />
 
-                <DR label="Per Balance Sheet" values={v("perBalanceSheet")} bold />
-                <DR
-                  label="Variance"
-                  values={rawNums("variance")}
-                  rawValues={rawNums("variance")}
-                  rowType="variance-amt"
-                />
-                <SpacerRow colCount={colCount} />
+            <DR label="Per Balance Sheet" values={v("perBalanceSheet")} bold />
+            <DR
+              label="Variance"
+              values={rawNums("variance")}
+              rawValues={rawNums("variance")}
+              rowType="variance-amt"
+            />
+            <SpacerRow colCount={colCount} />
 
-                <DR label="Outstanding Checks" values={v("outstandingChecks")} />
-                <DR
-                  label="Unreconciled $ Variance"
-                  values={rawNums("unreconciledDollar")}
-                  rawValues={rawNums("unreconciledDollar")}
-                  rowType="variance-amt"
-                />
-                <DR
-                  label="Unreconciled % Variance"
-                  values={rawNums("unreconciledPct")}
-                  rawValues={rawNums("unreconciledPct")}
-                  rowType="variance-pct"
-                />
-              </tbody>
-            </table>
-          )}
-        </div>
+            <DR label="Outstanding Checks" values={v("outstandingChecks")} />
+            <DR
+              label="Unreconciled $ Variance"
+              values={rawNums("unreconciledDollar")}
+              rawValues={rawNums("unreconciledDollar")}
+              rowType="variance-amt"
+            />
+            <DR
+              label="Unreconciled % Variance"
+              values={rawNums("unreconciledPct")}
+              rawValues={rawNums("unreconciledPct")}
+              rowType="variance-pct"
+            />
+          </FreezeTable>
+        )}
       </div>
     );
   };
@@ -1653,11 +2044,11 @@ export default function WorkspaceReconciliation() {
     return (
       <div
         key={account.accountId}
-        className="mb-4 overflow-hidden rounded-[var(--radius-card)] border border-border bg-white shadow-[0_10px_30px_rgba(15,23,42,0.04)]"
+        className="mb-4 rounded-[var(--radius-card)] border border-border bg-white shadow-[0_10px_30px_rgba(15,23,42,0.04)]"
       >
         <button
           type="button"
-          className="flex w-full items-center justify-between border-b border-primary/15 bg-[#F8FBF1] px-4 py-3 font-semibold text-primary transition-colors hover:bg-[#F2F8E7]"
+          className="flex w-full items-center justify-between overflow-clip rounded-t-[var(--radius-card)] border-b border-primary/15 bg-[#F8FBF1] px-4 py-3 font-semibold text-primary transition-colors hover:bg-[#F2F8E7]"
           onClick={() =>
             setExpandedAccounts((p) => ({
               ...p,
@@ -1675,86 +2066,55 @@ export default function WorkspaceReconciliation() {
         </button>
 
         {isExpanded && (
-          <div className="overflow-x-auto border-t border-border bg-white">
-            {isLoadingBankActivity ? (
-              <div className="flex items-center gap-2 px-4 py-5 text-[13px] text-text-secondary">
-                <LoaderCircle size={15} className="animate-spin" />
-                Loading QuickBooks bank activity...
-              </div>
-            ) : rows.length === 0 ? (
-              <div className="px-4 py-5 text-[13px] text-text-muted">
-                No data for this bank account.
-              </div>
-            ) : (
-              <table className="min-w-full table-fixed border-collapse bg-white text-[13px]">
-                <TableColGroup months={reportMonths} />
-                <thead>
-                  <TableHeader label={account.accountName} months={reportMonths} />
-                </thead>
-                <tbody>
-                  <DR
-                    label="Starting Balance"
-                    values={v("startingBalance")}
-                    bold
-                  />
-                  <DR label="Deposits" values={v("deposits")} />
-                  <DR label="Withdrawals" values={v("withdrawals")} />
-                  <DR label="Ending Balance" values={v("endingBalance")} bold />
-                  <SpacerRow colCount={colCount} />
+          isLoadingBankActivity ? (
+            <div className="border-t border-border bg-white flex items-center gap-2 px-4 py-5 text-[13px] text-text-secondary">
+              <LoaderCircle size={15} className="animate-spin" />
+              Loading QuickBooks bank activity...
+            </div>
+          ) : rows.length === 0 ? (
+            <div className="border-t border-border bg-white px-4 py-5 text-[13px] text-text-muted">
+              No data for this bank account.
+            </div>
+          ) : (
+            <FreezeTable months={reportMonths} label={account.accountName} containerClass="border-t border-border bg-white">
+              <DR label="Starting Balance" values={v("startingBalance")} bold />
+              <DR label="Deposits" values={v("deposits")} />
+              <DR label="Withdrawals" values={v("withdrawals")} />
+              <DR label="Ending Balance" values={v("endingBalance")} bold />
+              <SpacerRow colCount={colCount} />
 
-                  <DR
-                    label="Intercompany Deposits"
-                    values={v("intercompanyDeposits")}
-                    indent
-                  />
-                  <DR
-                    label="Intercompany Withdraws"
-                    values={v("intercompanyWithdraws")}
-                    indent
-                  />
-                  <SpacerRow colCount={colCount} />
+              <DR label="Intercompany Deposits" values={v("intercompanyDeposits")} indent />
+              <DR label="Intercompany Withdraws" values={v("intercompanyWithdraws")} indent />
+              <SpacerRow colCount={colCount} />
 
-                  <DR label="Footing Check" values={va("footingCheck")} check />
-                  <DR
-                    label="Prior Month Check"
-                    values={va("priorMonthCheck")}
-                    check
-                  />
-                  <SpacerRow colCount={colCount} />
+              <DR label="Footing Check" values={va("footingCheck")} check />
+              <DR label="Prior Month Check" values={va("priorMonthCheck")} check />
+              <SpacerRow colCount={colCount} />
 
-                  <DR
-                    label="Per Balance Sheet"
-                    values={v("perBalanceSheet")}
-                    bold
-                  />
-                  <DR
-                    label="Variance"
-                    values={rawNums("variance")}
-                    rawValues={rawNums("variance")}
-                    rowType="variance-amt"
-                  />
-                  <SpacerRow colCount={colCount} />
+              <DR label="Per Balance Sheet" values={v("perBalanceSheet")} bold />
+              <DR
+                label="Variance"
+                values={rawNums("variance")}
+                rawValues={rawNums("variance")}
+                rowType="variance-amt"
+              />
+              <SpacerRow colCount={colCount} />
 
-                  <DR
-                    label="Outstanding Checks"
-                    values={v("outstandingChecks")}
-                  />
-                  <DR
-                    label="Unreconciled $ Variance"
-                    values={rawNums("unreconciledDollar")}
-                    rawValues={rawNums("unreconciledDollar")}
-                    rowType="variance-amt"
-                  />
-                  <DR
-                    label="Unreconciled % Variance"
-                    values={rawNums("unreconciledPct")}
-                    rawValues={rawNums("unreconciledPct")}
-                    rowType="variance-pct"
-                  />
-                </tbody>
-              </table>
-            )}
-          </div>
+              <DR label="Outstanding Checks" values={v("outstandingChecks")} />
+              <DR
+                label="Unreconciled $ Variance"
+                values={rawNums("unreconciledDollar")}
+                rawValues={rawNums("unreconciledDollar")}
+                rowType="variance-amt"
+              />
+              <DR
+                label="Unreconciled % Variance"
+                values={rawNums("unreconciledPct")}
+                rawValues={rawNums("unreconciledPct")}
+                rowType="variance-pct"
+              />
+            </FreezeTable>
+          )
         )}
       </div>
     );
@@ -1768,144 +2128,42 @@ export default function WorkspaceReconciliation() {
     const avRaw = (f) => [...rows.map((r) => r[f] ?? null), ttm[f] ?? null];
 
     return (
-      <div className="overflow-x-auto rounded-xl border border-border shadow-sm">
-        <table className="min-w-full table-fixed border-collapse bg-white text-[13px]">
-          <TableColGroup months={months} />
-          <thead>
-            <TableHeader label="Activity Review" months={months} />
-          </thead>
-          <tbody>
-            <DR label="Total Deposits" values={av("totalDeposits")} bold />
-            <DR
-              label="Intercompany Transfers"
-              values={av("withdrawIntercompanyTransfers")}
-              indent
-            />
-            <DR
-              label="External Deposits"
-              values={av("externalDeposits")}
-              bold
-            />
-            <DR
-              label="Sales per Financials"
-              values={av("salesPerFinancials")}
-            />
-            <DR
-              label="$ Variance"
-              values={avRaw("depositsDollarVar")}
-              rawValues={avRaw("depositsDollarVar")}
-              rowType="variance-amt"
-            />
-            <DR
-              label="% Variance"
-              values={avRaw("depositsPctVar")}
-              rawValues={avRaw("depositsPctVar")}
-              rowType="variance-pct"
-            />
-            <SpacerRow colCount={colCount} />
+      <FreezeTable months={months} label="Activity Review" containerClass="rounded-xl border border-border shadow-sm">
+        <DR label="Total Deposits" values={av("totalDeposits")} bold />
+        <DR label="Intercompany Transfers" values={av("withdrawIntercompanyTransfers")} indent />
+        <DR label="External Deposits" values={av("externalDeposits")} bold />
+        <DR label="Sales per Financials" values={av("salesPerFinancials")} />
+        <DR label="$ Variance" values={avRaw("depositsDollarVar")} rawValues={avRaw("depositsDollarVar")} rowType="variance-amt" />
+        <DR label="% Variance" values={avRaw("depositsPctVar")} rawValues={avRaw("depositsPctVar")} rowType="variance-pct" />
+        <SpacerRow colCount={colCount} />
 
-            <DR label="Change in AR" values={av("changeInAR")} indent />
-            <DR
-              label="Change in Accts Receivable- Retentions"
-              values={av("changeInARRetentions")}
-              indent
-            />
-            <DR
-              label="Fixed Asset Disposals"
-              values={av("fixedAssetDisposals")}
-              indent
-            />
-            <DR label="Other" values={av("depositsOther")} indent />
-            <DR
-              label="Unreconciled Variance $"
-              values={avRaw("depositsUnreconciledDollar")}
-              rawValues={avRaw("depositsUnreconciledDollar")}
-              rowType="variance-amt"
-            />
-            <DR
-              label="Unreconciled Variance %"
-              values={avRaw("depositsUnreconciledPct")}
-              rawValues={avRaw("depositsUnreconciledPct")}
-              rowType="variance-pct"
-            />
-            <SpacerRow colCount={colCount} />
+        <DR label="Change in AR" values={av("changeInAR")} indent />
+        <DR label="Change in Accts Receivable- Retentions" values={av("changeInARRetentions")} indent />
+        <DR label="Fixed Asset Disposals" values={av("fixedAssetDisposals")} indent />
+        <DR label="Other" values={av("depositsOther")} indent />
+        <DR label="Unreconciled Variance $" values={avRaw("depositsUnreconciledDollar")} rawValues={avRaw("depositsUnreconciledDollar")} rowType="variance-amt" />
+        <DR label="Unreconciled Variance %" values={avRaw("depositsUnreconciledPct")} rawValues={avRaw("depositsUnreconciledPct")} rowType="variance-pct" />
+        <SpacerRow colCount={colCount} />
 
-            <DR
-              label="Total Withdrawals"
-              values={av("totalWithdrawals")}
-              bold
-            />
-            <DR
-              label="Intercompany Transfers"
-              values={av("intercompanyTransfers")}
-              indent
-            />
-            <DR
-              label="External Withdraws"
-              values={av("externalWithdraws")}
-              bold
-            />
-            <DR
-              label="Expenses per Financials"
-              values={av("expensesPerFinancials")}
-            />
-            <DR
-              label="$ Variance"
-              values={avRaw("withdrawsDollarVar")}
-              rawValues={avRaw("withdrawsDollarVar")}
-              rowType="variance-amt"
-            />
-            <DR
-              label="% Variance"
-              values={avRaw("withdrawsPctVar")}
-              rawValues={avRaw("withdrawsPctVar")}
-              rowType="variance-pct"
-            />
-            <SpacerRow colCount={colCount} />
+        <DR label="Total Withdrawals" values={av("totalWithdrawals")} bold />
+        <DR label="Intercompany Transfers" values={av("intercompanyTransfers")} indent />
+        <DR label="External Withdraws" values={av("externalWithdraws")} bold />
+        <DR label="Expenses per Financials" values={av("expensesPerFinancials")} />
+        <DR label="$ Variance" values={avRaw("withdrawsDollarVar")} rawValues={avRaw("withdrawsDollarVar")} rowType="variance-amt" />
+        <DR label="% Variance" values={avRaw("withdrawsPctVar")} rawValues={avRaw("withdrawsPctVar")} rowType="variance-pct" />
+        <SpacerRow colCount={colCount} />
 
-            <DR label="Owner Withdraws" values={av("ownerWithdraws")} indent />
-            <DR
-              label="Change in Current Liabilities"
-              values={av("changeInCurrentLiabilities")}
-              indent
-            />
-            <DR
-              label="Change in LT Liabilities"
-              values={av("changeInLTLiabilities")}
-              indent
-            />
-            <DR
-              label="Depreciation Expense"
-              values={av("depreciationExpense")}
-              indent
-            />
-            <DR
-              label="Amortization Expense"
-              values={av("amortizationExpense")}
-              indent
-            />
-            <DR label="Bad Debt Expense" values={av("badDebtExpense")} indent />
-            <DR
-              label="Fixed Asset Purchases"
-              values={av("fixedAssetPurchases")}
-              indent
-            />
-            <DR label="Other" values={av("withdrawsOther")} indent />
-            <DR
-              label="Unreconciled Variance $"
-              values={avRaw("withdrawsUnreconciledDollar")}
-              rawValues={avRaw("withdrawsUnreconciledDollar")}
-              rowType="variance-amt"
-            />
-            <DR
-              label="Unreconciled Variance %"
-              values={avRaw("withdrawsUnreconciledPct")}
-              rawValues={avRaw("withdrawsUnreconciledPct")}
-              rowType="variance-pct"
-            />
-          </tbody>
-        </table>
-      </div>
+        <DR label="Owner Withdraws" values={av("ownerWithdraws")} indent />
+        <DR label="Change in Current Liabilities" values={av("changeInCurrentLiabilities")} indent />
+        <DR label="Change in LT Liabilities" values={av("changeInLTLiabilities")} indent />
+        <DR label="Depreciation Expense" values={av("depreciationExpense")} indent />
+        <DR label="Amortization Expense" values={av("amortizationExpense")} indent />
+        <DR label="Bad Debt Expense" values={av("badDebtExpense")} indent />
+        <DR label="Fixed Asset Purchases" values={av("fixedAssetPurchases")} indent />
+        <DR label="Other" values={av("withdrawsOther")} indent />
+        <DR label="Unreconciled Variance $" values={avRaw("withdrawsUnreconciledDollar")} rawValues={avRaw("withdrawsUnreconciledDollar")} rowType="variance-amt" />
+        <DR label="Unreconciled Variance %" values={avRaw("withdrawsUnreconciledPct")} rawValues={avRaw("withdrawsUnreconciledPct")} rowType="variance-pct" />
+      </FreezeTable>
     );
   };
 
@@ -1916,9 +2174,8 @@ export default function WorkspaceReconciliation() {
 
   // Build activity rows from extracted PDF data (manual upload / manual GL)
   const manualActivityRows = (() => {
-    if (!extractedBankPdfData?.months?.length) return [];
-    return extractedBankPdfData.months.map((monthObj) => {
-      const mk = monthObj.key;
+    if (!filteredPdfMonths.length || !extractedBankPdfData) return [];
+    return filteredPdfMonths.map((mk) => {
       const totalDeposits = (extractedBankPdfData.banks || []).reduce((sum, bank) => {
         const m = (bank.months || []).find((x) => x.monthKey === mk);
         return sum + (m?.deposits || 0);
@@ -1928,33 +2185,39 @@ export default function WorkspaceReconciliation() {
         return sum + (m?.withdrawals || 0);
       }, 0);
       const externalDeposits = totalDeposits;
-      const depositsDollarVar = -externalDeposits;
+      const salesPerFinancials = plFinancials?.totalIncome?.[mk] ?? 0;
+      const depositsDollarVar = salesPerFinancials - externalDeposits;
+      const depositsPctVar = salesPerFinancials !== 0 ? (depositsDollarVar / salesPerFinancials) * 100 : 0;
       const depositsUnreconciledDollar = depositsDollarVar;
+      const depositsUnreconciledPct = salesPerFinancials !== 0 ? (depositsUnreconciledDollar / salesPerFinancials) * 100 : 0;
       const externalWithdraws = totalWithdrawals;
-      const withdrawsDollarVar = externalWithdraws;
+      const expensesPerFinancials = plFinancials?.totalExpenses?.[mk] ?? 0;
+      const withdrawsDollarVar = externalWithdraws - expensesPerFinancials;
+      const withdrawsPctVar = expensesPerFinancials !== 0 ? (withdrawsDollarVar / expensesPerFinancials) * 100 : 0;
       const withdrawsUnreconciledDollar = withdrawsDollarVar;
+      const withdrawsUnreconciledPct = expensesPerFinancials !== 0 ? (withdrawsUnreconciledDollar / expensesPerFinancials) * 100 : 0;
       return {
         month: mk,
         totalDeposits, intercompanyTransfers: 0, externalDeposits,
-        salesPerFinancials: 0, depositsDollarVar, depositsPctVar: 0,
+        salesPerFinancials, depositsDollarVar, depositsPctVar,
         changeInAR: 0, changeInARRetentions: 0, fixedAssetDisposals: 0,
-        depositsOther: 0, depositsUnreconciledDollar, depositsUnreconciledPct: 0,
+        depositsOther: 0, depositsUnreconciledDollar, depositsUnreconciledPct,
         totalWithdrawals, withdrawIntercompanyTransfers: 0, externalWithdraws,
-        expensesPerFinancials: 0, withdrawsDollarVar, withdrawsPctVar: 0,
+        expensesPerFinancials, withdrawsDollarVar, withdrawsPctVar,
         ownerWithdraws: 0, changeInCurrentLiabilities: 0, changeInLTLiabilities: 0,
         depreciationExpense: 0, amortizationExpense: 0, badDebtExpense: 0,
         fixedAssetPurchases: 0, withdrawsOther: 0,
-        withdrawsUnreconciledDollar, withdrawsUnreconciledPct: 0,
+        withdrawsUnreconciledDollar, withdrawsUnreconciledPct,
       };
     });
   })();
 
-  const manualActivityTTM = manualActivityRows.slice(-12).reduce(
+  const _manualTTMBase = manualActivityRows.slice(-12).reduce(
     (acc, r) => ({
       totalDeposits: acc.totalDeposits + r.totalDeposits,
       intercompanyTransfers: 0,
       externalDeposits: acc.externalDeposits + r.externalDeposits,
-      salesPerFinancials: 0,
+      salesPerFinancials: acc.salesPerFinancials + r.salesPerFinancials,
       depositsDollarVar: acc.depositsDollarVar + r.depositsDollarVar,
       depositsPctVar: 0,
       changeInAR: 0, changeInARRetentions: 0, fixedAssetDisposals: 0, depositsOther: 0,
@@ -1963,7 +2226,7 @@ export default function WorkspaceReconciliation() {
       totalWithdrawals: acc.totalWithdrawals + r.totalWithdrawals,
       withdrawIntercompanyTransfers: 0,
       externalWithdraws: acc.externalWithdraws + r.externalWithdraws,
-      expensesPerFinancials: 0,
+      expensesPerFinancials: acc.expensesPerFinancials + r.expensesPerFinancials,
       withdrawsDollarVar: acc.withdrawsDollarVar + r.withdrawsDollarVar,
       withdrawsPctVar: 0,
       ownerWithdraws: 0, changeInCurrentLiabilities: 0, changeInLTLiabilities: 0,
@@ -1974,10 +2237,20 @@ export default function WorkspaceReconciliation() {
     }),
     buildEmptyActivityReviewRow(),
   );
+  const manualActivityTTM = {
+    ..._manualTTMBase,
+    depositsPctVar: _manualTTMBase.salesPerFinancials !== 0
+      ? (_manualTTMBase.depositsDollarVar / _manualTTMBase.salesPerFinancials) * 100 : 0,
+    depositsUnreconciledPct: _manualTTMBase.salesPerFinancials !== 0
+      ? (_manualTTMBase.depositsUnreconciledDollar / _manualTTMBase.salesPerFinancials) * 100 : 0,
+    withdrawsPctVar: _manualTTMBase.expensesPerFinancials !== 0
+      ? (_manualTTMBase.withdrawsDollarVar / _manualTTMBase.expensesPerFinancials) * 100 : 0,
+    withdrawsUnreconciledPct: _manualTTMBase.expensesPerFinancials !== 0
+      ? (_manualTTMBase.withdrawsUnreconciledDollar / _manualTTMBase.expensesPerFinancials) * 100 : 0,
+  };
 
   const renderManualActivityTable = () => {
-    const months = (extractedBankPdfData?.months || []).map((m) => m.key);
-    return renderActivityTableCore(manualActivityRows, manualActivityTTM, months);
+    return renderActivityTableCore(manualActivityRows, manualActivityTTM, filteredPdfMonths);
   };
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -1986,139 +2259,141 @@ export default function WorkspaceReconciliation() {
     <>
       <Header title="Reconciliation" />
       <div className="page-content">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <h1 className="text-[24px] font-bold text-text-primary">
-            Reconciliation
-          </h1>
-        </div>
         <QBDisconnectedBanner pageName="Reconciliation" />
 
-
+        {kr.krActive && !kr.availability.bank && (
+          <div className="mb-4 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-[13px] text-amber-800">
+            <AlertCircle size={18} className="mt-0.5 shrink-0 text-amber-600" />
+            <span>
+              Bank Reconciliation needs a <strong>Bank Statement</strong> linked in the selected Key Reports Version.
+            </span>
+          </div>
+        )}
         {/* QB Bank Activity — only for QuickBooks Online */}
         {isQBOnline && (
-        <section className="card-base w-full p-5">
-          <h2 className="text-[18px] font-semibold text-text-primary">
-            QuickBooks Bank Activity
-          </h2>
-          <p className="mt-1 text-[13px] text-text-secondary">
-            Fetches bank account activity directly from QuickBooks for the
-            selected date range.
-          </p>
-          <div className="mt-4 grid gap-3 lg:grid-cols-[1fr_1fr_220px_auto]">
-            {/* Start Month */}
-            <div>
-              <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
-                Start Month
-              </label>
-              <div className="flex gap-2">
+          <section className="card-base w-full p-5">
+            <h2 className="text-[18px] font-semibold text-text-primary">
+              QuickBooks Bank Activity
+            </h2>
+            <p className="mt-1 text-[13px] text-text-secondary">
+              Fetches bank account activity directly from QuickBooks for the
+              selected date range.
+            </p>
+            <div className="mt-4 grid gap-3 lg:grid-cols-[1fr_1fr_220px_auto]">
+              {/* Start Month */}
+              <div>
+                <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
+                  Start Month
+                </label>
+                <div className="flex gap-2">
+                  <select
+                    className="input-base h-10"
+                    value={bankActivityStartMonth.split("-")[1]}
+                    onChange={(e) =>
+                      setBankActivityStartMonth(
+                        `${bankActivityStartMonth.split("-")[0]}-${e.target.value}`,
+                      )
+                    }
+                  >
+                    {MONTHS.map((m) => (
+                      <option key={m.value} value={m.value}>
+                        {m.label}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    className="input-base h-10"
+                    value={bankActivityStartMonth.split("-")[0]}
+                    onChange={(e) =>
+                      setBankActivityStartMonth(
+                        `${e.target.value}-${bankActivityStartMonth.split("-")[1]}`,
+                      )
+                    }
+                  >
+                    {YEARS.map((y) => (
+                      <option key={y} value={y}>
+                        {y}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* End Month */}
+              <div>
+                <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
+                  End Month
+                </label>
+                <div className="flex gap-2">
+                  <select
+                    className="input-base h-10"
+                    value={bankActivityEndMonth.split("-")[1]}
+                    onChange={(e) =>
+                      setBankActivityEndMonth(
+                        `${bankActivityEndMonth.split("-")[0]}-${e.target.value}`,
+                      )
+                    }
+                  >
+                    {MONTHS.map((m) => (
+                      <option key={m.value} value={m.value}>
+                        {m.label}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    className="input-base h-10"
+                    value={bankActivityEndMonth.split("-")[0]}
+                    onChange={(e) =>
+                      setBankActivityEndMonth(
+                        `${e.target.value}-${bankActivityEndMonth.split("-")[1]}`,
+                      )
+                    }
+                  >
+                    {YEARS.map((y) => (
+                      <option key={y} value={y}>
+                        {y}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Accounting Method */}
+              <div>
+                <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
+                  Accounting Type
+                </label>
                 <select
-                  className="input-base h-10"
-                  value={bankActivityStartMonth.split("-")[1]}
+                  value={bankActivityAccountingMethod}
                   onChange={(e) =>
-                    setBankActivityStartMonth(
-                      `${bankActivityStartMonth.split("-")[0]}-${e.target.value}`,
-                    )
+                    setBankActivityAccountingMethod(e.target.value)
                   }
-                >
-                  {MONTHS.map((m) => (
-                    <option key={m.value} value={m.value}>
-                      {m.label}
-                    </option>
-                  ))}
-                </select>
-                <select
                   className="input-base h-10"
-                  value={bankActivityStartMonth.split("-")[0]}
-                  onChange={(e) =>
-                    setBankActivityStartMonth(
-                      `${e.target.value}-${bankActivityStartMonth.split("-")[1]}`,
-                    )
-                  }
                 >
-                  {YEARS.map((y) => (
-                    <option key={y} value={y}>
-                      {y}
-                    </option>
-                  ))}
+                  <option value="Accrual">Accrual</option>
+                  <option value="Cash">Cash</option>
                 </select>
               </div>
-            </div>
 
-            {/* End Month */}
-            <div>
-              <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
-                End Month
-              </label>
-              <div className="flex gap-2">
-                <select
-                  className="input-base h-10"
-                  value={bankActivityEndMonth.split("-")[1]}
-                  onChange={(e) =>
-                    setBankActivityEndMonth(
-                      `${bankActivityEndMonth.split("-")[0]}-${e.target.value}`,
-                    )
-                  }
+              {/* Fetch Button */}
+              <div className="flex items-end">
+                <button
+                  type="button"
+                  className="btn-primary w-full"
+                  onClick={() => void loadQBBankActivity()}
+                  disabled={isLoadingBankActivity}
                 >
-                  {MONTHS.map((m) => (
-                    <option key={m.value} value={m.value}>
-                      {m.label}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  className="input-base h-10"
-                  value={bankActivityEndMonth.split("-")[0]}
-                  onChange={(e) =>
-                    setBankActivityEndMonth(
-                      `${e.target.value}-${bankActivityEndMonth.split("-")[1]}`,
-                    )
-                  }
-                >
-                  {YEARS.map((y) => (
-                    <option key={y} value={y}>
-                      {y}
-                    </option>
-                  ))}
-                </select>
+                  {isLoadingBankActivity ? (
+                    <LoaderCircle size={16} className="animate-spin" />
+                  ) : (
+                    <RefreshCw size={16} />
+                  )}{" "}
+                  Fetch Activity
+                </button>
               </div>
             </div>
-
-            {/* Accounting Method */}
-            <div>
-              <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
-                Accounting Type
-              </label>
-              <select
-                value={bankActivityAccountingMethod}
-                onChange={(e) =>
-                  setBankActivityAccountingMethod(e.target.value)
-                }
-                className="input-base h-10"
-              >
-                <option value="Accrual">Accrual</option>
-                <option value="Cash">Cash</option>
-              </select>
-            </div>
-
-            {/* Fetch Button */}
-            <div className="flex items-end">
-              <button
-                type="button"
-                className="btn-primary w-full"
-                onClick={() => void loadQBBankActivity()}
-                disabled={isLoadingBankActivity}
-              >
-                {isLoadingBankActivity ? (
-                  <LoaderCircle size={16} className="animate-spin" />
-                ) : (
-                  <RefreshCw size={16} />
-                )}{" "}
-                Fetch Activity
-              </button>
-            </div>
-          </div>
-          <StatusBanner sync={bankActivityFetchStatus} />
-        </section>
+            <StatusBanner sync={bankActivityFetchStatus} />
+          </section>
         )}
 
         {/* Bank Account Balances */}
@@ -2126,7 +2401,7 @@ export default function WorkspaceReconciliation() {
           <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
             <div>
               <h2 className="text-[18px] font-semibold text-text-primary">
-                Bank Account Balances
+                Bank Reconciliation
               </h2>
               <p className="text-[14px] text-text-secondary">
                 {(isManualUpload || isManualGl || isQBManual)
@@ -2135,6 +2410,43 @@ export default function WorkspaceReconciliation() {
               </p>
             </div>
             <div className="flex items-end gap-3">
+              {/* Date Range Filter — Manual Upload, Manual GL, QuickBooks Manual */}
+              {(isManualUpload || isManualGl || isQBManual) && allPdfMonths.length > 0 && (
+                <>
+                  <div>
+                    <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
+                      Start Date
+                    </label>
+                    <input
+                      type="date"
+                      className="input-base h-10 w-auto min-w-[150px]"
+                      value={manualMonthStart ? `${manualMonthStart}-01` : ""}
+                      onChange={(e) => {
+                        if (!e.target.value) return;
+                        const isoKey = e.target.value.slice(0, 7);
+                        setManualMonthStart(isoKey);
+                        if (manualMonthEnd && isoKey > manualMonthEnd) setManualMonthEnd(isoKey);
+                      }}
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
+                      End Date
+                    </label>
+                    <input
+                      type="date"
+                      className="input-base h-10 w-auto min-w-[150px]"
+                      value={manualMonthEnd ? `${manualMonthEnd}-01` : ""}
+                      onChange={(e) => {
+                        if (!e.target.value) return;
+                        const isoKey = e.target.value.slice(0, 7);
+                        setManualMonthEnd(isoKey);
+                        if (manualMonthStart && isoKey < manualMonthStart) setManualMonthStart(isoKey);
+                      }}
+                    />
+                  </div>
+                </>
+              )}
               {(isManualUpload || isManualGl || isQBManual) && (
                 <button
                   type="button"
@@ -2143,7 +2455,7 @@ export default function WorkspaceReconciliation() {
                   onClick={() => {
                     if (isQBManual) void loadQMSBankData();
                     else if (isManualUpload) void loadManualBankData();
-                    else void loadExtractedBankPdfData();
+                    else void loadExtractedBankPdfData({ datasetVersion: kr.resolvedDatasetVersion });
                   }}
                   title="Reload data from the active source"
                 >
@@ -2153,44 +2465,46 @@ export default function WorkspaceReconciliation() {
                   Refresh
                 </button>
               )}
-            <div className="min-w-[280px]">
-              <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
-                Bank Account
-              </label>
-              {(isManualUpload || isManualGl || isQBManual) ? (
-                <select
-                  className="input-base h-10 w-full"
-                  value={selectedManualBankName}
-                  onChange={(e) => setSelectedManualBankName(e.target.value)}
-                  disabled={!manualBankOptions.length}
-                >
-                  {manualBankOptions.length ? (
-                    manualBankOptions.map((name) => (
-                      <option key={name} value={name}>{name}</option>
-                    ))
-                  ) : (
-                    <option value="">No banks available</option>
-                  )}
-                </select>
-              ) : (
-                <select
-                  className="input-base h-10 w-full"
-                  value={selectedBalanceBankId}
-                  onChange={(e) => setSelectedBalanceBankId(e.target.value)}
-                  disabled={!balanceBankOptions.length}
-                >
-                  {balanceBankOptions.length ? (
-                    balanceBankOptions.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))
-                  ) : (
-                    <option value="">No bank accounts available</option>
-                  )}
-                </select>
-              )}
-            </div>
+              {/* Unified Key Reports Version selector is the single source of truth */}
+              <KeyReportVersionSelector clientId={clientId} variant="filter" />
+              <div className="min-w-[280px]">
+                <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
+                  Bank Account
+                </label>
+                {(isManualUpload || isManualGl || isQBManual) ? (
+                  <select
+                    className="input-base h-10 w-full"
+                    value={selectedManualBankName}
+                    onChange={(e) => setSelectedManualBankName(e.target.value)}
+                    disabled={!manualBankOptions.length}
+                  >
+                    {manualBankOptions.length ? (
+                      manualBankOptions.map((name) => (
+                        <option key={name} value={name}>{name}</option>
+                      ))
+                    ) : (
+                      <option value="">No banks available</option>
+                    )}
+                  </select>
+                ) : (
+                  <select
+                    className="input-base h-10 w-full"
+                    value={selectedBalanceBankId}
+                    onChange={(e) => setSelectedBalanceBankId(e.target.value)}
+                    disabled={!balanceBankOptions.length}
+                  >
+                    {balanceBankOptions.length ? (
+                      balanceBankOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))
+                    ) : (
+                      <option value="">No bank accounts available</option>
+                    )}
+                  </select>
+                )}
+              </div>
             </div>{/* end flex items-end gap-3 */}
           </div>
 

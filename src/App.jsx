@@ -15,11 +15,11 @@ import { ToastProvider, useToast } from "./context/ToastContext";
 import { DataSourceProvider } from "./context/DataSourceContext";
 import ErrorBoundary from "./components/common/ErrorBoundary";
 import Layout from "./components/layout/Layout";
+import BrokerLayout from "./components/layout/BrokerLayout";
 import ClientWorkspaceLayout from "./components/layout/ClientWorkspaceLayout";
 import UserLayout from "./components/layout/UserLayout";
 import Login from "./pages/Login";
 import BrokerDashboard from "./pages/broker/Dashboard";
-import BrokerCompanies from "./pages/broker/Companies";
 import BrokerRequests from "./pages/broker/Requests";
 import BrokerDocuments from "./pages/broker/Documents";
 import BrokerReminders from "./pages/broker/Reminders";
@@ -37,6 +37,7 @@ import UserMessages from "./pages/user/Messages";
 import UserRequests from "./pages/user/Requests";
 import WorkspaceDashboard from "./pages/broker/workspace/WorkspaceDashboard";
 import WorkspaceDashboardDatahub from "./pages/broker/workspace/WorkspaceDashboardDatahub";
+import WorkspaceDealTracker from "./pages/broker/workspace/WorkspaceDealTracker";
 import WorkspaceRequests from "./pages/broker/workspace/WorkspaceRequests";
 import WorkspaceDocuments from "./pages/broker/workspace/WorkspaceDocuments";
 import WorkspaceMessages from "./pages/broker/workspace/WorkspaceMessages";
@@ -48,6 +49,7 @@ import WorkspaceReports from "./pages/broker/workspace/WorkspaceReports";
 import WorkspaceReconciliation from "./pages/broker/workspace/WorkspaceReconciliation";
 import WorkspaceTaxReconciliation from "./pages/broker/workspace/WorkspaceTaxReconciliation";
 import WorkspaceConnections from "./pages/broker/workspace/WorkspaceConnections";
+import WorkspaceKeyReports from "./pages/broker/workspace/WorkspaceKeyReports";
 import Support from "./pages/Support";
 import WorkspaceEbitda from "./pages/broker/workspace/WorkspaceEbitda";
 import BrokerProfile from "./pages/broker/BrokerProfile";
@@ -91,6 +93,7 @@ function ProtectedRoute({ children, allowedRole, allowedRoles }) {
       />
     );
   if (user.role === "user") return <UserLayout>{children}</UserLayout>;
+  if (user.role === "broker") return <BrokerLayout>{children}</BrokerLayout>;
   return <Layout>{children}</Layout>;
 }
 
@@ -184,7 +187,7 @@ function ClientWorkspaceWrapper() {
               message:
                 "That company was not found. Opened the first available company instead.",
             });
-            navigate(`/broker/client/${fallbackCompany.id}/datahub-dashboard`, {
+            navigate(`/broker/client/${fallbackCompany.id}/analytics`, {
               replace: true,
               state: { company: fallbackCompany },
             });
@@ -223,7 +226,7 @@ function ClientWorkspaceWrapper() {
   if (user.role !== "broker")
     return <Navigate to={getHomeRoute(user.role)} replace />;
   if (loading) return <PageLoader message="Loading company workspace..." />;
-  if (!company) return <Navigate to="/broker/companies" replace />;
+  if (!company) return <Navigate to="/broker/dashboard" replace />;
 
   return (
     <ClientWorkspaceLayout company={company}>
@@ -263,14 +266,8 @@ function AppRoutes() {
           </ProtectedRoute>
         }
       />
-      <Route
-        path="/broker/companies"
-        element={
-          <ProtectedRoute allowedRole="broker">
-            <BrokerCompanies />
-          </ProtectedRoute>
-        }
-      />
+      {/* /broker/companies is now merged into the dashboard */}
+      <Route path="/broker/companies" element={<Navigate to="/broker/dashboard" replace />} />
       <Route
         path="/broker/requests"
         element={
@@ -309,9 +306,10 @@ function AppRoutes() {
         path="/broker/client/:clientId"
         element={<ClientWorkspaceWrapper />}
       >
-        <Route index element={<Navigate to="dashboard" replace />} />
+        <Route index element={<Navigate to="analytics" replace />} />
+        <Route path="analytics" element={<WorkspaceDashboardDatahub />} />
+        <Route path="datahub-dashboard" element={<Navigate to="../analytics" replace />} />
         <Route path="dashboard" element={<WorkspaceDashboard />} />
-        <Route path="datahub-dashboard" element={<WorkspaceDashboardDatahub />} />
         <Route path="invoices" element={<WorkspaceInvoices />} />
         <Route path="reports" element={<WorkspaceReports />} />
         <Route path="reconciliation" element={<WorkspaceReconciliation />} />
@@ -319,16 +317,21 @@ function AppRoutes() {
           path="tax-reconciliation"
           element={<WorkspaceTaxReconciliation />}
         />
-        <Route path="connections" element={<WorkspaceConnections />} />
         <Route path="ebitda" element={<WorkspaceEbitda />} />
-        <Route path="connections" element={<WorkspaceConnections />} />
-        <Route path="dataroom" element={<Navigate to="requests" replace />} />
+        <Route path="dataroom" element={<Navigate to="deal-tracker" replace />} />
+        <Route path="dataroom/connections" element={<WorkspaceConnections />} />
+        <Route path="dataroom/key-reports" element={<WorkspaceKeyReports />} />
+        <Route path="dataroom/deal-tracker" element={<WorkspaceDealTracker />} />
         <Route path="dataroom/requests" element={<WorkspaceRequests />} />
         <Route path="dataroom/documents" element={<WorkspaceDocuments />} />
         <Route path="dataroom/messages" element={<WorkspaceMessages />} />
         <Route path="dataroom/reminders" element={<WorkspaceReminders />} />
         <Route path="dataroom/activity" element={<WorkspaceActivity />} />
         <Route path="dataroom/users" element={<WorkspaceUsers />} />
+        <Route
+          path="connections"
+          element={<Navigate to="../dataroom/connections" replace />}
+        />
         <Route
           path="requests"
           element={<Navigate to="../dataroom/requests" replace />}

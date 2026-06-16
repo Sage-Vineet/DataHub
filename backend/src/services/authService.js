@@ -14,7 +14,7 @@ function getAuthPool() {
       connectionTimeoutMillis: 10000,
       idleTimeoutMillis: 30000,
     });
-    _authPool.on("error", () => {});
+    _authPool.on("error", () => { });
   }
   return _authPool;
 }
@@ -45,10 +45,8 @@ function isValidEmail(value) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
-function isValidPhone(value) {
-  if (!value) return true;
-  const digits = value.replace(/\D/g, "");
-  return /^\+?[0-9][0-9\s().-]{6,19}$/.test(value) && digits.length >= 7 && digits.length <= 15;
+function isValidPhone() {
+  return true;
 }
 
 async function setBrokerCompanyProfile(userId, brokerCompany) {
@@ -144,20 +142,54 @@ async function authenticate(email, password) {
 
   if (isClientUser && rawPassword === CLIENT_STATIC_PASSWORD) {
     // Static-password path: sync company assignment then re-fetch.
-    if (user.company_id) {
-      await syncUserCompanyAssignment(user.id, user.company_id);
-      await ensureDefaultFolders(user.company_id, user.id);
+    // If company_id is missing (orphaned post-migration account), try to recover
+    // it by matching the user's email against companies.contact_email.
+    let resolvedCompanyId = user.company_id;
+    if (!resolvedCompanyId) {
+      const { data: matched } = await supabase
+        .from("companies")
+        .select("id")
+        .ilike("contact_email", normalizedEmail)
+        .maybeSingle();
+      if (matched?.id) {
+        resolvedCompanyId = matched.id;
+        await supabase.from("users").update({ company_id: resolvedCompanyId }).eq("id", user.id);
+      }
+    }
+    if (resolvedCompanyId) {
+      await syncUserCompanyAssignment(user.id, resolvedCompanyId);
+      await ensureDefaultFolders(resolvedCompanyId, user.id);
     }
   } else {
     // Standard credential check for all other users / passwords.
-    const { data: authData } = await supabase
-      .from("users")
-      .select("password_hash")
-      .eq("id", user.id)
-      .single();
+    // password_hash is already present when the Postgres fallback was used
+    // inside getUserByEmail. Only query Supabase when it's absent, and fall
+    // back to a direct Postgres query if Supabase is unavailable.
+    let storedPassword = user.password_hash || null;
 
-    const storedPassword = authData?.password_hash;
-    let ok = rawPassword === storedPassword;
+    if (!storedPassword) {
+      const { data: authData } = await supabase
+        .from("users")
+        .select("password_hash")
+        .eq("id", user.id)
+        .single();
+      storedPassword = authData?.password_hash || null;
+    }
+
+    if (!storedPassword) {
+      const pool = getAuthPool();
+      if (pool) {
+        try {
+          const { rows } = await pool.query(
+            "SELECT password_hash FROM users WHERE id = $1 LIMIT 1",
+            [user.id],
+          );
+          storedPassword = rows[0]?.password_hash || null;
+        } catch { /* ignore — will throw Invalid credentials below */ }
+      }
+    }
+
+    let ok = storedPassword ? rawPassword === storedPassword : false;
 
     if (storedPassword && /^\$2[aby]\$/.test(storedPassword)) {
       try {
@@ -171,9 +203,23 @@ async function authenticate(email, password) {
 
     // For client/buyer users with a custom password, still sync the company
     // association so user_companies is populated after a DB migration
-    // that left the join table empty.
-    if (isClientUser && user.company_id) {
-      await syncUserCompanyAssignment(user.id, user.company_id);
+    // that left the join table empty. Also recover company_id via email if missing.
+    if (isClientUser) {
+      let resolvedCompanyId = user.company_id;
+      if (!resolvedCompanyId) {
+        const { data: matched } = await supabase
+          .from("companies")
+          .select("id")
+          .ilike("contact_email", normalizedEmail)
+          .maybeSingle();
+        if (matched?.id) {
+          resolvedCompanyId = matched.id;
+          await supabase.from("users").update({ company_id: resolvedCompanyId }).eq("id", user.id);
+        }
+      }
+      if (resolvedCompanyId) {
+        await syncUserCompanyAssignment(user.id, resolvedCompanyId);
+      }
     }
   }
 

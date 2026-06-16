@@ -19,24 +19,24 @@ import { useGlDocumentStore } from '../../store/glDocumentStore';
 const PROGRESS_IDLE = { isActive: false, stage: "upload", message: "", pct: 0, error: null };
 
 const POLL_INTERVAL_MS = 2500;
-const POLL_MAX_MS      = 12 * 60 * 1000; // 12 minutes
+const POLL_MAX_MS = 12 * 60 * 1000; // 12 minutes
 
 // Maps the worker job stage → StagingProgressModal stage id.
 // Modal stages in visual order: upload → stage → validate → prepare → complete
 // Worker stages in processing order: orchestrating (20%) → checksumming → duplicate_check
 //   → generating_snapshots (40%) → validating (80%) → activating (90%) → finalizing (95%) → completed (100%)
 const JOB_STAGE_TO_MODAL = {
-  orchestrating:        "stage",
-  checksumming:         "stage",
-  duplicate_check:      "stage",
-  duplicate_detected:   "stage",
-  duplicate_blocked:    "stage",
+  orchestrating: "stage",
+  checksumming: "stage",
+  duplicate_check: "stage",
+  duplicate_detected: "stage",
+  duplicate_blocked: "stage",
   generating_snapshots: "validate",  // 40%: building reports = the "validate" visual step
-  validating:           "validate",  // 80%: BS check
-  activating:           "prepare",   // 90%: making the version live = "prepare" visual step
-  replaceSessions:      "prepare",
-  finalizing:           "prepare",
-  completed:            "complete",
+  validating: "validate",  // 80%: BS check
+  activating: "prepare",   // 90%: making the version live = "prepare" visual step
+  replaceSessions: "prepare",
+  finalizing: "prepare",
+  completed: "complete",
 };
 
 function formatFiscalYearsDisplay(years = []) {
@@ -61,7 +61,7 @@ function formatFiscalYearsDisplay(years = []) {
  * Returns a shaped result object compatible with the rest of the upload flow.
  * Throws on failure or timeout.
  */
-async function pollUploadJobToCompletion(jobId, clientId, onProgress, cancelRef) {
+async function pollUploadJobToCompletion(jobId, clientId, onProgress, cancelRef, startPct = 25) {
   const deadline = Date.now() + POLL_MAX_MS;
 
   while (Date.now() < deadline) {
@@ -78,35 +78,39 @@ async function pollUploadJobToCompletion(jobId, clientId, onProgress, cancelRef)
     }
     if (!job) continue;
 
-    const pct     = Number(job.progress?.pct   || 0);
+    const pct = Number(job.progress?.pct || 0);
     const rawStage = String(job.progress?.stage || "stage");
     const modalStage = JOB_STAGE_TO_MODAL[rawStage] || "stage";
-    const label   = rawStage.replace(/_/g, " ");
-    onProgress({ stage: modalStage, pct: Math.max(20, pct), message: `Processing… (${label})` });
+    const label = rawStage.replace(/_/g, " ");
+
+    // Scale the worker's 0-100% progress into the remaining [startPct, 100%] range.
+    const modalPct = Math.min(98, startPct + Math.round((pct / 100) * (100 - startPct)));
+
+    onProgress({ stage: modalStage, pct: modalPct, message: `Processing… (${label})` });
 
     if (job.status === "completed") {
       const s = job.metadata?.completionSummary || {};
       return {
-        success:                      true,
+        success: true,
         jobId,
-        batchId:                      s.batchId                      || null,
-        activeBatchId:                s.activeBatchId                || s.batchId || null,
-        datasetVersionId:             s.datasetVersionId             || null,
-        versionNumber:                s.versionNumber                || s.activeDatasetVersion || null,
-        activeDatasetVersion:         s.activeDatasetVersion         || s.versionNumber || null,
-        alreadyStaged:                Boolean(s.alreadyStaged),
-        reportsReady:                 s.reportsReady !== false,
-        insertedTransactions:         s.insertedTransactions         || 0,
+        batchId: s.batchId || null,
+        activeBatchId: s.activeBatchId || s.batchId || null,
+        datasetVersionId: s.datasetVersionId || null,
+        versionNumber: s.versionNumber || s.activeDatasetVersion || null,
+        activeDatasetVersion: s.activeDatasetVersion || s.versionNumber || null,
+        alreadyStaged: Boolean(s.alreadyStaged),
+        reportsReady: s.reportsReady !== false,
+        insertedTransactions: s.insertedTransactions || 0,
         duplicateTransactionsSkipped: s.duplicateTransactionsSkipped || 0,
-        warnings:                     s.warnings                     || [],
-        filesParsed:                  s.filesParsed                  || [],
-        yearsDetected:                s.yearsDetected                || [],
-        fiscalYears:                  Array.isArray(s.fiscalYears) ? s.fiscalYears : [],
-        noChangesDetected:            Boolean(s.noChangesDetected),
-        blockedAsDuplicate:           Boolean(s.noChangesDetected || s.alreadyStaged),
-        snapshotsGenerated:           s.snapshotsGenerated           || 0,
-        validation:                   s.validation                   || null,
-        existingVersion:              s.existingVersion              || null,
+        warnings: s.warnings || [],
+        filesParsed: s.filesParsed || [],
+        yearsDetected: s.yearsDetected || [],
+        fiscalYears: Array.isArray(s.fiscalYears) ? s.fiscalYears : [],
+        noChangesDetected: Boolean(s.noChangesDetected),
+        blockedAsDuplicate: Boolean(s.noChangesDetected || s.alreadyStaged),
+        snapshotsGenerated: s.snapshotsGenerated || 0,
+        validation: s.validation || null,
+        existingVersion: s.existingVersion || null,
       };
     }
 
@@ -123,6 +127,10 @@ export default function ManualGLUpload({
   isLocked = false,
   lockMessage = "",
   onStageComplete = null,
+  // Optional: pre-select documents from Key Reports (does not affect Connections usage)
+  initialGlDocumentIds = null,
+  initialStartingBSDocumentId = null,
+  initialEndingBSDocumentId = null,
 }) {
   const { showToast } = useToast();
   const [step, setStep] = useState(1); // 1: Stage, 2: Map (if needed), 3: Staged
@@ -134,13 +142,17 @@ export default function ManualGLUpload({
     () => useGlDocumentStore.getState().getDocuments(companyId) || []
   );
   const [selectedDocumentIds, setSelectedDocumentIds] = useState(
-    () => useGlDocumentStore.getState().getSelection(companyId).selectedDocumentIds
+    () => initialGlDocumentIds?.length
+      ? initialGlDocumentIds
+      : useGlDocumentStore.getState().getSelection(companyId).selectedDocumentIds
   );
   const [selectedStartingDocumentId, setSelectedStartingDocumentId] = useState(
-    () => useGlDocumentStore.getState().getSelection(companyId).selectedStartingDocumentId
+    () => initialStartingBSDocumentId
+      || useGlDocumentStore.getState().getSelection(companyId).selectedStartingDocumentId
   );
   const [selectedEndingDocumentId, setSelectedEndingDocumentId] = useState(
-    () => useGlDocumentStore.getState().getSelection(companyId).selectedEndingDocumentId
+    () => initialEndingBSDocumentId
+      || useGlDocumentStore.getState().getSelection(companyId).selectedEndingDocumentId
   );
   const [activeUploadId, setActiveUploadId] = useState("");
   const [pendingStageRequest, setPendingStageRequest] = useState(null);
@@ -472,14 +484,16 @@ export default function ManualGLUpload({
       const jobId = queued?.jobId;
       if (!jobId) throw new Error(queued?.error || "Failed to start upload job.");
 
-      setStagingProgress((prev) => ({ ...prev, pct: 25, message: "Upload queued — processing in background…" }));
+      // Start the job polling — if we already did file uploads, start from 50%.
+      // Otherwise (dataroom source), start from 25%.
+      const pollStartPct = sourceMode === "manual" ? 50 : 25;
 
-      // Step 2: poll until the worker marks the job completed or failed.
       const staged = await pollUploadJobToCompletion(
         jobId,
         companyId,
         ({ stage, pct, message }) => setStagingProgress((prev) => ({ ...prev, stage, pct, message })),
         pollCancelRef,
+        pollStartPct
       );
 
       if (staged?.alreadyStaged || staged?.blockedAsDuplicate || staged?.noChangesDetected) {
@@ -740,14 +754,13 @@ export default function ManualGLUpload({
       const jobId = queued?.jobId;
       if (!jobId) throw new Error(queued?.error || "Failed to start upload job.");
 
-      setStagingProgress((prev) => ({ ...prev, pct: 25, message: "Upload queued — processing…" }));
-
       // Step 2: poll
       const staged = await pollUploadJobToCompletion(
         jobId,
         companyId,
         ({ stage, pct, message }) => setStagingProgress((prev) => ({ ...prev, stage, pct, message })),
         pollCancelRef,
+        25
       );
 
       if (staged?.alreadyStaged || staged?.blockedAsDuplicate || staged?.noChangesDetected) {

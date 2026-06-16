@@ -27,7 +27,7 @@ const listFolderAccess = asyncHandler(async (req, res) => {
   const companyId = await getFolderCompanyId(req.params.id);
   if (!companyId) return res.status(404).json({ error: "Not found" });
   if (!permissionService.canAccessCompany(req.user, companyId)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "You do not have permission to manage access for this folder." });
   }
 
   const { data, error } = await supabase
@@ -44,7 +44,7 @@ const createFolderAccess = asyncHandler(async (req, res) => {
   const companyId = await getFolderCompanyId(req.params.id);
   if (!companyId) return res.status(404).json({ error: "Not found" });
   if (!permissionService.canAccessCompany(req.user, companyId)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "You do not have permission to manage access for this folder." });
   }
 
   const { user_id, group_id, can_read, can_write, can_download, created_by } = req.body || {};
@@ -73,7 +73,7 @@ const updateFolderAccess = asyncHandler(async (req, res) => {
   const companyId = await getAccessCompanyId(req.params.id);
   if (!companyId) return res.status(404).json({ error: "Not found" });
   if (!permissionService.canAccessCompany(req.user, companyId)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "You do not have permission to manage access for this folder." });
   }
 
   const body = req.body || {};
@@ -94,7 +94,7 @@ const deleteFolderAccess = asyncHandler(async (req, res) => {
   const companyId = await getAccessCompanyId(req.params.id);
   if (!companyId) return res.status(404).json({ error: "Not found" });
   if (!permissionService.canAccessCompany(req.user, companyId)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "You do not have permission to manage access for this folder." });
   }
 
   const { error } = await supabase.from("folder_access").delete().eq("id", req.params.id);

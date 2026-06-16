@@ -21,9 +21,12 @@ const {
   getBalanceSheetMonthlyDetailFromStage,
   getCashflowSummaryFromStage,
   getCashflowMonthlyDetailFromStage,
+  getProfitLossVendorDetailFromStage,
+  getVendorAnalysisFromStage,
   validateBatchBalanceSheet,
   listManualGlBatches,
   getActualFiscalYearsFromDB,
+  resolveEffectiveReportBatchId,
 } = require("../services/manualGlMultiYearService");
 const { orchestrateManualGlUpload } = require("../services/manualGlUploadOrchestrationService");
 const {
@@ -171,10 +174,15 @@ function hasManualDetailFilterOverrides(filters = {}) {
   if (Array.isArray(filters.fiscalMonths) && filters.fiscalMonths.length > 0) return true;
   if (String(filters.startDate || "").trim()) return true;
   if (String(filters.endDate || "").trim()) return true;
+  // statementType is an override only when it deviates from the default (profit_loss),
+  // which is what the cached snapshot is generated against.
+  const statementType = String(filters.statementType || "").trim().toLowerCase();
+  if (statementType && statementType !== "profit_loss" && statementType !== "pl") return true;
   const textKeys = [
     "accountName",
     "accountNumber",
     "accountType",
+    "vendorName",
     "category",
     "subCategory",
     "department",
@@ -202,13 +210,15 @@ async function tryLoadActiveSnapshot(companyId, reportType, filters = {}) {
     const fiscalYear = resolveSelectedFiscalYear(filters);
     const datasetVersion = resolveSelectedDatasetVersion(filters);
     const requestedBatchId = String(filters.batchId || "").trim();
+    const keyReportVersionId = String(filters.keyReportVersionId || "").trim();
     let snapshot = null;
     let activeBatchId = requestedBatchId || null;
 
-    if (datasetVersion) {
+    if (keyReportVersionId || datasetVersion) {
       snapshot = await getSnapshotForDatasetVersion({
         companyId,
         datasetVersion,
+        keyReportVersionId,
         reportType,
         fiscalYear,
       });
@@ -229,15 +239,11 @@ async function tryLoadActiveSnapshot(companyId, reportType, filters = {}) {
       }
     }
 
-    if (!snapshot) {
-      const activeResult = await getSnapshotForActiveBatch({
-        companyId,
-        reportType,
-        fiscalYear,
-      });
-      snapshot = activeResult.snapshot;
-      activeBatchId = activeBatchId || activeResult.activeBatchId || null;
-    }
+    // Intentionally no fallback to getSnapshotForActiveBatch here.
+    // That fallback caused cross-version contamination: when version N had no
+    // snapshot yet, the currently-active batch's snapshot (a different version)
+    // was returned.  The staged-data path below queryStagedTransactions is
+    // always scoped to the resolved batchId, so it is safe to fall through.
 
     if (!snapshot?.snapshot_payload) {
       return { payload: null, activeBatchId };
@@ -444,10 +450,7 @@ router.get("/reports/pl", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
 
     const filters = parseManualFilterQuery(req.query || {});
-    const activeBatchId = await resolveReportBatchId(clientId, filters.batchId, {
-      ...filters,
-      allowExplicitBatch: isHistoricalBatchMode(filters),
-    });
+    const activeBatchId = await resolveEffectiveReportBatchId(clientId, filters);
     const cacheFilters = { ...filters, batchId: activeBatchId || filters.batchId || "" };
     logManualReportFilterDebug("reports/pl", clientId, cacheFilters, activeBatchId);
 
@@ -490,10 +493,7 @@ router.get("/reports/balance-sheet", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
 
     const filters = parseManualFilterQuery(req.query || {});
-    const activeBatchId = await resolveReportBatchId(clientId, filters.batchId, {
-      ...filters,
-      allowExplicitBatch: isHistoricalBatchMode(filters),
-    });
+    const activeBatchId = await resolveEffectiveReportBatchId(clientId, filters);
     const cacheFilters = { ...filters, batchId: activeBatchId || filters.batchId || "" };
     logManualReportFilterDebug("reports/balance-sheet", clientId, cacheFilters, activeBatchId);
 
@@ -537,10 +537,7 @@ router.get("/reports/cashflow", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL),
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
 
     const filters = parseManualFilterQuery(req.query || {});
-    const activeBatchId = await resolveReportBatchId(clientId, filters.batchId, {
-      ...filters,
-      allowExplicitBatch: isHistoricalBatchMode(filters),
-    });
+    const activeBatchId = await resolveEffectiveReportBatchId(clientId, filters);
     const cacheFilters = { ...filters, batchId: activeBatchId || filters.batchId || "" };
     logManualReportFilterDebug("reports/cashflow", clientId, cacheFilters, activeBatchId);
 
@@ -583,10 +580,7 @@ router.get("/reports/cashflow/monthly-detail", enforceDataSource(REPORT_SOURCE_K
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
 
     const filters = parseManualFilterQuery(req.query || {});
-    const activeBatchId = await resolveReportBatchId(clientId, filters.batchId, {
-      ...filters,
-      allowExplicitBatch: isHistoricalBatchMode(filters),
-    });
+    const activeBatchId = await resolveEffectiveReportBatchId(clientId, filters);
     const cacheFilters = { ...filters, batchId: activeBatchId || filters.batchId || "" };
     logManualReportFilterDebug("reports/cashflow/monthly-detail", clientId, cacheFilters, activeBatchId);
     const hasMonthFilter = Array.isArray(cacheFilters.fiscalMonths) && cacheFilters.fiscalMonths.length > 0;
@@ -724,24 +718,24 @@ router.post("/manual-gl/staging/multi-year", enforceDataSource(REPORT_SOURCE_KEY
 
         if (result?.success !== false) {
           const completionSummary = {
-            batchId:                      result?.activeBatchId || result?.batchId || null,
-            activeBatchId:                result?.activeBatchId || result?.batchId || null,
-            datasetVersionId:             result?.datasetVersionId || null,
-            versionNumber:                result?.versionNumber || result?.activeDatasetVersion || null,
-            activeDatasetVersion:         result?.activeDatasetVersion || result?.versionNumber || null,
-            alreadyStaged:                Boolean(result?.alreadyStaged),
-            reportsReady:                 result?.reportsReady !== false,
-            insertedTransactions:         result?.insertedTransactions         || 0,
+            batchId: result?.activeBatchId || result?.batchId || null,
+            activeBatchId: result?.activeBatchId || result?.batchId || null,
+            datasetVersionId: result?.datasetVersionId || null,
+            versionNumber: result?.versionNumber || result?.activeDatasetVersion || null,
+            activeDatasetVersion: result?.activeDatasetVersion || result?.versionNumber || null,
+            alreadyStaged: Boolean(result?.alreadyStaged),
+            reportsReady: result?.reportsReady !== false,
+            insertedTransactions: result?.insertedTransactions || 0,
             duplicateTransactionsSkipped: result?.duplicateTransactionsSkipped || 0,
-            warnings:                     result?.warnings                     || [],
-            filesParsed:                  result?.filesParsed                  || [],
-            yearsDetected:                result?.yearsDetected || result?.snapshotYears || [],
-            noChangesDetected:            Boolean(result?.noChangesDetected),
-            snapshotsGenerated:           result?.snapshotsGenerated           || 0,
-            validation:                   result?.validation                   || null,
-            fiscalYears:                  Array.isArray(result?.fiscalYears) ? result.fiscalYears : result?.snapshotYears || [],
-            existingVersion:              result?.existingVersion || null,
-            durationMs:                   duration,
+            warnings: result?.warnings || [],
+            filesParsed: result?.filesParsed || [],
+            yearsDetected: result?.yearsDetected || result?.snapshotYears || [],
+            noChangesDetected: Boolean(result?.noChangesDetected),
+            snapshotsGenerated: result?.snapshotsGenerated || 0,
+            validation: result?.validation || null,
+            fiscalYears: Array.isArray(result?.fiscalYears) ? result.fiscalYears : result?.snapshotYears || [],
+            existingVersion: result?.existingVersion || null,
+            durationMs: duration,
           };
 
           if (result?.alreadyStaged) {
@@ -779,7 +773,7 @@ router.post("/manual-gl/staging/multi-year", enforceDataSource(REPORT_SOURCE_KEY
       } catch (err) {
         const duration = Date.now() - perfStart;
         console.error(`[ManualGL][DirectExec][${job.id}] Critical error after ${duration}ms:`, err.message);
-        await failUploadLifecycle(job.id, null, err.message).catch(() => {});
+        await failUploadLifecycle(job.id, null, err.message).catch(() => { });
       }
     });
   } catch (error) {
@@ -885,10 +879,7 @@ router.get("/reports/profit-loss", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_G
     const clientId = resolveClientId(req);
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
     const filters = parseManualFilterQuery(req.query || {});
-    const activeBatchId = await resolveReportBatchId(clientId, filters.batchId, {
-      ...filters,
-      allowExplicitBatch: isHistoricalBatchMode(filters),
-    });
+    const activeBatchId = await resolveEffectiveReportBatchId(clientId, filters);
     const cacheFilters = { ...filters, batchId: activeBatchId || filters.batchId || "" };
     logManualReportFilterDebug("reports/profit-loss", clientId, cacheFilters, activeBatchId);
 
@@ -928,10 +919,7 @@ router.get("/reports/profit-loss/detail", enforceDataSource(REPORT_SOURCE_KEYS.M
     const clientId = resolveClientId(req);
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
     const filters = parseManualFilterQuery(req.query || {});
-    const activeBatchId = await resolveReportBatchId(clientId, filters.batchId, {
-      ...filters,
-      allowExplicitBatch: isHistoricalBatchMode(filters),
-    });
+    const activeBatchId = await resolveEffectiveReportBatchId(clientId, filters);
     const cacheFilters = { ...filters, batchId: activeBatchId || filters.batchId || "" };
     logManualReportFilterDebug("reports/profit-loss/detail", clientId, cacheFilters, activeBatchId);
     const skipSnapshot = hasManualDetailFilterOverrides(cacheFilters);
@@ -967,10 +955,7 @@ router.get("/reports/profit-loss/detail-vendor", enforceDataSource(REPORT_SOURCE
     const clientId = resolveClientId(req);
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
     const filters = parseManualFilterQuery(req.query || {});
-    const activeBatchId = await resolveReportBatchId(clientId, filters.batchId, {
-      ...filters,
-      allowExplicitBatch: isHistoricalBatchMode(filters),
-    });
+    const activeBatchId = await resolveEffectiveReportBatchId(clientId, filters);
     const cacheFilters = { ...filters, batchId: activeBatchId || filters.batchId || "" };
     logManualReportFilterDebug("reports/profit-loss/detail-vendor", clientId, cacheFilters, activeBatchId);
     const skipSnapshot = hasManualDetailFilterOverrides(cacheFilters);
@@ -997,6 +982,46 @@ router.get("/reports/profit-loss/detail-vendor", enforceDataSource(REPORT_SOURCE
     return res.status(500).json({
       success: false,
       error: error.message || "Failed to build staged Profit & Loss vendor detail.",
+    });
+  }
+});
+
+// Vendor Analysis: Account -> Vendor -> Account Total, with dynamic fiscal-year columns.
+router.get("/reports/vendor-analysis", enforceDataSource(REPORT_SOURCE_KEYS.MANUAL_GL), async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+    const filters = parseManualFilterQuery(req.query || {});
+    const activeBatchId = await resolveReportBatchId(clientId, filters.batchId, {
+      ...filters,
+      allowExplicitBatch: isHistoricalBatchMode(filters),
+    });
+    const cacheFilters = { ...filters, batchId: activeBatchId || filters.batchId || "" };
+    logManualReportFilterDebug("reports/vendor-analysis", clientId, cacheFilters, activeBatchId);
+    const skipSnapshot = hasManualDetailFilterOverrides(cacheFilters);
+
+    if (!skipSnapshot) {
+      const snapshotResult = await tryLoadActiveSnapshot(
+        clientId,
+        SNAPSHOT_REPORT_TYPES.VENDOR_ANALYSIS,
+        cacheFilters,
+      );
+      if (snapshotResult.payload) {
+        return res.json({
+          success: true,
+          ...snapshotResult.payload,
+          source: "manual_gl_reporting_snapshot",
+          activeBatchId: snapshotResult.activeBatchId || activeBatchId || null,
+        });
+      }
+    }
+
+    const payload = await getVendorAnalysisFromStage(clientId, cacheFilters);
+    return res.json({ success: true, ...payload, activeBatchId: activeBatchId || null });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.message || "Failed to build staged Vendor Analysis report.",
     });
   }
 });
@@ -1159,7 +1184,11 @@ router.get("/manual-gl/validation/balance-sheet", enforceDataSource(REPORT_SOURC
     const clientId = resolveClientId(req);
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
     const batchId = String(req.query.batchId || req.query.batch_id || "").trim();
-    const payload = await validateBatchBalanceSheet(clientId, batchId);
+    const datasetVersion = String(req.query.datasetVersion || req.query.dataset_version || "").trim();
+    const versionId = String(req.query.versionId || req.query.uploadSessionId || "").trim();
+    // Pass version filters so validation stays scoped to the SELECTED version and
+    // never falls back to another version's active/latest batch.
+    const payload = await validateBatchBalanceSheet(clientId, { batchId, datasetVersion, versionId });
     return res.json({ success: true, ...payload });
   } catch (error) {
     return res.status(500).json({

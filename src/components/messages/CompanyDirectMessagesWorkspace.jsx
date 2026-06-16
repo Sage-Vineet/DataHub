@@ -86,6 +86,8 @@ function MessageBubble({ message, isOwn }) {
 export default function CompanyDirectMessagesWorkspace({
   title = "Messages",
   description = "Direct company conversations",
+  showPageHeader = true,
+  headerSlot,
   fixedCompanyId = null,
   companyOptions = [],
   companyPlaceholder = "Select a company",
@@ -393,29 +395,31 @@ export default function CompanyDirectMessagesWorkspace({
 
   return (
     <div className="space-y-6">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-[#05164D]">{title}</h1>
-          <p className="mt-1 text-sm text-[#6D6E71]">{description}</p>
+      {showPageHeader && (
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-bold text-[#05164D]">{title}</h1>
+            <p className="mt-1 text-sm text-[#6D6E71]">{description}</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              if (singleListMode) {
+                loadSingleListContacts();
+              } else if (activeCompanyId) {
+                loadContacts(activeCompanyId);
+              }
+              if ((singleListMode ? selectedCompanyId : activeCompanyId) && selectedRecipientId) {
+                loadConversation(singleListMode ? selectedCompanyId : activeCompanyId, selectedRecipientId);
+              }
+            }}
+            className="inline-flex items-center gap-2 rounded-xl border border-[#E5E7EF] bg-white px-3.5 py-2.5 text-sm font-semibold text-[#51607A] transition-colors hover:bg-[#F8FAFC]"
+          >
+            <RefreshCw size={15} />
+            Refresh
+          </button>
         </div>
-        <button
-          type="button"
-          onClick={() => {
-            if (singleListMode) {
-              loadSingleListContacts();
-            } else if (activeCompanyId) {
-              loadContacts(activeCompanyId);
-            }
-            if ((singleListMode ? selectedCompanyId : activeCompanyId) && selectedRecipientId) {
-              loadConversation(singleListMode ? selectedCompanyId : activeCompanyId, selectedRecipientId);
-            }
-          }}
-          className="inline-flex items-center gap-2 rounded-xl border border-[#E5E7EF] bg-white px-3.5 py-2.5 text-sm font-semibold text-[#51607A] transition-colors hover:bg-[#F8FAFC]"
-        >
-          <RefreshCw size={15} />
-          Refresh
-        </button>
-      </div>
+      )}
 
       {error && (
         <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-600">
@@ -471,6 +475,7 @@ export default function CompanyDirectMessagesWorkspace({
 
         <div className="overflow-hidden rounded-3xl border border-[#E5E7EF] bg-white shadow-sm">
           <div className="border-b border-[#EEF0F5] p-4">
+            {headerSlot && <div className="mb-3">{headerSlot}</div>}
             <div className="flex items-center gap-2 text-sm font-semibold text-[#05164D]">
               <MessageSquare size={16} />
               {contactLabel}

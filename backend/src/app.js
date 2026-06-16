@@ -22,6 +22,8 @@ const workspacePageStateRoutes = require("./routes/workspacePageState");
 const manualGlRoutes = require("./routes/manualGl");
 const manualReportUploadRoutes = require("./routes/manualReportUploads");
 const reportSourceRoutes = require("./routes/reportSources");
+const ebitdaAdjustmentRoutes = require("./routes/ebitdaAdjustments");
+const keyReportRoutes = require("./routes/keyReports");
 const balanceSheetRoutes = require("./routes/quickbooks/balancesheet/balanceSheet");
 const balanceSheetDetailRoutes = require("./routes/quickbooks/balancesheet/balanceSheetFullDetail");
 const tokenRoutes = require("./routes/quickbooks/token");
@@ -37,6 +39,7 @@ const geminipdf = require("./routes/quickbooks/tax_reconciliation/geminiPdf");
 const bankStatementRoutes = require("./routes/quickbooks/reconciliation/bankStatement");
 const bankVsBooksRoutes = require("./routes/quickbooks/reconciliation/bankVsBooks");
 const syncRoutes = require("./routes/quickbooks/sync");
+const messageGroupRoutes = require("./routes/messageGroups");
 
 const app = express();
 
@@ -63,8 +66,8 @@ function isAllowedVercelPreview(origin) {
       protocol === "https:" &&
       (
         hostname.endsWith(".vercel.app") ||
-        hostname === "centuriuum.com" ||
-        hostname === "www.centuriuum.com"
+        hostname === "centurium.com" ||
+        hostname === "www.centurium.com"
       )
     );
   } catch (_error) {
@@ -78,6 +81,8 @@ const allowedOrigins = Array.from(
     process.env.APP_URL,
     process.env.CORS_ORIGIN,
     ...parseOriginList(process.env.CORS_ORIGIN),
+    "https://centurium.com",
+    "https://www.centurium.com",
     "https://data-hub-fawn.vercel.app",
     "https://datahub-sl3y.onrender.com",
     "http://localhost:5173",
@@ -125,6 +130,8 @@ app.use("/", workspacePageStateRoutes);
 app.use("/", manualGlRoutes);
 app.use("/", manualReportUploadRoutes);
 app.use("/", reportSourceRoutes);
+app.use("/", ebitdaAdjustmentRoutes);
+app.use("/", keyReportRoutes);
 
 // QuickBooks & Financial Routes (with consolidated auth)
 const financialRoutes = [
@@ -156,6 +163,7 @@ app.use("/", folderAccessRoutes);
 app.use("/", reminderRoutes);
 app.use("/", activityRoutes);
 app.use("/", messageRoutes);
+app.use("/", messageGroupRoutes);
 
 app.use(errorHandler);
 

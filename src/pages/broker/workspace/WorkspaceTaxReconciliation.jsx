@@ -1,14 +1,29 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useParams, useNavigate } from "react-router-dom";
 import {
   AlertCircle,
   CheckCircle2,
+  ChevronDown,
   LoaderCircle,
   RefreshCw,
 } from "lucide-react";
 import { cn } from "../../../lib/utils";
-import { getCompanyRequest, getStoredToken } from "../../../lib/api";
+import {
+  getCompanyRequest,
+  getStoredToken,
+  getManualStagedProfitLossSummary,
+  getManualStageFilterOptions,
+  listManualGlDatasetVersions,
+  getActiveKeyReportMappings,
+} from "../../../lib/api";
 import { useDataSource } from "../../../context/DataSourceContext";
+
+import {
+  useKeyReportContextStore,
+  selectKeyReportContext,
+} from "../../../store/useKeyReportContextStore";
+import { useShallow } from "zustand/react/shallow";
+import KeyReportVersionSelector from "../../../components/key-reports/KeyReportVersionSelector";
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
@@ -159,6 +174,7 @@ const MAIN_LINE_ITEMS = [
 
 export default function WorkspaceTaxReconciliation() {
   const { clientId } = useParams();
+  const navigate = useNavigate();
   const { activeSource, activeSourceMode } = useDataSource();
   const storedState = useMemo(() => getStoredState(clientId), [clientId]);
 
@@ -178,9 +194,26 @@ export default function WorkspaceTaxReconciliation() {
     status: Object.keys(storedState?.matrixData ?? {}).length > 0 ? "success" : "idle",
     message: Object.keys(storedState?.matrixData ?? {}).length > 0 ? "Restored saved data." : "",
   }));
+  // Key Reports tax return gate: 'idle' | 'loading' | 'ok' | 'missing'
+  const [krTaxGate, setKrTaxGate] = useState({ status: "idle" });
 
-  const isManualMode = activeSourceMode === 'manual_upload' || activeSourceMode === 'manual';
-  const isQBManual = activeSourceMode === 'quickbooks_manual';
+  // Dataset version selection removed — consolidated into Key Reports.
+
+  // Key Reports is the single source of truth: when a Version is selected, the
+  // tax reconciliation's flow comes from THAT Version (manual_gl vs manual_upload),
+  // not the Connections-page active data source.
+  const kr = useKeyReportContextStore(useShallow(selectKeyReportContext));
+  const effectiveSourceMode = kr.krActive
+    ? (kr.flowType === 'manual_gl' ? 'manual' : 'manual_upload')
+    : activeSourceMode;
+
+  // Manual GL (staged General Ledger) sources its P&L from the platform's GL
+  // reports — not from a separately uploaded P&L document. It's handled by its
+  // own branch (checked before isManualMode) so the uploaded-file path is unchanged.
+  const isManualGL = effectiveSourceMode === 'manual';
+  const isManualMode = effectiveSourceMode === 'manual_upload' || effectiveSourceMode === 'manual';
+  // A Key Reports Version is never the QuickBooks-Manual flow.
+  const isQBManual = !kr.krActive && activeSourceMode === 'quickbooks_manual';
 
   const selectedYears = useMemo(() => {
     const s = parseInt(startYear, 10);
@@ -241,6 +274,13 @@ export default function WorkspaceTaxReconciliation() {
     });
   }, [clientId, currentYear]);
 
+  // ── Manual GL version loading ─────────────────────────────────────────
+
+  // Manual GL internal version selection removed — consolidated into Key Reports.
+  const selectedVersion = kr.resolvedDatasetVersion;
+  const latestVersionRef = useRef(selectedVersion);
+  latestVersionRef.current = selectedVersion;
+
   // ── Persist ───────────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -256,13 +296,132 @@ export default function WorkspaceTaxReconciliation() {
   // ── Loader ────────────────────────────────────────────────────────────
 
   const loadData = useCallback(async (forceRefresh = false) => {
+    const requestVersion = selectedVersion;
     setIsLoading(true);
     setError("");
     setIsQBDisconnected(false);
     setSyncStatus({ status: "loading", message: isManualMode ? "Fetching P&L data…" : "Fetching P&L & Tax Data…" });
 
     try {
-      if (isManualMode) {
+      // Key Reports scoping (highest priority): resolve the tax return from the
+      // SELECTED Key Report Version's linked documents.
+      const krVersionParam = kr.krActive && kr.selectedVersionId
+        ? `&keyReportVersionId=${encodeURIComponent(String(kr.selectedVersionId))}`
+        : "";
+      const taxVersionParam = selectedVersion
+        ? `&datasetVersion=${encodeURIComponent(String(selectedVersion))}`
+        : "";
+
+      if (isManualGL) {
+        // ...
+        const headers = getHeaders();
+        const allWarnings = [];
+        const forceParam = forceRefresh ? "&force=1" : "";
+
+        setSyncStatus({ status: "loading", message: "Reading manual GL P&L…" });
+
+        // Tax returns (uploaded) + available GL fiscal years for the selected
+        // version, in parallel. Passing datasetVersion scopes both the year
+        // list and every subsequent P&L fetch to that version's transactions.
+        const versionParam = selectedVersion ? { datasetVersion: String(selectedVersion) } : {};
+        // Scope the tax return document resolution to the SELECTED version's Key
+        // Reports mapping so it never mixes another version's (or staging's) returns.
+        const [taxRes, filterRes] = await Promise.all([
+          fetch(`${API_BASE_URL}/manual-report-uploads/tax-data?clientId=${clientId || ""}${forceParam}${taxVersionParam}${krVersionParam}`, { headers })
+            .then((r) => r.json()).catch(() => ({ success: false })),
+          getManualStageFilterOptions({ clientId, params: versionParam }).catch(() => ({})),
+        ]);
+
+        const taxYears = (taxRes.success && taxRes.years) ? taxRes.years : {};
+        if (taxRes.warning) allWarnings.push(taxRes.warning);
+        if (Array.isArray(taxRes.warnings)) allWarnings.push(...taxRes.warnings);
+
+        const glYears = Array.isArray(filterRes?.options?.fiscalYear)
+          ? filterRes.options.fiscalYear.map(Number).filter(Boolean)
+          : [];
+
+        // Fetch the GL P&L summary per year — version-scoped so each version
+        // produces independent, isolated tax reconciliation line items.
+        const plYears = {};
+        await Promise.all(glYears.map(async (year) => {
+          try {
+            const payload = await getManualStagedProfitLossSummary({
+              clientId,
+              params: { fiscalYear: [String(year)], ...versionParam },
+            });
+            const rows = Array.isArray(payload?.hierarchicalRows) ? payload.hierarchicalRows : [];
+            if (rows.length) {
+              plYears[year] = { year, data: extractTaxRowsFromManualPL(rows) };
+            }
+          } catch {
+            /* skip this year on failure */
+          }
+        }));
+
+        const allYears = [...new Set([
+          ...Object.keys(plYears).map(Number),
+          ...Object.keys(taxYears).map(Number),
+        ])].sort();
+
+        if (!allYears.length) {
+          throw new Error("No manual GL P&L or tax return data found. Upload a GL via Manual GL Upload and tax returns to the data room.");
+        }
+
+        const results = {};
+        for (const year of allYears) {
+          const mergedMap = new Map();
+
+          MAIN_LINE_ITEMS.forEach((item) => {
+            mergedMap.set(item.label, { label: item.label, pl: 0, taxReturn: 0, isReconcilingItem: false });
+          });
+
+          // Overlay P&L (from manual GL) for matching year
+          (plYears[year]?.data || []).forEach((item) => {
+            if (mergedMap.has(item.label)) {
+              mergedMap.get(item.label).pl = Number(item.pl || 0);
+            } else {
+              mergedMap.set(item.label, { label: item.label, pl: Number(item.pl || 0), taxReturn: 0, isReconcilingItem: false });
+            }
+          });
+
+          // Overlay tax return data for matching year
+          (taxYears[year]?.data || []).forEach((item) => {
+            if (mergedMap.has(item.label)) {
+              const row = mergedMap.get(item.label);
+              row.taxReturn = Number(item.taxReturn || 0);
+              if (item.isReconcilingItem) row.isReconcilingItem = true;
+            } else {
+              mergedMap.set(item.label, {
+                label: item.label,
+                pl: 0,
+                taxReturn: Number(item.taxReturn || 0),
+                isReconcilingItem: !!item.isReconcilingItem,
+              });
+            }
+          });
+
+          results[year] = {
+            success: true,
+            taxYear: year,
+            data: Array.from(mergedMap.values()).map((row) => ({
+              ...row,
+              variance: (row.taxReturn || 0) - (row.pl || 0),
+            })),
+            warnings: [],
+          };
+        }
+
+        // Discard if the user switched versions while this load was in flight,
+        // so a slow previous-version response can't overwrite fresh data.
+        if (latestVersionRef.current !== requestVersion) return;
+        const loadedYears = Object.keys(results).map(Number).sort();
+        setMatrixData(results);
+        setWarnings(allWarnings);
+        setSyncStatus({
+          status: "success",
+          message: `Loaded ${loadedYears.length} year(s) from manual GL: FY ${loadedYears.join(", FY ")}.`,
+        });
+      } else if (isManualMode) {
         // ── Manual Upload: P&L + Tax Returns both from DataRoom via Gemini ─
         const headers = getHeaders();
         const allWarnings = [];
@@ -272,19 +431,19 @@ export default function WorkspaceTaxReconciliation() {
         // 1. Fetch P&L years and Tax Return years in parallel
         const forceParam = forceRefresh ? "&force=1" : "";
         const [plRes, taxRes] = await Promise.all([
-          fetch(`${API_BASE_URL}/manual-report-uploads/pl-for-tax?clientId=${clientId || ""}${forceParam}`, { headers })
+          fetch(`${API_BASE_URL}/manual-report-uploads/pl-for-tax?clientId=${clientId || ""}${forceParam}${krVersionParam}`, { headers })
             .then((r) => r.json()).catch(() => ({ success: false })),
-          fetch(`${API_BASE_URL}/manual-report-uploads/tax-data?clientId=${clientId || ""}${forceParam}`, { headers })
+          fetch(`${API_BASE_URL}/manual-report-uploads/tax-data?clientId=${clientId || ""}${forceParam}${krVersionParam}`, { headers })
             .then((r) => r.json()).catch(() => ({ success: false })),
         ]);
 
         // plYears: { 2023: { year, data: [{label, pl}] }, ... }
-        const plYears  = (plRes.success  && plRes.years)  ? plRes.years  : {};
+        const plYears = (plRes.success && plRes.years) ? plRes.years : {};
         // taxYears: { 2022: { year, data: [{label, taxReturn, isReconcilingItem}] }, ... }
         const taxYears = (taxRes.success && taxRes.years) ? taxRes.years : {};
 
-        if (plRes.warning)  allWarnings.push(plRes.warning);
-        if (Array.isArray(plRes.warnings))  allWarnings.push(...plRes.warnings);
+        if (plRes.warning) allWarnings.push(plRes.warning);
+        if (Array.isArray(plRes.warnings)) allWarnings.push(...plRes.warnings);
         if (taxRes.warning) allWarnings.push(taxRes.warning);
         if (Array.isArray(taxRes.warnings)) allWarnings.push(...taxRes.warnings);
 
@@ -369,7 +528,7 @@ export default function WorkspaceTaxReconciliation() {
           throw new Error("No synced P&L reports found. Please sync your files on the Connections page first.");
         }
 
-        if (taxRes.warning)  allWarnings.push(taxRes.warning);
+        if (taxRes.warning) allWarnings.push(taxRes.warning);
         if (Array.isArray(taxRes.warnings)) allWarnings.push(...taxRes.warnings);
 
         // Detect fiscal year from file date metadata or filename
@@ -510,14 +669,78 @@ export default function WorkspaceTaxReconciliation() {
     } finally {
       setIsLoading(false);
     }
-  }, [selectedYears, accountingMethod, clientId, getHeaders, isManualMode, isQBManual, currentYear]);
+  }, [selectedYears, accountingMethod, clientId, getHeaders, isManualGL, isManualMode, isQBManual, currentYear, selectedVersion]);
 
+  // Key Reports tax return gate — validates that a tax return is linked before
+  // loading any reconciliation data. For manual_upload and quickbooks_manual modes
+  // the backend now falls back to connection-page synced files, so the gate is
+  // bypassed; it only applies to QB Online where KR linking is the sole data path.
+  useEffect(() => {
+    if (!clientId) return;
+    // Key Reports-driven: the gate reflects whether THIS Version has a Tax Return
+    // linked (auto-detected). Tax Reconciliation requires GL/P&L + a Tax Return.
+    if (kr.krActive) {
+      if (kr.loadingDetail) {
+        setKrTaxGate({ status: "loading" });
+        return;
+      }
+      const ok = kr.availability.tax;
+      setKrTaxGate({ status: ok ? "ok" : "missing" });
+      // Removed matrixData clearing — allow what's available (like P&L) to render
+      return;
+    }
+    // Legacy (no Key Report versions): manual_upload / QMS fall back to synced
+    // files; only QB Online requires an active-version tax-return link.
+    if (!activeSource) return;
+    if (isManualMode || isQBManual) {
+      setKrTaxGate({ status: "ok" });
+      return;
+    }
+    let cancelled = false;
+    setKrTaxGate({ status: "loading" });
+    getActiveKeyReportMappings()
+      .then((mappings) => {
+        if (cancelled) return;
+        const hasTaxReturn = (mappings?.tax_return?.length || 0) > 0;
+        setKrTaxGate({ status: hasTaxReturn ? "ok" : "missing" });
+        // Removed matrixData clearing — allow what's available to render
+      })
+      .catch(() => {
+        if (!cancelled) setKrTaxGate({ status: "ok" }); // fail open
+      });
+    return () => { cancelled = true; };
+  }, [activeSource, clientId, isManualMode, isQBManual, kr.krActive, kr.loadingDetail, kr.availability.tax]);
+
+  // Auto-load on first visit. In Manual GL mode, wait until the version is
+  // resolved before loading — and include selectedVersion in the deps so this
+  // re-fires once the version becomes available (without it, the effect ran
+  // once with a null version and never again, leaving an empty screen even
+  // though an active version with data existed).
   useEffect(() => {
     if (!activeSource) return;
+    if (isManualGL && !selectedVersion) return;
     if (Object.keys(matrixData).length > 0) return;
+    // Removed strict krTaxGate.status !== "ok" check to allow P&L-only loading
     void loadData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSource]);
+  }, [activeSource, isManualGL, selectedVersion]);
+
+  // Re-generate when the selected version changes so Tax Reconciliation always
+  // reflects the chosen version's transactions with no cross-version leakage.
+  const prevTaxVersionRef = useRef(selectedVersion);
+  useEffect(() => {
+    if (!isManualGL) return;
+    if (prevTaxVersionRef.current === selectedVersion) return;
+    prevTaxVersionRef.current = selectedVersion;
+    if (!selectedVersion) return;
+    // Removed strict krTaxGate.status !== "ok" check to allow P&L-only re-loading on version change
+    try { window.sessionStorage.removeItem(getStorageKey(clientId)); } catch { /* ignore */ }
+    setMatrixData({});
+    setError("");
+    setWarnings([]);
+    setSyncStatus({ status: "idle", message: "" });
+    void loadData(true);
+  }, [isManualGL, selectedVersion, clientId, loadData]);
 
   // ── Data helpers ──────────────────────────────────────────────────────
 
@@ -571,11 +794,38 @@ export default function WorkspaceTaxReconciliation() {
 
   return (
     <div className="space-y-6">
+
+      {/* Key Reports tax return gate — shown when no tax return is linked */}
+      {krTaxGate.status === "missing" && (
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4">
+          <div className="flex items-start gap-3">
+            <AlertCircle size={18} className="mt-0.5 shrink-0 text-amber-600" />
+            <div>
+              <p className="text-sm font-semibold text-amber-800">
+                Tax Return missing in Key Reports
+              </p>
+              <p className="mt-1 text-sm text-amber-700">
+                A <strong>Tax Return</strong> is not linked in the selected Key Reports Version.
+                The "Tax Return" and "Variance" columns below will show no data until a return is linked.
+              </p>
+              <button
+                onClick={() => navigate(`/broker/client/${clientId}/dataroom/key-reports`)}
+                className="mt-2 text-sm font-semibold text-amber-800 underline hover:text-amber-900"
+              >
+                Link Tax Return in Key Reports →
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {isManualMode && (
         <div className="space-y-3">
-          <div className="flex items-center justify-between gap-4">
-            <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="flex flex-wrap items-center gap-3">
               {syncStatus?.message && <SyncStatus sync={syncStatus} />}
+              {/* Unified Key Reports Version selector is the single source of truth */}
+              <KeyReportVersionSelector clientId={clientId} variant="filter" />
             </div>
             <button
               type="button"
@@ -699,7 +949,7 @@ export default function WorkspaceTaxReconciliation() {
       {/* ── Single unified table ── */}
       <section className="rounded-[var(--radius-card)] border border-border bg-white shadow-[0_10px_30px_rgba(15,23,42,0.04)]">
         <div className="border-b border-border px-5 py-4">
-          <h2 className="text-[16px] font-semibold text-text-primary">Data Source Reconciliation</h2>
+          <h2 className="text-[16px] font-semibold text-text-primary">Tax Reconciliation</h2>
           <p className="mt-1 text-[13px] text-text-secondary">
             {isManualMode
               ? activeYears.length > 0

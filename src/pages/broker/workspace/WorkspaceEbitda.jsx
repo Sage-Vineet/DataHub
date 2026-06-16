@@ -1,7 +1,6 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useParams } from "react-router-dom";
 import {
-  RefreshCw,
   TrendingUp,
   AlertCircle,
   Plus,
@@ -9,30 +8,62 @@ import {
   ChevronDown,
 } from "lucide-react";
 import { cn, formatCurrency } from "../../../lib/utils";
-import { getCompanyRequest, getReportSources, setSelectedReportSource as apiSetSelectedReportSource, getAllManualUploadedReports, getAllQMSUploadedReports, syncQMSUploadSource } from "../../../lib/api";
+import {
+  getCompanyRequest,
+  getAllManualUploadedReports,
+  getAllQMSUploadedReports,
+  getManualStageFilterOptions,
+  listManualGlDatasetVersions,
+  uploadFile,
+  saveEbitdaAdjustmentsBatch,
+  deleteEbitdaAdjustment,
+} from "../../../lib/api";
 import {
   getEbitdaData,
   extractEbitdaFromManualPLRows,
 } from "../../../services/ebitdaService";
+import {
+  loadAdjustmentWorkspaceData,
+  loadVendorReferenceData,
+} from "../../../services/ebitdaAdjustmentService";
+import { getProfitMetricConfig } from "../../../lib/profitMetric";
 import { REPORT_SOURCE_KEYS, normalizeReportSourceKey } from "../../../lib/report-source";
-import { refreshQuickbooksToken } from "../../../lib/quickbooks";
 import QBDisconnectedBanner from "../../../components/common/QBDisconnectedBanner";
 import Modal from "../../../components/common/Modal";
+import EbitdaAdjustmentsPanel from "../../../components/reports/ebitda/EbitdaAdjustmentsPanel";
 import { useDataSource } from "../../../context/DataSourceContext";
+import { useKeyReportContextStore, selectKeyReportContext } from "../../../store/useKeyReportContextStore";
+import { useShallow } from "zustand/react/shallow";
+import KeyReportVersionSelector from "../../../components/key-reports/KeyReportVersionSelector";
 
 function formatPercent(value) {
   if (!Number.isFinite(value)) return "-";
-  return `${value.toFixed(1)}%`;
+  return `${value.toFixed(2)}%`;
 }
 
-function EmptyState() {
+function toNumber(value, fallback = 0) {
+  if (value === null || value === undefined || value === "") return fallback;
+  const numeric = typeof value === "number" ? value : Number(String(value).replace(/,/g, ""));
+  return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+function toAbsoluteNumber(value, fallback = 0) {
+  return Math.abs(toNumber(value, fallback));
+}
+
+function hasUsableEbitdaData(multiYearData) {
+  if (!multiYearData || typeof multiYearData !== "object") return false;
+  return Object.values(multiYearData).some((entry) => entry && typeof entry === "object");
+}
+
+function EmptyState({ analysisLabel = "EBITDA Analysis" }) {
   return (
     <div className="flex flex-col items-center justify-center rounded-2xl border-2 border-dashed border-border bg-bg-page/50 py-16">
       <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10">
         <TrendingUp size={28} className="text-primary" />
       </div>
       <h3 className="text-[16px] font-semibold text-text-primary">
-        Generate EBITDA Analysis
+        Generate {analysisLabel}
       </h3>
       <p className="mt-1.5 max-w-sm text-center text-[13px] text-text-muted">
         No financial data was found. Please upload and stage your financial data, then generate the analysis.
@@ -56,26 +87,29 @@ function EmptyStateNotification({ error, onRetry }) {
   );
 }
 
-const EMPTY_TABLE_ROWS = [
-  { label: 'Net Income', indent: false, bold: true, shade: 'bg-gray-50' },
-  { label: 'Total Interest Income', indent: true, bold: false, shade: '' },
-  { label: 'Total Interest Expense', indent: true, bold: false, shade: '' },
-  { label: 'Total Income Tax Expense', indent: true, bold: false, shade: '' },
-  { label: 'Depreciation', indent: true, bold: false, shade: '' },
-  { label: 'Amortization Expense', indent: true, bold: false, shade: '' },
-  { label: 'EBITDA', indent: false, bold: true, shade: 'bg-[#f8fafc]' },
-  { label: 'Addbacks', indent: false, bold: true, shade: 'bg-gray-100' },
-  { label: "Seller's Discretionary Earnings", indent: false, bold: true, shade: 'bg-gray-50' },
-  { label: 'SDE % of Sales', indent: false, bold: false, shade: '' },
-];
+function buildEmptyTableRows(labels) {
+  return [
+    { label: 'Net Income', indent: false, bold: true, shade: 'bg-gray-50' },
+    { label: 'Total Interest Income', indent: true, bold: false, shade: '' },
+    { label: 'Total Interest Expense', indent: true, bold: false, shade: '' },
+    { label: 'Total Income Tax Expense', indent: true, bold: false, shade: '' },
+    { label: 'Depreciation', indent: true, bold: false, shade: '' },
+    { label: 'Amortization Expense', indent: true, bold: false, shade: '' },
+    { label: 'EBITDA', indent: false, bold: true, shade: 'bg-[#f8fafc]' },
+    { label: labels?.sectionLabel || 'Addbacks', indent: false, bold: true, shade: 'bg-gray-100' },
+    { label: labels?.finalRowLabel || "Seller's Discretionary Earnings", indent: false, bold: true, shade: 'bg-gray-50' },
+    { label: labels?.percentRowLabel || 'SDE % of Sales', indent: false, bold: false, shade: '' },
+  ];
+}
 
-function EmptyEbitdaTable({ companyName }) {
+function EmptyEbitdaTable({ companyName, profitMetricConfig }) {
+  const rows = buildEmptyTableRows(profitMetricConfig);
   return (
     <div className="flex gap-6 items-start">
       <div className="flex-1 overflow-hidden rounded-xl border border-[#cbd5e1] bg-white shadow-lg">
         <div className="bg-[#8bc53d] py-3 text-center">
           <h2 className="text-[18px] font-bold text-white">
-            Recalculated Seller&apos;s Discretionary Earnings of {companyName || 'the Business'}
+            {profitMetricConfig?.headerLead || "Recalculated Seller's Discretionary Earnings"} of {companyName || 'the Business'}
           </h2>
         </div>
         <div className="overflow-x-auto">
@@ -87,7 +121,7 @@ function EmptyEbitdaTable({ companyName }) {
               </tr>
             </thead>
             <tbody>
-              {EMPTY_TABLE_ROWS.map((row) => (
+              {rows.map((row) => (
                 <tr
                   key={row.label}
                   className={`border-b border-[#f1f5f9] h-[46px] ${row.shade}`}
@@ -106,12 +140,12 @@ function EmptyEbitdaTable({ companyName }) {
   );
 }
 
-function LoadingState() {
+function LoadingState({ metricLabel = 'EBITDA' }) {
   return (
     <div className="flex flex-col items-center justify-center rounded-2xl border border-border bg-bg-page/50 py-16">
       <div className="mb-4 h-12 w-12 animate-spin rounded-full border-4 border-border border-t-primary" />
       <p className="animate-pulse text-[13px] font-medium text-text-muted">
-        Analyzing financial data & computing EBITDA…
+        Analyzing financial data & computing {metricLabel}…
       </p>
     </div>
   );
@@ -119,38 +153,101 @@ function LoadingState() {
 
 
 /* ------------------------------------------------------------------ */
-/*  Main Component                                                    */
+/*  Helpers & Sub-components                                         */
 /* ------------------------------------------------------------------ */
+
+function FormattedNumericInput({ value, apiValue, isFromPL, linkedToPL, onChange, className, ...props }) {
+  const [isFocused, setIsFocused] = useState(false);
+  const showPLAsterisk = Boolean(isFromPL && linkedToPL && value === null && apiValue !== null);
+  const valToFormat = value !== null ? value : apiValue;
+  const normalizedValue = valToFormat === null || valToFormat === undefined ? null : toAbsoluteNumber(valToFormat, 0);
+
+  const getDisplayValue = () => {
+    if (isFocused) {
+      if (value === null) return "";
+      return String(toAbsoluteNumber(value, 0));
+    }
+    const formatted = normalizedValue === null ? "-" : formatCurrency(normalizedValue);
+    return showPLAsterisk && formatted !== "-" && !formatted.startsWith("*")
+      ? `*${formatted}`
+      : formatted;
+  };
+
+  return (
+    <input
+      {...props}
+      type="text"
+      value={getDisplayValue()}
+      onFocus={() => setIsFocused(true)}
+      onBlur={() => setIsFocused(false)}
+      onChange={(e) => {
+        const val = e.target.value.replace(/[*,]/g, "").trim();
+        onChange(val);
+      }}
+      className={cn(
+        "w-full bg-transparent text-right font-medium focus:outline-none focus:ring-1 focus:ring-[#8bc53d] rounded px-2 py-1 transition-all",
+        (value !== null || apiValue !== null) ? "text-text-primary" : "text-gray-300",
+        className
+      )}
+      placeholder={apiValue !== null ? formatCurrency(toAbsoluteNumber(apiValue, 0)) : "-"}
+    />
+  );
+}
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
 
 export default function WorkspaceEbitda() {
   const { clientId } = useParams();
   const { activeSource, activeSourceMode } = useDataSource();
+  const kr = useKeyReportContextStore(useShallow(selectKeyReportContext));
 
   const accountingMethod = "Accrual";
 
-  const reportSource = activeSource ? normalizeReportSourceKey(activeSource) : REPORT_SOURCE_KEYS.QUICKBOOKS;
+  const reportSource = kr.krActive && kr.effectiveSource
+    ? kr.effectiveSource
+    : normalizeReportSourceKey(activeSource || REPORT_SOURCE_KEYS.QUICKBOOKS);
   const isManualGl = reportSource === REPORT_SOURCE_KEYS.MANUAL_GL;
   const isManualUpload = reportSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD;
   const isQBManual = reportSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
-  const isManualMode = isManualGl || isManualUpload || isQBManual;
 
   const [multiYearData, setMultiYearData] = useState(null);
   const [years, setYears] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [isSyncing, setIsSyncing] = useState(false);
   const [error, setError] = useState("");
   const [company, setCompany] = useState(null);
   const [dynamicAddbacks, setDynamicAddbacks] = useState([]);
   const [isDataInitialized, setIsDataInitialized] = useState(false);
   const [rowComments, setRowComments] = useState({});
-  const [sdePerCim, setSdePerCim] = useState("");
   const [isTypeDialogOpen, setIsTypeDialogOpen] = useState(false);
+  const [manualGlAdjustments, setManualGlAdjustments] = useState([]);
+  const [manualGlAdjustmentTypes, setManualGlAdjustmentTypes] = useState([]);
+  const [manualGlReferenceIndex, setManualGlReferenceIndex] = useState(null);
+  const [manualGlAdjustmentError, setManualGlAdjustmentError] = useState("");
+  const [isSavingAdjustment, setIsSavingAdjustment] = useState(false);
+  const profitMetricConfig = useMemo(() => getProfitMetricConfig(company), [company]);
+  const analysisLabel = profitMetricConfig.analysisLabel;
+  const sectionLabel = profitMetricConfig.sectionLabel;
+  const itemSingularLabel = profitMetricConfig.itemSingularLabel;
+  const itemPluralLabel = profitMetricConfig.itemPluralLabel;
+
+  // Dataset version selection removed — consolidated into Key Reports.
+  const selectedVersion = kr.resolvedDatasetVersion;
 
   const activeSourceRef = useRef(reportSource);
-  activeSourceRef.current = reportSource;
+  // Tracks the currently-selected version so an in-flight request for a
+  // previous version can be discarded if the user switches mid-fetch
+  // (last-write-wins guard — prevents stale-version data overwriting fresh).
+  const latestVersionRef = useRef(selectedVersion);
   const prevReportSourceForClearRef = useRef(reportSource);
+  const adjustmentLoadTokenRef = useRef(0);
+
+  useEffect(() => {
+    activeSourceRef.current = reportSource;
+  }, [reportSource]);
+
+  useEffect(() => {
+    latestVersionRef.current = selectedVersion;
+  }, [selectedVersion]);
 
   // Extract unique P&L accounts for addback dropdown (dynamic from API data)
   const plAccountOptions = useMemo(() => {
@@ -198,7 +295,7 @@ export default function WorkspaceEbitda() {
 
   // Step 1: Dynamic Extraction Function
   const getValueFromPL = useCallback((year, label) => {
-    const flatRows = multiYearData[year]?._debug?.flatRows;
+    const flatRows = multiYearData?.[year]?._debug?.flatRows;
     if (!flatRows || !label) return null;
 
     const searchLabel = label.toLowerCase().trim();
@@ -208,19 +305,60 @@ export default function WorkspaceEbitda() {
       row.AccountName?.toLowerCase().trim() === searchLabel
     );
 
-    return match ? (match.value || 0) : null;
+    return match ? toAbsoluteNumber(match.value, 0) : null;
   }, [multiYearData]);
 
   const calculateBaseEbitda = useCallback((year) => {
-    const comps = multiYearData[year]?.components;
+    const cached = toNumber(multiYearData?.[year]?.ebitda, NaN);
+    if (Number.isFinite(cached)) return cached;
+    const comps = multiYearData?.[year]?.components;
     if (!comps) return 0;
-    return (comps.netIncome?.value || 0)
-      - (comps.interestIncome?.value || 0)
-      + (comps.interestExpense?.value || 0)
-      + (comps.taxes?.value || 0)
-      + (comps.depreciation?.value || 0)
-      + (comps.amortization?.value || 0);
+    return toNumber(comps.netIncome?.value, 0)
+      - toNumber(comps.interestIncome?.value, 0)
+      + toNumber(comps.interestExpense?.value, 0)
+      + toNumber(comps.taxes?.value, 0)
+      + toNumber(comps.depreciation?.value, 0)
+      + toNumber(comps.amortization?.value, 0);
   }, [multiYearData]);
+
+  const adjustmentVersionId = isManualGl
+    ? (selectedVersion ? String(selectedVersion) : "")
+    : reportSource;
+
+  const adjustmentScope = useMemo(() => ({
+    clientId,
+    versionId: adjustmentVersionId,
+    sourceKey: reportSource,
+  }), [adjustmentVersionId, clientId, reportSource]);
+
+  const baseEbitdaByYear = useMemo(() => {
+    return Object.fromEntries(
+      (years || []).map((year) => [String(year), calculateBaseEbitda(year)]),
+    );
+  }, [calculateBaseEbitda, years]);
+
+  const revenueByYear = useMemo(() => {
+    return Object.fromEntries(
+      (years || []).map((year) => [String(year), multiYearData?.[year]?.revenue || 0]),
+    );
+  }, [multiYearData, years]);
+
+  const adjustmentAccountOptions = useMemo(() => {
+    return manualGlReferenceIndex?.accountOptions?.length
+      ? manualGlReferenceIndex.accountOptions
+      : plAccountOptions;
+  }, [manualGlReferenceIndex, plAccountOptions]);
+
+  const adjustmentVendorOptions = useMemo(() => {
+    return manualGlReferenceIndex?.vendorOptions?.length
+      ? manualGlReferenceIndex.vendorOptions
+      : [];
+  }, [manualGlReferenceIndex]);
+
+  const fallbackAdjustmentLookup = useCallback(
+    (year, label) => getValueFromPL(year, label),
+    [getValueFromPL],
+  );
 
   // Load company info
   useEffect(() => {
@@ -240,20 +378,30 @@ export default function WorkspaceEbitda() {
     setError("");
     setIsLoading(false);
     setIsDataInitialized(false);
-  }, [reportSource]);
+    // Clear version list when switching away from Manual GL
+    if (!isManualGl) {
+      setGlVersions([]);
+      setSelectedVersion(null);
+    }
+  }, [reportSource, isManualGl]);
 
+  // Manual GL internal version loading removed — consolidated into Key Reports.
+
+  // Cache key includes version so switching versions always fetches fresh data
+  // and never serves a cached result from a different version.
   const ebitdaCacheKey = clientId && reportSource
-    ? `ebitda_data_${clientId}_${reportSource}`
+    ? `ebitda_data_${clientId}_${reportSource}${isManualGl && selectedVersion ? `_v${selectedVersion}` : ""}`
     : null;
 
   const handleGenerate = useCallback(async (skipCache = false) => {
     const requestSource = reportSource;
+    const requestVersion = selectedVersion;
     if (!skipCache && ebitdaCacheKey) {
       try {
         const cached = sessionStorage.getItem(ebitdaCacheKey);
         if (cached) {
           const { multiYearData: cachedData, years: cachedYears } = JSON.parse(cached);
-          if (cachedData && cachedYears?.length) {
+          if (cachedData && cachedYears?.length && hasUsableEbitdaData(cachedData)) {
             setMultiYearData(cachedData);
             setYears(cachedYears);
             setError("");
@@ -269,8 +417,11 @@ export default function WorkspaceEbitda() {
       const currentYear = new Date().getFullYear();
 
       if (isManualGl) {
-        // Staged GL: discover available fiscal years, then fetch EBITDA per year
-        const filterOpts = await getManualStageFilterOptions({ clientId });
+        // Staged GL: discover available fiscal years for the selected version,
+        // then fetch EBITDA per year — version-scoped so different versions
+        // produce independent, isolated EBITDA calculations.
+        const versionParam = selectedVersion ? { datasetVersion: String(selectedVersion) } : {};
+        const filterOpts = await getManualStageFilterOptions({ clientId, params: versionParam });
         const yearStrings = filterOpts?.options?.fiscalYear || [];
         const availableYears = yearStrings
           .map((y) => parseInt(y, 10))
@@ -285,21 +436,32 @@ export default function WorkspaceEbitda() {
         await Promise.all(
           availableYears.map(async (year) => {
             try {
-              results[year] = await getEbitdaData(`${year}-01-01`, `${year}-12-31`, accountingMethod, "manual");
+              results[year] = await getEbitdaData(
+                `${year}-01-01`, `${year}-12-31`,
+                accountingMethod, "manual",
+                selectedVersion,
+              );
             } catch {
               results[year] = null;
             }
           })
         );
-        if (activeSourceRef.current !== requestSource) return;
+        // Discard if the source OR the selected version changed while this
+        // request was in flight — otherwise a slow old-version response would
+        // overwrite the newer version's data (stale-data-until-refresh bug).
+        if (activeSourceRef.current !== requestSource || latestVersionRef.current !== requestVersion) return;
         setYears(availableYears);
         setMultiYearData(results);
-        if (ebitdaCacheKey) {
+        if (ebitdaCacheKey && hasUsableEbitdaData(results)) {
           try { sessionStorage.setItem(ebitdaCacheKey, JSON.stringify({ multiYearData: results, years: availableYears })); } catch { /* quota exceeded */ }
         }
       } else if (isManualUpload) {
         // Fetch ALL uploaded P&L files so every year is represented
-        const result = await getAllManualUploadedReports("profit_and_loss", { clientId });
+        const params = {
+          clientId,
+          ...(kr.krActive && kr.selectedVersionId ? { keyReportVersionId: kr.selectedVersionId } : {}),
+        };
+        const result = await getAllManualUploadedReports("profit_and_loss", params);
         const files = (result?.files || []).filter((f) => f.data?.rows?.length);
 
         if (!files.length) {
@@ -362,12 +524,16 @@ export default function WorkspaceEbitda() {
         if (activeSourceRef.current !== requestSource) return;
         setYears(newYears);
         setMultiYearData(newData);
-        if (ebitdaCacheKey) {
+        if (ebitdaCacheKey && hasUsableEbitdaData(newData)) {
           try { sessionStorage.setItem(ebitdaCacheKey, JSON.stringify({ multiYearData: newData, years: newYears })); } catch { /* quota exceeded */ }
         }
       } else if (isQBManual) {
         // QuickBooks Manual: read all synced P&L files from qb_synced_reports
-        const result = await getAllQMSUploadedReports("profit_and_loss", { clientId });
+        const params = {
+          clientId,
+          ...(kr.krActive && kr.selectedVersionId ? { keyReportVersionId: kr.selectedVersionId } : {}),
+        };
+        const result = await getAllQMSUploadedReports("profit_and_loss", params);
         const files = (result?.files || []).filter((f) => f.data?.rows?.length);
 
         if (!files.length) {
@@ -425,7 +591,7 @@ export default function WorkspaceEbitda() {
         if (activeSourceRef.current !== requestSource) return;
         setYears(newYears);
         setMultiYearData(newData);
-        if (ebitdaCacheKey) {
+        if (ebitdaCacheKey && hasUsableEbitdaData(newData)) {
           try { sessionStorage.setItem(ebitdaCacheKey, JSON.stringify({ multiYearData: newData, years: newYears })); } catch { /* quota exceeded */ }
         }
       } else {
@@ -448,25 +614,120 @@ export default function WorkspaceEbitda() {
         );
         if (activeSourceRef.current !== requestSource) return;
         setMultiYearData(results);
-        if (ebitdaCacheKey) {
+        if (ebitdaCacheKey && hasUsableEbitdaData(results)) {
           try { sessionStorage.setItem(ebitdaCacheKey, JSON.stringify({ multiYearData: results, years: yearList })); } catch { /* quota exceeded */ }
         }
       }
     } catch (err) {
       if (activeSourceRef.current !== requestSource) return;
-      setError(err?.message || "Failed to fetch EBITDA data. Please try again.");
+      setError(err?.message || "Failed to fetch analysis data. Please try again.");
       setMultiYearData(null);
     } finally {
       if (activeSourceRef.current === requestSource) setIsLoading(false);
     }
-  }, [isManualGl, isManualUpload, isQBManual, clientId, ebitdaCacheKey, accountingMethod]);
+  }, [isManualGl, isManualUpload, isQBManual, clientId, ebitdaCacheKey, accountingMethod, selectedVersion]);
 
   useEffect(() => {
     handleGenerate(isManualUpload || isQBManual);
   }, [handleGenerate]);
 
+  // When the selected Manual GL version changes, discard any cached result and
+  // re-generate so EBITDA always reflects the chosen version's transactions.
+  const prevVersionRef = useRef(selectedVersion);
+  useEffect(() => {
+    if (!isManualGl) return;
+    if (prevVersionRef.current === selectedVersion) return;
+    prevVersionRef.current = selectedVersion;
+    if (!selectedVersion) return;
+
+    // Check cache before clearing/loading to minimize UI jumps
+    let inCache = false;
+    if (ebitdaCacheKey) {
+      try {
+        const cached = sessionStorage.getItem(ebitdaCacheKey);
+        if (cached) {
+          const { multiYearData: cd, years: cy } = JSON.parse(cached);
+          if (cd && cy?.length && hasUsableEbitdaData(cd)) inCache = true;
+        }
+      } catch { /* ignore */ }
+    }
+
+    if (!inCache) {
+      // Clear old state and show spinner IMMEDIATELY (prevents EmptyState flicker
+      // while handleGenerate is waiting to be triggered in the next tick).
+      setMultiYearData(null);
+      setYears([]);
+      setIsLoading(true);
+    }
+
+    setIsDataInitialized(false);
+    setError("");
+  }, [isManualGl, selectedVersion, ebitdaCacheKey]);
+
+  useEffect(() => {
+    if (!isManualGl) {
+      setManualGlAdjustments([]);
+      setManualGlAdjustmentTypes([]);
+      setManualGlReferenceIndex(null);
+      setManualGlAdjustmentError("");
+      return;
+    }
+
+    if (!clientId || !adjustmentVersionId) {
+      setManualGlAdjustments([]);
+      setManualGlAdjustmentTypes([]);
+      setManualGlReferenceIndex(null);
+      setManualGlAdjustmentError("");
+      return;
+    }
+
+    let cancelled = false;
+    const loadToken = adjustmentLoadTokenRef.current + 1;
+    adjustmentLoadTokenRef.current = loadToken;
+
+    setManualGlAdjustmentError("");
+    setManualGlAdjustments([]);
+    setManualGlAdjustmentTypes([]);
+    setManualGlReferenceIndex(null);
+
+    loadAdjustmentWorkspaceData({
+      clientId,
+      versionId: adjustmentVersionId,
+      sourceKey: reportSource,
+    })
+      .then(({ types, adjustments }) => {
+        if (cancelled || adjustmentLoadTokenRef.current !== loadToken) return;
+        setManualGlAdjustmentTypes(Array.isArray(types) ? types : []);
+        setManualGlAdjustments(Array.isArray(adjustments) ? adjustments : []);
+      })
+      .catch((err) => {
+        if (cancelled || adjustmentLoadTokenRef.current !== loadToken) return;
+        setManualGlAdjustmentError(err?.message || `Failed to load ${itemPluralLabel.toLowerCase()}.`);
+        setManualGlAdjustmentTypes([]);
+        setManualGlAdjustments([]);
+      });
+
+    loadVendorReferenceData({
+      clientId,
+      params: selectedVersion ? { datasetVersion: String(selectedVersion) } : {},
+    })
+      .then((reference) => {
+        if (cancelled || adjustmentLoadTokenRef.current !== loadToken) return;
+        setManualGlReferenceIndex(reference || null);
+      })
+      .catch(() => {
+        if (cancelled || adjustmentLoadTokenRef.current !== loadToken) return;
+        setManualGlReferenceIndex(null);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [adjustmentVersionId, clientId, isManualGl, reportSource, selectedVersion, itemPluralLabel]);
+
   // Handle Dynamic Addbacks Initialization and Persistence
   useEffect(() => {
+    if (isManualGl) return;
     if (!multiYearData || isDataInitialized) return;
 
     const storageKey = `ebitda_addbacks_${clientId}`;
@@ -484,15 +745,17 @@ export default function WorkspaceEbitda() {
           const normalizedLabel = (ab.label || "").trim();
           const vals = {};
           Object.keys(multiYearData).forEach(year => {
-            const apiVal = isFromPL ? getValueFromPL(year, normalizedLabel) : null;
+            const apiVal = isFromPL ? toAbsoluteNumber(getValueFromPL(year, normalizedLabel), 0) : null;
             const existing = ab.values?.[year] || {};
+            const existingUserValue = existing.userValue;
+            const hasExistingUserValue = existingUserValue !== null && existingUserValue !== undefined && String(existingUserValue).trim() !== "";
             vals[year] = {
               apiValue: apiVal,
-              userValue: existing.userValue !== undefined ? existing.userValue : (existing.apiValue !== undefined ? null : null)
+              userValue: hasExistingUserValue ? toAbsoluteNumber(existingUserValue, 0) : null
             };
             // If it was old format (just number), migrate it to userValue
             if (typeof existing === 'number') {
-              vals[year].userValue = existing;
+              vals[year].userValue = toAbsoluteNumber(existing, 0);
             }
           });
           const latestYear = years[0] || Object.keys(multiYearData)[0];
@@ -504,13 +767,12 @@ export default function WorkspaceEbitda() {
             isFromPL,
             accountId: ab.accountId || (isFromPL ? getAccountIdByLabel(normalizedLabel) : null),
             linkedToPL: isFromPL,
-            value: latestVals.userValue !== null ? latestVals.userValue : latestVals.apiValue,
+            value: latestVals.userValue !== null ? toAbsoluteNumber(latestVals.userValue, 0) : toAbsoluteNumber(latestVals.apiValue, 0),
             values: vals,
           };
         });
 
         setDynamicAddbacks(initialized);
-        if (parsed.sdePerCim) setSdePerCim(parsed.sdePerCim);
         if (parsed.rowComments) setRowComments(parsed.rowComments);
         setIsDataInitialized(true);
         return;
@@ -523,18 +785,18 @@ export default function WorkspaceEbitda() {
     // Starting with empty addbacks or previously saved ones only.
     setDynamicAddbacks([]);
     setIsDataInitialized(true);
-  }, [multiYearData, clientId, isDataInitialized, getValueFromPL, years, getAccountIdByLabel]);
+  }, [multiYearData, clientId, isDataInitialized, getValueFromPL, years, getAccountIdByLabel, isManualGl]);
 
   // Persistent saving
   useEffect(() => {
+    if (isManualGl) return;
     if (isDataInitialized && clientId) {
       localStorage.setItem(`ebitda_addbacks_${clientId}`, JSON.stringify({
         addbacks: dynamicAddbacks,
-        sdePerCim: sdePerCim,
         rowComments: rowComments
       }));
     }
-  }, [dynamicAddbacks, sdePerCim, rowComments, clientId, isDataInitialized]);
+  }, [dynamicAddbacks, rowComments, clientId, isDataInitialized, isManualGl]);
 
   const handleAddAddback = ({ type, accountLabel = "" } = {}) => {
     const newId = `custom_${Date.now()}`;
@@ -543,7 +805,7 @@ export default function WorkspaceEbitda() {
     const label = isPL ? accountLabel : "";
 
     years.forEach(year => {
-      const apiVal = isPL && label ? getValueFromPL(year, label) : null;
+      const apiVal = isPL && label ? toAbsoluteNumber(getValueFromPL(year, label), 0) : null;
       newVals[year] = {
         apiValue: apiVal,
         userValue: null
@@ -557,7 +819,7 @@ export default function WorkspaceEbitda() {
       id: newId,
       type: isPL ? "PL" : "RECAST",
       label,
-      value: latestVals.userValue !== null ? latestVals.userValue : latestVals.apiValue,
+      value: latestVals.userValue !== null ? toAbsoluteNumber(latestVals.userValue, 0) : toAbsoluteNumber(latestVals.apiValue, 0),
       isFromPL: isPL,
       accountId: isPL && label ? getAccountIdByLabel(label) : null,
       values: newVals,
@@ -569,8 +831,8 @@ export default function WorkspaceEbitda() {
   const updateAddbackValue = (id, year, value) => {
     setDynamicAddbacks(prev => prev.map(ab => {
       if (ab.id === id) {
-        const normalizedInput = typeof value === "string" ? value.replace(/\*/g, "").trim() : value;
-        const numericValue = normalizedInput === "" ? null : Number(normalizedInput);
+        const normalizedInput = typeof value === "string" ? value.replace(/[*,]/g, "").trim() : value;
+        const numericValue = normalizedInput === "" ? null : toAbsoluteNumber(normalizedInput, 0);
         const latestYear = years[0];
         const nextValues = {
           ...ab.values,
@@ -582,7 +844,7 @@ export default function WorkspaceEbitda() {
         const latestVals = nextValues[latestYear] || { apiValue: null, userValue: null };
         return {
           ...ab,
-          value: latestVals.userValue !== null ? latestVals.userValue : latestVals.apiValue,
+          value: latestVals.userValue !== null ? toAbsoluteNumber(latestVals.userValue, 0) : toAbsoluteNumber(latestVals.apiValue, 0),
           values: nextValues
         };
       }
@@ -599,7 +861,7 @@ export default function WorkspaceEbitda() {
         years.forEach(year => {
           newValues[year] = {
             ...newValues[year],
-            apiValue: getValueFromPL(year, label)
+            apiValue: toAbsoluteNumber(getValueFromPL(year, label), 0)
           };
         });
         const latestYear = years[0];
@@ -610,7 +872,7 @@ export default function WorkspaceEbitda() {
           type: isLinked ? "PL" : "RECAST",
           isFromPL: isLinked,
           accountId: isLinked ? getAccountIdByLabel(label) : null,
-          value: latestVals.userValue !== null ? latestVals.userValue : latestVals.apiValue,
+          value: latestVals.userValue !== null ? toAbsoluteNumber(latestVals.userValue, 0) : toAbsoluteNumber(latestVals.apiValue, 0),
           values: newValues,
           linkedToPL: isLinked,
         };
@@ -626,7 +888,7 @@ export default function WorkspaceEbitda() {
         years.forEach(year => {
           newValues[year] = {
             ...newValues[year],
-            apiValue: getValueFromPL(year, selectedValue),
+            apiValue: toAbsoluteNumber(getValueFromPL(year, selectedValue), 0),
             userValue: null
           };
         });
@@ -638,7 +900,7 @@ export default function WorkspaceEbitda() {
           label: selectedValue,
           isFromPL: true,
           accountId: getAccountIdByLabel(selectedValue),
-          value: latestVals.userValue !== null ? latestVals.userValue : latestVals.apiValue,
+          value: latestVals.userValue !== null ? toAbsoluteNumber(latestVals.userValue, 0) : toAbsoluteNumber(latestVals.apiValue, 0),
           linkedToPL: true,
           values: newValues,
         };
@@ -658,69 +920,151 @@ export default function WorkspaceEbitda() {
     }));
   };
 
+  const uploadAdjustmentAttachments = useCallback(async (files = []) => {
+    const pendingFiles = Array.isArray(files) ? files.filter(Boolean) : [];
+    if (!pendingFiles.length) return [];
 
-  const handleSync = async () => {
-    setIsSyncing(true);
-    if (ebitdaCacheKey) {
-      try { sessionStorage.removeItem(ebitdaCacheKey); } catch { /* ignore */ }
+    const uploaded = await Promise.all(
+      pendingFiles.map(async (file) => {
+        const result = await uploadFile(file, {
+          fileName: file?.name || "attachment",
+          prefix: "ebitda-adjustments",
+        });
+
+        return {
+          uploadId: result?.id || null,
+          fileName: result?.fileName || file?.name || "attachment",
+          fileUrl: result?.fileUrl || result?.file_url || "",
+          contentType: file?.type || result?.contentType || result?.content_type || null,
+          sizeBytes: file?.size || result?.sizeBytes || result?.size_bytes || null,
+          metadata: {
+            source: "ebitda-adjustment",
+          },
+        };
+      }),
+    );
+
+    return uploaded.filter((item) => item.fileUrl);
+  }, []);
+
+  const persistManualGlAdjustments = useCallback(async (nextAdjustments = []) => {
+    if (!adjustmentScope.clientId) throw new Error("Missing clientId.");
+    if (!adjustmentScope.versionId) throw new Error("Missing adjustment version.");
+
+    const response = await saveEbitdaAdjustmentsBatch(
+      {
+        companyId: adjustmentScope.clientId,
+        versionId: adjustmentScope.versionId,
+        sourceKey: adjustmentScope.sourceKey,
+        adjustments: nextAdjustments,
+      },
+      {
+        clientId: adjustmentScope.clientId,
+        versionId: adjustmentScope.versionId,
+        sourceKey: adjustmentScope.sourceKey,
+      },
+    );
+
+    const refreshedAdjustments = Array.isArray(response?.adjustments) ? response.adjustments : nextAdjustments;
+    setManualGlAdjustments(refreshedAdjustments);
+    if (Array.isArray(response?.types)) {
+      setManualGlAdjustmentTypes(response.types);
     }
+    setManualGlAdjustmentError("");
+    return response;
+  }, [adjustmentScope]);
+
+  const handleManualGlSaveAdjustment = useCallback(async (draft) => {
+    if (!draft) return;
+    setIsSavingAdjustment(true);
+    setManualGlAdjustmentError("");
+
     try {
-      if (isQBManual) {
-        // Re-sync all QMS files so the latest parser fixes apply, then re-fetch EBITDA.
-        await syncQMSUploadSource({ clientId });
-      } else if (!isManualMode) {
-        await refreshQuickbooksToken();
-      }
-      await handleGenerate(true);
-    } catch {
-      setError("Sync failed. Please try again.");
+      const uploadedAttachments = await uploadAdjustmentAttachments(draft.pendingFiles || []);
+      const nextAdjustment = {
+        ...draft,
+        attachments: [
+          ...(Array.isArray(draft.attachments) ? draft.attachments : []),
+          ...uploadedAttachments,
+        ],
+      };
+      delete nextAdjustment.pendingFiles;
+
+      const nextAdjustments = manualGlAdjustments.some((item) => String(item.id) === String(nextAdjustment.id))
+        ? manualGlAdjustments.map((item) => (String(item.id) === String(nextAdjustment.id) ? nextAdjustment : item))
+        : [...manualGlAdjustments, nextAdjustment];
+
+      await persistManualGlAdjustments(nextAdjustments);
+    } catch (err) {
+      setManualGlAdjustmentError(err?.message || `Failed to save ${itemSingularLabel.toLowerCase()}.`);
+      throw err;
     } finally {
-      setIsSyncing(false);
+      setIsSavingAdjustment(false);
     }
-  };
+  }, [itemSingularLabel, manualGlAdjustments, persistManualGlAdjustments, uploadAdjustmentAttachments]);
+
+  const handleManualGlDeleteAdjustment = useCallback(async (adjustmentId) => {
+    if (!adjustmentId) return;
+    setIsSavingAdjustment(true);
+    setManualGlAdjustmentError("");
+
+    try {
+      const response = await deleteEbitdaAdjustment(adjustmentId, {
+        clientId: adjustmentScope.clientId,
+        versionId: adjustmentScope.versionId,
+        sourceKey: adjustmentScope.sourceKey,
+      });
+      const refreshedAdjustments = Array.isArray(response?.adjustments)
+        ? response.adjustments
+        : manualGlAdjustments.filter((item) => String(item.id) !== String(adjustmentId));
+      setManualGlAdjustments(refreshedAdjustments);
+    } catch (err) {
+      setManualGlAdjustmentError(err?.message || `Failed to delete ${itemSingularLabel.toLowerCase()}.`);
+      throw err;
+    } finally {
+      setIsSavingAdjustment(false);
+    }
+  }, [adjustmentScope, itemSingularLabel, manualGlAdjustments]);
+
+
+  // handleSync removed
 
 
   return (
     <div className="page-container">
       <div className="page-content">
         {/* Header */}
-        <div className="mb-6 flex items-center justify-between">
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
           <div>
             <h1 className="text-2xl font-bold text-[#050505]">
-              EBITDA Analysis
+              {analysisLabel}
             </h1>
             <p className="mt-1 text-[13px] text-text-muted">
               {isManualGl
                 ? `Powered by staged GL data${company?.name ? ` — ${company.name}` : ""}`
                 : isManualUpload
-                ? `Powered by your uploaded Profit & Loss file${company?.name ? ` — ${company.name}` : ""}`
-                : isQBManual
-                ? `Powered by your QuickBooks Manual P&L reports${company?.name ? ` — ${company.name}` : ""}`
-                : `Dynamic earnings analysis powered by your Profit & Loss data${company?.name ? ` — ${company.name}` : ""}`}
+                  ? `Powered by your uploaded Profit & Loss file${company?.name ? ` — ${company.name}` : ""}`
+                  : isQBManual
+                    ? `Powered by your QuickBooks Manual P&L reports${company?.name ? ` — ${company.name}` : ""}`
+                    : `Dynamic earnings analysis powered by your Profit & Loss data${company?.name ? ` — ${company.name}` : ""}`}
             </p>
           </div>
-          <button
-            onClick={handleSync}
-            disabled={isSyncing || isLoading}
-            className="btn-secondary"
-          >
-            <RefreshCw
-              size={16}
-              className={isSyncing ? "animate-spin" : ""}
-            />
-            {isSyncing ? "Refreshing..." : "Refresh"}
-          </button>
+          <div className="flex flex-wrap items-center gap-3">
+            {/* Unified Key Reports Version selector is the single source of truth */}
+            <KeyReportVersionSelector clientId={clientId} variant="filter" />
+            {/* Refresh button removed */}
+          </div>
         </div>
 
-        <QBDisconnectedBanner pageName="EBITDA Analysis" />
+        <QBDisconnectedBanner pageName={analysisLabel} />
 
         {/* Content */}
         {isLoading ? (
-          <LoadingState />
+          <LoadingState metricLabel={profitMetricConfig.shortLabel} />
         ) : error && !multiYearData ? (
           <div className="flex flex-col gap-4">
             <EmptyStateNotification error={error} onRetry={handleGenerate} />
-            <EmptyEbitdaTable companyName={company?.name} />
+            <EmptyEbitdaTable companyName={company?.name} profitMetricConfig={profitMetricConfig} />
           </div>
         ) : multiYearData ? (
           <div className="animate-in slide-in-from-bottom-2 fade-in duration-300">
@@ -744,7 +1088,7 @@ export default function WorkspaceEbitda() {
                         className="bg-[#8bc53d] py-3 text-center"
                       >
                         <span className="text-[18px] font-bold text-white">
-                          Recalculated Seller&apos;s Discretionary Earnings of {company?.name || "the Business"}
+                          Recalculated {profitMetricConfig.longLabel} of {company?.name || "the Business"}
                         </span>
                       </th>
                       <th
@@ -835,228 +1179,222 @@ export default function WorkspaceEbitda() {
                       </td>
                     </tr>
 
-                    {/* ── Addbacks Section Header ──────────────────────── */}
-                    <tr className="bg-gray-100">
-                      <td colSpan={1 + years.length} className="p-0">
-                        <div className="px-4 py-3">
-                          <div className="flex items-center justify-between font-bold text-[#050505]">
-                            <span>Addbacks</span>
-                            <button
-                              onClick={() => setIsTypeDialogOpen(true)}
-                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#8bc53d] text-white text-[11px] font-bold hover:bg-[#78ab34] transition-colors"
-                            >
-                              <Plus size={12} strokeWidth={3} />
-                              ADD ROW
-                            </button>
-                          </div>
-                          <p className="mt-1 text-[11px] text-slate-500">
-                            * Values marked with an asterisk (*) are automatically fetched from the Profit &amp; Loss statement. Values without (*) are manually added.
-                          </p>
-                        </div>
-                      </td>
-                      {/* Comment cell for the Addbacks header — intentionally blank */}
-                      <td className="bg-gray-100" style={{ borderLeft: "2px solid #cbd5e1" }}></td>
-                    </tr>
+                    {isManualGl ? (
+                      <EbitdaAdjustmentsPanel
+                        years={years}
+                        adjustments={manualGlAdjustments}
+                        typeOptions={manualGlAdjustmentTypes}
+                        accountOptions={adjustmentAccountOptions}
+                        vendorOptions={adjustmentVendorOptions}
+                        referenceIndex={manualGlReferenceIndex}
+                        fallbackLookup={fallbackAdjustmentLookup}
+                        baseEbitdaByYear={baseEbitdaByYear}
+                        revenueByYear={revenueByYear}
+                        formatCurrency={formatCurrency}
+                        loading={Boolean(adjustmentVersionId) && !manualGlAdjustmentError && manualGlAdjustments.length === 0 && manualGlAdjustmentTypes.length === 0}
+                        error={manualGlAdjustmentError}
+                        isSaving={isSavingAdjustment}
+                        onSaveAdjustment={handleManualGlSaveAdjustment}
+                        onDeleteAdjustment={handleManualGlDeleteAdjustment}
+                        profitMetricConfig={profitMetricConfig}
+                      />
+                    ) : (
+                      <>
 
-                    {/* ── Dynamic Addback Rows ─────────────────────────── */}
-                    {dynamicAddbacks.map((row) => (
-                      <tr key={row.id} className="group border-b border-[#f1f5f9] hover:bg-slate-50 transition-colors">
-                        <td className="p-3 pl-6 text-text-primary">
-                          <div className="flex items-center gap-2">
-                            {row.type === "PL" ? (
-                              <div className="relative flex-1">
-                                <select
-                                  value={row.label}
-                                  onChange={(e) => handleAccountSelection(row.id, e.target.value)}
-                                  className="appearance-none w-full bg-transparent border-b border-transparent hover:border-gray-300 focus:border-[#8bc53d] focus:outline-none transition-all py-0.5 pr-5 text-[13px] cursor-pointer"
+                        {/* ── Addbacks Section Header ──────────────────────── */}
+                        <tr className="bg-gray-100">
+                          <td colSpan={1 + years.length} className="p-0">
+                            <div className="px-4 py-3">
+                              <div className="flex items-center justify-between font-bold text-[#050505]">
+                                <span>{sectionLabel}</span>
+                                <button
+                                  onClick={() => setIsTypeDialogOpen(true)}
+                                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-[#8bc53d] text-white text-[11px] font-bold hover:bg-[#78ab34] transition-colors"
                                 >
-                                  <option value="" disabled>Select account...</option>
-                                  {plAccountNames.map(name => (
-                                    <option key={name} value={name}>{name}</option>
-                                  ))}
-                                </select>
-                                <ChevronDown size={11} className="pointer-events-none absolute right-0 top-1/2 -translate-y-1/2 text-slate-400" />
+                                  <Plus size={12} strokeWidth={3} />
+                                  ADD {itemSingularLabel.toUpperCase()}
+                                </button>
                               </div>
-                            ) : (
-                              <input
-                                value={row.label}
-                                onChange={(e) => updateAddbackLabel(row.id, e.target.value)}
-                                className="flex-1 bg-transparent border-b border-transparent hover:border-gray-300 focus:border-[#8bc53d] focus:outline-none transition-all py-0.5 text-[13px]"
-                                placeholder="Enter label…"
-                              />
-                            )}
-                            <button
-                              onClick={() => deleteAddback(row.id)}
-                              className="opacity-0 group-hover:opacity-100 p-1 text-red-500 hover:bg-red-50 rounded transition-all flex-shrink-0"
-                              title="Delete Row"
-                            >
-                              <Trash2 size={14} />
-                            </button>
-                          </div>
-                        </td>
-                        {years.map((year) => {
-                          const { apiValue, userValue } = row.values[year] || { apiValue: null, userValue: null };
-                          const rawDisplayValue = userValue !== null ? String(userValue) : (apiValue !== null ? String(apiValue) : "");
-                          const showPLAsterisk = Boolean(
-                            row.isFromPL &&
-                            row.linkedToPL &&
-                            userValue === null &&
-                            apiValue !== null
-                          );
-                          const displayValue =
-                            showPLAsterisk && rawDisplayValue && !rawDisplayValue.startsWith("*")
-                              ? `*${rawDisplayValue}`
-                              : rawDisplayValue;
+                              <p className="mt-1 text-[11px] text-slate-500">
+                                * Values marked with an asterisk (*) are automatically fetched from the Profit &amp; Loss statement. Values without (*) are manually added.
+                              </p>
+                            </div>
+                          </td>
+                          {/* Comment cell for the Addbacks header — intentionally blank */}
+                          <td className="bg-gray-100" style={{ borderLeft: "2px solid #cbd5e1" }}></td>
+                        </tr>
 
-                          return (
-                            <td key={year} className="p-1.5 text-right">
-                              <input
-                                type="text"
-                                value={displayValue}
-                                onChange={(e) => updateAddbackValue(row.id, year, e.target.value)}
-                                title={showPLAsterisk ? "This value is sourced from Profit & Loss" : undefined}
-                                className={cn(
-                                  "w-full bg-transparent text-right font-medium focus:outline-none focus:ring-1 focus:ring-[#8bc53d] rounded px-2 py-1",
-                                  (userValue !== null || apiValue !== null) ? "text-text-primary" : "text-gray-300"
+                        {/* ── Dynamic Addback Rows ─────────────────────────── */}
+                        {dynamicAddbacks.map((row) => (
+                          <tr key={row.id} className="group border-b border-[#f1f5f9] hover:bg-slate-50 transition-colors">
+                            <td className="p-3 pl-6 text-text-primary">
+                              <div className="flex items-center gap-2">
+                                {row.type === "PL" ? (
+                                  <div className="relative flex-1">
+                                    <select
+                                      value={row.label}
+                                      onChange={(e) => handleAccountSelection(row.id, e.target.value)}
+                                      className="appearance-none w-full bg-transparent border-b border-transparent hover:border-gray-300 focus:border-[#8bc53d] focus:outline-none transition-all py-0.5 pr-5 text-[13px] cursor-pointer"
+                                    >
+                                      <option value="" disabled>Select account...</option>
+                                      {plAccountNames.map(name => (
+                                        <option key={name} value={name}>{name}</option>
+                                      ))}
+                                    </select>
+                                    <ChevronDown size={11} className="pointer-events-none absolute right-0 top-1/2 -translate-y-1/2 text-slate-400" />
+                                  </div>
+                                ) : (
+                                  <input
+                                    value={row.label}
+                                    onChange={(e) => updateAddbackLabel(row.id, e.target.value)}
+                                    className="flex-1 bg-transparent border-b border-transparent hover:border-gray-300 focus:border-[#8bc53d] focus:outline-none transition-all py-0.5 text-[13px]"
+                                    placeholder="Enter label…"
+                                  />
                                 )}
-                                placeholder={apiValue !== null ? String(apiValue) : "-"}
+                                <button
+                                  onClick={() => deleteAddback(row.id)}
+                                  className="opacity-0 group-hover:opacity-100 p-1 text-red-500 hover:bg-red-50 rounded transition-all flex-shrink-0"
+                                  title="Delete Row"
+                                >
+                                  <Trash2 size={14} />
+                                </button>
+                              </div>
+                            </td>
+                            {years.map((year) => {
+                              const { apiValue, userValue } = row.values[year] || { apiValue: null, userValue: null };
+                              const showPLAsterisk = Boolean(
+                                row.isFromPL &&
+                                row.linkedToPL &&
+                                userValue === null &&
+                                apiValue !== null
+                              );
+                              return (
+                                <td key={year} className="p-1.5 text-right">
+                                  <FormattedNumericInput
+                                    value={userValue}
+                                    apiValue={apiValue}
+                                    isFromPL={row.isFromPL}
+                                    linkedToPL={row.linkedToPL}
+                                    onChange={(val) => updateAddbackValue(row.id, year, val)}
+                                    title={showPLAsterisk ? "This value is sourced from Profit & Loss" : undefined}
+                                  />
+                                </td>
+                              );
+                            })}
+                            <td className="p-1" style={{ borderLeft: "2px solid #f1f5f9" }}>
+                              <input
+                                value={rowComments[row.id] || ""}
+                                onChange={(e) => updateRowComment(row.id, e.target.value)}
+                                placeholder={`${row.label || itemSingularLabel} remarks...`}
+                                className="w-full bg-transparent border-none focus:ring-0 text-[13px] px-3 placeholder:italic text-slate-600"
                               />
                             </td>
-                          );
-                        })}
-                        <td className="p-1" style={{ borderLeft: "2px solid #f1f5f9" }}>
-                          <input
-                            value={rowComments[row.id] || ""}
-                            onChange={(e) => updateRowComment(row.id, e.target.value)}
-                            placeholder={`${row.label || "Addback"} remarks...`}
-                            className="w-full bg-transparent border-none focus:ring-0 text-[13px] px-3 placeholder:italic text-slate-600"
-                          />
-                        </td>
-                      </tr>
-                    ))}
+                          </tr>
+                        ))}
 
-                    {/* ── Seller's Discretionary Earnings ─────────────── */}
-                    <tr className="border-t-2 border-[#8bc53d] bg-[#f8fafc]">
-                      <td className="p-4 font-bold text-[#050505] text-[15px]">Seller's Discretionary Earnings</td>
-                      {years.map(year => {
-                        const baseEbitda = calculateBaseEbitda(year);
-                        const addbacksSum = dynamicAddbacks.reduce((sum, ab) => {
-                          const { apiValue, userValue } = ab.values[year] || { apiValue: null, userValue: null };
-                          const val = userValue !== null ? userValue : (apiValue || 0);
-                          return sum + val;
-                        }, 0);
-                        const finalSde = baseEbitda + addbacksSum;
-                        return (
-                          <td key={year} className="p-4 text-right font-bold text-[#8bc53d] text-[16px]">
-                            {formatCurrency(finalSde)}
+                        {/* ── Total Adjustments ──────────────────────────── */}
+                        <tr className="border-t border-[#cbd5e1] bg-[#eef6e0]">
+                          <td className="p-3 font-bold text-[#050505]">{sectionLabel} Total</td>
+                          {years.map(year => {
+                            const addbacksSum = dynamicAddbacks.reduce((sum, ab) => {
+                              const { apiValue, userValue } = ab.values[year] || { apiValue: null, userValue: null };
+                              const val = userValue !== null ? userValue : apiValue;
+                              return sum + toAbsoluteNumber(val, 0);
+                            }, 0);
+                            return (
+                              <td key={year} className="p-3 text-right font-bold text-[#050505]">
+                                {formatCurrency(addbacksSum)}
+                              </td>
+                            );
+                          })}
+                          <td className="p-2 text-[12px] font-semibold text-slate-600" style={{ borderLeft: "2px solid #d6e7b5" }}>
+                            Total {itemPluralLabel.toLowerCase()} sum
                           </td>
-                        );
-                      })}
-                      <td className="p-2 bg-[#f8fafc]" style={{ borderLeft: "2px solid #8bc53d" }}>
-                        <textarea
-                          value={rowComments['totalSde'] || ""}
-                          onChange={(e) => updateRowComment('totalSde', e.target.value)}
-                          placeholder="Story of Seller's Discretionary Earnings..."
-                          className="w-full bg-transparent border-none focus:ring-0 text-[12px] px-2 leading-tight resize-none overflow-hidden placeholder:italic font-semibold text-slate-800"
-                          rows={2}
-                        />
-                      </td>
-                    </tr>
+                        </tr>
+                        <tr className="border-t-2 border-[#8bc53d] bg-[#f8fafc]">
+                          <td className="p-4 font-bold text-[#050505] text-[15px]">{profitMetricConfig.finalRowLabel}</td>
+                          {years.map(year => {
+                            const baseEbitda = calculateBaseEbitda(year);
+                            const addbacksSum = dynamicAddbacks.reduce((sum, ab) => {
+                              const { apiValue, userValue } = ab.values[year] || { apiValue: null, userValue: null };
+                              const val = userValue !== null ? userValue : apiValue;
+                              return sum + toAbsoluteNumber(val, 0);
+                            }, 0);
+                            const finalSde = baseEbitda + addbacksSum;
+                            return (
+                              <td key={year} className="p-4 text-right font-bold text-[#8bc53d] text-[16px]">
+                                {formatCurrency(finalSde)}
+                              </td>
+                            );
+                          })}
+                          <td className="p-2 bg-[#f8fafc]" style={{ borderLeft: "2px solid #8bc53d" }}>
+                            <textarea
+                              value={rowComments['totalSde'] || ""}
+                              onChange={(e) => updateRowComment('totalSde', e.target.value)}
+                              placeholder={`Story of ${profitMetricConfig.finalRowLabel}...`}
+                              className="w-full bg-transparent border-none focus:ring-0 text-[12px] px-2 leading-tight resize-none overflow-hidden placeholder:italic font-semibold text-slate-800"
+                              rows={2}
+                            />
+                          </td>
+                        </tr>
 
-                    {/* ── SDE % of Sales ───────────────────────────────── */}
-                    <tr className="border-b border-[#cbd5e1] bg-white">
-                      <td className="p-3 font-bold text-[#050505]">SDE % of Sales</td>
-                      {years.map(year => {
-                        const baseEbitda = calculateBaseEbitda(year);
-                        const addbacksSum = dynamicAddbacks.reduce((sum, ab) => {
-                          const { apiValue, userValue } = ab.values[year] || { apiValue: null, userValue: null };
-                          const val = userValue !== null ? userValue : (apiValue || 0);
-                          return sum + val;
-                        }, 0);
-                        const finalSde = baseEbitda + addbacksSum;
-                        const revenue = multiYearData[year]?.revenue || 0;
-                        const sdePct = revenue > 0 ? (finalSde / revenue) * 100 : 0;
-                        return (
-                          <td key={year} className="p-3 text-right font-bold text-text-primary">
-                            {formatPercent(sdePct)}
+                        {/* ── SDE % of Sales ───────────────────────────────── */}
+                        <tr className="border-b border-[#cbd5e1] bg-white">
+                          <td className="p-3 font-bold text-[#050505]">{profitMetricConfig.percentRowLabel}</td>
+                          {years.map(year => {
+                            const baseEbitda = calculateBaseEbitda(year);
+                            const addbacksSum = dynamicAddbacks.reduce((sum, ab) => {
+                              const { apiValue, userValue } = ab.values[year] || { apiValue: null, userValue: null };
+                              const val = userValue !== null ? userValue : apiValue;
+                              return sum + toAbsoluteNumber(val, 0);
+                            }, 0);
+                            const finalSde = baseEbitda + addbacksSum;
+                            const revenue = multiYearData[year]?.revenue || 0;
+                            const sdePct = revenue > 0 ? (finalSde / revenue) * 100 : 0;
+
+                            // Debug logging as requested
+                            console.log(`[EBITDA Analysis][${year}]`, {
+                              ebitda: baseEbitda,
+                              adjustments: dynamicAddbacks,
+                              totalAdjustments: addbacksSum,
+                              adjustedEbitda: finalSde,
+                              ebitdaPercent: sdePct
+                            });
+
+                            return (
+                              <td key={year} className="p-3 text-right font-bold text-text-primary">
+                                {formatPercent(sdePct)}
+                              </td>
+                            );
+                          })}
+                          <td className="p-1 bg-white" style={{ borderLeft: "2px solid #cbd5e1" }}>
+                            <input
+                              value={rowComments['sdePercent'] || ""}
+                              onChange={(e) => updateRowComment('sdePercent', e.target.value)}
+                              placeholder="Margin analysis..."
+                              className="w-full bg-transparent border-none focus:ring-0 text-[13px] px-3 placeholder:italic text-slate-600"
+                            />
                           </td>
-                        );
-                      })}
-                      <td className="p-1 bg-white" style={{ borderLeft: "2px solid #cbd5e1" }}>
-                        <input
-                          value={rowComments['sdePercent'] || ""}
-                          onChange={(e) => updateRowComment('sdePercent', e.target.value)}
-                          placeholder="Margin analysis..."
-                          className="w-full bg-transparent border-none focus:ring-0 text-[13px] px-3 placeholder:italic text-slate-600"
-                        />
-                      </td>
-                    </tr>
+                        </tr>
+
+                      </>
+                    )}
 
                   </tbody>
                 </table>
               </div>
             </div>
 
-            {/* Summary Analysis Box */}
-            <div className="flex justify-start mt-8 pb-12">
-              <div className="rounded-xl border border-[#cbd5e1] p-0 overflow-hidden bg-white shadow-lg max-w-md w-full">
-                <div className="border-b border-[#cbd5e1] bg-[#8bc53d] p-3 px-4 font-bold text-white text-[15px]">
-                  Summary Analysis
-                </div>
-                <div className="p-8 space-y-6">
-                  <div className="flex justify-between items-center bg-gray-50 border border-gray-100 rounded-lg p-3">
-                    <span className="font-bold text-slate-800">SDE Per CIM</span>
-                    <input
-                      type="number"
-                      value={sdePerCim}
-                      onChange={(e) => setSdePerCim(e.target.value)}
-                      placeholder="Enter value..."
-                      className="w-32 bg-white border border-gray-200 rounded px-2 py-1 text-right font-mono focus:ring-1 focus:ring-[#8bc53d] outline-none"
-                    />
-                  </div>
-
-                  {(() => {
-                    const latestYear = years[0];
-                    const baseEbitda = calculateBaseEbitda(latestYear);
-                    const addbacksSum = dynamicAddbacks.reduce((sum, ab) => {
-                      const { apiValue, userValue } = ab.values[latestYear] || { apiValue: null, userValue: null };
-                      const val = userValue !== null ? userValue : (apiValue || 0);
-                      return sum + val;
-                    }, 0);
-                    const currentSde = baseEbitda + addbacksSum;
-                    const cimVal = Number(sdePerCim) || 0;
-                    const diff = currentSde - cimVal;
-                    const pctDiff = cimVal !== 0 ? (diff / cimVal) * 100 : 0;
-
-                    return (
-                      <>
-                        <div className="flex justify-between items-center border-b border-gray-100 pb-3">
-                          <span className="font-bold text-slate-800">$ Difference</span>
-                          <span className={cn("font-mono font-bold text-[15px]", diff < 0 ? "text-red-500" : "text-green-600")}>
-                            {cimVal ? formatCurrency(diff) : "-"}
-                          </span>
-                        </div>
-                        <div className="flex justify-between items-center">
-                          <span className="font-bold text-slate-800">% Difference</span>
-                          <span className={cn("font-mono font-bold text-[15px]", pctDiff < 0 ? "text-red-500" : "text-green-600")}>
-                            {cimVal ? formatPercent(pctDiff) : "-"}
-                          </span>
-                        </div>
-                      </>
-                    );
-                  })()}
-                </div>
-              </div>
-            </div>
+            {/* Summary Analysis Box removed */}
           </div>
         ) : (
-          <EmptyState />
+          <EmptyState analysisLabel={analysisLabel} />
         )}
 
         <Modal
           isOpen={isTypeDialogOpen}
           onClose={() => setIsTypeDialogOpen(false)}
-          title="Select Addback Type"
+          title={`Select ${itemSingularLabel} Type`}
           size="sm"
         >
           <div className="space-y-2">
@@ -1083,7 +1421,7 @@ export default function WorkspaceEbitda() {
                   setIsTypeDialogOpen(false);
                 }}
               />
-              Recast Addback
+              Recast {itemSingularLabel}
             </label>
             {plAccountNames.length === 0 && (
               <p className="text-[12px] text-text-muted">

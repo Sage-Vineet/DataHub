@@ -50,7 +50,7 @@ import { loadManualUploadDashboard } from "../../../services/manualUploadDashboa
 import { fetchInvoices } from "../../../services/invoiceService";
 import { getProfitAndLoss } from "../../../services/profitAndLossService";
 import { syncQuickbooksReports } from "../../../lib/quickbooks";
-import { getReportSources, setSelectedReportSource } from "../../../lib/api";
+import { getReportSources, setSelectedReportSource, getManualStageFilterOptions } from "../../../lib/api";
 import {
   getReportSourceMode,
   normalizeReportSourceKey,
@@ -240,6 +240,8 @@ export default function WorkspaceDashboardDatahub() {
   const [isQBManualMode, setIsQBManualMode] = useState(false);
   const [qmsSelectedYear, setQmsSelectedYear] = useState("all");
   const [qmsAvailableYears, setQmsAvailableYears] = useState([]);
+  // Fiscal years available in the current staged Manual GL dataset
+  const [manualGlAvailableYears, setManualGlAvailableYears] = useState([]);
   const [manualUploadSelectedYear, setManualUploadSelectedYear] = useState("all");
   const [manualUploadAvailableYears, setManualUploadAvailableYears] = useState([]);
   const [dynamicStats, setDynamicStats] = useState([]);
@@ -522,6 +524,34 @@ export default function WorkspaceDashboardDatahub() {
       setIsLoading(false);
     }
   }, [clientId]);
+
+  // Fetch fiscal years available in the staged Manual GL dataset so both the
+  // dashboard year filter and the Financial Trends chart only show GL years.
+  useEffect(() => {
+    if (activeSourceMode !== "manual" || !clientId) return;
+    let cancelled = false;
+    getManualStageFilterOptions({ clientId, params: {} })
+      .then((payload) => {
+        if (cancelled) return;
+        const raw = payload?.options?.fiscalYear || [];
+        const years = raw
+          .map((y) => parseInt(y, 10))
+          .filter((y) => Number.isInteger(y) && y > 0)
+          .sort((a, b) => b - a); // descending so most recent is first
+        setManualGlAvailableYears(years);
+        if (years.length > 0) {
+          // Auto-select the most recent year so the dashboard filters align
+          const latest = years[0];
+          setSelectedYear(latest);
+          setChartSelectedYear(latest);
+          const { startDate: s, endDate: e } = calculateDateRangeFromYearMonth(latest, "");
+          applyGlobalDateRange(s, e, "yearMonth");
+        }
+      })
+      .catch(() => { /* silently ignore — no staged data */ });
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSourceMode, clientId]);
 
   const loadQMSDashboardData = useCallback(async (year = "all") => {
     console.log(`[DASHBOARD] activeSource=quickbooks_manual endpoint=${DASHBOARD_ENDPOINTS.quickbooks_manual} dataSource=QMS clientId=${clientId}`);
@@ -1214,7 +1244,58 @@ export default function WorkspaceDashboardDatahub() {
                 </select>
               </div>
             )}
-            {!isManualUploadMode && !isQBManualMode && <><div className="flex items-center gap-2 bg-bg-page rounded-lg border border-border p-2">
+            {/* Manual GL Upload: year-only filter showing only staged GL years */}
+            {activeSourceMode === "manual" && manualGlAvailableYears.length > 0 && (
+              <div className="flex items-center gap-2 bg-bg-page rounded-lg border border-border p-2">
+                <button
+                  onClick={() => {
+                    const idx = manualGlAvailableYears.indexOf(selectedYear);
+                    const prev = manualGlAvailableYears[idx + 1]; // descending order
+                    if (prev == null) return;
+                    setSelectedYear(prev);
+                    const { startDate: s, endDate: en } = calculateDateRangeFromYearMonth(prev, "");
+                    applyGlobalDateRange(s, en, "yearMonth");
+                  }}
+                  disabled={manualGlAvailableYears.indexOf(selectedYear) >= manualGlAvailableYears.length - 1}
+                  className="p-1.5 hover:bg-bg-page/80 rounded-md transition-colors disabled:opacity-30"
+                  title="Previous Year"
+                >
+                  <ChevronLeft size={16} className="text-text-secondary" />
+                </button>
+                <select
+                  value={selectedYear}
+                  onChange={(e) => {
+                    const newYear = parseInt(e.target.value, 10);
+                    setSelectedYear(newYear);
+                    const { startDate: s, endDate: en } = calculateDateRangeFromYearMonth(newYear, "");
+                    applyGlobalDateRange(s, en, "yearMonth");
+                  }}
+                  className="px-3 py-1.5 text-[13px] font-medium bg-transparent border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
+                >
+                  {manualGlAvailableYears.map((year) => (
+                    <option key={year} value={year}>{year}</option>
+                  ))}
+                </select>
+                <button
+                  onClick={() => {
+                    const idx = manualGlAvailableYears.indexOf(selectedYear);
+                    const next = manualGlAvailableYears[idx - 1]; // descending order
+                    if (next == null) return;
+                    setSelectedYear(next);
+                    const { startDate: s, endDate: en } = calculateDateRangeFromYearMonth(next, "");
+                    applyGlobalDateRange(s, en, "yearMonth");
+                  }}
+                  disabled={manualGlAvailableYears.indexOf(selectedYear) <= 0}
+                  className="p-1.5 hover:bg-bg-page/80 rounded-md transition-colors disabled:opacity-30"
+                  title="Next Year"
+                >
+                  <ChevronRight size={16} className="text-text-secondary" />
+                </button>
+              </div>
+            )}
+
+            {/* All other sources: full year / month / date-range filter */}
+            {!isManualUploadMode && !isQBManualMode && activeSourceMode !== "manual" && <><div className="flex items-center gap-2 bg-bg-page rounded-lg border border-border p-2">
               <button
                 onClick={handlePreviousYear}
                 className="p-1.5 hover:bg-bg-page/80 rounded-md transition-colors"
@@ -1447,7 +1528,10 @@ export default function WorkspaceDashboardDatahub() {
                     }
                     className="px-2 py-1 text-[12px] font-medium bg-transparent border border-border rounded-md focus:outline-none focus:ring-2 focus:ring-primary"
                   >
-                    {generateYearOptions().map((year) => (
+                    {(activeSourceMode === "manual" && manualGlAvailableYears.length > 0
+                      ? manualGlAvailableYears
+                      : generateYearOptions()
+                    ).map((year) => (
                       <option key={year} value={year}>
                         {year}
                       </option>

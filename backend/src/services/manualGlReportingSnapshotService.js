@@ -6,6 +6,7 @@ const {
   getProfitLossDetailFromStage,
   getProfitLossMonthlyDetailFromStage,
   getProfitLossVendorDetailFromStage,
+  getVendorAnalysisFromStage,
   getBalanceSheetSummaryFromStage,
   getBalanceSheetMonthlyDetailFromStage,
   getCashflowSummaryFromStage,
@@ -23,6 +24,7 @@ const SNAPSHOT_REPORT_TYPES = Object.freeze({
   PROFIT_LOSS_DETAIL: "profit_loss_detail",
   PROFIT_LOSS_MONTHLY_DETAIL: "profit_loss_monthly_detail",
   PROFIT_LOSS_DETAIL_VENDOR: "profit_loss_detail_vendor",
+  VENDOR_ANALYSIS: "vendor_analysis",
   BALANCE_SHEET_SUMMARY: "balance_sheet_summary",
   BALANCE_SHEET_MONTHLY_DETAIL: "balance_sheet_monthly_detail",
   CASHFLOW_SUMMARY: "cashflow_summary",
@@ -99,8 +101,31 @@ async function upsertReportingSnapshot({
     reportType,
     fiscalYear: normalizedFiscalYear,
   });
+
   if (existing?.id) {
-    return existing;
+    const existingDv = Number(existing.dataset_version || 0);
+    const needsVersionTag =
+      Number.isInteger(parsedDatasetVersion) && parsedDatasetVersion > 0 &&
+      existingDv !== parsedDatasetVersion;
+
+    if (!needsVersionTag) {
+      return existing;
+    }
+
+    // The snapshot exists but was written before dataset_version was populated
+    // (or was written with the wrong version number).  Back-fill it so that
+    // getSnapshotForDatasetVersion can find it via the integer version column.
+    const { data: tagged, error: tagError } = await supabase
+      .from(TABLE_SNAPSHOTS)
+      .update({ dataset_version: parsedDatasetVersion, updated_at: now })
+      .eq("id", existing.id)
+      .select("*")
+      .maybeSingle();
+
+    if (!tagError && tagged) {
+      return mapSnapshotRow(tagged);
+    }
+    // Fall through to upsert if the back-fill update fails.
   }
 
   const runUpsert = async (rowPayload) =>
@@ -249,6 +274,24 @@ async function generateReportingSnapshotsForBatch(companyId, batchId, options = 
   const now = new Date().toISOString();
   let datasetVersionId = options.datasetVersionId || null;
 
+  // Multi-version isolation: clear ONLY this batch's snapshots before
+  // regenerating them.  Other versions' snapshots MUST be preserved so that
+  // selecting a previously-staged version still returns its own cached reports.
+  // (Scoping by upload_batch_id is what keeps versions from clobbering one
+  // another — a company-wide delete here would wipe every other version.)
+  const { error: snapDeleteError } = await supabase
+    .from(TABLE_SNAPSHOTS)
+    .delete()
+    .eq("company_id", companyId)
+    .eq("upload_batch_id", batchId);
+  if (snapDeleteError) {
+    console.warn(
+      `[ManualGL][Snapshots] Failed to clear snapshots for batch=${batchId}: ${snapDeleteError.message}`,
+    );
+  } else {
+    console.log(`[ManualGL][Snapshots] Cleared previous snapshots for batch=${batchId} (other versions preserved)`);
+  }
+
   const { data: batchRow } = await supabase
     .from("manual_gl_batches")
     .select("dataset_version_id, dataset_version")
@@ -343,7 +386,7 @@ async function generateReportingSnapshotsForBatch(companyId, batchId, options = 
 
     const yearStart = Date.now();
 
-    // All 8 report builders work from _preloadedRows — no additional DB queries.
+    // All report builders work from _preloadedRows — no additional DB queries.
     const [
       profitLossSummary,
       profitLossDetail,
@@ -353,6 +396,7 @@ async function generateReportingSnapshotsForBatch(companyId, batchId, options = 
       cashflowSummary,
       cashflowMonthlyDetail,
       profitLossVendorDetail,
+      vendorAnalysis,
     ] = await Promise.all([
       getProfitLossSummaryFromStage(companyId, filters),
       getProfitLossDetailFromStage(companyId, filters),
@@ -362,6 +406,7 @@ async function generateReportingSnapshotsForBatch(companyId, batchId, options = 
       getCashflowSummaryFromStage(companyId, filters),
       getCashflowMonthlyDetailFromStage(companyId, filters),
       getProfitLossVendorDetailFromStage(companyId, filters),
+      getVendorAnalysisFromStage(companyId, filters),
     ]);
 
     console.log(`[ManualGL][Snapshots][Perf] year=${year ?? "ALL"} reports=${Date.now() - yearStart}ms`);
@@ -379,6 +424,7 @@ async function generateReportingSnapshotsForBatch(companyId, batchId, options = 
       { type: SNAPSHOT_REPORT_TYPES.CASHFLOW_SUMMARY, payload: cashflowSummary },
       { type: SNAPSHOT_REPORT_TYPES.CASHFLOW_MONTHLY_DETAIL, payload: cashflowMonthlyDetail },
       { type: SNAPSHOT_REPORT_TYPES.PROFIT_LOSS_DETAIL_VENDOR, payload: profitLossVendorDetail },
+      { type: SNAPSHOT_REPORT_TYPES.VENDOR_ANALYSIS, payload: vendorAnalysis },
     ];
 
     await Promise.all(

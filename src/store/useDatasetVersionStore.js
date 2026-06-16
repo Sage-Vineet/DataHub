@@ -8,9 +8,18 @@ import {
 export const useDatasetVersionStore = create((set, get) => ({
     versions: [],
     activeVersion: null,
+    // The dataset version currently selected in Reports, shared so other pages
+    // (e.g. Bank Reconciliation) generate against the SAME version. Stored as a
+    // string to match the value Reports keeps in manualFilters.datasetVersion.
+    selectedVersion: null,
     isLoading: false,
     error: null,
     lastFetchedCompanyId: null,
+
+    setSelectedVersion: (version) => {
+        const next = version == null || version === "" ? null : String(version);
+        if (get().selectedVersion !== next) set({ selectedVersion: next });
+    },
 
     fetchVersions: async (companyId, force = false) => {
         if (!companyId) return;
@@ -79,6 +88,7 @@ export const useDatasetVersionStore = create((set, get) => ({
         set({
             versions: [],
             activeVersion: null,
+            selectedVersion: null,
             isLoading: false,
             error: null,
             lastFetchedCompanyId: null

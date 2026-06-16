@@ -1,8 +1,9 @@
+import { memo } from "react";
 import BalanceSheetSummary from "./BalanceSheetSummary";
 import BalanceSheetQBSummary from "./BalanceSheetQBSummary";
 import ManualBalanceSheetMonthlyDetail from "../manual/ManualBalanceSheetMonthlyDetail";
 
-export default function BalanceSheetReport({
+function BalanceSheetReport({
   reportType,
   data,
   detailedData,
@@ -14,6 +15,7 @@ export default function BalanceSheetReport({
   entityName,
   createdOn,
   isPreview = false,
+  selectedMonths = [],
 }) {
   const resolvedEntityName = entityName || clientName || "Company";
   const periodText = startDate === "1970-01-01" ? "All Dates" : `${startDate || "N/A"} to ${endDate || "N/A"}`;
@@ -21,15 +23,18 @@ export default function BalanceSheetReport({
   const source = data?.source || null;
   const sourceLabel = data?.sourceLabel || null;
   const noDataText = data?.noDataText || null;
+  // Per-year comparative columns: only render multiple columns when the user
+  // selected more than one fiscal year. Absent/single yearCols → single-column
+  // (preserves the original look and keeps old snapshots rendering correctly).
+  const yearCols = Array.isArray(data?.yearCols) ? data.yearCols : null;
+  const summaryColumns = yearCols && yearCols.length > 1 ? { yearCols } : undefined;
   // Backend returns source="manual_gl_staged_transactions" (not "manual_staged").
   // Accept all known manual-staged source strings to be forward-compatible.
   const MANUAL_STAGED_SOURCES = ["manual_staged", "manual_gl_staged_transactions", "manual_gl_reporting_snapshot", "MANUAL_STAGED"];
   const isManualMonthlyDetail = Boolean(
     MANUAL_STAGED_SOURCES.includes(detailedData?.source) && detailedData?.reportType === "balance_sheet_monthly_detail"
   );
-  const summarySubtitle = sourceMode === "manual"
-    ? undefined
-    : `Report Period: ${periodText} | ${clientName} | ${accountingMethod} Basis`;
+  const summarySubtitle = null;
 
   if (reportType === "Detail") {
     if (isManualMonthlyDetail) {
@@ -37,6 +42,22 @@ export default function BalanceSheetReport({
         <ManualBalanceSheetMonthlyDetail
           data={detailedData}
           title="Balance Sheet"
+          subtitle={summarySubtitle}
+          entityName={resolvedEntityName}
+          selectedMonths={selectedMonths}
+        />
+      );
+    }
+
+    // manual_upload / quickbooks_manual monthly view — data already has rows + columns.yearCols
+    if (sourceMode === "manual_upload" || sourceMode === "quickbooks_manual") {
+      const rows = Array.isArray(detailedData?.rows) ? detailedData.rows : (Array.isArray(detailedData) ? detailedData : []);
+      return (
+        <BalanceSheetQBSummary
+          data={rows}
+          columns={detailedData?.columns}
+          title="Balance Sheet"
+          subtitle={summarySubtitle}
           entityName={resolvedEntityName}
         />
       );
@@ -52,7 +73,7 @@ export default function BalanceSheetReport({
         columns={columns}
         endDate={endDate}
         title="Balance Sheet"
-        subtitle={`${clientName} | ${accountingMethod} Basis`}
+        subtitle={null}
         entityName={resolvedEntityName}
         createdOn={createdOn}
       />
@@ -63,6 +84,7 @@ export default function BalanceSheetReport({
   return (
     <BalanceSheetQBSummary
       data={summaryRows}
+      columns={summaryColumns}
       title="Balance Sheet"
       subtitle={summarySubtitle}
       entityName={resolvedEntityName}
@@ -72,3 +94,8 @@ export default function BalanceSheetReport({
     />
   );
 }
+
+// Memoized: the report tree is expensive to render and its props are stable
+// between unrelated parent state changes (loading toggles, sibling-tab prefetch,
+// filter-dropdown interaction), so re-rendering it then is wasted work.
+export default memo(BalanceSheetReport);

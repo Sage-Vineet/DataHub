@@ -45,6 +45,59 @@ function findAmt(nodes, patterns) {
   return 0;
 }
 
+// ── Leaf-node helpers (no double-counting) ────────────────────────────────────
+
+/**
+ * Returns only leaf nodes — nodes that have no children.
+ * Parent/header rows that merely aggregate children are skipped.
+ * This is the correct pool to sum: each dollar counted exactly once.
+ */
+function flattenLeaves(nodes = []) {
+  const out = [];
+  function walk(node) {
+    if (!node) return;
+    const kids = Array.isArray(node.children) ? node.children.filter(Boolean) : [];
+    if (kids.length > 0) {
+      kids.forEach(walk);
+    } else if (node.type !== "header" && typeof node.amount === "number") {
+      out.push(node);
+    }
+  }
+  (Array.isArray(nodes) ? nodes : []).forEach(walk);
+  return out;
+}
+
+/** Sum all leaf amounts that match any pattern. Each leaf counted at most once. */
+function sumLeaves(leaves, patterns) {
+  let total = 0;
+  for (const leaf of leaves) {
+    const name = String(leaf.name || "");
+    for (const pat of patterns) {
+      const re = pat instanceof RegExp ? pat : new RegExp(pat, "i");
+      if (re.test(name)) { total += Number(leaf.amount) || 0; break; }
+    }
+  }
+  return r2(total);
+}
+
+/** Returns each matching leaf individually (used for per-named-loan financing). */
+function findNamedLeaves(leaves, patterns) {
+  const results = [];
+  const seen = new Set();
+  for (const leaf of leaves) {
+    const name = String(leaf.name || "");
+    for (const pat of patterns) {
+      const re = pat instanceof RegExp ? pat : new RegExp(pat, "i");
+      if (re.test(name) && !seen.has(name)) {
+        seen.add(name);
+        results.push({ name: leaf.name, amount: Number(leaf.amount) || 0 });
+        break;
+      }
+    }
+  }
+  return results;
+}
+
 // ── Line-item matchers ────────────────────────────────────────────────────────
 
 const CASH_PATTERNS = [
@@ -186,6 +239,26 @@ const AMORTIZATION_PATTERNS = [
   /\bamortization\b/i,
 ];
 
+// All debt instruments — used for per-named-loan financing (never aggregated).
+// Absorbs the individual sub-arrays so they're not defined separately.
+const ALL_LOAN_PATTERNS = [
+  ...LINE_OF_CREDIT_PATTERNS,
+  ...LONG_DEBT_PATTERNS,
+  ...NOTES_PAYABLE_PATTERNS,
+  /\bbank\s+loan\b/i,
+  /\bcredit\s+line\b/i,
+  /\bdirector.?s?\s+loan\b/i,
+  /\bshareholder.?s?\s+loan\b/i,
+  /\bpartner.?s?\s+loan\b/i,
+  /\bvehicle\s+loan\b/i,
+  /\bequipment\s+loan\b/i,
+  /\bsba\s+loan\b/i,
+  /\bterm\s+loan\b/i,
+  /\bmortgage\b/i,
+  /\bcredit\s+facility\b/i,
+  /\bborrowing\b/i,
+];
+
 // ── Year extraction ───────────────────────────────────────────────────────────
 
 function extractYear(row) {
@@ -261,139 +334,199 @@ function extractRows(row) {
 // ── Cash Flow generation (indirect method) ────────────────────────────────────
 
 /**
- * Build the complete cash flow statement.
- * bsPrevRows is optional — when absent, all balance-sheet delta lines are 0.
+ * GAAP indirect method cash flow statement.
+ * Uses only leaf-level accounts so parent/header rows never double-count children.
+ * bsPrevRows optional — when absent all balance-sheet deltas are 0.
  */
 function buildCashFlow({ bsPrevRows, bsCurrRows, plRows, year }) {
   const hasPrev = Array.isArray(bsPrevRows) && bsPrevRows.length > 0;
 
-  // ── Operating Activities ────────────────────────────────────────────────────
+  const plLeaves = flattenLeaves(plRows);
+  const bsCLeaves = flattenLeaves(bsCurrRows);
+  const bsPLeaves = hasPrev ? flattenLeaves(bsPrevRows) : [];
 
-  const netIncome = r2(findAmt(plRows, NET_INCOME_PATTERNS));
-  const depreciation = r2(findAmt(plRows, DEPRECIATION_PATTERNS));
+  // Per-account diagnostic log
+  const diagnostics = [];
+  function log(accountName, category, currentValue, previousValue, delta, cashFlowSection) {
+    diagnostics.push({
+      accountName, category,
+      currentValue: r2(currentValue),
+      previousValue: r2(previousValue),
+      delta: r2(delta),
+      cashFlowSection,
+    });
+  }
 
-  // Amortization — only count when separate from D&A node
-  const daNode = flatten(plRows).find((n) => DEPRECIATION_PATTERNS[0].test(String(n.name || "")));
-  const amortization = /amortization/i.test(String(daNode?.name || ""))
+  // ── P&L values ──────────────────────────────────────────────────────────────
+  const netIncome = sumLeaves(plLeaves, NET_INCOME_PATTERNS);
+  const depreciation = sumLeaves(plLeaves, DEPRECIATION_PATTERNS);
+
+  // Amortization: skip when already folded into the D&A line name
+  const daLeaf = plLeaves.find((n) => DEPRECIATION_PATTERNS[0].test(String(n.name || "")));
+  const amortization = /amortization/i.test(String(daLeaf?.name || ""))
     ? 0
-    : r2(findAmt(plRows, AMORTIZATION_PATTERNS));
+    : sumLeaves(plLeaves, AMORTIZATION_PATTERNS);
 
-  // Working capital deltas — always read from both BSes.
-  // When hasPrev=false all delta lines are forced to 0 (no baseline to compare against).
-  const currAR = findAmt(bsCurrRows, AR_PATTERNS);
-  const prevAR = hasPrev ? findAmt(bsPrevRows, AR_PATTERNS) : 0;
-  const currInv = findAmt(bsCurrRows, INV_PATTERNS);
-  const prevInv = hasPrev ? findAmt(bsPrevRows, INV_PATTERNS) : 0;
-  const currAP = findAmt(bsCurrRows, AP_PATTERNS);
-  const prevAP = hasPrev ? findAmt(bsPrevRows, AP_PATTERNS) : 0;
-  const currAccr = findAmt(bsCurrRows, ACCR_PATTERNS);
-  const prevAccr = hasPrev ? findAmt(bsPrevRows, ACCR_PATTERNS) : 0;
-  const currOCA = findAmt(bsCurrRows, OTHER_CA_PATTERNS);
-  const prevOCA = hasPrev ? findAmt(bsPrevRows, OTHER_CA_PATTERNS) : 0;
-  const currOCL = findAmt(bsCurrRows, OTHER_CL_PATTERNS);
-  const prevOCL = hasPrev ? findAmt(bsPrevRows, OTHER_CL_PATTERNS) : 0;
+  log("Net Income", "NetIncome", netIncome, 0, netIncome, "Operating");
+  log("Depreciation", "Depreciation", depreciation, 0, depreciation, "Operating");
+  if (amortization) log("Amortization", "Amortization", amortization, 0, amortization, "Operating");
 
-  // Operating indirect-method sign convention:
-  //   AR  increase → cash used      → negative
-  //   INV increase → cash used      → negative
-  //   AP  increase → cash received  → positive
-  //   ACCR increase → cash deferred → positive
-  //   OCA increase → cash used      → negative
-  //   OCL increase → cash deferred  → positive
-  const changeAR = hasPrev ? r2(-(currAR - prevAR)) : 0;
-  const changeInv = hasPrev ? r2(-(currInv - prevInv)) : 0;
-  const changeAP = hasPrev ? r2(+(currAP - prevAP)) : 0;
-  const changeAccr = hasPrev ? r2(+(currAccr - prevAccr)) : 0;
-  const changeOCA = hasPrev ? r2(-(currOCA - prevOCA)) : 0;
-  const changeOCL = hasPrev ? r2(+(currOCL - prevOCL)) : 0;
+  // ── Working capital deltas ─────────────────────────────────────────────────
+  function wcd(label, category, patterns, sign) {
+    if (!hasPrev) return 0;
+    const curr = sumLeaves(bsCLeaves, patterns);
+    const prev = sumLeaves(bsPLeaves, patterns);
+    const delta = r2(sign * (curr - prev));
+    log(label, category, curr, prev, delta, "Operating");
+    return delta;
+  }
+
+  const changeAR = wcd("Accounts Receivable", "AccountsReceivable", AR_PATTERNS, -1);
+  const changeInv = wcd("Inventory", "Inventory", INV_PATTERNS, -1);
+  const changeOCA = wcd("Other Current Assets", "OtherCurrentAssets", OTHER_CA_PATTERNS, -1);
+  const changeAP = wcd("Accounts Payable", "AccountsPayable", AP_PATTERNS, +1);
+  const changeAccr = wcd("Accrued Expenses", "AccruedExpenses", ACCR_PATTERNS, +1);
+  const changeOCL = wcd("Other Current Liabilities", "OtherCurrentLiabilities", OTHER_CL_PATTERNS, +1);
 
   const totalOperating = r2(
     netIncome + depreciation + amortization +
     changeAR + changeInv + changeAP + changeAccr + changeOCA + changeOCL
   );
 
-  // ── Investing Activities ────────────────────────────────────────────────────
-  // Raw year-over-year delta for each balance-sheet investing line.
-  // PurchaseOfFixedAssets = currFixed - prevFixed (positive = net purchase = cash out)
-  // SecurityDeposits      = -(currDep  - prevDep) (increase in deposits = cash out)
-  // Investments           = currInvt  - prevInvt  (positive = net purchase = cash out)
-  const currFixed = findAmt(bsCurrRows, FIXED_PATTERNS);
-  const prevFixed = hasPrev ? findAmt(bsPrevRows, FIXED_PATTERNS) : 0;
-  const currDep = findAmt(bsCurrRows, DEPOSITS_PATTERNS);
-  const prevDep = hasPrev ? findAmt(bsPrevRows, DEPOSITS_PATTERNS) : 0;
-  const currInvt = findAmt(bsCurrRows, INVESTMENTS_PATTERNS);
-  const prevInvt = hasPrev ? findAmt(bsPrevRows, INVESTMENTS_PATTERNS) : 0;
+  // ── Investing Activities ───────────────────────────────────────────────────
+  const currFixed = sumLeaves(bsCLeaves, FIXED_PATTERNS);
+  const prevFixed = hasPrev ? sumLeaves(bsPLeaves, FIXED_PATTERNS) : 0;
+  const netFAChange = hasPrev ? r2(currFixed - prevFixed) : 0;
 
-  const purchaseOfFixed = hasPrev ? r2(currFixed - prevFixed) : 0;
-  const securityDeposits = hasPrev ? r2(-(currDep - prevDep)) : 0;
-  const investments = hasPrev ? r2(currInvt - prevInvt) : 0;
+  let purchaseOfFixed = 0;
+  let saleOfFixed = 0;
 
-  const totalInvesting = r2(purchaseOfFixed + securityDeposits + investments);
-
-  // ── Financing Activities ────────────────────────────────────────────────────
-  const currLOC = findAmt(bsCurrRows, LINE_OF_CREDIT_PATTERNS);
-  const prevLOC = hasPrev ? findAmt(bsPrevRows, LINE_OF_CREDIT_PATTERNS) : 0;
-  const currLTD = findAmt(bsCurrRows, LONG_DEBT_PATTERNS);
-  const prevLTD = hasPrev ? findAmt(bsPrevRows, LONG_DEBT_PATTERNS) : 0;
-  // Notes payable: fallback when neither LOC nor LTD is present
-  const currNotes = (currLOC === 0 && currLTD === 0) ? findAmt(bsCurrRows, NOTES_PAYABLE_PATTERNS) : 0;
-  const prevNotes = (hasPrev && prevLOC === 0 && prevLTD === 0) ? findAmt(bsPrevRows, NOTES_PAYABLE_PATTERNS) : 0;
-
-  const totalDebtPrev = prevLOC + prevLTD + prevNotes;
-  const totalDebtCurr = currLOC + currLTD + currNotes;
-  const debtDelta = hasPrev ? r2(totalDebtCurr - totalDebtPrev) : 0;
-
-  // Loans split by direction; loanRepayment stored as a positive magnitude.
-  const loansReceived = debtDelta > 0 ? debtDelta : 0;
-  const loanRepayment = debtDelta < 0 ? r2(Math.abs(debtDelta)) : 0; // positive magnitude
-
-  // Equity: raw delta (can be negative if equity decreased)
-  const currEquity = findAmt(bsCurrRows, EQUITY_PAID_IN_PATTERNS);
-  const prevEquity = hasPrev ? findAmt(bsPrevRows, EQUITY_PAID_IN_PATTERNS) : 0;
-  const equityContrib = hasPrev ? r2(currEquity - prevEquity) : 0;
-
-  // Dividends / distributions: taken from the P&L (positive outflow amount)
-  const dividends = r2(findAmt(plRows, DIVIDENDS_PATTERNS));
-
-  // Total: LoansReceived − LoanRepayment + EquityContribution − Dividends
-  const totalFinancing = r2(loansReceived - loanRepayment + equityContrib - dividends);
-
-  // ── Cash reconciliation ───────────────────────────────────────────────────
-  // BeginningCash = PreviousYearBS.BankAccounts (0 when no previous BS)
-  const beginningCash = r2(hasPrev ? findAmt(bsPrevRows, CASH_PATTERNS) : 0);
-  const netCashChange = r2(totalOperating + totalInvesting + totalFinancing);
-  // EndingCash derived arithmetically so the statement is always self-consistent.
-  const bsEndingCash = r2(findAmt(bsCurrRows, CASH_PATTERNS));
-  const endingCash = r2(beginningCash + netCashChange);
-  const cashValidated = bsEndingCash !== 0 && Math.abs(endingCash - bsEndingCash) <= 1;
-
-  if (!cashValidated && bsEndingCash !== 0) {
-    console.error(`[ManualCashFlow] Cash mismatch year=${year}: computed endingCash=${endingCash} vs BS cash=${bsEndingCash} (diff=${Math.abs(endingCash - bsEndingCash).toFixed(2)})`);
+  if (hasPrev) {
+    if (depreciation > 0) {
+      // Under net PP&E reporting: Ending Net FA = Beginning Net FA + Capex − Depreciation
+      // Therefore: Capex = (Ending − Beginning) + Depreciation
+      const estimatedCapex = r2(netFAChange + depreciation);
+      if (estimatedCapex > 0) {
+        purchaseOfFixed = -estimatedCapex;          // cash outflow
+        log("Fixed Assets (Purchase)", "FixedAssets", currFixed, prevFixed, purchaseOfFixed, "Investing");
+      } else {
+        // Net FA fell more than depreciation → proceeds from disposal
+        saleOfFixed = r2(-estimatedCapex);          // cash inflow
+        log("Fixed Assets (Sale)", "FixedAssets", currFixed, prevFixed, saleOfFixed, "Investing");
+      }
+    } else {
+      // No depreciation available — use raw delta conservatively
+      if (netFAChange > 0) {
+        purchaseOfFixed = -netFAChange;
+        log("Fixed Assets (Purchase, no depr)", "FixedAssets", currFixed, prevFixed, purchaseOfFixed, "Investing");
+      } else if (netFAChange < 0) {
+        saleOfFixed = -netFAChange;
+        log("Fixed Assets (Sale, no depr)", "FixedAssets", currFixed, prevFixed, saleOfFixed, "Investing");
+      }
+    }
   }
 
-  // ── Diagnostics ──────────────────────────────────────────────────────────
-  console.log("[ManualCashFlow] buildCashFlow", {
-    year,
-    hasPrev,
-    workingCapitalChanges: {
-      AR: { curr: currAR, prev: prevAR, change: changeAR },
-      INV: { curr: currInv, prev: prevInv, change: changeInv },
-      AP: { curr: currAP, prev: prevAP, change: changeAP },
-      ACCR: { curr: currAccr, prev: prevAccr, change: changeAccr },
-      OCA: { curr: currOCA, prev: prevOCA, change: changeOCA },
-      OCL: { curr: currOCL, prev: prevOCL, change: changeOCL },
-    },
-    plValues: { netIncome, depreciation, amortization },
-    investing: { purchaseOfFixed, securityDeposits, investments },
-    financing: { loansReceived, loanRepayment, equityContrib, dividends },
-    totals: { totalOperating, totalInvesting, totalFinancing, netCashChange },
-    cash: { beginningCash, bsEndingCash, endingCash, cashValidated },
-  });
+  const currDep = sumLeaves(bsCLeaves, DEPOSITS_PATTERNS);
+  const prevDep = hasPrev ? sumLeaves(bsPLeaves, DEPOSITS_PATTERNS) : 0;
+  const securityDeposits = hasPrev ? r2(-(currDep - prevDep)) : 0;
+  log("Security Deposits", "SecurityDeposits", currDep, prevDep, securityDeposits, "Investing");
+
+  const currInvt = sumLeaves(bsCLeaves, INVESTMENTS_PATTERNS);
+  const prevInvt = hasPrev ? sumLeaves(bsPLeaves, INVESTMENTS_PATTERNS) : 0;
+  const investmentChange = hasPrev ? r2(-(currInvt - prevInvt)) : 0;
+  log("Investments", "Investments", currInvt, prevInvt, investmentChange, "Investing");
+
+  const totalInvesting = r2(purchaseOfFixed + saleOfFixed + securityDeposits + investmentChange);
+
+  // ── Financing Activities ───────────────────────────────────────────────────
+  const financingActivities = [];
+
+  // Per-named-loan — every individual debt account tracked separately
+  if (hasPrev) {
+    const currLoans = findNamedLeaves(bsCLeaves, ALL_LOAN_PATTERNS);
+    const prevLoans = findNamedLeaves(bsPLeaves, ALL_LOAN_PATTERNS);
+    const prevLoanMap = new Map(prevLoans.map((l) => [l.name, l.amount]));
+    const currLoanMap = new Map(currLoans.map((l) => [l.name, l.amount]));
+    const allLoanNames = new Set([...currLoanMap.keys(), ...prevLoanMap.keys()]);
+
+    for (const loanName of allLoanNames) {
+      const curr = currLoanMap.get(loanName) ?? 0;
+      const prev = prevLoanMap.get(loanName) ?? 0;
+      const delta = r2(curr - prev);
+      if (delta !== 0) {
+        financingActivities.push({ label: `Loans - ${loanName}`, value: delta });
+        log(`Loan: ${loanName}`, "Loans", curr, prev, delta, "Financing");
+      }
+    }
+  }
+
+  // Equity contribution — strict: paid-in capital and owner investment only
+  const currEquity = sumLeaves(bsCLeaves, EQUITY_PAID_IN_PATTERNS);
+  const prevEquity = hasPrev ? sumLeaves(bsPLeaves, EQUITY_PAID_IN_PATTERNS) : 0;
+  const equityContrib = hasPrev ? r2(currEquity - prevEquity) : 0;
+  if (equityContrib !== 0) log("Equity Contribution", "EquityContribution", currEquity, prevEquity, equityContrib, "Financing");
+  financingActivities.push({ label: "Equity Contribution", value: equityContrib });
+
+  // Dividends / owner draws — P&L only, never retained-earnings delta
+  const dividends = sumLeaves(plLeaves, DIVIDENDS_PATTERNS);
+  if (dividends !== 0) log("Dividends/Draws", "Dividends", dividends, 0, -dividends, "Financing");
+  financingActivities.push({ label: "Dividends", value: -dividends });
+
+  const totalFinancing = r2(financingActivities.reduce((s, a) => s + a.value, 0));
+
+  // ── Cash reconciliation ───────────────────────────────────────────────────
+  const beginningCash = r2(hasPrev ? sumLeaves(bsPLeaves, CASH_PATTERNS) : 0);
+  const netCashChange = r2(totalOperating + totalInvesting + totalFinancing);
+  const endingCash = r2(beginningCash + netCashChange);
+  const bsEndingCash = r2(sumLeaves(bsCLeaves, CASH_PATTERNS));
+  const reconDiff = r2(endingCash - bsEndingCash);
+  const cashValidated = bsEndingCash !== 0 && Math.abs(reconDiff) <= 1;
+
+  // Identify BS leaves not matched by any pattern (potential missing classifications)
+  const allBSPatterns = [
+    ...CASH_PATTERNS, ...AR_PATTERNS, ...INV_PATTERNS, ...AP_PATTERNS,
+    ...ACCR_PATTERNS, ...OTHER_CA_PATTERNS, ...OTHER_CL_PATTERNS,
+    ...FIXED_PATTERNS, ...DEPOSITS_PATTERNS, ...INVESTMENTS_PATTERNS,
+    ...ALL_LOAN_PATTERNS, ...EQUITY_PAID_IN_PATTERNS,
+  ];
+  const unclassifiedAccounts = bsCLeaves
+    .filter((leaf) => !allBSPatterns.some((pat) => {
+      const re = pat instanceof RegExp ? pat : new RegExp(pat, "i");
+      return re.test(String(leaf.name || ""));
+    }))
+    .map((l) => ({ name: l.name, amount: l.amount }));
+
+  const reconciliationReport = {
+    reconciliationStatus: cashValidated
+      ? "RECONCILED"
+      : bsEndingCash === 0 ? "NO_CASH_BALANCE" : "MISMATCH",
+    reconciliationDifference: reconDiff,
+    computedEndingCash: endingCash,
+    balanceSheetCash: bsEndingCash,
+    beginningCash,
+    netCashChange,
+    sectionTotals: { totalOperating, totalInvesting, totalFinancing },
+    unclassifiedAccounts,
+    diagnostics,
+  };
+
+  if (!cashValidated && bsEndingCash !== 0) {
+    console.error(
+      `[ManualCashFlow] Cash mismatch year=${year}: computed=${endingCash} vs BS=${bsEndingCash} (diff=${reconDiff})`,
+      "\nUnclassified accounts:", unclassifiedAccounts,
+      "\nSection totals:", reconciliationReport.sectionTotals,
+    );
+  } else {
+    console.log("[ManualCashFlow] buildCashFlow OK", {
+      year, totalOperating, totalInvesting, totalFinancing,
+      netCashChange, beginningCash, endingCash, bsEndingCash, cashValidated,
+    });
+  }
 
   return {
     year: Number(year),
     reportType: "cashflow",
-    accountingMethod: "Accrual",
+    accountingMethod: "Indirect",
     data: {
       operatingActivities: [
         { label: "Net Income", value: netIncome },
@@ -409,21 +542,18 @@ function buildCashFlow({ bsPrevRows, bsCurrRows, plRows, year }) {
       totalOperating,
       investingActivities: [
         { label: "Purchase of Fixed Assets", value: purchaseOfFixed },
+        { label: "Sale of Fixed Assets", value: saleOfFixed },
         { label: "Security Deposits", value: securityDeposits },
-        { label: "Investments", value: investments },
+        { label: "Investments", value: investmentChange },
       ],
       totalInvesting,
-      financingActivities: [
-        { label: "Loans Received", value: loansReceived },
-        { label: "Loan Repayment", value: -loanRepayment }, // stored as negative (cash outflow)
-        { label: "Equity Contribution", value: equityContrib },
-        { label: "Dividends", value: -dividends }, // stored as negative (cash outflow)
-      ],
+      financingActivities,
       totalFinancing,
       netCashChange,
       beginningCash,
       endingCash,
       cashValidated,
+      reconciliationReport,
     },
   };
 }
@@ -594,6 +724,23 @@ async function generateCashFlow(companyId, year) {
     plFile: pl.report_params?.fileName || null,
     hasPreviousBS: Boolean(bsPrev),
   };
+
+  // Validate reconciliation before persisting — never save a statement that mismatches BS cash
+  const { cashValidated, reconciliationReport } = cfResult.data;
+  if (!cashValidated && reconciliationReport?.reconciliationStatus === "MISMATCH") {
+    console.warn(`[ManualCashFlow] Reconciliation failed for year=${periodYear} — statement NOT saved.`);
+    return {
+      success: false,
+      message:
+        `Cash flow reconciliation failed for ${periodYear}. ` +
+        `Computed ending cash (${reconciliationReport.computedEndingCash}) does not match ` +
+        `balance sheet cash (${reconciliationReport.balanceSheetCash}). ` +
+        `Difference: ${reconciliationReport.reconciliationDifference}.`,
+      year: periodYear,
+      inputs,
+      reconciliationReport,
+    };
+  }
 
   await upsertGeneratedCashFlow(companyId, periodYear, cfResult, inputs);
 

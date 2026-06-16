@@ -1,22 +1,12 @@
 import { useState, useMemo, useCallback } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { cn } from "../../../lib/utils";
+import { cn, formatCurrency } from "../../../lib/utils";
 
 // ─── Utility Functions ──────────────────────────────────────────────────────
 
-function formatBSCurrency(value) {
-  if (value === undefined || value === null || value === "" || value === 0) return "-";
-  const num = typeof value === "string" ? parseFloat(value.replace(/,/g, "")) : Number(value);
-  if (!Number.isFinite(num) || num === 0) return "-";
-
-  const absVal = Math.abs(num);
-  const formatted = absVal.toLocaleString("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-
-  return num < 0 ? `(${formatted})` : formatted;
-}
+// Shared US-standard formatter (comma thousands, period decimal, parens for
+// negatives, "-" for zero/empty) lives in lib/utils. Alias kept for readability.
+const formatBSCurrency = formatCurrency;
 
 function calculateChange(current, previous) {
   const curr = Number(current) || 0;

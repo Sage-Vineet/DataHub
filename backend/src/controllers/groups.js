@@ -14,7 +14,7 @@ async function getGroupCompanyId(groupId) {
 
 const listGroups = asyncHandler(async (req, res) => {
   if (!permissionService.canAccessCompany(req.user, req.params.id)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "You do not have permission to access this company's groups." });
   }
 
   const { data: groups, error: groupsError } = await supabase
@@ -51,7 +51,7 @@ const listGroups = asyncHandler(async (req, res) => {
 
 const createGroup = asyncHandler(async (req, res) => {
   if (!permissionService.canAccessCompany(req.user, req.params.id)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "You do not have permission to access this company's groups." });
   }
 
   const { name, description } = req.body || {};
@@ -75,7 +75,7 @@ const updateGroup = asyncHandler(async (req, res) => {
   const companyId = await getGroupCompanyId(req.params.id);
   if (!companyId) return res.status(404).json({ error: "Not found" });
   if (!permissionService.canAccessCompany(req.user, companyId)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "You do not have permission to access this company's groups." });
   }
 
   const { name, description } = req.body || {};
@@ -100,7 +100,7 @@ const deleteGroup = asyncHandler(async (req, res) => {
   const companyId = await getGroupCompanyId(req.params.id);
   if (!companyId) return res.status(404).json({ error: "Not found" });
   if (!permissionService.canAccessCompany(req.user, companyId)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "You do not have permission to access this company's groups." });
   }
 
   const { error } = await supabase.from("buyer_groups").delete().eq("id", req.params.id);
@@ -112,7 +112,7 @@ const addMember = asyncHandler(async (req, res) => {
   const companyId = await getGroupCompanyId(req.params.id);
   if (!companyId) return res.status(404).json({ error: "Not found" });
   if (!permissionService.canAccessCompany(req.user, companyId)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "You do not have permission to access this company's groups." });
   }
 
   const { user_id } = req.body || {};
@@ -135,7 +135,7 @@ const listGroupMembers = asyncHandler(async (req, res) => {
   const companyId = await getGroupCompanyId(req.params.id);
   if (!companyId) return res.status(404).json({ error: "Not found" });
   if (!permissionService.canAccessCompany(req.user, companyId)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "You do not have permission to access this company's groups." });
   }
 
   const { data, error } = await supabase
@@ -152,7 +152,7 @@ const removeMember = asyncHandler(async (req, res) => {
   const companyId = await getGroupCompanyId(req.params.id);
   if (!companyId) return res.status(404).json({ error: "Not found" });
   if (!permissionService.canAccessCompany(req.user, companyId)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "You do not have permission to access this company's groups." });
   }
 
   const { error } = await supabase

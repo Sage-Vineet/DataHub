@@ -455,7 +455,7 @@ function InvoiceFilters({
           onChange={(event) => onStatusChange(event.target.value)}
           className="h-12 w-full rounded-xl border border-[#E4E7EC] bg-white px-4 text-[15px] font-medium text-[#344054] outline-none transition-colors focus:border-[#8BC53D]"
         >
-          <option value="all">All Statuses</option>
+          <option value="all">All Status</option>
           <option value="paid">Paid</option>
           <option value="open">Open</option>
           <option value="overdue">Overdue</option>

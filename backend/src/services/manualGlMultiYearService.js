@@ -708,44 +708,46 @@ async function getActualFiscalYearsFromDB(companyId, batchId, fiscalCalendarExpl
  *   - Generic "connect" or "ECONNREFUSED": transient network blip.
  */
 function classifyRetryError(error) {
-  const msg   = String(error?.message || "").toLowerCase();
-  const code  = String(error?.code    || "").toLowerCase();
+  const msg = String(error?.message || "").toLowerCase();
+  const code = String(error?.code || "").toLowerCase();
   const status = Number(error?.status || 0);
 
   // Permanent failures — never retry
-  const isStatementTimeout   = code === "57014" || msg.includes("statement timeout");
+  const isStatementTimeout = code === "57014" || msg.includes("statement timeout");
   const isConnectionTerminated = msg.includes("connection terminated") ||
-                                  msg.includes("connection reset") ||
-                                  msg.includes("connection closed");
-  const isSchemaCacheFailure  = msg.includes("schema cache") ||
-                                  msg.includes("failed to parse query") ||
-                                  msg.includes("pgrst");
-  const isCloudflareError     = msg.includes("cloudflare 52") ||
-                                  msg.includes("<!doctype html") ||
-                                  msg.includes("<html") ||
-                                  (status >= 520 && status <= 529);
-  const isFetchAborted        = msg.includes("aborted") ||
-                                  msg.includes("fetch failed") ||
-                                  error?.name === "AbortError";
-  const isAuthError           = status === 401 || status === 403;
-  const isNotFound            = status === 404;
+    msg.includes("connection reset") ||
+    msg.includes("connection closed");
+  const isSchemaCacheFailure = msg.includes("schema cache") ||
+    msg.includes("failed to parse query") ||
+    msg.includes("pgrst");
+  const isCloudflareError = msg.includes("cloudflare 52") ||
+    msg.includes("<!doctype html") ||
+    msg.includes("<html") ||
+    (status >= 520 && status <= 529);
+  const isFetchAborted = msg.includes("aborted") ||
+    msg.includes("fetch failed") ||
+    error?.name === "AbortError";
+  const isAuthError = status === 401 || status === 403;
+  const isNotFound = status === 404;
 
   if (
     isStatementTimeout || isConnectionTerminated || isSchemaCacheFailure ||
-    isCloudflareError  || isFetchAborted         || isAuthError          || isNotFound
+    isCloudflareError || isFetchAborted || isAuthError || isNotFound
   ) {
-    return { retryable: false, reason: isStatementTimeout ? "statement_timeout" :
-      isConnectionTerminated ? "connection_terminated" :
-      isSchemaCacheFailure   ? "schema_cache_failure"  :
-      isCloudflareError      ? "cloudflare_error"      :
-      isFetchAborted         ? "fetch_aborted"         : "non_retryable_status" };
+    return {
+      retryable: false, reason: isStatementTimeout ? "statement_timeout" :
+        isConnectionTerminated ? "connection_terminated" :
+          isSchemaCacheFailure ? "schema_cache_failure" :
+            isCloudflareError ? "cloudflare_error" :
+              isFetchAborted ? "fetch_aborted" : "non_retryable_status"
+    };
   }
 
   // Transient failures — safe to retry
-  const isRateLimit     = status === 429 || msg.includes("rate limit");
-  const isGatewayError  = status === 503 || status === 504;
+  const isRateLimit = status === 429 || msg.includes("rate limit");
+  const isGatewayError = status === 503 || status === 504;
   const isTransientConn = msg.includes("econnrefused") || msg.includes("econnreset") ||
-                          (msg.includes("connect") && !isConnectionTerminated);
+    (msg.includes("connect") && !isConnectionTerminated);
 
   if (isRateLimit || isGatewayError || isTransientConn) {
     return { retryable: true, reason: "transient" };
@@ -2759,7 +2761,11 @@ async function insertTransactions({
   }
 
   const upsertChunk = async (chunk, chunkIndex) => {
-    console.log(`[ManualGL][MultiYear] Upserting chunk ${chunkIndex + 1}/${chunks.length} (${chunk.length} rows)`);
+    const sampleBatchId = chunk[0]?.batch_id || chunk[0]?.upload_batch_id || "?";
+    console.log(
+      `[ManualGL][insertTransactions] chunk=${chunkIndex + 1}/${chunks.length} rows=${chunk.length} ` +
+      `companyId=${companyId} batchId=${sampleBatchId}`,
+    );
     await retrySupabaseOperation(async () => {
       let result = await supabase
         .from(TABLES.transactions)
@@ -2772,6 +2778,10 @@ async function insertTransactions({
         result.error &&
         (isMissingColumnError(result.error) || isConflictTargetError(result.error))
       ) {
+        console.warn(
+          `[ManualGL][insertTransactions] Primary constraint missing — using legacy fallback. ` +
+          `Error: ${result.error.message}`,
+        );
         const legacyChunk = chunk.map(
           ({
             source_type,
@@ -2784,14 +2794,24 @@ async function insertTransactions({
             ...legacy
           }) => legacy,
         );
+        // IMPORTANT: do NOT specify onConflict here.
+        // Previously the fallback used "company_id,transaction_hash" — a global
+        // constraint that spans ALL batches.  With ignoreDuplicates:true that
+        // silently dropped rows whose content already existed in a DIFFERENT
+        // batch (version), producing incomplete staged data for the new version.
+        // Omitting onConflict generates "ON CONFLICT DO NOTHING" which honours
+        // every unique constraint without specifying one as the target —
+        // idempotent within the same batch and safe across versions.
         result = await supabase
           .from(TABLES.transactions)
           .upsert(legacyChunk, {
-            onConflict: isConflictTargetError(result.error)
-              ? "company_id,transaction_hash"
-              : "company_id,batch_id,transaction_hash",
             ignoreDuplicates: true,
           });
+        if (result.error) {
+          console.warn(
+            `[ManualGL][insertTransactions] Legacy fallback upsert error (chunk ${chunkIndex + 1}): ${result.error.message}`,
+          );
+        }
       }
 
       return result;
@@ -2830,6 +2850,7 @@ async function replaceBalanceSheetLines({
 
   const baseLines = lines.map((line) => ({
     ...line,
+    upload_batch_id: line.upload_batch_id || line.batch_id || batchId,
     line_hash: line.line_hash || buildBalanceSheetLineHash(line),
   }));
   let { error } = await supabase
@@ -2846,6 +2867,8 @@ async function replaceBalanceSheetLines({
         source_switch_version,
         upload_session_id,
         staged_at,
+        upload_batch_id,
+        dataset_version_id,
         ...legacy
       }) => legacy,
     );
@@ -2962,6 +2985,11 @@ async function copyBatchTransactionsForYears({
   sourceSwitchVersion = null,
   uploadSessionId = null,
 }) {
+  console.log(
+    `[ManualGL][CarryForward] companyId=${companyId} ` +
+    `sourceBatchId=${sourceBatchId} targetBatchId=${targetBatchId} ` +
+    `years=[${(Array.isArray(fiscalYears) ? fiscalYears : []).join(",")}]`,
+  );
   const years = Array.isArray(fiscalYears)
     ? fiscalYears.map((year) => Number(year)).filter((year) => Number.isInteger(year) && year > 0)
     : [];
@@ -3056,12 +3084,14 @@ async function copyBatchTransactionsForYears({
           ...legacy
         }) => legacy,
       );
+      // Do NOT use "company_id,transaction_hash" as the conflict target.
+      // That global key spans ALL batches and would silently drop carry-forward
+      // rows whose hash already appears in the source batch, producing
+      // incomplete data for the new version.  Omitting onConflict produces
+      // "ON CONFLICT DO NOTHING" which is safe for any unique constraint.
       const legacyResult = await supabase
         .from(TABLES.transactions)
         .upsert(legacyChunk, {
-          onConflict: isConflictTargetError(error)
-            ? "company_id,transaction_hash"
-            : "company_id,batch_id,transaction_hash",
           ignoreDuplicates: true,
         });
       error = legacyResult.error;
@@ -3130,6 +3160,7 @@ async function copyBalanceSheetLinesFromBatch({
       carriedForwardFromBatchId: sourceBatchId,
     },
     dataset_version_id: datasetVersionId,
+    upload_batch_id: line.upload_batch_id || line.batch_id || targetBatchId,
   }));
 
   const result = await replaceBalanceSheetLines({
@@ -3224,6 +3255,9 @@ function parseManualFilterQuery(rawFilters = {}) {
   const rawUploadSessionId = toNonEmptyString(
     rawFilters.uploadSessionId || rawFilters.upload_session_id || rawFilters.versionId || rawFilters.version_id || "",
   );
+  const rawKeyReportVersionId = toNonEmptyString(
+    rawFilters.keyReportVersionId || rawFilters.key_report_version_id || "",
+  );
   const rawVersionId = toNonEmptyString(
     rawFilters.versionId || rawFilters.version_id || rawUploadSessionId || "",
   );
@@ -3257,6 +3291,10 @@ function parseManualFilterQuery(rawFilters = {}) {
     accountName: rawFilters.accountName || rawFilters.account_name || "",
     accountNumber: rawFilters.accountNumber || rawFilters.account_number || "",
     accountType: rawFilters.accountType || rawFilters.account_type || "",
+    vendorName: rawFilters.vendorName || rawFilters.vendor_name || "",
+    statementType: String(
+      rawFilters.statementType || rawFilters.statement_type || rawFilters.bsPl || rawFilters.bs_pl || "",
+    ).toLowerCase(),
     category: rawFilters.category || "",
     subCategory: rawFilters.subCategory || rawFilters.sub_category || "",
     department: rawFilters.department || "",
@@ -3269,11 +3307,71 @@ function parseManualFilterQuery(rawFilters = {}) {
     sourceType: toNonEmptyString(rawFilters.sourceType || rawFilters.source_type || ""),
     sourceSwitchVersion: toNonEmptyString(rawFilters.sourceSwitchVersion || rawFilters.source_switch_version || ""),
     uploadSessionId: isValidUuid(rawUploadSessionId) ? rawUploadSessionId : "",
+    keyReportVersionId: rawKeyReportVersionId,
     allBatches: parseBoolean(rawFilters.allBatches || rawFilters.all_batches),
     limit: Number(rawFilters.limit || 0) > 0
       ? Math.min(Number(rawFilters.limit), DEFAULT_STAGING_LIMIT)
       : DEFAULT_STAGING_LIMIT,
   };
+}
+
+/**
+ * Resolve the batch a report should read from, honoring an explicitly-requested
+ * dataset version.
+ *
+ * CRITICAL for version isolation: when a specific version (datasetVersion or
+ * versionId/uploadSessionId) was requested but cannot be resolved to a batch,
+ * this returns "" so the report renders EMPTY — it must NEVER silently fall back
+ * to the company's active batch.  Falling back would leak a different version's
+ * data into the selected version's report (the exact cross-version contamination
+ * this isolation work prevents).
+ *
+ * Only when no specific version/batch was requested at all do we default to the
+ * active/latest batch (the normal "open the Reports page" path).
+ */
+async function resolveEffectiveReportBatchId(companyId, filters = {}) {
+  const explicitBatchId = toNonEmptyString(filters.batchId);
+  if (explicitBatchId) return explicitBatchId;
+
+  const keyReportVersionId = toNonEmptyString(filters.keyReportVersionId);
+  const datasetVersion = Number(filters.datasetVersion || filters.dataset_version || 0);
+  const versionId = toNonEmptyString(filters.versionId || filters.uploadSessionId || "");
+  const hasVersionRequest =
+    (Number.isInteger(datasetVersion) && datasetVersion > 0) || !!versionId || !!keyReportVersionId;
+
+  if (hasVersionRequest) {
+    const resolved = await resolveReportBatchId(companyId, "", {
+      ...filters,
+      datasetVersion: Number.isInteger(datasetVersion) && datasetVersion > 0 ? datasetVersion : undefined,
+      versionId: keyReportVersionId || versionId,
+      allowExplicitBatch: true,
+      includeArchived: true,
+      versionMode: REPORT_BATCH_MODE.HISTORICAL,
+    });
+    // Empty => version not found.  Return "" (empty report), NOT the active batch.
+    return resolved || "";
+  }
+
+  // No specific version requested. Prefer the company's ACTIVE Key Report
+  // version (the official, user-curated source of truth) over the auto-activated
+  // "latest upload" batch. This is fully opt-in and FAIL-SAFE: if no active Key
+  // Report exists — or the Key Reports tables aren't present / any error occurs —
+  // we fall back to the exact pre-existing active/latest-batch behavior.
+  try {
+    const keyReportService = require("./keyReportService");
+    const pinned = await keyReportService.getActiveResolvedBatch(companyId);
+    if (pinned && pinned.batchId) {
+      return pinned.batchId;
+    }
+  } catch (err) {
+    // Backward-compatible: ignore and use the legacy default below.
+    if (process.env.DEBUG_KEY_REPORTS) {
+      console.warn("[KeyReports] active-version resolution skipped:", err.message);
+    }
+  }
+
+  // Default to the active/latest batch (legacy behavior).
+  return (await resolveReportBatchId(companyId)) || "";
 }
 
 async function queryStagedTransactions(companyId, rawFilters = {}) {
@@ -3321,6 +3419,17 @@ async function queryStagedTransactions(companyId, rawFilters = {}) {
     });
     if (resolvedBatchFromDatasetVersion) {
       filters.batchId = resolvedBatchFromDatasetVersion;
+    } else {
+      // The batch for this dataset version could not be found (version never
+      // existed or migration 027 hasn't run).  Return empty rows rather than
+      // falling through to the integer `dataset_version` column path (that
+      // column does not exist on the transactions table) or accidentally
+      // reading a different version's transactions.
+      console.warn(
+        `[ManualGL][queryStagedTransactions] Cannot resolve batchId for ` +
+        `dataset_version=${filters.datasetVersion} company=${companyId}; returning empty rows.`,
+      );
+      return { filters, rows: [] };
     }
   }
 
@@ -3376,6 +3485,7 @@ async function queryStagedTransactions(companyId, rawFilters = {}) {
 
     query = applyTextFilter(query, "account_name", filters.accountName);
     query = applyTextFilter(query, "account_number", filters.accountNumber);
+    query = applyTextFilter(query, "vendor_name", filters.vendorName);
     query = applyTextFilter(query, "account_type", filters.accountType, true);
     query = applyTextFilter(query, "category", filters.category, true);
     query = applyTextFilter(query, "sub_category", filters.subCategory, true);
@@ -3860,22 +3970,43 @@ function buildYearComparison(yearlyRows = []) {
   });
 }
 
-function buildProfitLossHierarchicalRows(transactions = [], yearlyRows = [], displayYear = null) {
-  // Resolve displayYear to the last available year so account-level rows always
-  // match the header totals. Without this guard, a null displayYear would let ALL
-  // years' transaction amounts accumulate into account rows while the section
-  // totals (pulled from yearlyRows) would only reflect the last year â€” producing
-  // inflated account-level numbers in a multi-year GL view.
-  const resolvedDisplayYear =
-    (Number.isInteger(displayYear) && displayYear > 0)
-      ? displayYear
-      : (yearlyRows.length > 0 ? yearlyRows[yearlyRows.length - 1].fiscalYear : null);
+// ── Per-year comparative-column helpers ──────────────────────────────────────
+// Shared by the P&L, Balance Sheet and Cash Flow summary builders so all three
+// statements emit an identical { yearCols, amounts } contract. Column keys MUST
+// match the keys written into each node's `amounts` map (the frontend renderer
+// reads line.amounts[col.key]); using these helpers everywhere prevents drift.
+function buildYearColumns(years = []) {
+  return years.map((y) => ({ key: `y${y}`, label: String(y) }));
+}
+function amountsFromByYear(byYear = {}, years = []) {
+  const out = {};
+  years.forEach((y) => {
+    out[`y${y}`] = roundMoney(Number(byYear?.[y] || 0));
+  });
+  return out;
+}
 
+function buildProfitLossHierarchicalRows(transactions = [], yearlyRows = [], years = null) {
+  // `years` is the set of fiscal years to expose as comparative columns. When a
+  // single year (or null) is given the output is a one-column table identical to
+  // the legacy single-`displayYear` behavior. Multiple years produce one
+  // per-year value in each node's `amounts` map.
+  let selectedYears = Array.isArray(years)
+    ? years.map(Number).filter((y) => Number.isInteger(y) && y > 0)
+    : [];
+  if (selectedYears.length === 0) {
+    const fallback = yearlyRows.length > 0 ? yearlyRows[yearlyRows.length - 1].fiscalYear : null;
+    selectedYears = fallback ? [fallback] : [];
+  }
+  selectedYears = Array.from(new Set(selectedYears)).sort((a, b) => a - b);
+  const yearSet = new Set(selectedYears);
+  const displayYear = selectedYears.length > 0 ? selectedYears[selectedYears.length - 1] : null;
+
+  // Per-account, per-year totals (only for the selected years).
   const accountMap = new Map();
-
   transactions.forEach((tx) => {
     const txFY = Number(tx.fiscalYear || 0);
-    if (resolvedDisplayYear && txFY !== resolvedDisplayYear) return;
+    if (!yearSet.has(txFY)) return;
 
     const accountType = normalizeAccountType(tx.accountType) || inferAccountType(tx.accountName, tx.accountNumber);
     if (!['income', 'cogs', 'expense'].includes(accountType)) return;
@@ -3885,73 +4016,95 @@ function buildProfitLossHierarchicalRows(transactions = [], yearlyRows = [], dis
 
     const key = `${category}::${tx.accountNumber || ''}::${tx.accountName}`;
     if (!accountMap.has(key)) {
-      accountMap.set(key, { accountName: tx.accountName, accountNumber: tx.accountNumber || '', category, total: 0 });
+      accountMap.set(key, { accountName: tx.accountName, accountNumber: tx.accountNumber || '', category, totalsByYear: {} });
     }
     const netAmount = roundMoney(Number(tx.netAmount || 0));
-    accountMap.get(key).total = roundMoney(accountMap.get(key).total + (category === 'Revenue' ? netAmount : -netAmount));
+    const signed = category === 'Revenue' ? netAmount : -netAmount;
+    const acc = accountMap.get(key);
+    acc.totalsByYear[txFY] = roundMoney((acc.totalsByYear[txFY] || 0) + signed);
   });
 
   const byCategory = { Revenue: [], COGS: [], 'Operating Expenses': [], 'Other Expenses': [] };
   accountMap.forEach((acc) => { if (byCategory[acc.category]) byCategory[acc.category].push(acc); });
   Object.values(byCategory).forEach((arr) => arr.sort((a, b) => a.accountName.localeCompare(b.accountName)));
 
-  const yearRow = resolvedDisplayYear ? yearlyRows.find(r => r.fiscalYear === resolvedDisplayYear) : (yearlyRows[yearlyRows.length - 1] || null);
-  const get = (key) => yearRow ? roundMoney(yearRow[key] || 0) : 0;
+  // Per-year section metric lookup from yearlyRows (Revenue, COGS, Gross Profit, …).
+  const metricByYear = (metric) => {
+    const out = {};
+    selectedYears.forEach((y) => {
+      const row = yearlyRows.find((r) => r.fiscalYear === y);
+      out[y] = row ? roundMoney(Number(row[metric] || 0)) : 0;
+    });
+    return out;
+  };
+  const negateByYear = (byYear) => {
+    const out = {};
+    selectedYears.forEach((y) => { out[y] = roundMoney(-Number(byYear[y] || 0)); });
+    return out;
+  };
+  // Latest-selected-year scalar for a byYear map (back-compat single `amount`).
+  const scalar = (byYear) => (displayYear ? roundMoney(Number(byYear[displayYear] || 0)) : 0);
 
   const toAccountRows = (accounts, prefix) => accounts.map((acc, i) => ({
     id: `${prefix}-${i}-${acc.accountNumber}`,
     name: acc.accountName,
-    amount: acc.total,
+    amount: scalar(acc.totalsByYear),
+    amounts: amountsFromByYear(acc.totalsByYear, selectedYears),
     type: 'data',
   }));
 
+  const sectionNode = (byYear) => ({
+    amount: scalar(byYear),
+    amounts: amountsFromByYear(byYear, selectedYears),
+  });
+
   const rows = [];
 
-  const incomeTotal = get('Revenue');
+  const incomeByYear = metricByYear('Revenue');
   rows.push({
-    id: 'income', name: 'Income', type: 'header', amount: incomeTotal,
+    id: 'income', name: 'Income', type: 'header', ...sectionNode(incomeByYear),
     children: [
       ...toAccountRows(byCategory.Revenue, 'inc'),
-      { id: 'total-income', name: 'Total Income', amount: incomeTotal, type: 'total' },
+      { id: 'total-income', name: 'Total Income', type: 'total', ...sectionNode(incomeByYear) },
     ],
   });
 
   if (byCategory.COGS.length > 0) {
-    const cogsTotal = get('COGS');
+    const cogsByYear = metricByYear('COGS');
     rows.push({
-      id: 'cogs', name: 'Cost of Goods Sold', type: 'header', amount: cogsTotal,
+      id: 'cogs', name: 'Cost of Goods Sold', type: 'header', ...sectionNode(cogsByYear),
       children: [
         ...toAccountRows(byCategory.COGS, 'cogs'),
-        { id: 'total-cogs', name: 'Total Cost of Goods Sold', amount: cogsTotal, type: 'total' },
+        { id: 'total-cogs', name: 'Total Cost of Goods Sold', type: 'total', ...sectionNode(cogsByYear) },
       ],
     });
   }
 
-  rows.push({ id: 'gross-profit', name: 'Gross Profit', amount: get('Gross Profit'), type: 'total' });
+  rows.push({ id: 'gross-profit', name: 'Gross Profit', type: 'total', ...sectionNode(metricByYear('Gross Profit')) });
 
-  const expenseTotal = get('Operating Expenses');
+  const expenseByYear = metricByYear('Operating Expenses');
   rows.push({
-    id: 'expenses', name: 'Expenses', type: 'header', amount: expenseTotal,
+    id: 'expenses', name: 'Expenses', type: 'header', ...sectionNode(expenseByYear),
     children: [
       ...toAccountRows(byCategory['Operating Expenses'], 'exp'),
-      { id: 'total-expenses', name: 'Total Expenses', amount: expenseTotal, type: 'total' },
+      { id: 'total-expenses', name: 'Total Expenses', type: 'total', ...sectionNode(expenseByYear) },
     ],
   });
 
-  rows.push({ id: 'net-operating-income', name: 'Net Operating Income', amount: get('Operating Income'), type: 'total' });
+  rows.push({ id: 'net-operating-income', name: 'Net Operating Income', type: 'total', ...sectionNode(metricByYear('Operating Income')) });
 
   if (byCategory['Other Expenses'].length > 0) {
-    const otherTotal = get('Other Expenses');
+    const otherDisplayByYear = negateByYear(metricByYear('Other Expenses'));
     rows.push({
-      id: 'other-income-expense', name: 'Other Income/Expense', type: 'header', amount: -otherTotal,
+      id: 'other-income-expense', name: 'Other Income/Expense', type: 'header', ...sectionNode(otherDisplayByYear),
       children: [
         ...toAccountRows(byCategory['Other Expenses'], 'other'),
-        { id: 'total-other', name: 'Total Other Income/Expense', amount: -otherTotal, type: 'total' },
+        { id: 'total-other', name: 'Total Other Income/Expense', type: 'total', ...sectionNode(otherDisplayByYear) },
       ],
     });
   }
 
-  rows.push({ id: 'net-income', name: 'Net Income', amount: get('Net Profit'), type: 'total' });
+  rows.push({ id: 'net-income', name: 'Net Income', type: 'total', ...sectionNode(metricByYear('Net Profit')) });
 
   return rows;
 }
@@ -3966,21 +4119,32 @@ function buildProfitLossSummaryPayload(transactions = [], filters = {}) {
     netProfitByYear[row.fiscalYear] = row["Net Profit"] || 0;
   });
 
-  const selectedYears = Array.isArray(filters.fiscalYears) && filters.fiscalYears.length > 0
-    ? filters.fiscalYears : summary.years;
-  const displayYear = selectedYears.length > 0 ? selectedYears[selectedYears.length - 1] : null;
-  const hierarchicalRows = buildProfitLossHierarchicalRows(transactions, yearlyRows, displayYear);
+  // Years the user explicitly selected (multi-select). When present, the summary
+  // renders one comparative column per year; otherwise it falls back to the
+  // latest year only (single column — unchanged legacy behavior).
+  const explicitYears = Array.isArray(filters.fiscalYears) && filters.fiscalYears.length > 0
+    ? filters.fiscalYears.map(Number).filter((y) => Number.isInteger(y) && y > 0).sort((a, b) => a - b)
+    : [];
+  const displayYear = explicitYears.length > 0
+    ? explicitYears[explicitYears.length - 1]
+    : (summary.years.length > 0 ? summary.years[summary.years.length - 1] : null);
+  const rowYears = explicitYears.length > 0 ? explicitYears : (displayYear ? [displayYear] : []);
+  const hierarchicalRows = buildProfitLossHierarchicalRows(transactions, yearlyRows, rowYears);
+  // Only expose comparative columns when the user explicitly selected years.
+  const yearCols = explicitYears.length > 0 ? buildYearColumns(explicitYears) : undefined;
 
   return {
     source: "manual_gl_staged_transactions",
     reportType: "profit_loss_summary",
     filters,
     years: summary.years,
+    displayYear,
     lines: summary.lines,
     monthlyBreakdown: monthlyRows,
     yearComparison,
     netProfitByYear,
     hierarchicalRows,
+    ...(yearCols ? { yearCols } : {}),
   };
 }
 
@@ -4548,11 +4712,33 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
   const displayAmount = (sectionKey, label) =>
     displayYear ? Number(byCategory(sectionKey, label)?.totalByYear?.[displayYear] || 0) : 0;
 
+  // Per-year comparative columns. We build `amounts` over the full internal
+  // `years` set here; restrictBsPayloadToSelectedYears() later prunes these maps
+  // (and adds `yearCols`) down to the user's selected years on output.
+  const categoryAmounts = (sectionKey, label) =>
+    amountsFromByYear(byCategory(sectionKey, label)?.totalByYear || {}, years);
+  const sectionAmounts = (sectionKey) =>
+    amountsFromByYear(sections[sectionKey]?.totalByYear || {}, years);
+  const sumCategoryAmounts = (sectionKey, labels) => {
+    const out = {};
+    years.forEach((y) => { out[`y${y}`] = sumCategory(sectionKey, labels, y); });
+    return out;
+  };
+  const sumAmountMaps = (...maps) => {
+    const out = {};
+    years.forEach((y) => {
+      const k = `y${y}`;
+      out[k] = roundMoney(maps.reduce((sum, m) => sum + Number(m?.[k] || 0), 0));
+    });
+    return out;
+  };
+
   const toAccountRows = (category, prefix) =>
     (category?.accounts || []).map((account, index) => ({
       id: `${prefix}-${index}`,
       name: account.name,
       amount: displayYear ? Number(account.balancesByYear?.[displayYear] || 0) : 0,
+      amounts: amountsFromByYear(account.balancesByYear || {}, years),
       type: "data",
     }));
 
@@ -4560,10 +4746,12 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
     const category = byCategory(sectionKey, label);
     if (!category) return null;
     const amount = displayAmount(sectionKey, label);
+    const amounts = categoryAmounts(sectionKey, label);
     return {
       id: `${prefix}-${normalizeKey(label).replace(/\s+/g, "-")}`,
       name: label,
       amount,
+      amounts,
       type: "header",
       children: [
         ...toAccountRows(category, `${prefix}-acc`),
@@ -4571,6 +4759,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
           id: `${prefix}-total-${normalizeKey(label).replace(/\s+/g, "-")}`,
           name: `Total for ${label}`,
           amount,
+          amounts,
           type: "total",
         },
       ],
@@ -4588,10 +4777,19 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
   const equityTotal = displayYear ? getYearValue(sections.Equity.totalByYear, displayYear) : 0;
   const liabilitiesAndEquityTotal = roundMoney(liabilitiesTotal + equityTotal);
 
+  // Per-year amount maps for the synthetic aggregate rows.
+  const currentAssetsAmounts = sumCategoryAmounts("Assets", ["Bank Accounts", "Other Current Assets"]);
+  const currentLiabilitiesAmounts = sumCategoryAmounts("Liabilities", ["Credit Cards", "Other Current Liabilities"]);
+  const assetsAmounts = sectionAmounts("Assets");
+  const liabilitiesAmounts = sectionAmounts("Liabilities");
+  const equityAmounts = sectionAmounts("Equity");
+  const liabilitiesAndEquityAmounts = sumAmountMaps(liabilitiesAmounts, equityAmounts);
+
   const currentAssetsNode = {
     id: "current-assets",
     name: "Current Assets",
     amount: currentAssetsTotal,
+    amounts: currentAssetsAmounts,
     type: "header",
     children: [
       categoryNode("Assets", "Bank Accounts", "assets-bank"),
@@ -4600,6 +4798,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
         id: "current-assets-total",
         name: "Total for Current Assets",
         amount: currentAssetsTotal,
+        amounts: currentAssetsAmounts,
         type: "total",
       },
     ].filter(Boolean),
@@ -4609,6 +4808,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
     id: "current-liabilities",
     name: "Current Liabilities",
     amount: currentLiabilitiesTotal,
+    amounts: currentLiabilitiesAmounts,
     type: "header",
     children: [
       categoryNode("Liabilities", "Credit Cards", "liab-cc"),
@@ -4617,6 +4817,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
         id: "current-liabilities-total",
         name: "Total for Current Liabilities",
         amount: currentLiabilitiesTotal,
+        amounts: currentLiabilitiesAmounts,
         type: "total",
       },
     ].filter(Boolean),
@@ -4626,6 +4827,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
     id: "assets",
     name: "Assets",
     amount: assetsTotal,
+    amounts: assetsAmounts,
     type: "header",
     children: [
       currentAssetsNode,
@@ -4635,6 +4837,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
         id: "assets-total",
         name: "Total for Assets",
         amount: assetsTotal,
+        amounts: assetsAmounts,
         type: "total",
       },
     ].filter(Boolean),
@@ -4644,6 +4847,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
     id: "liabilities",
     name: "Liabilities",
     amount: liabilitiesTotal,
+    amounts: liabilitiesAmounts,
     type: "header",
     children: [
       currentLiabilitiesNode,
@@ -4652,6 +4856,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
         id: "liabilities-total",
         name: "Total for Liabilities",
         amount: liabilitiesTotal,
+        amounts: liabilitiesAmounts,
         type: "total",
       },
     ].filter(Boolean),
@@ -4661,6 +4866,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
     id: "equity",
     name: "Equity",
     amount: equityTotal,
+    amounts: equityAmounts,
     type: "header",
     children: [
       categoryNode("Equity", "Owner Equity", "eq-owner"),
@@ -4670,6 +4876,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
         id: "equity-total",
         name: "Total for Equity",
         amount: equityTotal,
+        amounts: equityAmounts,
         type: "total",
       },
     ].filter(Boolean),
@@ -4679,6 +4886,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
     id: "liabilities-and-equity",
     name: "Liabilities and Equity",
     amount: liabilitiesAndEquityTotal,
+    amounts: liabilitiesAndEquityAmounts,
     type: "header",
     children: [
       liabilitiesNode,
@@ -4687,6 +4895,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
         id: "liabilities-and-equity-total",
         name: "Total for Liabilities and Equity",
         amount: liabilitiesAndEquityTotal,
+        amounts: liabilitiesAndEquityAmounts,
         type: "total",
       },
     ],
@@ -4742,8 +4951,7 @@ function buildBalanceSheetPayload(transactions = [], filters = {}, netProfitByYe
 }
 
 async function getBalanceSheetSummaryFromStage(companyId, filters = {}) {
-  const effectiveBatchId =
-    filters.batchId || (await resolveReportBatchId(companyId));
+  const effectiveBatchId = await resolveEffectiveReportBatchId(companyId, filters);
 
   // Load starting + ending BS lines and batch metadata in parallel.
   let startingLines = [];
@@ -6132,149 +6340,82 @@ async function stageMultiYearGlUpload({
       "[ManualGL][MultiYear] Generated year hashes:",
       uploadedYearHashPairs.map((item) => `${item.fiscalYear}:${item.dataHash.slice(0, 12)}`).join(", "),
     );
+
+    // ── Multi-version dedup: reuse existing version on identical re-stage ──────
+    // Every staged upload is preserved as its own immutable dataset version.  If
+    // the EXACT same dataset (identical content hash) was already staged and
+    // finalized, reuse that existing version instead of creating a duplicate.
+    // This satisfies "reuse existing version" semantics while keeping every
+    // distinct upload as its own isolated version.  We bail out BEFORE creating a
+    // new batch or touching any data, so existing versions are never disturbed.
+    try {
+      const existingVersion = await findExistingDatasetVersionByHash(companyId, datasetHash, { sourceType });
+      const existingBatchId = existingVersion?.batch_id || null;
+      const existingVersionNo = Number(existingVersion?.version_number || 0) || null;
+      if (existingVersion && existingBatchId && existingVersionNo) {
+        console.log(
+          `[ManualGL][MultiYear] Identical dataset already staged as version V${existingVersionNo} ` +
+          `(batch=${existingBatchId}); reusing existing version and skipping re-staging.`,
+        );
+        return {
+          success: true,
+          alreadyStaged: true,
+          blockedAsDuplicate: true,
+          reportsReady: true,
+          batchId: existingBatchId,
+          activeBatchId: existingBatchId,
+          datasetVersionId: existingVersion.id || null,
+          versionNumber: existingVersionNo,
+          activeDatasetVersion: existingVersionNo,
+          datasetHash,
+          existingVersion: {
+            id: existingVersion.id || null,
+            versionNumber: existingVersionNo,
+            batchId: existingBatchId,
+          },
+          fiscalYears: uploadedYears,
+          stagedFiscalYears: [],
+          fiscalCalendar,
+          fiscalCalendarExplicit: isFiscalCalendarExplicit,
+          warnings: parsingWarnings.slice(0, 500),
+        };
+      }
+    } catch (dedupError) {
+      console.warn(
+        "[ManualGL][MultiYear] Dedup lookup failed; continuing with fresh staging:",
+        dedupError.message,
+      );
+    }
+
     const fiscalYearStart = uploadedYears.length > 0 ? uploadedYears[0] : null;
     const fiscalYearEnd = uploadedYears.length > 0 ? uploadedYears[uploadedYears.length - 1] : null;
 
-    const existingDatasetVersion = datasetHash
-      ? await findExistingDatasetVersionByHash(companyId, datasetHash)
-      : null;
+    // Single-dataset mode: each upload is a full replacement of the previous dataset.
+    // Skip all duplicate-detection and carry-forward logic — every year in the
+    // uploaded files is staged fresh.  Previous staged data is deleted below
+    // (after the new batch is created) so the new dataset becomes the sole source
+    // of truth for this company.
+    const stagedYears = [...uploadedYears];
+    const carryForwardYears = []; // No carry-forward in single-dataset mode
+    const exactDuplicateYears = [];
 
-    if (existingDatasetVersion?.id) {
-      const existingFiscalYears = normalizeFiscalYears(
-        existingDatasetVersion.fiscal_years ||
-        existingDatasetVersion.metadata?.fiscalYears ||
-        uploadedYears,
-      );
-      const existingVersionNumber = Number(existingDatasetVersion.version_number || 0) || null;
-      const existingBatchId = existingDatasetVersion.batch_id || null;
-
-      console.log(
-        `[ManualGL][MultiYear] Existing dataset detected for company ${companyId}. ` +
-        `Reusing dataset version V${existingVersionNumber || "?"}. Skipping staging and report generation.`,
-      );
-
+    const versionPlan = stagedYears.map((fiscalYear) => {
+      const uploadedSummary = uploadedYearSummaries[fiscalYear];
       return {
-        success: true,
-        alreadyStaged: true,
-        blockedAsDuplicate: true,
-        noChangesDetected: true,
-        reportsReady: true,
-        activated: false,
-        datasetHash,
-        datasetVersionId: existingDatasetVersion.id,
-        versionNumber: existingVersionNumber,
-        activeDatasetVersion: existingVersionNumber,
-        batchId: existingBatchId,
-        activeBatchId: existingBatchId,
-        fiscalYears: existingFiscalYears,
-        duplicateFiscalYears: existingFiscalYears,
-        duplicateYears: existingFiscalYears,
-        existingVersion: {
-          versionId: existingDatasetVersion.id,
-          versionNumber: existingVersionNumber,
-          versionName: existingVersionNumber ? `Version ${existingVersionNumber}` : "Existing Version",
-          batchId: existingBatchId,
-          fiscalYears: existingFiscalYears,
-          reportsReady: true,
-        },
-        snapshotYears: existingFiscalYears,
-        snapshotsGenerated: 0,
-        validation: null,
-        message: `Dataset already staged as Version ${existingVersionNumber || "N/A"}. Reports are ready.`,
+        fiscalYear,
+        versionNo: 1,
+        rowCount: uploadedSummary?.rowCount || 0,
+        fileHash: uploadedSummary?.fileHash || "",
+        dataHash: uploadedSummary?.dataHash || "",
+        sourceUploadIds: uploadedSummary?.sourceUploadIds || [],
+        metadata: {},
       };
-    }
+    });
 
-    // Duplicate detection MUST run before any DB writes.
-    const collisionCheck = await checkExistingStagedFiscalYears(
+    console.log("[ManualGL][MultiYear] Single-dataset mode:", {
       companyId,
       uploadedYears,
-      uploadedYearHashPairs,
-    );
-    const exactDuplicateYearSet = new Set(
-      Array.isArray(collisionCheck?.duplicateYears) ? collisionCheck.duplicateYears.map(Number) : [],
-    );
-
-    const stagedYears = [];
-    const versionPlan = [];
-
-    for (const fiscalYear of uploadedYears) {
-      if (exactDuplicateYearSet.has(fiscalYear)) {
-        continue;
-      }
-
-      const uploadedSummary = uploadedYearSummaries[fiscalYear];
-      const activeSession = activeSessionMap.get(fiscalYear) || null;
-      const fallbackActiveSummary = activeYearSummaries?.[fiscalYear] || null;
-      const activeDataHash = String(
-        activeSession?.data_hash ||
-        activeSession?.dataHash ||
-        fallbackActiveSummary?.data_hash ||
-        fallbackActiveSummary?.dataHash ||
-        "",
-      ).trim();
-
-      if (activeDataHash && uploadedSummary.dataHash === activeDataHash) {
-        exactDuplicateYearSet.add(fiscalYear);
-        continue;
-      }
-
-      let nextVersionNo = null;
-      if (Number.isInteger(Number(activeSession?.version_no)) && Number(activeSession.version_no) > 0) {
-        nextVersionNo = Number(activeSession.version_no) + 1;
-      } else {
-        const latestStoredVersion = await getLatestUploadSessionVersion(companyId, fiscalYear);
-        if (latestStoredVersion) {
-          nextVersionNo = latestStoredVersion + 1;
-        } else if (fallbackActiveSummary) {
-          nextVersionNo = 2;
-        } else {
-          nextVersionNo = 1;
-        }
-      }
-
-      stagedYears.push(fiscalYear);
-      versionPlan.push({
-        fiscalYear,
-        versionNo: nextVersionNo,
-        rowCount: uploadedSummary.rowCount,
-        fileHash: uploadedSummary.fileHash,
-        dataHash: uploadedSummary.dataHash,
-        sourceUploadIds: uploadedSummary.sourceUploadIds,
-        metadata: {
-          previousActiveSessionId: activeSession?.id || null,
-          previousActiveBatchId: activeBatch?.id || null,
-        },
-      });
-
-      console.log(
-        `[ManualGL][VersionPlan] fiscalYear=${fiscalYear} versionNo=${nextVersionNo} ` +
-        `rowCount=${uploadedSummary.rowCount} dataHash=${String(uploadedSummary.dataHash || "").slice(0, 12)}...`,
-      );
-    }
-
-    const exactDuplicateYears = Array.from(exactDuplicateYearSet).sort((a, b) => a - b);
-
-    if (stagedYears.length === 0 && exactDuplicateYears.length > 0) {
-      return {
-        success: false,
-        blockedAsDuplicate: true,
-        noChangesDetected: true,
-        duplicateFiscalYears: exactDuplicateYears,
-        duplicateYears: exactDuplicateYears,
-        existingVersion: collisionCheck?.existingVersion || null,
-        activeBatchId: collisionCheck?.activeBatchId || null,
-        message: "The selected GL data is already staged for this company and fiscal year.",
-      };
-    }
-
-    const carryForwardYears = activeYears.filter((year) => !stagedYears.includes(year));
-
-    console.log("[ManualGL][VersionPlan]", {
-      uploadedYears,
       stagedYears,
-      exactDuplicateYears,
-      carryForwardYears,
-      activeBatchId: activeBatch?.id || null,
     });
 
     if (false && useDatasetLifecycle) {
@@ -6327,6 +6468,20 @@ async function stageMultiYearGlUpload({
       console.log("[ManualGL][MultiYear] Using external datasetVersionId:", datasetVersionId);
     }
 
+    // Multi-version retention: each upload becomes its own isolated dataset
+    // version.  We DO NOT delete prior staged data — every previous version's
+    // transactions and balance-sheet lines must remain intact and independently
+    // selectable on the Reports page.  The new dataset is inserted under a fresh
+    // upload_batch_id (created below); reports are always scoped by that batch /
+    // dataset_version, so versions never mix.  Identical re-uploads are short-
+    // circuited earlier by the content-hash dedup check, so we never reach here
+    // with a dataset that already exists.
+    console.log(`[ManualGL][MultiYear] Staging new isolated dataset version (prior versions preserved)...`, {
+      companyId,
+      stagedYears,
+      rowCount: allClassifiedTransactions.length,
+    });
+
     console.log("[ManualGL][MultiYear] Creating batch...");
     batch = await createBatch({
       companyId,
@@ -6367,27 +6522,9 @@ async function stageMultiYearGlUpload({
       });
     }
 
-    if (activeBatch?.id && carryForwardYears.length > 0) {
-      const carryForwardStats = await copyBatchTransactionsForYears({
-        companyId,
-        sourceBatchId: activeBatch.id,
-        targetBatchId: batch.id,
-        fiscalYears: carryForwardYears,
-        datasetVersionId: datasetVersion?.id || null,
-        sourceType,
-        sourceSwitchVersion,
-        uploadSessionId,
-      });
-
-      totalInserted += carryForwardStats.inserted;
-      Object.entries(carryForwardStats.yearGroups || {}).forEach(([year, count]) => {
-        combinedYearGroups[year] = (combinedYearGroups[year] || 0) + count;
-      });
-    }
-
     console.log(
       `[ManualGL][MultiYear] Phase 3 persisted ${totalInserted} rows across years ` +
-      `[${[...stagedYears, ...carryForwardYears].sort((a, b) => a - b).join(", ")}].`,
+      `[${stagedYears.sort((a, b) => a - b).join(", ")}].`,
     );
 
     // Per-year P&L validation â€” runs calculateProfitLossBuckets on each year's
@@ -6816,6 +6953,29 @@ function restrictBsPayloadToSelectedYears(payload, selectedYears) {
 
   const filteredAudit = (payload.audit || []).filter((a) => keepYear(a.year));
 
+  // Prune each hierarchicalRows node's per-year `amounts` map to the selected
+  // years and reset the scalar `amount` to the latest selected year (so the
+  // single-column back-compat field reflects the latest *selected* year, not the
+  // latest internally-computed carry-forward year).
+  const orderedSelected = filteredYears.slice().sort((a, b) => Number(a) - Number(b));
+  const latestSelected = orderedSelected.length ? orderedSelected[orderedSelected.length - 1] : null;
+  const pruneRowAmounts = (nodes) => {
+    if (!Array.isArray(nodes)) return nodes;
+    return nodes.map((node) => {
+      const next = { ...node };
+      if (node.amounts && typeof node.amounts === "object") {
+        next.amounts = Object.fromEntries(
+          Object.entries(node.amounts).filter(([k]) => yearsSet.has(Number(String(k).replace(/^y/, "")))),
+        );
+        if (latestSelected != null && Object.prototype.hasOwnProperty.call(next.amounts, `y${latestSelected}`)) {
+          next.amount = next.amounts[`y${latestSelected}`];
+        }
+      }
+      if (Array.isArray(node.children)) next.children = pruneRowAmounts(node.children);
+      return next;
+    });
+  };
+
   console.log(
     `[ManualGL][YearRestrict] BS response years restricted from [${(payload.years || []).join(", ")}] â†’ [${filteredYears.join(", ")}]`,
   );
@@ -6825,6 +6985,8 @@ function restrictBsPayloadToSelectedYears(payload, selectedYears) {
     years: filteredYears,
     sections: filterSections(payload.sections),
     audit: filteredAudit,
+    hierarchicalRows: pruneRowAmounts(payload.hierarchicalRows),
+    yearCols: buildYearColumns(orderedSelected),
   };
 }
 
@@ -6969,14 +7131,11 @@ async function getCashflowSummaryFromStage(companyId, filters = {}) {
   });
 
   // Build frontend-ready hierarchicalRows for CashflowSummary component.
-  // yearCols uses String keys to match amounts map keys in the component.
-  const yearCols = selectedYears.map((y) => ({ key: String(y), label: `FY ${y}` }));
+  // Uses the shared `y<year>` column-key convention so BS / P&L / CF are uniform;
+  // yearCols keys must match the keys written into each node's `amounts` map.
+  const yearCols = buildYearColumns(selectedYears);
 
-  const buildAmounts = (valuesByYear) => {
-    const amounts = {};
-    selectedYears.forEach((y) => { amounts[String(y)] = valuesByYear[y] || 0; });
-    return amounts;
-  };
+  const buildAmounts = (valuesByYear) => amountsFromByYear(valuesByYear, selectedYears);
 
   const SECTION_KEYS = ["Operating", "Investing", "Financing"];
   const SECTION_TOTAL_LABELS = {
@@ -7041,8 +7200,8 @@ async function getCashflowSummaryFromStage(companyId, filters = {}) {
   selectedYears.forEach((year) => {
     const priorYearIdx = allBsYears.indexOf(year) - 1;
     const priorYear = priorYearIdx >= 0 ? allBsYears[priorYearIdx] : null;
-    beginningCashAmounts[String(year)] = priorYear != null ? (cashBalanceByYear[priorYear] || 0) : 0;
-    endingCashAmounts[String(year)] = cashBalanceByYear[year] || 0;
+    beginningCashAmounts[`y${year}`] = priorYear != null ? roundMoney(cashBalanceByYear[priorYear] || 0) : 0;
+    endingCashAmounts[`y${year}`] = roundMoney(cashBalanceByYear[year] || 0);
   });
 
   hierarchicalRows.push({ id: "beginning-cash", name: "Beginning Cash", amounts: beginningCashAmounts });
@@ -7073,8 +7232,7 @@ async function getProfitLossSummaryFromStage(companyId, filters = {}) {
   // may hold wrong April-offset labels (BUG2). We bypass the fiscal_year DB filter and
   // instead fetch by date range, then correct + filter in memory.
   const preFilters = parseManualFilterQuery(filters);
-  const preBatchId = preFilters.batchId ||
-    (await resolveReportBatchId(companyId));
+  const preBatchId = await resolveEffectiveReportBatchId(companyId, preFilters);
   const batchMeta = await loadBatchMetadata(preBatchId);
   const fiscalCalendarExplicit = batchMeta.fiscalCalendarExplicit === true;
 
@@ -7160,8 +7318,7 @@ async function getProfitLossSummaryFromStage(companyId, filters = {}) {
 
 async function getProfitLossDetailFromStage(companyId, filters = {}) {
   const preFilters = parseManualFilterQuery(filters);
-  const preBatchId = preFilters.batchId ||
-    (await resolveReportBatchId(companyId));
+  const preBatchId = await resolveEffectiveReportBatchId(companyId, preFilters);
   const batchMeta = await loadBatchMetadata(preBatchId);
   const fiscalCalendarExplicit = batchMeta.fiscalCalendarExplicit === true;
 
@@ -7268,6 +7425,7 @@ async function getStageFilterOptions(companyId, filters = {}) {
   );
 
   if (!batchId && !datasetVersion) {
+    console.warn(`[ManualGL][FilterOptions] No batchId or datasetVersion available for company ${companyId}. Returning empty options.`);
     return {
       source: "manual_gl_active_batch",
       activeBatchId,
@@ -7306,6 +7464,10 @@ async function getStageFilterOptions(companyId, filters = {}) {
         batchId ||
         "",
       );
+
+      const snapshotYears = Array.isArray(payload.options.fiscalYear) ? payload.options.fiscalYear : [];
+      console.log(`[ManualGL][FilterOptions] Version V${datasetVersion || "?"} snapshot found: batch=${snapshotBatchId} years=[${snapshotYears.join(', ')}]`);
+
       return {
         source: "manual_gl_reporting_snapshot",
         activeBatchId,
@@ -7316,11 +7478,12 @@ async function getStageFilterOptions(companyId, filters = {}) {
         options: payload.options || emptyOptions,
       };
     }
-  } catch (_) {
-    // reporting_snapshots may not exist until migration 026 is applied.
+  } catch (err) {
+    console.warn("[ManualGL][FilterOptions] Snapshot lookup failed:", err.message);
   }
 
   if (!batchId) {
+    console.warn(`[ManualGL][FilterOptions] Could not resolve batchId for datasetVersion ${datasetVersion}.`);
     return {
       source: "manual_gl_active_batch",
       activeBatchId,
@@ -7333,13 +7496,13 @@ async function getStageFilterOptions(companyId, filters = {}) {
   }
 
   console.log(
-    `[ManualGL][FilterOptions] Resolving options for batch ${batchId} datasetVersion=${datasetVersion || "none"}`,
+    `[ManualGL][FilterOptions] Scanning staged transactions for batch ${batchId} (version=${datasetVersion || "none"})`,
   );
 
   const DISCOVERY_COLS = [
     "fiscal_year", "txn_date", "account_name", "account_number", "account_type",
     "category", "sub_category", "department", "class", "location",
-    "source_file", "transaction_type", "journal_type",
+    "source_file", "transaction_type", "journal_type", "vendor_name",
   ].join(", ");
 
   const fetchNarrow = async (includeSourceType = true) => {
@@ -7447,6 +7610,7 @@ async function getStageFilterOptions(companyId, filters = {}) {
     sourceFile: new Set(),
     transactionType: new Set(),
     journalType: new Set(),
+    vendorName: new Set(),
     reportType: new Set(["profit_loss", "balance_sheet"]),
   };
 
@@ -7470,6 +7634,7 @@ async function getStageFilterOptions(companyId, filters = {}) {
     addValue(options.sourceFile, row.source_file);
     addValue(options.transactionType, row.transaction_type);
     addValue(options.journalType, row.journal_type);
+    addValue(options.vendorName, row.vendor_name);
   });
 
   return {
@@ -7489,12 +7654,23 @@ async function getStageFilterOptions(companyId, filters = {}) {
 }
 
 async function loadBatchBalanceSheetLines(companyId, batchId, sheetType) {
-  const { data, error } = await supabase
+  let { data, error } = await supabase
     .from(TABLES.balanceSheetLines)
     .select("*")
     .eq("company_id", companyId)
-    .eq("batch_id", batchId)
+    .eq("upload_batch_id", batchId)
     .eq("sheet_type", sheetType);
+
+  if (error && isMissingColumnError(error, "upload_batch_id")) {
+    const legacy = await supabase
+      .from(TABLES.balanceSheetLines)
+      .select("*")
+      .eq("company_id", companyId)
+      .eq("batch_id", batchId)
+      .eq("sheet_type", sheetType);
+    data = legacy.data;
+    error = legacy.error;
+  }
 
   if (error) {
     throw new Error(`Failed to load ${sheetType} balance sheet lines: ${error.message}`);
@@ -7503,9 +7679,18 @@ async function loadBatchBalanceSheetLines(companyId, batchId, sheetType) {
   return data || [];
 }
 
-async function validateBatchBalanceSheet(companyId, batchId = "") {
+// Accepts either a plain batchId string (legacy callers) or a filters object
+// ({ batchId, datasetVersion, versionId }). Resolution goes through the
+// version-aware resolveEffectiveReportBatchId so that, when a specific version
+// was requested but cannot be resolved, validation stays empty rather than
+// silently falling back to another version's active/latest batch.
+async function validateBatchBalanceSheet(companyId, batchIdOrFilters = "") {
+  const filters =
+    typeof batchIdOrFilters === "string"
+      ? { batchId: batchIdOrFilters }
+      : batchIdOrFilters || {};
   const effectiveBatchId =
-    batchId || (await resolveReportBatchId(companyId));
+    filters.batchId || (await resolveEffectiveReportBatchId(companyId, filters));
   if (!effectiveBatchId) {
     throw new Error("No staged batch available for validation.");
   }
@@ -7686,14 +7871,18 @@ const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Se
 
 // â”€â”€â”€ Monthly Detail: Profit & Loss â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-function buildProfitLossMonthlyDetailPayload(transactions = [], year, filters = {}, selectedMonth = null) {
-  const resolvedSelectedMonth = (Number.isInteger(Number(selectedMonth)) && Number(selectedMonth) >= 1 && Number(selectedMonth) <= 12)
-    ? Number(selectedMonth) : null;
-  const months = resolvedSelectedMonth !== null ? [resolvedSelectedMonth] : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+function buildProfitLossMonthlyDetailPayload(transactions = [], year, filters = {}, selectedMonths = null) {
+  // Normalise: accept a single number, an array, or null/empty → fall back to all months.
+  const resolvedMonthsSet = (() => {
+    const raw = Array.isArray(selectedMonths) ? selectedMonths : (selectedMonths != null ? [selectedMonths] : []);
+    const valid = raw.map(Number).filter(n => Number.isInteger(n) && n >= 1 && n <= 12);
+    return valid.length > 0 ? new Set(valid) : null;
+  })();
+  const months = resolvedMonthsSet !== null ? [...resolvedMonthsSet].sort((a, b) => a - b) : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
   const accountMap = new Map();
 
-  if (resolvedSelectedMonth !== null) {
-    console.log(`[ManualGL][PL-Monthly][Filter] Period-only month: ${resolvedSelectedMonth} of year ${year}`);
+  if (resolvedMonthsSet !== null) {
+    console.log(`[ManualGL][PL-Monthly][Filter] Period-only months: ${[...resolvedMonthsSet].join(',')} of year ${year}`);
   }
 
   transactions.forEach((tx) => {
@@ -7707,8 +7896,8 @@ function buildProfitLossMonthlyDetailPayload(transactions = [], year, filters = 
     const monthNum = txDate.length >= 7 ? parseInt(txDate.slice(5, 7), 10) : 0;
     if (!monthNum || monthNum < 1 || monthNum > 12) return;
 
-    // Period-only filter: skip months outside selected month
-    if (resolvedSelectedMonth !== null && monthNum !== resolvedSelectedMonth) return;
+    // Period-only filter: skip months outside selected set
+    if (resolvedMonthsSet !== null && !resolvedMonthsSet.has(monthNum)) return;
 
     const category = normalizeProfitLossCategory(tx.category, tx.accountName, tx.accountType);
     if (!category) return;
@@ -7828,8 +8017,7 @@ function buildProfitLossMonthlyDetailPayload(transactions = [], year, filters = 
 
 async function getProfitLossMonthlyDetailFromStage(companyId, filters = {}) {
   const preFilters = parseManualFilterQuery(filters);
-  const preBatchId = preFilters.batchId ||
-    (await resolveReportBatchId(companyId));
+  const preBatchId = await resolveEffectiveReportBatchId(companyId, preFilters);
   const batchMeta = await loadBatchMetadata(preBatchId);
   const fiscalCalendarExplicit = batchMeta.fiscalCalendarExplicit === true;
 
@@ -7892,25 +8080,30 @@ async function getProfitLossMonthlyDetailFromStage(companyId, filters = {}) {
       )
       : null);
 
-  const selectedMonth = Array.isArray(normalizedFilters.fiscalMonths) && normalizedFilters.fiscalMonths.length > 0
-    ? normalizedFilters.fiscalMonths[0] : null;
-  console.log(`[ManualGL][PL-Monthly][Filter] selectedMonth: ${selectedMonth}`);
+  const selectedMonths = Array.isArray(normalizedFilters.fiscalMonths) && normalizedFilters.fiscalMonths.length > 0
+    ? normalizedFilters.fiscalMonths : null;
+  console.log(`[ManualGL][PL-Monthly][Filter] selectedMonths: ${selectedMonths ? selectedMonths.join(',') : 'all'}`);
 
-  return buildProfitLossMonthlyDetailPayload(normalized, fallbackYear, normalizedFilters, selectedMonth);
+  return buildProfitLossMonthlyDetailPayload(normalized, fallbackYear, normalizedFilters, selectedMonths);
 }
 
 // â”€â”€â”€ Monthly Detail: Balance Sheet â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-function buildBalanceSheetMonthlyDetailPayload(transactions = [], year, filters = {}, startingLines = [], netProfitByYear = {}, selectedMonth = null, fiscalCalendar = {}) {
-  const resolvedSelectedMonth = (Number.isInteger(Number(selectedMonth)) && Number(selectedMonth) >= 1 && Number(selectedMonth) <= 12)
-    ? Number(selectedMonth) : null;
-  // For BS, months are cumulative: always show from Jan up to (and including) selectedMonth
+function buildBalanceSheetMonthlyDetailPayload(transactions = [], year, filters = {}, startingLines = [], netProfitByYear = {}, selectedMonths = null, fiscalCalendar = {}) {
+  // Normalise: accept a single number, an array, or null/empty → fall back to all months.
+  const resolvedMonthsSet = (() => {
+    const raw = Array.isArray(selectedMonths) ? selectedMonths : (selectedMonths != null ? [selectedMonths] : []);
+    const valid = raw.map(Number).filter(n => Number.isInteger(n) && n >= 1 && n <= 12);
+    return valid.length > 0 ? new Set(valid) : null;
+  })();
   const allMonths = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-  const months = resolvedSelectedMonth !== null ? allMonths.slice(0, resolvedSelectedMonth) : allMonths;
-  const lastMonth = resolvedSelectedMonth !== null ? resolvedSelectedMonth : 12;
+  // Show only the specifically selected months; cumulative balances are still computed
+  // internally for all months (needed for correctness), but only the selected months are output.
+  const months = resolvedMonthsSet !== null ? [...resolvedMonthsSet].sort((a, b) => a - b) : allMonths;
+  const lastMonth = months.length > 0 ? months[months.length - 1] : 12;
 
-  if (resolvedSelectedMonth !== null) {
-    console.log(`[ManualGL][BS-Monthly][Filter] Cumulative through month: ${resolvedSelectedMonth} of year ${year}`);
+  if (resolvedMonthsSet !== null) {
+    console.log(`[ManualGL][BS-Monthly][Filter] Showing months: ${months.join(',')} of year ${year}`);
   }
 
   const derivedYears = Array.from(
@@ -7941,6 +8134,7 @@ function buildBalanceSheetMonthlyDetailPayload(transactions = [], year, filters 
         openingBalance: 0,
         monthlyDelta: {},
         monthlyBalance: {},
+        transactions: [],
         sources: new Set([source]),
       });
     }
@@ -8007,6 +8201,15 @@ function buildBalanceSheetMonthlyDetailPayload(transactions = [], year, filters 
 
     if (txMonth >= 1 && txMonth <= 12) {
       account.monthlyDelta[txMonth] = roundMoney((account.monthlyDelta[txMonth] || 0) + delta);
+
+      if (txYear === selectedYear) {
+        account.transactions.push({
+          date: tx.date,
+          vendorName: tx.vendorName || tx.vendor_name || "",
+          amount: delta,
+          fiscalMonth: txMonth,
+        });
+      }
     }
   });
 
@@ -8129,6 +8332,7 @@ function buildBalanceSheetMonthlyDetailPayload(transactions = [], year, filters 
       name: account.accountName,
       number: account.accountNumber || "",
       monthly: {},
+      transactions: account.transactions || [],
       total: 0,
     };
 
@@ -8225,8 +8429,7 @@ function buildBalanceSheetMonthlyDetailPayload(transactions = [], year, filters 
 
 async function getBalanceSheetMonthlyDetailFromStage(companyId, filters = {}) {
   const normalizedFilters = parseManualFilterQuery(filters);
-  const effectiveBatchId =
-    normalizedFilters.batchId || (await resolveReportBatchId(companyId));
+  const effectiveBatchId = await resolveEffectiveReportBatchId(companyId, normalizedFilters);
   const targetYear =
     Array.isArray(normalizedFilters.fiscalYears) && normalizedFilters.fiscalYears.length > 0
       ? Math.max(...normalizedFilters.fiscalYears.map((value) => Number(value)).filter((value) => Number.isInteger(value) && value > 0))
@@ -8275,9 +8478,9 @@ async function getBalanceSheetMonthlyDetailFromStage(companyId, filters = {}) {
     normalized = normalized.filter((tx) => Number(tx.fiscalYear || 0) <= targetYear);
   }
 
-  const selectedMonth = Array.isArray(normalizedFilters.fiscalMonths) && normalizedFilters.fiscalMonths.length > 0
-    ? normalizedFilters.fiscalMonths[0] : null;
-  console.log(`[ManualGL][BS-Monthly][Filter] targetYear: ${targetYear}, selectedMonth: ${selectedMonth}`);
+  const selectedMonths = Array.isArray(normalizedFilters.fiscalMonths) && normalizedFilters.fiscalMonths.length > 0
+    ? normalizedFilters.fiscalMonths : null;
+  console.log(`[ManualGL][BS-Monthly][Filter] targetYear: ${targetYear}, selectedMonths: ${selectedMonths ? selectedMonths.join(',') : 'all'}`);
 
   const batchFiscalCalendarMonthly = fiscalCalendarExplicitMonthly
     ? { fiscalYearStartMonth: batchMetaMonthly.fiscalYearStartMonth, fiscalYearStartDay: batchMetaMonthly.fiscalYearStartDay }
@@ -8289,19 +8492,22 @@ async function getBalanceSheetMonthlyDetailFromStage(companyId, filters = {}) {
     { ...normalizedFilters, batchId: normalizedFilters.batchId || effectiveBatchId || "" },
     startingLines,
     pnlPayload.netProfitByYear || {},
-    selectedMonth,
+    selectedMonths,
     batchFiscalCalendarMonthly,
   );
 }
 
 // â”€â”€â”€ Monthly Detail: Cash Flow â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-function buildCashflowMonthlyDetailPayload(transactions = [], year, filters = {}, startingLines = [], selectedMonth = null) {
-  const resolvedSelectedMonth = (Number.isInteger(Number(selectedMonth)) && Number(selectedMonth) >= 1 && Number(selectedMonth) <= 12)
-    ? Number(selectedMonth) : null;
+function buildCashflowMonthlyDetailPayload(transactions = [], year, filters = {}, startingLines = [], selectedMonths = null) {
+  const resolvedMonthsSet = (() => {
+    const raw = Array.isArray(selectedMonths) ? selectedMonths : (selectedMonths != null ? [selectedMonths] : []);
+    const valid = raw.map(Number).filter(n => Number.isInteger(n) && n >= 1 && n <= 12);
+    return valid.length > 0 ? new Set(valid) : null;
+  })();
   const allMonths = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-  const months = resolvedSelectedMonth !== null ? allMonths.slice(0, resolvedSelectedMonth) : allMonths;
-  const lastMonth = resolvedSelectedMonth !== null ? resolvedSelectedMonth : 12;
+  const months = resolvedMonthsSet !== null ? [...resolvedMonthsSet].sort((a, b) => a - b) : allMonths;
+  const lastMonth = months.length > 0 ? months[months.length - 1] : 12;
   const selectedYear = (Number.isInteger(Number(year)) && Number(year) > 0) ? Number(year) : null;
 
   if (!selectedYear) {
@@ -8495,7 +8701,7 @@ function buildCashflowMonthlyDetailPayload(transactions = [], year, filters = {}
 
 async function getCashflowMonthlyDetailFromStage(companyId, filters = {}) {
   const normalizedFilters = parseManualFilterQuery(filters);
-  const effectiveBatchId = normalizedFilters.batchId || (await resolveReportBatchId(companyId));
+  const effectiveBatchId = await resolveEffectiveReportBatchId(companyId, normalizedFilters);
   const targetYear = Array.isArray(normalizedFilters.fiscalYears) && normalizedFilters.fiscalYears.length > 0
     ? Math.max(...normalizedFilters.fiscalYears.map(Number).filter((y) => Number.isInteger(y) && y > 0))
     : null;
@@ -8531,22 +8737,22 @@ async function getCashflowMonthlyDetailFromStage(companyId, filters = {}) {
     normalized = reclassifyNormalizedTransactions(normalized, bsLookup);
   }
 
-  const selectedMonth = Array.isArray(normalizedFilters.fiscalMonths) && normalizedFilters.fiscalMonths.length > 0
-    ? normalizedFilters.fiscalMonths[0] : null;
-  console.log(`[ManualGL][CF-Monthly][Filter] targetYear: ${targetYear}, selectedMonth: ${selectedMonth}`);
+  const selectedMonths = Array.isArray(normalizedFilters.fiscalMonths) && normalizedFilters.fiscalMonths.length > 0
+    ? normalizedFilters.fiscalMonths : null;
+  console.log(`[ManualGL][CF-Monthly][Filter] targetYear: ${targetYear}, selectedMonths: ${selectedMonths ? selectedMonths.join(',') : 'all'}`);
 
   return buildCashflowMonthlyDetailPayload(
     normalized,
     targetYear,
     { ...normalizedFilters, batchId: normalizedFilters.batchId || effectiveBatchId || "" },
     startingLines,
-    selectedMonth,
+    selectedMonths,
   );
 }
 
 async function getProfitLossVendorDetailFromStage(companyId, filters = {}) {
   const preFilters = parseManualFilterQuery(filters);
-  const preBatchId = preFilters.batchId || (await resolveReportBatchId(companyId));
+  const preBatchId = await resolveEffectiveReportBatchId(companyId, preFilters);
   const batchMeta = await loadBatchMetadata(preBatchId);
   const fiscalCalendarExplicit = batchMeta.fiscalCalendarExplicit === true;
 
@@ -8593,9 +8799,168 @@ async function getProfitLossVendorDetailFromStage(companyId, filters = {}) {
   });
 }
 
+/**
+ * Maps a statementType filter value to the set of normalized account types it covers.
+ * Defaults to Profit & Loss (the report's primary focus).
+ */
+function resolveStatementTypeAccountTypes(statementType) {
+  const value = String(statementType || "").toLowerCase();
+  if (value === "all") return null; // no restriction
+  if (value === "balance_sheet" || value === "bs") return ["asset", "liability", "equity"];
+  // "profit_loss" | "pl" | "" (default)
+  return ["income", "cogs", "expense"];
+}
+
+/**
+ * Builds the Vendor Analysis payload.
+ * Hierarchy: Vendor -> Account -> Account Total
+ * Columns: dynamic fiscal years + a grand Total per row.
+ * Cell value uses the raw signed amount (credits positive, debits negative),
+ * consistent with the existing Manual GL report builders.
+ */
+function buildVendorAnalysisPayload(transactions = [], filters = {}) {
+  const vendorMap = new Map();
+  const years = new Set();
+
+  transactions.forEach((tx) => {
+    const vendorName = tx.vendorName || "No Vendor";
+    const accountName = tx.accountName || "Uncategorized Account";
+    const year = Number(tx.fiscalYear);
+    if (year > 0) years.add(year);
+
+    if (!vendorMap.has(vendorName)) {
+      vendorMap.set(vendorName, {
+        vendorName,
+        accounts: new Map(),
+        yearlyTotals: {},
+        totalAmount: 0,
+      });
+    }
+
+    const vendor = vendorMap.get(vendorName);
+    if (!vendor.accounts.has(accountName)) {
+      vendor.accounts.set(accountName, {
+        accountName,
+        accountNumber: tx.accountNumber || "",
+        accountType: tx.accountType || "",
+        category: tx.category || "",
+        subCategory: tx.subCategory || "",
+        yearlyTotals: {},
+        totalAmount: 0,
+      });
+    }
+
+    const account = vendor.accounts.get(accountName);
+    // normalizeStagedTransactionRow exposes the signed value as `netAmount`
+    // (credit - debit). Fall back to signedAmount/amount for any other caller.
+    const amount = Number(tx.netAmount ?? tx.signedAmount ?? tx.amount ?? 0) || 0;
+
+    vendor.totalAmount += amount;
+    account.totalAmount += amount;
+    if (year > 0) {
+      vendor.yearlyTotals[year] = (vendor.yearlyTotals[year] || 0) + amount;
+      account.yearlyTotals[year] = (account.yearlyTotals[year] || 0) + amount;
+    }
+  });
+
+  const sortedYears = Array.from(years).sort((a, b) => a - b);
+
+  const vendors = Array.from(vendorMap.values())
+    .map((vendor) => ({
+      vendorName: vendor.vendorName,
+      totalAmount: roundMoney(vendor.totalAmount),
+      yearlyTotals: roundYearlyTotals(vendor.yearlyTotals),
+      accounts: Array.from(vendor.accounts.values())
+        .map((a) => ({
+          accountName: a.accountName,
+          accountNumber: a.accountNumber,
+          accountType: a.accountType,
+          category: a.category,
+          subCategory: a.subCategory,
+          totalAmount: roundMoney(a.totalAmount),
+          yearlyTotals: roundYearlyTotals(a.yearlyTotals),
+        }))
+        .sort((a, b) => a.accountName.localeCompare(b.accountName)),
+    }))
+    .sort((a, b) => Math.abs(b.totalAmount) - Math.abs(a.totalAmount));
+
+  return {
+    source: "manual_gl_staged_transactions",
+    reportType: "vendor_analysis",
+    filters,
+    years: sortedYears,
+    vendors,
+  };
+}
+
+function roundYearlyTotals(map) {
+  const out = {};
+  Object.keys(map || {}).forEach((year) => {
+    out[year] = roundMoney(map[year]);
+  });
+  return out;
+}
+
+/**
+ * Vendor Analysis entry point. Mirrors getProfitLossVendorDetailFromStage's
+ * version-scoped, calendar-year-corrected data loading, then groups
+ * Account -> Vendor and applies the BS/P&L statementType filter.
+ */
+async function getVendorAnalysisFromStage(companyId, filters = {}) {
+  const preFilters = parseManualFilterQuery(filters);
+  const preBatchId = await resolveEffectiveReportBatchId(companyId, preFilters);
+  const batchMeta = await loadBatchMetadata(preBatchId);
+  const fiscalCalendarExplicit = batchMeta.fiscalCalendarExplicit === true;
+
+  const selectedYearsForBypass = preFilters.fiscalYears || [];
+  let queryFilters = { ...filters, batchId: preBatchId || filters.batchId || "" };
+
+  if (!fiscalCalendarExplicit && selectedYearsForBypass.length) {
+    const minYear = Math.min(...selectedYearsForBypass);
+    const maxYear = Math.max(...selectedYearsForBypass);
+    queryFilters = {
+      ...queryFilters,
+      fiscalYears: [],
+      fiscalYear: null,
+      startDate: `${minYear}-01-01`,
+      endDate: `${maxYear}-12-31`,
+    };
+  }
+
+  const { filters: normalizedFilters, rows: rawRows } = await queryStagedTransactions(companyId, queryFilters);
+  const correctedRows = fiscalCalendarExplicit ? rawRows : applyCalendarYearCorrection(rawRows);
+  const selectedYears = preFilters.fiscalYears || [];
+  const filteredRows = (!fiscalCalendarExplicit && selectedYears.length)
+    ? correctedRows.filter((r) => selectedYears.includes(Number(r.fiscal_year || 0)))
+    : correctedRows;
+
+  let normalized = filteredRows.map(normalizeStagedTransactionRow).filter(Boolean);
+  const effectiveBatchId = normalizedFilters.batchId || preBatchId || "";
+
+  if (effectiveBatchId) {
+    const bsLookup = await loadBsLookupForBatch(companyId, effectiveBatchId);
+    if (bsLookup.size > 0) {
+      normalized = reclassifyNormalizedTransactions(normalized, bsLookup);
+    }
+  }
+
+  const allowedTypes = resolveStatementTypeAccountTypes(preFilters.statementType);
+  const scoped = allowedTypes
+    ? normalized.filter((tx) => allowedTypes.includes(normalizeAccountType(tx.accountType) || ""))
+    : normalized;
+
+  return buildVendorAnalysisPayload(scoped, {
+    ...normalizedFilters,
+    statementType: preFilters.statementType || "profit_loss",
+    fiscalYears: selectedYears.length ? selectedYears : (normalizedFilters.fiscalYears || []),
+  });
+}
+
 module.exports = {
   parseManualFilterQuery,
   queryStagedTransactions,
+  getVendorAnalysisFromStage,
+  buildVendorAnalysisPayload,
   stageMultiYearGlUpload,
   getStageTransactions,
   getStageFilterOptions,
@@ -8611,6 +8976,7 @@ module.exports = {
   getLatestManualBatch,
   listManualGlBatches,
   getActualFiscalYearsFromDB,
+  resolveEffectiveReportBatchId,
   // Multi-year detection utility â€” usable by callers (e.g., upload controllers)
   // to surface file type information without re-staging.
   detectMultipleYears,
@@ -8635,18 +9001,10 @@ async function getReportPeriodDates(companyId, datasetVersionId) {
     .eq("dataset_version_id", datasetVersionId)
     .order("txn_date", { ascending: true });
 
+  // No fallback to a company-wide scan: that would mix transactions from every
+  // uploaded version and produce wrong date ranges for historical reports.
   if (error || !data?.length) {
-    const { data: fallbackData } = await supabase
-      .from("manual_gl_staged_transactions")
-      .select("txn_date")
-      .eq("company_id", companyId)
-      .order("txn_date", { ascending: true });
-
-    if (!fallbackData?.length) return { startDate: null, endDate: null };
-    return {
-      startDate: fallbackData[0].txn_date,
-      endDate: fallbackData[fallbackData.length - 1].txn_date,
-    };
+    return { startDate: null, endDate: null };
   }
 
   return {

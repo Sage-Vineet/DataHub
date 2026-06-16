@@ -32,12 +32,15 @@ import {
   createRequestReminder,
   deleteRequest,
   getCompanyRequest,
+  getRequestNarrative,
   listFolderTree,
   listCompanyRequests,
   listRequestDocuments,
+  listUsersRequest,
   updateRequest,
   updateRequestNarrative,
 } from '../../../lib/api';
+import { CLIENT_SUB_ROLES, ROLE_META, inferSubRole } from '../../../lib/roles';
 import NewRequestModal from '../../../components/NewRequestModal';
 import RequestDocumentPreviewModal from '../../../components/RequestDocumentPreviewModal';
 import { buildFolderOptionsFromTree } from '../../../lib/folderOptions';
@@ -83,6 +86,93 @@ function isEmptyBulkRow(row) {
   return Object.values(row || {}).every((value) => `${value ?? ''}`.trim() === '');
 }
 
+// Excel serial date → JS Date (serial 1 = 1900-01-01 in Excel's epoch, with the
+// intentional Lotus 1-2-3 leap-year bug where day 60 = 1900-02-29).
+function excelSerialToDate(serial) {
+  const excelEpoch = new Date(Date.UTC(1899, 11, 30));
+  return new Date(excelEpoch.getTime() + serial * 86400000);
+}
+
+// Accepts any date representation that Excel/Google Sheets might produce and
+// returns a YYYY-MM-DD string, or '' if the value cannot be parsed.
+function normalizeDueDate(value) {
+  if (value === null || value === undefined || value === '') return '';
+
+  // Already a Date object (from XLSX cellDates option).
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) return '';
+    return value.toISOString().slice(0, 10);
+  }
+
+  const raw = String(value).trim();
+  if (!raw) return '';
+
+  // Excel/XLSX serial number: a plain integer or float > 1000 is almost certainly a date serial.
+  const asNum = Number(raw);
+  if (!Number.isNaN(asNum) && asNum > 1000 && asNum < 200000) {
+    const d = excelSerialToDate(asNum);
+    if (!Number.isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+  }
+
+  // Already YYYY-MM-DD.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+
+  // DD/MM/YYYY or DD-MM-YYYY (common European / Indian locale from Excel).
+  const dmy = raw.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})$/);
+  if (dmy) {
+    const [, d, m, y] = dmy;
+    const date = new Date(Date.UTC(Number(y), Number(m) - 1, Number(d)));
+    if (!Number.isNaN(date.getTime())) return date.toISOString().slice(0, 10);
+  }
+
+  // MM/DD/YYYY (US locale).
+  const mdy = raw.match(/^(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{4})$/);
+  if (mdy) {
+    const [, m, d, y] = mdy;
+    const date = new Date(Date.UTC(Number(y), Number(m) - 1, Number(d)));
+    if (!Number.isNaN(date.getTime())) return date.toISOString().slice(0, 10);
+  }
+
+  // DD-Mon-YYYY or DD Mon YYYY (e.g. "01-Jun-2025", "1 June 2025").
+  const textMonth = raw.match(/^(\d{1,2})[\s\-]([A-Za-z]+)[\s\-](\d{4})$/);
+  if (textMonth) {
+    const date = new Date(`${textMonth[2]} ${textMonth[1]}, ${textMonth[3]}`);
+    if (!Number.isNaN(date.getTime())) {
+      return [
+        date.getFullYear(),
+        String(date.getMonth() + 1).padStart(2, '0'),
+        String(date.getDate()).padStart(2, '0'),
+      ].join('-');
+    }
+  }
+
+  // Last resort: let JS Date parse it and reformat.
+  const fallback = new Date(raw);
+  if (!Number.isNaN(fallback.getTime())) {
+    return [
+      fallback.getFullYear(),
+      String(fallback.getMonth() + 1).padStart(2, '0'),
+      String(fallback.getDate()).padStart(2, '0'),
+    ].join('-');
+  }
+
+  return raw; // return as-is; validation downstream will reject if invalid
+}
+
+// Force a column in a XLSX worksheet to text type so Excel/Sheets cannot
+// auto-convert the values to a date serial and reformat them.
+function forceSheetColumnToText(sheet, colIndex) {
+  const range = XLSX.utils.decode_range(sheet['!ref'] || 'A1');
+  for (let r = range.s.r + 1; r <= range.e.r; r++) {
+    const addr = XLSX.utils.encode_cell({ r, c: colIndex });
+    if (sheet[addr]) {
+      sheet[addr].t = 's';
+      sheet[addr].z = '@';
+      if (sheet[addr].w !== undefined) delete sheet[addr].w;
+    }
+  }
+}
+
 function downloadFile(blob, filename) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
@@ -122,6 +212,9 @@ function buildBulkTemplateWorkbook(folderOptions) {
     wch: header === 'description' ? 42 : 18,
   }));
 
+  // Force due_date column to text so Excel / Google Sheets cannot auto-reformat the date.
+  forceSheetColumnToText(templateSheet, BULK_TEMPLATE_HEADERS.indexOf('due_date'));
+
   const instructionsSheet = XLSX.utils.aoa_to_sheet([
     ['Field', 'Required', 'Guidance'],
     ['title', 'Yes', 'Request title shown to the client.'],
@@ -130,7 +223,7 @@ function buildBulkTemplateWorkbook(folderOptions) {
     ['category', 'Yes', `Use one of: ${CATEGORY_ORDER.join(', ')}`],
     ['response_type', 'Yes', `Use one of: ${RESPONSE_TYPE_OPTIONS.join(', ')}`],
     ['priority', 'Yes', `Use one of: ${PRIORITY_OPTIONS.join(', ')}`],
-    ['due_date', 'Yes', 'Format must be YYYY-MM-DD.'],
+    ['due_date', 'Yes', 'Enter date as YYYY-MM-DD (e.g. 2025-06-30). The column is pre-formatted as text to prevent Excel from changing the format.'],
     ['assigned_to', 'No', 'Optional user id for assignment. Leave blank if unassigned.'],
     ['visible', 'No', 'Use true or false. Blank defaults to true.'],
   ]);
@@ -174,6 +267,10 @@ function buildRequestsExportWorkbook(requests, companyName = '') {
     wch: h === 'description' ? 44 : h === 'id' ? 32 : h === 'title' ? 28 : 18,
   }));
 
+  // Force due_date and created_at columns to text so Excel cannot reformat them.
+  forceSheetColumnToText(dataSheet, EXPORT_HEADERS.indexOf('due_date'));
+  forceSheetColumnToText(dataSheet, EXPORT_HEADERS.indexOf('created_at'));
+
   // Style the read-only extra columns with a grey header (A1 offset for extra cols)
   const templateColCount = BULK_TEMPLATE_HEADERS.length;
   EXPORT_EXTRA_HEADERS.forEach((_, i) => {
@@ -192,7 +289,7 @@ function buildRequestsExportWorkbook(requests, companyName = '') {
     ['category',      'Yes', `Use one of: ${CATEGORY_ORDER.join(', ')}`],
     ['response_type', 'Yes', `Use one of: ${RESPONSE_TYPE_OPTIONS.join(', ')}`],
     ['priority',      'Yes', `Use one of: ${PRIORITY_OPTIONS.join(', ')}`],
-    ['due_date',      'Yes', 'Format must be YYYY-MM-DD.'],
+    ['due_date',      'Yes', 'Enter date as YYYY-MM-DD (e.g. 2025-06-30). Column is pre-formatted as text.'],
     ['assigned_to',   'No',  'Optional user id for assignment. Leave blank if unassigned.'],
     ['visible',       'No',  'Use true or false. Blank defaults to true.'],
     [],
@@ -209,7 +306,7 @@ function buildRequestsExportWorkbook(requests, companyName = '') {
   XLSX.utils.book_append_sheet(workbook, instructionsSheet, 'Instructions');
 
   if (companyName) {
-    workbook.Props = { Title: `${companyName} — Requests Export`, Author: 'DataHub' };
+    workbook.Props = { Title: `${companyName} — Requests Export`, Author: 'M&A Hub' };
   }
 
   return workbook;
@@ -221,7 +318,7 @@ function readBulkWorkbook(file) {
 
     reader.onload = (event) => {
       try {
-        const workbook = XLSX.read(event.target?.result, { type: 'array' });
+        const workbook = XLSX.read(event.target?.result, { type: 'array', cellDates: true });
         const sheetName = workbook.SheetNames[0];
         if (!sheetName) {
           reject(new Error('The uploaded workbook does not contain any sheets.'));
@@ -232,7 +329,14 @@ function readBulkWorkbook(file) {
           defval: '',
           raw: false,
         });
-        resolve(rows);
+
+        // Normalize due_date regardless of how Excel/Sheets formatted it.
+        const normalized = rows.map((row) => ({
+          ...row,
+          due_date: normalizeDueDate(row.due_date),
+        }));
+
+        resolve(normalized);
       } catch (error) {
         reject(new Error('Unable to read the uploaded Excel file.'));
       }
@@ -386,13 +490,21 @@ function mapApiRequestToUi(request) {
     dueDate: request.due_date ? request.due_date.slice(0, 10) : formatToday(),
     createdAt: request.created_at ? request.created_at.slice(0, 10) : formatToday(),
     updatedAt: request.updated_at ? request.updated_at.slice(0, 10) : (request.created_at ? request.created_at.slice(0, 10) : formatToday()),
-    assignedTo: request.assigned_to || 'Unassigned',
+    assignedTo: request.assigned_to || null,
+    assignedToDisplay: (() => {
+      if (!request.assigned_to) return 'Unassigned';
+      const name = request.assigned_to_name || request.assigned_to;
+      const roleLabel = request.assigned_to_sub_role ? (ROLE_META[request.assigned_to_sub_role]?.label || '') : '';
+      return roleLabel ? `${name} · ${roleLabel}` : name;
+    })(),
     visible: request.visible !== false,
     approvalStatus: request.approval_status || 'approved',
     submissionSource: request.submission_source || 'broker',
     requestedBy: request.created_by_name || 'Unknown user',
     approvedBy: request.approved_by_name || '',
     narrativeResponse: '',
+    narrativeAuthor: null,   // { name, role, updated_at }
+
     linkedDocuments: [],
     reminderHistory: [],
     reminderFrequencyDays,
@@ -407,7 +519,7 @@ function mapUiPatchToApi(patch) {
   if (patch.priority !== undefined) apiPatch.priority = patch.priority;
   if (patch.workflowStatus !== undefined) apiPatch.status = patch.workflowStatus;
   if (patch.dueDate !== undefined) apiPatch.due_date = patch.dueDate;
-  if (patch.assignedTo !== undefined && patch.assignedTo !== 'Unassigned') apiPatch.assigned_to = patch.assignedTo;
+  if (patch.assignedTo !== undefined) apiPatch.assigned_to = patch.assignedTo || null;
   if (patch.visible !== undefined) apiPatch.visible = patch.visible;
   return apiPatch;
 }
@@ -431,7 +543,7 @@ function buildCreateRequestPayload(form) {
       priority: normalizePriority(form.priority),
       status: 'pending',
       due_date: form.dueDate,
-      assigned_to: null,
+      assigned_to: form.assignedTo || null,
     visible: true,
   };
 }
@@ -682,9 +794,71 @@ function FileUpload({ onAddFiles, duplicateNames }) {
   );
 }
 
-function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSendReminder, onAttachDocument, onApproveRequest, approvingRequestId, onMarkReviewed, onDeleteRequest, deletingRequestId }) {
+function roleBadge(role) {
+  const r = String(role || '').toLowerCase();
+  if (r === 'broker' || r === 'admin') return { label: 'Broker', bg: '#E8ECF7', color: '#05164D' };
+  if (r === 'client') return { label: 'Seller', bg: '#DBEAFE', color: '#1D4ED8' };
+  return { label: 'Buyer', bg: '#DCFCE7', color: '#166534' };
+}
+
+function NarrativeCard({ content, author, canEdit, draft, onDraftChange, onSave, saving }) {
+  const hasExisting = content && content.trim().length > 0;
+  const badge = author ? roleBadge(author.role) : null;
+  const formattedTime = author?.updated_at
+    ? new Date(author.updated_at).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' })
+    : null;
+
+  return (
+    <div className="bg-white rounded-2xl shadow-card p-5 space-y-4">
+      <h3 className="font-semibold text-[#050505]">Narrative Response</h3>
+
+      {/* Existing narrative — always visible to all parties */}
+      {hasExisting ? (
+        <div className="rounded-xl border border-gray-100 bg-[#F8FAFC] p-4">
+          {author && (
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-[12px] font-semibold text-[#050505]">{author.name}</span>
+              <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold" style={{ background: badge.bg, color: badge.color }}>
+                {badge.label}
+              </span>
+              {formattedTime && <span className="text-[10px] text-[#A5A5A5]">{formattedTime}</span>}
+            </div>
+          )}
+          <p className="text-sm leading-relaxed text-[#4B5563] whitespace-pre-wrap">{content}</p>
+        </div>
+      ) : (
+        <p className="text-sm text-[#A5A5A5] italic">No narrative has been added yet.</p>
+      )}
+
+      {/* Edit area — only shown to eligible parties */}
+      {canEdit && (
+        <div>
+          <textarea
+            rows={4}
+            value={draft}
+            onChange={(e) => onDraftChange(e.target.value)}
+            placeholder={hasExisting ? 'Update the narrative…' : 'Enter explanation, comments, or notes…'}
+            className="w-full resize-none rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm text-[#4B5563] focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/30 focus:border-[#8BC53D]"
+          />
+          <button
+            type="button"
+            onClick={onSave}
+            disabled={saving || !draft.trim()}
+            className="mt-2 rounded-xl bg-[#05164D] px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#0b2a79] disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-[#A5A5A5]"
+          >
+            {saving ? 'Saving…' : hasExisting ? 'Update Narrative' : 'Save Narrative'}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSendReminder, onAttachDocument, onApproveRequest, approvingRequestId, onMarkReviewed, onDeleteRequest, deletingRequestId, clientTeamUsers = [] }) {
   const [duplicateWarning, setDuplicateWarning] = useState([]);
-  const [narrativeDraft, setNarrativeDraft] = useState(request?.narrativeResponse || '');
+  // Keep the draft EMPTY on load — the saved narrative is shown in the display card above.
+  // The textarea is only for typing NEW/UPDATED content before hitting Save.
+  const [narrativeDraft, setNarrativeDraft] = useState('');
   const [previewDocument, setPreviewDocument] = useState(null);
   const [requestDraft, setRequestDraft] = useState({
     name: request?.name || '',
@@ -695,9 +869,12 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
   const [savingRequestDetails, setSavingRequestDetails] = useState(false);
   const [savingNarrative, setSavingNarrative] = useState(false);
   const [unblocking, setUnblocking] = useState(false);
+  const [assignedToDraft, setAssignedToDraft] = useState(request?.assignedTo || '');
+  const [savingAssignment, setSavingAssignment] = useState(false);
 
   useEffect(() => {
-    setNarrativeDraft(request?.narrativeResponse || '');
+    // Reset the draft to empty when switching requests (not pre-fill — avoids duplication with display card).
+    setNarrativeDraft('');
     setPreviewDocument(null);
     setRequestDraft({
       name: request?.name || '',
@@ -705,7 +882,8 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
       priority: request?.priority || 'high',
       dueDate: request?.dueDate || formatToday(),
     });
-  }, [request?.id, request?.narrativeResponse]);
+    setAssignedToDraft(request?.assignedTo || '');
+  }, [request?.id]);
 
   if (!request) return null;
 
@@ -774,13 +952,24 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
   };
 
   const saveNarrative = async () => {
-    if (!canEditResponse || savingNarrative) return;
+    if (!canEditResponse || savingNarrative || !narrativeDraft.trim()) return;
     setSavingNarrative(true);
     await onUpdateRequest(request.id, {
-      narrativeResponse: narrativeDraft,
+      narrativeResponse: narrativeDraft.trim(),
       updatedAt: formatToday(),
     });
+    setNarrativeDraft(''); // clear draft after save — saved text shows in the display card
     setSavingNarrative(false);
+  };
+
+  const saveAssignment = async (newAssignedTo) => {
+    if (savingAssignment) return;
+    setSavingAssignment(true);
+    await onUpdateRequest(request.id, {
+      assignedTo: newAssignedTo || null,
+      updatedAt: formatToday(),
+    });
+    setSavingAssignment(false);
   };
 
   const handleUnblock = async () => {
@@ -941,31 +1130,15 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
             </div>
 
             {(request.responseType === 'Narrative' || request.responseType === 'Both') && (
-              <div className="bg-white rounded-2xl shadow-card p-5">
-                <h3 className="font-semibold text-[#050505] mb-3">Narrative Response</h3>
-                <textarea
-                  rows={5}
-                  value={narrativeDraft}
-                  readOnly={!canEditResponse}
-                  onChange={(event) => setNarrativeDraft(event.target.value)}
-                  placeholder="Enter explanation, comments, or notes related to this request"
-                  className={`w-full resize-none rounded-xl border px-4 py-3 text-sm ${
-                    canEditResponse
-                      ? 'border-gray-200 bg-white text-[#4B5563]'
-                      : 'border-gray-100 bg-gray-50 text-[#4B5563]'
-                  }`}
-                />
-                {canEditResponse && (
-                  <button
-                    type="button"
-                    onClick={saveNarrative}
-                    disabled={savingNarrative}
-                    className="mt-3 rounded-xl bg-[#05164D] px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-[#0b2a79] disabled:cursor-not-allowed disabled:bg-gray-200 disabled:text-[#A5A5A5]"
-                  >
-                    {savingNarrative ? 'Saving...' : 'Save Narrative'}
-                  </button>
-                )}
-              </div>
+              <NarrativeCard
+                content={request.narrativeResponse}
+                author={request.narrativeAuthor}
+                canEdit={canEditResponse}
+                draft={narrativeDraft}
+                onDraftChange={setNarrativeDraft}
+                onSave={saveNarrative}
+                saving={savingNarrative}
+              />
             )}
           </div>
 
@@ -979,7 +1152,28 @@ function RequestDetailPage({ onBack, request, allRequests, onUpdateRequest, onSe
                   { label: 'Category', value: <span className="inline-flex items-center gap-1.5 font-semibold text-[#050505]"><CategoryIcon size={14} style={{ color: CATEGORY_META[request.category].color }} />{request.category}</span> },
                   { label: 'Due Date', value: <span className={`font-semibold ${isOverdue ? 'text-[#B91C1C]' : 'text-[#050505]'}`}>{request.dueDate}</span> },
                   { label: 'Response Type', value: <span className="font-semibold text-[#050505]">{request.responseType}</span> },
-                  { label: 'Assigned To', value: <span className="font-semibold text-[#050505]">{request.assignedTo}</span> },
+                  { label: 'Assigned To', value: (
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={assignedToDraft}
+                        onChange={async (e) => {
+                          const val = e.target.value;
+                          setAssignedToDraft(val);
+                          await saveAssignment(val);
+                        }}
+                        disabled={savingAssignment}
+                        className="flex-1 min-w-0 rounded-lg border border-gray-200 bg-white px-2 py-1 text-xs font-semibold text-[#050505] focus:outline-none focus:ring-1 focus:ring-[#8BC53D] disabled:opacity-60"
+                      >
+                        <option value="">— Unassigned —</option>
+                        {clientTeamUsers.map((u) => (
+                          <option key={u.id} value={u.id}>
+                            {u.name}{u.role_label ? ` · ${u.role_label}` : ''}
+                          </option>
+                        ))}
+                      </select>
+                      {savingAssignment && <span className="text-[10px] text-[#A5A5A5] flex-shrink-0">Saving…</span>}
+                    </div>
+                  ) },
                   { label: 'Created Date', value: <span className="font-semibold text-[#050505]">{request.createdAt}</span> },
                   { label: 'Last Updated', value: <span className="font-semibold text-[#050505]">{request.updatedAt}</span> },
                 ].map((item) => (
@@ -1121,6 +1315,10 @@ export default function WorkspaceRequests() {
   const [bulkUploading, setBulkUploading] = useState(false);
   const [approvingRequestId, setApprovingRequestId] = useState(null);
   const [deletingRequestId, setDeletingRequestId] = useState(null);
+  // Client team users for the "Assign To" dropdown
+  const [clientTeamUsers, setClientTeamUsers] = useState([]);
+  // Approval-with-assign flow: holds the request being approved so broker can pick assignee
+  const [pendingApproval, setPendingApproval] = useState(null); // { requestId, assignedTo: '' }
 
   const loadRequests = async () => {
     if (!clientId) return;
@@ -1149,6 +1347,23 @@ export default function WorkspaceRequests() {
     getCompanyRequest(clientId)
       .then((data) => setCompany(data))
       .catch(() => setCompany(null));
+
+    // Load client team members for the "Assign To" dropdown
+    listUsersRequest()
+      .then((users) => {
+        const companyClients = users.filter((u) => {
+          const sub = u.sub_role || inferSubRole(u);
+          const assignedIds = (u.company_ids || u.companyIds || [u.company_id]).filter(Boolean);
+          const inCompany = assignedIds.some((id) => String(id) === String(clientId));
+          return inCompany && CLIENT_SUB_ROLES.includes(sub);
+        }).map((u) => ({
+          id: u.id,
+          name: u.name || u.email || 'Unknown',
+          role_label: ROLE_META[u.sub_role || inferSubRole(u)]?.label || '',
+        }));
+        setClientTeamUsers(companyClients);
+      })
+      .catch(() => setClientTeamUsers([]));
   }, [clientId]);
 
   useEffect(() => {
@@ -1172,6 +1387,18 @@ export default function WorkspaceRequests() {
           if (r.id !== activeRequestId) return r;
           const mapped = docs.map((doc) => mapRequestDocumentToUi(doc, 'Client'));
           return { ...r, linkedDocuments: mapped };
+        }));
+      })
+      .catch(() => {});
+    getRequestNarrative(activeRequestId)
+      .then((result) => {
+        setRequestState((prev) => prev.map((r) => {
+          if (r.id !== activeRequestId) return r;
+          const content = typeof result === 'string' ? result : (result?.content || '');
+          const narrativeAuthor = result?.author_name
+            ? { name: result.author_name, role: result.author_role, updated_at: result.updated_at }
+            : null;
+          return { ...r, narrativeResponse: content, narrativeAuthor };
         }));
       })
       .catch(() => {});
@@ -1255,9 +1482,10 @@ export default function WorkspaceRequests() {
     setRequestState(prev => prev.map(r => (r.id === id ? { ...r, ...patch } : r)));
     try {
       let canonicalRequest = null;
-      if (patch.narrativeResponse !== undefined) {
-        canonicalRequest = await updateRequestNarrative(id, {
-          content: patch.narrativeResponse,
+      const narrativePatch = patch.narrativeResponse !== undefined ? patch.narrativeResponse : undefined;
+      if (narrativePatch !== undefined) {
+        await updateRequestNarrative(id, {
+          content: narrativePatch,
           updated_by: user?.id || null,
         });
       }
@@ -1267,7 +1495,17 @@ export default function WorkspaceRequests() {
       }
       if (canonicalRequest?.id) {
         const normalized = mapApiRequestToUi(canonicalRequest);
-        setRequestState(prev => prev.map(r => (r.id === id ? { ...r, ...normalized } : r)));
+        // Preserve narrativeResponse/narrativeAuthor — mapApiRequestToUi always returns '' for them
+        setRequestState(prev => prev.map(r => {
+          if (r.id !== id) return r;
+          return {
+            ...r, ...normalized,
+            narrativeResponse: narrativePatch !== undefined ? narrativePatch : r.narrativeResponse,
+            narrativeAuthor: narrativePatch !== undefined
+              ? { name: user?.name || 'You', role: user?.role || 'broker', updated_at: new Date().toISOString() }
+              : r.narrativeAuthor,
+          };
+        }));
       }
       return true;
     } catch (err) {
@@ -1309,16 +1547,25 @@ export default function WorkspaceRequests() {
     }
   };
 
-  const handleApproveRequest = async (requestOrId) => {
+  // Step 1: broker clicks "Approve" → open assign-to dialog
+  const handleApproveRequest = (requestOrId) => {
     const requestId = typeof requestOrId === 'object' ? requestOrId?.id : requestOrId;
     if (!requestId) return;
+    setPendingApproval({ requestId, assignedTo: '' });
+  };
+
+  // Step 2: broker confirms approval (with optional assignee)
+  const confirmApproveRequest = async () => {
+    if (!pendingApproval?.requestId) return;
+    const { requestId, assignedTo } = pendingApproval;
 
     setApprovingRequestId(requestId);
     setError('');
     setSuccess('');
+    setPendingApproval(null);
 
     try {
-      const approved = await approveRequest(requestId);
+      const approved = await approveRequest(requestId, assignedTo || null);
       const normalized = mapApiRequestToUi(approved);
       setRequestState((prev) => prev.map((item) => (item.id === requestId ? { ...item, ...normalized } : item)));
       setSuccess('Request approved and sent to the client portal.');
@@ -1425,6 +1672,7 @@ export default function WorkspaceRequests() {
         onMarkReviewed={handleMarkReviewed}
         onDeleteRequest={handleDeleteRequest}
         deletingRequestId={deletingRequestId}
+        clientTeamUsers={clientTeamUsers}
         onSendReminder={(id) => createRequestReminder(id, {
           sent_at: new Date().toISOString(),
           sent_by: user?.id || null,
@@ -1668,12 +1916,57 @@ export default function WorkspaceRequests() {
         </div>
       )}
 
+      {/* ── Approve-with-assign modal ── */}
+      {pendingApproval && (
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 bg-white/30 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 space-y-4">
+            <h3 className="text-base font-bold text-[#05164D]">Approve & Assign Request</h3>
+            <p className="text-sm text-gray-500">Optionally assign this request to a specific client team member. Leave blank to make it visible to all.</p>
+            {clientTeamUsers.length > 0 && (
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Assign To (Client Team)</label>
+                <select
+                  value={pendingApproval.assignedTo}
+                  onChange={(e) => setPendingApproval((p) => ({ ...p, assignedTo: e.target.value }))}
+                  className="w-full px-3 py-2.5 rounded-xl border border-gray-200 text-sm"
+                >
+                  <option value="">— Unassigned (visible to all) —</option>
+                  {clientTeamUsers.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.name}{u.role_label ? ` · ${u.role_label}` : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {clientTeamUsers.length === 0 && (
+              <p className="text-xs text-[#A5A5A5]">No client team members found for this company. The request will be visible to all.</p>
+            )}
+            <div className="flex gap-3 pt-1">
+              <button
+                onClick={() => setPendingApproval(null)}
+                className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-gray-600 hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmApproveRequest}
+                className="flex-1 py-2.5 rounded-xl bg-[#8BC53D] hover:bg-[#476E2C] text-white text-sm font-semibold"
+              >
+                Approve & Send
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <NewRequestModal
         isOpen={isNewRequestOpen}
         onClose={() => setIsNewRequestOpen(false)}
         onCreate={createRequest}
         folderOptions={folderOptions}
         foldersLoading={foldersLoading}
+        clientTeamUsers={clientTeamUsers}
         extraContent={(
           <div className="rounded-2xl border border-[#BFDBFE] bg-[#EFF6FF] p-4 space-y-3">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">

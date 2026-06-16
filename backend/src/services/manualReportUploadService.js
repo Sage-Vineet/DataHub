@@ -243,11 +243,11 @@ function buildTaxReturnResponseData(tax) {
   const allOtherExpenses = isPartnership
     ? Number(tax.allOtherExpenses || 0)
     : Number(tax.grossProfit || 0) -
-      Number(tax.officerWages || 0) -
-      Number(tax.depreciation || 0) -
-      Number(tax.amortization || 0) -
-      Number(tax.interestExpense || 0) -
-      Number(tax.netIncome || 0);
+    Number(tax.officerWages || 0) -
+    Number(tax.depreciation || 0) -
+    Number(tax.amortization || 0) -
+    Number(tax.interestExpense || 0) -
+    Number(tax.netIncome || 0);
 
   // Label officer wages as "Guaranteed Payments" for partnerships
   const officerWagesLabel = isPartnership ? "Guaranteed Payments" : "Officer Wages";
@@ -306,8 +306,8 @@ async function extractTaxDataFromBuffer(pdfBuffer, cacheKey) {
           let text = result.response.text().trim();
           text = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
           const parsed = JSON.parse(text);
-          ["year","totalRevenue","totalCostOfGoodsSold","grossProfit","officerWages",
-           "depreciation","amortization","interestExpense","allOtherExpenses","netIncome"]
+          ["year", "totalRevenue", "totalCostOfGoodsSold", "grossProfit", "officerWages",
+            "depreciation", "amortization", "interestExpense", "allOtherExpenses", "netIncome"]
             .forEach((f) => { parsed[f] = Number(parsed[f]) || 0; });
           if (!parsed.formType) parsed.formType = "1120-S";
           if (!Array.isArray(parsed.reconcilingItems)) parsed.reconcilingItems = [];
@@ -422,8 +422,8 @@ async function extractPLForTax(pdfBuffer, cacheKey) {
           let text = result.response.text().trim();
           text = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
           const parsed = JSON.parse(text);
-          ["year","totalRevenue","totalCostOfGoodsSold","grossProfit","officerWages",
-           "depreciation","amortization","interestExpense","allOtherExpenses","allOtherIncome","netIncome"]
+          ["year", "totalRevenue", "totalCostOfGoodsSold", "grossProfit", "officerWages",
+            "depreciation", "amortization", "interestExpense", "allOtherExpenses", "allOtherIncome", "netIncome"]
             .forEach((f) => { parsed[f] = Number(parsed[f]) || 0; });
           console.log(`[PLForTax] year=${parsed.year} via ${modelName}`);
           return parsed;
@@ -474,39 +474,39 @@ function extractPLLineItemsFromRows(rows, year) {
     }
     return matches[matches.length - 1].value;
   };
-  const officerWages    = find(["officer compensation", "officer wages", "officer salary", "officer pay"], false);
-  const depreciation    = find(["depreciation expense", "depreciation"], false);
-  const amortization    = find(["amortization expense", "amortization"], false);
+  const officerWages = find(["officer compensation", "officer wages", "officer salary", "officer pay"], false);
+  const depreciation = find(["depreciation expense", "depreciation"], false);
+  const amortization = find(["amortization expense", "amortization"], false);
   const interestExpense = find(["total interest expense", "interest expense", "loan interest"], false);
-  const totalExpenses   = find(["total expenses", "total operating expenses", "total expense"]);
+  const totalExpenses = find(["total expenses", "total operating expenses", "total expense"]);
   const allOtherExpenses = totalExpenses > 0 ? Math.max(0, totalExpenses - (officerWages + depreciation + amortization + interestExpense)) : 0;
   return {
     year,
-    totalRevenue:         find(["total income", "total revenue", "net revenue", "total sales"]),
+    totalRevenue: find(["total income", "total revenue", "net revenue", "total sales"]),
     totalCostOfGoodsSold: find(["total cost of goods sold", "cost of goods sold", "cost of sales"]),
-    grossProfit:          find(["gross profit", "gross margin"]),
+    grossProfit: find(["gross profit", "gross margin"]),
     officerWages,
     depreciation,
     amortization,
     interestExpense,
     allOtherExpenses,
-    allOtherIncome:       find(["total other income", "other income", "other revenue"]),
-    netIncome:            find(["net income", "net loss", "net earnings", "net profit"]),
+    allOtherIncome: find(["total other income", "other income", "other revenue"]),
+    netIncome: find(["net income", "net loss", "net earnings", "net profit"]),
   };
 }
 
 function buildPLForTaxData(pl) {
   return [
-    { label: "Total Revenue",            pl: Number(pl.totalRevenue || 0) },
+    { label: "Total Revenue", pl: Number(pl.totalRevenue || 0) },
     { label: "Total Cost of Goods Sold", pl: Number(pl.totalCostOfGoodsSold || 0) },
-    { label: "Gross Profit",             pl: Number(pl.grossProfit || 0) },
-    { label: "Officer Wages",            pl: Number(pl.officerWages || 0) },
-    { label: "Depreciation Expense",     pl: Number(pl.depreciation || 0) },
-    { label: "Amortization Expense",     pl: Number(pl.amortization || 0) },
-    { label: "Total Interest Expense",   pl: Number(pl.interestExpense || 0) },
-    { label: "All Other Expenses",       pl: Number(pl.allOtherExpenses || 0) },
-    { label: "All Other Income",         pl: Number(pl.allOtherIncome || 0) },
-    { label: "Net Income",               pl: Number(pl.netIncome || 0) },
+    { label: "Gross Profit", pl: Number(pl.grossProfit || 0) },
+    { label: "Officer Wages", pl: Number(pl.officerWages || 0) },
+    { label: "Depreciation Expense", pl: Number(pl.depreciation || 0) },
+    { label: "Amortization Expense", pl: Number(pl.amortization || 0) },
+    { label: "Total Interest Expense", pl: Number(pl.interestExpense || 0) },
+    { label: "All Other Expenses", pl: Number(pl.allOtherExpenses || 0) },
+    { label: "All Other Income", pl: Number(pl.allOtherIncome || 0) },
+    { label: "Net Income", pl: Number(pl.netIncome || 0) },
   ];
 }
 
@@ -842,7 +842,7 @@ function findAmountInCells(cells = []) {
 }
 
 const MONTH_PERIOD_RE = /^(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)[\s.\-_]*(\d{2,4})?\s*$/i;
-const MONTH_ABBR_MAP = { january:"Jan",february:"Feb",march:"Mar",april:"Apr",may:"May",june:"Jun",july:"Jul",august:"Aug",september:"Sep",october:"Oct",november:"Nov",december:"Dec" };
+const MONTH_ABBR_MAP = { january: "Jan", february: "Feb", march: "Mar", april: "Apr", may: "May", june: "Jun", july: "Jul", august: "Aug", september: "Sep", october: "Oct", november: "Nov", december: "Dec" };
 
 function normalizePeriodLabel(cell) {
   const s = String(cell || "").trim();
@@ -994,7 +994,7 @@ function extractAsOfDateFromLines(lines = []) {
 // e.g. "January-December, 2022" → { start: "2022-01-01", end: "2022-12-31" }
 //      "October 2021 - September 2022" → { start: "2021-10-01", end: "2022-09-30" }
 function extractPeriodDatesFromLines(lines = []) {
-  const MONTH_MAP = { jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12 };
+  const MONTH_MAP = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
   const M = "jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?";
   // Two-month range: "(Month[ year]) - (Month[ year])"
   const rangeRe = new RegExp(
@@ -1087,10 +1087,10 @@ function buildSectionNode(name, children = [], id = "") {
   const computedAmount = totalRow
     ? totalRow.amount
     : roundMoney(
-        normalizedChildren
-          .filter((child) => child.type !== "total")
-          .reduce((sum, child) => sum + Number(child.amount || 0), 0),
-      );
+      normalizedChildren
+        .filter((child) => child.type !== "total")
+        .reduce((sum, child) => sum + Number(child.amount || 0), 0),
+    );
 
   const node = {
     id: id || `section-${normalizeSlug(name) || "group"}`,
@@ -1479,11 +1479,11 @@ function parseSectionedStatement(entries = [], sectionDefinitions = [], options 
     const normalizedLabel = normalizeText(entry.label);
     const type =
       normalizedLabel.includes("total ") ||
-      normalizedLabel.includes("net income") ||
-      normalizedLabel.includes("gross profit") ||
-      normalizedLabel.includes("net cash") ||
-      normalizedLabel.includes("ending cash") ||
-      normalizedLabel.includes("ending balance")
+        normalizedLabel.includes("net income") ||
+        normalizedLabel.includes("gross profit") ||
+        normalizedLabel.includes("net cash") ||
+        normalizedLabel.includes("ending cash") ||
+        normalizedLabel.includes("ending balance")
         ? "total"
         : "data";
 
@@ -1594,32 +1594,32 @@ async function parseStoredReport(upload, forcedStatementType = null, { skipAI = 
   const sectionDefinitions =
     statementType === STATEMENT_TYPES.PROFIT_AND_LOSS
       ? [
-          {
-            id: "income",
-            name: "Income",
-            matches: ["income", "revenue", "ordinary income", "ordinary income/expense"],
-          },
-          {
-            id: "cost-of-sales",
-            name: "Cost of Sales",
-            matches: ["cost of goods sold", "cost of sales", "cost of goods sold/cost of sales"],
-          },
-          {
-            id: "expenses",
-            name: "Expenses",
-            matches: ["expenses", "expense", "operating expenses"],
-          },
-          {
-            id: "other-income",
-            name: "Other Income / Expense",
-            matches: ["other income", "other expense", "other income / expense", "other income expense", "net other income"],
-          },
-        ]
+        {
+          id: "income",
+          name: "Income",
+          matches: ["income", "revenue", "ordinary income", "ordinary income/expense"],
+        },
+        {
+          id: "cost-of-sales",
+          name: "Cost of Sales",
+          matches: ["cost of goods sold", "cost of sales", "cost of goods sold/cost of sales"],
+        },
+        {
+          id: "expenses",
+          name: "Expenses",
+          matches: ["expenses", "expense", "operating expenses"],
+        },
+        {
+          id: "other-income",
+          name: "Other Income / Expense",
+          matches: ["other income", "other expense", "other income / expense", "other income expense", "net other income"],
+        },
+      ]
       : [
-          { id: "operating", name: "Operating Activities", matches: ["operating activities"] },
-          { id: "investing", name: "Investing Activities", matches: ["investing activities"] },
-          { id: "financing", name: "Financing Activities", matches: ["financing activities"] },
-        ];
+        { id: "operating", name: "Operating Activities", matches: ["operating activities"] },
+        { id: "investing", name: "Investing Activities", matches: ["investing activities"] },
+        { id: "financing", name: "Financing Activities", matches: ["financing activities"] },
+      ];
 
   const exactMatchOnly = parserType !== "pdf" && statementType === STATEMENT_TYPES.PROFIT_AND_LOSS;
 
@@ -1696,6 +1696,140 @@ async function loadUploadForDoc(doc) {
     }
   }
   throw new Error("No upload binary found for this document");
+}
+
+
+/**
+ * Processes a single DataRoom document into structured report data,
+ * persisting the result to qb_synced_reports.
+ * Used by Key Reports Sync to extract data from linked documents.
+ */
+async function processDocumentMapping(companyId, documentId, category, opts = {}) {
+  const { folderId = null, folderName = "Linked Document" } = opts;
+  const now = new Date().toISOString();
+
+  // 1. Resolve category to statement type
+  const typeMap = {
+    profit_loss: STATEMENT_TYPES.PROFIT_AND_LOSS,
+    balance_sheet: STATEMENT_TYPES.BALANCE_SHEET,
+    cash_flow: STATEMENT_TYPES.CASH_FLOW,
+    bank_statement: STATEMENT_TYPES.BANK_RECONCILIATION,
+    tax_return: STATEMENT_TYPES.TAX_RETURN,
+  };
+  const statementType = typeMap[category];
+  if (!statementType) {
+    throw new Error(`Unsupported category for document extraction: ${category}`);
+  }
+
+  // 2. Load document and binary
+  const { data: document, error: docErr } = await supabase
+    .from("documents")
+    .select("id, name, upload_id, file_url")
+    .eq("id", documentId)
+    .maybeSingle();
+
+  if (docErr) throw new Error(`Failed to load document: ${docErr.message}`);
+  if (!document) throw new Error(`Document not found: ${documentId}`);
+
+  const upload = await loadUploadForDoc(document);
+  const buffer = normalizeUploadBinary(upload.data);
+  const fileName = document.name;
+
+  let extractionResult = null;
+
+  // 3. Extraction based on statement type
+  if (statementType === STATEMENT_TYPES.TAX_RETURN) {
+    const cacheKey = `kr_sync_tax_${companyId}_${documentId}`;
+    const extracted = await extractTaxDataFromBuffer(buffer, cacheKey);
+    if (extracted?.year) {
+      extractionResult = {
+        tax_return: {
+          taxYears: {
+            [extracted.year]: {
+              year: extracted.year,
+              fileName,
+              data: buildTaxReturnResponseData(extracted),
+            },
+          },
+          syncedAt: now,
+          documentCount: 1,
+        },
+      };
+    }
+  } else if (statementType === STATEMENT_TYPES.BANK_RECONCILIATION) {
+    const ext = fileName.toLowerCase().split(".").pop();
+    let statements = [];
+    if (["xlsx", "xls", "csv"].includes(ext)) {
+      statements = await extractBankStatementsFromExcelBuffer(buffer, fileName);
+    } else {
+      statements = await extractBankStatementsFromPdfBase64(buffer.toString("base64"), fileName);
+    }
+    if (statements.length) {
+      const { banks, months, totals } = buildBankResponseShape(statements);
+      extractionResult = {
+        bank_reconciliation: {
+          banks,
+          months,
+          totals,
+          syncedAt: now,
+          documentCount: 1,
+        },
+      };
+    }
+  } else {
+    // P&L, Balance Sheet, Cash Flow
+    const parsed = await parseStoredReport(upload, statementType);
+    if (parsed?.report?.rows?.length) {
+      extractionResult = {
+        manual_report_upload: {
+          statementType: parsed.statementType,
+          parserType: parsed.parserType,
+          documentId,
+          uploadId: upload.id,
+          fileName,
+          report: parsed.report,
+          syncedAt: now,
+        },
+      };
+    }
+  }
+
+  if (!extractionResult) {
+    throw new Error(`Could not extract structured data from "${fileName}" as ${statementType}`);
+  }
+
+  // 4. Persist to qb_synced_reports
+  // Use source=manual_report_upload to remain compatible with standard report views.
+  await supabase
+    .from("qb_synced_reports")
+    .delete()
+    .eq("company_id", companyId)
+    .eq("source", MANUAL_REPORT_UPLOAD_SOURCE)
+    .eq("report_type", statementType)
+    .filter("report_params->>documentId", "eq", documentId);
+
+  const { error: upsertError } = await supabase
+    .from("qb_synced_reports")
+    .insert({
+      company_id: companyId,
+      report_type: statementType,
+      report_params: {
+        folderId,
+        folderName,
+        documentId,
+        uploadId: upload.id,
+        fileName,
+      },
+      data: extractionResult,
+      source: MANUAL_REPORT_UPLOAD_SOURCE,
+      status: "synced",
+      last_synced_at: now,
+      updated_at: now,
+    });
+
+  if (upsertError) throw new Error(`Persistence failed: ${upsertError.message}`);
+
+  return { success: true, documentId, statementType, fileName };
 }
 
 async function syncManualReportFolder({ companyId, folderId, folderName = "" }) {
@@ -2154,15 +2288,15 @@ async function getManualUploadSourceTree(companyId) {
     }
 
     if (existingCfEntry) {
-      existingCfEntry.fileCount   = cfCount || 0;
+      existingCfEntry.fileCount = cfCount || 0;
       existingCfEntry.isGenerated = true;
     } else {
       result.push({
-        id:          "generated-cashflow",
-        name:        "Cash Flow",
+        id: "generated-cashflow",
+        name: "Cash Flow",
         statementType: STATEMENT_TYPES.CASH_FLOW,
-        fileCount:   cfCount || 0,
-        isGroup:     false,
+        fileCount: cfCount || 0,
+        isGroup: false,
         isGenerated: true,
       });
     }
@@ -2964,7 +3098,7 @@ async function parseAndSaveQMSDocuments(companyId, documents, { clearFirst = fal
 
 // ── QMS + Manual Upload Dashboard: parse + aggregate ─────────────────────────
 
-const _qmsDashboardCache    = new Map();
+const _qmsDashboardCache = new Map();
 const _manualDashboardCache = new Map();
 const DASHBOARD_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -3010,7 +3144,7 @@ function _flattenQMSRows(rows) {
  *  T5 — substring includes on any type  (last resort)
  */
 function _findQMSAmount(flat, namePhrases) {
-  const phrases     = namePhrases.map(_lcStr);
+  const phrases = namePhrases.map(_lcStr);
   const normPhrases = namePhrases.map(_normalizeName);
 
   for (const phrase of phrases) {
@@ -3055,23 +3189,23 @@ function _extractKPIsFromQMSRows(bsRows, plRows, debugLabel = "") {
   const bsFlat = _flattenQMSRows(bsRows);
   const plFlat = _flattenQMSRows(plRows);
 
-  const totalRevenue   = _findQMSAmount(plFlat, ["total income", "total revenue", "total sales", "total ordinary income", "income", "revenue"]);
-  const rawExpenses    = _findQMSAmount(plFlat, ["total expenses", "total expense", "total operating expenses", "expenses", "operating expenses"]);
-  const totalExpenses  = Math.abs(rawExpenses);
-  const netProfitRaw   = _findQMSAmount(plFlat, ["net income", "net profit", "net loss", "net earnings", "net income loss"]);
-  const netProfit      = netProfitRaw !== 0 ? netProfitRaw : totalRevenue - totalExpenses;
+  const totalRevenue = _findQMSAmount(plFlat, ["total income", "total revenue", "total sales", "total ordinary income", "income", "revenue"]);
+  const rawExpenses = _findQMSAmount(plFlat, ["total expenses", "total expense", "total operating expenses", "expenses", "operating expenses"]);
+  const totalExpenses = Math.abs(rawExpenses);
+  const netProfitRaw = _findQMSAmount(plFlat, ["net income", "net profit", "net loss", "net earnings", "net income loss"]);
+  const netProfit = netProfitRaw !== 0 ? netProfitRaw : totalRevenue - totalExpenses;
 
-  const totalAssets       = _findQMSAmount(bsFlat, ["total assets", "assets"]);
-  const totalLiabilities  = _findQMSAmount(bsFlat, ["total liabilities", "liabilities"]);
-  const totalEquity       = _findQMSAmount(bsFlat, ["total equity", "total stockholders equity", "total shareholders equity", "total owners equity", "equity", "stockholders equity", "shareholders equity", "owners equity"]);
-  const currentAssets     = _findQMSAmount(bsFlat, ["total current assets", "current assets"]);
-  const currentLiabilities= _findQMSAmount(bsFlat, ["total current liabilities", "current liabilities"]);
-  const cashAndBankBalance= _findQMSAmount(bsFlat, ["total bank accounts", "total cash and cash equivalents", "total cash and bank", "total cash", "bank accounts", "cash and cash equivalents"]);
-  const accountsReceivable= _findQMSAmount(bsFlat, ["total accounts receivable", "total accounts receivable a r", "accounts receivable a r", "accounts receivable"]);
-  const inventoryValue    = _findQMSAmount(bsFlat, ["total inventory", "inventory asset", "inventory"]);
-  const accountsPayable   = _findQMSAmount(bsFlat, ["total accounts payable", "total accounts payable a p", "accounts payable a p", "accounts payable"]);
-  const longTermDebt      = _findQMSAmount(bsFlat, ["total long-term liabilities", "total long term liabilities", "long-term liabilities", "long term liabilities", "notes payable", "long-term debt"]);
-  const workingCapital    = currentAssets && currentLiabilities
+  const totalAssets = _findQMSAmount(bsFlat, ["total assets", "assets"]);
+  const totalLiabilities = _findQMSAmount(bsFlat, ["total liabilities", "liabilities"]);
+  const totalEquity = _findQMSAmount(bsFlat, ["total equity", "total stockholders equity", "total shareholders equity", "total owners equity", "equity", "stockholders equity", "shareholders equity", "owners equity"]);
+  const currentAssets = _findQMSAmount(bsFlat, ["total current assets", "current assets"]);
+  const currentLiabilities = _findQMSAmount(bsFlat, ["total current liabilities", "current liabilities"]);
+  const cashAndBankBalance = _findQMSAmount(bsFlat, ["total bank accounts", "total cash and cash equivalents", "total cash and bank", "total cash", "bank accounts", "cash and cash equivalents"]);
+  const accountsReceivable = _findQMSAmount(bsFlat, ["total accounts receivable", "total accounts receivable a r", "accounts receivable a r", "accounts receivable"]);
+  const inventoryValue = _findQMSAmount(bsFlat, ["total inventory", "inventory asset", "inventory"]);
+  const accountsPayable = _findQMSAmount(bsFlat, ["total accounts payable", "total accounts payable a p", "accounts payable a p", "accounts payable"]);
+  const longTermDebt = _findQMSAmount(bsFlat, ["total long-term liabilities", "total long term liabilities", "long-term liabilities", "long term liabilities", "notes payable", "long-term debt"]);
+  const workingCapital = currentAssets && currentLiabilities
     ? currentAssets - currentLiabilities
     : cashAndBankBalance + accountsReceivable + inventoryValue - accountsPayable;
 
@@ -3098,9 +3232,9 @@ function _extractYearFromQMSRecord(row) {
     if (bareYear) return parseInt(bareYear[1], 10);
     return null;
   };
-  const fromPeriodEnd   = tryYear(report?.periodEnd);   if (fromPeriodEnd)   return fromPeriodEnd;
+  const fromPeriodEnd = tryYear(report?.periodEnd); if (fromPeriodEnd) return fromPeriodEnd;
   const fromPeriodStart = tryYear(report?.periodStart); if (fromPeriodStart) return fromPeriodStart;
-  const fromAsOfDate    = tryYear(report?.asOfDate);    if (fromAsOfDate)    return fromAsOfDate;
+  const fromAsOfDate = tryYear(report?.asOfDate); if (fromAsOfDate) return fromAsOfDate;
   const fileName = row.report_params?.fileName || "";
   const match = fileName.match(/\b(20\d{2}|19\d{2})\b/);
   if (match) return parseInt(match[1], 10);
@@ -3111,7 +3245,7 @@ function _pickLatestRecord(records) {
   if (!records || records.length === 0) return null;
   return records.reduce((best, cur) => {
     const bestTs = new Date(best.updated_at || best.last_synced_at || 0).getTime();
-    const curTs  = new Date(cur.updated_at  || cur.last_synced_at  || 0).getTime();
+    const curTs = new Date(cur.updated_at || cur.last_synced_at || 0).getTime();
     return curTs > bestTs ? cur : best;
   });
 }
@@ -3157,7 +3291,7 @@ function _buildDashboardPayload(annotatedBS, annotatedPL, logPrefix) {
     reports[String(year)] = {
       year: String(year),
       balanceSheet: bsReport ? { rowId: bsRecord.id, fileName: bsRecord.report_params?.fileName || null, folderName: bsRecord.report_params?.folderName || null, asOfDate: bsReport.asOfDate || null, periodStart: bsReport.periodStart || null, periodEnd: bsReport.periodEnd || null, updatedAt: bsRecord.updated_at || null } : null,
-      profitLoss:   plReport ? { rowId: plRecord.id, fileName: plRecord.report_params?.fileName || null, folderName: plRecord.report_params?.folderName || null, asOfDate: plReport.asOfDate || null, periodStart: plReport.periodStart || null, periodEnd: plReport.periodEnd || null, updatedAt: plRecord.updated_at || null } : null,
+      profitLoss: plReport ? { rowId: plRecord.id, fileName: plRecord.report_params?.fileName || null, folderName: plRecord.report_params?.folderName || null, asOfDate: plReport.asOfDate || null, periodStart: plReport.periodStart || null, periodEnd: plReport.periodEnd || null, updatedAt: plRecord.updated_at || null } : null,
       kpis,
       ...(warnings.length > 0 ? { warnings } : {}),
     };
@@ -3175,12 +3309,12 @@ function _buildDashboardPayload(annotatedBS, annotatedPL, logPrefix) {
 
   const trends = [...allYears].reverse().map((year) => {
     const plReport = plByYear.get(year)?.data?.manual_report_upload?.report || null;
-    const plFlat   = _flattenQMSRows(plReport?.rows || []);
-    const revenue     = _findQMSAmount(plFlat, ["total income", "total revenue", "total sales", "total ordinary income", "income", "revenue"]);
+    const plFlat = _flattenQMSRows(plReport?.rows || []);
+    const revenue = _findQMSAmount(plFlat, ["total income", "total revenue", "total sales", "total ordinary income", "income", "revenue"]);
     const rawExpenses = _findQMSAmount(plFlat, ["total expenses", "total expense", "total operating expenses", "expenses", "operating expenses"]);
-    const expenses    = Math.abs(rawExpenses);
-    const netProfitRaw= _findQMSAmount(plFlat, ["net income", "net profit", "net loss", "net earnings", "net income loss"]);
-    const netProfit   = netProfitRaw !== 0 ? netProfitRaw : revenue - expenses;
+    const expenses = Math.abs(rawExpenses);
+    const netProfitRaw = _findQMSAmount(plFlat, ["net income", "net profit", "net loss", "net earnings", "net income loss"]);
+    const netProfit = netProfitRaw !== 0 ? netProfitRaw : revenue - expenses;
     return { year: String(year), revenue, expenses, netProfit };
   });
 
@@ -3252,4 +3386,5 @@ module.exports = {
   clearQMSDashboardCache,
   buildManualUploadDashboardData,
   clearManualDashboardCache,
+  processDocumentMapping,
 };

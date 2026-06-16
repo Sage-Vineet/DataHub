@@ -3,6 +3,8 @@ const permissionService = require("../services/permissionService");
 const userService = require("../services/userService");
 const folderService = require("../services/folderService");
 const documentService = require("../services/documentService");
+const companyService = require("../services/companyService");
+const { sendReminderEmail, sendRequestNotificationEmail } = require("../services/emailService");
 const asyncHandler = require("../utils");
 const { buildAppBaseUrl } = require("../utils/uploadStorage");
 const { isRequestResolved } = require("../utils/requestReminders");
@@ -15,7 +17,7 @@ async function validateAssignedUserForCompany(assignedUserId, companyId) {
 
 const listRequests = asyncHandler(async (req, res) => {
   if (!permissionService.canAccessCompany(req.user, req.params.id)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "Access denied." });
   }
 
   const requests = await requestService.listRequestsByCompany(req.params.id);
@@ -24,7 +26,7 @@ const listRequests = asyncHandler(async (req, res) => {
 
 const createRequest = asyncHandler(async (req, res) => {
   if (!permissionService.canAccessCompany(req.user, req.params.id)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "Access denied." });
   }
 
   const submissionSource = req.user?.effective_role === "user"
@@ -53,11 +55,43 @@ const createRequest = asyncHandler(async (req, res) => {
     await requestService.createReminderEvent(created.id, req.user?.id || normalized.value.approved_by || normalized.value.created_by);
   }
   res.status(201).json(await requestService.getRequestById(created.id));
+
+  // Fire-and-forget: notify assigned member or all client team members — must not fail the request
+  setImmediate(async () => {
+    try {
+      const companyId = req.params.id;
+      const assignedTo = normalized.value.assigned_to || null;
+      let recipients;
+      if (assignedTo) {
+        const user = await userService.getUserById(assignedTo);
+        recipients = user?.email ? [{ name: user.name, email: user.email }] : [];
+      } else {
+        recipients = await userService.getClientTeamMembersForCompany(companyId);
+      }
+      if (!recipients.length) return;
+      const [company, sender] = await Promise.all([
+        companyService.getCompanyById(companyId),
+        userService.getUserById(req.user?.id),
+      ]);
+      for (const r of recipients) {
+        await sendRequestNotificationEmail({
+          toName: r.name || null,
+          toEmail: r.email,
+          requestTitle: created.title,
+          dueDate: created.due_date || null,
+          senderName: sender?.name || null,
+          companyName: company?.name || null,
+        });
+      }
+    } catch (emailErr) {
+      console.error("[createRequest] Email notification failed:", emailErr.message);
+    }
+  });
 });
 
 const createRequestsBulk = asyncHandler(async (req, res) => {
   if (!permissionService.canAccessCompany(req.user, req.params.id) || !permissionService.isBroker(req.user)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "Access denied." });
   }
 
   const items = Array.isArray(req.body?.requests) ? req.body.requests : [];
@@ -85,13 +119,52 @@ const createRequestsBulk = asyncHandler(async (req, res) => {
   }
 
   res.status(201).json({ message: `Successfully created ${result.count} requests` });
+
+  // Fire-and-forget: notify per-item recipients — must not fail the request
+  setImmediate(async () => {
+    try {
+      const companyId = req.params.id;
+      const [company, sender] = await Promise.all([
+        companyService.getCompanyById(companyId),
+        userService.getUserById(req.user.id),
+      ]);
+      let allClientMembers = null;
+      for (const item of items) {
+        const assignedTo = typeof item.assigned_to === "string" && item.assigned_to.trim()
+          ? item.assigned_to.trim()
+          : null;
+        let recipients;
+        if (assignedTo) {
+          const user = await userService.getUserById(assignedTo);
+          recipients = user?.email ? [{ name: user.name, email: user.email }] : [];
+        } else {
+          if (!allClientMembers) {
+            allClientMembers = await userService.getClientTeamMembersForCompany(companyId);
+          }
+          recipients = allClientMembers;
+        }
+        for (const r of recipients) {
+          await sendRequestNotificationEmail({
+            toName: r.name || null,
+            toEmail: r.email,
+            requestTitle: item.title || "Document Request",
+            dueDate: item.due_date || null,
+            senderName: sender?.name || null,
+            companyName: company?.name || null,
+          });
+        }
+      }
+    } catch (emailErr) {
+      console.error("[createRequestsBulk] Email notification failed:", emailErr.message);
+    }
+  });
 });
 
 const getRequest = asyncHandler(async (req, res) => {
   const request = await requestService.getRequestById(req.params.id);
   if (!request) return res.status(404).json({ error: "Not found" });
   if (!permissionService.canAccessRequest(req.user, request)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "Access denied." });
   }
   res.json(request);
 });
@@ -100,7 +173,7 @@ const updateRequest = asyncHandler(async (req, res) => {
   const current = await requestService.getRequestById(req.params.id);
   if (!current) return res.status(404).json({ error: "Not found" });
   if (!permissionService.canAccessRequest(req.user, current)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "Access denied." });
   }
   if (current.status === "completed") {
     return res.status(403).json({ error: "Completed requests cannot be edited." });
@@ -122,7 +195,7 @@ const updateRequest = asyncHandler(async (req, res) => {
         return res.status(403).json({ error: "Users can only edit request title, description, priority, and due date." });
       }
     } else {
-      return res.status(403).json({ error: "Forbidden" });
+      return res.status(403).json({ error: "Access denied." });
     }
   }
 
@@ -143,10 +216,16 @@ const approveRequest = asyncHandler(async (req, res) => {
   const current = await requestService.getRequestById(req.params.id);
   if (!current) return res.status(404).json({ error: "Not found" });
   if (!permissionService.isBroker(req.user) || !permissionService.canAccessCompany(req.user, current.company_id)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "Access denied." });
   }
 
-  await requestService.approveRequest(req.params.id, req.user.id);
+  // Optional: broker can route the request to a specific client team member on approval
+  const assignedTo = req.body?.assigned_to || null;
+  if (assignedTo && !(await validateAssignedUserForCompany(assignedTo, current.company_id))) {
+    return res.status(400).json({ error: "Assigned user is not part of this company." });
+  }
+
+  await requestService.approveRequest(req.params.id, req.user.id, assignedTo);
   res.json(await requestService.getRequestById(req.params.id));
 });
 
@@ -154,7 +233,7 @@ const deleteRequest = asyncHandler(async (req, res) => {
   const current = await requestService.getRequestById(req.params.id);
   if (!current) return res.status(404).json({ error: "Not found" });
   if (!permissionService.isBroker(req.user) || !permissionService.canAccessCompany(req.user, current.company_id)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "Access denied." });
   }
 
   await requestService.deleteRequest(req.params.id);
@@ -165,7 +244,7 @@ const addRequestReminder = asyncHandler(async (req, res) => {
   const current = await requestService.getRequestById(req.params.id);
   if (!current) return res.status(404).json({ error: "Not found" });
   if (!permissionService.isBroker(req.user) || !permissionService.canAccessCompany(req.user, current.company_id)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "Access denied." });
   }
   if (isRequestResolved(current.status)) {
     return res.status(400).json({ error: "Resolved requests do not need reminders." });
@@ -177,13 +256,62 @@ const addRequestReminder = asyncHandler(async (req, res) => {
 
   const reminder = await requestService.createReminderEvent(req.params.id, sentBy, sentAt);
   res.status(201).json(reminder);
+
+  // Fire-and-forget: send reminder emails to request recipients — must not fail the reminder creation
+  setImmediate(async () => {
+    try {
+      const companyId = current.company_id;
+      const assignedTo = current.assigned_to || null;
+
+      let recipients;
+      if (assignedTo) {
+        const user = await userService.getUserById(assignedTo);
+        recipients = user?.email ? [{ name: user.name, email: user.email }] : [];
+      } else {
+        recipients = await userService.getClientTeamMembersForCompany(companyId);
+      }
+
+      if (!recipients.length) return;
+
+      const [company, sender] = await Promise.all([
+        companyService.getCompanyById(companyId),
+        userService.getUserById(sentBy),
+      ]);
+
+      const portalUrl = process.env.APP_BASE_URL
+        ? process.env.APP_BASE_URL.replace(/\/$/, "")
+        : null;
+
+      const seen = new Set();
+      for (const r of recipients) {
+        if (seen.has(r.email)) continue;
+        seen.add(r.email);
+        await sendReminderEmail({
+          toName: r.name || null,
+          toEmail: r.email,
+          requestTitle: current.title,
+          dueDate: current.due_date || null,
+          senderName: sender?.name || null,
+          companyName: company?.name || null,
+          requestType: current.category || current.response_type || null,
+          description: current.description || null,
+          priority: current.priority || null,
+          status: current.status || null,
+          reminderAt: sentAt,
+          portalUrl,
+        });
+      }
+    } catch (emailErr) {
+      console.error("[addRequestReminder] Email notification failed:", emailErr.message);
+    }
+  });
 });
 
 const listRequestDocuments = asyncHandler(async (req, res) => {
   const current = await requestService.getRequestById(req.params.id);
   if (!current) return res.status(404).json({ error: "Not found" });
   if (!permissionService.canAccessRequest(req.user, current)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "Access denied." });
   }
 
   const documents = await requestService.listRequestDocuments(req.params.id);
@@ -194,7 +322,7 @@ const addRequestDocument = asyncHandler(async (req, res) => {
   const current = await requestService.getRequestById(req.params.id);
   if (!current) return res.status(404).json({ error: "Not found" });
   if (!permissionService.canAccessRequest(req.user, current)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "Access denied." });
   }
   if (current.status === "completed") {
     return res.status(403).json({ error: "Completed requests cannot be edited." });
@@ -223,7 +351,7 @@ const updateNarrative = asyncHandler(async (req, res) => {
   const current = await requestService.getRequestById(req.params.id);
   if (!current) return res.status(404).json({ error: "Not found" });
   if (!permissionService.canAccessRequest(req.user, current)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "Access denied." });
   }
   if (current.status === "completed") {
     return res.status(403).json({ error: "Completed requests cannot be edited." });
@@ -251,16 +379,20 @@ const updateNarrative = asyncHandler(async (req, res) => {
 
 const getNarrativeFile = asyncHandler(async (req, res) => {
   const current = await requestService.getRequestById(req.params.id);
-  if (!current) return res.status(404).send("Not found");
+  if (!current) return res.status(404).json({ error: "Not found" });
   if (!permissionService.canAccessRequest(req.user, current)) {
-    return res.status(403).json({ error: "Forbidden" });
+    return res.status(403).json({ error: "Access denied." });
   }
 
   const data = await requestService.getNarrative(req.params.id);
-  if (!data) return res.status(404).send("Not found");
-  
-  res.setHeader("Content-Type", "text/plain; charset=utf-8");
-  res.send(data.content || "");
+  // Return JSON so the frontend request() helper can parse it correctly.
+  // Includes author metadata so the UI can show who wrote the narrative.
+  res.json({
+    content:     data?.content     || "",
+    author_name: data?.author_name || null,
+    author_role: data?.author_role || null,
+    updated_at:  data?.updated_at  || null,
+  });
 });
 
 module.exports = {

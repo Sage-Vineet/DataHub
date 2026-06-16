@@ -26,7 +26,7 @@ function resolveClientId(req) {
 
 function requireClientAccess(req, res, clientId) {
   if (!canAccessCompany(req.user, clientId)) {
-    res.status(403).json({ error: "Forbidden" });
+    res.status(403).json({ error: "You do not have permission to manage report sources for this company." });
     return false;
   }
   return true;

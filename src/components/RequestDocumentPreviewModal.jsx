@@ -97,7 +97,9 @@ export default function RequestDocumentPreviewModal({ document: previewDocument,
 
   useEffect(() => {
     if (!previewDocument?.id || !shouldRecordActivity) return;
-    recordDocumentActivity(previewDocument.id, 'view').catch(() => {});
+    recordDocumentActivity(previewDocument.id, 'view').catch((err) => {
+      console.warn('[DocumentActivity] failed to record view for doc', previewDocument.id, '-', err?.message || err);
+    });
   }, [previewDocument?.id, shouldRecordActivity]);
 
   useEffect(() => {
@@ -177,7 +179,9 @@ export default function RequestDocumentPreviewModal({ document: previewDocument,
     link.download = previewDocument.name || 'document';
     link.click();
     if (shouldRecordActivity) {
-      recordDocumentActivity(previewDocument.id, 'download').catch(() => {});
+      recordDocumentActivity(previewDocument.id, 'download').catch((err) => {
+        console.warn('[DocumentActivity] failed to record download for doc', previewDocument.id, '-', err?.message || err);
+      });
     }
     if (shouldRevoke) setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
   };

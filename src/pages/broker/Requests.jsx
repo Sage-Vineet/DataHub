@@ -66,7 +66,7 @@ export default function BrokerRequests() {
             <div className="flex items-start justify-between">
               <div>
                 <h3 className="font-bold text-[#050505]">{selected.name}</h3>
-                <p className="text-xs text-[#A5A5A5] mt-0.5">{selected.id}</p>
+                <p className="text-xs text-[#A5A5A5] mt-0.5">{selected.type || selected.companyName || ''}</p>
               </div>
               <StatusBadge value={selected.status} />
             </div>

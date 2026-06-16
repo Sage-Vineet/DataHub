@@ -82,7 +82,7 @@ export default function BrokerInvoices() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-[#050505]">Invoices</h1>
-          <p className="mt-0.5 text-sm text-[#6D6E71]">Data Hub invoice tracking is now available alongside the broker workspace.</p>
+          <p className="mt-0.5 text-sm text-[#6D6E71]">M&A Hub invoice tracking is now available alongside the broker workspace.</p>
         </div>
         <button
           onClick={handleExport}

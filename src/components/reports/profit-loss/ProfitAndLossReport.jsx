@@ -1,9 +1,10 @@
+import { memo } from "react";
 import ProfitAndLossSummary from "./ProfitAndLossSummary";
 import ProfitAndLossQBSummary from "./ProfitAndLossQBSummary";
 import ManualProfitLossDetail from "../manual/ManualProfitLossDetail";
 import ManualProfitLossMonthlyDetail from "../manual/ManualProfitLossMonthlyDetail";
 
-export default function ProfitAndLossReport({
+function ProfitAndLossReport({
   reportType,
   data,
   detailedData,
@@ -14,6 +15,7 @@ export default function ProfitAndLossReport({
   clientName = "All Clients",
   entityName,
   createdOn,
+  selectedMonths = [],
 }) {
   const resolvedEntityName = entityName || clientName || "Company";
   const periodText = startDate === "1970-01-01" ? "All Dates" : `${startDate || "N/A"} to ${endDate || "N/A"}`;
@@ -35,9 +37,7 @@ export default function ProfitAndLossReport({
     MANUAL_STAGED_SOURCES.includes(detailedData.source)
   );
 
-  const summarySubtitle = sourceMode === "manual"
-    ? undefined
-    : `Report Period: ${periodText} | ${clientName} | ${accountingMethod} Basis`;
+  const summarySubtitle = null;
 
   if (reportType === "Detail") {
     if (isManualStagedDetail) {
@@ -46,14 +46,8 @@ export default function ProfitAndLossReport({
           <ManualProfitLossMonthlyDetail
             data={detailedData}
             entityName={resolvedEntityName}
-          />
-        );
-      }
-      if (detailedData.reportType === "profit_loss_monthly_detail") {
-        return (
-          <ManualProfitLossMonthlyDetail
-            data={detailedData}
-            entityName={resolvedEntityName}
+            subtitle={summarySubtitle}
+            selectedMonths={selectedMonths}
           />
         );
       }
@@ -61,6 +55,20 @@ export default function ProfitAndLossReport({
         <ManualProfitLossDetail
           data={detailedData}
           title="Profit & Loss Detail"
+          entityName={resolvedEntityName}
+          subtitle={summarySubtitle}
+        />
+      );
+    }
+
+    // manual_upload / quickbooks_manual monthly view — data already has rows + columns.yearCols
+    if (sourceMode === "manual_upload" || sourceMode === "quickbooks_manual") {
+      return (
+        <ProfitAndLossQBSummary
+          data={Array.isArray(detailedData?.rows) ? detailedData.rows : []}
+          columns={detailedData?.columns}
+          title="Profit & Loss"
+          subtitle={summarySubtitle}
           entityName={resolvedEntityName}
         />
       );
@@ -79,10 +87,15 @@ export default function ProfitAndLossReport({
   // Summary View
   if (isManualStagedSummary) {
     const hierarchicalRows = Array.isArray(data?.hierarchicalRows) ? data.hierarchicalRows : [];
+    // Per-year comparative columns when more than one fiscal year is selected.
+    const yearCols = Array.isArray(data?.yearCols) ? data.yearCols : null;
+    const summaryColumns = yearCols && yearCols.length > 1 ? { yearCols } : undefined;
     return (
       <ProfitAndLossQBSummary
         data={hierarchicalRows}
+        columns={summaryColumns}
         title="Profit & Loss"
+        subtitle={summarySubtitle}
         entityName={resolvedEntityName}
       />
     );
@@ -97,3 +110,7 @@ export default function ProfitAndLossReport({
     />
   );
 }
+
+// Memoized: see BalanceSheetReport — avoids re-rendering the report tree on
+// unrelated parent state changes (loading toggles, sibling-tab prefetch).
+export default memo(ProfitAndLossReport);

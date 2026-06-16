@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useEffect, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { cn, formatCurrency } from "../../../lib/utils";
 
@@ -30,11 +30,16 @@ function CashflowRow({
           isCategory && depth === 0 && "bg-bg-page/30 border-t border-border"
         )}
       >
-        <td className="py-2.5 px-4 text-left bg-inherit z-10 min-w-[320px]">
+        <td className={cn(
+          "py-2.5 px-4 text-left z-10 min-w-[320px] sticky left-0",
+          isTotal ? "bg-bg-page"
+            : (isCategory && depth === 0) ? "bg-bg-page"
+            : "bg-bg-card",
+        )}>
           <div className="flex items-center">
             <div className="flex shrink-0">
               {Array.from({ length: depth }).map((_, index) => (
-                <div key={index} className="w-6 h-5 border-r border-border-light mr-[-1px]" />
+                <div key={index} className="w-6 h-5" />
               ))}
             </div>
 
@@ -99,10 +104,28 @@ export default function CashflowSummary({
   }),
 }) {
   const hasColumns = columns && columns.yearCols && columns.yearCols.length > 0;
-
+  const tableRef = useRef(null);
+  const theadRef = useRef(null);
+  useEffect(() => {
+    const mainEl = document.querySelector("main");
+    if (!mainEl) return;
+    const onScroll = () => {
+      if (!tableRef.current || !theadRef.current) return;
+      const tableTop = tableRef.current.getBoundingClientRect().top;
+      const mainTop = mainEl.getBoundingClientRect().top;
+      if (tableTop < mainTop) {
+        const offset = Math.min(mainTop - tableTop, tableRef.current.offsetHeight - theadRef.current.offsetHeight);
+        theadRef.current.style.transform = `translateY(${Math.max(0, offset)}px)`;
+      } else {
+        theadRef.current.style.transform = "";
+      }
+    };
+    mainEl.addEventListener("scroll", onScroll, { passive: true });
+    return () => mainEl.removeEventListener("scroll", onScroll);
+  }, []);
   return (
-    <div className="flex-1 overflow-y-auto bg-bg-page/50 p-10 lg:p-16 font-inter text-text-primary">
-      <div className="mx-auto card-base p-10 min-h-[1000px] flex flex-col rounded-sm max-w-[1500px]">
+    <div className="bg-bg-page/50 p-4 lg:p-8 font-inter text-text-primary">
+      <div className="card-base p-6 min-h-[1000px] rounded-sm">
         <div className="flex flex-col items-center mb-12 relative">
           <div className="w-12 h-1 bg-primary rounded-full mb-6" />
           <h1 className="text-[22px] font-bold text-text-primary tracking-tight leading-none mb-2">
@@ -114,21 +137,21 @@ export default function CashflowSummary({
           </div>
         </div>
 
-        <div className="overflow-x-auto flex-1">
-          <table className="min-w-max border-collapse">
-            <thead>
-              <tr className="border-b-2 border-text-primary sticky top-0 bg-bg-card z-20">
-                <th className="pb-3 pt-2 px-4 text-left text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider min-w-[320px]">
+        <div className="overflow-x-auto w-full">
+          <table ref={tableRef} className="min-w-max border-collapse">
+            <thead ref={theadRef} style={{ position: "relative", zIndex: 20 }}>
+              <tr className="border-b-2 border-text-primary">
+                <th className="sticky top-0 left-0 z-30 bg-bg-card pb-3 pt-2 px-4 text-left text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider min-w-[320px]">
                   Cash Flow Classification
                 </th>
                 {hasColumns ? (
                   columns.yearCols.map((col) => (
-                    <th key={col.key} className="pb-3 pt-2 px-3 text-right text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider min-w-[90px]">
+                    <th key={col.key} className="sticky top-0 z-20 bg-bg-card pb-3 pt-2 px-3 text-right text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider min-w-[90px]">
                       {col.label}
                     </th>
                   ))
                 ) : (
-                  <th className="pb-3 pt-2 px-4 text-right text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider">
+                  <th className="sticky top-0 z-20 bg-bg-card pb-3 pt-2 px-4 text-right text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider">
                     Amount (USD)
                   </th>
                 )}

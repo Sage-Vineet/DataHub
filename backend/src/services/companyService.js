@@ -2,6 +2,10 @@ const { supabase } = require("../db");
 const { Pool } = require("pg");
 const bcrypt = require("bcryptjs");
 const CLIENT_STATIC_PASSWORD = process.env.CLIENT_STATIC_PASSWORD || "123456";
+const PROFIT_METRIC_VALUES = Object.freeze({
+  ADJUSTED_EBITDA: "adjusted_ebitda",
+  SDE: "sde",
+});
 
 let _pool = null;
 function getPool() {
@@ -17,6 +21,31 @@ function getPool() {
     _pool.on("error", (err) => console.error("[companyService] pg pool error:", err.message));
   }
   return _pool;
+}
+
+function normalizeProfitMetric(value, fallback = PROFIT_METRIC_VALUES.ADJUSTED_EBITDA) {
+  const normalized = String(value ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+  if (!normalized) return fallback;
+
+  if (
+    normalized === PROFIT_METRIC_VALUES.SDE ||
+    normalized === "seller_discretionary_earnings" ||
+    normalized === "sellers_discretionary_earnings" ||
+    normalized === "seller's_discretionary_earnings"
+  ) {
+    return PROFIT_METRIC_VALUES.SDE;
+  }
+
+  if (
+    normalized === PROFIT_METRIC_VALUES.ADJUSTED_EBITDA ||
+    normalized === "adj_ebitda" ||
+    normalized === "adjusted_ebitda" ||
+    normalized === "ebitda"
+  ) {
+    return PROFIT_METRIC_VALUES.ADJUSTED_EBITDA;
+  }
+
+  return fallback;
 }
 
 async function getAllCompanies() {
@@ -78,6 +107,7 @@ async function createCompany(companyData) {
       contact_name: companyData.contact_name,
       contact_email: companyData.contact_email,
       contact_phone: companyData.contact_phone || null,
+      profit_metric: normalizeProfitMetric(companyData.profit_metric ?? companyData.profitMetric),
     })
     .select("*")
     .single();
@@ -113,10 +143,13 @@ async function updateCompany(id, companyData) {
     contact_name: companyData.contact_name,
     contact_email: companyData.contact_email,
     contact_phone: companyData.contact_phone,
+    profit_metric: companyData.profit_metric ?? companyData.profitMetric,
   };
 
   for (const [key, value] of Object.entries(mappable)) {
-    if (value !== undefined) patch[key] = value ?? null;
+    if (value !== undefined) {
+      patch[key] = key === "profit_metric" ? normalizeProfitMetric(value) : value ?? null;
+    }
   }
 
   const { data, error } = await supabase
@@ -195,6 +228,7 @@ async function syncCompanyClientRepresentative(company, previousCompany = null) 
     const { error: updateErr } = await supabase.from("users").update({
       name: company.contact_name, email: normalizedEmail,
       phone: company.contact_phone || null, company_id: company.id,
+      sub_role: existingUser.sub_role || "company_owner",
       status: "active", updated_at: new Date().toISOString(),
     }).eq("id", existingUser.id);
 
@@ -234,7 +268,7 @@ async function syncCompanyClientRepresentative(company, previousCompany = null) 
     .insert({
       name: company.contact_name, email: normalizedEmail,
       phone: company.contact_phone || null, password_hash: passwordHash,
-      role: "client", company_id: company.id, status: "active",
+      role: "buyer", sub_role: "company_owner", company_id: company.id, status: "active",
     })
     .select("id")
     .single();
@@ -247,8 +281,8 @@ async function syncCompanyClientRepresentative(company, previousCompany = null) 
     if (pool) {
       try {
         const { rows } = await pool.query(
-          `INSERT INTO users (name, email, phone, password_hash, role, company_id, status)
-           VALUES ($1, $2, $3, $4, 'client', $5, 'active') RETURNING id`,
+          `INSERT INTO users (name, email, phone, password_hash, role, sub_role, company_id, status)
+           VALUES ($1, $2, $3, $4, 'buyer', 'company_owner', $5, 'active') RETURNING id`,
           [company.contact_name, normalizedEmail, company.contact_phone || null, passwordHash, company.id],
         );
         userId = rows[0]?.id || null;
@@ -332,25 +366,54 @@ async function attachCompanyStats(companies) {
 }
 
 async function deleteCompany(id) {
-  // 1. Nullify users.company_id for any users whose primary company is this one
-  const { error: userUnlinkErr } = await supabase
-    .from("users")
-    .update({ company_id: null })
-    .eq("company_id", id);
-  if (userUnlinkErr) throw userUnlinkErr;
+  // Fetch IDs needed for tables that lack a direct company_id column.
+  const [{ data: folderRows }, { data: requestRows }, { data: groupRows }] = await Promise.all([
+    supabase.from("folders").select("id").eq("company_id", id),
+    supabase.from("requests").select("id").eq("company_id", id),
+    supabase.from("buyer_groups").select("id").eq("company_id", id),
+  ]);
 
-  // 2. Remove user_companies join-table rows referencing this company
-  const { error: ucErr } = await supabase
-    .from("user_companies")
-    .delete()
-    .eq("company_id", id);
-  if (ucErr) throw ucErr;
+  const folderIds  = (folderRows  || []).map((r) => r.id);
+  const requestIds = (requestRows || []).map((r) => r.id);
+  const groupIds   = (groupRows   || []).map((r) => r.id);
 
-  // 3. Now delete the company itself
-  const { error } = await supabase
-    .from("companies")
-    .delete()
-    .eq("id", id);
+  // Step 1 — nested tables (no company_id column; must be deleted before their parents).
+  const nested = [];
+  if (folderIds.length)  nested.push(supabase.from("folder_access").delete().in("folder_id", folderIds));
+  if (requestIds.length) nested.push(
+    supabase.from("request_documents").delete().in("request_id", requestIds),
+    supabase.from("request_narratives").delete().in("request_id", requestIds),
+    supabase.from("request_reminders").delete().in("request_id", requestIds),
+  );
+  if (groupIds.length)   nested.push(supabase.from("buyer_group_members").delete().in("group_id", groupIds));
+  await Promise.all(nested);
+
+  // Step 2 — all tables with a direct company_id FK, in safe dependency order.
+  const directTables = [
+    "documents",
+    "requests",
+    "folders",
+    "reminders",
+    "activity_log",
+    "company_messages",
+    "direct_messages",
+    "buyer_groups",
+    "manual_gl_staged_transactions",
+    "manual_gl_balance_sheet_lines",
+    "manual_gl_batches",
+    "report_source_records",
+    "user_companies",
+  ];
+  for (const table of directTables) {
+    const { error } = await supabase.from(table).delete().eq("company_id", id);
+    if (error) console.error(`[deleteCompany] cleanup ${table}:`, error.message);
+  }
+
+  // Step 3 — unlink users whose primary company was this one (SET NULL, not delete).
+  await supabase.from("users").update({ company_id: null }).eq("company_id", id);
+
+  // Step 4 — delete the company.
+  const { error } = await supabase.from("companies").delete().eq("id", id);
   if (error) throw error;
 }
 

@@ -1,3 +1,5 @@
+import { isSessionExpired, triggerSessionExpired } from './session';
+
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000').replace(/\/$/, '');
 const TOKEN_KEY = 'leo-auth-token';
 const LEGACY_TOKEN_KEY = 'leo-token';
@@ -81,11 +83,15 @@ function resolveClientIdFromLocation() {
     window.location.pathname || '',
   ];
 
+  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   for (const candidate of candidates) {
     if (!candidate.startsWith('/client/')) continue;
     const match = candidate.match(/^\/client\/([^/?#]+)/);
     if (match) {
-      return decodeURIComponent(match[1]);
+      const id = decodeURIComponent(match[1]);
+      // Must be a UUID — route names like "messages", "documents", "requests"
+      // are not valid company IDs and must never be sent as X-Client-Id.
+      if (uuidPattern.test(id)) return id;
     }
   }
 
@@ -109,6 +115,18 @@ export function setStoredToken(token) {
 
 async function request(path, options = {}) {
   const token = options.token ?? getStoredToken();
+
+  // Reject every authenticated request once the 8-hour session window has closed.
+  // triggerSessionExpired() notifies AuthContext synchronously so the UI redirects
+  // to /login. The thrown error propagates up to the calling component.
+  if (token && isSessionExpired()) {
+    triggerSessionExpired();
+    const err = new Error('Session expired. Please log in again.');
+    err.status = 401;
+    err.sessionExpired = true;
+    throw err;
+  }
+
   const clientId = options.clientId ?? resolveClientIdFromLocation();
   const headers = {
     ...(options.body ? { 'Content-Type': 'application/json' } : {}),
@@ -174,6 +192,48 @@ export function loginRequest(credentials) {
   });
 }
 
+export function sendVerificationOtpRequest(payload) {
+  return fetch(buildUrl('/auth/send-verification-otp'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+    body: JSON.stringify(payload),
+    cache: 'no-store',
+    credentials: 'omit',
+  }).then(async (response) => {
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      const error = new Error(data?.error || 'Failed to send verification code.');
+      error.status = response.status;
+      throw error;
+    }
+    return data;
+  });
+}
+
+export function verifyVerificationOtpRequest(payload) {
+  return fetch(buildUrl('/auth/verify-verification-otp'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+    body: JSON.stringify(payload),
+    cache: 'no-store',
+    credentials: 'omit',
+  }).then(async (response) => {
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      const error = new Error(data?.error || 'Verification failed.');
+      error.status = response.status;
+      throw error;
+    }
+    return data;
+  });
+}
+
+export function loadSavedQBBankActivityRequest(clientId) {
+  const params = new URLSearchParams();
+  if (clientId) params.append("clientId", clientId);
+  return request(`/qb-bank-activity/saved?${params}`);
+}
+
 export function brokerSignupRequest(payload) {
   return fetch(buildUrl('/auth/broker/signup'), {
     method: 'POST',
@@ -236,6 +296,27 @@ export function deleteUserRequest(userId) {
   return request(`/users/${userId}`, { method: 'DELETE' });
 }
 
+export function findUserByEmailRequest(email) {
+  return request(`/users/find-by-email?email=${encodeURIComponent(email)}`).then(unwrapPayload);
+}
+
+export function addUserToCompaniesRequest(userId, companyIds) {
+  return request(`/users/${userId}/add-companies`, { method: 'POST', body: { company_ids: companyIds } }).then(unwrapPayload);
+}
+
+export function removeUserFromCompaniesRequest(userId, companyIds) {
+  return request(`/users/${userId}/remove-companies`, { method: 'DELETE', body: { company_ids: companyIds } });
+}
+
+// Feature 1: Broker-team invite relationship (does NOT modify invited broker's company associations)
+export function inviteBrokerToTeamRequest(invitedBrokerId) {
+  return request('/users/broker-team/invite', { method: 'POST', body: { invited_broker_id: invitedBrokerId } });
+}
+
+export function removeBrokerFromTeamRequest(invitedBrokerId) {
+  return request(`/users/broker-team/invite/${invitedBrokerId}`, { method: 'DELETE' });
+}
+
 export function listCompanyRequests(companyId) {
   return request(`/companies/${companyId}/requests`).then(ensureArray);
 }
@@ -250,6 +331,10 @@ export function getCompanyMessagesRequest(companyId) {
 
 export function createCompanyMessageRequest(companyId, payload) {
   return request(`/companies/${companyId}/messages`, { method: "POST", body: payload }).then(unwrapPayload);
+}
+
+export function listMyDirectContactsRequest() {
+  return request("/my-direct-contacts");
 }
 
 export function listCompanyDirectMessageContactsRequest(companyId) {
@@ -311,8 +396,9 @@ export function updateRequest(requestId, payload) {
   return request(`/requests/${requestId}`, { method: 'PATCH', body: payload }).then(unwrapPayload);
 }
 
-export function approveRequest(requestId) {
-  return request(`/requests/${requestId}/approve`, { method: 'POST' }).then(unwrapPayload);
+export function approveRequest(requestId, assignedTo = null) {
+  const body = assignedTo ? { assigned_to: assignedTo } : undefined;
+  return request(`/requests/${requestId}/approve`, { method: 'POST', body }).then(unwrapPayload);
 }
 
 export function deleteRequest(requestId) {
@@ -321,6 +407,20 @@ export function deleteRequest(requestId) {
 
 export function updateRequestNarrative(requestId, payload) {
   return request(`/requests/${requestId}/narrative`, { method: 'PATCH', body: payload }).then(unwrapPayload);
+}
+
+export function getRequestNarrative(requestId) {
+  // Returns { content, author_name, author_role, updated_at } or a plain string (backward compat).
+  return request(`/requests/${requestId}/narrative/file`).then((res) => {
+    if (!res) return { content: '', author_name: null, author_role: null, updated_at: null };
+    if (typeof res === 'string') return { content: res, author_name: null, author_role: null, updated_at: null };
+    return {
+      content: res.content || '',
+      author_name: res.author_name || null,
+      author_role: res.author_role || null,
+      updated_at: res.updated_at || null,
+    };
+  }).catch(() => ({ content: '', author_name: null, author_role: null, updated_at: null }));
 }
 
 export function listRequestDocuments(requestId) {
@@ -416,6 +516,66 @@ export async function fetchProtectedFileBlob(fileUrl, options = {}) {
   }
 
   return response.blob();
+}
+
+function buildEbitdaAdjustmentScopeParams(options = {}) {
+  const params = new URLSearchParams();
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  if (clientId) params.set("clientId", clientId);
+
+  const fields = [
+    ["versionId", options.versionId],
+    ["sourceKey", options.sourceKey],
+    ["datasetVersionId", options.datasetVersionId],
+    ["uploadBatchId", options.uploadBatchId],
+  ];
+
+  fields.forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    params.set(key, String(value));
+  });
+
+  return params.toString();
+}
+
+export function listEbitdaAdjustmentTypes(options = {}) {
+  const query = buildEbitdaAdjustmentScopeParams(options);
+  return request(`/ebitda-adjustment-types${query ? `?${query}` : ""}`, options).then(
+    (payload) => payload?.types || [],
+  );
+}
+
+export function listEbitdaAdjustments(options = {}) {
+  const query = buildEbitdaAdjustmentScopeParams(options);
+  return request(`/ebitda-adjustments${query ? `?${query}` : ""}`, options).then(
+    (payload) => payload?.adjustments || [],
+  );
+}
+
+export function saveEbitdaAdjustmentsBatch(payload, options = {}) {
+  const query = buildEbitdaAdjustmentScopeParams(options);
+  return request(`/ebitda-adjustments/batch${query ? `?${query}` : ""}`, {
+    method: "POST",
+    body: payload,
+    ...options,
+  });
+}
+
+export function deleteEbitdaAdjustment(adjustmentId, options = {}) {
+  const query = buildEbitdaAdjustmentScopeParams(options);
+  return request(`/ebitda-adjustments/${encodeURIComponent(adjustmentId)}${query ? `?${query}` : ""}`, {
+    method: "DELETE",
+    ...options,
+  });
+}
+
+export function addEbitdaAdjustmentComment(adjustmentId, payload, options = {}) {
+  const query = buildEbitdaAdjustmentScopeParams(options);
+  return request(`/ebitda-adjustments/${encodeURIComponent(adjustmentId)}/comments${query ? `?${query}` : ""}`, {
+    method: "POST",
+    body: payload,
+    ...options,
+  }).then((res) => res?.comment || res);
 }
 
 export function listManualGlUploads(options = {}) {
@@ -815,6 +975,33 @@ export function getManualStagedProfitLossDetail(options = {}) {
   );
 }
 
+export function getManualVendorAnalysis(options = {}) {
+  const {
+    clientId: clientIdOption,
+    params = {},
+    ...requestOptions
+  } = options || {};
+  const clientId = clientIdOption ?? resolveClientIdFromLocation();
+  const search = new URLSearchParams();
+  if (clientId) search.set("clientId", clientId);
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === "") return;
+    if (Array.isArray(value)) {
+      if (value.length === 0) return;
+      search.set(key, value.join(","));
+      return;
+    }
+    search.set(key, String(value));
+  });
+
+  const query = search.toString();
+  return request(
+    `/reports/vendor-analysis${query ? `?${query}` : ""}`,
+    requestOptions,
+  );
+}
+
 export function getManualStagedProfitLossVendorDetail(options = {}) {
   const {
     clientId: clientIdOption,
@@ -976,6 +1163,7 @@ export function getLatestManualUploadedReport(statementType, options = {}) {
   const params = new URLSearchParams();
   if (clientId) params.set("clientId", clientId);
   if (options.rowId) params.set("rowId", options.rowId);
+  if (options.keyReportVersionId) params.set("keyReportVersionId", options.keyReportVersionId);
   const query = params.toString() ? `?${params}` : "";
   return request(
     `/manual-report-uploads/reports/${encodeURIComponent(statementType)}/latest${query}`,
@@ -1006,6 +1194,7 @@ export function getLatestQMSUploadedReport(statementType, options = {}) {
   const params = new URLSearchParams();
   if (clientId) params.set("clientId", clientId);
   if (options.rowId) params.set("rowId", options.rowId);
+  if (options.keyReportVersionId) params.set("keyReportVersionId", options.keyReportVersionId);
   const query = params.toString() ? `?${params}` : "";
   return request(
     `/manual-report-uploads/qms-reports/${encodeURIComponent(statementType)}/latest${query}`,
@@ -1149,6 +1338,79 @@ export function listDocumentActivity(documentId) {
   return request(`/documents/${documentId}/activity`).then(ensureArray);
 }
 
+// ---- Key Reports -----------------------------------------------------------
+// The X-Client-Id header is attached automatically from the workspace URL.
+
+export function getKeyReportVersions() {
+  return request('/key-reports/versions');
+}
+
+export function createKeyReportVersion(companyId, payload = {}) {
+  return request('/key-reports/versions', {
+    method: 'POST',
+    body: { companyId, ...payload },
+  });
+}
+
+export function getKeyReportVersion(versionId) {
+  return request(`/key-reports/versions/${versionId}`);
+}
+
+export function updateKeyReportVersion(versionId, payload) {
+  return request(`/key-reports/versions/${versionId}`, { method: 'PUT', body: payload });
+}
+
+export function duplicateKeyReportVersion(versionId, payload = {}) {
+  return request(`/key-reports/versions/${versionId}/duplicate`, { method: 'POST', body: payload });
+}
+
+export function activateKeyReportVersion(versionId) {
+  return request(`/key-reports/versions/${versionId}/activate`, { method: 'POST', body: {} });
+}
+
+export function deleteKeyReportVersion(versionId) {
+  return request(`/key-reports/versions/${versionId}`, { method: 'DELETE' });
+}
+
+export function addKeyReportMapping(versionId, payload) {
+  return request(`/key-reports/versions/${versionId}/mappings`, { method: 'POST', body: payload });
+}
+
+export function removeKeyReportMapping(mappingId) {
+  return request(`/key-reports/mappings/${mappingId}`, { method: 'DELETE' });
+}
+
+export function syncKeyReportVersion(versionId) {
+  return request(`/key-reports/versions/${versionId}/sync`, { method: 'POST', body: {} });
+}
+
+export async function getActiveKeyReportMappings() {
+  const res = await getKeyReportVersions();
+  const versions = res?.versions || [];
+  const active = versions.find(v => v.isActive) || versions[0];
+  if (!active?.id) return null;
+  const detail = await getKeyReportVersion(active.id);
+  return detail?.mappingsByCategory || null;
+}
+
+export function getKeyReportSyncLogs(versionId) {
+  return request(`/key-reports/versions/${versionId}/sync-logs`);
+}
+
+export function getKeyReportFileReferences(documentIds = []) {
+  const ids = (Array.isArray(documentIds) ? documentIds : [documentIds]).filter(Boolean);
+  const qs = ids.length ? `?documentIds=${encodeURIComponent(ids.join(','))}` : '';
+  return request(`/key-reports/file-references${qs}`);
+}
+
+export function getKeyReportPopupPreference() {
+  return request('/key-reports/popup-preference');
+}
+
+export function setKeyReportPopupPreference(dismissed) {
+  return request('/key-reports/popup-preference', { method: 'PUT', body: { dismissed } });
+}
+
 export function listFolderAccess(folderId) {
   return request(`/folders/${folderId}/access`).then(ensureArray);
 }
@@ -1167,4 +1429,49 @@ export function deleteFolderAccess(accessId) {
 
 export function createFolderDocument(folderId, payload) {
   return request(`/folders/${folderId}/documents`, { method: 'POST', body: payload }).then(unwrapPayload);
+}
+
+// ─── Message Groups (multi-role architecture) ────────────────────────────────
+
+export function listMessageGroupsForCompany(companyId) {
+  return request(`/companies/${companyId}/message-groups`).then(ensureArray);
+}
+
+export function listMyMessageGroups() {
+  return request('/my-groups').then(ensureArray);
+}
+
+export function triggerAutoCreateMessageGroups(companyId) {
+  return request(`/companies/${companyId}/message-groups/auto-create`, { method: 'POST' }).then(unwrapPayload);
+}
+
+export function addMessageGroupMember(groupId, userId) {
+  return request(`/message-groups/${groupId}/members`, { method: 'POST', body: { user_id: userId } }).then(unwrapPayload);
+}
+
+export function removeMessageGroupMember(groupId, userId) {
+  return request(`/message-groups/${groupId}/members/${userId}`, { method: 'DELETE' });
+}
+
+export function getGroupMembers(groupId) {
+  return request(`/message-groups/${groupId}/members`).then(ensureArray);
+}
+
+// ─── Group messages (migration 042) ──────────────────────────────────────────
+
+export function listGroupMessages(groupId, params = {}) {
+  const qs = Object.entries(params).filter(([, v]) => v != null).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
+  return request(`/message-groups/${groupId}/messages${qs ? `?${qs}` : ''}`).then(ensureArray);
+}
+
+export function sendGroupMessage(groupId, body) {
+  return request(`/message-groups/${groupId}/messages`, { method: 'POST', body: { body } }).then(unwrapPayload);
+}
+
+export function markGroupMessagesRead(groupId) {
+  return request(`/message-groups/${groupId}/messages/mark-read`, { method: 'POST' }).then(unwrapPayload);
+}
+
+export function getGroupUnreadCount(groupId) {
+  return request(`/message-groups/${groupId}/messages/unread-count`).then(unwrapPayload);
 }
