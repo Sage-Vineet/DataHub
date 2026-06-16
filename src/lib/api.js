@@ -415,10 +415,10 @@ export function getRequestNarrative(requestId) {
     if (!res) return { content: '', author_name: null, author_role: null, updated_at: null };
     if (typeof res === 'string') return { content: res, author_name: null, author_role: null, updated_at: null };
     return {
-      content:     res.content     || '',
+      content: res.content || '',
       author_name: res.author_name || null,
       author_role: res.author_role || null,
-      updated_at:  res.updated_at  || null,
+      updated_at: res.updated_at || null,
     };
   }).catch(() => ({ content: '', author_name: null, author_role: null, updated_at: null }));
 }
@@ -1163,6 +1163,7 @@ export function getLatestManualUploadedReport(statementType, options = {}) {
   const params = new URLSearchParams();
   if (clientId) params.set("clientId", clientId);
   if (options.rowId) params.set("rowId", options.rowId);
+  if (options.keyReportVersionId) params.set("keyReportVersionId", options.keyReportVersionId);
   const query = params.toString() ? `?${params}` : "";
   return request(
     `/manual-report-uploads/reports/${encodeURIComponent(statementType)}/latest${query}`,
@@ -1193,6 +1194,7 @@ export function getLatestQMSUploadedReport(statementType, options = {}) {
   const params = new URLSearchParams();
   if (clientId) params.set("clientId", clientId);
   if (options.rowId) params.set("rowId", options.rowId);
+  if (options.keyReportVersionId) params.set("keyReportVersionId", options.keyReportVersionId);
   const query = params.toString() ? `?${params}` : "";
   return request(
     `/manual-report-uploads/qms-reports/${encodeURIComponent(statementType)}/latest${query}`,

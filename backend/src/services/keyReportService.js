@@ -458,15 +458,24 @@ async function getVersionByDatasetVersion(companyId, datasetVersion) {
 }
 
 // Resolves the single Key Report version a consumer should read from, given a
-// company and an optional SELECTED dataset version (the Manual GL version the UI
-// has chosen). Resolution order:
-//   1. The version pinned to the selected dataset version (true isolation), else
-//   2. The company's ACTIVE version (keeps single-version setups working and
-//      avoids blank screens when nothing is pinned to the selected version).
+// company and optional selectors. Resolution order (strongest first):
+//   1. An explicit Key Report versionId — the UI's chosen Version is the single
+//      source of truth (must belong to this company; cross-company ids ignored).
+//   2. The version pinned to the selected Manual GL dataset version, else
+//   3. The company's ACTIVE version (keeps single-version setups working and
+//      avoids blank screens when nothing more specific is supplied).
 // Centralised here so getLinkedDocuments and getVersionReportContext share one
 // resolution code path and can never diverge.
-async function resolveVersionFor(companyId, { datasetVersion } = {}) {
+async function resolveVersionFor(companyId, { datasetVersion, versionId } = {}) {
   if (!companyId) return null;
+  if (versionId) {
+    const byId = await getVersion(versionId);
+    // Guard against cross-company access — the version must belong to this company.
+    if (byId && byId.companyId === companyId) return byId;
+    console.log(
+      `[KeyReports] versionId ${versionId} not found for company ${companyId}; falling back to dataset version / active.`,
+    );
+  }
   if (datasetVersion != null && datasetVersion !== "") {
     const pinned = await getVersionByDatasetVersion(companyId, datasetVersion);
     if (pinned) return pinned;
@@ -534,8 +543,8 @@ function emptyReportContext() {
 //   { versionId, datasetVersion, flowType, resolvedBatchId,
 //     documents: { profit_loss, balance_sheet, general_ledger, bank_statement, tax_return },
 //     pnlDocument, balanceSheet, glDocument, bankStatement, taxReturn }
-async function getVersionReportContext(companyId, { datasetVersion } = {}) {
-  const version = await resolveVersionFor(companyId, { datasetVersion });
+async function getVersionReportContext(companyId, { datasetVersion, versionId } = {}) {
+  const version = await resolveVersionFor(companyId, { datasetVersion, versionId });
   if (!version) return emptyReportContext();
 
   const documents = await loadDocumentsByCategory(version.id);
@@ -560,13 +569,24 @@ async function getVersionReportContext(companyId, { datasetVersion } = {}) {
 // wrapper over the centralised getVersionReportContext so there is exactly one
 // version-resolution + document-loading code path. Resolved from the SELECTED
 // dataset version when supplied, otherwise the company's ACTIVE version.
-async function getLinkedDocuments(companyId, reportCategory, { datasetVersion } = {}) {
+async function getLinkedDocuments(companyId, reportCategory, { datasetVersion, versionId } = {}) {
   if (!companyId) return { versionId: null, documents: [] };
-  const context = await getVersionReportContext(companyId, { datasetVersion });
+  const context = await getVersionReportContext(companyId, { datasetVersion, versionId });
   return {
     versionId: context.versionId,
     documents: context.documents[reportCategory] || [],
   };
+}
+
+// Convenience: resolve a full report context directly from a Key Report
+// versionId (the version's own company is used). Returns an empty context when
+// the version does not exist. Lets consumers pass the UI-selected Version id
+// without separately knowing its company.
+async function getVersionReportContextById(versionId) {
+  if (!versionId) return emptyReportContext();
+  const version = await getVersion(versionId);
+  if (!version) return emptyReportContext();
+  return getVersionReportContext(version.companyId, { versionId });
 }
 
 // Returns documents linked in the active version for a given category.
@@ -598,4 +618,5 @@ module.exports = {
   getVersionByDatasetVersion,
   getLinkedDocuments,
   getVersionReportContext,
+  getVersionReportContextById,
 };

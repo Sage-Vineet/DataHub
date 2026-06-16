@@ -136,14 +136,15 @@ function getCashflowComparativePeriods(numYears = 4) {
 }
 
 async function fetchSinglePeriodCashflow(startDate, endDate, accountingMethod, sourceMode = "quickbooks", options = {}) {
+  const keyReportVersionId = options?.keyReportVersionId || null;
   try {
     // ── Manual Upload: use dynamically generated Cash Flow ──────────────────
     if (sourceMode === "manual_upload") {
       let targetYear = options?.year ? parseInt(String(options.year), 10) : null;
 
       if (!targetYear) {
-        // Discover available periods and default to the latest
-        const periodsResult = await getManualCashFlowPeriods();
+        // ... (discovery logic)
+        const periodsResult = await getManualCashFlowPeriods({ keyReportVersionId });
         const availablePeriods = (periodsResult?.periods || [])
           .map((p) => parseInt(String(p.period ?? p), 10))
           .filter(Boolean);
@@ -151,7 +152,7 @@ async function fetchSinglePeriodCashflow(startDate, endDate, accountingMethod, s
         targetYear = Math.max(...availablePeriods);
       }
 
-      const cf = await getManualGeneratedCashFlow(targetYear, { force: options?.force });
+      const cf = await getManualGeneratedCashFlow(targetYear, { force: options?.force, keyReportVersionId });
       if (!cf?.success) return [];
 
       return generatedCfToRows(cf);
@@ -161,6 +162,7 @@ async function fetchSinglePeriodCashflow(startDate, endDate, accountingMethod, s
     if (sourceMode === "quickbooks_manual") {
       const payload = await getLatestQMSUploadedReport("cash_flow", {
         rowId: options?.manualUploadRowId,
+        keyReportVersionId,
       });
       const rows = Array.isArray(payload?.data?.rows) ? payload.data.rows : [];
       const periods = payload?.data?.periods || [];
@@ -313,6 +315,7 @@ function mergeCashflowPeriods(periodResults, periods) {
 
 export async function getCashflow(startDate, endDate, accountingMethod, options = {}) {
   const sourceMode = options?.sourceMode || "quickbooks";
+  const keyReportVersionId = options?.keyReportVersionId || null;
 
   if (sourceMode === "manual") {
     const params = {
@@ -320,11 +323,14 @@ export async function getCashflow(startDate, endDate, accountingMethod, options 
         ? options.manualFilters
         : {}),
     };
+    if (keyReportVersionId) {
+      params.keyReportVersionId = keyReportVersionId;
+    }
     const payload = await getManualGlCashflow({ params });
     return payload;
   }
 
-  return await fetchSinglePeriodCashflow(startDate, endDate, accountingMethod, sourceMode, options);
+  return await fetchSinglePeriodCashflow(startDate, endDate, accountingMethod, sourceMode, { ...options, keyReportVersionId });
 }
 
 function cfFileYear(file) {
@@ -500,6 +506,7 @@ export async function getCashflowDetail(
   options = {},
 ) {
   const sourceMode = options?.sourceMode || "quickbooks";
+  const keyReportVersionId = options?.keyReportVersionId || null;
 
   if (sourceMode === "manual") {
     const params = {
@@ -507,12 +514,15 @@ export async function getCashflowDetail(
         ? options.manualFilters
         : {}),
     };
+    if (keyReportVersionId) {
+      params.keyReportVersionId = keyReportVersionId;
+    }
     console.log("[DetailedReportUI][CF] Requesting monthly detail with params:", JSON.stringify(params));
     const response = await getManualStagedCashflowMonthlyDetail({ params });
     console.log("[DetailedReportUI][CF] Received keys:", Object.keys(response || {}), "| source:", response?.source, "| reportType:", response?.reportType);
     return response;
   }
-  if (options?.sourceMode === "manual_upload" || options?.sourceMode === "quickbooks_manual") {
+  if (sourceMode === "manual_upload" || sourceMode === "quickbooks_manual") {
     return buildCFMultiFileDetail(options.sourceMode);
   }
 
@@ -520,7 +530,7 @@ export async function getCashflowDetail(
 
   const results = await Promise.all(
     periods.map((p) =>
-      fetchSinglePeriodCashflow(p.start, p.end, accountingMethod, sourceMode),
+      fetchSinglePeriodCashflow(p.start, p.end, accountingMethod, sourceMode, { ...options, keyReportVersionId }),
     ),
   );
 

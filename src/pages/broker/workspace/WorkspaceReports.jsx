@@ -48,6 +48,12 @@ import {
 import { syncQuickbooksReports } from "../../../lib/quickbooks";
 import { exportReportToExcel, exportReportToPdf } from "../../../lib/reportExport";
 import {
+  useKeyReportContextStore,
+  selectKeyReportContext,
+} from "../../../store/useKeyReportContextStore";
+import { useShallow } from "zustand/react/shallow";
+import KeyReportVersionSelector from "../../../components/key-reports/KeyReportVersionSelector";
+import {
   getDateRange,
 } from "../../../lib/report-date-resolver";
 
@@ -395,12 +401,19 @@ export default function WorkspaceReports() {
   const [isLoading, setIsLoading] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [company, setCompany] = useState(null);
+  // Key Reports is the single source of truth: when the company has a selected
+  // Key Report Version, the report source is derived from that Version's flow —
+  // NOT from the Connections-page active data source. Falls back to the legacy
+  // DataSourceContext behavior only when no Key Report versions exist.
+  const kr = useKeyReportContextStore(useShallow(selectKeyReportContext));
   const selectedReportSource = useMemo(
     () =>
-      normalizeReportSourceKey(
-        contextActiveSource || REPORT_SOURCE_KEYS.QUICKBOOKS,
-      ),
-    [contextActiveSource],
+      kr.krActive && kr.effectiveSource
+        ? kr.effectiveSource
+        : normalizeReportSourceKey(
+          contextActiveSource || REPORT_SOURCE_KEYS.QUICKBOOKS,
+        ),
+    [kr.krActive, kr.effectiveSource, contextActiveSource],
   );
   const [manualFilters, setManualFilters] = useState(
     normalizeManualFilters(storedState?.manualFilters),
@@ -419,9 +432,8 @@ export default function WorkspaceReports() {
   const [reportStartMonth, setReportStartMonth] = useState(null);
   const [reportEndMonth, setReportEndMonth] = useState(null);
   const [filterOptionsVersion, setFilterOptionsVersion] = useState(0);
-  // Dataset versions available for the selected company (manual GL source).
-  // Drives the Version dropdown; every staged upload is its own isolated version.
-  const [manualVersions, setManualVersions] = useState([]);
+  // Dataset versions available for the selected company (manual GL source) removed — 
+  // consolidated into the unified Key Report Version selector.
   const [manualUploadFiles, setManualUploadFiles] = useState({
     "Balance Sheet": [],
     "Profit & Loss": [],
@@ -569,6 +581,42 @@ export default function WorkspaceReports() {
     () => getReportSourceMode(selectedReportSource),
     [selectedReportSource],
   );
+
+  // Auto-detect which report tabs the SELECTED Key Report Version can produce,
+  // from its linked document categories. When no Key Report version is active,
+  // all tabs are enabled (legacy behavior). Cash Flow needs both P&L and BS.
+  const reportTabAvailability = useCallback(
+    (tabKey) => {
+      if (!kr.krActive) return { enabled: true };
+      const a = kr.availability;
+      if (tabKey === "Profit & Loss") {
+        return a.profitLoss
+          ? { enabled: true }
+          : { enabled: false, reason: "Link a General Ledger (or P&L) document in Key Reports." };
+      }
+      if (tabKey === "Balance Sheet") {
+        return a.balanceSheet
+          ? { enabled: true }
+          : { enabled: false, reason: "Link a Balance Sheet document in Key Reports." };
+      }
+      if (tabKey === "Cashflow") {
+        return a.profitLoss && a.balanceSheet
+          ? { enabled: true }
+          : { enabled: false, reason: "Cash Flow needs both Profit & Loss and Balance Sheet docs (or GL) linked in Key Reports." };
+      }
+      return { enabled: true };
+    },
+    [kr.krActive, kr.availability.profitLoss, kr.availability.balanceSheet],
+  );
+
+  // If the active tab becomes unavailable for the selected Version, fall back to
+  // the first available one so the user never lands on an empty/blocked report.
+  useEffect(() => {
+    if (!kr.krActive) return;
+    if (reportTabAvailability(selectedTab).enabled) return;
+    const firstEnabled = REPORT_TABS.find((t) => reportTabAvailability(t.key).enabled);
+    if (firstEnabled && firstEnabled.key !== selectedTab) setSelectedTab(firstEnabled.key);
+  }, [kr.krActive, selectedTab, reportTabAvailability, REPORT_TABS]);
   const selectedSourceLabel = useMemo(
     () => getReportSourceLabel(selectedReportSource),
     [selectedReportSource],
@@ -625,44 +673,35 @@ export default function WorkspaceReports() {
 
   // Date From / Date To pickers now read directly from fromDate/toDate — no year round-trip.
 
-  // Load available dataset versions for the company.  Defaults the selection to
-  // the latest version and refreshes after every new upload (filterOptionsVersion
-  // increments on a successful stage).  Every version is preserved and selectable.
+  // Sync the Key Report Version selection (which acts as the single source of truth)
+  // to the Manual GL filters so the P&L / Balance Sheet / Cashflow reports reflect
+  // exactly the selected version's data.
   useEffect(() => {
-    if (selectedSourceMode !== "manual" || !clientId) return;
-    let cancelled = false;
-    listManualGlDatasetVersions({ clientId })
-      .then((versions) => {
-        if (cancelled) return;
-        const list = Array.isArray(versions) ? versions : [];
-        setManualVersions(list);
-        const available = list.map((v) => String(v.value));
-        const current = String(manualFiltersRef.current.datasetVersion || "");
-        // The list is newest-first, so available[0] is the latest version.
-        const nextVersion =
-          current && available.includes(current) ? current : (available[0] || "");
-        if (nextVersion !== current) {
-          const next = {
-            ...manualFiltersRef.current,
-            datasetVersion: nextVersion,
-            batchId: "",
-            fiscalYear: [],
-            fiscalMonth: [],
-          };
-          setManualFilters(next);
-          setAppliedManualFilters(next);
-          debugLog("[ManualGL][UI][VersionAutoSelect]", { selectedVersion: nextVersion });
-        }
-      })
-      .catch((error) => {
-        if (cancelled) return;
-        console.error("[WorkspaceReports] Failed to load dataset versions:", error);
-        setManualVersions([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [clientId, selectedSourceMode, filterOptionsVersion, debugLog]);
+    if (!kr.krActive || kr.flowType !== "manual_gl" || kr.resolvedDatasetVersion == null) return;
+    const nextVersion = String(kr.resolvedDatasetVersion);
+    const currentVersion = String(manualFilters.datasetVersion || "");
+
+    if (nextVersion !== currentVersion) {
+      const next = {
+        ...manualFilters,
+        datasetVersion: nextVersion,
+        batchId: "",
+        fiscalYear: [],
+        fiscalMonth: [],
+      };
+      setManualFilters(next);
+      setAppliedManualFilters(next);
+      debugLog("[ManualGL][UI][KRVersionSync]", { nextVersion });
+    }
+  }, [
+    kr.krActive,
+    kr.flowType,
+    kr.resolvedDatasetVersion,
+    manualFilters.datasetVersion, // Only trigger when version in filters differs
+    debugLog,
+  ]);
+
+
 
   useEffect(() => {
     if (selectedSourceMode !== "manual" || !clientId) return;
@@ -752,7 +791,11 @@ export default function WorkspaceReports() {
     if (!stType) return;
 
     setIsLoadingManualFiles(true);
-    getAllManualUploadedReports(stType, { clientId })
+    const params = {
+      clientId,
+      ...(kr.krActive && kr.selectedVersionId ? { keyReportVersionId: kr.selectedVersionId } : {}),
+    };
+    getAllManualUploadedReports(stType, params)
       .then((result) => {
         const files = result?.files || [];
         setManualUploadFiles((prev) => ({ ...prev, [selectedTab]: files }));
@@ -806,7 +849,11 @@ export default function WorkspaceReports() {
     if (!stType) return;
 
     setIsLoadingQMSFiles(true);
-    getAllQMSUploadedReports(stType, { clientId })
+    const params = {
+      clientId,
+      ...(kr.krActive && kr.selectedVersionId ? { keyReportVersionId: kr.selectedVersionId } : {}),
+    };
+    getAllQMSUploadedReports(stType, params)
       .then((result) => {
         const files = result?.files || [];
         setQMSFiles((prev) => ({ ...prev, [selectedTab]: files }));
@@ -1300,6 +1347,12 @@ export default function WorkspaceReports() {
             ? selectedQMSRowId[selectedTab]
             : null;
 
+      const commonOptions = {
+        sourceMode: selectedSourceMode,
+        manualFilters: manualFilterParams,
+        keyReportVersionId: kr.selectedVersionId || null,
+      };
+
       if (selectedTab === "Balance Sheet") {
         if (effectiveReportType === "Summary") {
           summary = await getBalanceSheet(
@@ -1307,7 +1360,7 @@ export default function WorkspaceReports() {
             effectiveEndDate,
             normalizedAccountingMethod,
             {
-              sourceMode: selectedSourceMode,
+              ...commonOptions,
               manualFilters: summaryFilterParams,
               manualUploadRowId,
             },
@@ -1317,10 +1370,7 @@ export default function WorkspaceReports() {
             effectiveStartDate,
             effectiveEndDate,
             normalizedAccountingMethod,
-            {
-              sourceMode: selectedSourceMode,
-              manualFilters: manualFilterParams,
-            },
+            commonOptions,
           );
         }
       } else if (selectedTab === "Profit & Loss") {
@@ -1330,7 +1380,7 @@ export default function WorkspaceReports() {
             effectiveEndDate,
             normalizedAccountingMethod,
             {
-              sourceMode: selectedSourceMode,
+              ...commonOptions,
               manualFilters: summaryFilterParams,
               manualUploadRowId,
             },
@@ -1341,8 +1391,7 @@ export default function WorkspaceReports() {
             effectiveEndDate,
             normalizedAccountingMethod,
             {
-              sourceMode: selectedSourceMode,
-              manualFilters: manualFilterParams,
+              ...commonOptions,
               reportType: effectiveReportType,
             },
           );
@@ -1354,7 +1403,7 @@ export default function WorkspaceReports() {
             effectiveEndDate,
             normalizedAccountingMethod,
             {
-              sourceMode: selectedSourceMode,
+              ...commonOptions,
               manualFilters: summaryFilterParams,
               manualUploadRowId,
               year: selectedManualCfYear,
@@ -1368,10 +1417,7 @@ export default function WorkspaceReports() {
             effectiveStartDate,
             effectiveEndDate,
             normalizedAccountingMethod,
-            {
-              sourceMode: selectedSourceMode,
-              manualFilters: manualFilterParams,
-            },
+            commonOptions,
           );
         }
       }
@@ -1426,6 +1472,7 @@ export default function WorkspaceReports() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     selectedQMSRowId[selectedTab],
     selectedManualCfYear,
+    kr.selectedVersionId,
   ]);
 
   // Auto-generate report when dependencies change.
@@ -1660,21 +1707,30 @@ export default function WorkspaceReports() {
           </div>
         </div>
 
+
+
         <div className="mb-6 flex gap-6 border-b border-border pb-px">
-          {REPORT_TABS.map((tab) => (
-            <button
-              key={tab.key}
-              onClick={() => setSelectedTab(tab.key)}
-              className={cn(
-                "relative pb-3 text-[14px] font-medium transition-all",
-                selectedTab === tab.key
-                  ? "font-semibold text-text-primary after:absolute after:bottom-[-1px] after:left-0 after:h-[2px] after:w-full after:rounded-full after:bg-primary after:content-['']"
-                  : "text-text-muted hover:text-text-secondary",
-              )}
-            >
-              {tab.label}
-            </button>
-          ))}
+          {REPORT_TABS.map((tab) => {
+            const avail = reportTabAvailability(tab.key);
+            return (
+              <button
+                key={tab.key}
+                onClick={() => avail.enabled && setSelectedTab(tab.key)}
+                disabled={!avail.enabled}
+                title={avail.enabled ? undefined : avail.reason}
+                className={cn(
+                  "relative pb-3 text-[14px] font-medium transition-all",
+                  !avail.enabled
+                    ? "cursor-not-allowed text-text-muted/40"
+                    : selectedTab === tab.key
+                      ? "font-semibold text-text-primary after:absolute after:bottom-[-1px] after:left-0 after:h-[2px] after:w-full after:rounded-full after:bg-primary after:content-['']"
+                      : "text-text-muted hover:text-text-secondary",
+                )}
+              >
+                {tab.label}
+              </button>
+            );
+          })}
         </div>
 
         <div className="card-base card-p min-h-[800px] flex flex-col">
@@ -1917,7 +1973,10 @@ export default function WorkspaceReports() {
 
             {/* Dataset Version selector removed — single-dataset mode */}
 
-            {selectedSourceMode === "manual_upload" && reportType === "Summary" && (
+            {/* File selectors for manual upload and QMS sources are hidden when a 
+                Key Reports version is active, as the version's linked documents
+                automatically drive the data path. */}
+            {selectedSourceMode === "manual_upload" && reportType === "Summary" && !kr.krActive && (
               isLoadingManualFiles ? (
                 <div className="flex flex-col gap-1.5">
                   <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
@@ -1958,7 +2017,7 @@ export default function WorkspaceReports() {
               ) : null
             )}
 
-            {selectedSourceMode === "manual_upload" && selectedTab === "Cashflow" && (
+            {selectedSourceMode === "manual_upload" && selectedTab === "Cashflow" && !kr.krActive && (
               isLoadingCfYears ? (
                 <div className="flex flex-col gap-1.5">
                   <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
@@ -1992,7 +2051,7 @@ export default function WorkspaceReports() {
               ) : null
             )}
 
-            {selectedSourceMode === "quickbooks_manual" && reportType === "Summary" && (
+            {selectedSourceMode === "quickbooks_manual" && reportType === "Summary" && !kr.krActive && (
               isLoadingQMSFiles ? (
                 <div className="flex flex-col gap-1.5">
                   <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
@@ -2037,31 +2096,9 @@ export default function WorkspaceReports() {
             {selectedSourceMode === "manual" && (
               <>
 
-                {manualVersions.length > 0 && (
-                  <div className="flex flex-col gap-1.5">
-                    <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
-                      Version
-                    </label>
-                    <div className="relative">
-                      <select
-                        value={String(manualFilters.datasetVersion || "")}
-                        onChange={(e) => handleVersionChange(e.target.value)}
-                        className="h-9 w-full min-w-[160px] appearance-none rounded-md border border-border-input bg-bg-card pl-3 pr-9 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-                      >
-                        {manualVersions.map((v) => (
-                          <option key={String(v.value)} value={String(v.value)}>
-                            {v.label || `Version ${v.value}`}
-                            {v.isActive ? " (active)" : ""}
-                          </option>
-                        ))}
-                      </select>
-                      <ChevronDown
-                        size={14}
-                        className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-text-muted"
-                      />
-                    </div>
-                  </div>
-                )}
+                {/* Unified Key Reports Version selector is the single source of truth */}
+                <KeyReportVersionSelector clientId={clientId} variant="filter" />
+
 
                 <div className="flex flex-col gap-1.5">
                   <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">

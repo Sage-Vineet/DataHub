@@ -3255,6 +3255,9 @@ function parseManualFilterQuery(rawFilters = {}) {
   const rawUploadSessionId = toNonEmptyString(
     rawFilters.uploadSessionId || rawFilters.upload_session_id || rawFilters.versionId || rawFilters.version_id || "",
   );
+  const rawKeyReportVersionId = toNonEmptyString(
+    rawFilters.keyReportVersionId || rawFilters.key_report_version_id || "",
+  );
   const rawVersionId = toNonEmptyString(
     rawFilters.versionId || rawFilters.version_id || rawUploadSessionId || "",
   );
@@ -3304,6 +3307,7 @@ function parseManualFilterQuery(rawFilters = {}) {
     sourceType: toNonEmptyString(rawFilters.sourceType || rawFilters.source_type || ""),
     sourceSwitchVersion: toNonEmptyString(rawFilters.sourceSwitchVersion || rawFilters.source_switch_version || ""),
     uploadSessionId: isValidUuid(rawUploadSessionId) ? rawUploadSessionId : "",
+    keyReportVersionId: rawKeyReportVersionId,
     allBatches: parseBoolean(rawFilters.allBatches || rawFilters.all_batches),
     limit: Number(rawFilters.limit || 0) > 0
       ? Math.min(Number(rawFilters.limit), DEFAULT_STAGING_LIMIT)
@@ -3329,16 +3333,17 @@ async function resolveEffectiveReportBatchId(companyId, filters = {}) {
   const explicitBatchId = toNonEmptyString(filters.batchId);
   if (explicitBatchId) return explicitBatchId;
 
+  const keyReportVersionId = toNonEmptyString(filters.keyReportVersionId);
   const datasetVersion = Number(filters.datasetVersion || filters.dataset_version || 0);
   const versionId = toNonEmptyString(filters.versionId || filters.uploadSessionId || "");
   const hasVersionRequest =
-    (Number.isInteger(datasetVersion) && datasetVersion > 0) || !!versionId;
+    (Number.isInteger(datasetVersion) && datasetVersion > 0) || !!versionId || !!keyReportVersionId;
 
   if (hasVersionRequest) {
     const resolved = await resolveReportBatchId(companyId, "", {
       ...filters,
       datasetVersion: Number.isInteger(datasetVersion) && datasetVersion > 0 ? datasetVersion : undefined,
-      versionId,
+      versionId: keyReportVersionId || versionId,
       allowExplicitBatch: true,
       includeArchived: true,
       versionMode: REPORT_BATCH_MODE.HISTORICAL,
@@ -7674,9 +7679,18 @@ async function loadBatchBalanceSheetLines(companyId, batchId, sheetType) {
   return data || [];
 }
 
-async function validateBatchBalanceSheet(companyId, batchId = "") {
+// Accepts either a plain batchId string (legacy callers) or a filters object
+// ({ batchId, datasetVersion, versionId }). Resolution goes through the
+// version-aware resolveEffectiveReportBatchId so that, when a specific version
+// was requested but cannot be resolved, validation stays empty rather than
+// silently falling back to another version's active/latest batch.
+async function validateBatchBalanceSheet(companyId, batchIdOrFilters = "") {
+  const filters =
+    typeof batchIdOrFilters === "string"
+      ? { batchId: batchIdOrFilters }
+      : batchIdOrFilters || {};
   const effectiveBatchId =
-    batchId || (await resolveReportBatchId(companyId));
+    filters.batchId || (await resolveEffectiveReportBatchId(companyId, filters));
   if (!effectiveBatchId) {
     throw new Error("No staged batch available for validation.");
   }
@@ -8962,6 +8976,7 @@ module.exports = {
   getLatestManualBatch,
   listManualGlBatches,
   getActualFiscalYearsFromDB,
+  resolveEffectiveReportBatchId,
   // Multi-year detection utility â€” usable by callers (e.g., upload controllers)
   // to surface file type information without re-staging.
   detectMultipleYears,

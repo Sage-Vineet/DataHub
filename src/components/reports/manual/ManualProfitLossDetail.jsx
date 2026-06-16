@@ -2,19 +2,6 @@ import { Fragment, useMemo, useState } from "react";
 import { ChevronDown, ChevronRight, FileText } from "lucide-react";
 import { cn, formatCurrency } from "../../../lib/utils";
 
-/**
- * Aggregate all transactions from every account in a category into a
- * Vendor → Account hierarchy.
- *
- * Returns: Array<{
- *   vendorName: string,
- *   yearlyTotals: Record<number, number>,
- *   totalAmount: number,
- *   accounts: Array<{ accountName, accountNumber, yearlyTotals, totalAmount }>
- * }>
- * Sorted by absolute totalAmount descending. Accounts within each vendor
- * are sorted alphabetically.
- */
 function buildCategoryVendorRows(accounts) {
   const vendorMap = new Map();
 

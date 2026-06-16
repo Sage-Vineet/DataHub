@@ -1,24 +1,6 @@
-// Key Reports sync — generate backend financial tables from a version's linked
-// files by feeding them through the proven Manual GL staging pipeline.
-//
-// Contract: generateFinancialTables(version, opts) resolves to
-//   { batchId, datasetVersion, summary } | null
-// where batchId is the immutable Manual GL upload batch (with version-scoped
-// reporting snapshots) that reports read from for this Key Report version.
-//
-// Design notes:
-// - We pass the linked documents' upload_ids straight into the orchestrator;
-//   it loads the binaries from the uploads table internally.
-// - The Manual GL pipeline is GL+BS driven (P&L is derived from GL classified
-//   against the Balance Sheet). P&L / Bank Statement / Tax Return mappings are
-//   retained as official-source references for future CIM/QoE workflows but do
-//   not feed GL staging in this phase.
-// - Sync is idempotent: re-syncing identical files reuses the existing dataset
-//   version (the orchestrator dedupes by content checksum). It never deletes
-//   other versions (per the version-isolation invariant).
-
 const keyReportService = require("./keyReportService");
 const { orchestrateManualGlUpload } = require("./manualGlUploadOrchestrationService");
+const { processDocumentMapping } = require("./manualReportUploadService");
 const {
   createUploadJob,
   finalizeUploadLifecycle,
@@ -36,17 +18,44 @@ function uploadIdsFor(grouped, category) {
 async function generateFinancialTables(version, opts = {}) {
   const { userId = null } = opts;
   const companyId = version.companyId;
-  const grouped = await keyReportService.getMappingsByCategory(version.id);
 
+  // ── Document-driven Extraction ─────────────────────────────────────────────
+  // We ensure all linked documents (P&L, BS, Bank Statements, Tax Returns) are
+  // extracted into structured data in qb_synced_reports. This allows the 
+  // Reports, Bank Recon, and Tax Recon pages to render data immediately.
+  const allMappings = await keyReportService.listMappings(version.id);
+  const extractionMappings = allMappings.filter(m => m.reportCategory !== REPORT_CATEGORIES.GENERAL_LEDGER);
+
+  if (extractionMappings.length > 0) {
+    console.log(`[KeyReportSync] Extracting ${extractionMappings.length} document(s) for Version ${version.id}`);
+    const results = await Promise.allSettled(
+      extractionMappings.map(m => processDocumentMapping(companyId, m.documentId, m.reportCategory))
+    );
+
+    // Log failures as warnings; we don't want to block the whole sync if one PDF fails.
+    results.forEach((res, i) => {
+      if (res.status === "rejected") {
+        console.warn(`[KeyReportSync] Extraction failed for ${extractionMappings[i].reportCategory} (${extractionMappings[i].documentId}):`, res.reason);
+      }
+    });
+  }
+
+  const grouped = await keyReportService.getMappingsByCategory(version.id);
   const glUploadIds = uploadIdsFor(grouped, REPORT_CATEGORIES.GENERAL_LEDGER);
   const bsUploadIds = uploadIdsFor(grouped, REPORT_CATEGORIES.BALANCE_SHEET);
 
-  // No GL files → nothing to generate (warnings-only phase; do not block).
+  // If no GL is provided, we clear the Manual GL staging pointer.
   if (!glUploadIds.length) {
     return {
-      batchId: version.resolvedBatchId || null,
-      datasetVersion: version.resolvedDatasetVersion || null,
-      summary: { generated: false, reason: "No General Ledger files linked." },
+      batchId: null,
+      datasetVersion: null,
+      summary: {
+        generated: false,
+        extractedDocs: extractionMappings.length,
+        message: extractionMappings.length > 0
+          ? `Version synced. Extracted ${extractionMappings.length} linked document(s). Note: No General Ledger files were linked.`
+          : "Version synced. Note: No supported documents were linked."
+      },
     };
   }
 
@@ -76,9 +85,10 @@ async function generateFinancialTables(version, opts = {}) {
     uploadedBy: userId,
     batchName: `Key Report ${version.versionName || `V${version.versionNumber}`}`,
     uploadJobId: job.id,
+    keyReportVersionId: version.id, // Strict isolation — bypasses global dedupe
   });
 
-  if (result?.success === false && !result?.alreadyStaged) {
+  if (result?.success === false) {
     throw new Error(result?.message || "Financial table generation failed during staging.");
   }
 

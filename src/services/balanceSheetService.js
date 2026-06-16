@@ -224,11 +224,13 @@ async function fetchSinglePeriodBS(
   options = {},
 ) {
   const normalizedAccountingMethod = normalizeAccountingMethod(accountingMethod);
+  const keyReportVersionId = options?.keyReportVersionId || null;
 
   try {
     if (sourceMode === "manual_upload") {
       const response = await getLatestManualUploadedReport("balance_sheet", {
         rowId: options?.manualUploadRowId,
+        keyReportVersionId,
       });
       return Array.isArray(response?.data?.rows) ? response.data.rows : [];
     }
@@ -239,7 +241,7 @@ async function fetchSinglePeriodBS(
           ? options.manualFilters
           : {};
       const response = await getManualGlBalanceSheet({
-        params: { ...manualFilters },
+        params: { ...manualFilters, ...(keyReportVersionId ? { keyReportVersionId } : {}) },
       });
 
       return parseUnifiedBalanceSheetRows(response);
@@ -335,6 +337,7 @@ function convertStagedBsPayloadToRows(response) {
 export async function getBalanceSheet(startDate, endDate, accountingMethod, options = {}) {
   const normalizedAccountingMethod = normalizeAccountingMethod(accountingMethod);
   const sourceMode = options?.sourceMode || "manual";
+  const keyReportVersionId = options?.keyReportVersionId || null;
 
   if (sourceMode === "quickbooks") {
     try {
@@ -373,6 +376,7 @@ export async function getBalanceSheet(startDate, endDate, accountingMethod, opti
       const fetchFn = isQMS ? getLatestQMSUploadedReport : getLatestManualUploadedReport;
       const response = await fetchFn("balance_sheet", {
         rowId: options?.manualUploadRowId,
+        keyReportVersionId,
       });
       const rows = Array.isArray(response?.data?.rows) ? response.data.rows : [];
       const periods = response?.data?.periods || [];
@@ -387,12 +391,12 @@ export async function getBalanceSheet(startDate, endDate, accountingMethod, opti
       };
       const summaryRows = periods.length > 0 && rows.length > 0
         ? rows.map(function sumNode(node) {
-            return {
-              ...node,
-              amount: getValue(node.colAmounts) || (node.amount || 0),
-              children: node.children ? node.children.map(sumNode) : undefined,
-            };
-          })
+          return {
+            ...node,
+            amount: getValue(node.colAmounts) || (node.amount || 0),
+            children: node.children ? node.children.map(sumNode) : undefined,
+          };
+        })
         : rows;
       return {
         rows: summaryRows,
@@ -417,6 +421,10 @@ export async function getBalanceSheet(startDate, endDate, accountingMethod, opti
     options?.manualFilters && typeof options.manualFilters === "object"
       ? options.manualFilters
       : {};
+
+  if (keyReportVersionId) {
+    manualFilters.keyReportVersionId = keyReportVersionId;
+  }
 
   try {
     // For manual staged data, fiscal year (in manualFilters) controls filtering.
@@ -725,7 +733,7 @@ function fileYear(file) {
 }
 
 function fileLabel(file) {
-  const monthNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const dateStr = file?.data?.asOfDate || file?.data?.periodEnd;
   if (dateStr) {
     const parts = String(dateStr).split("-");

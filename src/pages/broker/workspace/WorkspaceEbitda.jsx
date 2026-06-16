@@ -32,7 +32,9 @@ import QBDisconnectedBanner from "../../../components/common/QBDisconnectedBanne
 import Modal from "../../../components/common/Modal";
 import EbitdaAdjustmentsPanel from "../../../components/reports/ebitda/EbitdaAdjustmentsPanel";
 import { useDataSource } from "../../../context/DataSourceContext";
-import { useDatasetVersionStore } from "../../../store/useDatasetVersionStore";
+import { useKeyReportContextStore, selectKeyReportContext } from "../../../store/useKeyReportContextStore";
+import { useShallow } from "zustand/react/shallow";
+import KeyReportVersionSelector from "../../../components/key-reports/KeyReportVersionSelector";
 
 function formatPercent(value) {
   if (!Number.isFinite(value)) return "-";
@@ -196,11 +198,14 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000
 
 export default function WorkspaceEbitda() {
   const { clientId } = useParams();
-  const { activeSource } = useDataSource();
+  const { activeSource, activeSourceMode } = useDataSource();
+  const kr = useKeyReportContextStore(useShallow(selectKeyReportContext));
 
   const accountingMethod = "Accrual";
 
-  const reportSource = activeSource ? normalizeReportSourceKey(activeSource) : REPORT_SOURCE_KEYS.QUICKBOOKS;
+  const reportSource = kr.krActive && kr.effectiveSource
+    ? kr.effectiveSource
+    : normalizeReportSourceKey(activeSource || REPORT_SOURCE_KEYS.QUICKBOOKS);
   const isManualGl = reportSource === REPORT_SOURCE_KEYS.MANUAL_GL;
   const isManualUpload = reportSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD;
   const isQBManual = reportSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
@@ -225,12 +230,8 @@ export default function WorkspaceEbitda() {
   const itemSingularLabel = profitMetricConfig.itemSingularLabel;
   const itemPluralLabel = profitMetricConfig.itemPluralLabel;
 
-  // Dataset version selection — Manual GL only.
-  // Seeded from the shared store (kept in sync by WorkspaceReports) so the
-  // same version is used across all reports without the user having to reselect.
-  const sharedSelectedVersion = useDatasetVersionStore((s) => s.selectedVersion);
-  const [glVersions, setGlVersions] = useState([]);
-  const [selectedVersion, setSelectedVersion] = useState(null);
+  // Dataset version selection removed — consolidated into Key Reports.
+  const selectedVersion = kr.resolvedDatasetVersion;
 
   const activeSourceRef = useRef(reportSource);
   // Tracks the currently-selected version so an in-flight request for a
@@ -384,30 +385,7 @@ export default function WorkspaceEbitda() {
     }
   }, [reportSource, isManualGl]);
 
-  // Load available dataset versions for Manual GL.
-  // Seeds the selection from the shared store (written by WorkspaceReports)
-  // so the same version is active across all reports automatically.
-  useEffect(() => {
-    if (!isManualGl || !clientId) return;
-    let cancelled = false;
-    listManualGlDatasetVersions({ clientId })
-      .then((versions) => {
-        if (cancelled) return;
-        setGlVersions(versions);
-        setSelectedVersion((prev) => {
-          // Keep current selection if still valid; otherwise prefer the shared
-          // store value (Reports' selection), then fall back to latest/active.
-          const available = versions.map((v) => String(v.value));
-          if (prev && available.includes(String(prev))) return prev;
-          const fromStore = sharedSelectedVersion && available.includes(String(sharedSelectedVersion))
-            ? sharedSelectedVersion : null;
-          const active = versions.find((v) => v.isActive) || versions[0];
-          return fromStore ?? (active ? String(active.value) : null);
-        });
-      })
-      .catch(() => { if (!cancelled) setGlVersions([]); });
-    return () => { cancelled = true; };
-  }, [isManualGl, clientId, sharedSelectedVersion]);
+  // Manual GL internal version loading removed — consolidated into Key Reports.
 
   // Cache key includes version so switching versions always fetches fresh data
   // and never serves a cached result from a different version.
@@ -479,7 +457,11 @@ export default function WorkspaceEbitda() {
         }
       } else if (isManualUpload) {
         // Fetch ALL uploaded P&L files so every year is represented
-        const result = await getAllManualUploadedReports("profit_and_loss", { clientId });
+        const params = {
+          clientId,
+          ...(kr.krActive && kr.selectedVersionId ? { keyReportVersionId: kr.selectedVersionId } : {}),
+        };
+        const result = await getAllManualUploadedReports("profit_and_loss", params);
         const files = (result?.files || []).filter((f) => f.data?.rows?.length);
 
         if (!files.length) {
@@ -547,7 +529,11 @@ export default function WorkspaceEbitda() {
         }
       } else if (isQBManual) {
         // QuickBooks Manual: read all synced P&L files from qb_synced_reports
-        const result = await getAllQMSUploadedReports("profit_and_loss", { clientId });
+        const params = {
+          clientId,
+          ...(kr.krActive && kr.selectedVersionId ? { keyReportVersionId: kr.selectedVersionId } : {}),
+        };
+        const result = await getAllQMSUploadedReports("profit_and_loss", params);
         const files = (result?.files || []).filter((f) => f.data?.rows?.length);
 
         if (!files.length) {
@@ -1064,28 +1050,8 @@ export default function WorkspaceEbitda() {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
-            {/* Version selector — Manual GL only */}
-            {isManualGl && glVersions.length > 0 && (
-              <div className="flex flex-col gap-1.5">
-                <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
-                  Version
-                </label>
-                <div className="relative">
-                  <select
-                    value={selectedVersion ? String(selectedVersion) : ""}
-                    onChange={(e) => setSelectedVersion(e.target.value || null)}
-                    className="h-9 w-full min-w-[160px] appearance-none rounded-md border border-border-input bg-bg-card pl-3 pr-9 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-                  >
-                    {glVersions.map((v) => (
-                      <option key={String(v.value)} value={String(v.value)}>
-                        {v.label || `Version ${v.value}`}{v.isActive ? " (active)" : ""}
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown size={14} className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-text-muted" />
-                </div>
-              </div>
-            )}
+            {/* Unified Key Reports Version selector is the single source of truth */}
+            <KeyReportVersionSelector clientId={clientId} variant="filter" />
             {/* Refresh button removed */}
           </div>
         </div>

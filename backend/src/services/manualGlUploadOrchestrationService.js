@@ -110,6 +110,7 @@ async function orchestrateManualGlUpload({
   batchName = "",
   uploadJobId = null,
   datasetVersionId = null,
+  keyReportVersionId = null,
 }) {
   if (!companyId) {
     throw new Error("companyId is required for Manual GL orchestration.");
@@ -207,8 +208,10 @@ async function orchestrateManualGlUpload({
       await withTiming("setChecksum", () => setUploadChecksum(batchId, uploadChecksum, checksumRowCount));
     }
 
+    const strictIsolation = !!keyReportVersionId;
+
     await trackProgress("duplicate_check", 30);
-    const duplicateActiveBatch = uploadChecksum
+    const duplicateActiveBatch = (uploadChecksum && !strictIsolation)
       ? await withTiming("dupCheck", () => findActiveBatchByChecksum(companyId, uploadChecksum))
       : null;
 
