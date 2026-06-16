@@ -87,7 +87,7 @@ async function extractPlFinancials(clientId, source) {
       return null;
     };
 
-    const incomeRow   = findRow(
+    const incomeRow = findRow(
       ["total income", "total revenue", "net revenue", "total sales", "gross revenue", "operating revenue"],
       ["income", "revenue", "sales", "gross profit"],
     );
@@ -97,8 +97,10 @@ async function extractPlFinancials(clientId, source) {
     );
     if (!incomeRow && !expensesRow) return null;
 
-    const MONTHS = { jan:"01",feb:"02",mar:"03",apr:"04",may:"05",jun:"06",
-                     jul:"07",aug:"08",sep:"09",oct:"10",nov:"11",dec:"12" };
+    const MONTHS = {
+      jan: "01", feb: "02", mar: "03", apr: "04", may: "05", jun: "06",
+      jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12"
+    };
 
     // Infer year from report dates — used when period labels lack a year component (e.g. "Jan", "Feb")
     const baseYear = (() => {
@@ -111,15 +113,15 @@ async function extractPlFinancials(clientId, source) {
       // "Jan 25", "Jan-25", "January 2025", etc.
       const m = s.match(/^([a-z]+)[\s.\-_]*(\d{2,4})$/i);
       if (m) {
-        const mm = MONTHS[m[1].slice(0,3).toLowerCase()];
+        const mm = MONTHS[m[1].slice(0, 3).toLowerCase()];
         if (mm) { let yr = parseInt(m[2], 10); if (yr < 100) yr += 2000; return `${yr}-${mm}`; }
       }
       // "2025-01" ISO format
       const m2 = s.match(/^(\d{4})-(\d{1,2})$/);
-      if (m2) return `${m2[1]}-${String(m2[2]).padStart(2,"0")}`;
+      if (m2) return `${m2[1]}-${String(m2[2]).padStart(2, "0")}`;
       // Year-less label ("Jan", "February") — use inferred base year
       if (baseYear) {
-        const mm = MONTHS[s.slice(0,3).toLowerCase()];
+        const mm = MONTHS[s.slice(0, 3).toLowerCase()];
         if (mm) return `${baseYear}-${mm}`;
       }
       return null;
@@ -145,11 +147,11 @@ async function extractPlFinancials(clientId, source) {
     // Annual P&L (no period columns) — map single total to December of detected year
     const asOfDate = report.asOfDate || report.periodEnd;
     const year = asOfDate ? String(asOfDate).split("-")[0] : (baseYear ? String(baseYear) : null);
-    const income  = typeof incomeRow?.amount   === "number" ? incomeRow.amount   : null;
+    const income = typeof incomeRow?.amount === "number" ? incomeRow.amount : null;
     const expense = typeof expensesRow?.amount === "number" ? expensesRow.amount : null;
     if (!year || (income == null && expense == null)) return null;
     return {
-      totalIncome:   income  != null ? { [`${year}-12`]: income  } : {},
+      totalIncome: income != null ? { [`${year}-12`]: income } : {},
       totalExpenses: expense != null ? { [`${year}-12`]: expense } : {},
     };
   } catch (e) {
@@ -731,12 +733,17 @@ router.get("/manual-report-uploads/tax-data", async (req, res) => {
     const clientId = resolveClientId(req);
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
 
-    // ── Resolve the source tax return(s) strictly from the active Key Reports
-    //    version. The linked document set keys the cache, so switching the active
-    //    version (Version 1 → Tax_2024.pdf, Version 2 → Tax_2025.pdf) refreshes it.
-    const { versionId, documents: linkedDocs } = await keyReportService.getActiveLinkedDocuments(
+    // ── Resolve the source tax return(s) from the SELECTED Key Reports version
+    //    (from the chosen Manual GL dataset version), falling back to the active
+    //    version when none is selected. The linked document set keys the cache, so
+    //    switching versions (Version 1 → Tax_2024.pdf, Version 2 → Tax_2025.pdf)
+    //    refreshes it.
+    const datasetVersion = String(req.query.datasetVersion || "").trim() || null;
+    // Centralised resolver: one call yields the selected version's full document
+    // context; the tax_return field is the source set for this reconciliation.
+    const { versionId, taxReturn: linkedDocs } = await keyReportService.getVersionReportContext(
       clientId,
-      "tax_return",
+      { datasetVersion },
     );
     const documentSignature = linkedDocs.map((d) => d.id).filter(Boolean).sort().join(",");
 

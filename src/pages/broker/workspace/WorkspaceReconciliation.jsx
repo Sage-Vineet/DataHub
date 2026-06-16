@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import Header from "../../../components/Header";
 
-import { getStoredToken, setSelectedReportSource, getManualStageFilterOptions, loadSavedQBBankActivityRequest } from "../../../lib/api";
+import { getStoredToken, setSelectedReportSource, loadSavedQBBankActivityRequest } from "../../../lib/api";
 import { useDataSource } from "../../../context/DataSourceContext";
 import { useDatasetVersionStore } from "../../../store/useDatasetVersionStore";
 import { emitWorkspaceDataSourceUpdated } from "../../../lib/dataSourceEvents";
@@ -410,13 +410,12 @@ export default function WorkspaceReconciliation() {
   const glSelectedVersion = useDatasetVersionStore((s) => s.selectedVersion);
   const setGlSelectedVersion = useDatasetVersionStore((s) => s.setSelectedVersion);
   const fetchGlVersions = useDatasetVersionStore((s) => s.fetchVersions);
-  const [glFiscalYears, setGlFiscalYears] = useState([]);
-  const [glFiscalYear, setGlFiscalYear] = useState(null);
-  // Track the live GL scope (version + fiscal year) so an in-flight bank-data
-  // fetch for a previous version/year can be discarded if the user switches
-  // mid-fetch — prevents stale-version data overwriting fresh (needs F5) data.
-  const glScopeRef = useRef({ datasetVersion: glSelectedVersion, fiscalYear: glFiscalYear });
-  glScopeRef.current = { datasetVersion: glSelectedVersion, fiscalYear: glFiscalYear };
+  // Track the live GL scope (selected dataset version) so an in-flight bank-data
+  // fetch for a previous version can be discarded if the user switches mid-fetch —
+  // prevents stale-version data overwriting fresh (needs F5) data. Time filtering
+  // is handled client-side by the From/To date pickers, not by a fiscal-year scope.
+  const glScopeRef = useRef({ datasetVersion: glSelectedVersion });
+  glScopeRef.current = { datasetVersion: glSelectedVersion };
   const storedState = getStoredWorkspaceState(clientId);
   const [expandedAccounts, setExpandedAccounts] = useState(
     storedState?.expandedAccounts || getDefaultExpandedAccounts(),
@@ -736,9 +735,9 @@ export default function WorkspaceReconciliation() {
       if (clientId) params.append("clientId", clientId);
       // Pass the active source so the backend reads from the correct folder + cache partition.
       if (selectedReportSource) params.append("source", selectedReportSource);
-      // Manual GL scoping: restrict to the selected dataset version's fiscal year.
+      // Manual GL scoping: restrict to the selected dataset version (all years).
+      // The From/To date pickers narrow the displayed months client-side.
       if (opts.datasetVersion) params.append("datasetVersion", String(opts.datasetVersion));
-      if (opts.fiscalYear) params.append("fiscalYear", String(opts.fiscalYear));
       const url = `${EXTRACT_BANK_PDF_RECORDS_ENDPOINT}?${params.toString()}`;
       const resp = await fetch(url, {
         cache: "no-store",
@@ -749,11 +748,10 @@ export default function WorkspaceReconciliation() {
 
       const normalized = normalizeExtractedBankPdfData(data);
       // Discard result if source changed while this fetch was in-flight, or —
-      // for Manual GL — if the selected version/fiscal year changed mid-fetch.
+      // for Manual GL — if the selected version changed mid-fetch.
       if (activeSourceRef.current !== selectedReportSource) return;
       if (opts.datasetVersion != null &&
-        (String(glScopeRef.current.datasetVersion) !== String(opts.datasetVersion) ||
-          String(glScopeRef.current.fiscalYear) !== String(opts.fiscalYear))) return;
+        String(glScopeRef.current.datasetVersion) !== String(opts.datasetVersion)) return;
       setExtractedBankPdfData(normalized);
       setExtractedBankPdfFetchStatus({
         status: "success",
@@ -889,9 +887,8 @@ export default function WorkspaceReconciliation() {
       const params = new URLSearchParams();
       params.append("clientId", clientId);
       if (sourceKey) params.append("source", sourceKey);
-      // Manual GL scoping: pick the Balance Sheet matching the selected version's year.
+      // Manual GL scoping: pick the Balance Sheet for the selected version.
       if (opts.datasetVersion) params.append("datasetVersion", String(opts.datasetVersion));
-      if (opts.fiscalYear) params.append("fiscalYear", String(opts.fiscalYear));
       const resp = await fetch(`${BS_BANK_BALANCES_ENDPOINT}?${params.toString()}`, {
         cache: "no-store",
         headers: getHeaders(),
@@ -903,11 +900,10 @@ export default function WorkspaceReconciliation() {
       }
       const data = await resp.json();
       console.log(`[BsBankBalances] Response: source=${data.source} year=${data.year} accounts=${data.bankAccounts?.length ?? 0}`);
-      // For Manual GL, discard if the selected version/fiscal year changed
-      // while this fetch was in-flight (last-write-wins guard).
+      // For Manual GL, discard if the selected version changed while this fetch
+      // was in-flight (last-write-wins guard).
       if (opts.datasetVersion != null &&
-        (String(glScopeRef.current.datasetVersion) !== String(opts.datasetVersion) ||
-          String(glScopeRef.current.fiscalYear) !== String(opts.fiscalYear))) return;
+        String(glScopeRef.current.datasetVersion) !== String(opts.datasetVersion)) return;
       if (data?.success && data.bankAccounts?.length > 0) {
         setBsBankBalances(data);
       } else {
@@ -931,8 +927,9 @@ export default function WorkspaceReconciliation() {
       void loadManualBankData();
     } else if (selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_GL) {
       // Manual GL → PDF/Excel extraction endpoint, scoped to the selected dataset
-      // version + fiscal year so a different version's months never mix in.
-      const glScope = { datasetVersion: glSelectedVersion, fiscalYear: glFiscalYear };
+      // version so a different version's data never mixes in. All of the version's
+      // months are fetched; the From/To date pickers narrow the view client-side.
+      const glScope = { datasetVersion: glSelectedVersion };
       void loadExtractedBankPdfData(glScope);
       void loadBsBankBalances("manual_upload_excel_pdf", glScope);
     } else if (selectedReportSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) {
@@ -941,7 +938,7 @@ export default function WorkspaceReconciliation() {
       void loadBsBankBalances("quickbooks_manual");
     }
     // QUICKBOOKS (QB Online) uses its own separate data flow — no action here
-  }, [clientId, selectedReportSource, isSourceConfirmedByServer, glSelectedVersion, glFiscalYear, loadExtractedBankPdfData, loadManualBankData, loadQMSBankData, loadBsBankBalances]);
+  }, [clientId, selectedReportSource, isSourceConfirmedByServer, glSelectedVersion, loadExtractedBankPdfData, loadManualBankData, loadQMSBankData, loadBsBankBalances]);
 
   // Auto-restore QB Online bank activity from DB on page load.
   // Fires when the server confirms the source is QB Online and there is no
@@ -1056,28 +1053,9 @@ export default function WorkspaceReconciliation() {
     if (active) setGlSelectedVersion(String(active.value));
   }, [isManualGl, glVersions, glSelectedVersion, setGlSelectedVersion]);
 
-  // Fetch the fiscal years available for the selected version and default to the
-  // latest — mirrors how Reports scopes its year list per version.
-  useEffect(() => {
-    if (!isManualGl || !clientId || !glSelectedVersion) return undefined;
-    let cancelled = false;
-    getManualStageFilterOptions({ clientId, params: { datasetVersion: glSelectedVersion } })
-      .then((payload) => {
-        if (cancelled) return;
-        const years = (payload?.options?.fiscalYear || [])
-          .map(Number)
-          .filter(Number.isFinite)
-          .sort((a, b) => b - a);
-        setGlFiscalYears(years);
-        setGlFiscalYear((prev) =>
-          prev && years.includes(Number(prev)) ? prev : (years.length ? String(years[0]) : null),
-        );
-      })
-      .catch(() => {
-        if (!cancelled) setGlFiscalYears([]);
-      });
-    return () => { cancelled = true; };
-  }, [isManualGl, clientId, glSelectedVersion]);
+  // Fiscal-year scoping removed for Bank Reconciliation — the From/To date pickers
+  // are now the sole time filter. All of the selected version's months are fetched
+  // and narrowed client-side via manualMonthStart / manualMonthEnd.
 
   // QMS loading is now handled in the unified bank-data loader effect above
 
@@ -2426,7 +2404,7 @@ export default function WorkspaceReconciliation() {
                   onClick={() => {
                     if (isQBManual) void loadQMSBankData();
                     else if (isManualUpload) void loadManualBankData();
-                    else void loadExtractedBankPdfData({ datasetVersion: glSelectedVersion, fiscalYear: glFiscalYear });
+                    else void loadExtractedBankPdfData({ datasetVersion: glSelectedVersion });
                   }}
                   title="Reload data from the active source"
                 >
@@ -2436,7 +2414,8 @@ export default function WorkspaceReconciliation() {
                   Refresh
                 </button>
               )}
-              {/* Manual GL: dataset version + fiscal year scoping (shared with Reports) */}
+              {/* Manual GL: dataset version scoping (shared with Reports). Time
+                  filtering is handled by the Start/End date pickers above. */}
               {isManualGl && glVersions.length > 0 && (
                 <div className="min-w-[160px]">
                   <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
@@ -2451,22 +2430,6 @@ export default function WorkspaceReconciliation() {
                       <option key={String(v.value)} value={String(v.value)}>
                         {v.label || `Version ${v.value}`}{v.isActive ? " (active)" : ""}
                       </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-              {isManualGl && glFiscalYears.length > 0 && (
-                <div className="min-w-[120px]">
-                  <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
-                    Fiscal Year
-                  </label>
-                  <select
-                    className="input-base h-10 w-full"
-                    value={glFiscalYear ? String(glFiscalYear) : ""}
-                    onChange={(e) => setGlFiscalYear(e.target.value || null)}
-                  >
-                    {glFiscalYears.map((y) => (
-                      <option key={y} value={String(y)}>{y}</option>
                     ))}
                   </select>
                 </div>

@@ -18,7 +18,7 @@ import {
   Wallet,
   X,
 } from "lucide-react";
-import { formatCurrency, formatNumber, cn } from "../../../lib/utils";
+import { formatCurrency, cn } from "../../../lib/utils";
 import { exportToCSV } from "../../../lib/exportCSV";
 import {
   fetchInvoices,
@@ -999,16 +999,16 @@ export default function WorkspaceInvoices() {
       (row) => [
         row.monthLabel,
         row.year,
-        formatNumber(row.totalPostedAmount),
-        `${formatNumber(row.servicePercent, 2)}%`,
-        formatNumber(row.invoiceAmount),
+        row.totalPostedAmount,
+        `${row.servicePercent.toFixed(2)}%`,
+        row.invoiceAmount,
         row.totalEV,
-        formatNumber(row.dollarsPerEV),
+        row.dollarsPerEV,
         row.totalPA,
-        formatNumber(row.dollarsPerPA),
+        row.dollarsPerPA,
         row.notes,
-        formatNumber(row.discountValue),
-        formatNumber(row.clientFinalTotal),
+        row.discountValue,
+        row.clientFinalTotal,
       ],
     );
   };
@@ -1127,7 +1127,7 @@ export default function WorkspaceInvoices() {
           />
           <MetricCard
             label="Weighted Service %"
-            value={`${formatNumber(weightedServicePercent, 2)}%`}
+            value={`${weightedServicePercent.toFixed(2)}%`}
             subtitle="Service-coded value as a share of invoice totals"
             tone={{ bg: "#EEF2FF", fg: "#4338CA" }}
             icon={Activity}
@@ -1246,7 +1246,7 @@ export default function WorkspaceInvoices() {
                           {row.invoiceCount === 0 ? "–" : formatCurrency(row.totalPostedAmount)}
                         </td>
                         <td className="px-4 py-3 text-right text-[15px] text-[#101828] tabular-nums">
-                          {formatNumber(row.servicePercent, 2)}%
+                          {row.servicePercent.toFixed(2)}%
                         </td>
                         <td className="px-4 py-3 text-right text-[15px] font-semibold text-[#3C8C47] tabular-nums">
                           {row.invoiceCount === 0 ? "–" : formatCurrency(row.invoiceAmount)}
@@ -1307,7 +1307,7 @@ export default function WorkspaceInvoices() {
                         {formatCurrency(annualSummary.totalPostedAmount)}
                       </td>
                       <td className="px-4 py-4 text-right text-[14px] font-bold text-[#101828]">
-                        {formatNumber(weightedServicePercent, 2)}%
+                        {weightedServicePercent.toFixed(2)}%
                       </td>
                       <td className="px-4 py-4 text-right text-[14px] font-bold text-[#3C8C47]">
                         {formatCurrency(annualSummary.invoiceAmount)}

@@ -3,31 +3,35 @@ export function cn(...values) {
 }
 
 /**
- * Formats a number to US locale (en-US).
- * - Thousand separator: comma (,)
- * - Decimal separator: period (.)
- * - Handles null, undefined, NaN as '-'
- * - Zero as '0.00' (or as specified by decimals)
+ * Standardized Financial Number Formatter
+ * 0, null, undefined -> "-"
+ * Positive -> "1,234.56"
+ * Negative -> "(1,234.56)"
  */
-export const formatNumber = (value, decimals = 2) => {
-  if (value === null || value === undefined || value === "") return "-";
+export function formatNumber(amount, decimals = 2) {
+  if (amount === null || amount === undefined || amount === "" || Number(amount) === 0) {
+    return "-";
+  }
 
-  const numericValue = Number(value);
-  if (isNaN(numericValue)) return "-";
+  const numeric = typeof amount === "string"
+    ? Number(amount.replace(/,/g, "").replace(/[^\d.-]/g, ""))
+    : Number(amount);
 
-  return numericValue.toLocaleString("en-US", {
+  if (isNaN(numeric) || numeric === 0) {
+    return "-";
+  }
+
+  const formatter = new Intl.NumberFormat("en-US", {
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals,
   });
-};
 
-/**
- * Standardized Financial Number Formatter
- * 0 -> "0.00"
- * null, undefined -> "-"
- * Positive -> "1,234.56"
- * Negative -> "-1,234.56"
- */
+  const absValue = Math.abs(numeric);
+  const formatted = formatter.format(absValue);
+
+  return numeric < 0 ? `(${formatted})` : formatted;
+}
+
 export function formatCurrency(amount) {
   return formatNumber(amount, 2);
 }

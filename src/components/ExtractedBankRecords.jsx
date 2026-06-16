@@ -8,7 +8,6 @@ import {
   ChevronRight,
 } from "lucide-react";
 import { getStoredToken } from "../lib/api";
-import { formatNumber } from "../lib/utils";
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
@@ -17,7 +16,10 @@ const EXTRACT_BANK_PDF_RECORDS_ENDPOINT = `${API_BASE_URL}/api/extract-bank-pdf-
 const fmtPdfAmt = (val) => {
   const num = Number(val);
   if (!Number.isFinite(num)) return "-";
-  return formatNumber(num);
+  return new Intl.NumberFormat("en-IN", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(num);
 };
 
 const getErrMsg = (e) => (e instanceof Error ? e.message : String(e));
