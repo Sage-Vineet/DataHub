@@ -23,7 +23,6 @@ function CashflowReport({
   const summarySubtitle = null;
 
   if (reportType === "Detail") {
-    // Manual staged monthly detail
     const isManualMonthlyDetail = MANUAL_STAGED_SOURCES.includes(detailedData?.source) &&
       detailedData?.reportType === "cash_flow_monthly_detail";
 
@@ -35,11 +34,11 @@ function CashflowReport({
           subtitle={summarySubtitle}
           entityName={resolvedEntityName}
           selectedMonths={selectedMonths}
+          isPreview={isPreview}
         />
       );
     }
 
-    // QB comparative detail
     const rows = Array.isArray(detailedData?.rows) ? detailedData.rows : (Array.isArray(detailedData) ? detailedData : []);
     const columns = detailedData?.columns || undefined;
 
@@ -50,12 +49,12 @@ function CashflowReport({
         title="Cash Flow"
         subtitle={null}
         entityName={resolvedEntityName}
+        isPreview={isPreview}
       />
     );
   }
 
   // Summary mode
-  // Manual staged summary — uses hierarchicalRows + yearCols
   const isManualStagedSummary = MANUAL_STAGED_SOURCES.includes(data?.source) && Array.isArray(data?.hierarchicalRows);
   if (isManualStagedSummary) {
     const yearCols = Array.isArray(data.yearCols) ? data.yearCols : [];
@@ -67,6 +66,7 @@ function CashflowReport({
         title="Cash Flow Statement"
         subtitle={summarySubtitle}
         entityName={resolvedEntityName}
+        isPreview={isPreview}
       />
     );
   }
@@ -77,6 +77,7 @@ function CashflowReport({
       title="Cash Flow"
       subtitle={summarySubtitle}
       entityName={resolvedEntityName}
+      isPreview={isPreview}
     />
   );
 }

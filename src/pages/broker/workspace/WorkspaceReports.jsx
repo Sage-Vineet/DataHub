@@ -887,7 +887,13 @@ export default function WorkspaceReports() {
       if (kind === "excel") {
         exportReportToExcel("report-content", name);
       } else {
-        await exportReportToPdf("report-content", name);
+        await exportReportToPdf("report-content", name, {
+          entityName: company?.name || clientName || "Company",
+          reportType: selectedTab,
+          startDate: appliedStartDate,
+          endDate: appliedEndDate,
+          accountingMethod: appliedAccountingMethod,
+        });
       }
     } catch (err) {
       console.error("[WorkspaceReports] Export failed:", err);
@@ -1677,9 +1683,9 @@ export default function WorkspaceReports() {
           ))}
         </div>
 
-        <div className="card-base card-p min-h-[800px] flex flex-col">
+        <div className="card-base p-4 min-h-[800px] flex flex-col">
           {/* Collapsible filter bar — reclaims vertical space for the report. */}
-          <div className="mb-3 flex items-center gap-3">
+          <div className="mb-2 flex items-center gap-3">
             <button
               type="button"
               onClick={() => setFiltersCollapsed((v) => !v)}
@@ -1707,7 +1713,7 @@ export default function WorkspaceReports() {
           {/* QuickBooks-style Top Control Bar */}
           <div
             className={cn(
-              "mb-8 flex flex-wrap items-center gap-6 border-b border-border-light pb-6",
+              "mb-3 flex flex-wrap items-end gap-4 border-b border-border-light pb-3",
               filtersCollapsed && "hidden",
             )}
           >
@@ -2115,7 +2121,7 @@ export default function WorkspaceReports() {
               </div>
             ) : (
               <>
-                <div id="report-content" className="bg-white">
+                <div id="report-content">
                   {selectedTab === "Balance Sheet" ? (
                     <BalanceSheetReport
                       reportType={resolveEffectiveReportType(selectedTab, reportType, reportPeriod)}
