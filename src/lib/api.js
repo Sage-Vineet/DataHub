@@ -1473,3 +1473,15 @@ export function markGroupMessagesRead(groupId) {
 export function getGroupUnreadCount(groupId) {
   return request(`/message-groups/${groupId}/messages/unread-count`).then(unwrapPayload);
 }
+
+export function getTaxReconciliationOverrides({ clientId } = {}) {
+  const qs = clientId ? `?clientId=${encodeURIComponent(clientId)}` : '';
+  return request(`/manual-report-uploads/tax-reconciliation-overrides${qs}`);
+}
+
+export function saveTaxReconciliationOverrides({ clientId, overrides } = {}) {
+  return request('/manual-report-uploads/tax-reconciliation-overrides', {
+    method: 'PUT',
+    body: { clientId, overrides },
+  });
+}

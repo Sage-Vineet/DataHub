@@ -1315,4 +1315,83 @@ router.get("/manual-upload/bank-data", async (req, res) => {
   }
 });
 
+/* ===========================
+   GET /manual-report-uploads/tax-reconciliation-overrides
+   Returns user-saved Schedule K overrides for this company.
+=========================== */
+router.get("/manual-report-uploads/tax-reconciliation-overrides", async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+
+    const { data } = await supabase
+      .from("qb_synced_reports")
+      .select("data, updated_at")
+      .eq("company_id", clientId)
+      .eq("report_type", "tax_reconciliation_overrides")
+      .maybeSingle();
+
+    return res.json({
+      success: true,
+      overrides: data?.data?.overrides || {},
+      updatedAt: data?.updated_at || null,
+    });
+  } catch (err) {
+    console.error("[TaxOverrides GET] Error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/* ===========================
+   PUT /manual-report-uploads/tax-reconciliation-overrides
+   Saves (upserts) the full user-edited Schedule K overrides for this company.
+   Body: { overrides: { [year]: { [label]: { taxReturn, pl } } } }
+=========================== */
+router.put("/manual-report-uploads/tax-reconciliation-overrides", async (req, res) => {
+  try {
+    const clientId = resolveClientId(req);
+    if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
+
+    const { overrides } = req.body || {};
+    if (!overrides || typeof overrides !== "object") {
+      return res.status(400).json({ success: false, error: "Missing or invalid overrides object." });
+    }
+
+    const now = new Date().toISOString();
+
+    const { data: existing } = await supabase
+      .from("qb_synced_reports")
+      .select("id")
+      .eq("company_id", clientId)
+      .eq("report_type", "tax_reconciliation_overrides")
+      .maybeSingle();
+
+    const payload = {
+      company_id: clientId,
+      report_type: "tax_reconciliation_overrides",
+      source: MANUAL_REPORT_UPLOAD_SOURCE,
+      data: { overrides },
+      status: "synced",
+      last_synced_at: now,
+      updated_at: now,
+    };
+
+    let upsertError;
+    if (existing?.id) {
+      ({ error: upsertError } = await supabase
+        .from("qb_synced_reports").update(payload).eq("id", existing.id));
+    } else {
+      ({ error: upsertError } = await supabase
+        .from("qb_synced_reports").insert(payload));
+    }
+
+    if (upsertError) throw new Error(upsertError.message);
+
+    return res.json({ success: true, updatedAt: now });
+  } catch (err) {
+    console.error("[TaxOverrides PUT] Error:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 module.exports = router;
