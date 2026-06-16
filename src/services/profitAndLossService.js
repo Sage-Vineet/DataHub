@@ -154,6 +154,132 @@ function normalizeKey(name) {
   return PNL_SECTION_SYNONYMS[basic] || basic;
 }
 
+// Account name patterns (normalized) that belong in "Other Income", not operating "Income".
+const OTHER_INCOME_PATTERNS = [
+  "interest income",
+  "interest earned",
+  "interest revenue",
+  "dividend income",
+  "other interest income",
+];
+
+// Top-level calculated rows that must decrease when operating Income decreases.
+// "Net Income" is intentionally excluded — it stays the same once Other Income is added.
+const INCOME_DEPENDENT_ROWS = new Set([
+  "gross profit",
+  "net ordinary income",
+  "net operating income",
+]);
+
+function isOtherIncomeItem(name) {
+  const n = normalizeName(name);
+  return OTHER_INCOME_PATTERNS.some(p => n === p || n.includes(p));
+}
+
+/**
+ * Moves accounts like "Interest Income" out of the operating "Income" section
+ * into a separate "Other Income" section, adjusting Gross Profit and
+ * Net Operating Income accordingly.  Safe to call on any row tree —
+ * no-op if nothing matches.
+ */
+function reclassifyOtherIncome(rows) {
+  if (!Array.isArray(rows) || !rows.length) return rows;
+
+  const incomeIdx = rows.findIndex(r => normalizeKey(r.name) === "income");
+  if (incomeIdx === -1) return rows;
+
+  const incomeSection = rows[incomeIdx];
+  const children = incomeSection.children || [];
+
+  const toMove = children.filter(
+    c => c.type !== "total" && c.type !== "header" && isOtherIncomeItem(c.name),
+  );
+  if (!toMove.length) return rows;
+
+  const isMultiCol = toMove.some(item => item.amounts && typeof item.amounts === "object");
+
+  let deltaScalar = 0;
+  let deltaMap = null;
+
+  if (isMultiCol) {
+    deltaMap = {};
+    for (const item of toMove) {
+      if (item.amounts) {
+        for (const [k, v] of Object.entries(item.amounts)) {
+          deltaMap[k] = (deltaMap[k] || 0) + (Number(v) || 0);
+        }
+      }
+    }
+    deltaScalar = Object.values(deltaMap).reduce((s, v) => s + v, 0);
+  } else {
+    deltaScalar = toMove.reduce((s, item) => s + (Number(item.amount) || 0), 0);
+  }
+
+  if (!deltaScalar) return rows;
+
+  function applyDelta(node, sign) {
+    if (isMultiCol && deltaMap) {
+      const newAmounts = {};
+      const base = node.amounts || {};
+      for (const k of new Set([...Object.keys(base), ...Object.keys(deltaMap)])) {
+        newAmounts[k] = (Number(base[k]) || 0) + sign * (deltaMap[k] || 0);
+      }
+      return { ...node, amount: (Number(node.amount) || 0) + sign * deltaScalar, amounts: newAmounts };
+    }
+    return { ...node, amount: (Number(node.amount) || 0) + sign * deltaScalar };
+  }
+
+  const sub = node => applyDelta(node, -1);
+  const add = node => applyDelta(node, +1);
+
+  // Remove moved items from Income, adjust its total children and section total.
+  const updatedIncomeChildren = children
+    .filter(c => !toMove.includes(c))
+    .map(c => (c.type === "total" ? sub(c) : c));
+  const updatedIncomeSection = sub({ ...incomeSection, children: updatedIncomeChildren });
+
+  // Update top-level rows.
+  let newRows = rows.map((row, idx) => {
+    if (idx === incomeIdx) return updatedIncomeSection;
+    if (INCOME_DEPENDENT_ROWS.has(normalizeName(row.name))) return sub(row);
+    return row;
+  });
+
+  const movedFields = isMultiCol && deltaMap
+    ? { amount: deltaScalar, amounts: { ...deltaMap } }
+    : { amount: deltaScalar };
+
+  const otherIncomeIdx = newRows.findIndex(r => normalizeKey(r.name) === "other income");
+
+  if (otherIncomeIdx !== -1) {
+    const existing = newRows[otherIncomeIdx];
+    const existingChildren = existing.children || [];
+    const newChildren = [
+      ...existingChildren.filter(c => c.type !== "total"),
+      ...toMove,
+      ...existingChildren.filter(c => c.type === "total").map(add),
+    ];
+    newRows[otherIncomeIdx] = add({ ...existing, children: newChildren });
+  } else {
+    const totalRow = { id: "oi-total", name: "Total Other Income", type: "total", ...movedFields };
+    const otherIncomeSection = {
+      id: "oi-section",
+      name: "Other Income",
+      type: "header",
+      ...movedFields,
+      children: [...toMove, totalRow],
+    };
+    const netIncomeIdx = newRows.findIndex(r => normalizeName(r.name) === "net income");
+    if (netIncomeIdx !== -1) {
+      newRows = [...newRows.slice(0, netIncomeIdx), otherIncomeSection, ...newRows.slice(netIncomeIdx)];
+    } else {
+      newRows.push(otherIncomeSection);
+    }
+  }
+
+  return newRows;
+}
+
 // Union-merges tree nodes from N files into one tree.
 // Every row that exists in ANY file appears in the output.
 // amounts[fileKey] = value from that file (0 if not present).
@@ -274,7 +400,7 @@ export async function getProfitAndLoss(
     options?.sourceMode || "quickbooks",
     options,
   );
-  return rows;
+  return reclassifyOtherIncome(rows);
 }
 
 function pnlFileYear(file) {
@@ -371,7 +497,7 @@ function buildPNLFromPeriodColumns(sortedFiles) {
     });
 
   return {
-    rows: enrich(unionStructure),
+    rows: reclassifyOtherIncome(enrich(unionStructure)),
     columns: { yearCols: allCols, ytdComparison: null },
   };
 }
@@ -402,7 +528,7 @@ async function buildPNLMultiFileDetail(sourceMode = "manual_upload") {
     rows: f.data.rows,
   }));
 
-  const rows = mergeFileNodes(
+  const mergedRows = mergeFileNodes(
     filePeriods.map((p) => p.rows),
     filePeriods.map((p) => p.key),
   );
@@ -410,7 +536,7 @@ async function buildPNLMultiFileDetail(sourceMode = "manual_upload") {
   const yearCols = filePeriods.map((p) => ({ key: p.key, label: p.label }));
 
   return {
-    rows,
+    rows: reclassifyOtherIncome(mergedRows),
     columns: { yearCols, ytdComparison: null },
   };
 }
@@ -461,7 +587,7 @@ export async function getProfitAndLossDetail(
     ),
   );
 
-  const rows = mergePNLPeriods(results, periods);
+  const rows = reclassifyOtherIncome(mergePNLPeriods(results, periods));
 
   const yearCols = periods
     .filter((p) => !p.key.includes("_ytd"))
