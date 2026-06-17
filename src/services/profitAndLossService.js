@@ -18,7 +18,21 @@ import { parseSummaryReport } from "../lib/report-parsers";
  * 2. YTD for Current Year (e.g., 2025 YTD)
  * 3. YTD for Previous Year (e.g., 2024 YTD) for comparison
  */
-function getPNLComparativePeriods(numYears = 4) {
+function getPNLComparativePeriods(numYears = 4, startYear = null, endYear = null) {
+  // User-selected year range: generate one full-year period per year in [startYear, endYear].
+  if (startYear && endYear) {
+    const periods = [];
+    for (let y = Number(startYear); y <= Number(endYear); y++) {
+      const now = new Date();
+      const isCurrentYear = y === now.getFullYear();
+      const endStr = isCurrentYear
+        ? `${y}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`
+        : `${y}-12-31`;
+      periods.push({ key: `y${y}`, label: `FY ${y}${isCurrentYear ? " YTD" : ""}`, start: `${y}-01-01`, end: endStr });
+    }
+    return periods;
+  }
+
   const now = new Date();
   const currentYear = now.getFullYear();
   const currentMonth = now.getMonth();
@@ -502,10 +516,46 @@ function buildPNLFromPeriodColumns(sortedFiles) {
   };
 }
 
-async function buildPNLMultiFileDetail(sourceMode = "manual_upload") {
+// Collapse a node's per-period colAmounts to a single annual value so that
+// files with monthly columns can appear as one "FY YYYY" column in Year mode.
+function collapseNodeToAnnual(node, periods) {
+  const totalIdx = Array.isArray(periods)
+    ? periods.findIndex((p) => /^total$/i.test(String(p).trim()))
+    : -1;
+  const amount =
+    node.amount != null && node.amount !== 0
+      ? node.amount
+      : Array.isArray(node.colAmounts) && node.colAmounts.length
+        ? totalIdx >= 0
+          ? (node.colAmounts[totalIdx] || 0)
+          : node.colAmounts.reduce((s, v) => s + (Number(v) || 0), 0)
+        : 0;
+  return {
+    ...node,
+    amount,
+    children: node.children
+      ? node.children.map((c) => collapseNodeToAnnual(c, periods))
+      : undefined,
+  };
+}
+
+async function buildPNLMultiFileDetail(sourceMode = "manual_upload", options = {}) {
   const fetchFn = sourceMode === "quickbooks_manual" ? getAllQMSUploadedReports : getAllManualUploadedReports;
   const result = await fetchFn("profit_and_loss");
-  const files = (result?.files || []).filter((f) => f.data?.rows?.length);
+  let files = (result?.files || []).filter((f) => f.data?.rows?.length);
+
+  // Year range filtering
+  const { startYear, endYear, yearMode } = options;
+  if (startYear || endYear) {
+    files = files.filter((f) => {
+      const y = pnlFileYear(f);
+      if (!y) return true;
+      if (startYear && y < Number(startYear)) return false;
+      if (endYear && y > Number(endYear)) return false;
+      return true;
+    });
+  }
+
   if (!files.length) return { rows: [], columns: { yearCols: [], ytdComparison: null } };
 
   // Sort files oldest → newest
@@ -516,17 +566,24 @@ async function buildPNLMultiFileDetail(sourceMode = "manual_upload") {
     return new Date(a.updatedAt || 0) - new Date(b.updatedAt || 0);
   });
 
-  // If files have monthly period columns, expand one column per period (exact file layout)
-  if (sortedFiles.some((f) => f.data?.periods?.length > 0)) {
+  // yearMode: one "FY YYYY" column per file — skip period expansion.
+  // Otherwise: if any file has monthly columns, expand them all.
+  if (!yearMode && sortedFiles.some((f) => f.data?.periods?.length > 0)) {
     return buildPNLFromPeriodColumns(sortedFiles);
   }
 
-  // One column per file — union all rows so no data is missing
-  const filePeriods = sortedFiles.map((f, i) => ({
-    key: `f${i}`,
-    label: pnlFileLabel(f),
-    rows: f.data.rows,
-  }));
+  // One column per file — collapse monthly colAmounts to annual totals when yearMode.
+  const filePeriods = sortedFiles.map((f, i) => {
+    const year = pnlFileYear(f);
+    const rows = yearMode && f.data?.periods?.length
+      ? (f.data.rows || []).map((r) => collapseNodeToAnnual(r, f.data.periods))
+      : (f.data.rows || []);
+    return {
+      key: `f${i}`,
+      label: year ? `FY ${year}` : pnlFileLabel(f),
+      rows,
+    };
+  });
 
   const mergedRows = mergeFileNodes(
     filePeriods.map((p) => p.rows),
@@ -569,11 +626,16 @@ export async function getProfitAndLossDetail(
   }
 
   if (options?.sourceMode === "manual_upload" || options?.sourceMode === "quickbooks_manual") {
-    return buildPNLMultiFileDetail(options.sourceMode);
+    return buildPNLMultiFileDetail(options.sourceMode, {
+      startYear: options.startYear,
+      endYear: options.endYear,
+      yearMode: options.yearMode,
+    });
   }
 
-  // Detail now uses system-defined multi-year comparison (EBITDA analysis)
-  const periods = getPNLComparativePeriods(4);
+  // Detail now uses system-defined multi-year comparison (EBITDA analysis).
+  // When a year range is provided (Year mode), generate periods only for that range.
+  const periods = getPNLComparativePeriods(4, options.startYear || null, options.endYear || null);
 
   const results = await Promise.all(
     periods.map((p) =>

@@ -93,7 +93,20 @@ function generatedCfToRows(cf) {
  * 2. YTD for Current Year (e.g., 2025 YTD)
  * 3. YTD for Previous Year (e.g., 2024 YTD) for comparison
  */
-function getCashflowComparativePeriods(numYears = 4) {
+function getCashflowComparativePeriods(numYears = 4, startYear = null, endYear = null) {
+  if (startYear && endYear) {
+    const now = new Date();
+    const periods = [];
+    for (let y = Number(startYear); y <= Number(endYear); y++) {
+      const isCurrentYear = y === now.getFullYear();
+      const endStr = isCurrentYear
+        ? `${y}-${String(now.getMonth()+1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")}`
+        : `${y}-12-31`;
+      periods.push({ key: `y${y}`, label: `FY ${y}${isCurrentYear ? " YTD" : ""}`, start: `${y}-01-01`, end: endStr });
+    }
+    return periods;
+  }
+
   const now = new Date();
   const currentYear = now.getFullYear();
   const currentMonth = now.getMonth();
@@ -449,7 +462,28 @@ async function buildGeneratedCFMultiYear() {
   return { rows, columns: { yearCols, ytdComparison: null } };
 }
 
-async function buildCFMultiFileDetail(sourceMode = "manual_upload") {
+function collapseCFNodeToAnnual(node, periods) {
+  const totalIdx = Array.isArray(periods)
+    ? periods.findIndex((p) => /^total$/i.test(String(p).trim()))
+    : -1;
+  const amount =
+    node.amount != null && node.amount !== 0
+      ? node.amount
+      : Array.isArray(node.colAmounts) && node.colAmounts.length
+        ? totalIdx >= 0
+          ? (node.colAmounts[totalIdx] || 0)
+          : node.colAmounts.reduce((s, v) => s + (Number(v) || 0), 0)
+        : 0;
+  return {
+    ...node,
+    amount,
+    children: node.children
+      ? node.children.map((c) => collapseCFNodeToAnnual(c, periods))
+      : undefined,
+  };
+}
+
+async function buildCFMultiFileDetail(sourceMode = "manual_upload", options = {}) {
   // manual_upload cash flows are generated, not stored as uploaded files.
   if (sourceMode === "manual_upload") {
     return buildGeneratedCFMultiYear();
@@ -457,7 +491,19 @@ async function buildCFMultiFileDetail(sourceMode = "manual_upload") {
 
   const fetchFn = sourceMode === "quickbooks_manual" ? getAllQMSUploadedReports : getAllManualUploadedReports;
   const result = await fetchFn("cash_flow");
-  const files = (result?.files || []).filter((f) => f.data?.rows?.length);
+  let files = (result?.files || []).filter((f) => f.data?.rows?.length);
+
+  const { startYear, endYear, yearMode } = options;
+  if (startYear || endYear) {
+    files = files.filter((f) => {
+      const y = cfFileYear(f);
+      if (!y) return true;
+      if (startYear && y < Number(startYear)) return false;
+      if (endYear && y > Number(endYear)) return false;
+      return true;
+    });
+  }
+
   if (!files.length) return { rows: [], columns: { yearCols: [], ytdComparison: null } };
 
   // Sort files oldest → newest
@@ -468,17 +514,22 @@ async function buildCFMultiFileDetail(sourceMode = "manual_upload") {
     return new Date(a.updatedAt || 0) - new Date(b.updatedAt || 0);
   });
 
-  // If files have monthly period columns, expand one column per period (exact file layout)
-  if (sortedFiles.some((f) => f.data?.periods?.length > 0)) {
+  // yearMode: one "FY YYYY" column per file — skip period expansion.
+  if (!yearMode && sortedFiles.some((f) => f.data?.periods?.length > 0)) {
     return buildCFFromPeriodColumns(sortedFiles);
   }
 
-  // One column per file — union all rows so no data is missing
-  const filePeriods = sortedFiles.map((f, i) => ({
-    key: `f${i}`,
-    label: cfFileLabel(f),
-    rows: f.data.rows,
-  }));
+  const filePeriods = sortedFiles.map((f, i) => {
+    const year = cfFileYear(f);
+    const rows = yearMode && f.data?.periods?.length
+      ? (f.data.rows || []).map((r) => collapseCFNodeToAnnual(r, f.data.periods))
+      : (f.data.rows || []);
+    return {
+      key: `f${i}`,
+      label: year ? `FY ${year}` : cfFileLabel(f),
+      rows,
+    };
+  });
 
   const rows = mergeFileNodes(
     filePeriods.map((p) => p.rows),
@@ -513,10 +564,14 @@ export async function getCashflowDetail(
     return response;
   }
   if (options?.sourceMode === "manual_upload" || options?.sourceMode === "quickbooks_manual") {
-    return buildCFMultiFileDetail(options.sourceMode);
+    return buildCFMultiFileDetail(options.sourceMode, {
+      startYear: options.startYear,
+      endYear: options.endYear,
+      yearMode: options.yearMode,
+    });
   }
 
-  const periods = getCashflowComparativePeriods(4);
+  const periods = getCashflowComparativePeriods(4, options.startYear || null, options.endYear || null);
 
   const results = await Promise.all(
     periods.map((p) =>
