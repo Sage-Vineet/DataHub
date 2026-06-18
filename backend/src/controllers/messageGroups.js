@@ -20,21 +20,19 @@ const listGroupsForCompany = asyncHandler(async (req, res) => {
     return res.status(403).json({ error: "Access denied" });
   }
 
-  let groups = await messageGroupService.getGroupsForCompany(companyId);
-
-  // First-visit bootstrap: create the standard groups if none exist yet.
-  if (!groups.length) {
-    try {
-      const company = await companyService.getCompanyById(companyId);
-      if (company) {
-        await messageGroupService.autoCreateGroupsForCompany(company.id, company.name);
-        groups = await messageGroupService.getGroupsForCompany(companyId);
-      }
-    } catch (err) {
-      console.error("[listGroupsForCompany] auto-create failed:", err.message);
+  // Always sync group membership so newly-added brokers/clients/buyers are reflected
+  // immediately. All operations inside autoCreateGroupsForCompany are upserts, so
+  // re-running on every load is safe and never disrupts existing messages.
+  try {
+    const company = await companyService.getCompanyById(companyId);
+    if (company) {
+      await messageGroupService.autoCreateGroupsForCompany(company.id, company.name);
     }
+  } catch (err) {
+    console.error("[listGroupsForCompany] sync failed:", err.message);
   }
 
+  const groups = await messageGroupService.getGroupsForCompany(companyId);
   res.json(await messageGroupService.enrichGroups(groups, req.user.id));
 });
 

@@ -193,23 +193,6 @@ async function fetchCompanyUsersByRole(companyId) {
     }
   }
 
-  // ── Include broker team members from broker_team_invites ──────────────────
-  // broker_team_invites links a team_owner (primary broker) to their invited
-  // colleagues. These colleagues share the broker's company access but may not
-  // have their own user_companies entry for each client company.
-  if (brokerIds.length) {
-    const { data: invites } = await supabase
-      .from("broker_team_invites")
-      .select("invited_broker_id")
-      .in("team_owner_id", brokerIds);
-
-    for (const inv of invites || []) {
-      if (inv.invited_broker_id && !brokerIds.includes(inv.invited_broker_id)) {
-        brokerIds.push(inv.invited_broker_id);
-      }
-    }
-  }
-
   return { brokerIds, clientIds, buyerMap };
 }
 
@@ -272,11 +255,8 @@ async function autoCreateGroupsForCompany(companyId, companyName) {
     return groupId;
   }
 
-  // 1. Broker internal — broker team only
-  if (brokerIds.length) {
-    const gid = await upsertGroup(brokerCompanyName, MSG_GROUP_TYPE.BROKER_INTERNAL);
-    await addGroupMembers(gid, brokerIds);
-  }
+  // 1. Broker internal — skipped during auto-creation; created only when the broker
+  //    manually adds a team member so the group is never pre-populated.
 
   // 2. Broker + Client
   if (brokerIds.length && clientIds.length) {
@@ -287,8 +267,11 @@ async function autoCreateGroupsForCompany(companyId, companyName) {
     await addGroupMembers(gid, [...brokerIds, ...clientIds]);
   }
 
-  // 4. DealTeam — ONE group per company containing EVERYONE (broker + all clients + all buyers).
-  //    buyer_user_id = null signals this is the company-wide deal team, not per-buyer.
+  // 4. DealTeam — everyone: the directly-assigned broker(s) + all client + all buyer members.
+  //    Created on initial company creation with at minimum the creating broker + company owner.
+  //    autoCreateGroupsForCompany re-runs whenever a user is added to the company, so new
+  //    broker team members, client team members, and buyers are upserted into this group automatically.
+  //    buyer_user_id = null signals this is the company-wide group, not per-buyer.
   {
     const allBuyerMemberIds = [...buyerMap.values()].flatMap((set) => [...set]);
     const allMemberIds = [...new Set([...brokerIds, ...clientIds, ...allBuyerMemberIds])];
@@ -296,7 +279,7 @@ async function autoCreateGroupsForCompany(companyId, companyName) {
       const gid = await upsertGroup(
         `DealTeam - ${companyName}`,
         MSG_GROUP_TYPE.DEAL_TEAM,
-        null, // company-wide, not per-buyer
+        null,
       );
       await addGroupMembers(gid, allMemberIds);
     }

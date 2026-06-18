@@ -105,7 +105,7 @@ async function createCompany(companyData) {
       since: companyData.since || null,
       logo: companyData.logo || null,
       contact_name: companyData.contact_name,
-      contact_email: companyData.contact_email,
+      contact_email: companyData.contact_email ? String(companyData.contact_email).trim().toLowerCase() : null,
       contact_phone: companyData.contact_phone || null,
       profit_metric: normalizeProfitMetric(companyData.profit_metric ?? companyData.profitMetric),
     })
@@ -141,7 +141,7 @@ async function updateCompany(id, companyData) {
     since: companyData.since,
     logo: companyData.logo,
     contact_name: companyData.contact_name,
-    contact_email: companyData.contact_email,
+    contact_email: companyData.contact_email !== undefined ? (companyData.contact_email ? String(companyData.contact_email).trim().toLowerCase() : null) : undefined,
     contact_phone: companyData.contact_phone,
     profit_metric: companyData.profit_metric ?? companyData.profitMetric,
   };
