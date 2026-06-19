@@ -2,11 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import Header from "../../../components/Header";
 
-import { getStoredToken, setSelectedReportSource, getManualStageFilterOptions, loadSavedQBBankActivityRequest } from "../../../lib/api";
+import { getStoredToken, setSelectedReportSource, loadSavedQBBankActivityRequest } from "../../../lib/api";
 import { useDataSource } from "../../../context/DataSourceContext";
 import { useDatasetVersionStore } from "../../../store/useDatasetVersionStore";
 import { emitWorkspaceDataSourceUpdated } from "../../../lib/dataSourceEvents";
-import { cn } from "../../../lib/utils";
+import { cn, formatNumber, formatCurrency } from "../../../lib/utils";
 import {
   REPORT_SOURCE_KEYS,
   REPORT_SOURCE_OPTIONS,
@@ -93,13 +93,34 @@ function matchBsBank(queryName, bankAccounts) {
     (b) => _bsNormName(b.name).includes(qNorm) || qNorm.includes(_bsNormName(b.name)),
   );
   if (contains) return contains;
-  const qWords = qNorm.split(" ").filter((w) => w.length > 2);
-  if (qWords.length) {
+  // Stop-word aware word overlap: generic banking words (e.g. "bank") must not
+  // decide a match when a more specific identifier (e.g. "needham") is present.
+  // Numeric tokens (account number digits embedded in display names) are excluded.
+  const BS_STOP = new Set(["bank", "banks", "banking", "financial", "corp", "inc",
+    "llc", "ltd", "national", "savings", "credit", "union", "trust", "services",
+    "group", "company"]);
+  const allW = (s) => s.split(" ").filter((w) => w.length > 2 && !/^\d+$/.test(w));
+  const sigW = (s) => allW(s).filter((w) => !BS_STOP.has(w));
+  const qAll = allW(qNorm);
+  const qSig = sigW(qNorm);
+  if (qAll.length) {
+    // First pass — only significant (non-stop, non-numeric) words
+    if (qSig.length) {
+      let best = 0, bestMatch = null;
+      for (const b of bankAccounts) {
+        const bSig = sigW(_bsNormName(b.name));
+        const overlap = qSig.filter((w) => bSig.includes(w)).length;
+        const score = overlap / Math.max(qSig.length, bSig.length, 1);
+        if (score > best) { best = score; bestMatch = b; }
+      }
+      if (bestMatch && best > 0) return bestMatch;
+    }
+    // Second pass — all non-numeric words (fallback when no significant hit)
     let best = 0, bestMatch = null;
     for (const b of bankAccounts) {
-      const bWords = _bsNormName(b.name).split(" ").filter((w) => w.length > 2);
-      const overlap = qWords.filter((w) => bWords.includes(w)).length;
-      const score = overlap / Math.max(qWords.length, bWords.length, 1);
+      const bWords = allW(_bsNormName(b.name));
+      const overlap = qAll.filter((w) => bWords.includes(w)).length;
+      const score = overlap / Math.max(qAll.length, bWords.length, 1);
       if (score > best && score > 0.3) { best = score; bestMatch = b; }
     }
     if (bestMatch) return bestMatch;
@@ -127,38 +148,28 @@ const getStoredWorkspaceState = (clientId) => {
 };
 const fmtAmt = (val) => {
   if (val == null || val === 0) return "-";
-  return new Intl.NumberFormat("en-IN", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(val);
+  return formatNumber(val, 2);
 };
 const fmtAcct = (val) => {
   if (val == null || val === 0) return "-";
-  const abs = new Intl.NumberFormat("en-IN", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(Math.abs(val));
-  return val < 0 ? `(${abs})` : abs;
+  return formatNumber(val, 2);
 };
 const fmtVarianceAmt = (val) => {
   if (val == null || val === 0)
     return { display: "-", colorClass: "text-text-muted" };
-  const abs = new Intl.NumberFormat("en-IN", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(Math.abs(val));
+  const formatted = formatNumber(Math.abs(val), 2);
   if (val < 0)
-    return { display: `-${abs}`, colorClass: "text-red-600 font-medium" };
-  return { display: `+${abs}`, colorClass: "text-green-600 font-medium" };
+    return { display: `-${formatted}`, colorClass: "text-red-600 font-medium" };
+  return { display: `+${formatted}`, colorClass: "text-green-600 font-medium" };
 };
 const fmtVariancePct = (val) => {
   if (val == null) return { display: "-", colorClass: "text-text-muted" };
-  const fixed = parseFloat(val).toFixed(1);
-  if (parseFloat(fixed) === 0)
+  const formatted = formatNumber(val, 1);
+  if (parseFloat(formatted) === 0)
     return { display: "0.0%", colorClass: "text-text-muted" };
   if (val < 0)
-    return { display: `${fixed}%`, colorClass: "text-red-600 font-medium" };
-  return { display: `+${fixed}%`, colorClass: "text-green-600 font-medium" };
+    return { display: `${formatted}%`, colorClass: "text-red-600 font-medium" };
+  return { display: `+${formatted}%`, colorClass: "text-green-600 font-medium" };
 };
 const monthLabel = (ym) => {
   const [y, m] = ym.split("-");
@@ -202,14 +213,11 @@ function FreezeTable({ months, label, containerClass, children }) {
       {/* Sticky month header — sticks at top of main scroll container */}
       <div className="sticky top-0 z-20">
         <div ref={headScrollRef} className="no-scrollbar overflow-x-auto">
-          <table className="table-fixed border-collapse text-[13px]">
+          <table className="w-full table-fixed border-collapse text-[13px]">
             {colGroup}
             <thead>
               <tr className="bg-[#F8FBF1]">
-                <th className={cn(
-                  "sticky left-0 z-30 border border-border bg-[#F8FBF1] px-4 py-3 text-left text-[12px] font-semibold text-primary",
-                  TABLE_LABEL_COL_WIDTH,
-                )}>
+                <th className="sticky left-0 z-30 border border-border bg-[#F8FBF1] px-4 py-3 text-left text-[12px] font-semibold text-primary">
                   {label}
                 </th>
                 {months.map((m) => (
@@ -237,7 +245,7 @@ function FreezeTable({ months, label, containerClass, children }) {
 
       {/* Scrollable body — syncs horizontal scroll to the header above */}
       <div className="overflow-x-auto rounded-b-[var(--radius-card)]" onScroll={onBodyScroll}>
-        <table className="table-fixed border-collapse bg-white text-[13px]">
+        <table className="w-full table-fixed border-collapse bg-white text-[13px]">
           {colGroup}
           <tbody>
             {children}
@@ -261,8 +269,8 @@ function FreezeTable({ months, label, containerClass, children }) {
  */
 
 // Convert "Jan-2025" display key ↔ "2025-01" ISO key
-const _DISP_MONTH_MAP = {Jan:"01",Feb:"02",Mar:"03",Apr:"04",May:"05",Jun:"06",Jul:"07",Aug:"08",Sep:"09",Oct:"10",Nov:"11",Dec:"12"};
-const _ISO_TO_SHORT = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const _DISP_MONTH_MAP = { Jan: "01", Feb: "02", Mar: "03", Apr: "04", May: "05", Jun: "06", Jul: "07", Aug: "08", Sep: "09", Oct: "10", Nov: "11", Dec: "12" };
+const _ISO_TO_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const displayMonthToIso = (d) => {
   const [mon, year] = String(d || "").split("-");
   return _DISP_MONTH_MAP[mon] ? `${year}-${_DISP_MONTH_MAP[mon]}` : d;
@@ -402,13 +410,12 @@ export default function WorkspaceReconciliation() {
   const glSelectedVersion = useDatasetVersionStore((s) => s.selectedVersion);
   const setGlSelectedVersion = useDatasetVersionStore((s) => s.setSelectedVersion);
   const fetchGlVersions = useDatasetVersionStore((s) => s.fetchVersions);
-  const [glFiscalYears, setGlFiscalYears] = useState([]);
-  const [glFiscalYear, setGlFiscalYear] = useState(null);
-  // Track the live GL scope (version + fiscal year) so an in-flight bank-data
-  // fetch for a previous version/year can be discarded if the user switches
-  // mid-fetch — prevents stale-version data overwriting fresh (needs F5) data.
-  const glScopeRef = useRef({ datasetVersion: glSelectedVersion, fiscalYear: glFiscalYear });
-  glScopeRef.current = { datasetVersion: glSelectedVersion, fiscalYear: glFiscalYear };
+  // Track the live GL scope (selected dataset version) so an in-flight bank-data
+  // fetch for a previous version can be discarded if the user switches mid-fetch —
+  // prevents stale-version data overwriting fresh (needs F5) data. Time filtering
+  // is handled client-side by the From/To date pickers, not by a fiscal-year scope.
+  const glScopeRef = useRef({ datasetVersion: glSelectedVersion });
+  glScopeRef.current = { datasetVersion: glSelectedVersion };
   const storedState = getStoredWorkspaceState(clientId);
   const [expandedAccounts, setExpandedAccounts] = useState(
     storedState?.expandedAccounts || getDefaultExpandedAccounts(),
@@ -461,7 +468,10 @@ export default function WorkspaceReconciliation() {
       status: "idle",
       message: "",
     });
+  const [manualMonthStart, setManualMonthStart] = useState(null);
+  const [manualMonthEnd, setManualMonthEnd] = useState(null);
   const [bsBankBalances, setBsBankBalances] = useState(null);
+  const [plFinancials, setPlFinancials] = useState(null);
   const [reportSources, setReportSources] = useState([]);
   const [selectedReportSource, setSelectedReportSourceState] = useState(
     normalizeReportSourceKey(
@@ -725,9 +735,9 @@ export default function WorkspaceReconciliation() {
       if (clientId) params.append("clientId", clientId);
       // Pass the active source so the backend reads from the correct folder + cache partition.
       if (selectedReportSource) params.append("source", selectedReportSource);
-      // Manual GL scoping: restrict to the selected dataset version's fiscal year.
+      // Manual GL scoping: restrict to the selected dataset version (all years).
+      // The From/To date pickers narrow the displayed months client-side.
       if (opts.datasetVersion) params.append("datasetVersion", String(opts.datasetVersion));
-      if (opts.fiscalYear) params.append("fiscalYear", String(opts.fiscalYear));
       const url = `${EXTRACT_BANK_PDF_RECORDS_ENDPOINT}?${params.toString()}`;
       const resp = await fetch(url, {
         cache: "no-store",
@@ -738,11 +748,10 @@ export default function WorkspaceReconciliation() {
 
       const normalized = normalizeExtractedBankPdfData(data);
       // Discard result if source changed while this fetch was in-flight, or —
-      // for Manual GL — if the selected version/fiscal year changed mid-fetch.
+      // for Manual GL — if the selected version changed mid-fetch.
       if (activeSourceRef.current !== selectedReportSource) return;
       if (opts.datasetVersion != null &&
-          (String(glScopeRef.current.datasetVersion) !== String(opts.datasetVersion) ||
-           String(glScopeRef.current.fiscalYear) !== String(opts.fiscalYear))) return;
+        String(glScopeRef.current.datasetVersion) !== String(opts.datasetVersion)) return;
       setExtractedBankPdfData(normalized);
       setExtractedBankPdfFetchStatus({
         status: "success",
@@ -775,6 +784,7 @@ export default function WorkspaceReconciliation() {
 
     setIsLoadingExtractedBankPdfData(true);
     setExtractedBankPdfError("");
+    setPlFinancials(null);
     setExtractedBankPdfFetchStatus({
       status: "loading",
       message: "Loading bank statement data from QuickBooks Manual source...",
@@ -792,6 +802,8 @@ export default function WorkspaceReconciliation() {
       // Discard result if source changed while this fetch was in-flight.
       if (activeSourceRef.current !== selectedReportSource) return;
       setExtractedBankPdfData(normalized);
+      // Set P&L financials from merged response (Sales/Expenses per Financials for Activity Review)
+      setPlFinancials(data.plFinancials ?? null);
       setExtractedBankPdfFetchStatus({
         status: normalized ? "success" : "idle",
         message: normalized
@@ -817,6 +829,7 @@ export default function WorkspaceReconciliation() {
     }
     setIsLoadingExtractedBankPdfData(true);
     setExtractedBankPdfError("");
+    setPlFinancials(null);
     setExtractedBankPdfFetchStatus({
       status: "loading",
       message: "Loading bank statement data from Manual Upload source...",
@@ -829,6 +842,14 @@ export default function WorkspaceReconciliation() {
       const data = await resp.json();
       if (!resp.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
       if (activeSourceRef.current !== selectedReportSource) return;
+      // Set BS bank accounts from the merged response (always, even for empty cases)
+      if (data.balanceSheetBankAccounts?.bankAccounts?.length > 0) {
+        setBsBankBalances({ success: true, ...data.balanceSheetBankAccounts });
+      } else {
+        setBsBankBalances(null);
+      }
+      // Set P&L financials (Sales/Expenses per Financials for Activity Review)
+      setPlFinancials(data.plFinancials ?? null);
       if (data.empty) {
         setExtractedBankPdfData(null);
         setExtractedBankPdfFetchStatus({
@@ -866,9 +887,8 @@ export default function WorkspaceReconciliation() {
       const params = new URLSearchParams();
       params.append("clientId", clientId);
       if (sourceKey) params.append("source", sourceKey);
-      // Manual GL scoping: pick the Balance Sheet matching the selected version's year.
+      // Manual GL scoping: pick the Balance Sheet for the selected version.
       if (opts.datasetVersion) params.append("datasetVersion", String(opts.datasetVersion));
-      if (opts.fiscalYear) params.append("fiscalYear", String(opts.fiscalYear));
       const resp = await fetch(`${BS_BANK_BALANCES_ENDPOINT}?${params.toString()}`, {
         cache: "no-store",
         headers: getHeaders(),
@@ -880,11 +900,10 @@ export default function WorkspaceReconciliation() {
       }
       const data = await resp.json();
       console.log(`[BsBankBalances] Response: source=${data.source} year=${data.year} accounts=${data.bankAccounts?.length ?? 0}`);
-      // For Manual GL, discard if the selected version/fiscal year changed
-      // while this fetch was in-flight (last-write-wins guard).
+      // For Manual GL, discard if the selected version changed while this fetch
+      // was in-flight (last-write-wins guard).
       if (opts.datasetVersion != null &&
-          (String(glScopeRef.current.datasetVersion) !== String(opts.datasetVersion) ||
-           String(glScopeRef.current.fiscalYear) !== String(opts.fiscalYear))) return;
+        String(glScopeRef.current.datasetVersion) !== String(opts.datasetVersion)) return;
       if (data?.success && data.bankAccounts?.length > 0) {
         setBsBankBalances(data);
       } else {
@@ -904,13 +923,13 @@ export default function WorkspaceReconciliation() {
     if (!clientId || !selectedReportSource || !isSourceConfirmedByServer) return;
 
     if (selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD) {
-      // Manual Upload → dedicated endpoint reading "Manual Upload Source" folder only
+      // Manual Upload → single endpoint returns both bank data and balanceSheetBankAccounts
       void loadManualBankData();
-      void loadBsBankBalances("manual_upload_excel_pdf");
     } else if (selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_GL) {
       // Manual GL → PDF/Excel extraction endpoint, scoped to the selected dataset
-      // version + fiscal year so a different version's months never mix in.
-      const glScope = { datasetVersion: glSelectedVersion, fiscalYear: glFiscalYear };
+      // version so a different version's data never mixes in. All of the version's
+      // months are fetched; the From/To date pickers narrow the view client-side.
+      const glScope = { datasetVersion: glSelectedVersion };
       void loadExtractedBankPdfData(glScope);
       void loadBsBankBalances("manual_upload_excel_pdf", glScope);
     } else if (selectedReportSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) {
@@ -919,7 +938,7 @@ export default function WorkspaceReconciliation() {
       void loadBsBankBalances("quickbooks_manual");
     }
     // QUICKBOOKS (QB Online) uses its own separate data flow — no action here
-  }, [clientId, selectedReportSource, isSourceConfirmedByServer, glSelectedVersion, glFiscalYear, loadExtractedBankPdfData, loadManualBankData, loadQMSBankData, loadBsBankBalances]);
+  }, [clientId, selectedReportSource, isSourceConfirmedByServer, glSelectedVersion, loadExtractedBankPdfData, loadManualBankData, loadQMSBankData, loadBsBankBalances]);
 
   // Auto-restore QB Online bank activity from DB on page load.
   // Fires when the server confirms the source is QB Online and there is no
@@ -995,6 +1014,28 @@ export default function WorkspaceReconciliation() {
   const isQBManual = selectedReportSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
   const isQBOnline = selectedReportSource === REPORT_SOURCE_KEYS.QUICKBOOKS;
 
+  const allPdfMonths = useMemo(
+    () => (extractedBankPdfData?.months || []).map((m) => m.key).sort(),
+    [extractedBankPdfData],
+  );
+
+  useEffect(() => {
+    if (!allPdfMonths.length) {
+      setManualMonthStart(null);
+      setManualMonthEnd(null);
+    } else {
+      setManualMonthStart(allPdfMonths[0]);
+      setManualMonthEnd(allPdfMonths[allPdfMonths.length - 1]);
+    }
+  }, [allPdfMonths]);
+
+  const filteredPdfMonths = useMemo(() => {
+    if (!allPdfMonths.length) return [];
+    const start = manualMonthStart || allPdfMonths[0];
+    const end = manualMonthEnd || allPdfMonths[allPdfMonths.length - 1];
+    return allPdfMonths.filter((m) => m >= start && m <= end);
+  }, [allPdfMonths, manualMonthStart, manualMonthEnd]);
+
   // ── Manual GL version + fiscal-year scoping ─────────────────────────────────
   // Load available dataset versions (shared store, cached per company).
   useEffect(() => {
@@ -1012,28 +1053,9 @@ export default function WorkspaceReconciliation() {
     if (active) setGlSelectedVersion(String(active.value));
   }, [isManualGl, glVersions, glSelectedVersion, setGlSelectedVersion]);
 
-  // Fetch the fiscal years available for the selected version and default to the
-  // latest — mirrors how Reports scopes its year list per version.
-  useEffect(() => {
-    if (!isManualGl || !clientId || !glSelectedVersion) return undefined;
-    let cancelled = false;
-    getManualStageFilterOptions({ clientId, params: { datasetVersion: glSelectedVersion } })
-      .then((payload) => {
-        if (cancelled) return;
-        const years = (payload?.options?.fiscalYear || [])
-          .map(Number)
-          .filter(Number.isFinite)
-          .sort((a, b) => b - a);
-        setGlFiscalYears(years);
-        setGlFiscalYear((prev) =>
-          prev && years.includes(Number(prev)) ? prev : (years.length ? String(years[0]) : null),
-        );
-      })
-      .catch(() => {
-        if (!cancelled) setGlFiscalYears([]);
-      });
-    return () => { cancelled = true; };
-  }, [isManualGl, clientId, glSelectedVersion]);
+  // Fiscal-year scoping removed for Bank Reconciliation — the From/To date pickers
+  // are now the sole time filter. All of the selected version's months are fetched
+  // and narrowed client-side via manualMonthStart / manualMonthEnd.
 
   // QMS loading is now handled in the unified bank-data loader effect above
 
@@ -1795,7 +1817,7 @@ export default function WorkspaceReconciliation() {
   // ── Balance account table renderer ───────────────────────────────────────
 
   const renderManualBalanceAccountTable = (bank, label) => {
-    const pdfMonths = (extractedBankPdfData?.months || []).map((m) => m.key);
+    const pdfMonths = filteredPdfMonths;
     const monthMap = bank
       ? Object.fromEntries((bank.months || []).map((m) => [m.monthKey, m]))
       : {};
@@ -1908,11 +1930,10 @@ export default function WorkspaceReconciliation() {
             )}
           </div>
           {bank && (
-            <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${
-              overallStatus === "Verified"
-                ? "bg-green-100 text-green-700"
-                : "bg-amber-100 text-amber-700"
-            }`}>
+            <span className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${overallStatus === "Verified"
+              ? "bg-green-100 text-green-700"
+              : "bg-amber-100 text-amber-700"
+              }`}>
               {overallStatus}
             </span>
           )}
@@ -2111,9 +2132,8 @@ export default function WorkspaceReconciliation() {
 
   // Build activity rows from extracted PDF data (manual upload / manual GL)
   const manualActivityRows = (() => {
-    if (!extractedBankPdfData?.months?.length) return [];
-    return extractedBankPdfData.months.map((monthObj) => {
-      const mk = monthObj.key;
+    if (!filteredPdfMonths.length || !extractedBankPdfData) return [];
+    return filteredPdfMonths.map((mk) => {
       const totalDeposits = (extractedBankPdfData.banks || []).reduce((sum, bank) => {
         const m = (bank.months || []).find((x) => x.monthKey === mk);
         return sum + (m?.deposits || 0);
@@ -2123,33 +2143,39 @@ export default function WorkspaceReconciliation() {
         return sum + (m?.withdrawals || 0);
       }, 0);
       const externalDeposits = totalDeposits;
-      const depositsDollarVar = -externalDeposits;
+      const salesPerFinancials = plFinancials?.totalIncome?.[mk] ?? 0;
+      const depositsDollarVar = salesPerFinancials - externalDeposits;
+      const depositsPctVar = salesPerFinancials !== 0 ? (depositsDollarVar / salesPerFinancials) * 100 : 0;
       const depositsUnreconciledDollar = depositsDollarVar;
+      const depositsUnreconciledPct = salesPerFinancials !== 0 ? (depositsUnreconciledDollar / salesPerFinancials) * 100 : 0;
       const externalWithdraws = totalWithdrawals;
-      const withdrawsDollarVar = externalWithdraws;
+      const expensesPerFinancials = plFinancials?.totalExpenses?.[mk] ?? 0;
+      const withdrawsDollarVar = externalWithdraws - expensesPerFinancials;
+      const withdrawsPctVar = expensesPerFinancials !== 0 ? (withdrawsDollarVar / expensesPerFinancials) * 100 : 0;
       const withdrawsUnreconciledDollar = withdrawsDollarVar;
+      const withdrawsUnreconciledPct = expensesPerFinancials !== 0 ? (withdrawsUnreconciledDollar / expensesPerFinancials) * 100 : 0;
       return {
         month: mk,
         totalDeposits, intercompanyTransfers: 0, externalDeposits,
-        salesPerFinancials: 0, depositsDollarVar, depositsPctVar: 0,
+        salesPerFinancials, depositsDollarVar, depositsPctVar,
         changeInAR: 0, changeInARRetentions: 0, fixedAssetDisposals: 0,
-        depositsOther: 0, depositsUnreconciledDollar, depositsUnreconciledPct: 0,
+        depositsOther: 0, depositsUnreconciledDollar, depositsUnreconciledPct,
         totalWithdrawals, withdrawIntercompanyTransfers: 0, externalWithdraws,
-        expensesPerFinancials: 0, withdrawsDollarVar, withdrawsPctVar: 0,
+        expensesPerFinancials, withdrawsDollarVar, withdrawsPctVar,
         ownerWithdraws: 0, changeInCurrentLiabilities: 0, changeInLTLiabilities: 0,
         depreciationExpense: 0, amortizationExpense: 0, badDebtExpense: 0,
         fixedAssetPurchases: 0, withdrawsOther: 0,
-        withdrawsUnreconciledDollar, withdrawsUnreconciledPct: 0,
+        withdrawsUnreconciledDollar, withdrawsUnreconciledPct,
       };
     });
   })();
 
-  const manualActivityTTM = manualActivityRows.slice(-12).reduce(
+  const _manualTTMBase = manualActivityRows.slice(-12).reduce(
     (acc, r) => ({
       totalDeposits: acc.totalDeposits + r.totalDeposits,
       intercompanyTransfers: 0,
       externalDeposits: acc.externalDeposits + r.externalDeposits,
-      salesPerFinancials: 0,
+      salesPerFinancials: acc.salesPerFinancials + r.salesPerFinancials,
       depositsDollarVar: acc.depositsDollarVar + r.depositsDollarVar,
       depositsPctVar: 0,
       changeInAR: 0, changeInARRetentions: 0, fixedAssetDisposals: 0, depositsOther: 0,
@@ -2158,7 +2184,7 @@ export default function WorkspaceReconciliation() {
       totalWithdrawals: acc.totalWithdrawals + r.totalWithdrawals,
       withdrawIntercompanyTransfers: 0,
       externalWithdraws: acc.externalWithdraws + r.externalWithdraws,
-      expensesPerFinancials: 0,
+      expensesPerFinancials: acc.expensesPerFinancials + r.expensesPerFinancials,
       withdrawsDollarVar: acc.withdrawsDollarVar + r.withdrawsDollarVar,
       withdrawsPctVar: 0,
       ownerWithdraws: 0, changeInCurrentLiabilities: 0, changeInLTLiabilities: 0,
@@ -2169,10 +2195,20 @@ export default function WorkspaceReconciliation() {
     }),
     buildEmptyActivityReviewRow(),
   );
+  const manualActivityTTM = {
+    ..._manualTTMBase,
+    depositsPctVar: _manualTTMBase.salesPerFinancials !== 0
+      ? (_manualTTMBase.depositsDollarVar / _manualTTMBase.salesPerFinancials) * 100 : 0,
+    depositsUnreconciledPct: _manualTTMBase.salesPerFinancials !== 0
+      ? (_manualTTMBase.depositsUnreconciledDollar / _manualTTMBase.salesPerFinancials) * 100 : 0,
+    withdrawsPctVar: _manualTTMBase.expensesPerFinancials !== 0
+      ? (_manualTTMBase.withdrawsDollarVar / _manualTTMBase.expensesPerFinancials) * 100 : 0,
+    withdrawsUnreconciledPct: _manualTTMBase.expensesPerFinancials !== 0
+      ? (_manualTTMBase.withdrawsUnreconciledDollar / _manualTTMBase.expensesPerFinancials) * 100 : 0,
+  };
 
   const renderManualActivityTable = () => {
-    const months = (extractedBankPdfData?.months || []).map((m) => m.key);
-    return renderActivityTableCore(manualActivityRows, manualActivityTTM, months);
+    return renderActivityTableCore(manualActivityRows, manualActivityTTM, filteredPdfMonths);
   };
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -2181,139 +2217,132 @@ export default function WorkspaceReconciliation() {
     <>
       <Header title="Reconciliation" />
       <div className="page-content">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <h1 className="text-[24px] font-bold text-text-primary">
-            Reconciliation
-          </h1>
-        </div>
         <QBDisconnectedBanner pageName="Reconciliation" />
-
-
         {/* QB Bank Activity — only for QuickBooks Online */}
         {isQBOnline && (
-        <section className="card-base w-full p-5">
-          <h2 className="text-[18px] font-semibold text-text-primary">
-            QuickBooks Bank Activity
-          </h2>
-          <p className="mt-1 text-[13px] text-text-secondary">
-            Fetches bank account activity directly from QuickBooks for the
-            selected date range.
-          </p>
-          <div className="mt-4 grid gap-3 lg:grid-cols-[1fr_1fr_220px_auto]">
-            {/* Start Month */}
-            <div>
-              <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
-                Start Month
-              </label>
-              <div className="flex gap-2">
+          <section className="card-base w-full p-5">
+            <h2 className="text-[18px] font-semibold text-text-primary">
+              QuickBooks Bank Activity
+            </h2>
+            <p className="mt-1 text-[13px] text-text-secondary">
+              Fetches bank account activity directly from QuickBooks for the
+              selected date range.
+            </p>
+            <div className="mt-4 grid gap-3 lg:grid-cols-[1fr_1fr_220px_auto]">
+              {/* Start Month */}
+              <div>
+                <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
+                  Start Month
+                </label>
+                <div className="flex gap-2">
+                  <select
+                    className="input-base h-10"
+                    value={bankActivityStartMonth.split("-")[1]}
+                    onChange={(e) =>
+                      setBankActivityStartMonth(
+                        `${bankActivityStartMonth.split("-")[0]}-${e.target.value}`,
+                      )
+                    }
+                  >
+                    {MONTHS.map((m) => (
+                      <option key={m.value} value={m.value}>
+                        {m.label}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    className="input-base h-10"
+                    value={bankActivityStartMonth.split("-")[0]}
+                    onChange={(e) =>
+                      setBankActivityStartMonth(
+                        `${e.target.value}-${bankActivityStartMonth.split("-")[1]}`,
+                      )
+                    }
+                  >
+                    {YEARS.map((y) => (
+                      <option key={y} value={y}>
+                        {y}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* End Month */}
+              <div>
+                <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
+                  End Month
+                </label>
+                <div className="flex gap-2">
+                  <select
+                    className="input-base h-10"
+                    value={bankActivityEndMonth.split("-")[1]}
+                    onChange={(e) =>
+                      setBankActivityEndMonth(
+                        `${bankActivityEndMonth.split("-")[0]}-${e.target.value}`,
+                      )
+                    }
+                  >
+                    {MONTHS.map((m) => (
+                      <option key={m.value} value={m.value}>
+                        {m.label}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    className="input-base h-10"
+                    value={bankActivityEndMonth.split("-")[0]}
+                    onChange={(e) =>
+                      setBankActivityEndMonth(
+                        `${e.target.value}-${bankActivityEndMonth.split("-")[1]}`,
+                      )
+                    }
+                  >
+                    {YEARS.map((y) => (
+                      <option key={y} value={y}>
+                        {y}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* Accounting Method */}
+              <div>
+                <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
+                  Accounting Type
+                </label>
                 <select
-                  className="input-base h-10"
-                  value={bankActivityStartMonth.split("-")[1]}
+                  value={bankActivityAccountingMethod}
                   onChange={(e) =>
-                    setBankActivityStartMonth(
-                      `${bankActivityStartMonth.split("-")[0]}-${e.target.value}`,
-                    )
+                    setBankActivityAccountingMethod(e.target.value)
                   }
-                >
-                  {MONTHS.map((m) => (
-                    <option key={m.value} value={m.value}>
-                      {m.label}
-                    </option>
-                  ))}
-                </select>
-                <select
                   className="input-base h-10"
-                  value={bankActivityStartMonth.split("-")[0]}
-                  onChange={(e) =>
-                    setBankActivityStartMonth(
-                      `${e.target.value}-${bankActivityStartMonth.split("-")[1]}`,
-                    )
-                  }
                 >
-                  {YEARS.map((y) => (
-                    <option key={y} value={y}>
-                      {y}
-                    </option>
-                  ))}
+                  <option value="Accrual">Accrual</option>
+                  <option value="Cash">Cash</option>
                 </select>
               </div>
-            </div>
 
-            {/* End Month */}
-            <div>
-              <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
-                End Month
-              </label>
-              <div className="flex gap-2">
-                <select
-                  className="input-base h-10"
-                  value={bankActivityEndMonth.split("-")[1]}
-                  onChange={(e) =>
-                    setBankActivityEndMonth(
-                      `${bankActivityEndMonth.split("-")[0]}-${e.target.value}`,
-                    )
-                  }
+              {/* Fetch Button */}
+              <div className="flex items-end">
+                <button
+                  type="button"
+                  className="btn-primary w-full"
+                  onClick={() => void loadQBBankActivity()}
+                  disabled={isLoadingBankActivity}
                 >
-                  {MONTHS.map((m) => (
-                    <option key={m.value} value={m.value}>
-                      {m.label}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  className="input-base h-10"
-                  value={bankActivityEndMonth.split("-")[0]}
-                  onChange={(e) =>
-                    setBankActivityEndMonth(
-                      `${e.target.value}-${bankActivityEndMonth.split("-")[1]}`,
-                    )
-                  }
-                >
-                  {YEARS.map((y) => (
-                    <option key={y} value={y}>
-                      {y}
-                    </option>
-                  ))}
-                </select>
+                  {isLoadingBankActivity ? (
+                    <LoaderCircle size={16} className="animate-spin" />
+                  ) : (
+                    <RefreshCw size={16} />
+                  )}{" "}
+                  Fetch Activity
+                </button>
               </div>
             </div>
-
-            {/* Accounting Method */}
-            <div>
-              <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
-                Accounting Type
-              </label>
-              <select
-                value={bankActivityAccountingMethod}
-                onChange={(e) =>
-                  setBankActivityAccountingMethod(e.target.value)
-                }
-                className="input-base h-10"
-              >
-                <option value="Accrual">Accrual</option>
-                <option value="Cash">Cash</option>
-              </select>
-            </div>
-
-            {/* Fetch Button */}
-            <div className="flex items-end">
-              <button
-                type="button"
-                className="btn-primary w-full"
-                onClick={() => void loadQBBankActivity()}
-                disabled={isLoadingBankActivity}
-              >
-                {isLoadingBankActivity ? (
-                  <LoaderCircle size={16} className="animate-spin" />
-                ) : (
-                  <RefreshCw size={16} />
-                )}{" "}
-                Fetch Activity
-              </button>
-            </div>
-          </div>
-          <StatusBanner sync={bankActivityFetchStatus} />
-        </section>
+            <StatusBanner sync={bankActivityFetchStatus} />
+          </section>
         )}
 
         {/* Bank Account Balances */}
@@ -2321,7 +2350,7 @@ export default function WorkspaceReconciliation() {
           <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
             <div>
               <h2 className="text-[18px] font-semibold text-text-primary">
-                Bank Account Balances
+                Bank Reconciliation
               </h2>
               <p className="text-[14px] text-text-secondary">
                 {(isManualUpload || isManualGl || isQBManual)
@@ -2330,6 +2359,43 @@ export default function WorkspaceReconciliation() {
               </p>
             </div>
             <div className="flex items-end gap-3">
+              {/* Date Range Filter — Manual Upload, Manual GL, QuickBooks Manual */}
+              {(isManualUpload || isManualGl || isQBManual) && allPdfMonths.length > 0 && (
+                <>
+                  <div>
+                    <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
+                      Start Date
+                    </label>
+                    <input
+                      type="date"
+                      className="input-base h-10 w-auto min-w-[150px]"
+                      value={manualMonthStart ? `${manualMonthStart}-01` : ""}
+                      onChange={(e) => {
+                        if (!e.target.value) return;
+                        const isoKey = e.target.value.slice(0, 7);
+                        setManualMonthStart(isoKey);
+                        if (manualMonthEnd && isoKey > manualMonthEnd) setManualMonthEnd(isoKey);
+                      }}
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
+                      End Date
+                    </label>
+                    <input
+                      type="date"
+                      className="input-base h-10 w-auto min-w-[150px]"
+                      value={manualMonthEnd ? `${manualMonthEnd}-01` : ""}
+                      onChange={(e) => {
+                        if (!e.target.value) return;
+                        const isoKey = e.target.value.slice(0, 7);
+                        setManualMonthEnd(isoKey);
+                        if (manualMonthStart && isoKey < manualMonthStart) setManualMonthStart(isoKey);
+                      }}
+                    />
+                  </div>
+                </>
+              )}
               {(isManualUpload || isManualGl || isQBManual) && (
                 <button
                   type="button"
@@ -2338,7 +2404,7 @@ export default function WorkspaceReconciliation() {
                   onClick={() => {
                     if (isQBManual) void loadQMSBankData();
                     else if (isManualUpload) void loadManualBankData();
-                    else void loadExtractedBankPdfData({ datasetVersion: glSelectedVersion, fiscalYear: glFiscalYear });
+                    else void loadExtractedBankPdfData({ datasetVersion: glSelectedVersion });
                   }}
                   title="Reload data from the active source"
                 >
@@ -2348,79 +2414,64 @@ export default function WorkspaceReconciliation() {
                   Refresh
                 </button>
               )}
-            {/* Manual GL: dataset version + fiscal year scoping (shared with Reports) */}
-            {isManualGl && glVersions.length > 0 && (
-              <div className="min-w-[160px]">
-                <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
-                  Version
-                </label>
-                <select
-                  className="input-base h-10 w-full"
-                  value={glSelectedVersion ? String(glSelectedVersion) : ""}
-                  onChange={(e) => setGlSelectedVersion(e.target.value || null)}
-                >
-                  {glVersions.map((v) => (
-                    <option key={String(v.value)} value={String(v.value)}>
-                      {v.label || `Version ${v.value}`}{v.isActive ? " (active)" : ""}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-            {isManualGl && glFiscalYears.length > 0 && (
-              <div className="min-w-[120px]">
-                <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
-                  Fiscal Year
-                </label>
-                <select
-                  className="input-base h-10 w-full"
-                  value={glFiscalYear ? String(glFiscalYear) : ""}
-                  onChange={(e) => setGlFiscalYear(e.target.value || null)}
-                >
-                  {glFiscalYears.map((y) => (
-                    <option key={y} value={String(y)}>{y}</option>
-                  ))}
-                </select>
-              </div>
-            )}
-            <div className="min-w-[280px]">
-              <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
-                Bank Account
-              </label>
-              {(isManualUpload || isManualGl || isQBManual) ? (
-                <select
-                  className="input-base h-10 w-full"
-                  value={selectedManualBankName}
-                  onChange={(e) => setSelectedManualBankName(e.target.value)}
-                  disabled={!manualBankOptions.length}
-                >
-                  {manualBankOptions.length ? (
-                    manualBankOptions.map((name) => (
-                      <option key={name} value={name}>{name}</option>
-                    ))
-                  ) : (
-                    <option value="">No banks available</option>
-                  )}
-                </select>
-              ) : (
-                <select
-                  className="input-base h-10 w-full"
-                  value={selectedBalanceBankId}
-                  onChange={(e) => setSelectedBalanceBankId(e.target.value)}
-                  disabled={!balanceBankOptions.length}
-                >
-                  {balanceBankOptions.length ? (
-                    balanceBankOptions.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
+              {/* Manual GL: dataset version scoping (shared with Reports). Time
+                  filtering is handled by the Start/End date pickers above. */}
+              {isManualGl && glVersions.length > 0 && (
+                <div className="min-w-[160px]">
+                  <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
+                    Version
+                  </label>
+                  <select
+                    className="input-base h-10 w-full"
+                    value={glSelectedVersion ? String(glSelectedVersion) : ""}
+                    onChange={(e) => setGlSelectedVersion(e.target.value || null)}
+                  >
+                    {glVersions.map((v) => (
+                      <option key={String(v.value)} value={String(v.value)}>
+                        {v.label || `Version ${v.value}`}{v.isActive ? " (active)" : ""}
                       </option>
-                    ))
-                  ) : (
-                    <option value="">No bank accounts available</option>
-                  )}
-                </select>
+                    ))}
+                  </select>
+                </div>
               )}
-            </div>
+              <div className="min-w-[280px]">
+                <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
+                  Bank Account
+                </label>
+                {(isManualUpload || isManualGl || isQBManual) ? (
+                  <select
+                    className="input-base h-10 w-full"
+                    value={selectedManualBankName}
+                    onChange={(e) => setSelectedManualBankName(e.target.value)}
+                    disabled={!manualBankOptions.length}
+                  >
+                    {manualBankOptions.length ? (
+                      manualBankOptions.map((name) => (
+                        <option key={name} value={name}>{name}</option>
+                      ))
+                    ) : (
+                      <option value="">No banks available</option>
+                    )}
+                  </select>
+                ) : (
+                  <select
+                    className="input-base h-10 w-full"
+                    value={selectedBalanceBankId}
+                    onChange={(e) => setSelectedBalanceBankId(e.target.value)}
+                    disabled={!balanceBankOptions.length}
+                  >
+                    {balanceBankOptions.length ? (
+                      balanceBankOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))
+                    ) : (
+                      <option value="">No bank accounts available</option>
+                    )}
+                  </select>
+                )}
+              </div>
             </div>{/* end flex items-end gap-3 */}
           </div>
 

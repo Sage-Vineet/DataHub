@@ -3347,7 +3347,25 @@ async function resolveEffectiveReportBatchId(companyId, filters = {}) {
     return resolved || "";
   }
 
-  // No specific version requested → default to the active/latest batch.
+  // No specific version requested. Prefer the company's ACTIVE Key Report
+  // version (the official, user-curated source of truth) over the auto-activated
+  // "latest upload" batch. This is fully opt-in and FAIL-SAFE: if no active Key
+  // Report exists — or the Key Reports tables aren't present / any error occurs —
+  // we fall back to the exact pre-existing active/latest-batch behavior.
+  try {
+    const keyReportService = require("./keyReportService");
+    const pinned = await keyReportService.getActiveResolvedBatch(companyId);
+    if (pinned && pinned.batchId) {
+      return pinned.batchId;
+    }
+  } catch (err) {
+    // Backward-compatible: ignore and use the legacy default below.
+    if (process.env.DEBUG_KEY_REPORTS) {
+      console.warn("[KeyReports] active-version resolution skipped:", err.message);
+    }
+  }
+
+  // Default to the active/latest batch (legacy behavior).
   return (await resolveReportBatchId(companyId)) || "";
 }
 

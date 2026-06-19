@@ -1,5 +1,12 @@
-import { createContext, useContext, useState, useEffect } from 'react';
+import { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import { brokerSignupRequest, loginRequest, logoutRequest, meRequest, setStoredToken, getStoredToken } from '../lib/api';
+import {
+  startSession,
+  clearSession,
+  isSessionExpired,
+  getSessionExpiry,
+  setSessionExpiredHandler,
+} from '../lib/session';
 
 const AuthContext = createContext(null);
 
@@ -80,6 +87,57 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
+  // Holds the id of the one-shot expiry setTimeout so we can cancel it on logout.
+  const expiryTimerRef = useRef(null);
+
+  // Synchronous logout path used when the session clock runs out.
+  // Does NOT make a network call — there is no need to inform the server.
+  // setUser / setStoredToken / setError are stable React setState functions.
+  const expireSession = useCallback(() => {
+    if (expiryTimerRef.current) {
+      clearTimeout(expiryTimerRef.current);
+      expiryTimerRef.current = null;
+    }
+    clearSession();
+    setStoredToken(null);
+    setUser(null);
+    setError('');
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Arms a one-shot timer that fires exactly at the stored expiry timestamp.
+  // "Continuously running timers" (setInterval) are intentionally not used.
+  const scheduleExpiryLogout = useCallback(() => {
+    if (expiryTimerRef.current) clearTimeout(expiryTimerRef.current);
+    expiryTimerRef.current = null;
+    const expiry = getSessionExpiry();
+    if (!expiry) return;
+    const delay = expiry - Date.now();
+    if (delay <= 0) {
+      expireSession();
+      return;
+    }
+    expiryTimerRef.current = setTimeout(expireSession, delay);
+  }, [expireSession]);
+
+  // Register expireSession as the callback invoked by the API interceptor when
+  // it detects an expired session on a mid-flight authenticated request.
+  useEffect(() => {
+    setSessionExpiredHandler(expireSession);
+    return () => setSessionExpiredHandler(null);
+  }, [expireSession]);
+
+  // On tab/window focus: immediately check whether the session has expired while
+  // the app was in the background (covers Scenario B from the spec).
+  useEffect(() => {
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible' && getStoredToken()) {
+        if (isSessionExpired()) expireSession();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => document.removeEventListener('visibilitychange', handleVisibility);
+  }, [expireSession]);
+
   // Keepalive: ping the backend every 14 minutes so Render (free tier) never
   // spins down the server. Fires immediately on mount to wake the server as
   // soon as the user opens the app, eliminating the cold-start delay.
@@ -96,39 +154,95 @@ export function AuthProvider({ children }) {
     return () => clearInterval(keepalive);
   }, []);
 
-  // Check for existing token on app load
+  // Check for existing token on app load / browser refresh.
+  // Session expiry is validated before hitting the server so a stale token
+  // with a valid JWT signature (but an expired 8-hour window) never reaches /auth/me.
   useEffect(() => {
+    // cancelled flag prevents a stale async chain (e.g. React StrictMode double-invoke
+    // or a slow in-flight request) from clearing auth after the effect has been cleaned up.
+    let cancelled = false;
+
     const checkAuth = async () => {
-      const token = getStoredToken();
-      if (token) {
+      try {
+        const token = getStoredToken();
+        if (!token) return;
+
+        // If the session expiry key is present and legitimately past → expire.
+        // If the key is ABSENT but a valid token exists (storage trimmed, migrated
+        // from an older build, browser backup restore), repair the session window
+        // instead of logging the user out — the server will confirm validity below.
+        if (isSessionExpired()) {
+          let keyExists = false;
+          try { keyExists = localStorage.getItem('leo-session-expiry') !== null; } catch { /* ignore */ }
+          if (keyExists) {
+            // Key is present and in the past — genuine expiry.
+            expireSession();
+            return;
+          }
+          // Key absent: repair the window and proceed to server validation.
+          startSession();
+        }
+
+        let payload;
         try {
-          const payload = await meRequest();
-          const userData = unwrapUser(payload);
-          if (!userData) {
+          payload = await meRequest();
+        } catch (firstErr) {
+          if (cancelled) return;
+
+          // 401 = the server explicitly rejected the token (revoked, tampered, wrong secret).
+          // Clear auth immediately — keeping the token would loop infinitely.
+          if (firstErr?.status === 401) {
             setStoredToken(null);
             setUser(null);
-          } else {
-            setUser(normalizeUser(userData));
+            return;
           }
-        } catch (err) {
-          // Token is invalid, clear it
+
+          // Any other failure (network error, 5xx, server cold-starting on Render free tier)
+          // is TRANSIENT. Wait briefly and retry once before giving up.
+          // We must NOT clear the token here — it is still valid.
+          await new Promise((res) => setTimeout(res, 1500));
+          if (cancelled) return;
+
+          try {
+            payload = await meRequest();
+          } catch (retryErr) {
+            if (cancelled) return;
+            if (retryErr?.status === 401) {
+              setStoredToken(null);
+              setUser(null);
+            }
+            // Non-401 on retry as well: token is preserved.
+            // The route guard will redirect to login, but the token stays in
+            // localStorage so the very next hard refresh succeeds normally.
+            return;
+          }
+        }
+
+        if (cancelled) return;
+
+        const userData = unwrapUser(payload);
+        if (!userData) {
           setStoredToken(null);
           setUser(null);
-          console.log('Invalid token, clearing auth');
+        } else {
+          setUser(normalizeUser(userData));
+          scheduleExpiryLogout(); // re-arm timer after browser refresh
         }
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-      setLoading(false);
     };
 
     checkAuth();
-  }, []);
+
+    return () => { cancelled = true; };
+  }, []); // expireSession and scheduleExpiryLogout are stable (useCallback [])
 
   const login = async (email, password) => {
     try {
       setError('');
 
-      // Try backend authentication first
-      const response = await loginRequest({ email, password });
+      const response = await loginRequest({ email: email ? String(email).trim().toLowerCase() : email, password });
       const token = extractToken(response);
       const userData = unwrapUser(response);
 
@@ -136,10 +250,11 @@ export function AuthProvider({ children }) {
         throw new Error('Invalid login response');
       }
 
-      // Store token and set user
       setStoredToken(token);
+      startSession();           // record login time, calculate 8-hour expiry
       const normalizedUser = normalizeUser(userData);
       setUser(normalizedUser);
+      scheduleExpiryLogout();   // arm one-shot timer for automatic logout
 
       return normalizedUser;
     } catch (backendError) {
@@ -162,8 +277,10 @@ export function AuthProvider({ children }) {
       }
 
       setStoredToken(token);
+      startSession();
       const normalizedUser = normalizeUser(userData);
       setUser(normalizedUser);
+      scheduleExpiryLogout();
       return normalizedUser;
     } catch (signupError) {
       setError(signupError?.message || 'Unable to create broker account.');
@@ -190,6 +307,15 @@ export function AuthProvider({ children }) {
 
   const logout = async () => {
     const token = getStoredToken();
+
+    // Cancel the one-shot expiry timer so it doesn't fire after an explicit logout.
+    if (expiryTimerRef.current) {
+      clearTimeout(expiryTimerRef.current);
+      expiryTimerRef.current = null;
+    }
+
+    // Clear session timestamps from localStorage.
+    clearSession();
 
     // Optimistically clear local auth so signout feels instant.
     setUser(null);

@@ -8,7 +8,7 @@ export function cn(...values) {
  * Positive -> "1,234.56"
  * Negative -> "(1,234.56)"
  */
-export function formatCurrency(amount) {
+export function formatNumber(amount, decimals = 2) {
   if (amount === null || amount === undefined || amount === "" || Number(amount) === 0) {
     return "-";
   }
@@ -22,14 +22,18 @@ export function formatCurrency(amount) {
   }
 
   const formatter = new Intl.NumberFormat("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals,
   });
 
   const absValue = Math.abs(numeric);
   const formatted = formatter.format(absValue);
 
   return numeric < 0 ? `(${formatted})` : formatted;
+}
+
+export function formatCurrency(amount) {
+  return formatNumber(amount, 2);
 }
 
 export function formatDate(dateStr) {

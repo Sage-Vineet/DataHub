@@ -2,6 +2,10 @@ const { supabase } = require("../db");
 const { Pool } = require("pg");
 const bcrypt = require("bcryptjs");
 const CLIENT_STATIC_PASSWORD = process.env.CLIENT_STATIC_PASSWORD || "123456";
+const PROFIT_METRIC_VALUES = Object.freeze({
+  ADJUSTED_EBITDA: "adjusted_ebitda",
+  SDE: "sde",
+});
 
 let _pool = null;
 function getPool() {
@@ -17,6 +21,31 @@ function getPool() {
     _pool.on("error", (err) => console.error("[companyService] pg pool error:", err.message));
   }
   return _pool;
+}
+
+function normalizeProfitMetric(value, fallback = PROFIT_METRIC_VALUES.ADJUSTED_EBITDA) {
+  const normalized = String(value ?? "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+  if (!normalized) return fallback;
+
+  if (
+    normalized === PROFIT_METRIC_VALUES.SDE ||
+    normalized === "seller_discretionary_earnings" ||
+    normalized === "sellers_discretionary_earnings" ||
+    normalized === "seller's_discretionary_earnings"
+  ) {
+    return PROFIT_METRIC_VALUES.SDE;
+  }
+
+  if (
+    normalized === PROFIT_METRIC_VALUES.ADJUSTED_EBITDA ||
+    normalized === "adj_ebitda" ||
+    normalized === "adjusted_ebitda" ||
+    normalized === "ebitda"
+  ) {
+    return PROFIT_METRIC_VALUES.ADJUSTED_EBITDA;
+  }
+
+  return fallback;
 }
 
 async function getAllCompanies() {
@@ -76,8 +105,9 @@ async function createCompany(companyData) {
       since: companyData.since || null,
       logo: companyData.logo || null,
       contact_name: companyData.contact_name,
-      contact_email: companyData.contact_email,
+      contact_email: companyData.contact_email ? String(companyData.contact_email).trim().toLowerCase() : null,
       contact_phone: companyData.contact_phone || null,
+      profit_metric: normalizeProfitMetric(companyData.profit_metric ?? companyData.profitMetric),
     })
     .select("*")
     .single();
@@ -111,12 +141,15 @@ async function updateCompany(id, companyData) {
     since: companyData.since,
     logo: companyData.logo,
     contact_name: companyData.contact_name,
-    contact_email: companyData.contact_email,
+    contact_email: companyData.contact_email !== undefined ? (companyData.contact_email ? String(companyData.contact_email).trim().toLowerCase() : null) : undefined,
     contact_phone: companyData.contact_phone,
+    profit_metric: companyData.profit_metric ?? companyData.profitMetric,
   };
 
   for (const [key, value] of Object.entries(mappable)) {
-    if (value !== undefined) patch[key] = value ?? null;
+    if (value !== undefined) {
+      patch[key] = key === "profit_metric" ? normalizeProfitMetric(value) : value ?? null;
+    }
   }
 
   const { data, error } = await supabase
@@ -195,6 +228,7 @@ async function syncCompanyClientRepresentative(company, previousCompany = null) 
     const { error: updateErr } = await supabase.from("users").update({
       name: company.contact_name, email: normalizedEmail,
       phone: company.contact_phone || null, company_id: company.id,
+      sub_role: existingUser.sub_role || "company_owner",
       status: "active", updated_at: new Date().toISOString(),
     }).eq("id", existingUser.id);
 
@@ -234,7 +268,7 @@ async function syncCompanyClientRepresentative(company, previousCompany = null) 
     .insert({
       name: company.contact_name, email: normalizedEmail,
       phone: company.contact_phone || null, password_hash: passwordHash,
-      role: "buyer", company_id: company.id, status: "active",
+      role: "buyer", sub_role: "company_owner", company_id: company.id, status: "active",
     })
     .select("id")
     .single();
@@ -247,8 +281,8 @@ async function syncCompanyClientRepresentative(company, previousCompany = null) 
     if (pool) {
       try {
         const { rows } = await pool.query(
-          `INSERT INTO users (name, email, phone, password_hash, role, company_id, status)
-           VALUES ($1, $2, $3, $4, 'buyer', $5, 'active') RETURNING id`,
+          `INSERT INTO users (name, email, phone, password_hash, role, sub_role, company_id, status)
+           VALUES ($1, $2, $3, $4, 'buyer', 'company_owner', $5, 'active') RETURNING id`,
           [company.contact_name, normalizedEmail, company.contact_phone || null, passwordHash, company.id],
         );
         userId = rows[0]?.id || null;

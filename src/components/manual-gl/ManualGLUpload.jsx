@@ -127,6 +127,10 @@ export default function ManualGLUpload({
   isLocked = false,
   lockMessage = "",
   onStageComplete = null,
+  // Optional: pre-select documents from Key Reports (does not affect Connections usage)
+  initialGlDocumentIds = null,
+  initialStartingBSDocumentId = null,
+  initialEndingBSDocumentId = null,
 }) {
   const { showToast } = useToast();
   const [step, setStep] = useState(1); // 1: Stage, 2: Map (if needed), 3: Staged
@@ -138,13 +142,17 @@ export default function ManualGLUpload({
     () => useGlDocumentStore.getState().getDocuments(companyId) || []
   );
   const [selectedDocumentIds, setSelectedDocumentIds] = useState(
-    () => useGlDocumentStore.getState().getSelection(companyId).selectedDocumentIds
+    () => initialGlDocumentIds?.length
+      ? initialGlDocumentIds
+      : useGlDocumentStore.getState().getSelection(companyId).selectedDocumentIds
   );
   const [selectedStartingDocumentId, setSelectedStartingDocumentId] = useState(
-    () => useGlDocumentStore.getState().getSelection(companyId).selectedStartingDocumentId
+    () => initialStartingBSDocumentId
+      || useGlDocumentStore.getState().getSelection(companyId).selectedStartingDocumentId
   );
   const [selectedEndingDocumentId, setSelectedEndingDocumentId] = useState(
-    () => useGlDocumentStore.getState().getSelection(companyId).selectedEndingDocumentId
+    () => initialEndingBSDocumentId
+      || useGlDocumentStore.getState().getSelection(companyId).selectedEndingDocumentId
   );
   const [activeUploadId, setActiveUploadId] = useState("");
   const [pendingStageRequest, setPendingStageRequest] = useState(null);

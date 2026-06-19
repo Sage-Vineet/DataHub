@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS companies (
   data_source_type text,
   quickbooks_connected boolean NOT NULL DEFAULT false,
   manual_upload_active boolean NOT NULL DEFAULT false,
+  profit_metric text NOT NULL DEFAULT 'adjusted_ebitda',
   last_source_switch_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
@@ -406,3 +407,225 @@ CREATE INDEX IF NOT EXISTS idx_report_source_records_company
 
 CREATE INDEX IF NOT EXISTS idx_report_source_records_selected
   ON report_source_records(company_id, is_selected);
+
+-- EBITDA addback / adjustment engine
+CREATE TABLE IF NOT EXISTS ebitda_adjustment_types (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  type_key text NOT NULL UNIQUE,
+  label text NOT NULL,
+  description text,
+  sort_order integer NOT NULL DEFAULT 0,
+  is_active boolean NOT NULL DEFAULT true,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS ebitda_adjustments (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  version_id text NOT NULL,
+  dataset_version_id uuid REFERENCES dataset_versions(id) ON DELETE SET NULL,
+  upload_batch_id uuid REFERENCES manual_gl_batches(id) ON DELETE SET NULL,
+  source_key text NOT NULL DEFAULT 'manual_gl',
+  type_key text NOT NULL,
+  name text NOT NULL,
+  description text,
+  linked_account_id text,
+  linked_account_name text,
+  vendor_scope_mode text NOT NULL DEFAULT 'entire_account',
+  vendor_scope jsonb NOT NULL DEFAULT '[]'::jsonb,
+  is_manual boolean NOT NULL DEFAULT false,
+  override_reason text,
+  internal_notes text,
+  analyst_comments text,
+  supporting_explanation text,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  status text NOT NULL DEFAULT 'active',
+  created_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  updated_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  deleted_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  deleted_at timestamptz
+);
+
+CREATE TABLE IF NOT EXISTS ebitda_adjustment_values (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  version_id text NOT NULL,
+  adjustment_id uuid NOT NULL REFERENCES ebitda_adjustments(id) ON DELETE CASCADE,
+  year integer NOT NULL,
+  month integer NOT NULL DEFAULT 0,
+  value numeric(18, 2) NOT NULL DEFAULT 0,
+  original_value numeric(18, 2),
+  override_value numeric(18, 2),
+  override_reason text,
+  source_value numeric(18, 2),
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_ebitda_adjustment_values UNIQUE (adjustment_id, year, month)
+);
+
+CREATE TABLE IF NOT EXISTS ebitda_adjustment_attachments (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  version_id text NOT NULL,
+  adjustment_id uuid NOT NULL REFERENCES ebitda_adjustments(id) ON DELETE CASCADE,
+  upload_id uuid REFERENCES uploads(id) ON DELETE SET NULL,
+  file_name text NOT NULL,
+  file_url text NOT NULL,
+  content_type text,
+  size_bytes bigint,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS ebitda_adjustment_comments (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  version_id text NOT NULL,
+  adjustment_id uuid NOT NULL REFERENCES ebitda_adjustments(id) ON DELETE CASCADE,
+  comment_type text NOT NULL DEFAULT 'internal',
+  body text NOT NULL,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS ebitda_adjustment_audit_log (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  version_id text NOT NULL,
+  adjustment_id uuid REFERENCES ebitda_adjustments(id) ON DELETE CASCADE,
+  event_type text NOT NULL,
+  changed_fields jsonb NOT NULL DEFAULT '[]'::jsonb,
+  before_payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+  after_payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ebitda_adjustments_company_version
+  ON ebitda_adjustments(company_id, version_id, source_key, deleted_at);
+CREATE INDEX IF NOT EXISTS idx_ebitda_adjustments_account
+  ON ebitda_adjustments(company_id, version_id, linked_account_id);
+CREATE INDEX IF NOT EXISTS idx_ebitda_adjustments_dataset_version
+  ON ebitda_adjustments(company_id, dataset_version_id);
+CREATE INDEX IF NOT EXISTS idx_ebitda_adjustments_upload_batch
+  ON ebitda_adjustments(company_id, upload_batch_id);
+
+CREATE INDEX IF NOT EXISTS idx_ebitda_adjustment_values_company_version
+  ON ebitda_adjustment_values(company_id, version_id, adjustment_id, year, month);
+CREATE INDEX IF NOT EXISTS idx_ebitda_adjustment_values_adjustment
+  ON ebitda_adjustment_values(adjustment_id, year, month);
+
+CREATE INDEX IF NOT EXISTS idx_ebitda_adjustment_attachments_company_version
+  ON ebitda_adjustment_attachments(company_id, version_id, adjustment_id);
+CREATE INDEX IF NOT EXISTS idx_ebitda_adjustment_comments_company_version
+  ON ebitda_adjustment_comments(company_id, version_id, adjustment_id);
+CREATE INDEX IF NOT EXISTS idx_ebitda_adjustment_audit_company_version
+  ON ebitda_adjustment_audit_log(company_id, version_id, adjustment_id, created_at DESC);
+
+-- ============================================================================
+-- Key Reports (migration 046) — official user-curated source of truth
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS key_report_versions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  version_number integer NOT NULL,
+  version_name text,
+  status text NOT NULL DEFAULT 'draft',
+  is_active boolean NOT NULL DEFAULT false,
+  resolved_batch_id uuid REFERENCES manual_gl_batches(id) ON DELETE SET NULL,
+  resolved_dataset_version integer,
+  last_synced_at timestamptz,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  updated_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_key_report_versions_company_number UNIQUE (company_id, version_number)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_key_report_versions_company_active
+  ON key_report_versions(company_id)
+  WHERE is_active = true;
+
+CREATE INDEX IF NOT EXISTS idx_key_report_versions_company
+  ON key_report_versions(company_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS key_report_file_mappings (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  version_id uuid NOT NULL REFERENCES key_report_versions(id) ON DELETE CASCADE,
+  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  report_category text NOT NULL,
+  document_id uuid REFERENCES documents(id) ON DELETE SET NULL,
+  upload_id uuid REFERENCES uploads(id) ON DELETE SET NULL,
+  file_name text,
+  linked_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_key_report_file_mappings_unique
+    UNIQUE (version_id, report_category, document_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_key_report_file_mappings_version
+  ON key_report_file_mappings(version_id, report_category);
+CREATE INDEX IF NOT EXISTS idx_key_report_file_mappings_document
+  ON key_report_file_mappings(document_id);
+
+CREATE TABLE IF NOT EXISTS key_report_sync_logs (
+  id bigserial PRIMARY KEY,
+  version_id uuid NOT NULL REFERENCES key_report_versions(id) ON DELETE CASCADE,
+  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  sync_status text NOT NULL DEFAULT 'started',
+  sync_started_at timestamptz NOT NULL DEFAULT now(),
+  sync_completed_at timestamptz,
+  error_message text,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_key_report_sync_logs_version
+  ON key_report_sync_logs(version_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_key_report_sync_logs_company
+  ON key_report_sync_logs(company_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS file_references (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  document_id uuid NOT NULL REFERENCES documents(id) ON DELETE RESTRICT,
+  linked_module text NOT NULL,
+  linked_entity_id uuid,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_file_references_unique
+    UNIQUE (document_id, linked_module, linked_entity_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_file_references_document
+  ON file_references(document_id);
+CREATE INDEX IF NOT EXISTS idx_file_references_module_entity
+  ON file_references(linked_module, linked_entity_id);
+CREATE INDEX IF NOT EXISTS idx_file_references_company
+  ON file_references(company_id);
+
+CREATE TABLE IF NOT EXISTS user_preferences (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  pref_key text NOT NULL,
+  pref_value jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_user_preferences_user_key UNIQUE (user_id, pref_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_user_preferences_user
+  ON user_preferences(user_id);

@@ -5,6 +5,7 @@ import QBDisconnectedBanner from "../../../components/common/QBDisconnectedBanne
 import {
   ChevronDown,
   Download,
+  FileText,
   RefreshCw,
   RotateCcw,
 } from "lucide-react";
@@ -203,10 +204,10 @@ function createDefaultManualFilters() {
   return {
     batchId: "",
     datasetVersion: "",
-    fiscalYear: [],
-    fiscalMonth: [],
-    startDate: "",
-    endDate: "",
+    // Direct date-range fields — replaces the old fiscalYear[]/fiscalMonth[] round-trip.
+    fromDate: "",
+    toDate: "",
+    // Keep fiscalYear/fiscalMonth as supplemental multi-select filters (not used for date-range anymore).
     accountName: [],
     accountNumber: [],
     accountType: [],
@@ -252,8 +253,13 @@ function buildManualFilterParams(filters) {
     if (value) params[key] = value;
   });
 
-  // QB date fallback intentionally removed: manual reports are filtered by
-  // fiscalYear only; QB date ranges must not pollute staged GL sub-queries.
+  // Map fromDate/toDate → startDate/endDate for the backend.
+  if (normalized.fromDate) params.startDate = normalized.fromDate;
+  if (normalized.toDate) params.endDate = normalized.toDate;
+  // Remove the internal field names so the backend never sees "fromDate"/"toDate".
+  delete params.fromDate;
+  delete params.toDate;
+
   return params;
 }
 
@@ -267,13 +273,31 @@ function resolveEffectiveReportType(selectedTab, reportType, reportPeriod = "Mon
     selectedTab === "Balance Sheet" ||
     selectedTab === "Cashflow"
   ) {
-    return reportPeriod === "Year" ? "Summary" : "Detail";
+    // Both Month and Year use the Detail (multi-column) path.
+    // yearMode flag in options controls column granularity (monthly vs annual).
+    return "Detail";
   }
   return reportType;
 }
 
 function pad2(n) {
   return String(n).padStart(2, "0");
+}
+
+function reportMonthLabel(isoMonth) {
+  const [y, m] = isoMonth.split("-");
+  return `${["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][Number(m) - 1]} ${y}`;
+}
+
+const MONTH_COL_MAP = { JAN: 1, FEB: 2, MAR: 3, APR: 4, MAY: 5, JUN: 6, JUL: 7, AUG: 8, SEP: 9, OCT: 10, NOV: 11, DEC: 12 };
+function colLabelToISO(label) {
+  if (!label) return null;
+  const upper = String(label).trim().toUpperCase();
+  // Accept both 2-digit ("JAN 25") and 4-digit ("JAN 2025") year formats.
+  const m = /^([A-Z]{3})\s+(\d{2}|\d{4})$/.exec(upper);
+  if (!m || !MONTH_COL_MAP[m[1]]) return null;
+  const year = m[2].length === 2 ? 2000 + Number(m[2]) : Number(m[2]);
+  return `${year}-${String(MONTH_COL_MAP[m[1]]).padStart(2, "0")}`;
 }
 
 // Derive the Date From / Date To month pickers (YYYY-MM) from the fiscalYear[] +
@@ -394,9 +418,14 @@ export default function WorkspaceReports() {
   const [filtersCollapsed, setFiltersCollapsed] = useState(false);
   // Period granularity: "Month" (monthly columns) | "Year" (annual columns).
   const [reportPeriod, setReportPeriod] = useState("Month");
+  // Year range selectors — shown when reportPeriod === "Year".
+  const [yearRangeStart, setYearRangeStart] = useState(null);
+  const [yearRangeEnd, setYearRangeEnd] = useState(null);
   // Export (Excel / PDF) dropdown + in-flight state.
   const [exportOpen, setExportOpen] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [reportStartMonth, setReportStartMonth] = useState(null);
+  const [reportEndMonth, setReportEndMonth] = useState(null);
   const [filterOptionsVersion, setFilterOptionsVersion] = useState(0);
   // Dataset versions available for the selected company (manual GL source).
   // Drives the Version dropdown; every staged upload is its own isolated version.
@@ -512,13 +541,13 @@ export default function WorkspaceReports() {
     function handleGlStaged(event) {
       const { clientId: eventClientId } = event.detail || {};
       if (eventClientId && clientId && eventClientId !== clientId) return;
-      // Clear fiscal year selection and stale options; filter options will
+      // Clear date range, fiscal year, and stale options; filter options will
       // be re-fetched automatically via filterOptionsVersion increment.
       setManualFilterOptions({});
-      // Reset datasetVersion too so the version-load effect re-selects the newly
-      // staged (latest) version by default after an upload completes.
-      setManualFilters((prev) => ({ ...prev, batchId: "", datasetVersion: "", fiscalYear: [], fiscalMonth: [] }));
-      setAppliedManualFilters((prev) => ({ ...prev, batchId: "", datasetVersion: "", fiscalYear: [], fiscalMonth: [] }));
+      // Reset datasetVersion and date range so the version-load + options effects
+      // re-derive the full span of the newly staged dataset.
+      setManualFilters((prev) => ({ ...prev, batchId: "", datasetVersion: "", fromDate: "", toDate: "", fiscalYear: [], fiscalMonth: [] }));
+      setAppliedManualFilters((prev) => ({ ...prev, batchId: "", datasetVersion: "", fromDate: "", toDate: "", fiscalYear: [], fiscalMonth: [] }));
       setReportsData(createInitialReportsData());
       // Invalidate the tab-switch cache so reports refetch against the new batch.
       reportSignaturesRef.current = {};
@@ -575,6 +604,9 @@ export default function WorkspaceReports() {
         clientId,
         tab: selectedTab,
         reportType: resolveEffectiveReportType(selectedTab, reportType, reportPeriod),
+        reportPeriod,
+        yearRangeStart: reportPeriod === "Year" ? yearRangeStart : null,
+        yearRangeEnd: reportPeriod === "Year" ? yearRangeEnd : null,
         accountingMethod,
         source: selectedSourceMode,
         manualFilters: buildManualFilterParams(appliedManualFilters),
@@ -589,6 +621,8 @@ export default function WorkspaceReports() {
       selectedTab,
       reportType,
       reportPeriod,
+      yearRangeStart,
+      yearRangeEnd,
       accountingMethod,
       selectedSourceMode,
       appliedManualFilters,
@@ -602,16 +636,7 @@ export default function WorkspaceReports() {
   const currentSignatureRef = useRef(currentSignature);
   currentSignatureRef.current = currentSignature;
 
-  // Date From / Date To month pickers (manual mode) derive from fiscalYear/fiscalMonth.
-  const manualDateRangeValue = filtersToDateRange(manualFilters.fiscalYear, manualFilters.fiscalMonth);
-  const manualAvailableYears = (manualFilterOptions?.fiscalYear || [])
-    .map(Number)
-    .filter(Number.isFinite)
-    .sort((a, b) => a - b);
-  const manualDateMin = manualAvailableYears.length ? `${manualAvailableYears[0]}-01-01` : undefined;
-  const manualDateMax = manualAvailableYears.length
-    ? `${manualAvailableYears[manualAvailableYears.length - 1]}-12-31`
-    : undefined;
+  // Date From / Date To pickers now read directly from fromDate/toDate — no year round-trip.
 
   // Load available dataset versions for the company.  Defaults the selection to
   // the latest version and refreshes after every new upload (filterOptionsVersion
@@ -685,20 +710,28 @@ export default function WorkspaceReports() {
           changed = true;
         }
 
+        // Auto-populate fromDate/toDate from the full span of available data
+        // when no date range has been manually selected yet.
         if (availableYears.length > 0) {
+          const sortedYears = [...availableYears].map(Number).filter(Number.isFinite).sort((a, b) => a - b);
+          const spanFrom = `${sortedYears[0]}-01-01`;
+          const spanTo = `${sortedYears[sortedYears.length - 1]}-12-31`;
+
+          const hasFromDate = String(nextFilters.fromDate || "").trim();
+          const hasToDate = String(nextFilters.toDate || "").trim();
+
+          if (!hasFromDate || !hasToDate) {
+            nextFilters.fromDate = hasFromDate || spanFrom;
+            nextFilters.toDate = hasToDate || spanTo;
+            changed = true;
+            debugLog("[ManualGL][UI][FilterAutoSelectDateRange]", { fromDate: nextFilters.fromDate, toDate: nextFilters.toDate });
+          }
+
+          // Keep fiscalYear in sync with available years (still used as supplemental multi-select).
           const availableSet = new Set(availableYears.map((y) => String(y)));
           const currentSelection = (nextFilters.fiscalYear || []).map(String);
           const stillValid = currentSelection.filter((y) => availableSet.has(y));
-          if (stillValid.length === 0) {
-            // No valid selection — default to the latest available year.
-            const sorted = [...availableYears].map(Number).filter(Number.isFinite).sort((a, b) => b - a);
-            if (sorted.length > 0) {
-              nextFilters.fiscalYear = [String(sorted[0])];
-              changed = true;
-              debugLog("[ManualGL][UI][FilterAutoSelectYear]", { selectedFiscalYear: String(sorted[0]) });
-            }
-          } else if (stillValid.length !== currentSelection.length) {
-            // Drop stale years but preserve the rest of the multi-year selection.
+          if (stillValid.length !== currentSelection.length) {
             nextFilters.fiscalYear = stillValid;
             changed = true;
           }
@@ -867,7 +900,13 @@ export default function WorkspaceReports() {
       if (kind === "excel") {
         exportReportToExcel("report-content", name);
       } else {
-        await exportReportToPdf("report-content", name);
+        await exportReportToPdf("report-content", name, {
+          entityName: company?.name || clientName || "Company",
+          reportType: selectedTab,
+          startDate: appliedStartDate,
+          endDate: appliedEndDate,
+          accountingMethod: appliedAccountingMethod,
+        });
       }
     } catch (err) {
       console.error("[WorkspaceReports] Export failed:", err);
@@ -1116,13 +1155,11 @@ export default function WorkspaceReports() {
   // Date From / Date To pickers are pure views over fiscalYear[] + fiscalMonth[]
   // (the backend source of truth). They update the DRAFT only — the report
   // refetches when Apply is clicked, matching the previous multi-select behavior.
+  // Direct date-range handlers — no fiscal-year round-trip.
   const handleDateFromChange = useCallback(
     (value) => {
       setManualFilters((prev) => {
-        const cur = filtersToDateRange(prev.fiscalYear, prev.fiscalMonth);
-        const { fiscalYear, fiscalMonth } = dateRangeToFilters(value, cur.to);
-        const next = { ...prev, fiscalYear, fiscalMonth };
-        // Apply immediately
+        const next = { ...prev, fromDate: value };
         setAppliedManualFilters(next);
         return next;
       });
@@ -1134,10 +1171,7 @@ export default function WorkspaceReports() {
   const handleDateToChange = useCallback(
     (value) => {
       setManualFilters((prev) => {
-        const cur = filtersToDateRange(prev.fiscalYear, prev.fiscalMonth);
-        const { fiscalYear, fiscalMonth } = dateRangeToFilters(cur.from, value);
-        const next = { ...prev, fiscalYear, fiscalMonth };
-        // Apply immediately
+        const next = { ...prev, toDate: value };
         setAppliedManualFilters(next);
         return next;
       });
@@ -1146,11 +1180,8 @@ export default function WorkspaceReports() {
     [debugLog],
   );
 
-  // Switch the active dataset version. Clears batch + year/month so the
-  // filter-options effect re-derives them for the newly selected version,
-  // preventing stale cross-version selections. The datasetVersion flows into
-  // every report request (via buildManualFilterParams), so reports refresh
-  // using ONLY the selected version's dataset.
+  // Switch the active dataset version. Clears batch + date range + year/month so the
+  // filter-options effect re-derives the full span for the newly selected version.
   const handleVersionChange = useCallback(
     (versionValue) => {
       const nextVersion = String(versionValue || "");
@@ -1158,6 +1189,8 @@ export default function WorkspaceReports() {
         ...manualFiltersRef.current,
         datasetVersion: nextVersion,
         batchId: "",
+        fromDate: "",
+        toDate: "",
         fiscalYear: [],
         fiscalMonth: [],
       };
@@ -1167,8 +1200,6 @@ export default function WorkspaceReports() {
     },
     [debugLog],
   );
-
-  // handleApplyManualFilters removed
 
 
   // Core report fetch + state write, parameterised by tab/reportType so it can
@@ -1196,11 +1227,20 @@ export default function WorkspaceReports() {
       const normalizedAccountingMethod =
         normalizeAccountingMethod(accountingMethod);
 
+      const isYearMode = reportPeriod === "Year";
+
       // In manual-upload / QMS mode, resolve the fiscal year from the selected file
       // (avoids an extra API call — file list was already fetched by the files effect).
+      // In Year mode we use the full year range instead of a single file.
       let resolvedStart;
       let resolvedEnd;
-      if (selectedSourceMode === "manual_upload") {
+      if (isYearMode && (selectedSourceMode === "manual_upload" || selectedSourceMode === "quickbooks_manual")) {
+        // Year mode: span the whole selected year range; the service filters files itself.
+        const sy = yearRangeStart || String(new Date().getFullYear());
+        const ey = yearRangeEnd || sy;
+        resolvedStart = `${sy}-01-01`;
+        resolvedEnd = `${ey}-12-31`;
+      } else if (selectedSourceMode === "manual_upload") {
         const selectedRowId = selectedManualUploadRowId[selectedTab];
         const fileEntry = manualUploadFiles[selectedTab]?.find(
           (f) => f.rowId === selectedRowId,
@@ -1213,8 +1253,7 @@ export default function WorkspaceReports() {
           resolvedStart = `${year}-01-01`;
           resolvedEnd = `${year}-12-31`;
         }
-      }
-      if (selectedSourceMode === "quickbooks_manual") {
+      } else if (selectedSourceMode === "quickbooks_manual") {
         const selectedRowId = selectedQMSRowId[selectedTab];
         const fileEntry = qmsFiles[selectedTab]?.find(
           (f) => f.rowId === selectedRowId,
@@ -1258,21 +1297,14 @@ export default function WorkspaceReports() {
         });
       }
 
-      // For manual GL mode: derive display dates from the selected fiscal year.
+      // For manual GL mode: derive display dates from fromDate/toDate.
       let effectiveStartDate = resolvedStart;
       let effectiveEndDate = resolvedEnd;
       if (selectedSourceMode === "manual") {
-        const selectedYears = (
-          appliedManualFilters?.fiscalYear?.length
-            ? appliedManualFilters.fiscalYear
-            : (manualFilterParams?.fiscalYear || [])
-        )
-          .map(Number)
-          .filter(Number.isFinite);
-        if (selectedYears.length > 0) {
-          effectiveStartDate = `${Math.min(...selectedYears)}-01-01`;
-          effectiveEndDate = `${Math.max(...selectedYears)}-12-31`;
-        }
+        const fromDate = String(appliedManualFilters?.fromDate || "").trim();
+        const toDate = String(appliedManualFilters?.toDate || "").trim();
+        if (fromDate) effectiveStartDate = fromDate;
+        if (toDate) effectiveEndDate = toDate;
       }
       // For manual_upload Cash Flow: period must reflect the selected CF year,
       // not the QB date-range picker (which is hidden on this tab).
@@ -1287,6 +1319,11 @@ export default function WorkspaceReports() {
       setAppliedAccountingMethod(accountingMethod);
       let summary = [];
       let detail = { groups: [] };
+
+      // Year mode options passed through to all Detail service calls.
+      const yearModeOptions = isYearMode
+        ? { yearMode: true, startYear: yearRangeStart, endYear: yearRangeEnd }
+        : {};
 
       const manualUploadRowId =
         selectedSourceMode === "manual_upload"
@@ -1315,6 +1352,7 @@ export default function WorkspaceReports() {
             {
               sourceMode: selectedSourceMode,
               manualFilters: manualFilterParams,
+              ...yearModeOptions,
             },
           );
         }
@@ -1339,6 +1377,7 @@ export default function WorkspaceReports() {
               sourceMode: selectedSourceMode,
               manualFilters: manualFilterParams,
               reportType: effectiveReportType,
+              ...yearModeOptions,
             },
           );
         }
@@ -1366,6 +1405,7 @@ export default function WorkspaceReports() {
             {
               sourceMode: selectedSourceMode,
               manualFilters: manualFilterParams,
+              ...yearModeOptions,
             },
           );
         }
@@ -1414,6 +1454,8 @@ export default function WorkspaceReports() {
     debugLog,
     reportType,
     reportPeriod,
+    yearRangeStart,
+    yearRangeEnd,
     selectedSourceMode,
     selectedTab,
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1509,6 +1551,151 @@ export default function WorkspaceReports() {
 
   const currentReport = reportsData[selectedTab];
 
+  // Detect empty state for manual GL: report was fetched but returned no data
+  // for the selected date range. Show a clear message instead of a blank report.
+  const isManualGlEmptyState = useMemo(() => {
+    if (selectedSourceMode !== "manual" || isLoading) return false;
+    const from = String(appliedManualFilters?.fromDate || "").trim();
+    const to = String(appliedManualFilters?.toDate || "").trim();
+    if (!from && !to) return false; // no filter applied yet
+    const report = reportsData[selectedTab];
+    const summaryEmpty =
+      !report?.summary ||
+      (Array.isArray(report.summary) && report.summary.length === 0) ||
+      (report.summary?.rows && report.summary.rows.length === 0);
+    const detailEmpty =
+      !report?.detail ||
+      (Array.isArray(report.detail?.groups) && report.detail.groups.length === 0);
+    return summaryEmpty && detailEmpty;
+  }, [selectedSourceMode, isLoading, appliedManualFilters, reportsData, selectedTab]);
+
+  const isManualReportMode = selectedSourceMode === "manual_upload" || selectedSourceMode === "quickbooks_manual";
+
+  // Years available in the current data source — used to populate the Year-range pickers.
+  const availableYears = useMemo(() => {
+    const currentYear = new Date().getFullYear();
+    if (selectedSourceMode === "manual_upload") {
+      const files = manualUploadFiles[selectedTab] || [];
+      const years = files
+        .map((f) => resolveManualUploadYear({ data: f.data, reportParams: { fileName: f.fileName } }))
+        .filter(Boolean);
+      const unique = [...new Set(years)].sort((a, b) => a - b);
+      if (unique.length) return unique;
+    }
+    if (selectedSourceMode === "quickbooks_manual") {
+      const files = qmsFiles[selectedTab] || [];
+      const years = files
+        .map((f) => resolveManualUploadYear({ data: f.data, reportParams: { fileName: f.fileName } }))
+        .filter(Boolean);
+      const unique = [...new Set(years)].sort((a, b) => a - b);
+      if (unique.length) return unique;
+    }
+    if (selectedSourceMode === "manual") {
+      const years = (manualFilterOptions?.fiscalYear || []).map(Number).filter(Boolean);
+      const unique = [...new Set(years)].sort((a, b) => a - b);
+      if (unique.length) return unique;
+    }
+    // QuickBooks online: last 6 calendar years.
+    return Array.from({ length: 6 }, (_, i) => currentYear - 5 + i);
+  }, [selectedSourceMode, selectedTab, manualUploadFiles, qmsFiles, manualFilterOptions]);
+
+  // Auto-initialise year range when available years change (e.g. after files load).
+  useEffect(() => {
+    if (!availableYears.length) return;
+    setYearRangeStart((prev) => {
+      if (prev !== null && availableYears.includes(Number(prev))) return prev;
+      return String(availableYears[0]);
+    });
+    setYearRangeEnd((prev) => {
+      if (prev !== null && availableYears.includes(Number(prev))) return prev;
+      return String(availableYears[availableYears.length - 1]);
+    });
+  }, [availableYears]);
+  const availableReportMonths = useMemo(() => {
+    if (!isManualReportMode) return [];
+    const detail = currentReport?.detail;
+    if (!detail) return [];
+    // manual_upload / quickbooks_manual: yearCols with "MMM YYYY" labels
+    const yearCols = detail?.columns?.yearCols;
+    if (Array.isArray(yearCols) && yearCols.length > 0) {
+      const monthly = [...new Set(yearCols.map((c) => colLabelToISO(c.label)).filter(Boolean))].sort();
+      if (monthly.length > 0) return monthly;
+      // Fallback: file has only yearly columns (e.g. "FY 2025") — expand each year to Jan–Dec
+      // so the date pickers are always populated and functional.
+      const fyMonths = [];
+      yearCols.forEach((col) => {
+        const label = String(col.label || "").trim().toUpperCase();
+        const fyMatch = /^FY\s+(\d{4})$/.exec(label) || /^(\d{4})$/.exec(label);
+        if (fyMatch) {
+          const yr = fyMatch[1];
+          for (let m = 1; m <= 12; m++) fyMonths.push(`${yr}-${String(m).padStart(2, "0")}`);
+        }
+      });
+      if (fyMonths.length > 0) return [...new Set(fyMonths)].sort();
+      // Last resort: derive from asOfDate stored on the report
+      const asOf = detail?.asOfDate;
+      if (asOf) {
+        const yr = String(asOf).slice(0, 4);
+        if (/^\d{4}$/.test(yr)) {
+          return Array.from({ length: 12 }, (_, i) => `${yr}-${String(i + 1).padStart(2, "0")}`);
+        }
+      }
+    }
+    // Manual GL: detail.months (int array) + detail.year
+    if (Array.isArray(detail?.months) && detail?.year) {
+      return detail.months.map((m) => `${detail.year}-${String(m).padStart(2, "0")}`).sort();
+    }
+    return [];
+  }, [currentReport, isManualReportMode]);
+  useEffect(() => {
+    if (!availableReportMonths.length) {
+      setReportStartMonth(null);
+      setReportEndMonth(null);
+    } else {
+      setReportStartMonth(availableReportMonths[0]);
+      setReportEndMonth(availableReportMonths[availableReportMonths.length - 1]);
+    }
+  }, [availableReportMonths]);
+  const filteredReportMonthNums = useMemo(() => {
+    if (!availableReportMonths.length) return [];
+    const start = reportStartMonth || availableReportMonths[0];
+    const end = reportEndMonth || availableReportMonths[availableReportMonths.length - 1];
+    return availableReportMonths
+      .filter((m) => m >= start && m <= end)
+      .map((m) => Number(m.split("-")[1]));
+  }, [availableReportMonths, reportStartMonth, reportEndMonth]);
+
+  // Pre-filter detailedData for manual_upload / quickbooks_manual: strip yearCols
+  // and row amounts that fall outside the selected month range, so all downstream
+  // components (BalanceSheetSummary, ProfitAndLossSummary, CashflowSummary) only
+  // see the selected columns without needing any prop changes.
+  const filteredDetailedData = useMemo(() => {
+    const detail = currentReport?.detail;
+    if (!isManualReportMode || !detail) return detail;
+    const yearCols = detail?.columns?.yearCols;
+    if (!Array.isArray(yearCols) || !availableReportMonths.length) return detail;
+    const start = reportStartMonth || availableReportMonths[0];
+    const end = reportEndMonth || availableReportMonths[availableReportMonths.length - 1];
+    const filteredCols = yearCols.filter((col) => {
+      const iso = colLabelToISO(col.label);
+      if (!iso) return true; // non-month columns (e.g. "FY 2025") always shown
+      return iso >= start && iso <= end;
+    });
+    const filteredKeys = new Set(filteredCols.map((c) => c.key));
+    const filterNode = (node) => ({
+      ...node,
+      amounts: Object.fromEntries(
+        Object.entries(node.amounts || {}).filter(([k]) => filteredKeys.has(k))
+      ),
+      children: node.children ? node.children.map(filterNode) : undefined,
+    });
+    return {
+      ...detail,
+      columns: { ...detail.columns, yearCols: filteredCols },
+      rows: (detail.rows || []).map(filterNode),
+    };
+  }, [currentReport, isManualReportMode, reportStartMonth, reportEndMonth, availableReportMonths]);
+
   return (
     <div className="page-container">
       <Header title="Reports" />
@@ -1589,9 +1776,9 @@ export default function WorkspaceReports() {
           ))}
         </div>
 
-        <div className="card-base card-p min-h-[800px] flex flex-col">
+        <div className="card-base p-4 min-h-[800px] flex flex-col">
           {/* Collapsible filter bar — reclaims vertical space for the report. */}
-          <div className="mb-3 flex items-center gap-3">
+          <div className="mb-2 flex items-center gap-3">
             <button
               type="button"
               onClick={() => setFiltersCollapsed((v) => !v)}
@@ -1607,8 +1794,8 @@ export default function WorkspaceReports() {
               <span className="truncate text-[12px] text-text-muted">
                 {[
                   selectedSourceMode === "quickbooks" ? accountingMethod : null,
-                  manualDateRangeValue.from && manualDateRangeValue.to
-                    ? `${manualDateRangeValue.from} → ${manualDateRangeValue.to}`
+                  selectedSourceMode === "manual" && (manualFilters.fromDate || manualFilters.toDate)
+                    ? `${manualFilters.fromDate || "…"} → ${manualFilters.toDate || "…"}`
                     : null,
                 ]
                   .filter(Boolean)
@@ -1619,7 +1806,7 @@ export default function WorkspaceReports() {
           {/* QuickBooks-style Top Control Bar */}
           <div
             className={cn(
-              "mb-8 flex flex-wrap items-center gap-6 border-b border-border-light pb-6",
+              "mb-3 flex flex-wrap items-end gap-4 border-b border-border-light pb-3",
               filtersCollapsed && "hidden",
             )}
           >
@@ -1702,6 +1889,61 @@ export default function WorkspaceReports() {
                 </div>
               )}
 
+            {/* Year range filter — shown when Period = Year */}
+            {(selectedTab === "Profit & Loss" ||
+              selectedTab === "Balance Sheet" ||
+              selectedTab === "Cashflow") &&
+              reportPeriod === "Year" && (
+                <div className="flex items-end gap-3">
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
+                      From Year
+                    </label>
+                    <div className="relative min-w-[110px]">
+                      <select
+                        value={yearRangeStart ?? ""}
+                        onChange={(e) => setYearRangeStart(e.target.value)}
+                        className="h-9 w-full appearance-none rounded-md border border-border-input bg-bg-card pl-3 pr-9 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                      >
+                        {availableYears.map((y) => (
+                          <option key={y} value={String(y)}>
+                            {y}
+                          </option>
+                        ))}
+                      </select>
+                      <ChevronDown
+                        size={14}
+                        className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-text-muted"
+                      />
+                    </div>
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
+                      To Year
+                    </label>
+                    <div className="relative min-w-[110px]">
+                      <select
+                        value={yearRangeEnd ?? ""}
+                        onChange={(e) => setYearRangeEnd(e.target.value)}
+                        className="h-9 w-full appearance-none rounded-md border border-border-input bg-bg-card pl-3 pr-9 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                      >
+                        {availableYears
+                          .filter((y) => !yearRangeStart || y >= Number(yearRangeStart))
+                          .map((y) => (
+                            <option key={y} value={String(y)}>
+                              {y}
+                            </option>
+                          ))}
+                      </select>
+                      <ChevronDown
+                        size={14}
+                        className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-text-muted"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
             {reportType === "Summary" && selectedSourceMode !== "manual" && selectedSourceMode !== "manual_upload" && selectedSourceMode !== "quickbooks_manual" && (
               <>
                 <div className="flex flex-col gap-1.5">
@@ -1762,29 +2004,47 @@ export default function WorkspaceReports() {
               </>
             )}
 
-            {(selectedSourceMode === "manual_upload" || selectedSourceMode === "quickbooks_manual") && (
-              <div className="flex flex-col gap-1.5">
-                <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
-                  Date Range
-                </label>
-                <div className="relative min-w-[160px]">
-                  <select
-                    value={manualDateRange}
-                    onChange={(event) => setManualDateRange(event.target.value)}
-                    className="h-9 w-full appearance-none rounded-md border border-border-input bg-bg-card pl-3 pr-9 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-                  >
-                    {MANUAL_DATE_RANGE_OPTIONS.map((option) => (
-                      <option key={option} value={option}>
-                        {option}
-                      </option>
-                    ))}
-                  </select>
-                  <ChevronDown
-                    size={14}
-                    className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-text-muted"
+            {isManualReportMode && reportPeriod === "Month" && (
+              <>
+                <div>
+                  <label className="block text-[11px] font-semibold uppercase tracking-wide text-text-muted mb-1">
+                    Start Month
+                  </label>
+                  <input
+                    type="date"
+                    value={reportStartMonth ? `${reportStartMonth}-01` : ""}
+                    min={availableReportMonths[0] ? `${availableReportMonths[0]}-01` : undefined}
+                    max={reportEndMonth ? `${reportEndMonth}-01` : undefined}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (!val) return;
+                      const isoMonth = val.slice(0, 7);
+                      setReportStartMonth(isoMonth);
+                      if (reportEndMonth && isoMonth > reportEndMonth) setReportEndMonth(isoMonth);
+                    }}
+                    className="h-9 w-full rounded-md border border-border-input bg-bg-card px-3 text-[13px] text-text-primary"
                   />
                 </div>
-              </div>
+                <div>
+                  <label className="block text-[11px] font-semibold uppercase tracking-wide text-text-muted mb-1">
+                    End Month
+                  </label>
+                  <input
+                    type="date"
+                    value={reportEndMonth ? `${reportEndMonth}-01` : ""}
+                    min={reportStartMonth ? `${reportStartMonth}-01` : undefined}
+                    max={availableReportMonths[availableReportMonths.length - 1] ? `${availableReportMonths[availableReportMonths.length - 1]}-01` : undefined}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (!val) return;
+                      const isoMonth = val.slice(0, 7);
+                      setReportEndMonth(isoMonth);
+                      if (reportStartMonth && isoMonth < reportStartMonth) setReportStartMonth(isoMonth);
+                    }}
+                    className="h-9 w-full rounded-md border border-border-input bg-bg-card px-3 text-[13px] text-text-primary"
+                  />
+                </div>
+              </>
             )}
 
             {selectedSourceMode === "quickbooks" && (
@@ -1852,7 +2112,7 @@ export default function WorkspaceReports() {
               ) : null
             )}
 
-            {selectedSourceMode === "manual_upload" && selectedTab === "Cashflow" && (
+            {selectedSourceMode === "manual_upload" && selectedTab === "Cashflow" && reportPeriod !== "Year" && (
               isLoadingCfYears ? (
                 <div className="flex flex-col gap-1.5">
                   <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
@@ -1957,35 +2217,35 @@ export default function WorkspaceReports() {
                   </div>
                 )}
 
-                <div className="flex flex-col gap-1.5">
-                  <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
-                    Date From
-                  </label>
-                  <input
-                    type="date"
-                    min={manualDateMin}
-                    max={manualDateMax}
-                    value={manualDateRangeValue.from}
-                    onChange={(e) => handleDateFromChange(e.target.value)}
-                    className="h-9 min-w-[150px] rounded-md border border-border-input bg-bg-card px-3 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-                  />
-                </div>
+                {reportPeriod !== "Year" && (
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
+                      Date From
+                    </label>
+                    <input
+                      type="date"
+                      value={manualFilters.fromDate || ""}
+                      onChange={(e) => handleDateFromChange(e.target.value)}
+                      className="h-9 min-w-[150px] rounded-md border border-border-input bg-bg-card px-3 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                    />
+                  </div>
+                )}
 
-                <div className="flex flex-col gap-1.5">
-                  <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
-                    Date To
-                  </label>
-                  <input
-                    type="date"
-                    min={manualDateMin}
-                    max={manualDateMax}
-                    value={manualDateRangeValue.to}
-                    onChange={(e) => handleDateToChange(e.target.value)}
-                    className="h-9 min-w-[150px] rounded-md border border-border-input bg-bg-card px-3 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-                  />
-                </div>
+                {reportPeriod !== "Year" && (
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
+                      Date To
+                    </label>
+                    <input
+                      type="date"
+                      value={manualFilters.toDate || ""}
+                      onChange={(e) => handleDateToChange(e.target.value)}
+                      className="h-9 min-w-[150px] rounded-md border border-border-input bg-bg-card px-3 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                    />
+                  </div>
+                )}
 
-                {/* Apply button removed — filters are now reactive */}
+                {/* Filters are reactive — no Apply button needed */}
               </>
             )}
 
@@ -1999,14 +2259,26 @@ export default function WorkspaceReports() {
                   Fetching latest financial records from {selectedSourceLabel}...
                 </p>
               </div>
+            ) : isManualGlEmptyState ? (
+              <div className="flex flex-1 flex-col items-center justify-center py-24 text-center">
+                <div className="mb-4 h-12 w-12 rounded-full border-2 border-border flex items-center justify-center">
+                  <FileText size={22} className="text-text-muted" />
+                </div>
+                <p className="text-[15px] font-semibold text-text-primary mb-1">
+                  No data available for the selected date range.
+                </p>
+                <p className="text-[13px] text-text-muted">
+                  Try adjusting the Date From and Date To filters above.
+                </p>
+              </div>
             ) : (
               <>
-                <div id="report-content" className="bg-white">
+                <div id="report-content">
                   {selectedTab === "Balance Sheet" ? (
                     <BalanceSheetReport
                       reportType={resolveEffectiveReportType(selectedTab, reportType, reportPeriod)}
                       data={currentReport.summary}
-                      detailedData={currentReport.detail}
+                      detailedData={filteredDetailedData}
                       startDate={appliedStartDate}
                       endDate={appliedEndDate}
                       accountingMethod={appliedAccountingMethod}
@@ -2015,13 +2287,13 @@ export default function WorkspaceReports() {
                       entityName={company?.name || clientName}
                       createdOn={createdOn}
                       isPreview={true}
-                      selectedMonths={appliedManualFilters?.fiscalMonth || []}
+                      selectedMonths={isManualReportMode ? filteredReportMonthNums : (appliedManualFilters?.fiscalMonth || [])}
                     />
                   ) : selectedTab === "Profit & Loss" ? (
                     <ProfitAndLossReport
                       reportType={resolveEffectiveReportType(selectedTab, reportType, reportPeriod)}
                       data={currentReport.summary}
-                      detailedData={currentReport.detail}
+                      detailedData={filteredDetailedData}
                       startDate={appliedStartDate}
                       endDate={appliedEndDate}
                       accountingMethod={appliedAccountingMethod}
@@ -2030,13 +2302,13 @@ export default function WorkspaceReports() {
                       entityName={company?.name || clientName}
                       createdOn={createdOn}
                       isPreview={true}
-                      selectedMonths={appliedManualFilters?.fiscalMonth || []}
+                      selectedMonths={isManualReportMode ? filteredReportMonthNums : (appliedManualFilters?.fiscalMonth || [])}
                     />
                   ) : (
                     <CashflowReport
                       reportType={resolveEffectiveReportType(selectedTab, reportType, reportPeriod)}
                       data={currentReport.summary}
-                      detailedData={currentReport.detail}
+                      detailedData={filteredDetailedData}
                       startDate={appliedStartDate}
                       endDate={appliedEndDate}
                       accountingMethod={appliedAccountingMethod}
@@ -2045,7 +2317,7 @@ export default function WorkspaceReports() {
                       entityName={company?.name || clientName}
                       createdOn={createdOn}
                       isPreview={true}
-                      selectedMonths={appliedManualFilters?.fiscalMonth || []}
+                      selectedMonths={isManualReportMode ? filteredReportMonthNums : (appliedManualFilters?.fiscalMonth || [])}
                     />
                   )}
                 </div>

@@ -17,6 +17,7 @@ function BalanceSheetReport({
   isPreview = false,
   selectedMonths = [],
 }) {
+  // Forward isPreview to sub-components so they skip the document-style wrapper in-page
   const resolvedEntityName = entityName || clientName || "Company";
   const periodText = startDate === "1970-01-01" ? "All Dates" : `${startDate || "N/A"} to ${endDate || "N/A"}`;
   const summaryRows = Array.isArray(data) ? data : (Array.isArray(data?.rows) ? data.rows : []);
@@ -45,6 +46,22 @@ function BalanceSheetReport({
           subtitle={summarySubtitle}
           entityName={resolvedEntityName}
           selectedMonths={selectedMonths}
+          isPreview={isPreview}
+        />
+      );
+    }
+
+    // manual_upload / quickbooks_manual monthly view — data already has rows + columns.yearCols
+    if (sourceMode === "manual_upload" || sourceMode === "quickbooks_manual") {
+      const rows = Array.isArray(detailedData?.rows) ? detailedData.rows : (Array.isArray(detailedData) ? detailedData : []);
+      return (
+        <BalanceSheetQBSummary
+          data={rows}
+          columns={detailedData?.columns}
+          title="Balance Sheet"
+          subtitle={summarySubtitle}
+          entityName={resolvedEntityName}
+          isPreview={isPreview}
         />
       );
     }
@@ -62,6 +79,7 @@ function BalanceSheetReport({
         subtitle={null}
         entityName={resolvedEntityName}
         createdOn={createdOn}
+        isPreview={isPreview}
       />
     );
   }
@@ -77,6 +95,7 @@ function BalanceSheetReport({
       source={source}
       sourceLabel={sourceLabel}
       noDataText={noDataText}
+      isPreview={isPreview}
     />
   );
 }

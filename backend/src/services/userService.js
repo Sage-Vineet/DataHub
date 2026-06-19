@@ -1,6 +1,12 @@
 const { supabase } = require("../db");
 const bcrypt = require("bcryptjs");
 const { Pool } = require("pg");
+const { CLIENT_SUB_ROLES } = require("../constants/roles");
+
+// Sub-roles that belong to the client side of the platform.
+// Users with these sub_roles always receive effective_role = "client",
+// giving them full access to the client portal (file manager, documents, etc.).
+const CLIENT_SIDE_SUB_ROLES = ['company_owner', 'client_team_member', 'client_accountant'];
 
 let profilePool = null;
 let profileFallbackCooldownUntil = 0;
@@ -240,7 +246,11 @@ function flattenUser(user) {
 function _enrichFromCompanyIdOnly(userList, isSingle) {
   const enriched = userList.map((u) => ({
     ...u,
-    effective_role: u.effective_role ?? (u.role === "buyer" ? "user" : u.role === "client" ? "client" : u.role),
+    effective_role: u.effective_role ?? (
+      u.role === "buyer"
+        ? (CLIENT_SIDE_SUB_ROLES.includes(u.sub_role) ? "client" : "user")
+        : u.role === "client" ? "client" : u.role
+    ),
     company_ids: u.company_ids ?? (u.company_id ? [String(u.company_id)] : []),
     assigned_companies: u.assigned_companies ?? (
       u.company_id ? [{ id: u.company_id, name: u.company_name || null }] : []
@@ -315,6 +325,13 @@ async function attachAssignedCompanies(users) {
     return map;
   }, {});
 
+  // Snapshot direct user_companies assignments before historical data is merged in.
+  // Used to produce direct_company_ids — companies a user is explicitly assigned to —
+  // so the Deal Team page can distinguish directly assigned brokers from invite-only ones.
+  const directByUserId = Object.fromEntries(
+    Object.entries(byUserId).map(([uid, cos]) => [uid, [...cos]]),
+  );
+
   const historicalBrokerCompaniesByUserId = await getHistoricalBrokerCompaniesByUserId(userList);
   for (const [userId, companies] of Object.entries(historicalBrokerCompaniesByUserId)) {
     if (!byUserId[userId]) byUserId[userId] = [];
@@ -356,13 +373,16 @@ async function attachAssignedCompanies(users) {
     const effectiveRole = user.role === "client"
       ? "client"
       : user.role === "buyer"
-        ? (isSeller ? "client" : "user")
+        ? (CLIENT_SIDE_SUB_ROLES.includes(user.sub_role) || isSeller ? "client" : "user")
         : user.role;
 
     return {
       ...user,
       effective_role: effectiveRole,
       company_ids: normalizedCompanies.map((company) => company.id).filter(Boolean),
+      // direct_company_ids: only companies from user_companies rows (no historical broker data,
+      // no company_id fallback). Used by the Deal Team page to filter broker visibility.
+      direct_company_ids: dedupeCompanies(directByUserId[user.id] || []).map((c) => c.id).filter(Boolean),
       assigned_companies: normalizedCompanies,
     };
   });
@@ -611,8 +631,9 @@ async function getUserById(id) {
  */
 async function getUserByEmail(email) {
   if (!email) return null;
+  const normalized = String(email).trim().toLowerCase();
   const { data, error } = await selectUserRow((sel) =>
-    supabase.from("users").select(sel).eq("email", email).maybeSingle()
+    supabase.from("users").select(sel).eq("email", normalized).maybeSingle()
   );
   if (!error && data) {
     return await attachAssignedCompanies(await mergeSqlProfile(flattenUser(data)));
@@ -654,6 +675,82 @@ async function getUserByEmail(email) {
     console.warn("[getUserByEmail] Direct Postgres fallback failed:", pgErr.message);
     return null;
   }
+}
+
+// ── Broker Team Invite helpers ───────────────────────────────────────────────
+
+/**
+ * Returns invited_broker_id values for all invites where team_owner_id = ownerId.
+ */
+async function getBrokerTeamInviteIds(ownerId) {
+  if (!ownerId) return [];
+  const { data, error } = await supabase
+    .from("broker_team_invites")
+    .select("invited_broker_id")
+    .eq("team_owner_id", ownerId);
+  if (error) {
+    console.warn("[getBrokerTeamInviteIds] error:", error.message);
+    return [];
+  }
+  return (data || []).map((r) => r.invited_broker_id);
+}
+
+/**
+ * Creates a broker-team invite record (idempotent via upsert).
+ * Does NOT modify the invited broker's company_id / user_companies rows.
+ */
+async function inviteBrokerToTeam(teamOwnerId, invitedBrokerId) {
+  if (!teamOwnerId || !invitedBrokerId) throw new Error("teamOwnerId and invitedBrokerId required");
+  if (String(teamOwnerId) === String(invitedBrokerId)) {
+    throw Object.assign(new Error("Cannot invite yourself to your own team."), { status: 400 });
+  }
+  const { error } = await supabase
+    .from("broker_team_invites")
+    .upsert(
+      { team_owner_id: teamOwnerId, invited_broker_id: invitedBrokerId },
+      { onConflict: "team_owner_id,invited_broker_id" },
+    );
+  if (error) throw error;
+}
+
+/**
+ * Removes a broker-team invite record.
+ * Does NOT touch the invited broker's user_companies or account.
+ */
+async function removeBrokerFromTeam(teamOwnerId, invitedBrokerId) {
+  if (!teamOwnerId || !invitedBrokerId) return;
+  const { error } = await supabase
+    .from("broker_team_invites")
+    .delete()
+    .eq("team_owner_id", teamOwnerId)
+    .eq("invited_broker_id", invitedBrokerId);
+  if (error) throw error;
+}
+
+// ── Company-assignment helpers (Features 2 & 3) ───────────────────────────────
+
+/**
+ * Adds companyIds to an existing user's company assignments (merges, does not replace).
+ */
+async function addUserToCompanies(userId, companyIdsToAdd) {
+  if (!userId || !companyIdsToAdd?.length) return;
+  const existing = await getUserById(userId);
+  const merged = Array.from(new Set([
+    ...(existing?.company_ids || []).map(String),
+    ...companyIdsToAdd.map(String),
+  ]));
+  await syncUserCompanies(userId, merged);
+}
+
+/**
+ * Removes specific companyIds from an existing user's company assignments.
+ */
+async function removeUserFromCompanies(userId, companyIdsToRemove) {
+  if (!userId) return;
+  const existing = await getUserById(userId);
+  const removeSet = new Set((companyIdsToRemove || []).map(String));
+  const remaining = (existing?.company_ids || []).filter((id) => !removeSet.has(String(id)));
+  await syncUserCompanies(userId, remaining);
 }
 
 /**
@@ -745,12 +842,25 @@ async function listAllUsers(viewer = null) {
   if (!viewer || isAdmin(viewer)) return enriched;
 
   const viewerCompanyIds = new Set(getUserCompanyIds(viewer).map(String));
+
   if (isBroker(viewer)) {
-    return enriched.filter((user) => {
-      if (String(user.id) === String(viewer.id)) return true;
-      if (isAdmin(user)) return false;
-      return getUserCompanyIds(user).some((companyId) => viewerCompanyIds.has(String(companyId)));
-    });
+    // Fetch broker-team invite relationships so invited brokers appear in the list
+    // even if they share no company_id with the viewer.
+    const invitedIds = new Set((await getBrokerTeamInviteIds(viewer.id)).map(String));
+
+    return enriched
+      .filter((user) => {
+        if (String(user.id) === String(viewer.id)) return true;
+        if (isAdmin(user)) return false;
+        if (invitedIds.has(String(user.id))) return true;
+        return getUserCompanyIds(user).some((cid) => viewerCompanyIds.has(String(cid)));
+      })
+      .map((user) => ({
+        ...user,
+        // is_team_invite: true means this broker was added via explicit invite,
+        // NOT via shared company — UI shows "Remove from Team" instead of "Delete".
+        is_team_invite: invitedIds.has(String(user.id)),
+      }));
   }
 
   return enriched.filter((user) => String(user.id) === String(viewer.id));
@@ -782,10 +892,11 @@ async function createUser(userData) {
   const primaryCompanyId = company_id || assignedCompanyIds[0] || null;
   const passwordHash = await bcrypt.hash(String(password || ""), 10);
   const resolvedStatus = status || "active";
+  const normalizedEmail = email ? String(email).trim().toLowerCase() : email;
 
   const insertPayload = {
     name,
-    email,
+    email: normalizedEmail,
     phone: phone || null,
     password_hash: passwordHash,
     role,
@@ -840,7 +951,7 @@ async function updateUser(id, userData) {
   // ── Core updates (always-safe columns) ──────────────────────────────────
   const coreUpdates = {};
   if (name !== undefined) coreUpdates.name = name;
-  if (email !== undefined) coreUpdates.email = email;
+  if (email !== undefined) coreUpdates.email = email ? String(email).trim().toLowerCase() : email;
   if (phone !== undefined) coreUpdates.phone = normalizedPhone;
   if (role !== undefined) coreUpdates.role = role;
   if (status !== undefined) coreUpdates.status = status;
@@ -936,6 +1047,29 @@ async function updateUser(id, userData) {
   return await getUserById(id);
 }
 
+/**
+ * Returns all client-side users (company_owner, client_team_member, client_accountant)
+ * associated with the given company. Used for request-assignment email notifications.
+ */
+async function getClientTeamMembersForCompany(companyId) {
+  const { data: links } = await supabase
+    .from("user_companies")
+    .select("user_id")
+    .eq("company_id", companyId);
+
+  if (!links?.length) return [];
+
+  const userIds = links.map((l) => l.user_id).filter(Boolean);
+
+  const { data: users } = await supabase
+    .from("users")
+    .select("id, name, email, sub_role")
+    .in("id", userIds)
+    .in("sub_role", CLIENT_SUB_ROLES);
+
+  return (users || []).filter((u) => u.email);
+}
+
 module.exports = {
   supabase,
   userSelect,
@@ -949,9 +1083,15 @@ module.exports = {
   syncUserCompanies,
   getUserById,
   getUserByEmail,
+  addUserToCompanies,
+  removeUserFromCompanies,
+  getBrokerTeamInviteIds,
+  inviteBrokerToTeam,
+  removeBrokerFromTeam,
   listAllUsers,
   createUser,
   updateUser,
   resolveReplacementUserId,
-  reassignUserRecords
+  reassignUserRecords,
+  getClientTeamMembersForCompany,
 };

@@ -62,37 +62,60 @@ const EXPECTED_FOLDER_COUNT = DEFAULT_FOLDERS.length;
 const _ensureInProgress = new Map();
 
 async function resolveCreatorId(companyId, preferredUserId) {
-  // Supabase-first (reads are reliable); Postgres is often unreachable locally
+  // Collapse up to 4 sequential queries into 1: fetch preferred user, any admin/broker,
+  // or any company member in a single OR-filtered query.
   try {
-    if (preferredUserId) {
-      const { data } = await supabase.from("users").select("id").eq("id", preferredUserId).maybeSingle();
-      if (data?.id) return data.id;
+    const orParts = [
+      preferredUserId ? `id.eq.${preferredUserId}` : null,
+      `role.in.(admin,broker)`,
+      `company_id.eq.${companyId}`,
+    ].filter(Boolean).join(",");
+
+    const { data } = await supabase
+      .from("users")
+      .select("id, role, company_id")
+      .or(orParts)
+      .limit(10);
+
+    if (data?.length) {
+      if (preferredUserId) {
+        const preferred = data.find((u) => u.id === preferredUserId);
+        if (preferred) return preferred.id;
+      }
+      const privileged = data.find((u) => ["admin", "broker"].includes(u.role));
+      if (privileged) return privileged.id;
+      return data[0].id;
     }
-    const { data: admin } = await supabase.from("users").select("id").in("role", ["admin", "broker"]).limit(1).maybeSingle();
-    if (admin?.id) return admin.id;
-    const { data: cu } = await supabase.from("users").select("id").eq("company_id", companyId).limit(1).maybeSingle();
-    if (cu?.id) return cu.id;
+
+    // Last-resort: any user
     const { data: any } = await supabase.from("users").select("id").limit(1).maybeSingle();
     if (any?.id) return any.id;
-  } catch { /* fall through */ }
+  } catch { /* fall through to PG */ }
 
-  // Postgres fallback (used in production where direct DB is reachable)
-  const candidates = [
-    preferredUserId
-      ? () => pgQuery("SELECT id FROM users WHERE id=$1 LIMIT 1", [preferredUserId])
-      : null,
-    () => pgQuery("SELECT id FROM users WHERE role IN ('admin','broker') LIMIT 1"),
-    () => pgQuery("SELECT id FROM users WHERE company_id=$1 LIMIT 1", [companyId]),
-    () => pgQuery("SELECT id FROM users LIMIT 1"),
-  ].filter(Boolean);
+  // Postgres fallback
+  try {
+    const [conditions, params] = preferredUserId
+      ? [`id = $1 OR role IN ('admin','broker') OR company_id = $2`, [preferredUserId, companyId]]
+      : [`role IN ('admin','broker') OR company_id = $1`, [companyId]];
 
-  for (const fn of candidates) {
-    try {
-      const rows = await fn();
-      if (rows[0]?.id) return rows[0].id;
-    } catch { /* try next */ }
+    const rows = await pgQuery(
+      `SELECT id, role, company_id FROM users WHERE ${conditions} LIMIT 10`,
+      params,
+    );
+    if (rows.length) {
+      if (preferredUserId) {
+        const preferred = rows.find((u) => u.id === preferredUserId);
+        if (preferred) return preferred.id;
+      }
+      const privileged = rows.find((u) => ["admin", "broker"].includes(u.role));
+      if (privileged) return privileged.id;
+      return rows[0].id;
+    }
+    const last = await pgQuery("SELECT id FROM users LIMIT 1");
+    return last[0]?.id || null;
+  } catch {
+    return null;
   }
-  return null;
 }
 
 async function ensureCompanyDefaultFolders(companyId, preferredCreatedBy = null) {
@@ -110,14 +133,6 @@ async function ensureCompanyDefaultFolders(companyId, preferredCreatedBy = null)
   return promise;
 }
 
-async function _sbFolderExists(companyId, name, parentId) {
-  const q = supabase.from("folders").select("id").eq("company_id", companyId).ilike("name", name).limit(1);
-  const { data } = parentId === null
-    ? await q.is("parent_id", null).maybeSingle()
-    : await q.eq("parent_id", parentId).maybeSingle();
-  return data?.id ? [{ id: data.id }] : [];
-}
-
 async function _doEnsureCompanyDefaultFolders(companyId, preferredCreatedBy) {
   const creatorId = await resolveCreatorId(companyId, preferredCreatedBy);
   if (!creatorId) {
@@ -127,60 +142,111 @@ async function _doEnsureCompanyDefaultFolders(companyId, preferredCreatedBy) {
 
   console.log(`[folders] Ensuring default folders for ${companyId} (creator: ${creatorId})`);
 
-  const idByName = {};
+  // Load ALL existing folders in one query instead of querying per-folder
+  const { data: existingFolders } = await supabase
+    .from("folders")
+    .select("id, name, parent_id")
+    .eq("company_id", companyId);
 
-  for (const [name, parentKey, idKey] of DEFAULT_FOLDERS) {
-    const key = idKey || name;
-    const parentId = parentKey ? (idByName[parentKey] || null) : null;
-    try {
-      // 1. Check if folder already exists — Supabase first, Postgres fallback
-      let existing;
-      try {
-        existing = await _sbFolderExists(companyId, name, parentId);
-      } catch {
-        existing = parentId === null
-          ? await pgQuery("SELECT id FROM folders WHERE company_id=$1 AND lower(name)=lower($2) AND parent_id IS NULL LIMIT 1", [companyId, name])
-          : await pgQuery("SELECT id FROM folders WHERE company_id=$1 AND lower(name)=lower($2) AND parent_id=$3 LIMIT 1", [companyId, name, parentId]);
-      }
+  // lookup: "lower(name):parentId_or_'null'" → id
+  const existingMap = new Map();
+  for (const f of existingFolders || []) {
+    existingMap.set(`${f.name.toLowerCase()}:${f.parent_id ?? "null"}`, f.id);
+  }
 
-      if (existing.length > 0) {
-        idByName[key] = existing[0].id;
-        continue;
-      }
+  // idByKey: resolved folder id per DEFAULT_FOLDERS entry (idKey or name)
+  const idByKey = {};
 
-      // 2. Insert — Supabase first, Postgres fallback
-      let insertedId = null;
-      const { data: sbCreated, error: sbErr } = await supabase.from("folders")
-        .insert({ company_id: companyId, parent_id: parentId, name, color: null, created_by: creatorId })
-        .select("id").single();
+  // Process passes level-by-level: each pass batch-inserts all folders whose
+  // parent is already resolved. Handles arbitrary nesting depth.
+  let madeProgress = true;
+  const pending = DEFAULT_FOLDERS.map((entry) => ({ entry, done: false }));
 
-      if (!sbErr && sbCreated?.id) {
-        insertedId = sbCreated.id;
+  while (madeProgress && pending.some((p) => !p.done)) {
+    madeProgress = false;
+    const batch = [];
+
+    for (const item of pending) {
+      if (item.done) continue;
+      const [name, parentKey, idKey] = item.entry;
+      const key = idKey || name;
+      if (parentKey && idByKey[parentKey] === undefined) continue; // parent not resolved yet
+
+      const parentId = parentKey ? idByKey[parentKey] : null;
+      const existingId = existingMap.get(`${name.toLowerCase()}:${parentId ?? "null"}`);
+      if (existingId) {
+        idByKey[key] = existingId;
+        item.done = true;
+        madeProgress = true;
       } else {
-        const rows = await pgQuery(
-          "INSERT INTO folders (company_id, parent_id, name, color, created_by) VALUES ($1,$2,$3,NULL,$4) RETURNING id",
-          [companyId, parentId, name, creatorId],
-        );
-        insertedId = rows[0]?.id || null;
+        batch.push({ item, name, key, parentId });
       }
+    }
 
-      if (insertedId) {
-        idByName[key] = insertedId;
-        console.log(`[folders]   ✓ "${name}"`);
+    if (!batch.length) continue;
+
+    // Batch insert all new folders in this level pass
+    const toInsert = batch.map(({ name, parentId }) => ({
+      company_id: companyId,
+      parent_id: parentId,
+      name,
+      color: null,
+      created_by: creatorId,
+    }));
+
+    let insertedRows = [];
+
+    const { data: sbData, error: sbErr } = await supabase
+      .from("folders")
+      .insert(toInsert)
+      .select("id, name, parent_id");
+
+    if (!sbErr && sbData?.length) {
+      insertedRows = sbData;
+    } else {
+      // Supabase batch failed — fall back to PG one-by-one
+      for (const { name, parentId } of batch) {
+        try {
+          const rows = await pgQuery(
+            "INSERT INTO folders (company_id, parent_id, name, color, created_by) VALUES ($1,$2,$3,NULL,$4) ON CONFLICT DO NOTHING RETURNING id, name, parent_id",
+            [companyId, parentId, name, creatorId],
+          );
+          if (rows.length) {
+            insertedRows.push(rows[0]);
+          } else {
+            // Conflicted — re-fetch so we can map the id
+            const fetched = parentId === null
+              ? await pgQuery("SELECT id, name, parent_id FROM folders WHERE company_id=$1 AND lower(name)=lower($2) AND parent_id IS NULL LIMIT 1", [companyId, name])
+              : await pgQuery("SELECT id, name, parent_id FROM folders WHERE company_id=$1 AND lower(name)=lower($2) AND parent_id=$3 LIMIT 1", [companyId, name, parentId]);
+            if (fetched.length) insertedRows.push(fetched[0]);
+          }
+        } catch (err) {
+          console.error(`[folders]   ✗ "${name}":`, err.message);
+        }
       }
-    } catch (err) {
-      // On duplicate key, re-fetch the winner
-      if (err.message.includes("duplicate key value") || err.message.includes("unique constraint")) {
-        const winner = await _sbFolderExists(companyId, name, parentId).catch(() => []);
-        if (winner.length > 0) idByName[key] = winner[0].id;
-      } else {
-        console.error(`[folders]   ✗ "${name}":`, err.message);
+    }
+
+    // Map returned rows back to their keys by (name, parent_id)
+    for (const row of insertedRows) {
+      const match = batch.find(
+        ({ name, parentId }) =>
+          name.toLowerCase() === row.name?.toLowerCase() &&
+          String(parentId ?? "null") === String(row.parent_id ?? "null"),
+      );
+      if (match) {
+        idByKey[match.key] = row.id;
+        match.item.done = true;
+        existingMap.set(`${row.name.toLowerCase()}:${row.parent_id ?? "null"}`, row.id);
+        madeProgress = true;
       }
     }
   }
 
-  // Return all folders for this company
-  const { data } = await supabase.from("folders").select("*").eq("company_id", companyId).order("created_at", { ascending: true });
+  const { data } = await supabase
+    .from("folders")
+    .select("*")
+    .eq("company_id", companyId)
+    .order("created_at", { ascending: true });
   return data || [];
 }
 
@@ -349,9 +415,16 @@ async function unarchiveFolder(id) {
  * Deletes a folder
  */
 async function deleteFolder(id) {
+  // File-link protection: refuse to delete a folder whose subtree contains a
+  // document linked to a module (e.g. Key Reports). Throws FileLinkedError (409).
+  const { assertFolderDeletable } = require("./fileReferenceService");
+  await assertFolderDeletable(id);
+
   try {
     await pgQuery("DELETE FROM folders WHERE id=$1", [id]);
-  } catch {
+  } catch (err) {
+    // Preserve the 409 link-protection error instead of masking it as a delete fallback.
+    if (err && err.code === "FILE_LINKED") throw err;
     const { error } = await supabase.from("folders").delete().eq("id", id);
     if (error) throw error;
   }

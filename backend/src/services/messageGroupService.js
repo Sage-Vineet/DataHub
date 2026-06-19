@@ -84,10 +84,83 @@ async function getGroupMembersWithDetails(groupId) {
   return users || [];
 }
 
+// ─── Enrichment: last_message + unread_count ─────────────────────────────────
+
+/**
+ * Attaches last_message and unread_count to every group in the array.
+ * Uses two bulk Postgres queries instead of N+1 calls.
+ * Falls back gracefully if pg pool is unavailable.
+ */
+async function enrichGroups(groups, userId) {
+  if (!groups || !groups.length) return groups;
+
+  const groupIds = groups.map((g) => g.id).filter(Boolean);
+  if (!groupIds.length) return groups;
+
+  const pool = getPool();
+  if (!pool) return groups; // pg not available — return unenriched
+
+  try {
+    // Last message per group (DISTINCT ON = one row per group, latest first)
+    const { rows: lastMsgRows } = await pool.query(
+      `SELECT DISTINCT ON (gm.group_id)
+         gm.group_id,
+         gm.body,
+         gm.created_at,
+         gm.sender_id,
+         u.name AS sender_name
+       FROM group_messages gm
+       LEFT JOIN users u ON u.id = gm.sender_id
+       WHERE gm.group_id = ANY($1)
+       ORDER BY gm.group_id, gm.created_at DESC`,
+      [groupIds],
+    );
+
+    // Unread message counts per group for the requesting user
+    const { rows: unreadRows } = userId
+      ? await pool.query(
+          `SELECT gm.group_id, COUNT(*) AS unread
+           FROM group_messages gm
+           LEFT JOIN group_message_reads gmr
+             ON gmr.group_id = gm.group_id AND gmr.user_id = $1
+           WHERE gm.group_id = ANY($2)
+             AND gm.sender_id != $1
+             AND (gmr.last_read_at IS NULL OR gm.created_at > gmr.last_read_at)
+           GROUP BY gm.group_id`,
+          [userId, groupIds],
+        )
+      : { rows: [] };
+
+    const lastMsgMap = Object.fromEntries(lastMsgRows.map((r) => [r.group_id, r]));
+    const unreadMap  = Object.fromEntries(unreadRows.map((r) => [r.group_id, Number(r.unread)]));
+
+    return groups.map((g) => {
+      const lm = lastMsgMap[g.id];
+      return {
+        ...g,
+        last_message: lm
+          ? { body: lm.body, sender_name: lm.sender_name, created_at: lm.created_at }
+          : null,
+        unread_count: unreadMap[g.id] || 0,
+      };
+    });
+  } catch (err) {
+    console.error("[messageGroupService] enrichGroups error:", err.message);
+    return groups; // non-fatal: return unenriched
+  }
+}
+
 // ─── Auto-create logic ────────────────────────────────────────────────────────
 
 /**
  * Fetches all users belonging to a company, grouped by side (broker/client/buyer).
+ *
+ * Broker identification:
+ *   1. Users in user_companies with a BROKER_SUB_ROLES sub_role (or legacy role=broker/admin).
+ *   2. Members invited to a broker team via broker_team_invites where the team_owner is
+ *      already identified as a broker for this company — ensures broker team members
+ *      who were added via the invite system (not directly to user_companies) are included.
+ *
  * Returns { brokerIds, clientIds, buyerMap } where buyerMap is
  *   Map<parentUserId, Set<memberId>>.
  */
@@ -101,13 +174,13 @@ async function fetchCompanyUsersByRole(companyId) {
 
   const brokerIds = [];
   const clientIds = [];
-  const buyerMap = new Map();
+  const buyerMap  = new Map();
 
   for (const row of data || []) {
     const user = row.users;
     if (!user) continue;
     const subRole = user.sub_role;
-    const role = user.role;
+    const role    = user.role;
 
     if ((subRole && BROKER_SUB_ROLES.includes(subRole)) || (!subRole && (role === "broker" || role === "admin"))) {
       brokerIds.push(user.id);
@@ -147,9 +220,9 @@ async function resolveBrokerCompanyName(brokerIds) {
  *   1. broker_internal  — Broker team only           → "{brokerCompany}"
  *   2. broker_client    — Broker + Client team        → "{brokerCompany} - {clientCompany}"
  *   3. client_internal  — Client team only            → "{clientCompany}"
- *   4. deal_team        — One per buyer: broker + client + that buyer
- *                                                     → "DealTeam - {clientCompany} - {buyerCompany}"
- *   5. broker_buyer     — One per buyer: broker + buyer → "{brokerCompany} - {buyerCompany}"
+ *   4. deal_team        — ONE per company: all parties → "DealTeam - {clientCompany}"
+ *                          (broker + ALL clients + ALL buyers)
+ *   5. broker_buyer     — One per buyer: broker + that buyer → "{brokerCompany} - {buyerCompany}"
  *   6. buyer_internal   — One per buyer: buyer only   → "{buyerCompany}"
  */
 async function autoCreateGroupsForCompany(companyId, companyName) {
@@ -159,13 +232,14 @@ async function autoCreateGroupsForCompany(companyId, companyName) {
 
   // Helper: find-or-create a group, update its name if it changed, then sync members.
   async function upsertGroup(name, groupType, buyerUserId = null) {
-    const { data: existing } = await supabase
+    let q = supabase
       .from("message_groups")
       .select("id, name")
       .eq("company_id", companyId)
-      .eq("group_type", groupType)
-      .eq("buyer_user_id", buyerUserId ?? null)
-      .maybeSingle();
+      .eq("group_type", groupType);
+    // .eq(col, null) does NOT match SQL IS NULL in PostgREST — must use .is()
+    q = buyerUserId ? q.eq("buyer_user_id", buyerUserId) : q.is("buyer_user_id", null);
+    const { data: existing } = await q.limit(1).maybeSingle();
 
     let groupId;
     if (existing?.id) {
@@ -181,20 +255,8 @@ async function autoCreateGroupsForCompany(companyId, companyName) {
     return groupId;
   }
 
-  // Remove legacy "everyone" deal_team (buyer_user_id IS NULL) if it exists,
-  // since we now create one per buyer.
-  await supabase
-    .from("message_groups")
-    .delete()
-    .eq("company_id", companyId)
-    .eq("group_type", MSG_GROUP_TYPE.DEAL_TEAM)
-    .is("buyer_user_id", null);
-
-  // 1. Broker internal — broker team only
-  if (brokerIds.length) {
-    const gid = await upsertGroup(brokerCompanyName, MSG_GROUP_TYPE.BROKER_INTERNAL);
-    await addGroupMembers(gid, brokerIds);
-  }
+  // 1. Broker internal — skipped during auto-creation; created only when the broker
+  //    manually adds a team member so the group is never pre-populated.
 
   // 2. Broker + Client
   if (brokerIds.length && clientIds.length) {
@@ -205,13 +267,25 @@ async function autoCreateGroupsForCompany(companyId, companyName) {
     await addGroupMembers(gid, [...brokerIds, ...clientIds]);
   }
 
-  // 3. Client internal — client team only
-  if (clientIds.length) {
-    const gid = await upsertGroup(companyName, MSG_GROUP_TYPE.CLIENT_INTERNAL);
-    await addGroupMembers(gid, clientIds);
+  // 4. DealTeam — everyone: the directly-assigned broker(s) + all client + all buyer members.
+  //    Created on initial company creation with at minimum the creating broker + company owner.
+  //    autoCreateGroupsForCompany re-runs whenever a user is added to the company, so new
+  //    broker team members, client team members, and buyers are upserted into this group automatically.
+  //    buyer_user_id = null signals this is the company-wide group, not per-buyer.
+  {
+    const allBuyerMemberIds = [...buyerMap.values()].flatMap((set) => [...set]);
+    const allMemberIds = [...new Set([...brokerIds, ...clientIds, ...allBuyerMemberIds])];
+    if (allMemberIds.length) {
+      const gid = await upsertGroup(
+        `DealTeam - ${companyName}`,
+        MSG_GROUP_TYPE.DEAL_TEAM,
+        null,
+      );
+      await addGroupMembers(gid, allMemberIds);
+    }
   }
 
-  // 4, 5, 6 — per-buyer groups
+  // 5 & 6 — per-buyer groups (broker↔buyer channel + buyer internal)
   for (const [buyerParentId, memberSet] of buyerMap.entries()) {
     const buyerMemberIds = [...memberSet];
 
@@ -222,17 +296,7 @@ async function autoCreateGroupsForCompany(companyId, companyName) {
       .maybeSingle();
     const buyerCompanyName = buyerUser?.buyer_company_name || buyerUser?.name || "Buyer";
 
-    // 4. DealTeam — broker + client + this buyer
-    if (brokerIds.length && clientIds.length) {
-      const gid = await upsertGroup(
-        `DealTeam - ${companyName} - ${buyerCompanyName}`,
-        MSG_GROUP_TYPE.DEAL_TEAM,
-        buyerParentId,
-      );
-      await addGroupMembers(gid, [...brokerIds, ...clientIds, ...buyerMemberIds]);
-    }
-
-    // 5. Broker ↔ Buyer
+    // 5. Broker ↔ Buyer (private channel between broker team and this buyer)
     if (brokerIds.length) {
       const gid = await upsertGroup(
         `${brokerCompanyName} - ${buyerCompanyName}`,
@@ -242,9 +306,6 @@ async function autoCreateGroupsForCompany(companyId, companyName) {
       await addGroupMembers(gid, [...brokerIds, ...buyerMemberIds]);
     }
 
-    // 6. Buyer internal — this buyer's team only
-    const gid = await upsertGroup(buyerCompanyName, MSG_GROUP_TYPE.BUYER_INTERNAL, buyerParentId);
-    await addGroupMembers(gid, buyerMemberIds);
   }
 
   return { created };
@@ -264,6 +325,7 @@ module.exports = {
   addGroupMembers,
   removeGroupMember,
   getGroupMembersWithDetails,
+  enrichGroups,
   autoCreateGroupsForCompany,
   onUserAddedToCompany,
 };

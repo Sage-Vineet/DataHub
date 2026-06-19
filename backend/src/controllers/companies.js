@@ -2,6 +2,8 @@ const asyncHandler = require("../utils");
 const { ensureCompanyDefaultFolders } = require("../services/folderService");
 const companyService = require("../services/companyService");
 const permissionService = require("../services/permissionService");
+const userService = require("../services/userService");
+const { sendCompanyCreatedEmail } = require("../services/emailService");
 
 const listCompanies = asyncHandler(async (req, res) => {
   const companies = await companyService.getCompaniesForUser(req.user);
@@ -16,20 +18,62 @@ const createCompany = asyncHandler(async (req, res) => {
   }
 
   const inserted = await companyService.createCompany(req.body);
-  if (["broker", "admin"].includes(String(req.user?.role || "").toLowerCase())) {
-    await companyService.assignCompanyToUser(req.user.id, inserted.id);
-    if (!permissionService.isAdmin(req.user)) {
-      req.user.company_ids = Array.from(new Set([...(req.user.company_ids || []), inserted.id]));
-    }
-  }
 
-  const clientRepresentativeId = await companyService.syncCompanyClientRepresentative(inserted).catch((err) => {
-    console.error("[createCompany] syncCompanyClientRepresentative failed (non-fatal):", err.message);
-    return null;
-  });
+  // Run user assignment and client-rep sync in parallel — both only need inserted.id
+  const isBrokerOrAdmin = ["broker", "admin"].includes(String(req.user?.role || "").toLowerCase());
+  const [, clientRepresentativeId] = await Promise.all([
+    isBrokerOrAdmin
+      ? companyService.assignCompanyToUser(req.user.id, inserted.id).then(() => {
+          if (!permissionService.isAdmin(req.user)) {
+            req.user.company_ids = Array.from(new Set([...(req.user.company_ids || []), inserted.id]));
+          }
+        })
+      : Promise.resolve(null),
+    companyService.syncCompanyClientRepresentative(inserted).catch((err) => {
+      console.error("[createCompany] syncCompanyClientRepresentative failed (non-fatal):", err.message);
+      return null;
+    }),
+  ]);
+
   await ensureCompanyDefaultFolders(inserted.id, req.user?.id || clientRepresentativeId || null).catch(() => { });
 
-  res.status(201).json(inserted);
+  res.status(201).json({ ...inserted, emailQueued: true });
+
+  // Fire-and-forget: notify primary contact — must not block or fail company creation
+  setImmediate(async () => {
+    try {
+      const broker = await userService.getUserById(req.user?.id).catch(() => null);
+      const portalUrl = process.env.APP_BASE_URL
+        ? process.env.APP_BASE_URL.replace(/\/$/, "")
+        : (process.env.FRONTEND_URL || "").replace(/\/$/, "");
+
+      const seen = new Set();
+      const recipients = [];
+
+      // Primary contact
+      if (inserted.contact_email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(inserted.contact_email)) {
+        if (!seen.has(inserted.contact_email.toLowerCase())) {
+          seen.add(inserted.contact_email.toLowerCase());
+          recipients.push({ name: inserted.contact_name || null, email: inserted.contact_email });
+        }
+      }
+
+      for (const r of recipients) {
+        await sendCompanyCreatedEmail({
+          toName:      r.name || null,
+          toEmail:     r.email,
+          companyName: inserted.name,
+          projectName: inserted.project_name || null,
+          brokerName:  broker?.name || null,
+          portalUrl,
+        });
+      }
+
+      console.log(`[Audit] [createCompany] Notification emails sent company=${inserted.id} recipients=${recipients.map(r => r.email).join(", ")}`);
+    } catch (emailErr) {
+      console.error("[createCompany] Email notification failed (non-fatal):", emailErr.message);
+    }
+  });
 });
 
 const getCompany = asyncHandler(async (req, res) => {

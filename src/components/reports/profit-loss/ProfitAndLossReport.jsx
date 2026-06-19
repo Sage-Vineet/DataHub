@@ -15,6 +15,7 @@ function ProfitAndLossReport({
   clientName = "All Clients",
   entityName,
   createdOn,
+  isPreview = false,
   selectedMonths = [],
 }) {
   const resolvedEntityName = entityName || clientName || "Company";
@@ -48,6 +49,7 @@ function ProfitAndLossReport({
             entityName={resolvedEntityName}
             subtitle={summarySubtitle}
             selectedMonths={selectedMonths}
+            isPreview={isPreview}
           />
         );
       }
@@ -57,6 +59,21 @@ function ProfitAndLossReport({
           title="Profit & Loss Detail"
           entityName={resolvedEntityName}
           subtitle={summarySubtitle}
+          isPreview={isPreview}
+        />
+      );
+    }
+
+    // manual_upload / quickbooks_manual monthly view
+    if (sourceMode === "manual_upload" || sourceMode === "quickbooks_manual") {
+      return (
+        <ProfitAndLossQBSummary
+          data={Array.isArray(detailedData?.rows) ? detailedData.rows : []}
+          columns={detailedData?.columns}
+          title="Profit & Loss"
+          subtitle={summarySubtitle}
+          entityName={resolvedEntityName}
+          isPreview={isPreview}
         />
       );
     }
@@ -67,6 +84,7 @@ function ProfitAndLossReport({
         title="Profit & Loss"
         subtitle={summarySubtitle}
         entityName={resolvedEntityName}
+        isPreview={isPreview}
       />
     );
   }
@@ -74,7 +92,6 @@ function ProfitAndLossReport({
   // Summary View
   if (isManualStagedSummary) {
     const hierarchicalRows = Array.isArray(data?.hierarchicalRows) ? data.hierarchicalRows : [];
-    // Per-year comparative columns when more than one fiscal year is selected.
     const yearCols = Array.isArray(data?.yearCols) ? data.yearCols : null;
     const summaryColumns = yearCols && yearCols.length > 1 ? { yearCols } : undefined;
     return (
@@ -84,6 +101,7 @@ function ProfitAndLossReport({
         title="Profit & Loss"
         subtitle={summarySubtitle}
         entityName={resolvedEntityName}
+        isPreview={isPreview}
       />
     );
   }
@@ -94,6 +112,7 @@ function ProfitAndLossReport({
       title="Profit & Loss"
       subtitle={summarySubtitle}
       entityName={resolvedEntityName}
+      isPreview={isPreview}
     />
   );
 }

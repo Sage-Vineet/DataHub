@@ -49,6 +49,7 @@ import WorkspaceReports from "./pages/broker/workspace/WorkspaceReports";
 import WorkspaceReconciliation from "./pages/broker/workspace/WorkspaceReconciliation";
 import WorkspaceTaxReconciliation from "./pages/broker/workspace/WorkspaceTaxReconciliation";
 import WorkspaceConnections from "./pages/broker/workspace/WorkspaceConnections";
+import WorkspaceKeyReports from "./pages/broker/workspace/WorkspaceKeyReports";
 import Support from "./pages/Support";
 import WorkspaceEbitda from "./pages/broker/workspace/WorkspaceEbitda";
 import BrokerProfile from "./pages/broker/BrokerProfile";
@@ -316,10 +317,10 @@ function AppRoutes() {
           path="tax-reconciliation"
           element={<WorkspaceTaxReconciliation />}
         />
-        <Route path="connections" element={<WorkspaceConnections />} />
         <Route path="ebitda" element={<WorkspaceEbitda />} />
-        <Route path="connections" element={<WorkspaceConnections />} />
         <Route path="dataroom" element={<Navigate to="deal-tracker" replace />} />
+        <Route path="dataroom/connections" element={<WorkspaceConnections />} />
+        <Route path="dataroom/key-reports" element={<WorkspaceKeyReports />} />
         <Route path="dataroom/deal-tracker" element={<WorkspaceDealTracker />} />
         <Route path="dataroom/requests" element={<WorkspaceRequests />} />
         <Route path="dataroom/documents" element={<WorkspaceDocuments />} />
@@ -327,6 +328,10 @@ function AppRoutes() {
         <Route path="dataroom/reminders" element={<WorkspaceReminders />} />
         <Route path="dataroom/activity" element={<WorkspaceActivity />} />
         <Route path="dataroom/users" element={<WorkspaceUsers />} />
+        <Route
+          path="connections"
+          element={<Navigate to="../dataroom/connections" replace />}
+        />
         <Route
           path="requests"
           element={<Navigate to="../dataroom/requests" replace />}

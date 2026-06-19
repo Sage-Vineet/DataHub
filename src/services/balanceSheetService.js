@@ -156,7 +156,26 @@ function resolveSourceLabel(source) {
  * Generates dynamic comparative periods based on a specific end date.
  * Plus an additional period for the previous month to calculate monthly delta.
  */
-function getComparativePeriods(numYears = 4) {
+function getComparativePeriods(numYears = 4, startYear = null, endYear = null) {
+  // User-selected year range: one period per year, no monthly delta.
+  if (startYear && endYear) {
+    const now = new Date();
+    const monthNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const periods = [];
+    let idx = 1;
+    for (let y = Number(startYear); y <= Number(endYear); y++) {
+      const isCurrentYear = y === now.getFullYear();
+      const endDate = isCurrentYear
+        ? `${y}-${String(now.getMonth()+1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")}`
+        : `${y}-12-31`;
+      const label = isCurrentYear
+        ? `${monthNames[now.getMonth()]} ${String(y).slice(-2)}`
+        : `Dec ${String(y).slice(-2)}`;
+      periods.push({ year: y, key: `y${idx++}`, label, startDate: `${y}-01-01`, endDate, type: "yearly" });
+    }
+    return periods;
+  }
+
   let date = new Date();
 
   const currentYear = date.getFullYear();
@@ -724,6 +743,12 @@ function fileYear(file) {
   return m ? parseInt(m[1], 10) : 0;
 }
 
+// Expand 2-digit stored labels like "Jan 25" → "Jan 2025" for already-stored DB records.
+function expandPeriodLabel(label) {
+  const m = String(label || "").match(/^([A-Za-z]+)\s+(\d{2})$/);
+  return m ? `${m[1]} 20${m[2]}` : label;
+}
+
 function fileLabel(file) {
   const monthNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
   const dateStr = file?.data?.asOfDate || file?.data?.periodEnd;
@@ -733,12 +758,12 @@ function fileLabel(file) {
       const year = parseInt(parts[0], 10);
       const month = parseInt(parts[1], 10) - 1;
       if (year >= 2000 && month >= 0 && month <= 11) {
-        return `${monthNames[month]} ${String(year).slice(-2)}`;
+        return `${monthNames[month]} ${year}`;
       }
     }
   }
   const y = fileYear(file);
-  return y ? `Dec ${String(y).slice(-2)}` : "Unknown";
+  return y ? `Dec ${y}` : "Unknown";
 }
 
 function buildBSFromPeriodColumns(sortedFiles) {
@@ -748,7 +773,7 @@ function buildBSFromPeriodColumns(sortedFiles) {
     const startIdx = allCols.length;
 
     if (periods.length > 0) {
-      periods.forEach((label, i) => allCols.push({ key: `p${startIdx + i}`, label, isCurrent: false }));
+      periods.forEach((label, i) => allCols.push({ key: `p${startIdx + i}`, label: expandPeriodLabel(label), isCurrent: false }));
       const nameMap = new Map();
       const visit = (items) => {
         if (!Array.isArray(items)) return;
@@ -820,10 +845,43 @@ function buildBSFromPeriodColumns(sortedFiles) {
   };
 }
 
-async function buildBSMultiFileDetail(sourceMode = "manual_upload") {
+function collapseBSNodeToAnnual(node, periods) {
+  const totalIdx = Array.isArray(periods)
+    ? periods.findIndex((p) => /^total$/i.test(String(p).trim()))
+    : -1;
+  const amount =
+    node.amount != null && node.amount !== 0
+      ? node.amount
+      : Array.isArray(node.colAmounts) && node.colAmounts.length
+        ? totalIdx >= 0
+          ? (node.colAmounts[totalIdx] || 0)
+          : (node.colAmounts[node.colAmounts.length - 1] || 0)
+        : 0;
+  return {
+    ...node,
+    amount,
+    children: node.children
+      ? node.children.map((c) => collapseBSNodeToAnnual(c, periods))
+      : undefined,
+  };
+}
+
+async function buildBSMultiFileDetail(sourceMode = "manual_upload", options = {}) {
   const fetchFn = sourceMode === "quickbooks_manual" ? getAllQMSUploadedReports : getAllManualUploadedReports;
   const result = await fetchFn("balance_sheet");
-  const files = (result?.files || []).filter((f) => f.data?.rows?.length);
+  let files = (result?.files || []).filter((f) => f.data?.rows?.length);
+
+  const { startYear, endYear, yearMode } = options;
+  if (startYear || endYear) {
+    files = files.filter((f) => {
+      const y = fileYear(f);
+      if (!y) return true;
+      if (startYear && y < Number(startYear)) return false;
+      if (endYear && y > Number(endYear)) return false;
+      return true;
+    });
+  }
+
   if (!files.length) return { rows: [], columns: { yearCols: [], changeCols: [], currentMonth: "" } };
 
   // Sort files oldest → newest so columns read left-to-right chronologically
@@ -834,17 +892,22 @@ async function buildBSMultiFileDetail(sourceMode = "manual_upload") {
     return new Date(a.updatedAt || 0) - new Date(b.updatedAt || 0);
   });
 
-  // If files have monthly period columns, expand one column per period (exact file layout)
-  if (sortedFiles.some((f) => f.data?.periods?.length > 0)) {
+  // yearMode: one "FY YYYY" column per file — skip period expansion.
+  if (!yearMode && sortedFiles.some((f) => f.data?.periods?.length > 0)) {
     return buildBSFromPeriodColumns(sortedFiles);
   }
 
-  // One column per file — union all rows so no data is missing
-  const filePeriods = sortedFiles.map((f, i) => ({
-    key: `f${i}`,
-    label: fileLabel(f),
-    rows: f.data.rows,
-  }));
+  const filePeriods = sortedFiles.map((f, i) => {
+    const year = fileYear(f);
+    const rows = yearMode && f.data?.periods?.length
+      ? (f.data.rows || []).map((r) => collapseBSNodeToAnnual(r, f.data.periods))
+      : (f.data.rows || []);
+    return {
+      key: `f${i}`,
+      label: year ? `FY ${year}` : fileLabel(f),
+      rows,
+    };
+  });
 
   const fileKeys = filePeriods.map((p) => p.key);
   const masterKey = fileKeys[fileKeys.length - 1];
@@ -918,11 +981,18 @@ export async function getBalanceSheetDetail(
   }
 
   if (options?.sourceMode === "manual_upload" || options?.sourceMode === "quickbooks_manual") {
-    return buildBSMultiFileDetail(options.sourceMode);
+    return buildBSMultiFileDetail(options.sourceMode, {
+      startYear: options.startYear,
+      endYear: options.endYear,
+      yearMode: options.yearMode,
+    });
   }
 
-  // Detail now uses system-defined multi-year comparison (EBITDA analysis)
-  const allPeriods = getComparativePeriods(4, endDate, startDate);
+  // Detail now uses system-defined multi-year comparison (EBITDA analysis).
+  // When a year range is provided (Year mode), generate periods only for that range.
+  const allPeriods = (options.startYear && options.endYear)
+    ? getComparativePeriods(4, options.startYear, options.endYear)
+    : getComparativePeriods(4, endDate, startDate);
 
   const results = await Promise.all(
     allPeriods.map((p) =>

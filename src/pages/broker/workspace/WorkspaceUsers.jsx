@@ -10,6 +10,7 @@ import {
 import {
   createUserRequest, deleteUserRequest, listCompaniesRequest,
   listUsersRequest, updateUserRequest, triggerAutoCreateMessageGroups,
+  findUserByEmailRequest, addUserToCompaniesRequest, inviteBrokerToTeamRequest,
 } from '../../../lib/api';
 import {
   BROKER_SUB_ROLES, BUYER_SUB_ROLES, CLIENT_SUB_ROLES, ROLE_META,
@@ -43,6 +44,10 @@ function normalizeUser(u) {
     companyIds, assignedCompanies,
     company: u.company_name || assignedCompanies[0]?.name || 'Unassigned',
     joinedAt: u.created_at, avatar: initials(u.name || ''),
+    // direct_company_ids: only user_companies rows — no historical broker data or invite expansion.
+    // Used to determine if a broker is explicitly assigned to a company vs appearing via team invites.
+    direct_company_ids: u.direct_company_ids || [],
+    is_team_invite: u.is_team_invite || false,
   };
 }
 
@@ -330,6 +335,59 @@ function BuyerTeamView({ buyer, allUsers, onBack, onAddMember, onEdit }) {
         </div>
       )}
     </div>
+  );
+}
+
+// ─── Existing-user confirmation modal ────────────────────────────────────────
+
+const CONTEXT_META = {
+  broker:         { title: 'Broker Already Exists',  label: 'broker', verb: 'Add to Broker Team' },
+  client:         { title: 'Client Already Exists',  label: 'client', verb: 'Add Existing Account' },
+  buyer:          { title: 'Buyer Already Exists',   label: 'buyer',  verb: 'Add Existing Account' },
+  'buyer-member': { title: 'Buyer Already Exists',   label: 'buyer',  verb: 'Add Existing Account' },
+};
+
+function ExistingUserConfirmModal({ foundUser, context, companyNames, onConfirm, onClose, submitting }) {
+  const meta = CONTEXT_META[context] || CONTEXT_META.client;
+  const detail = (context === 'buyer' || context === 'buyer-member') && foundUser.buyer_company_name
+    ? `${foundUser.name} (${foundUser.buyer_company_name})`
+    : foundUser.name;
+
+  return createPortal(
+    <div style={{ position: 'fixed', inset: 0, zIndex: 999999, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}>
+      <div style={{ position: 'fixed', inset: 0, background: 'rgba(255,255,255,0.35)', backdropFilter: 'blur(4px)' }} onClick={onClose} />
+      <div style={{ position: 'relative', zIndex: 1, background: '#fff', borderRadius: 16, padding: 24, width: '100%', maxWidth: 360, boxShadow: '0 8px 32px rgba(0,0,0,0.14)' }}>
+        <div className="flex items-center justify-center w-14 h-14 rounded-full bg-blue-50 mx-auto mb-4">
+          <UsersIcon size={24} className="text-[#00648F]" />
+        </div>
+        <h3 className="text-center text-base font-bold text-[#05164D] mb-2">{meta.title}</h3>
+        <p className="text-center text-sm text-gray-500 mb-1">
+          This email is already linked to a {meta.label}:
+        </p>
+        <p className="text-center text-sm font-semibold text-[#05164D] mb-4">{detail}</p>
+        {companyNames?.length > 0 && (
+          <p className="text-center text-xs text-gray-400 mb-4">
+            They will be added to: {companyNames.join(', ')}
+          </p>
+        )}
+        <p className="text-center text-xs text-gray-400 mb-5">
+          Would you like to add this existing account to your team?
+        </p>
+        <div className="flex gap-3">
+          <button onClick={onClose} className="flex-1 py-2.5 rounded-xl border border-gray-200 text-sm font-semibold text-gray-600 hover:bg-gray-50">
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={submitting}
+            className="flex-1 py-2.5 rounded-xl bg-[#8BC53D] hover:bg-[#476E2C] text-white text-sm font-bold disabled:opacity-50 transition-colors"
+          >
+            {submitting ? 'Adding...' : meta.verb}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
   );
 }
 
@@ -664,6 +722,7 @@ export default function WorkspaceUsers() {
   const [editUser, setEditUser] = useState(null);
   const [deleteUser, setDeleteUser] = useState(null);
   const [addContext, setAddContext] = useState(null); // 'broker' | 'client' | 'buyer' | 'buyer-member'
+  const [existingUserConfirm, setExistingUserConfirm] = useState(null); // { user, companyIds, context }
 
   const loadData = async () => {
     setLoading(true);
@@ -671,10 +730,24 @@ export default function WorkspaceUsers() {
     try {
       const [usersRes, companiesRes] = await Promise.all([listUsersRequest(), listCompaniesRequest()]);
       const normalized = usersRes.map(normalizeUser).filter(Boolean);
-      // Filter to users belonging to this company (including broker team)
+      const thisCompany = companiesRes.find((c) => String(c.id) === String(clientId));
+      const contactEmail = (thisCompany?.contact_email || '').trim().toLowerCase();
+
+      // Filter to users belonging to this company.
+      // For broker-role users we use direct_company_ids (only explicit user_companies rows)
+      // so that invite-only brokers or those who appear via historical folder/doc data don't
+      // show up on a company's Deal Team page until the broker explicitly adds them.
+      // For client/buyer users the full companyIds list is used as before.
       const companyUsers = normalized.filter((u) => {
-        const userCompanyIds = u.companyIds || [u.companyId];
-        return userCompanyIds.some((id) => String(id) === String(clientId));
+        const isBrokerRole = classifyUser(u) === 'broker';
+        if (isBrokerRole) {
+          const directIds = u.direct_company_ids || [];
+          return directIds.some((id) => String(id) === String(clientId));
+        }
+        const userCompanyIds = (u.companyIds && u.companyIds.length > 0) ? u.companyIds : (u.companyId ? [u.companyId] : []);
+        const matchesCompany = userCompanyIds.some((id) => String(id) === String(clientId));
+        const isContact = contactEmail && (u.email || '').trim().toLowerCase() === contactEmail;
+        return matchesCompany || isContact;
       });
       setAllUsers(companyUsers);
       setCompanies(companiesRes);
@@ -726,7 +799,7 @@ export default function WorkspaceUsers() {
     try {
       const dbRole = dbRoleMap[addContext] || 'buyer';
       const payload = {
-        name: form.name.trim(), email: form.email.trim(),
+        name: form.name.trim(), email: form.email.trim().toLowerCase(),
         phone: form.phone?.trim() || null, password: form.password,
         role: dbRole, sub_role: form.sub_role,
         designation: form.designation?.trim() || null,
@@ -744,7 +817,7 @@ export default function WorkspaceUsers() {
         for (const m of form.teamMembers) {
           try {
             await createUserRequest({
-              name: m.name.trim(), email: m.email.trim(),
+              name: m.name.trim(), email: m.email.trim().toLowerCase(),
               phone: m.phone?.trim() || null, password: m.password,
               role: dbRole, sub_role: m.sub_role,
               designation: m.designation?.trim() || null,
@@ -778,9 +851,66 @@ export default function WorkspaceUsers() {
       setAddContext(null);
       setSuccess('User added successfully.');
     } catch (err) {
-      // Primary user creation failed
-      const msg = fmtApiError(err);
-      setFormError(msg);
+      const isDuplicate = /duplicate|already exists|unique constraint|email.*taken/i.test(String(err?.message || ''));
+      if (isDuplicate) {
+        try {
+          const existing = await findUserByEmailRequest(form.email.trim().toLowerCase());
+          if (existing?.id) {
+            const compatibleSubRoles = {
+              broker:         BROKER_SUB_ROLES,
+              client:         CLIENT_SUB_ROLES,
+              buyer:          BUYER_SUB_ROLES,
+              'buyer-member': BUYER_SUB_ROLES,
+            }[addContext] || [];
+
+            const existingSub = existing.sub_role || '';
+            const existingRole = String(existing.role || '').toLowerCase();
+            const brokerRoleMatch = addContext === 'broker' &&
+              (existingRole === 'broker' || existingRole === 'admin');
+            const isCompatible = compatibleSubRoles.includes(existingSub) || brokerRoleMatch;
+
+            if (!isCompatible) {
+              let existingType = 'a different role type';
+              if (BROKER_SUB_ROLES.includes(existingSub) || existingRole === 'broker') existingType = 'a broker';
+              else if (CLIENT_SUB_ROLES.includes(existingSub)) existingType = 'a client';
+              else if (BUYER_SUB_ROLES.includes(existingSub)) existingType = 'a buyer';
+              setFormError(`This email is already registered as ${existingType} and cannot be added here.`);
+              setSubmitting(false);
+              return;
+            }
+
+            setExistingUserConfirm({ user: existing, companyIds: [clientId], context: addContext });
+            setSubmitting(false);
+            return;
+          }
+        } catch (lookupErr) {
+          console.warn('[duplicate-check] user lookup failed:', lookupErr?.message);
+        }
+      }
+      setFormError(fmtApiError(err));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleAddExisting = async () => {
+    if (!existingUserConfirm) return;
+    setSubmitting(true);
+    const { user: existingUser, companyIds, context } = existingUserConfirm;
+    try {
+      if (context === 'broker') {
+        await inviteBrokerToTeamRequest(existingUser.id);
+      } else {
+        await addUserToCompaniesRequest(existingUser.id, companyIds);
+        await Promise.allSettled(companyIds.map((cid) => triggerAutoCreateMessageGroups(cid)));
+      }
+      await loadData();
+      setExistingUserConfirm(null);
+      setEditUser(null);
+      setAddContext(null);
+      setSuccess(`${existingUser.name} has been added to your team.`);
+    } catch (err) {
+      setFormError(fmtApiError(err));
     } finally {
       setSubmitting(false);
     }
@@ -791,7 +921,7 @@ export default function WorkspaceUsers() {
     setFormError('');
     try {
       const payload = {
-        name: form.name.trim(), email: form.email.trim(),
+        name: form.name.trim(), email: form.email.trim().toLowerCase(),
         phone: form.phone?.trim() || null,
         sub_role: form.sub_role,
         designation: form.designation?.trim() || null,
@@ -954,7 +1084,7 @@ export default function WorkspaceUsers() {
       )}
 
       {/* ── Modals ── */}
-      {editUser && (
+      {editUser && !existingUserConfirm && (
         <UserFormModal
           initial={{ ...editUser, _setMemberError: memberErrorRef }}
           roleOptions={roleOptionsMap[addContext || (editUser.id ? (BROKER_SUB_ROLES.includes(editUser.sub_role) ? 'broker' : CLIENT_SUB_ROLES.includes(editUser.sub_role) ? 'client' : 'buyer') : 'buyer')] || []}
@@ -977,6 +1107,17 @@ export default function WorkspaceUsers() {
           onClose={() => { setDeleteError(''); setDeleteUser(null); }}
           submitting={submitting}
           error={deleteError}
+        />
+      )}
+
+      {existingUserConfirm && (
+        <ExistingUserConfirmModal
+          foundUser={existingUserConfirm.user}
+          context={existingUserConfirm.context}
+          companyNames={companies.filter((c) => existingUserConfirm.companyIds.some((id) => String(id) === String(c.id))).map((c) => c.name)}
+          onConfirm={handleAddExisting}
+          onClose={() => { setExistingUserConfirm(null); setFormError(''); }}
+          submitting={submitting}
         />
       )}
     </div>

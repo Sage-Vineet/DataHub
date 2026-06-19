@@ -11,11 +11,16 @@ const {
   extractBsBankBalancesWithGemini,
   extractBsBankBalancesFromExcelText,
 } = require("../../../services/geminiFinancialParser");
+const keyReportService = require("../../../services/keyReportService");
 const XLSX = require("xlsx");
 
 const MANUAL_REPORT_UPLOAD_SOURCE = "manual_report_upload";
 const QMS_REPORT_UPLOAD_SOURCE = "quickbooks_manual_upload";
 const BANK_RECONCILIATION_TYPE = "bank_reconciliation";
+// Version-aware cache for Key Reports-resolved bank statement extraction. Kept
+// separate from BANK_RECONCILIATION_TYPE (written by Sync All) so the existing
+// sync cache is never disturbed; this cache is keyed by the linked document set.
+const BANK_RECON_KR_CACHE_TYPE = "bank_reconciliation_kr_v1";
 
 // Maps frontend REPORT_SOURCE_KEYS values → backend cache source + DataRoom folder root
 const SOURCE_CONFIG = {
@@ -165,9 +170,30 @@ async function loadBufferForDoc(doc) {
 //   4. Fallback: tree-walk the pre-parsed rows already stored in qb_synced_reports
 //   5. Cache result keyed by documentId; delete stale cache first
 // ─────────────────────────────────────────────────────────────────────────────
-async function runBsBankBalancesExtraction(clientId, cacheSource, folderRootName, fiscalYear = null) {
-  // 1. Always locate the latest Balance Sheet document first
-  const bsDocs = await getLatestBsDocument(clientId, folderRootName);
+async function runBsBankBalancesExtraction(clientId, cacheSource, folderRootName, fiscalYear = null, datasetVersion = null) {
+  // 1. Resolve the Balance Sheet document(s). For Manual GL (a dataset version is
+  //    supplied) the source of truth is the SELECTED Key Reports version's linked
+  //    Balance Sheet — never the staging folder. Only when Key Reports has no
+  //    Balance Sheet linked do we fall back to the Data Room folder lookup (which
+  //    is also the path used by Manual Upload / QMS, where no version is supplied).
+  let bsDocs = null;
+  if (datasetVersion != null && datasetVersion !== "") {
+    // Centralised resolver: one call yields the selected version's full document
+    // context; we read only the balance_sheet field here.
+    const { versionId, flowType, balanceSheet } = await keyReportService.getVersionReportContext(
+      clientId,
+      { datasetVersion },
+    );
+    if (balanceSheet.length) {
+      bsDocs = balanceSheet;
+      console.log(`[BsBankBalances] Using ${balanceSheet.length} Key Reports-linked Balance Sheet doc(s) for company ${clientId} (datasetVersion=${datasetVersion}, version=${versionId}, flow=${flowType}): ${balanceSheet.map((d) => d.name).join(", ")}`);
+    } else {
+      console.log(`[BsBankBalances] No Balance Sheet linked in Key Reports for datasetVersion=${datasetVersion} (company ${clientId}); falling back to folder "${folderRootName}".`);
+    }
+  }
+  if (!bsDocs) {
+    bsDocs = await getLatestBsDocument(clientId, folderRootName);
+  }
   if (!bsDocs?.length) {
     return {
       statusCode: 200,
@@ -344,49 +370,26 @@ const extractClientId = (req, res, next) => {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DataRoom: get PDF documents from "Bank Reconciliation" folder
+// Source of truth: the bank statement(s) linked in the SELECTED Key Reports
+// version (resolved from the chosen Manual GL dataset version), falling back to
+// the company's ACTIVE version when none is selected. The Data Room folder
+// location no longer determines the source — the version does, so switching
+// versions switches the document used (Version 1 → Bank_2024.pdf, Version 2 →
+// Bank_2025.pdf). folderRootName is kept for log context only.
 // ─────────────────────────────────────────────────────────────────────────────
-async function getBankReconciliationDocuments(companyId, folderRootName = "Manual Upload Source") {
-  const { data: sourceFolder } = await supabase
-    .from("folders")
-    .select("id")
-    .eq("company_id", companyId)
-    .is("parent_id", null)
-    .ilike("name", folderRootName)
-    .maybeSingle();
-
-  if (!sourceFolder) {
-    console.log(`[BankPDF] "${folderRootName}" folder not found for company ${companyId}`);
+async function getBankReconciliationDocuments(companyId, folderRootName = "Manual Upload Source", datasetVersion = null) {
+  // Centralised resolver: resolve the selected (or active) version once and read
+  // its bank_statement documents.
+  const { versionId, flowType, bankStatement: documents } = await keyReportService.getVersionReportContext(
+    companyId,
+    { datasetVersion },
+  );
+  if (!documents.length) {
+    console.log(`[BankPDF] No bank statement linked in Key Reports for company ${companyId} (datasetVersion=${datasetVersion ?? "active"}, version=${versionId || "none"}, source="${folderRootName}")`);
     return [];
   }
-
-  // Find "Bank Statement" (or legacy "Bank Reconciliation") subfolder
-  let bankFolder = null;
-  for (const folderName of ["Bank Statement", "Bank Reconciliation"]) {
-    const { data: found } = await supabase
-      .from("folders")
-      .select("id")
-      .eq("company_id", companyId)
-      .ilike("name", folderName)
-      .or(`parent_id.eq.${sourceFolder.id}`)
-      .maybeSingle();
-    if (found) { bankFolder = found; break; }
-  }
-
-  if (!bankFolder) {
-    console.log(`[BankPDF] "Bank Statement" subfolder not found for company ${companyId}`);
-    return [];
-  }
-
-  const { data: documents, error } = await supabase
-    .from("documents")
-    .select("id, name, upload_id, file_url")
-    .eq("folder_id", bankFolder.id)
-    .order("uploaded_at", { ascending: false });
-
-  if (error) console.warn(`[BankPDF] Error fetching documents: ${error.message}`);
-  console.log(`[BankPDF] Found ${documents?.length || 0} document(s) in Bank Statement folder for company ${companyId}`);
-  return documents || [];
+  console.log(`[BankPDF] Using ${documents.length} Key Reports-linked bank statement document(s) for company ${companyId} (datasetVersion=${datasetVersion ?? "active"}, version=${versionId}, flow=${flowType}): ${documents.map((d) => d.name).join(", ")}`);
+  return documents;
 }
 
 /**
@@ -503,44 +506,42 @@ router.get("/reconciliation-variance", extractClientId, async (req, res) => {
 // target its own isolated cache partition and DataRoom folder.
 // Returns { statusCode, body } — the caller forwards these directly to res.
 // ─────────────────────────────────────────────────────────────────────────────
-async function runBankExtraction(clientId, cacheSource, folderRootName) {
-  // 1. Check source-specific cache
-  const { data: cached } = await supabase
-    .from("qb_synced_reports")
-    .select("data, updated_at")
-    .eq("company_id", clientId)
-    .eq("source", cacheSource)
-    .eq("report_type", BANK_RECONCILIATION_TYPE)
-    .order("updated_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+async function runBankExtraction(clientId, cacheSource = MANUAL_REPORT_UPLOAD_SOURCE, folderRootName = "Manual Upload Source", datasetVersion = null) {
+  // 1. Resolve the source document(s) strictly from the SELECTED Key Reports
+  //    version (or the active one when no version is selected). The document set
+  //    determines the cache key, so switching versions (and therefore which bank
+  //    statement is linked) always invalidates a stale cache from another version.
+  const documents = await getBankReconciliationDocuments(clientId, folderRootName, datasetVersion);
 
-  if (cached?.data?.bank_reconciliation) {
-    const bd = cached.data.bank_reconciliation;
-    if (bd.banks?.length > 0) {
-      console.log(`[BankPDF] Cache hit for ${clientId} (source=${cacheSource})`);
+  if (!documents.length) {
+    // Fall back to data synced via the connection page (Sync All).
+    // Sync All stores extracted bank data in qb_synced_reports under
+    // report_type="bank_reconciliation" with the source-specific key.
+    const { data: synced } = await supabase
+      .from("qb_synced_reports")
+      .select("data, updated_at")
+      .eq("company_id", clientId)
+      .eq("source", cacheSource)
+      .eq("report_type", BANK_RECONCILIATION_TYPE)
+      .order("updated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const sbd = synced?.data?.bank_reconciliation;
+    if (sbd?.banks?.length > 0) {
+      console.log(`[BankPDF] No KR mapping — using connection-page synced bank data for ${clientId} (source=${cacheSource}, ${sbd.banks.length} bank(s))`);
       return {
         statusCode: 200,
         body: {
           success: true,
-          source: "cache",
-          bank_count: bd.banks.length,
-          banks: bd.banks,
-          months: bd.months || [],
-          totals: bd.totals || [],
-          syncedAt: bd.syncedAt || cached.updated_at,
-          documentCount: bd.documentCount || bd.banks.length,
+          source: "synced",
+          banks: sbd.banks,
+          months: sbd.months || [],
+          totals: sbd.totals || [],
+          syncedAt: sbd.syncedAt || synced.updated_at,
+          documentCount: sbd.documentCount || sbd.banks.length,
         },
       };
     }
-    console.log(`[BankPDF] Cache empty for ${clientId} (source=${cacheSource}) — falling through to live extraction`);
-  }
-
-  // 2. No usable cache — live extraction from the correct source folder
-  console.log(`[BankPDF] Live extraction for ${clientId} from "${folderRootName}"`);
-  const documents = await getBankReconciliationDocuments(clientId, folderRootName);
-
-  if (!documents.length) {
     return {
       statusCode: 200,
       body: {
@@ -549,11 +550,45 @@ async function runBankExtraction(clientId, cacheSource, folderRootName) {
         months: [],
         totals: [],
         source: "empty",
-        message: `No bank statement files found in "${folderRootName}". Upload PDF or Excel files to ${folderRootName} → Bank Statement in the Data Room.`,
+        message: "No bank statements found. Upload PDF or Excel files via the Connections page and sync, or link a Bank Statement in Key Reports.",
       },
     };
   }
 
+  const documentSignature = documents.map((d) => d.id).filter(Boolean).sort().join(",");
+
+  // 2. Version-aware cache check — only valid if built from the SAME linked
+  //    document set (kept in its own report_type so Sync All's cache is untouched).
+  const { data: cached } = await supabase
+    .from("qb_synced_reports")
+    .select("data, updated_at")
+    .eq("company_id", clientId)
+    .eq("source", cacheSource)
+    .eq("report_type", BANK_RECON_KR_CACHE_TYPE)
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const bd = cached?.data?.bank_reconciliation;
+  if (bd?.banks?.length > 0 && bd.documentSignature === documentSignature) {
+    console.log(`[BankPDF] KR cache hit for ${clientId} (source=${cacheSource}, sig=${documentSignature})`);
+    return {
+      statusCode: 200,
+      body: {
+        success: true,
+        source: "cache",
+        bank_count: bd.banks.length,
+        banks: bd.banks,
+        months: bd.months || [],
+        totals: bd.totals || [],
+        syncedAt: bd.syncedAt || cached.updated_at,
+        documentCount: bd.documentCount || bd.banks.length,
+      },
+    };
+  }
+
+  // 3. Live extraction over the Key Reports-linked documents
+  console.log(`[BankPDF] Live extraction for ${clientId} over ${documents.length} Key Reports-linked document(s)`);
   const allStatements = [];
   const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 
@@ -616,11 +651,44 @@ async function runBankExtraction(clientId, cacheSource, folderRootName) {
   if (!allStatements.length) {
     return {
       statusCode: 422,
-      body: { success: false, error: "Gemini could not extract any bank statement data from the uploaded files." },
+      body: { success: false, error: "Gemini could not extract any bank statement data from the linked Key Reports file(s)." },
     };
   }
 
   const { banks, months, totals } = buildBankResponseShape(allStatements);
+
+  // 4. Cache result — version-aware (delete stale entry first, then insert fresh).
+  const now = new Date().toISOString();
+  const cachePayload = {
+    bank_reconciliation: {
+      banks,
+      months,
+      totals,
+      documentSignature,
+      documentCount: documents.length,
+      syncedAt: now,
+    },
+  };
+  try {
+    await supabase
+      .from("qb_synced_reports")
+      .delete()
+      .eq("company_id", clientId)
+      .eq("source", cacheSource)
+      .eq("report_type", BANK_RECON_KR_CACHE_TYPE);
+    await supabase.from("qb_synced_reports").insert({
+      company_id: clientId,
+      report_type: BANK_RECON_KR_CACHE_TYPE,
+      source: cacheSource,
+      data: cachePayload,
+      status: "synced",
+      last_synced_at: now,
+      updated_at: now,
+    });
+  } catch (cacheErr) {
+    console.warn(`[BankPDF] KR cache write failed (non-fatal): ${cacheErr.message}`);
+  }
+
   return { statusCode: 200, body: { success: true, source: "live", bank_count: banks.length, banks, months, totals } };
 }
 
@@ -688,7 +756,8 @@ router.get("/extract-bank-pdf-records", extractClientId, async (req, res) => {
     const datasetVersion = String(req.query.datasetVersion || "").trim() || null;
     const { cacheSource, folderRootName } = SOURCE_CONFIG[sourceKey] || DEFAULT_SOURCE_CONFIG;
     console.log(`[BankPDF] source="${sourceKey}" → cacheSource="${cacheSource}", folder="${folderRootName}", datasetVersion=${datasetVersion}, fiscalYear=${fiscalYear}`);
-    const { statusCode, body } = await runBankExtraction(req.clientId, cacheSource, folderRootName);
+    // datasetVersion scopes document resolution to the SELECTED Key Reports version.
+    const { statusCode, body } = await runBankExtraction(req.clientId, cacheSource, folderRootName, datasetVersion);
     const scoped = fiscalYear ? filterBankReconByYear(body, fiscalYear) : body;
     return res.status(statusCode).json(scoped);
   } catch (error) {
@@ -735,7 +804,8 @@ router.get("/manual-report-uploads/bs-bank-balances", extractClientId, async (re
     const datasetVersion = String(req.query.datasetVersion || "").trim() || null;
     const { cacheSource, folderRootName } = SOURCE_CONFIG[sourceKey] || DEFAULT_SOURCE_CONFIG;
     console.log(`[BsBankBalances] source="${sourceKey}" → cacheSource="${cacheSource}", folder="${folderRootName}", datasetVersion=${datasetVersion}, fiscalYear=${fiscalYear}`);
-    const { statusCode, body } = await runBsBankBalancesExtraction(req.clientId, cacheSource, folderRootName, fiscalYear);
+    // datasetVersion scopes Balance Sheet resolution to the SELECTED Key Reports version.
+    const { statusCode, body } = await runBsBankBalancesExtraction(req.clientId, cacheSource, folderRootName, fiscalYear, datasetVersion);
     return res.status(statusCode).json(body);
   } catch (err) {
     console.error("[BsBankBalances] Error:", err);
@@ -744,3 +814,5 @@ router.get("/manual-report-uploads/bs-bank-balances", extractClientId, async (re
 });
 
 module.exports = router;
+module.exports.runBsBankBalancesExtraction = runBsBankBalancesExtraction;
+module.exports.runBankExtraction = runBankExtraction;
