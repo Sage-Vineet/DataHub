@@ -397,7 +397,7 @@ async function sendWelcomeEmail({ userId, userName, email, password, companyName
   }
 
   const baseUrl  = (process.env.FRONTEND_URL || "http://localhost:5173").replace(/\/$/, "");
-  const loginUrl = `${baseUrl}/login`;
+  const loginUrl = `${baseUrl}/#/login`;
   const companyDisplay = Array.isArray(companyNames) && companyNames.length
     ? companyNames.join(", ")
     : "N/A";
