@@ -1,251 +1,238 @@
 "use strict";
 
 /**
- * emailService.js — Production-hardened email delivery
+ * emailService.js — Microsoft Graph API email delivery
  *
- * Transport priority (first that works wins):
- *   1. Resend API  — HTTPS port 443, works on Render/any host (set RESEND_API_KEY)
- *   2. SMTP port 587 — Gmail TLS  (blocked on Render free tier)
- *   3. SMTP port 465 — Gmail SSL  (also blocked on Render free tier)
+ * Uses OAuth 2.0 client_credentials flow to obtain a Bearer token from
+ * Azure AD and sends email via POST /users/{sender}/sendMail on Graph.
  *
- * Render blocks outbound SMTP (ports 587/465). For production set RESEND_API_KEY.
- * Resend free tier: 3 000 emails/month · sign up at https://resend.com
+ * Required environment variables:
+ *   GRAPH_TENANT_ID      — Azure AD Directory (tenant) ID
+ *   GRAPH_CLIENT_ID      — Azure AD Application (client) ID
+ *   GRAPH_CLIENT_SECRET  — Azure AD client secret value
+ *   GRAPH_SENDER_EMAIL   — Licensed M365 mailbox to send from
+ *   EMAIL_FROM_NAME      — Display name (default: "M&A Hub")
+ *   FRONTEND_URL         — Used in welcome email login link
  */
 
-const nodemailer = require("nodemailer");
-const axios      = require("axios");
-const dns        = require("dns");
-const { promisify } = require("util");
-
-const dnsLookup = promisify(dns.lookup);
+const https = require("https");
 
 // In-process dedup guard — prevents double welcome-send per server lifetime.
 const _sentWelcomeEmails = new Set();
 
 // ── Configuration helpers ─────────────────────────────────────────────────────
 
-function _smtpCfg() {
-  return {
-    host:   process.env.EMAIL_HOST   || process.env.SMTP_HOST   || "",
-    port:   parseInt(process.env.EMAIL_PORT   || process.env.SMTP_PORT   || "587", 10),
-    secure: (process.env.EMAIL_SECURE || process.env.SMTP_SECURE) === "true",
-    user:   process.env.EMAIL_USER   || process.env.SMTP_USER   || "",
-    pass:   process.env.EMAIL_PASS   || process.env.SMTP_PASS   || "",
-  };
-}
-
-function isSmtpConfigured() {
-  const { host, user, pass } = _smtpCfg();
-  return !!(host && user && pass);
-}
-
-function isResendConfigured() {
-  return !!process.env.RESEND_API_KEY;
-}
-
-function _from() {
-  return (
-    process.env.EMAIL_FROM ||
-    process.env.SMTP_FROM  ||
-    `"M&A Hub" <${process.env.EMAIL_USER || process.env.SMTP_USER}>`
+function isGraphConfigured() {
+  return !!(
+    process.env.GRAPH_TENANT_ID &&
+    process.env.GRAPH_CLIENT_ID &&
+    process.env.GRAPH_CLIENT_SECRET &&
+    process.env.GRAPH_SENDER_EMAIL
   );
 }
 
-// ── IPv4 DNS resolver ─────────────────────────────────────────────────────────
-
-async function _resolveIPv4(hostname) {
-  // If already an IP address, use as-is.
-  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(hostname)) return hostname;
-  try {
-    const { address, family } = await dnsLookup(hostname, { family: 4 });
-    console.log(`[SMTP] DNS ${hostname} → ${address} (IPv${family})`);
-    return address;
-  } catch (err) {
-    console.warn(`[SMTP] DNS IPv4 lookup failed for ${hostname}: ${err.message} — using hostname directly`);
-    return hostname;
-  }
+function _senderEmail() {
+  return process.env.GRAPH_SENDER_EMAIL || "";
 }
 
-// ── Transporter factory ───────────────────────────────────────────────────────
+function _fromName() {
+  return process.env.EMAIL_FROM_NAME || "M&A Hub";
+}
 
-async function _buildTransporter(host, port, secure) {
-  const { user, pass } = _smtpCfg();
-  const resolvedHost = await _resolveIPv4(host);
+// ── OAuth 2.0 token cache ─────────────────────────────────────────────────────
+// Graph tokens are valid 60 minutes — reuse until 1 minute before expiry.
 
-  console.log(`[SMTP] Creating transporter → host=${resolvedHost} port=${port} secure=${secure}`);
+let _cachedToken = null;
+let _tokenExpiresAt = 0;
 
-  return nodemailer.createTransport({
-    host:             resolvedHost,
-    port,
-    secure,
-    auth:             { user, pass },
-    family:           4,          // redundant safety net after DNS resolution
-    connectionTimeout: 10000,
-    greetingTimeout:   10000,
-    socketTimeout:     15000,
-    tls:              { rejectUnauthorized: false },
+async function _getAccessToken() {
+  const now = Date.now();
+  if (_cachedToken && now < _tokenExpiresAt - 60_000) {
+    return _cachedToken;
+  }
+
+  const tenantId     = process.env.GRAPH_TENANT_ID;
+  const clientId     = process.env.GRAPH_CLIENT_ID;
+  const clientSecret = process.env.GRAPH_CLIENT_SECRET;
+
+  if (!tenantId || !clientId || !clientSecret) {
+    throw new Error(
+      "Microsoft Graph not configured. Set GRAPH_TENANT_ID, GRAPH_CLIENT_ID, GRAPH_CLIENT_SECRET."
+    );
+  }
+
+  const body = new URLSearchParams({
+    grant_type:    "client_credentials",
+    client_id:     clientId,
+    client_secret: clientSecret,
+    scope:         "https://graph.microsoft.com/.default",
+  }).toString();
+
+  return new Promise((resolve, reject) => {
+    const req = https.request(
+      {
+        hostname: "login.microsoftonline.com",
+        path:     `/${tenantId}/oauth2/v2.0/token`,
+        method:   "POST",
+        headers:  {
+          "Content-Type":   "application/x-www-form-urlencoded",
+          "Content-Length": Buffer.byteLength(body),
+        },
+      },
+      (res) => {
+        let data = "";
+        res.on("data", (chunk) => (data += chunk));
+        res.on("end", () => {
+          try {
+            const json = JSON.parse(data);
+            if (json.access_token) {
+              _cachedToken    = json.access_token;
+              _tokenExpiresAt = Date.now() + (Number(json.expires_in) || 3600) * 1000;
+              console.log("[Graph Auth] Access token obtained, expires in", json.expires_in, "s");
+              resolve(_cachedToken);
+            } else {
+              reject(new Error(`Graph token error: ${json.error_description || json.error || data}`));
+            }
+          } catch (e) {
+            reject(new Error(`Graph token parse error: ${e.message}`));
+          }
+        });
+      }
+    );
+    req.on("error", reject);
+    req.write(body);
+    req.end();
   });
 }
 
-// ── Resend API sender ─────────────────────────────────────────────────────────
-
-async function _sendViaResend(to, subject, html, text) {
-  console.log(`[Email Service] Trying Resend API for <${to}>`);
-  const response = await axios.post(
-    "https://api.resend.com/emails",
-    { from: _from(), to: [to], subject, html, text },
-    {
-      headers: {
-        Authorization:  `Bearer ${process.env.RESEND_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      timeout: 15000,
-    }
-  );
-  return response.data; // { id: "..." }
-}
-
-// ── SMTP sender with per-port retry ──────────────────────────────────────────
-
-async function _smtpSend(transporter, mailOptions, label, maxRetries = 3) {
-  let lastErr;
-  for (let i = 1; i <= maxRetries; i++) {
-    try {
-      const info = await transporter.sendMail(mailOptions);
-      return { info, attempt: i };
-    } catch (err) {
-      lastErr = err;
-      console.error(`[SMTP][${label}] Attempt ${i}/${maxRetries} failed: ${err.message}`);
-      if (i < maxRetries) await new Promise(r => setTimeout(r, i * 1000));
-    }
-  }
-  throw lastErr;
-}
-
-// ── Core delivery router ──────────────────────────────────────────────────────
+// ── Core Graph send ───────────────────────────────────────────────────────────
 
 async function _deliver(to, subject, html, text) {
-  const mailOptions = { from: _from(), to, subject, html, text };
-
-  // ── 1. Resend API (always works on Render — HTTPS port 443) ─────────────────
-  if (isResendConfigured()) {
-    try {
-      const result = await _sendViaResend(to, subject, html, text);
-      console.log(`[Email Service] ✓ Delivered via Resend API to <${to}> id=${result.id}`);
-      return { sent: true, provider: "resend", messageId: result.id };
-    } catch (err) {
-      console.error(`[Email Service] Resend API failed for <${to}>: ${err.message}`);
-      if (err.response) {
-        console.error(`[Email Service] Resend HTTP ${err.response.status}:`, JSON.stringify(err.response.data));
-      }
-      // fall through to SMTP
-    }
+  if (!isGraphConfigured()) {
+    throw new Error(
+      "Microsoft Graph email not configured. " +
+      "Set GRAPH_TENANT_ID, GRAPH_CLIENT_ID, GRAPH_CLIENT_SECRET, GRAPH_SENDER_EMAIL in .env"
+    );
   }
 
-  // ── 2. SMTP port 587 (TLS STARTTLS) ─────────────────────────────────────────
-  if (isSmtpConfigured()) {
-    const { host, user } = _smtpCfg();
-    console.log(`[SMTP] Attempting port 587 (TLS) — host=${host} user=${user}`);
+  const token  = await _getAccessToken();
+  const sender = _senderEmail();
 
-    try {
-      const t587 = await _buildTransporter(host, 587, false);
-      await t587.verify();
-      console.log("[SMTP] verify() passed on port 587");
-      const { info, attempt } = await _smtpSend(t587, mailOptions, "587", 3);
-      console.log(`[Email Service] ✓ Delivered via SMTP 587 to <${to}> attempt=${attempt} id=${info.messageId}`);
-      return { sent: true, provider: "smtp", port: 587, messageId: info.messageId };
-    } catch (err587) {
-      console.error(`[SMTP] Port 587 failed: ${err587.message}`);
-      console.error(`[SMTP] Stack: ${err587.stack}`);
-      if (err587.code === "ENETUNREACH" || err587.code === "ECONNREFUSED" || err587.code === "ETIMEDOUT") {
-        console.error("[SMTP] Network diagnosis: Render likely blocks outbound SMTP port 587. Set RESEND_API_KEY.");
+  const payload = JSON.stringify({
+    message: {
+      subject,
+      body: {
+        contentType: "HTML",
+        content:     html || text || "",
+      },
+      toRecipients: [
+        { emailAddress: { address: to } },
+      ],
+      from: {
+        emailAddress: { address: sender, name: _fromName() },
+      },
+    },
+    saveToSentItems: false,
+  });
+
+  return new Promise((resolve, reject) => {
+    const req = https.request(
+      {
+        hostname: "graph.microsoft.com",
+        path:     `/v1.0/users/${encodeURIComponent(sender)}/sendMail`,
+        method:   "POST",
+        headers:  {
+          Authorization:   `Bearer ${token}`,
+          "Content-Type":  "application/json",
+          "Content-Length": Buffer.byteLength(payload),
+        },
+      },
+      (res) => {
+        let data = "";
+        res.on("data", (chunk) => (data += chunk));
+        res.on("end", () => {
+          // Graph returns 202 Accepted with no body on success
+          if (res.statusCode === 202) {
+            console.log(`[Email Service] Delivered via Graph API to <${to}> (202 Accepted)`);
+            resolve({ sent: true, provider: "graph" });
+          } else {
+            // Invalidate cached token on auth errors so next call re-fetches
+            if (res.statusCode === 401) {
+              _cachedToken    = null;
+              _tokenExpiresAt = 0;
+            }
+            reject(
+              new Error(
+                `Graph sendMail failed — HTTP ${res.statusCode}: ${data.slice(0, 400)}`
+              )
+            );
+          }
+        });
       }
-
-      // ── 3. SMTP port 465 (SSL) fallback ───────────────────────────────────
-      console.log(`[SMTP] Falling back to port 465 (SSL) — host=${host}`);
-      try {
-        const t465 = await _buildTransporter(host, 465, true);
-        await t465.verify();
-        console.log("[SMTP] verify() passed on port 465");
-        const { info, attempt } = await _smtpSend(t465, mailOptions, "465", 2);
-        console.log(`[Email Service] ✓ Delivered via SMTP 465 to <${to}> attempt=${attempt} id=${info.messageId}`);
-        return { sent: true, provider: "smtp", port: 465, messageId: info.messageId };
-      } catch (err465) {
-        console.error(`[SMTP] Port 465 also failed: ${err465.message}`);
-        if (err465.code === "ENETUNREACH" || err465.code === "ECONNREFUSED" || err465.code === "ETIMEDOUT") {
-          console.error(
-            "[SMTP] CONCLUSION: Render is blocking outbound SMTP on both port 587 and 465.\n" +
-            "[SMTP] FIX: Add RESEND_API_KEY to Render environment variables.\n" +
-            "[SMTP] Sign up free at https://resend.com — 3000 emails/month included."
-          );
-        }
-        throw err465;
-      }
-    }
-  }
-
-  throw new Error(
-    "No email transport available. " +
-    "Set RESEND_API_KEY (recommended for Render) or EMAIL_HOST + EMAIL_USER + EMAIL_PASS."
-  );
+    );
+    req.on("error", reject);
+    req.write(payload);
+    req.end();
+  });
 }
 
-// ── SMTP / Resend health check (called at startup) ────────────────────────────
+// ── Graph health check (called at server startup) ─────────────────────────────
 
 async function checkEmailHealth() {
   console.log("[EMAIL HEALTH CHECK] Starting...");
-  console.log(`[EMAIL HEALTH CHECK] RESEND_API_KEY configured: ${isResendConfigured()}`);
-  console.log(`[EMAIL HEALTH CHECK] SMTP configured: ${isSmtpConfigured()}`);
+  console.log(`[EMAIL HEALTH CHECK] Graph configured: ${isGraphConfigured()}`);
 
-  if (isResendConfigured()) {
-    // Verify Resend key by calling the /domains endpoint (read-only, no email sent)
-    try {
-      await axios.get("https://api.resend.com/domains", {
-        headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}` },
-        timeout: 8000,
-      });
-      console.log("[EMAIL HEALTH CHECK] SUCCESS — Resend API key is valid");
-      return true;
-    } catch (err) {
-      const status = err.response?.status;
-      if (status === 401) {
-        console.error("[EMAIL HEALTH CHECK] FAILED — Resend API key is invalid (401 Unauthorized)");
-      } else {
-        console.error(`[EMAIL HEALTH CHECK] FAILED — Resend API unreachable: ${err.message}`);
-      }
-      return false;
-    }
+  if (!isGraphConfigured()) {
+    console.error(
+      "[EMAIL HEALTH CHECK] FAILED — Missing one or more Graph env vars:\n" +
+      "  GRAPH_TENANT_ID, GRAPH_CLIENT_ID, GRAPH_CLIENT_SECRET, GRAPH_SENDER_EMAIL"
+    );
+    return false;
   }
 
-  if (isSmtpConfigured()) {
-    const { host, user } = _smtpCfg();
-    console.log(`[EMAIL HEALTH CHECK] Testing SMTP — host=${host} user=${user} (password hidden)`);
-    try {
-      const transporter = await _buildTransporter(host, 587, false);
-      await transporter.verify();
-      console.log("[EMAIL HEALTH CHECK] SUCCESS — SMTP port 587 reachable and authenticated");
-      return true;
-    } catch (err) {
-      console.error(`[EMAIL HEALTH CHECK] FAILED — SMTP port 587: ${err.message}`);
-      try {
-        const t465 = await _buildTransporter(host, 465, true);
-        await t465.verify();
-        console.log("[EMAIL HEALTH CHECK] SUCCESS — SMTP port 465 reachable and authenticated");
-        return true;
-      } catch (err2) {
-        console.error(`[EMAIL HEALTH CHECK] FAILED — SMTP port 465: ${err2.message}`);
-        console.error(
-          "[EMAIL HEALTH CHECK] CONCLUSION: All SMTP ports blocked (likely Render restriction).\n" +
-          "[EMAIL HEALTH CHECK] ACTION REQUIRED: Set RESEND_API_KEY in Render environment.\n" +
-          "[EMAIL HEALTH CHECK] Free signup: https://resend.com"
-        );
-        return false;
-      }
-    }
-  }
+  try {
+    const token = await _getAccessToken();
+    if (!token) throw new Error("Empty token returned");
+    console.log("[EMAIL HEALTH CHECK] SUCCESS — Graph access token obtained");
 
-  console.error("[EMAIL HEALTH CHECK] FAILED — No email transport configured at all.");
-  return false;
+    // Verify the sender mailbox is accessible
+    await new Promise((resolve, reject) => {
+      const sender = _senderEmail();
+      const req = https.request(
+        {
+          hostname: "graph.microsoft.com",
+          path:     `/v1.0/users/${encodeURIComponent(sender)}/mailboxSettings`,
+          method:   "GET",
+          headers:  { Authorization: `Bearer ${token}` },
+        },
+        (res) => {
+          let data = "";
+          res.on("data", (c) => (data += c));
+          res.on("end", () => {
+            if (res.statusCode === 200) {
+              console.log(`[EMAIL HEALTH CHECK] SUCCESS — Sender mailbox <${sender}> accessible`);
+              resolve();
+            } else {
+              reject(new Error(`Mailbox check HTTP ${res.statusCode}: ${data.slice(0, 200)}`));
+            }
+          });
+        }
+      );
+      req.on("error", reject);
+      req.end();
+    });
+
+    return true;
+  } catch (err) {
+    console.error(`[EMAIL HEALTH CHECK] FAILED — ${err.message}`);
+    if (err.message.includes("Forbidden") || err.message.includes("403")) {
+      console.error(
+        "[EMAIL HEALTH CHECK] Likely cause: Mail.Send permission not granted or admin consent missing.\n" +
+        "  Fix: Azure Portal → App registrations → API permissions → Mail.Send → Grant admin consent"
+      );
+    }
+    return false;
+  }
 }
 
 // ── HTML helpers ──────────────────────────────────────────────────────────────
@@ -382,10 +369,8 @@ function _buildWelcomeText(userName, email, password, companyDisplay, loginUrl) 
  * Sends a 6-digit OTP verification email.
  */
 async function sendOtpEmail(email, otp) {
-  console.log("EMAIL_HOST:", process.env.EMAIL_HOST);
-  console.log("EMAIL_USER:", process.env.EMAIL_USER);
-  console.log(`[Email Service] EMAIL_PASS exists: ${!!process.env.EMAIL_PASS}`);
-  console.log(`[Email Service] RESEND_API_KEY configured: ${isResendConfigured()}`);
+  console.log(`[Email Service] Sending OTP to <${email}> via Graph API`);
+  console.log(`[Email Service] Graph configured: ${isGraphConfigured()}`);
 
   try {
     const result = await _deliver(
@@ -476,13 +461,13 @@ async function sendReminderEmail({
   const textLines = [
     greeting, "",
     `${sentBy} has sent you a reminder for: ${requestTitle || "Document Request"}`,
-    companyName        ? `Company:      ${companyName}` : "",
-    requestType        ? `Type:         ${requestType}` : "",
-    priority           ? `Priority:     ${priority}` : "",
-    formattedDue       ? `Due:          ${formattedDue}` : "",
-    status             ? `Status:       ${status}` : "",
+    companyName         ? `Company:      ${companyName}` : "",
+    requestType         ? `Type:         ${requestType}` : "",
+    priority            ? `Priority:     ${priority}` : "",
+    formattedDue        ? `Due:          ${formattedDue}` : "",
+    status              ? `Status:       ${status}` : "",
     formattedReminderAt ? `Reminder Sent: ${formattedReminderAt}` : "",
-    description        ? `\nDescription:\n${description}` : "",
+    description         ? `\nDescription:\n${description}` : "",
     "",
     "Please log in to the M&A Hub portal to complete any outstanding documents.",
     portalUrl ? `Portal: ${portalUrl}` : "",
@@ -635,6 +620,5 @@ module.exports = {
   sendRequestNotificationEmail,
   sendCompanyCreatedEmail,
   checkEmailHealth,
-  isSmtpConfigured,
-  isResendConfigured,
+  isGraphConfigured,
 };
