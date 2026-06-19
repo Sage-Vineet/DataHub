@@ -292,9 +292,12 @@ function reportMonthLabel(isoMonth) {
 const MONTH_COL_MAP = { JAN: 1, FEB: 2, MAR: 3, APR: 4, MAY: 5, JUN: 6, JUL: 7, AUG: 8, SEP: 9, OCT: 10, NOV: 11, DEC: 12 };
 function colLabelToISO(label) {
   if (!label) return null;
-  const m = /^([A-Z]{3})\s+(\d{2})$/.exec(String(label).trim().toUpperCase());
+  const upper = String(label).trim().toUpperCase();
+  // Accept both 2-digit ("JAN 25") and 4-digit ("JAN 2025") year formats.
+  const m = /^([A-Z]{3})\s+(\d{2}|\d{4})$/.exec(upper);
   if (!m || !MONTH_COL_MAP[m[1]]) return null;
-  return `${2000 + Number(m[2])}-${String(MONTH_COL_MAP[m[1]]).padStart(2, "0")}`;
+  const year = m[2].length === 2 ? 2000 + Number(m[2]) : Number(m[2]);
+  return `${year}-${String(MONTH_COL_MAP[m[1]]).padStart(2, "0")}`;
 }
 
 // Derive the Date From / Date To month pickers (YYYY-MM) from the fiscalYear[] +
@@ -1612,10 +1615,31 @@ export default function WorkspaceReports() {
     if (!isManualReportMode) return [];
     const detail = currentReport?.detail;
     if (!detail) return [];
-    // manual_upload / quickbooks_manual: yearCols with "MMM YY" labels
+    // manual_upload / quickbooks_manual: yearCols with "MMM YYYY" labels
     const yearCols = detail?.columns?.yearCols;
     if (Array.isArray(yearCols) && yearCols.length > 0) {
-      return [...new Set(yearCols.map((c) => colLabelToISO(c.label)).filter(Boolean))].sort();
+      const monthly = [...new Set(yearCols.map((c) => colLabelToISO(c.label)).filter(Boolean))].sort();
+      if (monthly.length > 0) return monthly;
+      // Fallback: file has only yearly columns (e.g. "FY 2025") — expand each year to Jan–Dec
+      // so the date pickers are always populated and functional.
+      const fyMonths = [];
+      yearCols.forEach((col) => {
+        const label = String(col.label || "").trim().toUpperCase();
+        const fyMatch = /^FY\s+(\d{4})$/.exec(label) || /^(\d{4})$/.exec(label);
+        if (fyMatch) {
+          const yr = fyMatch[1];
+          for (let m = 1; m <= 12; m++) fyMonths.push(`${yr}-${String(m).padStart(2, "0")}`);
+        }
+      });
+      if (fyMonths.length > 0) return [...new Set(fyMonths)].sort();
+      // Last resort: derive from asOfDate stored on the report
+      const asOf = detail?.asOfDate;
+      if (asOf) {
+        const yr = String(asOf).slice(0, 4);
+        if (/^\d{4}$/.test(yr)) {
+          return Array.from({ length: 12 }, (_, i) => `${yr}-${String(i + 1).padStart(2, "0")}`);
+        }
+      }
     }
     // Manual GL: detail.months (int array) + detail.year
     if (Array.isArray(detail?.months) && detail?.year) {
@@ -1980,7 +2004,7 @@ export default function WorkspaceReports() {
               </>
             )}
 
-            {isManualReportMode && reportPeriod === "Month" && availableReportMonths.length > 0 && (
+            {isManualReportMode && reportPeriod === "Month" && (
               <>
                 <div>
                   <label className="block text-[11px] font-semibold uppercase tracking-wide text-text-muted mb-1">

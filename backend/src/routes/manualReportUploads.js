@@ -16,7 +16,8 @@ const {
   getSyncProgress,
   getManualUploadProgress,
   extractAndCacheReportAsOfDate,
-  extractTaxDataFromBuffer,
+  extractTaxDataWithVerification,
+  validateTaxExtraction,
   clearTaxExtractCache,
   buildTaxReturnResponseData,
   extractPLForTax,
@@ -728,6 +729,43 @@ router.get("/manual-report-uploads/qms-reports/:statementType/latest", async (re
    1. Checks qb_synced_reports for data stored by Sync All (fast path).
    2. Falls back to real-time Gemini extraction from DataRoom PDFs.
 =========================== */
+// Enrich a cached tax-year object with a `status` field when it is missing.
+// The data array (label/taxReturn pairs) is converted back to raw field names
+// so validateTaxExtraction can run the same formula checks used at extraction time.
+function enrichTaxYearWithStatus(yearObj) {
+  if (yearObj && yearObj.status) return yearObj;
+  const dataArr = Array.isArray(yearObj?.data) ? yearObj.data : [];
+  const findVal = (...labels) => {
+    for (const lbl of labels) {
+      const item = dataArr.find((d) => d.label === lbl);
+      if (item) return Number(item.taxReturn || 0);
+    }
+    return 0;
+  };
+  const reconstructed = {
+    year:                 yearObj?.year || 0,
+    totalRevenue:         findVal("Total Revenue"),
+    totalCostOfGoodsSold: findVal("Total Cost of Goods Sold"),
+    grossProfit:          findVal("Gross Profit"),
+    officerWages:         findVal("Officer Wages", "Guaranteed Payments"),
+    depreciation:         findVal("Depreciation Expense"),
+    amortization:         findVal("Amortization Expense"),
+    interestExpense:      findVal("Total Interest Expense"),
+    allOtherExpenses:     findVal("All Other Expenses"),
+    netIncome:            findVal("Net Income"),
+  };
+  const { status } = validateTaxExtraction(reconstructed);
+  return { ...yearObj, status };
+}
+
+function enrichTaxYears(taxYears) {
+  const enriched = {};
+  for (const [yr, obj] of Object.entries(taxYears || {})) {
+    enriched[yr] = enrichTaxYearWithStatus(obj);
+  }
+  return enriched;
+}
+
 router.get("/manual-report-uploads/tax-data", async (req, res) => {
   try {
     const clientId = resolveClientId(req);
@@ -765,7 +803,7 @@ router.get("/manual-report-uploads/tax-data", async (req, res) => {
         console.log(`[TaxData] No KR mapping — using connection-page synced tax data for ${clientId} (${Object.keys(taxYears).length} year(s))`);
         return res.json({
           success: true,
-          years: taxYears,
+          years: enrichTaxYears(taxYears),
           source: "synced",
           updatedAt: synced.updated_at,
         });
@@ -798,7 +836,7 @@ router.get("/manual-report-uploads/tax-data", async (req, res) => {
       console.log(`[TaxData] Serving ${Object.keys(stored.data.tax_return.taxYears).length} year(s) from KR cache (version=${versionId})`);
       return res.json({
         success: true,
-        years: stored.data.tax_return.taxYears,
+        years: enrichTaxYears(stored.data.tax_return.taxYears),
         source: "db_cache",
         updatedAt: stored.updated_at,
       });
@@ -855,17 +893,17 @@ router.get("/manual-report-uploads/tax-data", async (req, res) => {
 
         console.log(`[TaxData] Sending "${fileName}" (${buffer.length} bytes) to Gemini...`);
         const cacheKey = `tax_rt_${clientId}_${uploadId}`;
-        const extracted = await extractTaxDataFromBuffer(buffer, cacheKey);
-        return { extracted, fileName };
+        const { extracted, status } = await extractTaxDataWithVerification(buffer, cacheKey);
+        return { extracted, fileName, status };
       })
     );
 
     for (const s of settlements) {
       if (s.status === "fulfilled" && s.value?.extracted?.year) {
-        const { extracted, fileName } = s.value;
+        const { extracted, fileName, status } = s.value;
         const year = Number(extracted.year);
-        years[year] = { year, fileName, data: buildTaxReturnResponseData(extracted) };
-        console.log(`[TaxData] year=${year} from "${fileName}"`);
+        years[year] = { year, fileName, status: status || "Needs Review", data: buildTaxReturnResponseData(extracted) };
+        console.log(`[TaxData] year=${year} status=${status} from "${fileName}"`);
       } else if (s.status === "rejected") {
         const msg = s.reason?.message || String(s.reason);
         warnings.push(`Extraction failed: ${msg}`);

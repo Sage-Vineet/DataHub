@@ -743,6 +743,12 @@ function fileYear(file) {
   return m ? parseInt(m[1], 10) : 0;
 }
 
+// Expand 2-digit stored labels like "Jan 25" → "Jan 2025" for already-stored DB records.
+function expandPeriodLabel(label) {
+  const m = String(label || "").match(/^([A-Za-z]+)\s+(\d{2})$/);
+  return m ? `${m[1]} 20${m[2]}` : label;
+}
+
 function fileLabel(file) {
   const monthNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
   const dateStr = file?.data?.asOfDate || file?.data?.periodEnd;
@@ -752,12 +758,12 @@ function fileLabel(file) {
       const year = parseInt(parts[0], 10);
       const month = parseInt(parts[1], 10) - 1;
       if (year >= 2000 && month >= 0 && month <= 11) {
-        return `${monthNames[month]} ${String(year).slice(-2)}`;
+        return `${monthNames[month]} ${year}`;
       }
     }
   }
   const y = fileYear(file);
-  return y ? `Dec ${String(y).slice(-2)}` : "Unknown";
+  return y ? `Dec ${y}` : "Unknown";
 }
 
 function buildBSFromPeriodColumns(sortedFiles) {
@@ -767,7 +773,7 @@ function buildBSFromPeriodColumns(sortedFiles) {
     const startIdx = allCols.length;
 
     if (periods.length > 0) {
-      periods.forEach((label, i) => allCols.push({ key: `p${startIdx + i}`, label, isCurrent: false }));
+      periods.forEach((label, i) => allCols.push({ key: `p${startIdx + i}`, label: expandPeriodLabel(label), isCurrent: false }));
       const nameMap = new Map();
       const visit = (items) => {
         if (!Array.isArray(items)) return;

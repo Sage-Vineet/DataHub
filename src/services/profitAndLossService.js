@@ -426,6 +426,12 @@ function pnlFileYear(file) {
   return m ? parseInt(m[1], 10) : 0;
 }
 
+// Expand 2-digit stored labels like "Jan 25" → "Jan 2025" for already-stored DB records.
+function expandPeriodLabel(label) {
+  const m = String(label || "").match(/^([A-Za-z]+)\s+(\d{2})$/);
+  return m ? `${m[1]} 20${m[2]}` : label;
+}
+
 function pnlFileLabel(file) {
   const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const dateStr = file?.data?.asOfDate || file?.data?.periodEnd;
@@ -435,7 +441,7 @@ function pnlFileLabel(file) {
       const year = parseInt(parts[0], 10);
       const month = parseInt(parts[1], 10) - 1;
       if (year >= 2000 && month >= 0 && month <= 11) {
-        return `${monthNames[month]} ${String(year).slice(-2)}`;
+        return `${monthNames[month]} ${year}`;
       }
     }
   }
@@ -451,7 +457,7 @@ function buildPNLFromPeriodColumns(sortedFiles) {
 
     if (periods.length > 0) {
       // File has monthly columns — expand one column per period
-      periods.forEach((label, i) => allCols.push({ key: `p${startIdx + i}`, label }));
+      periods.forEach((label, i) => allCols.push({ key: `p${startIdx + i}`, label: expandPeriodLabel(label) }));
       const nameMap = new Map();
       const visit = (items) => {
         if (!Array.isArray(items)) return;
