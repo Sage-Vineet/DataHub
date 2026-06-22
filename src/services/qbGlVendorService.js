@@ -267,13 +267,15 @@ export async function fetchQBVendorBreakdown(
   periods,
 ) {
   try {
-    const params = {};
+    // fresh=true tells the backend to fetch live from QB for this date range
+    // instead of serving a potentially empty or mismatched cached snapshot.
+    const params = { fresh: "true" };
     if (startDate) params.start_date = startDate;
     if (endDate) params.end_date = endDate;
     const normalised = normalizeAccountingMethod(accountingMethod);
     if (normalised) params.accounting_method = normalised;
 
-    console.log("[QBVendor] Fetching GL:", params);
+    console.log("[QBVendor] Fetching GL (live):", params, "| periods:", periods?.length);
     const glData = await fetchGeneralLedger(params);
     if (!glData) {
       console.warn("[QBVendor] fetchGeneralLedger returned empty response");

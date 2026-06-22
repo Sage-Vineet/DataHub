@@ -347,12 +347,32 @@ function mergeFileNodes(nodeArraysByFile, fileKeys) {
 }
 
 function mergePNLPeriods(periodResults, periods) {
-  // Find the current-year YTD period (the one without _ytd suffix that's most recent)
-  const currentYearKey = periods
-    .filter((p) => !p.key.includes("_ytd"))
-    .pop()?.key;
-  const masterIndex = periods.findIndex((p) => p.key === currentYearKey);
-  const masterRows = periodResults[masterIndex] || periodResults[periodResults.length - 1] || [];
+  // Build a union tree from ALL period results so accounts that had no
+  // transactions in some periods (and were therefore omitted by QB from those
+  // monthly responses) still appear in the merged output with 0 for those periods.
+  function mergeInto(dest, src) {
+    for (const srcNode of (src || [])) {
+      const norm = normalizeName(srcNode.name);
+      if (!norm) continue;
+      const existing = dest.find((n) => normalizeName(n.name) === norm);
+      if (existing) {
+        if (srcNode.children?.length) {
+          if (!existing.children) existing.children = [];
+          mergeInto(existing.children, srcNode.children);
+        }
+      } else {
+        dest.push({
+          ...srcNode,
+          children: srcNode.children ? srcNode.children.map((c) => ({ ...c })) : undefined,
+        });
+      }
+    }
+  }
+
+  const masterRows = [];
+  for (const rows of periodResults) {
+    mergeInto(masterRows, rows || []);
+  }
 
   if (masterRows.length === 0) return [];
 
@@ -605,9 +625,33 @@ async function buildPNLMultiFileDetail(sourceMode = "manual_upload", options = {
   };
 }
 
+function generateMonthlyPeriods(startDate, endDate) {
+  const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const periods = [];
+  const s = new Date(startDate + "T00:00:00");
+  const e = new Date(endDate + "T00:00:00");
+  let year = s.getFullYear();
+  let month = s.getMonth();
+  const endYear = e.getFullYear();
+  const endMonth = e.getMonth();
+  while (year < endYear || (year === endYear && month <= endMonth)) {
+    const mm = String(month + 1).padStart(2, "0");
+    const lastDay = new Date(year, month + 1, 0).getDate();
+    periods.push({
+      key: `m${year}_${mm}`,
+      label: `${MONTHS[month]} ${year}`,
+      start: `${year}-${mm}-01`,
+      end: `${year}-${mm}-${String(lastDay).padStart(2, "0")}`,
+    });
+    month++;
+    if (month > 11) { month = 0; year++; }
+  }
+  return periods;
+}
+
 export async function getProfitAndLossDetail(
-  _startDate,
-  _endDate,
+  startDate,
+  endDate,
   accountingMethod,
   options = {},
 ) {
@@ -636,7 +680,27 @@ export async function getProfitAndLossDetail(
     });
   }
 
-  // Detail now uses system-defined multi-year comparison (EBITDA analysis).
+  // Month mode: one column per calendar month between startDate and endDate.
+  if (options.monthMode && startDate && endDate) {
+    const periods = generateMonthlyPeriods(startDate, endDate);
+    const [results, vendorMap] = await Promise.all([
+      Promise.all(periods.map((p) =>
+        fetchSinglePeriodPNL(p.start, p.end, accountingMethod, options?.sourceMode || "quickbooks", options),
+      )),
+      fetchQBVendorBreakdown(periods[0]?.start, periods[periods.length - 1]?.end, accountingMethod, periods).catch(() => ({})),
+    ]);
+    const mergedRows = reclassifyOtherIncome(mergePNLPeriods(results, periods));
+    const rows = attachVendorsToRows(mergedRows, vendorMap, periods.map((p) => p.key));
+    return {
+      rows,
+      columns: {
+        yearCols: periods.map((p) => ({ key: p.key, label: p.label })),
+        ytdComparison: null,
+      },
+    };
+  }
+
+  // Year mode or default: system-defined multi-year comparison.
   // When a year range is provided (Year mode), generate periods only for that range.
   const periods = getPNLComparativePeriods(4, options.startYear || null, options.endYear || null);
 
