@@ -40,6 +40,7 @@ const bankStatementRoutes = require("./routes/quickbooks/reconciliation/bankStat
 const bankVsBooksRoutes = require("./routes/quickbooks/reconciliation/bankVsBooks");
 const syncRoutes = require("./routes/quickbooks/sync");
 const messageGroupRoutes = require("./routes/messageGroups");
+const cimRoutes = require("./routes/cim");
 
 const app = express();
 
@@ -164,6 +165,7 @@ app.use("/", reminderRoutes);
 app.use("/", activityRoutes);
 app.use("/", messageRoutes);
 app.use("/", messageGroupRoutes);
+app.use("/", cimRoutes);
 
 app.use(errorHandler);
 

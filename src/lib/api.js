@@ -113,7 +113,7 @@ export function setStoredToken(token) {
 }
 
 
-async function request(path, options = {}) {
+export async function request(path, options = {}) {
   const token = options.token ?? getStoredToken();
 
   // Reject every authenticated request once the 8-hour session window has closed.

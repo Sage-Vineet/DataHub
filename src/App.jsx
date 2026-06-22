@@ -52,7 +52,10 @@ import WorkspaceConnections from "./pages/broker/workspace/WorkspaceConnections"
 import WorkspaceKeyReports from "./pages/broker/workspace/WorkspaceKeyReports";
 import Support from "./pages/Support";
 import WorkspaceEbitda from "./pages/broker/workspace/WorkspaceEbitda";
+import WorkspaceCIM from "./pages/broker/workspace/WorkspaceCIM";
 import BrokerProfile from "./pages/broker/BrokerProfile";
+import CIMQuestionnaire from "./pages/client/CIMQuestionnaire";
+import CIMReview from "./pages/client/CIMReview";
 import { getCompanyRequest, listCompaniesRequest } from "./lib/api";
 
 function getHomeRoute(role) {
@@ -328,6 +331,7 @@ function AppRoutes() {
         <Route path="dataroom/reminders" element={<WorkspaceReminders />} />
         <Route path="dataroom/activity" element={<WorkspaceActivity />} />
         <Route path="dataroom/users" element={<WorkspaceUsers />} />
+        <Route path="cim" element={<WorkspaceCIM />} />
         <Route
           path="connections"
           element={<Navigate to="../dataroom/connections" replace />}
@@ -412,6 +416,23 @@ function AppRoutes() {
         element={
           <ProtectedRoute allowedRole="client">
             <ClientProfile />
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/client/cim-questionnaire"
+        element={
+          <ProtectedRoute allowedRole="client">
+            <CIMQuestionnaire />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/client/cim-review"
+        element={
+          <ProtectedRoute allowedRole="client">
+            <CIMReview />
           </ProtectedRoute>
         }
       />

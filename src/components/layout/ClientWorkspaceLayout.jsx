@@ -25,6 +25,7 @@ import {
   FileCheck,
   FileText,
   Target,
+  BookOpen,
 } from "lucide-react";
 import { useAuth } from "../../context/AuthContext";
 import { useMessageNotifications } from "../../context/MessageNotificationsContext";
@@ -169,6 +170,7 @@ function WorkspaceSidebar({ company, onClose }) {
       ],
     },
     { label: "Connections",         icon: Link2,        to: `${basePath}/connections` },
+    { label: "CIM Prep",            icon: BookOpen,     to: `${basePath}/cim` },
   ];
 
   const companyMessageCount = notifications.filter((item) => String(item.companyId) === String(clientId)).length;

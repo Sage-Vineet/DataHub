@@ -13,6 +13,8 @@ import {
   FileText,
   MessageSquare,
   Settings,
+  BookOpen,
+  Eye,
 } from "lucide-react";
 import datahublogo from "../../assets/datahublogo.png";
 
@@ -21,11 +23,13 @@ const brokerNav = [
 ];
 
 const clientNav = [
-  { label: "Dashboard", icon: LayoutDashboard, to: "/client/dashboard" },
-  { label: "My Requests", icon: ClipboardList, to: "/client/requests" },
-  { label: "Documents", icon: FileText, to: "/client/upload" },
-  { label: "Messages", icon: MessageSquare, to: "/client/messages" },
-  { label: "Reminders", icon: Bell, to: "/client/reminders" },
+  { label: "Dashboard",           icon: LayoutDashboard, to: "/client/dashboard" },
+  { label: "My Requests",         icon: ClipboardList,   to: "/client/requests" },
+  { label: "Documents",           icon: FileText,        to: "/client/upload" },
+  { label: "Messages",            icon: MessageSquare,   to: "/client/messages" },
+  { label: "Reminders",           icon: Bell,            to: "/client/reminders" },
+  { label: "CIM Questionnaire",   icon: BookOpen,        to: "/client/cim-questionnaire" },
+  { label: "CIM Review",          icon: Eye,             to: "/client/cim-review" },
 ];
 
 export default function Sidebar({ onClose }) {
