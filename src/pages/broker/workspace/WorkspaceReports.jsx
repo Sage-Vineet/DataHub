@@ -1306,6 +1306,12 @@ export default function WorkspaceReports() {
         if (fromDate) effectiveStartDate = fromDate;
         if (toDate) effectiveEndDate = toDate;
       }
+      // Month mode for QB Online: use the user's FROM/TO dates directly so the
+      // service generates monthly columns for exactly the selected range.
+      if (!isYearMode && selectedSourceMode === "quickbooks" && userStart && userEnd) {
+        effectiveStartDate = userStart;
+        effectiveEndDate = userEnd;
+      }
       // For manual_upload Cash Flow: period must reflect the selected CF year,
       // not the QB date-range picker (which is hidden on this tab).
       if (selectedSourceMode === "manual_upload" && selectedTab === "Cashflow" && selectedManualCfYear) {
@@ -1323,7 +1329,7 @@ export default function WorkspaceReports() {
       // Year mode options passed through to all Detail service calls.
       const yearModeOptions = isYearMode
         ? { yearMode: true, startYear: yearRangeStart, endYear: yearRangeEnd }
-        : {};
+        : { monthMode: true };
 
       const manualUploadRowId =
         selectedSourceMode === "manual_upload"
