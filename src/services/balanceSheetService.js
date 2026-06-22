@@ -11,6 +11,7 @@ import { normalizeAccountingMethod } from "../lib/report-filters";
 import {
   parseSummaryReport,
 } from "../lib/report-parsers";
+import { fetchQBVendorBreakdown, attachVendorsToRows } from "./qbGlVendorService";
 
 function toAmount(value) {
   if (typeof value === "number") return Number.isFinite(value) ? value : 0;
@@ -994,30 +995,37 @@ export async function getBalanceSheetDetail(
     ? getComparativePeriods(4, options.startYear, options.endYear)
     : getComparativePeriods(4, endDate, startDate);
 
-  const results = await Promise.all(
-    allPeriods.map((p) =>
-      fetchSinglePeriodBS(
-        p.startDate,
-        p.endDate,
-        accountingMethod,
-        options?.sourceMode || "quickbooks",
-        options,
+  const yearlyPeriods = allPeriods.filter(p => p.type === 'yearly');
+  const glStartDate = yearlyPeriods[0]?.startDate;
+  const glEndDate = yearlyPeriods[yearlyPeriods.length - 1]?.endDate;
+
+  // Fetch period snapshots and QB GL vendor data concurrently
+  const [results, vendorMap] = await Promise.all([
+    Promise.all(
+      allPeriods.map((p) =>
+        fetchSinglePeriodBS(
+          p.startDate,
+          p.endDate,
+          accountingMethod,
+          options?.sourceMode || "quickbooks",
+          options,
+        ),
       ),
-    )
-  );
+    ),
+    fetchQBVendorBreakdown(glStartDate, glEndDate, accountingMethod, yearlyPeriods).catch(() => ({})),
+  ]);
 
-  const rows = mergePeriods(results, allPeriods);
+  const mergedRows = mergePeriods(results, allPeriods);
+  const yearColKeys = yearlyPeriods.map(p => p.key);
+  const rows = attachVendorsToRows(mergedRows, vendorMap, yearColKeys);
 
-  const yearCols = allPeriods
-    .filter(p => p.type === 'yearly')
-    .map(p => ({
-      key: p.key,
-      label: p.label,
-      isCurrent: p.key === allPeriods.filter(x => x.type === 'yearly').pop().key
-    }));
+  const yearCols = yearlyPeriods.map(p => ({
+    key: p.key,
+    label: p.label,
+    isCurrent: p.key === yearlyPeriods[yearlyPeriods.length - 1].key,
+  }));
 
   const changeCols = [];
-  const yearlyPeriods = allPeriods.filter(p => p.type === 'yearly');
   for (let i = 1; i < yearlyPeriods.length; i++) {
     const prev = yearlyPeriods[i - 1];
     const curr = yearlyPeriods[i];
@@ -1025,7 +1033,7 @@ export async function getBalanceSheetDetail(
       key: `c${i}`,
       label: `'${String(curr.year).slice(-2)} CHANGE`,
       from: prev.key,
-      to: curr.key
+      to: curr.key,
     });
   }
 
@@ -1036,7 +1044,7 @@ export async function getBalanceSheetDetail(
     columns: {
       yearCols,
       changeCols,
-      currentMonth: currentPeriodLabel
-    }
+      currentMonth: currentPeriodLabel,
+    },
   };
 }
