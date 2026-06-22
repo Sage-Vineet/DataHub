@@ -9,6 +9,7 @@ import {
 } from "../lib/api";
 import { normalizeAccountingMethod } from "../lib/report-filters";
 import { parseSummaryReport } from "../lib/report-parsers";
+import { fetchQBVendorBreakdown, attachVendorsToRows } from "./qbGlVendorService";
 
 
 /**
@@ -618,10 +619,6 @@ export async function getProfitAndLossDetail(
         : {}),
     };
 
-    if (options.reportType === "DetailVendor") {
-      return getManualStagedProfitLossVendorDetail({ params });
-    }
-
     console.log("[DetailedReportUI][P&L] Requesting monthly detail with params:", JSON.stringify(params));
     const response = await getManualStagedProfitLossMonthlyDetail({ params });
     console.log("[DetailedReportUI][P&L] Received keys:", Object.keys(response || {}), "| source:", response?.source, "| reportType:", response?.reportType, "| months:", response?.months);
@@ -643,30 +640,34 @@ export async function getProfitAndLossDetail(
   // When a year range is provided (Year mode), generate periods only for that range.
   const periods = getPNLComparativePeriods(4, options.startYear || null, options.endYear || null);
 
-  const results = await Promise.all(
-    periods.map((p) =>
-      fetchSinglePeriodPNL(
-        p.start,
-        p.end,
-        accountingMethod,
-        options?.sourceMode || "quickbooks",
-        options,
+  // yearCols are the non-YTD periods shown as main columns.
+  const mainPeriods = periods.filter((p) => !p.key.includes("_ytd"));
+  const glStartDate = mainPeriods[0]?.start;
+  const glEndDate = mainPeriods[mainPeriods.length - 1]?.end;
+
+  // Fetch period P&L snapshots and QB GL vendor data concurrently.
+  const [results, vendorMap] = await Promise.all([
+    Promise.all(
+      periods.map((p) =>
+        fetchSinglePeriodPNL(
+          p.start,
+          p.end,
+          accountingMethod,
+          options?.sourceMode || "quickbooks",
+          options,
+        ),
       ),
     ),
-  );
+    fetchQBVendorBreakdown(glStartDate, glEndDate, accountingMethod, mainPeriods).catch(() => ({})),
+  ]);
 
-  const rows = reclassifyOtherIncome(mergePNLPeriods(results, periods));
+  const mergedRows = reclassifyOtherIncome(mergePNLPeriods(results, periods));
+  const yearColKeys = mainPeriods.map((p) => p.key);
+  const rows = attachVendorsToRows(mergedRows, vendorMap, yearColKeys);
 
-  const yearCols = periods
-    .filter((p) => !p.key.includes("_ytd"))
-    .map((p) => ({
-      key: p.key,
-      label: p.label,
-    }));
+  const yearCols = mainPeriods.map((p) => ({ key: p.key, label: p.label }));
 
-  const currentYearKey = periods
-    .filter((p) => !p.key.includes("_ytd"))
-    .pop()?.key;
+  const currentYearKey = mainPeriods[mainPeriods.length - 1]?.key;
   const prevYtdKey = periods.find((p) => p.key.includes("_ytd"))?.key;
 
   const ytdComparison = {

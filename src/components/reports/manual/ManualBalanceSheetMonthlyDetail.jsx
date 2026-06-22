@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useLayoutEffect, useRef } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { formatCurrency } from "../../../lib/utils";
 
@@ -171,6 +171,16 @@ export default function ManualBalanceSheetMonthlyDetail({
   entityName = "Company",
   selectedMonths = [],
 }) {
+  const tableWrapRef = useRef(null);
+  const [tableHeight, setTableHeight] = useState(null);
+
+  useLayoutEffect(() => {
+    if (!tableWrapRef.current) return;
+    const rect = tableWrapRef.current.getBoundingClientRect();
+    const h = Math.floor(window.innerHeight - rect.top - 8);
+    if (h > 200) setTableHeight(h);
+  });
+
   const year = data?.year || null;
   const allMonths = Array.isArray(data?.months) ? data.months : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
   const months = selectedMonths && selectedMonths.length > 0
@@ -190,7 +200,7 @@ export default function ManualBalanceSheetMonthlyDetail({
 
   if (!hasSections) {
     return (
-      <div className="flex-1 overflow-y-auto bg-bg-page/50 p-10 font-inter">
+      <div className="flex-1 bg-bg-page/50 p-10 font-inter">
         <div className="max-w-[1400px] mx-auto card-base p-10 min-h-[400px] flex items-center justify-center rounded-sm shadow-xl">
           <p className="text-text-muted italic text-[14px]">
             No Balance Sheet data found. Select a fiscal year filter and re-generate.
@@ -213,8 +223,8 @@ export default function ManualBalanceSheetMonthlyDetail({
     : (liabSection.total || 0) + (eqSection.total || 0);
 
   return (
-    <div className="flex-1 overflow-y-auto bg-bg-page/50 p-6 lg:p-10 font-inter">
-      <div className="max-w-[1600px] mx-auto card-base p-6 min-h-[900px] flex flex-col rounded-sm shadow-xl">
+    <div className="flex-1 bg-bg-page/50 p-6 lg:p-10 font-inter">
+      <div className="max-w-[1600px] mx-auto card-base p-6 flex flex-col rounded-sm shadow-xl">
 
         {/* Report Header */}
         <div className="flex flex-col items-center mb-10 relative">
@@ -230,7 +240,11 @@ export default function ManualBalanceSheetMonthlyDetail({
           )}
         </div>
 
-        <div className="overflow-auto max-h-[70vh] rounded-md border border-border">
+        <div
+          ref={tableWrapRef}
+          className="overflow-auto rounded-md border border-border"
+          style={tableHeight ? { height: `${tableHeight}px` } : {}}
+        >
           <table className="w-full border-collapse text-sm">
             <thead>
               <tr className="bg-bg-page">

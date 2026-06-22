@@ -1776,7 +1776,7 @@ export default function WorkspaceReports() {
           ))}
         </div>
 
-        <div className="card-base p-4 min-h-[800px] flex flex-col">
+        <div className="card-base p-4 flex flex-col">
           {/* Collapsible filter bar — reclaims vertical space for the report. */}
           <div className="mb-2 flex items-center gap-3">
             <button
@@ -1944,7 +1944,7 @@ export default function WorkspaceReports() {
                 </div>
               )}
 
-            {reportType === "Summary" && selectedSourceMode !== "manual" && selectedSourceMode !== "manual_upload" && selectedSourceMode !== "quickbooks_manual" && (
+            {reportType === "Summary" && reportPeriod !== "Year" && selectedSourceMode !== "manual" && selectedSourceMode !== "manual_upload" && selectedSourceMode !== "quickbooks_manual" && (
               <>
                 <div className="flex flex-col gap-1.5">
                   <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
@@ -2251,7 +2251,7 @@ export default function WorkspaceReports() {
 
           </div>
 
-          <div className="flex-1 animate-in fade-in slide-in-from-bottom-2 duration-500">
+          <div className="animate-in fade-in slide-in-from-bottom-2 duration-500">
             {isLoading ? (
               <div className="flex flex-1 flex-col items-center justify-center py-20">
                 <div className="mb-6 h-12 w-12 animate-spin rounded-full border-4 border-border border-t-primary" />
