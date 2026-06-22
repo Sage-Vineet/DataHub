@@ -4,6 +4,17 @@ import reactHooks from 'eslint-plugin-react-hooks'
 import reactRefresh from 'eslint-plugin-react-refresh'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
+const sharedRules = {
+  'no-unused-vars': [
+    'error',
+    {
+      varsIgnorePattern: '^[A-Z_]',
+      argsIgnorePattern: '^_',
+      caughtErrorsIgnorePattern: '^_',
+    },
+  ],
+}
+
 export default defineConfig([
   globalIgnores(['dist']),
   {
@@ -22,8 +33,18 @@ export default defineConfig([
         sourceType: 'module',
       },
     },
-    rules: {
-      'no-unused-vars': ['error', { varsIgnorePattern: '^[A-Z_]' }],
+    rules: sharedRules,
+  },
+  {
+    files: ['backend/**/*.{js,jsx}', 'refactor_reports.js'],
+    languageOptions: {
+      ecmaVersion: 'latest',
+      globals: globals.node,
+      parserOptions: {
+        ecmaVersion: 'latest',
+        sourceType: 'commonjs',
+      },
     },
+    rules: sharedRules,
   },
 ])

@@ -122,7 +122,10 @@ function ClientWorkspaceWrapper() {
   // Keep a ref to the latest location.state so the effect can read it without
   // adding location to the dependency array (which would re-run on every nav).
   const locationStateRef = useRef(location.state);
-  locationStateRef.current = location.state;
+
+  useEffect(() => {
+    locationStateRef.current = location.state;
+  }, [location.state]);
 
   useEffect(() => {
     if (!user || user.role !== "broker" || !clientId) return;
@@ -209,7 +212,6 @@ function ClientWorkspaceWrapper() {
     return () => {
       cancelled = true;
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, clientId, navigate, showToast]);
 
   useEffect(() => {

@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { cn, formatCurrency } from "../../../lib/utils";
 
@@ -30,7 +30,7 @@ const QBRow = ({ line, depth = 0 }) => {
         )}
       >
         <td className={cn(
-          "py-2.5 px-4 text-left z-10 min-w-[400px] sticky left-0",
+          "py-2.5 px-4 text-left z-10 min-w-[400px] sticky left-0 border-r-2 border-border/50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]",
           (isTotal || (isHeader && depth === 0)) ? "bg-bg-page" : "bg-bg-card",
         )}>
           <div className="flex items-center">
@@ -59,14 +59,16 @@ const QBRow = ({ line, depth = 0 }) => {
             </div>
           </div>
         </td>
-        <td
-          className={cn(
-            "py-2.5 px-4 text-right tabular-nums text-[14px] font-medium",
-            Number(line.amount) < 0 ? "text-status-error" : "text-text-primary",
-          )}
-        >
-          {formatValue(line.amount)}
-        </td>
+        {!isMonthly && (
+          <td
+            className={cn(
+              "py-2.5 px-4 text-right tabular-nums text-[14px] font-medium",
+              Number(line.amount) < 0 ? "text-status-error" : "text-text-primary",
+            )}
+          >
+            {formatValue(line.amount)}
+          </td>
+        )}
       </tr>
 
       {hasChildren && isOpen && (
@@ -83,6 +85,7 @@ export default function CashflowQBSummary({
   title = "Cash Flow",
   subtitle,
   entityName = "Company",
+  isMonthly = false,
 }) {
   const tableRef = useRef(null);
   const theadRef = useRef(null);
@@ -117,31 +120,32 @@ export default function CashflowQBSummary({
               <span>{subtitle}</span>
             </div>
           )}
+
         </div>
 
         <div className="overflow-x-auto w-full">
           <table ref={tableRef} className="w-full border-collapse">
             <thead ref={theadRef} style={{ position: "relative", zIndex: 20 }}>
               <tr className="border-b-2 border-text-primary">
-                <th className="sticky top-0 left-0 z-30 bg-bg-card pb-3 pt-2 px-4 text-left text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider min-w-[400px]">
+                <th className="sticky top-0 left-0 z-30 bg-bg-card pb-3 pt-2 px-4 text-left text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider min-w-[400px] border-r-2 border-border/50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]">
                   Cash Flow Classification
                 </th>
-                <th className="sticky top-0 z-20 bg-bg-card pb-3 pt-2 px-4 text-right text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider">
-                  Total
-                </th>
+                {!isMonthly && (
+                  <th className="sticky top-0 z-20 bg-bg-card pb-3 pt-2 px-4 text-right text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider">
+                    Total
+                  </th>
+                )}
               </tr>
             </thead>
             <tbody>
               {data.map((row, index) => (
                 <QBRow key={row.id || index} line={row} depth={0} />
               ))}
-              {data.length === 0 && (
-                <tr>
-                  <td colSpan={2} className="py-20 text-center text-text-muted italic">
-                    No data available for the selected period.
-                  </td>
-                </tr>
-              )}
+              <tr>
+                <td colSpan={isMonthly ? 1 : 2} className="py-20 text-center text-text-muted italic">
+                  No data available for the selected period.
+                </td>
+              </tr>
             </tbody>
           </table>
         </div>

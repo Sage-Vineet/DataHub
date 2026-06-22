@@ -13,6 +13,13 @@
 const { supabase } = require("../db");
 const fileReferenceService = require("./fileReferenceService");
 const documentService = require("./documentService");
+const { normalizeError, isConnectionError } = require("../utils/dbErrorHandler");
+const {
+  buildValidationResults,
+  replaceValidationResults,
+  listValidationResults,
+  resolveMappingYear,
+} = require("./keyReportValidationService");
 
 // Extensible by design — categories are plain strings, no DB enum.
 const REPORT_CATEGORIES = {
@@ -54,6 +61,8 @@ function normalizeMapping(row) {
     documentId: row.document_id || null,
     uploadId: row.upload_id || null,
     fileName: row.file_name || null,
+    year: Number.isInteger(Number(row.year)) ? Number(row.year) : null,
+    status: row.status || "linked",
     linkedBy: row.linked_by || null,
     metadata: row.metadata || {},
     createdAt: row.created_at,
@@ -262,6 +271,8 @@ async function addMapping(versionId, { reportCategory, documentId }, userId = nu
         document_id: documentId,
         upload_id: document.upload_id || null,
         file_name: document.name || null,
+        year: resolveMappingYear({ fileName: document.name || null }),
+        status: "linked",
         linked_by: userId,
       },
       { onConflict: "version_id,report_category,document_id" }
@@ -346,7 +357,7 @@ async function validateVersion(versionId) {
 // Sync: persist mappings (already persisted), validate, generate backend
 // financial tables, and update sync status. Idempotent + re-syncable.
 // Table generation is delegated to keyReportSyncService (Step 5).
-async function syncVersion(versionId, userId = null) {
+async function syncVersion(versionId, userId = null, opts = {}) {
   const version = await getVersion(versionId);
   if (!version) throw new Error("Version not found.");
 
@@ -368,7 +379,20 @@ async function syncVersion(versionId, userId = null) {
 
     // Generate backend financial tables from the linked files (Step 5).
     const keyReportSyncService = require("./keyReportSyncService");
-    const result = await keyReportSyncService.generateFinancialTables(version, { userId });
+    const result = await keyReportSyncService.generateFinancialTables(version, {
+      userId,
+      uploadJobId: opts.uploadJobId || null,
+    });
+
+    const mappingsByCategory = await getMappingsByCategory(versionId);
+    const validationResults = buildValidationResults({
+      version,
+      mappingsByCategory,
+      syncSummary: result?.summary || {},
+      warnings: validation.warnings,
+      missingFiles: validation.missingFiles,
+    });
+    await replaceValidationResults(version.id, version.companyId, validationResults);
 
     await supabase
       .from("key_report_versions")
@@ -395,18 +419,29 @@ async function syncVersion(versionId, userId = null) {
       success: true,
       version: await getVersion(versionId),
       warnings: validation.warnings,
+      validationResults,
       result,
     };
   } catch (err) {
-    await supabase
-      .from("key_report_sync_logs")
-      .update({
-        sync_status: "failed",
-        sync_completed_at: new Date().toISOString(),
-        error_message: err.message || String(err),
-      })
-      .eq("id", logId);
-    throw err;
+    const normalizedError = normalizeError(err);
+    if (isConnectionError(normalizedError)) {
+      normalizedError.status = 503;
+      normalizedError.retryable = true;
+    }
+
+    try {
+      await supabase
+        .from("key_report_sync_logs")
+        .update({
+          sync_status: "failed",
+          sync_completed_at: new Date().toISOString(),
+          error_message: normalizedError.message || String(err),
+        })
+        .eq("id", logId);
+    } catch (logUpdateError) {
+      console.warn("[KeyReports][Sync] Failed to persist sync error log:", logUpdateError.message);
+    }
+    throw normalizedError;
   }
 }
 
@@ -613,6 +648,7 @@ module.exports = {
   validateVersion,
   syncVersion,
   listSyncLogs,
+  listValidationResults,
   getActiveResolvedBatch,
   getActiveLinkedDocuments,
   getVersionByDatasetVersion,

@@ -8,6 +8,7 @@ const {
 const {
   generateReportingSnapshotsForBatch,
 } = require("./manualGlReportingSnapshotService");
+const { generateChartOfAccounts } = require("./chartOfAccountsService");
 
 const { REPORT_CATEGORIES } = keyReportService;
 
@@ -95,6 +96,21 @@ async function generateFinancialTables(version, opts = {}) {
   const batchId = result?.activeBatchId || result?.batchId || null;
   const datasetVersion = result?.activeDatasetVersion || result?.versionNumber || null;
 
+  // ── Chart of Accounts ──────────────────────────────────────────────────────
+  // Build the version's COA hierarchy from the staged GL/BS data. COA reads the
+  // staged transactions directly (independent of snapshots), so it runs for both
+  // the freshly-staged and the reused-dataset paths. Non-fatal: a COA failure
+  // surfaces as a warning rather than failing the whole sync.
+  let coaSummary = null;
+  if (batchId) {
+    try {
+      coaSummary = await generateChartOfAccounts(companyId, version.id, batchId);
+    } catch (coaErr) {
+      console.warn(`[KeyReportSync] Chart of Accounts generation failed for Version ${version.id}:`, coaErr.message);
+      coaSummary = { error: coaErr.message };
+    }
+  }
+
   // Finalize lifecycle + generate version-scoped reporting snapshots (synchronously,
   // so the Key Report version's resolved_batch_id is accurate when sync returns).
   if (!result?.alreadyStaged && batchId) {
@@ -113,6 +129,7 @@ async function generateFinancialTables(version, opts = {}) {
           years: snap?.years || [],
           glFiles: glUploadIds.length,
           bsFiles: bsUploadIds.length,
+          chartOfAccounts: coaSummary,
         },
       };
     } catch (snapErr) {
@@ -126,6 +143,7 @@ async function generateFinancialTables(version, opts = {}) {
           snapshotWarning: snapErr.message,
           glFiles: glUploadIds.length,
           bsFiles: bsUploadIds.length,
+          chartOfAccounts: coaSummary,
         },
       };
     }
@@ -140,6 +158,7 @@ async function generateFinancialTables(version, opts = {}) {
       reused: Boolean(result?.alreadyStaged),
       glFiles: glUploadIds.length,
       bsFiles: bsUploadIds.length,
+      chartOfAccounts: coaSummary,
     },
   };
 }

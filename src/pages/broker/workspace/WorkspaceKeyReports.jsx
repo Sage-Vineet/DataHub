@@ -10,9 +10,7 @@ import {
   FileText,
   Loader2,
   Star,
-  X,
 } from "lucide-react";
-import ManualGLUpload from "../../../components/manual-gl/ManualGLUpload";
 import {
   getKeyReportVersions,
   createKeyReportVersion,
@@ -28,6 +26,8 @@ import {
 import { useToast } from "../../../context/ToastContext";
 import DataRoomFilePicker from "../../../components/key-reports/DataRoomFilePicker";
 import KeyReportsEducationPopup from "../../../components/key-reports/KeyReportsEducationPopup";
+import ChartOfAccountsPanel from "../../../components/key-reports/ChartOfAccountsPanel";
+import KeyReportSyncDashboard from "../../../components/key-reports/KeyReportSyncDashboard";
 
 const CATEGORIES = [
   { key: "profit_loss", label: "Profit & Loss" },
@@ -36,6 +36,18 @@ const CATEGORIES = [
   { key: "bank_statement", label: "Bank Statements" },
   { key: "tax_return", label: "Tax Returns" },
 ];
+
+function createInitialSyncState() {
+  return {
+    status: "idle",
+    startedAt: null,
+    finishedAt: null,
+    summary: null,
+    warnings: [],
+    validationResults: [],
+    error: null,
+  };
+}
 
 export default function WorkspaceKeyReports() {
   const { clientId } = useParams();
@@ -47,10 +59,9 @@ export default function WorkspaceKeyReports() {
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [syncState, setSyncState] = useState(() => createInitialSyncState());
   const [pickerCategory, setPickerCategory] = useState(null);
   const [showPopup, setShowPopup] = useState(false);
-  // null → nothing; 'choose' → method selector; 'manual_gl' → GL upload panel; 'manual_upload' → folder upload panel
-  const [syncView, setSyncView] = useState(null);
 
   const notify = useCallback(
     (msg, type = "info") => {
@@ -91,7 +102,7 @@ export default function WorkspaceKeyReports() {
   }, [notify]);
 
   useEffect(() => {
-    loadVersions();
+    void Promise.resolve().then(() => loadVersions());
   }, [loadVersions]);
 
   const loadDetail = useCallback(async (versionId) => {
@@ -108,8 +119,12 @@ export default function WorkspaceKeyReports() {
   }, []);
 
   useEffect(() => {
-    loadDetail(selectedVersionId);
+    void Promise.resolve().then(() => loadDetail(selectedVersionId));
   }, [selectedVersionId, loadDetail]);
+
+  useEffect(() => {
+    void Promise.resolve().then(() => setSyncState(createInitialSyncState()));
+  }, [selectedVersionId]);
 
   const linkedDocumentIds = useMemo(() => {
     if (!detail?.mappingsByCategory) return [];
@@ -118,6 +133,8 @@ export default function WorkspaceKeyReports() {
       .map((m) => m.documentId)
       .filter(Boolean);
   }, [detail]);
+
+  const linkedDocumentCount = linkedDocumentIds.length;
 
   const handleCreateVersion = async () => {
     setBusy(true);
@@ -164,52 +181,59 @@ export default function WorkspaceKeyReports() {
 
   const handleSync = async () => {
     if (!selectedVersionId) return;
+    const startedAt = new Date().toISOString();
     setSyncing(true);
+    setSyncState({
+      status: "processing",
+      startedAt,
+      finishedAt: null,
+      summary: null,
+      warnings: [],
+      validationResults: [],
+      error: null,
+    });
     try {
       const res = await syncKeyReportVersion(selectedVersionId);
-      await loadDetail(selectedVersionId);
-      await loadVersions();
+      setSyncState({
+        status: "validation",
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        summary: res?.result?.summary || null,
+        warnings: Array.isArray(res?.warnings) ? res.warnings : [],
+        validationResults: Array.isArray(res?.validationResults) ? res.validationResults : [],
+        error: null,
+      });
+      await Promise.all([
+        loadDetail(selectedVersionId),
+        loadVersions(),
+      ]);
       const warnCount = res?.warnings?.length || 0;
       notify(`Sync complete${warnCount ? ` (${warnCount} warning${warnCount === 1 ? "" : "s"})` : ""}.`, "success");
     } catch (e) {
-      notify(e.message || "Sync failed.", "error");
+      const message = e.message || "Sync failed.";
+      setSyncState({
+        status: "error",
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        summary: null,
+        warnings: [],
+        validationResults: [],
+        error: message,
+      });
+      notify(message, "error");
     } finally {
       setSyncing(false);
     }
   };
 
-  const getLinkedCategoryCount = () => {
-    return Object.values(detail?.mappingsByCategory || {}).flat().length;
-  };
-
   const handleSyncClick = () => {
-    const docCount = getLinkedCategoryCount();
-    if (docCount === 0) {
+    if (linkedDocumentCount === 0) {
       notify("Link at least one document in Key Reports before syncing.", "error");
       return;
     }
 
-    const hasGL = (detail?.mappingsByCategory?.general_ledger?.length || 0) > 0;
-    if (hasGL) {
-      // If GL is linked, we use the Manual GL staging pipeline (via modal)
-      setSyncView("manual_gl");
-    } else {
-      // If no GL, we perform a direct sync (updates status and confirmed docs)
-      void handleSync();
-    }
+    void handleSync();
   };
-
-  // Document IDs from the active Key Report version, pre-populated into ManualGLUpload
-  const krDocIds = useMemo(() => {
-    const cats = detail?.mappingsByCategory || {};
-    const glDocIds = (cats.general_ledger || []).map((m) => m.documentId).filter(Boolean);
-    const bsArr = cats.balance_sheet || [];
-    return {
-      glDocIds,
-      startingBSDocId: bsArr[0]?.documentId || null,
-      endingBSDocId: bsArr[1]?.documentId || null,
-    };
-  }, [detail]);
 
   const handleLinkFiles = async (docs) => {
     if (!selectedVersionId || !pickerCategory || !docs?.length) return;
@@ -218,6 +242,7 @@ export default function WorkspaceKeyReports() {
         reportCategory: pickerCategory,
         documentIds: docs.map((d) => d.id),
       });
+      setSyncState(createInitialSyncState());
       await loadDetail(selectedVersionId);
       notify(`Linked ${docs.length} file${docs.length === 1 ? "" : "s"}.`, "success");
     } catch (e) {
@@ -228,6 +253,7 @@ export default function WorkspaceKeyReports() {
   const handleUnlink = async (mappingId) => {
     try {
       await removeKeyReportMapping(mappingId);
+      setSyncState(createInitialSyncState());
       await loadDetail(selectedVersionId);
       notify("File unlinked.", "success");
     } catch (e) {
@@ -252,48 +278,11 @@ export default function WorkspaceKeyReports() {
       <DataRoomFilePicker
         isOpen={!!pickerCategory}
         companyId={clientId}
-        title={`Link files — ${CATEGORIES.find((c) => c.key === pickerCategory)?.label || ""}`}
+        title={`Link files - ${CATEGORIES.find((c) => c.key === pickerCategory)?.label || ""}`}
         alreadyLinkedIds={linkedDocumentIds}
         onClose={() => setPickerCategory(null)}
         onSelect={handleLinkFiles}
       />
-
-      {/* ── Sync workflow: Manual GL Upload (embedded, no navigation) ────── */}
-      {syncView === "manual_gl" && (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-black/50 p-4">
-          <div className="mx-auto my-8 w-full max-w-4xl rounded-2xl bg-white shadow-xl">
-            <div className="flex items-center justify-between border-b border-border px-5 py-4">
-              <div>
-                <h2 className="text-base font-bold text-text-primary">Manual GL Upload</h2>
-                <p className="text-xs text-secondary">
-                  Pre-selected files are from this Key Report version — verify and click Stage to process.
-                </p>
-              </div>
-              <button
-                onClick={() => setSyncView(null)}
-                className="rounded-lg p-1.5 text-text-muted hover:bg-bg-page hover:text-text-primary"
-                aria-label="Close"
-              >
-                <X size={18} />
-              </button>
-            </div>
-            <div className="p-1">
-              <ManualGLUpload
-                companyId={clientId}
-                initialGlDocumentIds={krDocIds.glDocIds}
-                initialStartingBSDocumentId={krDocIds.startingBSDocId}
-                initialEndingBSDocumentId={krDocIds.endingBSDocId}
-                onStageComplete={() => {
-                  // Refresh Key Reports version data after staging; let the component
-                  // advance to Step 3 naturally so the user sees the completion summary.
-                  void loadDetail(selectedVersionId);
-                  void loadVersions();
-                }}
-              />
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Header */}
       <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
@@ -308,26 +297,27 @@ export default function WorkspaceKeyReports() {
           <select
             value={selectedVersionId || ""}
             onChange={(e) => setSelectedVersionId(e.target.value)}
-            className="rounded-xl border border-border bg-white px-3 py-2 text-sm text-text-primary"
+            disabled={syncing}
+            className="rounded-xl border border-border bg-white px-3 py-2 text-sm text-text-primary disabled:opacity-50"
           >
             {versions.length === 0 && <option value="">No versions</option>}
             {versions.map((v) => (
               <option key={v.id} value={v.id}>
                 {v.versionName || `Version ${v.versionNumber}`}
-                {v.isActive ? " ★ (official)" : ""}
+                {v.isActive ? " * (official)" : ""}
               </option>
             ))}
           </select>
           <button
             onClick={handleCreateVersion}
-            disabled={busy}
+            disabled={busy || syncing}
             className="flex items-center gap-1.5 rounded-xl border border-border bg-white px-3 py-2 text-sm font-semibold text-text-primary hover:bg-bg-page disabled:opacity-50"
           >
             <Plus size={15} /> New
           </button>
           <button
             onClick={handleDuplicate}
-            disabled={busy || !selectedVersionId}
+            disabled={busy || syncing || !selectedVersionId}
             className="flex items-center gap-1.5 rounded-xl border border-border bg-white px-3 py-2 text-sm font-semibold text-text-primary hover:bg-bg-page disabled:opacity-50"
           >
             <Copy size={15} /> Duplicate
@@ -337,7 +327,7 @@ export default function WorkspaceKeyReports() {
 
       {loading ? (
         <div className="flex items-center gap-2 py-16 text-sm text-text-muted">
-          <Loader2 size={16} className="animate-spin" /> Loading…
+          <Loader2 size={16} className="animate-spin" /> Loading...
         </div>
       ) : versions.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-border bg-white p-10 text-center">
@@ -379,7 +369,7 @@ export default function WorkspaceKeyReports() {
               {!version?.isActive && (
                 <button
                   onClick={handleActivate}
-                  disabled={busy}
+                  disabled={busy || syncing}
                   className="flex items-center gap-1.5 rounded-xl border border-primary px-3 py-2 text-sm font-semibold text-primary hover:bg-[#F0F7E6] disabled:opacity-50"
                 >
                   <CheckCircle2 size={15} /> Set as official
@@ -387,11 +377,11 @@ export default function WorkspaceKeyReports() {
               )}
               <button
                 onClick={handleSyncClick}
-                disabled={!selectedVersionId}
+                disabled={!selectedVersionId || syncing}
                 className="flex items-center gap-1.5 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
               >
-                <RefreshCw size={15} />
-                Sync
+                {syncing ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}
+                {syncing ? "Syncing..." : "Sync"}
               </button>
             </div>
           </div>
@@ -401,6 +391,12 @@ export default function WorkspaceKeyReports() {
               Last sync failed: {lastSync.error_message}
             </div>
           )}
+
+          <KeyReportSyncDashboard
+            version={version}
+            syncState={syncState}
+            hasLinkedDocuments={linkedDocumentCount > 0}
+          />
 
           {/* Category panels */}
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -412,7 +408,8 @@ export default function WorkspaceKeyReports() {
                     <h3 className="text-sm font-bold text-text-primary">{cat.label}</h3>
                     <button
                       onClick={() => setPickerCategory(cat.key)}
-                      className="flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-semibold text-text-primary hover:bg-bg-page"
+                      disabled={syncing}
+                      className="flex items-center gap-1.5 rounded-lg border border-border px-2.5 py-1.5 text-xs font-semibold text-text-primary hover:bg-bg-page disabled:opacity-50"
                     >
                       <Link2 size={13} /> Link Files
                     </button>
@@ -432,7 +429,8 @@ export default function WorkspaceKeyReports() {
                           </span>
                           <button
                             onClick={() => handleUnlink(m.id)}
-                            className="ml-auto rounded p-1 text-text-muted hover:bg-white hover:text-negative"
+                            disabled={syncing}
+                            className="ml-auto rounded p-1 text-text-muted hover:bg-white hover:text-negative disabled:opacity-50"
                             title="Unlink"
                           >
                             <Trash2 size={13} />
@@ -445,6 +443,13 @@ export default function WorkspaceKeyReports() {
               );
             })}
           </div>
+
+          {/* Chart of Accounts (generated by Sync from this version's GL/BS data) */}
+          <ChartOfAccountsPanel
+            versionId={selectedVersionId}
+            hasSyncedData={Boolean(version?.resolvedBatchId) && !syncing}
+            notify={notify}
+          />
         </>
       )}
     </div>

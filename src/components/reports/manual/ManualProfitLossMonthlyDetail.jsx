@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
-import { formatCurrency } from "../../../lib/utils";
+import { useState, useMemo } from "react";
 import { ChevronRight, ChevronDown } from "lucide-react";
+import { formatCurrency } from "../../../lib/utils";
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -12,16 +12,9 @@ function monthLabel(monthNum, year) {
   return `${MONTH_NAMES[monthNum - 1]}${year ? ` ${year}` : ""}`;
 }
 
-// Single account row.
-// `partyLabel` is "Customer" for revenue/sales accounts (money received from a
-// customer) and "Vendor" for everything else (money paid to a vendor/payee).
 function AccountRow({ account, months, year, partyLabel = "Vendor" }) {
   const [isOpen, setIsOpen] = useState(false);
   const hasTransactions = Array.isArray(account.transactions) && account.transactions.length > 0;
-
-  // Group the account's transactions into per-party subtotals broken out BY
-  // MONTH (and a row total), so the vendor/customer rows align under the same
-  // monthly columns as the parent account. Sorted by largest absolute total.
   const vendorGroups = useMemo(() => {
     const map = new Map();
     const emptyName = `No ${partyLabel.toLowerCase()} / —`;
@@ -49,7 +42,7 @@ function AccountRow({ account, months, year, partyLabel = "Vendor" }) {
         className={`border-b border-border-light hover:bg-bg-page/30 cursor-pointer transition-colors ${isOpen ? "bg-bg-page/20" : ""}`}
         onClick={() => setIsOpen(!isOpen)}
       >
-        <td className="px-3 py-1.5 pl-8 text-[12px] text-text-secondary">
+        <td className="px-3 py-1.5 pl-8 text-[12px] text-text-secondary sticky left-0 z-10 bg-bg-card border-r-2 border-border/50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]">
           <div className="flex items-center gap-1.5">
             {hasTransactions && (
               isOpen ? <ChevronDown size={12} className="text-text-muted" /> : <ChevronRight size={12} className="text-text-muted" />
@@ -63,22 +56,18 @@ function AccountRow({ account, months, year, partyLabel = "Vendor" }) {
             <td key={m} className={colClass(v)}>{formatCurrency(v)}</td>
           );
         })}
-        <td className={`px-3 py-1.5 text-right text-[12px] tabular-nums font-medium ${months.reduce((s,m)=>s+Number(account.monthly?.[m]||0),0) < 0 ? "text-status-error" : "text-text-secondary"}`}>
-          {formatCurrency(months.reduce((s,m)=>s+Number(account.monthly?.[m]||0),0))}
-        </td>
       </tr>
 
       {isOpen && hasTransactions && (
         <>
           {/* Sub-header marking the vendor/customer breakdown */}
           <tr className="border-b border-border/40 bg-bg-page/40">
-            <td className="px-3 py-1 pl-12 text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+            <td className="px-3 py-1 pl-12 text-[10px] font-semibold uppercase tracking-wider text-text-muted sticky left-0 z-10 bg-bg-page/40 border-r-2 border-border/50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]">
               {partyLabel}
             </td>
             {months.map((m) => (
               <td key={m} className="px-3 py-1" />
             ))}
-            <td className="px-3 py-1" />
           </tr>
           {/* One row per vendor/customer, amounts split across the monthly columns */}
           {vendorGroups.map((g, idx) => (
@@ -86,7 +75,7 @@ function AccountRow({ account, months, year, partyLabel = "Vendor" }) {
               key={g.vendorName || idx}
               className="border-b border-border/30 bg-bg-page/10 hover:bg-bg-page/30 transition-colors"
             >
-              <td className="px-3 py-1 pl-12 text-[11px] text-text-secondary">{g.vendorName}</td>
+              <td className="px-3 py-1 pl-12 text-[11px] text-text-secondary sticky left-0 z-10 bg-bg-page border-r-2 border-border/50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]">{g.vendorName}</td>
               {months.map((m) => {
                 const v = Number(g.monthly?.[m] || 0);
                 return (
@@ -98,11 +87,6 @@ function AccountRow({ account, months, year, partyLabel = "Vendor" }) {
                   </td>
                 );
               })}
-              <td
-                className={`px-3 py-1 text-right text-[11px] tabular-nums font-medium ${months.reduce((s,m)=>s+Number(g.monthly?.[m]||0),0) < 0 ? "text-status-error" : "text-text-secondary"}`}
-              >
-                {formatCurrency(months.reduce((s,m)=>s+Number(g.monthly?.[m]||0),0))}
-              </td>
             </tr>
           ))}
         </>
@@ -122,7 +106,7 @@ function SectionBlock({ section, months, year }) {
     <>
       {/* Section header */}
       <tr className="bg-bg-page/60 border-b border-border">
-        <td className="px-3 py-2 text-[13px] font-semibold text-text-primary" colSpan={months.length + 2}>
+        <td className="px-3 py-2 text-[13px] font-semibold text-text-primary sticky left-0 z-10 bg-bg-page/60 border-r-2 border-border/50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]" colSpan={1}>
           {section.label}
         </td>
       </tr>
@@ -135,7 +119,7 @@ function SectionBlock({ section, months, year }) {
       {/* Section subtotal */}
       {hasAccounts && (
         <tr className="border-b border-border bg-bg-page/30">
-          <td className="px-3 py-1.5 pl-6 text-[12px] font-semibold text-text-primary italic">
+          <td className="px-3 py-1.5 pl-6 text-[12px] font-semibold text-text-primary italic sticky left-0 z-10 bg-bg-page/30 border-r-2 border-border/50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]">
             {section.totalLabel || `Total For ${section.label}`}
           </td>
           {months.map((m) => {
@@ -146,9 +130,6 @@ function SectionBlock({ section, months, year }) {
               </td>
             );
           })}
-          <td className={`px-3 py-1.5 text-right text-[12px] tabular-nums font-semibold ${months.reduce((s,m)=>s+Number(section.monthlyTotals?.[m]||0),0) < 0 ? "text-status-error" : "text-text-primary"}`}>
-            {formatCurrency(months.reduce((s,m)=>s+Number(section.monthlyTotals?.[m]||0),0))}
-          </td>
         </tr>
       )}
     </>
@@ -164,7 +145,7 @@ function CalculatedRow({ section, months }) {
 
   return (
     <tr className={rowClass}>
-      <td className={`px-3 py-2 text-[13px] font-bold text-text-primary${isNetIncome ? " text-[14px]" : ""}`}>
+      <td className={`px-3 py-2 text-[13px] font-bold text-text-primary sticky left-0 z-10 bg-bg-page border-r-2 border-border/50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]${isNetIncome ? " text-[14px]" : ""}`}>
         {section.label}
       </td>
       {months.map((m) => {
@@ -175,9 +156,6 @@ function CalculatedRow({ section, months }) {
           </td>
         );
       })}
-      <td className={`px-3 py-2 text-right text-[12px] tabular-nums font-bold ${months.reduce((s,m)=>s+Number(section.monthlyTotals?.[m]||0),0) < 0 ? "text-status-error" : "text-text-primary"}`}>
-        {formatCurrency(months.reduce((s,m)=>s+Number(section.monthlyTotals?.[m]||0),0))}
-      </td>
     </tr>
   );
 }
@@ -232,6 +210,7 @@ export default function ManualProfitLossMonthlyDetail({
               <span>{displaySubtitle}</span>
             </div>
           )}
+
         </div>
 
         {/* Bounded scroll container so the header row can freeze on vertical scroll.
@@ -244,15 +223,12 @@ export default function ManualProfitLossMonthlyDetail({
                   border-b on a sticky row with border-collapse renders through the
                   labels. Each cell carries its own bg so body rows don't show through. */}
               <tr className="bg-bg-page">
-                <th className="sticky top-0 z-20 bg-bg-page px-3 pt-2.5 pb-3 text-left text-[12px] font-semibold text-text-primary min-w-[220px] border-b-2 border-text-primary" />
+                <th className="sticky top-0 left-0 z-30 bg-bg-page px-3 pt-2.5 pb-3 text-left text-[12px] font-semibold text-text-primary min-w-[220px] border-b-2 border-text-primary border-r-2 border-border/50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]" />
                 {months.map((m) => (
                   <th key={m} className="sticky top-0 z-20 bg-bg-page px-3 pt-2.5 pb-3 text-right text-[12px] font-semibold text-text-primary whitespace-nowrap min-w-[90px] border-b-2 border-text-primary">
                     {monthLabel(m, year)}
                   </th>
                 ))}
-                <th className="sticky top-0 z-20 bg-bg-page px-3 pt-2.5 pb-3 text-right text-[12px] font-semibold text-text-primary min-w-[100px] border-b-2 border-text-primary">
-                  Total
-                </th>
               </tr>
             </thead>
             <tbody>

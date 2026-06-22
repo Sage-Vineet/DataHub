@@ -2,6 +2,7 @@
 
 const { supabase } = require("../db");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { getAllManualUploadedReports } = require("./manualReportUploadService");
 
 const CF_GENERATED_SOURCE = "manual_upload_generated";
 const CF_REPORT_TYPE = "cash_flow";
@@ -30,7 +31,7 @@ function flatten(nodes = []) {
  * Prefers non-header nodes to avoid returning section totals that include
  * child totals already counted elsewhere.
  */
-function findAmt(nodes, patterns) {
+function _findAmt(nodes, patterns) {
   const flat = flatten(nodes);
   const preferred = flat.filter((n) => n.type !== "header");
   const pools = preferred.length ? [preferred, flat] : [flat];

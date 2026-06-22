@@ -51,10 +51,9 @@ function NavItem({ item, onClose, companyMessageCount }) {
       to={item.to}
       onClick={onClose}
       className={({ isActive }) =>
-        `relative flex items-center gap-3 rounded-md px-3 py-2.5 text-[14px] font-medium transition-all duration-200 ${
-          isActive
-            ? "bg-[#EEF6E0] text-primary font-semibold"
-            : "text-secondary hover:bg-[#F0F7E6] hover:text-text-primary"
+        `relative flex items-center gap-3 rounded-md px-3 py-2.5 text-[14px] font-medium transition-all duration-200 ${isActive
+          ? "bg-[#EEF6E0] text-primary font-semibold"
+          : "text-secondary hover:bg-[#F0F7E6] hover:text-text-primary"
         }`
       }
     >
@@ -90,11 +89,10 @@ function NavFolder({ folder, onClose, companyMessageCount, location }) {
     <div>
       <button
         onClick={() => setOpen((v) => !v)}
-        className={`relative flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-[14px] font-medium transition-all duration-200 ${
-          hasActiveChild
+        className={`relative flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-[14px] font-medium transition-all duration-200 ${hasActiveChild
             ? "text-primary"
             : "text-secondary hover:bg-[#F0F7E6] hover:text-text-primary"
-        }`}
+          }`}
       >
         {hasActiveChild && (
           <div className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r-full bg-primary" />
@@ -140,35 +138,37 @@ function WorkspaceSidebar({ company, onClose }) {
 
   const basePath = `/broker/client/${clientId}`;
 
+  const profitMetricConfig = getProfitMetricConfig(company);
+
   const navStructure = [
-    { label: "Deal Tracker",        icon: Target,       to: `${basePath}/dataroom/deal-tracker` },
-    { label: "Deal Team",           icon: Users,        to: `${basePath}/dataroom/users` },
+    { label: "Deal Tracker", icon: Target, to: `${basePath}/dataroom/deal-tracker` },
+    { label: "Deal Team", icon: Users, to: `${basePath}/dataroom/users` },
     {
       type: 'folder',
       label: "Dataroom",
       icon: FolderOpen,
       children: [
-        { label: "Requests",  icon: ClipboardList,  to: `${basePath}/dataroom/requests` },
-        { label: "Documents", icon: FileText,        to: `${basePath}/dataroom/documents` },
-        { label: "Messages",  icon: MessageSquare,  to: `${basePath}/dataroom/messages` },
-        { label: "Reminders", icon: Bell,           to: `${basePath}/dataroom/reminders` },
+        { label: "Requests", icon: ClipboardList, to: `${basePath}/dataroom/requests` },
+        { label: "Documents", icon: FileText, to: `${basePath}/dataroom/documents` },
+        { label: "Messages", icon: MessageSquare, to: `${basePath}/dataroom/messages` },
+        { label: "Reminders", icon: Bell, to: `${basePath}/dataroom/reminders` },
       ],
     },
-    { label: "Key Reports",         icon: FileCheck,    to: `${basePath}/dataroom/key-reports` },
-    { label: "Reports",             icon: BarChart3,    to: `${basePath}/reports` },
-    { label: "Analytics",           icon: TrendingUp,   to: `${basePath}/analytics` },
-    { label: "Invoices",            icon: Receipt,      to: `${basePath}/invoices` },
-    { label: "EBITDA Calculation",  icon: Calculator,   to: `${basePath}/ebitda` },
+    { label: "Key Reports", icon: FileCheck, to: `${basePath}/dataroom/key-reports` },
+    { label: "Reports", icon: BarChart3, to: `${basePath}/reports` },
+    { label: "Analytics", icon: TrendingUp, to: `${basePath}/analytics` },
+    { label: "Invoices", icon: Receipt, to: `${basePath}/invoices` },
+    { label: profitMetricConfig.navLabel, icon: Calculator, to: `${basePath}/ebitda` },
     {
       type: 'folder',
       label: "Quality of Earnings Report",
       icon: Scale,
       children: [
-        { label: "Bank Reconciliation", icon: Scale,      to: `${basePath}/reconciliation` },
-        { label: "Tax Reconciliation",  icon: FileCheck,  to: `${basePath}/tax-reconciliation` },
+        { label: "Bank Reconciliation", icon: Scale, to: `${basePath}/reconciliation` },
+        { label: "Tax Reconciliation", icon: FileCheck, to: `${basePath}/tax-reconciliation` },
       ],
     },
-    { label: "Connections",         icon: Link2,        to: `${basePath}/connections` },
+    { label: "Connections", icon: Link2, to: `${basePath}/connections` },
   ];
 
   const companyMessageCount = notifications.filter((item) => String(item.companyId) === String(clientId)).length;
@@ -358,13 +358,13 @@ function WorkspaceTopbar({ company, onMenuClick }) {
 
   const filteredCompanies = search.trim()
     ? companies.filter((c) => {
-        const q = search.toLowerCase();
-        return (
-          (c.name || '').toLowerCase().includes(q) ||
-          (c.project_name || '').toLowerCase().includes(q) ||
-          (c.industry || '').toLowerCase().includes(q)
-        );
-      })
+      const q = search.toLowerCase();
+      return (
+        (c.name || '').toLowerCase().includes(q) ||
+        (c.project_name || '').toLowerCase().includes(q) ||
+        (c.industry || '').toLowerCase().includes(q)
+      );
+    })
     : companies;
 
   return (
@@ -386,9 +386,8 @@ function WorkspaceTopbar({ company, onMenuClick }) {
           <div className="relative" ref={switchRef}>
             <button
               onClick={() => setShowSwitch((v) => !v)}
-              className={`flex items-center gap-3 rounded-xl border px-3 py-2 text-left transition-all hover:shadow-md active:scale-[0.98] ${
-                showSwitch ? 'border-primary/40 bg-[#EEF6E0] shadow-sm' : 'border-border bg-bg-card hover:border-primary/30'
-              }`}
+              className={`flex items-center gap-3 rounded-xl border px-3 py-2 text-left transition-all hover:shadow-md active:scale-[0.98] ${showSwitch ? 'border-primary/40 bg-[#EEF6E0] shadow-sm' : 'border-border bg-bg-card hover:border-primary/30'
+                }`}
               style={{ width: 260 }}
             >
               {/* Logo avatar */}
@@ -470,9 +469,8 @@ function WorkspaceTopbar({ company, onMenuClick }) {
                             setShowSwitch(false);
                             navigate(`/broker/client/${item.id}/dataroom/deal-tracker`, { state: { company: item } });
                           }}
-                          className={`flex w-full items-center gap-3 px-4 py-3 text-left transition-colors border-b border-border/40 last:border-0 ${
-                            isActive ? 'bg-[#EEF6E0]' : 'hover:bg-bg-page'
-                          }`}
+                          className={`flex w-full items-center gap-3 px-4 py-3 text-left transition-colors border-b border-border/40 last:border-0 ${isActive ? 'bg-[#EEF6E0]' : 'hover:bg-bg-page'
+                            }`}
                         >
                           <div className={`flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg text-[11px] font-bold text-white shadow-sm ${isActive ? 'bg-primary' : 'bg-[#8896B0]'}`}>
                             {item.logo}

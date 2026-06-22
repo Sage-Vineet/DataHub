@@ -1411,6 +1411,23 @@ export function setKeyReportPopupPreference(dismissed) {
   return request('/key-reports/popup-preference', { method: 'PUT', body: { dismissed } });
 }
 
+// ---- Chart of Accounts -----------------------------------------------------
+
+export function getChartOfAccounts(versionId) {
+  return request(`/key-reports/versions/${versionId}/chart-of-accounts`);
+}
+
+export function regenerateChartOfAccounts(versionId) {
+  return request(`/key-reports/versions/${versionId}/chart-of-accounts/regenerate`, {
+    method: 'POST',
+    body: {},
+  });
+}
+
+export function updateChartOfAccount(accountId, payload) {
+  return request(`/key-reports/chart-of-accounts/${accountId}`, { method: 'PATCH', body: payload });
+}
+
 export function listFolderAccess(folderId) {
   return request(`/folders/${folderId}/access`).then(ensureArray);
 }

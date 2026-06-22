@@ -16,6 +16,7 @@ function BalanceSheetReport({
   createdOn,
   isPreview = false,
   selectedMonths = [],
+  isMonthly = false,
 }) {
   const resolvedEntityName = entityName || clientName || "Company";
   const periodText = startDate === "1970-01-01" ? "All Dates" : `${startDate || "N/A"} to ${endDate || "N/A"}`;
@@ -45,6 +46,7 @@ function BalanceSheetReport({
           subtitle={summarySubtitle}
           entityName={resolvedEntityName}
           selectedMonths={selectedMonths}
+          isMonthly={isMonthly}
         />
       );
     }
@@ -59,6 +61,7 @@ function BalanceSheetReport({
           title="Balance Sheet"
           subtitle={summarySubtitle}
           entityName={resolvedEntityName}
+          isMonthly={isMonthly}
         />
       );
     }
@@ -76,6 +79,7 @@ function BalanceSheetReport({
         subtitle={null}
         entityName={resolvedEntityName}
         createdOn={createdOn}
+        isMonthly={isMonthly}
       />
     );
   }
@@ -91,6 +95,7 @@ function BalanceSheetReport({
       source={source}
       sourceLabel={sourceLabel}
       noDataText={noDataText}
+      isMonthly={isMonthly}
     />
   );
 }

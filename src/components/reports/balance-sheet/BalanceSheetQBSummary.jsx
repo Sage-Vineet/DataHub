@@ -2,7 +2,7 @@ import React, { useRef, useEffect, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { cn, formatCurrency } from "../../../lib/utils";
 
-const QBRow = ({ line, depth = 0, columns }) => {
+const QBRow = ({ line, depth = 0, columns, isMonthly }) => {
   const [isOpen, setIsOpen] = useState(true);
   const hasChildren = Boolean(line.children?.length);
   const isHeader = line.type === "header";
@@ -31,7 +31,7 @@ const QBRow = ({ line, depth = 0, columns }) => {
         )}
       >
         <td className={cn(
-          "py-2.5 px-4 text-left z-10 min-w-[400px] sticky left-0",
+          "py-2.5 px-4 text-left z-10 min-w-[400px] sticky left-0 border-r-2 border-border/50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]",
           (isTotal || (isHeader && depth === 0)) ? "bg-bg-page" : "bg-bg-card",
         )}>
           <div className="flex items-center">
@@ -63,6 +63,7 @@ const QBRow = ({ line, depth = 0, columns }) => {
         {yearCols ? (
           yearCols.map((col) => {
             const value = line.amounts?.[col.key];
+            if (isMonthly && col.label.toLowerCase() === "total") return null;
             return (
               <td
                 key={col.key}
@@ -76,7 +77,7 @@ const QBRow = ({ line, depth = 0, columns }) => {
               </td>
             );
           })
-        ) : (
+        ) : !isMonthly ? (
           <td
             className={cn(
               "py-2.5 px-4 text-right tabular-nums text-[14px] font-medium",
@@ -86,12 +87,12 @@ const QBRow = ({ line, depth = 0, columns }) => {
           >
             {cellText(line.amount)}
           </td>
-        )}
+        ) : null}
       </tr>
 
       {hasChildren && isOpen && (
         line.children.map((child, index) => (
-          <QBRow key={child.id || `row-${depth}-${index}`} line={child} depth={depth + 1} columns={columns} />
+          <QBRow key={child.id || `row-${depth}-${index}`} line={child} depth={depth + 1} columns={columns} isMonthly={isMonthly} />
         ))
       )}
     </>
@@ -107,6 +108,7 @@ export default function BalanceSheetQBSummary({
   source = null,
   sourceLabel = null,
   noDataText = "No data available for the selected period.",
+  isMonthly = false,
 }) {
   const hasColumns = Array.isArray(columns?.yearCols) && columns.yearCols.length > 0;
   const totalColCount = hasColumns ? columns.yearCols.length + 1 : 2;
@@ -165,31 +167,32 @@ export default function BalanceSheetQBSummary({
               {resolvedSourceLabel}
             </div>
           ) : null}
+
         </div>
 
-        <div className="overflow-x-auto w-full">
+        <div className="overflow-x-auto w-full relative">
           <table ref={tableRef} className={cn("border-collapse", hasColumns ? "min-w-max" : "w-full")}>
             <thead ref={theadRef} style={{ position: "relative", zIndex: 20 }}>
               <tr className="text-text-muted">
-                <th className="sticky top-0 left-0 z-30 bg-bg-card pb-4 pt-2.5 px-4 text-left text-[12px] font-medium whitespace-nowrap uppercase tracking-wider min-w-[400px] border-b-2 border-text-primary">
+                <th className="sticky top-0 left-0 z-30 bg-bg-card pb-4 pt-2.5 px-4 text-left text-[12px] font-medium whitespace-nowrap uppercase tracking-wider min-w-[400px] border-b-2 border-text-primary border-r-2 border-border/50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]">
                   Account
                 </th>
                 {hasColumns ? (
-                  columns.yearCols.map((col) => (
+                  columns.yearCols.filter(col => !isMonthly || col.label.toLowerCase() !== "total").map((col) => (
                     <th key={col.key} className="sticky top-0 z-20 bg-bg-card pb-4 pt-2.5 px-4 text-right text-[12px] font-medium whitespace-nowrap uppercase tracking-wider min-w-[110px] border-b-2 border-text-primary">
                       {col.label}
                     </th>
                   ))
-                ) : (
+                ) : !isMonthly ? (
                   <th className="sticky top-0 z-20 bg-bg-card pb-4 pt-2.5 px-4 text-right text-[12px] font-medium whitespace-nowrap uppercase tracking-wider border-b-2 border-text-primary">
                     Total
                   </th>
-                )}
+                ) : null}
               </tr>
             </thead>
             <tbody>
               {data.map((row, index) => (
-                <QBRow key={row.id || index} line={row} depth={0} columns={hasColumns ? columns : undefined} />
+                <QBRow key={row.id || index} line={row} depth={0} columns={hasColumns ? columns : undefined} isMonthly={isMonthly} />
               ))}
               {data.length === 0 && (
                 <tr>

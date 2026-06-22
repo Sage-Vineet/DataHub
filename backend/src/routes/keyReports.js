@@ -4,6 +4,8 @@ const { canAccessCompany } = require("../services/permissionService");
 const keyReportService = require("../services/keyReportService");
 const fileReferenceService = require("../services/fileReferenceService");
 const userPreferenceService = require("../services/userPreferenceService");
+const chartOfAccountsService = require("../services/chartOfAccountsService");
+const { normalizeError, isConnectionError } = require("../utils/dbErrorHandler");
 
 const router = express.Router();
 router.use(requireAuth);
@@ -49,14 +51,24 @@ async function loadVersionWithAccess(req, res) {
 }
 
 function handleError(res, error, label) {
-  const status = error.status || (error.code === "FILE_LINKED" ? 409 : 500);
+  const normalizedError = normalizeError(error);
+  const status =
+    normalizedError.status ||
+    (normalizedError.code === "FILE_LINKED"
+      ? 409
+      : isConnectionError(normalizedError)
+        ? 503
+        : 500);
   if (status >= 500) {
-    console.error(`[KeyReports] ${label} failed`, { error: error.message, stack: error.stack });
+    console.error(`[KeyReports] ${label} failed`, {
+      error: normalizedError.message,
+      stack: normalizedError.stack,
+    });
   }
   return res.status(status).json({
     success: false,
-    code: error.code || undefined,
-    error: error.message || "Key Reports request failed.",
+    code: normalizedError.code || undefined,
+    error: normalizedError.message || "Key Reports request failed.",
   });
 }
 
@@ -230,6 +242,62 @@ router.get("/key-reports/versions/:versionId/sync-logs", async (req, res) => {
     return res.json({ success: true, syncLogs: logs });
   } catch (error) {
     return handleError(res, error, "GET sync-logs");
+  }
+});
+
+// ---- Chart of Accounts -----------------------------------------------------
+
+// Fetch a version's COA hierarchy (groups with their child accounts).
+router.get("/key-reports/versions/:versionId/chart-of-accounts", async (req, res) => {
+  try {
+    const version = await loadVersionWithAccess(req, res);
+    if (!version) return;
+    const coa = await chartOfAccountsService.getChartOfAccounts(version.id);
+    return res.json({ success: true, ...coa });
+  } catch (error) {
+    return handleError(res, error, "GET chart-of-accounts");
+  }
+});
+
+// Rebuild a version's COA from its currently-resolved Manual GL batch (without a
+// full re-sync). Useful after editing classifications or relinking files.
+router.post("/key-reports/versions/:versionId/chart-of-accounts/regenerate", async (req, res) => {
+  try {
+    const version = await loadVersionWithAccess(req, res);
+    if (!version) return;
+    if (!version.resolvedBatchId) {
+      return res.status(409).json({
+        success: false,
+        error: "This version has no synced General Ledger data yet. Run Sync first.",
+      });
+    }
+    const summary = await chartOfAccountsService.generateChartOfAccounts(
+      version.companyId,
+      version.id,
+      version.resolvedBatchId,
+    );
+    const coa = await chartOfAccountsService.getChartOfAccounts(version.id);
+    return res.json({ success: true, summary, ...coa });
+  } catch (error) {
+    return handleError(res, error, "POST chart-of-accounts/regenerate");
+  }
+});
+
+// Update a single COA account (rename, reclassify, reparent, activate/deactivate).
+router.patch("/key-reports/chart-of-accounts/:accountId", async (req, res) => {
+  try {
+    const { supabase } = require("../db");
+    const { data: row } = await supabase
+      .from("chart_of_accounts")
+      .select("company_id")
+      .eq("id", req.params.accountId)
+      .maybeSingle();
+    if (!row) return res.status(404).json({ success: false, error: "Account not found." });
+    if (!requireCompanyAccess(req, res, row.company_id)) return;
+    const account = await chartOfAccountsService.updateAccount(req.params.accountId, req.body || {});
+    return res.json({ success: true, account });
+  } catch (error) {
+    return handleError(res, error, "PATCH chart-of-accounts");
   }
 });
 

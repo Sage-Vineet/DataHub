@@ -34,6 +34,7 @@ const router = express.Router();
 
 router.post("/customers", async (req, res) => {
   const qb = getQBConfig(req.clientId);
+  const url = `${qb.baseUrl}/v3/company/${qb.realmId}/customer?minorversion=75`;
 
   if (!qb.accessToken || !qb.realmId) {
     return res.status(401).json({ error: "Missing QuickBooks configuration" });
@@ -57,9 +58,6 @@ router.post("/customers", async (req, res) => {
       BillAddr: address ? { Line1: address } : undefined,
       Notes: notes,
     };
-
-    // Ensure baseUrl is an absolute URL (e.g., https://sandbox-quickbooks.api.intuit.com)
-    const url = `${qb.baseUrl}/v3/company/${qb.realmId}/customer?minorversion=75`;
 
     const qbResponse = await axios.post(url, qbPayload, {
       headers: {
@@ -224,9 +222,9 @@ router.post("/customers/query", async (req, res) => {
     });
   }
 
-  try {
-    const url = `${qb.baseUrl}/v3/company/${qb.realmId}/query?minorversion=75`;
+  const url = `${qb.baseUrl}/v3/company/${qb.realmId}/query?minorversion=75`;
 
+  try {
     const response = await axios.post(url, query, {
       headers: {
         Authorization: `Bearer ${qb.accessToken}`,

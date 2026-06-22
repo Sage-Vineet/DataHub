@@ -2,6 +2,7 @@ import { fetchProfitAndLoss } from "../lib/quickbooks";
 import {
   getManualStagedProfitLossSummary,
   getManualStagedProfitLossMonthlyDetail,
+  getManualStagedProfitLossVendorDetail,
   getLatestManualUploadedReport,
   getAllManualUploadedReports,
   getLatestQMSUploadedReport,

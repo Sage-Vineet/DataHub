@@ -5,6 +5,7 @@ import QBDisconnectedBanner from "../../../components/common/QBDisconnectedBanne
 import {
   ChevronDown,
   Download,
+  FileSpreadsheet,
   FileText,
   RefreshCw,
   RotateCcw,
@@ -1657,43 +1658,6 @@ export default function WorkspaceReports() {
             </h1>
           </div>
           <div className="flex items-center gap-2">
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => setExportOpen((v) => !v)}
-                disabled={isExporting}
-                className="btn-secondary"
-              >
-                <Download size={16} className={isExporting ? "animate-pulse" : ""} />
-                {isExporting ? "Exporting..." : "Export"}
-                <ChevronDown size={14} />
-              </button>
-              {exportOpen && (
-                <>
-                  {/* click-away backdrop */}
-                  <div
-                    className="fixed inset-0 z-10"
-                    onClick={() => setExportOpen(false)}
-                  />
-                  <div className="absolute right-0 z-20 mt-1 w-48 overflow-hidden rounded-md border border-border bg-bg-card shadow-lg">
-                    <button
-                      type="button"
-                      onClick={() => handleExport("excel")}
-                      className="block w-full px-3 py-2 text-left text-[13px] text-text-primary transition-colors hover:bg-bg-page"
-                    >
-                      Export to Excel (.xlsx)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleExport("pdf")}
-                      className="block w-full px-3 py-2 text-left text-[13px] text-text-primary transition-colors hover:bg-bg-page"
-                    >
-                      Export to PDF (.pdf)
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
             {selectedSourceMode === "quickbooks" ? (
               <button
                 onClick={handleSync}
@@ -1906,7 +1870,7 @@ export default function WorkspaceReports() {
               </>
             )}
 
-            {isManualReportMode && reportPeriod === "Month" && availableReportMonths.length > 0 && (
+            {isManualReportMode && reportPeriod === "Month" && availableReportMonths.length > 0 && !kr.krActive && (
               <>
                 <div>
                   <label className="block text-[11px] font-semibold uppercase tracking-wide text-text-muted mb-1">
@@ -2093,13 +2057,10 @@ export default function WorkspaceReports() {
               ) : null
             )}
 
-            {selectedSourceMode === "manual" && (
+            <KeyReportVersionSelector clientId={clientId} variant="filter" />
+
+            {selectedSourceMode === "manual" ? (
               <>
-
-                {/* Unified Key Reports Version selector is the single source of truth */}
-                <KeyReportVersionSelector clientId={clientId} variant="filter" />
-
-
                 <div className="flex flex-col gap-1.5">
                   <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
                     Date From
@@ -2123,11 +2084,90 @@ export default function WorkspaceReports() {
                     className="h-9 min-w-[150px] rounded-md border border-border-input bg-bg-card px-3 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
                   />
                 </div>
+              </>
+            ) : (
+              // Always show these date filters for other sources when Date Range filters are required (requirements 3 & 4)
+              <>
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
+                    Date From
+                  </label>
+                  <input
+                    type="date"
+                    value={manualFilters.fromDate || ""}
+                    onChange={(e) => handleDateFromChange(e.target.value)}
+                    className="h-9 min-w-[150px] rounded-md border border-border-input bg-bg-card px-3 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                  />
+                </div>
 
-                {/* Filters are reactive — no Apply button needed */}
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
+                    Date To
+                  </label>
+                  <input
+                    type="date"
+                    value={manualFilters.toDate || ""}
+                    onChange={(e) => handleDateToChange(e.target.value)}
+                    className="h-9 min-w-[150px] rounded-md border border-border-input bg-bg-card px-3 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                  />
+                </div>
               </>
             )}
 
+
+
+            <div className="flex flex-col gap-1.5 justify-end">
+              {/* Spacer label to align with other filters */}
+              <label className="text-[12px] font-medium uppercase tracking-wider text-transparent select-none">
+                Export
+              </label>
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setExportOpen((v) => !v)}
+                  disabled={isExporting}
+                  className="h-9 btn-secondary px-4 transition-all hover:bg-bg-page active:scale-95"
+                >
+                  <Download size={16} className={isExporting ? "animate-pulse" : ""} />
+                  <span className="text-[13px] font-medium">
+                    {isExporting ? "Exporting..." : "Export"}
+                  </span>
+                  <ChevronDown size={14} className={cn("transition-transform duration-200", exportOpen && "rotate-180")} />
+                </button>
+                {exportOpen && (
+                  <>
+                    <div
+                      className="fixed inset-0 z-10"
+                      onClick={() => setExportOpen(false)}
+                    />
+                    <div className="absolute right-0 top-full z-20 mt-1 w-48 overflow-hidden rounded-md border border-border bg-bg-card shadow-lg ring-1 ring-black ring-opacity-5 animate-in fade-in zoom-in-95 duration-150">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          handleExport("excel");
+                          setExportOpen(false);
+                        }}
+                        className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left text-[13px] text-text-primary transition-colors hover:bg-bg-page"
+                      >
+                        <FileSpreadsheet size={16} className="text-status-success" />
+                        Export to Excel (.xlsx)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          handleExport("pdf");
+                          setExportOpen(false);
+                        }}
+                        className="flex w-full items-center gap-2.5 px-3 py-2.5 text-left text-[13px] text-text-primary transition-colors hover:bg-bg-page"
+                      >
+                        <FileText size={16} className="text-status-error" />
+                        Export to PDF (.pdf)
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
           </div>
 
           <div className="flex-1 animate-in fade-in slide-in-from-bottom-2 duration-500">
@@ -2156,6 +2196,7 @@ export default function WorkspaceReports() {
                   {selectedTab === "Balance Sheet" ? (
                     <BalanceSheetReport
                       reportType={resolveEffectiveReportType(selectedTab, reportType, reportPeriod)}
+                      isMonthly={reportPeriod === "Month"}
                       data={currentReport.summary}
                       detailedData={filteredDetailedData}
                       startDate={appliedStartDate}
@@ -2171,6 +2212,7 @@ export default function WorkspaceReports() {
                   ) : selectedTab === "Profit & Loss" ? (
                     <ProfitAndLossReport
                       reportType={resolveEffectiveReportType(selectedTab, reportType, reportPeriod)}
+                      isMonthly={reportPeriod === "Month"}
                       data={currentReport.summary}
                       detailedData={filteredDetailedData}
                       startDate={appliedStartDate}
@@ -2186,6 +2228,7 @@ export default function WorkspaceReports() {
                   ) : (
                     <CashflowReport
                       reportType={resolveEffectiveReportType(selectedTab, reportType, reportPeriod)}
+                      isMonthly={reportPeriod === "Month"}
                       data={currentReport.summary}
                       detailedData={filteredDetailedData}
                       startDate={appliedStartDate}
@@ -2205,8 +2248,8 @@ export default function WorkspaceReports() {
             )}
           </div>
         </div>
-      </div>
+      </div >
 
-    </div>
+    </div >
   );
 }

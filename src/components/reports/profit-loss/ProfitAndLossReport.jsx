@@ -16,6 +16,7 @@ function ProfitAndLossReport({
   entityName,
   createdOn,
   selectedMonths = [],
+  isMonthly = false,
 }) {
   const resolvedEntityName = entityName || clientName || "Company";
   const periodText = startDate === "1970-01-01" ? "All Dates" : `${startDate || "N/A"} to ${endDate || "N/A"}`;
@@ -48,6 +49,7 @@ function ProfitAndLossReport({
             entityName={resolvedEntityName}
             subtitle={summarySubtitle}
             selectedMonths={selectedMonths}
+            isMonthly={isMonthly}
           />
         );
       }
@@ -70,6 +72,7 @@ function ProfitAndLossReport({
           title="Profit & Loss"
           subtitle={summarySubtitle}
           entityName={resolvedEntityName}
+          isMonthly={isMonthly}
         />
       );
     }
@@ -80,6 +83,7 @@ function ProfitAndLossReport({
         title="Profit & Loss"
         subtitle={summarySubtitle}
         entityName={resolvedEntityName}
+        isMonthly={isMonthly}
       />
     );
   }
@@ -97,6 +101,7 @@ function ProfitAndLossReport({
         title="Profit & Loss"
         subtitle={summarySubtitle}
         entityName={resolvedEntityName}
+        isMonthly={isMonthly}
       />
     );
   }
@@ -107,6 +112,7 @@ function ProfitAndLossReport({
       title="Profit & Loss"
       subtitle={summarySubtitle}
       entityName={resolvedEntityName}
+      isMonthly={isMonthly}
     />
   );
 }

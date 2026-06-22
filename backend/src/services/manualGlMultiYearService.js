@@ -651,9 +651,12 @@ function formatFiscalYearLabel(endYear, fiscalYearStartMonth = 1) {
 // Uses only the stored fiscal_year column â€” does NOT infer from dates or filenames.
 function getAvailableFiscalYears(rows = []) {
   const yearSet = new Set();
+  const currentYear = new Date().getFullYear();
+  const minYear = 1900;
+  const maxYear = currentYear + 5;
   for (const row of rows) {
     const yr = Number(row.fiscal_year ?? row.fiscalYear ?? 0);
-    if (Number.isInteger(yr) && yr > 0) yearSet.add(yr);
+    if (Number.isInteger(yr) && yr >= minYear && yr <= maxYear) yearSet.add(yr);
   }
   return Array.from(yearSet).sort((a, b) => a - b);
 }
@@ -5879,6 +5882,7 @@ async function stageMultiYearGlUpload({
   deferLifecycleFinalization = false,
   uploadJobId = null,
   datasetVersionId = null,
+  keyReportVersionId = null,
 }) {
   const fiscalCalendar = resolveFiscalCalendarConfig({
     fiscalYearStartMonth,
@@ -8985,6 +8989,11 @@ module.exports = {
   buildVendorProfitLossDetailPayload,
   checkExistingStagedFiscalYears,
   retrySupabaseOperation,
+  // Account classification helpers — reused by the Chart of Accounts engine so
+  // COA classification stays consistent with how reports bifurcate accounts.
+  normalizeAccountType,
+  inferAccountType,
+  isContraAccount,
 };
 
 

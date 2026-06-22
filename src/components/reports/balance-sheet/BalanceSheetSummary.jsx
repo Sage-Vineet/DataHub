@@ -89,7 +89,7 @@ function BSRow({ row, isCollapsed, onToggle, columns }) {
         isHeader && depth === 0 && "bg-bg-page/30 border-t border-border"
       )}
     >
-      <td className="py-2.5 px-4 text-left bg-inherit z-10 min-w-[320px]">
+      <td className="py-2.5 px-4 text-left z-10 min-w-[320px] sticky left-0 bg-inherit border-r-2 border-border/50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]">
         <div className="flex items-center">
           {/* Hierarchy Guide Vertical Lines - Exactly matching P&L */}
           <div className="flex shrink-0">
@@ -153,6 +153,7 @@ export default function BalanceSheetSummary({
   title = "Balance Sheet",
   subtitle,
   entityName = "Dataroom",
+  isMonthly = false,
 }) {
   const [collapsedSections, setCollapsedSections] = useState(new Set());
 
@@ -215,11 +216,11 @@ export default function BalanceSheetSummary({
           </div>
         </div>
 
-        <div className="overflow-x-auto flex-1">
+        <div className="overflow-x-auto flex-1 relative">
           <table className="min-w-max border-collapse">
             <thead>
               <tr className="border-b-2 border-text-primary sticky top-0 bg-bg-card z-20">
-                <th className="pb-3 pt-2 px-4 text-left text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider">
+                <th className="sticky top-0 left-0 z-30 bg-bg-card pb-3 pt-2 px-4 text-left text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider min-w-[320px] border-b-2 border-text-primary border-r-2 border-border/50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]">
                   Accounting Classification
                 </th>
                 {columns.yearCols.map((col) => (
@@ -308,6 +309,6 @@ export default function BalanceSheetSummary({
           background: rgba(0,0,0,0.2);
         }
       `}</style>
-    </div>
+    </div >
   );
 }

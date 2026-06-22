@@ -378,11 +378,6 @@ export default function WorkspaceEbitda() {
     setError("");
     setIsLoading(false);
     setIsDataInitialized(false);
-    // Clear version list when switching away from Manual GL
-    if (!isManualGl) {
-      setGlVersions([]);
-      setSelectedVersion(null);
-    }
   }, [reportSource, isManualGl]);
 
   // Manual GL internal version loading removed — consolidated into Key Reports.

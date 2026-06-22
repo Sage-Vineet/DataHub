@@ -12,6 +12,12 @@ const client = anthropicApiKey
   : null;
 const ANTHROPIC_MODEL =
   process.env.ANTHROPIC_MODEL || "claude-sonnet-4-20250514";
+const upload = multer({ dest: path.join(os.tmpdir(), "leo-bank-statement-uploads") });
+
+const cleanupFile = (filePath) => {
+  if (!filePath) return;
+  fs.promises.unlink(filePath).catch(() => {});
+};
 
 const normalizeAmount = (value) => {
   if (value === undefined || value === null || value === "") return 0;
@@ -113,8 +119,8 @@ const isNoiseLine = (line) =>
 
 const extractReference = (text) => {
   const patterns = [
-    /\b(?:utr|upi|neft|rtgs|imps|txn|txnid|transaction id|cheque|check|ref|reference)\s*[:\-]?\s*([A-Za-z0-9/-]{4,})/i,
-    /\b(?:chq|cheque|check)\s*[:\-]?\s*([A-Za-z0-9/-]{4,})/i,
+    /\b(?:utr|upi|neft|rtgs|imps|txn|txnid|transaction id|cheque|check|ref|reference)\s*[:-]?\s*([A-Za-z0-9/-]{4,})/i,
+    /\b(?:chq|cheque|check)\s*[:-]?\s*([A-Za-z0-9/-]{4,})/i,
   ];
 
   for (const pattern of patterns) {
@@ -270,6 +276,61 @@ const parseAnthropicTransactions = async (systemPrompt, userMessage) => {
     }
     throw error;
   }
+};
+
+const normalizeTransactionRow = (row = {}) => {
+  if (!row || typeof row !== "object") return null;
+
+  const date = toIsoDate(
+    row.date ||
+      row.txn_date ||
+      row.txnDate ||
+      row.transaction_date ||
+      row.transactionDate ||
+      row.posting_date ||
+      row.postingDate ||
+      row.value_date ||
+      row.valueDate ||
+      "",
+  );
+  const name = String(
+    row.name ||
+      row.narration ||
+      row.description ||
+      row.memo ||
+      row.text ||
+      row.label ||
+      "",
+  ).trim();
+  if (!date || !name) return null;
+
+  const rawAmount =
+    row.amount ??
+    row.value ??
+    row.debit ??
+    row.credit ??
+    row.balance ??
+    0;
+  let amount = normalizeAmount(rawAmount);
+  if (String(row.type || "").toLowerCase() === "debit") {
+    amount = -Math.abs(amount);
+  } else if (String(row.type || "").toLowerCase() === "credit") {
+    amount = Math.abs(amount);
+  } else {
+    amount = normalizeSignedAmount(amount, `${name} ${row.type || ""}`.trim());
+  }
+
+  return {
+    date,
+    name,
+    amount,
+    type: row.type || inferTransactionType(name, amount),
+    reference: row.reference || row.ref || row.transaction_id || "",
+    balance:
+      row.balance === null || row.balance === undefined || row.balance === ""
+        ? null
+        : normalizeAmount(row.balance),
+  };
 };
 
 // ✅ Catches amounts separated by any whitespace (1 or more spaces) at end of line
@@ -501,8 +562,6 @@ router.post(
       -------------------------- */
       if (req.file) {
         filePath = req.file.path;
-        const lowerFileName = req.file.originalname.toLowerCase();
-        const password = req.body.password || "";
 
         console.log(`📁 Processing Excel file: ${req.file.originalname}`);
       }
