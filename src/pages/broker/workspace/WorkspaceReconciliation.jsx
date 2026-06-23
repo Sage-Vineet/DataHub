@@ -48,6 +48,10 @@ const EXTRACT_BANK_PDF_RECORDS_ENDPOINT = `${API_BASE_URL}/extract-bank-pdf-reco
 const QMS_BANK_DATA_ENDPOINT = `${API_BASE_URL}/manual-report-uploads/qms-bank-data`;
 const MANUAL_BANK_DATA_ENDPOINT = `${API_BASE_URL}/manual-upload/bank-data`;
 const BS_BANK_BALANCES_ENDPOINT = `${API_BASE_URL}/manual-report-uploads/bs-bank-balances`;
+const BANK_RECON_ADJ_ENDPOINT = `${API_BASE_URL}/bank-reconciliation-adjustments`;
+const BANK_RECON_ADDBACK_ITEMS_ENDPOINT = `${API_BASE_URL}/bank-reconciliation-addback-items`;
+const BANK_RECON_LINE_ITEMS_ENDPOINT = `${API_BASE_URL}/bank-reconciliation-line-items`;
+const MANUAL_PL_ALL_ENDPOINT = `${API_BASE_URL}/manual-report-uploads/reports/profit_and_loss/all`;
 const RECONCILIATION_STORAGE_PREFIX = "workspace-reconciliation";
 
 // ── BS bank-balance helpers (module-level — no React context needed) ────────
@@ -163,10 +167,9 @@ const fmtVarianceAmt = (val) => {
   return { display: `+${formatted}`, colorClass: "text-green-600 font-medium" };
 };
 const fmtVariancePct = (val) => {
-  if (val == null) return { display: "-", colorClass: "text-text-muted" };
+  if (val == null || val === 0) return { display: "-", colorClass: "text-text-muted" };
   const formatted = formatNumber(val, 1);
-  if (parseFloat(formatted) === 0)
-    return { display: "0.0%", colorClass: "text-text-muted" };
+  // formatNumber returns "-" for 0, so guard above covers that case.
   if (val < 0)
     return { display: `${formatted}%`, colorClass: "text-red-600 font-medium" };
   return { display: `+${formatted}%`, colorClass: "text-green-600 font-medium" };
@@ -251,6 +254,520 @@ function FreezeTable({ months, label, containerClass, children }) {
             {children}
           </tbody>
         </table>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Inline editable cell for Activity Review adjustment rows.
+ * Defined outside the main component so React never unmounts it mid-edit.
+ */
+function EditableCell({ value, onSave }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    if (editing && inputRef.current) inputRef.current.focus();
+  }, [editing]);
+
+  const startEdit = () => {
+    setDraft(value !== 0 ? String(value) : "");
+    setEditing(true);
+  };
+
+  const commit = () => {
+    const raw = String(draft).replace(/,/g, "").trim();
+    const parsed = parseFloat(raw);
+    onSave(Number.isFinite(parsed) ? parsed : 0);
+    setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        type="text"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit();
+          if (e.key === "Escape") setEditing(false);
+        }}
+        className="w-full bg-blue-50 border border-blue-400 rounded px-2 py-0 text-right text-[12px] tabular-nums outline-none focus:ring-1 focus:ring-blue-400"
+      />
+    );
+  }
+
+  return (
+    <span
+      onClick={startEdit}
+      className={cn(
+        "block w-full text-right text-[12px] tabular-nums rounded px-1 py-[3px] min-h-[20px]",
+        "cursor-pointer hover:bg-blue-50/80 transition-colors select-none",
+        value !== 0 ? "text-text-primary" : "text-text-muted/40",
+      )}
+      title="Click to edit"
+    >
+      {value !== 0 ? formatNumber(value, 2) : "-"}
+    </span>
+  );
+}
+
+/**
+ * Editable adjustment row — one editable cell per month + TTM total.
+ * Defined outside the main component to keep component identity stable
+ * (avoids unmounting EditableCell on every re-render).
+ */
+function AdjRow({ label, rowKey, months, reconAdjustments, onSave }) {
+  const getAdj = (m) => reconAdjustments?.[`${m}_${rowKey}`] ?? 0;
+  const ttmTotal = months.slice(-12).reduce((s, m) => s + getAdj(m), 0);
+  return (
+    <tr className="bg-white hover:bg-blue-50/20">
+      <td
+        className={cn(
+          "sticky left-0 z-[1] border border-border px-3 py-[5px] text-[12px]",
+          "text-text-primary whitespace-nowrap bg-white pl-7",
+          TABLE_LABEL_COL_WIDTH,
+        )}
+      >
+        {label}
+      </td>
+      {months.map((month) => (
+        <td key={month} className={cn("border border-border px-1 py-[2px]", TABLE_VALUE_COL_WIDTH)}>
+          <EditableCell
+            value={getAdj(month)}
+            onSave={(val) => onSave(month, rowKey, val)}
+          />
+        </td>
+      ))}
+      <td
+        className={cn(
+          "border border-border px-3 py-[7px] text-right text-[12px] tabular-nums",
+          TABLE_VALUE_COL_WIDTH,
+          ttmTotal !== 0 ? "text-text-primary" : "text-text-muted/40",
+        )}
+      >
+        {ttmTotal !== 0 ? formatNumber(ttmTotal, 2) : "-"}
+      </td>
+    </tr>
+  );
+}
+
+function AddbackItemRow({ item, months, onSaveAmounts, onDelete }) {
+  const getAmt = (month) => Number(item.monthAmounts?.[month] ?? 0);
+  const ttmTotal = months.slice(-12).reduce((sum, m) => sum + getAmt(m), 0);
+
+  const handleSave = (month, val) => {
+    const updated = { ...(item.monthAmounts || {}), [month]: val };
+    if (val === 0) delete updated[month];
+    onSaveAmounts(item.id, updated);
+  };
+
+  return (
+    <tr className="hover:bg-blue-50/20">
+      <td
+        className={cn(
+          "sticky left-0 z-[1] border border-border px-3 py-[5px] text-[12px]",
+          "text-text-primary whitespace-nowrap bg-white pl-10",
+          TABLE_LABEL_COL_WIDTH,
+        )}
+      >
+        <div className="flex items-center justify-between gap-1 pr-1">
+          <span className="truncate">{item.name}</span>
+          <button
+            onClick={() => {
+              if (window.confirm(`Remove "${item.name}" from addbacks?`)) onDelete(item.id);
+            }}
+            title="Remove"
+            className="flex-shrink-0 text-text-muted hover:text-red-500 transition-colors text-[15px] leading-none font-medium"
+          >
+            ×
+          </button>
+        </div>
+      </td>
+      {months.map((month) => (
+        <td key={month} className={cn("border border-border px-1 py-[2px]", TABLE_VALUE_COL_WIDTH)}>
+          <EditableCell value={getAmt(month)} onSave={(val) => handleSave(month, val)} />
+        </td>
+      ))}
+      <td
+        className={cn(
+          "border border-border px-3 py-[7px] text-right text-[12px] tabular-nums",
+          TABLE_VALUE_COL_WIDTH,
+          ttmTotal !== 0 ? "text-text-primary" : "text-text-muted/40",
+        )}
+      >
+        {ttmTotal !== 0 ? formatNumber(ttmTotal, 2) : "-"}
+      </td>
+    </tr>
+  );
+}
+
+function AddbacksRowGroup({ section, months, addbackItems, onSaveAmounts, onDelete, onOpenPicker }) {
+  const sectionItems = addbackItems.filter((i) => i.section === section);
+
+  const totalPerMonth = months.reduce((acc, month) => {
+    acc[month] = sectionItems.reduce(
+      (sum, item) => sum + Number(item.monthAmounts?.[month] ?? 0),
+      0,
+    );
+    return acc;
+  }, {});
+
+  const ttmTotal = months.slice(-12).reduce((sum, m) => sum + (totalPerMonth[m] ?? 0), 0);
+
+  return (
+    <>
+      <tr className="bg-white hover:bg-blue-50/20">
+        <td
+          className={cn(
+            "sticky left-0 z-[1] border border-border px-3 py-[5px] text-[12px]",
+            "text-text-primary whitespace-nowrap bg-white pl-7 font-medium",
+            TABLE_LABEL_COL_WIDTH,
+          )}
+        >
+          <div className="flex items-center gap-2">
+            <span>Addbacks</span>
+            <button
+              onClick={onOpenPicker}
+              title="Add addback item"
+              className="flex items-center justify-center w-[18px] h-[18px] rounded-full bg-green-500 text-white hover:bg-green-600 transition-colors text-[13px] leading-none font-bold"
+            >
+              +
+            </button>
+          </div>
+        </td>
+        {months.map((month) => (
+          <td
+            key={month}
+            className={cn(
+              "border border-border px-3 py-[7px] text-right text-[12px] tabular-nums",
+              TABLE_VALUE_COL_WIDTH,
+              totalPerMonth[month] !== 0 ? "text-text-primary" : "text-text-muted/40",
+            )}
+          >
+            {totalPerMonth[month] !== 0 ? formatNumber(totalPerMonth[month], 2) : "-"}
+          </td>
+        ))}
+        <td
+          className={cn(
+            "border border-border px-3 py-[7px] text-right text-[12px] tabular-nums",
+            TABLE_VALUE_COL_WIDTH,
+            ttmTotal !== 0 ? "text-text-primary" : "text-text-muted/40",
+          )}
+        >
+          {ttmTotal !== 0 ? formatNumber(ttmTotal, 2) : "-"}
+        </td>
+      </tr>
+      {sectionItems.map((item) => (
+        <AddbackItemRow
+          key={item.id}
+          item={item}
+          months={months}
+          onSaveAmounts={onSaveAmounts}
+          onDelete={onDelete}
+        />
+      ))}
+    </>
+  );
+}
+
+function fmtML(mk) {
+  const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const [y, m] = mk.split("-");
+  return `${MONTHS[+m - 1]} '${String(y).slice(-2)}`;
+}
+
+// Parse a period label like "Jan 24" or "Mar 2026" into an ISO month key "YYYY-MM"
+function parsePeriodLabel(label) {
+  const MM = { Jan:"01",Feb:"02",Mar:"03",Apr:"04",May:"05",Jun:"06",
+               Jul:"07",Aug:"08",Sep:"09",Oct:"10",Nov:"11",Dec:"12" };
+  const m = String(label || "").trim().match(/^([A-Za-z]{3})\s+(\d{2,4})$/);
+  if (!m) return null;
+  const mm = MM[m[1]];
+  if (!mm) return null;
+  const yr = m[2].length === 2 ? `20${m[2]}` : m[2];
+  return `${yr}-${mm}`;
+}
+
+// Parse manual P&L upload response into plIncomeItems / plExpenseItems arrays
+function parseManualPLItems(files) {
+  const plIncomeItems = [];
+  const plExpenseItems = [];
+  if (!Array.isArray(files) || files.length === 0) return { plIncomeItems, plExpenseItems };
+  const file = files[0];
+  const { rows, periods } = file?.data || {};
+  if (!rows || !periods) return { plIncomeItems, plExpenseItems };
+  const periodKeys = periods.map(parsePeriodLabel);
+
+  function extractItems(rowList, target, source) {
+    for (const row of (rowList || [])) {
+      if (row.type === "data" && row.name) {
+        const monthAmounts = {};
+        (row.colAmounts || []).forEach((val, idx) => {
+          const mk = periodKeys[idx];
+          if (mk && val != null && val !== 0) monthAmounts[mk] = val;
+        });
+        target.push({ name: row.name, source, monthAmounts });
+      }
+      if (row.children?.length) extractItems(row.children, target, source);
+    }
+  }
+
+  for (const row of rows) {
+    if (row.type !== "header") continue;
+    const sn = (row.name || "").toLowerCase();
+    if (sn.includes("income") || sn.includes("revenue")) {
+      extractItems(row.children || [], plIncomeItems, "pl_income");
+    } else if (sn.includes("expense") || sn.includes("cost")) {
+      extractItems(row.children || [], plExpenseItems, "pl_expense");
+    }
+  }
+
+  return { plIncomeItems, plExpenseItems };
+}
+
+function AddbackPickerModal({
+  isOpen,
+  section,
+  months,
+  clientId,
+  startDate,
+  endDate,
+  accountingMethod,
+  getHeaders,
+  existingItems,
+  reportSource,
+  onAdd,
+  onClose,
+}) {
+  const isQBOnline = reportSource === "quickbooks_online";
+  const isManualUpload = reportSource === "manual_upload_excel_pdf";
+  const hasPLData = isQBOnline || isManualUpload;
+
+  // Default tab: deposits→income items, withdrawals→expense items; no-P&L modes→manual only
+  const defaultTab = hasPLData ? (section === "withdrawals" ? "expense" : "income") : "manual";
+  const [tab, setTab] = useState(defaultTab);
+  const [search, setSearch] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [lineItems, setLineItems] = useState({ plIncomeItems: [], plExpenseItems: [] });
+  const [fetchError, setFetchError] = useState(null);
+  const [manualName, setManualName] = useState("");
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setSearch("");
+    setTab(hasPLData ? (section === "withdrawals" ? "expense" : "income") : "manual");
+    setFetchError(null);
+    setLineItems({ plIncomeItems: [], plExpenseItems: [] });
+
+    if (!hasPLData || !clientId) return;
+
+    setLoading(true);
+
+    if (isQBOnline) {
+      const params = new URLSearchParams({
+        clientId,
+        start_date: startDate,
+        end_date: endDate,
+        accounting_method: accountingMethod || "Accrual",
+      });
+      fetch(`${BANK_RECON_LINE_ITEMS_ENDPOINT}?${params}`, { headers: getHeaders() })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => {
+          if (d?.success) {
+            setLineItems({ plIncomeItems: d.plIncomeItems || [], plExpenseItems: d.plExpenseItems || [] });
+          } else {
+            setFetchError("Could not load P&L items from QuickBooks.");
+          }
+        })
+        .catch(() => setFetchError("Could not load P&L items from QuickBooks."))
+        .finally(() => setLoading(false));
+    } else if (isManualUpload) {
+      fetch(`${MANUAL_PL_ALL_ENDPOINT}?clientId=${clientId}`, { headers: getHeaders() })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => {
+          if (d?.success && Array.isArray(d.files)) {
+            setLineItems(parseManualPLItems(d.files));
+          } else {
+            setFetchError("Could not load P&L items from manual upload.");
+          }
+        })
+        .catch(() => setFetchError("Could not load P&L items from manual upload."))
+        .finally(() => setLoading(false));
+    }
+  }, [isOpen, reportSource, section, clientId, startDate, endDate, accountingMethod]);
+
+  if (!isOpen) return null;
+
+  const existingNames = new Set(
+    existingItems.filter((i) => i.section === section).map((i) => i.name),
+  );
+  const sourceItems = tab === "income" ? lineItems.plIncomeItems : lineItems.plExpenseItems;
+  const filtered = sourceItems.filter(
+    (i) =>
+      !existingNames.has(i.name) &&
+      i.name.toLowerCase().includes(search.toLowerCase()),
+  );
+
+  const handleAddItem = (name, source, monthAmounts) => {
+    onAdd(name, source, monthAmounts);
+    onClose();
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-xl shadow-2xl w-[520px] max-h-[520px] flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+          <h3 className="text-[14px] font-semibold text-text-primary">
+            Add Addback — {section === "deposits" ? "Deposits" : "Withdrawals"}
+          </h3>
+          <button
+            onClick={onClose}
+            className="text-text-muted hover:text-text-primary text-[20px] leading-none w-6 h-6 flex items-center justify-center"
+          >
+            ×
+          </button>
+        </div>
+
+        <div className="flex border-b border-border">
+          {(hasPLData
+            ? [["income", "P&L Income"], ["expense", "P&L Expenses"], ["manual", "Manual"]]
+            : [["manual", "Manual"]]
+          ).map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setTab(key)}
+              className={cn(
+                "px-4 py-2 text-[12px] font-medium border-b-2 transition-colors",
+                tab === key
+                  ? "border-blue-500 text-blue-600"
+                  : "border-transparent text-text-muted hover:text-text-primary",
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {tab === "manual" ? (
+          <div className="p-5 flex flex-col gap-3">
+            <p className="text-[12px] text-text-muted">
+              Enter a name for the addback item. Edit monthly amounts directly in the table.
+            </p>
+            <input
+              type="text"
+              value={manualName}
+              onChange={(e) => setManualName(e.target.value)}
+              placeholder="e.g. Owner Distributions"
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && manualName.trim()) {
+                  handleAddItem(manualName.trim(), "manual", {});
+                  setManualName("");
+                }
+                if (e.key === "Escape") onClose();
+              }}
+              className="border border-border rounded-lg px-3 py-2 text-[13px] outline-none focus:ring-2 focus:ring-blue-400"
+            />
+            <button
+              onClick={() => {
+                if (!manualName.trim()) return;
+                handleAddItem(manualName.trim(), "manual", {});
+                setManualName("");
+              }}
+              disabled={!manualName.trim()}
+              className="self-start px-4 py-2 bg-blue-600 text-white text-[12px] font-medium rounded-lg hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              Add Item
+            </button>
+          </div>
+        ) : (
+          <>
+            <div className="px-4 pt-3 pb-2">
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search accounts..."
+                className="w-full border border-border rounded-lg px-3 py-1.5 text-[12px] outline-none focus:ring-2 focus:ring-blue-400"
+              />
+            </div>
+            <div className="flex-1 overflow-y-auto px-2 pb-3">
+              {loading ? (
+                <div className="flex items-center justify-center py-8 text-[12px] text-text-muted">
+                  Loading P&L items…
+                </div>
+              ) : fetchError ? (
+                <div className="mx-2 my-3 px-3 py-3 bg-orange-50 border border-orange-200 rounded-lg text-[12px] text-orange-700">
+                  {fetchError}
+                </div>
+              ) : filtered.length === 0 ? (
+                <div className="flex items-center justify-center py-8 text-[12px] text-text-muted">
+                  {search ? "No items match your search." : "No items available."}
+                </div>
+              ) : (
+                filtered.map((item) => {
+                  const filterMonths = months || [];
+                  const monthsWithData = filterMonths.filter(
+                    (m) => item.monthAmounts?.[m] != null,
+                  );
+                  const outsideRange = Object.keys(item.monthAmounts || {}).filter(
+                    (m) => !filterMonths.includes(m),
+                  );
+                  return (
+                    <button
+                      key={item.name}
+                      onClick={() => handleAddItem(item.name, item.source, item.monthAmounts)}
+                      className="w-full flex flex-col px-3 py-2.5 rounded-lg hover:bg-blue-50 text-left transition-colors group border-b border-border/40 last:border-0"
+                    >
+                      <span className="text-[12px] text-text-primary font-medium group-hover:text-blue-700">
+                        {item.name}
+                      </span>
+                      {monthsWithData.length > 0 ? (
+                        <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1">
+                          {monthsWithData.map((m) => {
+                            const val = Number(item.monthAmounts[m]);
+                            return (
+                              <span key={m} className="text-[10px] text-text-muted">
+                                {fmtML(m)}:{" "}
+                                <span
+                                  className={
+                                    val < 0 ? "text-red-500 font-medium" : "text-green-700 font-medium"
+                                  }
+                                >
+                                  {formatNumber(val, 0)}
+                                </span>
+                              </span>
+                            );
+                          })}
+                          {outsideRange.length > 0 && (
+                            <span className="text-[10px] text-text-muted/50 italic">
+                              +{outsideRange.length} outside range
+                            </span>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-[10px] text-text-muted/60 mt-0.5 italic">
+                          No data in selected range
+                        </span>
+                      )}
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -481,6 +998,12 @@ export default function WorkspaceReconciliation() {
   // True only after getReportSources API confirms the actual source.
   // Prevents stale storedState from triggering the wrong endpoint on mount.
   const [isSourceConfirmedByServer, setIsSourceConfirmedByServer] = useState(false);
+  // Persisted adjustment values keyed by "${month}_${rowKey}", e.g. "2025-01_changeInAR".
+  const [reconAdjustments, setReconAdjustments] = useState({});
+  // Named addback items (multi-item rows) for deposits and withdrawals sections.
+  const [addbackItems, setAddbackItems] = useState([]);
+  // Controls the addback picker modal: null = closed, { open, section, startDate, endDate } = open.
+  const [addbackPickerState, setAddbackPickerState] = useState(null);
 
   // Always reflects the latest selectedReportSource — used to discard in-flight fetch results
   // that started under a different source (race condition: user switches source while a fetch
@@ -916,6 +1439,101 @@ export default function WorkspaceReconciliation() {
     }
   }, [clientId, getHeaders]);
 
+  // Load persisted reconciliation adjustments for this company on mount / clientId change.
+  useEffect(() => {
+    if (!clientId) return;
+    fetch(`${BANK_RECON_ADJ_ENDPOINT}?clientId=${clientId}`, { headers: getHeaders() })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d?.success && Array.isArray(d.adjustments)) {
+          const map = {};
+          d.adjustments.forEach((a) => {
+            map[`${a.month}_${a.rowKey}`] = Number(a.amount) || 0;
+          });
+          setReconAdjustments(map);
+        }
+      })
+      .catch(() => {});
+  }, [clientId, getHeaders]);
+
+  // Load persisted addback items — isolated by company AND connection mode.
+  useEffect(() => {
+    if (!clientId || !selectedReportSource) return;
+    setAddbackItems([]); // clear immediately so old mode's items never flash
+    fetch(
+      `${BANK_RECON_ADDBACK_ITEMS_ENDPOINT}?clientId=${clientId}&reportSource=${encodeURIComponent(selectedReportSource)}`,
+      { headers: getHeaders() },
+    )
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d?.success && Array.isArray(d.items)) setAddbackItems(d.items);
+      })
+      .catch(() => {});
+  }, [clientId, getHeaders, selectedReportSource]);
+
+  const saveAdjustment = useCallback(
+    async (month, rowKey, amount) => {
+      const key = `${month}_${rowKey}`;
+      setReconAdjustments((prev) => ({ ...prev, [key]: amount }));
+      try {
+        await fetch(BANK_RECON_ADJ_ENDPOINT, {
+          method: "POST",
+          headers: { ...getHeaders(), "Content-Type": "application/json" },
+          body: JSON.stringify({ clientId, month, rowKey, amount }),
+        });
+      } catch {
+        // Value stays in local state even if the network request fails
+      }
+    },
+    [clientId, getHeaders],
+  );
+
+  const createAddbackItem = useCallback(
+    async (section, name, source, monthAmounts) => {
+      try {
+        const resp = await fetch(BANK_RECON_ADDBACK_ITEMS_ENDPOINT, {
+          method: "POST",
+          headers: { ...getHeaders(), "Content-Type": "application/json" },
+          body: JSON.stringify({ clientId, section, name, source, monthAmounts, reportSource: selectedReportSource }),
+        });
+        const data = await resp.json();
+        if (data?.success && data.item) {
+          setAddbackItems((prev) => [...prev, data.item]);
+        }
+      } catch { /* stays in local state */ }
+    },
+    [clientId, getHeaders, selectedReportSource],
+  );
+
+  const updateAddbackItemAmounts = useCallback(
+    async (id, monthAmounts) => {
+      setAddbackItems((prev) =>
+        prev.map((i) => (i.id === id ? { ...i, monthAmounts } : i)),
+      );
+      try {
+        await fetch(`${BANK_RECON_ADDBACK_ITEMS_ENDPOINT}/${id}`, {
+          method: "PUT",
+          headers: { ...getHeaders(), "Content-Type": "application/json" },
+          body: JSON.stringify({ clientId, monthAmounts }),
+        });
+      } catch { /* value stays in local state */ }
+    },
+    [clientId, getHeaders],
+  );
+
+  const deleteAddbackItem = useCallback(
+    async (id) => {
+      setAddbackItems((prev) => prev.filter((i) => i.id !== id));
+      try {
+        await fetch(
+          `${BANK_RECON_ADDBACK_ITEMS_ENDPOINT}/${id}?clientId=${encodeURIComponent(clientId)}`,
+          { method: "DELETE", headers: getHeaders() },
+        );
+      } catch { /* removed from local state already */ }
+    },
+    [clientId, getHeaders],
+  );
+
   // Unified bank-data loader — dispatches ONLY based on server-confirmed source.
   // isSourceConfirmedByServer prevents stale storedState from triggering the wrong endpoint.
   // Never short-circuit on stored data — stored data may be from a different source.
@@ -1258,7 +1876,7 @@ export default function WorkspaceReconciliation() {
     const intercompanyTransfers =
       intercompanyDeposits + intercompanyWithdraws;
     const externalDeposits = totalDeposits - intercompanyTransfers;
-    const salesPerFinancials = 0;
+    const salesPerFinancials = qbBankActivity?.plFinancials?.totalIncome?.[month] ?? 0;
     const depositsDollarVar = salesPerFinancials - externalDeposits;
     const depositsPctVar =
       salesPerFinancials !== 0
@@ -1282,7 +1900,7 @@ export default function WorkspaceReconciliation() {
     const withdrawIntercompanyTransfers = intercompanyWithdraws;
     const externalWithdraws =
       totalWithdrawals - withdrawIntercompanyTransfers;
-    const expensesPerFinancials = 0;
+    const expensesPerFinancials = qbBankActivity?.plFinancials?.totalExpenses?.[month] ?? 0;
     const withdrawsDollarVar = externalWithdraws - expensesPerFinancials;
     const withdrawsPctVar =
       expensesPerFinancials !== 0
@@ -2085,6 +2703,82 @@ export default function WorkspaceReconciliation() {
     const av = (f) => [...rows.map((r) => fmtAmt(r[f])), fmtAmt(ttm[f])];
     const avRaw = (f) => [...rows.map((r) => r[f] ?? null), ttm[f] ?? null];
 
+    // ── Adjustment helpers ────────────────────────────────────────────────────
+    const getAdj = (month, key) => reconAdjustments?.[`${month}_${key}`] ?? 0;
+
+    // Pre-compute addback totals per month from multi-item addback rows
+    const depAddbackMap = {};
+    const wdrAddbackMap = {};
+    addbackItems.forEach((item) => {
+      const map = item.section === "deposits" ? depAddbackMap : wdrAddbackMap;
+      Object.entries(item.monthAmounts || {}).forEach(([m, amt]) => {
+        map[m] = (map[m] || 0) + Number(amt);
+      });
+    });
+
+    // Deposits — adjusted Unreconciled Variance
+    const depositsUnrecAdj = rows.map((r) =>
+      r.depositsDollarVar
+      + getAdj(r.month, "changeInAR")
+      + getAdj(r.month, "changeInARRetentions")
+      + getAdj(r.month, "fixedAssetDisposals")
+      + getAdj(r.month, "depositsOther")
+      + (depAddbackMap[r.month] ?? 0),
+    );
+    const depositsUnrecPctAdj = rows.map((r, i) =>
+      r.salesPerFinancials !== 0 ? (depositsUnrecAdj[i] / r.salesPerFinancials) * 100 : 0,
+    );
+    const ttmDepositsUnrecAdj = months.slice(-12).reduce(
+      (sum, m) =>
+        sum
+        + getAdj(m, "changeInAR")
+        + getAdj(m, "changeInARRetentions")
+        + getAdj(m, "fixedAssetDisposals")
+        + getAdj(m, "depositsOther")
+        + (depAddbackMap[m] ?? 0),
+      ttm.depositsDollarVar,
+    );
+    const ttmDepositsUnrecPctAdj =
+      ttm.salesPerFinancials !== 0 ? (ttmDepositsUnrecAdj / ttm.salesPerFinancials) * 100 : 0;
+
+    // Withdrawals — adjusted Unreconciled Variance
+    const withdrawsUnrecAdj = rows.map((r) =>
+      r.withdrawsDollarVar
+      + getAdj(r.month, "ownerWithdraws")
+      + getAdj(r.month, "changeInCurrentLiabilities")
+      + getAdj(r.month, "changeInLTLiabilities")
+      + getAdj(r.month, "depreciationExpense")
+      + getAdj(r.month, "amortizationExpense")
+      + getAdj(r.month, "badDebtExpense")
+      + getAdj(r.month, "fixedAssetPurchases")
+      + getAdj(r.month, "withdrawsOther")
+      + (wdrAddbackMap[r.month] ?? 0),
+    );
+    const withdrawsUnrecPctAdj = rows.map((r, i) =>
+      r.expensesPerFinancials !== 0 ? (withdrawsUnrecAdj[i] / r.expensesPerFinancials) * 100 : 0,
+    );
+    const ttmWithdrawsUnrecAdj = months.slice(-12).reduce(
+      (sum, m) =>
+        sum
+        + getAdj(m, "ownerWithdraws")
+        + getAdj(m, "changeInCurrentLiabilities")
+        + getAdj(m, "changeInLTLiabilities")
+        + getAdj(m, "depreciationExpense")
+        + getAdj(m, "amortizationExpense")
+        + getAdj(m, "badDebtExpense")
+        + getAdj(m, "fixedAssetPurchases")
+        + getAdj(m, "withdrawsOther")
+        + (wdrAddbackMap[m] ?? 0),
+      ttm.withdrawsDollarVar,
+    );
+    const ttmWithdrawsUnrecPctAdj =
+      ttm.expensesPerFinancials !== 0 ? (ttmWithdrawsUnrecAdj / ttm.expensesPerFinancials) * 100 : 0;
+
+    const adjDepURaw = [...depositsUnrecAdj, ttmDepositsUnrecAdj];
+    const adjDepPctRaw = [...depositsUnrecPctAdj, ttmDepositsUnrecPctAdj];
+    const adjWdrURaw = [...withdrawsUnrecAdj, ttmWithdrawsUnrecAdj];
+    const adjWdrPctRaw = [...withdrawsUnrecPctAdj, ttmWithdrawsUnrecPctAdj];
+
     return (
       <FreezeTable months={months} label="Activity Review" containerClass="rounded-xl border border-border shadow-sm">
         <DR label="Total Deposits" values={av("totalDeposits")} bold />
@@ -2095,12 +2789,27 @@ export default function WorkspaceReconciliation() {
         <DR label="% Variance" values={avRaw("depositsPctVar")} rawValues={avRaw("depositsPctVar")} rowType="variance-pct" />
         <SpacerRow colCount={colCount} />
 
-        <DR label="Change in AR" values={av("changeInAR")} indent />
-        <DR label="Change in Accts Receivable- Retentions" values={av("changeInARRetentions")} indent />
-        <DR label="Fixed Asset Disposals" values={av("fixedAssetDisposals")} indent />
-        <DR label="Other" values={av("depositsOther")} indent />
-        <DR label="Unreconciled Variance $" values={avRaw("depositsUnreconciledDollar")} rawValues={avRaw("depositsUnreconciledDollar")} rowType="variance-amt" />
-        <DR label="Unreconciled Variance %" values={avRaw("depositsUnreconciledPct")} rawValues={avRaw("depositsUnreconciledPct")} rowType="variance-pct" />
+        <AdjRow label="Change in AR" rowKey="changeInAR" months={months} reconAdjustments={reconAdjustments} onSave={saveAdjustment} />
+        <AdjRow label="Change in Accts Receivable- Retentions" rowKey="changeInARRetentions" months={months} reconAdjustments={reconAdjustments} onSave={saveAdjustment} />
+        <AdjRow label="Fixed Asset Disposals" rowKey="fixedAssetDisposals" months={months} reconAdjustments={reconAdjustments} onSave={saveAdjustment} />
+        <AdjRow label="Other" rowKey="depositsOther" months={months} reconAdjustments={reconAdjustments} onSave={saveAdjustment} />
+        <AddbacksRowGroup
+          section="deposits"
+          months={months}
+          addbackItems={addbackItems}
+          onSaveAmounts={updateAddbackItemAmounts}
+          onDelete={deleteAddbackItem}
+          onOpenPicker={() => {
+            const [sy, sm] = bankActivityStartMonth.split("-");
+            const startDate = `${sy}-${sm}-01`;
+            const [ey, em] = bankActivityEndMonth.split("-");
+            const lastDay = new Date(+ey, +em, 0).getDate();
+            const endDate = `${ey}-${em}-${String(lastDay).padStart(2, "0")}`;
+            setAddbackPickerState({ open: true, section: "deposits", startDate, endDate, months });
+          }}
+        />
+        <DR label="Unreconciled Variance $" values={adjDepURaw} rawValues={adjDepURaw} rowType="variance-amt" />
+        <DR label="Unreconciled Variance %" values={adjDepPctRaw} rawValues={adjDepPctRaw} rowType="variance-pct" />
         <SpacerRow colCount={colCount} />
 
         <DR label="Total Withdrawals" values={av("totalWithdrawals")} bold />
@@ -2111,16 +2820,31 @@ export default function WorkspaceReconciliation() {
         <DR label="% Variance" values={avRaw("withdrawsPctVar")} rawValues={avRaw("withdrawsPctVar")} rowType="variance-pct" />
         <SpacerRow colCount={colCount} />
 
-        <DR label="Owner Withdraws" values={av("ownerWithdraws")} indent />
-        <DR label="Change in Current Liabilities" values={av("changeInCurrentLiabilities")} indent />
-        <DR label="Change in LT Liabilities" values={av("changeInLTLiabilities")} indent />
-        <DR label="Depreciation Expense" values={av("depreciationExpense")} indent />
-        <DR label="Amortization Expense" values={av("amortizationExpense")} indent />
-        <DR label="Bad Debt Expense" values={av("badDebtExpense")} indent />
-        <DR label="Fixed Asset Purchases" values={av("fixedAssetPurchases")} indent />
-        <DR label="Other" values={av("withdrawsOther")} indent />
-        <DR label="Unreconciled Variance $" values={avRaw("withdrawsUnreconciledDollar")} rawValues={avRaw("withdrawsUnreconciledDollar")} rowType="variance-amt" />
-        <DR label="Unreconciled Variance %" values={avRaw("withdrawsUnreconciledPct")} rawValues={avRaw("withdrawsUnreconciledPct")} rowType="variance-pct" />
+        <AdjRow label="Owner Withdraws" rowKey="ownerWithdraws" months={months} reconAdjustments={reconAdjustments} onSave={saveAdjustment} />
+        <AdjRow label="Change in Current Liabilities" rowKey="changeInCurrentLiabilities" months={months} reconAdjustments={reconAdjustments} onSave={saveAdjustment} />
+        <AdjRow label="Change in LT Liabilities" rowKey="changeInLTLiabilities" months={months} reconAdjustments={reconAdjustments} onSave={saveAdjustment} />
+        <AdjRow label="Depreciation Expense" rowKey="depreciationExpense" months={months} reconAdjustments={reconAdjustments} onSave={saveAdjustment} />
+        <AdjRow label="Amortization Expense" rowKey="amortizationExpense" months={months} reconAdjustments={reconAdjustments} onSave={saveAdjustment} />
+        <AdjRow label="Bad Debt Expense" rowKey="badDebtExpense" months={months} reconAdjustments={reconAdjustments} onSave={saveAdjustment} />
+        <AdjRow label="Fixed Asset Purchases" rowKey="fixedAssetPurchases" months={months} reconAdjustments={reconAdjustments} onSave={saveAdjustment} />
+        <AdjRow label="Other" rowKey="withdrawsOther" months={months} reconAdjustments={reconAdjustments} onSave={saveAdjustment} />
+        <AddbacksRowGroup
+          section="withdrawals"
+          months={months}
+          addbackItems={addbackItems}
+          onSaveAmounts={updateAddbackItemAmounts}
+          onDelete={deleteAddbackItem}
+          onOpenPicker={() => {
+            const [sy, sm] = bankActivityStartMonth.split("-");
+            const startDate = `${sy}-${sm}-01`;
+            const [ey, em] = bankActivityEndMonth.split("-");
+            const lastDay = new Date(+ey, +em, 0).getDate();
+            const endDate = `${ey}-${em}-${String(lastDay).padStart(2, "0")}`;
+            setAddbackPickerState({ open: true, section: "withdrawals", startDate, endDate, months });
+          }}
+        />
+        <DR label="Unreconciled Variance $" values={adjWdrURaw} rawValues={adjWdrURaw} rowType="variance-amt" />
+        <DR label="Unreconciled Variance %" values={adjWdrPctRaw} rawValues={adjWdrPctRaw} rowType="variance-pct" />
       </FreezeTable>
     );
   };
@@ -2532,6 +3256,25 @@ export default function WorkspaceReconciliation() {
           )}
         </section>
       </div>
+
+      {addbackPickerState?.open && (
+        <AddbackPickerModal
+          isOpen
+          section={addbackPickerState.section}
+          months={addbackPickerState.months || []}
+          clientId={clientId}
+          startDate={addbackPickerState.startDate}
+          endDate={addbackPickerState.endDate}
+          accountingMethod={bankActivityAccountingMethod}
+          getHeaders={getHeaders}
+          existingItems={addbackItems}
+          reportSource={selectedReportSource}
+          onAdd={(name, source, monthAmounts) =>
+            createAddbackItem(addbackPickerState.section, name, source, monthAmounts)
+          }
+          onClose={() => setAddbackPickerState(null)}
+        />
+      )}
     </>
   );
 }
