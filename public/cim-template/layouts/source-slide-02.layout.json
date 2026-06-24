@@ -1,0 +1,454 @@
+{
+  "schema": "openai.presentation.layout/v4",
+  "unit": "px",
+  "slide": {
+    "aid": "sl/pg3ex0nu",
+    "id": "pg3ex0nu",
+    "slide": 3,
+    "layoutId": "/ppt/slideLayouts/slideLayout1.xml",
+    "layoutName": "DEFAULT",
+    "masterLayoutId": "/ppt/slideMasters/slideMaster1.xml",
+    "frame": {
+      "left": 0,
+      "top": 0,
+      "width": 1280,
+      "height": 720
+    }
+  },
+  "theme": {
+    "colorSchemeName": "Office",
+    "colors": {
+      "accent1": "#4472C4",
+      "accent2": "#ED7D31",
+      "accent3": "#A5A5A5",
+      "accent4": "#FFC000",
+      "accent5": "#5B9BD5",
+      "accent6": "#70AD47",
+      "dk1": "#000000",
+      "lt1": "#FFFFFF",
+      "dk2": "#44546A",
+      "lt2": "#E7E6E6",
+      "hlink": "#0563C1",
+      "folHlink": "#954F72"
+    },
+    "fontScheme": {
+      "name": "Office",
+      "majorFont": {
+        "latinTypeface": "Calibri Light"
+      },
+      "minorFont": {
+        "latinTypeface": "Calibri"
+      }
+    },
+    "typefaces": [
+      "Calibri",
+      "Calibri Light"
+    ]
+  },
+  "inheritedLayers": [
+    {
+      "scope": "layout",
+      "id": "/ppt/slideLayouts/slideLayout1.xml",
+      "name": "DEFAULT",
+      "parentLayoutId": "/ppt/slideMasters/slideMaster1.xml",
+      "elements": []
+    },
+    {
+      "scope": "master",
+      "id": "/ppt/slideMasters/slideMaster1.xml",
+      "type": "master",
+      "elements": []
+    }
+  ],
+  "elements": [
+    {
+      "order": 1,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/5o7qpg3e",
+      "id": "2",
+      "name": "Shape 0",
+      "bbox": [
+        0,
+        0,
+        1279.68,
+        30.72
+      ],
+      "geometry": "rect",
+      "fillColor": "#476E2C",
+      "lineColor": "#476E2C",
+      "lineWidth": 1.33
+    },
+    {
+      "order": 2,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/g3ex0nux",
+      "id": "3",
+      "name": "Text 1",
+      "bbox": [
+        33.6,
+        7.68,
+        960,
+        19.2
+      ],
+      "geometry": "rect",
+      "text": "[COMPANY NAME]  |  DISCLAIMER",
+      "textPreview": "[COMPANY NAME]  |  DISCLAIMER",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[COMPANY NAME]  |  DISCLAIMER"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[COMPANY NAME]  |  DISCLAIMER",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "[COMPANY NAME]",
+              "fontSize": 10.67,
+              "typeface": "Calibri",
+              "color": "#6D6E71",
+              "bold": true
+            },
+            {
+              "index": 2,
+              "text": "  |  DISCLAIMER",
+              "fontSize": 10.67,
+              "typeface": "Calibri",
+              "color": "#6D6E71"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 3,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/r65wjudg",
+      "id": "4",
+      "name": "Text 2",
+      "bbox": [
+        1226.88,
+        7.68,
+        33.6,
+        19.2
+      ],
+      "geometry": "rect",
+      "text": "2",
+      "textPreview": "2",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "2"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "2",
+          "marginLeft": 0,
+          "indent": 0,
+          "resolvedTextStyle": {
+            "alignment": "right"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "2",
+              "fontSize": 10.67,
+              "typeface": "Calibri",
+              "color": "#6D6E71",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 4,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/ylc7u54z",
+      "id": "5",
+      "name": "Shape 3",
+      "bbox": [
+        33.6,
+        32.64,
+        1212.48,
+        0
+      ],
+      "geometry": "line",
+      "lineColor": "#EFEFF1",
+      "lineWidth": 1
+    },
+    {
+      "order": 5,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/9cvixcze",
+      "id": "6",
+      "name": "Text 4",
+      "bbox": [
+        33.6,
+        40.32,
+        1212.48,
+        52.8
+      ],
+      "geometry": "rect",
+      "text": "Disclaimer & Confidentiality Notice",
+      "textPreview": "Disclaimer & Confidentiality Notice",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Disclaimer & Confidentiality Notice"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Disclaimer & Confidentiality Notice",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "Disclaimer & Confidentiality Notice",
+              "fontSize": 26.67,
+              "typeface": "Calibri",
+              "color": "#2F3033",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 6,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/gr2p8nqx",
+      "id": "7",
+      "name": "Text 5",
+      "bbox": [
+        33.6,
+        110.4,
+        1212.48,
+        547.2
+      ],
+      "geometry": "rect",
+      "text": "This Confidential Information Memorandum (\"CIM\") has been prepared by [Advisor Firm Name] (\"Advisor\") on behalf of [Company Legal Name] (the \"Company\") solely for the use of prospective buyers who have executed a Non-Disclosure Agreement with the Company.\n\nThis document contains forward-looking statements and financial projections that are based on assumptions and estimates. These projections are not guarantees of future performance. Prospective buyers are expected to conduct their own due diligence and should not rely solely on this document.\n\nThe information herein is provided \"as is\" without representation or warranty of any kind. Neither the Company nor the Advisor accepts any liability for the accuracy or completeness of the information contained in this document.\n\nThis CIM is strictly confidential and may not be reproduced, distributed, or disclosed to any third party without the prior written consent of the Company.\n\nBy receiving this document, the recipient agrees to be bound by the terms of the Non-Disclosure Agreement and to use this information solely for evaluation purposes.",
+      "textPreview": "This Confidential Information Memorandum (\"CIM\") has been prepared by [Advisor Firm Name] (\"Advisor\") on behalf of [Company Legal Name] (...",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 12,
+        "lines": [
+          {
+            "index": 1,
+            "text": "This Confidential Information Memorandum (\"CIM\") has been prepared by [Advisor Firm Name] (\"Advisor\") on behalf of [Company Legal Name] (the \"Company\") solely for the use of prospective"
+          },
+          {
+            "index": 2,
+            "text": "buyers who have executed a Non-Disclosure Agreement with the Company."
+          },
+          {
+            "index": 3,
+            "text": ""
+          },
+          {
+            "index": 4,
+            "text": "This document contains forward-looking statements and financial projections that are based on assumptions and estimates. These projections are not guarantees of future performance."
+          },
+          {
+            "index": 5,
+            "text": "Prospective buyers are expected to conduct their own due diligence and should not rely solely on this document."
+          },
+          {
+            "index": 6,
+            "text": ""
+          },
+          {
+            "index": 7,
+            "text": "The information herein is provided \"as is\" without representation or warranty of any kind. Neither the Company nor the Advisor accepts any liability for the accuracy or completeness of the"
+          },
+          {
+            "index": 8,
+            "text": "information contained in this document."
+          },
+          {
+            "index": 9,
+            "text": ""
+          },
+          {
+            "index": 10,
+            "text": "This CIM is strictly confidential and may not be reproduced, distributed, or disclosed to any third party without the prior written consent of the Company."
+          },
+          {
+            "index": 11,
+            "text": ""
+          },
+          {
+            "index": 12,
+            "text": "By receiving this document, the recipient agrees to be bound by the terms of the Non-Disclosure Agreement and to use this information solely for evaluation purposes."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "This Confidential Information Memorandum (\"CIM\") has been prepared by [Advisor Firm Name] (\"Advisor\") on behalf of [Company Legal Name] (the \"Company\") solely for the use of prospective buyers who have executed a Non-Disclosure Agreement with the Company.",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "This Confidential Information Memorandum (\"CIM\") has been prepared by [Advisor Firm Name] (\"Advisor\") on behalf of [Company Legal Name] (the \"Company\") solely for the use of prospective buyers who have executed a Non-Disclosure Agreement with the Company.",
+              "fontSize": 14,
+              "typeface": "Calibri",
+              "color": "#6D6E71"
+            }
+          ]
+        },
+        {
+          "index": 3,
+          "text": "This document contains forward-looking statements and financial projections that are based on assumptions and estimates. These projections are not guarantees of future performance. Prospective buyers are expected to conduct their own due diligence and should not rely solely on this document.",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "This document contains forward-looking statements and financial projections that are based on assumptions and estimates. These projections are not guarantees of future performance. Prospective buyers are expected to conduct their own due diligence and should not rely solely on this document.",
+              "fontSize": 14,
+              "typeface": "Calibri",
+              "color": "#6D6E71"
+            }
+          ]
+        },
+        {
+          "index": 5,
+          "text": "The information herein is provided \"as is\" without representation or warranty of any kind. Neither the Company nor the Advisor accepts any liability for the accuracy or completeness of the information contained in this document.",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "The information herein is provided \"as is\" without representation or warranty of any kind. Neither the Company nor the Advisor accepts any liability for the accuracy or completeness of the information contained in this document.",
+              "fontSize": 14,
+              "typeface": "Calibri",
+              "color": "#6D6E71"
+            }
+          ]
+        },
+        {
+          "index": 7,
+          "text": "This CIM is strictly confidential and may not be reproduced, distributed, or disclosed to any third party without the prior written consent of the Company.",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "This CIM is strictly confidential and may not be reproduced, distributed, or disclosed to any third party without the prior written consent of the Company.",
+              "fontSize": 14,
+              "typeface": "Calibri",
+              "color": "#6D6E71"
+            }
+          ]
+        },
+        {
+          "index": 9,
+          "text": "By receiving this document, the recipient agrees to be bound by the terms of the Non-Disclosure Agreement and to use this information solely for evaluation purposes.",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "By receiving this document, the recipient agrees to be bound by the terms of the Non-Disclosure Agreement and to use this information solely for evaluation purposes.",
+              "fontSize": 14,
+              "typeface": "Calibri",
+              "color": "#6D6E71"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "composeRuns": []
+}

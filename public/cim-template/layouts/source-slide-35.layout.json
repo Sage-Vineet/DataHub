@@ -1,0 +1,1785 @@
+{
+  "schema": "openai.presentation.layout/v4",
+  "unit": "px",
+  "slide": {
+    "aid": "sl/xs72x4na",
+    "id": "xs72x4na",
+    "slide": 36,
+    "layoutId": "/ppt/slideLayouts/slideLayout1.xml",
+    "layoutName": "DEFAULT",
+    "masterLayoutId": "/ppt/slideMasters/slideMaster1.xml",
+    "frame": {
+      "left": 0,
+      "top": 0,
+      "width": 1280,
+      "height": 720
+    }
+  },
+  "theme": {
+    "colorSchemeName": "Office",
+    "colors": {
+      "accent1": "#4472C4",
+      "accent2": "#ED7D31",
+      "accent3": "#A5A5A5",
+      "accent4": "#FFC000",
+      "accent5": "#5B9BD5",
+      "accent6": "#70AD47",
+      "dk1": "#000000",
+      "lt1": "#FFFFFF",
+      "dk2": "#44546A",
+      "lt2": "#E7E6E6",
+      "hlink": "#0563C1",
+      "folHlink": "#954F72"
+    },
+    "fontScheme": {
+      "name": "Office",
+      "majorFont": {
+        "latinTypeface": "Calibri Light"
+      },
+      "minorFont": {
+        "latinTypeface": "Calibri"
+      }
+    },
+    "typefaces": [
+      "Calibri",
+      "Calibri Light"
+    ]
+  },
+  "inheritedLayers": [
+    {
+      "scope": "layout",
+      "id": "/ppt/slideLayouts/slideLayout1.xml",
+      "name": "DEFAULT",
+      "parentLayoutId": "/ppt/slideMasters/slideMaster1.xml",
+      "elements": []
+    },
+    {
+      "scope": "master",
+      "id": "/ppt/slideMasters/slideMaster1.xml",
+      "type": "master",
+      "elements": []
+    }
+  ],
+  "elements": [
+    {
+      "order": 1,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/m58z25kb",
+      "id": "2",
+      "name": "Shape 0",
+      "bbox": [
+        0,
+        0,
+        1279.68,
+        30.72
+      ],
+      "geometry": "rect",
+      "fillColor": "#8BC53D",
+      "lineColor": "#8BC53D",
+      "lineWidth": 1.33
+    },
+    {
+      "order": 2,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/bq1oryts",
+      "id": "3",
+      "name": "Text 1",
+      "bbox": [
+        33.6,
+        7.68,
+        960,
+        19.2
+      ],
+      "geometry": "rect",
+      "text": "[COMPANY NAME]  |  GROWTH STRATEGY",
+      "textPreview": "[COMPANY NAME]  |  GROWTH STRATEGY",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[COMPANY NAME]  |  GROWTH STRATEGY"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[COMPANY NAME]  |  GROWTH STRATEGY",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "[COMPANY NAME]",
+              "fontSize": 10.67,
+              "typeface": "Calibri",
+              "color": "#6D6E71",
+              "bold": true
+            },
+            {
+              "index": 2,
+              "text": "  |  GROWTH STRATEGY",
+              "fontSize": 10.67,
+              "typeface": "Calibri",
+              "color": "#6D6E71"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 3,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/4nap4r65",
+      "id": "4",
+      "name": "Text 2",
+      "bbox": [
+        1226.88,
+        7.68,
+        33.6,
+        19.2
+      ],
+      "geometry": "rect",
+      "text": "28",
+      "textPreview": "28",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "28"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "28",
+          "marginLeft": 0,
+          "indent": 0,
+          "resolvedTextStyle": {
+            "alignment": "right"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "28",
+              "fontSize": 10.67,
+              "typeface": "Calibri",
+              "color": "#6D6E71",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 4,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/t83itgfm",
+      "id": "5",
+      "name": "Shape 3",
+      "bbox": [
+        33.6,
+        32.64,
+        1212.48,
+        0
+      ],
+      "geometry": "line",
+      "lineColor": "#EFEFF1",
+      "lineWidth": 1
+    },
+    {
+      "order": 5,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/mhk3q5o7",
+      "id": "6",
+      "name": "Text 4",
+      "bbox": [
+        33.6,
+        40.32,
+        1212.48,
+        67.2
+      ],
+      "geometry": "rect",
+      "text": "[Company] has identified [X] organic growth levers executable within [X-X] months post-close",
+      "textPreview": "[Company] has identified [X] organic growth levers executable within [X-X] months post-close",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 2,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[Company] has identified [X] organic growth levers executable within [X-X] months"
+          },
+          {
+            "index": 2,
+            "text": "post-close"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[Company] has identified [X] organic growth levers executable within [X-X] months post-close",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "[Company] has identified [X] organic growth levers executable within [X-X] months post-close",
+              "fontSize": 29.33,
+              "typeface": "Calibri",
+              "color": "#2F3033",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 6,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/b2hwfyxo",
+      "id": "7",
+      "name": "Text 5",
+      "bbox": [
+        33.6,
+        103.68,
+        1212.48,
+        33.6
+      ],
+      "geometry": "rect",
+      "text": "Each initiative has been assessed for feasibility, required investment, and expected financial impact",
+      "textPreview": "Each initiative has been assessed for feasibility, required investment, and expected financial impact",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Each initiative has been assessed for feasibility, required investment, and expected financial impact"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Each initiative has been assessed for feasibility, required investment, and expected financial impact",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "Each initiative has been assessed for feasibility, required investment, and expected financial impact",
+              "fontSize": 16,
+              "typeface": "Calibri",
+              "color": "#476E2C"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 7,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/4vmtwra5",
+      "id": "8",
+      "name": "Shape 6",
+      "bbox": [
+        33.6,
+        158.4,
+        604.8,
+        192
+      ],
+      "geometry": "rect",
+      "fillColor": "#EFEFF1",
+      "lineColor": "#EFEFF1",
+      "lineWidth": 1.33
+    },
+    {
+      "order": 8,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/tgfmlkjm",
+      "id": "9",
+      "name": "Shape 7",
+      "bbox": [
+        33.6,
+        158.4,
+        6.72,
+        192
+      ],
+      "geometry": "rect",
+      "fillColor": "#476E2C",
+      "lineColor": "#476E2C",
+      "lineWidth": 1.33
+    },
+    {
+      "order": 9,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/xc3ylc7u",
+      "id": "10",
+      "name": "Text 8",
+      "bbox": [
+        48,
+        168,
+        432,
+        26.88
+      ],
+      "geometry": "rect",
+      "text": "Near-Term (0-12 mo)",
+      "textPreview": "Near-Term (0-12 mo)",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Near-Term (0-12 mo)"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Near-Term (0-12 mo)",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "Near-Term (0-12 mo)",
+              "fontSize": 11.33,
+              "typeface": "Calibri",
+              "color": "#8BC53D",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 10,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/4r65wjud",
+      "id": "11",
+      "name": "Text 9",
+      "bbox": [
+        48,
+        194.88,
+        432,
+        36.48
+      ],
+      "geometry": "rect",
+      "text": "[Initiative 1]",
+      "textPreview": "[Initiative 1]",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[Initiative 1]"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[Initiative 1]",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "[Initiative 1]",
+              "fontSize": 17.33,
+              "typeface": "Calibri",
+              "color": "#2F3033",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 11,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/f6dcbulw",
+      "id": "12",
+      "name": "Text 10",
+      "bbox": [
+        48,
+        235.2,
+        432,
+        100.8
+      ],
+      "geometry": "rect",
+      "text": "[Specific action, target outcome, expected revenue or EBITDA impact tied to a specific customer segment.]",
+      "textPreview": "[Specific action, target outcome, expected revenue or EBITDA impact tied to a specific customer segment.]",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 2,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[Specific action, target outcome, expected revenue or EBITDA impact tied"
+          },
+          {
+            "index": 2,
+            "text": "to a specific customer segment.]"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[Specific action, target outcome, expected revenue or EBITDA impact tied to a specific customer segment.]",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "[Specific action, target outcome, expected revenue or EBITDA impact tied to a specific customer segment.]",
+              "fontSize": 12.67,
+              "typeface": "Calibri",
+              "color": "#6D6E71"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 12,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/mlkjm1cf",
+      "id": "13",
+      "name": "Text 11",
+      "bbox": [
+        482.88,
+        179.52,
+        144,
+        62.4
+      ],
+      "geometry": "rect",
+      "text": "$[X]M",
+      "textPreview": "$[X]M",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "$[X]M"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "$[X]M",
+          "marginLeft": 0,
+          "indent": 0,
+          "resolvedTextStyle": {
+            "alignment": "center"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "$[X]M",
+              "fontSize": 29.33,
+              "typeface": "Calibri",
+              "color": "#476E2C",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 13,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/xkf6dcbu",
+      "id": "14",
+      "name": "Text 12",
+      "bbox": [
+        482.88,
+        246.72,
+        144,
+        43.2
+      ],
+      "geometry": "rect",
+      "text": "Revenue Opportunity",
+      "textPreview": "Revenue Opportunity",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Revenue Opportunity"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Revenue Opportunity",
+          "marginLeft": 0,
+          "indent": 0,
+          "resolvedTextStyle": {
+            "alignment": "center"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Revenue Opportunity",
+              "fontSize": 11.33,
+              "typeface": "Calibri",
+              "color": "#8C8D90"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 14,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/4zidonyd",
+      "id": "15",
+      "name": "Shape 13",
+      "bbox": [
+        662.4,
+        158.4,
+        604.8,
+        192
+      ],
+      "geometry": "rect",
+      "fillColor": "#EFEFF1",
+      "lineColor": "#EFEFF1",
+      "lineWidth": 1.33
+    },
+    {
+      "order": 15,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/fepkzupw",
+      "id": "16",
+      "name": "Shape 14",
+      "bbox": [
+        662.4,
+        158.4,
+        6.72,
+        192
+      ],
+      "geometry": "rect",
+      "fillColor": "#8BC53D",
+      "lineColor": "#8BC53D",
+      "lineWidth": 1.33
+    },
+    {
+      "order": 16,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/mtwra5gb",
+      "id": "17",
+      "name": "Text 15",
+      "bbox": [
+        676.8,
+        168,
+        432,
+        26.88
+      ],
+      "geometry": "rect",
+      "text": "Near-Term (0-12 mo)",
+      "textPreview": "Near-Term (0-12 mo)",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Near-Term (0-12 mo)"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Near-Term (0-12 mo)",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "Near-Term (0-12 mo)",
+              "fontSize": 11.33,
+              "typeface": "Calibri",
+              "color": "#8BC53D",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 17,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/xobm58z2",
+      "id": "18",
+      "name": "Text 16",
+      "bbox": [
+        676.8,
+        194.88,
+        432,
+        36.48
+      ],
+      "geometry": "rect",
+      "text": "[Initiative 2]",
+      "textPreview": "[Initiative 2]",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[Initiative 2]"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[Initiative 2]",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "[Initiative 2]",
+              "fontSize": 17.33,
+              "typeface": "Calibri",
+              "color": "#2F3033",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 18,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/83itgfml",
+      "id": "19",
+      "name": "Text 17",
+      "bbox": [
+        676.8,
+        235.2,
+        432,
+        100.8
+      ],
+      "geometry": "rect",
+      "text": "[Specific action, target outcome, margin expansion lever.]",
+      "textPreview": "[Specific action, target outcome, margin expansion lever.]",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[Specific action, target outcome, margin expansion lever.]"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[Specific action, target outcome, margin expansion lever.]",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "[Specific action, target outcome, margin expansion lever.]",
+              "fontSize": 12.67,
+              "typeface": "Calibri",
+              "color": "#6D6E71"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 19,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/4byhgn29",
+      "id": "20",
+      "name": "Text 18",
+      "bbox": [
+        1111.68,
+        179.52,
+        144,
+        62.4
+      ],
+      "geometry": "rect",
+      "text": "[X]%",
+      "textPreview": "[X]%",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[X]%"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[X]%",
+          "marginLeft": 0,
+          "indent": 0,
+          "resolvedTextStyle": {
+            "alignment": "center"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "[X]%",
+              "fontSize": 29.33,
+              "typeface": "Calibri",
+              "color": "#8BC53D",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 20,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/twra5gbq",
+      "id": "21",
+      "name": "Text 19",
+      "bbox": [
+        1111.68,
+        246.72,
+        144,
+        43.2
+      ],
+      "geometry": "rect",
+      "text": "Margin Expansion",
+      "textPreview": "Margin Expansion",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Margin Expansion"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Margin Expansion",
+          "marginLeft": 0,
+          "indent": 0,
+          "resolvedTextStyle": {
+            "alignment": "center"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Margin Expansion",
+              "fontSize": 11.33,
+              "typeface": "Calibri",
+              "color": "#8C8D90"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 21,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/m58z25kb",
+      "id": "22",
+      "name": "Shape 20",
+      "bbox": [
+        33.6,
+        364.8,
+        604.8,
+        192
+      ],
+      "geometry": "rect",
+      "fillColor": "#EFEFF1",
+      "lineColor": "#EFEFF1",
+      "lineWidth": 1.33
+    },
+    {
+      "order": 22,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/bq1oryts",
+      "id": "23",
+      "name": "Shape 21",
+      "bbox": [
+        33.6,
+        364.8,
+        6.72,
+        192
+      ],
+      "geometry": "rect",
+      "fillColor": "#476E2C",
+      "lineColor": "#476E2C",
+      "lineWidth": 1.33
+    },
+    {
+      "order": 23,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/4nap4r65",
+      "id": "24",
+      "name": "Text 22",
+      "bbox": [
+        48,
+        374.4,
+        432,
+        26.88
+      ],
+      "geometry": "rect",
+      "text": "Medium-Term (12-36 mo)",
+      "textPreview": "Medium-Term (12-36 mo)",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Medium-Term (12-36 mo)"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Medium-Term (12-36 mo)",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "Medium-Term (12-36 mo)",
+              "fontSize": 11.33,
+              "typeface": "Calibri",
+              "color": "#D9A441",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 24,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/t83itgfm",
+      "id": "25",
+      "name": "Text 23",
+      "bbox": [
+        48,
+        401.28,
+        432,
+        36.48
+      ],
+      "geometry": "rect",
+      "text": "[Initiative 3]",
+      "textPreview": "[Initiative 3]",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[Initiative 3]"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[Initiative 3]",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "[Initiative 3]",
+              "fontSize": 17.33,
+              "typeface": "Calibri",
+              "color": "#2F3033",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 25,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/mhk3q5o7",
+      "id": "26",
+      "name": "Text 24",
+      "bbox": [
+        48,
+        441.6,
+        432,
+        100.8
+      ],
+      "geometry": "rect",
+      "text": "[Geographic expansion, new product launch, or channel partnership with market sizing.]",
+      "textPreview": "[Geographic expansion, new product launch, or channel partnership with market sizing.]",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 2,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[Geographic expansion, new product launch, or channel partnership with"
+          },
+          {
+            "index": 2,
+            "text": "market sizing.]"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[Geographic expansion, new product launch, or channel partnership with market sizing.]",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "[Geographic expansion, new product launch, or channel partnership with market sizing.]",
+              "fontSize": 12.67,
+              "typeface": "Calibri",
+              "color": "#6D6E71"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 26,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/b2hwfyxo",
+      "id": "27",
+      "name": "Text 25",
+      "bbox": [
+        482.88,
+        385.92,
+        144,
+        62.4
+      ],
+      "geometry": "rect",
+      "text": "$[X]M",
+      "textPreview": "$[X]M",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "$[X]M"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "$[X]M",
+          "marginLeft": 0,
+          "indent": 0,
+          "resolvedTextStyle": {
+            "alignment": "center"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "$[X]M",
+              "fontSize": 29.33,
+              "typeface": "Calibri",
+              "color": "#476E2C",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 27,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/4vmtwra5",
+      "id": "28",
+      "name": "Text 26",
+      "bbox": [
+        482.88,
+        453.12,
+        144,
+        43.2
+      ],
+      "geometry": "rect",
+      "text": "New Market TAM",
+      "textPreview": "New Market TAM",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "New Market TAM"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "New Market TAM",
+          "marginLeft": 0,
+          "indent": 0,
+          "resolvedTextStyle": {
+            "alignment": "center"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "New Market TAM",
+              "fontSize": 11.33,
+              "typeface": "Calibri",
+              "color": "#8C8D90"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 28,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/tgfmlkjm",
+      "id": "29",
+      "name": "Shape 27",
+      "bbox": [
+        662.4,
+        364.8,
+        604.8,
+        192
+      ],
+      "geometry": "rect",
+      "fillColor": "#EFEFF1",
+      "lineColor": "#EFEFF1",
+      "lineWidth": 1.33
+    },
+    {
+      "order": 29,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/ji5snelo",
+      "id": "30",
+      "name": "Shape 28",
+      "bbox": [
+        662.4,
+        364.8,
+        6.72,
+        192
+      ],
+      "geometry": "rect",
+      "fillColor": "#8BC53D",
+      "lineColor": "#8BC53D",
+      "lineWidth": 1.33
+    },
+    {
+      "order": 30,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/uxc3ylc7",
+      "id": "31",
+      "name": "Text 29",
+      "bbox": [
+        676.8,
+        374.4,
+        432,
+        26.88
+      ],
+      "geometry": "rect",
+      "text": "Medium-Term (12-36 mo)",
+      "textPreview": "Medium-Term (12-36 mo)",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Medium-Term (12-36 mo)"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Medium-Term (12-36 mo)",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "Medium-Term (12-36 mo)",
+              "fontSize": 11.33,
+              "typeface": "Calibri",
+              "color": "#D9A441",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 31,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/1kre1w7m",
+      "id": "32",
+      "name": "Text 30",
+      "bbox": [
+        676.8,
+        401.28,
+        432,
+        36.48
+      ],
+      "geometry": "rect",
+      "text": "[Initiative 4]",
+      "textPreview": "[Initiative 4]",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[Initiative 4]"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[Initiative 4]",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "[Initiative 4]",
+              "fontSize": 17.33,
+              "typeface": "Calibri",
+              "color": "#2F3033",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 32,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/c3ylc7u5",
+      "id": "33",
+      "name": "Text 31",
+      "bbox": [
+        676.8,
+        441.6,
+        432,
+        100.8
+      ],
+      "geometry": "rect",
+      "text": "[Technology investment, platform build-out, or M&A integration playbook with strategic rationale.]",
+      "textPreview": "[Technology investment, platform build-out, or M&A integration playbook with strategic rationale.]",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 2,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[Technology investment, platform build-out, or M&A integration playbook"
+          },
+          {
+            "index": 2,
+            "text": "with strategic rationale.]"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[Technology investment, platform build-out, or M&A integration playbook with strategic rationale.]",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "[Technology investment, platform build-out, or M&A integration playbook with strategic rationale.]",
+              "fontSize": 12.67,
+              "typeface": "Calibri",
+              "color": "#6D6E71"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 33,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/j6tovaho",
+      "id": "34",
+      "name": "Text 32",
+      "bbox": [
+        1111.68,
+        385.92,
+        144,
+        62.4
+      ],
+      "geometry": "rect",
+      "text": "[X]x",
+      "textPreview": "[X]x",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[X]x"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[X]x",
+          "marginLeft": 0,
+          "indent": 0,
+          "resolvedTextStyle": {
+            "alignment": "center"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "[X]x",
+              "fontSize": 29.33,
+              "typeface": "Calibri",
+              "color": "#8BC53D",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 34,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/ulwval87",
+      "id": "35",
+      "name": "Text 33",
+      "bbox": [
+        1111.68,
+        453.12,
+        144,
+        43.2
+      ],
+      "geometry": "rect",
+      "text": "Customer LTV Uplift",
+      "textPreview": "Customer LTV Uplift",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Customer LTV Uplift"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Customer LTV Uplift",
+          "marginLeft": 0,
+          "indent": 0,
+          "resolvedTextStyle": {
+            "alignment": "center"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "Customer LTV Uplift",
+              "fontSize": 11.33,
+              "typeface": "Calibri",
+              "color": "#8C8D90"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 35,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/1cfa9w3m",
+      "id": "36",
+      "name": "Text 34",
+      "bbox": [
+        33.6,
+        693.12,
+        1212.48,
+        21.12
+      ],
+      "geometry": "rect",
+      "text": "Source: Management analysis",
+      "textPreview": "Source: Management analysis",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Source: Management analysis"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Source: Management analysis",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "Source: Management analysis",
+              "fontSize": 10,
+              "typeface": "Calibri",
+              "color": "#8C8D90"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "composeRuns": []
+}

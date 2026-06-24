@@ -447,6 +447,34 @@ export function listBrokerActivity(limit = 25) {
   return request(`/broker/activity?limit=${limit}`).then(ensureArray);
 }
 
+export function getWorkspacePageStateRequest(pageKey, options = {}) {
+  return request(`/workspace-page-state/${encodeURIComponent(pageKey)}`, options);
+}
+
+export function saveWorkspacePageStateRequest(pageKey, state, options = {}) {
+  return request(`/workspace-page-state/${encodeURIComponent(pageKey)}`, {
+    ...options,
+    method: 'PUT',
+    body: { state },
+  });
+}
+
+export function getCimQuestionnaireRequest(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/cim-questionnaire${query}`, options);
+}
+
+export function saveCimQuestionnaireRequest(state, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/cim-questionnaire${query}`, {
+    ...options,
+    method: 'PUT',
+    body: { state },
+  });
+}
+
 export async function uploadFile(file, options = {}) {
   if (!file) {
     throw new Error('Missing file for upload');

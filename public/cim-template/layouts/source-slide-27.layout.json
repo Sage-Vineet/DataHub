@@ -1,0 +1,3239 @@
+{
+  "schema": "openai.presentation.layout/v4",
+  "unit": "px",
+  "slide": {
+    "aid": "sl/gfmlkjm1",
+    "id": "gfmlkjm1",
+    "slide": 28,
+    "layoutId": "/ppt/slideLayouts/slideLayout1.xml",
+    "layoutName": "DEFAULT",
+    "masterLayoutId": "/ppt/slideMasters/slideMaster1.xml",
+    "frame": {
+      "left": 0,
+      "top": 0,
+      "width": 1280,
+      "height": 720
+    }
+  },
+  "theme": {
+    "colorSchemeName": "Office",
+    "colors": {
+      "accent1": "#4472C4",
+      "accent2": "#ED7D31",
+      "accent3": "#A5A5A5",
+      "accent4": "#FFC000",
+      "accent5": "#5B9BD5",
+      "accent6": "#70AD47",
+      "dk1": "#000000",
+      "lt1": "#FFFFFF",
+      "dk2": "#44546A",
+      "lt2": "#E7E6E6",
+      "hlink": "#0563C1",
+      "folHlink": "#954F72"
+    },
+    "fontScheme": {
+      "name": "Office",
+      "majorFont": {
+        "latinTypeface": "Calibri Light"
+      },
+      "minorFont": {
+        "latinTypeface": "Calibri"
+      }
+    },
+    "typefaces": [
+      "Calibri",
+      "Calibri Light"
+    ]
+  },
+  "inheritedLayers": [
+    {
+      "scope": "layout",
+      "id": "/ppt/slideLayouts/slideLayout1.xml",
+      "name": "DEFAULT",
+      "parentLayoutId": "/ppt/slideMasters/slideMaster1.xml",
+      "elements": []
+    },
+    {
+      "scope": "master",
+      "id": "/ppt/slideMasters/slideMaster1.xml",
+      "type": "master",
+      "elements": []
+    }
+  ],
+  "elements": [
+    {
+      "order": 1,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/8jqh0fep",
+      "id": "2",
+      "name": "Shape 0",
+      "bbox": [
+        0,
+        0,
+        1279.68,
+        30.72
+      ],
+      "geometry": "rect",
+      "fillColor": "#8BC53D",
+      "lineColor": "#8BC53D",
+      "lineWidth": 1.33
+    },
+    {
+      "order": 2,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/x4nap4r6",
+      "id": "3",
+      "name": "Text 1",
+      "bbox": [
+        33.6,
+        7.68,
+        960,
+        19.2
+      ],
+      "geometry": "rect",
+      "text": "[COMPANY NAME]  |  FINANCIAL PERFORMANCE",
+      "textPreview": "[COMPANY NAME]  |  FINANCIAL PERFORMANCE",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[COMPANY NAME]  |  FINANCIAL PERFORMANCE"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[COMPANY NAME]  |  FINANCIAL PERFORMANCE",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "[COMPANY NAME]",
+              "fontSize": 10.67,
+              "typeface": "Calibri",
+              "color": "#6D6E71",
+              "bold": true
+            },
+            {
+              "index": 2,
+              "text": "  |  FINANCIAL PERFORMANCE",
+              "fontSize": 10.67,
+              "typeface": "Calibri",
+              "color": "#6D6E71"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 3,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/qpg3ex0n",
+      "id": "4",
+      "name": "Text 2",
+      "bbox": [
+        1226.88,
+        7.68,
+        33.6,
+        19.2
+      ],
+      "geometry": "rect",
+      "text": "20",
+      "textPreview": "20",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "20"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "20",
+          "marginLeft": 0,
+          "indent": 0,
+          "resolvedTextStyle": {
+            "alignment": "right"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "20",
+              "fontSize": 10.67,
+              "typeface": "Calibri",
+              "color": "#6D6E71",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 4,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/fa9w3m94",
+      "id": "5",
+      "name": "Shape 3",
+      "bbox": [
+        33.6,
+        32.64,
+        1212.48,
+        0
+      ],
+      "geometry": "line",
+      "lineColor": "#EFEFF1",
+      "lineWidth": 1
+    },
+    {
+      "order": 5,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/8v6psfil",
+      "id": "6",
+      "name": "Text 4",
+      "bbox": [
+        33.6,
+        40.32,
+        1212.48,
+        67.2
+      ],
+      "geometry": "rect",
+      "text": "The Company has generated $[X]M in cumulative free cash flow over [FY+X–FY+Y], reflecting strong earnings quality",
+      "textPreview": "The Company has generated $[X]M in cumulative free cash flow over [FY+X–FY+Y], reflecting strong earnings quality",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 2,
+        "lines": [
+          {
+            "index": 1,
+            "text": "The Company has generated $[X]M in cumulative free cash flow over [FY+X–FY+Y],"
+          },
+          {
+            "index": 2,
+            "text": "reflecting strong earnings quality"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "The Company has generated $[X]M in cumulative free cash flow over [FY+X–FY+Y], reflecting strong earnings quality",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "The Company has generated $[X]M in cumulative free cash flow over [FY+X–FY+Y], reflecting strong earnings quality",
+              "fontSize": 29.33,
+              "typeface": "Calibri",
+              "color": "#2F3033",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 6,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/xczed8v6",
+      "id": "7",
+      "name": "Text 5",
+      "bbox": [
+        33.6,
+        103.68,
+        1212.48,
+        33.6
+      ],
+      "geometry": "rect",
+      "text": "[X]% FCF conversion underscores the ability to translate EBITDA into distributable cash with minimal reinvestment requirements",
+      "textPreview": "[X]% FCF conversion underscores the ability to translate EBITDA into distributable cash with minimal reinvestment requirements",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[X]% FCF conversion underscores the ability to translate EBITDA into distributable cash with minimal reinvestment requirements"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[X]% FCF conversion underscores the ability to translate EBITDA into distributable cash with minimal reinvestment requirements",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "[X]% FCF conversion underscores the ability to translate EBITDA into distributable cash with minimal reinvestment requirements",
+              "fontSize": 16,
+              "typeface": "Calibri",
+              "color": "#476E2C"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 7,
+      "kind": "table",
+      "scope": "slide",
+      "aid": "tb/4vmtwra5",
+      "id": "10",
+      "name": "Table 0",
+      "bbox": [
+        33.6,
+        148.8,
+        1200,
+        542.4
+      ],
+      "text": "FY[Y-2]A | FY[Y-1]A | FY[Y]A | LTM [Date]\nOPERATING ACTIVITIES\nNet Income | $[X]M | $[X]M | $[X]M | $[X]M\nD&A | $[X]M | $[X]M | $[X]M | $[X]M\nChanges in Working Capital | ([X]M) | ([X]M) | ([X]M) | ([X]M)\nOther Non-Cash Items | $[X]M | $[X]M | $[X]M | $[X]M\nCash from Operations | $[X]M | $[X]M | $[X]M | $[X]M\nINVESTING ACTIVITIES\nCapital Expenditures | ([X]M) | ([X]M) | ([X]M) | ([X]M)\nAcquisitions / Dispositions | ([X]M) | ([X]M) | ([X]M) | ([X]M)\nCash from Investing | ([X]M) | ([X]M) | ([X]M) | ([X]M)\nFINANCING ACTIVITIES\nNet Borrowings / (Repayments) | $[X]M | $[X]M | $[X]M | $[X]M\nDividends / Distributions | ([X]M) | ([X]M) | ([X]M) | ([X]M)\nCash from Financing | ([X]M) | ([X]M) | ([X]M) | ([X]M)\nNet Change in Cash | $[X]M | $[X]M | $[X]M | $[X]M\nFree Cash Flow | $[X]M | $[X]M | $[X]M | $[X]M\nFCF Conversion (% EBITDA) | [X]% | [X]% | [X]% | [X]%",
+      "textPreview": "FY[Y-2]A | FY[Y-1]A | FY[Y]A | LTM [Date] | OPERATING ACTIVITIES | Net Income | $[X]M | $[X]M | $[X]M | $[X]M | D&A | $[X]M | $[X]M | $[X...",
+      "rows": 18,
+      "cols": 5,
+      "cells": [
+        {
+          "index": 1,
+          "row": 1,
+          "column": 1,
+          "bbox": [
+            33.6,
+            148.8,
+            432,
+            30.13
+          ],
+          "fillColor": "#476E2C"
+        },
+        {
+          "index": 2,
+          "row": 1,
+          "column": 2,
+          "bbox": [
+            465.6,
+            148.8,
+            192,
+            30.13
+          ],
+          "text": "FY[Y-2]A",
+          "textPreview": "FY[Y-2]A",
+          "fillColor": "#476E2C",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "FY[Y-2]A",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "FY[Y-2]A",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#FFFFFF",
+                  "bold": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 3,
+          "row": 1,
+          "column": 3,
+          "bbox": [
+            657.6,
+            148.8,
+            192,
+            30.13
+          ],
+          "text": "FY[Y-1]A",
+          "textPreview": "FY[Y-1]A",
+          "fillColor": "#476E2C",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "FY[Y-1]A",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "FY[Y-1]A",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#FFFFFF",
+                  "bold": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 4,
+          "row": 1,
+          "column": 4,
+          "bbox": [
+            849.6,
+            148.8,
+            192,
+            30.13
+          ],
+          "text": "FY[Y]A",
+          "textPreview": "FY[Y]A",
+          "fillColor": "#476E2C",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "FY[Y]A",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "FY[Y]A",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#FFFFFF",
+                  "bold": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 5,
+          "row": 1,
+          "column": 5,
+          "bbox": [
+            1041.6,
+            148.8,
+            192,
+            30.13
+          ],
+          "text": "LTM [Date]",
+          "textPreview": "LTM [Date]",
+          "fillColor": "#476E2C",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "LTM [Date]",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "LTM [Date]",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#FFFFFF",
+                  "bold": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 6,
+          "row": 2,
+          "column": 1,
+          "bbox": [
+            33.6,
+            178.93,
+            432,
+            30.13
+          ],
+          "text": "OPERATING ACTIVITIES",
+          "textPreview": "OPERATING ACTIVITIES",
+          "fillColor": "#EFEFF1",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "OPERATING ACTIVITIES",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "left"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "OPERATING ACTIVITIES",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#476E2C",
+                  "bold": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 7,
+          "row": 2,
+          "column": 2,
+          "bbox": [
+            465.6,
+            178.93,
+            192,
+            30.13
+          ],
+          "fillColor": "#EFEFF1"
+        },
+        {
+          "index": 8,
+          "row": 2,
+          "column": 3,
+          "bbox": [
+            657.6,
+            178.93,
+            192,
+            30.13
+          ],
+          "fillColor": "#EFEFF1"
+        },
+        {
+          "index": 9,
+          "row": 2,
+          "column": 4,
+          "bbox": [
+            849.6,
+            178.93,
+            192,
+            30.13
+          ],
+          "fillColor": "#EFEFF1"
+        },
+        {
+          "index": 10,
+          "row": 2,
+          "column": 5,
+          "bbox": [
+            1041.6,
+            178.93,
+            192,
+            30.13
+          ],
+          "fillColor": "#EFEFF1"
+        },
+        {
+          "index": 11,
+          "row": 3,
+          "column": 1,
+          "bbox": [
+            33.6,
+            209.07,
+            432,
+            30.13
+          ],
+          "text": "Net Income",
+          "textPreview": "Net Income",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "Net Income",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "left"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "Net Income",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 12,
+          "row": 3,
+          "column": 2,
+          "bbox": [
+            465.6,
+            209.07,
+            192,
+            30.13
+          ],
+          "text": "$[X]M",
+          "textPreview": "$[X]M",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$[X]M",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$[X]M",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 13,
+          "row": 3,
+          "column": 3,
+          "bbox": [
+            657.6,
+            209.07,
+            192,
+            30.13
+          ],
+          "text": "$[X]M",
+          "textPreview": "$[X]M",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$[X]M",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$[X]M",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 14,
+          "row": 3,
+          "column": 4,
+          "bbox": [
+            849.6,
+            209.07,
+            192,
+            30.13
+          ],
+          "text": "$[X]M",
+          "textPreview": "$[X]M",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$[X]M",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$[X]M",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 15,
+          "row": 3,
+          "column": 5,
+          "bbox": [
+            1041.6,
+            209.07,
+            192,
+            30.13
+          ],
+          "text": "$[X]M",
+          "textPreview": "$[X]M",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$[X]M",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$[X]M",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 16,
+          "row": 4,
+          "column": 1,
+          "bbox": [
+            33.6,
+            239.2,
+            432,
+            30.13
+          ],
+          "text": "D&A",
+          "textPreview": "D&A",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "D&A",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "left"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "D&A",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 17,
+          "row": 4,
+          "column": 2,
+          "bbox": [
+            465.6,
+            239.2,
+            192,
+            30.13
+          ],
+          "text": "$[X]M",
+          "textPreview": "$[X]M",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$[X]M",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$[X]M",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 18,
+          "row": 4,
+          "column": 3,
+          "bbox": [
+            657.6,
+            239.2,
+            192,
+            30.13
+          ],
+          "text": "$[X]M",
+          "textPreview": "$[X]M",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$[X]M",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$[X]M",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 19,
+          "row": 4,
+          "column": 4,
+          "bbox": [
+            849.6,
+            239.2,
+            192,
+            30.13
+          ],
+          "text": "$[X]M",
+          "textPreview": "$[X]M",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$[X]M",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$[X]M",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 20,
+          "row": 4,
+          "column": 5,
+          "bbox": [
+            1041.6,
+            239.2,
+            192,
+            30.13
+          ],
+          "text": "$[X]M",
+          "textPreview": "$[X]M",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$[X]M",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$[X]M",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 21,
+          "row": 5,
+          "column": 1,
+          "bbox": [
+            33.6,
+            269.33,
+            432,
+            30.13
+          ],
+          "text": "Changes in Working Capital",
+          "textPreview": "Changes in Working Capital",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "Changes in Working Capital",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "left"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "Changes in Working Capital",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 22,
+          "row": 5,
+          "column": 2,
+          "bbox": [
+            465.6,
+            269.33,
+            192,
+            30.13
+          ],
+          "text": "([X]M)",
+          "textPreview": "([X]M)",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "([X]M)",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "([X]M)",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 23,
+          "row": 5,
+          "column": 3,
+          "bbox": [
+            657.6,
+            269.33,
+            192,
+            30.13
+          ],
+          "text": "([X]M)",
+          "textPreview": "([X]M)",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "([X]M)",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "([X]M)",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 24,
+          "row": 5,
+          "column": 4,
+          "bbox": [
+            849.6,
+            269.33,
+            192,
+            30.13
+          ],
+          "text": "([X]M)",
+          "textPreview": "([X]M)",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "([X]M)",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "([X]M)",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 25,
+          "row": 5,
+          "column": 5,
+          "bbox": [
+            1041.6,
+            269.33,
+            192,
+            30.13
+          ],
+          "text": "([X]M)",
+          "textPreview": "([X]M)",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "([X]M)",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "([X]M)",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 26,
+          "row": 6,
+          "column": 1,
+          "bbox": [
+            33.6,
+            299.47,
+            432,
+            30.13
+          ],
+          "text": "Other Non-Cash Items",
+          "textPreview": "Other Non-Cash Items",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "Other Non-Cash Items",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "left"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "Other Non-Cash Items",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 27,
+          "row": 6,
+          "column": 2,
+          "bbox": [
+            465.6,
+            299.47,
+            192,
+            30.13
+          ],
+          "text": "$[X]M",
+          "textPreview": "$[X]M",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$[X]M",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$[X]M",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 28,
+          "row": 6,
+          "column": 3,
+          "bbox": [
+            657.6,
+            299.47,
+            192,
+            30.13
+          ],
+          "text": "$[X]M",
+          "textPreview": "$[X]M",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$[X]M",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$[X]M",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 29,
+          "row": 6,
+          "column": 4,
+          "bbox": [
+            849.6,
+            299.47,
+            192,
+            30.13
+          ],
+          "text": "$[X]M",
+          "textPreview": "$[X]M",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$[X]M",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$[X]M",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 30,
+          "row": 6,
+          "column": 5,
+          "bbox": [
+            1041.6,
+            299.47,
+            192,
+            30.13
+          ],
+          "text": "$[X]M",
+          "textPreview": "$[X]M",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$[X]M",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$[X]M",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 31,
+          "row": 7,
+          "column": 1,
+          "bbox": [
+            33.6,
+            329.6,
+            432,
+            30.13
+          ],
+          "text": "Cash from Operations",
+          "textPreview": "Cash from Operations",
+          "fillColor": "#EFEFF1",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "Cash from Operations",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "left"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "Cash from Operations",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#2F3033",
+                  "bold": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 32,
+          "row": 7,
+          "column": 2,
+          "bbox": [
+            465.6,
+            329.6,
+            192,
+            30.13
+          ],
+          "text": "$[X]M",
+          "textPreview": "$[X]M",
+          "fillColor": "#EFEFF1",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$[X]M",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$[X]M",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#2F3033",
+                  "bold": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 33,
+          "row": 7,
+          "column": 3,
+          "bbox": [
+            657.6,
+            329.6,
+            192,
+            30.13
+          ],
+          "text": "$[X]M",
+          "textPreview": "$[X]M",
+          "fillColor": "#EFEFF1",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$[X]M",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$[X]M",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#2F3033",
+                  "bold": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 34,
+          "row": 7,
+          "column": 4,
+          "bbox": [
+            849.6,
+            329.6,
+            192,
+            30.13
+          ],
+          "text": "$[X]M",
+          "textPreview": "$[X]M",
+          "fillColor": "#EFEFF1",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$[X]M",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$[X]M",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#2F3033",
+                  "bold": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 35,
+          "row": 7,
+          "column": 5,
+          "bbox": [
+            1041.6,
+            329.6,
+            192,
+            30.13
+          ],
+          "text": "$[X]M",
+          "textPreview": "$[X]M",
+          "fillColor": "#EFEFF1",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$[X]M",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$[X]M",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#2F3033",
+                  "bold": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 36,
+          "row": 8,
+          "column": 1,
+          "bbox": [
+            33.6,
+            359.73,
+            432,
+            30.13
+          ],
+          "text": "INVESTING ACTIVITIES",
+          "textPreview": "INVESTING ACTIVITIES",
+          "fillColor": "#EFEFF1",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "INVESTING ACTIVITIES",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "left"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "INVESTING ACTIVITIES",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#476E2C",
+                  "bold": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 37,
+          "row": 8,
+          "column": 2,
+          "bbox": [
+            465.6,
+            359.73,
+            192,
+            30.13
+          ],
+          "fillColor": "#EFEFF1"
+        },
+        {
+          "index": 38,
+          "row": 8,
+          "column": 3,
+          "bbox": [
+            657.6,
+            359.73,
+            192,
+            30.13
+          ],
+          "fillColor": "#EFEFF1"
+        },
+        {
+          "index": 39,
+          "row": 8,
+          "column": 4,
+          "bbox": [
+            849.6,
+            359.73,
+            192,
+            30.13
+          ],
+          "fillColor": "#EFEFF1"
+        },
+        {
+          "index": 40,
+          "row": 8,
+          "column": 5,
+          "bbox": [
+            1041.6,
+            359.73,
+            192,
+            30.13
+          ],
+          "fillColor": "#EFEFF1"
+        },
+        {
+          "index": 41,
+          "row": 9,
+          "column": 1,
+          "bbox": [
+            33.6,
+            389.87,
+            432,
+            30.13
+          ],
+          "text": "Capital Expenditures",
+          "textPreview": "Capital Expenditures",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "Capital Expenditures",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "left"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "Capital Expenditures",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 42,
+          "row": 9,
+          "column": 2,
+          "bbox": [
+            465.6,
+            389.87,
+            192,
+            30.13
+          ],
+          "text": "([X]M)",
+          "textPreview": "([X]M)",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "([X]M)",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "([X]M)",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 43,
+          "row": 9,
+          "column": 3,
+          "bbox": [
+            657.6,
+            389.87,
+            192,
+            30.13
+          ],
+          "text": "([X]M)",
+          "textPreview": "([X]M)",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "([X]M)",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "([X]M)",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 44,
+          "row": 9,
+          "column": 4,
+          "bbox": [
+            849.6,
+            389.87,
+            192,
+            30.13
+          ],
+          "text": "([X]M)",
+          "textPreview": "([X]M)",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "([X]M)",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "([X]M)",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 45,
+          "row": 9,
+          "column": 5,
+          "bbox": [
+            1041.6,
+            389.87,
+            192,
+            30.13
+          ],
+          "text": "([X]M)",
+          "textPreview": "([X]M)",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "([X]M)",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "([X]M)",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 46,
+          "row": 10,
+          "column": 1,
+          "bbox": [
+            33.6,
+            420,
+            432,
+            30.13
+          ],
+          "text": "Acquisitions / Dispositions",
+          "textPreview": "Acquisitions / Dispositions",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "Acquisitions / Dispositions",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "left"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "Acquisitions / Dispositions",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 47,
+          "row": 10,
+          "column": 2,
+          "bbox": [
+            465.6,
+            420,
+            192,
+            30.13
+          ],
+          "text": "([X]M)",
+          "textPreview": "([X]M)",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "([X]M)",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "([X]M)",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 48,
+          "row": 10,
+          "column": 3,
+          "bbox": [
+            657.6,
+            420,
+            192,
+            30.13
+          ],
+          "text": "([X]M)",
+          "textPreview": "([X]M)",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "([X]M)",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "([X]M)",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 49,
+          "row": 10,
+          "column": 4,
+          "bbox": [
+            849.6,
+            420,
+            192,
+            30.13
+          ],
+          "text": "([X]M)",
+          "textPreview": "([X]M)",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "([X]M)",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "([X]M)",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 50,
+          "row": 10,
+          "column": 5,
+          "bbox": [
+            1041.6,
+            420,
+            192,
+            30.13
+          ],
+          "text": "([X]M)",
+          "textPreview": "([X]M)",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "([X]M)",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "([X]M)",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 51,
+          "row": 11,
+          "column": 1,
+          "bbox": [
+            33.6,
+            450.13,
+            432,
+            30.13
+          ],
+          "text": "Cash from Investing",
+          "textPreview": "Cash from Investing",
+          "fillColor": "#EFEFF1",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "Cash from Investing",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "left"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "Cash from Investing",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#2F3033",
+                  "bold": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 52,
+          "row": 11,
+          "column": 2,
+          "bbox": [
+            465.6,
+            450.13,
+            192,
+            30.13
+          ],
+          "text": "([X]M)",
+          "textPreview": "([X]M)",
+          "fillColor": "#EFEFF1",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "([X]M)",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "([X]M)",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#2F3033",
+                  "bold": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 53,
+          "row": 11,
+          "column": 3,
+          "bbox": [
+            657.6,
+            450.13,
+            192,
+            30.13
+          ],
+          "text": "([X]M)",
+          "textPreview": "([X]M)",
+          "fillColor": "#EFEFF1",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "([X]M)",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "([X]M)",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#2F3033",
+                  "bold": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 54,
+          "row": 11,
+          "column": 4,
+          "bbox": [
+            849.6,
+            450.13,
+            192,
+            30.13
+          ],
+          "text": "([X]M)",
+          "textPreview": "([X]M)",
+          "fillColor": "#EFEFF1",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "([X]M)",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "([X]M)",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#2F3033",
+                  "bold": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 55,
+          "row": 11,
+          "column": 5,
+          "bbox": [
+            1041.6,
+            450.13,
+            192,
+            30.13
+          ],
+          "text": "([X]M)",
+          "textPreview": "([X]M)",
+          "fillColor": "#EFEFF1",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "([X]M)",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "([X]M)",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#2F3033",
+                  "bold": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 56,
+          "row": 12,
+          "column": 1,
+          "bbox": [
+            33.6,
+            480.27,
+            432,
+            30.13
+          ],
+          "text": "FINANCING ACTIVITIES",
+          "textPreview": "FINANCING ACTIVITIES",
+          "fillColor": "#EFEFF1",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "FINANCING ACTIVITIES",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "left"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "FINANCING ACTIVITIES",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#476E2C",
+                  "bold": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 57,
+          "row": 12,
+          "column": 2,
+          "bbox": [
+            465.6,
+            480.27,
+            192,
+            30.13
+          ],
+          "fillColor": "#EFEFF1"
+        },
+        {
+          "index": 58,
+          "row": 12,
+          "column": 3,
+          "bbox": [
+            657.6,
+            480.27,
+            192,
+            30.13
+          ],
+          "fillColor": "#EFEFF1"
+        },
+        {
+          "index": 59,
+          "row": 12,
+          "column": 4,
+          "bbox": [
+            849.6,
+            480.27,
+            192,
+            30.13
+          ],
+          "fillColor": "#EFEFF1"
+        },
+        {
+          "index": 60,
+          "row": 12,
+          "column": 5,
+          "bbox": [
+            1041.6,
+            480.27,
+            192,
+            30.13
+          ],
+          "fillColor": "#EFEFF1"
+        },
+        {
+          "index": 61,
+          "row": 13,
+          "column": 1,
+          "bbox": [
+            33.6,
+            510.4,
+            432,
+            30.13
+          ],
+          "text": "Net Borrowings / (Repayments)",
+          "textPreview": "Net Borrowings / (Repayments)",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "Net Borrowings / (Repayments)",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "left"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "Net Borrowings / (Repayments)",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 62,
+          "row": 13,
+          "column": 2,
+          "bbox": [
+            465.6,
+            510.4,
+            192,
+            30.13
+          ],
+          "text": "$[X]M",
+          "textPreview": "$[X]M",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$[X]M",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$[X]M",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 63,
+          "row": 13,
+          "column": 3,
+          "bbox": [
+            657.6,
+            510.4,
+            192,
+            30.13
+          ],
+          "text": "$[X]M",
+          "textPreview": "$[X]M",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$[X]M",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$[X]M",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 64,
+          "row": 13,
+          "column": 4,
+          "bbox": [
+            849.6,
+            510.4,
+            192,
+            30.13
+          ],
+          "text": "$[X]M",
+          "textPreview": "$[X]M",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$[X]M",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$[X]M",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 65,
+          "row": 13,
+          "column": 5,
+          "bbox": [
+            1041.6,
+            510.4,
+            192,
+            30.13
+          ],
+          "text": "$[X]M",
+          "textPreview": "$[X]M",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$[X]M",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$[X]M",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 66,
+          "row": 14,
+          "column": 1,
+          "bbox": [
+            33.6,
+            540.53,
+            432,
+            30.13
+          ],
+          "text": "Dividends / Distributions",
+          "textPreview": "Dividends / Distributions",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "Dividends / Distributions",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "left"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "Dividends / Distributions",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 67,
+          "row": 14,
+          "column": 2,
+          "bbox": [
+            465.6,
+            540.53,
+            192,
+            30.13
+          ],
+          "text": "([X]M)",
+          "textPreview": "([X]M)",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "([X]M)",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "([X]M)",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 68,
+          "row": 14,
+          "column": 3,
+          "bbox": [
+            657.6,
+            540.53,
+            192,
+            30.13
+          ],
+          "text": "([X]M)",
+          "textPreview": "([X]M)",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "([X]M)",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "([X]M)",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 69,
+          "row": 14,
+          "column": 4,
+          "bbox": [
+            849.6,
+            540.53,
+            192,
+            30.13
+          ],
+          "text": "([X]M)",
+          "textPreview": "([X]M)",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "([X]M)",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "([X]M)",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 70,
+          "row": 14,
+          "column": 5,
+          "bbox": [
+            1041.6,
+            540.53,
+            192,
+            30.13
+          ],
+          "text": "([X]M)",
+          "textPreview": "([X]M)",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "([X]M)",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "([X]M)",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 71,
+          "row": 15,
+          "column": 1,
+          "bbox": [
+            33.6,
+            570.67,
+            432,
+            30.13
+          ],
+          "text": "Cash from Financing",
+          "textPreview": "Cash from Financing",
+          "fillColor": "#EFEFF1",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "Cash from Financing",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "left"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "Cash from Financing",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#2F3033",
+                  "bold": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 72,
+          "row": 15,
+          "column": 2,
+          "bbox": [
+            465.6,
+            570.67,
+            192,
+            30.13
+          ],
+          "text": "([X]M)",
+          "textPreview": "([X]M)",
+          "fillColor": "#EFEFF1",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "([X]M)",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "([X]M)",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#2F3033",
+                  "bold": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 73,
+          "row": 15,
+          "column": 3,
+          "bbox": [
+            657.6,
+            570.67,
+            192,
+            30.13
+          ],
+          "text": "([X]M)",
+          "textPreview": "([X]M)",
+          "fillColor": "#EFEFF1",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "([X]M)",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "([X]M)",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#2F3033",
+                  "bold": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 74,
+          "row": 15,
+          "column": 4,
+          "bbox": [
+            849.6,
+            570.67,
+            192,
+            30.13
+          ],
+          "text": "([X]M)",
+          "textPreview": "([X]M)",
+          "fillColor": "#EFEFF1",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "([X]M)",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "([X]M)",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#2F3033",
+                  "bold": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 75,
+          "row": 15,
+          "column": 5,
+          "bbox": [
+            1041.6,
+            570.67,
+            192,
+            30.13
+          ],
+          "text": "([X]M)",
+          "textPreview": "([X]M)",
+          "fillColor": "#EFEFF1",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "([X]M)",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "([X]M)",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#2F3033",
+                  "bold": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 76,
+          "row": 16,
+          "column": 1,
+          "bbox": [
+            33.6,
+            600.8,
+            432,
+            30.13
+          ],
+          "text": "Net Change in Cash",
+          "textPreview": "Net Change in Cash",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "Net Change in Cash",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "left"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "Net Change in Cash",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#2F3033",
+                  "bold": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 77,
+          "row": 16,
+          "column": 2,
+          "bbox": [
+            465.6,
+            600.8,
+            192,
+            30.13
+          ],
+          "text": "$[X]M",
+          "textPreview": "$[X]M",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$[X]M",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$[X]M",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71",
+                  "bold": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 78,
+          "row": 16,
+          "column": 3,
+          "bbox": [
+            657.6,
+            600.8,
+            192,
+            30.13
+          ],
+          "text": "$[X]M",
+          "textPreview": "$[X]M",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$[X]M",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$[X]M",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71",
+                  "bold": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 79,
+          "row": 16,
+          "column": 4,
+          "bbox": [
+            849.6,
+            600.8,
+            192,
+            30.13
+          ],
+          "text": "$[X]M",
+          "textPreview": "$[X]M",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$[X]M",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$[X]M",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71",
+                  "bold": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 80,
+          "row": 16,
+          "column": 5,
+          "bbox": [
+            1041.6,
+            600.8,
+            192,
+            30.13
+          ],
+          "text": "$[X]M",
+          "textPreview": "$[X]M",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$[X]M",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$[X]M",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#6D6E71",
+                  "bold": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 81,
+          "row": 17,
+          "column": 1,
+          "bbox": [
+            33.6,
+            630.93,
+            432,
+            30.13
+          ],
+          "text": "Free Cash Flow",
+          "textPreview": "Free Cash Flow",
+          "fillColor": "#EFEFF1",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "Free Cash Flow",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "left"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "Free Cash Flow",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#476E2C",
+                  "bold": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 82,
+          "row": 17,
+          "column": 2,
+          "bbox": [
+            465.6,
+            630.93,
+            192,
+            30.13
+          ],
+          "text": "$[X]M",
+          "textPreview": "$[X]M",
+          "fillColor": "#EFEFF1",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$[X]M",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$[X]M",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#476E2C",
+                  "bold": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 83,
+          "row": 17,
+          "column": 3,
+          "bbox": [
+            657.6,
+            630.93,
+            192,
+            30.13
+          ],
+          "text": "$[X]M",
+          "textPreview": "$[X]M",
+          "fillColor": "#EFEFF1",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$[X]M",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$[X]M",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#476E2C",
+                  "bold": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 84,
+          "row": 17,
+          "column": 4,
+          "bbox": [
+            849.6,
+            630.93,
+            192,
+            30.13
+          ],
+          "text": "$[X]M",
+          "textPreview": "$[X]M",
+          "fillColor": "#EFEFF1",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$[X]M",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$[X]M",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#476E2C",
+                  "bold": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 85,
+          "row": 17,
+          "column": 5,
+          "bbox": [
+            1041.6,
+            630.93,
+            192,
+            30.13
+          ],
+          "text": "$[X]M",
+          "textPreview": "$[X]M",
+          "fillColor": "#EFEFF1",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "$[X]M",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "$[X]M",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#476E2C",
+                  "bold": true
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 86,
+          "row": 18,
+          "column": 1,
+          "bbox": [
+            33.6,
+            661.07,
+            432,
+            30.13
+          ],
+          "text": "FCF Conversion (% EBITDA)",
+          "textPreview": "FCF Conversion (% EBITDA)",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "FCF Conversion (% EBITDA)",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "left"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "FCF Conversion (% EBITDA)",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#8C8D90"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 87,
+          "row": 18,
+          "column": 2,
+          "bbox": [
+            465.6,
+            661.07,
+            192,
+            30.13
+          ],
+          "text": "[X]%",
+          "textPreview": "[X]%",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "[X]%",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "[X]%",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#8C8D90"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 88,
+          "row": 18,
+          "column": 3,
+          "bbox": [
+            657.6,
+            661.07,
+            192,
+            30.13
+          ],
+          "text": "[X]%",
+          "textPreview": "[X]%",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "[X]%",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "[X]%",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#8C8D90"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 89,
+          "row": 18,
+          "column": 4,
+          "bbox": [
+            849.6,
+            661.07,
+            192,
+            30.13
+          ],
+          "text": "[X]%",
+          "textPreview": "[X]%",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "[X]%",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "[X]%",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#8C8D90"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "index": 90,
+          "row": 18,
+          "column": 5,
+          "bbox": [
+            1041.6,
+            661.07,
+            192,
+            30.13
+          ],
+          "text": "[X]%",
+          "textPreview": "[X]%",
+          "fillColor": "#FFFFFF",
+          "paragraphs": [
+            {
+              "index": 1,
+              "text": "[X]%",
+              "marginLeft": 0,
+              "indent": 0,
+              "resolvedTextStyle": {
+                "alignment": "center"
+              },
+              "runs": [
+                {
+                  "index": 1,
+                  "text": "[X]%",
+                  "fontSize": 11.73,
+                  "typeface": "Calibri",
+                  "color": "#8C8D90"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 8,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/je9cvixc",
+      "id": "9",
+      "name": "Text 6",
+      "bbox": [
+        33.6,
+        693.12,
+        1212.48,
+        21.12
+      ],
+      "geometry": "rect",
+      "text": "Note: Free Cash Flow = Cash from Operations less CapEx. Source: Audited financial statements.",
+      "textPreview": "Note: Free Cash Flow = Cash from Operations less CapEx. Source: Audited financial statements.",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Note: Free Cash Flow = Cash from Operations less CapEx. Source: Audited financial statements."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Note: Free Cash Flow = Cash from Operations less CapEx. Source: Audited financial statements.",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "Note: Free Cash Flow = Cash from Operations less CapEx. Source: Audited financial statements.",
+              "fontSize": 10,
+              "typeface": "Calibri",
+              "color": "#8C8D90"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "composeRuns": []
+}
