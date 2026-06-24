@@ -10,7 +10,10 @@ import {
   Trash2,
   Check,
   X,
+  Download,
 } from "lucide-react";
+import * as XLSX from "xlsx";
+import { jsPDF } from "jspdf";
 import { cn } from "../../../lib/utils";
 import {
   getCompanyRequest,
@@ -275,6 +278,8 @@ export default function WorkspaceTaxReconciliation() {
   const [matrixData, setMatrixData] = useState(storedState?.matrixData ?? {});
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(storedState?.error ?? "");
+  const [taxExportOpen, setTaxExportOpen] = useState(false);
+  const [taxIsExporting, setTaxIsExporting] = useState(false);
   const [warnings, setWarnings] = useState(storedState?.warnings ?? []);
   const [isQBDisconnected, setIsQBDisconnected] = useState(false);
   const [syncStatus, setSyncStatus] = useState(() => ({
@@ -1051,6 +1056,259 @@ export default function WorkspaceTaxReconciliation() {
   const hasMatrixData = Object.keys(matrixData).length > 0;
   const reportTitle = company?.name || "Your Company";
 
+  const exportTaxReconToExcel = () => {
+    const wb = XLSX.utils.book_new();
+    const fmtN = (v) => (v == null ? "" : Number(v) || 0);
+
+    const getReconVal = (yr, label) => {
+      const ovr = reconcilingOverrides[String(yr)]?.[label];
+      if (ovr?.deleted) return 0;
+      if (ovr !== undefined) return Number(ovr.taxReturn ?? 0);
+      const d = matrixData[yr]?.data?.find((r) => r?.label === label);
+      return Number(d?.taxReturn ?? 0);
+    };
+
+    const headerRow1 = ["Source"];
+    const headerRow2 = [""];
+    for (const yr of activeYears) {
+      headerRow1.push(`FY ${yr}`, "", "");
+      headerRow2.push("P&L", "Tax Return", "TR Variance");
+    }
+
+    const allRows = [headerRow1, headerRow2];
+
+    for (const { label } of MAIN_LINE_ITEMS) {
+      const row = [label];
+      for (const yr of activeYears) {
+        const d = matrixData[yr]?.data?.find((r) => r?.label === label);
+        const pl = Number(d?.pl ?? 0);
+        const taxReturn = Number(d?.taxReturn ?? 0);
+        row.push(fmtN(pl), fmtN(taxReturn), fmtN(taxReturn - pl));
+      }
+      allRows.push(row);
+    }
+
+    const secRow = ["TAX TO BOOK RECONCILING ITEMS"];
+    for (let i = 0; i < activeYears.length * 3; i++) secRow.push("");
+    allRows.push(secRow);
+
+    for (const label of dynamicReconcilingItems) {
+      const row = [label];
+      for (const yr of activeYears) {
+        const taxReturn = getReconVal(yr, label);
+        row.push("", fmtN(taxReturn), fmtN(taxReturn));
+      }
+      allRows.push(row);
+    }
+
+    const reconCheckRow = ["Reconciliation Check"];
+    const unreconPctRow = ["Unreconciled %"];
+    for (const yr of activeYears) {
+      const nd = matrixData[yr]?.data?.find((r) => r?.label === "Net Income");
+      const plNet = Number(nd?.pl ?? 0);
+      const taxNet = Number(nd?.taxReturn ?? 0);
+      const itemsSum = dynamicReconcilingItems.reduce((acc, lbl) => acc + getReconVal(yr, lbl), 0);
+      const check = taxNet - plNet - itemsSum;
+      reconCheckRow.push(fmtN(check), "", "");
+      const pct = plNet !== 0 ? ((check / plNet) * 100).toFixed(1) + "%" : "0.0%";
+      unreconPctRow.push(pct, "", "");
+    }
+    allRows.push(reconCheckRow);
+    allRows.push(unreconPctRow);
+
+    const ws = XLSX.utils.aoa_to_sheet(allRows);
+    XLSX.utils.book_append_sheet(wb, ws, "Tax Reconciliation");
+    XLSX.writeFile(wb, "Tax Reconciliation.xlsx");
+  };
+
+  const exportTaxReconToPdf = () => {
+    const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
+    const PAGE_W = 841.89;
+    const PAGE_H = 595.28;
+    const MARGIN = 30;
+    const usableW = PAGE_W - MARGIN * 2;
+    const LABEL_COL = 180;
+    const yearGroupW = (usableW - LABEL_COL) / (activeYears.length || 1);
+    const subColW = yearGroupW / 3;
+    const ROW_H = 18;
+    const FS = 8;
+    let y = MARGIN;
+
+    const fmtN = (v) => {
+      const n = Number(v);
+      if (v == null || v === "" || isNaN(n)) return "-";
+      return n.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+    };
+
+    const getReconVal = (yr, label) => {
+      const ovr = reconcilingOverrides[String(yr)]?.[label];
+      if (ovr?.deleted) return 0;
+      if (ovr !== undefined) return Number(ovr.taxReturn ?? 0);
+      const d = matrixData[yr]?.data?.find((r) => r?.label === label);
+      return Number(d?.taxReturn ?? 0);
+    };
+
+    const checkPage = () => {
+      if (y + ROW_H > PAGE_H - MARGIN) { doc.addPage(); y = MARGIN; }
+    };
+
+    doc.setFontSize(14);
+    doc.setFont("helvetica", "bold");
+    doc.setTextColor(0, 0, 0);
+    doc.text("Tax Reconciliation", MARGIN, y + 12);
+    y += 28;
+
+    // Year group header row
+    doc.setFontSize(FS + 1);
+    doc.setFont("helvetica", "bold");
+    doc.setTextColor(0, 0, 0);
+    doc.text("Source", MARGIN + 4, y + ROW_H - 5);
+    activeYears.forEach((yr, i) => {
+      const x = MARGIN + LABEL_COL + i * yearGroupW;
+      doc.text(`FY ${yr}`, x + yearGroupW / 2, y + ROW_H - 5, { align: "center" });
+    });
+    doc.setDrawColor(0, 0, 0);
+    doc.line(MARGIN, y + ROW_H, MARGIN + usableW, y + ROW_H);
+    y += ROW_H;
+
+    // Sub-column headers
+    doc.setFontSize(FS);
+    doc.setFont("helvetica", "bold");
+    doc.setTextColor(0, 0, 0);
+    activeYears.forEach((_, i) => {
+      ["P&L", "Tax Return", "TR Variance"].forEach((sl, j) => {
+        const rx = MARGIN + LABEL_COL + i * yearGroupW + (j + 1) * subColW - 4;
+        doc.text(sl, rx, y + ROW_H - 5, { align: "right" });
+      });
+    });
+    doc.setDrawColor(0, 0, 0);
+    doc.line(MARGIN, y + ROW_H, MARGIN + usableW, y + ROW_H);
+    y += ROW_H;
+
+    const drawRow = (label, bold, getCols) => {
+      checkPage();
+      doc.setFont("helvetica", bold ? "bold" : "normal");
+      doc.setFontSize(FS);
+      doc.setTextColor(0, 0, 0);
+      doc.text(label, MARGIN + 4, y + ROW_H - 5);
+      activeYears.forEach((yr, i) => {
+        const [v0, v1, v2] = getCols(yr);
+        const bx = MARGIN + LABEL_COL + i * yearGroupW;
+        if (v0 !== "") doc.text(fmtN(v0), bx + subColW - 4, y + ROW_H - 5, { align: "right" });
+        if (v1 !== "") doc.text(fmtN(v1), bx + subColW * 2 - 4, y + ROW_H - 5, { align: "right" });
+        if (v2 !== "") doc.text(fmtN(v2), bx + subColW * 3 - 4, y + ROW_H - 5, { align: "right" });
+      });
+      doc.setDrawColor(180, 180, 180);
+      doc.line(MARGIN, y + ROW_H, MARGIN + usableW, y + ROW_H);
+      y += ROW_H;
+    };
+
+    for (const { label, isHighlight } of MAIN_LINE_ITEMS) {
+      drawRow(label, isHighlight, (yr) => {
+        const d = matrixData[yr]?.data?.find((r) => r?.label === label);
+        const pl = Number(d?.pl ?? 0);
+        const tr = Number(d?.taxReturn ?? 0);
+        return [pl, tr, tr - pl];
+      });
+    }
+
+    checkPage();
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(FS);
+    doc.setTextColor(0, 0, 0);
+    doc.text("TAX TO BOOK RECONCILING ITEMS", MARGIN + 4, y + ROW_H - 5);
+    doc.setDrawColor(0, 0, 0);
+    doc.line(MARGIN, y + ROW_H, MARGIN + usableW, y + ROW_H);
+    y += ROW_H;
+
+    for (const label of dynamicReconcilingItems) {
+      drawRow(label, false, (yr) => {
+        const tr = getReconVal(yr, label);
+        return ["", tr, tr];
+      });
+    }
+
+    drawRow("Reconciliation Check", true, (yr) => {
+      const nd = matrixData[yr]?.data?.find((r) => r?.label === "Net Income");
+      const plNet = Number(nd?.pl ?? 0);
+      const taxNet = Number(nd?.taxReturn ?? 0);
+      const itemsSum = dynamicReconcilingItems.reduce((acc, lbl) => acc + getReconVal(yr, lbl), 0);
+      return [taxNet - plNet - itemsSum, "", ""];
+    });
+
+    checkPage();
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(FS);
+    doc.setTextColor(0, 0, 0);
+    doc.text("Unreconciled %", MARGIN + 4, y + ROW_H - 5);
+    activeYears.forEach((yr, i) => {
+      const nd = matrixData[yr]?.data?.find((r) => r?.label === "Net Income");
+      const plNet = Number(nd?.pl ?? 0);
+      const taxNet = Number(nd?.taxReturn ?? 0);
+      const itemsSum = dynamicReconcilingItems.reduce((acc, lbl) => acc + getReconVal(yr, lbl), 0);
+      const check = taxNet - plNet - itemsSum;
+      const pct = plNet !== 0 ? ((check / plNet) * 100).toFixed(1) + "%" : "0.0%";
+      const bx = MARGIN + LABEL_COL + i * yearGroupW;
+      doc.text(pct, bx + subColW - 4, y + ROW_H - 5, { align: "right" });
+    });
+    y += ROW_H;
+
+    doc.save("Tax Reconciliation.pdf");
+  };
+
+  const handleTaxExport = (kind) => {
+    setTaxExportOpen(false);
+    setTaxIsExporting(true);
+    try {
+      if (kind === "excel") {
+        exportTaxReconToExcel();
+      } else {
+        exportTaxReconToPdf();
+      }
+    } catch (err) {
+      console.error("[TaxRecon] Export failed:", err);
+      alert(err?.message || "Export failed. Please try again.");
+    } finally {
+      setTaxIsExporting(false);
+    }
+  };
+
+  const TaxExportDropdown = (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setTaxExportOpen((v) => !v)}
+        disabled={taxIsExporting}
+        className="inline-flex h-9 items-center justify-center gap-2 rounded-xl border border-border bg-bg-card px-3 text-[13px] font-medium text-text-primary transition hover:bg-bg-page disabled:cursor-not-allowed disabled:opacity-70"
+      >
+        <Download size={14} className={taxIsExporting ? "animate-pulse" : ""} />
+        {taxIsExporting ? "Exporting…" : "Export"}
+        <ChevronDown size={12} />
+      </button>
+      {taxExportOpen && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setTaxExportOpen(false)} />
+          <div className="absolute right-0 z-20 mt-1 w-48 overflow-hidden rounded-md border border-border bg-bg-card shadow-lg">
+            <button
+              type="button"
+              onClick={() => handleTaxExport("excel")}
+              className="block w-full px-3 py-2 text-left text-[13px] text-text-primary transition-colors hover:bg-bg-page"
+            >
+              Export to Excel (.xlsx)
+            </button>
+            <button
+              type="button"
+              onClick={() => handleTaxExport("pdf")}
+              className="block w-full px-3 py-2 text-left text-[13px] text-text-primary transition-colors hover:bg-bg-page"
+            >
+              Export to PDF (.pdf)
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+
   // ── Render ────────────────────────────────────────────────────────────
 
   return (
@@ -1121,6 +1379,7 @@ export default function WorkspaceTaxReconciliation() {
               <RefreshCw size={14} className={cn(isLoading && "animate-spin")} />
               {isLoading ? "Syncing…" : "Sync"}
             </button>
+            {TaxExportDropdown}
           </div>
           {warnings.length > 0 && !error && (
             <div className="space-y-1 rounded-xl border border-yellow-200 bg-yellow-50 px-4 py-3 text-[13px] text-yellow-800">
@@ -1202,6 +1461,7 @@ export default function WorkspaceTaxReconciliation() {
                 <RefreshCw size={16} className={cn(isLoading && "animate-spin")} />
                 Refresh
               </button>
+              {TaxExportDropdown}
             </div>
           </div>
 
@@ -1241,7 +1501,7 @@ export default function WorkspaceTaxReconciliation() {
           </p>
         </div>
 
-        <div className="overflow-x-auto">
+        <div id="tax-recon-table" className="overflow-x-auto">
           <table className="w-full table-fixed border-collapse text-[13px]">
             <colgroup>
               <col style={{ width: "220px" }} />
