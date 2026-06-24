@@ -697,6 +697,10 @@ export async function getProfitAndLossDetail(
               if (!accMap.has(accKey)) accMap.set(accKey, { accountNumber: acc.accountNumber, accountName: acc.accountName, monthly: {}, transactions: [] });
               const aggAcc = accMap.get(accKey);
               aggAcc.monthly[yr] = yrMonths.reduce((sum, m) => sum + Number(acc.monthly?.[m] || 0), 0);
+              // Carry transactions tagged with fiscalYear so vendor drill-down works in yearly view
+              if (Array.isArray(acc.transactions) && acc.transactions.length > 0) {
+                acc.transactions.forEach((tx) => aggAcc.transactions.push({ ...tx, fiscalYear: yr }));
+              }
             }
           }
         }

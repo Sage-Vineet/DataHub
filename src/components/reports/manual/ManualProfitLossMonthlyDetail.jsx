@@ -22,27 +22,30 @@ const STICKY_FIRST_COL = "sticky left-0 z-10 bg-bg-page border-r border-border";
 function AccountRow({ account, months, partyLabel = "Vendor" }) {
   const [isOpen, setIsOpen] = useState(false);
   const hasTransactions = Array.isArray(account.transactions) && account.transactions.length > 0;
+  const isYearMode = months.length > 0 && months[0] > 12;
 
   const vendorGroups = useMemo(() => {
     const map = new Map();
     const emptyName = `No ${partyLabel.toLowerCase()} / —`;
     (account.transactions || []).forEach((tx) => {
       const name = String(tx.vendorName || "").trim() || emptyName;
-      const month = Number(String(tx.date || "").slice(5, 7));
       const amt = Number(tx.amount || 0);
-      if (!map.has(name)) {
-        map.set(name, { vendorName: name, monthly: {}, total: 0 });
-      }
+      if (!map.has(name)) map.set(name, { vendorName: name, monthly: {}, total: 0 });
       const g = map.get(name);
       g.total += amt;
-      if (month >= 1 && month <= 12) {
-        g.monthly[month] = (g.monthly[month] || 0) + amt;
+      if (isYearMode) {
+        // In yearly mode key by fiscalYear so vendor columns align with year columns
+        const yr = tx.fiscalYear || tx.year;
+        if (yr) g.monthly[yr] = (g.monthly[yr] || 0) + amt;
+      } else {
+        const month = Number(String(tx.date || "").slice(5, 7));
+        if (month >= 1 && month <= 12) g.monthly[month] = (g.monthly[month] || 0) + amt;
       }
     });
     return Array.from(map.values()).sort(
       (a, b) => Math.abs(b.total) - Math.abs(a.total),
     );
-  }, [account.transactions, partyLabel]);
+  }, [account.transactions, partyLabel, isYearMode]);
 
   return (
     <>
