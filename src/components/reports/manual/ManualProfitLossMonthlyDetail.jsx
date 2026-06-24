@@ -8,8 +8,9 @@ function colClass(value) {
   return `px-3 py-1.5 text-right text-[12px] tabular-nums ${Number(value) < 0 ? "text-status-error" : "text-text-secondary"}`;
 }
 
-function monthLabel(monthNum, year) {
-  return `${MONTH_NAMES[monthNum - 1]}${year ? ` ${year}` : ""}`;
+function monthLabel(col, year) {
+  if (col > 12) return String(col); // yearly mode: col IS the year number
+  return `${MONTH_NAMES[col - 1] || ""}${year ? ` ${year}` : ""}`;
 }
 
 // Shared class for the frozen first-column cell in every body row.
@@ -210,7 +211,10 @@ export default function ManualProfitLossMonthlyDetail({
 
   const year = data?.year || null;
   const allMonths = Array.isArray(data?.months) ? data.months : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-  const months = selectedMonths && selectedMonths.length > 0
+  // In yearly mode columns are year numbers (>12); selectedMonths contains month numbers (1-12)
+  // so the filter would incorrectly remove all columns — skip it in yearly mode.
+  const isYearMode = allMonths.some((m) => m > 12);
+  const months = (!isYearMode && selectedMonths && selectedMonths.length > 0)
     ? allMonths.filter((m) => selectedMonths.includes(m))
     : allMonths;
   const sections = Array.isArray(data?.sections) ? data.sections : [];
@@ -218,9 +222,17 @@ export default function ManualProfitLossMonthlyDetail({
 
   const firstMonth = months.length > 0 ? months[0] : 1;
   const lastMonth = months.length > 0 ? months[months.length - 1] : 12;
-  const fallbackSubtitle = year
-    ? `${monthNames[firstMonth - 1]} 1–${monthNames[lastMonth - 1]} ${new Date(year, lastMonth, 0).getDate()}, ${year}`
-    : "All Dates";
+
+  let fallbackSubtitle;
+  if (isYearMode) {
+    fallbackSubtitle = firstMonth === lastMonth
+      ? `FY ${firstMonth}`
+      : `FY ${firstMonth} – FY ${lastMonth}`;
+  } else {
+    fallbackSubtitle = year
+      ? `${monthNames[firstMonth - 1] || ""} 1–${monthNames[lastMonth - 1] || ""} ${new Date(year, lastMonth, 0).getDate()}, ${year}`
+      : "All Dates";
+  }
   const displaySubtitle = subtitle === null ? null : (subtitle || fallbackSubtitle);
 
   if (!sections.length) {

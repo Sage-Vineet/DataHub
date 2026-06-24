@@ -656,15 +656,75 @@ export async function getProfitAndLossDetail(
   options = {},
 ) {
   if ((options?.sourceMode || "quickbooks") === "manual") {
-    // Only pass manual filters — QB date params not used for staged GL data
-    const params = {
+    const baseParams = {
       ...((options?.manualFilters && typeof options.manualFilters === "object")
         ? options.manualFilters
         : {}),
     };
 
-    console.log("[DetailedReportUI][P&L] Requesting monthly detail with params:", JSON.stringify(params));
-    const response = await getManualStagedProfitLossMonthlyDetail({ params });
+    // Yearly mode: one call per year, aggregate annual totals (sum of all months)
+    if (options?.yearMode === true && options?.startYear && options?.endYear) {
+      const startYr = Number(options.startYear);
+      const endYr = Number(options.endYear);
+      const years = [];
+      for (let y = startYr; y <= endYr; y++) years.push(y);
+
+      const yearResults = {};
+      await Promise.all(years.map(async (yr) => {
+        const resp = await getManualStagedProfitLossMonthlyDetail({ params: { ...baseParams, fiscalYear: yr } });
+        yearResults[yr] = resp;
+      }));
+
+      const firstAvailable = Object.values(yearResults).find((r) => Array.isArray(r?.sections) && r.sections.length > 0);
+      if (!firstAvailable) {
+        return { source: "manual_gl_staged_transactions", reportType: "profit_loss_monthly_detail", year: null, months: years, sections: [] };
+      }
+
+      const lastYr = years[years.length - 1];
+      const aggregatedSections = firstAvailable.sections.map((templateSection) => {
+        const monthlyTotals = {};
+        const accMap = new Map();
+
+        for (const yr of years) {
+          const section = yearResults[yr]?.sections?.find((s) => s.key === templateSection.key);
+          if (!section) continue;
+          const yrMonths = yearResults[yr]?.months || [];
+          monthlyTotals[yr] = yrMonths.reduce((sum, m) => sum + Number(section.monthlyTotals?.[m] || 0), 0);
+
+          if (!templateSection.isCalculated) {
+            for (const acc of (section.accounts || [])) {
+              const accKey = `${acc.accountNumber}::${acc.accountName}`;
+              if (!accMap.has(accKey)) accMap.set(accKey, { accountNumber: acc.accountNumber, accountName: acc.accountName, monthly: {}, transactions: [] });
+              const aggAcc = accMap.get(accKey);
+              aggAcc.monthly[yr] = yrMonths.reduce((sum, m) => sum + Number(acc.monthly?.[m] || 0), 0);
+            }
+          }
+        }
+
+        const base = {
+          key: templateSection.key,
+          label: templateSection.label,
+          isCalculated: templateSection.isCalculated,
+          totalLabel: templateSection.totalLabel,
+          monthlyTotals,
+          total: monthlyTotals[lastYr] ?? 0,
+        };
+        if (!templateSection.isCalculated) base.accounts = Array.from(accMap.values());
+        return base;
+      });
+
+      return {
+        source: firstAvailable.source || "manual_gl_staged_transactions",
+        reportType: "profit_loss_monthly_detail",
+        year: null,
+        months: years,
+        sections: aggregatedSections,
+      };
+    }
+
+    // Monthly mode (default): single call with current filters
+    console.log("[DetailedReportUI][P&L] Requesting monthly detail with params:", JSON.stringify(baseParams));
+    const response = await getManualStagedProfitLossMonthlyDetail({ params: baseParams });
     console.log("[DetailedReportUI][P&L] Received keys:", Object.keys(response || {}), "| source:", response?.source, "| reportType:", response?.reportType, "| months:", response?.months);
     if (!Array.isArray(response?.sections) || response.sections.length === 0) {
       console.warn("[DetailedReportUI][P&L] WARNING: sections is empty — check fiscal year filter and staged data.");

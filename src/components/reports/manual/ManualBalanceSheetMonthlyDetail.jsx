@@ -1,11 +1,15 @@
-import { useState, useMemo, useLayoutEffect, useRef } from "react";
+import { useState, useMemo } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { formatCurrency } from "../../../lib/utils";
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-function monthLabel(monthNum, year) {
-  return `${MONTH_NAMES[monthNum - 1]}${year ? ` ${year}` : ""}`;
+// Shared class for the frozen first-column cell in every body row.
+const STICKY_FIRST_COL = "sticky left-0 z-10 bg-bg-page border-r border-border";
+
+function columnLabel(col, year) {
+  if (col > 12) return String(col); // yearly mode: col IS the year number
+  return `${MONTH_NAMES[col - 1] || ""}${year ? ` ${year}` : ""}`;
 }
 
 function colClass(value) {
@@ -14,42 +18,40 @@ function colClass(value) {
 
 function AccountRow({ account, months, partyLabel = "Vendor / Customer" }) {
   const [isOpen, setIsOpen] = useState(false);
+  const isYearMode = months.length > 0 && months[0] > 12;
 
   const vendorGroups = useMemo(() => {
     if (!account.transactions || account.transactions.length === 0) return [];
-
     const map = new Map();
     account.transactions.forEach((tx) => {
       const name = tx.vendorName || "Unknown";
-      if (!map.has(name)) {
-        map.set(name, { vendorName: name, monthly: {}, total: 0 });
-      }
+      if (!map.has(name)) map.set(name, { vendorName: name, monthly: {}, total: 0 });
       const g = map.get(name);
       const amt = Number(tx.amount || 0);
-      const m = tx.fiscalMonth;
-
       g.total += amt;
-      if (m >= 1 && m <= 12) {
-        g.monthly[m] = (g.monthly[m] || 0) + amt;
+      if (isYearMode) {
+        // In yearly mode key by fiscalYear so vendor columns align with year columns
+        const yr = tx.fiscalYear || tx.year;
+        if (yr) g.monthly[yr] = (g.monthly[yr] || 0) + amt;
+      } else {
+        const m = tx.fiscalMonth;
+        if (m >= 1 && m <= 12) g.monthly[m] = (g.monthly[m] || 0) + amt;
       }
     });
-
     return Array.from(map.values()).sort((a, b) => b.total - a.total);
-  }, [account.transactions]);
+  }, [account.transactions, isYearMode]);
 
   const hasTransactions = vendorGroups.length > 0;
 
   return (
     <>
       <tr
-        className={`border-b border-border-light hover:bg-bg-page/30 transition-colors ${hasTransactions ? 'cursor-pointer' : ''}`}
+        className={`border-b border-border-light hover:bg-bg-page/30 transition-colors ${hasTransactions ? "cursor-pointer" : ""}`}
         onClick={() => hasTransactions && setIsOpen(!isOpen)}
       >
-        <td className="px-3 py-1.5 pl-6 flex items-center gap-2 text-[12px] text-text-secondary">
+        <td className={`${STICKY_FIRST_COL} px-3 py-1.5 pl-6 flex items-center gap-2 text-[12px] text-text-secondary`}>
           <div className="w-4 h-4 flex items-center justify-center">
-            {hasTransactions && (
-              isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />
-            )}
+            {hasTransactions && (isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />)}
           </div>
           <span className="truncate max-w-[300px]" title={account.name}>{account.name}</span>
         </td>
@@ -57,34 +59,34 @@ function AccountRow({ account, months, partyLabel = "Vendor / Customer" }) {
           const v = Number(account.monthly?.[m] || 0);
           return <td key={m} className={colClass(v)}>{formatCurrency(v)}</td>;
         })}
-        <td className={`px-3 py-1.5 text-right text-[12px] tabular-nums font-medium ${Number(account.monthly?.[months[months.length-1]] ?? account.total ?? 0) < 0 ? "text-status-error" : "text-text-secondary"}`}>
-          {formatCurrency(Number(account.monthly?.[months[months.length-1]] ?? account.total ?? 0))}
+        <td className={`px-3 py-1.5 text-right text-[12px] tabular-nums font-medium ${Number(account.monthly?.[months[months.length - 1]] ?? account.total ?? 0) < 0 ? "text-status-error" : "text-text-secondary"}`}>
+          {formatCurrency(Number(account.monthly?.[months[months.length - 1]] ?? account.total ?? 0))}
         </td>
       </tr>
 
       {isOpen && hasTransactions && (
         <>
           <tr className="bg-bg-page/5 border-b border-border-light">
-            <td className="px-3 py-1 pl-14 text-[10px] font-bold text-text-muted uppercase tracking-wider bg-bg-page/10">
+            <td className={`${STICKY_FIRST_COL} bg-bg-page/10 px-3 py-1 pl-14 text-[10px] font-bold text-text-muted uppercase tracking-wider`}>
               {partyLabel}
             </td>
-            {months.map(m => <td key={m} className="px-3 py-1 bg-bg-page/10" />)}
+            {months.map((m) => <td key={m} className="px-3 py-1 bg-bg-page/10" />)}
             <td className="px-3 py-1 bg-bg-page/10" />
           </tr>
           {vendorGroups.map((vg) => (
             <tr key={vg.vendorName} className="border-b border-border-light/50 bg-bg-page/5 hover:bg-bg-page/10">
-              <td className="px-3 py-1.5 pl-14 text-[11px] text-text-muted italic">
+              <td className={`${STICKY_FIRST_COL} bg-bg-page/5 px-3 py-1.5 pl-14 text-[11px] text-text-muted italic`}>
                 {vg.vendorName}
               </td>
               {months.map((m) => {
                 const v = Number(vg.monthly[m] || 0);
                 return (
-                  <td key={m} className={`px-3 py-1.5 text-right text-[11px] tabular-nums ${v < 0 ? 'text-status-error/80' : 'text-text-muted/80'}`}>
+                  <td key={m} className={`px-3 py-1.5 text-right text-[11px] tabular-nums ${v < 0 ? "text-status-error/80" : "text-text-muted/80"}`}>
                     {v !== 0 ? formatCurrency(v) : "-"}
                   </td>
                 );
               })}
-              <td className={`px-3 py-1.5 text-right text-[11px] tabular-nums font-medium ${vg.total < 0 ? 'text-status-error/80' : 'text-text-muted/80'}`}>
+              <td className={`px-3 py-1.5 text-right text-[11px] tabular-nums font-medium ${vg.total < 0 ? "text-status-error/80" : "text-text-muted/80"}`}>
                 {formatCurrency(vg.total)}
               </td>
             </tr>
@@ -99,19 +101,17 @@ function CategoryBlock({ category, months, partyLabel }) {
   return (
     <>
       <tr className="border-b border-border-light bg-bg-page/20">
-        <td className="px-3 py-1.5 pl-6 text-[12px] font-semibold text-text-secondary italic">
+        <td className={`${STICKY_FIRST_COL} bg-bg-page/20 px-3 py-1.5 pl-6 text-[12px] font-semibold text-text-secondary italic`}>
           {category.label}
         </td>
-        {months.map((m) => (
-          <td key={m} className="px-3 py-1.5" />
-        ))}
-        <td className="px-3 py-1.5" />
+        {months.map((m) => <td key={m} className="px-3 py-1.5 bg-bg-page/20" />)}
+        <td className="px-3 py-1.5 bg-bg-page/20" />
       </tr>
       {(category.accounts || []).map((acc) => (
         <AccountRow key={`${acc.number}::${acc.name}`} account={acc} months={months} partyLabel={partyLabel} />
       ))}
       <tr className="border-b border-border bg-bg-page/30">
-        <td className="px-3 py-1.5 pl-8 text-[12px] font-semibold text-text-primary italic">
+        <td className={`${STICKY_FIRST_COL} bg-bg-page/30 px-3 py-1.5 pl-8 text-[12px] font-semibold text-text-primary italic`}>
           Total {category.label}
         </td>
         {months.map((m) => {
@@ -122,8 +122,8 @@ function CategoryBlock({ category, months, partyLabel }) {
             </td>
           );
         })}
-        <td className={`px-3 py-1.5 text-right text-[12px] tabular-nums font-semibold ${Number(category.monthlyTotals?.[months[months.length-1]] ?? category.total ?? 0) < 0 ? "text-status-error" : "text-text-primary"}`}>
-          {formatCurrency(Number(category.monthlyTotals?.[months[months.length-1]] ?? category.total ?? 0))}
+        <td className={`px-3 py-1.5 text-right text-[12px] tabular-nums font-semibold ${Number(category.monthlyTotals?.[months[months.length - 1]] ?? category.total ?? 0) < 0 ? "text-status-error" : "text-text-primary"}`}>
+          {formatCurrency(Number(category.monthlyTotals?.[months[months.length - 1]] ?? category.total ?? 0))}
         </td>
       </tr>
     </>
@@ -133,21 +133,23 @@ function CategoryBlock({ category, months, partyLabel }) {
 function SectionBlock({ sectionKey, section, months }) {
   const totalLabel = sectionKey === "Assets" ? "Total Assets"
     : sectionKey === "Liabilities" ? "Total Liabilities"
-      : "Total Equity";
+    : "Total Equity";
   const partyLabel = sectionKey === "Assets" ? "Customer / Vendor" : "Vendor";
 
   return (
     <>
       <tr className="bg-bg-page/70 border-b border-border">
-        <td className="px-3 py-2 text-[13px] font-bold text-text-primary" colSpan={months.length + 2}>
+        <td className={`${STICKY_FIRST_COL} bg-bg-page/70 px-3 py-2 text-[13px] font-bold text-text-primary`}>
           {section.label}
         </td>
+        {months.map((m) => <td key={m} className="bg-bg-page/70" />)}
+        <td className="bg-bg-page/70" />
       </tr>
       {(section.categories || []).map((cat) => (
         <CategoryBlock key={cat.label} category={cat} months={months} partyLabel={partyLabel} />
       ))}
       <tr className="border-b-2 border-text-primary bg-bg-page/50">
-        <td className="px-3 py-2 text-[13px] font-bold text-text-primary">{totalLabel}</td>
+        <td className={`${STICKY_FIRST_COL} bg-bg-page/50 px-3 py-2 text-[13px] font-bold text-text-primary`}>{totalLabel}</td>
         {months.map((m) => {
           const v = Number(section.monthlyTotals?.[m] || 0);
           return (
@@ -156,8 +158,8 @@ function SectionBlock({ sectionKey, section, months }) {
             </td>
           );
         })}
-        <td className={`px-3 py-2 text-right text-[12px] tabular-nums font-bold ${Number(section.monthlyTotals?.[months[months.length-1]] ?? section.total ?? 0) < 0 ? "text-status-error" : "text-text-primary"}`}>
-          {formatCurrency(Number(section.monthlyTotals?.[months[months.length-1]] ?? section.total ?? 0))}
+        <td className={`px-3 py-2 text-right text-[12px] tabular-nums font-bold ${Number(section.monthlyTotals?.[months[months.length - 1]] ?? section.total ?? 0) < 0 ? "text-status-error" : "text-text-primary"}`}>
+          {formatCurrency(Number(section.monthlyTotals?.[months[months.length - 1]] ?? section.total ?? 0))}
         </td>
       </tr>
     </>
@@ -171,31 +173,32 @@ export default function ManualBalanceSheetMonthlyDetail({
   entityName = "Company",
   selectedMonths = [],
 }) {
-  const tableWrapRef = useRef(null);
-  const [tableHeight, setTableHeight] = useState(null);
-
-  useLayoutEffect(() => {
-    if (!tableWrapRef.current) return;
-    const rect = tableWrapRef.current.getBoundingClientRect();
-    const h = Math.floor(window.innerHeight - rect.top - 8);
-    if (h > 200) setTableHeight(h);
-  });
-
   const year = data?.year || null;
   const allMonths = Array.isArray(data?.months) ? data.months : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
-  const months = selectedMonths && selectedMonths.length > 0
+  // In yearly mode columns are year numbers (>12); selectedMonths contains month numbers (1-12)
+  // so the filter would incorrectly remove all columns — skip it in yearly mode.
+  const isYearMode = allMonths.some((m) => m > 12);
+  const months = (!isYearMode && selectedMonths && selectedMonths.length > 0)
     ? allMonths.filter((m) => selectedMonths.includes(m))
     : allMonths;
   const sections = data?.sections || {};
   const hasSections = Object.keys(sections).length > 0;
 
+  const monthNames = data?.monthNames || MONTH_NAMES;
   const lastMonth = months.length > 0 ? months[months.length - 1] : 12;
-  const monthNames = data?.monthNames || ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-  const lastMonthName = monthNames[lastMonth - 1] || "Dec";
-  const lastDayOfMonth = year ? new Date(year, lastMonth, 0).getDate() : 31;
-  const fallbackSubtitle = year
-    ? `As of ${lastMonthName} ${lastDayOfMonth}, ${year}`
-    : "All Dates";
+
+  let fallbackSubtitle;
+  if (isYearMode) {
+    const firstYear = months[0];
+    const lastYear = months[months.length - 1];
+    fallbackSubtitle = firstYear
+      ? (firstYear === lastYear ? `FY ${firstYear}` : `FY ${firstYear} – FY ${lastYear}`)
+      : "All Years";
+  } else {
+    const lastMonthName = monthNames[lastMonth - 1] || "Dec";
+    const lastDayOfMonth = year ? new Date(year, lastMonth, 0).getDate() : 31;
+    fallbackSubtitle = year ? `As of ${lastMonthName} ${lastDayOfMonth}, ${year}` : "All Dates";
+  }
   const displaySubtitle = subtitle === null ? null : (subtitle || fallbackSubtitle);
 
   if (!hasSections) {
@@ -210,7 +213,6 @@ export default function ManualBalanceSheetMonthlyDetail({
     );
   }
 
-  // Calculate total liabilities + equity by month
   const liabSection = sections.Liabilities || { monthlyTotals: {}, total: 0 };
   const eqSection = sections.Equity || { monthlyTotals: {}, total: 0 };
   const totalLEByMonth = {};
@@ -240,18 +242,16 @@ export default function ManualBalanceSheetMonthlyDetail({
           )}
         </div>
 
-        <div
-          ref={tableWrapRef}
-          className="overflow-auto rounded-md border border-border"
-          style={tableHeight ? { height: `${tableHeight}px` } : {}}
-        >
+        {/* overflow-x-auto: horizontal scroll only — no fixed height so the page handles vertical scroll */}
+        <div className="overflow-x-auto rounded-md border border-border">
           <table className="w-full border-collapse text-sm">
             <thead>
               <tr className="bg-bg-page">
-                <th className="sticky top-0 z-20 bg-bg-page px-3 pt-2.5 pb-3 text-left text-[12px] font-semibold text-text-primary min-w-[300px] border-b-2 border-text-primary" />
+                {/* Corner cell: sticky on BOTH top and left (z-30 > column header z-20 > body z-10) */}
+                <th className="sticky top-0 left-0 z-30 bg-bg-page px-3 pt-2.5 pb-3 text-left text-[12px] font-semibold text-text-primary min-w-[300px] border-b-2 border-text-primary border-r border-border" />
                 {months.map((m) => (
                   <th key={m} className="sticky top-0 z-20 bg-bg-page px-3 pt-2.5 pb-3 text-right text-[12px] font-semibold text-text-primary whitespace-nowrap min-w-[100px] border-b-2 border-text-primary">
-                    {monthLabel(m, year)}
+                    {columnLabel(m, year)}
                   </th>
                 ))}
                 <th className="sticky top-0 z-20 bg-bg-page px-3 pt-2.5 pb-3 text-right text-[12px] font-semibold text-text-primary min-w-[110px] border-b-2 border-text-primary">
@@ -266,9 +266,8 @@ export default function ManualBalanceSheetMonthlyDetail({
                 ) : null
               )}
 
-              {/* Total Liabilities & Equity */}
               <tr className="border-t-2 border-text-primary bg-bg-page/60">
-                <td className="px-3 py-2 text-[13px] font-bold text-text-primary">
+                <td className={`${STICKY_FIRST_COL} bg-bg-page/60 px-3 py-2 text-[13px] font-bold text-text-primary`}>
                   Total Liabilities &amp; Equity
                 </td>
                 {months.map((m) => {
