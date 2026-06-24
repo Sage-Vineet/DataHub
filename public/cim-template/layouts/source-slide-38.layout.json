@@ -1,0 +1,618 @@
+{
+  "schema": "openai.presentation.layout/v4",
+  "unit": "px",
+  "slide": {
+    "aid": "sl/kjm1cfa9",
+    "id": "kjm1cfa9",
+    "slide": 39,
+    "layoutId": "/ppt/slideLayouts/slideLayout1.xml",
+    "layoutName": "DEFAULT",
+    "masterLayoutId": "/ppt/slideMasters/slideMaster1.xml",
+    "backgroundColor": "#2A3F1A",
+    "frame": {
+      "left": 0,
+      "top": 0,
+      "width": 1280,
+      "height": 720
+    }
+  },
+  "theme": {
+    "colorSchemeName": "Office",
+    "colors": {
+      "accent1": "#4472C4",
+      "accent2": "#ED7D31",
+      "accent3": "#A5A5A5",
+      "accent4": "#FFC000",
+      "accent5": "#5B9BD5",
+      "accent6": "#70AD47",
+      "dk1": "#000000",
+      "lt1": "#FFFFFF",
+      "dk2": "#44546A",
+      "lt2": "#E7E6E6",
+      "hlink": "#0563C1",
+      "folHlink": "#954F72"
+    },
+    "fontScheme": {
+      "name": "Office",
+      "majorFont": {
+        "latinTypeface": "Calibri Light"
+      },
+      "minorFont": {
+        "latinTypeface": "Calibri"
+      }
+    },
+    "typefaces": [
+      "Calibri",
+      "Calibri Light"
+    ]
+  },
+  "inheritedLayers": [
+    {
+      "scope": "layout",
+      "id": "/ppt/slideLayouts/slideLayout1.xml",
+      "name": "DEFAULT",
+      "parentLayoutId": "/ppt/slideMasters/slideMaster1.xml",
+      "elements": []
+    },
+    {
+      "scope": "master",
+      "id": "/ppt/slideMasters/slideMaster1.xml",
+      "type": "master",
+      "elements": []
+    }
+  ],
+  "elements": [
+    {
+      "order": 1,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/donyd0z6",
+      "id": "2",
+      "name": "Shape 0",
+      "bbox": [
+        0,
+        0,
+        1279.68,
+        48
+      ],
+      "geometry": "rect",
+      "fillColor": "#8BC53D",
+      "lineColor": "#8BC53D",
+      "lineWidth": 1.33
+    },
+    {
+      "order": 2,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/k3q5o7qp",
+      "id": "3",
+      "name": "Text 1",
+      "bbox": [
+        96,
+        172.8,
+        1087.68,
+        33.6
+      ],
+      "geometry": "rect",
+      "text": "STRICTLY PRIVATE & CONFIDENTIAL",
+      "textPreview": "STRICTLY PRIVATE & CONFIDENTIAL",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "STRICTLY PRIVATE & CONFIDENTIAL"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "STRICTLY PRIVATE & CONFIDENTIAL",
+          "marginLeft": 0,
+          "indent": 0,
+          "resolvedTextStyle": {
+            "alignment": "center"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "STRICTLY PRIVATE & CONFIDENTIAL",
+              "fontSize": 14.67,
+              "typeface": "Calibri",
+              "color": "#8BC53D",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 3,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/val87ed8",
+      "id": "4",
+      "name": "Text 2",
+      "bbox": [
+        96,
+        220.8,
+        1087.68,
+        62.4
+      ],
+      "geometry": "rect",
+      "text": "This document has been prepared by [Advisor Firm] on behalf of [Company].\nFor further information, please contact the advisor below.",
+      "textPreview": "This document has been prepared by [Advisor Firm] on behalf of [Company]. | For further information, please contact the advisor below.",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 2,
+        "lines": [
+          {
+            "index": 1,
+            "text": "This document has been prepared by [Advisor Firm] on behalf of [Company]."
+          },
+          {
+            "index": 2,
+            "text": "For further information, please contact the advisor below."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "This document has been prepared by [Advisor Firm] on behalf of [Company].",
+          "marginLeft": 0,
+          "indent": 0,
+          "resolvedTextStyle": {
+            "alignment": "center"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "This document has been prepared by [Advisor Firm] on behalf of [Company].",
+              "fontSize": 17.33,
+              "typeface": "Calibri",
+              "color": "#8C8D90"
+            }
+          ]
+        },
+        {
+          "index": 2,
+          "text": "For further information, please contact the advisor below.",
+          "marginLeft": 0,
+          "indent": 0,
+          "resolvedTextStyle": {
+            "alignment": "center"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "For further information, please contact the advisor below.",
+              "fontSize": 17.33,
+              "typeface": "Calibri",
+              "color": "#8C8D90"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 4,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/6psfil0r",
+      "id": "5",
+      "name": "Shape 3",
+      "bbox": [
+        467.04,
+        307.2,
+        345.6,
+        115.2
+      ],
+      "geometry": "rect",
+      "fillColor": "#EFEFF1",
+      "lineColor": "#CCCCCC",
+      "lineWidth": 1.33
+    },
+    {
+      "order": 5,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/dcbulwva",
+      "id": "6",
+      "name": "Text 4",
+      "bbox": [
+        467.04,
+        307.2,
+        345.6,
+        115.2
+      ],
+      "geometry": "rect",
+      "text": "[ADVISOR LOGO]",
+      "textPreview": "[ADVISOR LOGO]",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[ADVISOR LOGO]"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[ADVISOR LOGO]",
+          "marginLeft": 0,
+          "indent": 0,
+          "resolvedTextStyle": {
+            "alignment": "center"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "[ADVISOR LOGO]",
+              "fontSize": 13.33,
+              "typeface": "Calibri",
+              "color": "#8C8D90",
+              "italic": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 6,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/kre1w7mp",
+      "id": "7",
+      "name": "Text 5",
+      "bbox": [
+        96,
+        446.4,
+        1087.68,
+        62.4
+      ],
+      "geometry": "rect",
+      "text": "[Advisor Firm Name]\n[Address  |  City  |  Phone  |  Website]",
+      "textPreview": "[Advisor Firm Name] | [Address  |  City  |  Phone  |  Website]",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 2,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[Advisor Firm Name]"
+          },
+          {
+            "index": 2,
+            "text": "[Address  |  City  |  Phone  |  Website]"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[Advisor Firm Name]",
+          "marginLeft": 0,
+          "indent": 0,
+          "resolvedTextStyle": {
+            "alignment": "center"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "[Advisor Firm Name]",
+              "fontSize": 14.67,
+              "typeface": "Calibri",
+              "color": "#8C8D90"
+            }
+          ]
+        },
+        {
+          "index": 2,
+          "text": "[Address  |  City  |  Phone  |  Website]",
+          "marginLeft": 0,
+          "indent": 0,
+          "resolvedTextStyle": {
+            "alignment": "center"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "[Address  |  City  |  Phone  |  Website]",
+              "fontSize": 14.67,
+              "typeface": "Calibri",
+              "color": "#8C8D90"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 7,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/v6psfil0",
+      "id": "8",
+      "name": "Text 6",
+      "bbox": [
+        96,
+        518.4,
+        515.04,
+        33.6
+      ],
+      "geometry": "rect",
+      "text": "[Lead Advisor]  |  [Email]  |  [Phone]",
+      "textPreview": "[Lead Advisor]  |  [Email]  |  [Phone]",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[Lead Advisor]  |  [Email]  |  [Phone]"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[Lead Advisor]  |  [Email]  |  [Phone]",
+          "marginLeft": 0,
+          "indent": 0,
+          "resolvedTextStyle": {
+            "alignment": "center"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "[Lead Advisor]  |  [Email]  |  [Phone]",
+              "fontSize": 14,
+              "typeface": "Calibri",
+              "color": "#FFFFFF"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 8,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/2lszqtcj",
+      "id": "9",
+      "name": "Shape 7",
+      "bbox": [
+        639.84,
+        513.6,
+        0,
+        43.2
+      ],
+      "geometry": "line",
+      "lineColor": "#8BC53D",
+      "lineWidth": 1.33
+    },
+    {
+      "order": 9,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/szqtcj6t",
+      "id": "10",
+      "name": "Text 8",
+      "bbox": [
+        668.64,
+        518.4,
+        515.04,
+        33.6
+      ],
+      "geometry": "rect",
+      "text": "[Co-Advisor]  |  [Email]  |  [Phone]",
+      "textPreview": "[Co-Advisor]  |  [Email]  |  [Phone]",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[Co-Advisor]  |  [Email]  |  [Phone]"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[Co-Advisor]  |  [Email]  |  [Phone]",
+          "marginLeft": 0,
+          "indent": 0,
+          "resolvedTextStyle": {
+            "alignment": "center"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "[Co-Advisor]  |  [Email]  |  [Phone]",
+              "fontSize": 14,
+              "typeface": "Calibri",
+              "color": "#FFFFFF"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 10,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/lkjm1cfa",
+      "id": "11",
+      "name": "Shape 9",
+      "bbox": [
+        0,
+        683.52,
+        1279.68,
+        36.48
+      ],
+      "geometry": "rect",
+      "fillColor": "#476E2C",
+      "lineColor": "#476E2C",
+      "lineWidth": 1.33
+    },
+    {
+      "order": 11,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/at47y1kr",
+      "id": "12",
+      "name": "Text 10",
+      "bbox": [
+        0,
+        686.4,
+        1279.68,
+        28.8
+      ],
+      "geometry": "rect",
+      "text": "(c) [Year] [Advisor Firm Name]. All rights reserved. Strictly Private & Confidential.",
+      "textPreview": "(c) [Year] [Advisor Firm Name]. All rights reserved. Strictly Private & Confidential.",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "(c) [Year] [Advisor Firm Name]. All rights reserved. Strictly Private & Confidential."
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "(c) [Year] [Advisor Firm Name]. All rights reserved. Strictly Private & Confidential.",
+          "marginLeft": 0,
+          "indent": 0,
+          "resolvedTextStyle": {
+            "alignment": "center"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "(c) [Year] [Advisor Firm Name]. All rights reserved. Strictly Private & Confidential.",
+              "fontSize": 10.67,
+              "typeface": "Calibri",
+              "color": "#8BC53D"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "composeRuns": []
+}

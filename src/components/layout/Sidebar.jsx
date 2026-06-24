@@ -24,6 +24,7 @@ const clientNav = [
   { label: "Dashboard", icon: LayoutDashboard, to: "/client/dashboard" },
   { label: "My Requests", icon: ClipboardList, to: "/client/requests" },
   { label: "Documents", icon: FileText, to: "/client/upload" },
+  { label: "CIM Questionnaire", icon: ClipboardList, to: "/client/cim-questionnaire" },
   { label: "Messages", icon: MessageSquare, to: "/client/messages" },
   { label: "Reminders", icon: Bell, to: "/client/reminders" },
 ];
