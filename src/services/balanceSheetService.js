@@ -11,6 +11,7 @@ import { normalizeAccountingMethod } from "../lib/report-filters";
 import {
   parseSummaryReport,
 } from "../lib/report-parsers";
+import { fetchQBVendorBreakdown, attachVendorsToRows } from "./qbGlVendorService";
 
 function toAmount(value) {
   if (typeof value === "number") return Number.isFinite(value) ? value : 0;
@@ -570,10 +571,32 @@ function mergeFileNodes(nodeArraysByFile, fileKeys) {
 }
 
 function mergePeriods(periodResults, periods) {
-  const yearlyPeriods = periods.filter(p => p.type === 'yearly');
-  const currentYearKey = yearlyPeriods[yearlyPeriods.length - 1]?.key || "y1";
-  const masterIndex = periods.findIndex(p => p.key === currentYearKey);
-  const masterRows = periodResults[masterIndex] || [];
+  // Use last period as the "current" key for monthlyChange calculation.
+  // Works for both yearly (y1/y2…) and monthly (m2025_10…) period sets.
+  const currentYearKey = periods[periods.length - 1]?.key || "y1";
+
+  // Build a union tree from ALL period results so accounts omitted by QB from
+  // some snapshots (zero balance) still appear with 0 in those periods.
+  function mergeInto(dest, src) {
+    for (const srcNode of (src || [])) {
+      const norm = normalizeName(srcNode.name);
+      if (!norm) continue;
+      const existing = dest.find(n => normalizeName(n.name) === norm);
+      if (existing) {
+        if (srcNode.children?.length) {
+          if (!existing.children) existing.children = [];
+          mergeInto(existing.children, srcNode.children);
+        }
+      } else {
+        dest.push({ ...srcNode, children: srcNode.children ? srcNode.children.map(c => ({ ...c })) : undefined });
+      }
+    }
+  }
+
+  const masterRows = [];
+  for (const rows of periodResults) {
+    mergeInto(masterRows, rows || []);
+  }
 
   if (masterRows.length === 0) return [];
 
@@ -597,7 +620,6 @@ function mergePeriods(periodResults, periods) {
     const normName = normalizeName(node.name);
 
     periods.forEach((period, i) => {
-      // Look up based on normalized name
       amounts[period.key] = periodMaps[i].get(normName) || 0;
     });
 
@@ -988,36 +1010,90 @@ export async function getBalanceSheetDetail(
     });
   }
 
-  // Detail now uses system-defined multi-year comparison (EBITDA analysis).
+  // Month mode: one balance sheet snapshot per calendar month.
+  if (options.monthMode && startDate && endDate) {
+    const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const monthlyPeriods = [];
+    const s = new Date(startDate + "T00:00:00");
+    const e = new Date(endDate + "T00:00:00");
+    let yr = s.getFullYear(), mo = s.getMonth();
+    while (yr < e.getFullYear() || (yr === e.getFullYear() && mo <= e.getMonth())) {
+      const mm = String(mo + 1).padStart(2, "0");
+      const lastDay = new Date(yr, mo + 1, 0).getDate();
+      monthlyPeriods.push({
+        key: `m${yr}_${mm}`,
+        label: `${MONTHS[mo]} ${yr}`,
+        startDate: `${yr}-${mm}-01`,
+        endDate: `${yr}-${mm}-${String(lastDay).padStart(2, "0")}`,
+        type: "monthly",
+      });
+      mo++; if (mo > 11) { mo = 0; yr++; }
+    }
+    const [monthResults, vendorMap] = await Promise.all([
+      Promise.all(monthlyPeriods.map((p) =>
+        fetchSinglePeriodBS(p.startDate, p.endDate, accountingMethod, options?.sourceMode || "quickbooks", options),
+      )),
+      fetchQBVendorBreakdown(
+        monthlyPeriods[0]?.startDate,
+        monthlyPeriods[monthlyPeriods.length - 1]?.endDate,
+        accountingMethod,
+        monthlyPeriods,
+      ).catch(() => ({})),
+    ]);
+    const mergedRows = mergePeriods(monthResults, monthlyPeriods);
+    const colKeys = monthlyPeriods.map((p) => p.key);
+    const rows = attachVendorsToRows(mergedRows, vendorMap, colKeys);
+    return {
+      rows,
+      columns: {
+        yearCols: monthlyPeriods.map((p, i) => ({
+          key: p.key,
+          label: p.label,
+          isCurrent: i === monthlyPeriods.length - 1,
+        })),
+        changeCols: [],
+        currentMonth: monthlyPeriods[monthlyPeriods.length - 1]?.label || "",
+      },
+    };
+  }
+
+  // Year mode or default: system-defined multi-year comparison.
   // When a year range is provided (Year mode), generate periods only for that range.
   const allPeriods = (options.startYear && options.endYear)
     ? getComparativePeriods(4, options.startYear, options.endYear)
     : getComparativePeriods(4, endDate, startDate);
 
-  const results = await Promise.all(
-    allPeriods.map((p) =>
-      fetchSinglePeriodBS(
-        p.startDate,
-        p.endDate,
-        accountingMethod,
-        options?.sourceMode || "quickbooks",
-        options,
+  const yearlyPeriods = allPeriods.filter(p => p.type === 'yearly');
+  const glStartDate = yearlyPeriods[0]?.startDate;
+  const glEndDate = yearlyPeriods[yearlyPeriods.length - 1]?.endDate;
+
+  // Fetch period snapshots and QB GL vendor data concurrently
+  const [results, vendorMap] = await Promise.all([
+    Promise.all(
+      allPeriods.map((p) =>
+        fetchSinglePeriodBS(
+          p.startDate,
+          p.endDate,
+          accountingMethod,
+          options?.sourceMode || "quickbooks",
+          options,
+        ),
       ),
-    )
-  );
+    ),
+    fetchQBVendorBreakdown(glStartDate, glEndDate, accountingMethod, yearlyPeriods).catch(() => ({})),
+  ]);
 
-  const rows = mergePeriods(results, allPeriods);
+  const mergedRows = mergePeriods(results, allPeriods);
+  const yearColKeys = yearlyPeriods.map(p => p.key);
+  const rows = attachVendorsToRows(mergedRows, vendorMap, yearColKeys);
 
-  const yearCols = allPeriods
-    .filter(p => p.type === 'yearly')
-    .map(p => ({
-      key: p.key,
-      label: p.label,
-      isCurrent: p.key === allPeriods.filter(x => x.type === 'yearly').pop().key
-    }));
+  const yearCols = yearlyPeriods.map(p => ({
+    key: p.key,
+    label: p.label,
+    isCurrent: p.key === yearlyPeriods[yearlyPeriods.length - 1].key,
+  }));
 
   const changeCols = [];
-  const yearlyPeriods = allPeriods.filter(p => p.type === 'yearly');
   for (let i = 1; i < yearlyPeriods.length; i++) {
     const prev = yearlyPeriods[i - 1];
     const curr = yearlyPeriods[i];
@@ -1025,7 +1101,7 @@ export async function getBalanceSheetDetail(
       key: `c${i}`,
       label: `'${String(curr.year).slice(-2)} CHANGE`,
       from: prev.key,
-      to: curr.key
+      to: curr.key,
     });
   }
 
@@ -1036,7 +1112,7 @@ export async function getBalanceSheetDetail(
     columns: {
       yearCols,
       changeCols,
-      currentMonth: currentPeriodLabel
-    }
+      currentMonth: currentPeriodLabel,
+    },
   };
 }

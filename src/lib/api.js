@@ -578,6 +578,14 @@ export function addEbitdaAdjustmentComment(adjustmentId, payload, options = {}) 
   }).then((res) => res?.comment || res);
 }
 
+export function generateEbitdaComments(payload, options = {}) {
+  return request("/ebitda/generate-comments", {
+    method: "POST",
+    body: payload,
+    ...options,
+  }).then((res) => res?.comments || {});
+}
+
 export function listManualGlUploads(options = {}) {
   const clientId = options.clientId ?? resolveClientIdFromLocation();
   const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";

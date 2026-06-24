@@ -68,8 +68,11 @@ function flattenRows(items, depth = 0) {
 // ─── Row Component ──────────────────────────────────────────────────────────
 
 function BSRow({ row, isCollapsed, onToggle, columns }) {
+  const [vendorsOpen, setVendorsOpen] = useState(false);
+
   const { name, amounts, depth, hasChildren, isTotal, isHeader } = row;
   const { yearCols, changeCols } = columns;
+  const hasVendors = !isTotal && !isHeader && Array.isArray(row.vendors) && row.vendors.length > 0;
 
   const nameLower = (name || "").toLowerCase();
   const isBold = [
@@ -78,69 +81,128 @@ function BSRow({ row, isCollapsed, onToggle, columns }) {
     "total equity", "total liabilities and equity", "assets", "liabilities and equity"
   ].includes(nameLower);
 
+  // Total number of data columns (excluding the name cell) for vendor label colSpan.
+  const totalDataCols = yearCols.length + changeCols.length + (changeCols.length > 0 ? 1 : 0);
+
+  const handleRowClick = () => {
+    if (hasChildren) onToggle(row.id);
+    else if (hasVendors) setVendorsOpen((v) => !v);
+  };
+
   return (
-    <tr
-      onClick={hasChildren ? () => onToggle(row.id) : undefined}
-      className={cn(
-        "group transition-colors border-b border-border-light",
-        hasChildren && "cursor-pointer hover:bg-bg-page/50",
-        !hasChildren && "hover:bg-bg-page/30",
-        (isTotal || isBold) && "bg-bg-page/60 font-semibold border-b-2 border-text-primary table-row-total",
-        isHeader && depth === 0 && "bg-bg-page/30 border-t border-border"
-      )}
-    >
-      <td className="py-2.5 px-4 text-left bg-inherit z-10 min-w-[320px]">
-        <div className="flex items-center">
-          {/* Hierarchy Guide Vertical Lines - Exactly matching P&L */}
-          <div className="flex shrink-0">
-            {Array.from({ length: depth }).map((_, index) => (
-              <div key={index} className="w-6 h-5 border-r border-border-light mr-[-1px]" />
-            ))}
-          </div>
-
-          <div className="flex items-center gap-1">
-            <div className="w-5 flex items-center justify-center shrink-0">
-              {hasChildren ? (
-                isCollapsed ? (
-                  <ChevronRight size={14} className="text-text-muted group-hover:text-text-primary" />
-                ) : (
-                  <ChevronDown size={14} className="text-text-muted group-hover:text-text-primary" />
-                )
-              ) : null}
+    <>
+      <tr
+        onClick={handleRowClick}
+        className={cn(
+          "group transition-colors border-b border-border-light",
+          (hasChildren || hasVendors) && "cursor-pointer hover:bg-bg-page/50",
+          !hasChildren && !hasVendors && "hover:bg-bg-page/30",
+          (isTotal || isBold) && "bg-bg-page/60 font-semibold border-b-2 border-text-primary table-row-total",
+          isHeader && depth === 0 && "bg-bg-page/30 border-t border-border"
+        )}
+      >
+        <td className="py-2.5 px-4 text-left bg-inherit z-10 min-w-[320px]">
+          <div className="flex items-center">
+            <div className="flex shrink-0">
+              {Array.from({ length: depth }).map((_, index) => (
+                <div key={index} className="w-6 h-5 border-r border-border-light mr-[-1px]" />
+              ))}
             </div>
-            <span className={cn(
-              "text-[14px] whitespace-nowrap",
-              (isHeader || isTotal) ? "font-semibold text-text-primary" : "text-text-secondary",
-              depth > 1 && !isTotal && !isHeader && "text-text-muted"
-            )}>
-              {name}
-            </span>
+
+            <div className="flex items-center gap-1">
+              <div className="w-5 flex items-center justify-center shrink-0">
+                {hasChildren ? (
+                  isCollapsed ? (
+                    <ChevronRight size={14} className="text-text-muted group-hover:text-text-primary" />
+                  ) : (
+                    <ChevronDown size={14} className="text-text-muted group-hover:text-text-primary" />
+                  )
+                ) : hasVendors ? (
+                  vendorsOpen ? (
+                    <ChevronDown size={13} className="text-text-muted group-hover:text-text-primary" />
+                  ) : (
+                    <ChevronRight size={13} className="text-text-muted group-hover:text-text-primary" />
+                  )
+                ) : null}
+              </div>
+              <span className={cn(
+                "text-[14px] whitespace-nowrap",
+                (isHeader || isTotal) ? "font-semibold text-text-primary" : "text-text-secondary",
+                depth > 1 && !isTotal && !isHeader && "text-text-muted"
+              )}>
+                {name}
+              </span>
+            </div>
           </div>
-        </div>
-      </td>
-
-      {yearCols.map((col) => (
-        <td key={col.key} className={cn(
-          "py-2.5 px-3 text-right tabular-nums text-[14px] whitespace-nowrap",
-          col.isCurrent ? "font-semibold text-text-primary" : "text-text-secondary",
-          isTotal ? "font-semibold" : "font-medium"
-        )}>
-          {formatBSCurrency(amounts?.[col.key])}
         </td>
-      ))}
 
-      {changeCols.map((col) => (
-        <td key={col.key} className="py-2.5 px-3 text-right tabular-nums text-[14px] text-text-muted font-medium whitespace-nowrap">
-          {formatBSCurrency(calculateChange(amounts?.[col.to], amounts?.[col.from]))}
-        </td>
-      ))}
+        {yearCols.map((col) => (
+          <td key={col.key} className={cn(
+            "py-2.5 px-3 text-right tabular-nums text-[14px] whitespace-nowrap",
+            col.isCurrent ? "font-semibold text-text-primary" : "text-text-secondary",
+            isTotal ? "font-semibold" : "font-medium"
+          )}>
+            {formatBSCurrency(amounts?.[col.key])}
+          </td>
+        ))}
 
-      {changeCols.length > 0 && (
-        <td className="py-2.5 px-4 text-right tabular-nums text-[14px] font-semibold text-primary whitespace-nowrap">
-          {formatBSCurrency(amounts?.monthlyChange || 0)}
-        </td>
+        {changeCols.map((col) => (
+          <td key={col.key} className="py-2.5 px-3 text-right tabular-nums text-[14px] text-text-muted font-medium whitespace-nowrap">
+            {formatBSCurrency(calculateChange(amounts?.[col.to], amounts?.[col.from]))}
+          </td>
+        ))}
+
+        {changeCols.length > 0 && (
+          <td className="py-2.5 px-4 text-right tabular-nums text-[14px] font-semibold text-primary whitespace-nowrap">
+            {formatBSCurrency(amounts?.monthlyChange || 0)}
+          </td>
+        )}
+      </tr>
+
+      {/* Vendor / Customer breakdown rows */}
+      {vendorsOpen && hasVendors && (
+        <>
+          <tr className="bg-bg-page/20">
+            <td
+              colSpan={totalDataCols + 1}
+              style={{ paddingLeft: `${(depth + 1) * 24 + 16}px` }}
+              className="py-1 text-[10px] font-bold uppercase tracking-widest text-text-muted"
+            >
+              Customer / Vendor
+            </td>
+          </tr>
+          {row.vendors.map((vendor) => (
+            <tr key={vendor.name} className="border-b border-border-light/50 hover:bg-bg-page/20">
+              <td className="py-1.5 px-4 text-left min-w-[320px]">
+                <div className="flex items-center">
+                  <div className="flex shrink-0">
+                    {Array.from({ length: depth + 2 }).map((_, i) => (
+                      <div key={i} className="w-6 h-5 border-r border-border-light/50 mr-[-1px]" />
+                    ))}
+                  </div>
+                  <span className="text-[13px] text-text-muted whitespace-nowrap pl-1">
+                    {vendor.name}
+                  </span>
+                </div>
+              </td>
+              {yearCols.map((col) => (
+                <td key={col.key} className="py-1.5 px-3 text-right tabular-nums text-[13px] text-text-muted whitespace-nowrap">
+                  {formatBSCurrency(vendor.amounts?.[col.key] || 0)}
+                </td>
+              ))}
+              {changeCols.map((col) => (
+                <td key={col.key} className="py-1.5 px-3 text-right text-[13px] text-text-muted/50 whitespace-nowrap">
+                  —
+                </td>
+              ))}
+              {changeCols.length > 0 && (
+                <td className="py-1.5 px-4 text-right text-[13px] text-text-muted/50 whitespace-nowrap">—</td>
+              )}
+            </tr>
+          ))}
+        </>
       )}
-    </tr>
+    </>
   );
 }
 
@@ -153,6 +215,7 @@ export default function BalanceSheetSummary({
   title = "Balance Sheet",
   subtitle,
   entityName = "Dataroom",
+  isPreview = false,
 }) {
   const [collapsedSections, setCollapsedSections] = useState(new Set());
 
@@ -192,7 +255,10 @@ export default function BalanceSheetSummary({
 
   if (!data || data.length === 0) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center p-20 bg-bg-page/50 min-h-[500px]">
+      <div className={cn(
+        "flex-1 flex flex-col items-center justify-center",
+        isPreview ? "py-8" : "p-20 bg-bg-page/50 min-h-[500px]"
+      )}>
         <div className="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin mb-4" />
         <p className="text-text-muted font-medium italic">Preparing Balance Sheet...</p>
       </div>
@@ -200,23 +266,25 @@ export default function BalanceSheetSummary({
   }
 
   return (
-    <div className="flex-1 overflow-y-auto bg-bg-page/50 p-10 lg:p-16 animate-in fade-in duration-700 font-inter">
-      <div className="max-w-[1400px] mx-auto card-base p-10 min-h-[1000px] flex flex-col rounded-sm">
+    <div className={cn("font-inter animate-in fade-in duration-700", isPreview ? "" : "flex-1 overflow-y-auto bg-bg-page/50 p-10 lg:p-16")}>
+      <div className={cn("flex flex-col", isPreview ? "" : "max-w-[1400px] mx-auto card-base p-10 min-h-[1000px] rounded-sm")}>
 
         {/* Header Section Matches P&L Style */}
-        <div className="flex flex-col items-center mb-12 relative">
-          <div className="w-12 h-1 bg-primary rounded-full mb-6" />
-          <h1 className="text-[22px] font-bold text-text-primary tracking-tight leading-none mb-2">
+        <div className={cn("flex flex-col items-center relative", isPreview ? "mb-4" : "mb-12")}>
+          <div className="w-12 h-1 bg-primary rounded-full mb-3" />
+          <h1 className="text-[20px] font-bold text-text-primary tracking-tight leading-none mb-1">
             {entityName}
           </h1>
-          <h2 className="text-[18px] font-medium text-text-secondary mb-4">{title}</h2>
-          <div className="flex items-center gap-3 text-[12px] text-text-muted bg-bg-page px-4 py-1.5 rounded-full border border-border">
-            <span>{subtitle}</span>
-          </div>
+          <h2 className="text-[16px] font-medium text-text-secondary mb-2">{title}</h2>
+          {!isPreview && (
+            <div className="flex items-center gap-3 text-[12px] text-text-muted bg-bg-page px-4 py-1.5 rounded-full border border-border">
+              <span>{subtitle}</span>
+            </div>
+          )}
         </div>
 
         <div className="overflow-x-auto flex-1">
-          <table className="min-w-max border-collapse">
+          <table className="w-full min-w-max border-collapse">
             <thead>
               <tr className="border-b-2 border-text-primary sticky top-0 bg-bg-card z-20">
                 <th className="pb-3 pt-2 px-4 text-left text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider">
@@ -267,7 +335,7 @@ export default function BalanceSheetSummary({
         </div>
 
         {/* Footer Matches P&L Exactly */}
-        <div className="mt-16 pt-8 border-t border-border flex flex-col items-center gap-4">
+        {!isPreview && <div className="mt-16 pt-8 border-t border-border flex flex-col items-center gap-4">
           <div className="flex items-center gap-8">
             <div className="flex flex-col items-center">
               <span className="text-[11px] text-text-muted mb-1">Created on</span>
@@ -284,7 +352,7 @@ export default function BalanceSheetSummary({
           <p className="text-[11px] text-text-muted text-center max-w-sm leading-relaxed">
             This balance sheet provides a comprehensive view of the company&apos;s financial position over a 5-year comparative period.
           </p>
-        </div>
+        </div>}
       </div>
 
       <style>{`
