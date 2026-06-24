@@ -11,9 +11,9 @@ const listCompanies = asyncHandler(async (req, res) => {
 });
 
 const createCompany = asyncHandler(async (req, res) => {
-  const { name, project_name, industry, contact_name, contact_email, contact_phone } = req.body || {};
+  const { name, project_name, industry } = req.body || {};
 
-  if (!name || !project_name || !industry || !contact_name || !contact_email || !contact_phone) {
+  if (!name || !project_name || !industry) {
     return res.status(400).json({ error: "Missing required fields" });
   }
 
@@ -37,7 +37,7 @@ const createCompany = asyncHandler(async (req, res) => {
 
   await ensureCompanyDefaultFolders(inserted.id, req.user?.id || clientRepresentativeId || null).catch(() => { });
 
-  res.status(201).json({ ...inserted, emailQueued: true });
+  res.status(201).json({ ...inserted, emailQueued: Boolean(inserted.contact_email) });
 
   // Fire-and-forget: notify primary contact — must not block or fail company creation
   setImmediate(async () => {

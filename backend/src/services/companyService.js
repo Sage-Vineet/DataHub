@@ -7,6 +7,14 @@ const PROFIT_METRIC_VALUES = Object.freeze({
   SDE: "sde",
 });
 
+function normalizeOptionalText(value) {
+  return value == null ? "" : String(value).trim();
+}
+
+function normalizeOptionalEmail(value) {
+  return value == null ? "" : String(value).trim().toLowerCase();
+}
+
 let _pool = null;
 function getPool() {
   if (!process.env.DATABASE_URL) return null;
@@ -104,9 +112,9 @@ async function createCompany(companyData) {
       status: companyData.status || "active",
       since: companyData.since || null,
       logo: companyData.logo || null,
-      contact_name: companyData.contact_name,
-      contact_email: companyData.contact_email ? String(companyData.contact_email).trim().toLowerCase() : null,
-      contact_phone: companyData.contact_phone || null,
+      contact_name: normalizeOptionalText(companyData.contact_name),
+      contact_email: normalizeOptionalEmail(companyData.contact_email),
+      contact_phone: normalizeOptionalText(companyData.contact_phone),
       profit_metric: normalizeProfitMetric(companyData.profit_metric ?? companyData.profitMetric),
     })
     .select("*")

@@ -16,13 +16,19 @@ import { getProfitMetricConfig, normalizeProfitMetric, PROFIT_METRIC_OPTIONS } f
 import { useClientStore } from '../../store/clientStore';
 import StatusBadge from '../../components/common/StatusBadge';
 import Modal from '../../components/common/Modal';
-import { SUB_ROLE, CLIENT_TEAM_ROLE_OPTIONS } from '../../lib/roles';
+import { SUB_ROLE } from '../../lib/roles';
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
 
 const PAGE_SIZE = 9; // 3-column grid looks best with multiples of 3
 const OTHER_INDUSTRY = 'Other';
-const EMPTY_FORM = { name: '', project_name: '', contactFirst: '', contactLast: '', email: '', phone: '', industry: '', profit_metric: 'adjusted_ebitda', year_type: 'calendar' };
+const EMPTY_FORM = { name: '', project_name: '', industry: '', profit_metric: 'adjusted_ebitda', year_type: 'calendar' };
+
+const COMPANY_FORM_CLIENT_ROLE_OPTIONS = [
+  { value: SUB_ROLE.COMPANY_OWNER, label: 'Client' },
+  { value: SUB_ROLE.CLIENT_TEAM_MEMBER, label: 'Client Team Member' },
+  { value: SUB_ROLE.CLIENT_ACCOUNTANT, label: 'Client Accountant' },
+];
 
 const YEAR_TYPE_OPTIONS = [
   { value: 'calendar', label: 'Calendar Year', description: 'Jan 1 – Dec 31' },
@@ -48,11 +54,6 @@ function formatUSPhone(raw) {
   if (d.length <= 3) return d;
   if (d.length <= 6) return `(${d.slice(0, 3)}) ${d.slice(3)}`;
   return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`;
-}
-
-function splitName(full = '') {
-  const parts = (full || '').trim().split(/\s+/);
-  return { contactFirst: parts[0] || '', contactLast: parts.slice(1).join(' ') || '' };
 }
 
 function formatDate(value) {
@@ -300,10 +301,9 @@ export default function BrokerDashboard() {
       .catch(() => { })
       .finally(() => { if (!cancelled) setLoadingActivity(false); });
 
-    loadCompanies();
+    Promise.resolve().then(loadCompanies);
 
     return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -417,14 +417,9 @@ export default function BrokerDashboard() {
     setEditing(company);
     const industry = company.industry || '';
     setUseCustomIndustry(Boolean(industry) && !INDUSTRY_OPTIONS.includes(industry));
-    const { contactFirst, contactLast } = splitName(company.contact || '');
     setForm({
       name: company.name || '',
       project_name: company.projectName || '',
-      contactFirst,
-      contactLast,
-      email: company.email || '',
-      phone: formatUSPhone(company.phone || ''),
       industry,
       profit_metric: normalizeProfitMetric(company.profitMetric ?? company.profit_metric),
       year_type: company.yearType || 'calendar',
@@ -442,13 +437,8 @@ export default function BrokerDashboard() {
   // ── Save company ──────────────────────────────────────────────────────────────
   const handleSaveCompany = async () => {
     if (submittingRef.current) return;
-    const contactName = `${(form.contactFirst || '').trim()} ${(form.contactLast || '').trim()}`.trim();
-    if (!form.name.trim() || !form.project_name.trim() || !form.contactFirst.trim() || !form.contactLast.trim() || !form.email.trim() || !form.phone.trim() || !form.industry.trim()) {
+    if (!form.name.trim() || !form.project_name.trim() || !form.industry.trim()) {
       setFormError('Please fill in all required fields, including Project Name and Industry.');
-      return;
-    }
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email.trim())) {
-      setFormError('Please enter a valid email address.');
       return;
     }
 
@@ -461,9 +451,6 @@ export default function BrokerDashboard() {
       project_name: form.project_name.trim(),
       industry: form.industry.trim(),
       profit_metric: normalizeProfitMetric(form.profit_metric),
-      contact_name: contactName,
-      contact_email: form.email.trim().toLowerCase(),
-      contact_phone: form.phone.trim(),
       logo: getInitials(form.name),
       year_type: form.year_type || 'calendar',
     };
@@ -486,7 +473,7 @@ export default function BrokerDashboard() {
           const formatted = formatCompany({ ...created, request_count: 0, pending_request_count: 0, completed_request_count: 0 });
           setCompanies((prev) => [formatted, ...prev]);
           setPage(1);
-          setSuccess('Company created successfully. Notification emails have been sent to all company contacts.');
+          setSuccess('Company created successfully.');
           closeFormModal();
           // Create team members (background, non-blocking) — each triggers a welcome email via users endpoint
           if (teamMembers.length > 0) {
@@ -499,7 +486,7 @@ export default function BrokerDashboard() {
           triggerAutoCreateMessageGroups(created.id).catch(() => { });
         } else {
           await loadCompanies();
-          setSuccess('Company created successfully. Notification emails have been sent to all company contacts.');
+          setSuccess('Company created successfully.');
           closeFormModal();
         }
       }
@@ -899,55 +886,6 @@ export default function BrokerDashboard() {
             </div>
           ))}
 
-          <div className="grid grid-cols-2 gap-3">
-            {[
-              { key: 'contactFirst', label: 'First Name', placeholder: 'Jane' },
-              { key: 'contactLast', label: 'Last Name', placeholder: 'Smith' },
-            ].map((field) => (
-              <div key={field.key}>
-                <label className="block text-sm font-medium text-[#050505] mb-1.5">
-                  {field.label} <span className="text-[#C62026]">*</span>
-                </label>
-                <input
-                  type="text"
-                  value={form[field.key]}
-                  onChange={(e) => setForm((c) => ({ ...c, [field.key]: e.target.value }))}
-                  placeholder={field.placeholder}
-                  disabled={submitting}
-                  className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all placeholder-[#A5A5A5] disabled:bg-gray-50 disabled:cursor-not-allowed"
-                />
-              </div>
-            ))}
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-[#050505] mb-1.5">Email Address <span className="text-[#C62026]">*</span></label>
-            <input
-              type="email"
-              value={form.email}
-              onChange={(e) => setForm((c) => ({ ...c, email: e.target.value }))}
-              placeholder="contact@company.com"
-              disabled={submitting}
-              className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all placeholder-[#A5A5A5] disabled:bg-gray-50 disabled:cursor-not-allowed"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-[#050505] mb-1.5">Phone Number <span className="text-[#C62026]">*</span></label>
-            <div className="flex">
-              <span className="flex h-[42px] items-center rounded-l-xl border border-r-0 border-gray-200 bg-gray-50 px-3 text-sm font-medium text-[#6D6E71]">+1</span>
-              <input
-                type="tel"
-                value={form.phone}
-                onChange={(e) => setForm((c) => ({ ...c, phone: formatUSPhone(e.target.value) }))}
-                placeholder="(555) 000-0000"
-                maxLength={14}
-                disabled={submitting}
-                className="min-w-0 flex-1 rounded-l-none rounded-r-xl border border-gray-200 px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-[#8BC53D]/40 focus:border-[#8BC53D] transition-all placeholder-[#A5A5A5] disabled:bg-gray-50 disabled:cursor-not-allowed"
-              />
-            </div>
-          </div>
-
           <div>
             <label className="block text-sm font-medium text-[#050505] mb-1.5">Industry <span className="text-[#C62026]">*</span></label>
             <select
@@ -1031,7 +969,7 @@ export default function BrokerDashboard() {
               <div className="flex items-center justify-between mb-3">
                 <div>
                   <p className="text-sm font-semibold text-[#05164D]">Client Team Members</p>
-                  <p className="text-xs text-gray-400">Optionally add team members or accountants now</p>
+                  <p className="text-xs text-gray-400">Optionally add a client, team member, or accountant now</p>
                 </div>
                 <button
                   type="button"
@@ -1056,7 +994,7 @@ export default function BrokerDashboard() {
                         placeholder="Phone" maxLength={14} className="w-32 px-3 py-2 rounded-lg border border-gray-200 text-xs focus:outline-none focus:border-[#8BC53D]" />
                       <select value={m.sub_role} onChange={(e) => updateTeamMember(m.id, { sub_role: e.target.value })}
                         className="px-3 py-2 rounded-lg border border-gray-200 text-xs bg-white focus:outline-none focus:border-[#8BC53D]">
-                        {CLIENT_TEAM_ROLE_OPTIONS.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+                        {COMPANY_FORM_CLIENT_ROLE_OPTIONS.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
                       </select>
                       <input type="password" value={m.password} onChange={(e) => updateTeamMember(m.id, { password: e.target.value })}
                         placeholder="Password *" className="flex-1 min-w-[120px] px-3 py-2 rounded-lg border border-gray-200 text-xs focus:outline-none focus:border-[#8BC53D]" />
