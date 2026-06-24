@@ -1570,6 +1570,38 @@ export default function WorkspaceReconciliation() {
     void loadSavedQBBankActivity();
   }, [isSourceConfirmedByServer, selectedReportSource, qbBankActivity, loadSavedQBBankActivity]);
 
+  // When a saved snapshot loads without plFinancials (saved before this feature was added),
+  // fetch P&L totals from the line-items endpoint and merge them in.
+  useEffect(() => {
+    if (selectedReportSource !== REPORT_SOURCE_KEYS.QUICKBOOKS) return;
+    if (!clientId || !qbBankActivity?.months?.length) return;
+    const hasIncome = Object.keys(qbBankActivity.plFinancials?.totalIncome || {}).length > 0;
+    if (hasIncome) return;
+
+    const mons = qbBankActivity.months;
+    const startDate = `${mons[0]}-01`;
+    const [ey, em] = mons[mons.length - 1].split("-");
+    const endDate = `${mons[mons.length - 1]}-${String(new Date(+ey, +em, 0).getDate()).padStart(2, "0")}`;
+
+    const params = new URLSearchParams({
+      clientId,
+      start_date: startDate,
+      end_date: endDate,
+      accounting_method: bankActivityAccountingMethod || "Accrual",
+    });
+    fetch(`${BANK_RECON_LINE_ITEMS_ENDPOINT}?${params}`, { headers: getHeaders() })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!d?.success) return;
+        setQbBankActivity((prev) =>
+          prev
+            ? { ...prev, plFinancials: { totalIncome: d.plTotalIncome || {}, totalExpenses: d.plTotalExpenses || {} } }
+            : prev,
+        );
+      })
+      .catch(() => {});
+  }, [qbBankActivity, selectedReportSource, clientId, bankActivityAccountingMethod, getHeaders]);
+
   // Drive selectedReportSource from DataSourceContext.activeSource — the single source of truth
   // that the header badge also reads. This eliminates the split-brain between the badge and the
   // reconciliation page that was causing qms-bank-data to fire in Manual Upload mode.
