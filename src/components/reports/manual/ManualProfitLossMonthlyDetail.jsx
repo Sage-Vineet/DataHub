@@ -1,4 +1,4 @@
-import { useMemo, useState, useLayoutEffect, useRef } from "react";
+import { useMemo, useState, useRef, useCallback } from "react";
 import { formatCurrency } from "../../../lib/utils";
 import { ChevronRight, ChevronDown } from "lucide-react";
 
@@ -198,20 +198,6 @@ export default function ManualProfitLossMonthlyDetail({
   isPreview = false,
   selectedMonths = [],
 }) {
-  const tableWrapRef = useRef(null);
-  const [tableHeight, setTableHeight] = useState(null);
-
-  // Measure on every render; React bails out if height is unchanged so no infinite loop.
-  // This lets the table fill the remaining viewport height, making its scrollbar sit at
-  // the page edge (looks like the page scrollbar) while sticky top-0 on <th> works
-  // correctly relative to the table container.
-  useLayoutEffect(() => {
-    if (!tableWrapRef.current) return;
-    const rect = tableWrapRef.current.getBoundingClientRect();
-    const h = Math.floor(window.innerHeight - rect.top - 8);
-    if (h > 200) setTableHeight(h);
-  });
-
   const year = data?.year || null;
   const allMonths = Array.isArray(data?.months) ? data.months : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
   // In yearly mode columns are year numbers (>12); selectedMonths contains month numbers (1-12)
@@ -237,6 +223,11 @@ export default function ManualProfitLossMonthlyDetail({
       : "All Dates";
   }
   const displaySubtitle = subtitle === null ? null : (subtitle || fallbackSubtitle);
+
+  const headScrollRef = useRef(null);
+  const onBodyScroll = useCallback((e) => {
+    if (headScrollRef.current) headScrollRef.current.scrollLeft = e.currentTarget.scrollLeft;
+  }, []);
 
   if (!sections.length) {
     return (
@@ -270,36 +261,51 @@ export default function ManualProfitLossMonthlyDetail({
           </div>
         )}
 
-        <div
-          ref={tableWrapRef}
-          className="overflow-auto rounded-md border border-border"
-          style={tableHeight ? { height: `${tableHeight}px` } : {}}
-        >
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr className="bg-bg-page">
-                {/* Corner cell: frozen on BOTH top AND left (z-30 > header z-20 > body z-10) */}
-                <th className="sticky top-0 left-0 z-30 bg-bg-page px-3 pt-2.5 pb-3 text-left text-[12px] font-semibold text-text-primary min-w-[220px] border-b-2 border-text-primary border-r border-border" />
-                {months.map((m) => (
-                  <th key={m} className="sticky top-0 z-20 bg-bg-page px-3 pt-2.5 pb-3 text-right text-[12px] font-semibold text-text-primary whitespace-nowrap min-w-[90px] border-b-2 border-text-primary">
-                    {monthLabel(m, year)}
-                  </th>
-                ))}
-                <th className="sticky top-0 z-20 bg-bg-page px-3 pt-2.5 pb-3 text-right text-[12px] font-semibold text-text-primary min-w-[100px] border-b-2 border-text-primary">
-                  Total
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {sections.map((section) =>
-                section.isCalculated ? (
-                  <CalculatedRow key={section.key} section={section} months={months} />
-                ) : (
-                  <SectionBlock key={section.key} section={section} months={months} />
-                )
-              )}
-            </tbody>
-          </table>
+        <div className="rounded-md border border-border">
+          {/* Sticky header div — sticks to page top on vertical scroll; scroll synced from body via JS */}
+          <div className="sticky top-0 z-20 bg-bg-page">
+            <div ref={headScrollRef} className="overflow-x-hidden">
+              <table className="w-full table-fixed border-collapse text-sm">
+                <colgroup>
+                  <col style={{ width: 220, minWidth: 220 }} />
+                  {months.map((m) => <col key={m} style={{ width: 90, minWidth: 90 }} />)}
+                  <col style={{ width: 100, minWidth: 100 }} />
+                </colgroup>
+                <thead>
+                  <tr className="bg-bg-page">
+                    <th className="bg-bg-page px-3 pt-2.5 pb-3 text-left text-[12px] font-semibold text-text-primary border-b-2 border-text-primary border-r border-border" />
+                    {months.map((m) => (
+                      <th key={m} className="bg-bg-page px-3 pt-2.5 pb-3 text-right text-[12px] font-semibold text-text-primary whitespace-nowrap border-b-2 border-text-primary">
+                        {monthLabel(m, year)}
+                      </th>
+                    ))}
+                    <th className="bg-bg-page px-3 pt-2.5 pb-3 text-right text-[12px] font-semibold text-text-primary border-b-2 border-text-primary">
+                      Total
+                    </th>
+                  </tr>
+                </thead>
+              </table>
+            </div>
+          </div>
+          {/* Body div — horizontal scroll synced to sticky header above */}
+          <div className="overflow-x-auto" onScroll={onBodyScroll}>
+            <table className="w-full table-fixed border-collapse text-sm">
+              <colgroup>
+                <col style={{ width: 220, minWidth: 220 }} />
+                {months.map((m) => <col key={m} style={{ width: 90, minWidth: 90 }} />)}
+                <col style={{ width: 100, minWidth: 100 }} />
+              </colgroup>
+              <tbody>
+                {sections.map((section) =>
+                  section.isCalculated ? (
+                    <CalculatedRow key={section.key} section={section} months={months} />
+                  ) : (
+                    <SectionBlock key={section.key} section={section} months={months} />
+                  )
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>

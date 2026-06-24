@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef, useCallback } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { formatCurrency } from "../../../lib/utils";
 
@@ -201,6 +201,11 @@ export default function ManualBalanceSheetMonthlyDetail({
   }
   const displaySubtitle = subtitle === null ? null : (subtitle || fallbackSubtitle);
 
+  const headScrollRef = useRef(null);
+  const onBodyScroll = useCallback((e) => {
+    if (headScrollRef.current) headScrollRef.current.scrollLeft = e.currentTarget.scrollLeft;
+  }, []);
+
   if (!hasSections) {
     return (
       <div className="flex-1 bg-bg-page/50 p-10 font-inter">
@@ -242,48 +247,66 @@ export default function ManualBalanceSheetMonthlyDetail({
           )}
         </div>
 
-        {/* overflow-x-auto: horizontal scroll only — no fixed height so the page handles vertical scroll */}
-        <div className="overflow-x-auto rounded-md border border-border">
-          <table className="w-full border-collapse text-sm">
-            <thead>
-              <tr className="bg-bg-page">
-                {/* Corner cell: sticky on BOTH top and left (z-30 > column header z-20 > body z-10) */}
-                <th className="sticky top-0 left-0 z-30 bg-bg-page px-3 pt-2.5 pb-3 text-left text-[12px] font-semibold text-text-primary min-w-[300px] border-b-2 border-text-primary border-r border-border" />
-                {months.map((m) => (
-                  <th key={m} className="sticky top-0 z-20 bg-bg-page px-3 pt-2.5 pb-3 text-right text-[12px] font-semibold text-text-primary whitespace-nowrap min-w-[100px] border-b-2 border-text-primary">
-                    {columnLabel(m, year)}
-                  </th>
-                ))}
-                <th className="sticky top-0 z-20 bg-bg-page px-3 pt-2.5 pb-3 text-right text-[12px] font-semibold text-text-primary min-w-[110px] border-b-2 border-text-primary">
-                  Total
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {["Assets", "Liabilities", "Equity"].map((key) =>
-                sections[key] ? (
-                  <SectionBlock key={key} sectionKey={key} section={sections[key]} months={months} />
-                ) : null
-              )}
+        <div className="rounded-md border border-border">
+          {/* Sticky header div — sticks to page top on vertical scroll; scroll synced from body via JS */}
+          <div className="sticky top-0 z-20 bg-bg-page">
+            <div ref={headScrollRef} className="overflow-x-hidden">
+              <table className="w-full table-fixed border-collapse text-sm">
+                <colgroup>
+                  <col style={{ width: 300, minWidth: 300 }} />
+                  {months.map((m) => <col key={m} style={{ width: 100, minWidth: 100 }} />)}
+                  <col style={{ width: 110, minWidth: 110 }} />
+                </colgroup>
+                <thead>
+                  <tr className="bg-bg-page">
+                    <th className="bg-bg-page px-3 pt-2.5 pb-3 text-left text-[12px] font-semibold text-text-primary border-b-2 border-text-primary border-r border-border" />
+                    {months.map((m) => (
+                      <th key={m} className="bg-bg-page px-3 pt-2.5 pb-3 text-right text-[12px] font-semibold text-text-primary whitespace-nowrap border-b-2 border-text-primary">
+                        {columnLabel(m, year)}
+                      </th>
+                    ))}
+                    <th className="bg-bg-page px-3 pt-2.5 pb-3 text-right text-[12px] font-semibold text-text-primary border-b-2 border-text-primary">
+                      Total
+                    </th>
+                  </tr>
+                </thead>
+              </table>
+            </div>
+          </div>
+          {/* Body div — horizontal scroll synced to sticky header above */}
+          <div className="overflow-x-auto" onScroll={onBodyScroll}>
+            <table className="w-full table-fixed border-collapse text-sm">
+              <colgroup>
+                <col style={{ width: 300, minWidth: 300 }} />
+                {months.map((m) => <col key={m} style={{ width: 100, minWidth: 100 }} />)}
+                <col style={{ width: 110, minWidth: 110 }} />
+              </colgroup>
+              <tbody>
+                {["Assets", "Liabilities", "Equity"].map((key) =>
+                  sections[key] ? (
+                    <SectionBlock key={key} sectionKey={key} section={sections[key]} months={months} />
+                  ) : null
+                )}
 
-              <tr className="border-t-2 border-text-primary bg-bg-page/60">
-                <td className={`${STICKY_FIRST_COL} bg-bg-page/60 px-3 py-2 text-[13px] font-bold text-text-primary`}>
-                  Total Liabilities &amp; Equity
-                </td>
-                {months.map((m) => {
-                  const v = Number(totalLEByMonth[m] || 0);
-                  return (
-                    <td key={m} className={`px-3 py-2 text-right text-[12px] tabular-nums font-bold ${v < 0 ? "text-status-error" : "text-text-primary"}`}>
-                      {formatCurrency(v)}
-                    </td>
-                  );
-                })}
-                <td className={`px-3 py-2 text-right text-[12px] tabular-nums font-bold ${totalLETotal < 0 ? "text-status-error" : "text-text-primary"}`}>
-                  {formatCurrency(totalLETotal)}
-                </td>
-              </tr>
-            </tbody>
-          </table>
+                <tr className="border-t-2 border-text-primary bg-bg-page/60">
+                  <td className={`${STICKY_FIRST_COL} bg-bg-page/60 px-3 py-2 text-[13px] font-bold text-text-primary`}>
+                    Total Liabilities &amp; Equity
+                  </td>
+                  {months.map((m) => {
+                    const v = Number(totalLEByMonth[m] || 0);
+                    return (
+                      <td key={m} className={`px-3 py-2 text-right text-[12px] tabular-nums font-bold ${v < 0 ? "text-status-error" : "text-text-primary"}`}>
+                        {formatCurrency(v)}
+                      </td>
+                    );
+                  })}
+                  <td className={`px-3 py-2 text-right text-[12px] tabular-nums font-bold ${totalLETotal < 0 ? "text-status-error" : "text-text-primary"}`}>
+                    {formatCurrency(totalLETotal)}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>
