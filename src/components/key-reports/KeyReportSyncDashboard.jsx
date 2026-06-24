@@ -149,8 +149,9 @@ function buildValidationMatrix(validationResults = []) {
     if (!dataType) return;
 
     const parsedYear = Number(row?.year);
-    const yearKey = Number.isInteger(parsedYear) && parsedYear > 0 ? String(parsedYear) : "All";
-    if (yearKey !== "All") yearSet.add(Number(yearKey));
+    const hasYear = Number.isInteger(parsedYear) && parsedYear > 0;
+    const yearKey = hasYear ? String(parsedYear) : "All";
+    if (hasYear) yearSet.add(parsedYear);
 
     if (!VALIDATION_ROW_ORDER.some((item) => item.key === dataType)) {
       extraKeys.add(dataType);
@@ -173,9 +174,6 @@ function buildValidationMatrix(validationResults = []) {
   });
 
   const columns = Array.from(yearSet).sort((a, b) => a - b).map((year) => String(year));
-  if (validationResults.some((row) => !Number.isInteger(Number(row?.year)))) {
-    columns.push("All");
-  }
   if (!columns.length) columns.push("All");
 
   const rowOrder = [
@@ -185,10 +183,14 @@ function buildValidationMatrix(validationResults = []) {
 
   const rows = rowOrder.map((key) => {
     const config = VALIDATION_ROW_ORDER.find((item) => item.key === key);
+    const cells = rowMap.get(key) || new Map();
+    const hasAnyYearCell = columns.some(col => col !== "All" && cells.has(col));
+    const isYearIndependent = cells.has("All") || key === "chart_of_accounts" || !hasAnyYearCell;
     return {
       key,
       label: config?.label || EXTRA_ROW_LABEL(key),
-      cells: rowMap.get(key) || new Map(),
+      cells,
+      isYearIndependent,
     };
   });
 
@@ -196,19 +198,33 @@ function buildValidationMatrix(validationResults = []) {
   const detailRows = [];
 
   rows.forEach((row) => {
-    columns.forEach((column) => {
-      const cell = row.cells.get(column) || { status: "idle", messages: [] };
+    if (row.isYearIndependent) {
+      const cell = row.cells.get("All") || { status: "idle", messages: [] };
       summaryCounts[cell.status] = (summaryCounts[cell.status] || 0) + 1;
       if (cell.messages.length) {
         detailRows.push({
           rowKey: row.key,
           rowLabel: row.label,
-          column,
+          column: "All",
           status: cell.status,
           message: cell.messages.join(" | "),
         });
       }
-    });
+    } else {
+      columns.forEach((column) => {
+        const cell = row.cells.get(column) || { status: "idle", messages: [] };
+        summaryCounts[cell.status] = (summaryCounts[cell.status] || 0) + 1;
+        if (cell.messages.length) {
+          detailRows.push({
+            rowKey: row.key,
+            rowLabel: row.label,
+            column,
+            status: cell.status,
+            message: cell.messages.join(" | "),
+          });
+        }
+      });
+    }
   });
 
   return { columns, rows, summaryCounts, detailRows };
@@ -418,25 +434,51 @@ export default function KeyReportSyncDashboard({
                     <div className="bg-white px-3 py-3">
                       <p className="text-sm font-semibold text-text-primary">{row.label}</p>
                     </div>
-                    {matrix.columns.map((column) => {
-                      const cell = row.cells.get(column) || { status: "idle", messages: [] };
-                      const meta = STATUS_META[cell.status] || STATUS_META.idle;
-                      const message = cell.messages.length
-                        ? cell.messages.join(" | ")
-                        : "No result yet.";
-                      return (
-                        <div key={`${row.key}:${column}`} className={cn("bg-white px-3 py-3", meta.cell)}>
-                          <div className="flex items-start justify-between gap-2">
-                            <span className={cn("rounded-full border px-2 py-0.5 text-[11px] font-semibold", meta.badge)}>
-                              {meta.label}
-                            </span>
+                    {row.isYearIndependent ? (
+                      (() => {
+                        const cell = row.cells.get("All") || { status: "idle", messages: [] };
+                        const meta = STATUS_META[cell.status] || STATUS_META.idle;
+                        const message = cell.messages.length
+                          ? cell.messages.join(" | ")
+                          : "No result yet.";
+                        return (
+                          <div
+                            key={`${row.key}:all`}
+                            className={cn("bg-white px-3 py-3", meta.cell)}
+                            style={{ gridColumn: `span ${matrix.columns.length}` }}
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <span className={cn("rounded-full border px-2 py-0.5 text-[11px] font-semibold", meta.badge)}>
+                                {meta.label}
+                              </span>
+                            </div>
+                            <p className="mt-2 text-[11px] leading-4 text-inherit" title={message}>
+                              {message}
+                            </p>
                           </div>
-                          <p className="mt-2 text-[11px] leading-4 text-inherit" title={message}>
-                            {message}
-                          </p>
-                        </div>
-                      );
-                    })}
+                        );
+                      })()
+                    ) : (
+                      matrix.columns.map((column) => {
+                        const cell = row.cells.get(column) || { status: "idle", messages: [] };
+                        const meta = STATUS_META[cell.status] || STATUS_META.idle;
+                        const message = cell.messages.length
+                          ? cell.messages.join(" | ")
+                          : "No result yet.";
+                        return (
+                          <div key={`${row.key}:${column}`} className={cn("bg-white px-3 py-3", meta.cell)}>
+                            <div className="flex items-start justify-between gap-2">
+                              <span className={cn("rounded-full border px-2 py-0.5 text-[11px] font-semibold", meta.badge)}>
+                                {meta.label}
+                              </span>
+                            </div>
+                            <p className="mt-2 text-[11px] leading-4 text-inherit" title={message}>
+                              {message}
+                            </p>
+                          </div>
+                        );
+                      })
+                    )}
                   </Fragment>
                 ))}
               </div>

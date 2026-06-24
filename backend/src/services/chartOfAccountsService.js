@@ -120,6 +120,30 @@ async function collectBsAccounts(companyId, batchId) {
   );
 }
 
+// Read distinct accounts from general_ledger_entries for a version (new architecture).
+async function collectGlAccountsFromEntries(companyId, versionId) {
+  return fetchAllRows(() =>
+    supabase
+      .from('general_ledger_entries')
+      .select('account_number, account_name, account_type, fiscal_year')
+      .eq('company_id', companyId)
+      .eq('version_id', versionId)
+      .order('id', { ascending: true }),
+  );
+}
+
+// Read distinct accounts from balance_sheet_entries for a version (new architecture).
+async function collectBsAccountsFromEntries(companyId, versionId) {
+  return fetchAllRows(() =>
+    supabase
+      .from('balance_sheet_entries')
+      .select('account_name, section')
+      .eq('company_id', companyId)
+      .eq('version_id', versionId)
+      .order('id', { ascending: true }),
+  );
+}
+
 /**
  * Build the in-memory COA model (groups + leaves) from raw account rows.
  * Pure function — no DB access — so it is easy to test and reason about.
@@ -193,18 +217,26 @@ function buildCoaModel(glRows, bsRows) {
  *
  * @param {string} companyId
  * @param {string} versionId  key_report_versions.id
- * @param {string} batchId    manual_gl_batches.id produced by the sync
+ * @param {string} batchId    manual_gl_batches.id (legacy path); pass null to read from entry tables
  * @returns {Promise<{ accountCount: number, groupCount: number, leafCount: number }>}
  */
 async function generateChartOfAccounts(companyId, versionId, batchId) {
-  if (!companyId || !versionId || !batchId) {
+  if (!companyId || !versionId) {
     return { accountCount: 0, groupCount: 0, leafCount: 0, skipped: true };
   }
 
-  const [glRows, bsRows] = await Promise.all([
-    collectGlAccounts(companyId, batchId),
-    collectBsAccounts(companyId, batchId).catch(() => []),
-  ]);
+  let glRows, bsRows;
+  if (batchId) {
+    [glRows, bsRows] = await Promise.all([
+      collectGlAccounts(companyId, batchId),
+      collectBsAccounts(companyId, batchId).catch(() => []),
+    ]);
+  } else {
+    [glRows, bsRows] = await Promise.all([
+      collectGlAccountsFromEntries(companyId, versionId),
+      collectBsAccountsFromEntries(companyId, versionId).catch(() => []),
+    ]);
+  }
 
   const { groups, leaves } = buildCoaModel(glRows, bsRows);
 

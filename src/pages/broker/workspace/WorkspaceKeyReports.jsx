@@ -268,6 +268,14 @@ export default function WorkspaceKeyReports() {
   const version = detail?.version;
   const mappingsByCategory = detail?.mappingsByCategory || {};
   const lastSync = detail?.syncLogs?.[0];
+  const persistedValidationResults = Array.isArray(detail?.validationResults) ? detail.validationResults : [];
+  const displaySyncState = {
+    ...syncState,
+    status: syncState.status === "idle" && persistedValidationResults.length > 0 ? "validation" : syncState.status,
+    validationResults: Array.isArray(syncState.validationResults) && syncState.validationResults.length > 0
+      ? syncState.validationResults
+      : persistedValidationResults,
+  };
 
   return (
     <div className="p-6">
@@ -394,7 +402,7 @@ export default function WorkspaceKeyReports() {
 
           <KeyReportSyncDashboard
             version={version}
-            syncState={syncState}
+            syncState={displaySyncState}
             hasLinkedDocuments={linkedDocumentCount > 0}
           />
 

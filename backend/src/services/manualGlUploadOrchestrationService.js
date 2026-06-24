@@ -141,6 +141,7 @@ async function orchestrateManualGlUpload({
     batchName,
     useDatasetLifecycle: !datasetVersionId,
     datasetVersionId: datasetVersionId,
+    keyReportVersionId,
     deferLifecycleFinalization: true,
     uploadJobId,
   }));
@@ -211,7 +212,7 @@ async function orchestrateManualGlUpload({
     const strictIsolation = !!keyReportVersionId;
 
     await trackProgress("duplicate_check", 30);
-    const duplicateActiveBatch = (uploadChecksum && !strictIsolation)
+    const duplicateActiveBatch = uploadChecksum
       ? await withTiming("dupCheck", () => findActiveBatchByChecksum(companyId, uploadChecksum))
       : null;
 

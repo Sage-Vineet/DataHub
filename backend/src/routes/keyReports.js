@@ -105,11 +105,12 @@ router.get("/key-reports/versions/:versionId", async (req, res) => {
   try {
     const version = await loadVersionWithAccess(req, res);
     if (!version) return;
-    const [mappingsByCategory, syncLogs] = await Promise.all([
+    const [mappingsByCategory, syncLogs, validationResults] = await Promise.all([
       keyReportService.getMappingsByCategory(version.id),
       keyReportService.listSyncLogs(version.id),
+      keyReportService.listValidationResults(version.id),
     ]);
-    return res.json({ success: true, version, mappingsByCategory, syncLogs });
+    return res.json({ success: true, version, mappingsByCategory, syncLogs, validationResults });
   } catch (error) {
     return handleError(res, error, "GET /key-reports/versions/:versionId");
   }

@@ -1508,6 +1508,64 @@ function parseSectionedStatement(entries = [], sectionDefinitions = [], options 
 // Balance Sheet, P&L, and Cash Flow use the rule-based parser only.
 const QMS_AI_STATEMENT_TYPES = new Set(["tax_return", "bank_statement", "bank_reconciliation"]);
 
+const PERIOD_MONTH_RE = "(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)";
+
+function normalizeYearToken(value) {
+  const year = Number(value);
+  if (!Number.isFinite(year) || year < 0) return null;
+  if (year >= 1000 && year <= 9999) return year;
+  if (year > 0 && year <= 99) return year >= 70 ? 1900 + year : 2000 + year;
+  return null;
+}
+
+function collectYearsFromText(value) {
+  const text = String(value || "").trim();
+  if (!text) return [];
+
+  const years = new Set();
+  const fullYearMatches = text.match(/\b(?:19|20)\d{2}\b/g) || [];
+  fullYearMatches.forEach((match) => years.add(Number(match)));
+
+  const monthYearRegex = new RegExp(PERIOD_MONTH_RE + "[\s.\-_]*(\d{2,4})\b", "ig");
+  let monthMatch;
+  while ((monthMatch = monthYearRegex.exec(text))) {
+    const normalized = normalizeYearToken(monthMatch[1]);
+    if (normalized) years.add(normalized);
+  }
+
+  return Array.from(years).sort((a, b) => a - b);
+}
+
+function collectDetectedYearsFromReport(report = {}, fileName = "") {
+  const years = new Set();
+  const add = (value) => {
+    collectYearsFromText(value).forEach((year) => years.add(year));
+  };
+
+  add(report?.asOfDate);
+  add(report?.periodStart);
+  add(report?.periodEnd);
+  (report?.periods || []).forEach(add);
+  if (!years.size) add(fileName);
+
+  return Array.from(years).sort((a, b) => a - b);
+}
+
+function collectDetectedYearsFromStatements(statements = [], fileName = "") {
+  const years = new Set();
+  const add = (value) => {
+    collectYearsFromText(value).forEach((year) => years.add(year));
+  };
+
+  (statements || []).forEach((statement) => {
+    add(statement?.period_start);
+    add(statement?.period_end);
+  });
+  if (!years.size) add(fileName);
+
+  return Array.from(years).sort((a, b) => a - b);
+}
+
 async function parseStoredReport(upload, forcedStatementType = null, { skipAI = false } = {}) {
   const buffer = normalizeUploadBinary(upload?.data);
   const fileName = String(upload?.file_name || "");
@@ -1531,6 +1589,15 @@ async function parseStoredReport(upload, forcedStatementType = null, { skipAI = 
             asOfDate: geminiResult.asOfDate || geminiResult.periodEnd || null,
             periodStart: geminiResult.periodStart || null,
             periodEnd: geminiResult.periodEnd || geminiResult.asOfDate || null,
+            detectedYears: collectDetectedYearsFromReport(
+              {
+                asOfDate: geminiResult.asOfDate || geminiResult.periodEnd || null,
+                periodStart: geminiResult.periodStart || null,
+                periodEnd: geminiResult.periodEnd || geminiResult.asOfDate || null,
+                periods: Array.isArray(geminiResult.periods) ? geminiResult.periods : [],
+              },
+              fileName,
+            ),
           },
         };
       }
@@ -1585,6 +1652,15 @@ async function parseStoredReport(upload, forcedStatementType = null, { skipAI = 
       report: {
         rows: hierarchyRows.length ? hierarchyRows : [],
         asOfDate,
+        detectedYears: collectDetectedYearsFromReport(
+          {
+            asOfDate,
+            periodStart: null,
+            periodEnd: null,
+            periods: periodInfo ? periodInfo.periods.map((p) => p.label) : [],
+          },
+          fileName,
+        ),
         ...(periodInfo ? { periods: periodInfo.periods.map((p) => p.label) } : {}),
       },
     };
@@ -1662,6 +1738,15 @@ async function parseStoredReport(upload, forcedStatementType = null, { skipAI = 
     report: {
       rows: parseSectionedStatement(entries, sectionDefinitions, { exactMatchOnly }),
       asOfDate: reportAsOfDate,
+      detectedYears: collectDetectedYearsFromReport(
+        {
+          asOfDate: reportAsOfDate,
+          periodStart: reportPeriodStart,
+          periodEnd: reportPeriodEnd,
+          periods: periodInfo ? periodInfo.periods.map((p) => p.label) : [],
+        },
+        fileName,
+      ),
       ...(reportPeriodStart ? { periodStart: reportPeriodStart } : {}),
       ...(reportPeriodEnd ? { periodEnd: reportPeriodEnd } : {}),
       ...(periodInfo ? { periods: periodInfo.periods.map((p) => p.label) } : {}),
@@ -1742,6 +1827,7 @@ async function processDocumentMapping(companyId, documentId, category, opts = {}
     const cacheKey = `kr_sync_tax_${companyId}_${documentId}`;
     const extracted = await extractTaxDataFromBuffer(buffer, cacheKey);
     if (extracted?.year) {
+      const detectedYears = collectDetectedYearsFromReport({ asOfDate: String(extracted.year) + "-12-31" }, fileName);
       extractionResult = {
         tax_return: {
           taxYears: {
@@ -1753,6 +1839,7 @@ async function processDocumentMapping(companyId, documentId, category, opts = {}
           },
           syncedAt: now,
           documentCount: 1,
+          detectedYears: detectedYears.length ? detectedYears : [Number(extracted.year)],
         },
       };
     }
@@ -1766,6 +1853,7 @@ async function processDocumentMapping(companyId, documentId, category, opts = {}
     }
     if (statements.length) {
       const { banks, months, totals } = buildBankResponseShape(statements);
+      const detectedYears = collectDetectedYearsFromStatements(statements, fileName);
       extractionResult = {
         bank_reconciliation: {
           banks,
@@ -1773,6 +1861,7 @@ async function processDocumentMapping(companyId, documentId, category, opts = {}
           totals,
           syncedAt: now,
           documentCount: 1,
+          detectedYears,
         },
       };
     }
@@ -1789,6 +1878,7 @@ async function processDocumentMapping(companyId, documentId, category, opts = {}
           fileName,
           report: parsed.report,
           syncedAt: now,
+          detectedYears: Array.isArray(parsed?.report?.detectedYears) ? parsed.report.detectedYears : [],
         },
       };
     }
@@ -1829,7 +1919,19 @@ async function processDocumentMapping(companyId, documentId, category, opts = {}
 
   if (upsertError) throw new Error(`Persistence failed: ${upsertError.message}`);
 
-  return { success: true, documentId, statementType, fileName };
+  const detectedYears =
+    extractionResult?.manual_report_upload?.detectedYears ||
+    extractionResult?.bank_reconciliation?.detectedYears ||
+    extractionResult?.tax_return?.detectedYears ||
+    [];
+
+  return {
+    success: true,
+    documentId,
+    statementType,
+    fileName,
+    detectedYears,
+  };
 }
 
 async function syncManualReportFolder({ companyId, folderId, folderName = "" }) {

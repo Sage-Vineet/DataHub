@@ -15,8 +15,6 @@ const fileReferenceService = require("./fileReferenceService");
 const documentService = require("./documentService");
 const { normalizeError, isConnectionError } = require("../utils/dbErrorHandler");
 const {
-  buildValidationResults,
-  replaceValidationResults,
   listValidationResults,
   resolveMappingYear,
 } = require("./keyReportValidationService");
@@ -377,30 +375,23 @@ async function syncVersion(versionId, userId = null, opts = {}) {
   try {
     const validation = await validateVersion(versionId);
 
-    // Generate backend financial tables from the linked files (Step 5).
+    // Extract all linked files and persist to entry tables. Validation results
+    // are written internally by the sync service (from entry table row counts).
     const keyReportSyncService = require("./keyReportSyncService");
     const result = await keyReportSyncService.generateFinancialTables(version, {
       userId,
       uploadJobId: opts.uploadJobId || null,
     });
 
-    const mappingsByCategory = await getMappingsByCategory(versionId);
-    const validationResults = buildValidationResults({
-      version,
-      mappingsByCategory,
-      syncSummary: result?.summary || {},
-      warnings: validation.warnings,
-      missingFiles: validation.missingFiles,
-    });
-    await replaceValidationResults(version.id, version.companyId, validationResults);
-
+    // key_report_versions: mark synced. resolved_batch_id/dataset_version are null
+    // in the new direct-extraction architecture (no Manual GL batch is created).
     await supabase
       .from("key_report_versions")
       .update({
         status: "synced",
         last_synced_at: new Date().toISOString(),
-        resolved_batch_id: result?.batchId || version.resolvedBatchId || null,
-        resolved_dataset_version: result?.datasetVersion ?? version.resolvedDatasetVersion ?? null,
+        resolved_batch_id: null,
+        resolved_dataset_version: null,
         updated_at: new Date().toISOString(),
         updated_by: userId,
       })
@@ -411,9 +402,17 @@ async function syncVersion(versionId, userId = null, opts = {}) {
       .update({
         sync_status: "success",
         sync_completed_at: new Date().toISOString(),
-        metadata: { warnings: validation.warnings, result: result?.summary || null },
+        metadata: {
+          warnings: validation.warnings,
+          years: result?.years || [],
+          extractionResults: result?.extractionResults || null,
+          totalRowsInserted: result?.summary?.totalRowsInserted || 0,
+        },
       })
       .eq("id", logId);
+
+    // Fetch the validation results persisted by the sync service for the response.
+    const validationResults = await listValidationResults(versionId);
 
     return {
       success: true,
