@@ -987,14 +987,91 @@ export async function getBalanceSheetDetail(
   options = {},
 ) {
   if ((options?.sourceMode || "quickbooks") === "manual") {
-    // Only pass manual filters (fiscal year, batch, etc.) — no QB date params
-    const params = {
+    const baseParams = {
       ...((options?.manualFilters && typeof options.manualFilters === "object")
         ? options.manualFilters
         : {}),
     };
-    console.log("[DetailedReportUI][BS] Requesting monthly detail with params:", JSON.stringify(params));
-    const response = await getManualStagedBalanceSheetMonthlyDetail({ params });
+
+    // Yearly mode: one call per year, aggregate year-end (last-month) balance for each account
+    if (options?.yearMode === true && options?.startYear && options?.endYear) {
+      const startYr = Number(options.startYear);
+      const endYr = Number(options.endYear);
+      const years = [];
+      for (let y = startYr; y <= endYr; y++) years.push(y);
+
+      const yearResults = {};
+      await Promise.all(years.map(async (yr) => {
+        const resp = await getManualStagedBalanceSheetMonthlyDetail({ params: { ...baseParams, fiscalYear: yr } });
+        yearResults[yr] = resp;
+      }));
+
+      const firstAvailable = Object.values(yearResults).find((r) => r?.sections);
+      const lastYr = years[years.length - 1];
+      const aggregatedSections = {};
+
+      for (const sectionKey of ["Assets", "Liabilities", "Equity"]) {
+        const templateSection = Object.values(yearResults).map((r) => r?.sections?.[sectionKey]).find(Boolean);
+        if (!templateSection) continue;
+
+        const catMap = new Map();
+        const sectionMonthlyTotals = {};
+
+        for (const yr of years) {
+          const section = yearResults[yr]?.sections?.[sectionKey];
+          if (!section) continue;
+          const yrMonths = yearResults[yr]?.months || [];
+          const lastMon = yrMonths[yrMonths.length - 1];
+          sectionMonthlyTotals[yr] = lastMon != null
+            ? Number(section.monthlyTotals?.[lastMon] ?? section.total ?? 0)
+            : Number(section.total ?? 0);
+
+          for (const cat of (section.categories || [])) {
+            if (!catMap.has(cat.label)) catMap.set(cat.label, { label: cat.label, accMap: new Map(), monthlyTotals: {} });
+            const aggCat = catMap.get(cat.label);
+            aggCat.monthlyTotals[yr] = lastMon != null
+              ? Number(cat.monthlyTotals?.[lastMon] ?? cat.total ?? 0)
+              : Number(cat.total ?? 0);
+            for (const acc of (cat.accounts || [])) {
+              const accKey = `${acc.number}::${acc.name}`;
+              if (!aggCat.accMap.has(accKey)) aggCat.accMap.set(accKey, { name: acc.name, number: acc.number, monthly: {}, total: 0, transactions: [] });
+              const aggAcc = aggCat.accMap.get(accKey);
+              aggAcc.monthly[yr] = lastMon != null
+                ? Number(acc.monthly?.[lastMon] ?? acc.total ?? 0)
+                : Number(acc.total ?? 0);
+              // Carry transactions tagged with fiscalYear so vendor drill-down works in yearly view
+              if (Array.isArray(acc.transactions) && acc.transactions.length > 0) {
+                acc.transactions.forEach((tx) => aggAcc.transactions.push({ ...tx, fiscalYear: yr }));
+              }
+            }
+          }
+        }
+
+        aggregatedSections[sectionKey] = {
+          label: templateSection.label,
+          monthlyTotals: sectionMonthlyTotals,
+          total: sectionMonthlyTotals[lastYr] ?? 0,
+          categories: Array.from(catMap.values()).map((c) => ({
+            label: c.label,
+            monthlyTotals: c.monthlyTotals,
+            total: c.monthlyTotals[lastYr] ?? 0,
+            accounts: Array.from(c.accMap.values()).map((a) => ({ ...a, total: a.monthly[lastYr] ?? 0 })),
+          })),
+        };
+      }
+
+      return {
+        source: firstAvailable?.source || "manual_gl_staged_transactions",
+        reportType: "balance_sheet_monthly_detail",
+        year: null,
+        months: years,
+        sections: aggregatedSections,
+      };
+    }
+
+    // Monthly mode (default): single call with current filters
+    console.log("[DetailedReportUI][BS] Requesting monthly detail with params:", JSON.stringify(baseParams));
+    const response = await getManualStagedBalanceSheetMonthlyDetail({ params: baseParams });
     console.log("[DetailedReportUI][BS] Received keys:", Object.keys(response || {}), "| source:", response?.source, "| reportType:", response?.reportType, "| months:", response?.months);
     if (!response?.sections || Object.keys(response.sections).length === 0) {
       console.warn("[DetailedReportUI][BS] WARNING: sections is empty — check fiscal year filter and staged data.");
