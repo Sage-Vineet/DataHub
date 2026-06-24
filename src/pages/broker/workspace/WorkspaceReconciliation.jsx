@@ -20,7 +20,10 @@ import {
   LoaderCircle,
   ChevronDown,
   ChevronRight,
+  Download,
 } from "lucide-react";
+import * as XLSX from "xlsx";
+import { jsPDF } from "jspdf";
 import QBDisconnectedBanner from "../../../components/common/QBDisconnectedBanner";
 
 const MONTHS = [
@@ -1005,6 +1008,10 @@ export default function WorkspaceReconciliation() {
   // Controls the addback picker modal: null = closed, { open, section, startDate, endDate } = open.
   const [addbackPickerState, setAddbackPickerState] = useState(null);
 
+  // Export dropdown state
+  const [bankReconExportOpen, setBankReconExportOpen] = useState(false);
+  const [bankReconIsExporting, setBankReconIsExporting] = useState(false);
+
   // Always reflects the latest selectedReportSource — used to discard in-flight fetch results
   // that started under a different source (race condition: user switches source while a fetch
   // for the old source is still in-flight; the stale result would overwrite the correct data).
@@ -1533,6 +1540,26 @@ export default function WorkspaceReconciliation() {
     },
     [clientId, getHeaders],
   );
+
+
+
+
+  const handleBankReconExport = async (kind) => {
+    setBankReconExportOpen(false);
+    setBankReconIsExporting(true);
+    try {
+      if (kind === "excel") {
+        exportBankReconToExcel();
+      } else {
+        exportBankReconToPdf();
+      }
+    } catch (err) {
+      console.error("[BankRecon] Export failed:", err);
+      alert(err?.message || "Export failed. Please try again.");
+    } finally {
+      setBankReconIsExporting(false);
+    }
+  };
 
   // Unified bank-data loader — dispatches ONLY based on server-confirmed source.
   // isSourceConfirmedByServer prevents stale storedState from triggering the wrong endpoint.
@@ -2967,6 +2994,385 @@ export default function WorkspaceReconciliation() {
     return renderActivityTableCore(manualActivityRows, manualActivityTTM, filteredPdfMonths);
   };
 
+  // ── Bank Reconciliation Excel export (data-driven) ───────────────────────────
+  const exportBankReconToExcel = () => {
+    const isManual = isManualUpload || isManualGl || isQBManual;
+    const months = isManual ? filteredPdfMonths : reportMonths;
+    if (!months.length) { alert("No data to export."); return; }
+
+    const colHeaders = ["", ...months.map(monthLabel), "TTM"];
+    const wb = XLSX.utils.book_new();
+
+    const fmtN = (val) => (val == null ? "" : Number(val) || 0);
+
+    // Helper: build sheet rows for one bank balance table
+    const bankRows = (bankName, rows, ttm) => {
+      const vals = (f) => [...rows.map((r) => fmtN(r[f])), fmtN(ttm[f])];
+      return [
+        [bankName],
+        colHeaders,
+        ["Starting Balance", ...vals("startingBalance")],
+        ["Deposits", ...vals("deposits")],
+        ["Withdrawals", ...vals("withdrawals")],
+        ["Ending Balance", ...vals("endingBalance")],
+        [],
+        ["Footing Check", ...vals("footingCheck")],
+        ["Prior Month Check", ...vals("priorMonthCheck")],
+        [],
+        ["Per Balance Sheet", ...vals("perBalanceSheet")],
+        ["Variance", ...vals("variance")],
+        [],
+        ["Outstanding Checks", ...vals("outstandingChecks")],
+        ["Unreconciled $ Variance", ...vals("unreconciledDollar")],
+        ["Unreconciled % Variance", ...vals("unreconciledPct")],
+        [],
+      ];
+    };
+
+    const allRows = [];
+
+    if (isManual) {
+      (extractedBankPdfData?.banks || []).forEach((bank) => {
+        const monthMap = Object.fromEntries((bank.months || []).map((m) => [m.monthKey, m]));
+        const baseRows = months.map((mk) => {
+          const m = monthMap[mk];
+          return { month: mk, startingBalance: m?.startingBalance ?? 0, deposits: m?.deposits ?? 0, withdrawals: m?.withdrawals ?? 0, endingBalance: m?.endingBalance ?? 0 };
+        });
+        const rows = baseRows.map((r, i) => ({
+          ...r,
+          footingCheck: r.endingBalance - (r.startingBalance + r.deposits - r.withdrawals),
+          priorMonthCheck: i === 0 ? 0 : baseRows[i - 1].endingBalance - r.startingBalance,
+          perBalanceSheet: null, variance: null, outstandingChecks: 0, unreconciledDollar: null, unreconciledPct: null,
+        }));
+        const ttm = rows.slice(-12).reduce((acc, r, i) => ({
+          startingBalance: i === 0 ? r.startingBalance : acc.startingBalance,
+          deposits: acc.deposits + r.deposits, withdrawals: acc.withdrawals + r.withdrawals, endingBalance: r.endingBalance,
+          footingCheck: acc.footingCheck + r.footingCheck, priorMonthCheck: acc.priorMonthCheck + r.priorMonthCheck,
+          perBalanceSheet: null, variance: null, outstandingChecks: 0, unreconciledDollar: null, unreconciledPct: null,
+        }), { startingBalance: 0, deposits: 0, withdrawals: 0, endingBalance: 0, footingCheck: 0, priorMonthCheck: 0,
+              perBalanceSheet: null, variance: null, outstandingChecks: 0, unreconciledDollar: null, unreconciledPct: null });
+        allRows.push(...bankRows(bank.bankName || "Bank Account", rows, ttm));
+      });
+    } else {
+      for (const account of (qbBankActivity?.accounts || [])) {
+        const { rows, ttm } = buildAccountBalanceDataFromQB(account);
+        allRows.push(...bankRows(account.accountName, rows, ttm));
+      }
+    }
+
+    // Activity Review
+    const actRows = isManual ? manualActivityRows : activityRows;
+    const actTTM = isManual ? manualActivityTTM : activityTTM;
+    if (actRows.length) {
+      const getAdj = (month, key) => reconAdjustments?.[`${month}_${key}`] ?? 0;
+      const adjTTM = (key) => months.slice(-12).reduce((s, m) => s + getAdj(m, key), 0);
+      const adjVals = (key) => [...actRows.map((r) => getAdj(r.month, key)), adjTTM(key)];
+      const depMap = {}, wdrMap = {};
+      addbackItems.forEach((item) => {
+        const map = item.section === "deposits" ? depMap : wdrMap;
+        Object.entries(item.monthAmounts || {}).forEach(([m, amt]) => { map[m] = (map[m] || 0) + Number(amt); });
+      });
+      const depUnrec = actRows.map((r) =>
+        r.depositsDollarVar + getAdj(r.month, "changeInAR") + getAdj(r.month, "changeInARRetentions")
+        + getAdj(r.month, "fixedAssetDisposals") + getAdj(r.month, "depositsOther") + (depMap[r.month] ?? 0));
+      const ttmDepUnrec = months.slice(-12).reduce((s, m) =>
+        s + getAdj(m, "changeInAR") + getAdj(m, "changeInARRetentions") + getAdj(m, "fixedAssetDisposals")
+        + getAdj(m, "depositsOther") + (depMap[m] ?? 0), actTTM.depositsDollarVar ?? 0);
+      const wdrUnrec = actRows.map((r) =>
+        r.withdrawsDollarVar + getAdj(r.month, "ownerWithdraws") + getAdj(r.month, "changeInCurrentLiabilities")
+        + getAdj(r.month, "changeInLTLiabilities") + getAdj(r.month, "depreciationExpense")
+        + getAdj(r.month, "amortizationExpense") + getAdj(r.month, "badDebtExpense")
+        + getAdj(r.month, "fixedAssetPurchases") + getAdj(r.month, "withdrawsOther") + (wdrMap[r.month] ?? 0));
+      const ttmWdrUnrec = months.slice(-12).reduce((s, m) =>
+        s + getAdj(m, "ownerWithdraws") + getAdj(m, "changeInCurrentLiabilities") + getAdj(m, "changeInLTLiabilities")
+        + getAdj(m, "depreciationExpense") + getAdj(m, "amortizationExpense") + getAdj(m, "badDebtExpense")
+        + getAdj(m, "fixedAssetPurchases") + getAdj(m, "withdrawsOther") + (wdrMap[m] ?? 0), actTTM.withdrawsDollarVar ?? 0);
+      const adjDepURaw = [...depUnrec, ttmDepUnrec];
+      const adjWdrURaw = [...wdrUnrec, ttmWdrUnrec];
+      const av = (f) => [...actRows.map((r) => fmtN(r[f])), fmtN(actTTM[f])];
+
+      allRows.push(
+        ["Activity Review"], colHeaders,
+        ["Total Deposits", ...av("totalDeposits")],
+        ["  Intercompany Transfers", ...av("withdrawIntercompanyTransfers")],
+        ["External Deposits", ...av("externalDeposits")],
+        ["Sales per Financials", ...av("salesPerFinancials")],
+        ["$ Variance", ...adjDepURaw.map((v) => fmtN(v))],
+        [],
+        ["Change in AR", ...adjVals("changeInAR")],
+        ["Change in AR Retentions", ...adjVals("changeInARRetentions")],
+        ["Fixed Asset Disposals", ...adjVals("fixedAssetDisposals")],
+        ["Other", ...adjVals("depositsOther")],
+        ...addbackItems.filter((i) => i.section === "deposits").map((item) => [
+          `  ${item.name}`,
+          ...actRows.map((r) => fmtN(item.monthAmounts[r.month])),
+          actRows.slice(-12).reduce((s, r) => s + (Number(item.monthAmounts[r.month]) || 0), 0),
+        ]),
+        ["Unreconciled Variance $", ...adjDepURaw.map((v) => fmtN(v))],
+        [],
+        ["Total Withdrawals", ...av("totalWithdrawals")],
+        ["  Intercompany Transfers", ...av("intercompanyTransfers")],
+        ["External Withdrawals", ...av("externalWithdraws")],
+        ["Expenses per Financials", ...av("expensesPerFinancials")],
+        ["$ Variance", ...adjWdrURaw.map((v) => fmtN(v))],
+        [],
+        ["Owner Withdrawals", ...adjVals("ownerWithdraws")],
+        ["Change in Current Liabilities", ...adjVals("changeInCurrentLiabilities")],
+        ["Change in LT Liabilities", ...adjVals("changeInLTLiabilities")],
+        ["Depreciation Expense", ...adjVals("depreciationExpense")],
+        ["Amortization Expense", ...adjVals("amortizationExpense")],
+        ["Bad Debt Expense", ...adjVals("badDebtExpense")],
+        ["Fixed Asset Purchases", ...adjVals("fixedAssetPurchases")],
+        ["Other", ...adjVals("withdrawsOther")],
+        ...addbackItems.filter((i) => i.section === "withdrawals").map((item) => [
+          `  ${item.name}`,
+          ...actRows.map((r) => fmtN(item.monthAmounts[r.month])),
+          actRows.slice(-12).reduce((s, r) => s + (Number(item.monthAmounts[r.month]) || 0), 0),
+        ]),
+        ["Unreconciled Variance $", ...adjWdrURaw.map((v) => fmtN(v))],
+      );
+    }
+
+    const ws = XLSX.utils.aoa_to_sheet(allRows);
+    XLSX.utils.book_append_sheet(wb, ws, "Bank Reconciliation");
+    XLSX.writeFile(wb, "Bank Reconciliation.xlsx");
+  };
+
+  // ── Bank Reconciliation PDF export (data-driven, uses jsPDF directly) ──────
+  const exportBankReconToPdf = () => {
+    const isManual = isManualUpload || isManualGl || isQBManual;
+    const months = isManual ? filteredPdfMonths : reportMonths;
+    if (!months.length) { alert("No data to export."); return; }
+
+    const nValCols = months.length + 1;
+    const isCompact = nValCols >= 9;
+    const usePortrait = nValCols <= 3;
+    const PW = usePortrait ? 595.28 : 841.89;
+    const PH = usePortrait ? 841.89 : 595.28;
+    const ML = isCompact ? 22 : 28, MR = isCompact ? 22 : 28;
+    const MT = 45, MB = 38;
+    const CW = PW - ML - MR;
+    const ROW_H = isCompact ? 14 : 16;
+    const DATA_FONT = isCompact ? 7.5 : 8.5;
+    const HDR_FONT = isCompact ? 7 : 8;
+    const MIN_NAME_W = 140;
+    const VAL_W = Math.max(42, (CW - MIN_NAME_W) / nValCols);
+    const NAME_W = Math.max(MIN_NAME_W, CW - nValCols * VAL_W);
+    const CELL_PAD = 3;
+
+    const doc = new jsPDF({ orientation: usePortrait ? "portrait" : "landscape", unit: "pt", format: "a4" });
+    const valColRight = (i) => PW - MR - (nValCols - 1 - i) * VAL_W;
+    const nameSepX = ML + NAME_W;
+
+    const fmt = (val) => {
+      if (val == null || val === 0) return "-";
+      const n = typeof val === "number" ? val : Number(val);
+      if (isNaN(n) || n === 0) return "-";
+      const abs = Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      return n < 0 ? `(${abs})` : abs;
+    };
+    const fmtVar = (val) => {
+      if (val == null) return { text: "-", neg: false };
+      const n = Number(val);
+      if (isNaN(n) || n === 0) return { text: "-", neg: false };
+      const abs = Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      return { text: n < 0 ? `-${abs}` : `+${abs}`, neg: n < 0 };
+    };
+    const fmtPct = (val) => {
+      if (val == null) return { text: "-", neg: false };
+      const n = Number(val);
+      if (isNaN(n) || n === 0) return { text: "-", neg: false };
+      const abs = Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+      return { text: n < 0 ? `-${abs}%` : `+${abs}%`, neg: n < 0 };
+    };
+    const drawVertLines = (top, bottom) => {
+      doc.setDrawColor(210, 210, 210); doc.setLineWidth(0.4);
+      doc.line(nameSepX, top, nameSepX, bottom);
+      for (let i = 0; i < nValCols - 1; i++) doc.line(valColRight(i), top, valColRight(i), bottom);
+    };
+    let y = MT;
+    const checkPageBreak = () => { if (y + ROW_H > PH - MB) { doc.addPage(); y = MT; } };
+    const drawSectionTitle = (title) => {
+      checkPageBreak(); y += 8;
+      doc.setFont("helvetica", "bold"); doc.setFontSize(10); doc.setTextColor(30, 80, 30);
+      doc.text(title, ML, y); y += 12;
+      doc.setDrawColor(190, 190, 190); doc.setLineWidth(0.5); doc.line(ML, y, PW - MR, y); y += 6;
+    };
+    const drawTableHeader = (label, cols) => {
+      checkPageBreak();
+      const top = y, bottom = y + ROW_H + 4;
+      doc.setFillColor(237, 239, 242); doc.rect(ML, top, CW, bottom - top, "F");
+      doc.setFont("helvetica", "bold"); doc.setFontSize(HDR_FONT); doc.setTextColor(60, 60, 60);
+      doc.text(label, ML + 4, bottom - 4);
+      cols.forEach((col, i) => doc.text(col, valColRight(i) - CELL_PAD, bottom - 4, { align: "right" }));
+      y = bottom;
+      doc.setDrawColor(30, 30, 30); doc.setLineWidth(0.8); doc.line(ML, y, PW - MR, y);
+      drawVertLines(top, y); y += 3;
+    };
+    const drawRow = (label, values, opts = {}) => {
+      checkPageBreak();
+      const { bold = false, indent = 0, rowType = "normal" } = opts;
+      const top = y, bottom = y + ROW_H;
+      if (bold) { doc.setFillColor(232, 234, 237); doc.rect(ML, top, CW, bottom - top, "F"); }
+      doc.setFont("helvetica", bold ? "bold" : "normal"); doc.setFontSize(DATA_FONT); doc.setTextColor(bold ? 15 : 45);
+      const lbl = doc.splitTextToSize(String(label), NAME_W - indent * 12 - 8)[0] ?? label;
+      doc.text(lbl, ML + indent * 12 + 4, bottom - 4);
+      values.forEach((val, i) => {
+        let text, neg = false;
+        if (rowType === "variance-amt") { const r = fmtVar(val); text = r.text; neg = r.neg; }
+        else if (rowType === "variance-pct") { const r = fmtPct(val); text = r.text; neg = r.neg; }
+        else { text = fmt(val); neg = typeof val === "number" && val < 0; }
+        if (!text || text === "") return;
+        doc.setTextColor(neg ? 180 : (bold ? 15 : 45), neg ? 30 : (bold ? 15 : 45), neg ? 30 : (bold ? 15 : 45));
+        doc.text(text, valColRight(i) - CELL_PAD, bottom - 4, { align: "right" });
+      });
+      doc.setDrawColor(218, 220, 224); doc.setLineWidth(0.3); doc.line(ML, bottom, PW - MR, bottom);
+      drawVertLines(top, bottom); y += ROW_H;
+    };
+    const spacer = () => { y += 4; };
+
+    // Title
+    doc.setFont("helvetica", "bold"); doc.setFontSize(13); doc.setTextColor(10, 10, 10);
+    doc.text("Bank Reconciliation", PW / 2, y, { align: "center" }); y += 16;
+    doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.setTextColor(60, 60, 60);
+    doc.text(`${monthLabel(months[0])} – ${monthLabel(months[months.length - 1])}`, PW / 2, y, { align: "center" }); y += 12;
+    doc.setDrawColor(190, 190, 190); doc.setLineWidth(0.5); doc.line(ML, y, PW - MR, y); y += 12;
+
+    const colHeaders = [...months.map(monthLabel), "TTM"];
+
+    // Bank balance tables — always export ALL banks, ignoring the dropdown filter
+    const drawManualBank = (bank) => {
+      if (!bank) return;
+      drawSectionTitle(bank.bankName || "Bank Account");
+      const monthMap = Object.fromEntries((bank.months || []).map((m) => [m.monthKey, m]));
+      const baseRows = months.map((mk) => {
+        const m = monthMap[mk];
+        return { month: mk, startingBalance: m?.startingBalance ?? 0, deposits: m?.deposits ?? 0, withdrawals: m?.withdrawals ?? 0, endingBalance: m?.endingBalance ?? 0 };
+      });
+      const rows = baseRows.map((r, i) => ({
+        ...r, intercompanyDeposits: 0, intercompanyWithdraws: 0,
+        footingCheck: r.endingBalance - (r.startingBalance + r.deposits - r.withdrawals),
+        priorMonthCheck: i === 0 ? 0 : baseRows[i - 1].endingBalance - r.startingBalance,
+        perBalanceSheet: null, variance: null, outstandingChecks: 0, unreconciledDollar: null, unreconciledPct: null,
+      }));
+      const ttm = rows.slice(-12).reduce((acc, r, i) => ({
+        startingBalance: i === 0 ? r.startingBalance : acc.startingBalance,
+        deposits: acc.deposits + r.deposits, withdrawals: acc.withdrawals + r.withdrawals, endingBalance: r.endingBalance,
+        intercompanyDeposits: 0, intercompanyWithdraws: 0,
+        footingCheck: acc.footingCheck + r.footingCheck, priorMonthCheck: acc.priorMonthCheck + r.priorMonthCheck,
+        perBalanceSheet: null, variance: null, outstandingChecks: 0, unreconciledDollar: null, unreconciledPct: null,
+      }), { startingBalance: 0, deposits: 0, withdrawals: 0, endingBalance: 0, intercompanyDeposits: 0, intercompanyWithdraws: 0,
+            footingCheck: 0, priorMonthCheck: 0, perBalanceSheet: null, variance: null, outstandingChecks: 0, unreconciledDollar: null, unreconciledPct: null });
+      const vals = (f) => [...rows.map((r) => r[f]), ttm[f]];
+      drawTableHeader(bank.bankName, colHeaders);
+      drawRow("Starting Balance", vals("startingBalance"), { bold: true });
+      drawRow("Deposits", vals("deposits")); drawRow("Withdrawals", vals("withdrawals"));
+      drawRow("Ending Balance", vals("endingBalance"), { bold: true }); spacer();
+      drawRow("Footing Check", vals("footingCheck")); drawRow("Prior Month Check", vals("priorMonthCheck")); spacer();
+      drawRow("Unreconciled $ Variance", vals("unreconciledDollar"), { rowType: "variance-amt" });
+      drawRow("Unreconciled % Variance", vals("unreconciledPct"), { rowType: "variance-pct" });
+    };
+
+    if (isManual) {
+      (extractedBankPdfData?.banks || []).forEach(drawManualBank);
+    } else {
+      for (const account of (qbBankActivity?.accounts || [])) {
+        drawSectionTitle(account.accountName);
+        const { rows, ttm } = buildAccountBalanceDataFromQB(account);
+        const vals = (f) => [...rows.map((r) => r[f]), ttm[f]];
+        drawTableHeader(account.accountName, colHeaders);
+        drawRow("Starting Balance", vals("startingBalance"), { bold: true });
+        drawRow("Deposits", vals("deposits")); drawRow("Withdrawals", vals("withdrawals"));
+        drawRow("Ending Balance", vals("endingBalance"), { bold: true }); spacer();
+        drawRow("Intercompany Deposits", vals("intercompanyDeposits"), { indent: 1 });
+        drawRow("Intercompany Withdrawals", vals("intercompanyWithdraws"), { indent: 1 }); spacer();
+        drawRow("Footing Check", vals("footingCheck")); drawRow("Prior Month Check", vals("priorMonthCheck")); spacer();
+        drawRow("Per Balance Sheet", vals("perBalanceSheet"), { bold: true });
+        drawRow("Variance", vals("variance"), { rowType: "variance-amt" }); spacer();
+        drawRow("Outstanding Checks", vals("outstandingChecks"));
+        drawRow("Unreconciled $ Variance", vals("unreconciledDollar"), { rowType: "variance-amt" });
+        drawRow("Unreconciled % Variance", vals("unreconciledPct"), { rowType: "variance-pct" });
+      }
+    }
+
+    // Activity Review
+    const actRows = isManual ? manualActivityRows : activityRows;
+    const actTTM = isManual ? manualActivityTTM : activityTTM;
+    if (actRows.length) {
+      drawSectionTitle("Activity Review");
+      const getAdj = (month, key) => reconAdjustments?.[`${month}_${key}`] ?? 0;
+      const adjTTM = (key) => months.slice(-12).reduce((s, m) => s + getAdj(m, key), 0);
+      const adjVals = (key) => [...actRows.map((r) => getAdj(r.month, key)), adjTTM(key)];
+      const depMap = {}, wdrMap = {};
+      addbackItems.forEach((item) => {
+        const map = item.section === "deposits" ? depMap : wdrMap;
+        Object.entries(item.monthAmounts || {}).forEach(([m, amt]) => { map[m] = (map[m] || 0) + Number(amt); });
+      });
+      const depUnrec = actRows.map((r) =>
+        r.depositsDollarVar + getAdj(r.month, "changeInAR") + getAdj(r.month, "changeInARRetentions")
+        + getAdj(r.month, "fixedAssetDisposals") + getAdj(r.month, "depositsOther") + (depMap[r.month] ?? 0));
+      const ttmDepUnrec = months.slice(-12).reduce((s, m) =>
+        s + getAdj(m, "changeInAR") + getAdj(m, "changeInARRetentions") + getAdj(m, "fixedAssetDisposals")
+        + getAdj(m, "depositsOther") + (depMap[m] ?? 0), actTTM.depositsDollarVar ?? 0);
+      const wdrUnrec = actRows.map((r) =>
+        r.withdrawsDollarVar + getAdj(r.month, "ownerWithdraws") + getAdj(r.month, "changeInCurrentLiabilities")
+        + getAdj(r.month, "changeInLTLiabilities") + getAdj(r.month, "depreciationExpense")
+        + getAdj(r.month, "amortizationExpense") + getAdj(r.month, "badDebtExpense")
+        + getAdj(r.month, "fixedAssetPurchases") + getAdj(r.month, "withdrawsOther") + (wdrMap[r.month] ?? 0));
+      const ttmWdrUnrec = months.slice(-12).reduce((s, m) =>
+        s + getAdj(m, "ownerWithdraws") + getAdj(m, "changeInCurrentLiabilities") + getAdj(m, "changeInLTLiabilities")
+        + getAdj(m, "depreciationExpense") + getAdj(m, "amortizationExpense") + getAdj(m, "badDebtExpense")
+        + getAdj(m, "fixedAssetPurchases") + getAdj(m, "withdrawsOther") + (wdrMap[m] ?? 0), actTTM.withdrawsDollarVar ?? 0);
+      const adjDepURaw = [...depUnrec, ttmDepUnrec];
+      const adjWdrURaw = [...wdrUnrec, ttmWdrUnrec];
+      const av = (f) => [...actRows.map((r) => r[f] ?? null), actTTM[f] ?? null];
+      drawTableHeader("Activity Review", colHeaders);
+      drawRow("Total Deposits", av("totalDeposits"), { bold: true });
+      drawRow("Intercompany Transfers", av("withdrawIntercompanyTransfers"), { indent: 1 });
+      drawRow("External Deposits", av("externalDeposits"), { bold: true });
+      drawRow("Sales per Financials", av("salesPerFinancials"));
+      drawRow("$ Variance", av("depositsDollarVar"), { rowType: "variance-amt" });
+      drawRow("% Variance", av("depositsPctVar"), { rowType: "variance-pct" }); spacer();
+      drawRow("Change in AR", adjVals("changeInAR"));
+      drawRow("Change in AR Retentions", adjVals("changeInARRetentions"));
+      drawRow("Fixed Asset Disposals", adjVals("fixedAssetDisposals"));
+      drawRow("Other", adjVals("depositsOther"));
+      addbackItems.filter((i) => i.section === "deposits").forEach((item) => {
+        drawRow(item.name, [...actRows.map((r) => item.monthAmounts[r.month] ?? null),
+          actRows.slice(-12).reduce((s, r) => s + (Number(item.monthAmounts[r.month]) || 0), 0)], { indent: 1 });
+      });
+      drawRow("Unreconciled Variance $", adjDepURaw, { rowType: "variance-amt" }); spacer();
+      drawRow("Total Withdrawals", av("totalWithdrawals"), { bold: true });
+      drawRow("Intercompany Transfers", av("intercompanyTransfers"), { indent: 1 });
+      drawRow("External Withdrawals", av("externalWithdraws"), { bold: true });
+      drawRow("Expenses per Financials", av("expensesPerFinancials"));
+      drawRow("$ Variance", av("withdrawsDollarVar"), { rowType: "variance-amt" });
+      drawRow("% Variance", av("withdrawsPctVar"), { rowType: "variance-pct" }); spacer();
+      drawRow("Owner Withdrawals", adjVals("ownerWithdraws"));
+      drawRow("Change in Current Liabilities", adjVals("changeInCurrentLiabilities"));
+      drawRow("Change in LT Liabilities", adjVals("changeInLTLiabilities"));
+      drawRow("Depreciation Expense", adjVals("depreciationExpense"));
+      drawRow("Amortization Expense", adjVals("amortizationExpense"));
+      drawRow("Bad Debt Expense", adjVals("badDebtExpense"));
+      drawRow("Fixed Asset Purchases", adjVals("fixedAssetPurchases"));
+      drawRow("Other", adjVals("withdrawsOther"));
+      addbackItems.filter((i) => i.section === "withdrawals").forEach((item) => {
+        drawRow(item.name, [...actRows.map((r) => item.monthAmounts[r.month] ?? null),
+          actRows.slice(-12).reduce((s, r) => s + (Number(item.monthAmounts[r.month]) || 0), 0)], { indent: 1 });
+      });
+      drawRow("Unreconciled Variance $", adjWdrURaw, { rowType: "variance-amt" });
+    }
+
+    // Footer
+    const totalPages = doc.getNumberOfPages();
+    const nowStr = new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+    for (let p = 1; p <= totalPages; p++) {
+      doc.setPage(p); doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(150, 150, 150);
+      doc.text(nowStr, ML, PH - 16); doc.text(`${p} / ${totalPages}`, PW - MR, PH - 16, { align: "right" });
+    }
+    doc.save("Bank Reconciliation.pdf");
+  };
+
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
@@ -3101,7 +3507,8 @@ export default function WorkspaceReconciliation() {
           </section>
         )}
 
-        {/* Bank Account Balances */}
+        {/* Bank Account Balances + Activity Review — wrapped for export */}
+        <div id="bank-recon-table" className="flex flex-col gap-6">
         <section className="card-base card-p w-full">
           <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
             <div>
@@ -3228,9 +3635,44 @@ export default function WorkspaceReconciliation() {
                   </select>
                 )}
               </div>
+              {/* Export dropdown */}
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setBankReconExportOpen((v) => !v)}
+                  disabled={bankReconIsExporting}
+                  className="btn-outline flex h-10 items-center gap-1.5 px-3 text-[13px]"
+                >
+                  <Download size={14} className={bankReconIsExporting ? "animate-pulse" : ""} />
+                  {bankReconIsExporting ? "Exporting…" : "Export"}
+                  <ChevronDown size={12} />
+                </button>
+                {bankReconExportOpen && (
+                  <>
+                    <div className="fixed inset-0 z-10" onClick={() => setBankReconExportOpen(false)} />
+                    <div className="absolute right-0 z-20 mt-1 w-48 overflow-hidden rounded-md border border-border bg-bg-card shadow-lg">
+                      <button
+                        type="button"
+                        onClick={() => handleBankReconExport("excel")}
+                        className="block w-full px-3 py-2 text-left text-[13px] text-text-primary transition-colors hover:bg-bg-page"
+                      >
+                        Export to Excel (.xlsx)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleBankReconExport("pdf")}
+                        className="block w-full px-3 py-2 text-left text-[13px] text-text-primary transition-colors hover:bg-bg-page"
+                      >
+                        Export to PDF (.pdf)
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
             </div>{/* end flex items-end gap-3 */}
           </div>
 
+          <div>
           {(isManualUpload || isManualGl || isQBManual) ? (
             extractedBankPdfData ? (
               renderManualBalanceAccountTable(
@@ -3254,6 +3696,7 @@ export default function WorkspaceReconciliation() {
               Fetch bank activity to see account balances.
             </div>
           )}
+          </div>
         </section>
 
         {/* Activity Review */}
@@ -3287,6 +3730,7 @@ export default function WorkspaceReconciliation() {
             </div>
           )}
         </section>
+        </div>{/* end bank-recon-table export wrapper */}
       </div>
 
       {addbackPickerState?.open && (
