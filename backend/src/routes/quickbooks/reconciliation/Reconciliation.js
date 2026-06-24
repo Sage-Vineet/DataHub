@@ -1037,7 +1037,21 @@ router.get("/bank-reconciliation-line-items", async (req, res) => {
       }
     }
 
-    return res.json({ success: true, plIncomeItems, plExpenseItems });
+    // Aggregate totals per month for Sales/Expenses per Financials rows
+    const plTotalIncome = {};
+    const plTotalExpenses = {};
+    plIncomeItems.forEach((item) => {
+      Object.entries(item.monthAmounts).forEach(([m, v]) => {
+        plTotalIncome[m] = (plTotalIncome[m] || 0) + v;
+      });
+    });
+    plExpenseItems.forEach((item) => {
+      Object.entries(item.monthAmounts).forEach(([m, v]) => {
+        plTotalExpenses[m] = (plTotalExpenses[m] || 0) + v;
+      });
+    });
+
+    return res.json({ success: true, plIncomeItems, plExpenseItems, plTotalIncome, plTotalExpenses });
   } catch (error) {
     if (error.response?.status === 401) {
       try { await tokenManager.refreshAccessToken(req.clientId); } catch (_) {}
