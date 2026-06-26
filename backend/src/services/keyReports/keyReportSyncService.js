@@ -374,7 +374,7 @@ async function generateFinancialTables(version, opts = {}) {
   let coaSummary = null;
   try {
     coaSummary = await generateChartOfAccounts(companyId, versionId, null);
-    logger.log(`  ✓ Chart of Accounts: ${coaSummary.accountCount || 0} accounts (${coaSummary.groupCount || 0} groups, ${coaSummary.leafCount || 0} leaves)`);
+    logger.log(`  ✓ Chart of Accounts: ${coaSummary.leafCount || 0} accounts classified (${coaSummary.inserted || 0} new, ${coaSummary.updated || 0} updated, ${coaSummary.deleted || 0} removed)`);
   } catch (coaErr) {
     logger.warn(`  Chart of Accounts generation failed: ${coaErr.message}`);
     coaSummary = { error: coaErr.message, accountCount: 0 };

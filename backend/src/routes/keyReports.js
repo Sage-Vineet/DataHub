@@ -267,7 +267,33 @@ router.get("/key-reports/versions/:versionId/sync-logs", async (req, res) => {
 
 // ---- Chart of Accounts -----------------------------------------------------
 
-// Fetch a version's COA hierarchy (groups with their child accounts).
+// Helper: verify the caller can access the company that owns a COA account.
+async function loadAccountWithAccess(req, res) {
+  const { supabase } = require("../db");
+  const { data: row } = await supabase
+    .from("chart_of_accounts")
+    .select("company_id, version_id")
+    .eq("id", req.params.accountId)
+    .maybeSingle();
+  if (!row) {
+    res.status(404).json({ success: false, error: "Account not found." });
+    return null;
+  }
+  if (!requireCompanyAccess(req, res, row.company_id)) return null;
+  return row;
+}
+
+// The standardized hierarchy taxonomy (reference data for UI level filters).
+router.get("/key-reports/hierarchy-levels", async (req, res) => {
+  try {
+    const levels = await chartOfAccountsService.getHierarchyLevels();
+    return res.json({ success: true, levels });
+  } catch (error) {
+    return handleError(res, error, "GET hierarchy-levels");
+  }
+});
+
+// Fetch a version's COA as a deep tree + flat list (15-level hierarchy).
 router.get("/key-reports/versions/:versionId/chart-of-accounts", async (req, res) => {
   try {
     const version = await loadVersionWithAccess(req, res);
@@ -276,6 +302,18 @@ router.get("/key-reports/versions/:versionId/chart-of-accounts", async (req, res
     return res.json({ success: true, ...coa });
   } catch (error) {
     return handleError(res, error, "GET chart-of-accounts");
+  }
+});
+
+// Classification + adjustment audit history for a version.
+router.get("/key-reports/versions/:versionId/chart-of-accounts/history", async (req, res) => {
+  try {
+    const version = await loadVersionWithAccess(req, res);
+    if (!version) return;
+    const history = await chartOfAccountsService.getHistory(version.id);
+    return res.json({ success: true, ...history });
+  } catch (error) {
+    return handleError(res, error, "GET chart-of-accounts/history");
   }
 });
 
@@ -308,21 +346,58 @@ router.post("/key-reports/versions/:versionId/chart-of-accounts/regenerate", asy
   }
 });
 
-// Update a single COA account (rename, reclassify, reparent, activate/deactivate).
+// Update a single COA account: rename (adjustedName), move/reclassify (levels +
+// accountType/statementType), activate/deactivate. Writes adjustment + history
+// audit; never touches the original AI classification.
 router.patch("/key-reports/chart-of-accounts/:accountId", async (req, res) => {
   try {
-    const { supabase } = require("../db");
-    const { data: row } = await supabase
-      .from("chart_of_accounts")
-      .select("company_id")
-      .eq("id", req.params.accountId)
-      .maybeSingle();
-    if (!row) return res.status(404).json({ success: false, error: "Account not found." });
-    if (!requireCompanyAccess(req, res, row.company_id)) return;
-    const account = await chartOfAccountsService.updateAccount(req.params.accountId, req.body || {});
+    const row = await loadAccountWithAccess(req, res);
+    if (!row) return;
+    const account = await chartOfAccountsService.updateAccountHierarchy(
+      req.params.accountId, req.body || {}, req.user?.id || null,
+    );
     return res.json({ success: true, account });
   } catch (error) {
     return handleError(res, error, "PATCH chart-of-accounts");
+  }
+});
+
+// Restore a single account to its original AI classification.
+router.post("/key-reports/chart-of-accounts/:accountId/reset", async (req, res) => {
+  try {
+    const row = await loadAccountWithAccess(req, res);
+    if (!row) return;
+    const account = await chartOfAccountsService.resetAccount(req.params.accountId, req.user?.id || null);
+    return res.json({ success: true, account });
+  } catch (error) {
+    return handleError(res, error, "POST chart-of-accounts/reset");
+  }
+});
+
+// Bulk-save an edited hierarchy for a version.
+router.post("/key-reports/versions/:versionId/chart-of-accounts/save", async (req, res) => {
+  try {
+    const version = await loadVersionWithAccess(req, res);
+    if (!version) return;
+    const nodes = Array.isArray(req.body?.nodes) ? req.body.nodes : [];
+    const result = await chartOfAccountsService.saveHierarchy(version.id, nodes, req.user?.id || null);
+    const coa = await chartOfAccountsService.getChartOfAccounts(version.id);
+    return res.json({ success: true, ...result, ...coa });
+  } catch (error) {
+    return handleError(res, error, "POST chart-of-accounts/save");
+  }
+});
+
+// Restore the entire version's hierarchy to the original AI classification.
+router.post("/key-reports/versions/:versionId/chart-of-accounts/reset", async (req, res) => {
+  try {
+    const version = await loadVersionWithAccess(req, res);
+    if (!version) return;
+    const result = await chartOfAccountsService.resetVersion(version.id, req.user?.id || null);
+    const coa = await chartOfAccountsService.getChartOfAccounts(version.id);
+    return res.json({ success: true, ...result, ...coa });
+  } catch (error) {
+    return handleError(res, error, "POST chart-of-accounts/reset-version");
   }
 });
 

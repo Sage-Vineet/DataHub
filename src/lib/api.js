@@ -1460,6 +1460,34 @@ export function updateChartOfAccount(accountId, payload) {
   return request(`/key-reports/chart-of-accounts/${accountId}`, { method: 'PATCH', body: payload });
 }
 
+// Restore a single account to its original AI classification.
+export function resetChartOfAccount(accountId) {
+  return request(`/key-reports/chart-of-accounts/${accountId}/reset`, { method: 'POST', body: {} });
+}
+
+// Bulk-save an edited hierarchy for a version.
+export function saveChartOfAccounts(versionId, nodes) {
+  return request(`/key-reports/versions/${versionId}/chart-of-accounts/save`, {
+    method: 'POST',
+    body: { nodes },
+  });
+}
+
+// Restore an entire version's hierarchy to the original AI classification.
+export function resetChartOfAccounts(versionId) {
+  return request(`/key-reports/versions/${versionId}/chart-of-accounts/reset`, { method: 'POST', body: {} });
+}
+
+// Classification + adjustment audit history.
+export function getChartOfAccountsHistory(versionId) {
+  return request(`/key-reports/versions/${versionId}/chart-of-accounts/history`);
+}
+
+// Standardized hierarchy taxonomy (reference data for UI filters).
+export function getHierarchyLevels() {
+  return request(`/key-reports/hierarchy-levels`);
+}
+
 export function listFolderAccess(folderId) {
   return request(`/folders/${folderId}/access`).then(ensureArray);
 }
