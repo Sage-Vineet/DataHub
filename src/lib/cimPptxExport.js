@@ -62,7 +62,92 @@ function parseDataUrl(dataUrl = "") {
     mimeType === "image/gif" ? "gif" :
     "png";
 
-  return { mimeType, extension, bytes };
+  const dimensions = getImageDimensions(bytes, mimeType);
+
+  return { mimeType, extension, bytes, ...dimensions };
+}
+
+function readUint32Be(bytes, offset) {
+  return (
+    (bytes[offset] << 24) |
+    (bytes[offset + 1] << 16) |
+    (bytes[offset + 2] << 8) |
+    bytes[offset + 3]
+  ) >>> 0;
+}
+
+function readUint16Be(bytes, offset) {
+  return (bytes[offset] << 8) | bytes[offset + 1];
+}
+
+function readUint16Le(bytes, offset) {
+  return bytes[offset] | (bytes[offset + 1] << 8);
+}
+
+function decodeBytes(bytes) {
+  if (typeof TextDecoder !== "undefined") return new TextDecoder("utf-8").decode(bytes);
+  return globalThis.Buffer.from(bytes).toString("utf8");
+}
+
+function parseSvgDimensions(bytes) {
+  const svg = decodeBytes(bytes);
+  const tag = svg.match(/<svg\b[^>]*>/i)?.[0] || "";
+  const width = Number(tag.match(/\bwidth=["']?([0-9.]+)/i)?.[1] || 0);
+  const height = Number(tag.match(/\bheight=["']?([0-9.]+)/i)?.[1] || 0);
+  if (width > 0 && height > 0) return { width, height };
+
+  const viewBox = tag.match(/\bviewBox=["']?([0-9.\-\s]+)["']?/i)?.[1]
+    ?.trim()
+    .split(/\s+/)
+    .map(Number);
+  if (viewBox?.length === 4 && viewBox[2] > 0 && viewBox[3] > 0) {
+    return { width: viewBox[2], height: viewBox[3] };
+  }
+
+  return {};
+}
+
+function parseJpegDimensions(bytes) {
+  if (bytes[0] !== 0xff || bytes[1] !== 0xd8) return {};
+
+  let offset = 2;
+  while (offset + 9 < bytes.length) {
+    if (bytes[offset] !== 0xff) {
+      offset += 1;
+      continue;
+    }
+
+    const marker = bytes[offset + 1];
+    const length = readUint16Be(bytes, offset + 2);
+    const isSof =
+      (marker >= 0xc0 && marker <= 0xc3) ||
+      (marker >= 0xc5 && marker <= 0xc7) ||
+      (marker >= 0xc9 && marker <= 0xcb) ||
+      (marker >= 0xcd && marker <= 0xcf);
+
+    if (isSof && offset + 8 < bytes.length) {
+      return {
+        width: readUint16Be(bytes, offset + 7),
+        height: readUint16Be(bytes, offset + 5),
+      };
+    }
+
+    offset += Math.max(length + 2, 2);
+  }
+
+  return {};
+}
+
+function getImageDimensions(bytes, mimeType) {
+  if (mimeType === "image/png" && bytes.length >= 24) {
+    return { width: readUint32Be(bytes, 16), height: readUint32Be(bytes, 20) };
+  }
+  if (mimeType === "image/jpeg") return parseJpegDimensions(bytes);
+  if (mimeType === "image/gif" && bytes.length >= 10) {
+    return { width: readUint16Le(bytes, 6), height: readUint16Le(bytes, 8) };
+  }
+  if (mimeType === "image/svg+xml") return parseSvgDimensions(bytes);
+  return {};
 }
 
 function getRuns(element) {
@@ -84,6 +169,7 @@ function getElementStyle(element) {
     color: parseColor(firstRun.color, "333333"),
     align: paragraphStyle.alignment || resolved.alignment || "left",
     vertical: resolved.verticalAlignment || "top",
+    insets: resolved.insets || { top: 0, right: 0, bottom: 0, left: 0 },
   };
 }
 
@@ -119,7 +205,11 @@ function paragraphXml(text, style) {
 
   return lines.map((line) => `
         <a:p>
-          <a:pPr algn="${align}"/>
+          <a:pPr algn="${align}" marL="0" indent="0">
+            <a:lnSpc><a:spcPct val="108000"/></a:lnSpc>
+            <a:spcBef><a:spcPts val="0"/></a:spcBef>
+            <a:spcAft><a:spcPts val="0"/></a:spcAft>
+          </a:pPr>
           <a:r>
             <a:rPr lang="en-US" sz="${Math.round(style.fontSize * 100)}"${style.bold ? ' b="1"' : ""}${style.italic ? ' i="1"' : ""}>
               <a:solidFill><a:srgbClr val="${style.color}"/></a:solidFill>
@@ -142,9 +232,12 @@ function shapeXml(element, index, text) {
   const style = getElementStyle(element);
   const geometry = element.geometry === "ellipse" ? "ellipse" : "rect";
   const hasText = typeof text === "string" && text.length > 0;
+  const insets = style.insets || {};
   const textBody = hasText
     ? `<p:txBody>
-        <a:bodyPr wrap="square" anchor="${style.vertical === "middle" ? "ctr" : style.vertical === "bottom" ? "b" : "t"}" lIns="0" rIns="0" tIns="0" bIns="0"/>
+        <a:bodyPr wrap="square" vertOverflow="clip" horzOverflow="clip" anchor="${style.vertical === "middle" ? "ctr" : style.vertical === "bottom" ? "b" : "t"}" lIns="${toEmu(insets.left)}" rIns="${toEmu(insets.right)}" tIns="${toEmu(insets.top)}" bIns="${toEmu(insets.bottom)}">
+          <a:normAutofit fontScale="65000" lnSpcReduction="20000"/>
+        </a:bodyPr>
         <a:lstStyle/>
         ${paragraphXml(text, style)}
       </p:txBody>`
@@ -193,8 +286,39 @@ function tableXml(element, index, text) {
   }).join("");
 }
 
-function pictureXml(element, index, relationshipId, name = "Image") {
+function getContainedImageBox(element, media = {}) {
   const [rawLeft = 0, rawTop = 0, rawWidth = 0, rawHeight = 0] = element.bbox || [];
+  const imageWidth = Number(media.width || 0);
+  const imageHeight = Number(media.height || 0);
+
+  if (rawWidth <= 0 || rawHeight <= 0 || imageWidth <= 0 || imageHeight <= 0) {
+    return { left: rawLeft, top: rawTop, width: rawWidth, height: rawHeight };
+  }
+
+  const boxAspect = rawWidth / rawHeight;
+  const imageAspect = imageWidth / imageHeight;
+
+  if (imageAspect > boxAspect) {
+    const height = rawWidth / imageAspect;
+    return {
+      left: rawLeft,
+      top: rawTop + (rawHeight - height) / 2,
+      width: rawWidth,
+      height,
+    };
+  }
+
+  const width = rawHeight * imageAspect;
+  return {
+    left: rawLeft + (rawWidth - width) / 2,
+    top: rawTop,
+    width,
+    height: rawHeight,
+  };
+}
+
+function pictureXml(element, index, media, name = "Image") {
+  const { left, top, width, height } = getContainedImageBox(element, media);
 
   return `
       <p:pic>
@@ -204,17 +328,55 @@ function pictureXml(element, index, relationshipId, name = "Image") {
           <p:nvPr/>
         </p:nvPicPr>
         <p:blipFill>
-          <a:blip r:embed="${relationshipId}"/>
+          <a:blip r:embed="${media.relationshipId}"/>
           <a:stretch><a:fillRect/></a:stretch>
         </p:blipFill>
         <p:spPr>
           <a:xfrm>
-            <a:off x="${toEmu(rawLeft)}" y="${toEmu(rawTop)}"/>
-            <a:ext cx="${Math.max(toEmu(rawWidth), EMU_PER_PX)}" cy="${Math.max(toEmu(rawHeight), EMU_PER_PX)}"/>
+            <a:off x="${toEmu(left)}" y="${toEmu(top)}"/>
+            <a:ext cx="${Math.max(toEmu(width), EMU_PER_PX)}" cy="${Math.max(toEmu(height), EMU_PER_PX)}"/>
           </a:xfrm>
           <a:prstGeom prst="rect"><a:avLst/></a:prstGeom>
         </p:spPr>
       </p:pic>`;
+}
+
+function slideBackgroundXml(layout) {
+  const color = layout?.slide?.backgroundColor || "#FFFFFF";
+
+  return `
+    <p:bg>
+      <p:bgPr>
+        <a:solidFill><a:srgbClr val="${parseColor(color, "FFFFFF")}"/></a:solidFill>
+        <a:effectLst/>
+      </p:bgPr>
+    </p:bg>`;
+}
+
+function hasSameBbox(first, second, tolerance = 1) {
+  const firstBox = first?.bbox || [];
+  const secondBox = second?.bbox || [];
+  if (firstBox.length < 4 || secondBox.length < 4) return false;
+  return firstBox.every((value, index) => Math.abs(Number(value || 0) - Number(secondBox[index] || 0)) <= tolerance);
+}
+
+function isLogoPlaceholderText(element) {
+  return /^\[((advisor|adviser)|company)\s+logo\]$/i.test(normalizeText(element?.text));
+}
+
+function getMatchingLogoElement(elements, index) {
+  const element = elements[index];
+  if (!element || element.text) return null;
+  return elements.slice(index + 1).find((candidate) =>
+    isLogoPlaceholderText(candidate) && hasSameBbox(element, candidate),
+  ) || null;
+}
+
+function isTopRightSlideNumberElement(element) {
+  const clean = normalizeText(element?.text);
+  if (!/^\d{1,3}$/.test(clean)) return false;
+  const [left = 0, top = 0, width = 0, height = 0] = element.bbox || [];
+  return left >= SLIDE_WIDTH_PX - 96 && top <= 48 && width <= 80 && height <= 40;
 }
 
 function normalizeContent(rawContent) {
@@ -222,18 +384,32 @@ function normalizeContent(rawContent) {
   return { kind: "text", text: rawContent || "" };
 }
 
+function shouldSkipLogoPlaceholderShape(elements, index, slideNumber, getElementContent) {
+  const logoElement = getMatchingLogoElement(elements, index);
+  if (!logoElement) return false;
+
+  const logoContent = normalizeContent(getElementContent(slideNumber, logoElement));
+  return logoContent.kind === "image" && Boolean(logoContent.dataUrl);
+}
+
 function slideXml(layout, slideNumber, getElementContent, mediaAllocator) {
   const elements = layout?.elements || [];
   const shapes = elements
     .map((element, index) => {
-      const content = normalizeContent(getElementContent(slideNumber, element));
+      if (shouldSkipLogoPlaceholderShape(elements, index, slideNumber, getElementContent)) {
+        return "";
+      }
+
+      const content = isTopRightSlideNumberElement(element)
+        ? { kind: "text", text: String(slideNumber) }
+        : normalizeContent(getElementContent(slideNumber, element));
       if (element.kind === "table" && Array.isArray(element.cells)) {
         return tableXml(element, index, content.text ?? element.text ?? "");
       }
       if ((content.kind === "image" || content.kind === "chart") && content.dataUrl) {
         const media = mediaAllocator(content.dataUrl);
         if (media) {
-          return pictureXml(element, index, media.relationshipId, content.name || content.alt || content.kind);
+          return pictureXml(element, index, media, content.name || content.alt || content.kind);
         }
       }
       return shapeXml(element, index, content.text ?? "");
@@ -243,6 +419,7 @@ function slideXml(layout, slideNumber, getElementContent, mediaAllocator) {
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
   <p:cSld>
+    ${slideBackgroundXml(layout)}
     <p:spTree>
       <p:nvGrpSpPr>
         <p:cNvPr id="1" name=""/>
@@ -460,7 +637,7 @@ export function buildCimPptxBlob({ layouts, slideNumbers, getElementText, getEle
       const fileName = `image${mediaIndex}.${media.extension}`;
       mediaFiles.push({ fileName, extension: media.extension, bytes: media.bytes });
       relationships.push({ relationshipId, fileName });
-      return { relationshipId, fileName };
+      return { relationshipId, fileName, width: media.width, height: media.height };
     };
 
     slideMedia[index + 1] = relationships;
