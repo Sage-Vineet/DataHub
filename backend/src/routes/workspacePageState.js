@@ -42,6 +42,8 @@ function normalizeQuestionnaireState(input, user) {
   return {
     version: 1,
     items,
+    currentBatchId: input?.currentBatchId || "",
+    history: Array.isArray(input?.history) ? input.history : [],
     createdAt: input?.createdAt || now,
     sentAt: input?.sentAt || null,
     sentBy: input?.sentBy || null,
