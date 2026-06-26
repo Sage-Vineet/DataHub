@@ -112,13 +112,14 @@ def parse_statement_table(table, doc_type, fiscal_year, as_of_date=None):
     """
     Parse a pdfplumber table (list of lists) into financial row dicts.
     Works for both P&L and Balance Sheet by checking doc_type.
+    For Balance Sheet, tracks the current section (Assets/Liabilities/Equity)
+    so that leaf entries inherit the correct section even when their own name
+    contains no section keyword.
     """
     result = []
+    current_section = None  # tracks Assets / Liabilities / Equity across rows
     for row in table:
         if not row:
-            continue
-        non_empty = [str(c or '').strip() for c in row if str(c or '').strip()]
-        if len(non_empty) < 2:
             continue
 
         # Account name: first non-empty cell
@@ -138,6 +139,23 @@ def parse_statement_table(table, doc_type, fiscal_year, as_of_date=None):
             if v is not None:
                 amount = v
                 break
+
+        # Balance-sheet section header detection: a row whose account name
+        # contains a section keyword AND has no numeric amount is a pure
+        # section divider (e.g. "ASSETS", "LIABILITIES AND EQUITY").
+        if doc_type == 'balance_sheet':
+            section_from_name = infer_section(account_name)
+            if section_from_name and amount is None:
+                current_section = section_from_name
+                continue  # section header — don't emit as a data row
+            # Even if the row has an amount, update current_section so that
+            # "Total Assets $1,147,368.19" anchors the section for later rows.
+            if section_from_name:
+                current_section = section_from_name
+
+        non_empty = [str(c or '').strip() for c in row if str(c or '').strip()]
+        if len(non_empty) < 2:
+            continue
         if amount is None:
             continue
 
@@ -154,7 +172,7 @@ def parse_statement_table(table, doc_type, fiscal_year, as_of_date=None):
             result.append({
                 'account_name':     account_name,
                 'account_number':   None,
-                'section':          infer_section(account_name),
+                'section':          current_section or infer_section(account_name),
                 'amount':           amount,
                 'as_of_date':       as_of_date or f'{fiscal_year}-12-31',
                 'fiscal_year':      fiscal_year,
@@ -235,14 +253,31 @@ def extract_balance_sheet(pdf):
 
 
 def parse_lines_balance_sheet(text, fiscal_year, as_of_date):
+    """
+    Line-by-line fallback parser for Balance Sheet PDFs.
+    Tracks the current section (assets/liabilities/equity) across lines so that
+    leaf entries like "Business Checking (7454)" inherit the correct section even
+    though their own name contains no section keyword.
+    """
     result = []
+    current_section = None
     for line in text.split('\n'):
         line = line.strip()
         if not line or len(line) < 4:
             continue
         if re.match(r'^[\d\s.,\-()\$]+$', line):
             continue
+
+        section_from_name = infer_section(line)
         m = re.search(r'([\-\(]?[\d,]+\.?\d*\)?)$', line)
+        has_amount = m is not None and parse_amount(m.group(1)) is not None
+
+        # Pure section-header lines (contain a section keyword, no amount):
+        # "ASSETS", "LIABILITIES AND EQUITY", "Equity" — update context, skip row.
+        if section_from_name and not has_amount:
+            current_section = section_from_name
+            continue
+
         if not m:
             continue
         amount = parse_amount(m.group(1))
@@ -251,10 +286,16 @@ def parse_lines_balance_sheet(text, fiscal_year, as_of_date):
         account_name = re.sub(r'[\-\(]?[\d,]+\.?\d*\)?\s*$', '', line).strip()
         if not account_name or len(account_name) < 2:
             continue
+
+        # Rows that carry a section keyword AND an amount (e.g. "Total Assets $X")
+        # also advance the current section so subsequent rows stay in scope.
+        if section_from_name:
+            current_section = section_from_name
+
         result.append({
             'account_name':     account_name,
             'account_number':   None,
-            'section':          infer_section(account_name),
+            'section':          current_section or section_from_name,
             'amount':           amount,
             'as_of_date':       as_of_date or f'{fiscal_year}-12-31',
             'fiscal_year':      fiscal_year,

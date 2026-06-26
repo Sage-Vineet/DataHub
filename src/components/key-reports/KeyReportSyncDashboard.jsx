@@ -1,6 +1,7 @@
-import { Fragment, useMemo } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { AlertCircle, CheckCircle2, Loader2 } from "lucide-react";
 import { cn } from "../../lib/utils";
+import ExtractedDataModal from "./ExtractedDataModal";
 
 const PROCESS_STEPS = [
   "Read linked files",
@@ -255,6 +256,8 @@ export default function KeyReportSyncDashboard({
   syncState,
   hasLinkedDocuments = false,
 }) {
+  const [modal, setModal] = useState({ open: false, dataType: null, year: null });
+
   const state = syncState || {
     status: "idle",
     startedAt: null,
@@ -455,6 +458,15 @@ export default function KeyReportSyncDashboard({
                             <p className="mt-2 text-[11px] leading-4 text-inherit" title={message}>
                               {message}
                             </p>
+                            {(cell.status === "success" || cell.status === "warning") && row.key !== "chart_of_accounts" && (
+                              <button
+                                onClick={() => setModal({ open: true, dataType: row.key, year: null })}
+                                className="mt-1.5 text-[11px] font-semibold text-primary hover:underline"
+                                style={{ background: "none", border: "none", padding: 0, cursor: "pointer", display: "block" }}
+                              >
+                                View data →
+                              </button>
+                            )}
                           </div>
                         );
                       })()
@@ -475,6 +487,15 @@ export default function KeyReportSyncDashboard({
                             <p className="mt-2 text-[11px] leading-4 text-inherit" title={message}>
                               {message}
                             </p>
+                            {(cell.status === "success" || cell.status === "warning") && row.key !== "chart_of_accounts" && (
+                              <button
+                                onClick={() => setModal({ open: true, dataType: row.key, year: parseInt(column, 10) || null })}
+                                className="mt-1.5 text-[11px] font-semibold text-primary hover:underline"
+                                style={{ background: "none", border: "none", padding: 0, cursor: "pointer", display: "block" }}
+                              >
+                                View data →
+                              </button>
+                            )}
                           </div>
                         );
                       })
@@ -525,6 +546,14 @@ export default function KeyReportSyncDashboard({
           </div>
         )}
       </section>
+
+      <ExtractedDataModal
+        open={modal.open}
+        onClose={() => setModal({ open: false, dataType: null, year: null })}
+        versionId={version?.id}
+        dataType={modal.dataType}
+        year={modal.year}
+      />
     </div>
   );
 }

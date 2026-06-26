@@ -1482,4 +1482,8 @@ module.exports = {
   getCachedCashFlow,
   listAvailablePeriods,
   generatedCfToRows,
+  // Exposed for the Key Reports report engine (keyReportReportService) so it can
+  // build a version-isolated Cash Flow (indirect method) from the entry tables
+  // WITHOUT touching Manual GL staging, batches, or qb_synced_reports.
+  buildCashFlow,
 };

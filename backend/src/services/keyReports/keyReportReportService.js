@@ -1,16 +1,4 @@
-/**
- * Key Reports Report Service
- *
- * Reads ONLY from Key Reports entry tables:
- *   profit_loss_entries, balance_sheet_entries, general_ledger_entries,
- *   bank_statement_entries, tax_return_entries
- *
- * NEVER reads: Manual GL staging tables, active batches, dataset snapshots,
- *              or any qb_synced_reports rows.
- *
- * Returns data in formats compatible with the existing frontend report components
- * (same shapes as buildBSMultiFileDetail / buildPNLMultiFileDetail).
- */
+
 
 const { supabase } = require('../../db');
 const { buildCashFlow, generatedCfToRows } = require('../manualCashFlowService');
@@ -42,25 +30,42 @@ function auditReport(versionId, sourceType, fiscalYear, rowsRead, opts = {}) {
 // Balance-Sheet integrity check (spec #15): Assets = Liabilities + Equity.
 // Logs the difference for every generated/rendered year; never throws — a report
 // that is slightly out of balance must still render, but the imbalance is auditable.
-function validateBalanceSheet(versionId, fiscalYear, sectionTotals) {
+function validateBalanceSheet(versionId, fiscalYear, sectionTotals, opts = {}) {
   const assets = safeNum(sectionTotals.assets);
   const liabilities = safeNum(sectionTotals.liabilities);
   const equity = safeNum(sectionTotals.equity);
-  const difference = Math.round((assets - (liabilities + equity)) * 100) / 100;
+  const liabilitiesPlusEquity = Math.round((liabilities + equity) * 100) / 100;
+  const difference = Math.round((assets - liabilitiesPlusEquity) * 100) / 100;
   const balanced = Math.abs(difference) < 0.5; // tolerate sub-dollar rounding
   console.log('[KEY_REPORTS_VALIDATION]', {
     versionId,
     fiscalYear: fiscalYear ?? null,
-    assets,
-    liabilitiesPlusEquity: Math.round((liabilities + equity) * 100) / 100,
+    totalAssets: assets,
+    totalLiabilities: liabilities,
+    totalEquity: equity,
+    liabilitiesPlusEquity,
     difference,
     balanced,
   });
   if (!balanced) {
     console.warn(
       `[KEY_REPORTS_VALIDATION] Balance Sheet OUT OF BALANCE version=${versionId} FY${fiscalYear}: ` +
-      `Assets ${assets} ≠ Liabilities+Equity ${liabilities + equity} (diff ${difference})`,
+      `Assets=${assets} Liabilities=${liabilities} Equity=${equity} L+E=${liabilitiesPlusEquity} diff=${difference}`,
     );
+    if (opts.unclassified && opts.unclassified.length) {
+      console.warn('[KEY_REPORTS_VALIDATION] Unclassified GL accounts excluded from this year:',
+        opts.unclassified.map(u =>
+          `  "${u.distribution_account}" split="${u.split_account}" amt=${u.amount} rb=${u.running_balance} FY=${u.fiscal_year}`
+        ).join('\n')
+      );
+    }
+    if (opts.bsMap) {
+      const top = Array.from(opts.bsMap.entries())
+        .map(([name, acc]) => ({ name, type: acc.type, net: Math.round(acc.net * 100) / 100 }))
+        .sort((a, b) => Math.abs(b.net) - Math.abs(a.net))
+        .slice(0, 10);
+      console.warn('[KEY_REPORTS_VALIDATION] Top GL movements by account (this year):', top);
+    }
   }
   return { assets, liabilities, equity, difference, balanced };
 }
@@ -140,10 +145,10 @@ async function hasExtractedRows(table, versionId, year) {
 // distribution_account name keyword. This keeps Key Reports COMPLETELY isolated
 // from manualGlMultiYearService.
 
-const ASSET_KW = ['cash', 'bank', 'checking', 'savings', 'receivable', 'a/r', 'inventory', 'prepaid', 'deposit', 'equipment', 'furniture', 'vehicle', 'building', 'land', 'property', 'fixed asset', 'accumulated depreciation', 'goodwill', 'intangible', 'investment', 'asset'];
+const ASSET_KW = ['cash', 'bank', 'checking', 'savings', 'receivable', 'a/r', 'inventory', 'prepaid', 'deposit','money market', 'equipment', 'furniture', 'vehicle', 'building', 'land', 'property', 'fixed asset', 'accumulated depreciation', 'goodwill', 'intangible', 'investment', 'asset'];
 const LIABILITY_KW = ['payable', 'a/p', 'accrued', 'credit card', 'loan', 'note payable', 'line of credit', 'deferred', 'unearned', 'tax payable', 'payroll liab', 'liability', 'mortgage'];
 const EQUITY_KW = ['equity', 'capital', 'retained earnings', 'owner', 'member', 'shareholder', 'stockholder', 'distribution', 'draw', 'common stock', 'opening balance'];
-const REVENUE_KW = ['revenue', 'income', 'sales', 'service', 'fees earned', 'interest income', 'gross receipts'];
+const REVENUE_KW = ['revenue', 'income', 'sales', 'service', 'fees earned', 'interest income', 'gross receipts', 'discounts/refunds given'];
 const EXPENSE_KW = ['expense', 'cost of goods', 'cogs', 'cost of sales', 'salaries', 'wages', 'rent', 'utilities', 'insurance', 'depreciation expense', 'amortization', 'payroll', 'supplies', 'advertising', 'marketing', 'fees', 'interest expense', 'tax expense'];
 
 function classifyGLAccount(name, accountType) {
@@ -177,13 +182,14 @@ function glNetMovement(row) {
 }
 
 /**
- * Read TRANSACTION GL rows for EXACTLY one fiscal year (spec #8 — never mix
- * years), aggregated per account. Returns { accounts: Map(name→{net,type}), rowsRead }.
+ * Read TRANSACTION GL rows for EXACTLY one fiscal year, aggregated per
+ * distribution_account. Used for P&L report generation (existing callers).
+ * Returns { accounts: Map(name→{net,type}), rowsRead }.
  */
 async function aggregateGLByAccount(versionId, year) {
   const { data, error } = await supabase
     .from('general_ledger_entries')
-    .select('distribution_account, amount, row_type, fiscal_year')
+    .select('distribution_account, split_account, amount, running_balance, row_type, fiscal_year')
     .eq('version_id', versionId)
     .eq('fiscal_year', year)
     .eq('row_type', 'TRANSACTION')
@@ -192,15 +198,128 @@ async function aggregateGLByAccount(versionId, year) {
   const rows = data || [];
 
   const accounts = new Map();
+  const unclassified = [];
   for (const row of rows) {
     const name = glAccountName(row);
     if (!name) continue;
-    if (!accounts.has(name)) {
-      accounts.set(name, { name, net: 0, type: classifyGLAccount(name, null) });
+    const type = classifyGLAccount(name, null);
+    if (type === 'unknown') {
+      unclassified.push({
+        fiscal_year: row.fiscal_year,
+        distribution_account: row.distribution_account,
+        split_account: row.split_account,
+        amount: row.amount,
+        running_balance: row.running_balance,
+      });
     }
+    if (!accounts.has(name)) accounts.set(name, { name, net: 0, type });
     accounts.get(name).net += glNetMovement(row);
   }
+  if (unclassified.length) {
+    console.warn(`[KeyReports][GL] versionId=${versionId} FY${year}: ${unclassified.length} unclassified GL accounts:`,
+      unclassified.map(u => `${u.distribution_account} (split:${u.split_account}) amt=${u.amount} rb=${u.running_balance}`).join(' | '));
+  }
   return { accounts, rowsRead: rows.length };
+}
+
+/**
+ * Single-side aggregation for Balance Sheet carry-forward.
+ *
+ * QuickBooks GL exports each account's ledger as separate rows. For each
+ * TRANSACTION row only the distribution_account side is posted to the BS map.
+ * Applying the inverse movement to split_account would double-count every bank
+ * transfer, credit card payment, and loan movement because QB already emits a
+ * dedicated distribution row for that account's own ledger.
+ *
+ * Sign convention (debit-positive throughout):
+ *   asset:     bsMap.net += amount           (assets increase with debits)
+ *   liability: bsMap.net += amount           (negated in bsBalancesForYear → balance += -amount)
+ *   equity:    bsMap.net += amount           (negated in bsBalancesForYear → balance += -amount)
+ *   P&L dist:  netIncome += -amount
+ *   P&L split: netIncome += amount (= -(splitAmount)) — fallback only when that
+ *              P&L account has no distribution row of its own in this year's GL.
+ *
+ * Returns { bsMap, netIncome, unclassified, rowsRead }.
+ */
+async function aggregateGLForBS(versionId, year) {
+  const { data, error } = await supabase
+    .from('general_ledger_entries')
+    .select('distribution_account, split_account, amount, running_balance, row_type, fiscal_year')
+    .eq('version_id', versionId)
+    .eq('fiscal_year', year)
+    .eq('row_type', 'TRANSACTION')
+    .limit(100000);
+  if (error) throw error;
+  const rows = data || [];
+
+  // Pre-scan: record every P&L account that appears as distribution_account.
+  // Prevents double-counting Net Income when QB exports both sides of a transaction:
+  // the P&L distribution row (which counts NI) and a paired BS row that lists the
+  // same P&L account as split_account (which must then be skipped).
+  const plDistSeen = new Set();
+  for (const row of rows) {
+    const n = (row.distribution_account && String(row.distribution_account).trim()) || '';
+    if (!n) continue;
+    const t = classifyGLAccount(n, null);
+    if (t === 'revenue' || t === 'expense') plDistSeen.add(n);
+  }
+
+  const bsMap = new Map();
+  let netIncome = 0;
+  const unclassified = [];
+
+  for (const row of rows) {
+    const distName = (row.distribution_account && String(row.distribution_account).trim()) || '';
+    const splitName = (row.split_account && String(row.split_account).trim()) || '';
+    const amount = safeNum(row.amount);
+
+    const distType = distName ? classifyGLAccount(distName, null) : 'unknown';
+    const splitType = splitName ? classifyGLAccount(splitName, null) : 'unknown';
+
+    // ── distribution_account (primary posting account) ─────────────────────
+    if (distType === 'asset') {
+      if (!bsMap.has(distName)) bsMap.set(distName, { net: 0, type: 'asset' });
+      bsMap.get(distName).net += amount;
+    } else if (distType === 'liability') {
+      if (!bsMap.has(distName)) bsMap.set(distName, { net: 0, type: 'liability' });
+      bsMap.get(distName).net += amount;
+    } else if (distType === 'equity') {
+      if (!bsMap.has(distName)) bsMap.set(distName, { net: 0, type: 'equity' });
+      bsMap.get(distName).net += amount;
+    } else if (distType === 'revenue' || distType === 'expense') {
+      netIncome += -amount;
+    } else {
+      unclassified.push({
+        fiscal_year: row.fiscal_year,
+        distribution_account: row.distribution_account,
+        split_account: row.split_account,
+        amount: row.amount,
+        running_balance: row.running_balance,
+      });
+    }
+
+    // ── split_account ──────────────────────────────────────────────────────
+    // Asset/Liability/Equity: NOT posted — QB already exports those accounts'
+    // own distribution rows, so applying the inverse here causes double-counting.
+    // P&L: contribute to Net Income only as a fallback for P&L accounts that
+    // have no distribution row in this year's GL (e.g. partial exports).
+    if (!splitName) continue;
+    if ((splitType === 'revenue' || splitType === 'expense') && !plDistSeen.has(splitName)) {
+      // splitAmount = -amount; netIncome += -(splitAmount) = amount
+      netIncome += amount;
+    }
+  }
+
+  if (unclassified.length) {
+    console.warn(
+      `[KeyReports][BS][GL] versionId=${versionId} FY${year}: ${unclassified.length} unclassified distribution_account(s) — these rows are EXCLUDED from the Balance Sheet and may cause an imbalance:`,
+      unclassified.map(u =>
+        `  distribution_account="${u.distribution_account}" split_account="${u.split_account}" amount=${u.amount} running_balance=${u.running_balance} fiscal_year=${u.fiscal_year}`
+      ).join('\n')
+    );
+  }
+
+  return { bsMap, netIncome, unclassified, rowsRead: rows.length };
 }
 
 // ─── GL → report generation (spec #6, #7, #8) ─────────────────────────────────
@@ -270,10 +389,14 @@ function extractedBalancesMap(entries) {
   const propagated = propagateMissingSection(entries);
   const map = new Map();
   for (const e of propagated) {
-    if (e.is_total) continue;
-    if (e.hierarchy_level === 0) continue; // pure section header
     const name = (e.account_name || '').trim();
     if (!name) continue;
+    // "Net Income" on a QB Balance Sheet is a real equity line but is sometimes
+    // marked is_total=true. Include it so the prior-year carry-forward gets the
+    // correct NI amount to close into Retained Earnings.
+    const isNetIncomeLine = /^net\s+income$/i.test(name);
+    if (e.is_total && !isNetIncomeLine) continue;
+    if (e.hierarchy_level === 0 && !e.is_total) continue; // pure section header
     const sec = e._resolvedSection;
     const type = sec === 'assets' ? 'asset' : sec === 'liabilities' ? 'liability' : sec === 'equity' ? 'equity' : 'unknown';
     map.set(name, { name, balance: safeNum(e.amount), type });
@@ -322,32 +445,40 @@ async function bsBalancesForYear(versionId, year, depth = 0) {
   let rowsRead = 0;
 
   // Prior-year closing (bounded recursion guards against runaway / missing data).
+  // Year-end accounting close: prior "Net Income" rolls into Retained Earnings so
+  // the new year opens with a clean Net Income line for the current period only.
   if (depth < 15 && year > 1990) {
     const prior = await bsBalancesForYear(versionId, year - 1, depth + 1);
     if (prior && prior.balances.size) {
-      for (const [, v] of prior.balances) addBalance(balances, v.name, v.balance, v.type);
+      let priorNetIncome = 0;
+      for (const [, v] of prior.balances) {
+        if (/^net\s+income$/i.test(v.name.trim())) {
+          priorNetIncome += v.balance;
+        } else {
+          addBalance(balances, v.name, v.balance, v.type);
+        }
+      }
+      // Close prior-year Net Income into Retained Earnings (accounting year-end close).
+      if (Math.abs(priorNetIncome) > 0.005) {
+        addBalance(balances, 'Retained Earnings', priorNetIncome, 'equity');
+      }
       rowsRead += prior.rowsRead;
     }
   }
 
-  const { accounts, rowsRead: glRows } = await aggregateGLByAccount(versionId, year);
+  const { bsMap, netIncome, unclassified, rowsRead: glRows } = await aggregateGLForBS(versionId, year);
   rowsRead += glRows;
 
-  let netIncome = 0;
-  let unknownCount = 0;
-  for (const acc of accounts.values()) {
-    if (acc.type === 'asset') addBalance(balances, acc.name, acc.net, 'asset');
-    else if (acc.type === 'liability') addBalance(balances, acc.name, -acc.net, 'liability');
-    else if (acc.type === 'equity') addBalance(balances, acc.name, -acc.net, 'equity');
-    else if (acc.type === 'revenue' || acc.type === 'expense') netIncome += -acc.net;
-    else unknownCount += 1;
+  for (const [name, acc] of bsMap) {
+    if (acc.type === 'asset') addBalance(balances, name, acc.net, 'asset');
+    else if (acc.type === 'liability') addBalance(balances, name, -acc.net, 'liability');
+    else if (acc.type === 'equity') addBalance(balances, name, -acc.net, 'equity');
   }
-  if (Math.abs(netIncome) > 0.005) addBalance(balances, 'Retained Earnings', netIncome, 'equity');
-  if (unknownCount) {
-    console.warn(`[KeyReports][BS][GL] version=${versionId} FY${year}: ${unknownCount} unclassified GL account(s) excluded — may unbalance the sheet.`);
-  }
+  // Current-year Net Income is a separate equity line — NOT merged into Retained Earnings.
+  // RE = accumulated prior-year earnings; Net Income = this year only (matches QB presentation).
+  if (Math.abs(netIncome) > 0.005) addBalance(balances, 'Net Income', netIncome, 'equity');
 
-  return { balances, rowsRead, generatedFromGL: true, asOfDate: `${year}-12-31` };
+  return { balances, rowsRead, generatedFromGL: true, asOfDate: `${year}-12-31`, bsMap, unclassified };
 }
 
 /** Single-year BS tree from a natural-sign balances map (shape matches buildBSHierarchicalRows). */
@@ -826,8 +957,17 @@ function buildBSHierarchicalRows(entriesByYear, years) {
       if (!section) continue;
 
       if (!sectionData[section]) sectionData[section] = {};
-      const key = entry.account_name?.trim() || '';
-      if (!key) continue;
+      const rawName = entry.account_name?.trim() || '';
+      if (!rawName) continue;
+      // Normalize "Total for X" / "Total of X" → "Total X" so extracted total rows
+      // merge correctly with generated "Total X" rows in the multi-year union step.
+      const key = entry.is_total
+        ? rawName.replace(/^total\s+for\s+/i, 'Total ').replace(/^total\s+of\s+/i, 'Total ')
+        : rawName;
+      // "Total Liabilities and Equity" is a cross-section summary row generated at
+      // the top level (L + E). Keeping it inside the equity section would cause it
+      // to be picked as the equity totalEntry and overstate equity.
+      if (/total\s+liabilit/i.test(key) && /equity/i.test(key)) continue;
 
       if (!sectionData[section][key]) {
         sectionData[section][key] = {
@@ -884,9 +1024,16 @@ function buildBSHierarchicalRows(entriesByYear, years) {
     const sectionAmounts = {};
     for (const y of years) {
       const col = `y${y}`;
-      sectionAmounts[col] = totalEntry
-        ? safeNum(totalEntry.amounts[col])
-        : entries.filter(e => !e.isTotal).reduce((s, e) => s + safeNum(e.amounts[col] || 0), 0);
+      if (totalEntry) {
+        sectionAmounts[col] = safeNum(totalEntry.amounts[col]);
+      } else {
+        // No grand-total row — sum all line items that are NOT sub-section subtotals.
+        // Entries starting with "Total" are sub-totals (e.g. "Total Current Liabilities")
+        // that would double-count. "Net Income" is a real line item even when is_total=true.
+        sectionAmounts[col] = entries
+          .filter(e => !e.isHeader && !/^total\b/i.test(e.name))
+          .reduce((s, e) => s + safeNum(e.amounts[col] || 0), 0);
+      }
     }
 
     hierarchicalRows.push({
@@ -994,14 +1141,17 @@ async function getBalanceSheetReport(versionId, { year, startDate, endDate, peri
       if (built.asOfDate && (!latestAsOfDate || built.asOfDate > latestAsOfDate)) latestAsOfDate = built.asOfDate;
       auditReport(versionId, 'balance_sheet', y, entries.length, { generatedFromExtractedReport: true });
     } else {
-      const { balances, rowsRead, asOfDate } = await bsBalancesForYear(versionId, y);
+      const { balances, rowsRead, asOfDate, bsMap, unclassified } = await bsBalancesForYear(versionId, y);
       treesByYear[y] = buildBSFromBalances(balances, y).hierarchicalRows;
       anyGenerated = true;
       if (asOfDate && (!latestAsOfDate || asOfDate > latestAsOfDate)) latestAsOfDate = asOfDate;
       auditReport(versionId, 'balance_sheet', y, rowsRead, { generatedFromGL: true });
+      // Balance integrity check per year (spec #15) — pass GL details for imbalance diagnosis.
+      validateBalanceSheet(versionId, y, sectionTotalsFromTree(treesByYear[y], y), { bsMap, unclassified });
+      continue;
     }
 
-    // Balance integrity check per year (spec #15).
+    // Balance integrity check for extracted years.
     validateBalanceSheet(versionId, y, sectionTotalsFromTree(treesByYear[y], y));
   }
 

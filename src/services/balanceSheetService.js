@@ -6,6 +6,7 @@ import {
   getAllManualUploadedReports,
   getLatestQMSUploadedReport,
   getAllQMSUploadedReports,
+  getKeyReportVersionReport,
 } from "../lib/api";
 import { normalizeAccountingMethod } from "../lib/report-filters";
 import {
@@ -338,6 +339,46 @@ export async function getBalanceSheet(startDate, endDate, accountingMethod, opti
   const normalizedAccountingMethod = normalizeAccountingMethod(accountingMethod);
   const sourceMode = options?.sourceMode || "manual";
   const keyReportVersionId = options?.keyReportVersionId || null;
+
+  // Key Reports: read ONLY from balance_sheet_entries — never from Manual GL staging,
+  // active batches, or snapshots. keyReportVersionId always wins regardless of sourceMode.
+  if (keyReportVersionId) {
+    try {
+      const manualFilters = options?.manualFilters || {};
+      const singleYear = /^\d{4}$/.test(String(manualFilters.fiscalYear ?? "")) ? manualFilters.fiscalYear : null;
+      const response = await getKeyReportVersionReport(keyReportVersionId, "balance-sheet", {
+        // Summary tab = annual ("Year") view → fiscal-year columns (spec #10).
+        // Only the user's explicit date pickers (fromDate/toDate) drive which
+        // years render (spec #11–#13); with none set, ALL synced years show.
+        year: singleYear,
+        startDate: manualFilters.fromDate || null,
+        endDate: manualFilters.toDate || null,
+        period: "year",
+      });
+      const rows = response?.hierarchicalRows || response?.rows || [];
+      console.log("[KeyReports][BS][Summary] Loaded", rows.length, "rows from balance_sheet_entries for version", keyReportVersionId);
+      return {
+        rows,
+        yearCols: response?.yearCols,
+        columns: response?.columns,
+        source: response?.source || "key_reports_entry_tables",
+        sourceLabel: "Key Reports",
+        asOfDate: response?.asOfDate || null,
+        noDataText: rows.length > 0 ? null : "No Balance Sheet data in Key Reports. Run Sync first.",
+        reStageRequired: false,
+        reStageWarning: null,
+      };
+    } catch (err) {
+      console.warn("[KeyReports][BS][Summary] Entry table fetch failed:", err.message);
+      return {
+        rows: [],
+        source: "key_reports_entry_tables",
+        sourceLabel: "Key Reports",
+        asOfDate: null,
+        noDataText: "Key Reports Balance Sheet data unavailable.",
+      };
+    }
+  }
 
   if (sourceMode === "quickbooks") {
     try {
@@ -909,6 +950,38 @@ export async function getBalanceSheetDetail(
   accountingMethod,
   options = {},
 ) {
+  const keyReportVersionId = options?.keyReportVersionId || null;
+
+  // Key Reports: read ONLY from balance_sheet_entries — never from Manual GL staging.
+  if (keyReportVersionId) {
+    try {
+      const manualFilters = options?.manualFilters || {};
+      const singleYear = /^\d{4}$/.test(String(manualFilters.fiscalYear ?? "")) ? manualFilters.fiscalYear : null;
+      const response = await getKeyReportVersionReport(keyReportVersionId, "balance-sheet", {
+        // Detail tab = "Month" view → monthly columns (Jan…Dec) for the year (spec #9).
+        year: singleYear,
+        startDate: manualFilters.fromDate || null,
+        endDate: manualFilters.toDate || null,
+        period: "month",
+      });
+      console.log("[KeyReports][BS][Detail] Loaded from balance_sheet_entries for version", keyReportVersionId);
+      return {
+        rows: response?.hierarchicalRows || response?.rows || [],
+        columns: response?.columns || { yearCols: [], changeCols: [], currentMonth: "" },
+        source: response?.source || "key_reports_entry_tables",
+        reportType: "balance_sheet_monthly_detail",
+      };
+    } catch (err) {
+      console.warn("[KeyReports][BS][Detail] Entry table fetch failed:", err.message);
+      return {
+        rows: [],
+        columns: { yearCols: [], changeCols: [], currentMonth: "" },
+        source: "key_reports_entry_tables",
+        reportType: "balance_sheet_monthly_detail",
+      };
+    }
+  }
+
   if ((options?.sourceMode || "quickbooks") === "manual") {
     // Only pass manual filters (fiscal year, batch, etc.) — no QB date params
     const params = {

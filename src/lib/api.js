@@ -1397,6 +1397,38 @@ export function getKeyReportSyncLogs(versionId) {
   return request(`/key-reports/versions/${versionId}/sync-logs`);
 }
 
+/**
+ * Fetch a financial report directly from Key Reports entry tables.
+ *
+ * reportType: 'profit-loss' | 'balance-sheet' | 'general-ledger' |
+ *             'bank-statement' | 'tax-return'
+ *
+ * This is the ONLY correct report endpoint when keyReportVersionId is present.
+ * NEVER call ManualGL or staging endpoints for Key Reports data.
+ */
+export function getKeyReportVersionReport(versionId, reportType, params = {}) {
+  const search = new URLSearchParams();
+  if (params.year != null && params.year !== "") search.set("year", String(params.year));
+  // Date-range filter (spec #11–#13): controls which fiscal years/months render.
+  if (params.startDate) search.set("startDate", String(params.startDate));
+  if (params.endDate) search.set("endDate", String(params.endDate));
+  // Granularity: "month" → monthly columns, otherwise annual fiscal-year columns.
+  if (params.period) search.set("period", String(params.period));
+  if (params.page != null) search.set("page", String(params.page));
+  if (params.pageSize != null) search.set("pageSize", String(params.pageSize));
+  const qs = search.toString();
+  return request(`/key-reports/versions/${versionId}/reports/${reportType}${qs ? `?${qs}` : ""}`);
+}
+
+export function getKeyReportExtractedData(versionId, { dataType, year, page = 1, pageSize = 50, search } = {}) {
+  const params = new URLSearchParams({ dataType });
+  if (year != null) params.set('year', String(year));
+  if (page > 1) params.set('page', String(page));
+  if (pageSize !== 50) params.set('pageSize', String(pageSize));
+  if (search) params.set('search', search);
+  return request(`/key-reports/versions/${versionId}/extracted-data?${params}`);
+}
+
 export function getKeyReportFileReferences(documentIds = []) {
   const ids = (Array.isArray(documentIds) ? documentIds : [documentIds]).filter(Boolean);
   const qs = ids.length ? `?documentIds=${encodeURIComponent(ids.join(','))}` : '';

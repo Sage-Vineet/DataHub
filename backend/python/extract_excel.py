@@ -29,6 +29,8 @@ except ImportError:
     print('{"error":"openpyxl not installed — run: pip install openpyxl","rows":[],"detected_years":[]}')
     sys.exit(1)
 
+import json as _json
+
 from common import (
     lc, cell_str, parse_amount, parse_date,
     extract_year_from_text, extract_years_from_title_rows, extract_year_cols_from_header,
@@ -37,7 +39,7 @@ from common import (
     find_best_header_row, find_col,
     ACCOUNT_ALIASES, AMOUNT_ALIASES, DATE_ALIASES, REF_ALIASES,
     NAME_ALIASES, ACCTNUM_ALIASES, DEBIT_ALIASES, CREDIT_ALIASES,
-    DESC_ALIASES, CLASS_ALIASES, TYPE_ALIASES, BALANCE_ALIASES,
+    DESC_ALIASES, CLASS_ALIASES, TYPE_ALIASES, BALANCE_ALIASES, SPLIT_ALIASES,
     emit, emit_error,
 )
 
@@ -265,6 +267,15 @@ def extract_balance_sheet(wb):
 # ── GENERAL LEDGER ────────────────────────────────────────────────────────────
 
 def extract_general_ledger(wb):
+    """
+    Extract every row from the GL sheet, preserving source structure.
+
+    Row types emitted:
+      ACCOUNT_HEADER    — section header row (e.g. "Business Checking (7454)")
+      BEGINNING_BALANCE — "Beginning Balance" sentinel row
+      TRANSACTION       — dated transaction row
+      TOTAL_ROW         — "Total …" summary row
+    """
     rows = get_rows(wb, r'general\s*ledger|gl\b|transaction')
     if len(rows) < 2:
         emit_error('No data rows found in GL file')
@@ -289,13 +300,14 @@ def extract_general_ledger(wb):
         'desc':        find_col(header_row, DESC_ALIASES),
         'class_':      find_col(header_row, CLASS_ALIASES),
         'type':        find_col(header_row, TYPE_ALIASES),
+        'balance':     find_col(header_row, BALANCE_ALIASES),
+        'split':       find_col(header_row, SPLIT_ALIASES),
     }
     dbg(f'GL col map: {col}')
 
-    # Detect QBO "by Account" format: no Account column in header; account name
-    # appears as a section header row above its transactions.
+    # Detect QBO "by Account" format: no Account column in header; the account
+    # name appears as a standalone section-header row above its transactions.
     is_by_account = col['account'] < 0 and col['account_num'] < 0
-    current_account_section = None
 
     # If date column not found, probe first data rows
     if col['date'] < 0:
@@ -314,59 +326,142 @@ def extract_general_ledger(wb):
         c = col[key]
         return row[c] if c >= 0 and c < len(row) else None
 
+    def last_numeric(row):
+        """Return the last parseable numeric value in row, or None."""
+        for v in reversed(row):
+            a = parse_amount(v)
+            if a is not None:
+                return a
+        return None
+
+    current_account_section = None
+    current_fiscal_year     = None
     result = []
-    for row in rows[header_idx + 1:]:
+
+    # header_idx is 0-based; Excel rows are 1-based. Row header_idx+2 is the
+    # first data row (1 for header, 1 for 0→1 conversion).
+    for offset, row in enumerate(rows[header_idx + 1:]):
+        excel_row_num = header_idx + 2 + offset   # 1-based source row number
+
         if not row or all(v is None or str(v).strip() == '' for v in row):
             continue
 
-        date_str = parse_date(get(row, 'date'))
+        raw_row_json = _json.dumps([cell_str(v) for v in row], default=str)
+        first_cell   = cell_str(row[0] if row else None)
+        first_lc     = first_cell.lower()
+        date_str     = parse_date(get(row, 'date'))
 
-        # by-Account: rows without a date are section headers carrying the account name
-        if is_by_account and not date_str:
-            potential = cell_str(row[0])
-            if potential:
-                current_account_section = potential
+        # ── BEGINNING BALANCE ─────────────────────────────────────────────────
+        if 'beginning balance' in first_lc:
+            result.append({
+                'row_type':        'BEGINNING_BALANCE',
+                'row_number':      excel_row_num,
+                'account_name':    first_cell,
+                'account_section': current_account_section,
+                'description':     first_cell,
+                'running_balance': last_numeric(row),
+                'fiscal_year':     current_fiscal_year,
+                'transaction_date': None,
+                'raw_row_json':    raw_row_json,
+            })
             continue
 
-        if not date_str:
+        # ── TOTAL ROW ─────────────────────────────────────────────────────────
+        if first_lc.startswith('total'):
+            result.append({
+                'row_type':        'TOTAL_ROW',
+                'row_number':      excel_row_num,
+                'account_name':    first_cell,
+                'account_section': current_account_section,
+                'description':     first_cell,
+                'running_balance': last_numeric(row),
+                'fiscal_year':     current_fiscal_year,
+                'transaction_date': None,
+                'raw_row_json':    raw_row_json,
+            })
             continue
 
-        fiscal_year = int(date_str[:4])
+        # ── TRANSACTION ───────────────────────────────────────────────────────
+        if date_str:
+            fiscal_year         = int(date_str[:4])
+            current_fiscal_year = fiscal_year
 
-        if is_by_account:
-            account_name = current_account_section or ''
-            account_num  = ''
-        else:
-            account_name = cell_str(get(row, 'account'))
-            account_num  = cell_str(get(row, 'account_num'))
+            if is_by_account:
+                account_name         = current_account_section or ''
+                account_num          = ''
+                distribution_account = current_account_section or ''
+            else:
+                account_name         = cell_str(get(row, 'account'))
+                account_num          = cell_str(get(row, 'account_num'))
+                distribution_account = account_name
 
-        if not account_name and not account_num:
+            # Raw signed amount: prefer single Amount col; fall back to debit/credit
+            raw_amount = parse_amount(get(row, 'amount'))
+            if raw_amount is None:
+                d = parse_amount(get(row, 'debit'))  or 0
+                c = parse_amount(get(row, 'credit')) or 0
+                if d != 0 or c != 0:
+                    raw_amount = d - c
+
+            # Legacy debit/credit for backward compatibility
+            if col['debit'] >= 0 or col['credit'] >= 0:
+                debit  = parse_amount(get(row, 'debit'))  or 0
+                credit = parse_amount(get(row, 'credit')) or 0
+            elif raw_amount is not None:
+                debit  = raw_amount if raw_amount >= 0 else 0
+                credit = abs(raw_amount) if raw_amount < 0 else 0
+            else:
+                debit = credit = 0
+
+            result.append({
+                'row_type':           'TRANSACTION',
+                'row_number':         excel_row_num,
+                'transaction_date':   date_str,
+                'fiscal_year':        fiscal_year,
+                'account_section':    current_account_section,
+                'account_name':       account_name,
+                'account_number':     account_num or None,
+                'distribution_account': distribution_account,
+                'transaction_num':    cell_str(get(row, 'ref'))   or None,
+                'transaction_name':   cell_str(get(row, 'name'))  or None,
+                'memo_description':   cell_str(get(row, 'desc'))  or None,
+                'split_account':      cell_str(get(row, 'split')) or None,
+                'amount':             raw_amount,
+                'running_balance':    parse_amount(get(row, 'balance')),
+                # Legacy fields kept for backward compat
+                'description':        cell_str(get(row, 'desc'))  or None,
+                'reference':          cell_str(get(row, 'ref'))   or None,
+                'debit':              debit,
+                'credit':             credit,
+                'journal_type':       cell_str(get(row, 'type'))  or None,
+                'class':              cell_str(get(row, 'class_')) or None,
+                'raw_row_json':       raw_row_json,
+            })
             continue
 
-        debit  = parse_amount(get(row, 'debit'))  or 0
-        credit = parse_amount(get(row, 'credit')) or 0
+        # ── ACCOUNT HEADER ────────────────────────────────────────────────────
+        # Any non-blank, non-date row that isn't a total or beginning-balance
+        # is treated as an account section header.
+        if first_cell:
+            current_account_section = first_cell
+            result.append({
+                'row_type':        'ACCOUNT_HEADER',
+                'row_number':      excel_row_num,
+                'account_name':    first_cell,
+                'account_section': first_cell,
+                'description':     None,
+                'running_balance': None,
+                'fiscal_year':     current_fiscal_year,
+                'transaction_date': None,
+                'raw_row_json':    raw_row_json,
+            })
 
-        # Single-amount column: positive = debit, negative = credit
-        if col['debit'] < 0 and col['credit'] < 0 and col['amount'] >= 0:
-            amt = parse_amount(get(row, 'amount')) or 0
-            debit, credit = (amt, 0) if amt >= 0 else (0, abs(amt))
-
-        result.append({
-            'transaction_date': date_str,
-            'fiscal_year':      fiscal_year,
-            'account_number':   account_num or None,
-            'account_name':     account_name,
-            'description':      cell_str(get(row, 'desc'))  or None,
-            'reference':        cell_str(get(row, 'ref'))   or None,
-            'debit':            debit,
-            'credit':           credit,
-            'journal_type':     cell_str(get(row, 'type'))  or None,
-            'class':            cell_str(get(row, 'class_')) or None,
-            'vendor_name':      cell_str(get(row, 'name'))  or None,
-        })
-
-    detected_years = sorted({r['fiscal_year'] for r in result})
-    dbg(f'Extracted {len(result)} GL rows, years={detected_years}')
+    # detected_years only from TRANSACTION rows (the ones that have fiscal_year from a date)
+    detected_years = sorted({
+        r['fiscal_year'] for r in result
+        if r.get('row_type') == 'TRANSACTION' and r.get('fiscal_year')
+    })
+    dbg(f'Extracted {len(result)} GL rows (all types), years={detected_years}')
     return {'rows': result, 'detected_years': detected_years}
 
 

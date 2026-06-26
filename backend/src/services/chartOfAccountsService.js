@@ -24,8 +24,8 @@ const {
 } = require("./manualGlMultiYearService");
 
 const TABLE_COA = "chart_of_accounts";
-const TABLE_TXN = "manual_gl_staged_transactions";
-const TABLE_BS = "manual_gl_balance_sheet_lines";
+const TABLE_TXN = "general_ledger_entries";
+const TABLE_BS = "balance_sheet_entries";
 const PAGE_SIZE = 1000;
 
 // Group (parent) node definitions, keyed by normalized account type. The label is
@@ -58,6 +58,50 @@ function accountTypeFromBsSection(section) {
 
 function normName(accountName) {
   return String(accountName || "").trim().toLowerCase();
+}
+
+// ── Invalid-row guards ───────────────────────────────────────────────────────
+// Spec: a header, total, or section label must NEVER become a chart of account.
+// These guards are name-based so one rule protects EVERY source path (BS, P&L, GL)
+// and both the entry-table and legacy-batch readers.
+
+// Report banners / metadata lines (e.g. "Accrual Basis ...", "Report generated ...").
+const NON_ACCOUNT_RE =
+  /^(accrual basis|cash basis|report generated|date generated|generated on|as of\b|unrealized gains?)/i;
+
+// Pure section / category labels — structure, not accounts.
+const SECTION_LABEL_SET = new Set([
+  "assets", "liabilities", "equity", "income", "revenue", "expense", "expenses",
+  "current assets", "fixed assets", "other assets", "other current assets",
+  "current liabilities", "long-term liabilities", "long term liabilities",
+  "other current liabilities", "other liabilities", "cost of goods sold",
+  "liabilities and equity", "liabilities & equity", "total liabilities and equity",
+]);
+
+// Total / subtotal / summary rows (mirrors backend/python/common.py IS_TOTAL_RE).
+const TOTAL_NAME_RE = /(^total\b|\btotal$|\bnet income\b|\bnet loss\b|\bgross profit\b)/i;
+
+function isTotalName(name) {
+  return TOTAL_NAME_RE.test(String(name || "").trim());
+}
+
+function isSectionLabel(name) {
+  const n = String(name || "").trim().toLowerCase().replace(/\s+/g, " ");
+  return SECTION_LABEL_SET.has(n);
+}
+
+/**
+ * True when a row must NOT become a chart-of-accounts entry: blank names, report
+ * banners ("Accrual Basis …"), section labels ("Assets", "Current Liabilities"),
+ * and any total/subtotal ("Total Assets", "Total for …", "Net Income").
+ */
+function isNonAccountRow(name) {
+  const n = String(name || "").trim();
+  if (!n) return true;
+  if (NON_ACCOUNT_RE.test(n)) return true;
+  if (isTotalName(n)) return true;
+  if (isSectionLabel(n)) return true;
+  return false;
 }
 
 // Paginate a scoped select so large batches don't get truncated by PostgREST's
@@ -125,21 +169,41 @@ async function collectGlAccountsFromEntries(companyId, versionId) {
   return fetchAllRows(() =>
     supabase
       .from('general_ledger_entries')
-      .select('account_number, account_name, account_type, fiscal_year')
+      .select('distribution_account, account_section, fiscal_year')
       .eq('company_id', companyId)
       .eq('version_id', versionId)
+      .eq('row_type', 'TRANSACTION')
       .order('id', { ascending: true }),
   );
 }
 
-// Read distinct accounts from balance_sheet_entries for a version (new architecture).
+// Read accounts from balance_sheet_entries for a version (new architecture).
+// Excludes total rows at the query layer; section-header/label rows are dropped by
+// isNonAccountRow in buildCoaModel. Balance Sheet is the AUTHORITATIVE source — its
+// `section` decides asset/liability/equity (never keyword inference).
 async function collectBsAccountsFromEntries(companyId, versionId) {
   return fetchAllRows(() =>
     supabase
       .from('balance_sheet_entries')
-      .select('account_name, section')
+      .select('account_name, account_number, section, is_total, hierarchy_level, fiscal_year')
       .eq('company_id', companyId)
       .eq('version_id', versionId)
+      .eq('is_total', false)
+      .order('id', { ascending: true }),
+  );
+}
+
+// Read accounts from profit_loss_entries for a version (new architecture).
+// Spec priority #2 (after Balance Sheet, before General Ledger). Excludes total
+// rows at the query layer; headers/labels dropped by isNonAccountRow.
+async function collectPlAccountsFromEntries(companyId, versionId) {
+  return fetchAllRows(() =>
+    supabase
+      .from('profit_loss_entries')
+      .select('account_name, account_number, account_type, is_total, hierarchy_level, fiscal_year')
+      .eq('company_id', companyId)
+      .eq('version_id', versionId)
+      .eq('is_total', false)
       .order('id', { ascending: true }),
   );
 }
@@ -147,12 +211,20 @@ async function collectBsAccountsFromEntries(companyId, versionId) {
 /**
  * Build the in-memory COA model (groups + leaves) from raw account rows.
  * Pure function — no DB access — so it is easy to test and reason about.
+ *
+ * Source precedence (spec): Balance Sheet (authoritative) → Profit & Loss →
+ * General Ledger (fallback only). Sources are processed in that order; whichever
+ * source FIRST creates a leaf fixes its classification, and later sources only
+ * merge provenance (sources/fiscal years/number). General Ledger therefore never
+ * overrides a Balance-Sheet or P&L classification of the same account.
+ *
+ * Every name is screened by isNonAccountRow, so headers, totals, and section
+ * labels can never become accounts regardless of which source emitted them.
  */
-function buildCoaModel(glRows, bsRows) {
-  // Index leaves by normalized name so the same account linked from both GL
-  // (numbered) and the Balance Sheet (often un-numbered) collapses into one row.
-  // Two genuinely distinct accounts that share a name but have *different*
-  // numbers are kept separate.
+function buildCoaModel(glRows, bsRows, plRows) {
+  // Index leaves by normalized name so the same account linked from BS (often
+  // un-numbered) and GL (numbered) collapses into one row. Two genuinely distinct
+  // accounts that share a name but have *different* numbers are kept separate.
   const leavesByName = new Map(); // normName -> leaf[]
   const usedGroups = new Set();
 
@@ -162,12 +234,16 @@ function buildCoaModel(glRows, bsRows) {
     if (!leaf.accountNumber && number) leaf.accountNumber = number; // adopt a real number
   };
 
-  const addLeaf = (accountName, accountNumber, accountType, source, fiscalYear) => {
+  // explicitType: a known type from the source (BS section / P&L|GL account_type).
+  // When absent we keyword-infer. classificationSource records how we decided.
+  const addLeaf = (accountName, accountNumber, explicitType, source, fiscalYear, classificationSource) => {
     const name = String(accountName || "").trim();
     if (!name) return;
+    if (isNonAccountRow(name)) return; // guard: no headers / totals / section labels
     const number = accountNumber ? String(accountNumber).trim() : null;
-    const type =
-      normalizeAccountType(accountType) || inferAccountType(name, number || "");
+    const normalized = normalizeAccountType(explicitType);
+    const type = normalized || inferAccountType(name, number || "");
+    const resolvedSource = normalized ? classificationSource : "keyword";
     const key = normName(name);
     const bucket = leavesByName.get(key) || [];
 
@@ -188,6 +264,7 @@ function buildCoaModel(glRows, bsRows) {
       accountNumber: number,
       accountType: type,
       statementType: statementTypeFor(type),
+      classificationSource: resolvedSource,
       sources: new Set([source]),
       fiscalYears: new Set(fiscalYear ? [Number(fiscalYear)] : []),
     };
@@ -195,12 +272,21 @@ function buildCoaModel(glRows, bsRows) {
     leavesByName.set(key, bucket);
   };
 
-  for (const r of glRows || []) {
-    addLeaf(r.account_name, r.account_number, r.account_type, "general_ledger", r.fiscal_year);
-  }
+  // 1) Balance Sheet — authoritative. Section drives the type (never keyword).
   for (const r of bsRows || []) {
     const type = accountTypeFromBsSection(r.section);
-    addLeaf(r.account_name, null, type, "balance_sheet", null);
+    addLeaf(r.account_name, r.account_number || null, type, "balance_sheet", r.fiscal_year, "balance_sheet_section");
+  }
+  // 2) Profit & Loss — income / expense / cogs.
+  for (const r of plRows || []) {
+    addLeaf(r.account_name, r.account_number || null, r.account_type || null, "profit_loss", r.fiscal_year, "profit_loss_type");
+  }
+  // 3) General Ledger — fallback only. Use the posting account; do NOT fall back to
+  //    the section header (it can be a report banner). Type is keyword-inferred
+  //    unless the entry carries an explicit account_type (legacy staged rows).
+  for (const r of glRows || []) {
+    const name = r.distribution_account || r.account_name || "";
+    addLeaf(name, r.account_number || null, r.account_type || null, "general_ledger", r.fiscal_year, "gl_type");
   }
 
   // Only emit group nodes that actually have children.
@@ -225,20 +311,22 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
     return { accountCount: 0, groupCount: 0, leafCount: 0, skipped: true };
   }
 
-  let glRows, bsRows;
+  let glRows, bsRows, plRows;
   if (batchId) {
     [glRows, bsRows] = await Promise.all([
       collectGlAccounts(companyId, batchId),
       collectBsAccounts(companyId, batchId).catch(() => []),
     ]);
+    plRows = [];
   } else {
-    [glRows, bsRows] = await Promise.all([
+    [glRows, bsRows, plRows] = await Promise.all([
       collectGlAccountsFromEntries(companyId, versionId),
       collectBsAccountsFromEntries(companyId, versionId).catch(() => []),
+      collectPlAccountsFromEntries(companyId, versionId).catch(() => []),
     ]);
   }
 
-  const { groups, leaves } = buildCoaModel(glRows, bsRows);
+  const { groups, leaves } = buildCoaModel(glRows, bsRows, plRows);
 
   // Replace the version's COA atomically-ish: delete then insert. The COA is a
   // pure derivative of the version's data, so a brief empty window on regenerate
@@ -291,6 +379,7 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
         is_group: false,
         sources: Array.from(leaf.sources),
         fiscal_years: Array.from(leaf.fiscalYears).sort((a, b) => a - b),
+        classification_source: leaf.classificationSource || null,
       },
     }));
 
@@ -392,10 +481,135 @@ async function updateAccount(accountId, patch = {}) {
   return mapRow(data);
 }
 
+// ── Validation engine (Key Reports Rearchitecture — M1 / spec validation rules) ──
+//
+// Runs the spec's Chart-of-Accounts checks against a synced version and returns
+// (a) a structured `reports` object (the lists the spec asks to surface:
+//     unmapped / duplicate / invalid / header-total / multi-category), and
+// (b) `rows` shaped for key_report_validation_results so the Sync dashboard's
+//     existing year-by-year grid + "Validation messages" pane render them with NO
+//     frontend change (data_type='chart_of_accounts', year=null).
+//
+// Pure derivative — reads the COA + GL it just built; never mutates anything.
+async function validateChartOfAccounts(companyId, versionId) {
+  const empty = { nullType: [], invalidRows: [], duplicates: [], unmapped: [], multiCategory: [] };
+  if (!companyId || !versionId) {
+    return { summary: { accountCount: 0, leafCount: 0, status: "warning", ...empty }, reports: empty, rows: [] };
+  }
+
+  const { data: coaData, error } = await supabase
+    .from(TABLE_COA)
+    .select("id, account_name, account_number, account_type, metadata")
+    .eq("version_id", versionId);
+  if (error) throw error;
+
+  const all = coaData || [];
+  const leaves = all.filter((r) => !r.metadata?.is_group);
+
+  // GL accounts that ought to be represented in the COA (TRANSACTION rows only).
+  let glAccounts = [];
+  try {
+    const glRows = await collectGlAccountsFromEntries(companyId, versionId);
+    glAccounts = glRows.map((r) => String(r.distribution_account || "").trim()).filter(Boolean);
+  } catch (_e) {
+    glAccounts = [];
+  }
+
+  const leafKeys = new Set(leaves.map((r) => normName(r.account_name)));
+
+  // 1) No account may have a NULL/blank category.
+  const nullType = leaves.filter((r) => !r.account_type).map((r) => r.account_name);
+  // 2) No header/total/section-label row may exist in the COA (defensive — the
+  //    generator already screens these; this proves it for the dashboard).
+  const invalidRows = leaves.filter((r) => isNonAccountRow(r.account_name)).map((r) => r.account_name);
+  // 3) No duplicate account mappings (same normalized name more than once).
+  const counts = new Map();
+  for (const r of leaves) {
+    const k = normName(r.account_name);
+    counts.set(k, (counts.get(k) || 0) + 1);
+  }
+  const duplicates = leaves
+    .filter((r) => counts.get(normName(r.account_name)) > 1)
+    .map((r) => r.account_name)
+    .filter((v, i, a) => a.indexOf(v) === i);
+  // 4) Every GL account must map to a COA account.
+  const unmapped = Array.from(
+    new Set(glAccounts.filter((n) => !isNonAccountRow(n) && !leafKeys.has(normName(n)))),
+  );
+  // 5) Each account belongs to exactly one category.
+  const typesByName = new Map();
+  for (const r of leaves) {
+    const k = normName(r.account_name);
+    if (!typesByName.has(k)) typesByName.set(k, new Set());
+    typesByName.get(k).add(r.account_type || "unknown");
+  }
+  const multiCategory = Array.from(typesByName.entries())
+    .filter(([, set]) => set.size > 1)
+    .map(([k]) => k);
+
+  const reports = { nullType, invalidRows, duplicates, unmapped, multiCategory };
+
+  const sample = (arr, n = 8) =>
+    arr.slice(0, n).join(", ") + (arr.length > n ? ` … (+${arr.length - n} more)` : "");
+
+  const rows = [];
+  let worst = "success";
+
+  // Hard failures.
+  const errorChecks = [
+    [nullType, (a) => `${a.length} account(s) missing a category: ${sample(a)}`],
+    [invalidRows, (a) => `${a.length} invalid row(s) (header/total/section) present in the Chart of Accounts: ${sample(a)}`],
+    [multiCategory, (a) => `${a.length} account(s) classified into more than one category: ${sample(a)}`],
+  ];
+  for (const [arr, msg] of errorChecks) {
+    if (arr.length) {
+      worst = "error";
+      rows.push({
+        dataType: "chart_of_accounts", year: null, status: "error", severity: "error",
+        message: msg(arr), metadata: { sample: arr.slice(0, 25), count: arr.length },
+      });
+    }
+  }
+
+  // Soft warnings.
+  const warnChecks = [
+    [duplicates, (a) => `${a.length} duplicate account name(s): ${sample(a)}`],
+    [unmapped, (a) => `${a.length} General Ledger account(s) not represented in the Chart of Accounts: ${sample(a)}`],
+  ];
+  for (const [arr, msg] of warnChecks) {
+    if (arr.length) {
+      if (worst !== "error") worst = "warning";
+      rows.push({
+        dataType: "chart_of_accounts", year: null, status: "warning", severity: "warning",
+        message: msg(arr), metadata: { sample: arr.slice(0, 25), count: arr.length },
+      });
+    }
+  }
+
+  const status = leaves.length ? worst : "warning";
+  // Summary row first so the grid cell reflects overall COA health.
+  rows.unshift({
+    dataType: "chart_of_accounts",
+    year: null,
+    status,
+    severity: status,
+    message: leaves.length
+      ? status === "success"
+        ? `Chart of Accounts generated successfully (${leaves.length} accounts, all classified).`
+        : `Chart of Accounts generated with issues (${leaves.length} accounts).`
+      : "Chart of Accounts not generated.",
+    metadata: { accountCount: all.length, leafCount: leaves.length, reports },
+  });
+
+  return { summary: { accountCount: all.length, leafCount: leaves.length, status, ...reports }, reports, rows };
+}
+
 module.exports = {
   generateChartOfAccounts,
   getChartOfAccounts,
   updateAccount,
+  validateChartOfAccounts,
   // exported for unit testing
   buildCoaModel,
+  isNonAccountRow,
 };

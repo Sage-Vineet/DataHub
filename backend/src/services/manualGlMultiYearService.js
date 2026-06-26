@@ -3361,7 +3361,7 @@ async function resolveEffectiveReportBatchId(companyId, filters = {}) {
   // Report exists — or the Key Reports tables aren't present / any error occurs —
   // we fall back to the exact pre-existing active/latest-batch behavior.
   try {
-    const keyReportService = require("./keyReportService");
+    const keyReportService = require("./keyReports/keyReportService");
     const pinned = await keyReportService.getActiveResolvedBatch(companyId);
     if (pinned && pinned.batchId) {
       return pinned.batchId;

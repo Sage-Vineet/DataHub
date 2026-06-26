@@ -13,15 +13,15 @@
  *   7. Build & persist Validation Results (from entry table row counts)
  */
 
-const { supabase } = require('../db');
+const { supabase } = require('../../db');
 
-const taxReturnExtractionService = require('./keyReports/taxReturnExtractionService');
-const bankStatementExtractionService = require('./keyReports/bankStatementExtractionService');
-const profitLossExtractionService = require('./keyReports/profitLossExtractionService');
-const balanceSheetExtractionService = require('./keyReports/balanceSheetExtractionService');
-const generalLedgerExtractionService = require('./keyReports/generalLedgerExtractionService');
+const taxReturnExtractionService = require('./taxReturnExtractionService');
+const bankStatementExtractionService = require('./bankStatementExtractionService');
+const profitLossExtractionService = require('./profitLossExtractionService');
+const balanceSheetExtractionService = require('./balanceSheetExtractionService');
+const generalLedgerExtractionService = require('./generalLedgerExtractionService');
 
-const { generateChartOfAccounts } = require('./chartOfAccountsService');
+const { generateChartOfAccounts, validateChartOfAccounts } = require('../chartOfAccountsService');
 const { replaceValidationResults } = require('./keyReportValidationService');
 const keyReportService = require('./keyReportService');
 
@@ -180,23 +180,23 @@ async function buildValidationResultsFromEntryTables(versionId, mappingsByCatego
   ).sort((a, b) => a - b);
 
   const dataTypes = [
-    { key: 'tax_return',     table: 'tax_return_entries',     yearCol: 'tax_year',        isDateCol: false },
-    { key: 'bank_statement', table: 'bank_statement_entries', yearCol: 'statement_month', isDateCol: true  },
-    { key: 'profit_loss',    table: 'profit_loss_entries',    yearCol: 'fiscal_year',     isDateCol: false },
-    { key: 'balance_sheet',  table: 'balance_sheet_entries',  yearCol: 'fiscal_year',     isDateCol: false },
-    { key: 'general_ledger', table: 'general_ledger_entries', yearCol: 'fiscal_year',     isDateCol: false },
+    { key: 'tax_return', table: 'tax_return_entries', yearCol: 'tax_year', isDateCol: false },
+    { key: 'bank_statement', table: 'bank_statement_entries', yearCol: 'statement_month', isDateCol: true },
+    { key: 'profit_loss', table: 'profit_loss_entries', yearCol: 'fiscal_year', isDateCol: false },
+    { key: 'balance_sheet', table: 'balance_sheet_entries', yearCol: 'fiscal_year', isDateCol: false },
+    { key: 'general_ledger', table: 'general_ledger_entries', yearCol: 'fiscal_year', isDateCol: false },
   ];
 
   const labels = {
-    tax_return:     'Tax Return Data',
+    tax_return: 'Tax Return Data',
     bank_statement: 'Bank Statement Data',
-    profit_loss:    'Profit & Loss Data',
-    balance_sheet:  'Balance Sheet Data',
+    profit_loss: 'Profit & Loss Data',
+    balance_sheet: 'Balance Sheet Data',
     general_ledger: 'General Ledger Data',
   };
 
   for (const dt of dataTypes) {
-    const label      = labels[dt.key];
+    const label = labels[dt.key];
     const hasMappings = (mappingsByCategory[dt.key] || []).length > 0;
 
     // Query years actually present in this table for this version
@@ -235,9 +235,9 @@ async function buildValidationResultsFromEntryTables(versionId, mappingsByCatego
         rows.push({
           dataType: dt.key,
           year,
-          status:   hasData ? 'success' : 'warning',
+          status: hasData ? 'success' : 'warning',
           severity: hasData ? 'success' : 'warning',
-          message:  hasData
+          message: hasData
             ? `${label} loaded successfully (${rowCount} rows${year ? ` for ${year}` : ''})`
             : hasMappings
               ? `No ${label} data extracted for ${year}.`
@@ -255,10 +255,10 @@ async function buildValidationResultsFromEntryTables(versionId, mappingsByCatego
     } else {      // No data — emit a single warning row (no year dimension since we have none)
       rows.push({
         dataType: dt.key,
-        year:     null,
-        status:   'warning',
+        year: null,
+        status: 'warning',
         severity: 'warning',
-        message:  hasMappings
+        message: hasMappings
           ? `No ${label} extracted from linked file(s)`
           : `No ${label} files linked`,
         metadata: { rowCount: 0 },
@@ -266,28 +266,13 @@ async function buildValidationResultsFromEntryTables(versionId, mappingsByCatego
     }
   }
 
-  // Chart of Accounts has no year dimension
-  const { count: coaCount } = await supabase
-    .from('chart_of_accounts')
-    .select('id', { count: 'exact', head: true })
-    .eq('version_id', versionId);
-
-  rows.push({
-    dataType: 'chart_of_accounts',
-    year:     null,
-    status:   coaCount > 0 ? 'success' : 'warning',
-    severity: coaCount > 0 ? 'success' : 'warning',
-    message:  coaCount > 0
-      ? `Chart of Accounts generated successfully (${coaCount} accounts)`
-      : 'Chart of Accounts not generated',
-    metadata: { accountCount: coaCount || 0 },
-  });
-
+  // Chart of Accounts validation rows are appended by the caller via
+  // chartOfAccountsService.validateChartOfAccounts (richer spec checks).
   return rows;
 }
 
 async function generateFinancialTables(version, opts = {}) {
-  const {} = opts; // opts reserved for future use (e.g. userId, uploadJobId)
+  const { } = opts; // opts reserved for future use (e.g. userId, uploadJobId)
   const companyId = version.companyId;
   const versionId = version.id;
 
@@ -308,10 +293,10 @@ async function generateFinancialTables(version, opts = {}) {
   }
 
   const extractionResults = {
-    tax_return:     { success: 0, failed: 0, rowsExtracted: 0 },
+    tax_return: { success: 0, failed: 0, rowsExtracted: 0 },
     bank_statement: { success: 0, failed: 0, rowsExtracted: 0 },
-    profit_loss:    { success: 0, failed: 0, rowsExtracted: 0 },
-    balance_sheet:  { success: 0, failed: 0, rowsExtracted: 0 },
+    profit_loss: { success: 0, failed: 0, rowsExtracted: 0 },
+    balance_sheet: { success: 0, failed: 0, rowsExtracted: 0 },
     general_ledger: { success: 0, failed: 0, rowsExtracted: 0 },
   };
 
@@ -395,10 +380,27 @@ async function generateFinancialTables(version, opts = {}) {
     coaSummary = { error: coaErr.message, accountCount: 0 };
   }
 
-  // Step 7: Validation Results (from entry table row counts)
+  // Step 7: Validation Results (from entry table row counts + COA spec checks)
   logger.log('--- Step 7: Validation Results ---');
   logger.log(`  Building validation rows for years=[${years.join(', ')}]`);
   const validationRows = await buildValidationResultsFromEntryTables(versionId, mappingsByCategory, years, logger);
+
+  // Chart of Accounts validation (null type / invalid rows / duplicates / unmapped
+  // GL / multi-category). Non-fatal: a validation failure must not fail the sync.
+  let coaValidation = null;
+  try {
+    coaValidation = await validateChartOfAccounts(companyId, versionId);
+    validationRows.push(...coaValidation.rows);
+    const r = coaValidation.reports;
+    logger.log(
+      `  ✓ COA validation: status=${coaValidation.summary.status} ` +
+      `nullType=${r.nullType.length} invalid=${r.invalidRows.length} ` +
+      `duplicates=${r.duplicates.length} unmappedGL=${r.unmapped.length} multiCategory=${r.multiCategory.length}`,
+    );
+  } catch (vErr) {
+    logger.warn(`  COA validation failed: ${vErr.message}`);
+  }
+
   await replaceValidationResults(versionId, companyId, validationRows);
   logger.log(`  ✓ ${validationRows.length} validation rows stored`);
 
@@ -422,6 +424,7 @@ async function generateFinancialTables(version, opts = {}) {
       totalRowsInserted: totalRows,
       extractionResults,
       chartOfAccounts: coaSummary,
+      chartOfAccountsValidation: coaValidation ? coaValidation.summary : null,
       message,
     },
     message,

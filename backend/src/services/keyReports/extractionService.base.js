@@ -69,13 +69,22 @@ class ExtractionServiceBase {
         fileName,
       });
 
+      // Filter rows matching disallowed patterns before database insertion
+      const { filteredRows, skippedLog } = this.filterRowsBeforeInsertion(transformedRows);
+
+      if (skippedLog.length > 0) {
+        skippedLog.forEach(({ value, reason }) => {
+          this.logger.log(`Skipped row value: "${value}" | Reason: ${reason}`);
+        });
+      }
+
       // 5. Insert into database
-      const insertResult = await this.insertRows(transformedRows);
+      const insertResult = await this.insertRows(filteredRows);
       if (!insertResult.success) {
         throw new Error(insertResult.error || 'Insert failed');
       }
 
-      const rowsInserted  = insertResult.rowsInserted  ?? validatedRows.length;
+      const rowsInserted  = insertResult.rowsInserted  ?? filteredRows.length;
       const duplicates    = insertResult.duplicates     ?? 0;
       const finalCount    = await this.getRowCount(versionId);
       const detectedYears = extractedData.detectedYears || [];
@@ -238,6 +247,115 @@ class ExtractionServiceBase {
 
     if (error) return 0;
     return count || 0;
+  }
+
+  /**
+   * Filter layer before database insertion
+   * Checks row string fields against patterns and returns filtered rows
+   */
+  filterRowsBeforeInsertion(rows) {
+    if (!Array.isArray(rows)) return { filteredRows: [], skippedLog: [] };
+
+    const filteredRows = [];
+    const skippedLog = [];
+
+    const matchesFilterPatterns = (val) => {
+      if (val === null || val === undefined) return null;
+      const str = String(val).trim();
+      const lowerStr = str.toLowerCase();
+      
+      // Normalize multiple spaces to single spaces
+      const normalizedStr = lowerStr.replace(/\s+/g, ' ');
+
+      // Headers
+      if (normalizedStr.startsWith('accrual basis')) {
+        return 'Accrual Basis* pattern';
+      }
+      if (normalizedStr.startsWith('cash basis')) {
+        return 'Cash Basis* pattern';
+      }
+      if (normalizedStr.startsWith('report generated')) {
+        return 'Report Generated* pattern';
+      }
+      if (normalizedStr.startsWith('generated on')) {
+        return 'Generated On* pattern';
+      }
+
+      // Totals
+      if (normalizedStr.startsWith('total for ')) {
+        return 'Total for * pattern';
+      }
+      
+      const exactTotals = [
+        'total assets',
+        'total liabilities',
+        'total equity',
+        'total income',
+        'total expenses'
+      ];
+      if (exactTotals.includes(normalizedStr)) {
+        return `Exact total pattern: "${str}"`;
+      }
+
+      // Section Headers
+      const exactSectionHeaders = [
+        'assets',
+        'current assets',
+        'other current assets',
+        'fixed assets',
+        'liabilities',
+        'current liabilities',
+        'long-term liabilities',
+        'long term liabilities',
+        'equity',
+        'income',
+        'expenses'
+      ];
+      if (exactSectionHeaders.includes(normalizedStr)) {
+        return `Exact section header pattern: "${str}"`;
+      }
+
+      return null;
+    };
+
+    // The fields to inspect in a row
+    const fieldsToInspect = [
+      'account_name',
+      'distribution_account',
+      'bank_account',
+      'bank_name',
+      'description',
+      'field_name',
+      'field_label'
+    ];
+
+    for (const row of rows) {
+      let skipReason = null;
+      let matchedValue = null;
+
+      for (const field of fieldsToInspect) {
+        if (row && row[field] !== undefined && row[field] !== null) {
+          const reason = matchesFilterPatterns(row[field]);
+          if (reason) {
+            skipReason = reason;
+            matchedValue = row[field];
+            break;
+          }
+        }
+      }
+
+      if (skipReason) {
+        skippedLog.push({
+          value: matchedValue,
+          reason: skipReason,
+          row
+        });
+      } else {
+        filteredRows.push(row);
+      }
+    }
+
+    return { filteredRows, skippedLog };
   }
 
   /**

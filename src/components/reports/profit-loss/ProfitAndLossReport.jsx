@@ -27,10 +27,14 @@ function ProfitAndLossReport({
     "manual_gl_reporting_snapshot",
     "MANUAL_STAGED",
   ];
+  // Key Reports entry tables use the same hierarchical-rows summary renderer as Manual GL.
+  // The detail view falls through to ProfitAndLossSummary (which understands { rows, columns })
+  // so key_reports_entry_tables is intentionally excluded from the detail sources list.
+  const SUMMARY_RENDERABLE_SOURCES = [...MANUAL_STAGED_SOURCES, "key_reports_entry_tables"];
 
   const isManualStagedSummary = Boolean(
     data && typeof data === "object" && !Array.isArray(data) &&
-    MANUAL_STAGED_SOURCES.includes(data.source)
+    SUMMARY_RENDERABLE_SOURCES.includes(data.source)
   );
 
   const isManualStagedDetail = Boolean(

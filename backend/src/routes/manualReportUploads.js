@@ -34,7 +34,7 @@ const {
 const { supabase } = require("../db");
 const { canAccessCompany } = require("../services/permissionService");
 const { runBsBankBalancesExtraction, runBankExtraction } = require("./quickbooks/reconciliation/bankVsBooks");
-const keyReportService = require("../services/keyReportService");
+const keyReportService = require("../services/keyReports/keyReportService");
 
 // Version-aware cache for Key Reports-resolved tax return extraction. Kept
 // separate from the Sync All tax_return cache so existing data is untouched;

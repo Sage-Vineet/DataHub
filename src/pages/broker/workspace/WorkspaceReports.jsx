@@ -407,6 +407,40 @@ export default function WorkspaceReports() {
   // NOT from the Connections-page active data source. Falls back to the legacy
   // DataSourceContext behavior only when no Key Report versions exist.
   const kr = useKeyReportContextStore(useShallow(selectKeyReportContext));
+  const krFetchVersions = useKeyReportContextStore((s) => s.fetchVersions);
+
+  // Ensure the Key Reports store starts loading for this company as early as
+  // possible (independent of whether the version selector is mounted yet), so the
+  // krReady gate below can hold report generation until the KR flow is resolved.
+  useEffect(() => {
+    if (clientId) krFetchVersions(clientId);
+  }, [clientId, krFetchVersions]);
+
+  // Gate report generation until the Key Reports store has settled for THIS
+  // company. Until then we must not fetch — otherwise the first pass fires with
+  // keyReportVersionId=null and leaks to Manual GL endpoints (e.g.
+  // /reports/balance-sheet/monthly-detail) before the selected Key Report Version
+  // loads. When the company has no KR versions, the legacy fallback path is valid
+  // and we proceed immediately.
+  const krReady = useMemo(() => {
+    if (!clientId) return false;
+    if (kr.loading || kr.loadingDetail) return false; // a KR fetch is in flight
+    if (kr.error) return true; // KR unavailable → don't block reports (legacy path)
+    if (kr.loadedCompanyId !== clientId) return false; // store not loaded for this company yet
+    if (!kr.versions.length) return true; // no KR versions → legacy path is fine
+    if (kr.selectedVersionId && !kr.version) return false; // selected version detail not applied yet
+    return true;
+  }, [
+    clientId,
+    kr.loading,
+    kr.loadingDetail,
+    kr.error,
+    kr.loadedCompanyId,
+    kr.versions.length,
+    kr.selectedVersionId,
+    kr.version,
+  ]);
+
   const selectedReportSource = useMemo(
     () =>
       kr.krActive && kr.effectiveSource
@@ -653,6 +687,10 @@ export default function WorkspaceReports() {
         manualUploadRowId: selectedManualUploadRowId[selectedTab] || null,
         qmsRowId: selectedQMSRowId[selectedTab] || null,
         manualCfYear: selectedManualCfYear || null,
+        // Key Reports version is the authoritative data source — include it so the
+        // cache busts and the report re-fetches as soon as the KR store finishes
+        // loading, preventing stale Manual GL data from being shown permanently.
+        krVersionId: kr.selectedVersionId || null,
       }),
     [
       clientId,
@@ -667,6 +705,7 @@ export default function WorkspaceReports() {
       selectedManualUploadRowId,
       selectedQMSRowId,
       selectedManualCfYear,
+      kr.selectedVersionId,
     ],
   );
   const currentSignatureRef = useRef(currentSignature);
@@ -706,6 +745,14 @@ export default function WorkspaceReports() {
 
   useEffect(() => {
     if (selectedSourceMode !== "manual" || !clientId) return;
+    // New-style Key Reports versions (no resolvedBatchId) sync data into entry
+    // tables — they have NO Manual GL batch. Fetching staging filter options would
+    // load the wrong fiscal years into state and contaminate the KR report filters.
+    // Old-style KR (resolvedBatchId set) still needs filter options for its batch.
+    if (kr.krActive && !kr.version?.resolvedBatchId) {
+      debugLog("[KeyReports][Report] Skipping filter-options: new-style KR (entry-tables path), versionId=", kr.selectedVersionId);
+      return;
+    }
 
     // Scope filter options (years, accounts, etc.) to the SELECTED version so the
     // dropdowns reflect only that version's data — never another version's.
@@ -778,7 +825,8 @@ export default function WorkspaceReports() {
       });
     // filterOptionsVersion increments when a new GL batch is staged, forcing a re-fetch.
     // manualFilters.datasetVersion re-fetches the year list when the user switches version.
-  }, [clientId, selectedSourceMode, filterOptionsVersion, manualFilters.datasetVersion, debugLog]);
+    // kr.krActive / kr.version?.resolvedBatchId: re-evaluate the new-style KR guard when KR loads.
+  }, [clientId, selectedSourceMode, filterOptionsVersion, manualFilters.datasetVersion, debugLog, kr.krActive, kr.version?.resolvedBatchId]);
 
   // Load available uploaded files per tab when in manual_upload source mode
   useEffect(() => {
@@ -1354,6 +1402,10 @@ export default function WorkspaceReports() {
         keyReportVersionId: kr.selectedVersionId || null,
       };
 
+      if (kr.selectedVersionId) {
+        console.log(`[KeyReports][Report] Generating ${selectedTab} / ${effectiveReportType} versionId=${kr.selectedVersionId} sourceMode=${selectedSourceMode}`);
+      }
+
       if (selectedTab === "Balance Sheet") {
         if (effectiveReportType === "Summary") {
           summary = await getBalanceSheet(
@@ -1489,6 +1541,13 @@ export default function WorkspaceReports() {
   useEffect(() => {
     if (!clientId) return undefined;
 
+    // Hold until the Key Reports store has settled — prevents a Manual GL first
+    // pass while the selected Key Report Version is still loading.
+    if (!krReady) {
+      setIsLoading(true);
+      return undefined;
+    }
+
     const effectiveReportType = resolveEffectiveReportType(
       selectedTab,
       reportType,
@@ -1557,6 +1616,7 @@ export default function WorkspaceReports() {
     appliedManualFilters,
     getDates,
     selectedManualCfYear,
+    krReady,
   ]);
 
 

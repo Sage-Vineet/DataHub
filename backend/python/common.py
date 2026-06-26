@@ -37,6 +37,7 @@ DESC_ALIASES    = ['memo', 'description', 'narration', 'notes', 'detail', 'parti
 CLASS_ALIASES   = ['class', 'job', 'department', 'dept', 'location', 'cost center', 'division']
 TYPE_ALIASES    = ['type', 'transaction type', 'txn type', 'journal type', 'entry type']
 BALANCE_ALIASES = ['balance', 'running balance', 'closing balance', 'ledger balance']
+SPLIT_ALIASES   = ['split', 'split account', 'account split', 'contra account', 'offset account']
 
 PERIOD_LABEL_RE = re.compile(
     r'\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec'

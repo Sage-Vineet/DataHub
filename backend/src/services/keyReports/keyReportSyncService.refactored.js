@@ -37,12 +37,12 @@ const { generateChartOfAccounts } = require('../chartOfAccountsService');
 const {
   buildValidationResults,
   replaceValidationResults,
-} = require('../keyReportValidationService');
+} = require('./keyReportValidationService');
 
 // Reporting snapshots (performance optimization)
 const { generateReportingSnapshotsForBatch } = require('../manualGlReportingSnapshotService');
 
-const keyReportService = require('../keyReportService');
+const keyReportService = require('./keyReportService');
 
 /**
  * Main sync entry point

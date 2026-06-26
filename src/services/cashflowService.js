@@ -7,6 +7,7 @@ import {
   getAllQMSUploadedReports,
   getManualCashFlowPeriods,
   getManualGeneratedCashFlow,
+  getKeyReportVersionReport,
 } from "../lib/api";
 import { normalizeAccountingMethod } from "../lib/report-filters";
 import { parseCashFlowSummaryReport } from "../lib/report-parsers";
@@ -316,6 +317,27 @@ export async function getCashflow(startDate, endDate, accountingMethod, options 
   const sourceMode = options?.sourceMode || "quickbooks";
   const keyReportVersionId = options?.keyReportVersionId || null;
 
+  // Key Reports: build Cash Flow ONLY from this version's entry tables
+  // (balance_sheet_entries + profit_loss_entries) via the dedicated endpoint.
+  // NEVER falls through to Manual GL staging / batches / snapshots.
+  if (keyReportVersionId) {
+    try {
+      const manualFilters = options?.manualFilters || {};
+      const rawYear = options?.year || manualFilters.fiscalYear || null;
+      const response = await getKeyReportVersionReport(keyReportVersionId, "cashflow", {
+        year: /^\d{4}$/.test(String(rawYear ?? "")) ? rawYear : null,
+        startDate: manualFilters.fromDate || null,
+        endDate: manualFilters.toDate || null,
+      });
+      const rows = response?.rows || response?.hierarchicalRows || [];
+      console.log("[KeyReports][CF][Summary] Loaded", rows.length, "rows from entry tables for version", keyReportVersionId);
+      return rows;
+    } catch (err) {
+      console.warn("[KeyReports][CF][Summary] Entry table fetch failed:", err.message);
+      return [];
+    }
+  }
+
   if (sourceMode === "manual") {
     const params = {
       ...((options?.manualFilters && typeof options.manualFilters === "object")
@@ -506,6 +528,35 @@ export async function getCashflowDetail(
 ) {
   const sourceMode = options?.sourceMode || "quickbooks";
   const keyReportVersionId = options?.keyReportVersionId || null;
+
+  // Key Reports: read ONLY from this version's entry tables (multi-year comparative
+  // Cash Flow) — never from Manual GL staging.
+  if (keyReportVersionId) {
+    try {
+      const manualFilters = options?.manualFilters || {};
+      const singleYear = /^\d{4}$/.test(String(manualFilters.fiscalYear ?? "")) ? manualFilters.fiscalYear : null;
+      const response = await getKeyReportVersionReport(keyReportVersionId, "cashflow", {
+        year: singleYear,
+        startDate: manualFilters.fromDate || null,
+        endDate: manualFilters.toDate || null,
+      });
+      console.log("[KeyReports][CF][Detail] Loaded from entry tables for version", keyReportVersionId);
+      return {
+        rows: response?.hierarchicalRows || response?.rows || [],
+        columns: response?.columns || { yearCols: [], ytdComparison: null },
+        source: response?.source || "key_reports_entry_tables",
+        reportType: "cashflow_multi_year",
+      };
+    } catch (err) {
+      console.warn("[KeyReports][CF][Detail] Entry table fetch failed:", err.message);
+      return {
+        rows: [],
+        columns: { yearCols: [], ytdComparison: null },
+        source: "key_reports_entry_tables",
+        reportType: "cashflow_multi_year",
+      };
+    }
+  }
 
   if (sourceMode === "manual") {
     const params = {

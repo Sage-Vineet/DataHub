@@ -143,6 +143,8 @@ class GeneralLedgerExtractionService extends ExtractionServiceBase {
     const headerRow = raw[headerIdx];
 
     // Build column map
+    const SPLIT_ALIASES_JS = ['split', 'split account', 'account split', 'contra account', 'offset account'];
+
     const colMap = {
       date:       findColByAliases(headerRow, DATE_ALIASES),
       ref:        findColByAliases(headerRow, REF_ALIASES),
@@ -156,6 +158,7 @@ class GeneralLedgerExtractionService extends ExtractionServiceBase {
       class_:     findColByAliases(headerRow, CLASS_ALIASES),
       type:       findColByAliases(headerRow, TYPE_ALIASES),
       balance:    findColByAliases(headerRow, BALANCE_ALIASES),
+      split:      findColByAliases(headerRow, SPLIT_ALIASES_JS),
     };
 
     this.logger.log(`  Column map: ${JSON.stringify(colMap)}`);
@@ -179,63 +182,135 @@ class GeneralLedgerExtractionService extends ExtractionServiceBase {
     }
 
     const rows = [];
-    let rowsDetected = 0, rowsRejected = 0;
+    let currentAccountSection = null;
+    let currentFiscalYear = null;
+
+    // colMap.balance and colMap.split may be -1 if not found — that is fine
+    const isToStr = (v) => String(v || '').trim();
 
     for (let i = headerIdx + 1; i < raw.length; i++) {
       const row = raw[i];
-      if (row.every((c) => !c)) continue; // blank row
+      if (row.every((c) => !c && c !== 0)) continue; // blank row
 
-      rowsDetected++;
+      // 1-based Excel row number (headerIdx is 0-based; add 2 for 1-indexed + skip header)
+      const excelRowNum = headerIdx + 2 + (i - headerIdx - 1);
+      const rawRowJson  = JSON.stringify(row.map((v) => String(v ?? '')));
+      const firstCell   = isToStr(row[0]);
+      const firstLc     = firstCell.toLowerCase();
+      const dateStr     = parseDate(colMap.date >= 0 ? row[colMap.date] : null);
 
-      const dateStr = parseDate(colMap.date >= 0 ? row[colMap.date] : null);
-      if (!dateStr) { rowsRejected++; continue; }
-
-      const fiscalYear = new Date(dateStr).getFullYear();
-
-      const accountName = String(colMap.account >= 0 ? (row[colMap.account] || '') : '').trim();
-      const accountNum  = String(colMap.accountNum >= 0 ? (row[colMap.accountNum] || '') : '').trim();
-
-      // Skip rows that are section headers (no account + no date)
-      if (!accountName && !accountNum) { rowsRejected++; continue; }
-
-      let debit  = colMap.debit  >= 0 ? parseAmount(row[colMap.debit])  : 0;
-      let credit = colMap.credit >= 0 ? parseAmount(row[colMap.credit]) : 0;
-
-      // Single amount column: positive = debit, negative = credit
-      if (colMap.debit < 0 && colMap.credit < 0 && colMap.amount >= 0) {
-        const amt = parseAmount(row[colMap.amount]);
-        if (amt >= 0) debit = amt;
-        else credit = Math.abs(amt);
+      // ── BEGINNING BALANCE ────────────────────────────────────────────────────
+      if (firstLc.includes('beginning balance')) {
+        let bal = null;
+        for (let c = row.length - 1; c >= 0; c--) {
+          const v = parseAmount(row[c]);
+          if (v !== null && v !== 0) { bal = v; break; }
+        }
+        rows.push({
+          row_type: 'BEGINNING_BALANCE', row_number: excelRowNum,
+          account_name: firstCell, account_section: currentAccountSection,
+          description: firstCell, running_balance: bal,
+          fiscal_year: currentFiscalYear, transaction_date: null, raw_row_json: rawRowJson,
+        });
+        continue;
       }
 
-      rows.push({
-        transaction_date: dateStr,
-        fiscal_year: fiscalYear,
-        account_number: accountNum || null,
-        account_name: accountName,
-        description: colMap.desc >= 0 ? String(row[colMap.desc] || '').trim() || null : null,
-        reference: colMap.ref >= 0 ? String(row[colMap.ref] || '').trim() || null : null,
-        debit,
-        credit,
-        journal_type: colMap.type >= 0 ? String(row[colMap.type] || '').trim() || null : null,
-        class: colMap.class_ >= 0 ? String(row[colMap.class_] || '').trim() || null : null,
-        vendor_name: colMap.name >= 0 ? String(row[colMap.name] || '').trim() || null : null,
-      });
+      // ── TOTAL ROW ────────────────────────────────────────────────────────────
+      if (firstLc.startsWith('total')) {
+        let bal = null;
+        for (let c = row.length - 1; c >= 0; c--) {
+          const v = parseAmount(row[c]);
+          if (v !== null && v !== 0) { bal = v; break; }
+        }
+        rows.push({
+          row_type: 'TOTAL_ROW', row_number: excelRowNum,
+          account_name: firstCell, account_section: currentAccountSection,
+          description: firstCell, running_balance: bal,
+          fiscal_year: currentFiscalYear, transaction_date: null, raw_row_json: rawRowJson,
+        });
+        continue;
+      }
+
+      // ── TRANSACTION ──────────────────────────────────────────────────────────
+      if (dateStr) {
+        const fiscalYear = new Date(dateStr).getFullYear();
+        currentFiscalYear = fiscalYear;
+
+        const accountName = isToStr(colMap.account    >= 0 ? row[colMap.account]    : null);
+        const accountNum  = isToStr(colMap.accountNum >= 0 ? row[colMap.accountNum] : null);
+        const distAcct    = accountName || currentAccountSection || '';
+
+        let rawAmount = colMap.amount >= 0 ? parseAmount(row[colMap.amount]) : null;
+        let debit     = colMap.debit  >= 0 ? parseAmount(row[colMap.debit])  || 0 : 0;
+        let credit    = colMap.credit >= 0 ? parseAmount(row[colMap.credit]) || 0 : 0;
+
+        if (colMap.debit < 0 && colMap.credit < 0 && rawAmount !== null) {
+          debit  = rawAmount >= 0 ? rawAmount : 0;
+          credit = rawAmount <  0 ? Math.abs(rawAmount) : 0;
+        } else if (rawAmount === null) {
+          rawAmount = debit - credit || null;
+        }
+
+        rows.push({
+          row_type:             'TRANSACTION',
+          row_number:           excelRowNum,
+          transaction_date:     dateStr,
+          fiscal_year:          fiscalYear,
+          account_section:      currentAccountSection,
+          account_name:         accountName,
+          account_number:       accountNum || null,
+          distribution_account: distAcct,
+          transaction_num:      colMap.ref    >= 0 ? isToStr(row[colMap.ref])    || null : null,
+          transaction_name:     colMap.name   >= 0 ? isToStr(row[colMap.name])   || null : null,
+          memo_description:     colMap.desc   >= 0 ? isToStr(row[colMap.desc])   || null : null,
+          split_account:        colMap.split  >= 0 ? isToStr(row[colMap.split])  || null : null,
+          amount:               rawAmount,
+          running_balance:      colMap.balance >= 0 ? parseAmount(row[colMap.balance]) : null,
+          description:          colMap.desc   >= 0 ? isToStr(row[colMap.desc])   || null : null,
+          reference:            colMap.ref    >= 0 ? isToStr(row[colMap.ref])    || null : null,
+          debit,
+          credit,
+          journal_type:         colMap.type   >= 0 ? isToStr(row[colMap.type])   || null : null,
+          class:                colMap.class_ >= 0 ? isToStr(row[colMap.class_]) || null : null,
+          raw_row_json:         rawRowJson,
+        });
+        continue;
+      }
+
+      // ── ACCOUNT HEADER ───────────────────────────────────────────────────────
+      if (firstCell) {
+        currentAccountSection = firstCell;
+        rows.push({
+          row_type: 'ACCOUNT_HEADER', row_number: excelRowNum,
+          account_name: firstCell, account_section: firstCell,
+          description: null, running_balance: null,
+          fiscal_year: currentFiscalYear, transaction_date: null, raw_row_json: rawRowJson,
+        });
+      }
     }
 
-    this.logger.log(`  "${fileName}": Rows detected=${rowsDetected}, extracted=${rows.length}, rejected=${rowsRejected}`);
-    if (!rows.length) throw new Error('No GL transaction rows extracted from file');
+    this.logger.log(`  "${fileName}": extracted=${rows.length} rows (all types)`);
+    if (!rows.length) throw new Error('No GL rows extracted from file');
 
-    const detectedYears = [...new Set(rows.map((r) => r.fiscal_year))].sort((a, b) => a - b);
+    const detectedYears = [...new Set(
+      rows.filter((r) => r.row_type === 'TRANSACTION' && r.fiscal_year).map((r) => r.fiscal_year)
+    )].sort((a, b) => a - b);
     return { rows, detectedYears };
   }
 
-  // ── Validation: only reject rows that would fail NOT NULL DB constraints ────
+  // ── Validation ───────────────────────────────────────────────────────────────
+  // Accept all row types. Only reject rows that carry no identifiable content at all.
   async validateRows(rows) {
     let rejected = 0;
     const valid = rows.filter((row) => {
-      if (!row.transaction_date) { rejected++; return false; }
-      if (!row.account_name && !row.account_number) { rejected++; return false; }
+      const rowType = row.row_type || 'TRANSACTION';
+      // TRANSACTION rows must have a date
+      if (rowType === 'TRANSACTION' && !row.transaction_date) { rejected++; return false; }
+      // Every row must have at least one content field
+      if (!row.account_section && !row.account_name && !row.distribution_account && !row.memo_description) {
+        rejected++;
+        return false;
+      }
       return true;
     });
     if (rejected > 0) this.logger.warn(`validateRows: rejected ${rejected} rows`);
@@ -243,35 +318,33 @@ class GeneralLedgerExtractionService extends ExtractionServiceBase {
   }
 
   transformRows(rows, metadata) {
-    return rows.map((row, idx) => ({
-      version_id: metadata.versionId,
-      company_id: metadata.companyId,
+    return rows.map((row) => ({
+      version_id:    metadata.versionId,
+      company_id:    metadata.companyId,
       source_file_id: metadata.documentId,
 
-      transaction_date: row.transaction_date,
-      fiscal_year: row.fiscal_year,
+      // ── Row classification ──────────────────────────────────────────────────
+      row_type:      row.row_type || 'TRANSACTION',
+      row_number:    row.row_number != null ? Number(row.row_number) : null,
 
-      account_number: row.account_number || '',
-      account_name:   row.account_name   || '',
-      account_type: null,
+      // ── Date / year (null for non-transaction rows) ─────────────────────────
+      transaction_date: row.transaction_date || null,
+      fiscal_year:      row.fiscal_year != null ? Number(row.fiscal_year) : null,
 
-      description:  row.description  || null,
-      reference:    row.reference    || null,
+      // ── Account identity ────────────────────────────────────────────────────
+      account_section:      row.account_section || null,
+      distribution_account: row.distribution_account || row.account_name || null,
 
-      debit:  Number(row.debit)  || 0,
-      credit: Number(row.credit) || 0,
+      // ── Raw GL columns ──────────────────────────────────────────────────────
+      transaction_type:     row.transaction_type || null,
+      transaction_num:      row.transaction_num  || row.reference || null,
+      transaction_name:     row.transaction_name || null,
+      memo_description:     row.memo_description || row.description || null,
+      split_account:        row.split_account    || null,
+      amount:               row.amount        != null ? Number(row.amount)        : null,
+      running_balance:      row.running_balance != null ? Number(row.running_balance) : null,
+      raw_row_json:         row.raw_row_json  || null,
 
-      category:         null,
-      sub_category:     null,
-      department:       null,
-      class:            row.class       || null,
-      location:         null,
-      journal_type:     row.journal_type || null,
-      transaction_type: null,
-      vendor_name:      row.vendor_name  || null,
-
-      row_number:       idx,
-      transaction_hash: this.computeRowHash({ versionId: metadata.versionId, documentId: metadata.documentId, date: row.transaction_date, acct: row.account_number || row.account_name, debit: row.debit, credit: row.credit, rowNum: idx }),
       extracted_at: new Date().toISOString(),
     }));
   }

@@ -1,4 +1,4 @@
-const { supabase } = require("../db");
+const { supabase } = require("../../db");
 
 const TABLE_VALIDATION_RESULTS = "key_report_validation_results";
 

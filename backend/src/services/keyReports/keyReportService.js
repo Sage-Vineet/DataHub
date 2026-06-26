@@ -10,10 +10,10 @@
 // Linking a document also registers a file_reference so the file is protected
 // from deletion while it is in use (see fileReferenceService).
 
-const { supabase } = require("../db");
-const fileReferenceService = require("./fileReferenceService");
-const documentService = require("./documentService");
-const { normalizeError, isConnectionError } = require("../utils/dbErrorHandler");
+const { supabase } = require("../../db");
+const fileReferenceService = require("../fileReferenceService");
+const documentService = require("../documentService");
+const { normalizeError, isConnectionError } = require("../../utils/dbErrorHandler");
 const {
   listValidationResults,
   resolveMappingYear,
@@ -629,6 +629,110 @@ async function getActiveLinkedDocuments(companyId, reportCategory) {
   return getLinkedDocuments(companyId, reportCategory);
 }
 
+// ---- Extracted data viewer --------------------------------------------------
+
+const ENTRY_TABLE_CONFIG = {
+  profit_loss: {
+    table: 'profit_loss_entries',
+    yearCol: 'fiscal_year',
+    yearIsDate: false,
+    searchCols: ['account_name', 'account_number', 'category'],
+    selectCols: 'id,fiscal_year,account_name,account_number,account_type,category,sub_category,amount,hierarchy_level,is_total,sort_order',
+    orderCol: 'sort_order',
+    orderSecondary: 'id',
+  },
+  balance_sheet: {
+    table: 'balance_sheet_entries',
+    yearCol: 'fiscal_year',
+    yearIsDate: false,
+    searchCols: ['account_name', 'account_number', 'section'],
+    selectCols: 'id,fiscal_year,as_of_date,account_name,account_number,account_type,section,amount,hierarchy_level,is_total,sort_order',
+    orderCol: 'sort_order',
+    orderSecondary: 'id',
+  },
+  general_ledger: {
+    table: 'general_ledger_entries',
+    yearCol: 'fiscal_year',
+    yearIsDate: false,
+    searchCols: ['account_section', 'distribution_account', 'memo_description', 'split_account', 'transaction_name', 'transaction_num'],
+    selectCols: 'id,row_type,row_number,fiscal_year,transaction_date,account_section,distribution_account,transaction_type,transaction_num,transaction_name,memo_description,split_account,amount,running_balance',
+    orderCol: 'row_number',
+    orderSecondary: 'id',
+  },
+  tax_return: {
+    table: 'tax_return_entries',
+    yearCol: 'tax_year',
+    yearIsDate: false,
+    searchCols: ['field_name', 'field_label', 'schedule', 'section'],
+    selectCols: 'id,tax_year,form_type,field_name,field_label,field_value,field_amount,line_number,schedule,section',
+    orderCol: 'id',
+    orderSecondary: null,
+  },
+  bank_statement: {
+    table: 'bank_statement_entries',
+    yearCol: 'statement_month',
+    yearIsDate: true,
+    searchCols: ['description', 'bank_account', 'bank_name'],
+    selectCols: 'id,transaction_date,statement_date,bank_account,bank_name,description,reference,amount,transaction_type,running_balance',
+    orderCol: 'transaction_date',
+    orderSecondary: 'id',
+  },
+};
+
+async function getExtractedData(versionId, { dataType, year, page = 1, pageSize = 50, search } = {}) {
+  const config = ENTRY_TABLE_CONFIG[dataType];
+  if (!config) {
+    const err = new Error(`Unknown data type: ${dataType}`);
+    err.status = 400;
+    throw err;
+  }
+
+  const parsedPage = Math.max(1, parseInt(page, 10) || 1);
+  const parsedSize = Math.min(100, Math.max(1, parseInt(pageSize, 10) || 50));
+  const from = (parsedPage - 1) * parsedSize;
+  const to = from + parsedSize - 1;
+
+  let query = supabase
+    .from(config.table)
+    .select(config.selectCols, { count: 'exact' })
+    .eq('version_id', versionId);
+
+  if (year) {
+    const parsedYear = parseInt(year, 10);
+    if (Number.isInteger(parsedYear) && parsedYear > 0) {
+      if (config.yearIsDate) {
+        query = query
+          .gte(config.yearCol, `${parsedYear}-01-01`)
+          .lte(config.yearCol, `${parsedYear}-12-31`);
+      } else {
+        query = query.eq(config.yearCol, parsedYear);
+      }
+    }
+  }
+
+  if (search && search.trim()) {
+    const term = search.trim();
+    const orFilter = config.searchCols.map(col => `${col}.ilike.%${term}%`).join(',');
+    query = query.or(orFilter);
+  }
+
+  query = query.order(config.orderCol, { ascending: true, nullsFirst: false });
+  if (config.orderSecondary) {
+    query = query.order(config.orderSecondary, { ascending: true });
+  }
+  query = query.range(from, to);
+
+  const { data, count, error } = await query;
+  if (error) throw error;
+
+  return {
+    rows: data || [],
+    total: count || 0,
+    page: parsedPage,
+    pageSize: parsedSize,
+  };
+}
+
 module.exports = {
   REPORT_CATEGORIES,
   VALID_CATEGORIES,
@@ -654,4 +758,5 @@ module.exports = {
   getLinkedDocuments,
   getVersionReportContext,
   getVersionReportContextById,
+  getExtractedData,
 };
