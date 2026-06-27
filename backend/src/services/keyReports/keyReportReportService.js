@@ -145,11 +145,41 @@ async function hasExtractedRows(table, versionId, year) {
 // distribution_account name keyword. This keeps Key Reports COMPLETELY isolated
 // from manualGlMultiYearService.
 
-const ASSET_KW = ['cash', 'bank', 'checking', 'savings', 'receivable', 'a/r', 'inventory', 'prepaid', 'deposit','money market', 'equipment', 'furniture', 'vehicle', 'building', 'land', 'property', 'fixed asset', 'accumulated depreciation', 'goodwill', 'intangible', 'investment', 'asset'];
-const LIABILITY_KW = ['payable', 'a/p', 'accrued', 'credit card', 'loan', 'note payable', 'line of credit', 'deferred', 'unearned', 'tax payable', 'payroll liab', 'liability', 'mortgage'];
-const EQUITY_KW = ['equity', 'capital', 'retained earnings', 'owner', 'member', 'shareholder', 'stockholder', 'distribution', 'draw', 'common stock', 'opening balance'];
-const REVENUE_KW = ['revenue', 'income', 'sales', 'service', 'fees earned', 'interest income', 'gross receipts', 'discounts/refunds given'];
-const EXPENSE_KW = ['expense', 'cost of goods', 'cogs', 'cost of sales', 'salaries', 'wages', 'rent', 'utilities', 'insurance', 'depreciation expense', 'amortization', 'payroll', 'supplies', 'advertising', 'marketing', 'fees', 'interest expense', 'tax expense'];
+const ASSET_KW = [
+  'cash', 'bank', 'checking', 'savings', 'receivable', 'a/r', 'inventory', 'prepaid', 'deposit',
+  'money market', 'equipment', 'furniture', 'vehicle', 'building', 'land', 'property', 'fixed asset',
+  'accumulated depreciation', 'goodwill', 'intangible', 'investment', 'due from', 'asset',
+];
+const LIABILITY_KW = [
+  'payable', 'a/p', 'accrued', 'credit card', 'loan', 'note payable', 'line of credit',
+  'deferred', 'unearned', 'tax payable', 'payroll liab', 'liability', 'mortgage',
+];
+const EQUITY_KW = [
+  'equity', 'capital', 'retained earnings', 'owner', 'member', 'shareholder',
+  'stockholder', 'distribution', 'draw', 'common stock', 'opening balance',
+];
+// 'service' removed — too broad, falsely matches expense accounts like "Legal & Professional Services".
+// Revenue accounts with "service" in the name typically also carry "income" or "revenue".
+const REVENUE_KW = [
+  'revenue', 'income', 'sales', 'fees earned', 'interest income', 'gross receipts',
+  'discounts/refunds given', 'gain on sale', 'refunds to customers',
+];
+// 'depreciation expense' expanded to 'depreciation' alone so "Depreciation" (without the word "expense")
+// is still caught. "accumulated depreciation" is in ASSET_KW and wins because ASSET is checked first.
+const EXPENSE_KW = [
+  'expense', 'cost of goods', 'cogs', 'cost of sales', 'salaries', 'wages', 'rent', 'utilities',
+  'insurance', 'depreciation', 'amortization', 'payroll', 'supplies', 'advertising', 'marketing',
+  'fees', 'interest expense', 'interest paid', 'tax expense',
+  'legal', 'alarm', 'charitable', 'education', 'employee benefits',
+  'meals', 'repairs', 'maintenance', 'rubbish', 'subscription',
+  'telephone', 'travel', 'water', 'worker', 'car & truck', 'real estate', 'licenses',
+];
+
+// Specific expense phrases that contain liability or asset substrings and must be classified
+// as expense before the broader LIABILITY_KW / ASSET_KW checks run.
+// "Credit Card Charges/Fees" contains "credit card" (liability keyword).
+// "Bank Charges & Fees" contains "bank" (asset keyword).
+const PRIORITY_EXPENSE_KW = ['credit card charges', 'credit card fees', 'bank charges', 'bank fees'];
 
 function classifyGLAccount(name, accountType) {
   const t = String(accountType || '').toLowerCase();
@@ -162,12 +192,18 @@ function classifyGLAccount(name, accountType) {
   }
   const n = String(name || '').toLowerCase();
   const hit = (kws) => kws.some((k) => n.includes(k));
-  // Order matters: revenue/expense before equity so "interest income" ≠ equity.
-  if (hit(REVENUE_KW)) return 'revenue';
-  if (hit(EXPENSE_KW)) return 'expense';
-  if (hit(ASSET_KW)) return 'asset';
+  // Priority expense: specific expense phrases checked before broader BS-account keywords so
+  // "Credit Card Charges/Fees" does not match "credit card" (liability) and
+  // "Bank Charges & Fees" does not match "bank" (asset).
+  if (hit(PRIORITY_EXPENSE_KW)) return 'expense';
+  // Revenue first; then liability before asset so "Loan Payable- Bank" hits "loan"
+  // (liability) before "bank" (asset); then asset; then expense (after asset so "accumulated
+  // depreciation" wins over the bare "depreciation" keyword added to EXPENSE_KW); equity last.
+  if (hit(REVENUE_KW))   return 'revenue';
   if (hit(LIABILITY_KW)) return 'liability';
-  if (hit(EQUITY_KW)) return 'equity';
+  if (hit(ASSET_KW))     return 'asset';
+  if (hit(EXPENSE_KW))   return 'expense';
+  if (hit(EQUITY_KW))    return 'equity';
   return 'unknown';
 }
 
@@ -181,15 +217,7 @@ function glNetMovement(row) {
   return safeNum(row.amount); // amount is the signed movement
 }
 
-/**
- * Read ALL GL rows for one fiscal year/row_type, paginating past PostgREST's
- * `max-rows` cap (default 1000). A plain `.limit(100000)` is silently clamped to
- * 1000 rows by the server, so a GL export larger than 1000 rows is TRUNCATED:
- * only the first account ledger sections are returned and every later account
- * gets zero movement (leaving it stuck at its prior-year opening balance). Real
- * QuickBooks GL exports routinely exceed 8000 rows, so this must page through
- * the whole result set keyed on row_number for a stable order.
- */
+
 async function fetchAllGLRows(versionId, year, columns, rowType = 'TRANSACTION') {
   const PAGE = 1000;
   const out = [];
@@ -307,7 +335,11 @@ async function aggregateGLForBS(versionId, year) {
     } else if (distType === 'equity') {
       if (!bsMap.has(distName)) bsMap.set(distName, { net: 0, type: 'equity' });
       bsMap.get(distName).net += amount;
-    } else if (distType === 'revenue' || distType === 'expense') {
+    } else if (distType === 'revenue') {
+      // Revenue credits are positive in QB's natural-balance GL export → add to NI.
+      netIncome += amount;
+    } else if (distType === 'expense') {
+      // Expense debits are positive → subtract from NI.
       netIncome += -amount;
     } else {
       unclassified.push({
@@ -491,9 +523,12 @@ async function bsBalancesForYear(versionId, year, depth = 0) {
   rowsRead += glRows;
 
   for (const [name, acc] of bsMap) {
+    // QB GL uses natural-balance convention: assets, liabilities, and equity all store
+    // their movements as positive when the balance increases. No sign flip needed here —
+    // netting at bsMap level already captures both debits and credits correctly.
     if (acc.type === 'asset') addBalance(balances, name, acc.net, 'asset');
-    else if (acc.type === 'liability') addBalance(balances, name, -acc.net, 'liability');
-    else if (acc.type === 'equity') addBalance(balances, name, -acc.net, 'equity');
+    else if (acc.type === 'liability') addBalance(balances, name, acc.net, 'liability');
+    else if (acc.type === 'equity') addBalance(balances, name, acc.net, 'equity');
   }
   // Current-year Net Income is a separate equity line — NOT merged into Retained Earnings.
   // RE = accumulated prior-year earnings; Net Income = this year only (matches QB presentation).
