@@ -121,7 +121,7 @@ const PROCESSING_BATCH_STALE_MINUTES = 120;
 // Pre-compiled account-type inference regexes.
 // Defined once at module load â€” NOT inside inferAccountType() â€” so they are
 // never recompiled during the 100K-500K transaction classification loop.
-const RE_ACCT_ASSET = /\bcash\b|\bbank\b|\bchecking\b|\bsavings\b|\breceivable\b|\ba\/r\b|\binventory\b|\basset\b|\bprepaid\b|\bfixed asset\b|\bequipment\b|\bmachinery\b|\bvehicle\b|\btruck\b|\bfurniture\b|\bfixture\b|\bcomputer\b|\bbuilding\b|\bland\b/;
+const RE_ACCT_ASSET = /\bcash\b|\bbank\b|\bchecking\b|\bsavings\b|\breceivable\b|\ba\/r\b|\binventory\b|\basset\b|\bprepaid\b|\bfixed asset\b|\bequipment\b|\bmachinery\b|\bvehicle\b|\btruck\b|\bfurniture\b|\bfixture\b|\bcomputer\b|\bbuilding\b|\bland\b|\bmoney\s+market\b|\bundeposited\b|\bpetty\s+cash\b|\bcertificate\s+of\s+deposit\b/;
 const RE_ACCT_LIABILITY = /\bpayable\b|\bloan\b|\bliability\b|\bcredit card\b|\bcc\b|\bvisa\b|\bmastercard\b|\bamex\b|\bdebt\b|\bnote payable\b|\bnotes payable\b/;
 const RE_ACCT_EQUITY = /\bequity\b|\bcapital\b|\bdraw\b|\bretained earnings\b|\bowner\b/;
 const RE_ACCT_INCOME = /\bsales\b|\brevenue\b|\bincome\b|\bfee\b|\brefunds?\b|\bdiscounts?\b|\bgain\b/;

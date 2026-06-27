@@ -82,7 +82,7 @@ const SECTION_LABEL_SET = new Set([
   "liabilities and equity", "liabilities & equity", "total liabilities and equity",
 ]);
 
-const TOTAL_NAME_RE = /(^total\b|\btotal$|\bnet income\b|\bnet loss\b|\bgross profit\b)/i;
+const TOTAL_NAME_RE = /(^total\b|\btotal$|\bnet income\b|\bnet loss\b|\bgross profit\b|\bnet operating income\b|\bnet operating loss\b|\boperating income\b|\bpretax income\b|\bincome before taxes?\b|\bnet revenue\b)/i;
 
 function isTotalName(name) {
   return TOTAL_NAME_RE.test(String(name || "").trim());
@@ -191,8 +191,10 @@ function buildCoaModel(glRows, bsRows, plRows) {
   // broad keyword regex in inferAccountType (e.g. "Bank Charges & Fees" matches
   // \bbank\b → "asset", "Car & Truck" matches \btruck\b → "asset").
   // Only promote to a BS type from a P&L source when there is a STRONG signal.
-  const PL_STRONG_ASSET_RE = /\b(checking|savings|receivable|a\/r|inventory|prepaid|equipment|machinery|furniture|fixture|computer|building|cash\s+(and|&)\s+(cash\s+)?equivalent)\b/i;
-  const PL_STRONG_LIAB_RE  = /\b(payable|a\/p|loan|mortgage|note\s+payable|line\s+of\s+credit|credit\s+card)\b/i;
+  const PL_STRONG_ASSET_RE = /\b(checking|savings|receivable|a\/r|inventory|prepaid|equipment|machinery|furniture|fixture|computer|building|cash\s+(and|&)\s+(cash\s+)?equivalent|money\s+market|undeposited|petty\s+cash|certificate\s+of\s+deposit)\b/i;
+  // "credit card" intentionally excluded: "Credit Card Bill / Charges / Fees" are P&L expenses,
+  // not balance-sheet liabilities. Only "Credit Card Payable" (has "payable") survives as liability.
+  const PL_STRONG_LIAB_RE  = /\b(payable|a\/p|loan|mortgage|note\s+payable|line\s+of\s+credit)\b/i;
   const PL_STRONG_EQUITY_RE = /\b(retained\s+earnings|owner.?s?\s+equity|capital\s+stock|common\s+stock)\b/i;
   const BS_TYPES_SET = new Set(["asset", "liability", "equity"]);
 
