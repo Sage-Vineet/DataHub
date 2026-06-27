@@ -22,7 +22,7 @@
 "use strict";
 
 const { supabase } = require("../../db");
-const { getCashflowReport } = require("./keyReportReportService");
+const { getCashflowReport, bsBalancesForYear } = require("./keyReportReportService");
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
@@ -797,7 +797,32 @@ async function generateYearlyBs(versionId, year, allCoa, unmappedSet) {
   if (error) throw new Error(`BS entries: ${error.message}`);
 
   if (!entries?.length) {
-    console.warn(`[FinStmt][BS][${year}] NO balance_sheet_entries found for version=${versionId} year=${year} asOf=${latestDate || 'N/A'}. Upload a balance sheet for this year.`);
+    console.warn(`[FinStmt][BS][${year}] NO balance_sheet_entries found for version=${versionId} year=${year} asOf=${latestDate || 'N/A'}. Falling back to GL carry-forward (BS=prior-year close + GL).`);
+
+    // No uploaded balance sheet for this year → derive per-account closing
+    // balances from the existing Key Reports GL carry-forward engine
+    // (BS(year) = BS(year-1 closing) + GL(year)) and map them onto COA leaves.
+    // This reuses bsBalancesForYear() — no new statement logic here.
+    try {
+      const { balances } = await bsBalancesForYear(versionId, year);
+      if (balances && balances.size) {
+        const fuzzyLookup = buildFuzzyLookup(bsLeaves);
+        let mapped = 0;
+        for (const { name, balance } of balances.values()) {
+          if (Math.abs(safeNum(balance)) < 0.005) continue;
+          const match = fuzzyMatch(fuzzyLookup, name, null);
+          if (match?.id && leafAmounts.has(match.id)) {
+            leafAmounts.set(match.id, round2((leafAmounts.get(match.id) || 0) + safeNum(balance)));
+            mapped++;
+          } else {
+            unmappedSet.add(norm(name));
+          }
+        }
+        console.log(`[FinStmt][BS][${year}] GL carry-forward fallback: ${balances.size} balances, ${mapped} mapped to COA leaves`);
+      }
+    } catch (err) {
+      console.warn(`[FinStmt][BS][${year}] GL carry-forward fallback failed: ${err.message}`);
+    }
   }
 
   if (entries?.length) {

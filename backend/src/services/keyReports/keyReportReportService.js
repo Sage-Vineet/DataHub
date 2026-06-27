@@ -182,20 +182,46 @@ function glNetMovement(row) {
 }
 
 /**
+ * Read ALL GL rows for one fiscal year/row_type, paginating past PostgREST's
+ * `max-rows` cap (default 1000). A plain `.limit(100000)` is silently clamped to
+ * 1000 rows by the server, so a GL export larger than 1000 rows is TRUNCATED:
+ * only the first account ledger sections are returned and every later account
+ * gets zero movement (leaving it stuck at its prior-year opening balance). Real
+ * QuickBooks GL exports routinely exceed 8000 rows, so this must page through
+ * the whole result set keyed on row_number for a stable order.
+ */
+async function fetchAllGLRows(versionId, year, columns, rowType = 'TRANSACTION') {
+  const PAGE = 1000;
+  const out = [];
+  for (let from = 0; ; from += PAGE) {
+    let q = supabase
+      .from('general_ledger_entries')
+      .select(columns)
+      .eq('version_id', versionId)
+      .eq('fiscal_year', year);
+    if (rowType) q = q.eq('row_type', rowType);
+    const { data, error } = await q
+      .order('row_number', { ascending: true, nullsFirst: false })
+      .order('id', { ascending: true })
+      .range(from, from + PAGE - 1);
+    if (error) throw error;
+    if (!data || !data.length) break;
+    out.push(...data);
+    if (data.length < PAGE) break;
+  }
+  return out;
+}
+
+/**
  * Read TRANSACTION GL rows for EXACTLY one fiscal year, aggregated per
  * distribution_account. Used for P&L report generation (existing callers).
  * Returns { accounts: Map(name→{net,type}), rowsRead }.
  */
 async function aggregateGLByAccount(versionId, year) {
-  const { data, error } = await supabase
-    .from('general_ledger_entries')
-    .select('distribution_account, split_account, amount, running_balance, row_type, fiscal_year')
-    .eq('version_id', versionId)
-    .eq('fiscal_year', year)
-    .eq('row_type', 'TRANSACTION')
-    .limit(100000);
-  if (error) throw error;
-  const rows = data || [];
+  const rows = await fetchAllGLRows(
+    versionId, year,
+    'distribution_account, split_account, amount, running_balance, row_type, fiscal_year',
+  );
 
   const accounts = new Map();
   const unclassified = [];
@@ -242,15 +268,10 @@ async function aggregateGLByAccount(versionId, year) {
  * Returns { bsMap, netIncome, unclassified, rowsRead }.
  */
 async function aggregateGLForBS(versionId, year) {
-  const { data, error } = await supabase
-    .from('general_ledger_entries')
-    .select('distribution_account, split_account, amount, running_balance, row_type, fiscal_year')
-    .eq('version_id', versionId)
-    .eq('fiscal_year', year)
-    .eq('row_type', 'TRANSACTION')
-    .limit(100000);
-  if (error) throw error;
-  const rows = data || [];
+  const rows = await fetchAllGLRows(
+    versionId, year,
+    'distribution_account, split_account, amount, running_balance, row_type, fiscal_year',
+  );
 
   // Pre-scan: record every P&L account that appears as distribution_account.
   // Prevents double-counting Net Income when QB exports both sides of a transaction:
@@ -559,15 +580,10 @@ const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep
  * monthsPresent: Set<1..12>, rowsRead }.
  */
 async function aggregateGLByAccountMonth(versionId, year) {
-  const { data, error } = await supabase
-    .from('general_ledger_entries')
-    .select('distribution_account, amount, transaction_date, row_type, fiscal_year')
-    .eq('version_id', versionId)
-    .eq('fiscal_year', year)
-    .eq('row_type', 'TRANSACTION')
-    .limit(100000);
-  if (error) throw error;
-  const rows = data || [];
+  const rows = await fetchAllGLRows(
+    versionId, year,
+    'distribution_account, amount, transaction_date, row_type, fiscal_year',
+  );
 
   const byAccount = new Map();
   const monthsPresent = new Set();
@@ -1504,4 +1520,8 @@ module.exports = {
   buildPLHierarchicalRows,
   buildBSHierarchicalRows,
   mergeCfByYear,
+  // GL carry-forward generator (BS(year)=BS(year-1)+GL(year)) — reused by the
+  // COA-driven financialStatementService as a fallback for years with no
+  // uploaded balance sheet.
+  bsBalancesForYear,
 };
