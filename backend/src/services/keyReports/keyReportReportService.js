@@ -180,6 +180,9 @@ const EXPENSE_KW = [
 // "Credit Card Charges/Fees" contains "credit card" (liability keyword).
 // "Bank Charges & Fees" contains "bank" (asset keyword).
 const PRIORITY_EXPENSE_KW = ['credit card charges', 'credit card fees', 'bank charges', 'bank fees'];
+// "Loans to MTP" and similar receivable-style entries contain "loan" (a LIABILITY keyword)
+// but represent money owed TO the company — check these before the broader LIABILITY sweep.
+const PRIORITY_ASSET_KW = ['loans to', 'loan to'];
 
 function classifyGLAccount(name, accountType) {
   const t = String(accountType || '').toLowerCase();
@@ -192,18 +195,14 @@ function classifyGLAccount(name, accountType) {
   }
   const n = String(name || '').toLowerCase();
   const hit = (kws) => kws.some((k) => n.includes(k));
-  // Priority expense: specific expense phrases checked before broader BS-account keywords so
-  // "Credit Card Charges/Fees" does not match "credit card" (liability) and
-  // "Bank Charges & Fees" does not match "bank" (asset).
   if (hit(PRIORITY_EXPENSE_KW)) return 'expense';
-  // Revenue first; then liability before asset so "Loan Payable- Bank" hits "loan"
-  // (liability) before "bank" (asset); then asset; then expense (after asset so "accumulated
-  // depreciation" wins over the bare "depreciation" keyword added to EXPENSE_KW); equity last.
-  if (hit(REVENUE_KW))   return 'revenue';
-  if (hit(LIABILITY_KW)) return 'liability';
-  if (hit(ASSET_KW))     return 'asset';
-  if (hit(EXPENSE_KW))   return 'expense';
-  if (hit(EQUITY_KW))    return 'equity';
+  if (hit(REVENUE_KW))          return 'revenue';
+  // Receivable-style loans ("Loans to X") must be assets; check before LIABILITY_KW ("loan").
+  if (hit(PRIORITY_ASSET_KW))   return 'asset';
+  if (hit(LIABILITY_KW))        return 'liability';
+  if (hit(ASSET_KW))            return 'asset';
+  if (hit(EXPENSE_KW))          return 'expense';
+  if (hit(EQUITY_KW))           return 'equity';
   return 'unknown';
 }
 
@@ -276,35 +275,13 @@ async function aggregateGLByAccount(versionId, year) {
   return { accounts, rowsRead: rows.length };
 }
 
-/**
- * Single-side aggregation for Balance Sheet carry-forward.
- *
- * QuickBooks GL exports each account's ledger as separate rows. For each
- * TRANSACTION row only the distribution_account side is posted to the BS map.
- * Applying the inverse movement to split_account would double-count every bank
- * transfer, credit card payment, and loan movement because QB already emits a
- * dedicated distribution row for that account's own ledger.
- *
- * Sign convention (debit-positive throughout):
- *   asset:     bsMap.net += amount           (assets increase with debits)
- *   liability: bsMap.net += amount           (negated in bsBalancesForYear → balance += -amount)
- *   equity:    bsMap.net += amount           (negated in bsBalancesForYear → balance += -amount)
- *   P&L dist:  netIncome += -amount
- *   P&L split: netIncome += amount (= -(splitAmount)) — fallback only when that
- *              P&L account has no distribution row of its own in this year's GL.
- *
- * Returns { bsMap, netIncome, unclassified, rowsRead }.
- */
 async function aggregateGLForBS(versionId, year) {
   const rows = await fetchAllGLRows(
     versionId, year,
     'distribution_account, split_account, amount, running_balance, row_type, fiscal_year',
   );
 
-  // Pre-scan: record every P&L account that appears as distribution_account.
-  // Prevents double-counting Net Income when QB exports both sides of a transaction:
-  // the P&L distribution row (which counts NI) and a paired BS row that lists the
-  // same P&L account as split_account (which must then be skipped).
+  
   const plDistSeen = new Set();
   for (const row of rows) {
     const n = (row.distribution_account && String(row.distribution_account).trim()) || '';

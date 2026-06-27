@@ -51,6 +51,46 @@ const normStrict = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, ""
 
 const displayName = (acc) => acc.adjusted_name || acc.base_account || acc.account_name;
 
+// ─── Unmapped BS entry classification ────────────────────────────────────────
+// When a balance_sheet_entries row can't be matched to a COA leaf, classify it
+// by keyword so it still appears on the correct side of the Balance Sheet.
+// Mirrors classifyGLAccount in keyReportReportService but scoped to BS types.
+
+const _BS_PRIORITY_ASSET_KW = ['loans to', 'loan to'];
+const _BS_LIABILITY_KW      = ['payable', 'accrued', 'credit card', 'loan', 'liability', 'mortgage', 'deferred', 'unearned'];
+const _BS_ASSET_KW          = ['cash', 'bank', 'checking', 'savings', 'receivable', 'inventory', 'prepaid', 'deposit', 'money market', 'equipment', 'furniture', 'vehicle', 'building', 'land', 'property', 'accumulated depreciation', 'goodwill', 'intangible', 'investment', 'due from', 'asset'];
+const _BS_EQUITY_KW         = ['equity', 'capital', 'retained earnings', 'owner', 'member', 'distribution', 'draw', 'net income', 'net loss'];
+
+function classifyUnmappedBSAccount(name) {
+  const n = String(name || '').toLowerCase();
+  const hit = (kws) => kws.some(k => n.includes(k));
+  if (hit(_BS_PRIORITY_ASSET_KW)) return 'asset';
+  if (hit(_BS_LIABILITY_KW))      return 'liability';
+  if (hit(_BS_ASSET_KW))          return 'asset';
+  if (hit(_BS_EQUITY_KW))         return 'equity';
+  return null;
+}
+
+function makeSyntheticLeaf(rawName, amount, acType) {
+  const section = acType === 'asset'     ? 'Other Current Assets'
+    : acType === 'liability' ? 'Other Current Liabilities'
+    : 'Equity';
+  return {
+    id: `__synthetic__${norm(rawName)}`,
+    system_id: null, account_number: null,
+    account_name: rawName, adjusted_name: null, base_account: null,
+    account_type: acType, statement_type: 'balance_sheet',
+    parent_account_id: null, metadata: null, hierarchy_path: null,
+    level_1: acType === 'asset' ? 'Assets' : acType === 'liability' ? 'Liabilities' : 'Equity',
+    level_2: section,
+    level_3: null, level_4: null, level_5: null,
+    level_6: null, level_7: null, level_8: null, level_9: null, level_10: null,
+    level_11: null, level_12: null, level_13: null, level_14: null, level_15: null,
+    isGroup: false, children: [],
+    signedAmount: amount, displayAmount: amount, leafAmount: amount,
+  };
+}
+
 // ─── Calculated / summary row detection ───────────────────────────────────────
 
 /**
@@ -605,18 +645,26 @@ function injectNetIncomeToBS(bsEntry, plEntry) {
   const eq = bsEntry.statement.equity;
   if (!eq) return bsEntry;
 
-  const retAcc = (eq.accounts || []).find(a =>
-    /retained.*earnings|net.*income/i.test(a.name || "")
+  // Only touch the "Net Income" account — never add to Retained Earnings.
+  // RE represents accumulated prior earnings; NI is the current year's result.
+  const niAcc = (eq.accounts || []).find(a =>
+    /^net\s*(income|loss)/i.test(a.name || "")
   );
-  if (retAcc) {
-    retAcc.amount = round2(retAcc.amount + netIncome);
-    retAcc.netIncomeInjected = netIncome;
+
+  if (niAcc) {
+    // If this year has Net Income from an uploaded BS, trust that value over the
+    // generated P&L (the uploaded QB document is the source of truth).
+    if (bsEntry.hasUploadedNetIncome && Math.abs(niAcc.amount) > 0.01) {
+      return bsEntry;
+    }
+    niAcc.amount = round2(netIncome);
+    niAcc.netIncomeInjected = netIncome;
   } else {
     eq.accounts = eq.accounts || [];
     eq.accounts.push({
       systemId: null, accountNumber: null,
-      name: "Net Income (Current Year)",
-      adjustedName: "Net Income (Current Year)",
+      name: "Net Income",
+      adjustedName: "Net Income",
       amount: netIncome,
       netIncomeInjected: netIncome,
     });
@@ -786,15 +834,20 @@ async function generateYearlyBs(versionId, year, allCoa, unmappedSet) {
 
   // Load entries for the latest snapshot date only.
   const leafAmounts = new Map(bsLeaves.map(a => [a.id, 0]));
+  // Load ALL rows (including is_total=true) so Net Income in the equity section of
+  // an uploaded BS is not silently dropped. The is_total filter is applied in code below,
+  // where we make an exception for the Net Income line.
   let query = supabase
     .from("balance_sheet_entries")
-    .select("account_name, account_number, amount")
-    .eq("version_id", versionId)
-    .or("is_total.eq.false,is_total.is.null");
+    .select("account_name, account_number, amount, is_total")
+    .eq("version_id", versionId);
   query = latestDate ? query.eq("as_of_date", latestDate) : query.eq("fiscal_year", year);
 
   const { data: entries, error } = await query.limit(200000);
   if (error) throw new Error(`BS entries: ${error.message}`);
+
+  const syntheticLeaves    = [];
+  let hasUploadedNetIncome = false;
 
   if (!entries?.length) {
     console.warn(`[FinStmt][BS][${year}] NO balance_sheet_entries found for version=${versionId} year=${year} asOf=${latestDate || 'N/A'}. Falling back to GL carry-forward (BS=prior-year close + GL).`);
@@ -806,17 +859,28 @@ async function generateYearlyBs(versionId, year, allCoa, unmappedSet) {
     try {
       const { balances } = await bsBalancesForYear(versionId, year);
       if (balances && balances.size) {
-        const fuzzyLookup = buildFuzzyLookup(bsLeaves);
+        const fuzzyLookup  = buildFuzzyLookup(bsLeaves);
         let mapped = 0;
+        const mappedFromGL = new Set();
         for (const { name, balance } of balances.values()) {
           if (Math.abs(safeNum(balance)) < 0.005) continue;
           const match = fuzzyMatch(fuzzyLookup, name, null);
           if (match?.id && leafAmounts.has(match.id)) {
             leafAmounts.set(match.id, round2((leafAmounts.get(match.id) || 0) + safeNum(balance)));
             mapped++;
+            mappedFromGL.add(norm(name));
           } else {
             unmappedSet.add(norm(name));
           }
+        }
+        // Synthetic leaves for GL carry-forward balances that couldn't match any COA leaf.
+        for (const { name, balance } of balances.values()) {
+          if (Math.abs(safeNum(balance)) < 0.005 || mappedFromGL.has(norm(name))) continue;
+          const acType = classifyUnmappedBSAccount(name);
+          if (!acType) continue;
+          unmappedSet.delete(norm(name));
+          syntheticLeaves.push(makeSyntheticLeaf(name, safeNum(balance), acType));
+          if (/^net\s*(income|loss)/i.test(name)) hasUploadedNetIncome = true;
         }
         console.log(`[FinStmt][BS][${year}] GL carry-forward fallback: ${balances.size} balances, ${mapped} mapped to COA leaves`);
       }
@@ -828,15 +892,23 @@ async function generateYearlyBs(versionId, year, allCoa, unmappedSet) {
   if (entries?.length) {
     const entryTotals = new Map();
     for (const e of entries) {
-      if (isSummaryRow(e.account_name)) continue;
+      const isNI = /^net\s*(income|loss)/i.test(String(e.account_name || '').trim());
+      // Skip calculated totals (is_total=true) UNLESS it's the Net Income equity line,
+      // which QB exports mark as a total but which represents a real closing balance.
+      if (e.is_total && !isNI) continue;
+      // Skip P&L subtotals ("Net Operating Income", "Total Revenue", etc.)
+      // but allow the "Net Income" equity account through.
+      if (!isNI && isSummaryRow(e.account_name)) continue;
       const key = norm(e.account_name);
       if (!key) continue;
       if (!entryTotals.has(key)) entryTotals.set(key, { amount: 0, rawName: e.account_name, accountNumber: e.account_number });
       entryTotals.get(key).amount += safeNum(e.amount);
+      if (isNI) hasUploadedNetIncome = true;
     }
 
     const bsMappings  = await loadMappings(versionId, "balance_sheet_entries");
     const fuzzyLookup = buildFuzzyLookup(bsLeaves);
+    const mappedKeys  = new Set();
 
     for (const [normKey, { amount, rawName, accountNumber }] of entryTotals) {
       let ids = bsMappings?.get(normKey);
@@ -845,23 +917,40 @@ async function generateYearlyBs(versionId, year, allCoa, unmappedSet) {
         for (const id of ids) {
           if (leafAmounts.has(id)) leafAmounts.set(id, round2((leafAmounts.get(id) || 0) + amount / ids.length));
         }
+        mappedKeys.add(normKey);
       } else {
         const match = fuzzyMatch(fuzzyLookup, rawName, accountNumber);
         if (match?.id && leafAmounts.has(match.id)) {
           leafAmounts.set(match.id, round2((leafAmounts.get(match.id) || 0) + amount));
+          mappedKeys.add(normKey);
         } else {
           unmappedSet.add(normKey);
         }
       }
+    }
+
+    // Accounts that couldn't match any COA leaf are classified by keyword and added
+    // as synthetic leaves. This keeps "Loans to MTP", "Net Income", etc. on the correct
+    // side of the Balance Sheet even before they are added to the COA.
+    for (const [normKey, { amount, rawName }] of entryTotals) {
+      if (mappedKeys.has(normKey)) continue;
+      if (Math.abs(safeNum(amount)) < 0.005) continue;
+      const acType = classifyUnmappedBSAccount(rawName);
+      if (!acType) continue;
+      unmappedSet.delete(normKey);
+      syntheticLeaves.push(makeSyntheticLeaf(rawName, safeNum(amount), acType));
     }
   }
 
   const { byId, roots, leaves } = buildTree(bsAccounts);
   for (const root of roots) rollupNode(root, leafAmounts);
 
-  const stmt = buildBsStatement(leaves, byId);
+  const stmt = buildBsStatement([...leaves, ...syntheticLeaves], byId);
+  if (syntheticLeaves.length) {
+    console.log(`[FinStmt][BS][${year}] ${syntheticLeaves.length} synthetic leaf(ves) added for unmapped entries: ${syntheticLeaves.map(l => l.account_name).join(', ')}`);
+  }
   console.log(`[FinStmt][BS][${year}] asOf=${latestDate} assets=${stmt.totalAssets} liab=${stmt.totalLiabilities} equity=${stmt.totalEquity} balanced=${stmt.balanced}`);
-  return { year: String(year), asOfDate: latestDate || `${year}-12-31`, periodLabel: `FY ${year}`, statement: stmt };
+  return { year: String(year), asOfDate: latestDate || `${year}-12-31`, periodLabel: `FY ${year}`, statement: stmt, hasUploadedNetIncome };
 }
 
 // ─── Monthly BS ───────────────────────────────────────────────────────────────
@@ -1002,14 +1091,17 @@ function validateAll(plYearly, bsYearly) {
     }
   }
   for (const { year, statement: plY } of plYearly) {
+    if (Math.abs(safeNum(plY?.netIncome)) < 0.01) continue;
     const bsEntry = bsYearly.find(b => b.year === year);
-    if (bsEntry) {
-      const retAcc = bsEntry.statement.equity?.accounts?.find(
-        a => /retained.*earnings|net.*income/i.test(a.name || "")
-      );
-      if (retAcc && Math.abs(retAcc.amount) > 0 && Math.abs(retAcc.amount - plY.netIncome) > 1) {
-        errors.push(`FY${year} Net Income check: P&L=${plY.netIncome} vs BS Equity "${retAcc.name}"=${retAcc.amount}`);
-      }
+    if (!bsEntry) continue;
+    // Look specifically for the "Net Income" account in equity — not Retained Earnings.
+    // After injectNetIncomeToBS, this account always holds the authoritative NI for the year.
+    const niAcc = bsEntry.statement.equity?.accounts?.find(
+      a => /^net\s*(income|loss)/i.test(a.name || "")
+    );
+    if (niAcc && Math.abs(safeNum(niAcc.amount) - safeNum(plY.netIncome)) > 1) {
+      const diff = round2(safeNum(niAcc.amount) - safeNum(plY.netIncome));
+      errors.push(`FY${year} Net Income: generated P&L=${plY.netIncome} vs BS equity NI=${niAcc.amount} (diff=${diff})`);
     }
   }
   return errors;
