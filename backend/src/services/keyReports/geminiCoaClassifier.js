@@ -68,29 +68,35 @@ async function callGeminiText(prompt) {
 }
 
 function buildPrompt(batch) {
-  // Each item: { key, accountName, accountNumber, level1, level2, level3, level4 }
+  // Each item: { key, accountName, accountNumber, standardizedPath }
+  // standardizedPath is the COMPLETE already-classified hierarchy (all fixed levels).
   const lines = batch.map((a) => {
-    const standardized = [a.level1, a.level2, a.level3, a.level4].filter(Boolean).join(" > ");
+    const standardized = a.standardizedPath
+      || [a.level1, a.level2, a.level3, a.level4].filter(Boolean).join(" > ");
     const num = a.accountNumber ? ` (#${a.accountNumber})` : "";
-    return `- key="${a.key}" account="${a.accountName}"${num} standardized="${standardized}"`;
+    return `- key="${a.key}" account="${a.accountName}"${num} fixed_hierarchy="${standardized}"`;
   });
 
-  return `You are a financial chart-of-accounts expert. For each account below, refine its
-classification within the STANDARDIZED hierarchy already provided. The standardized levels
-(1-4) are FIXED — do not change them. Your job is ONLY to add deeper, company-specific
-sub-category levels that sit BETWEEN the standardized group and the actual base account,
-and to suggest a clean normalized display name.
+  return `You are a financial chart-of-accounts expert for an ERP system.
 
-Rules:
-- "deeperLevels" is an ordered array of 0 to 6 concise category labels (general -> specific).
-  Do NOT repeat the standardized labels. Do NOT include the account name itself. If the
-  account is already specific enough, return an empty array.
-- "normalizedName" is a clean, human-readable version of the account name (fix casing, expand
-  obvious abbreviations, trim codes). Keep it faithful — do not invent meaning.
-- Return STRICT JSON only, no markdown, no commentary.
+For each account below, ALL fixed hierarchy levels are already set in fixed_hierarchy.
+Your ONLY job is to suggest 0–3 concise company-specific sub-category labels that sit
+BETWEEN the last fixed level and the base account itself.
 
-Output JSON shape:
-{ "accounts": [ { "key": "<echo the key>", "deeperLevels": ["..."], "normalizedName": "..." } ] }
+Critical rules:
+1. NEVER repeat or include any label already present in fixed_hierarchy.
+2. NEVER include the account name itself in deeperLevels.
+3. NEVER create arbitrary business names, location names, bank names, or
+   operational groupings (e.g. "Operating Accounts", "Primary Business", "Provident Bank").
+4. Only add a label if it meaningfully categorizes the account within a standard
+   financial chart-of-accounts. When in doubt, return an empty array [].
+5. Keep labels short and professional (e.g. "Employee Benefits", "Restaurant Revenue").
+6. "normalizedName": clean, human-readable version of the account name.
+   Fix casing, expand obvious abbreviations. Do NOT invent meaning.
+7. Return STRICT JSON only — no markdown, no prose.
+
+Output format:
+{ "accounts": [ { "key": "<echo key>", "deeperLevels": ["..."], "normalizedName": "..." } ] }
 
 Accounts:
 ${lines.join("\n")}`;

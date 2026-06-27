@@ -124,7 +124,7 @@ const PROCESSING_BATCH_STALE_MINUTES = 120;
 const RE_ACCT_ASSET = /\bcash\b|\bbank\b|\bchecking\b|\bsavings\b|\breceivable\b|\ba\/r\b|\binventory\b|\basset\b|\bprepaid\b|\bfixed asset\b|\bequipment\b|\bmachinery\b|\bvehicle\b|\btruck\b|\bfurniture\b|\bfixture\b|\bcomputer\b|\bbuilding\b|\bland\b/;
 const RE_ACCT_LIABILITY = /\bpayable\b|\bloan\b|\bliability\b|\bcredit card\b|\bcc\b|\bvisa\b|\bmastercard\b|\bamex\b|\bdebt\b|\bnote payable\b|\bnotes payable\b/;
 const RE_ACCT_EQUITY = /\bequity\b|\bcapital\b|\bdraw\b|\bretained earnings\b|\bowner\b/;
-const RE_ACCT_INCOME = /\bsales\b|\brevenue\b|\bincome\b|\bfee\b/;
+const RE_ACCT_INCOME = /\bsales\b|\brevenue\b|\bincome\b|\bfee\b|\brefunds?\b|\bdiscounts?\b|\bgain\b/;
 const RE_ACCT_COGS = /\bcogs\b|\bcost of goods\b|\bdirect cost\b/;
 const RE_ACCT_EXPENSE = /\bexpense\b|\brent\b|\butilit\b|\bsalaries\b|\bwages\b|\btravel\b|\bmeals\b|\boffice\b/;
 

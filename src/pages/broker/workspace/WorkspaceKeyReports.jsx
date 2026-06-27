@@ -33,8 +33,9 @@ import {
 import { useToast } from "../../../context/ToastContext";
 import DataRoomFilePicker from "../../../components/key-reports/DataRoomFilePicker";
 import KeyReportsEducationPopup from "../../../components/key-reports/KeyReportsEducationPopup";
-import ChartOfAccountsTreeGrid from "../../../components/key-reports/ChartOfAccountsTreeGrid";
+import ChartOfAccountsGrid from "../../../components/key-reports/ChartOfAccountsGrid";
 import KeyReportSyncDashboard from "../../../components/key-reports/KeyReportSyncDashboard";
+import FinancialStatementsView from "../../../components/key-reports/FinancialStatementsView";
 
 const CATEGORIES = [
   { key: "profit_loss", label: "Profit & Loss", required: true },
@@ -552,7 +553,7 @@ export default function WorkspaceKeyReports() {
           )}
 
           {(activeStep === "coa" || activeStep === "review") && (
-            <ChartOfAccountsTreeGrid versionId={selectedVersionId} hasSyncedData={hasSyncedData} notify={notify} />
+            <ChartOfAccountsGrid versionId={selectedVersionId} hasSyncedData={hasSyncedData} notify={notify} />
           )}
 
           {activeStep === "save" && (
@@ -585,26 +586,11 @@ export default function WorkspaceKeyReports() {
           )}
 
           {activeStep === "reports" && (
-            <div className="rounded-2xl border border-border bg-white p-5">
-              <h3 className="flex items-center gap-2 text-sm font-bold text-text-primary">
-                <BarChart3 size={16} className="text-primary" /> Financial Reports
-              </h3>
-              <p className="mt-1 text-sm text-secondary">
-                These reports are powered by this version's Chart of Accounts.
-              </p>
-              <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                {reportLinks.map((r) => (
-                  <button
-                    key={r.label}
-                    onClick={() => navigate(r.to)}
-                    className="flex items-center justify-between rounded-xl border border-border px-4 py-3 text-left text-sm font-semibold text-text-primary hover:bg-bg-page"
-                  >
-                    {r.label}
-                    <ArrowRight size={15} className="text-text-muted" />
-                  </button>
-                ))}
-              </div>
-            </div>
+            <FinancialStatementsView
+              versionId={selectedVersionId}
+              hasSyncedData={hasSyncedData}
+              notify={notify}
+            />
           )}
 
           {/* Step nav buttons */}

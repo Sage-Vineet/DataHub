@@ -118,7 +118,7 @@ async function fetchAllRows(buildQuery) {
 }
 
 async function collectGlAccounts(companyId, batchId) {
-  const select = "account_number, account_name, account_type, fiscal_year";
+  const select = "distribution_account, split_account, account_section, fiscal_year";
   let rows;
   try {
     rows = await fetchAllRows(() =>
@@ -146,9 +146,9 @@ async function collectBsAccounts(companyId, batchId) {
 async function collectGlAccountsFromEntries(companyId, versionId) {
   return fetchAllRows(() =>
     supabase.from("general_ledger_entries")
-      .select("distribution_account, account_section, account_number, fiscal_year")
+      .select("distribution_account, split_account, account_section, fiscal_year")
       .eq("company_id", companyId).eq("version_id", versionId)
-      .eq("row_type", "TRANSACTION").order("id", { ascending: true }),
+      .order("id", { ascending: true }),
   );
 }
 
@@ -157,7 +157,7 @@ async function collectBsAccountsFromEntries(companyId, versionId) {
     supabase.from("balance_sheet_entries")
       .select("account_name, account_number, section, is_total, hierarchy_level, fiscal_year")
       .eq("company_id", companyId).eq("version_id", versionId)
-      .eq("is_total", false).order("id", { ascending: true }),
+      .or("is_total.eq.false,is_total.is.null").order("id", { ascending: true }),
   );
 }
 
@@ -166,7 +166,7 @@ async function collectPlAccountsFromEntries(companyId, versionId) {
     supabase.from("profit_loss_entries")
       .select("account_name, account_number, account_type, is_total, hierarchy_level, fiscal_year")
       .eq("company_id", companyId).eq("version_id", versionId)
-      .eq("is_total", false).order("id", { ascending: true }),
+      .or("is_total.eq.false,is_total.is.null").order("id", { ascending: true }),
   );
 }
 
@@ -180,19 +180,38 @@ function buildCoaModel(glRows, bsRows, plRows) {
   const leavesByName = new Map();
   const usedGroups = new Set();
 
-  const mergeInto = (leaf, source, fiscalYear, number) => {
+  const mergeInto = (leaf, source, fiscalYear, number, bsSection) => {
     leaf.sources.add(source);
     if (fiscalYear) leaf.fiscalYears.add(Number(fiscalYear));
     if (!leaf.accountNumber && number) leaf.accountNumber = number;
+    if (bsSection && !leaf.bsSection) leaf.bsSection = bsSection;
   };
 
-  const addLeaf = (accountName, accountNumber, explicitType, source, fiscalYear, classificationSource) => {
+  // P&L accounts whose type is unset can be misclassified as BS types by the
+  // broad keyword regex in inferAccountType (e.g. "Bank Charges & Fees" matches
+  // \bbank\b → "asset", "Car & Truck" matches \btruck\b → "asset").
+  // Only promote to a BS type from a P&L source when there is a STRONG signal.
+  const PL_STRONG_ASSET_RE = /\b(checking|savings|receivable|a\/r|inventory|prepaid|equipment|machinery|furniture|fixture|computer|building|cash\s+(and|&)\s+(cash\s+)?equivalent)\b/i;
+  const PL_STRONG_LIAB_RE  = /\b(payable|a\/p|loan|mortgage|note\s+payable|line\s+of\s+credit|credit\s+card)\b/i;
+  const PL_STRONG_EQUITY_RE = /\b(retained\s+earnings|owner.?s?\s+equity|capital\s+stock|common\s+stock)\b/i;
+  const BS_TYPES_SET = new Set(["asset", "liability", "equity"]);
+
+  const addLeaf = (accountName, accountNumber, explicitType, source, fiscalYear, classificationSource, bsSection) => {
     const name = String(accountName || "").trim();
     if (!name) return;
     if (isNonAccountRow(name)) return;
     const number = accountNumber ? String(accountNumber).trim() : null;
     const normalized = normalizeAccountType(explicitType);
-    const type = normalized || inferAccountType(name, number || "");
+    let type = normalized || inferAccountType(name, number || "");
+    // Guard: without an explicit type, P&L-sourced accounts should not silently
+    // become BS types — keyword inference is too broad (bank → asset, truck → asset).
+    if (!normalized && source === "profit_loss" && BS_TYPES_SET.has(type)) {
+      const strong =
+        (type === "asset"     && PL_STRONG_ASSET_RE.test(name)) ||
+        (type === "liability" && PL_STRONG_LIAB_RE.test(name))  ||
+        (type === "equity"    && PL_STRONG_EQUITY_RE.test(name));
+      if (!strong) type = "expense";
+    }
     const resolvedSource = normalized ? classificationSource : "keyword";
     const key = normName(name);
     const bucket = leavesByName.get(key) || [];
@@ -202,7 +221,7 @@ function buildCoaModel(glRows, bsRows, plRows) {
       return true;
     });
     if (target) {
-      mergeInto(target, source, fiscalYear, number);
+      mergeInto(target, source, fiscalYear, number, bsSection);
       return;
     }
 
@@ -215,6 +234,7 @@ function buildCoaModel(glRows, bsRows, plRows) {
       classificationSource: resolvedSource,
       sources: new Set([source]),
       fiscalYears: new Set(fiscalYear ? [Number(fiscalYear)] : []),
+      bsSection: bsSection || null,
     };
     bucket.push(leaf);
     leavesByName.set(key, bucket);
@@ -222,14 +242,16 @@ function buildCoaModel(glRows, bsRows, plRows) {
 
   for (const r of bsRows || []) {
     const type = accountTypeFromBsSection(r.section);
-    addLeaf(r.account_name, r.account_number || null, type, "balance_sheet", r.fiscal_year, "balance_sheet_section");
+    addLeaf(r.account_name, r.account_number || null, type, "balance_sheet", r.fiscal_year, "balance_sheet_section", r.section);
   }
   for (const r of plRows || []) {
     addLeaf(r.account_name, r.account_number || null, r.account_type || null, "profit_loss", r.fiscal_year, "profit_loss_type");
   }
   for (const r of glRows || []) {
-    const name = r.distribution_account || r.account_name || "";
-    addLeaf(name, r.account_number || null, r.account_type || null, "general_ledger", r.fiscal_year, "gl_type");
+    // GL has no account_number/account_name columns; extract from distribution_account.
+    // GL is an enrichment source — addLeaf merges into existing BS/PL accounts where possible.
+    const name = r.distribution_account || r.account_section || "";
+    addLeaf(name, null, null, "general_ledger", r.fiscal_year, "gl_type");
   }
 
   const groups = Object.entries(GROUP_DEFS)
@@ -258,16 +280,20 @@ async function buildLeafHierarchies(leaves) {
       accountNumber: leaf.accountNumber,
       accountType: leaf.accountType,
       statementType: leaf.statementType,
+      bsSection: leaf.bsSection,
     });
     return { leaf, stdLevels: levels, standardizedDepth };
   });
 
   // 2) Optional AI refinement (deeper levels + normalized names).
-  const refineInput = enriched.map(({ leaf, stdLevels }) => ({
+  // Pass the COMPLETE standardized path so Gemini never re-generates levels
+  // that the rule engine already placed (which caused duplicates and arbitrary nodes).
+  const refineInput = enriched.map(({ leaf, stdLevels, standardizedDepth }) => ({
     key: accountKey(leaf.accountNumber, leaf.accountName),
     accountName: leaf.accountName,
     accountNumber: leaf.accountNumber,
     level1: stdLevels[0], level2: stdLevels[1], level3: stdLevels[2], level4: stdLevels[3],
+    standardizedPath: stdLevels.slice(0, standardizedDepth).filter(Boolean).join(" > "),
   }));
 
   let refinements = new Map();
@@ -294,7 +320,9 @@ async function buildLeafHierarchies(leaves) {
       ...leaf,
       levels,
       hierarchyPath,
-      baseAccount: leaf.accountName,
+      // base_account = the source account name (never null for a leaf).
+      // displayName may be AI-normalised; baseAccount is always the original.
+      baseAccount: leaf.accountName || displayName,
       displayName,
       classificationMethod,
     };
@@ -317,6 +345,185 @@ function columnsToLevels(row) {
 
 function hierarchySnapshot(levels, accountType, statementType, baseAccount) {
   return { levels, account_type: accountType, statement_type: statementType, base_account: baseAccount };
+}
+
+// ── System ID (the client's "System ID" column: INC-001 / EXP-001 / BS-001) ───
+const SYSTEM_ID_PREFIX = Object.freeze({
+  income: "INC", expense: "EXP", cogs: "EXP",
+  asset: "BS", liability: "BS", equity: "BS",
+});
+// Excel ordering: income → expense → assets → liabilities → equity.
+const TYPE_ORDER = Object.freeze({ income: 1, expense: 2, cogs: 3, asset: 4, liability: 5, equity: 6 });
+
+function systemIdPrefix(accountType) {
+  return SYSTEM_ID_PREFIX[accountType] || "ACC";
+}
+
+/**
+ * Assign a stable system_id to every (deduped) leaf. Existing rows keep their id;
+ * new accounts get the next number for their prefix. Returns Map<accountKey, sid>.
+ */
+function assignSystemIds(leaves, existingByKey) {
+  const maxByPrefix = {};
+  for (const row of existingByKey.values()) {
+    const m = /^([A-Z]+)-(\d+)$/.exec(row.system_id || "");
+    if (!m) continue;
+    maxByPrefix[m[1]] = Math.max(maxByPrefix[m[1]] || 0, Number(m[2]));
+  }
+  const ordered = leaves.slice().sort((a, b) => {
+    const ta = TYPE_ORDER[a.accountType] || 99;
+    const tb = TYPE_ORDER[b.accountType] || 99;
+    if (ta !== tb) return ta - tb;
+    return a.accountName.localeCompare(b.accountName);
+  });
+  const byKey = new Map();
+  for (const leaf of ordered) {
+    const key = accountKey(leaf.accountNumber, leaf.accountName);
+    if (byKey.has(key)) continue;
+    const existing = existingByKey.get(key);
+    if (existing?.system_id) { byKey.set(key, existing.system_id); continue; }
+    const prefix = systemIdPrefix(leaf.accountType);
+    const n = (maxByPrefix[prefix] || 0) + 1;
+    maxByPrefix[prefix] = n;
+    byKey.set(key, `${prefix}-${String(n).padStart(3, "0")}`);
+  }
+  return byKey;
+}
+
+// ── Category (parent) node materialization for parent_account_id ──────────────
+// The level columns alone encode the hierarchy, but the spec also requires a
+// valid parent_account_id tree. We materialize one is_group row per distinct
+// path prefix (the level labels above the base account) and chain them, so a
+// real expandable tree can be rebuilt from parent_account_id — not just levels.
+
+/** The category path a leaf hangs under (its levels minus the base account). */
+function leafCategoryKey(levelsArr) {
+  const path = levelsArr.filter(Boolean);
+  if (path.length <= 1) return null; // base account only → no parent category
+  return path.slice(0, -1).join(" > ");
+}
+
+/** Distinct category prefixes across all leaves → Map<catKey, descriptor>. */
+function buildDesiredCategories(leaves) {
+  const cats = new Map();
+  for (const leaf of leaves) {
+    const path = leaf.levels.filter(Boolean);
+    if (path.length <= 1) continue;
+    const catLabels = path.slice(0, -1);
+    for (let i = 0; i < catLabels.length; i += 1) {
+      const prefixArr = catLabels.slice(0, i + 1);
+      const key = prefixArr.join(" > ");
+      if (cats.has(key)) continue;
+      cats.set(key, {
+        pathArr: prefixArr,
+        label: prefixArr[prefixArr.length - 1],
+        parentKey: i === 0 ? null : prefixArr.slice(0, -1).join(" > "),
+        depth: prefixArr.length,
+        accountType: leaf.accountType,
+        statementType: leaf.statementType,
+      });
+    }
+  }
+  return cats;
+}
+
+/**
+ * Reconcile the version's category nodes against the desired set: insert new,
+ * update changed, delete stale, then chain parent_account_id. Returns
+ * Map<catKey, accountId> for the leaf pass to point parents at.
+ */
+async function syncCategoryNodes(versionId, companyId, existingCatsData, desiredCats) {
+  const existingByPath = new Map();
+  for (const row of existingCatsData || []) {
+    const p = row.metadata?.cat_path;
+    if (p) existingByPath.set(p, row);
+  }
+
+  const catIdByPath = new Map();
+  const toInsert = [];
+  const updates = [];
+  let sortCounter = 0;
+
+  const ordered = Array.from(desiredCats.entries()).sort((a, b) => {
+    if (a[1].depth !== b[1].depth) return a[1].depth - b[1].depth;
+    return a[0].localeCompare(b[0]);
+  });
+
+  for (const [key, def] of ordered) {
+    sortCounter += 1;
+    const levelsArr = new Array(MAX_LEVELS).fill(null);
+    def.pathArr.forEach((label, i) => { if (i < MAX_LEVELS) levelsArr[i] = label; });
+    const hierarchyPath = def.pathArr.join(" > ");
+    const existing = existingByPath.get(key);
+    const common = {
+      account_type: def.accountType,
+      statement_type: def.statementType,
+      sort_order: sortCounter,
+      ...levelsToColumns(levelsArr),
+      hierarchy_path: hierarchyPath,
+      classification_method: "rule",
+    };
+    if (existing) {
+      catIdByPath.set(key, existing.id);
+      updates.push({ id: existing.id, patch: { ...common, updated_at: new Date().toISOString() } });
+    } else {
+      toInsert.push({
+        version_id: versionId,
+        company_id: companyId,
+        account_number: null,
+        account_name: def.label,
+        system_id: null,
+        account_id_name: def.label,
+        parent_account_id: null,
+        is_active: true,
+        ...common,
+        base_account: null,
+        original_name: def.label,
+        original_hierarchy: hierarchySnapshot(levelsArr, def.accountType, def.statementType, null),
+        adjusted_name: def.label,
+        adjusted_hierarchy: hierarchySnapshot(levelsArr, def.accountType, def.statementType, null),
+        metadata: { is_group: true, cat_path: key, level: def.depth },
+        _cat_path: key, // local marker, stripped before insert
+      });
+    }
+  }
+
+  for (const { id, patch } of updates) {
+    const { error } = await supabase.from(TABLE_COA).update(patch).eq("id", id);
+    if (error) throw error;
+  }
+
+  if (toInsert.length) {
+    const payload = toInsert.map(({ _cat_path, ...row }) => row);
+    const ins = await supabase.from(TABLE_COA).insert(payload).select("id, metadata");
+    if (ins.error) throw ins.error;
+    for (const row of ins.data || []) {
+      const p = row.metadata?.cat_path;
+      if (p) catIdByPath.set(p, row.id);
+    }
+  }
+
+  // Chain parent_account_id now that every category node has an id.
+  for (const [key, def] of ordered) {
+    const id = catIdByPath.get(key);
+    const parentId = def.parentKey ? catIdByPath.get(def.parentKey) || null : null;
+    if (!id) continue;
+    const existing = existingByPath.get(key);
+    if (existing && existing.parent_account_id === parentId) continue; // unchanged
+    const { error } = await supabase.from(TABLE_COA).update({ parent_account_id: parentId }).eq("id", id);
+    if (error) throw error;
+  }
+
+  // Delete category nodes whose path is no longer used (CASCADE clears any FKs).
+  const staleCatIds = (existingCatsData || [])
+    .filter((row) => !desiredCats.has(row.metadata?.cat_path))
+    .map((row) => row.id);
+  if (staleCatIds.length) {
+    const del = await supabase.from(TABLE_COA).delete().in("id", staleCatIds);
+    if (del.error) throw del.error;
+  }
+
+  return catIdByPath;
 }
 
 /**
@@ -343,7 +550,10 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
     plRows = [];
   } else {
     [glRows, bsRows, plRows] = await Promise.all([
-      collectGlAccountsFromEntries(companyId, versionId),
+      collectGlAccountsFromEntries(companyId, versionId).catch((e) => {
+        console.warn(`[ChartOfAccounts] GL enrichment skipped: ${e.message}`);
+        return [];
+      }),
       collectBsAccountsFromEntries(companyId, versionId).catch(() => []),
       collectPlAccountsFromEntries(companyId, versionId).catch(() => []),
     ]);
@@ -361,13 +571,22 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
   // 2) Load existing rows so we can preserve ids, originals, and adjustments.
   const { data: existingData, error: exErr } = await supabase
     .from(TABLE_COA)
-    .select("id, account_number, account_name, original_name, original_hierarchy, adjusted_name, adjusted_hierarchy, metadata, classification_method, account_type, statement_type, level_1, level_2, level_3, level_4, level_5, level_6, level_7, level_8, level_9, level_10, level_11, level_12, level_13, level_14, level_15, base_account")
+    .select("id, system_id, account_number, account_name, parent_account_id, original_name, original_hierarchy, adjusted_name, adjusted_hierarchy, metadata, classification_method, account_type, statement_type, level_1, level_2, level_3, level_4, level_5, level_6, level_7, level_8, level_9, level_10, level_11, level_12, level_13, level_14, level_15, base_account")
     .eq("version_id", versionId);
   if (exErr) throw exErr;
+  // Category (is_group) rows form the parent_account_id tree; leaves are the real
+  // accounts. Keep them separate so the leaf upsert/stale-delete never touches them.
+  const existingLeavesData = (existingData || []).filter((r) => !r.metadata?.is_group);
+  const existingCatsData = (existingData || []).filter((r) => r.metadata?.is_group);
   const existingByKey = new Map();
-  for (const row of existingData || []) {
+  for (const row of existingLeavesData) {
     existingByKey.set(accountKey(row.account_number, row.account_name), row);
   }
+
+  // 2a) Materialize the category-node tree (parent_account_id) + assign system ids.
+  const desiredCats = buildDesiredCategories(hierarchical);
+  const catIdByPath = await syncCategoryNodes(versionId, companyId, existingCatsData, desiredCats);
+  const systemIdByKey = assignSystemIds(hierarchical, existingByKey);
 
   const seenKeys = new Set();
   const toInsert = [];
@@ -392,22 +611,25 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
     };
     sortCounter += 1;
     const existing = existingByKey.get(key);
+    const systemId = systemIdByKey.get(key) || null;
+    const parentAccountId = catIdByPath.get(leafCategoryKey(leaf.levels)) || null;
 
     if (!existing) {
       // Brand-new account: original = adjusted = AI result.
       toInsert.push({
         version_id: versionId,
         company_id: companyId,
+        system_id: systemId,
         account_number: leaf.accountNumber,
         account_name: leaf.accountName,
         account_id_name: accountIdName,
-        parent_account_id: null,
+        parent_account_id: parentAccountId,
         account_type: leaf.accountType,
         statement_type: leaf.statementType,
         is_active: true,
         sort_order: sortCounter,
         ...levelsToColumns(aiLevels),
-        base_account: leaf.baseAccount,
+        base_account: leaf.baseAccount || leaf.accountName,
         hierarchy_path: leaf.hierarchyPath,
         classification_method: leaf.classificationMethod,
         original_name: leaf.displayName,
@@ -423,6 +645,8 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
     const userModified = Boolean(existing.metadata?.user_modified);
     const patch = {
       account_id_name: accountIdName,
+      // Backfill system_id once; never renumber a previously-assigned account.
+      system_id: existing.system_id || systemId,
       account_type: userModified ? existing.account_type : leaf.accountType,
       statement_type: userModified ? existing.statement_type : leaf.statementType,
       sort_order: sortCounter,
@@ -433,11 +657,12 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
       updated_at: new Date().toISOString(),
     };
     if (userModified) {
-      // Keep the user's adjusted hierarchy + display name + level columns.
-      // (No level/adjusted changes here.)
+      // Keep the user's adjusted hierarchy + display name + level columns +
+      // their existing parent_account_id. (No level/adjusted changes here.)
     } else {
       // Refresh the adjusted view + level columns with the latest AI result.
       Object.assign(patch, levelsToColumns(aiLevels), {
+        parent_account_id: parentAccountId,
         base_account: leaf.baseAccount,
         hierarchy_path: leaf.hierarchyPath,
         classification_method: leaf.classificationMethod,
@@ -464,8 +689,9 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
     }
   }
 
-  // 5) Delete rows whose source account disappeared (CASCADE clears their audit).
-  const staleIds = (existingData || [])
+  // 5) Delete leaf rows whose source account disappeared (CASCADE clears their
+  //    audit). Category nodes are reconciled separately in syncCategoryNodes.
+  const staleIds = existingLeavesData
     .filter((row) => !seenKeys.has(accountKey(row.account_number, row.account_name)))
     .map((row) => row.id);
   if (staleIds.length) {
@@ -475,7 +701,7 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
 
   // 6) Resolve account ids for every leaf (existing + inserted).
   const accountIdByKey = new Map();
-  for (const row of existingData || []) accountIdByKey.set(accountKey(row.account_number, row.account_name), row.id);
+  for (const row of existingLeavesData) accountIdByKey.set(accountKey(row.account_number, row.account_name), row.id);
   for (const [k, id] of insertedByKey.entries()) accountIdByKey.set(k, id);
 
   // 7) Rebuild source→account mappings (pure derivative; safe to replace).
@@ -546,6 +772,7 @@ function mapRow(row) {
   return {
     id: row.id,
     versionId: row.version_id,
+    systemId: row.system_id,
     accountNumber: row.account_number,
     accountName: row.adjusted_name || row.account_name, // display = adjusted
     sourceName: row.account_name,
@@ -652,7 +879,9 @@ async function getChartOfAccounts(versionId) {
     .order("sort_order", { ascending: true });
   if (error) throw error;
 
-  const rows = (data || []).map(mapRow);
+  // Category (is_group) rows exist only to carry the parent_account_id tree;
+  // the UI grid + tree are built from the real leaf accounts.
+  const rows = (data || []).filter((r) => !r.metadata?.is_group).map(mapRow);
   const tree = buildTree(rows);
   return { versionId, flat: rows, tree, accountCount: rows.length };
 }
@@ -850,18 +1079,19 @@ async function updateAccount(accountId, patch = {}) {
 
 // ── Validation engine (extended with level-integrity checks) ─────────────────
 async function validateChartOfAccounts(companyId, versionId) {
-  const empty = { nullType: [], invalidRows: [], duplicates: [], unmapped: [], multiCategory: [], noLevel: [], noBase: [] };
+  const empty = { nullType: [], invalidRows: [], duplicates: [], unmapped: [], multiCategory: [], noLevel: [], noBase: [], noSystemId: [], noPath: [], badParent: [] };
   if (!companyId || !versionId) {
     return { summary: { accountCount: 0, leafCount: 0, status: "warning", ...empty }, reports: empty, rows: [] };
   }
 
   const { data: coaData, error } = await supabase
     .from(TABLE_COA)
-    .select("id, account_name, adjusted_name, account_number, account_type, base_account, level_1, level_2, metadata")
+    .select("id, system_id, account_name, adjusted_name, account_number, account_type, parent_account_id, hierarchy_path, base_account, level_1, level_2, metadata")
     .eq("version_id", versionId);
   if (error) throw error;
 
   const all = coaData || [];
+  const allIds = new Set(all.map((r) => r.id));
   const leaves = all.filter((r) => !r.metadata?.is_group);
 
   let glAccounts = [];
@@ -878,6 +1108,12 @@ async function validateChartOfAccounts(companyId, versionId) {
   const invalidRows = leaves.filter((r) => isNonAccountRow(r.account_name)).map((r) => r.account_name);
   const noLevel = leaves.filter((r) => !r.level_1).map((r) => r.account_name);
   const noBase = leaves.filter((r) => !r.base_account).map((r) => r.account_name);
+  const noSystemId = leaves.filter((r) => !r.system_id).map((r) => r.account_name);
+  const noPath = leaves.filter((r) => !r.hierarchy_path).map((r) => r.account_name);
+  // parent_account_id must be NULL or resolve to another row in this version.
+  const badParent = leaves
+    .filter((r) => r.parent_account_id && !allIds.has(r.parent_account_id))
+    .map((r) => r.account_name);
 
   const counts = new Map();
   for (const r of leaves) {
@@ -903,7 +1139,7 @@ async function validateChartOfAccounts(companyId, versionId) {
     .filter(([, set]) => set.size > 1)
     .map(([k]) => k);
 
-  const reports = { nullType, invalidRows, duplicates, unmapped, multiCategory, noLevel, noBase };
+  const reports = { nullType, invalidRows, duplicates, unmapped, multiCategory, noLevel, noBase, noSystemId, noPath, badParent };
 
   const sample = (arr, n = 8) =>
     arr.slice(0, n).join(", ") + (arr.length > n ? ` … (+${arr.length - n} more)` : "");
@@ -916,6 +1152,7 @@ async function validateChartOfAccounts(companyId, versionId) {
     [invalidRows, (a) => `${a.length} invalid row(s) (header/total/section) present in the Chart of Accounts: ${sample(a)}`],
     [multiCategory, (a) => `${a.length} account(s) classified into more than one category: ${sample(a)}`],
     [noLevel, (a) => `${a.length} account(s) missing a hierarchy (no Level 1): ${sample(a)}`],
+    [badParent, (a) => `${a.length} account(s) have a parent_account_id that does not resolve to a row in this version: ${sample(a)}`],
   ];
   for (const [arr, msg] of errorChecks) {
     if (arr.length) {
@@ -928,6 +1165,8 @@ async function validateChartOfAccounts(companyId, versionId) {
     [duplicates, (a) => `${a.length} duplicate account name(s): ${sample(a)}`],
     [unmapped, (a) => `${a.length} General Ledger account(s) not represented in the Chart of Accounts: ${sample(a)}`],
     [noBase, (a) => `${a.length} account(s) missing a base account: ${sample(a)}`],
+    [noSystemId, (a) => `${a.length} account(s) missing a System ID: ${sample(a)}`],
+    [noPath, (a) => `${a.length} account(s) missing a hierarchy path: ${sample(a)}`],
   ];
   for (const [arr, msg] of warnChecks) {
     if (arr.length) {

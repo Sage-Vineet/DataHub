@@ -156,30 +156,44 @@ CREATE INDEX IF NOT EXISTS idx_coa_classification_history_version
   ON coa_classification_history(version_id, created_at DESC);
 
 -- ----------------------------------------------------------------------------
--- 6) Seed the standardized taxonomy (levels 1–3). Idempotent via the unique
---    constraint + ON CONFLICT DO NOTHING.
+-- 6) Seed the standardized taxonomy as the client's BOTTOM-UP financial ROLLUP
+--    (matches chartOfAccountsService / coaHierarchyRules). Reseeds the standard
+--    rows so re-running this migration replaces an older taxonomy. Idempotent.
 -- ----------------------------------------------------------------------------
+DELETE FROM coa_hierarchy_levels WHERE is_standard = true;
+
 INSERT INTO coa_hierarchy_levels (level_number, statement_type, parent_label, label, sort_order) VALUES
-  -- Level 1 — statement
-  (1, 'profit_loss',   NULL, 'Income Statement', 1),
-  (1, 'balance_sheet', NULL, 'Balance Sheet',    2),
-  -- Level 2 — major category
-  (2, 'balance_sheet', 'Balance Sheet',    'Assets',                 1),
-  (2, 'balance_sheet', 'Balance Sheet',    'Liabilities',            2),
-  (2, 'balance_sheet', 'Balance Sheet',    'Equity',                 3),
-  (2, 'profit_loss',   'Income Statement', 'Revenue',                4),
-  (2, 'profit_loss',   'Income Statement', 'Cost of Goods Sold',     5),
-  (2, 'profit_loss',   'Income Statement', 'Operating Expenses',     6),
-  -- Level 3 — standardized sub-category
-  (3, 'balance_sheet', 'Assets',               'Current Assets',        1),
-  (3, 'balance_sheet', 'Assets',               'Fixed Assets',          2),
-  (3, 'balance_sheet', 'Assets',               'Other Assets',          3),
-  (3, 'balance_sheet', 'Liabilities',          'Current Liabilities',   4),
-  (3, 'balance_sheet', 'Liabilities',          'Long-Term Liabilities', 5),
-  (3, 'balance_sheet', 'Equity',               'Equity',                6),
-  (3, 'profit_loss',   'Revenue',              'Operating Revenue',     7),
-  (3, 'profit_loss',   'Revenue',              'Other Revenue',         8),
-  (3, 'profit_loss',   'Cost of Goods Sold',   'Cost of Goods Sold',    9),
-  (3, 'profit_loss',   'Operating Expenses',   'Operating Expenses',   10),
-  (3, 'profit_loss',   'Operating Expenses',   'Other Expenses',       11)
+  -- Level 1 — rollup heads
+  (1, 'balance_sheet', NULL, 'Total Liabilities and Equity', 1),
+  (1, 'balance_sheet', NULL, 'Total Assets',                 2),
+  -- Level 2
+  (2, 'balance_sheet', 'Total Assets',                 'Total Assets',      1),
+  (2, 'balance_sheet', 'Total Liabilities and Equity', 'Total Liabilities', 2),
+  (2, 'balance_sheet', 'Total Liabilities and Equity', 'Total Equity',      3),
+  -- Level 3
+  (3, 'profit_loss',   'Total Equity', 'Net Income',            1),
+  (3, 'balance_sheet', 'Total Equity', 'Equity',                2),
+  (3, 'balance_sheet', 'Total Assets', 'Current Assets',        3),
+  (3, 'balance_sheet', 'Total Assets', 'Fixed Assets',          4),
+  (3, 'balance_sheet', 'Total Assets', 'Other Assets',          5),
+  (3, 'balance_sheet', 'Total Liabilities', 'Current Liabilities',   6),
+  (3, 'balance_sheet', 'Total Liabilities', 'Long-Term Liabilities', 7),
+  -- Levels 4–8 — the P&L rollup chain
+  (4, 'profit_loss', 'Net Income',       'Pretax Income',    1),
+  (5, 'profit_loss', 'Pretax Income',    'Operating Income', 1),
+  (6, 'profit_loss', 'Operating Income', 'Gross Profit',     1),
+  (7, 'profit_loss', 'Gross Profit',     'Total Revenue',    1),
+  (7, 'profit_loss', 'Gross Profit',     'Total Expenses',   2),
+  (8, 'profit_loss', 'Total Revenue',    'Income',           1),
+  (8, 'profit_loss', 'Total Expenses',   'Expenses',         2),
+  -- Level 9 — company expense groups
+  (9, 'profit_loss', 'Expenses', 'Payroll and Labor',          1),
+  (9, 'profit_loss', 'Expenses', 'Cost of Sales',              2),
+  (9, 'profit_loss', 'Expenses', 'Occupancy',                  3),
+  (9, 'profit_loss', 'Expenses', 'Insurance',                  4),
+  (9, 'profit_loss', 'Expenses', 'Sales and Marketing',        5),
+  (9, 'profit_loss', 'Expenses', 'General and Administrative', 6),
+  (9, 'profit_loss', 'Expenses', 'Vehicle and Travel',         7),
+  (9, 'profit_loss', 'Expenses', 'Repairs and Maintenance',    8),
+  (9, 'profit_loss', 'Expenses', 'Non-Cash and Below-Line',    9)
 ON CONFLICT ON CONSTRAINT uq_coa_hierarchy_levels DO NOTHING;

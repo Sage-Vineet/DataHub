@@ -1488,6 +1488,15 @@ export function getHierarchyLevels() {
   return request(`/key-reports/hierarchy-levels`);
 }
 
+// COA-mapped financial statements (monthly + yearly P&L and Balance Sheet).
+export function getFinancialStatements(versionId, { year, currency } = {}) {
+  const params = new URLSearchParams();
+  if (year) params.set("year", year);
+  if (currency) params.set("currency", currency);
+  const qs = params.toString();
+  return request(`/key-reports/versions/${versionId}/reports/financial-statements${qs ? `?${qs}` : ""}`);
+}
+
 export function listFolderAccess(folderId) {
   return request(`/folders/${folderId}/access`).then(ensureArray);
 }
