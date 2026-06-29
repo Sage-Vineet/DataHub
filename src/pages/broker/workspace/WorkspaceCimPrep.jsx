@@ -2015,6 +2015,10 @@ function getChartDataUrl(field, chartValues, fieldValues = {}) {
   return svgToDataUrl(buildChartSvg(field, getChartConfig(field, chartValues)));
 }
 
+function getElementAutofillKey(kind, slideNumber, order) {
+  return `__cim_${kind}__:${slideNumber}:${order}`;
+}
+
 function getElementContent(slideNumber, element, fieldsById, fieldValues, assetValues, chartValues, globalDetails) {
   if (!element?.text) return { kind: "text", text: "" };
   const elementFields = getElementFields(slideNumber, element, fieldsById);
@@ -2031,9 +2035,13 @@ function getElementContent(slideNumber, element, fieldsById, fieldValues, assetV
     return { kind: "chart", dataUrl: getChartDataUrl(mediaField, chartValues, fieldValues), name: mediaField.label };
   }
 
+  const displayText = getElementDisplayText(slideNumber, element, fieldsById, fieldValues, globalDetails);
+  const override = fieldValues?.[getElementAutofillKey("element_override", slideNumber, element.order)];
+  const suffix = fieldValues?.[getElementAutofillKey("element_suffix", slideNumber, element.order)];
+
   return {
     kind: "text",
-    text: getElementDisplayText(slideNumber, element, fieldsById, fieldValues, globalDetails),
+    text: override || `${displayText}${suffix || ""}`,
   };
 }
 
@@ -2048,9 +2056,22 @@ function hasFieldData(field, fieldValues, assetValues, chartValues) {
 }
 
 function getEditableTemplateFields(fields = [], globalDetails) {
-  return fields.filter(
+  const editableFields = fields.filter(
     (field) => !field.hidden && !isResolvedByGlobalDetails(field, globalDetails),
   );
+
+  const slideOneAdvisorLogos = editableFields.filter((field) =>
+    field.slideNumber === 1 && isAssetField(field) && getAssetKey(field) === "advisor-logo",
+  );
+  if (slideOneAdvisorLogos.length === 0) return editableFields;
+
+  const advisorLogoField = slideOneAdvisorLogos[slideOneAdvisorLogos.length - 1];
+  return [
+    ...editableFields.filter((field) =>
+      !(field.slideNumber === 1 && isAssetField(field) && getAssetKey(field) === "advisor-logo"),
+    ),
+    advisorLogoField,
+  ];
 }
 
 function countFieldsWithData(fields = [], fieldValues, assetValues, chartValues) {
@@ -2257,7 +2278,13 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
   const historyYears = alignAutoFillYears(years, 4);
   const balanceYears = alignAutoFillYears(years, 3);
   const cagrYears = getAutoFillCagrYears(snapshot, historyYears);
-  const historyRange = getAutoFillYearRange(cagrYears);
+  const selectedStartYear = Number(snapshot?.currentPeriod?.startFiscalYear || cagrYears[0] || 0);
+  const selectedEndYear = Number(snapshot?.currentPeriod?.fiscalYear || latestYear || 0);
+  const selectedRangeText = selectedStartYear && selectedEndYear
+    ? selectedStartYear === selectedEndYear
+      ? `FY${selectedEndYear}`
+      : `FY${selectedStartYear} to FY${selectedEndYear}`
+    : getAutoFillYearRange(cagrYears);
   const revenueCagr = calculateAutoFillCagr(snapshot, cagrYears);
   const firstHistoryYear = historyYears.find(Boolean);
   const firstCagrYear = cagrYears[0] || firstHistoryYear;
@@ -2290,6 +2317,29 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
     if (field) fieldValues[field.id] = value;
   };
 
+  const addElementOverride = (slide, order, value) => {
+    if (!normalizeText(value)) return;
+    fieldValues[getElementAutofillKey("element_override", slide, order)] = value;
+  };
+
+  const addElementSuffix = (slide, order, value) => {
+    if (!normalizeText(value)) return;
+    fieldValues[getElementAutofillKey("element_suffix", slide, order)] = value;
+  };
+
+  const financialSource = snapshot?.validation?.sourceLedger?.sourceLabel || "Financial reports";
+  const reportsSource = `${financialSource}; Reports; EBITDA Calculation`;
+  const sourceAsOfDate = currentLongDate || (latestYear ? `December 31, ${latestYear}` : "");
+
+  addElementOverride(5, 27, `Source: ${reportsSource}.`);
+  addElementOverride(6, 32, `Source: ${reportsSource}; ${selectedRangeText}.`);
+  addElementSuffix(24, 8, ` Source: ${reportsSource}.`);
+  addElementOverride(23, 36, `Source: ${reportsSource}; ${selectedRangeText}.`);
+  addElementOverride(26, 8, `Source: ${financialSource}; Reports; ${selectedRangeText}.`);
+  addElementOverride(27, 8, `Note: Free Cash Flow = Cash from Operations less CapEx. Source: ${financialSource}; Reports.`);
+  addElementOverride(29, 32, `Source: ${financialSource}; Quality of Earnings - Bank Reconciliation; as of ${sourceAsOfDate}.`);
+  addElementOverride(30, 32, `Source: ${financialSource}; Quality of Earnings - Tax Reconciliation; ${selectedRangeText}; as of ${sourceAsOfDate}.`);
+
   add(5, 26, 1, formatAutoFillPercent(latest.ebitdaMargin));
 
   add(6, 6, 0, "Fiscal Year (FY)");
@@ -2299,9 +2349,9 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
   add(6, 19, 0, formatAutoFillMillions(latest.adjustedEbitda));
   add(6, 21, 0, formatAutoFillPercent(latest.ebitdaMargin));
   add(6, 31, 0, formatAutoFillPercent(revenueCagr));
-  add(6, 31, 1, historyRange);
+  add(6, 31, 1, selectedRangeText);
   add(6, 31, 2, formatAutoFillPercent(marginExpansion));
-  addMergedOrder(6, 32, historyRange);
+  addMergedOrder(6, 32, selectedRangeText);
   addChart(6, 28, "bar", getAutoFillChartData(snapshot, historyYears.filter(Boolean)));
 
   add(9, 34, 0, formatAutoFillMillions(latest.totalRevenue));
@@ -2310,7 +2360,7 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
   const previousYear = years[years.indexOf(latestYear) - 1] || null;
   const previous = getAutoFillYearMetrics(snapshot, previousYear);
   add(23, 5, 1, formatAutoFillPercent(revenueCagr));
-  add(23, 5, 2, historyRange);
+  add(23, 5, 2, selectedRangeText);
   add(23, 5, 3, formatAutoFillPercent(getAutoFillYearMetrics(snapshot, firstCagrYear)?.ebitdaMargin));
   add(23, 5, 4, formatAutoFillPercent(latest.ebitdaMargin));
   add(23, 9, 0, formatAutoFillMillions(latest.totalRevenue));
@@ -2328,11 +2378,14 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
     ? formatAutoFillNumber(latest.longTermDebtAdjustedEbitdaRatio, 1)
     : "");
   add(23, 31, 0, currentLongDate);
-  addMergedOrder(23, 36, historyRange);
+  add(23, 36, 2, financialSource);
+  addMergedOrder(23, 36, selectedRangeText);
   addChart(23, 33, "bar", getAutoFillChartData(snapshot, historyYears.filter(Boolean), ["totalRevenue"]));
   addChart(23, 35, "bar", getAutoFillChartData(snapshot, historyYears.filter(Boolean), ["adjustedEbitda", "ebitdaMargin"]));
 
   const incomeColumns = [...historyYears, latestYear];
+  add(24, 5, 0, selectedStartYear ? `FY${selectedStartYear}` : "");
+  add(24, 5, 1, selectedEndYear ? `FY${selectedEndYear}` : "");
   incomeColumns.forEach((year, columnIndex) => {
     if (columnIndex < 4) add(24, 7, columnIndex, year);
     if (columnIndex === 4) add(24, 7, 4, currentShortDate);
@@ -2382,8 +2435,8 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
     add(26, 7, 60 + columnIndex, formatAutoFillMillions(metrics.totalEquity));
     add(26, 7, 64 + columnIndex, formatAutoFillMillions(metrics.totalAssets));
   });
-  add(26, 8, 0, historyYears.find(Boolean) ? `FY${historyYears.find(Boolean)}` : "");
-  add(26, 8, 1, latestYear ? `FY${latestYear}` : "");
+  add(26, 8, 0, selectedStartYear ? `FY${selectedStartYear}` : "");
+  add(26, 8, 1, selectedEndYear ? `FY${selectedEndYear}` : "");
 
   const cashflowColumns = [...balanceYears, latestYear];
   cashflowColumns.forEach((year, columnIndex) => {
@@ -2409,7 +2462,7 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
     .filter(Boolean)
     .reduce((sum, year) => sum + Number(getAutoFillYearMetrics(snapshot, year).freeCashFlow || 0), 0);
   add(27, 5, 0, formatAutoFillMillions(cumulativeFcf));
-  add(27, 5, 1, getAutoFillYearRange(cashflowColumns.filter(Boolean)));
+  add(27, 5, 1, selectedRangeText);
   add(27, 6, 0, formatAutoFillPercent(calculateAutoFillFcfConversion(latest)));
 
   add(28, 5, 0, formatAutoFillMillions(latest.workingCapital));
@@ -3701,6 +3754,47 @@ function FinancialAutofillModal({
   );
 }
 
+function FinancialAutofillProgressOverlay({ state }) {
+  if (!state?.loading) return null;
+  const progress = Math.max(1, Math.min(100, Number(state.progress || 1)));
+
+  return (
+    <div
+      className="fixed inset-0 z-[100000] flex items-center justify-center bg-[#111827]/65 p-4 backdrop-blur-sm"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Auto-filling CIM financials"
+    >
+      <div className="w-full max-w-md rounded-lg border border-white/20 bg-white px-6 py-7 shadow-2xl sm:px-8">
+        <div className="flex items-start gap-4">
+          <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-lg bg-[#EEF6E0] text-[#476E2C]">
+            <Loader2 size={24} className="animate-spin" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="text-base font-bold text-[#050505]">Auto-filling financials</h2>
+              <span className="tabular-nums text-sm font-bold text-[#476E2C]">{Math.round(progress)}%</span>
+            </div>
+            <p className="mt-1 min-h-10 text-sm leading-relaxed text-[#6D6E71]" aria-live="polite">
+              {state.progressMessage || "Preparing financial reports"}
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-5 h-2 overflow-hidden rounded-full bg-[#E8EDEF]" aria-hidden="true">
+          <div
+            className="h-full rounded-full bg-[#8BC53D] transition-[width] duration-500 ease-out"
+            style={{ width: `${progress}%` }}
+          />
+        </div>
+        <p className="mt-3 text-center text-xs font-medium text-[#8A8F98]">
+          Keep this page open while the CIM is updated.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function formatValidationFigure(value) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return "-";
@@ -4317,6 +4411,8 @@ export default function WorkspaceCimPrep() {
     filledCount: 0,
     error: "",
     validation: null,
+    progress: 0,
+    progressMessage: "",
   });
   const [activeSectionId, setActiveSectionId] = useState(BASIC_DETAILS_SECTION.id);
   const [activeSlide, setActiveSlide] = useState(BASIC_DETAILS_SECTION.slides[0]);
@@ -4389,6 +4485,23 @@ export default function WorkspaceCimPrep() {
       cancelled = true;
     };
   }, [clientId]);
+
+  useEffect(() => {
+    if (loading) return;
+
+    const copyrightField = (fieldsBySlide[38] || []).find((field) =>
+      field.order === 11 && getFieldTokenIndex(field) === 0,
+    );
+    if (!copyrightField) return;
+
+    const fieldId = copyrightField.valueFieldId || copyrightField.id;
+    const currentYear = String(new Date().getFullYear());
+    setFieldValues((previous) =>
+      previous[fieldId] === currentYear
+        ? previous
+        : { ...previous, [fieldId]: currentYear },
+    );
+  }, [fieldsBySlide, loading]);
 
   useEffect(() => {
     let cancelled = false;
@@ -4538,7 +4651,13 @@ export default function WorkspaceCimPrep() {
       return false;
     }
 
-    setFinancialAutofillState((previous) => ({ ...previous, loading: true, error: "" }));
+    setFinancialAutofillState((previous) => ({
+      ...previous,
+      loading: true,
+      error: "",
+      progress: 4,
+      progressMessage: "Preparing the selected date range",
+    }));
 
     try {
       const snapshot = await loadCimFinancialAutofillSnapshot({
@@ -4546,7 +4665,20 @@ export default function WorkspaceCimPrep() {
         sourceKey: reportSource,
         selectedDatasetVersion,
         dateRange,
+        onProgress: ({ progress, message }) => {
+          setFinancialAutofillState((previous) => ({
+            ...previous,
+            loading: true,
+            progress,
+            progressMessage: message,
+          }));
+        },
       });
+      setFinancialAutofillState((previous) => ({
+        ...previous,
+        progress: 97,
+        progressMessage: "Updating CIM fields, tables, and charts",
+      }));
       const additions = buildCimFinancialAutofillValues(fieldsBySlide, snapshot);
       const fieldMerge = mergeOverwriteAutofillValues(fieldValues, additions.fieldValues);
 
@@ -4566,11 +4698,19 @@ export default function WorkspaceCimPrep() {
       if (chartCount > 0) setChartValues(nextChartValues);
 
       const filledCount = fieldMerge.count + chartCount;
+      setFinancialAutofillState((previous) => ({
+        ...previous,
+        progress: 100,
+        progressMessage: "Financial auto-fill complete",
+      }));
+      await new Promise((resolve) => window.setTimeout(resolve, 350));
       setFinancialAutofillState({
         loading: false,
         filledCount,
         error: "",
         validation: snapshot.validation || null,
+        progress: 100,
+        progressMessage: "Financial auto-fill complete",
       });
       setFinancialAutofillRange(dateRange);
 
@@ -4593,6 +4733,8 @@ export default function WorkspaceCimPrep() {
         loading: false,
         filledCount: 0,
         error: message,
+        progress: 0,
+        progressMessage: "",
       }));
       showToast({
         type: "error",
@@ -4612,9 +4754,9 @@ export default function WorkspaceCimPrep() {
     templateFieldCount,
   ]);
 
-  const handleConfirmFinancialAutofill = useCallback(async (dateRange) => {
-    const applied = await handleFinancialAutofill({ dateRange });
-    if (applied) setFinancialAutofillModalOpen(false);
+  const handleConfirmFinancialAutofill = useCallback((dateRange) => {
+    setFinancialAutofillModalOpen(false);
+    void handleFinancialAutofill({ dateRange });
   }, [handleFinancialAutofill]);
 
   const handleSectionSelect = useCallback((sectionId) => {
@@ -5034,17 +5176,23 @@ export default function WorkspaceCimPrep() {
               setPreviewSlideIndex(index >= 0 ? index : 0);
               setPreviewOpen(true);
             }}
-            className="theme-btn-secondary"
+            className="group relative flex h-10 w-10 items-center justify-center rounded-md border border-border bg-white text-[#6D6E71] transition hover:border-[#8BC53D] hover:bg-[#EEF6E0] hover:text-[#476E2C]"
+            aria-label="Preview PPT"
           >
             <Eye size={16} />
-            Preview PPT
+            <span className="pointer-events-none absolute right-0 top-full z-50 mt-2 whitespace-nowrap rounded-md bg-[#050505] px-2 py-1 text-xs font-semibold text-white opacity-0 shadow-lg transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+              Preview PPT
+            </span>
           </button>
           <button
             onClick={handleExport}
-            className="theme-btn-secondary"
+            className="group relative flex h-10 w-10 items-center justify-center rounded-md border border-border bg-white text-[#6D6E71] transition hover:border-[#8BC53D] hover:bg-[#EEF6E0] hover:text-[#476E2C]"
+            aria-label="Export PPT"
           >
             <Download size={16} />
-            Export PPT
+            <span className="pointer-events-none absolute right-0 top-full z-50 mt-2 whitespace-nowrap rounded-md bg-[#050505] px-2 py-1 text-xs font-semibold text-white opacity-0 shadow-lg transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+              Export PPT
+            </span>
           </button>
           <button
             onClick={handleSave}
@@ -5052,7 +5200,7 @@ export default function WorkspaceCimPrep() {
             className="theme-btn-primary disabled:cursor-not-allowed disabled:opacity-70"
           >
             {saving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
-            Save Changes
+            Save
           </button>
         </div>
       </div>
@@ -5182,6 +5330,8 @@ export default function WorkspaceCimPrep() {
         onClose={() => setFinancialAutofillModalOpen(false)}
         onConfirm={handleConfirmFinancialAutofill}
       />
+
+      <FinancialAutofillProgressOverlay state={financialAutofillState} />
 
       <PreviewModal
         open={previewOpen}

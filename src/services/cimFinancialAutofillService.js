@@ -62,6 +62,36 @@ const SOURCE_LABELS = {
   [REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL]: "QuickBooks Manual",
 };
 
+const CIM_AUTOFILL_CACHE_TTL_MS = 2 * 60 * 1000;
+const cimAutofillSnapshotCache = new Map();
+const cimDashboardRequestCache = new Map();
+
+function getCimAutofillCacheKey({ clientId, sourceKey, selectedDatasetVersion, dateRange }) {
+  return [
+    clientId || "",
+    sourceKey || "",
+    selectedDatasetVersion || "",
+    dateRange?.startDate || "",
+    dateRange?.endDate || "",
+  ].join("|");
+}
+
+async function loadCimDashboardOnce(sourceKey, clientId) {
+  const key = `${sourceKey}|${clientId || ""}`;
+  const cached = cimDashboardRequestCache.get(key);
+  if (cached && Date.now() - cached.cachedAt < CIM_AUTOFILL_CACHE_TTL_MS) {
+    return cached.request;
+  }
+  if (!cached || Date.now() - cached.cachedAt >= CIM_AUTOFILL_CACHE_TTL_MS) {
+    const request = sourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD
+      ? loadManualUploadDashboard("all", { clientId })
+      : loadQMSDashboard("all", { clientId });
+    cimDashboardRequestCache.set(key, { cachedAt: Date.now(), request });
+    request.catch(() => cimDashboardRequestCache.delete(key));
+  }
+  return cimDashboardRequestCache.get(key).request;
+}
+
 function toNumber(value, fallback = 0) {
   if (value === null || value === undefined || value === "") return fallback;
   const numeric = typeof value === "number" ? value : Number(String(value).replace(/[$,%(),]/g, ""));
@@ -88,6 +118,23 @@ function mapKpisToMetrics(kpis = []) {
     if (key) metrics[key] = toNumber(card.rawValue ?? card.value, 0);
   });
   return metrics;
+}
+
+function mapRawDashboardKpis(kpis = {}) {
+  return {
+    totalRevenue: toNumber(kpis.totalRevenue, 0),
+    totalExpenses: toNumber(kpis.totalExpenses, 0),
+    netProfit: toNumber(kpis.netProfit, 0),
+    totalAssets: toNumber(kpis.totalAssets, 0),
+    totalLiabilities: toNumber(kpis.totalLiabilities, 0),
+    totalEquity: toNumber(kpis.totalEquity, 0),
+    workingCapital: toNumber(kpis.workingCapital, 0),
+    cashAndBankBalance: toNumber(kpis.cashAndBankBalance, 0),
+    accountReceivable: toNumber(kpis.accountsReceivable, 0),
+    inventoryValue: toNumber(kpis.inventoryValue, 0),
+    accountPayable: toNumber(kpis.accountsPayable, 0),
+    longTermDebt: toNumber(kpis.longTermDebt, 0),
+  };
 }
 
 function getFinancialTolerance(...values) {
@@ -310,12 +357,12 @@ async function getAvailableYears({ clientId, sourceKey, selectedDatasetVersion }
   const normalizedSource = normalizeReportSourceKey(sourceKey) || REPORT_SOURCE_KEYS.QUICKBOOKS;
 
   if (normalizedSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD) {
-    const dashboard = await loadManualUploadDashboard("all", { clientId });
+    const dashboard = await loadCimDashboardOnce(normalizedSource, clientId);
     return sortYearsDescending(dashboard.availableYears || []);
   }
 
   if (normalizedSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) {
-    const dashboard = await loadQMSDashboard("all", { clientId });
+    const dashboard = await loadCimDashboardOnce(normalizedSource, clientId);
     return sortYearsDescending(dashboard.availableYears || []);
   }
 
@@ -344,6 +391,33 @@ async function loadKpisForYear({ clientId, sourceKey, sourceMode, year, datasetV
     sourceMode,
     datasetVersion,
   }));
+}
+
+async function loadKpisByYear({ clientId, sourceKey, sourceMode, years, datasetVersion }) {
+  if (sourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD || sourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) {
+    const dashboard = await loadCimDashboardOnce(sourceKey, clientId);
+    const reports = dashboard?._raw?.reports || {};
+    return Object.fromEntries(years.map((year) => [
+      year,
+      mapRawDashboardKpis(reports[String(year)]?.kpis || {}),
+    ]));
+  }
+
+  const entries = {};
+  await Promise.all(years.map(async (year) => {
+    try {
+      entries[year] = await loadKpisForYear({
+        clientId,
+        sourceKey,
+        sourceMode,
+        year,
+        datasetVersion,
+      });
+    } catch {
+      entries[year] = {};
+    }
+  }));
+  return entries;
 }
 
 async function loadKpisForDateRange({
@@ -392,18 +466,50 @@ async function loadUploadedEbitdaByYear({ clientId, getReports }) {
   return entries;
 }
 
+function loadCachedEbitdaWorkspaceData({ clientId, sourceKey, datasetVersion }) {
+  if (typeof window === "undefined" || !clientId || !sourceKey) return {};
+  const versionSuffix = sourceKey === REPORT_SOURCE_KEYS.MANUAL_GL && datasetVersion
+    ? `_v${datasetVersion}`
+    : "";
+  try {
+    const raw = window.sessionStorage.getItem(`ebitda_data_${clientId}_${sourceKey}${versionSuffix}`);
+    const parsed = raw ? JSON.parse(raw) : null;
+    return parsed?.multiYearData && typeof parsed.multiYearData === "object"
+      ? parsed.multiYearData
+      : {};
+  } catch {
+    return {};
+  }
+}
+
 async function loadEbitdaByYear({ clientId, sourceKey, sourceMode, years, datasetVersion }) {
+  const cachedEntries = loadCachedEbitdaWorkspaceData({
+    clientId,
+    sourceKey,
+    datasetVersion,
+  });
+  const missingYears = years.filter((year) => !cachedEntries[year] && !cachedEntries[String(year)]);
+  if (missingYears.length === 0) {
+    return Object.fromEntries(years.map((year) => [year, cachedEntries[year] || cachedEntries[String(year)]]));
+  }
+
   if (sourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD) {
-    return loadUploadedEbitdaByYear({ clientId, getReports: getAllManualUploadedReports });
+    return {
+      ...cachedEntries,
+      ...await loadUploadedEbitdaByYear({ clientId, getReports: getAllManualUploadedReports }),
+    };
   }
   if (sourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) {
-    return loadUploadedEbitdaByYear({ clientId, getReports: getAllQMSUploadedReports });
+    return {
+      ...cachedEntries,
+      ...await loadUploadedEbitdaByYear({ clientId, getReports: getAllQMSUploadedReports }),
+    };
   }
 
   const ebitdaSourceMode = sourceKey === REPORT_SOURCE_KEYS.MANUAL_GL ? "manual" : "quickbooks";
   const entries = {};
   await Promise.all(
-    years.map(async (year) => {
+    missingYears.map(async (year) => {
       const range = getFiscalYearRange(year);
       try {
         entries[year] = await getEbitdaData(
@@ -418,7 +524,7 @@ async function loadEbitdaByYear({ clientId, sourceKey, sourceMode, years, datase
       }
     }),
   );
-  return entries;
+  return { ...cachedEntries, ...entries };
 }
 
 async function loadEbitdaForDateRange({
@@ -933,8 +1039,27 @@ export async function loadCimFinancialAutofillSnapshot({
   sourceKey,
   selectedDatasetVersion = "",
   dateRange = null,
+  onProgress,
 } = {}) {
+  const reportProgress = (progress, message) => {
+    if (typeof onProgress === "function") onProgress({ progress, message });
+  };
+
   const normalizedSource = normalizeReportSourceKey(sourceKey) || REPORT_SOURCE_KEYS.QUICKBOOKS;
+  const cacheKey = getCimAutofillCacheKey({
+    clientId,
+    sourceKey: normalizedSource,
+    selectedDatasetVersion,
+    dateRange,
+  });
+  const cached = cimAutofillSnapshotCache.get(cacheKey);
+  if (cached && Date.now() - cached.cachedAt < CIM_AUTOFILL_CACHE_TTL_MS) {
+    reportProgress(92, "Using recently validated report data");
+    reportProgress(95, "Preparing verified values for the CIM");
+    return cached.snapshot;
+  }
+
+  reportProgress(8, "Checking the selected financial source");
   const sourceMode = getReportSourceMode(normalizedSource);
   const datasetVersion = normalizedSource === REPORT_SOURCE_KEYS.MANUAL_GL
     ? await getManualGlDatasetVersion(clientId, selectedDatasetVersion)
@@ -949,6 +1074,7 @@ export async function loadCimFinancialAutofillSnapshot({
     sourceKey: normalizedSource,
     selectedDatasetVersion: datasetVersion || selectedDatasetVersion,
   });
+  reportProgress(16, "Finding available fiscal periods");
   const availableYears = await getAvailableYears({
     clientId,
     sourceKey: normalizedSource,
@@ -961,31 +1087,48 @@ export async function loadCimFinancialAutofillSnapshot({
         selectedFiscalYear,
       ])
       : sortYearsDescending(availableYears)
-  ).slice(0, 6);
+  ).slice(0, 5);
   const years = sortYearsDescending([
     ...recentYears,
     selectedStartYear,
     selectedFiscalYear,
   ]);
 
-  const metricsByYear = {};
-  await Promise.all(
-    years.map(async (year) => {
-      try {
-        metricsByYear[year] = await loadKpisForYear({
-          clientId,
-          sourceKey: normalizedSource,
-          sourceMode,
-          year,
-          datasetVersion,
-        });
-      } catch {
-        metricsByYear[year] = {};
-      }
-    }),
-  );
+  const ebitdaPromise = loadEbitdaByYear({
+    clientId,
+    sourceKey: normalizedSource,
+    sourceMode,
+    years,
+    datasetVersion,
+  });
+  const adjustmentsPromise = loadAdjustmentTotals({
+    clientId,
+    sourceKey: normalizedSource,
+    years,
+    datasetVersion,
+  });
+  const cashflowPromise = loadCashflowByYear({
+    clientId,
+    sourceMode,
+    years,
+    datasetVersion,
+  });
 
-  if (isSingleFiscalYearRange) {
+  reportProgress(24, "Reading income statements and balance sheets");
+  const metricsByYear = await loadKpisByYear({
+    clientId,
+    sourceKey: normalizedSource,
+    sourceMode,
+    years,
+    datasetVersion,
+  });
+  reportProgress(42, "Cross-checking reported financial figures");
+
+  if (
+    isSingleFiscalYearRange &&
+    normalizedSource !== REPORT_SOURCE_KEYS.MANUAL_UPLOAD &&
+    normalizedSource !== REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL
+  ) {
     try {
       const annualMetrics = metricsByYear[selectedFiscalYear] || {};
       const rangeMetrics = await loadKpisForDateRange({
@@ -1020,13 +1163,8 @@ export async function loadCimFinancialAutofillSnapshot({
       selectedFiscalYear,
     ])
     : (usableYears.length ? usableYears : years);
-  const ebitdaByYear = await loadEbitdaByYear({
-    clientId,
-    sourceKey: normalizedSource,
-    sourceMode,
-    years: selectedYears,
-    datasetVersion,
-  });
+  const ebitdaByYear = await ebitdaPromise;
+  reportProgress(58, "Reconciling EBITDA and approved adjustments");
   if (isSingleFiscalYearRange) {
     try {
       const rangeEbitda = await loadEbitdaForDateRange({
@@ -1049,18 +1187,10 @@ export async function loadCimFinancialAutofillSnapshot({
       ebitdaByYear[selectedFiscalYear] = ebitdaByYear[selectedFiscalYear] || null;
     }
   }
-  const adjustments = await loadAdjustmentTotals({
-    clientId,
-    sourceKey: normalizedSource,
-    years: selectedYears,
-    datasetVersion,
-  });
-  const cashflowByYear = await loadCashflowByYear({
-    clientId,
-    sourceMode,
-    years: selectedYears,
-    datasetVersion,
-  });
+  const adjustments = await adjustmentsPromise;
+  reportProgress(68, "Processing cash flow and capital expenditure data");
+  const cashflowByYear = await cashflowPromise;
+  reportProgress(80, "Calculating margins, cash conversion, and leverage");
   if (isSingleFiscalYearRange) {
     try {
       const rangeCashflow = await loadCashflowForDateRange({
@@ -1095,6 +1225,7 @@ export async function loadCimFinancialAutofillSnapshot({
   const sortedAscending = sortYearsDescending(selectedYears).reverse();
   const latestYear = selectedFiscalYear || sortedAscending[sortedAscending.length - 1] || new Date().getFullYear();
   const sourceLedger = await sourceLedgerPromise;
+  reportProgress(90, "Validating accounting consistency and source support");
   const validation = buildCimFinancialValidation({
     sourceLedger,
     years: sortedAscending,
@@ -1104,8 +1235,9 @@ export async function loadCimFinancialAutofillSnapshot({
     adjustments,
     enrichedByYear,
   });
+  reportProgress(95, "Preparing verified values for the CIM");
 
-  return {
+  const snapshot = {
     sourceKey: normalizedSource,
     sourceMode,
     datasetVersion,
@@ -1123,4 +1255,6 @@ export async function loadCimFinancialAutofillSnapshot({
     metricsByYear: enrichedByYear,
     validation,
   };
+  cimAutofillSnapshotCache.set(cacheKey, { cachedAt: Date.now(), snapshot });
+  return snapshot;
 }
