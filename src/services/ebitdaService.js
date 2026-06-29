@@ -294,6 +294,23 @@ const ADJ_EXCLUDE = [
 const REVENUE_PATTERNS = [
   "total income",
   "total revenue",
+  "total sales",
+  "net sales",
+];
+
+const COGS_PATTERNS = [
+  "total cost of goods sold",
+  "cost of goods sold",
+  "total cost of sales",
+  "cost of sales",
+  "total cogs",
+  "cogs",
+  "total direct costs",
+  "direct costs",
+];
+
+const GROSS_PROFIT_PATTERNS = [
+  "total gross profit",
   "gross profit",
 ];
 
@@ -483,7 +500,17 @@ function buildEbitdaFromFlatRows(flatRows, periodMeta = {}) {
   const gainLossAssets = extractComponent(flatRows, GAIN_LOSS_ASSETS_PATTERNS);
   const adjustments = extractComponent(flatRows, ADJUSTMENT_PATTERNS, [...ADJ_EXCLUDE, ...OFFICER_WAGES_PATTERNS]);
   const revenue = extractComponent(flatRows, REVENUE_PATTERNS);
+  const cogs = extractComponent(flatRows, COGS_PATTERNS);
+  const grossProfit = extractComponent(flatRows, GROSS_PROFIT_PATTERNS);
   const opex = extractComponent(flatRows, OPEX_PATTERNS);
+  const costOfGoodsSold = Math.abs(cogs.total);
+  const hasGrossProfitData = cogs.items.length > 0 || grossProfit.items.length > 0;
+  const resolvedRevenue = revenue.total || (
+    grossProfit.items.length > 0 ? grossProfit.total + costOfGoodsSold : 0
+  );
+  const resolvedGrossProfit = grossProfit.items.length > 0
+    ? grossProfit.total
+    : resolvedRevenue - costOfGoodsSold;
 
   const addBackRows = [
     ...interestExpense.items, ...taxes.items, ...depreciation.items,
@@ -505,7 +532,10 @@ function buildEbitdaFromFlatRows(flatRows, periodMeta = {}) {
   return {
     ebitda,
     adjustedEbitda: ebitda + adjustments.total,
-    revenue: revenue.total,
+    revenue: resolvedRevenue,
+    costOfGoodsSold,
+    grossProfit: hasGrossProfitData ? resolvedGrossProfit : 0,
+    hasGrossProfitData,
     opex: opex.total,
     components: {
       netIncome: { label: netIncomeMatch.label || "Net Income", value: netIncomeMatch.value, total: netIncomeMatch.value, matchedAccounts: [netIncomeMatch] },
@@ -652,7 +682,17 @@ export async function getEbitdaData(startDate, endDate, accountingMethod, source
 
     // New: Revenue & OpEx for breakdown
     const revenue = extractComponent(flatRows, REVENUE_PATTERNS);
+    const cogs = extractComponent(flatRows, COGS_PATTERNS);
+    const grossProfit = extractComponent(flatRows, GROSS_PROFIT_PATTERNS);
     const opex = extractComponent(flatRows, OPEX_PATTERNS);
+    const costOfGoodsSold = Math.abs(cogs.total);
+    const hasGrossProfitData = cogs.items.length > 0 || grossProfit.items.length > 0;
+    const resolvedRevenue = revenue.total || (
+      grossProfit.items.length > 0 ? grossProfit.total + costOfGoodsSold : 0
+    );
+    const resolvedGrossProfit = grossProfit.items.length > 0
+      ? grossProfit.total
+      : resolvedRevenue - costOfGoodsSold;
 
     // To prevent double-counting (e.g. a row matched by both depreciation and amortization)
     // we track the unique row signatures added to the final EBITDA sum.
@@ -690,7 +730,10 @@ export async function getEbitdaData(startDate, endDate, accountingMethod, source
     return {
       ebitda,
       adjustedEbitda,
-      revenue: revenue.total,
+      revenue: resolvedRevenue,
+      costOfGoodsSold,
+      grossProfit: hasGrossProfitData ? resolvedGrossProfit : 0,
+      hasGrossProfitData,
       opex: opex.total,
       components: {
         netIncome: {
@@ -770,7 +813,10 @@ export async function getEbitdaData(startDate, endDate, accountingMethod, source
       },
     };
   } catch (error) {
-    console.error("[EBITDA Service] Fatal error:", error);
+    // Only log fatal errors if they aren't expected connection issues
+    if (!error.message?.includes("QuickBooks is disconnected")) {
+      console.error("[EBITDA Service] Unexpected error:", error);
+    }
     throw error;
   }
 }

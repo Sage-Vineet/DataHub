@@ -94,6 +94,76 @@ async function ensureBrokerTeamInvitesTable() {
   }
 }
 
+async function ensureBankReconAdjTable() {
+  if (!process.env.DATABASE_URL) return;
+  const isLocal = process.env.DATABASE_URL.includes("localhost") ||
+                  process.env.DATABASE_URL.includes("127.0.0.1");
+  const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: isLocal ? false : { rejectUnauthorized: false },
+    connectionTimeoutMillis: 8000,
+    idleTimeoutMillis: 5000,
+  });
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS bank_reconciliation_adjustments (
+        id              uuid           PRIMARY KEY DEFAULT gen_random_uuid(),
+        company_id      uuid           NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        month           text           NOT NULL,
+        row_key         text           NOT NULL,
+        amount          numeric(18, 2) NOT NULL DEFAULT 0,
+        created_at      timestamptz    NOT NULL DEFAULT now(),
+        updated_at      timestamptz    NOT NULL DEFAULT now(),
+        CONSTRAINT uq_bank_recon_adjustment UNIQUE (company_id, month, row_key)
+      );
+      CREATE INDEX IF NOT EXISTS idx_bank_recon_adj_company
+        ON bank_reconciliation_adjustments(company_id, month);
+    `);
+    console.log("[Startup] bank_reconciliation_adjustments table ready");
+  } catch (err) {
+    console.warn("[Startup] Could not auto-create bank_reconciliation_adjustments table:", err.message);
+  } finally {
+    await pool.end().catch(() => {});
+  }
+}
+
+async function ensureBankReconAddbackItemsTable() {
+  if (!process.env.DATABASE_URL) return;
+  const isLocal = process.env.DATABASE_URL.includes("localhost") ||
+                  process.env.DATABASE_URL.includes("127.0.0.1");
+  const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: isLocal ? false : { rejectUnauthorized: false },
+    connectionTimeoutMillis: 8000,
+    idleTimeoutMillis: 5000,
+  });
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS bank_reconciliation_addback_items (
+        id            uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+        company_id    uuid        NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        section       text        NOT NULL CHECK (section IN ('deposits', 'withdrawals')),
+        name          text        NOT NULL,
+        source        text        NOT NULL DEFAULT 'manual',
+        month_amounts jsonb       NOT NULL DEFAULT '{}'::jsonb,
+        report_source text        NOT NULL DEFAULT 'quickbooks_online',
+        sort_order    integer     NOT NULL DEFAULT 0,
+        created_at    timestamptz NOT NULL DEFAULT now(),
+        updated_at    timestamptz NOT NULL DEFAULT now()
+      );
+      ALTER TABLE bank_reconciliation_addback_items
+        ADD COLUMN IF NOT EXISTS report_source text NOT NULL DEFAULT 'quickbooks_online';
+      CREATE INDEX IF NOT EXISTS idx_brai_company_source_section
+        ON bank_reconciliation_addback_items(company_id, report_source, section);
+    `);
+    console.log("[Startup] bank_reconciliation_addback_items table ready");
+  } catch (err) {
+    console.warn("[Startup] Could not auto-create bank_reconciliation_addback_items table:", err.message);
+  } finally {
+    await pool.end().catch(() => {});
+  }
+}
+
 (async () => {
   try {
     await db.ready;
@@ -109,6 +179,12 @@ async function ensureBrokerTeamInvitesTable() {
       );
       ensureBrokerTeamInvitesTable().catch((err) =>
         console.warn("[Startup] broker_team_invites table init failed:", err.message)
+      );
+      ensureBankReconAdjTable().catch((err) =>
+        console.warn("[Startup] bank_reconciliation_adjustments table init failed:", err.message)
+      );
+      ensureBankReconAddbackItemsTable().catch((err) =>
+        console.warn("[Startup] bank_reconciliation_addback_items table init failed:", err.message)
       );
       checkEmailHealth().catch((err) =>
         console.warn("[Startup] Email health check threw:", err.message)

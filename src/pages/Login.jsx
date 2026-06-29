@@ -184,7 +184,7 @@ export default function Login() {
   const validateSignup = () => {
     const firstName = signupForm.firstName.trim();
     const lastName  = signupForm.lastName.trim();
-    const email     = signupForm.email.trim();
+    const email     = signupForm.email.trim().toLowerCase();
     const pw        = signupForm.password;
     if (!firstName)                         return "First name is required.";
     if (!lastName)                          return "Last name is required.";
@@ -217,7 +217,7 @@ export default function Login() {
     setLoading(true);
     setError("");
     try {
-      await sendVerificationOtpRequest({ email: signupForm.email.trim() });
+      await sendVerificationOtpRequest({ email: signupForm.email.trim().toLowerCase() });
       setPendingForm({ ...signupForm });
       setOtpDigits(["", "", "", "", "", ""]);
       setOtpError("");
@@ -265,7 +265,7 @@ export default function Login() {
     setOtpError("");
     try {
       const result = await verifyVerificationOtpRequest({
-        email: pendingForm.email.trim(),
+        email: pendingForm.email.trim().toLowerCase(),
         otp,
       });
       const fullName =
@@ -273,7 +273,7 @@ export default function Login() {
       await signupBroker({
         name:               fullName,
         broker_company:     pendingForm.broker_company.trim(),
-        email:              pendingForm.email.trim(),
+        email:              pendingForm.email.trim().toLowerCase(),
         phone:              pendingForm.phone.trim(),
         password:           pendingForm.password,
         confirmPassword:    pendingForm.confirmPassword,
@@ -291,7 +291,7 @@ export default function Login() {
     setResendLoading(true);
     setOtpError("");
     try {
-      await sendVerificationOtpRequest({ email: pendingForm.email.trim() });
+      await sendVerificationOtpRequest({ email: pendingForm.email.trim().toLowerCase() });
       setOtpDigits(["", "", "", "", "", ""]);
       setCountdown(60);
       setTimeout(() => otpRefs.current[0]?.focus(), 50);

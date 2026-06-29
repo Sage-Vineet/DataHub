@@ -706,8 +706,11 @@ export async function fetchDashboardKPIs(start, end, options = {}) {
         ? {
           ...(start ? { startDate: start } : {}),
           ...(end ? { endDate: end } : {}),
+          ...(options?.datasetVersion ? { datasetVersion: String(options.datasetVersion) } : {}),
         }
-        : {};
+        : {
+          ...(options?.datasetVersion ? { datasetVersion: String(options.datasetVersion) } : {}),
+        };
 
     const [profitAndLossPayload, balanceSheetPayload] = await Promise.all([
       getManualStagedProfitLossSummary({ params: manualParams }).catch(() => null),
@@ -1110,7 +1113,7 @@ export async function fetchDashboardKPIsFromManualUpload() {
   return cards.map((card) => ({ ...card, rawValue: Number(card.rawValue || 0) }));
 }
 
-function extractMultiColumnTrends(payload, buckets) {
+export function extractMultiColumnTrends(payload, buckets) {
   const qbReport = unwrapReportPayload(payload);
 
   // Identify period columns: money columns whose title is NOT "total"

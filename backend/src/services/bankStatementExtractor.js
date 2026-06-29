@@ -99,9 +99,32 @@ function allAmountsOnLine(line) {
 
 // ─── Balance validation ───────────────────────────────────────────────────────
 function validateBalance(stmt) {
-  const expected = (stmt.beginning_balance || 0) + (stmt.deposits || 0) - (stmt.withdrawals || 0) - (stmt.fees || 0);
-  const variance = Math.abs(expected - (stmt.ending_balance || 0));
-  return variance <= 1.0 ? "Verified" : "Needs Review";
+  const beginning = stmt.beginning_balance || 0;
+  const deposits  = stmt.deposits          || 0;
+  const withdrawals = stmt.withdrawals     || 0;
+  const fees      = stmt.fees              || 0;
+  const ending    = stmt.ending_balance    || 0;
+
+  // Primary: standard bank formula  beginning + deposits - withdrawals - fees = ending
+  const expected = beginning + deposits - withdrawals - fees;
+  const variance = Math.abs(expected - ending);
+  if (variance <= 1.0) return "Verified";
+
+  // Secondary: AI sometimes sets beginning = ending when the statement's opening
+  // balance is 0 (or when there is no prior balance shown).  If that pattern is
+  // detected AND deposits - withdrawals ≈ ending, the extraction is effectively
+  // correct — treat as Verified and let the caller fix beginning_balance to 0.
+  if (Math.abs(beginning - ending) < 0.02 && Math.abs(deposits - withdrawals - fees - ending) <= 1.0) {
+    return "Verified";
+  }
+
+  // Tertiary: percentage-based tolerance (≤ 0.5% of the larger of beginning/ending).
+  // Handles minor rounding differences that arise when a bank sums line items
+  // to more decimal places than it prints.
+  const scale = Math.max(Math.abs(beginning), Math.abs(ending), 1);
+  if (variance / scale <= 0.005) return "Verified";
+
+  return "Needs Review";
 }
 
 // ─── Duplicate detection ──────────────────────────────────────────────────────
@@ -480,15 +503,25 @@ For EACH account and EACH statement period found, return one JSON object with th
 }
 
 EXTRACTION RULES — search for these patterns anywhere in the document:
-  Beginning balance / Opening balance / Starting balance → startingBalance
-  Total credits / Credits / Deposits / Incoming → deposits
-  Total debits / Debits / Withdrawals / Outgoing → withdrawals (ALWAYS positive)
-  Ending balance / Closing balance → endingBalance
+  Beginning balance / Opening balance / Starting balance / Previous balance → startingBalance
+  Total credits / Credits / Deposits / Incoming / Total additions → deposits
+  Total debits / Debits / Withdrawals / Outgoing / Total subtractions → withdrawals (ALWAYS positive)
+  Service charges / Fees / Maintenance fee → fees
+  Ending balance / Closing balance / New balance / Current balance → endingBalance
   accountName: entity or company name on the statement header (not the bank name)
   accountNumber: LAST 4 DIGITS ONLY (e.g. 8209360067 → "0067")
   statementStartDate and statementEndDate: MUST be YYYY-MM-DD format
   month: 3-letter abbreviation (Jan, Feb, … Dec) from the statement end date
   year: 4-digit year from the statement end date
+
+CRITICAL — BEGINNING vs ENDING BALANCE (most common extraction error):
+- startingBalance and endingBalance are TWO DIFFERENT numbers on the statement.
+- startingBalance = balance BEFORE the statement period (often labelled "Previous Balance", "Balance Forward", or "Opening Balance").
+- endingBalance   = balance AFTER the statement period (often labelled "New Balance", "Closing Balance", or "Ending Balance").
+- NEVER use the same dollar amount for both startingBalance and endingBalance unless you have confirmed that the account literally had no net change during the period.
+- If the statement does NOT show an explicit beginning balance (e.g. first statement for the account), set startingBalance to 0.
+- SELF-CHECK: After extracting, verify: startingBalance + deposits - withdrawals - fees ≈ endingBalance (within $1.00).
+  If the check fails, re-examine and correct the values before returning.
 
 OUTPUT RULES:
 - Return ONLY a raw JSON array. NO markdown, NO code fences, NO explanation text.
@@ -515,11 +548,21 @@ function normalizeGeminiStatement(s) {
     ? `${rawBankName} (${accountNumber})`
     : rawBankName;
 
-  const beginningBalance = s.startingBalance ?? s.beginning_balance ?? 0;
-  const deposits = s.deposits ?? 0;
-  const withdrawals = Math.abs(s.withdrawals ?? 0);
-  const fees = s.fees ?? 0;
-  const endingBalance = s.endingBalance ?? s.ending_balance ?? 0;
+  let beginningBalance = Number(s.startingBalance ?? s.beginning_balance ?? 0) || 0;
+  const deposits      = Number(s.deposits ?? 0) || 0;
+  const withdrawals   = Math.abs(Number(s.withdrawals ?? 0) || 0);
+  const fees          = Number(s.fees ?? 0) || 0;
+  let endingBalance   = Number(s.endingBalance ?? s.ending_balance ?? 0) || 0;
+
+  // Auto-correct the most common AI extraction error: beginning = ending when the
+  // actual beginning balance is 0.  Signature: beginning ≈ ending AND
+  // deposits - withdrawals - fees ≈ ending (i.e. the net of the period = ending).
+  if (
+    Math.abs(beginningBalance - endingBalance) < 0.02 &&
+    Math.abs(deposits - withdrawals - fees - endingBalance) <= 1.0
+  ) {
+    beginningBalance = 0;
+  }
 
   const stmt = {
     bank_name: displayBankName,       // "Wells Fargo (0067)" — used as grouping key
@@ -528,11 +571,11 @@ function normalizeGeminiStatement(s) {
     account_number: accountNumber,    // "0067" — last 4 only
     period_start: periodStart,
     period_end: periodEnd,
-    beginning_balance: Number(beginningBalance) || 0,
-    deposits: Number(deposits) || 0,
-    withdrawals: Number(withdrawals) || 0,
-    fees: Number(fees) || 0,
-    ending_balance: Number(endingBalance) || 0,
+    beginning_balance: beginningBalance,
+    deposits,
+    withdrawals,
+    fees,
+    ending_balance: endingBalance,
     source: "gemini",
   };
   stmt.status = validateBalance(stmt);

@@ -1,6 +1,5 @@
 import { fetchCashflow } from "../lib/quickbooks";
 import {
-  getLatestManualUploadedReport,
   getManualGlCashflow,
   getAllManualUploadedReports,
   getManualStagedCashflowMonthlyDetail,
@@ -8,6 +7,7 @@ import {
   getAllQMSUploadedReports,
   getManualCashFlowPeriods,
   getManualGeneratedCashFlow,
+  getKeyReportVersionReport,
 } from "../lib/api";
 import { normalizeAccountingMethod } from "../lib/report-filters";
 import { parseCashFlowSummaryReport } from "../lib/report-parsers";
@@ -93,7 +93,20 @@ function generatedCfToRows(cf) {
  * 2. YTD for Current Year (e.g., 2025 YTD)
  * 3. YTD for Previous Year (e.g., 2024 YTD) for comparison
  */
-function getCashflowComparativePeriods(numYears = 4) {
+function getCashflowComparativePeriods(numYears = 4, startYear = null, endYear = null) {
+  if (startYear && endYear) {
+    const now = new Date();
+    const periods = [];
+    for (let y = Number(startYear); y <= Number(endYear); y++) {
+      const isCurrentYear = y === now.getFullYear();
+      const endStr = isCurrentYear
+        ? `${y}-${String(now.getMonth()+1).padStart(2,"0")}-${String(now.getDate()).padStart(2,"0")}`
+        : `${y}-12-31`;
+      periods.push({ key: `y${y}`, label: `FY ${y}${isCurrentYear ? " YTD" : ""}`, start: `${y}-01-01`, end: endStr });
+    }
+    return periods;
+  }
+
   const now = new Date();
   const currentYear = now.getFullYear();
   const currentMonth = now.getMonth();
@@ -317,6 +330,27 @@ export async function getCashflow(startDate, endDate, accountingMethod, options 
   const sourceMode = options?.sourceMode || "quickbooks";
   const keyReportVersionId = options?.keyReportVersionId || null;
 
+  // Key Reports: build Cash Flow ONLY from this version's entry tables
+  // (balance_sheet_entries + profit_loss_entries) via the dedicated endpoint.
+  // NEVER falls through to Manual GL staging / batches / snapshots.
+  if (keyReportVersionId) {
+    try {
+      const manualFilters = options?.manualFilters || {};
+      const rawYear = options?.year || manualFilters.fiscalYear || null;
+      const response = await getKeyReportVersionReport(keyReportVersionId, "cashflow", {
+        year: /^\d{4}$/.test(String(rawYear ?? "")) ? rawYear : null,
+        startDate: manualFilters.fromDate || null,
+        endDate: manualFilters.toDate || null,
+      });
+      const rows = response?.rows || response?.hierarchicalRows || [];
+      console.log("[KeyReports][CF][Summary] Loaded", rows.length, "rows from entry tables for version", keyReportVersionId);
+      return rows;
+    } catch (err) {
+      console.warn("[KeyReports][CF][Summary] Entry table fetch failed:", err.message);
+      return [];
+    }
+  }
+
   if (sourceMode === "manual") {
     const params = {
       ...((options?.manualFilters && typeof options.manualFilters === "object")
@@ -342,6 +376,12 @@ function cfFileYear(file) {
   return m ? parseInt(m[1], 10) : 0;
 }
 
+// Expand 2-digit stored labels like "Jan 25" → "Jan 2025" for already-stored DB records.
+function expandPeriodLabel(label) {
+  const m = String(label || "").match(/^([A-Za-z]+)\s+(\d{2})$/);
+  return m ? `${m[1]} 20${m[2]}` : label;
+}
+
 function cfFileLabel(file) {
   const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const dateStr = file?.data?.asOfDate || file?.data?.periodEnd;
@@ -351,7 +391,7 @@ function cfFileLabel(file) {
       const year = parseInt(parts[0], 10);
       const month = parseInt(parts[1], 10) - 1;
       if (year >= 2000 && month >= 0 && month <= 11) {
-        return `${monthNames[month]} ${String(year).slice(-2)}`;
+        return `${monthNames[month]} ${year}`;
       }
     }
   }
@@ -366,7 +406,7 @@ function buildCFFromPeriodColumns(sortedFiles) {
     const startIdx = allCols.length;
 
     if (periods.length > 0) {
-      periods.forEach((label, i) => allCols.push({ key: `p${startIdx + i}`, label }));
+      periods.forEach((label, i) => allCols.push({ key: `p${startIdx + i}`, label: expandPeriodLabel(label) }));
       const nameMap = new Map();
       const visit = (items) => {
         if (!Array.isArray(items)) return;
@@ -455,7 +495,28 @@ async function buildGeneratedCFMultiYear() {
   return { rows, columns: { yearCols, ytdComparison: null } };
 }
 
-async function buildCFMultiFileDetail(sourceMode = "manual_upload") {
+function collapseCFNodeToAnnual(node, periods) {
+  const totalIdx = Array.isArray(periods)
+    ? periods.findIndex((p) => /^total$/i.test(String(p).trim()))
+    : -1;
+  const amount =
+    node.amount != null && node.amount !== 0
+      ? node.amount
+      : Array.isArray(node.colAmounts) && node.colAmounts.length
+        ? totalIdx >= 0
+          ? (node.colAmounts[totalIdx] || 0)
+          : node.colAmounts.reduce((s, v) => s + (Number(v) || 0), 0)
+        : 0;
+  return {
+    ...node,
+    amount,
+    children: node.children
+      ? node.children.map((c) => collapseCFNodeToAnnual(c, periods))
+      : undefined,
+  };
+}
+
+async function buildCFMultiFileDetail(sourceMode = "manual_upload", options = {}) {
   // manual_upload cash flows are generated, not stored as uploaded files.
   if (sourceMode === "manual_upload") {
     return buildGeneratedCFMultiYear();
@@ -463,7 +524,19 @@ async function buildCFMultiFileDetail(sourceMode = "manual_upload") {
 
   const fetchFn = sourceMode === "quickbooks_manual" ? getAllQMSUploadedReports : getAllManualUploadedReports;
   const result = await fetchFn("cash_flow");
-  const files = (result?.files || []).filter((f) => f.data?.rows?.length);
+  let files = (result?.files || []).filter((f) => f.data?.rows?.length);
+
+  const { startYear, endYear, yearMode } = options;
+  if (startYear || endYear) {
+    files = files.filter((f) => {
+      const y = cfFileYear(f);
+      if (!y) return true;
+      if (startYear && y < Number(startYear)) return false;
+      if (endYear && y > Number(endYear)) return false;
+      return true;
+    });
+  }
+
   if (!files.length) return { rows: [], columns: { yearCols: [], ytdComparison: null } };
 
   // Sort files oldest → newest
@@ -474,17 +547,22 @@ async function buildCFMultiFileDetail(sourceMode = "manual_upload") {
     return new Date(a.updatedAt || 0) - new Date(b.updatedAt || 0);
   });
 
-  // If files have monthly period columns, expand one column per period (exact file layout)
-  if (sortedFiles.some((f) => f.data?.periods?.length > 0)) {
+  // yearMode: one "FY YYYY" column per file — skip period expansion.
+  if (!yearMode && sortedFiles.some((f) => f.data?.periods?.length > 0)) {
     return buildCFFromPeriodColumns(sortedFiles);
   }
 
-  // One column per file — union all rows so no data is missing
-  const filePeriods = sortedFiles.map((f, i) => ({
-    key: `f${i}`,
-    label: cfFileLabel(f),
-    rows: f.data.rows,
-  }));
+  const filePeriods = sortedFiles.map((f, i) => {
+    const year = cfFileYear(f);
+    const rows = yearMode && f.data?.periods?.length
+      ? (f.data.rows || []).map((r) => collapseCFNodeToAnnual(r, f.data.periods))
+      : (f.data.rows || []);
+    return {
+      key: `f${i}`,
+      label: year ? `FY ${year}` : cfFileLabel(f),
+      rows,
+    };
+  });
 
   const rows = mergeFileNodes(
     filePeriods.map((p) => p.rows),
@@ -508,6 +586,35 @@ export async function getCashflowDetail(
   const sourceMode = options?.sourceMode || "quickbooks";
   const keyReportVersionId = options?.keyReportVersionId || null;
 
+  // Key Reports: read ONLY from this version's entry tables (multi-year comparative
+  // Cash Flow) — never from Manual GL staging.
+  if (keyReportVersionId) {
+    try {
+      const manualFilters = options?.manualFilters || {};
+      const singleYear = /^\d{4}$/.test(String(manualFilters.fiscalYear ?? "")) ? manualFilters.fiscalYear : null;
+      const response = await getKeyReportVersionReport(keyReportVersionId, "cashflow", {
+        year: singleYear,
+        startDate: manualFilters.fromDate || null,
+        endDate: manualFilters.toDate || null,
+      });
+      console.log("[KeyReports][CF][Detail] Loaded from entry tables for version", keyReportVersionId);
+      return {
+        rows: response?.hierarchicalRows || response?.rows || [],
+        columns: response?.columns || { yearCols: [], ytdComparison: null },
+        source: response?.source || "key_reports_entry_tables",
+        reportType: "cashflow_multi_year",
+      };
+    } catch (err) {
+      console.warn("[KeyReports][CF][Detail] Entry table fetch failed:", err.message);
+      return {
+        rows: [],
+        columns: { yearCols: [], ytdComparison: null },
+        source: "key_reports_entry_tables",
+        reportType: "cashflow_multi_year",
+      };
+    }
+  }
+
   if (sourceMode === "manual") {
     const params = {
       ...((options?.manualFilters && typeof options.manualFilters === "object")
@@ -522,11 +629,15 @@ export async function getCashflowDetail(
     console.log("[DetailedReportUI][CF] Received keys:", Object.keys(response || {}), "| source:", response?.source, "| reportType:", response?.reportType);
     return response;
   }
-  if (sourceMode === "manual_upload" || sourceMode === "quickbooks_manual") {
-    return buildCFMultiFileDetail(options.sourceMode);
+  if (options?.sourceMode === "manual_upload" || options?.sourceMode === "quickbooks_manual") {
+    return buildCFMultiFileDetail(options.sourceMode, {
+      startYear: options.startYear,
+      endYear: options.endYear,
+      yearMode: options.yearMode,
+    });
   }
 
-  const periods = getCashflowComparativePeriods(4);
+  const periods = getCashflowComparativePeriods(4, options.startYear || null, options.endYear || null);
 
   const results = await Promise.all(
     periods.map((p) =>

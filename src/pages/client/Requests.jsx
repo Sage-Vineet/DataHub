@@ -26,7 +26,6 @@ import {
   listCompanyRequests,
   listRequestDocuments,
   uploadFile,
-  updateRequest,
   updateRequestNarrative,
 } from '../../lib/api';
 import { buildFolderMapFromTree } from '../../lib/folderOptions';
@@ -208,18 +207,6 @@ function mapApiRequestToUi(request) {
     reminderHistory: [],
     notificationFrequency: getReminderFrequencyLabel(request.priority),
   };
-}
-
-function mapUiPatchToApi(patch) {
-  const apiPatch = {};
-  if (patch.name !== undefined) apiPatch.title = patch.name;
-  if (patch.description !== undefined) apiPatch.description = patch.description;
-  if (patch.priority !== undefined) apiPatch.priority = patch.priority;
-  if (patch.workflowStatus !== undefined) apiPatch.status = patch.workflowStatus;
-  if (patch.dueDate !== undefined) apiPatch.due_date = patch.dueDate;
-  if (patch.assignedTo !== undefined && patch.assignedTo !== null) apiPatch.assigned_to = patch.assignedTo;
-  if (patch.visible !== undefined) apiPatch.visible = patch.visible;
-  return apiPatch;
 }
 
 function CategoryCard({ category, requestsInCategory, onClick }) {
@@ -410,7 +397,7 @@ function roleBadgeClient(role) {
   return { label: 'Buyer', bg: '#DCFCE7', color: '#166534' };
 }
 
-function NarrativeCard({ content, author, canEdit, draft, onDraftChange, onSave, saving }) {
+function NarrativeCard({ content, author, canEdit, draft, onDraftChange }) {
   const hasExisting = content && content.trim().length > 0;
   const badge = author ? roleBadgeClient(author.role) : null;
   const formattedTime = author?.updated_at
@@ -460,13 +447,6 @@ function RequestDetailPage({ onBack, request, allRequests, onSubmitResponse, err
   const [pendingFiles, setPendingFiles] = useState([]);
   const [submitting, setSubmitting] = useState(false);
   const [previewDocument, setPreviewDocument] = useState(null);
-
-  useEffect(() => {
-    setNarrativeDraft('');
-    setPendingFiles([]);
-    setDuplicateWarning([]);
-    setPreviewDocument(null);
-  }, [request?.id]);
 
   if (!request) return null;
 
@@ -585,8 +565,6 @@ function RequestDetailPage({ onBack, request, allRequests, onSubmitResponse, err
                 canEdit={!isReadOnly}
                 draft={narrativeDraft}
                 onDraftChange={setNarrativeDraft}
-                onSave={null}
-                saving={false}
               />
             )}
 
@@ -874,6 +852,7 @@ export default function ClientRequests() {
   if (activeRequest) {
     return (
       <RequestDetailPage
+        key={activeRequest.id}
         onBack={() => setActiveRequestId(null)}
         request={activeRequest}
         allRequests={requestState}

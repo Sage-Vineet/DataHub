@@ -1,5 +1,5 @@
 const express = require("express");
-const { fetchAndCacheReport, REPORT_TYPES } = require("../../../services/quickbooksReportService");
+const { fetchAndCacheReport, fetchOnDemandReport, REPORT_TYPES } = require("../../../services/quickbooksReportService");
 
 const router = express.Router();
 
@@ -35,16 +35,18 @@ const router = express.Router();
  */
 router.get("/general-ledger", async (req, res) => {
   const clientId = req.clientId;
-  const { start_date, end_date, account } = req.query;
+  const { start_date, end_date, account, fresh } = req.query;
 
-  // Build query parameters for QB API
   const queryParams = {};
   if (start_date) queryParams.start_date = start_date;
   if (end_date) queryParams.end_date = end_date;
   if (account) queryParams.account = account;
 
   try {
-    const result = await fetchAndCacheReport(
+    // fresh=true → fetch live from QB with the given date range and cache the result.
+    // This is used by the vendor/customer breakdown when the user applies new filters.
+    const fetchFn = fresh === "true" ? fetchOnDemandReport : fetchAndCacheReport;
+    const result = await fetchFn(
       clientId,
       REPORT_TYPES.GENERAL_LEDGER,
       "GeneralLedger",
@@ -54,7 +56,7 @@ router.get("/general-ledger", async (req, res) => {
     return res.json({
       success: true,
       data: result.data,
-      source: "cached_snapshot",
+      source: fresh === "true" ? "live" : "cached_snapshot",
       disconnected: Boolean(req.qbDisconnected),
       lastSyncAt: result.lastSyncedAt,
       datasetVersion: result.datasetVersion || null,

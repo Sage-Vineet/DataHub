@@ -11,7 +11,7 @@ const {
   extractBsBankBalancesWithGemini,
   extractBsBankBalancesFromExcelText,
 } = require("../../../services/geminiFinancialParser");
-const keyReportService = require("../../../services/keyReportService");
+const keyReportService = require("../../../services/keyReports/keyReportService");
 const XLSX = require("xlsx");
 
 const MANUAL_REPORT_UPLOAD_SOURCE = "manual_report_upload";

@@ -9,6 +9,9 @@ const {
   addEbitdaComment,
   normalizeScope,
 } = require("../services/ebitdaAdjustmentStore");
+const { GoogleGenerativeAI } = require("@google/generative-ai");
+
+const GEMINI_MODELS = ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash"];
 
 const router = express.Router();
 
@@ -145,6 +148,102 @@ router.post("/ebitda-adjustments/:id/comments", async (req, res) => {
       success: false,
       error: error.message || "Failed to add EBITDA comment.",
     });
+  }
+});
+
+// ── AI-generated EBITDA comments ────────────────────────────────────────────
+// POST /ebitda/generate-comments
+// Body: { companyName, years, ebitdaData, adjustments, finalLabel, percentLabel }
+// Returns: { comments: { netIncome, interestIncome, ... } }
+router.post("/ebitda/generate-comments", async (req, res) => {
+  try {
+  if (!process.env.GEMINI_API_KEY) {
+    return res.status(503).json({ success: false, error: "AI service not configured." });
+  }
+
+  const {
+    companyName = "the company",
+    years = [],
+    ebitdaData = {},
+    adjustments = [],
+    finalLabel = "Adjusted EBITDA",
+    percentLabel = "EBITDA % of Sales",
+  } = req.body || {};
+
+  const fmt = (v) => (v == null || v === "" ? "N/A" : Number(v).toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }));
+  const fmtPct = (v) => (v == null || v === "" ? "N/A" : `${Number(v).toFixed(2)}%`);
+
+  // Build a structured financial summary for Gemini to analyse
+  const rows = [
+    { key: "netIncome",       label: "Net Income" },
+    { key: "interestIncome",  label: "Total Interest Income" },
+    { key: "interestExpense", label: "Total Interest Expense" },
+    { key: "taxes",           label: "Total Income Tax Expense" },
+    { key: "depreciation",    label: "Depreciation" },
+    { key: "amortization",    label: "Amortization Expense" },
+    { key: "ebitda",          label: "EBITDA" },
+    { key: "totalSde",        label: finalLabel },
+    { key: "sdePercent",      label: percentLabel },
+  ];
+
+  const tableLines = rows.map(({ key, label }) => {
+    const vals = years.map((yr) => {
+      const v = ebitdaData[yr]?.[key];
+      return key === "sdePercent" ? fmtPct(v) : fmt(v);
+    });
+    return `  ${label}: ${vals.join(" | ")}`;
+  });
+
+  const adjLines = adjustments.length
+    ? adjustments.map((a) => {
+        const vals = years.map((yr) => fmt(a.values?.[yr]?.value ?? a.values?.[yr]?.apiValue)).join(" | ");
+        return `  ${a.label}: ${vals}`;
+      })
+    : ["  (none)"];
+
+  const prompt = `You are a senior M&A financial analyst. Analyse the following EBITDA data for ${companyName} and write a concise, insightful analytical comment for EACH row. Comments should be 1-2 sentences, professional, and highlight trends, anomalies, or significance of the value.
+
+YEARS: ${years.join(" | ")}
+
+EBITDA TABLE:
+${tableLines.join("\n")}
+
+ADJUSTMENTS / ADD-BACKS:
+${adjLines.join("\n")}
+
+Return ONLY a raw JSON object with these exact keys (no markdown, no explanation):
+{
+  "netIncome": "...",
+  "interestIncome": "...",
+  "interestExpense": "...",
+  "taxes": "...",
+  "depreciation": "...",
+  "amortization": "...",
+  "ebitda": "...",
+  "totalSde": "...",
+  "sdePercent": "..."
+}`;
+
+  for (const modelName of GEMINI_MODELS) {
+    try {
+      const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+      const model = genAI.getGenerativeModel({ model: modelName });
+      const result = await model.generateContent(prompt);
+      let text = result.response.text().trim()
+        .replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+      const comments = JSON.parse(text);
+      // Ensure all expected keys exist
+      rows.forEach(({ key }) => { if (!comments[key]) comments[key] = ""; });
+      return res.json({ success: true, comments });
+    } catch (err) {
+      console.warn(`[EbitdaComments] model=${modelName} failed: ${err.message}`);
+    }
+  }
+
+  return res.status(500).json({ success: false, error: "Failed to generate comments after all retries." });
+  } catch (err) {
+    console.error("[EbitdaComments] Unexpected error:", err.message, err.stack);
+    return res.status(500).json({ success: false, error: err.message || "Unexpected server error." });
   }
 });
 

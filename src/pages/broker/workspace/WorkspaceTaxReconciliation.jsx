@@ -6,7 +6,14 @@ import {
   ChevronDown,
   LoaderCircle,
   RefreshCw,
+  Plus,
+  Trash2,
+  Check,
+  X,
+  Download,
 } from "lucide-react";
+import * as XLSX from "xlsx";
+import { jsPDF } from "jspdf";
 import { cn } from "../../../lib/utils";
 import {
   getCompanyRequest,
@@ -15,6 +22,8 @@ import {
   getManualStageFilterOptions,
   listManualGlDatasetVersions,
   getActiveKeyReportMappings,
+  getTaxReconciliationOverrides,
+  saveTaxReconciliationOverrides,
 } from "../../../lib/api";
 import { useDataSource } from "../../../context/DataSourceContext";
 
@@ -157,6 +166,93 @@ function SyncStatus({ sync }) {
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
+// Complete Form 1065 Schedule K — Partners' Distributive Share Items list,
+// grouped by section. Each section has a header label and the corresponding items.
+// Items already in the table are filtered out at render time; deleted items can be re-added.
+const SCHEDULE_K_SECTIONS = [
+  {
+    section: "Income (Loss)",
+    items: [
+      "Ordinary Business Income (Loss)",
+      "Net Rental Real Estate Income (Loss)",
+      "Other Gross Rental Income (Loss)",
+      "Expenses from Other Rental Activities",
+      "Other Net Rental Income (Loss)",
+      "Guaranteed Payments – Services",
+      "Guaranteed Payments – Capital",
+      "Guaranteed Payments – Total",
+      "Interest Income",
+      "Ordinary Dividends",
+      "Qualified Dividends",
+      "Dividend Equivalents",
+      "Royalties",
+      "Net Short-Term Capital Gain (Loss)",
+      "Net Long-Term Capital Gain (Loss)",
+      "Collectibles (28%) Gain (Loss)",
+      "Unrecaptured Section 1250 Gain",
+      "Net Section 1231 Gain (Loss)",
+      "Other Income (Loss)",
+    ],
+  },
+  {
+    section: "Deductions",
+    items: [
+      "Section 179 Deduction",
+      "Contributions (Charitable)",
+      "Investment Interest Expense",
+      "Section 59(e)(2) Expenditures",
+      "Other Deductions",
+    ],
+  },
+  {
+    section: "Self-Employment",
+    items: [
+      "Net Earnings (Loss) from Self-Employment",
+      "Gross Farming or Fishing Income",
+      "Gross Nonfarm Income",
+    ],
+  },
+  {
+    section: "Credits",
+    items: [
+      "Low-Income Housing Credit (Section 42(j)(5))",
+      "Low-Income Housing Credit (Other)",
+      "Qualified Rehabilitation Expenditures (Rental Real Estate)",
+      "Other Rental Real Estate Credits",
+      "Other Rental Credits",
+      "Other Credits",
+    ],
+  },
+  {
+    section: "AMT Items",
+    items: [
+      "Post-1986 Depreciation Adjustment",
+      "Adjusted Gain or Loss",
+      "Depletion (Other than Oil and Gas)",
+      "Oil, Gas & Geothermal Properties – Gross Income",
+      "Oil, Gas & Geothermal Properties – Deductions",
+      "Other AMT Items",
+    ],
+  },
+  {
+    section: "Other Information",
+    items: [
+      "Tax-Exempt Interest Income",
+      "Other Tax-Exempt Income",
+      "Nondeductible Expenses",
+      "Distributions of Cash and Marketable Securities",
+      "Distributions of Other Property",
+      "Investment Income",
+      "Investment Expenses",
+      "Other Items and Amounts",
+      "Total Foreign Taxes Paid or Accrued",
+    ],
+  },
+];
+
+// Flat list derived from sections (used for any code that needs a plain array)
+const SCHEDULE_K_ITEMS = SCHEDULE_K_SECTIONS.flatMap((s) => s.items);
+
 const MAIN_LINE_ITEMS = [
   { label: "Total Revenue", isHighlight: false },
   { label: "Total Cost of Goods Sold", isHighlight: false },
@@ -188,6 +284,8 @@ export default function WorkspaceTaxReconciliation() {
   const [matrixData, setMatrixData] = useState(storedState?.matrixData ?? {});
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState(storedState?.error ?? "");
+  const [taxExportOpen, setTaxExportOpen] = useState(false);
+  const [taxIsExporting, setTaxIsExporting] = useState(false);
   const [warnings, setWarnings] = useState(storedState?.warnings ?? []);
   const [isQBDisconnected, setIsQBDisconnected] = useState(false);
   const [syncStatus, setSyncStatus] = useState(() => ({
@@ -206,6 +304,16 @@ export default function WorkspaceTaxReconciliation() {
   const effectiveSourceMode = kr.krActive
     ? (kr.flowType === 'manual_gl' ? 'manual' : 'manual_upload')
     : activeSourceMode;
+
+  // User-edited Schedule K overrides: { [year]: { [label]: { taxReturn, pl, userAdded? } } }
+  const [reconcilingOverrides, setReconcilingOverrides] = useState({});
+  // Inline edit state: { year, label } or null
+  const [editingCell, setEditingCell] = useState(null);
+  const [editingValue, setEditingValue] = useState("");
+  // Add-row dropdown state
+  const [showAddRowDropdown, setShowAddRowDropdown] = useState(false);
+  const [addRowSearch, setAddRowSearch] = useState("");
+  const addRowRef = useRef(null);
 
   // Manual GL (staged General Ledger) sources its P&L from the platform's GL
   // reports — not from a separately uploaded P&L document. It's handled by its
@@ -742,6 +850,41 @@ export default function WorkspaceTaxReconciliation() {
     void loadData(true);
   }, [isManualGL, selectedVersion, clientId, loadData]);
 
+  // ── Overrides: load from DB whenever clientId changes ────────────────
+
+  useEffect(() => {
+    if (!clientId) return;
+    let cancelled = false;
+    getTaxReconciliationOverrides({ clientId })
+      .then((res) => {
+        if (!cancelled) setReconcilingOverrides(res?.overrides || {});
+      })
+      .catch(() => { /* non-fatal — start with empty overrides */ });
+    return () => { cancelled = true; };
+  }, [clientId]);
+
+  // Close add-row dropdown on outside click
+  useEffect(() => {
+    if (!showAddRowDropdown) return;
+    function onOutsideClick(e) {
+      if (addRowRef.current && !addRowRef.current.contains(e.target)) {
+        setShowAddRowDropdown(false);
+        setAddRowSearch("");
+      }
+    }
+    document.addEventListener("mousedown", onOutsideClick);
+    return () => document.removeEventListener("mousedown", onOutsideClick);
+  }, [showAddRowDropdown]);
+
+  // Debounced save to DB
+  const saveTimeoutRef = useRef(null);
+  const persistOverrides = useCallback((next) => {
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    saveTimeoutRef.current = setTimeout(() => {
+      saveTaxReconciliationOverrides({ clientId, overrides: next }).catch(() => {});
+    }, 600);
+  }, [clientId]);
+
   // ── Data helpers ──────────────────────────────────────────────────────
 
   const getMainRow = useCallback(
@@ -754,7 +897,37 @@ export default function WorkspaceTaxReconciliation() {
     [matrixData],
   );
 
+  // All visible reconciling item labels = AI-extracted + user-added overrides,
+  // minus any rows the user has explicitly deleted.
   const dynamicReconcilingItems = useMemo(() => {
+    const labels = new Set();
+    Object.values(matrixData).forEach((yearData) => {
+      yearData?.data?.forEach((row) => {
+        if (row.isReconcilingItem) labels.add(row.label);
+      });
+    });
+    // Include labels added via user overrides (userAdded flag)
+    Object.values(reconcilingOverrides).forEach((yearOvr) => {
+      Object.entries(yearOvr || {}).forEach(([lbl, ovr]) => {
+        if (ovr?.userAdded) labels.add(lbl);
+      });
+    });
+    // Exclude labels deleted in ALL years (deleted flag present in every year that has data)
+    return Array.from(labels)
+      .filter((lbl) => {
+        // A label is hidden only if EVERY year that has any data for it marks it deleted
+        const yearsWithData = Object.keys(reconcilingOverrides).filter(
+          (yr) => reconcilingOverrides[yr]?.[lbl] !== undefined,
+        );
+        if (!yearsWithData.length) return true; // no override → not deleted
+        return yearsWithData.some((yr) => !reconcilingOverrides[yr][lbl]?.deleted);
+      })
+      .sort((a, b) => a.localeCompare(b));
+  }, [matrixData, reconcilingOverrides]);
+
+  // All Schedule K labels the AI found in the actual tax return documents (across all years),
+  // including deleted ones — used to drive the "From Your Tax Return" section of the add-row dropdown.
+  const aiExtractedScheduleKLabels = useMemo(() => {
     const labels = new Set();
     Object.values(matrixData).forEach((yearData) => {
       yearData?.data?.forEach((row) => {
@@ -764,12 +937,16 @@ export default function WorkspaceTaxReconciliation() {
     return Array.from(labels).sort((a, b) => a.localeCompare(b));
   }, [matrixData]);
 
+  // Effective Tax Return value: deleted → 0, override wins over AI-extracted value
   const getReconValue = useCallback(
     (year, label) => {
+      const ovr = reconcilingOverrides[String(year)]?.[label];
+      if (ovr?.deleted) return 0;
+      if (ovr !== undefined) return Number(ovr.taxReturn ?? 0);
       const row = matrixData[year]?.data?.find((r) => r?.label === label);
       return Number(row?.taxReturn ?? 0);
     },
-    [matrixData],
+    [matrixData, reconcilingOverrides],
   );
 
   const getReconCheck = useCallback(
@@ -784,11 +961,358 @@ export default function WorkspaceTaxReconciliation() {
     [getMainRow, getReconValue, dynamicReconcilingItems],
   );
 
+  // ── Override edit handlers ────────────────────────────────────────────
+
+  const startEdit = useCallback((year, label) => {
+    setEditingCell({ year, label });
+    const current = getReconValue(year, label);
+    setEditingValue(current !== 0 ? String(current) : "");
+  }, [getReconValue]);
+
+  const commitEdit = useCallback((year, label) => {
+    const raw = String(editingValue).replace(/[,\s]/g, "");
+    const numVal = raw === "" || raw === "-" ? 0 : parseFloat(raw);
+    const finalVal = Number.isFinite(numVal) ? numVal : 0;
+
+    setReconcilingOverrides((prev) => {
+      const yearKey = String(year);
+      const existing = prev[yearKey]?.[label];
+      const next = {
+        ...prev,
+        [yearKey]: {
+          ...(prev[yearKey] || {}),
+          [label]: { taxReturn: finalVal, pl: 0, ...(existing?.userAdded ? { userAdded: true } : {}) },
+        },
+      };
+      persistOverrides(next);
+      return next;
+    });
+    setEditingCell(null);
+    setEditingValue("");
+  }, [editingValue, persistOverrides]);
+
+  const cancelEdit = useCallback(() => {
+    setEditingCell(null);
+    setEditingValue("");
+  }, []);
+
+  const addReconRow = useCallback((label) => {
+    setReconcilingOverrides((prev) => {
+      const next = { ...prev };
+      activeYears.forEach((yr) => {
+        const yearKey = String(yr);
+        const existing = next[yearKey]?.[label];
+        // Only skip if there's already a live (non-deleted) override
+        if (existing && !existing.deleted) return;
+        next[yearKey] = { ...(next[yearKey] || {}), [label]: { taxReturn: 0, pl: 0, userAdded: true } };
+      });
+      persistOverrides(next);
+      return next;
+    });
+    setShowAddRowDropdown(false);
+    setAddRowSearch("");
+  }, [activeYears, persistOverrides]);
+
+  // Restores a previously deleted AI-extracted row by removing the deleted override entirely,
+  // so getReconValue falls back to the original value from matrixData.
+  const restoreAiRow = useCallback((label) => {
+    setReconcilingOverrides((prev) => {
+      const next = { ...prev };
+      Object.keys(next).forEach((yr) => {
+        if (next[yr]?.[label] !== undefined) {
+          next[yr] = { ...next[yr] };
+          delete next[yr][label];
+        }
+      });
+      persistOverrides(next);
+      return next;
+    });
+    setShowAddRowDropdown(false);
+    setAddRowSearch("");
+  }, [persistOverrides]);
+
+  const deleteReconRow = useCallback((label) => {
+    setReconcilingOverrides((prev) => {
+      const isUserAdded = Object.values(prev).some((yr) => yr?.[label]?.userAdded);
+      const next = { ...prev };
+      if (isUserAdded) {
+        // User-added rows: remove entirely so the label leaves the visible Set
+        Object.keys(next).forEach((yr) => {
+          if (next[yr]?.[label] !== undefined) {
+            next[yr] = { ...next[yr] };
+            delete next[yr][label];
+          }
+        });
+      } else {
+        // AI-extracted rows: mark deleted so they disappear but can be re-added from the dropdown
+        activeYears.forEach((yr) => {
+          const yearKey = String(yr);
+          next[yearKey] = { ...next[yearKey], [label]: { ...(next[yearKey]?.[label] || {}), deleted: true } };
+        });
+      }
+      persistOverrides(next);
+      return next;
+    });
+  }, [activeYears, persistOverrides]);
+
   const yrDiv = (idx) =>
     idx < activeYears.length - 1 ? "border-r-2 border-r-primary/25" : "";
 
   const hasMatrixData = Object.keys(matrixData).length > 0;
   const reportTitle = company?.name || "Your Company";
+
+  const exportTaxReconToExcel = () => {
+    const wb = XLSX.utils.book_new();
+    const fmtN = (v) => (v == null ? "" : Number(v) || 0);
+
+    const getReconVal = (yr, label) => {
+      const ovr = reconcilingOverrides[String(yr)]?.[label];
+      if (ovr?.deleted) return 0;
+      if (ovr !== undefined) return Number(ovr.taxReturn ?? 0);
+      const d = matrixData[yr]?.data?.find((r) => r?.label === label);
+      return Number(d?.taxReturn ?? 0);
+    };
+
+    const headerRow1 = ["Source"];
+    const headerRow2 = [""];
+    for (const yr of activeYears) {
+      headerRow1.push(`FY ${yr}`, "", "");
+      headerRow2.push("P&L", "Tax Return", "TR Variance");
+    }
+
+    const allRows = [headerRow1, headerRow2];
+
+    for (const { label } of MAIN_LINE_ITEMS) {
+      const row = [label];
+      for (const yr of activeYears) {
+        const d = matrixData[yr]?.data?.find((r) => r?.label === label);
+        const pl = Number(d?.pl ?? 0);
+        const taxReturn = Number(d?.taxReturn ?? 0);
+        row.push(fmtN(pl), fmtN(taxReturn), fmtN(taxReturn - pl));
+      }
+      allRows.push(row);
+    }
+
+    const secRow = ["TAX TO BOOK RECONCILING ITEMS"];
+    for (let i = 0; i < activeYears.length * 3; i++) secRow.push("");
+    allRows.push(secRow);
+
+    for (const label of dynamicReconcilingItems) {
+      const row = [label];
+      for (const yr of activeYears) {
+        const taxReturn = getReconVal(yr, label);
+        row.push("", fmtN(taxReturn), fmtN(taxReturn));
+      }
+      allRows.push(row);
+    }
+
+    const reconCheckRow = ["Reconciliation Check"];
+    const unreconPctRow = ["Unreconciled %"];
+    for (const yr of activeYears) {
+      const nd = matrixData[yr]?.data?.find((r) => r?.label === "Net Income");
+      const plNet = Number(nd?.pl ?? 0);
+      const taxNet = Number(nd?.taxReturn ?? 0);
+      const itemsSum = dynamicReconcilingItems.reduce((acc, lbl) => acc + getReconVal(yr, lbl), 0);
+      const check = taxNet - plNet - itemsSum;
+      reconCheckRow.push(fmtN(check), "", "");
+      const pct = plNet !== 0 ? ((check / plNet) * 100).toFixed(1) + "%" : "0.0%";
+      unreconPctRow.push(pct, "", "");
+    }
+    allRows.push(reconCheckRow);
+    allRows.push(unreconPctRow);
+
+    const ws = XLSX.utils.aoa_to_sheet(allRows);
+    XLSX.utils.book_append_sheet(wb, ws, "Tax Reconciliation");
+    XLSX.writeFile(wb, "Tax Reconciliation.xlsx");
+  };
+
+  const exportTaxReconToPdf = () => {
+    const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
+    const PAGE_W = 841.89;
+    const PAGE_H = 595.28;
+    const MARGIN = 30;
+    const usableW = PAGE_W - MARGIN * 2;
+    const LABEL_COL = 180;
+    const yearGroupW = (usableW - LABEL_COL) / (activeYears.length || 1);
+    const subColW = yearGroupW / 3;
+    const ROW_H = 18;
+    const FS = 8;
+    let y = MARGIN;
+
+    const fmtN = (v) => {
+      const n = Number(v);
+      if (v == null || v === "" || isNaN(n)) return "-";
+      return n.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+    };
+
+    const getReconVal = (yr, label) => {
+      const ovr = reconcilingOverrides[String(yr)]?.[label];
+      if (ovr?.deleted) return 0;
+      if (ovr !== undefined) return Number(ovr.taxReturn ?? 0);
+      const d = matrixData[yr]?.data?.find((r) => r?.label === label);
+      return Number(d?.taxReturn ?? 0);
+    };
+
+    const checkPage = () => {
+      if (y + ROW_H > PAGE_H - MARGIN) { doc.addPage(); y = MARGIN; }
+    };
+
+    doc.setFontSize(14);
+    doc.setFont("helvetica", "bold");
+    doc.setTextColor(0, 0, 0);
+    doc.text("Tax Reconciliation", MARGIN, y + 12);
+    y += 28;
+
+    // Year group header row
+    doc.setFontSize(FS + 1);
+    doc.setFont("helvetica", "bold");
+    doc.setTextColor(0, 0, 0);
+    doc.text("Source", MARGIN + 4, y + ROW_H - 5);
+    activeYears.forEach((yr, i) => {
+      const x = MARGIN + LABEL_COL + i * yearGroupW;
+      doc.text(`FY ${yr}`, x + yearGroupW / 2, y + ROW_H - 5, { align: "center" });
+    });
+    doc.setDrawColor(0, 0, 0);
+    doc.line(MARGIN, y + ROW_H, MARGIN + usableW, y + ROW_H);
+    y += ROW_H;
+
+    // Sub-column headers
+    doc.setFontSize(FS);
+    doc.setFont("helvetica", "bold");
+    doc.setTextColor(0, 0, 0);
+    activeYears.forEach((_, i) => {
+      ["P&L", "Tax Return", "TR Variance"].forEach((sl, j) => {
+        const rx = MARGIN + LABEL_COL + i * yearGroupW + (j + 1) * subColW - 4;
+        doc.text(sl, rx, y + ROW_H - 5, { align: "right" });
+      });
+    });
+    doc.setDrawColor(0, 0, 0);
+    doc.line(MARGIN, y + ROW_H, MARGIN + usableW, y + ROW_H);
+    y += ROW_H;
+
+    const drawRow = (label, bold, getCols) => {
+      checkPage();
+      doc.setFont("helvetica", bold ? "bold" : "normal");
+      doc.setFontSize(FS);
+      doc.setTextColor(0, 0, 0);
+      doc.text(label, MARGIN + 4, y + ROW_H - 5);
+      activeYears.forEach((yr, i) => {
+        const [v0, v1, v2] = getCols(yr);
+        const bx = MARGIN + LABEL_COL + i * yearGroupW;
+        if (v0 !== "") doc.text(fmtN(v0), bx + subColW - 4, y + ROW_H - 5, { align: "right" });
+        if (v1 !== "") doc.text(fmtN(v1), bx + subColW * 2 - 4, y + ROW_H - 5, { align: "right" });
+        if (v2 !== "") doc.text(fmtN(v2), bx + subColW * 3 - 4, y + ROW_H - 5, { align: "right" });
+      });
+      doc.setDrawColor(180, 180, 180);
+      doc.line(MARGIN, y + ROW_H, MARGIN + usableW, y + ROW_H);
+      y += ROW_H;
+    };
+
+    for (const { label, isHighlight } of MAIN_LINE_ITEMS) {
+      drawRow(label, isHighlight, (yr) => {
+        const d = matrixData[yr]?.data?.find((r) => r?.label === label);
+        const pl = Number(d?.pl ?? 0);
+        const tr = Number(d?.taxReturn ?? 0);
+        return [pl, tr, tr - pl];
+      });
+    }
+
+    checkPage();
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(FS);
+    doc.setTextColor(0, 0, 0);
+    doc.text("TAX TO BOOK RECONCILING ITEMS", MARGIN + 4, y + ROW_H - 5);
+    doc.setDrawColor(0, 0, 0);
+    doc.line(MARGIN, y + ROW_H, MARGIN + usableW, y + ROW_H);
+    y += ROW_H;
+
+    for (const label of dynamicReconcilingItems) {
+      drawRow(label, false, (yr) => {
+        const tr = getReconVal(yr, label);
+        return ["", tr, tr];
+      });
+    }
+
+    drawRow("Reconciliation Check", true, (yr) => {
+      const nd = matrixData[yr]?.data?.find((r) => r?.label === "Net Income");
+      const plNet = Number(nd?.pl ?? 0);
+      const taxNet = Number(nd?.taxReturn ?? 0);
+      const itemsSum = dynamicReconcilingItems.reduce((acc, lbl) => acc + getReconVal(yr, lbl), 0);
+      return [taxNet - plNet - itemsSum, "", ""];
+    });
+
+    checkPage();
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(FS);
+    doc.setTextColor(0, 0, 0);
+    doc.text("Unreconciled %", MARGIN + 4, y + ROW_H - 5);
+    activeYears.forEach((yr, i) => {
+      const nd = matrixData[yr]?.data?.find((r) => r?.label === "Net Income");
+      const plNet = Number(nd?.pl ?? 0);
+      const taxNet = Number(nd?.taxReturn ?? 0);
+      const itemsSum = dynamicReconcilingItems.reduce((acc, lbl) => acc + getReconVal(yr, lbl), 0);
+      const check = taxNet - plNet - itemsSum;
+      const pct = plNet !== 0 ? ((check / plNet) * 100).toFixed(1) + "%" : "0.0%";
+      const bx = MARGIN + LABEL_COL + i * yearGroupW;
+      doc.text(pct, bx + subColW - 4, y + ROW_H - 5, { align: "right" });
+    });
+    y += ROW_H;
+
+    doc.save("Tax Reconciliation.pdf");
+  };
+
+  const handleTaxExport = (kind) => {
+    setTaxExportOpen(false);
+    setTaxIsExporting(true);
+    try {
+      if (kind === "excel") {
+        exportTaxReconToExcel();
+      } else {
+        exportTaxReconToPdf();
+      }
+    } catch (err) {
+      console.error("[TaxRecon] Export failed:", err);
+      alert(err?.message || "Export failed. Please try again.");
+    } finally {
+      setTaxIsExporting(false);
+    }
+  };
+
+  const TaxExportDropdown = (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setTaxExportOpen((v) => !v)}
+        disabled={taxIsExporting}
+        className="inline-flex h-9 items-center justify-center gap-2 rounded-xl border border-border bg-bg-card px-3 text-[13px] font-medium text-text-primary transition hover:bg-bg-page disabled:cursor-not-allowed disabled:opacity-70"
+      >
+        <Download size={14} className={taxIsExporting ? "animate-pulse" : ""} />
+        {taxIsExporting ? "Exporting…" : "Export"}
+        <ChevronDown size={12} />
+      </button>
+      {taxExportOpen && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setTaxExportOpen(false)} />
+          <div className="absolute right-0 z-20 mt-1 w-48 overflow-hidden rounded-md border border-border bg-bg-card shadow-lg">
+            <button
+              type="button"
+              onClick={() => handleTaxExport("excel")}
+              className="block w-full px-3 py-2 text-left text-[13px] text-text-primary transition-colors hover:bg-bg-page"
+            >
+              Export to Excel (.xlsx)
+            </button>
+            <button
+              type="button"
+              onClick={() => handleTaxExport("pdf")}
+              className="block w-full px-3 py-2 text-left text-[13px] text-text-primary transition-colors hover:bg-bg-page"
+            >
+              Export to PDF (.pdf)
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
 
   // ── Render ────────────────────────────────────────────────────────────
 
@@ -840,6 +1364,7 @@ export default function WorkspaceTaxReconciliation() {
               <RefreshCw size={14} className={cn(isLoading && "animate-spin")} />
               {isLoading ? "Syncing…" : "Sync"}
             </button>
+            {TaxExportDropdown}
           </div>
           {warnings.length > 0 && !error && (
             <div className="space-y-1 rounded-xl border border-yellow-200 bg-yellow-50 px-4 py-3 text-[13px] text-yellow-800">
@@ -920,6 +1445,7 @@ export default function WorkspaceTaxReconciliation() {
                 <RefreshCw size={16} className={cn(isLoading && "animate-spin")} />
                 Refresh
               </button>
+              {TaxExportDropdown}
             </div>
           </div>
 
@@ -959,7 +1485,7 @@ export default function WorkspaceTaxReconciliation() {
           </p>
         </div>
 
-        <div className="overflow-x-auto">
+        <div id="tax-recon-table" className="overflow-x-auto">
           <table className="w-full table-fixed border-collapse text-[13px]">
             <colgroup>
               <col style={{ width: "220px" }} />
@@ -1065,40 +1591,229 @@ export default function WorkspaceTaxReconciliation() {
                 ))}
               </tr>
 
-              {/* ── Part 2 rows ── */}
+              {/* ── Part 2 rows (editable) ── */}
               {dynamicReconcilingItems.length > 0 ? (
-                dynamicReconcilingItems.map((label, rowIdx) => (
-                  <tr
-                    key={label}
-                    className={cn(
-                      "border-b border-[#f1f5f9] transition-colors hover:bg-slate-50",
-                      rowIdx % 2 === 0 ? "bg-white" : "bg-[#FCFDF8]",
-                    )}
-                  >
-                    <td className="border-r border-border px-5 py-3 text-left text-[13px] font-medium text-text-secondary">
-                      {label}
-                    </td>
-                    {activeYears.map((year, idx) => {
-                      const val = getReconValue(year, label);
-                      return (
-                        <Fragment key={year}>
-                          <td className="px-4 py-3 text-right text-text-muted">—</td>
-                          <td className={cn("px-4 py-3 text-right tabular-nums font-medium", val !== 0 ? "bg-primary/5 text-primary" : "text-text-secondary")}>
-                            {formatAmount(val)}
-                          </td>
-                          <td className={cn("px-4 py-3 text-right text-text-muted", yrDiv(idx))}>—</td>
-                        </Fragment>
-                      );
-                    })}
-                  </tr>
-                ))
+                dynamicReconcilingItems.map((label, rowIdx) => {
+                  return (
+                    <tr
+                      key={label}
+                      className={cn(
+                        "group border-b border-[#f1f5f9] transition-colors hover:bg-slate-50",
+                        rowIdx % 2 === 0 ? "bg-white" : "bg-[#FCFDF8]",
+                      )}
+                    >
+                      {/* Label cell with delete button (all rows) */}
+                      <td className="border-r border-border px-5 py-2.5 text-left text-[13px] font-medium text-text-secondary">
+                        <div className="flex items-center justify-between gap-2">
+                          <span>{label}</span>
+                          <button
+                            onClick={() => deleteReconRow(label)}
+                            title="Remove this row"
+                            className="invisible shrink-0 rounded p-0.5 text-text-muted opacity-60 hover:text-red-500 hover:opacity-100 group-hover:visible"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                      </td>
+
+                      {activeYears.map((year, idx) => {
+                        const val = getReconValue(year, label);
+                        const isEditing = editingCell?.year === year && editingCell?.label === label;
+                        const hasOverride = reconcilingOverrides[String(year)]?.[label] !== undefined;
+                        return (
+                          <Fragment key={year}>
+                            <td className="px-4 py-2.5 text-right text-text-muted">—</td>
+
+                            {/* Editable Tax Return cell */}
+                            <td
+                              className={cn(
+                                "px-2 py-1.5 text-right tabular-nums font-medium",
+                                val !== 0 ? "bg-primary/5 text-primary" : "text-text-secondary",
+                                isEditing ? "bg-white p-0" : "cursor-pointer hover:ring-1 hover:ring-primary/30",
+                              )}
+                              onClick={() => !isEditing && startEdit(year, label)}
+                            >
+                              {isEditing ? (
+                                <div className="flex items-center gap-0.5">
+                                  <input
+                                    autoFocus
+                                    type="text"
+                                    value={editingValue}
+                                    onChange={(e) => setEditingValue(e.target.value)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === "Enter") commitEdit(year, label);
+                                      if (e.key === "Escape") cancelEdit();
+                                    }}
+                                    onBlur={() => commitEdit(year, label)}
+                                    className="w-24 rounded border border-primary/50 bg-white px-2 py-1 text-right text-[13px] font-medium text-primary outline-none focus:ring-1 focus:ring-primary"
+                                  />
+                                  <button onMouseDown={(e) => { e.preventDefault(); commitEdit(year, label); }} className="rounded p-0.5 text-primary hover:bg-primary/10"><Check size={12} /></button>
+                                  <button onMouseDown={(e) => { e.preventDefault(); cancelEdit(); }} className="rounded p-0.5 text-text-muted hover:bg-slate-100"><X size={12} /></button>
+                                </div>
+                              ) : (
+                                <span className={cn("flex items-center justify-end gap-1", hasOverride && "underline decoration-dotted decoration-primary/40")}>
+                                  {formatAmount(val)}
+                                </span>
+                              )}
+                            </td>
+
+                            <td className={cn("px-4 py-2.5 text-right text-text-muted", yrDiv(idx))}>—</td>
+                          </Fragment>
+                        );
+                      })}
+                    </tr>
+                  );
+                })
               ) : (
                 <tr>
-                  <td colSpan={1 + activeYears.length * 3} className="px-5 py-6 text-center text-text-muted italic">
-                    No reconciling items found in tax returns.
+                  <td colSpan={1 + activeYears.length * 3} className="px-5 py-4 text-center text-[13px] text-text-muted italic">
+                    No reconciling items found. Add items using the button below.
                   </td>
                 </tr>
               )}
+
+              {/* ── Add Row row ── */}
+              <tr className="border-b border-[#f1f5f9] bg-[#F8FBF1]">
+                <td className="border-r border-border px-4 py-2" colSpan={1 + activeYears.length * 3}>
+                  <div className="relative inline-block" ref={addRowRef}>
+                    <button
+                      onClick={() => { setShowAddRowDropdown((v) => !v); setAddRowSearch(""); }}
+                      className="flex items-center gap-1.5 rounded-md border border-primary/30 bg-white px-3 py-1.5 text-[12px] font-medium text-primary hover:bg-primary/5 hover:border-primary/50 transition-colors"
+                    >
+                      <Plus size={13} />
+                      Add Schedule K Item
+                    </button>
+
+                    {showAddRowDropdown && (
+                      <div className="absolute left-0 top-full z-30 mt-1 w-72 rounded-lg border border-border bg-white shadow-lg">
+                        <div className="p-2 border-b border-border">
+                          <input
+                            autoFocus
+                            type="text"
+                            placeholder="Search or type custom label…"
+                            value={addRowSearch}
+                            onChange={(e) => setAddRowSearch(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter" && addRowSearch.trim()) {
+                                addReconRow(addRowSearch.trim());
+                              }
+                              if (e.key === "Escape") { setShowAddRowDropdown(false); setAddRowSearch(""); }
+                            }}
+                            className="w-full rounded border border-border px-2 py-1.5 text-[12px] outline-none focus:ring-1 focus:ring-primary"
+                          />
+                        </div>
+                        <ul className="max-h-60 overflow-y-auto py-1">
+                          {/* Custom typed label — only when it's not already in AI list, static list, or table */}
+                          {addRowSearch.trim() &&
+                            !aiExtractedScheduleKLabels.some(
+                              (s) => s.toLowerCase() === addRowSearch.trim().toLowerCase()
+                            ) &&
+                            !SCHEDULE_K_ITEMS.some(
+                              (s) => s.toLowerCase() === addRowSearch.trim().toLowerCase()
+                            ) &&
+                            !dynamicReconcilingItems.includes(addRowSearch.trim()) && (
+                            <li>
+                              <button
+                                onMouseDown={() => addReconRow(addRowSearch.trim())}
+                                className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] text-primary hover:bg-primary/5"
+                              >
+                                <Plus size={12} className="shrink-0" />
+                                Add &ldquo;{addRowSearch.trim()}&rdquo;
+                              </button>
+                            </li>
+                          )}
+                          {/* Dynamically built from the actual AI-extracted tax return data + static supplement */}
+                          {(() => {
+                            const searchLower = addRowSearch.trim().toLowerCase();
+
+                            // Section 1: items the AI found in this company's tax return document
+                            const fromTaxReturn = aiExtractedScheduleKLabels.filter(
+                              (item) =>
+                                !dynamicReconcilingItems.includes(item) &&
+                                (!searchLower || item.toLowerCase().includes(searchLower)),
+                            );
+
+                            // Section 2: standard Schedule K items NOT found by AI and not already in table
+                            const staticSections = SCHEDULE_K_SECTIONS.map((sec) => ({
+                              ...sec,
+                              visible: sec.items.filter(
+                                (item) =>
+                                  !aiExtractedScheduleKLabels.includes(item) &&
+                                  !dynamicReconcilingItems.includes(item) &&
+                                  (!searchLower || item.toLowerCase().includes(searchLower)),
+                              ),
+                            })).filter((sec) => sec.visible.length > 0);
+
+                            const hasAny = fromTaxReturn.length > 0 || staticSections.length > 0;
+
+                            if (!hasAny) {
+                              return (
+                                <li className="px-3 py-3 text-center text-[12px] text-text-muted italic">
+                                  {searchLower
+                                    ? "No matching Schedule K items."
+                                    : "All Schedule K items are already in the table."}
+                                </li>
+                              );
+                            }
+
+                            return (
+                              <>
+                                {fromTaxReturn.length > 0 && (
+                                  <li>
+                                    <div className="px-3 pt-2.5 pb-0.5 text-[10px] font-semibold uppercase tracking-wider text-primary/60">
+                                      From Your Tax Return
+                                    </div>
+                                    <ul>
+                                      {fromTaxReturn.map((item) => (
+                                        <li key={item}>
+                                          <button
+                                            onMouseDown={() => restoreAiRow(item)}
+                                            className="w-full px-4 py-1.5 text-left text-[12px] text-text-primary hover:bg-primary/5"
+                                          >
+                                            {item}
+                                          </button>
+                                        </li>
+                                      ))}
+                                    </ul>
+                                  </li>
+                                )}
+                                {staticSections.length > 0 && (
+                                  <>
+                                    {fromTaxReturn.length > 0 && (
+                                      <li>
+                                        <div className="mx-3 my-1 border-t border-border" />
+                                      </li>
+                                    )}
+                                    {staticSections.map((sec) => (
+                                      <li key={sec.section}>
+                                        <div className="px-3 pt-2.5 pb-0.5 text-[10px] font-semibold uppercase tracking-wider text-text-muted">
+                                          {sec.section}
+                                        </div>
+                                        <ul>
+                                          {sec.visible.map((item) => (
+                                            <li key={item}>
+                                              <button
+                                                onMouseDown={() => addReconRow(item)}
+                                                className="w-full px-4 py-1.5 text-left text-[12px] text-text-primary hover:bg-primary/5"
+                                              >
+                                                {item}
+                                              </button>
+                                            </li>
+                                          ))}
+                                        </ul>
+                                      </li>
+                                    ))}
+                                  </>
+                                )}
+                              </>
+                            );
+                          })()}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                </td>
+              </tr>
 
               {/* ── Part 3: Reconciliation check ── */}
               <tr className="border-t-2 border-primary/20 bg-[#FAFBF7]">

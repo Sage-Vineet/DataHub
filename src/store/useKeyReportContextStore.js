@@ -21,12 +21,18 @@ import { create } from "zustand";
 import { getKeyReportVersions, getKeyReportVersion } from "../lib/api";
 import { REPORT_SOURCE_KEYS } from "../lib/report-source";
 
-// Derive the flow ("manual_gl" | "manual_upload") the same way the backend
-// keyReportService.getVersionReportContext does: a version that produced a
-// Manual GL batch, or that has a General Ledger document linked, is the GL flow.
-export function deriveFlowType(version, mappingsByCategory) {
-  const glCount = (mappingsByCategory?.general_ledger || []).length;
-  if (version?.resolvedBatchId || glCount > 0) return "manual_gl";
+// Derive the flow type for a Key Reports version:
+//   "manual_gl"    — old-style: version has a resolvedBatchId pointing at a Manual GL
+//                    batch; reports still read from manual_gl_staged_transactions.
+//   "manual_upload"— new-style: version syncs directly into the five entry tables
+//                    (profit_loss_entries, balance_sheet_entries, etc.); reports read
+//                    ONLY from those tables via the /key-reports/versions/:id/reports/*
+//                    endpoints. The presence of GL documents does NOT imply a batch —
+//                    removing glCount from this check stops the report page from
+//                    treating new-style KR as Manual GL (which caused spurious
+//                    /manual-gl/staging/filter-options + /reports/balance-sheet/monthly-detail calls).
+export function deriveFlowType(version) {
+  if (version?.resolvedBatchId) return "manual_gl";
   return "manual_upload";
 }
 
@@ -177,18 +183,21 @@ export function selectKeyReportContext(state) {
       ...INACTIVE_CONTEXT,
       versions,
       selectedVersionId,
+      loadedCompanyId: state.loadedCompanyId,
       loading: state.loading,
       loadingDetail: state.loadingDetail,
+      error: state.error,
     };
   }
 
-  const flowType = deriveFlowType(version, mappingsByCategory);
+  const flowType = deriveFlowType(version);
   const availability = deriveAvailability(mappingsByCategory);
 
   return {
     krActive: true,
     versions,
     selectedVersionId,
+    loadedCompanyId: state.loadedCompanyId,
     version,
     flowType,
     effectiveSource: flowToReportSource(flowType),
@@ -199,5 +208,6 @@ export function selectKeyReportContext(state) {
     documents: mappingsByCategory || {},
     loading: state.loading,
     loadingDetail: state.loadingDetail,
+    error: state.error,
   };
 }

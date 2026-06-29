@@ -23,6 +23,7 @@ const manualGlRoutes = require("./routes/manualGl");
 const manualReportUploadRoutes = require("./routes/manualReportUploads");
 const reportSourceRoutes = require("./routes/reportSources");
 const ebitdaAdjustmentRoutes = require("./routes/ebitdaAdjustments");
+const bankReconAdjRoutes = require("./routes/bankReconciliationAdjustments");
 const keyReportRoutes = require("./routes/keyReports");
 const balanceSheetRoutes = require("./routes/quickbooks/balancesheet/balanceSheet");
 const balanceSheetDetailRoutes = require("./routes/quickbooks/balancesheet/balanceSheetFullDetail");
@@ -131,6 +132,7 @@ app.use("/", manualGlRoutes);
 app.use("/", manualReportUploadRoutes);
 app.use("/", reportSourceRoutes);
 app.use("/", ebitdaAdjustmentRoutes);
+app.use("/", bankReconAdjRoutes);
 app.use("/", keyReportRoutes);
 
 // QuickBooks & Financial Routes (with consolidated auth)

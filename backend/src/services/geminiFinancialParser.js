@@ -502,4 +502,98 @@ async function extractBsBankBalancesFromExcelText(csvText) {
   return _normalizeBsBalancesRaw(parseJsonFromText(responseText));
 }
 
-module.exports = { parsePdfWithGemini, extractBsBankBalancesWithGemini, extractBsBankBalancesFromExcelText };
+// ---------------------------------------------------------------------------
+// Tax Return parser — dedicated prompt that returns { fields: [...] }
+// ---------------------------------------------------------------------------
+
+const TAX_RETURN_PROMPT = `You are a CPA specializing in tax return analysis.
+Extract ALL data from this tax return PDF.
+
+Return ONLY a raw JSON object:
+{
+  "taxYear": 2024,
+  "formType": "1120S",
+  "fields": [
+    {
+      "tax_year": 2024,
+      "form_type": "1120S",
+      "field_name": "gross_receipts",
+      "field_label": "Gross receipts or sales",
+      "field_amount": 1234567.89,
+      "field_value": "1,234,567.89",
+      "line_number": "1a",
+      "schedule": null,
+      "section": "Income"
+    }
+  ]
+}
+
+Rules:
+- Extract EVERY line item from every schedule and form
+- "tax_year" is the year the return covers (integer)
+- "form_type" is the IRS form number (e.g. "1120S", "1065", "1040", "990")
+- "field_name" is a short snake_case key for this field
+- "field_label" is the exact label shown on the form
+- "field_amount" is the dollar value as a plain number (null if not a dollar amount)
+- "field_value" is the raw string from the form
+- "line_number" is the line/box number (e.g. "1a", "21", null)
+- "schedule" is the schedule name if applicable ("K-1", "M-1", etc.) or null
+- "section" is the part of the form ("Income", "Deductions", "Credits", etc.)
+- Include ALL fields including zeros
+- Return ONLY raw JSON. No markdown. No code fences. No explanation.`;
+
+async function parseTaxReturnWithGemini(buffer, fileName = '') {
+  const base64Pdf = Buffer.from(buffer).toString('base64');
+  const responseText = await callGemini(base64Pdf, TAX_RETURN_PROMPT);
+  const raw = parseJsonFromText(responseText);
+
+  if (!raw || !Array.isArray(raw.fields)) {
+    throw new Error('Gemini tax return response missing fields array');
+  }
+
+  const topLevelYear = parseInt(raw.taxYear, 10) || null;
+  const topLevelForm = String(raw.formType || raw.form_type || '').trim() || null;
+
+  const fields = raw.fields
+    .map((f) => ({
+      tax_year: parseInt(f.tax_year, 10) || topLevelYear || new Date().getFullYear(),
+      form_type: String(f.form_type || topLevelForm || '').trim() || null,
+      field_name: String(f.field_name || f.field_label || '').trim(),
+      field_label: String(f.field_label || '').trim() || null,
+      field_amount: f.field_amount != null ? (parseFloat(f.field_amount) || null) : null,
+      field_value: f.field_value != null ? String(f.field_value) : null,
+      line_number: f.line_number != null ? String(f.line_number) : null,
+      schedule: f.schedule ? String(f.schedule) : null,
+      section: f.section ? String(f.section) : null,
+    }))
+    .filter((f) => f.field_name);
+
+  const detectedYears = [...new Set(fields.map((f) => f.tax_year).filter(Boolean))];
+
+  return { fields, detectedYears };
+}
+
+// ---------------------------------------------------------------------------
+// Flatten a Gemini hierarchical rows tree into a flat array
+// (used by P&L and Balance Sheet extractors)
+// ---------------------------------------------------------------------------
+
+function flattenGeminiRows(nodes, sectionName = '', depth = 0) {
+  const result = [];
+  for (const node of nodes || []) {
+    result.push({ ...node, _section: sectionName || node.name, _depth: depth });
+    if (Array.isArray(node.children) && node.children.length > 0) {
+      const childSection = (node.type === 'header') ? node.name : sectionName;
+      result.push(...flattenGeminiRows(node.children, childSection, depth + 1));
+    }
+  }
+  return result;
+}
+
+module.exports = {
+  parsePdfWithGemini,
+  parseTaxReturnWithGemini,
+  flattenGeminiRows,
+  extractBsBankBalancesWithGemini,
+  extractBsBankBalancesFromExcelText,
+};

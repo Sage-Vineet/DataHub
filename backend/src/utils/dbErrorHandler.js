@@ -23,6 +23,7 @@ const CONNECTION_ERROR_KEYWORDS = [
  */
 function isConnectionError(error) {
   if (!error) return false;
+  if (error.isConnectionError === true) return true;
   const message = String(error?.message || error || '').toLowerCase();
   const code = String(error?.code || '').toLowerCase();
   
@@ -144,6 +145,11 @@ async function withRetry(operation, options = {}) {
         
         if (onError) {
           onError(error, attempt, delay);
+        } else {
+          console.warn(
+            `[dbErrorHandler] ${operationName} attempt ${attempt + 1}/${maxAttempts} failed; retrying in ${delay}ms`,
+            error.message,
+          );
         }
         
         await new Promise(resolve => setTimeout(resolve, delay));
@@ -154,6 +160,12 @@ async function withRetry(operation, options = {}) {
     }
   }
   
+  if (lastError) {
+    console.warn(
+      `[dbErrorHandler] ${operationName} failed after ${maxAttempts} attempt(s)`,
+      lastError.message,
+    );
+  }
   throw normalizeError(lastError);
 }
 

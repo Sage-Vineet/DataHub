@@ -856,7 +856,60 @@ router.get("/qb-bank-activity", async (req, res) => {
       };
     });
 
-    return { success: true, accounts: result, months };
+    // ── 9. Fetch P&L Summary (monthly) for Sales/Expenses per Financials ─────
+    const plFinancials = { totalIncome: {}, totalExpenses: {} };
+    try {
+      const plResp = await axios.get(
+        `${qb.baseUrl}/v3/company/${qb.realmId}/reports/ProfitAndLoss`,
+        {
+          headers,
+          proxy: false,
+          params: {
+            start_date,
+            end_date,
+            summarize_column_by: "Month",
+            accounting_method: req.query.accounting_method || "Accrual",
+            minorversion: 75,
+          },
+        },
+      );
+      const plData = plResp.data;
+      const columns = plData?.Columns?.Column || [];
+
+      // Build columnIndex → "YYYY-MM" map from column headers like "Jan 2026"
+      const colMonthMap = {};
+      columns.forEach((col, idx) => {
+        if (idx === 0) return; // label column
+        const title = String(col.ColTitle || "").trim();
+        if (/^total$/i.test(title)) return;
+        const parsed = parsePLColTitle(title);
+        if (parsed) colMonthMap[idx] = parsed;
+      });
+
+      // Walk top-level sections to find Income and Expenses summaries
+      const plRows = plData?.Rows?.Row || [];
+      for (const section of plRows) {
+        if (section.type !== "Section") continue;
+        const sectionName = String(section.Header?.ColData?.[0]?.value || "").trim();
+        const summaryData = section.Summary?.ColData || [];
+
+        if (/^income$/i.test(sectionName)) {
+          for (const [idxStr, monthKey] of Object.entries(colMonthMap)) {
+            const raw = summaryData[Number(idxStr)]?.value;
+            plFinancials.totalIncome[monthKey] = parseFloat(String(raw || "0").replace(/,/g, "")) || 0;
+          }
+        } else if (/^(expenses?|total expenses?)$/i.test(sectionName)) {
+          for (const [idxStr, monthKey] of Object.entries(colMonthMap)) {
+            const raw = summaryData[Number(idxStr)]?.value;
+            plFinancials.totalExpenses[monthKey] = Math.abs(parseFloat(String(raw || "0").replace(/,/g, "")) || 0);
+          }
+        }
+      }
+    } catch (plErr) {
+      console.warn("[Bank Activity] P&L Summary fetch failed (non-fatal):", plErr.message);
+    }
+
+    return { success: true, accounts: result, months, plFinancials };
   };
 
   const saveAndRespond = async (data) => {
@@ -902,6 +955,122 @@ router.get("/qb-bank-activity", async (req, res) => {
 });
 
 // ─── Helpers (backend-only) ───────────────────────────────────────────────────
+
+/**
+ * Parse a QB P&L column title like "Jan 2026" into "2026-01".
+ * Returns null for unrecognised formats (e.g. "Total").
+ */
+// ── P&L Line Items for Bank Recon Addback Picker ─────────────────────────────
+router.get("/bank-reconciliation-line-items", async (req, res) => {
+  const qb = getQBConfig(req.clientId);
+  if (!qb.accessToken || !qb.realmId) {
+    return res.status(401).json({ success: false, error: "QuickBooks not connected." });
+  }
+  const { start_date, end_date, accounting_method } = req.query;
+  if (!start_date || !end_date) {
+    return res.status(400).json({ success: false, error: "start_date and end_date are required." });
+  }
+  try {
+    const authHeaders = { Authorization: `Bearer ${qb.accessToken}`, Accept: "application/json" };
+    const plResp = await axios.get(
+      `${qb.baseUrl}/v3/company/${qb.realmId}/reports/ProfitAndLoss`,
+      {
+        headers: authHeaders,
+        proxy: false,
+        params: {
+          start_date,
+          end_date,
+          summarize_column_by: "Month",
+          accounting_method: accounting_method || "Accrual",
+          minorversion: 75,
+        },
+      },
+    );
+    const plData = plResp.data;
+    const columns = plData?.Columns?.Column || [];
+
+    const colMonthMap = {};
+    columns.forEach((col, idx) => {
+      if (idx === 0) return;
+      const title = col.ColTitle || "";
+      if (title === "TOTAL" || title === "Total") return;
+      const parsed = parsePLColTitle(title);
+      if (parsed) colMonthMap[idx] = parsed;
+    });
+
+    function toNum(str) {
+      const n = parseFloat(String(str || "0").replace(/,/g, ""));
+      return Number.isFinite(n) ? n : 0;
+    }
+
+    function walkRows(rows, target, sectionType) {
+      const arr = Array.isArray(rows) ? rows : rows ? [rows] : [];
+      for (const row of arr) {
+        if (row.type === "Data") {
+          const name = row.ColData?.[0]?.value || "";
+          if (!name) continue;
+          const monthAmounts = {};
+          Object.entries(colMonthMap).forEach(([idxStr, monthKey]) => {
+            const val = toNum(row.ColData?.[Number(idxStr)]?.value);
+            if (val !== 0) monthAmounts[monthKey] = val;
+          });
+          target.push({ name, source: sectionType, monthAmounts });
+        } else if (row.type === "Section") {
+          const sub = row.Rows?.Row;
+          if (sub) walkRows(sub, target, sectionType);
+        }
+      }
+    }
+
+    const plIncomeItems = [];
+    const plExpenseItems = [];
+    const topRows = plData?.Rows?.Row || [];
+    for (const section of (Array.isArray(topRows) ? topRows : [topRows])) {
+      if (section.type !== "Section") continue;
+      const sectionName = String(section.Header?.ColData?.[0]?.value || "").trim().toLowerCase();
+      const sub = section.Rows?.Row;
+      if (!sub) continue;
+      if (sectionName === "income") {
+        walkRows(sub, plIncomeItems, "pl_income");
+      } else if (sectionName === "expenses" || sectionName === "expense") {
+        walkRows(sub, plExpenseItems, "pl_expense");
+      }
+    }
+
+    // Aggregate totals per month for Sales/Expenses per Financials rows
+    const plTotalIncome = {};
+    const plTotalExpenses = {};
+    plIncomeItems.forEach((item) => {
+      Object.entries(item.monthAmounts).forEach(([m, v]) => {
+        plTotalIncome[m] = (plTotalIncome[m] || 0) + v;
+      });
+    });
+    plExpenseItems.forEach((item) => {
+      Object.entries(item.monthAmounts).forEach(([m, v]) => {
+        plTotalExpenses[m] = (plTotalExpenses[m] || 0) + v;
+      });
+    });
+
+    return res.json({ success: true, plIncomeItems, plExpenseItems, plTotalIncome, plTotalExpenses });
+  } catch (error) {
+    if (error.response?.status === 401) {
+      try { await tokenManager.refreshAccessToken(req.clientId); } catch (_) {}
+    }
+    console.error("[LineItems]", error.response?.data || error.message);
+    return res.status(500).json({ success: false, error: "Failed to fetch line items." });
+  }
+});
+
+function parsePLColTitle(title) {
+  const MONTH_MAP = {
+    jan: "01", feb: "02", mar: "03", apr: "04", may: "05", jun: "06",
+    jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12",
+  };
+  const m = String(title || "").trim().match(/^([A-Za-z]{3})\s+(\d{4})$/);
+  if (!m) return null;
+  const mm = MONTH_MAP[m[1].toLowerCase()];
+  return mm ? `${m[2]}-${mm}` : null;
+}
 
 function getMonthsRangeBackend(start, end) {
   const result = [];

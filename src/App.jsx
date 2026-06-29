@@ -30,6 +30,7 @@ import ClientReminders from "./pages/client/Reminders";
 import ClientConnections from "./pages/client/Connections";
 import ClientMessages from "./pages/client/Messages";
 import ClientProfile from "./pages/client/Profile";
+import ClientCimQuestionnaire from "./pages/client/CimQuestionnaire";
 import UserPortalDashboard from "./pages/user/PortalDashboard";
 import UserCompanyDetails from "./pages/user/CompanyDetails";
 import UserDocuments from "./pages/user/Documents";
@@ -50,6 +51,7 @@ import WorkspaceReconciliation from "./pages/broker/workspace/WorkspaceReconcili
 import WorkspaceTaxReconciliation from "./pages/broker/workspace/WorkspaceTaxReconciliation";
 import WorkspaceConnections from "./pages/broker/workspace/WorkspaceConnections";
 import WorkspaceKeyReports from "./pages/broker/workspace/WorkspaceKeyReports";
+import WorkspaceCimPrep from "./pages/broker/workspace/WorkspaceCimPrep";
 import Support from "./pages/Support";
 import WorkspaceEbitda from "./pages/broker/workspace/WorkspaceEbitda";
 import BrokerProfile from "./pages/broker/BrokerProfile";
@@ -97,6 +99,14 @@ function ProtectedRoute({ children, allowedRole, allowedRoles }) {
   return <Layout>{children}</Layout>;
 }
 
+function BrokerStandaloneRoute({ children }) {
+  const { user, loading } = useAuth();
+  if (loading) return <PageLoader message="Checking session..." />;
+  if (!user) return <Navigate to="/login" replace />;
+  if (user.role !== "broker") return <Navigate to={getHomeRoute(user.role)} replace />;
+  return children;
+}
+
 // Module-level cache: clientId → resolved company object.
 // Survives re-renders; cleared on full page reload.
 const companyCache = {};
@@ -122,7 +132,10 @@ function ClientWorkspaceWrapper() {
   // Keep a ref to the latest location.state so the effect can read it without
   // adding location to the dependency array (which would re-run on every nav).
   const locationStateRef = useRef(location.state);
-  locationStateRef.current = location.state;
+
+  useEffect(() => {
+    locationStateRef.current = location.state;
+  }, [location.state]);
 
   useEffect(() => {
     if (!user || user.role !== "broker" || !clientId) return;
@@ -209,7 +222,6 @@ function ClientWorkspaceWrapper() {
     return () => {
       cancelled = true;
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, clientId, navigate, showToast]);
 
   useEffect(() => {
@@ -298,6 +310,14 @@ function AppRoutes() {
           <ProtectedRoute allowedRole="broker">
             <BrokerProfile />
           </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/broker/client/:clientId/cim-prep"
+        element={
+          <BrokerStandaloneRoute>
+            <WorkspaceCimPrep />
+          </BrokerStandaloneRoute>
         }
       />
 
@@ -396,6 +416,14 @@ function AppRoutes() {
         element={
           <ProtectedRoute allowedRole="client">
             <ClientMessages />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/client/cim-questionnaire"
+        element={
+          <ProtectedRoute allowedRole="client">
+            <ClientCimQuestionnaire />
           </ProtectedRoute>
         }
       />

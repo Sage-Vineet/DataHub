@@ -1,7 +1,8 @@
 import { Building2, Mail, Phone, ShieldCheck, UserRound } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 
-function DetailCard({ icon: Icon, label, value }) {
+function DetailCard({ icon, label, value }) {
+  const Icon = icon;
   return (
     <div className="rounded-2xl bg-[#F8F9FC] p-4">
       <div className="flex items-center gap-3">

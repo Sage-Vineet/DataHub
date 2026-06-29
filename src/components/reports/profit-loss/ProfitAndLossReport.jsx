@@ -15,7 +15,9 @@ function ProfitAndLossReport({
   clientName = "All Clients",
   entityName,
   createdOn,
+  isPreview = false,
   selectedMonths = [],
+  isMonthly = false,
 }) {
   const resolvedEntityName = entityName || clientName || "Company";
   const periodText = startDate === "1970-01-01" ? "All Dates" : `${startDate || "N/A"} to ${endDate || "N/A"}`;
@@ -26,10 +28,14 @@ function ProfitAndLossReport({
     "manual_gl_reporting_snapshot",
     "MANUAL_STAGED",
   ];
+  // Key Reports entry tables use the same hierarchical-rows summary renderer as Manual GL.
+  // The detail view falls through to ProfitAndLossSummary (which understands { rows, columns })
+  // so key_reports_entry_tables is intentionally excluded from the detail sources list.
+  const SUMMARY_RENDERABLE_SOURCES = [...MANUAL_STAGED_SOURCES, "key_reports_entry_tables"];
 
   const isManualStagedSummary = Boolean(
     data && typeof data === "object" && !Array.isArray(data) &&
-    MANUAL_STAGED_SOURCES.includes(data.source)
+    SUMMARY_RENDERABLE_SOURCES.includes(data.source)
   );
 
   const isManualStagedDetail = Boolean(
@@ -48,6 +54,8 @@ function ProfitAndLossReport({
             entityName={resolvedEntityName}
             subtitle={summarySubtitle}
             selectedMonths={selectedMonths}
+            isMonthly={isMonthly}
+            isPreview={isPreview}
           />
         );
       }
@@ -57,11 +65,12 @@ function ProfitAndLossReport({
           title="Profit & Loss Detail"
           entityName={resolvedEntityName}
           subtitle={summarySubtitle}
+          isPreview={isPreview}
         />
       );
     }
 
-    // manual_upload / quickbooks_manual monthly view — data already has rows + columns.yearCols
+    // manual_upload / quickbooks_manual monthly view
     if (sourceMode === "manual_upload" || sourceMode === "quickbooks_manual") {
       return (
         <ProfitAndLossQBSummary
@@ -70,6 +79,8 @@ function ProfitAndLossReport({
           title="Profit & Loss"
           subtitle={summarySubtitle}
           entityName={resolvedEntityName}
+          isMonthly={isMonthly}
+          isPreview={isPreview}
         />
       );
     }
@@ -80,6 +91,8 @@ function ProfitAndLossReport({
         title="Profit & Loss"
         subtitle={summarySubtitle}
         entityName={resolvedEntityName}
+        isMonthly={isMonthly}
+        isPreview={isPreview}
       />
     );
   }
@@ -87,7 +100,6 @@ function ProfitAndLossReport({
   // Summary View
   if (isManualStagedSummary) {
     const hierarchicalRows = Array.isArray(data?.hierarchicalRows) ? data.hierarchicalRows : [];
-    // Per-year comparative columns when more than one fiscal year is selected.
     const yearCols = Array.isArray(data?.yearCols) ? data.yearCols : null;
     const summaryColumns = yearCols && yearCols.length > 1 ? { yearCols } : undefined;
     return (
@@ -97,6 +109,8 @@ function ProfitAndLossReport({
         title="Profit & Loss"
         subtitle={summarySubtitle}
         entityName={resolvedEntityName}
+        isMonthly={isMonthly}
+        isPreview={isPreview}
       />
     );
   }
@@ -107,6 +121,8 @@ function ProfitAndLossReport({
       title="Profit & Loss"
       subtitle={summarySubtitle}
       entityName={resolvedEntityName}
+      isMonthly={isMonthly}
+      isPreview={isPreview}
     />
   );
 }

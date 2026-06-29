@@ -152,6 +152,11 @@ export function syncGeneralLedger(params = {}) {
   return request(`/qb-general-ledger${query ? `?${query}` : ""}`);
 }
 
+export function fetchGeneralLedger(params = {}) {
+  const query = new URLSearchParams(params).toString();
+  return request(`/general-ledger${query ? `?${query}` : ""}`);
+}
+
 export function fetchBankVsBooks() {
   return request("/bank-vs-books");
 }

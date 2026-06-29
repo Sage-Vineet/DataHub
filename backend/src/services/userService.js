@@ -325,6 +325,13 @@ async function attachAssignedCompanies(users) {
     return map;
   }, {});
 
+  // Snapshot direct user_companies assignments before historical data is merged in.
+  // Used to produce direct_company_ids — companies a user is explicitly assigned to —
+  // so the Deal Team page can distinguish directly assigned brokers from invite-only ones.
+  const directByUserId = Object.fromEntries(
+    Object.entries(byUserId).map(([uid, cos]) => [uid, [...cos]]),
+  );
+
   const historicalBrokerCompaniesByUserId = await getHistoricalBrokerCompaniesByUserId(userList);
   for (const [userId, companies] of Object.entries(historicalBrokerCompaniesByUserId)) {
     if (!byUserId[userId]) byUserId[userId] = [];
@@ -373,6 +380,9 @@ async function attachAssignedCompanies(users) {
       ...user,
       effective_role: effectiveRole,
       company_ids: normalizedCompanies.map((company) => company.id).filter(Boolean),
+      // direct_company_ids: only companies from user_companies rows (no historical broker data,
+      // no company_id fallback). Used by the Deal Team page to filter broker visibility.
+      direct_company_ids: dedupeCompanies(directByUserId[user.id] || []).map((c) => c.id).filter(Boolean),
       assigned_companies: normalizedCompanies,
     };
   });
@@ -621,8 +631,9 @@ async function getUserById(id) {
  */
 async function getUserByEmail(email) {
   if (!email) return null;
+  const normalized = String(email).trim().toLowerCase();
   const { data, error } = await selectUserRow((sel) =>
-    supabase.from("users").select(sel).eq("email", email).maybeSingle()
+    supabase.from("users").select(sel).eq("email", normalized).maybeSingle()
   );
   if (!error && data) {
     return await attachAssignedCompanies(await mergeSqlProfile(flattenUser(data)));
@@ -881,10 +892,11 @@ async function createUser(userData) {
   const primaryCompanyId = company_id || assignedCompanyIds[0] || null;
   const passwordHash = await bcrypt.hash(String(password || ""), 10);
   const resolvedStatus = status || "active";
+  const normalizedEmail = email ? String(email).trim().toLowerCase() : email;
 
   const insertPayload = {
     name,
-    email,
+    email: normalizedEmail,
     phone: phone || null,
     password_hash: passwordHash,
     role,
@@ -939,7 +951,7 @@ async function updateUser(id, userData) {
   // ── Core updates (always-safe columns) ──────────────────────────────────
   const coreUpdates = {};
   if (name !== undefined) coreUpdates.name = name;
-  if (email !== undefined) coreUpdates.email = email;
+  if (email !== undefined) coreUpdates.email = email ? String(email).trim().toLowerCase() : email;
   if (phone !== undefined) coreUpdates.phone = normalizedPhone;
   if (role !== undefined) coreUpdates.role = role;
   if (status !== undefined) coreUpdates.status = status;

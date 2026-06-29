@@ -685,7 +685,7 @@ function InviteBrokerModal({ onConfirm, onClose, submitting }) {
   const [looking, setLooking] = useState(false);
 
   const handleLookup = async () => {
-    const trimmed = email.trim();
+    const trimmed = email.trim().toLowerCase();
     if (!isValidEmail(trimmed)) { setLookupError('Enter a valid email address.'); return; }
     setLooking(true);
     setLookupError('');
@@ -1022,7 +1022,7 @@ export default function BrokerUsers() {
       const companyIds = Array.from(new Set([form.companyId, ...(form.companyIds || [])].filter(Boolean)));
       const payload = {
         name: form.name.trim(),
-        email: form.email.trim(),
+        email: form.email.trim().toLowerCase(),
         phone: form.phone?.trim() || null,
         password: form.password,
         role: dbRole,
@@ -1040,7 +1040,7 @@ export default function BrokerUsers() {
           form.teamMembers.map((m) =>
             createUserRequest({
               name: m.name.trim(),
-              email: m.email.trim(),
+              email: m.email.trim().toLowerCase(),
               phone: m.phone?.trim() || null,
               password: m.password,
               role: dbRole,
@@ -1065,7 +1065,7 @@ export default function BrokerUsers() {
       const isDuplicate = /duplicate|already exists|unique constraint|email.*taken/i.test(String(err?.message || ''));
       if (isDuplicate) {
         try {
-          const existing = await findUserByEmailRequest(form.email.trim());
+          const existing = await findUserByEmailRequest(form.email.trim().toLowerCase());
           if (existing?.id) {
             // Determine which sub-role groups are compatible with the current add context
             const compatibleSubRoles = {
@@ -1139,7 +1139,7 @@ export default function BrokerUsers() {
     try {
       const payload = {
         name: form.name.trim(),
-        email: form.email.trim(),
+        email: form.email.trim().toLowerCase(),
         phone: form.phone?.trim() || null,
         sub_role: form.sub_role,
         designation: form.designation?.trim() || null,

@@ -121,10 +121,10 @@ const PROCESSING_BATCH_STALE_MINUTES = 120;
 // Pre-compiled account-type inference regexes.
 // Defined once at module load â€” NOT inside inferAccountType() â€” so they are
 // never recompiled during the 100K-500K transaction classification loop.
-const RE_ACCT_ASSET = /\bcash\b|\bbank\b|\bchecking\b|\bsavings\b|\breceivable\b|\ba\/r\b|\binventory\b|\basset\b|\bprepaid\b|\bfixed asset\b|\bequipment\b|\bmachinery\b|\bvehicle\b|\btruck\b|\bfurniture\b|\bfixture\b|\bcomputer\b|\bbuilding\b|\bland\b/;
+const RE_ACCT_ASSET = /\bcash\b|\bbank\b|\bchecking\b|\bsavings\b|\breceivable\b|\ba\/r\b|\binventory\b|\basset\b|\bprepaid\b|\bfixed asset\b|\bequipment\b|\bmachinery\b|\bvehicle\b|\btruck\b|\bfurniture\b|\bfixture\b|\bcomputer\b|\bbuilding\b|\bland\b|\bmoney\s+market\b|\bundeposited\b|\bpetty\s+cash\b|\bcertificate\s+of\s+deposit\b/;
 const RE_ACCT_LIABILITY = /\bpayable\b|\bloan\b|\bliability\b|\bcredit card\b|\bcc\b|\bvisa\b|\bmastercard\b|\bamex\b|\bdebt\b|\bnote payable\b|\bnotes payable\b/;
 const RE_ACCT_EQUITY = /\bequity\b|\bcapital\b|\bdraw\b|\bretained earnings\b|\bowner\b/;
-const RE_ACCT_INCOME = /\bsales\b|\brevenue\b|\bincome\b|\bfee\b/;
+const RE_ACCT_INCOME = /\bsales\b|\brevenue\b|\bincome\b|\bfee\b|\brefunds?\b|\bdiscounts?\b|\bgain\b/;
 const RE_ACCT_COGS = /\bcogs\b|\bcost of goods\b|\bdirect cost\b/;
 const RE_ACCT_EXPENSE = /\bexpense\b|\brent\b|\butilit\b|\bsalaries\b|\bwages\b|\btravel\b|\bmeals\b|\boffice\b/;
 
@@ -651,9 +651,12 @@ function formatFiscalYearLabel(endYear, fiscalYearStartMonth = 1) {
 // Uses only the stored fiscal_year column â€” does NOT infer from dates or filenames.
 function getAvailableFiscalYears(rows = []) {
   const yearSet = new Set();
+  const currentYear = new Date().getFullYear();
+  const minYear = 1900;
+  const maxYear = currentYear + 5;
   for (const row of rows) {
     const yr = Number(row.fiscal_year ?? row.fiscalYear ?? 0);
-    if (Number.isInteger(yr) && yr > 0) yearSet.add(yr);
+    if (Number.isInteger(yr) && yr >= minYear && yr <= maxYear) yearSet.add(yr);
   }
   return Array.from(yearSet).sort((a, b) => a - b);
 }
@@ -3358,7 +3361,7 @@ async function resolveEffectiveReportBatchId(companyId, filters = {}) {
   // Report exists — or the Key Reports tables aren't present / any error occurs —
   // we fall back to the exact pre-existing active/latest-batch behavior.
   try {
-    const keyReportService = require("./keyReportService");
+    const keyReportService = require("./keyReports/keyReportService");
     const pinned = await keyReportService.getActiveResolvedBatch(companyId);
     if (pinned && pinned.batchId) {
       return pinned.batchId;
@@ -5879,6 +5882,7 @@ async function stageMultiYearGlUpload({
   deferLifecycleFinalization = false,
   uploadJobId = null,
   datasetVersionId = null,
+  keyReportVersionId = null,
 }) {
   const fiscalCalendar = resolveFiscalCalendarConfig({
     fiscalYearStartMonth,
@@ -8985,6 +8989,11 @@ module.exports = {
   buildVendorProfitLossDetailPayload,
   checkExistingStagedFiscalYears,
   retrySupabaseOperation,
+  // Account classification helpers — reused by the Chart of Accounts engine so
+  // COA classification stays consistent with how reports bifurcate accounts.
+  normalizeAccountType,
+  inferAccountType,
+  isContraAccount,
 };
 
 

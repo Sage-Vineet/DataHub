@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { cn, formatCurrency } from "../../../lib/utils";
 
@@ -6,7 +6,7 @@ const formatValue = (value) => {
   return formatCurrency(value);
 };
 
-const QBRow = ({ line, depth = 0, columns }) => {
+const QBRow = ({ line, depth = 0, columns, isMonthly }) => {
   const [isOpen, setIsOpen] = useState(true);
   const hasChildren = Boolean(line.children?.length);
   const isHeader = line.type === "header";
@@ -31,7 +31,7 @@ const QBRow = ({ line, depth = 0, columns }) => {
         )}
       >
         <td className={cn(
-          "py-2.5 px-4 text-left z-10 min-w-[400px] sticky left-0",
+          "py-2.5 px-4 text-left z-10 min-w-[400px] sticky left-0 border-r-2 border-border/50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]",
           (isTotal || (isHeader && depth === 0)) ? "bg-bg-page" : "bg-bg-card",
         )}>
           <div className="flex items-center">
@@ -63,6 +63,7 @@ const QBRow = ({ line, depth = 0, columns }) => {
         {yearCols ? (
           yearCols.map((col) => {
             const value = line.amounts?.[col.key];
+            if (isMonthly && col.label.toLowerCase() === "total") return null;
             return (
               <td
                 key={col.key}
@@ -75,7 +76,7 @@ const QBRow = ({ line, depth = 0, columns }) => {
               </td>
             );
           })
-        ) : (
+        ) : !isMonthly ? (
           <td
             className={cn(
               "py-2.5 px-4 text-right tabular-nums text-[14px] font-medium",
@@ -84,12 +85,12 @@ const QBRow = ({ line, depth = 0, columns }) => {
           >
             {formatValue(line.amount)}
           </td>
-        )}
+        ) : null}
       </tr>
 
       {hasChildren && isOpen && (
         line.children.map((child, index) => (
-          <QBRow key={child.id || `row-${depth}-${index}`} line={child} depth={depth + 1} columns={columns} />
+          <QBRow key={child.id || `row-${depth}-${index}`} line={child} depth={depth + 1} columns={columns} isMonthly={isMonthly} />
         ))
       )}
     </>
@@ -102,6 +103,8 @@ export default function ProfitAndLossQBSummary({
   title = "Profit & Loss",
   subtitle,
   entityName = "Company",
+  isMonthly = false,
+  isPreview = false,
 }) {
   const hasColumns = Array.isArray(columns?.yearCols) && columns.yearCols.length > 0;
   const totalColCount = hasColumns ? columns.yearCols.length + 1 : 2;
@@ -124,6 +127,57 @@ export default function ProfitAndLossQBSummary({
     mainEl.addEventListener("scroll", onScroll, { passive: true });
     return () => mainEl.removeEventListener("scroll", onScroll);
   }, []);
+
+  const tableEl = (
+    <div className="overflow-x-auto w-full">
+      <table ref={tableRef} className="min-w-full border-collapse">
+        <thead ref={theadRef} style={{ position: "relative", zIndex: 20 }}>
+          <tr className="text-text-muted">
+            <th className="sticky top-0 left-0 z-30 bg-bg-card pb-3 pt-2 px-4 text-left text-[12px] font-medium whitespace-nowrap uppercase tracking-wider min-w-[400px] border-b-2 border-text-primary">
+              Account
+            </th>
+            {hasColumns ? (
+              columns.yearCols.map((col) => (
+                <th key={col.key} className="sticky top-0 z-20 bg-bg-card pb-3 pt-2 px-4 text-right text-[12px] font-medium whitespace-nowrap uppercase tracking-wider min-w-[110px] border-b-2 border-text-primary">
+                  {col.label}
+                </th>
+              ))
+            ) : (
+              <th className="sticky top-0 z-20 bg-bg-card pb-3 pt-2 px-4 text-right text-[12px] font-medium whitespace-nowrap uppercase tracking-wider border-b-2 border-text-primary">
+                Total
+              </th>
+            )}
+          </tr>
+        </thead>
+        <tbody>
+          {data.map((row, index) => (
+            <QBRow key={row.id || index} line={row} depth={0} columns={hasColumns ? columns : undefined} />
+          ))}
+          {data.length === 0 && (
+            <tr>
+              <td colSpan={totalColCount} className="py-20 text-center text-text-muted italic">
+                No data available for the selected period.
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+
+  if (isPreview) {
+    return (
+      <div className="font-inter">
+        <div className="mb-4 flex flex-col items-center text-center">
+          <span className="text-[15px] font-bold text-text-primary">{entityName}</span>
+          <span className="text-[13px] font-medium text-text-secondary mt-0.5">{title}</span>
+          {subtitle && <span className="text-[12px] text-text-muted mt-0.5">{subtitle}</span>}
+        </div>
+        {tableEl}
+      </div>
+    );
+  }
+
   return (
     <div className="bg-bg-page/50 p-4 lg:p-8 font-inter">
       <div className="card-base p-6 min-h-[800px] rounded-sm shadow-xl">
@@ -138,42 +192,9 @@ export default function ProfitAndLossQBSummary({
               <span>{subtitle}</span>
             </div>
           )}
-        </div>
 
-        <div className="overflow-x-auto w-full">
-          <table ref={tableRef} className={cn("border-collapse", hasColumns ? "min-w-max" : "w-full")}>
-            <thead ref={theadRef} style={{ position: "relative", zIndex: 20 }}>
-              <tr className="text-text-muted">
-                <th className="sticky top-0 left-0 z-30 bg-bg-card pb-4 pt-2.5 px-4 text-left text-[12px] font-medium whitespace-nowrap uppercase tracking-wider min-w-[400px] border-b-2 border-text-primary">
-                  Account
-                </th>
-                {hasColumns ? (
-                  columns.yearCols.map((col) => (
-                    <th key={col.key} className="sticky top-0 z-20 bg-bg-card pb-4 pt-2.5 px-4 text-right text-[12px] font-medium whitespace-nowrap uppercase tracking-wider min-w-[110px] border-b-2 border-text-primary">
-                      {col.label}
-                    </th>
-                  ))
-                ) : (
-                  <th className="sticky top-0 z-20 bg-bg-card pb-4 pt-2.5 px-4 text-right text-[12px] font-medium whitespace-nowrap uppercase tracking-wider border-b-2 border-text-primary">
-                    Total
-                  </th>
-                )}
-              </tr>
-            </thead>
-            <tbody>
-              {data.map((row, index) => (
-                <QBRow key={row.id || index} line={row} depth={0} columns={hasColumns ? columns : undefined} />
-              ))}
-              {data.length === 0 && (
-                <tr>
-                  <td colSpan={totalColCount} className="py-20 text-center text-text-muted italic">
-                    No data available for the selected period.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
         </div>
+        {tableEl}
       </div>
     </div>
   );
