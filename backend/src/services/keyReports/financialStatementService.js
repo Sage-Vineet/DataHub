@@ -61,6 +61,30 @@ const _BS_LIABILITY_KW      = ['payable', 'accrued', 'credit card', 'loan', 'lia
 const _BS_ASSET_KW          = ['cash', 'bank', 'checking', 'savings', 'receivable', 'inventory', 'prepaid', 'deposit', 'money market', 'equipment', 'furniture', 'vehicle', 'building', 'land', 'property', 'accumulated depreciation', 'goodwill', 'intangible', 'investment', 'due from', 'asset'];
 const _BS_EQUITY_KW         = ['equity', 'capital', 'retained earnings', 'owner', 'member', 'distribution', 'draw', 'net income', 'net loss'];
 
+// P&L keyword lists for COA suggestion in unmapped account report (Issue 5)
+const _PL_PRIORITY_EXPENSE_KW = ['credit card charges', 'credit card fees', 'bank charges', 'bank fees'];
+const _PL_REVENUE_KW = ['revenue', 'income', 'sales', 'fees earned', 'interest income', 'gross receipts', 'gain on sale', 'refunds to customers', 'discounts'];
+const _PL_EXPENSE_KW = ['expense', 'cost of goods', 'cogs', 'cost of sales', 'salaries', 'wages', 'rent', 'utilities', 'insurance', 'depreciation', 'amortization', 'payroll', 'supplies', 'advertising', 'marketing', 'fees', 'interest paid', 'legal', 'alarm', 'charitable', 'education', 'meals', 'repairs', 'maintenance', 'subscription', 'telephone', 'travel', 'water', 'worker', 'licenses'];
+
+/**
+ * Issue 5: Return a suggested COA type for an account name that could not be
+ * matched to a COA leaf. Uses priority-ordered keyword lists. Result is
+ * advisory only — always include the confidence score in the UI.
+ */
+function suggestCoaType(normName) {
+  const n = String(normName || '').toLowerCase();
+  const hitKw = (kws) => { for (const k of kws) { if (n.includes(k)) return k; } return null; };
+  let kw;
+  if ((kw = hitKw(_BS_PRIORITY_ASSET_KW)))   return { suggestedType: 'asset',     confidence: 0.90, reason: `keyword match: "${kw}"` };
+  if ((kw = hitKw(_PL_PRIORITY_EXPENSE_KW))) return { suggestedType: 'expense',   confidence: 0.90, reason: `keyword match: "${kw}"` };
+  if ((kw = hitKw(_PL_REVENUE_KW)))          return { suggestedType: 'revenue',   confidence: 0.85, reason: `keyword match: "${kw}"` };
+  if ((kw = hitKw(_BS_LIABILITY_KW)))        return { suggestedType: 'liability', confidence: 0.80, reason: `keyword match: "${kw}"` };
+  if ((kw = hitKw(_BS_ASSET_KW)))            return { suggestedType: 'asset',     confidence: 0.80, reason: `keyword match: "${kw}"` };
+  if ((kw = hitKw(_PL_EXPENSE_KW)))          return { suggestedType: 'expense',   confidence: 0.75, reason: `keyword match: "${kw}"` };
+  if ((kw = hitKw(_BS_EQUITY_KW)))           return { suggestedType: 'equity',    confidence: 0.75, reason: `keyword match: "${kw}"` };
+  return { suggestedType: 'unknown', confidence: 0, reason: 'no keyword match — manual classification required' };
+}
+
 function classifyUnmappedBSAccount(name) {
   const n = String(name || '').toLowerCase();
   const hit = (kws) => kws.some(k => n.includes(k));
@@ -733,8 +757,34 @@ async function distinctYears(versionId) {
       .or("row_type.eq.TRANSACTION,row_type.is.null")
       .limit(200000),
   ]);
+
+  // Log query errors (e.g. is_generated column not yet migrated) so failures are
+  // visible in server logs rather than silently producing zero rows.
+  if (pl.error)            console.warn(`[FinStmt][Years] PL query error: ${pl.error.message}`);
+  if (bs.error)            console.warn(`[FinStmt][Years] BS query error: ${bs.error.message}`);
+  if (gl.error)            console.warn(`[FinStmt][Years] GL query error: ${gl.error.message}`);
+  if (glDateFallback.error) console.warn(`[FinStmt][Years] GL-date query error: ${glDateFallback.error.message}`);
+
+  // If the is_generated-filtered PL/BS query failed (e.g. migration 054 not yet
+  // applied to Supabase so the column doesn't exist), fall back to an unfiltered
+  // query so uploaded years are never silently excluded.
+  let plData = pl.data;
+  let bsData = bs.data;
+  if (pl.error) {
+    const fb = await supabase.from("profit_loss_entries").select("fiscal_year")
+      .eq("version_id", versionId).limit(200000);
+    plData = fb.data;
+    if (!fb.error) console.log("[FinStmt][Years] PL unfiltered fallback succeeded");
+  }
+  if (bs.error) {
+    const fb = await supabase.from("balance_sheet_entries").select("fiscal_year")
+      .eq("version_id", versionId).limit(200000);
+    bsData = fb.data;
+    if (!fb.error) console.log("[FinStmt][Years] BS unfiltered fallback succeeded");
+  }
+
   const set = new Set();
-  for (const row of [...(pl.data || []), ...(bs.data || []), ...(gl.data || [])]) {
+  for (const row of [...(plData || []), ...(bsData || []), ...(gl.data || [])]) {
     const y = Number(row.fiscal_year);
     if (y >= 1990 && y <= 2100) set.add(y);
   }
@@ -745,7 +795,7 @@ async function distinctYears(versionId) {
   }
   const years = Array.from(set).sort((a, b) => a - b);
   console.log(
-    `[FinStmt][Years] pl=${pl.data?.length || 0} bs=${bs.data?.length || 0} ` +
+    `[FinStmt][Years] pl=${plData?.length || 0} bs=${bsData?.length || 0} ` +
     `gl=${gl.data?.length || 0} glDateFallback=${glDateFallback.data?.length || 0} → [${years.join(", ")}]`,
   );
   return years;
@@ -926,7 +976,92 @@ async function generateYearlyPl(versionId, year, allCoa, unmappedSet) {
   return { year: String(year), periodLabel: `FY ${year}`, statement: stmt };
 }
 
-// ─── Monthly P&L (via GL entries) ─────────────────────────────────────────────
+// ─── Monthly P&L ─────────────────────────────────────────────────────────────
+
+// Fallback when GL has no transaction_date: distribute the yearly P&L statement
+// proportionally across months using per-month Net Income derived from monthly
+// balance_sheet_entries equity changes (same data source that makes BS monthly work).
+async function generateMonthlyPlFromYearly(versionId, year, yearlyStatement) {
+  const yearlyNI = safeNum(yearlyStatement?.netIncome);
+
+  const { data: bsEntries, error } = await supabase
+    .from("balance_sheet_entries")
+    .select("account_name, amount, as_of_date")
+    .eq("version_id", versionId)
+    .eq("fiscal_year", year)
+    .or("is_total.eq.false,is_total.is.null")
+    .order("as_of_date", { ascending: true })
+    .limit(200000);
+
+  if (error || !bsEntries?.length) return [];
+
+  const NI_KW  = /net.*(income|loss)/i;
+  const byDate = new Map();
+  for (const e of bsEntries) {
+    if (!e.as_of_date || !NI_KW.test(e.account_name)) continue;
+    const monthNum = parseInt(e.as_of_date.slice(5, 7), 10);
+    if (!(monthNum >= 1 && monthNum <= 12)) continue;
+    if (!byDate.has(e.as_of_date)) byDate.set(e.as_of_date, { date: e.as_of_date, monthNum, niYTD: 0 });
+    byDate.get(e.as_of_date).niYTD += safeNum(e.amount);
+  }
+
+  const sortedDates = Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date));
+  if (!sortedDates.length) return [];
+
+  const scaleAccounts = (accounts, ratio) =>
+    (accounts || []).map(a => ({ ...a, amount: round2(safeNum(a.amount) * ratio) }));
+
+  const scaleStmt = (stmt, ratio) => {
+    const revenue = {
+      label:    stmt.revenue?.label,
+      accounts: scaleAccounts(stmt.revenue?.accounts, ratio),
+      total:    round2(safeNum(stmt.revenue?.total) * ratio),
+    };
+    const costOfSales = {
+      label:    stmt.costOfSales?.label,
+      accounts: scaleAccounts(stmt.costOfSales?.accounts, ratio),
+      total:    round2(safeNum(stmt.costOfSales?.total) * ratio),
+    };
+    const grossProfit = round2(safeNum(stmt.grossProfit) * ratio);
+    const scaledGroups = {};
+    for (const [g, gv] of Object.entries(stmt.operatingExpenses?.groups || {})) {
+      scaledGroups[g] = {
+        label:    gv.label,
+        accounts: scaleAccounts(gv.accounts, ratio),
+        total:    round2(safeNum(gv.total) * ratio),
+      };
+    }
+    const totalExpenses   = round2(safeNum(stmt.operatingExpenses?.total) * ratio);
+    const operatingIncome = round2(safeNum(stmt.operatingIncome) * ratio);
+    return {
+      revenue,
+      costOfSales,
+      grossProfit,
+      operatingExpenses: { label: stmt.operatingExpenses?.label, groups: scaledGroups, total: totalExpenses },
+      operatingIncome,
+      pretaxIncome: operatingIncome,
+      netIncome:    operatingIncome,
+    };
+  };
+
+  return sortedDates.map((curr, i) => {
+    const prevYTD = i > 0 ? sortedDates[i - 1].niYTD : 0;
+    const monthNI = curr.niYTD - prevYTD;
+    // Proportional ratio; even distribution when yearly NI ≈ 0 (avoids divide-by-zero)
+    const ratio = Math.abs(yearlyNI) > 0.01
+      ? monthNI / yearlyNI
+      : 1 / sortedDates.length;
+
+    return {
+      month:            MONTH_NAMES[curr.monthNum - 1],
+      monthNumber:      curr.monthNum,
+      year:             String(year),
+      periodLabel:      `${MONTH_NAMES[curr.monthNum - 1]} ${year}`,
+      statement:        scaleStmt(yearlyStatement, ratio),
+      vendorsByAccount: {},
+    };
+  });
+}
 
 // GL-direct P&L for one month — used when COA mapping produces all-zero results.
 function buildGlDirectPlStatement(byAccount, monthNum) {
@@ -1004,9 +1139,14 @@ async function loadGlAmountsByMonth(versionId, year) {
   return monthsFound.size ? { byAccount, monthsFound } : null;
 }
 
-async function generateMonthlyPl(versionId, year, allCoa, unmappedSet) {
+async function generateMonthlyPl(versionId, year, allCoa, unmappedSet, yearlyStatement = null) {
   const gl = await loadGlAmountsByMonth(versionId, year);
-  if (!gl) return [];
+  if (!gl) {
+    // GL has no transaction_date — fall back to proportional distribution of the
+    // yearly P&L across months, scaled by monthly Net Income from BS equity changes.
+    if (yearlyStatement) return generateMonthlyPlFromYearly(versionId, year, yearlyStatement);
+    return [];
+  }
 
   const plAccounts  = allCoa.filter(isPlAccount);
   const plLeaves    = plAccounts.filter(a => !a.metadata?.is_group);
@@ -1433,10 +1573,120 @@ async function generateYearlyCf(versionId, year) {
   }
 }
 
+// Fallback when GL has no transaction_date: derive monthly CF from period-over-period
+// balance_sheet_entries deltas (same data source that makes BS monthly work).
+async function generateMonthlyCfFromBSDeltas(versionId, year) {
+  const { data: entries, error } = await supabase
+    .from("balance_sheet_entries")
+    .select("account_name, amount, as_of_date")
+    .eq("version_id", versionId)
+    .eq("fiscal_year", year)
+    .or("is_total.eq.false,is_total.is.null")
+    .order("as_of_date", { ascending: true })
+    .limit(200000);
+
+  if (error || !entries?.length) return [];
+
+  const byDate = new Map();
+  for (const e of entries) {
+    if (isSummaryRow(e.account_name)) continue;
+    const dateKey  = e.as_of_date;
+    if (!dateKey)  continue;
+    const monthNum = parseInt(dateKey.slice(5, 7), 10);
+    if (!(monthNum >= 1 && monthNum <= 12)) continue;
+    if (!byDate.has(dateKey)) byDate.set(dateKey, new Map());
+    const k = norm(e.account_name);
+    if (!k) continue;
+    if (!byDate.get(dateKey).has(k)) byDate.get(dateKey).set(k, { name: e.account_name, amount: 0 });
+    byDate.get(dateKey).get(k).amount += safeNum(e.amount);
+  }
+
+  const sortedDates = Array.from(byDate.keys()).sort();
+  if (sortedDates.length < 2) return [];
+
+  const CASH_KW         = /cash|checking|savings|petty/i;
+  const NI_KW           = /net.*(income|loss)/i;
+  const WC_ASSET_KW     = /receivable|inventory|prepaid|deposit|due from/i;
+  const WC_LIAB_KW      = /payable|accrued|credit card|unearned|deferred revenue/i;
+  const INVEST_KW       = /equipment|property|building|land|vehicle|furniture|ppe|intangible|invest/i;
+  const FINANCE_LIAB_KW = /loan|mortgage|bond|note payable|line of credit|long.term/i;
+  const EQUITY_KW       = /equity|retained|owner|capital/i;
+
+  let runningCash = 0;
+  const result    = [];
+
+  for (let i = 1; i < sortedDates.length; i++) {
+    const prevMap  = byDate.get(sortedDates[i - 1]);
+    const currMap  = byDate.get(sortedDates[i]);
+    const currDate = sortedDates[i];
+    const monthNum = parseInt(currDate.slice(5, 7), 10);
+    const allKeys  = new Set([...prevMap.keys(), ...currMap.keys()]);
+
+    let operatingBase = 0, wcAdj = 0, investingTotal = 0, financingTotal = 0;
+    const opAdjItems = [], invItems = [], finItems = [];
+
+    for (const k of allKeys) {
+      const name  = (currMap.get(k) || prevMap.get(k)).name;
+      const delta = safeNum(currMap.get(k)?.amount) - safeNum(prevMap.get(k)?.amount);
+      if (!delta || CASH_KW.test(name)) continue;
+
+      if (NI_KW.test(name)) {
+        operatingBase += delta;
+      } else if (WC_ASSET_KW.test(name)) {
+        wcAdj -= delta;
+        opAdjItems.push({ name, amount: round2(-delta) });
+      } else if (WC_LIAB_KW.test(name)) {
+        wcAdj += delta;
+        opAdjItems.push({ name, amount: round2(delta) });
+      } else if (INVEST_KW.test(name)) {
+        investingTotal -= delta;
+        invItems.push({ name, amount: round2(-delta) });
+      } else if (FINANCE_LIAB_KW.test(name)) {
+        financingTotal += delta;
+        finItems.push({ name, amount: round2(delta) });
+      } else if (EQUITY_KW.test(name)) {
+        financingTotal += delta;
+        finItems.push({ name, amount: round2(delta) });
+      }
+    }
+
+    const operatingTotal = round2(operatingBase + wcAdj);
+    const netCash        = round2(operatingTotal + investingTotal + financingTotal);
+    const openingCash    = round2(runningCash);
+    runningCash         += netCash;
+    const endingCash     = round2(runningCash);
+
+    result.push({
+      month:       MONTH_NAMES[monthNum - 1],
+      monthNumber: monthNum,
+      year:        String(year),
+      periodLabel: `${MONTH_NAMES[monthNum - 1]} ${year}`,
+      statement: {
+        operatingActivities: {
+          label: "Operating Activities",
+          items: [{ name: "Net Income", amount: round2(operatingBase) }, ...opAdjItems],
+          total: operatingTotal,
+        },
+        investingActivities:  { label: "Investing Activities",  items: invItems, total: round2(investingTotal) },
+        financingActivities:  { label: "Financing Activities",  items: finItems, total: round2(financingTotal) },
+        netCashIncrease: netCash,
+        openingCash,
+        endingCash,
+      },
+    });
+  }
+
+  console.log(`[FinStmt][CF][${year}] BS-delta monthly fallback: ${result.length} months`);
+  return result;
+}
+
 async function generateMonthlyCf(versionId, year) {
   try {
     const glByMonth = await aggregateGLForBSByMonth(versionId, year);
-    if (!glByMonth) return [];
+    if (!glByMonth) {
+      // GL has no transaction_date — derive CF from period-over-period BS entry deltas
+      return generateMonthlyCfFromBSDeltas(versionId, year);
+    }
 
     const CASH_KW          = /cash|checking|savings|petty/i;
     const WC_ASSET_KW      = /receivable|inventory|prepaid|deposit|due from/i;
@@ -1538,12 +1788,17 @@ async function generateFinancialStatements(versionId, options = {}) {
     ? years.filter(y => y === Number(options.year))
     : years;
 
+  console.log(
+    `[FinStmt][Init] v=${versionId} allYears=[${years.join(",")}] ` +
+    `filteredYears=[${filteredYears.join(",")}] coa=${allCoa.length}`,
+  );
+
   const missingData = [];
   if (!allCoa.filter(a => !a.metadata?.is_group).length) {
     missingData.push("Chart of Accounts has no leaf accounts. Generate the COA first (Step 6 in Key Reports).");
   }
   if (!filteredYears.length) {
-    missingData.push("No financial data found. Sync your financial documents first.");
+    missingData.push(`No financial data found for ${options.year ? `FY${options.year}` : "any year"}. Sync your financial documents first.`);
   }
   if (missingData.length) {
     return {
@@ -1555,10 +1810,13 @@ async function generateFinancialStatements(versionId, options = {}) {
 
   const unmappedSet = new Set();
 
-  // P&L and Cash Flow are year-independent — run concurrently for speed.
-  const [plYearly, plMonthly, cfYearly, cfMonthly] = await Promise.all([
-    Promise.all(filteredYears.map(y => generateYearlyPl(versionId, y, allCoa, unmappedSet))),
-    Promise.all(filteredYears.map(y => generateMonthlyPl(versionId, y, allCoa, unmappedSet))),
+  // Yearly P&L must complete first so its statement can serve as a proportional
+  // fallback for monthly P&L when GL has no transaction_date.
+  const plYearly = await Promise.all(filteredYears.map(y => generateYearlyPl(versionId, y, allCoa, unmappedSet)));
+
+  // Monthly P&L, yearly CF, and monthly CF are year-independent — run concurrently.
+  const [plMonthly, cfYearly, cfMonthly] = await Promise.all([
+    Promise.all(filteredYears.map((y, i) => generateMonthlyPl(versionId, y, allCoa, unmappedSet, plYearly[i]?.statement))),
     Promise.all(filteredYears.map(y => generateYearlyCf(versionId, y))),
     Promise.all(filteredYears.map(y => generateMonthlyCf(versionId, y))),
   ]);
@@ -1584,6 +1842,12 @@ async function generateFinancialStatements(versionId, options = {}) {
   const validation       = validateAll(plYearly, bsYearly);
   const unmappedAccounts = Array.from(unmappedSet).sort();
 
+  // Issue 5: enrich unmapped accounts with suggested COA type, confidence, and reason
+  const unmappedAccountDetails = unmappedAccounts.map(normName => ({
+    name:         normName,
+    ...suggestCoaType(normName),
+  }));
+
   console.log(
     `[FinStmt] v=${versionId} years=[${filteredYears.join(",")}]`,
     `| pl=${plYearly.length} bs=${bsYearly.length} cf=${cfYearly.length}`,
@@ -1603,6 +1867,7 @@ async function generateFinancialStatements(versionId, options = {}) {
     },
     validation,
     unmappedAccounts,
+    unmappedAccountDetails,
     missingData: [],
   };
 }

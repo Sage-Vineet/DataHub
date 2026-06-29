@@ -76,7 +76,7 @@ async function getDistinctYears(table, versionId, yearCol, isDateCol = false) {
     .from(table)
     .select(yearCol)
     .eq('version_id', versionId)
-    .limit(50000);
+    .limit(200000);
   if (error || !data) return [];
   const set = new Set();
   for (const row of data) {
