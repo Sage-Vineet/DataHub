@@ -2188,15 +2188,32 @@ function calculateAutoFillCagr(snapshot, years = []) {
   const lastYear = cleanYears[cleanYears.length - 1];
   const firstRevenue = getAutoFillMetric(snapshot, firstYear, "totalRevenue");
   const lastRevenue = getAutoFillMetric(snapshot, lastYear, "totalRevenue");
-  const periods = cleanYears.length - 1;
+  const periods = Number(lastYear) - Number(firstYear);
   if (firstRevenue <= 0 || lastRevenue <= 0 || periods <= 0) return 0;
   return (Math.pow(lastRevenue / firstRevenue, 1 / periods) - 1) * 100;
 }
 
+function getAutoFillCagrYears(snapshot, fallbackYears = []) {
+  const availableYears = snapshot?.years || [];
+  const startYear = Number(snapshot?.currentPeriod?.startFiscalYear || 0);
+  const endYear = Number(snapshot?.currentPeriod?.fiscalYear || snapshot?.latestYear || 0);
+  if (startYear && endYear && startYear < endYear) {
+    const selected = availableYears.filter((year) => year >= startYear && year <= endYear);
+    if (selected.includes(startYear) && selected.includes(endYear)) return selected;
+  }
+  return fallbackYears.filter(Boolean);
+}
+
 function calculateAutoFillFcfConversion(metrics = {}) {
   const fcf = Number(metrics.freeCashFlow || 0);
-  const ebitda = Number(metrics.adjustedEbitda || 0);
-  return ebitda > 0 ? (fcf / ebitda) * 100 : 0;
+  const ebitda = Number(metrics.ebitda || metrics.adjustedEbitda || 0);
+  return Math.abs(ebitda) > 0.0001 ? (fcf / ebitda) * 100 : 0;
+}
+
+function formatAutoFillChartValue(key, value) {
+  return /margin|growth|percent|rate/i.test(String(key || ""))
+    ? formatAutoFillPercent(value)
+    : formatAutoFillMillions(value);
 }
 
 function getAutoFillChartData(snapshot, years = snapshot?.years || [], valueKeys = ["totalRevenue", "adjustedEbitda"]) {
@@ -2204,7 +2221,7 @@ function getAutoFillChartData(snapshot, years = snapshot?.years || [], valueKeys
     .filter(Boolean)
     .map((year) => {
       const values = valueKeys
-        .map((key) => formatAutoFillMillions(getAutoFillMetric(snapshot, year, key)))
+        .map((key) => formatAutoFillChartValue(key, getAutoFillMetric(snapshot, year, key)))
         .filter((value) => value !== "");
       return values.length ? `FY${year},${values.join(",")}` : "";
     })
@@ -2237,9 +2254,11 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
   const currentPeriodMonths = snapshot?.currentPeriod?.months || 12;
   const historyYears = alignAutoFillYears(years, 4);
   const balanceYears = alignAutoFillYears(years, 3);
-  const historyRange = getAutoFillYearRange(historyYears.filter(Boolean));
-  const revenueCagr = calculateAutoFillCagr(snapshot, historyYears.filter(Boolean));
+  const cagrYears = getAutoFillCagrYears(snapshot, historyYears);
+  const historyRange = getAutoFillYearRange(cagrYears);
+  const revenueCagr = calculateAutoFillCagr(snapshot, cagrYears);
   const firstHistoryYear = historyYears.find(Boolean);
+  const firstCagrYear = cagrYears[0] || firstHistoryYear;
   const marginExpansion =
     Number(latest.ebitdaMargin || 0) -
     Number(getAutoFillYearMetrics(snapshot, firstHistoryYear)?.ebitdaMargin || 0);
@@ -2290,24 +2309,24 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
   const previous = getAutoFillYearMetrics(snapshot, previousYear);
   add(23, 5, 1, formatAutoFillPercent(revenueCagr));
   add(23, 5, 2, historyRange);
-  add(23, 5, 3, formatAutoFillPercent(getAutoFillYearMetrics(snapshot, firstHistoryYear)?.ebitdaMargin));
-  add(23, 5, 4, formatAutoFillPercent(latest.ebitdaMargin));
+  add(23, 5, 3, formatAutoFillPercent(getAutoFillYearMetrics(snapshot, firstCagrYear)?.reportedEbitdaMargin));
+  add(23, 5, 4, formatAutoFillPercent(latest.reportedEbitdaMargin));
   add(23, 9, 0, formatAutoFillMillions(latest.totalRevenue));
   add(23, 10, 0, latestYear);
   add(23, 11, 0, formatAutoFillMillions(previous.totalRevenue));
   add(23, 11, 1, previousYear);
-  add(23, 14, 0, formatAutoFillPercent(calculateAutoFillGrowth(snapshot, latestYear)));
-  add(23, 16, 0, formatAutoFillPercent(calculateAutoFillGrowth(snapshot, previousYear)));
+  add(23, 14, 0, formatAutoFillPercent(latest.grossMargin));
+  add(23, 16, 0, formatAutoFillPercent(previous.grossMargin));
   add(23, 16, 1, previousYear);
-  add(23, 19, 0, formatAutoFillMillions(latest.adjustedEbitda));
-  add(23, 21, 0, formatAutoFillPercent(latest.ebitdaMargin));
+  add(23, 19, 0, formatAutoFillMillions(latest.ebitda));
+  add(23, 21, 0, formatAutoFillPercent(latest.reportedEbitdaMargin));
   add(23, 24, 0, formatAutoFillMillions(latest.freeCashFlow));
   add(23, 26, 0, formatAutoFillPercent(calculateAutoFillFcfConversion(latest)));
-  add(23, 29, 0, Number(latest.adjustedEbitda) ? formatAutoFillNumber(latest.netDebtEbitdaRatio, 1) : "");
+  add(23, 29, 0, Number(latest.ebitda) ? formatAutoFillNumber(latest.longTermDebtEbitdaRatio, 1) : "");
   add(23, 31, 0, currentLongDate);
   addMergedOrder(23, 36, historyRange);
   addChart(23, 33, "bar", getAutoFillChartData(snapshot, historyYears.filter(Boolean), ["totalRevenue"]));
-  addChart(23, 35, "bar", getAutoFillChartData(snapshot, historyYears.filter(Boolean), ["adjustedEbitda", "ebitdaMargin"]));
+  addChart(23, 35, "bar", getAutoFillChartData(snapshot, historyYears.filter(Boolean), ["ebitda", "reportedEbitdaMargin"]));
 
   const incomeColumns = [...historyYears, latestYear];
   incomeColumns.forEach((year, columnIndex) => {

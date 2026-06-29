@@ -40,6 +40,9 @@ const KPI_LABEL_TO_KEY = {
   "Total Debt": "totalDebt",
   "Debt": "totalDebt",
   "Net Debt": "netDebt",
+  "Cost of Goods Sold": "costOfGoodsSold",
+  "COGS": "costOfGoodsSold",
+  "Gross Profit": "grossProfit",
 };
 
 function toNumber(value, fallback = 0) {
@@ -414,6 +417,11 @@ function extractCashflowMetrics(rows = []) {
     "capital expenditures",
     "capex",
     "purchase of fixed assets",
+    "purchases of fixed assets",
+    "purchase of property",
+    "purchases of property",
+    "property plant and equipment",
+    "payments to acquire property",
   ]));
 
   return {
@@ -538,9 +546,20 @@ async function loadCashflowForDateRange({
 
 function enrichYearMetric({ year, metrics, ebitdaData, adjustmentTotal = 0, adjustmentCount = 0, cashflow = {} }) {
   const revenue = toNumber(metrics.totalRevenue, 0) || toNumber(ebitdaData?.revenue, 0);
-  const baseEbitda = toNumber(ebitdaData?.ebitda, 0);
+  const baseEbitda = toNumber(ebitdaData?.ebitda, 0) || toNumber(ebitdaData?.adjustedEbitda, 0);
   const fallbackAdjusted = toNumber(ebitdaData?.adjustedEbitda, baseEbitda);
   const adjustedEbitda = adjustmentTotal > 0 ? baseEbitda + adjustmentTotal : fallbackAdjusted;
+  const costOfGoodsSold = Math.abs(
+    toNumber(metrics.costOfGoodsSold, 0) || toNumber(ebitdaData?.costOfGoodsSold, 0),
+  );
+  const extractedGrossProfit = toNumber(metrics.grossProfit, 0) || toNumber(ebitdaData?.grossProfit, 0);
+  const hasGrossProfitData = Boolean(
+    metrics.hasGrossProfitData ||
+    ebitdaData?.hasGrossProfitData ||
+    costOfGoodsSold ||
+    extractedGrossProfit,
+  );
+  const grossProfit = extractedGrossProfit || (hasGrossProfitData ? revenue - costOfGoodsSold : 0);
   const depreciation = toNumber(ebitdaData?.components?.depreciation?.value, 0);
   const amortization = toNumber(ebitdaData?.components?.amortization?.value, 0);
   const interestExpense = toNumber(ebitdaData?.components?.interestExpense?.value, 0);
@@ -564,6 +583,10 @@ function enrichYearMetric({ year, metrics, ebitdaData, adjustmentTotal = 0, adju
     addbacksTotal: Math.max(0, adjustedEbitda - baseEbitda),
     addbacksCount: adjustmentCount,
     ebitdaMargin: revenue > 0 ? (adjustedEbitda / revenue) * 100 : 0,
+    reportedEbitdaMargin: revenue > 0 ? (baseEbitda / revenue) * 100 : 0,
+    costOfGoodsSold,
+    grossProfit,
+    grossMargin: revenue > 0 && hasGrossProfitData ? (grossProfit / revenue) * 100 : 0,
     depreciationAmortization: da,
     ebit,
     taxes,
@@ -573,6 +596,7 @@ function enrichYearMetric({ year, metrics, ebitdaData, adjustmentTotal = 0, adju
     totalDebt,
     netDebt,
     netDebtEbitdaRatio: adjustedEbitda ? netDebt / adjustedEbitda : 0,
+    longTermDebtEbitdaRatio: baseEbitda ? toNumber(metrics.longTermDebt, 0) / baseEbitda : 0,
     effectiveTaxRate: preTaxIncome > 0 ? (taxes / preTaxIncome) * 100 : 0,
     currentAssetsApprox:
       toNumber(metrics.cashAndBankBalance, 0) +
@@ -596,12 +620,16 @@ export async function loadCimFinancialAutofillSnapshot({
     : "";
   const selectedRange = normalizeDateRange(dateRange);
   const selectedFiscalYear = selectedRange?.fiscalYear || 0;
+  const selectedStartYear = getYearFromDate(selectedRange?.startDate);
+  const isSingleFiscalYearRange = Boolean(
+    selectedRange && selectedStartYear === selectedFiscalYear,
+  );
   const availableYears = await getAvailableYears({
     clientId,
     sourceKey: normalizedSource,
     selectedDatasetVersion: datasetVersion,
   });
-  const years = (
+  const recentYears = (
     selectedFiscalYear
       ? sortYearsDescending([
         ...availableYears.filter((year) => Number(year) <= selectedFiscalYear),
@@ -609,6 +637,11 @@ export async function loadCimFinancialAutofillSnapshot({
       ])
       : sortYearsDescending(availableYears)
   ).slice(0, 6);
+  const years = sortYearsDescending([
+    ...recentYears,
+    selectedStartYear,
+    selectedFiscalYear,
+  ]);
 
   const metricsByYear = {};
   await Promise.all(
@@ -627,9 +660,10 @@ export async function loadCimFinancialAutofillSnapshot({
     }),
   );
 
-  if (selectedRange) {
+  if (isSingleFiscalYearRange) {
     try {
-      metricsByYear[selectedFiscalYear] = await loadKpisForDateRange({
+      const annualMetrics = metricsByYear[selectedFiscalYear] || {};
+      const rangeMetrics = await loadKpisForDateRange({
         clientId,
         sourceKey: normalizedSource,
         sourceMode,
@@ -638,6 +672,16 @@ export async function loadCimFinancialAutofillSnapshot({
         fiscalYear: selectedFiscalYear,
         datasetVersion,
       });
+      metricsByYear[selectedFiscalYear] = {
+        ...annualMetrics,
+        ...rangeMetrics,
+        cashAndBankBalance:
+          toNumber(rangeMetrics.cashAndBankBalance, 0) || toNumber(annualMetrics.cashAndBankBalance, 0),
+        longTermDebt:
+          toNumber(rangeMetrics.longTermDebt, 0) || toNumber(annualMetrics.longTermDebt, 0),
+        totalDebt:
+          toNumber(rangeMetrics.totalDebt, 0) || toNumber(annualMetrics.totalDebt, 0),
+      };
     } catch {
       metricsByYear[selectedFiscalYear] = metricsByYear[selectedFiscalYear] || {};
     }
@@ -647,8 +691,9 @@ export async function loadCimFinancialAutofillSnapshot({
   const selectedYears = selectedFiscalYear
     ? sortYearsDescending([
       ...(usableYears.length ? usableYears : years),
+      selectedStartYear,
       selectedFiscalYear,
-    ]).slice(0, 6)
+    ])
     : (usableYears.length ? usableYears : years);
   const ebitdaByYear = await loadEbitdaByYear({
     clientId,
@@ -657,9 +702,9 @@ export async function loadCimFinancialAutofillSnapshot({
     years: selectedYears,
     datasetVersion,
   });
-  if (selectedRange) {
+  if (isSingleFiscalYearRange) {
     try {
-      ebitdaByYear[selectedFiscalYear] = await loadEbitdaForDateRange({
+      const rangeEbitda = await loadEbitdaForDateRange({
         clientId,
         sourceKey: normalizedSource,
         sourceMode,
@@ -668,6 +713,13 @@ export async function loadCimFinancialAutofillSnapshot({
         fiscalYear: selectedFiscalYear,
         datasetVersion,
       });
+      if (rangeEbitda && (
+        Math.abs(toNumber(rangeEbitda.ebitda, 0)) > 0.0001 ||
+        Math.abs(toNumber(rangeEbitda.adjustedEbitda, 0)) > 0.0001 ||
+        Math.abs(toNumber(rangeEbitda.revenue, 0)) > 0.0001
+      )) {
+        ebitdaByYear[selectedFiscalYear] = rangeEbitda;
+      }
     } catch {
       ebitdaByYear[selectedFiscalYear] = ebitdaByYear[selectedFiscalYear] || null;
     }
@@ -684,9 +736,9 @@ export async function loadCimFinancialAutofillSnapshot({
     years: selectedYears,
     datasetVersion,
   });
-  if (selectedRange) {
+  if (isSingleFiscalYearRange) {
     try {
-      cashflowByYear[selectedFiscalYear] = await loadCashflowForDateRange({
+      const rangeCashflow = await loadCashflowForDateRange({
         clientId,
         sourceKey: normalizedSource,
         sourceMode,
@@ -695,6 +747,9 @@ export async function loadCimFinancialAutofillSnapshot({
         fiscalYear: selectedFiscalYear,
         datasetVersion,
       });
+      if (Object.values(rangeCashflow || {}).some((value) => Math.abs(toNumber(value, 0)) > 0.0001)) {
+        cashflowByYear[selectedFiscalYear] = rangeCashflow;
+      }
     } catch {
       cashflowByYear[selectedFiscalYear] = cashflowByYear[selectedFiscalYear] || {};
     }
@@ -725,6 +780,7 @@ export async function loadCimFinancialAutofillSnapshot({
       ? {
         startDate: selectedRange.startDate,
         endDate: selectedRange.endDate,
+        startFiscalYear: selectedStartYear,
         fiscalYear: selectedFiscalYear,
         months: getInclusiveMonthSpan(selectedRange.startDate, selectedRange.endDate),
       }
