@@ -1,7 +1,6 @@
 import { useMemo, useState, useRef, useCallback } from "react";
 import { formatCurrency } from "../../../lib/utils";
 import { ChevronRight, ChevronDown } from "lucide-react";
-import { formatCurrency } from "../../../lib/utils";
 
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
