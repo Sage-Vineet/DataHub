@@ -132,6 +132,7 @@ function ClientWorkspaceWrapper() {
   // Keep a ref to the latest location.state so the effect can read it without
   // adding location to the dependency array (which would re-run on every nav).
   const locationStateRef = useRef(location.state);
+
   useEffect(() => {
     locationStateRef.current = location.state;
   }, [location.state]);

@@ -110,6 +110,7 @@ async function orchestrateManualGlUpload({
   batchName = "",
   uploadJobId = null,
   datasetVersionId = null,
+  keyReportVersionId = null,
 }) {
   if (!companyId) {
     throw new Error("companyId is required for Manual GL orchestration.");
@@ -140,6 +141,7 @@ async function orchestrateManualGlUpload({
     batchName,
     useDatasetLifecycle: !datasetVersionId,
     datasetVersionId: datasetVersionId,
+    keyReportVersionId,
     deferLifecycleFinalization: true,
     uploadJobId,
   }));
@@ -206,6 +208,8 @@ async function orchestrateManualGlUpload({
     if (uploadChecksum) {
       await withTiming("setChecksum", () => setUploadChecksum(batchId, uploadChecksum, checksumRowCount));
     }
+
+    const strictIsolation = !!keyReportVersionId;
 
     await trackProgress("duplicate_check", 30);
     const duplicateActiveBatch = uploadChecksum

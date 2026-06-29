@@ -1,5 +1,3 @@
-import axios from 'axios';
-
 /**
  * Support Service for handling help & support requests.
  */

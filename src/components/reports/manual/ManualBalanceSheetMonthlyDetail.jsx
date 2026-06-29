@@ -224,7 +224,7 @@ export default function ManualBalanceSheetMonthlyDetail({
   months.forEach((m) => {
     totalLEByMonth[m] = (liabSection.monthlyTotals?.[m] || 0) + (eqSection.monthlyTotals?.[m] || 0);
   });
-  const lastVisibleMonth = months[months.length - 1];
+  const lastVisibleMonth = months.length > 0 ? months[months.length - 1] : null;
   const totalLETotal = lastVisibleMonth != null
     ? (totalLEByMonth[lastVisibleMonth] || 0)
     : (liabSection.total || 0) + (eqSection.total || 0);
@@ -245,6 +245,7 @@ export default function ManualBalanceSheetMonthlyDetail({
               <span>{displaySubtitle}</span>
             </div>
           )}
+
         </div>
 
         <div className="rounded-md border border-border">

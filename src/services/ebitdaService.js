@@ -813,7 +813,10 @@ export async function getEbitdaData(startDate, endDate, accountingMethod, source
       },
     };
   } catch (error) {
-    console.error("[EBITDA Service] Fatal error:", error);
+    // Only log fatal errors if they aren't expected connection issues
+    if (!error.message?.includes("QuickBooks is disconnected")) {
+      console.error("[EBITDA Service] Unexpected error:", error);
+    }
     throw error;
   }
 }

@@ -16,6 +16,7 @@ function BalanceSheetReport({
   createdOn,
   isPreview = false,
   selectedMonths = [],
+  isMonthly = false,
 }) {
   // Forward isPreview to sub-components so they skip the document-style wrapper in-page
   const resolvedEntityName = entityName || clientName || "Company";
@@ -46,6 +47,7 @@ function BalanceSheetReport({
           subtitle={summarySubtitle}
           entityName={resolvedEntityName}
           selectedMonths={selectedMonths}
+          isMonthly={isMonthly}
           isPreview={isPreview}
         />
       );
@@ -61,6 +63,7 @@ function BalanceSheetReport({
           title="Balance Sheet"
           subtitle={summarySubtitle}
           entityName={resolvedEntityName}
+          isMonthly={isMonthly}
           isPreview={isPreview}
         />
       );
@@ -79,6 +82,7 @@ function BalanceSheetReport({
         subtitle={null}
         entityName={resolvedEntityName}
         createdOn={createdOn}
+        isMonthly={isMonthly}
         isPreview={isPreview}
       />
     );
@@ -95,6 +99,7 @@ function BalanceSheetReport({
       source={source}
       sourceLabel={sourceLabel}
       noDataText={noDataText}
+      isMonthly={isMonthly}
       isPreview={isPreview}
     />
   );

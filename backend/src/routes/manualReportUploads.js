@@ -35,7 +35,7 @@ const {
 const { supabase } = require("../db");
 const { canAccessCompany } = require("../services/permissionService");
 const { runBsBankBalancesExtraction, runBankExtraction } = require("./quickbooks/reconciliation/bankVsBooks");
-const keyReportService = require("../services/keyReportService");
+const keyReportService = require("../services/keyReports/keyReportService");
 
 // Version-aware cache for Key Reports-resolved tax return extraction. Kept
 // separate from the Sync All tax_return cache so existing data is untouched;
@@ -44,14 +44,22 @@ const TAX_RETURN_KR_CACHE_TYPE = "tax_return_kr_v1";
 
 // Extracts monthly Total Income and Total Expenses from the latest P&L stored in qb_synced_reports.
 // Returns { totalIncome: { "YYYY-MM": number }, totalExpenses: { "YYYY-MM": number } } or null.
-async function extractPlFinancials(clientId, source) {
+async function extractPlFinancials(clientId, source, { keyReportVersionId = null, datasetVersion = null } = {}) {
   try {
-    const { data: row } = await supabase
+    const query = supabase
       .from("qb_synced_reports")
       .select("data")
       .eq("company_id", clientId)
       .eq("source", source)
-      .eq("report_type", "profit_and_loss")
+      .eq("report_type", "profit_and_loss");
+
+    if (keyReportVersionId) {
+      query.eq("key_report_version_id", keyReportVersionId);
+    } else if (datasetVersion) {
+      query.eq("dataset_version", datasetVersion);
+    }
+
+    const { data: row } = await query
       .order("updated_at", { ascending: false })
       .order("last_synced_at", { ascending: false })
       .limit(1)
@@ -400,9 +408,39 @@ router.get("/manual-report-uploads/reports/:statementType/latest", async (req, r
     // ─────────────────────────────────────────────────────────────────────────
 
     const rowId = String(req.query.rowId || "").trim() || null;
+    const keyReportVersionId = String(req.query.keyReportVersionId || "").trim() || null;
 
     let row;
-    if (rowId) {
+    if (keyReportVersionId) {
+      // ── Key Reports document-driven resolution ──
+      // Prioritize the document explicitly linked to THIS version for this category.
+      const categoryMap = {
+        profit_and_loss: "profit_loss",
+        balance_sheet: "balance_sheet",
+        general_ledger: "general_ledger",
+        bank_statement: "bank_statement",
+        tax_return: "tax_return",
+      };
+      const category = categoryMap[statementType];
+      if (category) {
+        const { documents } = await keyReportService.getLinkedDocuments(clientId, category, { versionId: keyReportVersionId });
+        const doc = documents?.[0]; // Support first document for now
+        if (doc?.upload_id) {
+          const { data: linkedRow, error: linkedErr } = await supabase
+            .from("qb_synced_reports")
+            .select("id, report_type, report_params, data, updated_at, last_synced_at")
+            .eq("company_id", clientId)
+            .eq("report_type", statementType)
+            .eq("report_params->>documentId", doc.id)
+            .maybeSingle();
+          if (!linkedErr && linkedRow) {
+            row = linkedRow;
+          }
+        }
+      }
+    }
+
+    if (!row && rowId) {
       const { data: specificRow, error: rowErr } = await supabase
         .from("qb_synced_reports")
         .select("id, report_type, report_params, data, updated_at, last_synced_at")
@@ -411,7 +449,7 @@ router.get("/manual-report-uploads/reports/:statementType/latest", async (req, r
         .maybeSingle();
       if (rowErr) throw new Error(rowErr.message);
       row = specificRow;
-    } else {
+    } else if (!row) {
       row = await getLatestManualUploadedReport({ companyId: clientId, statementType });
     }
 
@@ -488,7 +526,24 @@ router.get("/manual-report-uploads/reports/:statementType/all", async (req, res)
       return res.status(400).json({ success: false, error: "Invalid statementType." });
     }
 
-    const rows = await getAllManualUploadedReports({ companyId: clientId, statementType });
+    const keyReportVersionId = String(req.query.keyReportVersionId || "").trim() || null;
+    let rows = await getAllManualUploadedReports({ companyId: clientId, statementType });
+
+    if (keyReportVersionId) {
+      const categoryMap = {
+        profit_and_loss: "profit_loss",
+        balance_sheet: "balance_sheet",
+        general_ledger: "general_ledger",
+        bank_statement: "bank_statement",
+        tax_return: "tax_return",
+      };
+      const category = categoryMap[statementType];
+      if (category) {
+        const { documents } = await keyReportService.getLinkedDocuments(clientId, category, { versionId: keyReportVersionId });
+        const linkedDocIds = new Set(documents.map(d => d.id));
+        rows = rows.filter(row => linkedDocIds.has(row.report_params?.documentId));
+      }
+    }
 
     const files = rows.map((row) => {
       const report = row.data?.manual_report_upload?.report || null;
@@ -536,7 +591,24 @@ router.get("/manual-report-uploads/qms-reports/:statementType/all", async (req, 
       return res.status(400).json({ success: false, error: "Invalid statementType." });
     }
 
-    const rows = await getAllQMSUploadedReports({ companyId: clientId, statementType });
+    const keyReportVersionId = String(req.query.keyReportVersionId || "").trim() || null;
+    let rows = await getAllQMSUploadedReports({ companyId: clientId, statementType });
+
+    if (keyReportVersionId) {
+      const categoryMap = {
+        profit_and_loss: "profit_loss",
+        balance_sheet: "balance_sheet",
+        general_ledger: "general_ledger",
+        bank_statement: "bank_statement",
+        tax_return: "tax_return",
+      };
+      const category = categoryMap[statementType];
+      if (category) {
+        const { documents } = await keyReportService.getLinkedDocuments(clientId, category, { versionId: keyReportVersionId });
+        const linkedDocIds = new Set(documents.map(d => d.id));
+        rows = rows.filter(row => linkedDocIds.has(row.report_params?.documentId));
+      }
+    }
 
     const files = rows.map((row) => {
       const report = row.data?.manual_report_upload?.report || null;
@@ -575,10 +647,13 @@ router.get("/manual-report-uploads/qms-bank-data", async (req, res) => {
     const clientId = resolveClientId(req);
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
 
-    // Bank statement is resolved from the active Key Reports version (single
-    // source of truth); P&L financials remain QMS-source-scoped.
+    const datasetVersion = String(req.query.datasetVersion || "").trim() || null;
+    const keyReportVersionId = String(req.query.keyReportVersionId || "").trim() || null;
+
+    // Bank statement is resolved from the SELECTED Key Reports version (single
+    // source of truth, active when none selected); P&L financials remain QMS-scoped.
     const [{ body: bankBody }, plFinancials] = await Promise.all([
-      runBankExtraction(clientId, "quickbooks_manual_upload"),
+      runBankExtraction(clientId, "quickbooks_manual_upload", "Manual Upload Source", datasetVersion, keyReportVersionId),
       extractPlFinancials(clientId, "quickbooks_manual_upload").catch(() => null),
     ]);
 
@@ -679,9 +754,37 @@ router.get("/manual-report-uploads/qms-reports/:statementType/latest", async (re
     }
 
     const rowId = String(req.query.rowId || "").trim() || null;
+    const keyReportVersionId = String(req.query.keyReportVersionId || "").trim() || null;
 
     let row;
-    if (rowId) {
+    if (keyReportVersionId) {
+      const categoryMap = {
+        profit_and_loss: "profit_loss",
+        balance_sheet: "balance_sheet",
+        general_ledger: "general_ledger",
+        bank_statement: "bank_statement",
+        tax_return: "tax_return",
+      };
+      const category = categoryMap[statementType];
+      if (category) {
+        const { documents } = await keyReportService.getLinkedDocuments(clientId, category, { versionId: keyReportVersionId });
+        const doc = documents?.[0];
+        if (doc?.upload_id) {
+          const { data: linkedRow, error: linkedErr } = await supabase
+            .from("qb_synced_reports")
+            .select("id, report_type, report_params, data, updated_at, last_synced_at")
+            .eq("company_id", clientId)
+            .eq("report_type", statementType)
+            .eq("report_params->>documentId", doc.id)
+            .maybeSingle();
+          if (!linkedErr && linkedRow) {
+            row = linkedRow;
+          }
+        }
+      }
+    }
+
+    if (!row && rowId) {
       const { data: specificRow, error: rowErr } = await supabase
         .from("qb_synced_reports")
         .select("id, report_type, report_params, data, updated_at, last_synced_at")
@@ -690,7 +793,7 @@ router.get("/manual-report-uploads/qms-reports/:statementType/latest", async (re
         .maybeSingle();
       if (rowErr) throw new Error(rowErr.message);
       row = specificRow;
-    } else {
+    } else if (!row) {
       row = await getLatestQMSUploadedReport({ companyId: clientId, statementType });
     }
 
@@ -777,11 +880,13 @@ router.get("/manual-report-uploads/tax-data", async (req, res) => {
     //    switching versions (Version 1 → Tax_2024.pdf, Version 2 → Tax_2025.pdf)
     //    refreshes it.
     const datasetVersion = String(req.query.datasetVersion || "").trim() || null;
+    const keyReportVersionId = String(req.query.keyReportVersionId || "").trim() || null;
     // Centralised resolver: one call yields the selected version's full document
-    // context; the tax_return field is the source set for this reconciliation.
+    // context; the tax_return field is the source set for this reconciliation. An
+    // explicit Key Reports versionId takes priority over the dataset version.
     const { versionId, taxReturn: linkedDocs } = await keyReportService.getVersionReportContext(
       clientId,
-      { datasetVersion },
+      { datasetVersion, versionId: keyReportVersionId },
     );
     const documentSignature = linkedDocs.map((d) => d.id).filter(Boolean).sort().join(",");
 
@@ -1305,12 +1410,20 @@ router.get("/manual-upload/bank-data", async (req, res) => {
     const clientId = resolveClientId(req);
     if (!clientId) return res.status(400).json({ success: false, error: "Missing clientId." });
 
+    // Optional Key Reports scoping so a selected Version (not just the active one)
+    // drives which documents this Manual Upload flow reads.
+    const datasetVersion = String(req.query.datasetVersion || "").trim() || null;
+    const keyReportVersionId = String(req.query.keyReportVersionId || "").trim() || null;
+
     // Fetch P&L financials in parallel — merges Sales/Expenses per Financials into this response
-    const plFinancialsPromise = extractPlFinancials(clientId, MANUAL_REPORT_UPLOAD_SOURCE).catch(() => null);
+    const plFinancialsPromise = extractPlFinancials(clientId, MANUAL_REPORT_UPLOAD_SOURCE, {
+      keyReportVersionId,
+      datasetVersion
+    }).catch(() => null);
 
     // Start BS bank accounts fetch in parallel — merges /bs-bank-balances into this response
     const bsBankAccountsPromise = runBsBankBalancesExtraction(
-      clientId, MANUAL_REPORT_UPLOAD_SOURCE, "Manual Upload Source"
+      clientId, MANUAL_REPORT_UPLOAD_SOURCE, "Manual Upload Source", null, datasetVersion, keyReportVersionId
     ).then(r => {
       const b = r?.body;
       if (b?.bankAccounts?.length > 0) {
@@ -1327,7 +1440,7 @@ router.get("/manual-upload/bank-data", async (req, res) => {
     // Bank statement is resolved strictly from the active Key Reports version
     // (version-aware cache + live extraction handled by runBankExtraction). BS
     // bank accounts and P&L financials remain manual_upload-source-scoped.
-    const { body: bankBody } = await runBankExtraction(clientId, MANUAL_REPORT_UPLOAD_SOURCE, "Manual Upload Source");
+    const { body: bankBody } = await runBankExtraction(clientId, MANUAL_REPORT_UPLOAD_SOURCE, "Manual Upload Source", datasetVersion, keyReportVersionId);
     const [balanceSheetBankAccounts, plFinancials] = await Promise.all([bsBankAccountsPromise, plFinancialsPromise]);
 
     if (!bankBody?.banks?.length) {

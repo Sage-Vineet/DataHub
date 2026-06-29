@@ -17,7 +17,6 @@ import {
   unarchiveFolder,
   uploadFile,
   updateFolder,
-  updateFolderAccess,
 } from '../lib/api';
 
 // ── Tree Utilities ──────────────────────────────────────────────────────────

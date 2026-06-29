@@ -2,10 +2,12 @@ import { fetchProfitAndLoss } from "../lib/quickbooks";
 import {
   getManualStagedProfitLossSummary,
   getManualStagedProfitLossMonthlyDetail,
+  getManualStagedProfitLossVendorDetail,
   getLatestManualUploadedReport,
   getAllManualUploadedReports,
   getLatestQMSUploadedReport,
   getAllQMSUploadedReports,
+  getKeyReportVersionReport,
 } from "../lib/api";
 import { normalizeAccountingMethod } from "../lib/report-filters";
 import { parseSummaryReport } from "../lib/report-parsers";
@@ -83,10 +85,13 @@ async function fetchSinglePeriodPNL(
   options = {},
 ) {
   try {
+    const keyReportVersionId = options?.keyReportVersionId || null;
+
     if (sourceMode === "manual_upload" || sourceMode === "quickbooks_manual") {
       const fetchFn = sourceMode === "quickbooks_manual" ? getLatestQMSUploadedReport : getLatestManualUploadedReport;
       const payload = await fetchFn("profit_and_loss", {
         rowId: options?.manualUploadRowId,
+        keyReportVersionId,
       });
       const rows = Array.isArray(payload?.data?.rows) ? payload.data.rows : [];
       const periods = payload?.data?.periods || [];
@@ -417,6 +422,44 @@ export async function getProfitAndLoss(
   accountingMethod,
   options = {},
 ) {
+  const keyReportVersionId = options?.keyReportVersionId || null;
+
+  // Key Reports: read ONLY from profit_loss_entries — never from Manual GL staging.
+  if (keyReportVersionId) {
+    try {
+      const manualFilters = options?.manualFilters || {};
+      const singleYear = /^\d{4}$/.test(String(manualFilters.fiscalYear ?? "")) ? manualFilters.fiscalYear : null;
+      const response = await getKeyReportVersionReport(keyReportVersionId, "profit-loss", {
+        // Summary tab = annual ("Year") view → fiscal-year columns (spec #10).
+        // Explicit date pickers (fromDate/toDate) drive which years render (spec #11–#13).
+        year: singleYear,
+        startDate: manualFilters.fromDate || null,
+        endDate: manualFilters.toDate || null,
+        period: "year",
+      });
+      const hierarchicalRows = response?.hierarchicalRows || response?.rows || [];
+      console.log("[KeyReports][PL][Summary] Loaded", hierarchicalRows.length, "rows from profit_loss_entries for version", keyReportVersionId);
+      return {
+        hierarchicalRows,
+        rows: hierarchicalRows,
+        yearCols: response?.yearCols,
+        columns: response?.columns,
+        source: response?.source || "key_reports_entry_tables",
+        sourceLabel: "Key Reports",
+        noDataText: hierarchicalRows.length > 0 ? null : "No Profit & Loss data in Key Reports. Run Sync first.",
+      };
+    } catch (err) {
+      console.warn("[KeyReports][PL][Summary] Entry table fetch failed:", err.message);
+      return {
+        hierarchicalRows: [],
+        rows: [],
+        source: "key_reports_entry_tables",
+        sourceLabel: "Key Reports",
+        noDataText: "Key Reports Profit & Loss data unavailable.",
+      };
+    }
+  }
+
   if ((options?.sourceMode || "quickbooks") === "manual") {
     // Only pass manual filters (fiscal year, batch, etc.) — QB date params not used
     const params = {
@@ -661,6 +704,9 @@ export async function getProfitAndLossDetail(
         ? options.manualFilters
         : {}),
     };
+    if (keyReportVersionId) {
+      params.keyReportVersionId = keyReportVersionId;
+    }
 
     // Yearly mode: one call per year, aggregate annual totals (sum of all months)
     if (options?.yearMode === true && options?.startYear && options?.endYear) {

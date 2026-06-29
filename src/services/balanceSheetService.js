@@ -6,6 +6,7 @@ import {
   getAllManualUploadedReports,
   getLatestQMSUploadedReport,
   getAllQMSUploadedReports,
+  getKeyReportVersionReport,
 } from "../lib/api";
 import { normalizeAccountingMethod } from "../lib/report-filters";
 import {
@@ -244,11 +245,13 @@ async function fetchSinglePeriodBS(
   options = {},
 ) {
   const normalizedAccountingMethod = normalizeAccountingMethod(accountingMethod);
+  const keyReportVersionId = options?.keyReportVersionId || null;
 
   try {
     if (sourceMode === "manual_upload") {
       const response = await getLatestManualUploadedReport("balance_sheet", {
         rowId: options?.manualUploadRowId,
+        keyReportVersionId,
       });
       return Array.isArray(response?.data?.rows) ? response.data.rows : [];
     }
@@ -259,7 +262,7 @@ async function fetchSinglePeriodBS(
           ? options.manualFilters
           : {};
       const response = await getManualGlBalanceSheet({
-        params: { ...manualFilters },
+        params: { ...manualFilters, ...(keyReportVersionId ? { keyReportVersionId } : {}) },
       });
 
       return parseUnifiedBalanceSheetRows(response);
@@ -355,6 +358,47 @@ function convertStagedBsPayloadToRows(response) {
 export async function getBalanceSheet(startDate, endDate, accountingMethod, options = {}) {
   const normalizedAccountingMethod = normalizeAccountingMethod(accountingMethod);
   const sourceMode = options?.sourceMode || "manual";
+  const keyReportVersionId = options?.keyReportVersionId || null;
+
+  // Key Reports: read ONLY from balance_sheet_entries — never from Manual GL staging,
+  // active batches, or snapshots. keyReportVersionId always wins regardless of sourceMode.
+  if (keyReportVersionId) {
+    try {
+      const manualFilters = options?.manualFilters || {};
+      const singleYear = /^\d{4}$/.test(String(manualFilters.fiscalYear ?? "")) ? manualFilters.fiscalYear : null;
+      const response = await getKeyReportVersionReport(keyReportVersionId, "balance-sheet", {
+        // Summary tab = annual ("Year") view → fiscal-year columns (spec #10).
+        // Only the user's explicit date pickers (fromDate/toDate) drive which
+        // years render (spec #11–#13); with none set, ALL synced years show.
+        year: singleYear,
+        startDate: manualFilters.fromDate || null,
+        endDate: manualFilters.toDate || null,
+        period: "year",
+      });
+      const rows = response?.hierarchicalRows || response?.rows || [];
+      console.log("[KeyReports][BS][Summary] Loaded", rows.length, "rows from balance_sheet_entries for version", keyReportVersionId);
+      return {
+        rows,
+        yearCols: response?.yearCols,
+        columns: response?.columns,
+        source: response?.source || "key_reports_entry_tables",
+        sourceLabel: "Key Reports",
+        asOfDate: response?.asOfDate || null,
+        noDataText: rows.length > 0 ? null : "No Balance Sheet data in Key Reports. Run Sync first.",
+        reStageRequired: false,
+        reStageWarning: null,
+      };
+    } catch (err) {
+      console.warn("[KeyReports][BS][Summary] Entry table fetch failed:", err.message);
+      return {
+        rows: [],
+        source: "key_reports_entry_tables",
+        sourceLabel: "Key Reports",
+        asOfDate: null,
+        noDataText: "Key Reports Balance Sheet data unavailable.",
+      };
+    }
+  }
 
   if (sourceMode === "quickbooks") {
     try {
@@ -393,6 +437,7 @@ export async function getBalanceSheet(startDate, endDate, accountingMethod, opti
       const fetchFn = isQMS ? getLatestQMSUploadedReport : getLatestManualUploadedReport;
       const response = await fetchFn("balance_sheet", {
         rowId: options?.manualUploadRowId,
+        keyReportVersionId,
       });
       const rows = Array.isArray(response?.data?.rows) ? response.data.rows : [];
       const periods = response?.data?.periods || [];
@@ -407,12 +452,12 @@ export async function getBalanceSheet(startDate, endDate, accountingMethod, opti
       };
       const summaryRows = periods.length > 0 && rows.length > 0
         ? rows.map(function sumNode(node) {
-            return {
-              ...node,
-              amount: getValue(node.colAmounts) || (node.amount || 0),
-              children: node.children ? node.children.map(sumNode) : undefined,
-            };
-          })
+          return {
+            ...node,
+            amount: getValue(node.colAmounts) || (node.amount || 0),
+            children: node.children ? node.children.map(sumNode) : undefined,
+          };
+        })
         : rows;
       return {
         rows: summaryRows,
@@ -437,6 +482,10 @@ export async function getBalanceSheet(startDate, endDate, accountingMethod, opti
     options?.manualFilters && typeof options.manualFilters === "object"
       ? options.manualFilters
       : {};
+
+  if (keyReportVersionId) {
+    manualFilters.keyReportVersionId = keyReportVersionId;
+  }
 
   try {
     // For manual staged data, fiscal year (in manualFilters) controls filtering.
@@ -772,7 +821,7 @@ function expandPeriodLabel(label) {
 }
 
 function fileLabel(file) {
-  const monthNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const dateStr = file?.data?.asOfDate || file?.data?.periodEnd;
   if (dateStr) {
     const parts = String(dateStr).split("-");
@@ -986,6 +1035,38 @@ export async function getBalanceSheetDetail(
   accountingMethod,
   options = {},
 ) {
+  const keyReportVersionId = options?.keyReportVersionId || null;
+
+  // Key Reports: read ONLY from balance_sheet_entries — never from Manual GL staging.
+  if (keyReportVersionId) {
+    try {
+      const manualFilters = options?.manualFilters || {};
+      const singleYear = /^\d{4}$/.test(String(manualFilters.fiscalYear ?? "")) ? manualFilters.fiscalYear : null;
+      const response = await getKeyReportVersionReport(keyReportVersionId, "balance-sheet", {
+        // Detail tab = "Month" view → monthly columns (Jan…Dec) for the year (spec #9).
+        year: singleYear,
+        startDate: manualFilters.fromDate || null,
+        endDate: manualFilters.toDate || null,
+        period: "month",
+      });
+      console.log("[KeyReports][BS][Detail] Loaded from balance_sheet_entries for version", keyReportVersionId);
+      return {
+        rows: response?.hierarchicalRows || response?.rows || [],
+        columns: response?.columns || { yearCols: [], changeCols: [], currentMonth: "" },
+        source: response?.source || "key_reports_entry_tables",
+        reportType: "balance_sheet_monthly_detail",
+      };
+    } catch (err) {
+      console.warn("[KeyReports][BS][Detail] Entry table fetch failed:", err.message);
+      return {
+        rows: [],
+        columns: { yearCols: [], changeCols: [], currentMonth: "" },
+        source: "key_reports_entry_tables",
+        reportType: "balance_sheet_monthly_detail",
+      };
+    }
+  }
+
   if ((options?.sourceMode || "quickbooks") === "manual") {
     const baseParams = {
       ...((options?.manualFilters && typeof options.manualFilters === "object")

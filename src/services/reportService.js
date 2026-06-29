@@ -1113,7 +1113,7 @@ export async function fetchDashboardKPIsFromManualUpload() {
   return cards.map((card) => ({ ...card, rawValue: Number(card.rawValue || 0) }));
 }
 
-function extractMultiColumnTrends(payload, buckets) {
+export function extractMultiColumnTrends(payload, buckets) {
   const qbReport = unwrapReportPayload(payload);
 
   // Identify period columns: money columns whose title is NOT "total"

@@ -287,7 +287,7 @@ export default function BalanceSheetSummary({
           <table className="w-full min-w-max border-collapse">
             <thead>
               <tr className="border-b-2 border-text-primary sticky top-0 bg-bg-card z-20">
-                <th className="pb-3 pt-2 px-4 text-left text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider">
+                <th className="sticky top-0 left-0 z-30 bg-bg-card pb-3 pt-2 px-4 text-left text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider min-w-[320px] border-b-2 border-text-primary border-r-2 border-border/50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]">
                   Accounting Classification
                 </th>
                 {columns.yearCols.map((col) => (
@@ -376,6 +376,6 @@ export default function BalanceSheetSummary({
           background: rgba(0,0,0,0.2);
         }
       `}</style>
-    </div>
+    </div >
   );
 }

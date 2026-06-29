@@ -10,9 +10,14 @@
 // Linking a document also registers a file_reference so the file is protected
 // from deletion while it is in use (see fileReferenceService).
 
-const { supabase } = require("../db");
-const fileReferenceService = require("./fileReferenceService");
-const documentService = require("./documentService");
+const { supabase } = require("../../db");
+const fileReferenceService = require("../fileReferenceService");
+const documentService = require("../documentService");
+const { normalizeError, isConnectionError } = require("../../utils/dbErrorHandler");
+const {
+  listValidationResults,
+  resolveMappingYear,
+} = require("./keyReportValidationService");
 
 // Extensible by design — categories are plain strings, no DB enum.
 const REPORT_CATEGORIES = {
@@ -54,6 +59,8 @@ function normalizeMapping(row) {
     documentId: row.document_id || null,
     uploadId: row.upload_id || null,
     fileName: row.file_name || null,
+    year: Number.isInteger(Number(row.year)) ? Number(row.year) : null,
+    status: row.status || "linked",
     linkedBy: row.linked_by || null,
     metadata: row.metadata || {},
     createdAt: row.created_at,
@@ -262,6 +269,8 @@ async function addMapping(versionId, { reportCategory, documentId }, userId = nu
         document_id: documentId,
         upload_id: document.upload_id || null,
         file_name: document.name || null,
+        year: resolveMappingYear({ fileName: document.name || null }),
+        status: "linked",
         linked_by: userId,
       },
       { onConflict: "version_id,report_category,document_id" }
@@ -346,7 +355,7 @@ async function validateVersion(versionId) {
 // Sync: persist mappings (already persisted), validate, generate backend
 // financial tables, and update sync status. Idempotent + re-syncable.
 // Table generation is delegated to keyReportSyncService (Step 5).
-async function syncVersion(versionId, userId = null) {
+async function syncVersion(versionId, userId = null, opts = {}) {
   const version = await getVersion(versionId);
   if (!version) throw new Error("Version not found.");
 
@@ -366,17 +375,23 @@ async function syncVersion(versionId, userId = null) {
   try {
     const validation = await validateVersion(versionId);
 
-    // Generate backend financial tables from the linked files (Step 5).
+    // Extract all linked files and persist to entry tables. Validation results
+    // are written internally by the sync service (from entry table row counts).
     const keyReportSyncService = require("./keyReportSyncService");
-    const result = await keyReportSyncService.generateFinancialTables(version, { userId });
+    const result = await keyReportSyncService.generateFinancialTables(version, {
+      userId,
+      uploadJobId: opts.uploadJobId || null,
+    });
 
+    // key_report_versions: mark synced. resolved_batch_id/dataset_version are null
+    // in the new direct-extraction architecture (no Manual GL batch is created).
     await supabase
       .from("key_report_versions")
       .update({
         status: "synced",
         last_synced_at: new Date().toISOString(),
-        resolved_batch_id: result?.batchId || version.resolvedBatchId || null,
-        resolved_dataset_version: result?.datasetVersion ?? version.resolvedDatasetVersion ?? null,
+        resolved_batch_id: null,
+        resolved_dataset_version: null,
         updated_at: new Date().toISOString(),
         updated_by: userId,
       })
@@ -387,26 +402,45 @@ async function syncVersion(versionId, userId = null) {
       .update({
         sync_status: "success",
         sync_completed_at: new Date().toISOString(),
-        metadata: { warnings: validation.warnings, result: result?.summary || null },
+        metadata: {
+          warnings: validation.warnings,
+          years: result?.years || [],
+          extractionResults: result?.extractionResults || null,
+          totalRowsInserted: result?.summary?.totalRowsInserted || 0,
+        },
       })
       .eq("id", logId);
+
+    // Fetch the validation results persisted by the sync service for the response.
+    const validationResults = await listValidationResults(versionId);
 
     return {
       success: true,
       version: await getVersion(versionId),
       warnings: validation.warnings,
+      validationResults,
       result,
     };
   } catch (err) {
-    await supabase
-      .from("key_report_sync_logs")
-      .update({
-        sync_status: "failed",
-        sync_completed_at: new Date().toISOString(),
-        error_message: err.message || String(err),
-      })
-      .eq("id", logId);
-    throw err;
+    const normalizedError = normalizeError(err);
+    if (isConnectionError(normalizedError)) {
+      normalizedError.status = 503;
+      normalizedError.retryable = true;
+    }
+
+    try {
+      await supabase
+        .from("key_report_sync_logs")
+        .update({
+          sync_status: "failed",
+          sync_completed_at: new Date().toISOString(),
+          error_message: normalizedError.message || String(err),
+        })
+        .eq("id", logId);
+    } catch (logUpdateError) {
+      console.warn("[KeyReports][Sync] Failed to persist sync error log:", logUpdateError.message);
+    }
+    throw normalizedError;
   }
 }
 
@@ -458,15 +492,24 @@ async function getVersionByDatasetVersion(companyId, datasetVersion) {
 }
 
 // Resolves the single Key Report version a consumer should read from, given a
-// company and an optional SELECTED dataset version (the Manual GL version the UI
-// has chosen). Resolution order:
-//   1. The version pinned to the selected dataset version (true isolation), else
-//   2. The company's ACTIVE version (keeps single-version setups working and
-//      avoids blank screens when nothing is pinned to the selected version).
+// company and optional selectors. Resolution order (strongest first):
+//   1. An explicit Key Report versionId — the UI's chosen Version is the single
+//      source of truth (must belong to this company; cross-company ids ignored).
+//   2. The version pinned to the selected Manual GL dataset version, else
+//   3. The company's ACTIVE version (keeps single-version setups working and
+//      avoids blank screens when nothing more specific is supplied).
 // Centralised here so getLinkedDocuments and getVersionReportContext share one
 // resolution code path and can never diverge.
-async function resolveVersionFor(companyId, { datasetVersion } = {}) {
+async function resolveVersionFor(companyId, { datasetVersion, versionId } = {}) {
   if (!companyId) return null;
+  if (versionId) {
+    const byId = await getVersion(versionId);
+    // Guard against cross-company access — the version must belong to this company.
+    if (byId && byId.companyId === companyId) return byId;
+    console.log(
+      `[KeyReports] versionId ${versionId} not found for company ${companyId}; falling back to dataset version / active.`,
+    );
+  }
   if (datasetVersion != null && datasetVersion !== "") {
     const pinned = await getVersionByDatasetVersion(companyId, datasetVersion);
     if (pinned) return pinned;
@@ -534,8 +577,8 @@ function emptyReportContext() {
 //   { versionId, datasetVersion, flowType, resolvedBatchId,
 //     documents: { profit_loss, balance_sheet, general_ledger, bank_statement, tax_return },
 //     pnlDocument, balanceSheet, glDocument, bankStatement, taxReturn }
-async function getVersionReportContext(companyId, { datasetVersion } = {}) {
-  const version = await resolveVersionFor(companyId, { datasetVersion });
+async function getVersionReportContext(companyId, { datasetVersion, versionId } = {}) {
+  const version = await resolveVersionFor(companyId, { datasetVersion, versionId });
   if (!version) return emptyReportContext();
 
   const documents = await loadDocumentsByCategory(version.id);
@@ -560,19 +603,134 @@ async function getVersionReportContext(companyId, { datasetVersion } = {}) {
 // wrapper over the centralised getVersionReportContext so there is exactly one
 // version-resolution + document-loading code path. Resolved from the SELECTED
 // dataset version when supplied, otherwise the company's ACTIVE version.
-async function getLinkedDocuments(companyId, reportCategory, { datasetVersion } = {}) {
+async function getLinkedDocuments(companyId, reportCategory, { datasetVersion, versionId } = {}) {
   if (!companyId) return { versionId: null, documents: [] };
-  const context = await getVersionReportContext(companyId, { datasetVersion });
+  const context = await getVersionReportContext(companyId, { datasetVersion, versionId });
   return {
     versionId: context.versionId,
     documents: context.documents[reportCategory] || [],
   };
 }
 
+// Convenience: resolve a full report context directly from a Key Report
+// versionId (the version's own company is used). Returns an empty context when
+// the version does not exist. Lets consumers pass the UI-selected Version id
+// without separately knowing its company.
+async function getVersionReportContextById(versionId) {
+  if (!versionId) return emptyReportContext();
+  const version = await getVersion(versionId);
+  if (!version) return emptyReportContext();
+  return getVersionReportContext(version.companyId, { versionId });
+}
+
 // Returns documents linked in the active version for a given category.
 // Thin wrapper over getLinkedDocuments for callers that don't scope by version.
 async function getActiveLinkedDocuments(companyId, reportCategory) {
   return getLinkedDocuments(companyId, reportCategory);
+}
+
+// ---- Extracted data viewer --------------------------------------------------
+
+const ENTRY_TABLE_CONFIG = {
+  profit_loss: {
+    table: 'profit_loss_entries',
+    yearCol: 'fiscal_year',
+    yearIsDate: false,
+    searchCols: ['account_name', 'account_number', 'category'],
+    selectCols: 'id,fiscal_year,account_name,account_number,account_type,category,sub_category,amount,hierarchy_level,is_total,sort_order',
+    orderCol: 'sort_order',
+    orderSecondary: 'id',
+  },
+  balance_sheet: {
+    table: 'balance_sheet_entries',
+    yearCol: 'fiscal_year',
+    yearIsDate: false,
+    searchCols: ['account_name', 'account_number', 'section'],
+    selectCols: 'id,fiscal_year,as_of_date,account_name,account_number,account_type,section,amount,hierarchy_level,is_total,sort_order',
+    orderCol: 'sort_order',
+    orderSecondary: 'id',
+  },
+  general_ledger: {
+    table: 'general_ledger_entries',
+    yearCol: 'fiscal_year',
+    yearIsDate: false,
+    searchCols: ['account_section', 'distribution_account', 'memo_description', 'split_account', 'transaction_name', 'transaction_num'],
+    selectCols: 'id,row_type,row_number,fiscal_year,transaction_date,account_section,distribution_account,transaction_type,transaction_num,transaction_name,memo_description,split_account,amount,running_balance',
+    orderCol: 'row_number',
+    orderSecondary: 'id',
+  },
+  tax_return: {
+    table: 'tax_return_entries',
+    yearCol: 'tax_year',
+    yearIsDate: false,
+    searchCols: ['field_name', 'field_label', 'schedule', 'section'],
+    selectCols: 'id,tax_year,form_type,field_name,field_label,field_value,field_amount,line_number,schedule,section',
+    orderCol: 'id',
+    orderSecondary: null,
+  },
+  bank_statement: {
+    table: 'bank_statement_entries',
+    yearCol: 'statement_month',
+    yearIsDate: true,
+    searchCols: ['description', 'bank_account', 'bank_name'],
+    selectCols: 'id,transaction_date,statement_date,bank_account,bank_name,description,reference,amount,transaction_type,running_balance',
+    orderCol: 'transaction_date',
+    orderSecondary: 'id',
+  },
+};
+
+async function getExtractedData(versionId, { dataType, year, page = 1, pageSize = 50, search } = {}) {
+  const config = ENTRY_TABLE_CONFIG[dataType];
+  if (!config) {
+    const err = new Error(`Unknown data type: ${dataType}`);
+    err.status = 400;
+    throw err;
+  }
+
+  const parsedPage = Math.max(1, parseInt(page, 10) || 1);
+  const parsedSize = Math.min(100, Math.max(1, parseInt(pageSize, 10) || 50));
+  const from = (parsedPage - 1) * parsedSize;
+  const to = from + parsedSize - 1;
+
+  let query = supabase
+    .from(config.table)
+    .select(config.selectCols, { count: 'exact' })
+    .eq('version_id', versionId);
+
+  if (year) {
+    const parsedYear = parseInt(year, 10);
+    if (Number.isInteger(parsedYear) && parsedYear > 0) {
+      if (config.yearIsDate) {
+        query = query
+          .gte(config.yearCol, `${parsedYear}-01-01`)
+          .lte(config.yearCol, `${parsedYear}-12-31`);
+      } else {
+        query = query.eq(config.yearCol, parsedYear);
+      }
+    }
+  }
+
+  if (search && search.trim()) {
+    const term = search.trim();
+    const orFilter = config.searchCols.map(col => `${col}.ilike.%${term}%`).join(',');
+    query = query.or(orFilter);
+  }
+
+  query = query.order(config.orderCol, { ascending: true, nullsFirst: false });
+  if (config.orderSecondary) {
+    query = query.order(config.orderSecondary, { ascending: true });
+  }
+  query = query.range(from, to);
+
+  const { data, count, error } = await query;
+  if (error) throw error;
+
+  return {
+    rows: data || [],
+    total: count || 0,
+    page: parsedPage,
+    pageSize: parsedSize,
+  };
 }
 
 module.exports = {
@@ -593,9 +751,12 @@ module.exports = {
   validateVersion,
   syncVersion,
   listSyncLogs,
+  listValidationResults,
   getActiveResolvedBatch,
   getActiveLinkedDocuments,
   getVersionByDatasetVersion,
   getLinkedDocuments,
   getVersionReportContext,
+  getVersionReportContextById,
+  getExtractedData,
 };

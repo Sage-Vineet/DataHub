@@ -11,6 +11,7 @@ export default function ManualProfitLossSummary({
   title = "Profit & Loss",
   subtitle = "",
   entityName = "Company",
+  isMonthly = false,
 }) {
   const years = Array.isArray(data?.years) ? data.years : [];
   const lines = Array.isArray(data?.lines) ? data.lines : [];
@@ -37,11 +38,11 @@ export default function ManualProfitLossSummary({
           ) : null}
         </div>
 
-        <div className="overflow-x-auto">
+        <div className="overflow-x-auto relative">
           <table className="w-full border-collapse">
             <thead>
               <tr className="bg-bg-page sticky top-0 z-10">
-                <th className="pt-2.5 pb-4 px-4 text-left text-[12px] font-medium text-text-muted uppercase tracking-wider border-b-2 border-text-primary">
+                <th className="sticky top-0 left-0 z-30 bg-bg-page pt-2.5 pb-4 px-4 text-left text-[12px] font-medium text-text-muted uppercase tracking-wider border-b-2 border-text-primary border-r-2 border-border/50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)] min-w-[300px]">
                   Metric
                 </th>
                 {years.map((year) => (
@@ -59,8 +60,8 @@ export default function ManualProfitLossSummary({
             </thead>
             <tbody>
               {lines.map((line) => (
-                <tr key={line.key} className="border-b border-border-light">
-                  <td className="px-4 py-3 text-[14px] font-medium text-text-primary">
+                <tr key={line.key} className="border-b border-border-light group">
+                  <td className="px-4 py-3 text-[14px] font-medium text-text-primary sticky left-0 z-10 bg-inherit border-r-2 border-border/50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)] min-w-[300px]">
                     {line.label || formatMetric(line.key)}
                   </td>
                   {years.map((year) => {

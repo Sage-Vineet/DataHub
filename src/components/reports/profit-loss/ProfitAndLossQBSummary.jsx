@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { cn, formatCurrency } from "../../../lib/utils";
 
@@ -6,7 +6,7 @@ const formatValue = (value) => {
   return formatCurrency(value);
 };
 
-const QBRow = ({ line, depth = 0, columns }) => {
+const QBRow = ({ line, depth = 0, columns, isMonthly }) => {
   const [isOpen, setIsOpen] = useState(true);
   const hasChildren = Boolean(line.children?.length);
   const isHeader = line.type === "header";
@@ -31,7 +31,7 @@ const QBRow = ({ line, depth = 0, columns }) => {
         )}
       >
         <td className={cn(
-          "py-2.5 px-4 text-left z-10 min-w-[400px] sticky left-0",
+          "py-2.5 px-4 text-left z-10 min-w-[400px] sticky left-0 border-r-2 border-border/50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]",
           (isTotal || (isHeader && depth === 0)) ? "bg-bg-page" : "bg-bg-card",
         )}>
           <div className="flex items-center">
@@ -63,6 +63,7 @@ const QBRow = ({ line, depth = 0, columns }) => {
         {yearCols ? (
           yearCols.map((col) => {
             const value = line.amounts?.[col.key];
+            if (isMonthly && col.label.toLowerCase() === "total") return null;
             return (
               <td
                 key={col.key}
@@ -75,7 +76,7 @@ const QBRow = ({ line, depth = 0, columns }) => {
               </td>
             );
           })
-        ) : (
+        ) : !isMonthly ? (
           <td
             className={cn(
               "py-2.5 px-4 text-right tabular-nums text-[14px] font-medium",
@@ -84,12 +85,12 @@ const QBRow = ({ line, depth = 0, columns }) => {
           >
             {formatValue(line.amount)}
           </td>
-        )}
+        ) : null}
       </tr>
 
       {hasChildren && isOpen && (
         line.children.map((child, index) => (
-          <QBRow key={child.id || `row-${depth}-${index}`} line={child} depth={depth + 1} columns={columns} />
+          <QBRow key={child.id || `row-${depth}-${index}`} line={child} depth={depth + 1} columns={columns} isMonthly={isMonthly} />
         ))
       )}
     </>
@@ -102,6 +103,7 @@ export default function ProfitAndLossQBSummary({
   title = "Profit & Loss",
   subtitle,
   entityName = "Company",
+  isMonthly = false,
   isPreview = false,
 }) {
   const hasColumns = Array.isArray(columns?.yearCols) && columns.yearCols.length > 0;
@@ -190,6 +192,7 @@ export default function ProfitAndLossQBSummary({
               <span>{subtitle}</span>
             </div>
           )}
+
         </div>
         {tableEl}
       </div>

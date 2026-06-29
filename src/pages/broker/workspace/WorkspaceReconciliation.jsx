@@ -5,6 +5,12 @@ import Header from "../../../components/Header";
 import { getStoredToken, setSelectedReportSource, loadSavedQBBankActivityRequest } from "../../../lib/api";
 import { useDataSource } from "../../../context/DataSourceContext";
 import { useDatasetVersionStore } from "../../../store/useDatasetVersionStore";
+import {
+  useKeyReportContextStore,
+  selectKeyReportContext,
+} from "../../../store/useKeyReportContextStore";
+import { useShallow } from "zustand/react/shallow";
+import KeyReportVersionSelector from "../../../components/key-reports/KeyReportVersionSelector";
 import { emitWorkspaceDataSourceUpdated } from "../../../lib/dataSourceEvents";
 import { cn, formatNumber, formatCurrency } from "../../../lib/utils";
 import {
@@ -924,18 +930,19 @@ export default function WorkspaceReconciliation() {
   // WorkspaceReconciliation must never call getReportSources independently — doing so reads
   // only the DB value and can be stale relative to the localStorage cache in DataSourceContext.
   const { activeSource: contextActiveSource, sourceRecords: contextSourceRecords } = useDataSource();
-  // Shared dataset-version selection (same store Reports writes to) so the
-  // reconciliation reconciles against the version chosen in Reports. Manual GL only.
-  const glVersions = useDatasetVersionStore((s) => s.versions);
-  const glSelectedVersion = useDatasetVersionStore((s) => s.selectedVersion);
-  const setGlSelectedVersion = useDatasetVersionStore((s) => s.setSelectedVersion);
-  const fetchGlVersions = useDatasetVersionStore((s) => s.fetchVersions);
+  const kr = useKeyReportContextStore(useShallow(selectKeyReportContext));
+  // Shared dataset-version selection (same store Reports writes to) removed — 
+  // consolidated into the unified Key Report Version selector.
   // Track the live GL scope (selected dataset version) so an in-flight bank-data
   // fetch for a previous version can be discarded if the user switches mid-fetch —
-  // prevents stale-version data overwriting fresh (needs F5) data. Time filtering
-  // is handled client-side by the From/To date pickers, not by a fiscal-year scope.
-  const glScopeRef = useRef({ datasetVersion: glSelectedVersion });
-  glScopeRef.current = { datasetVersion: glSelectedVersion };
+  // prevents stale-version data overwriting fresh (needs F5) data.
+  const glScopeRef = useRef({ datasetVersion: kr.resolvedDatasetVersion });
+  glScopeRef.current = { datasetVersion: kr.resolvedDatasetVersion };
+  // Key Reports is the single source of truth: when a Key Report Version is
+  // selected, the bank reconciliation resolves its documents from THAT Version
+  // (via keyReportVersionId) instead of the Connections-page active source.
+  const krVersionIdRef = useRef(null);
+  krVersionIdRef.current = kr.krActive ? kr.selectedVersionId : null;
   const storedState = getStoredWorkspaceState(clientId);
   const [expandedAccounts, setExpandedAccounts] = useState(
     storedState?.expandedAccounts || getDefaultExpandedAccounts(),
@@ -993,11 +1000,22 @@ export default function WorkspaceReconciliation() {
   const [bsBankBalances, setBsBankBalances] = useState(null);
   const [plFinancials, setPlFinancials] = useState(null);
   const [reportSources, setReportSources] = useState([]);
+  // Key Reports is the single source of truth: when the company has a selected
+  // Key Report Version, the report source is derived from that Version's flow —
+  // NOT from the Connections-page active data source. Falls back to the legacy
+  // DataSourceContext behavior only when no Key Report versions exist.
   const [selectedReportSource, setSelectedReportSourceState] = useState(
-    normalizeReportSourceKey(
-      storedState?.selectedReportSource || REPORT_SOURCE_KEYS.QUICKBOOKS,
-    ),
+    kr.krActive && kr.effectiveSource
+      ? kr.effectiveSource
+      : normalizeReportSourceKey(contextActiveSource || REPORT_SOURCE_KEYS.QUICKBOOKS)
   );
+  // Keep the local source state in sync with the authoritative Key Reports flow
+  useEffect(() => {
+    if (!kr.krActive || !kr.effectiveSource) return;
+    if (selectedReportSource !== kr.effectiveSource) {
+      setSelectedReportSourceState(kr.effectiveSource);
+    }
+  }, [kr.krActive, kr.effectiveSource, selectedReportSource]);
   // True only after getReportSources API confirms the actual source.
   // Prevents stale storedState from triggering the wrong endpoint on mount.
   const [isSourceConfirmedByServer, setIsSourceConfirmedByServer] = useState(false);
@@ -1268,6 +1286,9 @@ export default function WorkspaceReconciliation() {
       // Manual GL scoping: restrict to the selected dataset version (all years).
       // The From/To date pickers narrow the displayed months client-side.
       if (opts.datasetVersion) params.append("datasetVersion", String(opts.datasetVersion));
+      // Key Reports scoping (highest priority): resolve the bank statement from
+      // the SELECTED Key Report Version's linked documents.
+      if (opts.keyReportVersionId) params.append("keyReportVersionId", String(opts.keyReportVersionId));
       const url = `${EXTRACT_BANK_PDF_RECORDS_ENDPOINT}?${params.toString()}`;
       const resp = await fetch(url, {
         cache: "no-store",
@@ -1323,6 +1344,7 @@ export default function WorkspaceReconciliation() {
     try {
       const params = new URLSearchParams();
       if (clientId) params.append("clientId", clientId);
+      if (krVersionIdRef.current) params.append("keyReportVersionId", String(krVersionIdRef.current));
       const url = `${QMS_BANK_DATA_ENDPOINT}?${params.toString()}`;
       const resp = await fetch(url, { cache: "no-store", headers: getHeaders() });
       const data = await resp.json();
@@ -1367,6 +1389,8 @@ export default function WorkspaceReconciliation() {
     try {
       const params = new URLSearchParams();
       if (clientId) params.append("clientId", clientId);
+      // Key Reports scoping: resolve documents from the SELECTED Version.
+      if (krVersionIdRef.current) params.append("keyReportVersionId", String(krVersionIdRef.current));
       const url = `${MANUAL_BANK_DATA_ENDPOINT}?${params.toString()}`;
       const resp = await fetch(url, { cache: "no-store", headers: getHeaders() });
       const data = await resp.json();
@@ -1419,6 +1443,9 @@ export default function WorkspaceReconciliation() {
       if (sourceKey) params.append("source", sourceKey);
       // Manual GL scoping: pick the Balance Sheet for the selected version.
       if (opts.datasetVersion) params.append("datasetVersion", String(opts.datasetVersion));
+      // Key Reports scoping (highest priority): pick the Balance Sheet linked to
+      // the SELECTED Key Report Version.
+      if (opts.keyReportVersionId) params.append("keyReportVersionId", String(opts.keyReportVersionId));
       const resp = await fetch(`${BS_BANK_BALANCES_ENDPOINT}?${params.toString()}`, {
         cache: "no-store",
         headers: getHeaders(),
@@ -1574,16 +1601,21 @@ export default function WorkspaceReconciliation() {
       // Manual GL → PDF/Excel extraction endpoint, scoped to the selected dataset
       // version so a different version's data never mixes in. All of the version's
       // months are fetched; the From/To date pickers narrow the view client-side.
-      const glScope = { datasetVersion: glSelectedVersion };
+      // keyReportVersionId (when a Version is selected) is the highest-priority
+      // scope — the bank statement / balance sheet come from that Version.
+      const glScope = {
+        datasetVersion: kr.resolvedDatasetVersion,
+        keyReportVersionId: krVersionIdRef.current,
+      };
       void loadExtractedBankPdfData(glScope);
       void loadBsBankBalances("manual_upload_excel_pdf", glScope);
     } else if (selectedReportSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) {
       // QuickBooks Manual ONLY → QMS endpoint reading "Quickbooks Manual Source" folder only
       void loadQMSBankData();
-      void loadBsBankBalances("quickbooks_manual");
+      void loadBsBankBalances("quickbooks_manual", { keyReportVersionId: krVersionIdRef.current });
     }
     // QUICKBOOKS (QB Online) uses its own separate data flow — no action here
-  }, [clientId, selectedReportSource, isSourceConfirmedByServer, glSelectedVersion, loadExtractedBankPdfData, loadManualBankData, loadQMSBankData, loadBsBankBalances]);
+  }, [clientId, selectedReportSource, isSourceConfirmedByServer, kr.resolvedDatasetVersion, kr.selectedVersionId, loadExtractedBankPdfData, loadManualBankData, loadQMSBankData, loadBsBankBalances]);
 
   // Auto-restore QB Online bank activity from DB on page load.
   // Fires when the server confirms the source is QB Online and there is no
@@ -1633,6 +1665,9 @@ export default function WorkspaceReconciliation() {
   // that the header badge also reads. This eliminates the split-brain between the badge and the
   // reconciliation page that was causing qms-bank-data to fire in Manual Upload mode.
   useEffect(() => {
+    // Key Reports (when a Version is selected) is authoritative — skip the
+    // Connections-driven source here so the active data source has zero impact.
+    if (kr.krActive) return;
     if (!contextActiveSource) return;
     const confirmed = normalizeReportSourceKey(contextActiveSource);
     if (!confirmed) return;
@@ -1648,7 +1683,27 @@ export default function WorkspaceReconciliation() {
     setExtractedBankPdfError("");
     setBsBankBalances(null);
     setIsSourceConfirmedByServer(true);
-  }, [contextActiveSource, contextSourceRecords]);
+  }, [contextActiveSource, contextSourceRecords, kr.krActive]);
+
+  // Key Reports-driven source: the selected Version's flow determines the report
+  // source, and its pinned dataset version scopes the books/balance-sheet side.
+  // This makes Bank Reconciliation depend solely on the selected Version.
+  useEffect(() => {
+    if (!kr.krActive || !kr.effectiveSource) return;
+    setSelectedReportSourceState(kr.effectiveSource);
+    // Clear cross-version data before the unified loader refetches.
+    setExtractedBankPdfData(null);
+    setExtractedBankPdfFetchStatus({ status: "idle", message: "" });
+    setExtractedBankPdfError("");
+    setBsBankBalances(null);
+    setIsSourceConfirmedByServer(true);
+  }, [
+    kr.krActive,
+    kr.effectiveSource,
+    kr.flowType,
+    kr.resolvedDatasetVersion,
+    kr.selectedVersionId,
+  ]);
 
   const handleReportSourceChange = async (sourceKey) => {
     const normalized = normalizeReportSourceKey(sourceKey);
@@ -1713,22 +1768,9 @@ export default function WorkspaceReconciliation() {
     return allPdfMonths.filter((m) => m >= start && m <= end);
   }, [allPdfMonths, manualMonthStart, manualMonthEnd]);
 
-  // ── Manual GL version + fiscal-year scoping ─────────────────────────────────
-  // Load available dataset versions (shared store, cached per company).
-  useEffect(() => {
-    if (!isManualGl || !clientId) return;
-    void fetchGlVersions(clientId);
-  }, [isManualGl, clientId, fetchGlVersions]);
+  // Manual GL internal version selection removed — consolidated into Key Reports.
 
-  // Default the version selection (active → latest) when none is set or the
-  // current store selection isn't among this company's versions.
-  useEffect(() => {
-    if (!isManualGl || !glVersions.length) return;
-    const valid = glVersions.some((v) => String(v.value) === String(glSelectedVersion));
-    if (glSelectedVersion && valid) return;
-    const active = glVersions.find((v) => v.isActive) || glVersions[0];
-    if (active) setGlSelectedVersion(String(active.value));
-  }, [isManualGl, glVersions, glSelectedVersion, setGlSelectedVersion]);
+
 
   // Fiscal-year scoping removed for Bank Reconciliation — the From/To date pickers
   // are now the sole time filter. All of the selected version's months are fetched
@@ -3380,6 +3422,15 @@ export default function WorkspaceReconciliation() {
       <Header title="Reconciliation" />
       <div className="page-content">
         <QBDisconnectedBanner pageName="Reconciliation" />
+
+        {kr.krActive && !kr.availability.bank && (
+          <div className="mb-4 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-[13px] text-amber-800">
+            <AlertCircle size={18} className="mt-0.5 shrink-0 text-amber-600" />
+            <span>
+              Bank Reconciliation needs a <strong>Bank Statement</strong> linked in the selected Key Reports Version.
+            </span>
+          </div>
+        )}
         {/* QB Bank Activity — only for QuickBooks Online */}
         {isQBOnline && (
           <section className="card-base w-full p-5">
@@ -3567,7 +3618,7 @@ export default function WorkspaceReconciliation() {
                   onClick={() => {
                     if (isQBManual) void loadQMSBankData();
                     else if (isManualUpload) void loadManualBankData();
-                    else void loadExtractedBankPdfData({ datasetVersion: glSelectedVersion });
+                    else void loadExtractedBankPdfData({ datasetVersion: kr.resolvedDatasetVersion });
                   }}
                   title="Reload data from the active source"
                 >
@@ -3577,26 +3628,8 @@ export default function WorkspaceReconciliation() {
                   Refresh
                 </button>
               )}
-              {/* Manual GL: dataset version scoping (shared with Reports). Time
-                  filtering is handled by the Start/End date pickers above. */}
-              {isManualGl && glVersions.length > 0 && (
-                <div className="min-w-[160px]">
-                  <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
-                    Version
-                  </label>
-                  <select
-                    className="input-base h-10 w-full"
-                    value={glSelectedVersion ? String(glSelectedVersion) : ""}
-                    onChange={(e) => setGlSelectedVersion(e.target.value || null)}
-                  >
-                    {glVersions.map((v) => (
-                      <option key={String(v.value)} value={String(v.value)}>
-                        {v.label || `Version ${v.value}`}{v.isActive ? " (active)" : ""}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
+              {/* Unified Key Reports Version selector is the single source of truth */}
+              <KeyReportVersionSelector clientId={clientId} variant="filter" />
               <div className="min-w-[280px]">
                 <label className="mb-1.5 block text-[12px] font-medium text-text-secondary">
                   Bank Account

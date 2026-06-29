@@ -26,7 +26,13 @@ import {
   saveTaxReconciliationOverrides,
 } from "../../../lib/api";
 import { useDataSource } from "../../../context/DataSourceContext";
-import { useDatasetVersionStore } from "../../../store/useDatasetVersionStore";
+
+import {
+  useKeyReportContextStore,
+  selectKeyReportContext,
+} from "../../../store/useKeyReportContextStore";
+import { useShallow } from "zustand/react/shallow";
+import KeyReportVersionSelector from "../../../components/key-reports/KeyReportVersionSelector";
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
@@ -289,6 +295,16 @@ export default function WorkspaceTaxReconciliation() {
   // Key Reports tax return gate: 'idle' | 'loading' | 'ok' | 'missing'
   const [krTaxGate, setKrTaxGate] = useState({ status: "idle" });
 
+  // Dataset version selection removed — consolidated into Key Reports.
+
+  // Key Reports is the single source of truth: when a Version is selected, the
+  // tax reconciliation's flow comes from THAT Version (manual_gl vs manual_upload),
+  // not the Connections-page active data source.
+  const kr = useKeyReportContextStore(useShallow(selectKeyReportContext));
+  const effectiveSourceMode = kr.krActive
+    ? (kr.flowType === 'manual_gl' ? 'manual' : 'manual_upload')
+    : activeSourceMode;
+
   // User-edited Schedule K overrides: { [year]: { [label]: { taxReturn, pl, userAdded? } } }
   const [reconcilingOverrides, setReconcilingOverrides] = useState({});
   // Inline edit state: { year, label } or null
@@ -299,23 +315,13 @@ export default function WorkspaceTaxReconciliation() {
   const [addRowSearch, setAddRowSearch] = useState("");
   const addRowRef = useRef(null);
 
-  // Dataset version selection — Manual GL only.
-  // Seeded from the shared store so the same version selected in Reports is
-  // used here automatically; user can override locally with the dropdown.
-  const sharedSelectedVersion = useDatasetVersionStore((s) => s.selectedVersion);
-  const [glVersions, setGlVersions] = useState([]);
-  const [selectedVersion, setSelectedVersion] = useState(null);
-  // Tracks the live selection so an in-flight load for a previous version can
-  // be discarded if the user switches mid-fetch (last-write-wins guard).
-  const latestVersionRef = useRef(selectedVersion);
-  latestVersionRef.current = selectedVersion;
-
   // Manual GL (staged General Ledger) sources its P&L from the platform's GL
   // reports — not from a separately uploaded P&L document. It's handled by its
   // own branch (checked before isManualMode) so the uploaded-file path is unchanged.
-  const isManualGL = activeSourceMode === 'manual';
-  const isManualMode = activeSourceMode === 'manual_upload' || activeSourceMode === 'manual';
-  const isQBManual = activeSourceMode === 'quickbooks_manual';
+  const isManualGL = effectiveSourceMode === 'manual';
+  const isManualMode = effectiveSourceMode === 'manual_upload' || effectiveSourceMode === 'manual';
+  // A Key Reports Version is never the QuickBooks-Manual flow.
+  const isQBManual = !kr.krActive && activeSourceMode === 'quickbooks_manual';
 
   const selectedYears = useMemo(() => {
     const s = parseInt(startYear, 10);
@@ -378,25 +384,10 @@ export default function WorkspaceTaxReconciliation() {
 
   // ── Manual GL version loading ─────────────────────────────────────────
 
-  useEffect(() => {
-    if (!isManualGL || !clientId) return;
-    let cancelled = false;
-    listManualGlDatasetVersions({ clientId })
-      .then((versions) => {
-        if (cancelled) return;
-        setGlVersions(versions);
-        setSelectedVersion((prev) => {
-          const available = versions.map((v) => String(v.value));
-          if (prev && available.includes(String(prev))) return prev;
-          const fromStore = sharedSelectedVersion && available.includes(String(sharedSelectedVersion))
-            ? sharedSelectedVersion : null;
-          const active = versions.find((v) => v.isActive) || versions[0];
-          return fromStore ?? (active ? String(active.value) : null);
-        });
-      })
-      .catch(() => { if (!cancelled) setGlVersions([]); });
-    return () => { cancelled = true; };
-  }, [isManualGL, clientId, sharedSelectedVersion]);
+  // Manual GL internal version selection removed — consolidated into Key Reports.
+  const selectedVersion = kr.resolvedDatasetVersion;
+  const latestVersionRef = useRef(selectedVersion);
+  latestVersionRef.current = selectedVersion;
 
   // ── Persist ───────────────────────────────────────────────────────────
 
@@ -420,9 +411,17 @@ export default function WorkspaceTaxReconciliation() {
     setSyncStatus({ status: "loading", message: isManualMode ? "Fetching P&L data…" : "Fetching P&L & Tax Data…" });
 
     try {
+      // Key Reports scoping (highest priority): resolve the tax return from the
+      // SELECTED Key Report Version's linked documents.
+      const krVersionParam = kr.krActive && kr.selectedVersionId
+        ? `&keyReportVersionId=${encodeURIComponent(String(kr.selectedVersionId))}`
+        : "";
+      const taxVersionParam = selectedVersion
+        ? `&datasetVersion=${encodeURIComponent(String(selectedVersion))}`
+        : "";
+
       if (isManualGL) {
-        // ── Manual GL: P&L sourced from the platform's staged-GL reports ──
-        // (no separate P&L upload). Tax returns still come from the DataRoom.
+        // ...
         const headers = getHeaders();
         const allWarnings = [];
         const forceParam = forceRefresh ? "&force=1" : "";
@@ -435,11 +434,8 @@ export default function WorkspaceTaxReconciliation() {
         const versionParam = selectedVersion ? { datasetVersion: String(selectedVersion) } : {};
         // Scope the tax return document resolution to the SELECTED version's Key
         // Reports mapping so it never mixes another version's (or staging's) returns.
-        const taxVersionParam = selectedVersion
-          ? `&datasetVersion=${encodeURIComponent(String(selectedVersion))}`
-          : "";
         const [taxRes, filterRes] = await Promise.all([
-          fetch(`${API_BASE_URL}/manual-report-uploads/tax-data?clientId=${clientId || ""}${forceParam}${taxVersionParam}`, { headers })
+          fetch(`${API_BASE_URL}/manual-report-uploads/tax-data?clientId=${clientId || ""}${forceParam}${taxVersionParam}${krVersionParam}`, { headers })
             .then((r) => r.json()).catch(() => ({ success: false })),
           getManualStageFilterOptions({ clientId, params: versionParam }).catch(() => ({})),
         ]);
@@ -543,9 +539,9 @@ export default function WorkspaceTaxReconciliation() {
         // 1. Fetch P&L years and Tax Return years in parallel
         const forceParam = forceRefresh ? "&force=1" : "";
         const [plRes, taxRes] = await Promise.all([
-          fetch(`${API_BASE_URL}/manual-report-uploads/pl-for-tax?clientId=${clientId || ""}${forceParam}`, { headers })
+          fetch(`${API_BASE_URL}/manual-report-uploads/pl-for-tax?clientId=${clientId || ""}${forceParam}${krVersionParam}`, { headers })
             .then((r) => r.json()).catch(() => ({ success: false })),
-          fetch(`${API_BASE_URL}/manual-report-uploads/tax-data?clientId=${clientId || ""}${forceParam}`, { headers })
+          fetch(`${API_BASE_URL}/manual-report-uploads/tax-data?clientId=${clientId || ""}${forceParam}${krVersionParam}`, { headers })
             .then((r) => r.json()).catch(() => ({ success: false })),
         ]);
 
@@ -788,7 +784,22 @@ export default function WorkspaceTaxReconciliation() {
   // the backend now falls back to connection-page synced files, so the gate is
   // bypassed; it only applies to QB Online where KR linking is the sole data path.
   useEffect(() => {
-    if (!activeSource || !clientId) return;
+    if (!clientId) return;
+    // Key Reports-driven: the gate reflects whether THIS Version has a Tax Return
+    // linked (auto-detected). Tax Reconciliation requires GL/P&L + a Tax Return.
+    if (kr.krActive) {
+      if (kr.loadingDetail) {
+        setKrTaxGate({ status: "loading" });
+        return;
+      }
+      const ok = kr.availability.tax;
+      setKrTaxGate({ status: ok ? "ok" : "missing" });
+      // Removed matrixData clearing — allow what's available (like P&L) to render
+      return;
+    }
+    // Legacy (no Key Report versions): manual_upload / QMS fall back to synced
+    // files; only QB Online requires an active-version tax-return link.
+    if (!activeSource) return;
     if (isManualMode || isQBManual) {
       setKrTaxGate({ status: "ok" });
       return;
@@ -800,19 +811,13 @@ export default function WorkspaceTaxReconciliation() {
         if (cancelled) return;
         const hasTaxReturn = (mappings?.tax_return?.length || 0) > 0;
         setKrTaxGate({ status: hasTaxReturn ? "ok" : "missing" });
-        if (!hasTaxReturn) {
-          // Clear any cached data when gate transitions to missing
-          setMatrixData({});
-          setError("");
-          setWarnings([]);
-          setSyncStatus({ status: "idle", message: "" });
-        }
+        // Removed matrixData clearing — allow what's available to render
       })
       .catch(() => {
         if (!cancelled) setKrTaxGate({ status: "ok" }); // fail open
       });
     return () => { cancelled = true; };
-  }, [activeSource, clientId, isManualMode, isQBManual]);
+  }, [activeSource, clientId, isManualMode, isQBManual, kr.krActive, kr.loadingDetail, kr.availability.tax]);
 
   // Auto-load on first visit. In Manual GL mode, wait until the version is
   // resolved before loading — and include selectedVersion in the deps so this
@@ -823,10 +828,10 @@ export default function WorkspaceTaxReconciliation() {
     if (!activeSource) return;
     if (isManualGL && !selectedVersion) return;
     if (Object.keys(matrixData).length > 0) return;
-    if (krTaxGate.status !== "ok") return; // gate: wait for Key Reports validation
+    // Removed strict krTaxGate.status !== "ok" check to allow P&L-only loading
     void loadData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSource, isManualGL, selectedVersion, krTaxGate.status]);
+  }, [activeSource, isManualGL, selectedVersion]);
 
   // Re-generate when the selected version changes so Tax Reconciliation always
   // reflects the chosen version's transactions with no cross-version leakage.
@@ -836,14 +841,14 @@ export default function WorkspaceTaxReconciliation() {
     if (prevTaxVersionRef.current === selectedVersion) return;
     prevTaxVersionRef.current = selectedVersion;
     if (!selectedVersion) return;
-    if (krTaxGate.status !== "ok") return; // gate: don't reload if tax return is missing
+    // Removed strict krTaxGate.status !== "ok" check to allow P&L-only re-loading on version change
     try { window.sessionStorage.removeItem(getStorageKey(clientId)); } catch { /* ignore */ }
     setMatrixData({});
     setError("");
     setWarnings([]);
     setSyncStatus({ status: "idle", message: "" });
     void loadData(true);
-  }, [isManualGL, selectedVersion, clientId, loadData, krTaxGate.status]);
+  }, [isManualGL, selectedVersion, clientId, loadData]);
 
   // ── Overrides: load from DB whenever clientId changes ────────────────
 
@@ -1313,6 +1318,7 @@ export default function WorkspaceTaxReconciliation() {
 
   return (
     <div className="space-y-6">
+
       {/* Key Reports tax return gate — shown when no tax return is linked */}
       {krTaxGate.status === "missing" && (
         <div className="rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4">
@@ -1320,17 +1326,17 @@ export default function WorkspaceTaxReconciliation() {
             <AlertCircle size={18} className="mt-0.5 shrink-0 text-amber-600" />
             <div>
               <p className="text-sm font-semibold text-amber-800">
-                Tax Return required in Key Reports
+                Tax Return missing in Key Reports
               </p>
               <p className="mt-1 text-sm text-amber-700">
-                To load Tax Reconciliation data, link a Tax Return document in the Key Reports
-                Tax Returns category for this client.
+                A <strong>Tax Return</strong> is not linked in the selected Key Reports Version.
+                The "Tax Return" and "Variance" columns below will show no data until a return is linked.
               </p>
               <button
                 onClick={() => navigate(`/broker/client/${clientId}/dataroom/key-reports`)}
                 className="mt-2 text-sm font-semibold text-amber-800 underline hover:text-amber-900"
               >
-                Go to Key Reports →
+                Link Tax Return in Key Reports →
               </button>
             </div>
           </div>
@@ -1342,38 +1348,17 @@ export default function WorkspaceTaxReconciliation() {
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div className="flex flex-wrap items-center gap-3">
               {syncStatus?.message && <SyncStatus sync={syncStatus} />}
-              {/* Version selector — Manual GL only */}
-              {isManualGL && glVersions.length > 0 && (
-                <div className="flex flex-col gap-1.5">
-                  <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
-                    Version
-                  </label>
-                  <div className="relative">
-                    <select
-                      value={selectedVersion ? String(selectedVersion) : ""}
-                      onChange={(e) => setSelectedVersion(e.target.value || null)}
-                      className="h-9 w-full min-w-[160px] appearance-none rounded-md border border-border-input bg-bg-card pl-3 pr-9 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-                    >
-                      {glVersions.map((v) => (
-                        <option key={String(v.value)} value={String(v.value)}>
-                          {v.label || `Version ${v.value}`}{v.isActive ? " (active)" : ""}
-                        </option>
-                      ))}
-                    </select>
-                    <ChevronDown size={14} className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-text-muted" />
-                  </div>
-                </div>
-              )}
+              {/* Unified Key Reports Version selector is the single source of truth */}
+              <KeyReportVersionSelector clientId={clientId} variant="filter" />
             </div>
             <button
               type="button"
               onClick={() => {
-                if (krTaxGate.status !== "ok") return;
                 try { window.sessionStorage.removeItem(getStorageKey(clientId)); } catch { /* ignore */ }
                 setMatrixData({});
                 void loadData(true);
               }}
-              disabled={isLoading || krTaxGate.status !== "ok"}
+              disabled={isLoading}
               className="inline-flex h-9 items-center justify-center gap-2 rounded-xl bg-primary px-4 text-[13px] font-semibold text-white transition hover:bg-primary-dark disabled:cursor-not-allowed disabled:opacity-70"
             >
               <RefreshCw size={14} className={cn(isLoading && "animate-spin")} />
@@ -1450,12 +1435,11 @@ export default function WorkspaceTaxReconciliation() {
               <button
                 type="button"
                 onClick={() => {
-                  if (krTaxGate.status !== "ok") return;
                   try { window.sessionStorage.removeItem(getStorageKey(clientId)); } catch { /* ignore */ }
                   setMatrixData({});
                   void loadData(true);
                 }}
-                disabled={isLoading || krTaxGate.status !== "ok"}
+                disabled={isLoading}
                 className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-primary px-4 text-[14px] font-semibold text-white transition hover:bg-primary-dark disabled:cursor-not-allowed disabled:opacity-70"
               >
                 <RefreshCw size={16} className={cn(isLoading && "animate-spin")} />

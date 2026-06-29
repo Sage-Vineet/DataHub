@@ -17,6 +17,8 @@ function CashflowReport({
   entityName,
   isPreview = false,
   selectedMonths = [],
+  isMonthly = false,
+  exportControls,
 }) {
   const resolvedEntityName = entityName || clientName || "Company";
   const periodText = startDate === "1970-01-01" ? "All Dates" : `${startDate || "N/A"} to ${endDate || "N/A"}`;
@@ -34,6 +36,8 @@ function CashflowReport({
           subtitle={summarySubtitle}
           entityName={resolvedEntityName}
           selectedMonths={selectedMonths}
+          isMonthly={isMonthly}
+          exportControls={exportControls}
           isPreview={isPreview}
         />
       );
@@ -49,6 +53,7 @@ function CashflowReport({
         title="Cash Flow"
         subtitle={null}
         entityName={resolvedEntityName}
+        isMonthly={isMonthly}
         isPreview={isPreview}
       />
     );
@@ -66,6 +71,7 @@ function CashflowReport({
         title="Cash Flow Statement"
         subtitle={summarySubtitle}
         entityName={resolvedEntityName}
+        isMonthly={isMonthly}
         isPreview={isPreview}
       />
     );
@@ -77,6 +83,8 @@ function CashflowReport({
       title="Cash Flow"
       subtitle={summarySubtitle}
       entityName={resolvedEntityName}
+      exportControls={exportControls}
+      isMonthly={isMonthly}
       isPreview={isPreview}
     />
   );

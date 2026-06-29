@@ -1,9 +1,13 @@
 const express = require("express");
 const { requireAuth } = require("../middleware/auth");
 const { canAccessCompany } = require("../services/permissionService");
-const keyReportService = require("../services/keyReportService");
+const keyReportService = require("../services/keyReports/keyReportService");
 const fileReferenceService = require("../services/fileReferenceService");
 const userPreferenceService = require("../services/userPreferenceService");
+const chartOfAccountsService = require("../services/chartOfAccountsService");
+const keyReportReportService = require("../services/keyReports/keyReportReportService");
+const { generateFinancialStatements } = require("../services/keyReports/financialStatementService");
+const { normalizeError, isConnectionError } = require("../utils/dbErrorHandler");
 
 const router = express.Router();
 router.use(requireAuth);
@@ -49,14 +53,24 @@ async function loadVersionWithAccess(req, res) {
 }
 
 function handleError(res, error, label) {
-  const status = error.status || (error.code === "FILE_LINKED" ? 409 : 500);
+  const normalizedError = normalizeError(error);
+  const status =
+    normalizedError.status ||
+    (normalizedError.code === "FILE_LINKED"
+      ? 409
+      : isConnectionError(normalizedError)
+        ? 503
+        : 500);
   if (status >= 500) {
-    console.error(`[KeyReports] ${label} failed`, { error: error.message, stack: error.stack });
+    console.error(`[KeyReports] ${label} failed`, {
+      error: normalizedError.message,
+      stack: normalizedError.stack,
+    });
   }
   return res.status(status).json({
     success: false,
-    code: error.code || undefined,
-    error: error.message || "Key Reports request failed.",
+    code: normalizedError.code || undefined,
+    error: normalizedError.message || "Key Reports request failed.",
   });
 }
 
@@ -93,11 +107,12 @@ router.get("/key-reports/versions/:versionId", async (req, res) => {
   try {
     const version = await loadVersionWithAccess(req, res);
     if (!version) return;
-    const [mappingsByCategory, syncLogs] = await Promise.all([
+    const [mappingsByCategory, syncLogs, validationResults] = await Promise.all([
       keyReportService.getMappingsByCategory(version.id),
       keyReportService.listSyncLogs(version.id),
+      keyReportService.listValidationResults(version.id),
     ]);
-    return res.json({ success: true, version, mappingsByCategory, syncLogs });
+    return res.json({ success: true, version, mappingsByCategory, syncLogs, validationResults });
   } catch (error) {
     return handleError(res, error, "GET /key-reports/versions/:versionId");
   }
@@ -222,6 +237,24 @@ router.post("/key-reports/versions/:versionId/sync", async (req, res) => {
   }
 });
 
+router.get("/key-reports/versions/:versionId/extracted-data", async (req, res) => {
+  try {
+    const version = await loadVersionWithAccess(req, res);
+    if (!version) return;
+    const { dataType, year, page, pageSize, search } = req.query;
+    const result = await keyReportService.getExtractedData(version.id, {
+      dataType,
+      year,
+      page,
+      pageSize,
+      search,
+    });
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    return handleError(res, error, "GET extracted-data");
+  }
+});
+
 router.get("/key-reports/versions/:versionId/sync-logs", async (req, res) => {
   try {
     const version = await loadVersionWithAccess(req, res);
@@ -230,6 +263,142 @@ router.get("/key-reports/versions/:versionId/sync-logs", async (req, res) => {
     return res.json({ success: true, syncLogs: logs });
   } catch (error) {
     return handleError(res, error, "GET sync-logs");
+  }
+});
+
+// ---- Chart of Accounts -----------------------------------------------------
+
+// Helper: verify the caller can access the company that owns a COA account.
+async function loadAccountWithAccess(req, res) {
+  const { supabase } = require("../db");
+  const { data: row } = await supabase
+    .from("chart_of_accounts")
+    .select("company_id, version_id")
+    .eq("id", req.params.accountId)
+    .maybeSingle();
+  if (!row) {
+    res.status(404).json({ success: false, error: "Account not found." });
+    return null;
+  }
+  if (!requireCompanyAccess(req, res, row.company_id)) return null;
+  return row;
+}
+
+// The standardized hierarchy taxonomy (reference data for UI level filters).
+router.get("/key-reports/hierarchy-levels", async (req, res) => {
+  try {
+    const levels = await chartOfAccountsService.getHierarchyLevels();
+    return res.json({ success: true, levels });
+  } catch (error) {
+    return handleError(res, error, "GET hierarchy-levels");
+  }
+});
+
+// Fetch a version's COA as a deep tree + flat list (15-level hierarchy).
+router.get("/key-reports/versions/:versionId/chart-of-accounts", async (req, res) => {
+  try {
+    const version = await loadVersionWithAccess(req, res);
+    if (!version) return;
+    const coa = await chartOfAccountsService.getChartOfAccounts(version.id);
+    return res.json({ success: true, ...coa });
+  } catch (error) {
+    return handleError(res, error, "GET chart-of-accounts");
+  }
+});
+
+// Classification + adjustment audit history for a version.
+router.get("/key-reports/versions/:versionId/chart-of-accounts/history", async (req, res) => {
+  try {
+    const version = await loadVersionWithAccess(req, res);
+    if (!version) return;
+    const history = await chartOfAccountsService.getHistory(version.id);
+    return res.json({ success: true, ...history });
+  } catch (error) {
+    return handleError(res, error, "GET chart-of-accounts/history");
+  }
+});
+
+// Rebuild a version's COA from its entry tables (general_ledger_entries +
+// balance_sheet_entries). batchId=null → reads from Key Reports entry tables,
+// which is correct for all new-style syncs (resolvedBatchId is always null).
+router.post("/key-reports/versions/:versionId/chart-of-accounts/regenerate", async (req, res) => {
+  try {
+    const version = await loadVersionWithAccess(req, res);
+    if (!version) return;
+    console.log(`[KeyReports][Audit] COA regenerate versionId=${version.id} resolvedBatchId=${version.resolvedBatchId || 'null (entry-table path)'}`);
+    const summary = await chartOfAccountsService.generateChartOfAccounts(
+      version.companyId,
+      version.id,
+      version.resolvedBatchId || null,
+    );
+    // Re-run the COA spec checks so a manual rebuild reports its own health.
+    // (Not persisted here — replaceValidationResults would wipe the other data
+    //  types' rows; persistence happens during a full Sync.)
+    let validation = null;
+    try {
+      validation = await chartOfAccountsService.validateChartOfAccounts(version.companyId, version.id);
+    } catch (vErr) {
+      console.warn(`[KeyReports][Audit] COA regenerate validation failed: ${vErr.message}`);
+    }
+    const coa = await chartOfAccountsService.getChartOfAccounts(version.id);
+    return res.json({ success: true, summary, validation: validation ? validation.summary : null, ...coa });
+  } catch (error) {
+    return handleError(res, error, "POST chart-of-accounts/regenerate");
+  }
+});
+
+// Update a single COA account: rename (adjustedName), move/reclassify (levels +
+// accountType/statementType), activate/deactivate. Writes adjustment + history
+// audit; never touches the original AI classification.
+router.patch("/key-reports/chart-of-accounts/:accountId", async (req, res) => {
+  try {
+    const row = await loadAccountWithAccess(req, res);
+    if (!row) return;
+    const account = await chartOfAccountsService.updateAccountHierarchy(
+      req.params.accountId, req.body || {}, req.user?.id || null,
+    );
+    return res.json({ success: true, account });
+  } catch (error) {
+    return handleError(res, error, "PATCH chart-of-accounts");
+  }
+});
+
+// Restore a single account to its original AI classification.
+router.post("/key-reports/chart-of-accounts/:accountId/reset", async (req, res) => {
+  try {
+    const row = await loadAccountWithAccess(req, res);
+    if (!row) return;
+    const account = await chartOfAccountsService.resetAccount(req.params.accountId, req.user?.id || null);
+    return res.json({ success: true, account });
+  } catch (error) {
+    return handleError(res, error, "POST chart-of-accounts/reset");
+  }
+});
+
+// Bulk-save an edited hierarchy for a version.
+router.post("/key-reports/versions/:versionId/chart-of-accounts/save", async (req, res) => {
+  try {
+    const version = await loadVersionWithAccess(req, res);
+    if (!version) return;
+    const nodes = Array.isArray(req.body?.nodes) ? req.body.nodes : [];
+    const result = await chartOfAccountsService.saveHierarchy(version.id, nodes, req.user?.id || null);
+    const coa = await chartOfAccountsService.getChartOfAccounts(version.id);
+    return res.json({ success: true, ...result, ...coa });
+  } catch (error) {
+    return handleError(res, error, "POST chart-of-accounts/save");
+  }
+});
+
+// Restore the entire version's hierarchy to the original AI classification.
+router.post("/key-reports/versions/:versionId/chart-of-accounts/reset", async (req, res) => {
+  try {
+    const version = await loadVersionWithAccess(req, res);
+    if (!version) return;
+    const result = await chartOfAccountsService.resetVersion(version.id, req.user?.id || null);
+    const coa = await chartOfAccountsService.getChartOfAccounts(version.id);
+    return res.json({ success: true, ...result, ...coa });
+  } catch (error) {
+    return handleError(res, error, "POST chart-of-accounts/reset-version");
   }
 });
 
@@ -269,6 +438,117 @@ router.put("/key-reports/popup-preference", async (req, res) => {
     return res.json({ success: true, dismissed });
   } catch (error) {
     return handleError(res, error, "PUT popup-preference");
+  }
+});
+
+// ---- Reports (read ONLY from Key Reports entry tables) ---------------------
+// These endpoints are the single authoritative report source for Key Reports.
+// They NEVER touch Manual GL staging, active batches, or snapshots.
+
+function parseReportQuery(q = {}) {
+  // `year` accepts a single fiscal year. A comma list (e.g. "2022,2023") is NOT a
+  // single year — collapse it to a date range so spec #12/#13 still resolve the
+  // full year set rather than silently using only the first value.
+  const rawYear = q.year != null ? String(q.year).trim() : "";
+  const isSingleYear = /^\d{4}$/.test(rawYear);
+  return {
+    year: isSingleYear ? parseInt(rawYear, 10) : null,
+    startDate: q.startDate ? String(q.startDate) : null,
+    endDate: q.endDate ? String(q.endDate) : null,
+    // "month" → monthly columns (Jan…Dec); anything else → fiscal-year columns.
+    period: String(q.period || "").toLowerCase() === "month" ? "month" : "year",
+    page: parseInt(String(q.page || 1), 10) || 1,
+    pageSize: parseInt(String(q.pageSize || 500), 10) || 500,
+  };
+}
+
+router.get("/key-reports/versions/:versionId/reports/profit-loss", async (req, res) => {
+  try {
+    const version = await loadVersionWithAccess(req, res);
+    if (!version) return;
+    const { year, startDate, endDate, period } = parseReportQuery(req.query);
+    const result = await keyReportReportService.getProfitLossReport(version.id, { year, startDate, endDate, period });
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    return handleError(res, error, "GET reports/profit-loss");
+  }
+});
+
+router.get("/key-reports/versions/:versionId/reports/balance-sheet", async (req, res) => {
+  try {
+    const version = await loadVersionWithAccess(req, res);
+    if (!version) return;
+    const { year, startDate, endDate, period } = parseReportQuery(req.query);
+    const result = await keyReportReportService.getBalanceSheetReport(version.id, { year, startDate, endDate, period });
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    return handleError(res, error, "GET reports/balance-sheet");
+  }
+});
+
+router.get("/key-reports/versions/:versionId/reports/cashflow", async (req, res) => {
+  try {
+    const version = await loadVersionWithAccess(req, res);
+    if (!version) return;
+    const { year, startDate, endDate } = parseReportQuery(req.query);
+    const result = await keyReportReportService.getCashflowReport(version.id, { year, startDate, endDate });
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    return handleError(res, error, "GET reports/cashflow");
+  }
+});
+
+router.get("/key-reports/versions/:versionId/reports/general-ledger", async (req, res) => {
+  try {
+    const version = await loadVersionWithAccess(req, res);
+    if (!version) return;
+    const { year, startDate, endDate, page, pageSize } = parseReportQuery(req.query);
+    const result = await keyReportReportService.getGeneralLedgerReport(version.id, { year, startDate, endDate, page, pageSize });
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    return handleError(res, error, "GET reports/general-ledger");
+  }
+});
+
+router.get("/key-reports/versions/:versionId/reports/bank-statement", async (req, res) => {
+  try {
+    const version = await loadVersionWithAccess(req, res);
+    if (!version) return;
+    const { year, page, pageSize } = parseReportQuery(req.query);
+    const result = await keyReportReportService.getBankStatementReport(version.id, { year, page, pageSize });
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    return handleError(res, error, "GET reports/bank-statement");
+  }
+});
+
+router.get("/key-reports/versions/:versionId/reports/tax-return", async (req, res) => {
+  try {
+    const version = await loadVersionWithAccess(req, res);
+    if (!version) return;
+    const { year } = parseReportQuery(req.query);
+    const result = await keyReportReportService.getTaxReturnReport(version.id, { year });
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    return handleError(res, error, "GET reports/tax-return");
+  }
+});
+
+// ── COA-mapped Financial Statements (P&L + Balance Sheet, monthly + yearly) ───
+// GET /key-reports/versions/:versionId/reports/financial-statements?year=2024&currency=USD
+router.get("/key-reports/versions/:versionId/reports/financial-statements", async (req, res) => {
+  try {
+    const version = await loadVersionWithAccess(req, res);
+    if (!version) return;
+    const { year, currency, companyName } = req.query;
+    const result = await generateFinancialStatements(version.id, {
+      year: year ? parseInt(String(year), 10) : undefined,
+      currency: currency || "USD",
+      companyName: companyName || "",
+    });
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    return handleError(res, error, "GET reports/financial-statements");
   }
 });
 

@@ -68,9 +68,6 @@ function AccountRow({ account, months, partyLabel = "Vendor" }) {
             <td key={m} className={colClass(v)}>{formatCurrency(v)}</td>
           );
         })}
-        <td className={`px-3 py-1.5 text-right text-[12px] tabular-nums font-medium ${months.reduce((s,m)=>s+Number(account.monthly?.[m]||0),0) < 0 ? "text-status-error" : "text-text-secondary"}`}>
-          {formatCurrency(months.reduce((s,m)=>s+Number(account.monthly?.[m]||0),0))}
-        </td>
       </tr>
 
       {isOpen && hasTransactions && (
@@ -83,7 +80,6 @@ function AccountRow({ account, months, partyLabel = "Vendor" }) {
             {months.map((m) => (
               <td key={m} className="px-3 py-1" />
             ))}
-            <td className="px-3 py-1" />
           </tr>
           {/* One row per vendor/customer */}
           {vendorGroups.map((g, idx) => (
@@ -103,11 +99,6 @@ function AccountRow({ account, months, partyLabel = "Vendor" }) {
                   </td>
                 );
               })}
-              <td
-                className={`px-3 py-1 text-right text-[11px] tabular-nums font-medium ${months.reduce((s,m)=>s+Number(g.monthly?.[m]||0),0) < 0 ? "text-status-error" : "text-text-secondary"}`}
-              >
-                {formatCurrency(months.reduce((s,m)=>s+Number(g.monthly?.[m]||0),0))}
-              </td>
             </tr>
           ))}
         </>
@@ -153,9 +144,6 @@ function SectionBlock({ section, months }) {
               </td>
             );
           })}
-          <td className={`px-3 py-1.5 text-right text-[12px] tabular-nums font-semibold ${months.reduce((s,m)=>s+Number(section.monthlyTotals?.[m]||0),0) < 0 ? "text-status-error" : "text-text-primary"}`}>
-            {formatCurrency(months.reduce((s,m)=>s+Number(section.monthlyTotals?.[m]||0),0))}
-          </td>
         </tr>
       )}
     </>
@@ -183,9 +171,6 @@ function CalculatedRow({ section, months }) {
           </td>
         );
       })}
-      <td className={`px-3 py-2 text-right text-[12px] tabular-nums font-bold ${months.reduce((s,m)=>s+Number(section.monthlyTotals?.[m]||0),0) < 0 ? "text-status-error" : "text-text-primary"}`}>
-        {formatCurrency(months.reduce((s,m)=>s+Number(section.monthlyTotals?.[m]||0),0))}
-      </td>
     </tr>
   );
 }

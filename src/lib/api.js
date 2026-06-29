@@ -415,10 +415,10 @@ export function getRequestNarrative(requestId) {
     if (!res) return { content: '', author_name: null, author_role: null, updated_at: null };
     if (typeof res === 'string') return { content: res, author_name: null, author_role: null, updated_at: null };
     return {
-      content:     res.content     || '',
+      content: res.content || '',
       author_name: res.author_name || null,
       author_role: res.author_role || null,
-      updated_at:  res.updated_at  || null,
+      updated_at: res.updated_at || null,
     };
   }).catch(() => ({ content: '', author_name: null, author_role: null, updated_at: null }));
 }
@@ -1199,6 +1199,7 @@ export function getLatestManualUploadedReport(statementType, options = {}) {
   const params = new URLSearchParams();
   if (clientId) params.set("clientId", clientId);
   if (options.rowId) params.set("rowId", options.rowId);
+  if (options.keyReportVersionId) params.set("keyReportVersionId", options.keyReportVersionId);
   const query = params.toString() ? `?${params}` : "";
   return request(
     `/manual-report-uploads/reports/${encodeURIComponent(statementType)}/latest${query}`,
@@ -1229,6 +1230,7 @@ export function getLatestQMSUploadedReport(statementType, options = {}) {
   const params = new URLSearchParams();
   if (clientId) params.set("clientId", clientId);
   if (options.rowId) params.set("rowId", options.rowId);
+  if (options.keyReportVersionId) params.set("keyReportVersionId", options.keyReportVersionId);
   const query = params.toString() ? `?${params}` : "";
   return request(
     `/manual-report-uploads/qms-reports/${encodeURIComponent(statementType)}/latest${query}`,
@@ -1431,6 +1433,38 @@ export function getKeyReportSyncLogs(versionId) {
   return request(`/key-reports/versions/${versionId}/sync-logs`);
 }
 
+/**
+ * Fetch a financial report directly from Key Reports entry tables.
+ *
+ * reportType: 'profit-loss' | 'balance-sheet' | 'general-ledger' |
+ *             'bank-statement' | 'tax-return'
+ *
+ * This is the ONLY correct report endpoint when keyReportVersionId is present.
+ * NEVER call ManualGL or staging endpoints for Key Reports data.
+ */
+export function getKeyReportVersionReport(versionId, reportType, params = {}) {
+  const search = new URLSearchParams();
+  if (params.year != null && params.year !== "") search.set("year", String(params.year));
+  // Date-range filter (spec #11–#13): controls which fiscal years/months render.
+  if (params.startDate) search.set("startDate", String(params.startDate));
+  if (params.endDate) search.set("endDate", String(params.endDate));
+  // Granularity: "month" → monthly columns, otherwise annual fiscal-year columns.
+  if (params.period) search.set("period", String(params.period));
+  if (params.page != null) search.set("page", String(params.page));
+  if (params.pageSize != null) search.set("pageSize", String(params.pageSize));
+  const qs = search.toString();
+  return request(`/key-reports/versions/${versionId}/reports/${reportType}${qs ? `?${qs}` : ""}`);
+}
+
+export function getKeyReportExtractedData(versionId, { dataType, year, page = 1, pageSize = 50, search } = {}) {
+  const params = new URLSearchParams({ dataType });
+  if (year != null) params.set('year', String(year));
+  if (page > 1) params.set('page', String(page));
+  if (pageSize !== 50) params.set('pageSize', String(pageSize));
+  if (search) params.set('search', search);
+  return request(`/key-reports/versions/${versionId}/extracted-data?${params}`);
+}
+
 export function getKeyReportFileReferences(documentIds = []) {
   const ids = (Array.isArray(documentIds) ? documentIds : [documentIds]).filter(Boolean);
   const qs = ids.length ? `?documentIds=${encodeURIComponent(ids.join(','))}` : '';
@@ -1443,6 +1477,60 @@ export function getKeyReportPopupPreference() {
 
 export function setKeyReportPopupPreference(dismissed) {
   return request('/key-reports/popup-preference', { method: 'PUT', body: { dismissed } });
+}
+
+// ---- Chart of Accounts -----------------------------------------------------
+
+export function getChartOfAccounts(versionId) {
+  return request(`/key-reports/versions/${versionId}/chart-of-accounts`);
+}
+
+export function regenerateChartOfAccounts(versionId) {
+  return request(`/key-reports/versions/${versionId}/chart-of-accounts/regenerate`, {
+    method: 'POST',
+    body: {},
+  });
+}
+
+export function updateChartOfAccount(accountId, payload) {
+  return request(`/key-reports/chart-of-accounts/${accountId}`, { method: 'PATCH', body: payload });
+}
+
+// Restore a single account to its original AI classification.
+export function resetChartOfAccount(accountId) {
+  return request(`/key-reports/chart-of-accounts/${accountId}/reset`, { method: 'POST', body: {} });
+}
+
+// Bulk-save an edited hierarchy for a version.
+export function saveChartOfAccounts(versionId, nodes) {
+  return request(`/key-reports/versions/${versionId}/chart-of-accounts/save`, {
+    method: 'POST',
+    body: { nodes },
+  });
+}
+
+// Restore an entire version's hierarchy to the original AI classification.
+export function resetChartOfAccounts(versionId) {
+  return request(`/key-reports/versions/${versionId}/chart-of-accounts/reset`, { method: 'POST', body: {} });
+}
+
+// Classification + adjustment audit history.
+export function getChartOfAccountsHistory(versionId) {
+  return request(`/key-reports/versions/${versionId}/chart-of-accounts/history`);
+}
+
+// Standardized hierarchy taxonomy (reference data for UI filters).
+export function getHierarchyLevels() {
+  return request(`/key-reports/hierarchy-levels`);
+}
+
+// COA-mapped financial statements (monthly + yearly P&L and Balance Sheet).
+export function getFinancialStatements(versionId, { year, currency } = {}) {
+  const params = new URLSearchParams();
+  if (year) params.set("year", year);
+  if (currency) params.set("currency", currency);
+  const qs = params.toString();
+  return request(`/key-reports/versions/${versionId}/reports/financial-statements${qs ? `?${qs}` : ""}`);
 }
 
 export function listFolderAccess(folderId) {

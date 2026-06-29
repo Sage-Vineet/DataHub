@@ -22,7 +22,7 @@ function AccountRow({ account, months }) {
         className={`border-b border-border-light hover:bg-bg-page/30 cursor-pointer transition-colors ${isOpen ? "bg-bg-page/20" : ""}`}
         onClick={() => setIsOpen(!isOpen)}
       >
-        <td className="px-3 py-1.5 pl-8 text-[12px] text-text-secondary">
+        <td className="px-3 py-1.5 pl-8 text-[12px] text-text-secondary sticky left-0 z-10 bg-bg-card border-r-2 border-border/50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]">
           <div className="flex items-center gap-1.5">
             {hasTransactions && (
               isOpen ? <ChevronDown size={12} className="text-text-muted" /> : <ChevronRight size={12} className="text-text-muted" />
@@ -34,9 +34,6 @@ function AccountRow({ account, months }) {
           const v = Number(account.monthly?.[m] || 0);
           return <td key={m} className={colClass(v)}>{formatCurrency(v)}</td>;
         })}
-        <td className={`px-3 py-1.5 text-right text-[12px] tabular-nums font-medium ${months.reduce((s,m)=>s+Number(account.monthly?.[m]||0),0) < 0 ? "text-status-error" : "text-text-secondary"}`}>
-          {formatCurrency(months.reduce((s,m)=>s+Number(account.monthly?.[m]||0),0))}
-        </td>
       </tr>
 
       {isOpen && hasTransactions && (
@@ -84,16 +81,17 @@ function SectionBlock({ section, months }) {
   return (
     <>
       <tr className="bg-bg-page/60 border-b border-border">
-        <td className="px-3 py-2 text-[13px] font-semibold text-text-primary" colSpan={months.length + 2}>
+        <td className="px-3 py-2 text-[13px] font-semibold text-text-primary sticky left-0 z-10 bg-bg-page/60 border-r-2 border-border/50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]" colSpan={1}>
           {section.label}
         </td>
+        {months.map(m => <td key={m} className="bg-bg-page/10" />)}
       </tr>
       {hasAccounts && section.accounts.map((acc, i) => (
         <AccountRow key={`${acc.accountName}-${i}`} account={acc} months={months} />
       ))}
       {hasAccounts && (
         <tr className="border-b border-border bg-bg-page/30">
-          <td className="px-3 py-1.5 pl-6 text-[12px] font-semibold text-text-primary italic">
+          <td className="px-3 py-1.5 pl-6 text-[12px] font-semibold text-text-primary italic sticky left-0 z-10 bg-bg-page/30 border-r-2 border-border/50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]">
             {section.totalLabel || `Total ${section.label}`}
           </td>
           {months.map((m) => {
@@ -104,9 +102,6 @@ function SectionBlock({ section, months }) {
               </td>
             );
           })}
-          <td className={`px-3 py-1.5 text-right text-[12px] tabular-nums font-semibold ${months.reduce((s,m)=>s+Number(section.monthlyTotals?.[m]||0),0) < 0 ? "text-status-error" : "text-text-primary"}`}>
-            {formatCurrency(months.reduce((s,m)=>s+Number(section.monthlyTotals?.[m]||0),0))}
-          </td>
         </tr>
       )}
     </>
@@ -124,7 +119,7 @@ function CalculatedRow({ section, months }) {
 
   return (
     <tr className={rowClass}>
-      <td className={`px-3 py-2 text-[13px] font-bold text-text-primary${isEnding ? " text-[14px]" : ""}`}>
+      <td className={`px-3 py-2 text-[13px] font-bold text-text-primary sticky left-0 z-10 bg-bg-page border-r-2 border-border/50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]${isEnding ? " text-[14px]" : ""}`}>
         {section.label}
       </td>
       {months.map((m) => {
@@ -135,9 +130,6 @@ function CalculatedRow({ section, months }) {
           </td>
         );
       })}
-      <td className={`px-3 py-2 text-right text-[12px] tabular-nums font-bold ${months.reduce((s,m)=>s+Number(section.monthlyTotals?.[m]||0),0) < 0 ? "text-status-error" : "text-text-primary"}`}>
-        {formatCurrency(months.reduce((s,m)=>s+Number(section.monthlyTotals?.[m]||0),0))}
-      </td>
     </tr>
   );
 }
@@ -191,15 +183,12 @@ export default function ManualCashflowMonthlyDetail({
           <table className="w-full border-collapse text-sm">
             <thead>
               <tr className="border-b-2 border-text-primary bg-bg-page sticky top-0 z-10">
-                <th className="px-3 py-2.5 text-left text-[12px] font-semibold text-text-primary min-w-[220px]" />
+                <th className="sticky top-0 left-0 z-30 bg-bg-page px-3 py-2.5 text-left text-[12px] font-semibold text-text-primary min-w-[220px] border-b-2 border-text-primary border-r-2 border-border/50 shadow-[2px_0_4px_-2px_rgba(0,0,0,0.1)]" />
                 {months.map((m) => (
-                  <th key={m} className="px-3 py-2.5 text-right text-[12px] font-semibold text-text-primary whitespace-nowrap min-w-[90px]">
+                  <th key={m} className="sticky top-0 z-20 bg-bg-page px-3 py-2.5 text-right text-[12px] font-semibold text-text-primary whitespace-nowrap min-w-[90px] border-b-2 border-text-primary">
                     {monthLabel(m)}
                   </th>
                 ))}
-                <th className="px-3 py-2.5 text-right text-[12px] font-semibold text-text-primary min-w-[100px]">
-                  Total
-                </th>
               </tr>
             </thead>
             <tbody>
@@ -214,6 +203,6 @@ export default function ManualCashflowMonthlyDetail({
           </table>
         </div>
       </div>
-    </div>
+    </div >
   );
 }

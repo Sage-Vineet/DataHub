@@ -1,6 +1,5 @@
 import { fetchCashflow } from "../lib/quickbooks";
 import {
-  getLatestManualUploadedReport,
   getManualGlCashflow,
   getAllManualUploadedReports,
   getManualStagedCashflowMonthlyDetail,
@@ -8,6 +7,7 @@ import {
   getAllQMSUploadedReports,
   getManualCashFlowPeriods,
   getManualGeneratedCashFlow,
+  getKeyReportVersionReport,
 } from "../lib/api";
 import { normalizeAccountingMethod } from "../lib/report-filters";
 import { parseCashFlowSummaryReport } from "../lib/report-parsers";
@@ -149,14 +149,15 @@ function getCashflowComparativePeriods(numYears = 4, startYear = null, endYear =
 }
 
 async function fetchSinglePeriodCashflow(startDate, endDate, accountingMethod, sourceMode = "quickbooks", options = {}) {
+  const keyReportVersionId = options?.keyReportVersionId || null;
   try {
     // ── Manual Upload: use dynamically generated Cash Flow ──────────────────
     if (sourceMode === "manual_upload") {
       let targetYear = options?.year ? parseInt(String(options.year), 10) : null;
 
       if (!targetYear) {
-        // Discover available periods and default to the latest
-        const periodsResult = await getManualCashFlowPeriods();
+        // ... (discovery logic)
+        const periodsResult = await getManualCashFlowPeriods({ keyReportVersionId });
         const availablePeriods = (periodsResult?.periods || [])
           .map((p) => parseInt(String(p.period ?? p), 10))
           .filter(Boolean);
@@ -164,7 +165,7 @@ async function fetchSinglePeriodCashflow(startDate, endDate, accountingMethod, s
         targetYear = Math.max(...availablePeriods);
       }
 
-      const cf = await getManualGeneratedCashFlow(targetYear, { force: options?.force });
+      const cf = await getManualGeneratedCashFlow(targetYear, { force: options?.force, keyReportVersionId });
       if (!cf?.success) return [];
 
       return generatedCfToRows(cf);
@@ -174,6 +175,7 @@ async function fetchSinglePeriodCashflow(startDate, endDate, accountingMethod, s
     if (sourceMode === "quickbooks_manual") {
       const payload = await getLatestQMSUploadedReport("cash_flow", {
         rowId: options?.manualUploadRowId,
+        keyReportVersionId,
       });
       const rows = Array.isArray(payload?.data?.rows) ? payload.data.rows : [];
       const periods = payload?.data?.periods || [];
@@ -326,6 +328,28 @@ function mergeCashflowPeriods(periodResults, periods) {
 
 export async function getCashflow(startDate, endDate, accountingMethod, options = {}) {
   const sourceMode = options?.sourceMode || "quickbooks";
+  const keyReportVersionId = options?.keyReportVersionId || null;
+
+  // Key Reports: build Cash Flow ONLY from this version's entry tables
+  // (balance_sheet_entries + profit_loss_entries) via the dedicated endpoint.
+  // NEVER falls through to Manual GL staging / batches / snapshots.
+  if (keyReportVersionId) {
+    try {
+      const manualFilters = options?.manualFilters || {};
+      const rawYear = options?.year || manualFilters.fiscalYear || null;
+      const response = await getKeyReportVersionReport(keyReportVersionId, "cashflow", {
+        year: /^\d{4}$/.test(String(rawYear ?? "")) ? rawYear : null,
+        startDate: manualFilters.fromDate || null,
+        endDate: manualFilters.toDate || null,
+      });
+      const rows = response?.rows || response?.hierarchicalRows || [];
+      console.log("[KeyReports][CF][Summary] Loaded", rows.length, "rows from entry tables for version", keyReportVersionId);
+      return rows;
+    } catch (err) {
+      console.warn("[KeyReports][CF][Summary] Entry table fetch failed:", err.message);
+      return [];
+    }
+  }
 
   if (sourceMode === "manual") {
     const params = {
@@ -333,11 +357,14 @@ export async function getCashflow(startDate, endDate, accountingMethod, options 
         ? options.manualFilters
         : {}),
     };
+    if (keyReportVersionId) {
+      params.keyReportVersionId = keyReportVersionId;
+    }
     const payload = await getManualGlCashflow({ params });
     return payload;
   }
 
-  return await fetchSinglePeriodCashflow(startDate, endDate, accountingMethod, sourceMode, options);
+  return await fetchSinglePeriodCashflow(startDate, endDate, accountingMethod, sourceMode, { ...options, keyReportVersionId });
 }
 
 function cfFileYear(file) {
@@ -557,6 +584,36 @@ export async function getCashflowDetail(
   options = {},
 ) {
   const sourceMode = options?.sourceMode || "quickbooks";
+  const keyReportVersionId = options?.keyReportVersionId || null;
+
+  // Key Reports: read ONLY from this version's entry tables (multi-year comparative
+  // Cash Flow) — never from Manual GL staging.
+  if (keyReportVersionId) {
+    try {
+      const manualFilters = options?.manualFilters || {};
+      const singleYear = /^\d{4}$/.test(String(manualFilters.fiscalYear ?? "")) ? manualFilters.fiscalYear : null;
+      const response = await getKeyReportVersionReport(keyReportVersionId, "cashflow", {
+        year: singleYear,
+        startDate: manualFilters.fromDate || null,
+        endDate: manualFilters.toDate || null,
+      });
+      console.log("[KeyReports][CF][Detail] Loaded from entry tables for version", keyReportVersionId);
+      return {
+        rows: response?.hierarchicalRows || response?.rows || [],
+        columns: response?.columns || { yearCols: [], ytdComparison: null },
+        source: response?.source || "key_reports_entry_tables",
+        reportType: "cashflow_multi_year",
+      };
+    } catch (err) {
+      console.warn("[KeyReports][CF][Detail] Entry table fetch failed:", err.message);
+      return {
+        rows: [],
+        columns: { yearCols: [], ytdComparison: null },
+        source: "key_reports_entry_tables",
+        reportType: "cashflow_multi_year",
+      };
+    }
+  }
 
   if (sourceMode === "manual") {
     const params = {
@@ -564,6 +621,9 @@ export async function getCashflowDetail(
         ? options.manualFilters
         : {}),
     };
+    if (keyReportVersionId) {
+      params.keyReportVersionId = keyReportVersionId;
+    }
     console.log("[DetailedReportUI][CF] Requesting monthly detail with params:", JSON.stringify(params));
     const response = await getManualStagedCashflowMonthlyDetail({ params });
     console.log("[DetailedReportUI][CF] Received keys:", Object.keys(response || {}), "| source:", response?.source, "| reportType:", response?.reportType);
@@ -581,7 +641,7 @@ export async function getCashflowDetail(
 
   const results = await Promise.all(
     periods.map((p) =>
-      fetchSinglePeriodCashflow(p.start, p.end, accountingMethod, sourceMode),
+      fetchSinglePeriodCashflow(p.start, p.end, accountingMethod, sourceMode, { ...options, keyReportVersionId }),
     ),
   );
 
