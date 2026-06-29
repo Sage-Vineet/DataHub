@@ -1006,8 +1006,8 @@ export default function FinancialStatementsView({
             />
           </div>
 
-          {/* Year filter — dropdown populated from returned data, never hardcoded */}
-          {allYears.length > 0 && (
+          {/* Year filter — only shown in yearly mode, populated from returned data */}
+          {period === "yearly" && allYears.length > 0 && (
             <div className="px-4 pt-2 pb-1 flex items-center gap-2">
               <label htmlFor="fy-select" className="text-xs text-gray-500 font-medium whitespace-nowrap">
                 Fiscal Year

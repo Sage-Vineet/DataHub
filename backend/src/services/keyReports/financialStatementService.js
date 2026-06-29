@@ -928,6 +928,33 @@ async function generateYearlyPl(versionId, year, allCoa, unmappedSet) {
 
 // ─── Monthly P&L (via GL entries) ─────────────────────────────────────────────
 
+// GL-direct P&L for one month — used when COA mapping produces all-zero results.
+function buildGlDirectPlStatement(byAccount, monthNum) {
+  const REVENUE_RE = /revenue|income|sales|fees earned|interest income|gross receipts|gain on sale|refund/i;
+  const revenue = [], expenses = [];
+  for (const { rawName, months } of byAccount.values()) {
+    const amt = months.get(monthNum) || 0;
+    if (Math.abs(amt) < 0.005) continue;
+    if (REVENUE_RE.test(rawName)) {
+      revenue.push({ name: rawName, amount: round2(Math.abs(amt)) });
+    } else {
+      expenses.push({ name: rawName, amount: round2(Math.abs(amt)) });
+    }
+  }
+  const totalRevenue  = round2(revenue.reduce((s, a) => s + a.amount, 0));
+  const totalExpenses = round2(expenses.reduce((s, a) => s + a.amount, 0));
+  const grossProfit   = totalRevenue;
+  const netIncome     = round2(totalRevenue - totalExpenses);
+  return {
+    revenue:          { label: "Total Revenue",  accounts: revenue,   total: totalRevenue },
+    costOfSales:      { label: "Cost of Sales",  accounts: [],        total: 0 },
+    grossProfit,
+    operatingExpenses: { label: "Total Expenses", groups: { "Operating Expenses": { label: "Operating Expenses", accounts: expenses, total: totalExpenses } }, total: totalExpenses },
+    operatingIncome:  netIncome,
+    netIncome,
+  };
+}
+
 async function loadGlAmountsByMonth(versionId, year) {
   // Include rows where row_type is null — those are pre-migration-050 transaction
   // rows that were extracted before the TRANSACTION / ACCOUNT_HEADER enum was added.
@@ -1030,6 +1057,17 @@ async function generateMonthlyPl(versionId, year, allCoa, unmappedSet) {
           }
         }
       }
+    }
+
+    // If COA mapping produced no amounts, fall back to direct GL classification.
+    const totalMapped = Array.from(leafAmounts.values()).reduce((s, v) => s + Math.abs(v), 0);
+    if (totalMapped < 0.01 && gl.byAccount.size > 0) {
+      return {
+        month: MONTH_NAMES[monthNum - 1], monthNumber: monthNum,
+        year: String(year), periodLabel: `${MONTH_NAMES[monthNum - 1]} ${year}`,
+        statement: buildGlDirectPlStatement(gl.byAccount, monthNum),
+        vendorsByAccount: {},
+      };
     }
 
     const { byId, roots, leaves } = buildTree(plAccounts);
@@ -1368,12 +1406,12 @@ function convertCfRow(row) {
 }
 
 function convertCfTree(rows) {
-  const find  = (id) => rows.find(r => r.id === id || r.id?.startsWith(id));
+  const find  = (id) => rows.find(r => r.id === id || r.id?.includes(id));
   const op    = find("operating");
   const inv   = find("investing");
   const fin   = find("financing");
   const net   = rows.find(r => /net.*(cash|change)/i.test(r.name) && r.type === "total");
-  const open  = rows.find(r => /opening/i.test(r.name));
+  const open  = rows.find(r => /opening|beginning/i.test(r.name));
   const close = rows.find(r => /ending/i.test(r.name));
   return {
     operatingActivities:  { label: "Operating Activities",  items: (op?.children  || []).map(convertCfRow), total: safeNum(op?.amount  || 0) },
@@ -1397,25 +1435,67 @@ async function generateYearlyCf(versionId, year) {
 
 async function generateMonthlyCf(versionId, year) {
   try {
-    const cf = await getCashflowReport(versionId, { year, period: "month" });
-    if (!cf.yearCols?.length) return [];
-    const rows = cf.hierarchicalRows || [];
-    const find = (id) => rows.find(r => r.id === id || r.id?.startsWith(id));
-    return (cf.yearCols || []).map((col) => {
-      const monthNum = parseInt(String(col.key).slice(-2), 10);
-      const getAmt   = (row) => safeNum(row?.amounts?.[col.key] || 0);
-      const op = find("operating"); const inv = find("investing"); const fin = find("financing");
+    const glByMonth = await aggregateGLForBSByMonth(versionId, year);
+    if (!glByMonth) return [];
+
+    const CASH_KW          = /cash|checking|savings|petty/i;
+    const WC_ASSET_KW      = /receivable|inventory|prepaid|deposit|due from/i;
+    const WC_LIAB_KW       = /payable|accrued|credit card|unearned|deferred revenue/i;
+    const INVEST_KW        = /equipment|property|building|land|vehicle|furniture|ppe|intangible|invest/i;
+    const FINANCE_LIAB_KW  = /loan|mortgage|bond|note payable|line of credit|long.term/i;
+
+    const months = Array.from(glByMonth.keys()).sort((a, b) => a - b);
+    let runningCash = 0;
+
+    return months.map((monthNum) => {
+      const mData = glByMonth.get(monthNum);
+      const operatingBase = safeNum(mData.netIncome);
+      let wcAdj = 0, investingTotal = 0, financingTotal = 0;
+      const opAdjItems = [], invItems = [], finItems = [];
+
+      for (const [name, { net, type }] of mData.bsMap) {
+        const amt = safeNum(net);
+        if (!amt || CASH_KW.test(name)) continue;
+
+        if (type === "asset" && WC_ASSET_KW.test(name)) {
+          wcAdj -= amt;
+          opAdjItems.push({ name, amount: round2(-amt) });
+        } else if (type === "liability" && WC_LIAB_KW.test(name)) {
+          wcAdj += amt;
+          opAdjItems.push({ name, amount: round2(amt) });
+        } else if (type === "asset" && INVEST_KW.test(name)) {
+          investingTotal -= amt;
+          invItems.push({ name, amount: round2(-amt) });
+        } else if (type === "liability" && FINANCE_LIAB_KW.test(name)) {
+          financingTotal += amt;
+          finItems.push({ name, amount: round2(amt) });
+        } else if (type === "equity") {
+          financingTotal += amt;
+          finItems.push({ name, amount: round2(amt) });
+        }
+      }
+
+      const operatingTotal = round2(operatingBase + wcAdj);
+      const netCash = round2(operatingTotal + investingTotal + financingTotal);
+      const openingCash = round2(runningCash);
+      runningCash += netCash;
+      const endingCash = round2(runningCash);
+
       return {
-        month: MONTH_NAMES[monthNum - 1], monthNumber: monthNum, year: String(year), periodLabel: col.label,
+        month: MONTH_NAMES[monthNum - 1], monthNumber: monthNum,
+        year: String(year), periodLabel: `${MONTH_NAMES[monthNum - 1]} ${year}`,
         statement: {
-          operatingActivities:  { label: "Operating Activities",  items: (op?.children  || []).map(c => ({ name: c.name, amount: getAmt(c) })), total: getAmt(op) },
-          investingActivities:  { label: "Investing Activities",  items: (inv?.children || []).map(c => ({ name: c.name, amount: getAmt(c) })), total: getAmt(inv) },
-          financingActivities:  { label: "Financing Activities",  items: (fin?.children || []).map(c => ({ name: c.name, amount: getAmt(c) })), total: getAmt(fin) },
-          netCashIncrease: 0, openingCash: 0, endingCash: 0,
+          operatingActivities: { label: "Operating Activities", items: [{ name: "Net Income", amount: round2(operatingBase) }, ...opAdjItems], total: operatingTotal },
+          investingActivities: { label: "Investing Activities", items: invItems, total: round2(investingTotal) },
+          financingActivities: { label: "Financing Activities", items: finItems, total: round2(financingTotal) },
+          netCashIncrease: netCash, openingCash, endingCash,
         },
       };
     });
-  } catch { return []; }
+  } catch (err) {
+    console.warn(`[FinStmt][CF][${year}] monthly: ${err.message}`);
+    return [];
+  }
 }
 
 // ─── Validation ───────────────────────────────────────────────────────────────
