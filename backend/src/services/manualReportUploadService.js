@@ -99,25 +99,50 @@ PAGE 1 — INCOME & DEDUCTIONS (Form 1120-S):
   Line 21  — Ordinary business income   → "netIncome"
 
 PAGE 3 ONLY — SCHEDULE K (Form 1120-S), Lines 2–16f:
-  SKIP Line 1 (= netIncome already captured).
-  For each non-zero line add to reconcilingItems:
-  2->"Net Rental Real Estate Income", 3c->"Other Net Rental Income",
-  4->"Interest Income", 5a->"Ordinary Dividends", 5b->"Qualified Dividends",
-  6->"Royalties", 7->"Net Short-Term Capital Gain (Loss)",
-  8a->"Net Long-Term Capital Gain (Loss)", 9->"Net Section 1231 Gain (Loss)",
-  10->"Other Income (Loss)", 11->"Section 179 Deduction",
-  12a->"Charitable Contributions", 12b->"Investment Interest Expense",
-  12c->"Section 59(e)(2) Expenditures", 12d->"Other Deductions",
-  13a->"Low-Income Housing Credit Sec42(j)(5)", 13b->"Low-Income Housing Credit Other",
-  13c->"Qualified Rehabilitation Expenditures", 13d->"Other Real Estate Credits",
-  13e->"Other Rental Credits", 13f->"Biofuel Producer Credit", 13g->"Other Credits",
-  15a->"Post-1986 Depreciation Adjustment", 15b->"Adjusted Gain or Loss",
-  15c->"Depletion Other Than Oil and Gas",
-  15d->"Oil Gas Geothermal Properties Gross Income",
-  15e->"Oil Gas Geothermal Properties Deductions", 15f->"Other AMT Items",
-  16a->"Tax-Exempt Interest Income", 16b->"Other Tax-Exempt Income",
-  16c->"Nondeductible Expenses", 16d->"Distributions",
-  16e->"Repayment of Loans from Shareholders", 16f->"Foreign Taxes Paid or Accrued"
+
+  ⚠️ SCHEDULE K EXTRACTION RULES — READ CAREFULLY:
+  1. Look at the "Total amount" column on the RIGHT SIDE of the Schedule K table.
+  2. For each line, examine ONLY the printed dollar amount in that right-hand column.
+  3. INCLUDE the line ONLY if you can see a clearly printed, non-zero number there.
+  4. If the cell is blank, empty, has a dash (—), or contains 0 → DO NOT include it.
+  5. DO NOT guess, estimate, or carry values from other parts of the form.
+  6. DO NOT include Line 1 (already captured as netIncome).
+
+  Line → label mapping (ONLY add lines with a visible non-zero value in "Total amount"):
+  2  → "Net Rental Real Estate Income"
+  3c → "Other Net Rental Income"
+  4  → "Interest Income"
+  5a → "Ordinary Dividends"
+  5b → "Qualified Dividends"
+  6  → "Royalties"
+  7  → "Net Short-Term Capital Gain (Loss)"
+  8a → "Net Long-Term Capital Gain (Loss)"
+  9  → "Net Section 1231 Gain (Loss)"
+  10 → "Other Income (Loss)"
+  11 → "Section 179 Deduction"
+  12a → "Charitable Contributions"
+  12b → "Investment Interest Expense"
+  12c → "Section 59(e)(2) Expenditures"
+  12d → "Other Deductions"
+  13a → "Low-Income Housing Credit Sec42(j)(5)"
+  13b → "Low-Income Housing Credit Other"
+  13c → "Qualified Rehabilitation Expenditures"
+  13d → "Other Real Estate Credits"
+  13e → "Other Rental Credits"
+  13f → "Biofuel Producer Credit"
+  13g → "Other Credits"
+  15a → "Post-1986 Depreciation Adjustment"
+  15b → "Adjusted Gain or Loss"
+  15c → "Depletion Other Than Oil and Gas"
+  15d → "Oil Gas Geothermal Properties Gross Income"
+  15e → "Oil Gas Geothermal Properties Deductions"
+  15f → "Other AMT Items"
+  16a → "Tax-Exempt Interest Income"
+  16b → "Other Tax-Exempt Income"
+  16c → "Nondeductible Expenses"
+  16d → "Distributions"
+  16e → "Repayment of Loans from Shareholders"
+  16f → "Foreign Taxes Paid or Accrued"
 
 ═══════════════════════════════════════════════════════
 FORM 1065 (PARTNERSHIP) — read PAGE 1 and ONLY the partnership-level SCHEDULE K page
@@ -155,36 +180,54 @@ SCHEDULE K page — Partners' Distributive Share Items (Form 1065):
   ⚠️ READ ONLY the page titled "Schedule K  Partners' Distributive Share Items".
      This page shows totals for the ENTIRE PARTNERSHIP in a single column (often "Total amount").
   ⚠️ DO NOT read any page with "Schedule K-1" in the title — those are partner-specific pages.
+
+  ⚠️ SCHEDULE K EXTRACTION RULES — READ CAREFULLY:
+  1. Look at the "Total amount" column on the RIGHT SIDE of the Schedule K table.
+  2. INCLUDE a line ONLY if you can see a clearly printed, non-zero dollar amount in that column.
+  3. If a cell is blank, empty, has a dash (—), or shows 0 → DO NOT include it.
+  4. DO NOT include Line 1 (already captured as netIncome).
+  5. DO NOT guess or carry over values from other pages or statements.
+
   SKIP Line 1 (= netIncome already captured).
-  Only include reconcilingItems entries where the value in the "Total amount" column is non-zero.
-  For each non-zero line add to reconcilingItems:
-  2 ->"Net Rental Real Estate Income",
-  3a->"Other Gross Rental Income", 3c->"Other Net Rental Income",
-  4c->"Guaranteed Payments Total",
-  5 ->"Interest Income",
-  6a->"Ordinary Dividends", 6b->"Qualified Dividends",
-  7 ->"Royalties",
-  8 ->"Net Short-Term Capital Gain (Loss)",
-  9a->"Net Long-Term Capital Gain (Loss)", 9c->"Unrecaptured Section 1250 Gain",
-  10->"Net Section 1231 Gain (Loss)",
-  11->"Other Income (Loss)",
-  12->"Section 179 Deduction",
-  13a->"Charitable Contributions Cash", 13b->"Charitable Contributions Noncash",
-  13c->"Investment Interest Expense",
-  13d2->"Section 59(e)(2) Expenditures",
-  14a->"Net Earnings from Self-Employment",
-  14b->"Gross Farming or Fishing Income", 14c->"Gross Nonfarm Income",
-  15a->"Low-Income Housing Credit Sec42(j)(5)", 15b->"Low-Income Housing Credit Other",
-  15c->"Qualified Rehabilitation Expenditures", 15d->"Other Real Estate Credits",
-  15e->"Other Rental Credits", 15f->"Other Credits",
-  17a->"Post-1986 Depreciation Adjustment", 17b->"Adjusted Gain or Loss",
-  17c->"Depletion Other Than Oil and Gas",
-  18a->"Tax-Exempt Interest Income", 18b->"Other Tax-Exempt Income",
-  18c->"Nondeductible Expenses",
-  19a->"Distributions of Cash and Marketable Securities",
-  19b->"Distributions of Other Property",
-  20a->"Investment Income", 20b->"Investment Expenses",
-  21 ->"Total Foreign Taxes Paid or Accrued"
+  Line → label mapping (ONLY add lines with a visible non-zero value in "Total amount"):
+  2  → "Net Rental Real Estate Income"
+  3a → "Other Gross Rental Income"
+  3c → "Other Net Rental Income"
+  4c → "Guaranteed Payments Total"
+  5  → "Interest Income"
+  6a → "Ordinary Dividends"
+  6b → "Qualified Dividends"
+  7  → "Royalties"
+  8  → "Net Short-Term Capital Gain (Loss)"
+  9a → "Net Long-Term Capital Gain (Loss)"
+  9c → "Unrecaptured Section 1250 Gain"
+  10 → "Net Section 1231 Gain (Loss)"
+  11 → "Other Income (Loss)"
+  12 → "Section 179 Deduction"
+  13a → "Charitable Contributions Cash"
+  13b → "Charitable Contributions Noncash"
+  13c → "Investment Interest Expense"
+  13d2 → "Section 59(e)(2) Expenditures"
+  14a → "Net Earnings from Self-Employment"
+  14b → "Gross Farming or Fishing Income"
+  14c → "Gross Nonfarm Income"
+  15a → "Low-Income Housing Credit Sec42(j)(5)"
+  15b → "Low-Income Housing Credit Other"
+  15c → "Qualified Rehabilitation Expenditures"
+  15d → "Other Real Estate Credits"
+  15e → "Other Rental Credits"
+  15f → "Other Credits"
+  17a → "Post-1986 Depreciation Adjustment"
+  17b → "Adjusted Gain or Loss"
+  17c → "Depletion Other Than Oil and Gas"
+  18a → "Tax-Exempt Interest Income"
+  18b → "Other Tax-Exempt Income"
+  18c → "Nondeductible Expenses"
+  19a → "Distributions of Cash and Marketable Securities"
+  19b → "Distributions of Other Property"
+  20a → "Investment Income"
+  20b → "Investment Expenses"
+  21  → "Total Foreign Taxes Paid or Accrued"
 
 ═══════════════════════════════════════════════════════
 FORM 1120 (C-CORPORATION) — read PAGE 1 only
@@ -210,6 +253,17 @@ CRITICAL — totalRevenue:
   If Line 1b is blank, Line 1c = Line 1a.
 
 "year": 4-digit tax year printed at top-right of Page 1 (e.g. 2023).
+
+SELF-CHECK (mandatory before returning):
+After extracting all values, mentally verify BOTH formulas:
+  1) grossProfit  = totalRevenue - totalCostOfGoodsSold   (must match within $5)
+  2) netIncome    = grossProfit - officerWages - depreciation - amortization
+                   - interestExpense - allOtherExpenses   (must match within $5)
+If either formula fails, re-examine the relevant lines and correct the values.
+The most common mistakes:
+  - Using Line 1a (gross receipts) instead of Line 1c (balance after returns) for totalRevenue
+  - Reading the wrong line for netIncome (must be the "Ordinary business income" line, NOT taxable income)
+  - Omitting a deduction line or double-counting it in allOtherExpenses
 
 OUTPUT RULES:
 - Return ONLY a raw JSON object. No markdown, no backticks, no explanation.
@@ -340,6 +394,228 @@ async function extractTaxDataFromBuffer(pdfBuffer, cacheKey) {
   promise.catch(() => _taxExtractCache.delete(cacheKey));
   _taxExtractCache.set(cacheKey, promise);
   return promise;
+}
+
+// ─── Tax return mathematical validation ──────────────────────────────────────
+const TAX_VALIDATE_TOLERANCE = 5; // $5 tolerance for integer rounding
+
+function validateTaxExtraction(extracted) {
+  const issues = [];
+  const rev      = Number(extracted.totalRevenue         || 0);
+  const cogs     = Number(extracted.totalCostOfGoodsSold || 0);
+  const gp       = Number(extracted.grossProfit          || 0);
+  const wages    = Number(extracted.officerWages         || 0);
+  const dep      = Number(extracted.depreciation         || 0);
+  const amor     = Number(extracted.amortization         || 0);
+  const interest = Number(extracted.interestExpense      || 0);
+  const other    = Number(extracted.allOtherExpenses     || 0);
+  const netInc   = Number(extracted.netIncome            || 0);
+  const year     = Number(extracted.year                 || 0);
+
+  if (year < 2010 || year > 2030) {
+    issues.push(`Tax year out of expected range: ${year}`);
+  }
+  if (rev <= 0) {
+    issues.push(`Total Revenue is zero or negative: ${rev}`);
+  }
+
+  // Formula 1: grossProfit = totalRevenue - totalCostOfGoodsSold
+  const expectedGP = rev - cogs;
+  if (Math.abs(gp - expectedGP) > TAX_VALIDATE_TOLERANCE) {
+    issues.push(
+      `Gross Profit mismatch: extracted ${gp}, expected ${expectedGP} (revenue ${rev} - COGS ${cogs})`
+    );
+  }
+
+  // Formula 2: netIncome = grossProfit - all deductions
+  // Uses the raw AI-extracted allOtherExpenses (before buildTaxReturnResponseData derives it for corps)
+  const expectedNet = gp - wages - dep - amor - interest - other;
+  if (Math.abs(netInc - expectedNet) > TAX_VALIDATE_TOLERANCE) {
+    issues.push(
+      `Net Income mismatch: extracted ${netInc}, expected ${expectedNet} ` +
+      `(GP ${gp} - wages ${wages} - dep ${dep} - amor ${amor} - interest ${interest} - other ${other})`
+    );
+  }
+
+  return { status: issues.length === 0 ? "Verified" : "Needs Review", issues };
+}
+
+// Build a targeted re-extraction prompt that tells the AI exactly what failed
+function buildTaxVerificationPrompt(extracted, issues) {
+  return `You are DataHub's Tax Return Verification Engine.
+
+A prior extraction of this tax return PDF produced values that FAILED mathematical verification.
+Re-read the PDF carefully and return CORRECTED values.
+
+PREVIOUSLY EXTRACTED (INCORRECT) VALUES:
+  formType:             ${extracted.formType}
+  year:                 ${extracted.year}
+  totalRevenue:         ${extracted.totalRevenue}
+  totalCostOfGoodsSold: ${extracted.totalCostOfGoodsSold}
+  grossProfit:          ${extracted.grossProfit}
+  officerWages:         ${extracted.officerWages}
+  depreciation:         ${extracted.depreciation}
+  amortization:         ${extracted.amortization}
+  interestExpense:      ${extracted.interestExpense}
+  allOtherExpenses:     ${extracted.allOtherExpenses}
+  netIncome:            ${extracted.netIncome}
+
+FAILED CHECKS:
+${issues.map((i) => `  • ${i}`).join("\n")}
+
+REQUIRED FORMULAS (must hold within $5):
+  grossProfit = totalRevenue - totalCostOfGoodsSold
+  netIncome   = grossProfit - officerWages - depreciation - amortization - interestExpense - allOtherExpenses
+
+INSTRUCTIONS:
+1. Go back to the specific form lines mentioned in each failed check.
+2. Re-read the printed dollar amount from the original PDF image — do NOT reuse the wrong values above.
+3. Common causes of failure:
+   • Line 1a vs Line 1c confusion for totalRevenue (always use the "Balance" column, Line 1c)
+   • Wrong line for netIncome (use "Ordinary business income", NOT "Taxable income")
+   • allOtherExpenses over/under-counted — verify against Line 19 (1120-S), Line 21 (1065), or Line 26 (1120)
+   • A deduction line misread (e.g. depreciation split across two sub-lines)
+4. After correcting, verify the formulas hold before responding.
+
+Return ONLY a raw JSON object in the exact same schema. No markdown, no explanation.
+{
+  "formType": "${extracted.formType || "1120-S"}",
+  "year": 0,
+  "totalRevenue": 0,
+  "totalCostOfGoodsSold": 0,
+  "grossProfit": 0,
+  "officerWages": 0,
+  "depreciation": 0,
+  "amortization": 0,
+  "interestExpense": 0,
+  "allOtherExpenses": 0,
+  "netIncome": 0,
+  "reconcilingItems": []
+}`;
+}
+
+// Second-pass: if first extraction fails validation, re-run with targeted correction prompt
+async function extractTaxDataWithVerification(pdfBuffer, cacheKey) {
+  const extracted = await extractTaxDataFromBuffer(pdfBuffer, cacheKey);
+  const { status, issues } = validateTaxExtraction(extracted);
+
+  if (status === "Verified") {
+    // Still run Schedule K verification to remove hallucinated items
+    extracted.reconcilingItems = await verifyScheduleKItems(
+      pdfBuffer, extracted.formType || "1120-S", extracted.reconcilingItems || []
+    );
+    _taxExtractCache.set(cacheKey, Promise.resolve(extracted));
+    return { extracted, status: "Verified" };
+  }
+
+  // First pass failed — attempt a targeted second pass with a correction prompt
+  console.log(`[TaxVerify] key=${cacheKey} first pass FAILED: ${issues.join("; ")} — retrying with verification prompt`);
+  const pdfBase64 = pdfBuffer.toString("base64");
+  const verificationPrompt = buildTaxVerificationPrompt(extracted, issues);
+
+  for (const modelName of TAX_GEMINI_MODELS) {
+    try {
+      const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+      const model = genAI.getGenerativeModel({ model: modelName });
+      const result = await model.generateContent([
+        { inlineData: { mimeType: "application/pdf", data: pdfBase64 } },
+        { text: verificationPrompt },
+      ]);
+      let text = result.response.text().trim()
+        .replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+      const corrected = JSON.parse(text);
+
+      ["year","totalRevenue","totalCostOfGoodsSold","grossProfit","officerWages",
+       "depreciation","amortization","interestExpense","allOtherExpenses","netIncome"]
+        .forEach((f) => { corrected[f] = Number(corrected[f]) || 0; });
+      if (!corrected.formType) corrected.formType = extracted.formType || "1120-S";
+      if (!Array.isArray(corrected.reconcilingItems)) corrected.reconcilingItems = extracted.reconcilingItems || [];
+      corrected.reconcilingItems = corrected.reconcilingItems
+        .map((i) => ({ label: String(i.label || "").trim(), value: Number(i.value) || 0 }))
+        .filter((i) => i.label && i.value !== 0);
+
+      const secondCheck = validateTaxExtraction(corrected);
+      console.log(`[TaxVerify] key=${cacheKey} second pass status=${secondCheck.status} via ${modelName}`);
+
+      // Schedule K verification pass — remove any hallucinated reconciling items
+      corrected.reconcilingItems = await verifyScheduleKItems(
+        pdfBuffer, corrected.formType, corrected.reconcilingItems
+      );
+
+      _taxExtractCache.set(cacheKey, Promise.resolve(corrected));
+      return { extracted: corrected, status: secondCheck.status };
+    } catch (err) {
+      console.warn(`[TaxVerify] second-pass model=${modelName} failed: ${err.message}`);
+    }
+  }
+
+  // Second pass completely failed — still run Schedule K verification on first-pass result
+  extracted.reconcilingItems = await verifyScheduleKItems(
+    pdfBuffer, extracted.formType || "1120-S", extracted.reconcilingItems || []
+  );
+  return { extracted, status: "Needs Review" };
+}
+
+// ─── Schedule K dedicated verification pass ───────────────────────────────────
+// After extraction, send a targeted prompt that lists every item the AI claimed
+// to see on Schedule K and asks it to confirm each value is actually printed.
+// Items the AI cannot confirm get removed from reconcilingItems.
+function buildScheduleKVerificationPrompt(formType, reconcilingItems) {
+  const lines = reconcilingItems.map((i) => `  • ${i.label}: ${i.value}`).join("\n");
+  return `You are verifying Schedule K data extracted from a US ${formType} tax return PDF.
+
+The prior extraction produced these Schedule K reconciling items:
+${lines || "  (none)"}
+
+YOUR TASK — for EACH item above:
+1. Go to the Schedule K page in the PDF.
+2. Find the exact line that corresponds to that label.
+3. Look at the "Total amount" column (right side of the form) for that line.
+4. If you see a non-zero dollar amount printed there → KEEP the item with the correct value.
+5. If the cell is blank, empty, dashed, or zero → REMOVE it from the list.
+6. Correct the value if the amount you see differs from what was extracted.
+
+Also scan the ENTIRE Schedule K for any additional lines with non-zero values in the
+"Total amount" column that were MISSED by the prior extraction — add those too.
+
+CRITICAL:
+- Use ONLY values visually printed on Schedule K in the "Total amount" column.
+- DO NOT include Line 1 (Ordinary business income — already captured separately).
+- DO NOT guess or carry over values from other pages.
+
+Return ONLY a raw JSON array of confirmed items (empty array [] if none):
+[{"label": "Distributions", "value": 26640}, ...]
+No markdown, no explanation.`;
+}
+
+async function verifyScheduleKItems(pdfBuffer, formType, reconcilingItems) {
+  if (!reconcilingItems.length) return reconcilingItems; // nothing to verify
+  const pdfBase64 = pdfBuffer.toString("base64");
+  const prompt = buildScheduleKVerificationPrompt(formType, reconcilingItems);
+
+  for (const modelName of TAX_GEMINI_MODELS) {
+    try {
+      const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+      const model = genAI.getGenerativeModel({ model: modelName });
+      const result = await model.generateContent([
+        { inlineData: { mimeType: "application/pdf", data: pdfBase64 } },
+        { text: prompt },
+      ]);
+      let text = result.response.text().trim()
+        .replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+      const verified = JSON.parse(text);
+      if (!Array.isArray(verified)) throw new Error("Expected array");
+      const clean = verified
+        .map((i) => ({ label: String(i.label || "").trim(), value: Number(i.value) || 0 }))
+        .filter((i) => i.label && i.value !== 0);
+      console.log(`[ScheduleKVerify] formType=${formType} — ${reconcilingItems.length} in, ${clean.length} confirmed via ${modelName}`);
+      return clean;
+    } catch (err) {
+      console.warn(`[ScheduleKVerify] model=${modelName} failed: ${err.message}`);
+    }
+  }
+  // If verification completely fails, keep the original items unchanged
+  return reconcilingItems;
 }
 
 /* =========================================================
@@ -842,7 +1118,8 @@ function findAmountInCells(cells = []) {
 }
 
 const MONTH_PERIOD_RE = /^(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)[\s.\-_]*(\d{2,4})?\s*$/i;
-const MONTH_ABBR_MAP = { january: "Jan", february: "Feb", march: "Mar", april: "Apr", may: "May", june: "Jun", july: "Jul", august: "Aug", september: "Sep", october: "Oct", november: "Nov", december: "Dec" };
+const MONTH_ABBR_MAP = { january:"Jan",february:"Feb",march:"Mar",april:"Apr",may:"May",june:"Jun",july:"Jul",august:"Aug",september:"Sep",october:"Oct",november:"Nov",december:"Dec" };
+const MONTH_ABBRS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
 function normalizePeriodLabel(cell) {
   const s = String(cell || "").trim();
@@ -850,8 +1127,20 @@ function normalizePeriodLabel(cell) {
   if (!m) return s;
   const full = m[1].toLowerCase();
   const abbr = MONTH_ABBR_MAP[full] || (full[0].toUpperCase() + full.slice(1, 3));
-  const yr = m[2] ? String(m[2]).slice(-2) : "";
+  const yr = m[2] ? (m[2].length <= 2 ? `20${m[2]}` : m[2]) : "";
   return yr ? `${abbr} ${yr}` : abbr;
+}
+
+// Convert an Excel date serial number (e.g. 45292 = Jan 1 2025) to "Jan 2025".
+function excelSerialToMonthYear(serial) {
+  const n = Number(serial);
+  if (!Number.isFinite(n) || n < 40000 || n > 80000) return null;
+  const ms = (n - 25569) * 86400000;
+  const d = new Date(ms);
+  const abbr = MONTH_ABBRS[d.getUTCMonth()];
+  const year = d.getUTCFullYear();
+  if (!abbr || year < 2000 || year > 2099) return null;
+  return `${abbr} ${year}`;
 }
 
 function detectPeriodColumns(rawRows) {
@@ -859,9 +1148,16 @@ function detectPeriodColumns(rawRows) {
     const row = Array.isArray(rawRows[i]) ? rawRows[i] : [];
     const periods = [];
     for (let j = 0; j < row.length; j++) {
-      const cell = String(row[j] || "").trim();
-      if (MONTH_PERIOD_RE.test(cell)) {
-        periods.push({ label: normalizePeriodLabel(cell), colIdx: j });
+      const cell = row[j];
+      const cellStr = String(cell || "").trim();
+      if (MONTH_PERIOD_RE.test(cellStr)) {
+        periods.push({ label: normalizePeriodLabel(cellStr), colIdx: j });
+        continue;
+      }
+      // Excel sometimes stores month headers as numeric date serials (e.g. 45292 for Jan 2025).
+      const serialLabel = excelSerialToMonthYear(cell);
+      if (serialLabel) {
+        periods.push({ label: serialLabel, colIdx: j });
       }
     }
     if (periods.length >= 3) {
@@ -890,17 +1186,43 @@ function extractRowsFromWorkbook(buffer, fileName = "", contentType = "") {
     throw new Error(`Unable to parse workbook: ${error.message}`);
   }
 
-  const sheetName = workbook.SheetNames[0];
-  const sheet = sheetName ? workbook.Sheets[sheetName] : null;
-  if (!sheet) throw new Error("No worksheet found.");
+  if (!workbook.SheetNames.length) throw new Error("No worksheet found.");
 
-  const rawRows = XLSX.utils.sheet_to_json(sheet, {
-    header: 1,
-    defval: null,
-    blankrows: false,
-  });
+  // For multi-sheet workbooks (e.g. "Balance Sheet + Last 13 Months" tabs), prefer
+  // the sheet that has the most detected period columns so we always show the richest
+  // monthly data rather than falling back to a yearly-comparison sheet.
+  let bestRows = null;
+  let bestPeriodCount = -1;
 
-  return rawRows.filter((row) => Array.isArray(row) && row.some(hasCellValue));
+  for (const sName of workbook.SheetNames) {
+    const sheet = workbook.Sheets[sName];
+    if (!sheet) continue;
+    const sheetRows = XLSX.utils.sheet_to_json(sheet, {
+      header: 1,
+      defval: null,
+      blankrows: false,
+    }).filter((row) => Array.isArray(row) && row.some(hasCellValue));
+
+    const info = detectPeriodColumns(sheetRows);
+    const count = info ? info.periods.length : 0;
+    if (count > bestPeriodCount) {
+      bestPeriodCount = count;
+      bestRows = sheetRows;
+    }
+  }
+
+  // If no sheet had period columns, fall back to the first sheet.
+  if (!bestRows) {
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    if (!sheet) throw new Error("No worksheet found.");
+    bestRows = XLSX.utils.sheet_to_json(sheet, {
+      header: 1,
+      defval: null,
+      blankrows: false,
+    }).filter((row) => Array.isArray(row) && row.some(hasCellValue));
+  }
+
+  return bestRows;
 }
 
 function extractPdfLines(buffer) {
@@ -1640,6 +1962,19 @@ async function parseStoredReport(upload, forcedStatementType = null, { skipAI = 
         console.warn(
           `[ManualReportUpload] Balance Sheet normalization fallback for ${fileName}: ${error.message}`,
         );
+      }
+    }
+
+    // For multi-column Balance Sheets (e.g. "Last 13 Months"), use the last
+    // period's year as asOfDate so year-range filtering works correctly.
+    if (periodInfo && periodInfo.periods.length > 0) {
+      const dataLabels = periodInfo.periods
+        .map((p) => p.label)
+        .filter((l) => !/^total$/i.test(l.trim()));
+      const lastLabel = dataLabels[dataLabels.length - 1];
+      if (lastLabel) {
+        const ym = lastLabel.match(/\b(20\d{2})\b/);
+        if (ym) asOfDate = `${ym[1]}-12-31`;
       }
     }
 
@@ -3477,6 +3812,8 @@ module.exports = {
   getAllQMSUploadedReports,
   extractAndCacheReportAsOfDate,
   extractTaxDataFromBuffer,
+  extractTaxDataWithVerification,
+  validateTaxExtraction,
   clearTaxExtractCache,
   buildTaxReturnResponseData,
   syncTaxReturnFolder,

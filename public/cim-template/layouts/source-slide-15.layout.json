@@ -1,0 +1,1845 @@
+{
+  "schema": "openai.presentation.layout/v4",
+  "unit": "px",
+  "slide": {
+    "aid": "sl/7y1kre1w",
+    "id": "7y1kre1w",
+    "slide": 16,
+    "layoutId": "/ppt/slideLayouts/slideLayout1.xml",
+    "layoutName": "DEFAULT",
+    "masterLayoutId": "/ppt/slideMasters/slideMaster1.xml",
+    "frame": {
+      "left": 0,
+      "top": 0,
+      "width": 1280,
+      "height": 720
+    }
+  },
+  "theme": {
+    "colorSchemeName": "Office",
+    "colors": {
+      "accent1": "#4472C4",
+      "accent2": "#ED7D31",
+      "accent3": "#A5A5A5",
+      "accent4": "#FFC000",
+      "accent5": "#5B9BD5",
+      "accent6": "#70AD47",
+      "dk1": "#000000",
+      "lt1": "#FFFFFF",
+      "dk2": "#44546A",
+      "lt2": "#E7E6E6",
+      "hlink": "#0563C1",
+      "folHlink": "#954F72"
+    },
+    "fontScheme": {
+      "name": "Office",
+      "majorFont": {
+        "latinTypeface": "Calibri Light"
+      },
+      "minorFont": {
+        "latinTypeface": "Calibri"
+      }
+    },
+    "typefaces": [
+      "Calibri",
+      "Calibri Light"
+    ]
+  },
+  "inheritedLayers": [
+    {
+      "scope": "layout",
+      "id": "/ppt/slideLayouts/slideLayout1.xml",
+      "name": "DEFAULT",
+      "parentLayoutId": "/ppt/slideMasters/slideMaster1.xml",
+      "elements": []
+    },
+    {
+      "scope": "master",
+      "id": "/ppt/slideMasters/slideMaster1.xml",
+      "type": "master",
+      "elements": []
+    }
+  ],
+  "elements": [
+    {
+      "order": 1,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/yd0z6103",
+      "id": "2",
+      "name": "Shape 0",
+      "bbox": [
+        0,
+        0,
+        1279.68,
+        30.72
+      ],
+      "geometry": "rect",
+      "fillColor": "#8BC53D",
+      "lineColor": "#8BC53D",
+      "lineWidth": 1.33
+    },
+    {
+      "order": 2,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/rytsvu9k",
+      "id": "3",
+      "name": "Text 1",
+      "bbox": [
+        33.6,
+        7.68,
+        960,
+        19.2
+      ],
+      "geometry": "rect",
+      "text": "[COMPANY NAME]  |  MANAGEMENT TEAM",
+      "textPreview": "[COMPANY NAME]  |  MANAGEMENT TEAM",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[COMPANY NAME]  |  MANAGEMENT TEAM"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[COMPANY NAME]  |  MANAGEMENT TEAM",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "[COMPANY NAME]",
+              "fontSize": 10.67,
+              "typeface": "Calibri",
+              "color": "#6D6E71",
+              "bold": true
+            },
+            {
+              "index": 2,
+              "text": "  |  MANAGEMENT TEAM",
+              "fontSize": 10.67,
+              "typeface": "Calibri",
+              "color": "#6D6E71"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 3,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/g7adsji5",
+      "id": "4",
+      "name": "Text 2",
+      "bbox": [
+        1226.88,
+        7.68,
+        33.6,
+        19.2
+      ],
+      "geometry": "rect",
+      "text": "15",
+      "textPreview": "15",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "15"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "15",
+          "marginLeft": 0,
+          "indent": 0,
+          "resolvedTextStyle": {
+            "alignment": "right"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "15",
+              "fontSize": 10.67,
+              "typeface": "Calibri",
+              "color": "#6D6E71",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 4,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/9s36hcrm",
+      "id": "5",
+      "name": "Shape 3",
+      "bbox": [
+        33.6,
+        32.64,
+        1212.48,
+        0
+      ],
+      "geometry": "line",
+      "lineColor": "#EFEFF1",
+      "lineWidth": 1
+    },
+    {
+      "order": 5,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/y1kre1w7",
+      "id": "6",
+      "name": "Text 4",
+      "bbox": [
+        33.6,
+        40.32,
+        1212.48,
+        67.2
+      ],
+      "geometry": "rect",
+      "text": "[Company] is led by an experienced team with [X]+ years of combined industry expertise",
+      "textPreview": "[Company] is led by an experienced team with [X]+ years of combined industry expertise",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 2,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[Company] is led by an experienced team with [X]+ years of combined industry"
+          },
+          {
+            "index": 2,
+            "text": "expertise"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[Company] is led by an experienced team with [X]+ years of combined industry expertise",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "[Company] is led by an experienced team with [X]+ years of combined industry expertise",
+              "fontSize": 29.33,
+              "typeface": "Calibri",
+              "color": "#2F3033",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 6,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/rmhk3q5o",
+      "id": "7",
+      "name": "Text 5",
+      "bbox": [
+        33.6,
+        103.68,
+        1212.48,
+        33.6
+      ],
+      "geometry": "rect",
+      "text": "The management team has demonstrated the ability to [grow the business / build operational infrastructure / navigate complex markets]",
+      "textPreview": "The management team has demonstrated the ability to [grow the business / build operational infrastructure / navigate complex markets]",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "The management team has demonstrated the ability to [grow the business / build operational infrastructure / navigate complex markets]"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "The management team has demonstrated the ability to [grow the business / build operational infrastructure / navigate complex markets]",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "The management team has demonstrated the ability to [grow the business / build operational infrastructure / navigate complex markets]",
+              "fontSize": 16,
+              "typeface": "Calibri",
+              "color": "#476E2C"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 7,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/g3ex0nux",
+      "id": "8",
+      "name": "Shape 6",
+      "bbox": [
+        33.6,
+        158.4,
+        288,
+        508.8
+      ],
+      "geometry": "rect",
+      "fillColor": "#EFEFF1",
+      "lineColor": "#EFEFF1",
+      "lineWidth": 1.33
+    },
+    {
+      "order": 8,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/5o7qpg3e",
+      "id": "9",
+      "name": "Shape 7",
+      "bbox": [
+        48,
+        177.6,
+        259.2,
+        163.2
+      ],
+      "geometry": "rect",
+      "fillColor": "#EFEFF1",
+      "lineColor": "#CCCCCC",
+      "lineWidth": 1.33
+    },
+    {
+      "order": 9,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/5gbq1ory",
+      "id": "10",
+      "name": "Text 8",
+      "bbox": [
+        48,
+        177.6,
+        259.2,
+        163.2
+      ],
+      "geometry": "rect",
+      "text": "[Photo]",
+      "textPreview": "[Photo]",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[Photo]"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[Photo]",
+          "marginLeft": 0,
+          "indent": 0,
+          "resolvedTextStyle": {
+            "alignment": "center"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "[Photo]",
+              "fontSize": 13.33,
+              "typeface": "Calibri",
+              "color": "#8C8D90",
+              "italic": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 10,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/cvixczed",
+      "id": "11",
+      "name": "Text 9",
+      "bbox": [
+        45.12,
+        352.32,
+        266.88,
+        36.48
+      ],
+      "geometry": "rect",
+      "text": "[Full Name]",
+      "textPreview": "[Full Name]",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[Full Name]"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[Full Name]",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "[Full Name]",
+              "fontSize": 17.33,
+              "typeface": "Calibri",
+              "color": "#2F3033",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 11,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/nap4r65w",
+      "id": "12",
+      "name": "Text 10",
+      "bbox": [
+        45.12,
+        388.8,
+        266.88,
+        28.8
+      ],
+      "geometry": "rect",
+      "text": "[Title — CEO / President]",
+      "textPreview": "[Title — CEO / President]",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[Title — CEO / President]"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[Title — CEO / President]",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "[Title — CEO / President]",
+              "fontSize": 12.67,
+              "typeface": "Calibri",
+              "color": "#476E2C",
+              "italic": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 12,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/upwb2hwf",
+      "id": "13",
+      "name": "Text 11",
+      "bbox": [
+        45.12,
+        419.52,
+        266.88,
+        23.04
+      ],
+      "geometry": "rect",
+      "text": "[X]+ yrs experience",
+      "textPreview": "[X]+ yrs experience",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[X]+ yrs experience"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[X]+ yrs experience",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "[X]+ yrs experience",
+              "fontSize": 11.33,
+              "typeface": "Calibri",
+              "color": "#8C8D90"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 13,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/54zidony",
+      "id": "14",
+      "name": "Shape 12",
+      "bbox": [
+        45.12,
+        451.2,
+        264,
+        0
+      ],
+      "geometry": "line",
+      "lineColor": "#EFEFF1",
+      "lineWidth": 1.33
+    },
+    {
+      "order": 14,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/cj6tovah",
+      "id": "15",
+      "name": "Text 13",
+      "bbox": [
+        45.12,
+        463.68,
+        266.88,
+        189.12
+      ],
+      "geometry": "rect",
+      "text": "[Brief bio: prior roles, relevant expertise, key achievements at the Company]",
+      "textPreview": "[Brief bio: prior roles, relevant expertise, key achievements at the Company]",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 2,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[Brief bio: prior roles, relevant expertise, key"
+          },
+          {
+            "index": 2,
+            "text": "achievements at the Company]"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[Brief bio: prior roles, relevant expertise, key achievements at the Company]",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "[Brief bio: prior roles, relevant expertise, key achievements at the Company]",
+              "fontSize": 12,
+              "typeface": "Calibri",
+              "color": "#6D6E71"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 15,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/nyd0z610",
+      "id": "16",
+      "name": "Shape 14",
+      "bbox": [
+        342.72,
+        158.4,
+        288,
+        508.8
+      ],
+      "geometry": "rect",
+      "fillColor": "#EFEFF1",
+      "lineColor": "#EFEFF1",
+      "lineWidth": 1.33
+    },
+    {
+      "order": 16,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/udg7adsj",
+      "id": "17",
+      "name": "Shape 15",
+      "bbox": [
+        357.12,
+        177.6,
+        259.2,
+        163.2
+      ],
+      "geometry": "rect",
+      "fillColor": "#EFEFF1",
+      "lineColor": "#CCCCCC",
+      "lineWidth": 1.33
+    },
+    {
+      "order": 17,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/1032lszq",
+      "id": "18",
+      "name": "Text 16",
+      "bbox": [
+        357.12,
+        177.6,
+        259.2,
+        163.2
+      ],
+      "geometry": "rect",
+      "text": "[Photo]",
+      "textPreview": "[Photo]",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[Photo]"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[Photo]",
+          "marginLeft": 0,
+          "indent": 0,
+          "resolvedTextStyle": {
+            "alignment": "center"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "[Photo]",
+              "fontSize": 13.33,
+              "typeface": "Calibri",
+              "color": "#8C8D90",
+              "italic": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 18,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/cfa9w3m9",
+      "id": "19",
+      "name": "Text 17",
+      "bbox": [
+        354.24,
+        352.32,
+        266.88,
+        36.48
+      ],
+      "geometry": "rect",
+      "text": "[Full Name]",
+      "textPreview": "[Full Name]",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[Full Name]"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[Full Name]",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "[Full Name]",
+              "fontSize": 17.33,
+              "typeface": "Calibri",
+              "color": "#2F3033",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 19,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/obm58z25",
+      "id": "20",
+      "name": "Text 18",
+      "bbox": [
+        354.24,
+        388.8,
+        266.88,
+        28.8
+      ],
+      "geometry": "rect",
+      "text": "[Title — CFO / VP Finance]",
+      "textPreview": "[Title — CFO / VP Finance]",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[Title — CFO / VP Finance]"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[Title — CFO / VP Finance]",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "[Title — CFO / VP Finance]",
+              "fontSize": 12.67,
+              "typeface": "Calibri",
+              "color": "#476E2C",
+              "italic": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 20,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/hwfyxobm",
+      "id": "21",
+      "name": "Text 19",
+      "bbox": [
+        354.24,
+        419.52,
+        266.88,
+        23.04
+      ],
+      "geometry": "rect",
+      "text": "[X]+ yrs experience",
+      "textPreview": "[X]+ yrs experience",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[X]+ yrs experience"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[X]+ yrs experience",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "[X]+ yrs experience",
+              "fontSize": 11.33,
+              "typeface": "Calibri",
+              "color": "#8C8D90"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 21,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/65wjudg7",
+      "id": "22",
+      "name": "Shape 20",
+      "bbox": [
+        354.24,
+        451.2,
+        264,
+        0
+      ],
+      "geometry": "line",
+      "lineColor": "#EFEFF1",
+      "lineWidth": 1.33
+    },
+    {
+      "order": 22,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/zqtcj6to",
+      "id": "23",
+      "name": "Text 21",
+      "bbox": [
+        354.24,
+        463.68,
+        266.88,
+        189.12
+      ],
+      "geometry": "rect",
+      "text": "[Brief bio: prior roles, relevant expertise, key achievements at the Company]",
+      "textPreview": "[Brief bio: prior roles, relevant expertise, key achievements at the Company]",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 2,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[Brief bio: prior roles, relevant expertise, key"
+          },
+          {
+            "index": 2,
+            "text": "achievements at the Company]"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[Brief bio: prior roles, relevant expertise, key achievements at the Company]",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "[Brief bio: prior roles, relevant expertise, key achievements at the Company]",
+              "fontSize": 12,
+              "typeface": "Calibri",
+              "color": "#6D6E71"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 23,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/oza1gvy9",
+      "id": "24",
+      "name": "Shape 22",
+      "bbox": [
+        651.84,
+        158.4,
+        288,
+        508.8
+      ],
+      "geometry": "rect",
+      "fillColor": "#EFEFF1",
+      "lineColor": "#EFEFF1",
+      "lineWidth": 1.33
+    },
+    {
+      "order": 24,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/hk3q5o7q",
+      "id": "25",
+      "name": "Shape 23",
+      "bbox": [
+        666.24,
+        177.6,
+        259.2,
+        163.2
+      ],
+      "geometry": "rect",
+      "fillColor": "#EFEFF1",
+      "lineColor": "#CCCCCC",
+      "lineWidth": 1.33
+    },
+    {
+      "order": 25,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/6xkf6dcb",
+      "id": "26",
+      "name": "Text 24",
+      "bbox": [
+        666.24,
+        177.6,
+        259.2,
+        163.2
+      ],
+      "geometry": "rect",
+      "text": "[Photo]",
+      "textPreview": "[Photo]",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[Photo]"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[Photo]",
+          "marginLeft": 0,
+          "indent": 0,
+          "resolvedTextStyle": {
+            "alignment": "center"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "[Photo]",
+              "fontSize": 13.33,
+              "typeface": "Calibri",
+              "color": "#8C8D90",
+              "italic": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 26,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/zed8v6ps",
+      "id": "27",
+      "name": "Text 25",
+      "bbox": [
+        663.36,
+        352.32,
+        266.88,
+        36.48
+      ],
+      "geometry": "rect",
+      "text": "[Full Name]",
+      "textPreview": "[Full Name]",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[Full Name]"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[Full Name]",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "[Full Name]",
+              "fontSize": 17.33,
+              "typeface": "Calibri",
+              "color": "#2F3033",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 27,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/orytsvu9",
+      "id": "28",
+      "name": "Text 26",
+      "bbox": [
+        663.36,
+        388.8,
+        266.88,
+        28.8
+      ],
+      "geometry": "rect",
+      "text": "[Title — COO / VP Operations]",
+      "textPreview": "[Title — COO / VP Operations]",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[Title — COO / VP Operations]"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[Title — COO / VP Operations]",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "[Title — COO / VP Operations]",
+              "fontSize": 12.67,
+              "typeface": "Calibri",
+              "color": "#476E2C",
+              "italic": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 28,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/hcrmhk3q",
+      "id": "29",
+      "name": "Text 27",
+      "bbox": [
+        663.36,
+        419.52,
+        266.88,
+        23.04
+      ],
+      "geometry": "rect",
+      "text": "[X]+ yrs experience",
+      "textPreview": "[X]+ yrs experience",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[X]+ yrs experience"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[X]+ yrs experience",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "[X]+ yrs experience",
+              "fontSize": 11.33,
+              "typeface": "Calibri",
+              "color": "#8C8D90"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 29,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/72x4nap4",
+      "id": "30",
+      "name": "Shape 28",
+      "bbox": [
+        663.36,
+        451.2,
+        264,
+        0
+      ],
+      "geometry": "line",
+      "lineColor": "#EFEFF1",
+      "lineWidth": 1.33
+    },
+    {
+      "order": 30,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/ih4byhgn",
+      "id": "31",
+      "name": "Text 29",
+      "bbox": [
+        663.36,
+        463.68,
+        266.88,
+        189.12
+      ],
+      "geometry": "rect",
+      "text": "[Brief bio: prior roles, relevant expertise, key achievements at the Company]",
+      "textPreview": "[Brief bio: prior roles, relevant expertise, key achievements at the Company]",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 2,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[Brief bio: prior roles, relevant expertise, key"
+          },
+          {
+            "index": 2,
+            "text": "achievements at the Company]"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[Brief bio: prior roles, relevant expertise, key achievements at the Company]",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "[Brief bio: prior roles, relevant expertise, key achievements at the Company]",
+              "fontSize": 12,
+              "typeface": "Calibri",
+              "color": "#6D6E71"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 31,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/p8nqxs72",
+      "id": "32",
+      "name": "Shape 30",
+      "bbox": [
+        960.96,
+        158.4,
+        288,
+        508.8
+      ],
+      "geometry": "rect",
+      "fillColor": "#EFEFF1",
+      "lineColor": "#EFEFF1",
+      "lineWidth": 1.33
+    },
+    {
+      "order": 32,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/0nuxc3yl",
+      "id": "33",
+      "name": "Shape 31",
+      "bbox": [
+        975.36,
+        177.6,
+        259.2,
+        163.2
+      ],
+      "geometry": "rect",
+      "fillColor": "#EFEFF1",
+      "lineColor": "#CCCCCC",
+      "lineWidth": 1.33
+    },
+    {
+      "order": 33,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/7ed8bat4",
+      "id": "34",
+      "name": "Text 32",
+      "bbox": [
+        975.36,
+        177.6,
+        259.2,
+        163.2
+      ],
+      "geometry": "rect",
+      "text": "[Photo]",
+      "textPreview": "[Photo]",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[Photo]"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[Photo]",
+          "marginLeft": 0,
+          "indent": 0,
+          "resolvedTextStyle": {
+            "alignment": "center"
+          },
+          "runs": [
+            {
+              "index": 1,
+              "text": "[Photo]",
+              "fontSize": 13.33,
+              "typeface": "Calibri",
+              "color": "#8C8D90",
+              "italic": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 34,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/itgfmlkj",
+      "id": "35",
+      "name": "Text 33",
+      "bbox": [
+        972.48,
+        352.32,
+        266.88,
+        36.48
+      ],
+      "geometry": "rect",
+      "text": "[Full Name]",
+      "textPreview": "[Full Name]",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[Full Name]"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[Full Name]",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "[Full Name]",
+              "fontSize": 17.33,
+              "typeface": "Calibri",
+              "color": "#2F3033",
+              "bold": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 35,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/pkzupwb2",
+      "id": "36",
+      "name": "Text 34",
+      "bbox": [
+        972.48,
+        388.8,
+        266.88,
+        28.8
+      ],
+      "geometry": "rect",
+      "text": "[Title — CRO / VP Sales]",
+      "textPreview": "[Title — CRO / VP Sales]",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[Title — CRO / VP Sales]"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[Title — CRO / VP Sales]",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "[Title — CRO / VP Sales]",
+              "fontSize": 12.67,
+              "typeface": "Calibri",
+              "color": "#476E2C",
+              "italic": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 36,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/0z61032l",
+      "id": "37",
+      "name": "Text 35",
+      "bbox": [
+        972.48,
+        419.52,
+        266.88,
+        23.04
+      ],
+      "geometry": "rect",
+      "text": "[X]+ yrs experience",
+      "textPreview": "[X]+ yrs experience",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[X]+ yrs experience"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[X]+ yrs experience",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "[X]+ yrs experience",
+              "fontSize": 11.33,
+              "typeface": "Calibri",
+              "color": "#8C8D90"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 37,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/7qpg3ex0",
+      "id": "38",
+      "name": "Shape 36",
+      "bbox": [
+        972.48,
+        451.2,
+        264,
+        0
+      ],
+      "geometry": "line",
+      "lineColor": "#EFEFF1",
+      "lineWidth": 1.33
+    },
+    {
+      "order": 38,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/i5sneloj",
+      "id": "39",
+      "name": "Text 37",
+      "bbox": [
+        972.48,
+        463.68,
+        266.88,
+        189.12
+      ],
+      "geometry": "rect",
+      "text": "[Brief bio: prior roles, relevant expertise, key achievements at the Company]",
+      "textPreview": "[Brief bio: prior roles, relevant expertise, key achievements at the Company]",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 2,
+        "lines": [
+          {
+            "index": 1,
+            "text": "[Brief bio: prior roles, relevant expertise, key"
+          },
+          {
+            "index": 2,
+            "text": "achievements at the Company]"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "[Brief bio: prior roles, relevant expertise, key achievements at the Company]",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "[Brief bio: prior roles, relevant expertise, key achievements at the Company]",
+              "fontSize": 12,
+              "typeface": "Calibri",
+              "color": "#6D6E71"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "order": 39,
+      "kind": "shape",
+      "scope": "slide",
+      "aid": "sh/ahoza1gv",
+      "id": "40",
+      "name": "Text 38",
+      "bbox": [
+        33.6,
+        693.12,
+        1212.48,
+        21.12
+      ],
+      "geometry": "rect",
+      "text": "Source: [Source reference]",
+      "textPreview": "Source: [Source reference]",
+      "resolvedFontSize": 24,
+      "resolvedTextStyle": {
+        "anchor": 2,
+        "fontSize": 24,
+        "typeface": "Calibri",
+        "color": "tx1",
+        "alignment": "left",
+        "verticalAlignment": "middle",
+        "wrap": "square",
+        "insets": {
+          "top": 0,
+          "right": 0,
+          "bottom": 0,
+          "left": 0
+        }
+      },
+      "textLayout": {
+        "lineCount": 1,
+        "lines": [
+          {
+            "index": 1,
+            "text": "Source: [Source reference]"
+          }
+        ]
+      },
+      "paragraphs": [
+        {
+          "index": 1,
+          "text": "Source: [Source reference]",
+          "marginLeft": 0,
+          "indent": 0,
+          "runs": [
+            {
+              "index": 1,
+              "text": "Source: [Source reference]",
+              "fontSize": 10,
+              "typeface": "Calibri",
+              "color": "#8C8D90"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "composeRuns": []
+}

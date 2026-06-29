@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState } from "react";
+import { useRef, useEffect, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { cn, formatCurrency } from "../../../lib/utils";
 
@@ -109,6 +109,7 @@ export default function BalanceSheetQBSummary({
   sourceLabel = null,
   noDataText = "No data available for the selected period.",
   isMonthly = false,
+  isPreview = false,
 }) {
   const hasColumns = Array.isArray(columns?.yearCols) && columns.yearCols.length > 0;
   const totalColCount = hasColumns ? columns.yearCols.length + 1 : 2;
@@ -141,6 +142,58 @@ export default function BalanceSheetQBSummary({
           ? "Generated from QuickBooks"
           : null);
 
+  const tableEl = (
+    <div className="overflow-x-auto w-full">
+      <table ref={tableRef} className="min-w-full border-collapse">
+        <thead ref={theadRef} style={{ position: "relative", zIndex: 20 }}>
+          <tr className="text-text-muted">
+            <th className="sticky top-0 left-0 z-30 bg-bg-card pb-3 pt-2 px-4 text-left text-[12px] font-medium whitespace-nowrap uppercase tracking-wider min-w-[400px] border-b-2 border-text-primary">
+              Account
+            </th>
+            {hasColumns ? (
+              columns.yearCols.map((col) => (
+                <th key={col.key} className="sticky top-0 z-20 bg-bg-card pb-3 pt-2 px-4 text-right text-[12px] font-medium whitespace-nowrap uppercase tracking-wider min-w-[110px] border-b-2 border-text-primary">
+                  {col.label}
+                </th>
+              ))
+            ) : (
+              <th className="sticky top-0 z-20 bg-bg-card pb-3 pt-2 px-4 text-right text-[12px] font-medium whitespace-nowrap uppercase tracking-wider border-b-2 border-text-primary">
+                Total
+              </th>
+            )}
+          </tr>
+        </thead>
+        <tbody>
+          {data.map((row, index) => (
+            <QBRow key={row.id || index} line={row} depth={0} columns={hasColumns ? columns : undefined} />
+          ))}
+          {data.length === 0 && (
+            <tr>
+              <td colSpan={totalColCount} className="py-20 text-center text-text-muted italic">
+                {noDataText}
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+
+  // Compact in-page view — no document wrapper, header inline
+  if (isPreview) {
+    return (
+      <div className="font-inter">
+        <div className="mb-4 flex flex-col items-center text-center">
+          <span className="text-[15px] font-bold text-text-primary">{entityName}</span>
+          <span className="text-[13px] font-medium text-text-secondary mt-0.5">{title}</span>
+          {subtitle && <span className="text-[12px] text-text-muted mt-0.5">{subtitle}</span>}
+        </div>
+        {tableEl}
+      </div>
+    );
+  }
+
+  // Document / export view — full paper layout
   return (
     <div className="bg-bg-page/50 p-4 lg:p-8 font-inter">
       <div className="card-base p-6 min-h-[800px] rounded-sm shadow-xl">
@@ -156,14 +209,12 @@ export default function BalanceSheetQBSummary({
             </div>
           )}
           {resolvedSourceLabel ? (
-            <div
-              className={cn(
-                "mt-3 rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-wide",
-                source === "MANUAL_UPLOAD"
-                  ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                  : "border-border bg-bg-page text-text-muted",
-              )}
-            >
+            <div className={cn(
+              "mt-3 rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-wide",
+              source === "MANUAL_UPLOAD"
+                ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                : "border-border bg-bg-page text-text-muted",
+            )}>
               {resolvedSourceLabel}
             </div>
           ) : null}
@@ -204,6 +255,7 @@ export default function BalanceSheetQBSummary({
             </tbody>
           </table>
         </div>
+        {tableEl}
       </div>
     </div>
   );

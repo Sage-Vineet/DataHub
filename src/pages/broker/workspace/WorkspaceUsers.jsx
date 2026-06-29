@@ -44,6 +44,10 @@ function normalizeUser(u) {
     companyIds, assignedCompanies,
     company: u.company_name || assignedCompanies[0]?.name || 'Unassigned',
     joinedAt: u.created_at, avatar: initials(u.name || ''),
+    // direct_company_ids: only user_companies rows — no historical broker data or invite expansion.
+    // Used to determine if a broker is explicitly assigned to a company vs appearing via team invites.
+    direct_company_ids: u.direct_company_ids || [],
+    is_team_invite: u.is_team_invite || false,
   };
 }
 
@@ -729,10 +733,17 @@ export default function WorkspaceUsers() {
       const thisCompany = companiesRes.find((c) => String(c.id) === String(clientId));
       const contactEmail = (thisCompany?.contact_email || '').trim().toLowerCase();
 
-      // Filter to users belonging to this company (including broker team).
-      // Also include the company's primary contact by email — catches cases where
-      // the contact user's company_id association wasn't saved correctly.
+      // Filter to users belonging to this company.
+      // For broker-role users we use direct_company_ids (only explicit user_companies rows)
+      // so that invite-only brokers or those who appear via historical folder/doc data don't
+      // show up on a company's Deal Team page until the broker explicitly adds them.
+      // For client/buyer users the full companyIds list is used as before.
       const companyUsers = normalized.filter((u) => {
+        const isBrokerRole = classifyUser(u) === 'broker';
+        if (isBrokerRole) {
+          const directIds = u.direct_company_ids || [];
+          return directIds.some((id) => String(id) === String(clientId));
+        }
         const userCompanyIds = (u.companyIds && u.companyIds.length > 0) ? u.companyIds : (u.companyId ? [u.companyId] : []);
         const matchesCompany = userCompanyIds.some((id) => String(id) === String(clientId));
         const isContact = contactEmail && (u.email || '').trim().toLowerCase() === contactEmail;
@@ -788,7 +799,7 @@ export default function WorkspaceUsers() {
     try {
       const dbRole = dbRoleMap[addContext] || 'buyer';
       const payload = {
-        name: form.name.trim(), email: form.email.trim(),
+        name: form.name.trim(), email: form.email.trim().toLowerCase(),
         phone: form.phone?.trim() || null, password: form.password,
         role: dbRole, sub_role: form.sub_role,
         designation: form.designation?.trim() || null,
@@ -806,7 +817,7 @@ export default function WorkspaceUsers() {
         for (const m of form.teamMembers) {
           try {
             await createUserRequest({
-              name: m.name.trim(), email: m.email.trim(),
+              name: m.name.trim(), email: m.email.trim().toLowerCase(),
               phone: m.phone?.trim() || null, password: m.password,
               role: dbRole, sub_role: m.sub_role,
               designation: m.designation?.trim() || null,
@@ -843,7 +854,7 @@ export default function WorkspaceUsers() {
       const isDuplicate = /duplicate|already exists|unique constraint|email.*taken/i.test(String(err?.message || ''));
       if (isDuplicate) {
         try {
-          const existing = await findUserByEmailRequest(form.email.trim());
+          const existing = await findUserByEmailRequest(form.email.trim().toLowerCase());
           if (existing?.id) {
             const compatibleSubRoles = {
               broker:         BROKER_SUB_ROLES,
@@ -910,7 +921,7 @@ export default function WorkspaceUsers() {
     setFormError('');
     try {
       const payload = {
-        name: form.name.trim(), email: form.email.trim(),
+        name: form.name.trim(), email: form.email.trim().toLowerCase(),
         phone: form.phone?.trim() || null,
         sub_role: form.sub_role,
         designation: form.designation?.trim() || null,

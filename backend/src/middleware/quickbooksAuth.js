@@ -140,6 +140,7 @@ function isQuickBooksRoute(pathname = "") {
     "/qb-bank-accounts",
     "/qb-bank-activity",
     "/qb-one-bank-activity",
+    "/bank-reconciliation-line-items",
     "/extract-bank-pdf-records",
     "/quickbooks-pl",
     "/tax-data",

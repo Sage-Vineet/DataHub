@@ -51,9 +51,9 @@ CREATE TABLE IF NOT EXISTS companies (
   status company_status NOT NULL DEFAULT 'active',
   since date,
   logo text,
-  contact_name text NOT NULL,
-  contact_email text NOT NULL,
-  contact_phone text NOT NULL,
+  contact_name text,
+  contact_email text,
+  contact_phone text,
   data_source_type text,
   quickbooks_connected boolean NOT NULL DEFAULT false,
   manual_upload_active boolean NOT NULL DEFAULT false,
@@ -763,3 +763,15 @@ CREATE INDEX IF NOT EXISTS idx_coa_classification_history_account
   ON coa_classification_history(account_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_coa_classification_history_version
   ON coa_classification_history(version_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS workspace_page_state (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  page_key text NOT NULL,
+  payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_workspace_page_state_company_page UNIQUE (company_id, page_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_workspace_page_state_company
+  ON workspace_page_state(company_id, updated_at DESC);

@@ -168,7 +168,8 @@ function WorkspaceSidebar({ company, onClose }) {
         { label: "Tax Reconciliation", icon: FileCheck, to: `${basePath}/tax-reconciliation` },
       ],
     },
-    { label: "Connections", icon: Link2, to: `${basePath}/connections` },
+    { label: "Connections",         icon: Link2,        to: `${basePath}/connections` },
+    { label: "CIM Prep",            icon: FileText,     to: `${basePath}/cim-prep` },
   ];
 
   const companyMessageCount = notifications.filter((item) => String(item.companyId) === String(clientId)).length;

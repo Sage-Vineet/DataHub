@@ -97,6 +97,7 @@ export default function CashflowSummary({
   title,
   subtitle,
   entityName = "Company",
+  isPreview = false,
   createdOn = new Date().toLocaleDateString("en-US", {
     month: "long",
     day: "numeric",
@@ -123,6 +124,57 @@ export default function CashflowSummary({
     mainEl.addEventListener("scroll", onScroll, { passive: true });
     return () => mainEl.removeEventListener("scroll", onScroll);
   }, []);
+  const tableEl = (
+    <div className="overflow-x-auto w-full">
+      <table ref={tableRef} className="min-w-full border-collapse">
+        <thead ref={theadRef} style={{ position: "relative", zIndex: 20 }}>
+          <tr className="border-b-2 border-text-primary">
+            <th className="sticky top-0 left-0 z-30 bg-bg-card pb-3 pt-2 px-4 text-left text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider min-w-[320px]">
+              Cash Flow Classification
+            </th>
+            {hasColumns ? (
+              columns.yearCols.map((col) => (
+                <th key={col.key} className="sticky top-0 z-20 bg-bg-card pb-3 pt-2 px-3 text-right text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider min-w-[90px]">
+                  {col.label}
+                </th>
+              ))
+            ) : (
+              <th className="sticky top-0 z-20 bg-bg-card pb-3 pt-2 px-4 text-right text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider">
+                Amount (USD)
+              </th>
+            )}
+          </tr>
+        </thead>
+        <tbody>
+          {Array.isArray(data) && data.length > 0 ? (
+            data.map((category, index) => (
+              <CashflowRow key={category.id || `cashflow-category-${index}`} line={category} depth={0} columns={columns} />
+            ))
+          ) : (
+            <tr>
+              <td colSpan={hasColumns ? columns.yearCols.length + 1 : 2} className="py-20 text-center text-text-muted italic">
+                No report data found for this period.
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+
+  if (isPreview) {
+    return (
+      <div className="font-inter text-text-primary">
+        <div className="mb-4 flex flex-col items-center text-center">
+          <span className="text-[15px] font-bold text-text-primary">{entityName}</span>
+          <span className="text-[13px] font-medium text-text-secondary mt-0.5">{title}</span>
+          {subtitle && <span className="text-[12px] text-text-muted mt-0.5">{subtitle}</span>}
+        </div>
+        {tableEl}
+      </div>
+    );
+  }
+
   return (
     <div className="bg-bg-page/50 p-4 lg:p-8 font-inter text-text-primary">
       <div className="card-base p-6 min-h-[1000px] rounded-sm">
@@ -136,43 +188,7 @@ export default function CashflowSummary({
             <span>{subtitle}</span>
           </div>
         </div>
-
-        <div className="overflow-x-auto w-full">
-          <table ref={tableRef} className="min-w-max border-collapse">
-            <thead ref={theadRef} style={{ position: "relative", zIndex: 20 }}>
-              <tr className="border-b-2 border-text-primary">
-                <th className="sticky top-0 left-0 z-30 bg-bg-card pb-3 pt-2 px-4 text-left text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider min-w-[320px]">
-                  Cash Flow Classification
-                </th>
-                {hasColumns ? (
-                  columns.yearCols.map((col) => (
-                    <th key={col.key} className="sticky top-0 z-20 bg-bg-card pb-3 pt-2 px-3 text-right text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider min-w-[90px]">
-                      {col.label}
-                    </th>
-                  ))
-                ) : (
-                  <th className="sticky top-0 z-20 bg-bg-card pb-3 pt-2 px-4 text-right text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider">
-                    Amount (USD)
-                  </th>
-                )}
-              </tr>
-            </thead>
-            <tbody>
-              {Array.isArray(data) && data.length > 0 ? (
-                data.map((category, index) => (
-                  <CashflowRow key={category.id || `cashflow-category-${index}`} line={category} depth={0} columns={columns} />
-                ))
-              ) : (
-                <tr>
-                  <td colSpan={hasColumns ? columns.yearCols.length + 1 : 2} className="py-20 text-center text-text-muted italic">
-                    No report data found for this period.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-
+        {tableEl}
         <div className="mt-16 pt-8 border-t border-border flex flex-col items-center gap-4">
           <div className="flex items-center gap-8">
             <div className="flex flex-col items-center">

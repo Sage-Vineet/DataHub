@@ -18,6 +18,7 @@ function BalanceSheetReport({
   selectedMonths = [],
   isMonthly = false,
 }) {
+  // Forward isPreview to sub-components so they skip the document-style wrapper in-page
   const resolvedEntityName = entityName || clientName || "Company";
   const periodText = startDate === "1970-01-01" ? "All Dates" : `${startDate || "N/A"} to ${endDate || "N/A"}`;
   const summaryRows = Array.isArray(data) ? data : (Array.isArray(data?.rows) ? data.rows : []);
@@ -47,6 +48,7 @@ function BalanceSheetReport({
           entityName={resolvedEntityName}
           selectedMonths={selectedMonths}
           isMonthly={isMonthly}
+          isPreview={isPreview}
         />
       );
     }
@@ -62,6 +64,7 @@ function BalanceSheetReport({
           subtitle={summarySubtitle}
           entityName={resolvedEntityName}
           isMonthly={isMonthly}
+          isPreview={isPreview}
         />
       );
     }
@@ -80,6 +83,7 @@ function BalanceSheetReport({
         entityName={resolvedEntityName}
         createdOn={createdOn}
         isMonthly={isMonthly}
+        isPreview={isPreview}
       />
     );
   }
@@ -96,6 +100,7 @@ function BalanceSheetReport({
       sourceLabel={sourceLabel}
       noDataText={noDataText}
       isMonthly={isMonthly}
+      isPreview={isPreview}
     />
   );
 }

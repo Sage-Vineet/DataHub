@@ -11,6 +11,7 @@ import {
 } from "../lib/api";
 import { normalizeAccountingMethod } from "../lib/report-filters";
 import { parseSummaryReport } from "../lib/report-parsers";
+import { fetchQBVendorBreakdown, attachVendorsToRows } from "./qbGlVendorService";
 
 
 /**
@@ -20,7 +21,21 @@ import { parseSummaryReport } from "../lib/report-parsers";
  * 2. YTD for Current Year (e.g., 2025 YTD)
  * 3. YTD for Previous Year (e.g., 2024 YTD) for comparison
  */
-function getPNLComparativePeriods(numYears = 4) {
+function getPNLComparativePeriods(numYears = 4, startYear = null, endYear = null) {
+  // User-selected year range: generate one full-year period per year in [startYear, endYear].
+  if (startYear && endYear) {
+    const periods = [];
+    for (let y = Number(startYear); y <= Number(endYear); y++) {
+      const now = new Date();
+      const isCurrentYear = y === now.getFullYear();
+      const endStr = isCurrentYear
+        ? `${y}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`
+        : `${y}-12-31`;
+      periods.push({ key: `y${y}`, label: `FY ${y}${isCurrentYear ? " YTD" : ""}`, start: `${y}-01-01`, end: endStr });
+    }
+    return periods;
+  }
+
   const now = new Date();
   const currentYear = now.getFullYear();
   const currentMonth = now.getMonth();
@@ -159,6 +174,132 @@ function normalizeKey(name) {
   return PNL_SECTION_SYNONYMS[basic] || basic;
 }
 
+// Account name patterns (normalized) that belong in "Other Income", not operating "Income".
+const OTHER_INCOME_PATTERNS = [
+  "interest income",
+  "interest earned",
+  "interest revenue",
+  "dividend income",
+  "other interest income",
+];
+
+// Top-level calculated rows that must decrease when operating Income decreases.
+// "Net Income" is intentionally excluded — it stays the same once Other Income is added.
+const INCOME_DEPENDENT_ROWS = new Set([
+  "gross profit",
+  "net ordinary income",
+  "net operating income",
+]);
+
+function isOtherIncomeItem(name) {
+  const n = normalizeName(name);
+  return OTHER_INCOME_PATTERNS.some(p => n === p || n.includes(p));
+}
+
+/**
+ * Moves accounts like "Interest Income" out of the operating "Income" section
+ * into a separate "Other Income" section, adjusting Gross Profit and
+ * Net Operating Income accordingly.  Safe to call on any row tree —
+ * no-op if nothing matches.
+ */
+function reclassifyOtherIncome(rows) {
+  if (!Array.isArray(rows) || !rows.length) return rows;
+
+  const incomeIdx = rows.findIndex(r => normalizeKey(r.name) === "income");
+  if (incomeIdx === -1) return rows;
+
+  const incomeSection = rows[incomeIdx];
+  const children = incomeSection.children || [];
+
+  const toMove = children.filter(
+    c => c.type !== "total" && c.type !== "header" && isOtherIncomeItem(c.name),
+  );
+  if (!toMove.length) return rows;
+
+  const isMultiCol = toMove.some(item => item.amounts && typeof item.amounts === "object");
+
+  let deltaScalar = 0;
+  let deltaMap = null;
+
+  if (isMultiCol) {
+    deltaMap = {};
+    for (const item of toMove) {
+      if (item.amounts) {
+        for (const [k, v] of Object.entries(item.amounts)) {
+          deltaMap[k] = (deltaMap[k] || 0) + (Number(v) || 0);
+        }
+      }
+    }
+    deltaScalar = Object.values(deltaMap).reduce((s, v) => s + v, 0);
+  } else {
+    deltaScalar = toMove.reduce((s, item) => s + (Number(item.amount) || 0), 0);
+  }
+
+  if (!deltaScalar) return rows;
+
+  function applyDelta(node, sign) {
+    if (isMultiCol && deltaMap) {
+      const newAmounts = {};
+      const base = node.amounts || {};
+      for (const k of new Set([...Object.keys(base), ...Object.keys(deltaMap)])) {
+        newAmounts[k] = (Number(base[k]) || 0) + sign * (deltaMap[k] || 0);
+      }
+      return { ...node, amount: (Number(node.amount) || 0) + sign * deltaScalar, amounts: newAmounts };
+    }
+    return { ...node, amount: (Number(node.amount) || 0) + sign * deltaScalar };
+  }
+
+  const sub = node => applyDelta(node, -1);
+  const add = node => applyDelta(node, +1);
+
+  // Remove moved items from Income, adjust its total children and section total.
+  const updatedIncomeChildren = children
+    .filter(c => !toMove.includes(c))
+    .map(c => (c.type === "total" ? sub(c) : c));
+  const updatedIncomeSection = sub({ ...incomeSection, children: updatedIncomeChildren });
+
+  // Update top-level rows.
+  let newRows = rows.map((row, idx) => {
+    if (idx === incomeIdx) return updatedIncomeSection;
+    if (INCOME_DEPENDENT_ROWS.has(normalizeName(row.name))) return sub(row);
+    return row;
+  });
+
+  const movedFields = isMultiCol && deltaMap
+    ? { amount: deltaScalar, amounts: { ...deltaMap } }
+    : { amount: deltaScalar };
+
+  const otherIncomeIdx = newRows.findIndex(r => normalizeKey(r.name) === "other income");
+
+  if (otherIncomeIdx !== -1) {
+    const existing = newRows[otherIncomeIdx];
+    const existingChildren = existing.children || [];
+    const newChildren = [
+      ...existingChildren.filter(c => c.type !== "total"),
+      ...toMove,
+      ...existingChildren.filter(c => c.type === "total").map(add),
+    ];
+    newRows[otherIncomeIdx] = add({ ...existing, children: newChildren });
+  } else {
+    const totalRow = { id: "oi-total", name: "Total Other Income", type: "total", ...movedFields };
+    const otherIncomeSection = {
+      id: "oi-section",
+      name: "Other Income",
+      type: "header",
+      ...movedFields,
+      children: [...toMove, totalRow],
+    };
+    const netIncomeIdx = newRows.findIndex(r => normalizeName(r.name) === "net income");
+    if (netIncomeIdx !== -1) {
+      newRows = [...newRows.slice(0, netIncomeIdx), otherIncomeSection, ...newRows.slice(netIncomeIdx)];
+    } else {
+      newRows.push(otherIncomeSection);
+    }
+  }
+
+  return newRows;
+}
+
 // Union-merges tree nodes from N files into one tree.
 // Every row that exists in ANY file appears in the output.
 // amounts[fileKey] = value from that file (0 if not present).
@@ -211,12 +352,32 @@ function mergeFileNodes(nodeArraysByFile, fileKeys) {
 }
 
 function mergePNLPeriods(periodResults, periods) {
-  // Find the current-year YTD period (the one without _ytd suffix that's most recent)
-  const currentYearKey = periods
-    .filter((p) => !p.key.includes("_ytd"))
-    .pop()?.key;
-  const masterIndex = periods.findIndex((p) => p.key === currentYearKey);
-  const masterRows = periodResults[masterIndex] || periodResults[periodResults.length - 1] || [];
+  // Build a union tree from ALL period results so accounts that had no
+  // transactions in some periods (and were therefore omitted by QB from those
+  // monthly responses) still appear in the merged output with 0 for those periods.
+  function mergeInto(dest, src) {
+    for (const srcNode of (src || [])) {
+      const norm = normalizeName(srcNode.name);
+      if (!norm) continue;
+      const existing = dest.find((n) => normalizeName(n.name) === norm);
+      if (existing) {
+        if (srcNode.children?.length) {
+          if (!existing.children) existing.children = [];
+          mergeInto(existing.children, srcNode.children);
+        }
+      } else {
+        dest.push({
+          ...srcNode,
+          children: srcNode.children ? srcNode.children.map((c) => ({ ...c })) : undefined,
+        });
+      }
+    }
+  }
+
+  const masterRows = [];
+  for (const rows of periodResults) {
+    mergeInto(masterRows, rows || []);
+  }
 
   if (masterRows.length === 0) return [];
 
@@ -317,7 +478,7 @@ export async function getProfitAndLoss(
     options?.sourceMode || "quickbooks",
     options,
   );
-  return rows;
+  return reclassifyOtherIncome(rows);
 }
 
 function pnlFileYear(file) {
@@ -329,6 +490,12 @@ function pnlFileYear(file) {
   return m ? parseInt(m[1], 10) : 0;
 }
 
+// Expand 2-digit stored labels like "Jan 25" → "Jan 2025" for already-stored DB records.
+function expandPeriodLabel(label) {
+  const m = String(label || "").match(/^([A-Za-z]+)\s+(\d{2})$/);
+  return m ? `${m[1]} 20${m[2]}` : label;
+}
+
 function pnlFileLabel(file) {
   const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   const dateStr = file?.data?.asOfDate || file?.data?.periodEnd;
@@ -338,7 +505,7 @@ function pnlFileLabel(file) {
       const year = parseInt(parts[0], 10);
       const month = parseInt(parts[1], 10) - 1;
       if (year >= 2000 && month >= 0 && month <= 11) {
-        return `${monthNames[month]} ${String(year).slice(-2)}`;
+        return `${monthNames[month]} ${year}`;
       }
     }
   }
@@ -354,7 +521,7 @@ function buildPNLFromPeriodColumns(sortedFiles) {
 
     if (periods.length > 0) {
       // File has monthly columns — expand one column per period
-      periods.forEach((label, i) => allCols.push({ key: `p${startIdx + i}`, label }));
+      periods.forEach((label, i) => allCols.push({ key: `p${startIdx + i}`, label: expandPeriodLabel(label) }));
       const nameMap = new Map();
       const visit = (items) => {
         if (!Array.isArray(items)) return;
@@ -414,15 +581,51 @@ function buildPNLFromPeriodColumns(sortedFiles) {
     });
 
   return {
-    rows: enrich(unionStructure),
+    rows: reclassifyOtherIncome(enrich(unionStructure)),
     columns: { yearCols: allCols, ytdComparison: null },
   };
 }
 
-async function buildPNLMultiFileDetail(sourceMode = "manual_upload") {
+// Collapse a node's per-period colAmounts to a single annual value so that
+// files with monthly columns can appear as one "FY YYYY" column in Year mode.
+function collapseNodeToAnnual(node, periods) {
+  const totalIdx = Array.isArray(periods)
+    ? periods.findIndex((p) => /^total$/i.test(String(p).trim()))
+    : -1;
+  const amount =
+    node.amount != null && node.amount !== 0
+      ? node.amount
+      : Array.isArray(node.colAmounts) && node.colAmounts.length
+        ? totalIdx >= 0
+          ? (node.colAmounts[totalIdx] || 0)
+          : node.colAmounts.reduce((s, v) => s + (Number(v) || 0), 0)
+        : 0;
+  return {
+    ...node,
+    amount,
+    children: node.children
+      ? node.children.map((c) => collapseNodeToAnnual(c, periods))
+      : undefined,
+  };
+}
+
+async function buildPNLMultiFileDetail(sourceMode = "manual_upload", options = {}) {
   const fetchFn = sourceMode === "quickbooks_manual" ? getAllQMSUploadedReports : getAllManualUploadedReports;
   const result = await fetchFn("profit_and_loss");
-  const files = (result?.files || []).filter((f) => f.data?.rows?.length);
+  let files = (result?.files || []).filter((f) => f.data?.rows?.length);
+
+  // Year range filtering
+  const { startYear, endYear, yearMode } = options;
+  if (startYear || endYear) {
+    files = files.filter((f) => {
+      const y = pnlFileYear(f);
+      if (!y) return true;
+      if (startYear && y < Number(startYear)) return false;
+      if (endYear && y > Number(endYear)) return false;
+      return true;
+    });
+  }
+
   if (!files.length) return { rows: [], columns: { yearCols: [], ytdComparison: null } };
 
   // Sort files oldest → newest
@@ -433,19 +636,26 @@ async function buildPNLMultiFileDetail(sourceMode = "manual_upload") {
     return new Date(a.updatedAt || 0) - new Date(b.updatedAt || 0);
   });
 
-  // If files have monthly period columns, expand one column per period (exact file layout)
-  if (sortedFiles.some((f) => f.data?.periods?.length > 0)) {
+  // yearMode: one "FY YYYY" column per file — skip period expansion.
+  // Otherwise: if any file has monthly columns, expand them all.
+  if (!yearMode && sortedFiles.some((f) => f.data?.periods?.length > 0)) {
     return buildPNLFromPeriodColumns(sortedFiles);
   }
 
-  // One column per file — union all rows so no data is missing
-  const filePeriods = sortedFiles.map((f, i) => ({
-    key: `f${i}`,
-    label: pnlFileLabel(f),
-    rows: f.data.rows,
-  }));
+  // One column per file — collapse monthly colAmounts to annual totals when yearMode.
+  const filePeriods = sortedFiles.map((f, i) => {
+    const year = pnlFileYear(f);
+    const rows = yearMode && f.data?.periods?.length
+      ? (f.data.rows || []).map((r) => collapseNodeToAnnual(r, f.data.periods))
+      : (f.data.rows || []);
+    return {
+      key: `f${i}`,
+      label: year ? `FY ${year}` : pnlFileLabel(f),
+      rows,
+    };
+  });
 
-  const rows = mergeFileNodes(
+  const mergedRows = mergeFileNodes(
     filePeriods.map((p) => p.rows),
     filePeriods.map((p) => p.key),
   );
@@ -453,53 +663,43 @@ async function buildPNLMultiFileDetail(sourceMode = "manual_upload") {
   const yearCols = filePeriods.map((p) => ({ key: p.key, label: p.label }));
 
   return {
-    rows,
+    rows: reclassifyOtherIncome(mergedRows),
     columns: { yearCols, ytdComparison: null },
   };
 }
 
+function generateMonthlyPeriods(startDate, endDate) {
+  const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const periods = [];
+  const s = new Date(startDate + "T00:00:00");
+  const e = new Date(endDate + "T00:00:00");
+  let year = s.getFullYear();
+  let month = s.getMonth();
+  const endYear = e.getFullYear();
+  const endMonth = e.getMonth();
+  while (year < endYear || (year === endYear && month <= endMonth)) {
+    const mm = String(month + 1).padStart(2, "0");
+    const lastDay = new Date(year, month + 1, 0).getDate();
+    periods.push({
+      key: `m${year}_${mm}`,
+      label: `${MONTHS[month]} ${year}`,
+      start: `${year}-${mm}-01`,
+      end: `${year}-${mm}-${String(lastDay).padStart(2, "0")}`,
+    });
+    month++;
+    if (month > 11) { month = 0; year++; }
+  }
+  return periods;
+}
+
 export async function getProfitAndLossDetail(
-  _startDate,
-  _endDate,
+  startDate,
+  endDate,
   accountingMethod,
   options = {},
 ) {
-  const sourceMode = options?.sourceMode || "quickbooks";
-  const keyReportVersionId = options?.keyReportVersionId || null;
-
-  // Key Reports: read ONLY from profit_loss_entries — never from Manual GL staging.
-  if (keyReportVersionId) {
-    try {
-      const manualFilters = options?.manualFilters || {};
-      const singleYear = /^\d{4}$/.test(String(manualFilters.fiscalYear ?? "")) ? manualFilters.fiscalYear : null;
-      const response = await getKeyReportVersionReport(keyReportVersionId, "profit-loss", {
-        // Detail tab = "Month" view → monthly columns (Jan…Dec) for the year (spec #9).
-        year: singleYear,
-        startDate: manualFilters.fromDate || null,
-        endDate: manualFilters.toDate || null,
-        period: "month",
-      });
-      console.log("[KeyReports][PL][Detail] Loaded from profit_loss_entries for version", keyReportVersionId);
-      return {
-        rows: response?.hierarchicalRows || response?.rows || [],
-        columns: response?.columns || { yearCols: [], changeCols: [], currentMonth: "" },
-        source: response?.source || "key_reports_entry_tables",
-        reportType: "profit_loss_monthly_detail",
-      };
-    } catch (err) {
-      console.warn("[KeyReports][PL][Detail] Entry table fetch failed:", err.message);
-      return {
-        rows: [],
-        columns: { yearCols: [], changeCols: [], currentMonth: "" },
-        source: "key_reports_entry_tables",
-        reportType: "profit_loss_monthly_detail",
-      };
-    }
-  }
-
-  if (sourceMode === "manual") {
-    // Only pass manual filters — QB date params not used for staged GL data
-    const params = {
+  if ((options?.sourceMode || "quickbooks") === "manual") {
+    const baseParams = {
       ...((options?.manualFilters && typeof options.manualFilters === "object")
         ? options.manualFilters
         : {}),
@@ -508,12 +708,73 @@ export async function getProfitAndLossDetail(
       params.keyReportVersionId = keyReportVersionId;
     }
 
-    if (options.reportType === "DetailVendor") {
-      return getManualStagedProfitLossVendorDetail({ params });
+    // Yearly mode: one call per year, aggregate annual totals (sum of all months)
+    if (options?.yearMode === true && options?.startYear && options?.endYear) {
+      const startYr = Number(options.startYear);
+      const endYr = Number(options.endYear);
+      const years = [];
+      for (let y = startYr; y <= endYr; y++) years.push(y);
+
+      const yearResults = {};
+      await Promise.all(years.map(async (yr) => {
+        const resp = await getManualStagedProfitLossMonthlyDetail({ params: { ...baseParams, fiscalYear: yr } });
+        yearResults[yr] = resp;
+      }));
+
+      const firstAvailable = Object.values(yearResults).find((r) => Array.isArray(r?.sections) && r.sections.length > 0);
+      if (!firstAvailable) {
+        return { source: "manual_gl_staged_transactions", reportType: "profit_loss_monthly_detail", year: null, months: years, sections: [] };
+      }
+
+      const lastYr = years[years.length - 1];
+      const aggregatedSections = firstAvailable.sections.map((templateSection) => {
+        const monthlyTotals = {};
+        const accMap = new Map();
+
+        for (const yr of years) {
+          const section = yearResults[yr]?.sections?.find((s) => s.key === templateSection.key);
+          if (!section) continue;
+          const yrMonths = yearResults[yr]?.months || [];
+          monthlyTotals[yr] = yrMonths.reduce((sum, m) => sum + Number(section.monthlyTotals?.[m] || 0), 0);
+
+          if (!templateSection.isCalculated) {
+            for (const acc of (section.accounts || [])) {
+              const accKey = `${acc.accountNumber}::${acc.accountName}`;
+              if (!accMap.has(accKey)) accMap.set(accKey, { accountNumber: acc.accountNumber, accountName: acc.accountName, monthly: {}, transactions: [] });
+              const aggAcc = accMap.get(accKey);
+              aggAcc.monthly[yr] = yrMonths.reduce((sum, m) => sum + Number(acc.monthly?.[m] || 0), 0);
+              // Carry transactions tagged with fiscalYear so vendor drill-down works in yearly view
+              if (Array.isArray(acc.transactions) && acc.transactions.length > 0) {
+                acc.transactions.forEach((tx) => aggAcc.transactions.push({ ...tx, fiscalYear: yr }));
+              }
+            }
+          }
+        }
+
+        const base = {
+          key: templateSection.key,
+          label: templateSection.label,
+          isCalculated: templateSection.isCalculated,
+          totalLabel: templateSection.totalLabel,
+          monthlyTotals,
+          total: monthlyTotals[lastYr] ?? 0,
+        };
+        if (!templateSection.isCalculated) base.accounts = Array.from(accMap.values());
+        return base;
+      });
+
+      return {
+        source: firstAvailable.source || "manual_gl_staged_transactions",
+        reportType: "profit_loss_monthly_detail",
+        year: null,
+        months: years,
+        sections: aggregatedSections,
+      };
     }
 
-    console.log("[DetailedReportUI][P&L] Requesting monthly detail with params:", JSON.stringify(params));
-    const response = await getManualStagedProfitLossMonthlyDetail({ params });
+    // Monthly mode (default): single call with current filters
+    console.log("[DetailedReportUI][P&L] Requesting monthly detail with params:", JSON.stringify(baseParams));
+    const response = await getManualStagedProfitLossMonthlyDetail({ params: baseParams });
     console.log("[DetailedReportUI][P&L] Received keys:", Object.keys(response || {}), "| source:", response?.source, "| reportType:", response?.reportType, "| months:", response?.months);
     if (!Array.isArray(response?.sections) || response.sections.length === 0) {
       console.warn("[DetailedReportUI][P&L] WARNING: sections is empty — check fiscal year filter and staged data.");
@@ -521,37 +782,66 @@ export async function getProfitAndLossDetail(
     return response;
   }
 
-  if (sourceMode === "manual_upload" || sourceMode === "quickbooks_manual") {
-    return buildPNLMultiFileDetail(sourceMode);
+  if (options?.sourceMode === "manual_upload" || options?.sourceMode === "quickbooks_manual") {
+    return buildPNLMultiFileDetail(options.sourceMode, {
+      startYear: options.startYear,
+      endYear: options.endYear,
+      yearMode: options.yearMode,
+    });
   }
 
-  // Detail now uses system-defined multi-year comparison (EBITDA analysis)
-  const periods = getPNLComparativePeriods(4);
+  // Month mode: one column per calendar month between startDate and endDate.
+  if (options.monthMode && startDate && endDate) {
+    const periods = generateMonthlyPeriods(startDate, endDate);
+    const [results, vendorMap] = await Promise.all([
+      Promise.all(periods.map((p) =>
+        fetchSinglePeriodPNL(p.start, p.end, accountingMethod, options?.sourceMode || "quickbooks", options),
+      )),
+      fetchQBVendorBreakdown(periods[0]?.start, periods[periods.length - 1]?.end, accountingMethod, periods).catch(() => ({})),
+    ]);
+    const mergedRows = reclassifyOtherIncome(mergePNLPeriods(results, periods));
+    const rows = attachVendorsToRows(mergedRows, vendorMap, periods.map((p) => p.key));
+    return {
+      rows,
+      columns: {
+        yearCols: periods.map((p) => ({ key: p.key, label: p.label })),
+        ytdComparison: null,
+      },
+    };
+  }
 
-  const results = await Promise.all(
-    periods.map((p) =>
-      fetchSinglePeriodPNL(
-        p.start,
-        p.end,
-        accountingMethod,
-        sourceMode,
-        { ...options, keyReportVersionId },
+  // Year mode or default: system-defined multi-year comparison.
+  // When a year range is provided (Year mode), generate periods only for that range.
+  const periods = getPNLComparativePeriods(4, options.startYear || null, options.endYear || null);
+
+  // yearCols are the non-YTD periods shown as main columns.
+  const mainPeriods = periods.filter((p) => !p.key.includes("_ytd"));
+  const glStartDate = mainPeriods[0]?.start;
+  const glEndDate = mainPeriods[mainPeriods.length - 1]?.end;
+
+  // Fetch period P&L snapshots and QB GL vendor data concurrently.
+  const [results, vendorMap] = await Promise.all([
+    Promise.all(
+      periods.map((p) =>
+        fetchSinglePeriodPNL(
+          p.start,
+          p.end,
+          accountingMethod,
+          options?.sourceMode || "quickbooks",
+          options,
+        ),
       ),
     ),
-  );
+    fetchQBVendorBreakdown(glStartDate, glEndDate, accountingMethod, mainPeriods).catch(() => ({})),
+  ]);
 
-  const rows = mergePNLPeriods(results, periods);
+  const mergedRows = reclassifyOtherIncome(mergePNLPeriods(results, periods));
+  const yearColKeys = mainPeriods.map((p) => p.key);
+  const rows = attachVendorsToRows(mergedRows, vendorMap, yearColKeys);
 
-  const yearCols = periods
-    .filter((p) => !p.key.includes("_ytd"))
-    .map((p) => ({
-      key: p.key,
-      label: p.label,
-    }));
+  const yearCols = mainPeriods.map((p) => ({ key: p.key, label: p.label }));
 
-  const currentYearKey = periods
-    .filter((p) => !p.key.includes("_ytd"))
-    .pop()?.key;
+  const currentYearKey = mainPeriods[mainPeriods.length - 1]?.key;
   const prevYtdKey = periods.find((p) => p.key.includes("_ytd"))?.key;
 
   const ytdComparison = {

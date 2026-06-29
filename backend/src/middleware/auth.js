@@ -58,7 +58,7 @@ async function requireAuth(req, res, next) {
   }
 
   try {
-    const payload = jwt.verify(token, process.env.JWT_SECRET || "change_me");
+    const payload = jwt.verify(token, process.env.JWT_SECRET || "change_me", { clockTolerance: 30 });
 
     const cached = _getCachedUser(payload.sub);
     if (cached) {

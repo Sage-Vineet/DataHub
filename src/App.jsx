@@ -30,6 +30,7 @@ import ClientReminders from "./pages/client/Reminders";
 import ClientConnections from "./pages/client/Connections";
 import ClientMessages from "./pages/client/Messages";
 import ClientProfile from "./pages/client/Profile";
+import ClientCimQuestionnaire from "./pages/client/CimQuestionnaire";
 import UserPortalDashboard from "./pages/user/PortalDashboard";
 import UserCompanyDetails from "./pages/user/CompanyDetails";
 import UserDocuments from "./pages/user/Documents";
@@ -50,6 +51,7 @@ import WorkspaceReconciliation from "./pages/broker/workspace/WorkspaceReconcili
 import WorkspaceTaxReconciliation from "./pages/broker/workspace/WorkspaceTaxReconciliation";
 import WorkspaceConnections from "./pages/broker/workspace/WorkspaceConnections";
 import WorkspaceKeyReports from "./pages/broker/workspace/WorkspaceKeyReports";
+import WorkspaceCimPrep from "./pages/broker/workspace/WorkspaceCimPrep";
 import Support from "./pages/Support";
 import WorkspaceEbitda from "./pages/broker/workspace/WorkspaceEbitda";
 import BrokerProfile from "./pages/broker/BrokerProfile";
@@ -95,6 +97,14 @@ function ProtectedRoute({ children, allowedRole, allowedRoles }) {
   if (user.role === "user") return <UserLayout>{children}</UserLayout>;
   if (user.role === "broker") return <BrokerLayout>{children}</BrokerLayout>;
   return <Layout>{children}</Layout>;
+}
+
+function BrokerStandaloneRoute({ children }) {
+  const { user, loading } = useAuth();
+  if (loading) return <PageLoader message="Checking session..." />;
+  if (!user) return <Navigate to="/login" replace />;
+  if (user.role !== "broker") return <Navigate to={getHomeRoute(user.role)} replace />;
+  return children;
 }
 
 // Module-level cache: clientId → resolved company object.
@@ -302,6 +312,14 @@ function AppRoutes() {
           </ProtectedRoute>
         }
       />
+      <Route
+        path="/broker/client/:clientId/cim-prep"
+        element={
+          <BrokerStandaloneRoute>
+            <WorkspaceCimPrep />
+          </BrokerStandaloneRoute>
+        }
+      />
 
       {/* Client workspace — scoped to a specific client */}
       <Route
@@ -398,6 +416,14 @@ function AppRoutes() {
         element={
           <ProtectedRoute allowedRole="client">
             <ClientMessages />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/client/cim-questionnaire"
+        element={
+          <ProtectedRoute allowedRole="client">
+            <ClientCimQuestionnaire />
           </ProtectedRoute>
         }
       />

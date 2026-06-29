@@ -15,6 +15,7 @@ function ProfitAndLossReport({
   clientName = "All Clients",
   entityName,
   createdOn,
+  isPreview = false,
   selectedMonths = [],
   isMonthly = false,
 }) {
@@ -54,6 +55,7 @@ function ProfitAndLossReport({
             subtitle={summarySubtitle}
             selectedMonths={selectedMonths}
             isMonthly={isMonthly}
+            isPreview={isPreview}
           />
         );
       }
@@ -63,11 +65,12 @@ function ProfitAndLossReport({
           title="Profit & Loss Detail"
           entityName={resolvedEntityName}
           subtitle={summarySubtitle}
+          isPreview={isPreview}
         />
       );
     }
 
-    // manual_upload / quickbooks_manual monthly view — data already has rows + columns.yearCols
+    // manual_upload / quickbooks_manual monthly view
     if (sourceMode === "manual_upload" || sourceMode === "quickbooks_manual") {
       return (
         <ProfitAndLossQBSummary
@@ -77,6 +80,7 @@ function ProfitAndLossReport({
           subtitle={summarySubtitle}
           entityName={resolvedEntityName}
           isMonthly={isMonthly}
+          isPreview={isPreview}
         />
       );
     }
@@ -88,6 +92,7 @@ function ProfitAndLossReport({
         subtitle={summarySubtitle}
         entityName={resolvedEntityName}
         isMonthly={isMonthly}
+        isPreview={isPreview}
       />
     );
   }
@@ -95,7 +100,6 @@ function ProfitAndLossReport({
   // Summary View
   if (isManualStagedSummary) {
     const hierarchicalRows = Array.isArray(data?.hierarchicalRows) ? data.hierarchicalRows : [];
-    // Per-year comparative columns when more than one fiscal year is selected.
     const yearCols = Array.isArray(data?.yearCols) ? data.yearCols : null;
     const summaryColumns = yearCols && yearCols.length > 1 ? { yearCols } : undefined;
     return (
@@ -106,6 +110,7 @@ function ProfitAndLossReport({
         subtitle={summarySubtitle}
         entityName={resolvedEntityName}
         isMonthly={isMonthly}
+        isPreview={isPreview}
       />
     );
   }
@@ -117,6 +122,7 @@ function ProfitAndLossReport({
       subtitle={summarySubtitle}
       entityName={resolvedEntityName}
       isMonthly={isMonthly}
+      isPreview={isPreview}
     />
   );
 }

@@ -11,27 +11,33 @@ const listCompanies = asyncHandler(async (req, res) => {
 });
 
 const createCompany = asyncHandler(async (req, res) => {
-  const { name, project_name, industry, contact_name, contact_email, contact_phone } = req.body || {};
+  const { name, project_name, industry } = req.body || {};
 
-  if (!name || !project_name || !industry || !contact_name || !contact_email || !contact_phone) {
+  if (!name || !project_name || !industry) {
     return res.status(400).json({ error: "Missing required fields" });
   }
 
   const inserted = await companyService.createCompany(req.body);
-  if (["broker", "admin"].includes(String(req.user?.role || "").toLowerCase())) {
-    await companyService.assignCompanyToUser(req.user.id, inserted.id);
-    if (!permissionService.isAdmin(req.user)) {
-      req.user.company_ids = Array.from(new Set([...(req.user.company_ids || []), inserted.id]));
-    }
-  }
 
-  const clientRepresentativeId = await companyService.syncCompanyClientRepresentative(inserted).catch((err) => {
-    console.error("[createCompany] syncCompanyClientRepresentative failed (non-fatal):", err.message);
-    return null;
-  });
+  // Run user assignment and client-rep sync in parallel — both only need inserted.id
+  const isBrokerOrAdmin = ["broker", "admin"].includes(String(req.user?.role || "").toLowerCase());
+  const [, clientRepresentativeId] = await Promise.all([
+    isBrokerOrAdmin
+      ? companyService.assignCompanyToUser(req.user.id, inserted.id).then(() => {
+          if (!permissionService.isAdmin(req.user)) {
+            req.user.company_ids = Array.from(new Set([...(req.user.company_ids || []), inserted.id]));
+          }
+        })
+      : Promise.resolve(null),
+    companyService.syncCompanyClientRepresentative(inserted).catch((err) => {
+      console.error("[createCompany] syncCompanyClientRepresentative failed (non-fatal):", err.message);
+      return null;
+    }),
+  ]);
+
   await ensureCompanyDefaultFolders(inserted.id, req.user?.id || clientRepresentativeId || null).catch(() => { });
 
-  res.status(201).json({ ...inserted, emailQueued: true });
+  res.status(201).json({ ...inserted, emailQueued: Boolean(inserted.contact_email) });
 
   // Fire-and-forget: notify primary contact — must not block or fail company creation
   setImmediate(async () => {

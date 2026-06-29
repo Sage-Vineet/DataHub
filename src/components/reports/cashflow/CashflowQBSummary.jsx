@@ -86,6 +86,7 @@ export default function CashflowQBSummary({
   subtitle,
   entityName = "Company",
   isMonthly = false,
+  isPreview = false,
 }) {
   const tableRef = useRef(null);
   const theadRef = useRef(null);
@@ -106,6 +107,49 @@ export default function CashflowQBSummary({
     mainEl.addEventListener("scroll", onScroll, { passive: true });
     return () => mainEl.removeEventListener("scroll", onScroll);
   }, []);
+
+  const tableEl = (
+    <div className="overflow-x-auto w-full">
+      <table ref={tableRef} className="w-full border-collapse">
+        <thead ref={theadRef} style={{ position: "relative", zIndex: 20 }}>
+          <tr className="border-b-2 border-text-primary">
+            <th className="sticky top-0 left-0 z-30 bg-bg-card pb-3 pt-2 px-4 text-left text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider min-w-[400px]">
+              Cash Flow Classification
+            </th>
+            <th className="sticky top-0 z-20 bg-bg-card pb-3 pt-2 px-4 text-right text-[12px] font-medium text-text-muted whitespace-nowrap uppercase tracking-wider">
+              Total
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {data.map((row, index) => (
+            <QBRow key={row.id || index} line={row} depth={0} />
+          ))}
+          {data.length === 0 && (
+            <tr>
+              <td colSpan={2} className="py-20 text-center text-text-muted italic">
+                No data available for the selected period.
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+
+  if (isPreview) {
+    return (
+      <div className="font-inter">
+        <div className="mb-4 flex flex-col items-center text-center">
+          <span className="text-[15px] font-bold text-text-primary">{entityName}</span>
+          <span className="text-[13px] font-medium text-text-secondary mt-0.5">{title}</span>
+          {subtitle && <span className="text-[12px] text-text-muted mt-0.5">{subtitle}</span>}
+        </div>
+        {tableEl}
+      </div>
+    );
+  }
+
   return (
     <div className="bg-bg-page/50 p-4 lg:p-8 font-inter">
       <div className="card-base p-6 min-h-[800px] rounded-sm shadow-xl">
@@ -149,6 +193,7 @@ export default function CashflowQBSummary({
             </tbody>
           </table>
         </div>
+        {tableEl}
       </div>
     </div>
   );

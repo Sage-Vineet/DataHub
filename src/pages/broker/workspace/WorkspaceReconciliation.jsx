@@ -26,7 +26,10 @@ import {
   LoaderCircle,
   ChevronDown,
   ChevronRight,
+  Download,
 } from "lucide-react";
+import * as XLSX from "xlsx";
+import { jsPDF } from "jspdf";
 import QBDisconnectedBanner from "../../../components/common/QBDisconnectedBanner";
 
 const MONTHS = [
@@ -54,6 +57,10 @@ const EXTRACT_BANK_PDF_RECORDS_ENDPOINT = `${API_BASE_URL}/extract-bank-pdf-reco
 const QMS_BANK_DATA_ENDPOINT = `${API_BASE_URL}/manual-report-uploads/qms-bank-data`;
 const MANUAL_BANK_DATA_ENDPOINT = `${API_BASE_URL}/manual-upload/bank-data`;
 const BS_BANK_BALANCES_ENDPOINT = `${API_BASE_URL}/manual-report-uploads/bs-bank-balances`;
+const BANK_RECON_ADJ_ENDPOINT = `${API_BASE_URL}/bank-reconciliation-adjustments`;
+const BANK_RECON_ADDBACK_ITEMS_ENDPOINT = `${API_BASE_URL}/bank-reconciliation-addback-items`;
+const BANK_RECON_LINE_ITEMS_ENDPOINT = `${API_BASE_URL}/bank-reconciliation-line-items`;
+const MANUAL_PL_ALL_ENDPOINT = `${API_BASE_URL}/manual-report-uploads/reports/profit_and_loss/all`;
 const RECONCILIATION_STORAGE_PREFIX = "workspace-reconciliation";
 
 // ── BS bank-balance helpers (module-level — no React context needed) ────────
@@ -169,10 +176,9 @@ const fmtVarianceAmt = (val) => {
   return { display: `+${formatted}`, colorClass: "text-green-600 font-medium" };
 };
 const fmtVariancePct = (val) => {
-  if (val == null) return { display: "-", colorClass: "text-text-muted" };
+  if (val == null || val === 0) return { display: "-", colorClass: "text-text-muted" };
   const formatted = formatNumber(val, 1);
-  if (parseFloat(formatted) === 0)
-    return { display: "0.0%", colorClass: "text-text-muted" };
+  // formatNumber returns "-" for 0, so guard above covers that case.
   if (val < 0)
     return { display: `${formatted}%`, colorClass: "text-red-600 font-medium" };
   return { display: `+${formatted}%`, colorClass: "text-green-600 font-medium" };
@@ -257,6 +263,520 @@ function FreezeTable({ months, label, containerClass, children }) {
             {children}
           </tbody>
         </table>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Inline editable cell for Activity Review adjustment rows.
+ * Defined outside the main component so React never unmounts it mid-edit.
+ */
+function EditableCell({ value, onSave }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    if (editing && inputRef.current) inputRef.current.focus();
+  }, [editing]);
+
+  const startEdit = () => {
+    setDraft(value !== 0 ? String(value) : "");
+    setEditing(true);
+  };
+
+  const commit = () => {
+    const raw = String(draft).replace(/,/g, "").trim();
+    const parsed = parseFloat(raw);
+    onSave(Number.isFinite(parsed) ? parsed : 0);
+    setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        type="text"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") commit();
+          if (e.key === "Escape") setEditing(false);
+        }}
+        className="w-full bg-blue-50 border border-blue-400 rounded px-2 py-0 text-right text-[12px] tabular-nums outline-none focus:ring-1 focus:ring-blue-400"
+      />
+    );
+  }
+
+  return (
+    <span
+      onClick={startEdit}
+      className={cn(
+        "block w-full text-right text-[12px] tabular-nums rounded px-1 py-[3px] min-h-[20px]",
+        "cursor-pointer hover:bg-blue-50/80 transition-colors select-none",
+        value !== 0 ? "text-text-primary" : "text-text-muted/40",
+      )}
+      title="Click to edit"
+    >
+      {value !== 0 ? formatNumber(value, 2) : "-"}
+    </span>
+  );
+}
+
+/**
+ * Editable adjustment row — one editable cell per month + TTM total.
+ * Defined outside the main component to keep component identity stable
+ * (avoids unmounting EditableCell on every re-render).
+ */
+function AdjRow({ label, rowKey, months, reconAdjustments, onSave }) {
+  const getAdj = (m) => reconAdjustments?.[`${m}_${rowKey}`] ?? 0;
+  const ttmTotal = months.slice(-12).reduce((s, m) => s + getAdj(m), 0);
+  return (
+    <tr className="bg-white hover:bg-blue-50/20">
+      <td
+        className={cn(
+          "sticky left-0 z-[1] border border-border px-3 py-[5px] text-[12px]",
+          "text-text-primary whitespace-nowrap bg-white pl-7",
+          TABLE_LABEL_COL_WIDTH,
+        )}
+      >
+        {label}
+      </td>
+      {months.map((month) => (
+        <td key={month} className={cn("border border-border px-1 py-[2px]", TABLE_VALUE_COL_WIDTH)}>
+          <EditableCell
+            value={getAdj(month)}
+            onSave={(val) => onSave(month, rowKey, val)}
+          />
+        </td>
+      ))}
+      <td
+        className={cn(
+          "border border-border px-3 py-[7px] text-right text-[12px] tabular-nums",
+          TABLE_VALUE_COL_WIDTH,
+          ttmTotal !== 0 ? "text-text-primary" : "text-text-muted/40",
+        )}
+      >
+        {ttmTotal !== 0 ? formatNumber(ttmTotal, 2) : "-"}
+      </td>
+    </tr>
+  );
+}
+
+function AddbackItemRow({ item, months, onSaveAmounts, onDelete }) {
+  const getAmt = (month) => Number(item.monthAmounts?.[month] ?? 0);
+  const ttmTotal = months.slice(-12).reduce((sum, m) => sum + getAmt(m), 0);
+
+  const handleSave = (month, val) => {
+    const updated = { ...(item.monthAmounts || {}), [month]: val };
+    if (val === 0) delete updated[month];
+    onSaveAmounts(item.id, updated);
+  };
+
+  return (
+    <tr className="hover:bg-blue-50/20">
+      <td
+        className={cn(
+          "sticky left-0 z-[1] border border-border px-3 py-[5px] text-[12px]",
+          "text-text-primary whitespace-nowrap bg-white pl-10",
+          TABLE_LABEL_COL_WIDTH,
+        )}
+      >
+        <div className="flex items-center justify-between gap-1 pr-1">
+          <span className="truncate">{item.name}</span>
+          <button
+            onClick={() => {
+              if (window.confirm(`Remove "${item.name}" from addbacks?`)) onDelete(item.id);
+            }}
+            title="Remove"
+            className="flex-shrink-0 text-text-muted hover:text-red-500 transition-colors text-[15px] leading-none font-medium"
+          >
+            ×
+          </button>
+        </div>
+      </td>
+      {months.map((month) => (
+        <td key={month} className={cn("border border-border px-1 py-[2px]", TABLE_VALUE_COL_WIDTH)}>
+          <EditableCell value={getAmt(month)} onSave={(val) => handleSave(month, val)} />
+        </td>
+      ))}
+      <td
+        className={cn(
+          "border border-border px-3 py-[7px] text-right text-[12px] tabular-nums",
+          TABLE_VALUE_COL_WIDTH,
+          ttmTotal !== 0 ? "text-text-primary" : "text-text-muted/40",
+        )}
+      >
+        {ttmTotal !== 0 ? formatNumber(ttmTotal, 2) : "-"}
+      </td>
+    </tr>
+  );
+}
+
+function AddbacksRowGroup({ section, months, addbackItems, onSaveAmounts, onDelete, onOpenPicker }) {
+  const sectionItems = addbackItems.filter((i) => i.section === section);
+
+  const totalPerMonth = months.reduce((acc, month) => {
+    acc[month] = sectionItems.reduce(
+      (sum, item) => sum + Number(item.monthAmounts?.[month] ?? 0),
+      0,
+    );
+    return acc;
+  }, {});
+
+  const ttmTotal = months.slice(-12).reduce((sum, m) => sum + (totalPerMonth[m] ?? 0), 0);
+
+  return (
+    <>
+      <tr className="bg-white hover:bg-blue-50/20">
+        <td
+          className={cn(
+            "sticky left-0 z-[1] border border-border px-3 py-[5px] text-[12px]",
+            "text-text-primary whitespace-nowrap bg-white pl-7 font-medium",
+            TABLE_LABEL_COL_WIDTH,
+          )}
+        >
+          <div className="flex items-center gap-2">
+            <span>Addbacks</span>
+            <button
+              onClick={onOpenPicker}
+              title="Add addback item"
+              className="flex items-center justify-center w-[18px] h-[18px] rounded-full bg-green-500 text-white hover:bg-green-600 transition-colors text-[13px] leading-none font-bold"
+            >
+              +
+            </button>
+          </div>
+        </td>
+        {months.map((month) => (
+          <td
+            key={month}
+            className={cn(
+              "border border-border px-3 py-[7px] text-right text-[12px] tabular-nums",
+              TABLE_VALUE_COL_WIDTH,
+              totalPerMonth[month] !== 0 ? "text-text-primary" : "text-text-muted/40",
+            )}
+          >
+            {totalPerMonth[month] !== 0 ? formatNumber(totalPerMonth[month], 2) : "-"}
+          </td>
+        ))}
+        <td
+          className={cn(
+            "border border-border px-3 py-[7px] text-right text-[12px] tabular-nums",
+            TABLE_VALUE_COL_WIDTH,
+            ttmTotal !== 0 ? "text-text-primary" : "text-text-muted/40",
+          )}
+        >
+          {ttmTotal !== 0 ? formatNumber(ttmTotal, 2) : "-"}
+        </td>
+      </tr>
+      {sectionItems.map((item) => (
+        <AddbackItemRow
+          key={item.id}
+          item={item}
+          months={months}
+          onSaveAmounts={onSaveAmounts}
+          onDelete={onDelete}
+        />
+      ))}
+    </>
+  );
+}
+
+function fmtML(mk) {
+  const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const [y, m] = mk.split("-");
+  return `${MONTHS[+m - 1]} '${String(y).slice(-2)}`;
+}
+
+// Parse a period label like "Jan 24" or "Mar 2026" into an ISO month key "YYYY-MM"
+function parsePeriodLabel(label) {
+  const MM = { Jan:"01",Feb:"02",Mar:"03",Apr:"04",May:"05",Jun:"06",
+               Jul:"07",Aug:"08",Sep:"09",Oct:"10",Nov:"11",Dec:"12" };
+  const m = String(label || "").trim().match(/^([A-Za-z]{3})\s+(\d{2,4})$/);
+  if (!m) return null;
+  const mm = MM[m[1]];
+  if (!mm) return null;
+  const yr = m[2].length === 2 ? `20${m[2]}` : m[2];
+  return `${yr}-${mm}`;
+}
+
+// Parse manual P&L upload response into plIncomeItems / plExpenseItems arrays
+function parseManualPLItems(files) {
+  const plIncomeItems = [];
+  const plExpenseItems = [];
+  if (!Array.isArray(files) || files.length === 0) return { plIncomeItems, plExpenseItems };
+  const file = files[0];
+  const { rows, periods } = file?.data || {};
+  if (!rows || !periods) return { plIncomeItems, plExpenseItems };
+  const periodKeys = periods.map(parsePeriodLabel);
+
+  function extractItems(rowList, target, source) {
+    for (const row of (rowList || [])) {
+      if (row.type === "data" && row.name) {
+        const monthAmounts = {};
+        (row.colAmounts || []).forEach((val, idx) => {
+          const mk = periodKeys[idx];
+          if (mk && val != null && val !== 0) monthAmounts[mk] = val;
+        });
+        target.push({ name: row.name, source, monthAmounts });
+      }
+      if (row.children?.length) extractItems(row.children, target, source);
+    }
+  }
+
+  for (const row of rows) {
+    if (row.type !== "header") continue;
+    const sn = (row.name || "").toLowerCase();
+    if (sn.includes("income") || sn.includes("revenue")) {
+      extractItems(row.children || [], plIncomeItems, "pl_income");
+    } else if (sn.includes("expense") || sn.includes("cost")) {
+      extractItems(row.children || [], plExpenseItems, "pl_expense");
+    }
+  }
+
+  return { plIncomeItems, plExpenseItems };
+}
+
+function AddbackPickerModal({
+  isOpen,
+  section,
+  months,
+  clientId,
+  startDate,
+  endDate,
+  accountingMethod,
+  getHeaders,
+  existingItems,
+  reportSource,
+  onAdd,
+  onClose,
+}) {
+  const isQBOnline = reportSource === "quickbooks_online";
+  const isManualUpload = reportSource === "manual_upload_excel_pdf";
+  const hasPLData = isQBOnline || isManualUpload;
+
+  // Default tab: deposits→income items, withdrawals→expense items; no-P&L modes→manual only
+  const defaultTab = hasPLData ? (section === "withdrawals" ? "expense" : "income") : "manual";
+  const [tab, setTab] = useState(defaultTab);
+  const [search, setSearch] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [lineItems, setLineItems] = useState({ plIncomeItems: [], plExpenseItems: [] });
+  const [fetchError, setFetchError] = useState(null);
+  const [manualName, setManualName] = useState("");
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setSearch("");
+    setTab(hasPLData ? (section === "withdrawals" ? "expense" : "income") : "manual");
+    setFetchError(null);
+    setLineItems({ plIncomeItems: [], plExpenseItems: [] });
+
+    if (!hasPLData || !clientId) return;
+
+    setLoading(true);
+
+    if (isQBOnline) {
+      const params = new URLSearchParams({
+        clientId,
+        start_date: startDate,
+        end_date: endDate,
+        accounting_method: accountingMethod || "Accrual",
+      });
+      fetch(`${BANK_RECON_LINE_ITEMS_ENDPOINT}?${params}`, { headers: getHeaders() })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => {
+          if (d?.success) {
+            setLineItems({ plIncomeItems: d.plIncomeItems || [], plExpenseItems: d.plExpenseItems || [] });
+          } else {
+            setFetchError("Could not load P&L items from QuickBooks.");
+          }
+        })
+        .catch(() => setFetchError("Could not load P&L items from QuickBooks."))
+        .finally(() => setLoading(false));
+    } else if (isManualUpload) {
+      fetch(`${MANUAL_PL_ALL_ENDPOINT}?clientId=${clientId}`, { headers: getHeaders() })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => {
+          if (d?.success && Array.isArray(d.files)) {
+            setLineItems(parseManualPLItems(d.files));
+          } else {
+            setFetchError("Could not load P&L items from manual upload.");
+          }
+        })
+        .catch(() => setFetchError("Could not load P&L items from manual upload."))
+        .finally(() => setLoading(false));
+    }
+  }, [isOpen, reportSource, section, clientId, startDate, endDate, accountingMethod]);
+
+  if (!isOpen) return null;
+
+  const existingNames = new Set(
+    existingItems.filter((i) => i.section === section).map((i) => i.name),
+  );
+  const sourceItems = tab === "income" ? lineItems.plIncomeItems : lineItems.plExpenseItems;
+  const filtered = sourceItems.filter(
+    (i) =>
+      !existingNames.has(i.name) &&
+      i.name.toLowerCase().includes(search.toLowerCase()),
+  );
+
+  const handleAddItem = (name, source, monthAmounts) => {
+    onAdd(name, source, monthAmounts);
+    onClose();
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-xl shadow-2xl w-[520px] max-h-[520px] flex flex-col overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+          <h3 className="text-[14px] font-semibold text-text-primary">
+            Add Addback — {section === "deposits" ? "Deposits" : "Withdrawals"}
+          </h3>
+          <button
+            onClick={onClose}
+            className="text-text-muted hover:text-text-primary text-[20px] leading-none w-6 h-6 flex items-center justify-center"
+          >
+            ×
+          </button>
+        </div>
+
+        <div className="flex border-b border-border">
+          {(hasPLData
+            ? [["income", "P&L Income"], ["expense", "P&L Expenses"], ["manual", "Manual"]]
+            : [["manual", "Manual"]]
+          ).map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setTab(key)}
+              className={cn(
+                "px-4 py-2 text-[12px] font-medium border-b-2 transition-colors",
+                tab === key
+                  ? "border-blue-500 text-blue-600"
+                  : "border-transparent text-text-muted hover:text-text-primary",
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {tab === "manual" ? (
+          <div className="p-5 flex flex-col gap-3">
+            <p className="text-[12px] text-text-muted">
+              Enter a name for the addback item. Edit monthly amounts directly in the table.
+            </p>
+            <input
+              type="text"
+              value={manualName}
+              onChange={(e) => setManualName(e.target.value)}
+              placeholder="e.g. Owner Distributions"
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && manualName.trim()) {
+                  handleAddItem(manualName.trim(), "manual", {});
+                  setManualName("");
+                }
+                if (e.key === "Escape") onClose();
+              }}
+              className="border border-border rounded-lg px-3 py-2 text-[13px] outline-none focus:ring-2 focus:ring-blue-400"
+            />
+            <button
+              onClick={() => {
+                if (!manualName.trim()) return;
+                handleAddItem(manualName.trim(), "manual", {});
+                setManualName("");
+              }}
+              disabled={!manualName.trim()}
+              className="self-start px-4 py-2 bg-blue-600 text-white text-[12px] font-medium rounded-lg hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              Add Item
+            </button>
+          </div>
+        ) : (
+          <>
+            <div className="px-4 pt-3 pb-2">
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search accounts..."
+                className="w-full border border-border rounded-lg px-3 py-1.5 text-[12px] outline-none focus:ring-2 focus:ring-blue-400"
+              />
+            </div>
+            <div className="flex-1 overflow-y-auto px-2 pb-3">
+              {loading ? (
+                <div className="flex items-center justify-center py-8 text-[12px] text-text-muted">
+                  Loading P&L items…
+                </div>
+              ) : fetchError ? (
+                <div className="mx-2 my-3 px-3 py-3 bg-orange-50 border border-orange-200 rounded-lg text-[12px] text-orange-700">
+                  {fetchError}
+                </div>
+              ) : filtered.length === 0 ? (
+                <div className="flex items-center justify-center py-8 text-[12px] text-text-muted">
+                  {search ? "No items match your search." : "No items available."}
+                </div>
+              ) : (
+                filtered.map((item) => {
+                  const filterMonths = months || [];
+                  const monthsWithData = filterMonths.filter(
+                    (m) => item.monthAmounts?.[m] != null,
+                  );
+                  const outsideRange = Object.keys(item.monthAmounts || {}).filter(
+                    (m) => !filterMonths.includes(m),
+                  );
+                  return (
+                    <button
+                      key={item.name}
+                      onClick={() => handleAddItem(item.name, item.source, item.monthAmounts)}
+                      className="w-full flex flex-col px-3 py-2.5 rounded-lg hover:bg-blue-50 text-left transition-colors group border-b border-border/40 last:border-0"
+                    >
+                      <span className="text-[12px] text-text-primary font-medium group-hover:text-blue-700">
+                        {item.name}
+                      </span>
+                      {monthsWithData.length > 0 ? (
+                        <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-1">
+                          {monthsWithData.map((m) => {
+                            const val = Number(item.monthAmounts[m]);
+                            return (
+                              <span key={m} className="text-[10px] text-text-muted">
+                                {fmtML(m)}:{" "}
+                                <span
+                                  className={
+                                    val < 0 ? "text-red-500 font-medium" : "text-green-700 font-medium"
+                                  }
+                                >
+                                  {formatNumber(val, 0)}
+                                </span>
+                              </span>
+                            );
+                          })}
+                          {outsideRange.length > 0 && (
+                            <span className="text-[10px] text-text-muted/50 italic">
+                              +{outsideRange.length} outside range
+                            </span>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-[10px] text-text-muted/60 mt-0.5 italic">
+                          No data in selected range
+                        </span>
+                      )}
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -499,6 +1019,16 @@ export default function WorkspaceReconciliation() {
   // True only after getReportSources API confirms the actual source.
   // Prevents stale storedState from triggering the wrong endpoint on mount.
   const [isSourceConfirmedByServer, setIsSourceConfirmedByServer] = useState(false);
+  // Persisted adjustment values keyed by "${month}_${rowKey}", e.g. "2025-01_changeInAR".
+  const [reconAdjustments, setReconAdjustments] = useState({});
+  // Named addback items (multi-item rows) for deposits and withdrawals sections.
+  const [addbackItems, setAddbackItems] = useState([]);
+  // Controls the addback picker modal: null = closed, { open, section, startDate, endDate } = open.
+  const [addbackPickerState, setAddbackPickerState] = useState(null);
+
+  // Export dropdown state
+  const [bankReconExportOpen, setBankReconExportOpen] = useState(false);
+  const [bankReconIsExporting, setBankReconIsExporting] = useState(false);
 
   // Always reflects the latest selectedReportSource — used to discard in-flight fetch results
   // that started under a different source (race condition: user switches source while a fetch
@@ -943,6 +1473,121 @@ export default function WorkspaceReconciliation() {
     }
   }, [clientId, getHeaders]);
 
+  // Load persisted reconciliation adjustments for this company on mount / clientId change.
+  useEffect(() => {
+    if (!clientId) return;
+    fetch(`${BANK_RECON_ADJ_ENDPOINT}?clientId=${clientId}`, { headers: getHeaders() })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d?.success && Array.isArray(d.adjustments)) {
+          const map = {};
+          d.adjustments.forEach((a) => {
+            map[`${a.month}_${a.rowKey}`] = Number(a.amount) || 0;
+          });
+          setReconAdjustments(map);
+        }
+      })
+      .catch(() => {});
+  }, [clientId, getHeaders]);
+
+  // Load persisted addback items — isolated by company AND connection mode.
+  useEffect(() => {
+    if (!clientId || !selectedReportSource) return;
+    setAddbackItems([]); // clear immediately so old mode's items never flash
+    fetch(
+      `${BANK_RECON_ADDBACK_ITEMS_ENDPOINT}?clientId=${clientId}&reportSource=${encodeURIComponent(selectedReportSource)}`,
+      { headers: getHeaders() },
+    )
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d?.success && Array.isArray(d.items)) setAddbackItems(d.items);
+      })
+      .catch(() => {});
+  }, [clientId, getHeaders, selectedReportSource]);
+
+  const saveAdjustment = useCallback(
+    async (month, rowKey, amount) => {
+      const key = `${month}_${rowKey}`;
+      setReconAdjustments((prev) => ({ ...prev, [key]: amount }));
+      try {
+        await fetch(BANK_RECON_ADJ_ENDPOINT, {
+          method: "POST",
+          headers: { ...getHeaders(), "Content-Type": "application/json" },
+          body: JSON.stringify({ clientId, month, rowKey, amount }),
+        });
+      } catch {
+        // Value stays in local state even if the network request fails
+      }
+    },
+    [clientId, getHeaders],
+  );
+
+  const createAddbackItem = useCallback(
+    async (section, name, source, monthAmounts) => {
+      try {
+        const resp = await fetch(BANK_RECON_ADDBACK_ITEMS_ENDPOINT, {
+          method: "POST",
+          headers: { ...getHeaders(), "Content-Type": "application/json" },
+          body: JSON.stringify({ clientId, section, name, source, monthAmounts, reportSource: selectedReportSource }),
+        });
+        const data = await resp.json();
+        if (data?.success && data.item) {
+          setAddbackItems((prev) => [...prev, data.item]);
+        }
+      } catch { /* stays in local state */ }
+    },
+    [clientId, getHeaders, selectedReportSource],
+  );
+
+  const updateAddbackItemAmounts = useCallback(
+    async (id, monthAmounts) => {
+      setAddbackItems((prev) =>
+        prev.map((i) => (i.id === id ? { ...i, monthAmounts } : i)),
+      );
+      try {
+        await fetch(`${BANK_RECON_ADDBACK_ITEMS_ENDPOINT}/${id}`, {
+          method: "PUT",
+          headers: { ...getHeaders(), "Content-Type": "application/json" },
+          body: JSON.stringify({ clientId, monthAmounts }),
+        });
+      } catch { /* value stays in local state */ }
+    },
+    [clientId, getHeaders],
+  );
+
+  const deleteAddbackItem = useCallback(
+    async (id) => {
+      setAddbackItems((prev) => prev.filter((i) => i.id !== id));
+      try {
+        await fetch(
+          `${BANK_RECON_ADDBACK_ITEMS_ENDPOINT}/${id}?clientId=${encodeURIComponent(clientId)}`,
+          { method: "DELETE", headers: getHeaders() },
+        );
+      } catch { /* removed from local state already */ }
+    },
+    [clientId, getHeaders],
+  );
+
+
+
+
+  const handleBankReconExport = async (kind) => {
+    setBankReconExportOpen(false);
+    setBankReconIsExporting(true);
+    try {
+      if (kind === "excel") {
+        exportBankReconToExcel();
+      } else {
+        exportBankReconToPdf();
+      }
+    } catch (err) {
+      console.error("[BankRecon] Export failed:", err);
+      alert(err?.message || "Export failed. Please try again.");
+    } finally {
+      setBankReconIsExporting(false);
+    }
+  };
+
   // Unified bank-data loader — dispatches ONLY based on server-confirmed source.
   // isSourceConfirmedByServer prevents stale storedState from triggering the wrong endpoint.
   // Never short-circuit on stored data — stored data may be from a different source.
@@ -983,6 +1628,38 @@ export default function WorkspaceReconciliation() {
     if (qbBankActivity) return; // session already has data — no need to hit DB
     void loadSavedQBBankActivity();
   }, [isSourceConfirmedByServer, selectedReportSource, qbBankActivity, loadSavedQBBankActivity]);
+
+  // When a saved snapshot loads without plFinancials (saved before this feature was added),
+  // fetch P&L totals from the line-items endpoint and merge them in.
+  useEffect(() => {
+    if (selectedReportSource !== REPORT_SOURCE_KEYS.QUICKBOOKS) return;
+    if (!clientId || !qbBankActivity?.months?.length) return;
+    const hasIncome = Object.keys(qbBankActivity.plFinancials?.totalIncome || {}).length > 0;
+    if (hasIncome) return;
+
+    const mons = qbBankActivity.months;
+    const startDate = `${mons[0]}-01`;
+    const [ey, em] = mons[mons.length - 1].split("-");
+    const endDate = `${mons[mons.length - 1]}-${String(new Date(+ey, +em, 0).getDate()).padStart(2, "0")}`;
+
+    const params = new URLSearchParams({
+      clientId,
+      start_date: startDate,
+      end_date: endDate,
+      accounting_method: bankActivityAccountingMethod || "Accrual",
+    });
+    fetch(`${BANK_RECON_LINE_ITEMS_ENDPOINT}?${params}`, { headers: getHeaders() })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!d?.success) return;
+        setQbBankActivity((prev) =>
+          prev
+            ? { ...prev, plFinancials: { totalIncome: d.plTotalIncome || {}, totalExpenses: d.plTotalExpenses || {} } }
+            : prev,
+        );
+      })
+      .catch(() => {});
+  }, [qbBankActivity, selectedReportSource, clientId, bankActivityAccountingMethod, getHeaders]);
 
   // Drive selectedReportSource from DataSourceContext.activeSource — the single source of truth
   // that the header badge also reads. This eliminates the split-brain between the badge and the
@@ -1300,7 +1977,7 @@ export default function WorkspaceReconciliation() {
     const intercompanyTransfers =
       intercompanyDeposits + intercompanyWithdraws;
     const externalDeposits = totalDeposits - intercompanyTransfers;
-    const salesPerFinancials = 0;
+    const salesPerFinancials = qbBankActivity?.plFinancials?.totalIncome?.[month] ?? 0;
     const depositsDollarVar = salesPerFinancials - externalDeposits;
     const depositsPctVar =
       salesPerFinancials !== 0
@@ -1324,7 +2001,7 @@ export default function WorkspaceReconciliation() {
     const withdrawIntercompanyTransfers = intercompanyWithdraws;
     const externalWithdraws =
       totalWithdrawals - withdrawIntercompanyTransfers;
-    const expensesPerFinancials = 0;
+    const expensesPerFinancials = qbBankActivity?.plFinancials?.totalExpenses?.[month] ?? 0;
     const withdrawsDollarVar = externalWithdraws - expensesPerFinancials;
     const withdrawsPctVar =
       expensesPerFinancials !== 0
@@ -2127,6 +2804,82 @@ export default function WorkspaceReconciliation() {
     const av = (f) => [...rows.map((r) => fmtAmt(r[f])), fmtAmt(ttm[f])];
     const avRaw = (f) => [...rows.map((r) => r[f] ?? null), ttm[f] ?? null];
 
+    // ── Adjustment helpers ────────────────────────────────────────────────────
+    const getAdj = (month, key) => reconAdjustments?.[`${month}_${key}`] ?? 0;
+
+    // Pre-compute addback totals per month from multi-item addback rows
+    const depAddbackMap = {};
+    const wdrAddbackMap = {};
+    addbackItems.forEach((item) => {
+      const map = item.section === "deposits" ? depAddbackMap : wdrAddbackMap;
+      Object.entries(item.monthAmounts || {}).forEach(([m, amt]) => {
+        map[m] = (map[m] || 0) + Number(amt);
+      });
+    });
+
+    // Deposits — adjusted Unreconciled Variance
+    const depositsUnrecAdj = rows.map((r) =>
+      r.depositsDollarVar
+      + getAdj(r.month, "changeInAR")
+      + getAdj(r.month, "changeInARRetentions")
+      + getAdj(r.month, "fixedAssetDisposals")
+      + getAdj(r.month, "depositsOther")
+      + (depAddbackMap[r.month] ?? 0),
+    );
+    const depositsUnrecPctAdj = rows.map((r, i) =>
+      r.salesPerFinancials !== 0 ? (depositsUnrecAdj[i] / r.salesPerFinancials) * 100 : 0,
+    );
+    const ttmDepositsUnrecAdj = months.slice(-12).reduce(
+      (sum, m) =>
+        sum
+        + getAdj(m, "changeInAR")
+        + getAdj(m, "changeInARRetentions")
+        + getAdj(m, "fixedAssetDisposals")
+        + getAdj(m, "depositsOther")
+        + (depAddbackMap[m] ?? 0),
+      ttm.depositsDollarVar,
+    );
+    const ttmDepositsUnrecPctAdj =
+      ttm.salesPerFinancials !== 0 ? (ttmDepositsUnrecAdj / ttm.salesPerFinancials) * 100 : 0;
+
+    // Withdrawals — adjusted Unreconciled Variance
+    const withdrawsUnrecAdj = rows.map((r) =>
+      r.withdrawsDollarVar
+      + getAdj(r.month, "ownerWithdraws")
+      + getAdj(r.month, "changeInCurrentLiabilities")
+      + getAdj(r.month, "changeInLTLiabilities")
+      + getAdj(r.month, "depreciationExpense")
+      + getAdj(r.month, "amortizationExpense")
+      + getAdj(r.month, "badDebtExpense")
+      + getAdj(r.month, "fixedAssetPurchases")
+      + getAdj(r.month, "withdrawsOther")
+      + (wdrAddbackMap[r.month] ?? 0),
+    );
+    const withdrawsUnrecPctAdj = rows.map((r, i) =>
+      r.expensesPerFinancials !== 0 ? (withdrawsUnrecAdj[i] / r.expensesPerFinancials) * 100 : 0,
+    );
+    const ttmWithdrawsUnrecAdj = months.slice(-12).reduce(
+      (sum, m) =>
+        sum
+        + getAdj(m, "ownerWithdraws")
+        + getAdj(m, "changeInCurrentLiabilities")
+        + getAdj(m, "changeInLTLiabilities")
+        + getAdj(m, "depreciationExpense")
+        + getAdj(m, "amortizationExpense")
+        + getAdj(m, "badDebtExpense")
+        + getAdj(m, "fixedAssetPurchases")
+        + getAdj(m, "withdrawsOther")
+        + (wdrAddbackMap[m] ?? 0),
+      ttm.withdrawsDollarVar,
+    );
+    const ttmWithdrawsUnrecPctAdj =
+      ttm.expensesPerFinancials !== 0 ? (ttmWithdrawsUnrecAdj / ttm.expensesPerFinancials) * 100 : 0;
+
+    const adjDepURaw = [...depositsUnrecAdj, ttmDepositsUnrecAdj];
+    const adjDepPctRaw = [...depositsUnrecPctAdj, ttmDepositsUnrecPctAdj];
+    const adjWdrURaw = [...withdrawsUnrecAdj, ttmWithdrawsUnrecAdj];
+    const adjWdrPctRaw = [...withdrawsUnrecPctAdj, ttmWithdrawsUnrecPctAdj];
+
     return (
       <FreezeTable months={months} label="Activity Review" containerClass="rounded-xl border border-border shadow-sm">
         <DR label="Total Deposits" values={av("totalDeposits")} bold />
@@ -2137,12 +2890,27 @@ export default function WorkspaceReconciliation() {
         <DR label="% Variance" values={avRaw("depositsPctVar")} rawValues={avRaw("depositsPctVar")} rowType="variance-pct" />
         <SpacerRow colCount={colCount} />
 
-        <DR label="Change in AR" values={av("changeInAR")} indent />
-        <DR label="Change in Accts Receivable- Retentions" values={av("changeInARRetentions")} indent />
-        <DR label="Fixed Asset Disposals" values={av("fixedAssetDisposals")} indent />
-        <DR label="Other" values={av("depositsOther")} indent />
-        <DR label="Unreconciled Variance $" values={avRaw("depositsUnreconciledDollar")} rawValues={avRaw("depositsUnreconciledDollar")} rowType="variance-amt" />
-        <DR label="Unreconciled Variance %" values={avRaw("depositsUnreconciledPct")} rawValues={avRaw("depositsUnreconciledPct")} rowType="variance-pct" />
+        <AdjRow label="Change in AR" rowKey="changeInAR" months={months} reconAdjustments={reconAdjustments} onSave={saveAdjustment} />
+        <AdjRow label="Change in Accts Receivable- Retentions" rowKey="changeInARRetentions" months={months} reconAdjustments={reconAdjustments} onSave={saveAdjustment} />
+        <AdjRow label="Fixed Asset Disposals" rowKey="fixedAssetDisposals" months={months} reconAdjustments={reconAdjustments} onSave={saveAdjustment} />
+        <AdjRow label="Other" rowKey="depositsOther" months={months} reconAdjustments={reconAdjustments} onSave={saveAdjustment} />
+        <AddbacksRowGroup
+          section="deposits"
+          months={months}
+          addbackItems={addbackItems}
+          onSaveAmounts={updateAddbackItemAmounts}
+          onDelete={deleteAddbackItem}
+          onOpenPicker={() => {
+            const [sy, sm] = bankActivityStartMonth.split("-");
+            const startDate = `${sy}-${sm}-01`;
+            const [ey, em] = bankActivityEndMonth.split("-");
+            const lastDay = new Date(+ey, +em, 0).getDate();
+            const endDate = `${ey}-${em}-${String(lastDay).padStart(2, "0")}`;
+            setAddbackPickerState({ open: true, section: "deposits", startDate, endDate, months });
+          }}
+        />
+        <DR label="Unreconciled Variance $" values={adjDepURaw} rawValues={adjDepURaw} rowType="variance-amt" />
+        <DR label="Unreconciled Variance %" values={adjDepPctRaw} rawValues={adjDepPctRaw} rowType="variance-pct" />
         <SpacerRow colCount={colCount} />
 
         <DR label="Total Withdrawals" values={av("totalWithdrawals")} bold />
@@ -2153,16 +2921,31 @@ export default function WorkspaceReconciliation() {
         <DR label="% Variance" values={avRaw("withdrawsPctVar")} rawValues={avRaw("withdrawsPctVar")} rowType="variance-pct" />
         <SpacerRow colCount={colCount} />
 
-        <DR label="Owner Withdraws" values={av("ownerWithdraws")} indent />
-        <DR label="Change in Current Liabilities" values={av("changeInCurrentLiabilities")} indent />
-        <DR label="Change in LT Liabilities" values={av("changeInLTLiabilities")} indent />
-        <DR label="Depreciation Expense" values={av("depreciationExpense")} indent />
-        <DR label="Amortization Expense" values={av("amortizationExpense")} indent />
-        <DR label="Bad Debt Expense" values={av("badDebtExpense")} indent />
-        <DR label="Fixed Asset Purchases" values={av("fixedAssetPurchases")} indent />
-        <DR label="Other" values={av("withdrawsOther")} indent />
-        <DR label="Unreconciled Variance $" values={avRaw("withdrawsUnreconciledDollar")} rawValues={avRaw("withdrawsUnreconciledDollar")} rowType="variance-amt" />
-        <DR label="Unreconciled Variance %" values={avRaw("withdrawsUnreconciledPct")} rawValues={avRaw("withdrawsUnreconciledPct")} rowType="variance-pct" />
+        <AdjRow label="Owner Withdraws" rowKey="ownerWithdraws" months={months} reconAdjustments={reconAdjustments} onSave={saveAdjustment} />
+        <AdjRow label="Change in Current Liabilities" rowKey="changeInCurrentLiabilities" months={months} reconAdjustments={reconAdjustments} onSave={saveAdjustment} />
+        <AdjRow label="Change in LT Liabilities" rowKey="changeInLTLiabilities" months={months} reconAdjustments={reconAdjustments} onSave={saveAdjustment} />
+        <AdjRow label="Depreciation Expense" rowKey="depreciationExpense" months={months} reconAdjustments={reconAdjustments} onSave={saveAdjustment} />
+        <AdjRow label="Amortization Expense" rowKey="amortizationExpense" months={months} reconAdjustments={reconAdjustments} onSave={saveAdjustment} />
+        <AdjRow label="Bad Debt Expense" rowKey="badDebtExpense" months={months} reconAdjustments={reconAdjustments} onSave={saveAdjustment} />
+        <AdjRow label="Fixed Asset Purchases" rowKey="fixedAssetPurchases" months={months} reconAdjustments={reconAdjustments} onSave={saveAdjustment} />
+        <AdjRow label="Other" rowKey="withdrawsOther" months={months} reconAdjustments={reconAdjustments} onSave={saveAdjustment} />
+        <AddbacksRowGroup
+          section="withdrawals"
+          months={months}
+          addbackItems={addbackItems}
+          onSaveAmounts={updateAddbackItemAmounts}
+          onDelete={deleteAddbackItem}
+          onOpenPicker={() => {
+            const [sy, sm] = bankActivityStartMonth.split("-");
+            const startDate = `${sy}-${sm}-01`;
+            const [ey, em] = bankActivityEndMonth.split("-");
+            const lastDay = new Date(+ey, +em, 0).getDate();
+            const endDate = `${ey}-${em}-${String(lastDay).padStart(2, "0")}`;
+            setAddbackPickerState({ open: true, section: "withdrawals", startDate, endDate, months });
+          }}
+        />
+        <DR label="Unreconciled Variance $" values={adjWdrURaw} rawValues={adjWdrURaw} rowType="variance-amt" />
+        <DR label="Unreconciled Variance %" values={adjWdrPctRaw} rawValues={adjWdrPctRaw} rowType="variance-pct" />
       </FreezeTable>
     );
   };
@@ -2251,6 +3034,385 @@ export default function WorkspaceReconciliation() {
 
   const renderManualActivityTable = () => {
     return renderActivityTableCore(manualActivityRows, manualActivityTTM, filteredPdfMonths);
+  };
+
+  // ── Bank Reconciliation Excel export (data-driven) ───────────────────────────
+  const exportBankReconToExcel = () => {
+    const isManual = isManualUpload || isManualGl || isQBManual;
+    const months = isManual ? filteredPdfMonths : reportMonths;
+    if (!months.length) { alert("No data to export."); return; }
+
+    const colHeaders = ["", ...months.map(monthLabel), "TTM"];
+    const wb = XLSX.utils.book_new();
+
+    const fmtN = (val) => (val == null ? "" : Number(val) || 0);
+
+    // Helper: build sheet rows for one bank balance table
+    const bankRows = (bankName, rows, ttm) => {
+      const vals = (f) => [...rows.map((r) => fmtN(r[f])), fmtN(ttm[f])];
+      return [
+        [bankName],
+        colHeaders,
+        ["Starting Balance", ...vals("startingBalance")],
+        ["Deposits", ...vals("deposits")],
+        ["Withdrawals", ...vals("withdrawals")],
+        ["Ending Balance", ...vals("endingBalance")],
+        [],
+        ["Footing Check", ...vals("footingCheck")],
+        ["Prior Month Check", ...vals("priorMonthCheck")],
+        [],
+        ["Per Balance Sheet", ...vals("perBalanceSheet")],
+        ["Variance", ...vals("variance")],
+        [],
+        ["Outstanding Checks", ...vals("outstandingChecks")],
+        ["Unreconciled $ Variance", ...vals("unreconciledDollar")],
+        ["Unreconciled % Variance", ...vals("unreconciledPct")],
+        [],
+      ];
+    };
+
+    const allRows = [];
+
+    if (isManual) {
+      (extractedBankPdfData?.banks || []).forEach((bank) => {
+        const monthMap = Object.fromEntries((bank.months || []).map((m) => [m.monthKey, m]));
+        const baseRows = months.map((mk) => {
+          const m = monthMap[mk];
+          return { month: mk, startingBalance: m?.startingBalance ?? 0, deposits: m?.deposits ?? 0, withdrawals: m?.withdrawals ?? 0, endingBalance: m?.endingBalance ?? 0 };
+        });
+        const rows = baseRows.map((r, i) => ({
+          ...r,
+          footingCheck: r.endingBalance - (r.startingBalance + r.deposits - r.withdrawals),
+          priorMonthCheck: i === 0 ? 0 : baseRows[i - 1].endingBalance - r.startingBalance,
+          perBalanceSheet: null, variance: null, outstandingChecks: 0, unreconciledDollar: null, unreconciledPct: null,
+        }));
+        const ttm = rows.slice(-12).reduce((acc, r, i) => ({
+          startingBalance: i === 0 ? r.startingBalance : acc.startingBalance,
+          deposits: acc.deposits + r.deposits, withdrawals: acc.withdrawals + r.withdrawals, endingBalance: r.endingBalance,
+          footingCheck: acc.footingCheck + r.footingCheck, priorMonthCheck: acc.priorMonthCheck + r.priorMonthCheck,
+          perBalanceSheet: null, variance: null, outstandingChecks: 0, unreconciledDollar: null, unreconciledPct: null,
+        }), { startingBalance: 0, deposits: 0, withdrawals: 0, endingBalance: 0, footingCheck: 0, priorMonthCheck: 0,
+              perBalanceSheet: null, variance: null, outstandingChecks: 0, unreconciledDollar: null, unreconciledPct: null });
+        allRows.push(...bankRows(bank.bankName || "Bank Account", rows, ttm));
+      });
+    } else {
+      for (const account of (qbBankActivity?.accounts || [])) {
+        const { rows, ttm } = buildAccountBalanceDataFromQB(account);
+        allRows.push(...bankRows(account.accountName, rows, ttm));
+      }
+    }
+
+    // Activity Review
+    const actRows = isManual ? manualActivityRows : activityRows;
+    const actTTM = isManual ? manualActivityTTM : activityTTM;
+    if (actRows.length) {
+      const getAdj = (month, key) => reconAdjustments?.[`${month}_${key}`] ?? 0;
+      const adjTTM = (key) => months.slice(-12).reduce((s, m) => s + getAdj(m, key), 0);
+      const adjVals = (key) => [...actRows.map((r) => getAdj(r.month, key)), adjTTM(key)];
+      const depMap = {}, wdrMap = {};
+      addbackItems.forEach((item) => {
+        const map = item.section === "deposits" ? depMap : wdrMap;
+        Object.entries(item.monthAmounts || {}).forEach(([m, amt]) => { map[m] = (map[m] || 0) + Number(amt); });
+      });
+      const depUnrec = actRows.map((r) =>
+        r.depositsDollarVar + getAdj(r.month, "changeInAR") + getAdj(r.month, "changeInARRetentions")
+        + getAdj(r.month, "fixedAssetDisposals") + getAdj(r.month, "depositsOther") + (depMap[r.month] ?? 0));
+      const ttmDepUnrec = months.slice(-12).reduce((s, m) =>
+        s + getAdj(m, "changeInAR") + getAdj(m, "changeInARRetentions") + getAdj(m, "fixedAssetDisposals")
+        + getAdj(m, "depositsOther") + (depMap[m] ?? 0), actTTM.depositsDollarVar ?? 0);
+      const wdrUnrec = actRows.map((r) =>
+        r.withdrawsDollarVar + getAdj(r.month, "ownerWithdraws") + getAdj(r.month, "changeInCurrentLiabilities")
+        + getAdj(r.month, "changeInLTLiabilities") + getAdj(r.month, "depreciationExpense")
+        + getAdj(r.month, "amortizationExpense") + getAdj(r.month, "badDebtExpense")
+        + getAdj(r.month, "fixedAssetPurchases") + getAdj(r.month, "withdrawsOther") + (wdrMap[r.month] ?? 0));
+      const ttmWdrUnrec = months.slice(-12).reduce((s, m) =>
+        s + getAdj(m, "ownerWithdraws") + getAdj(m, "changeInCurrentLiabilities") + getAdj(m, "changeInLTLiabilities")
+        + getAdj(m, "depreciationExpense") + getAdj(m, "amortizationExpense") + getAdj(m, "badDebtExpense")
+        + getAdj(m, "fixedAssetPurchases") + getAdj(m, "withdrawsOther") + (wdrMap[m] ?? 0), actTTM.withdrawsDollarVar ?? 0);
+      const adjDepURaw = [...depUnrec, ttmDepUnrec];
+      const adjWdrURaw = [...wdrUnrec, ttmWdrUnrec];
+      const av = (f) => [...actRows.map((r) => fmtN(r[f])), fmtN(actTTM[f])];
+
+      allRows.push(
+        ["Activity Review"], colHeaders,
+        ["Total Deposits", ...av("totalDeposits")],
+        ["  Intercompany Transfers", ...av("withdrawIntercompanyTransfers")],
+        ["External Deposits", ...av("externalDeposits")],
+        ["Sales per Financials", ...av("salesPerFinancials")],
+        ["$ Variance", ...adjDepURaw.map((v) => fmtN(v))],
+        [],
+        ["Change in AR", ...adjVals("changeInAR")],
+        ["Change in AR Retentions", ...adjVals("changeInARRetentions")],
+        ["Fixed Asset Disposals", ...adjVals("fixedAssetDisposals")],
+        ["Other", ...adjVals("depositsOther")],
+        ...addbackItems.filter((i) => i.section === "deposits").map((item) => [
+          `  ${item.name}`,
+          ...actRows.map((r) => fmtN(item.monthAmounts[r.month])),
+          actRows.slice(-12).reduce((s, r) => s + (Number(item.monthAmounts[r.month]) || 0), 0),
+        ]),
+        ["Unreconciled Variance $", ...adjDepURaw.map((v) => fmtN(v))],
+        [],
+        ["Total Withdrawals", ...av("totalWithdrawals")],
+        ["  Intercompany Transfers", ...av("intercompanyTransfers")],
+        ["External Withdrawals", ...av("externalWithdraws")],
+        ["Expenses per Financials", ...av("expensesPerFinancials")],
+        ["$ Variance", ...adjWdrURaw.map((v) => fmtN(v))],
+        [],
+        ["Owner Withdrawals", ...adjVals("ownerWithdraws")],
+        ["Change in Current Liabilities", ...adjVals("changeInCurrentLiabilities")],
+        ["Change in LT Liabilities", ...adjVals("changeInLTLiabilities")],
+        ["Depreciation Expense", ...adjVals("depreciationExpense")],
+        ["Amortization Expense", ...adjVals("amortizationExpense")],
+        ["Bad Debt Expense", ...adjVals("badDebtExpense")],
+        ["Fixed Asset Purchases", ...adjVals("fixedAssetPurchases")],
+        ["Other", ...adjVals("withdrawsOther")],
+        ...addbackItems.filter((i) => i.section === "withdrawals").map((item) => [
+          `  ${item.name}`,
+          ...actRows.map((r) => fmtN(item.monthAmounts[r.month])),
+          actRows.slice(-12).reduce((s, r) => s + (Number(item.monthAmounts[r.month]) || 0), 0),
+        ]),
+        ["Unreconciled Variance $", ...adjWdrURaw.map((v) => fmtN(v))],
+      );
+    }
+
+    const ws = XLSX.utils.aoa_to_sheet(allRows);
+    XLSX.utils.book_append_sheet(wb, ws, "Bank Reconciliation");
+    XLSX.writeFile(wb, "Bank Reconciliation.xlsx");
+  };
+
+  // ── Bank Reconciliation PDF export (data-driven, uses jsPDF directly) ──────
+  const exportBankReconToPdf = () => {
+    const isManual = isManualUpload || isManualGl || isQBManual;
+    const months = isManual ? filteredPdfMonths : reportMonths;
+    if (!months.length) { alert("No data to export."); return; }
+
+    const nValCols = months.length + 1;
+    const isCompact = nValCols >= 9;
+    const usePortrait = nValCols <= 3;
+    const PW = usePortrait ? 595.28 : 841.89;
+    const PH = usePortrait ? 841.89 : 595.28;
+    const ML = isCompact ? 22 : 28, MR = isCompact ? 22 : 28;
+    const MT = 45, MB = 38;
+    const CW = PW - ML - MR;
+    const ROW_H = isCompact ? 14 : 16;
+    const DATA_FONT = isCompact ? 7.5 : 8.5;
+    const HDR_FONT = isCompact ? 7 : 8;
+    const MIN_NAME_W = 140;
+    const VAL_W = Math.max(42, (CW - MIN_NAME_W) / nValCols);
+    const NAME_W = Math.max(MIN_NAME_W, CW - nValCols * VAL_W);
+    const CELL_PAD = 3;
+
+    const doc = new jsPDF({ orientation: usePortrait ? "portrait" : "landscape", unit: "pt", format: "a4" });
+    const valColRight = (i) => PW - MR - (nValCols - 1 - i) * VAL_W;
+    const nameSepX = ML + NAME_W;
+
+    const fmt = (val) => {
+      if (val == null || val === 0) return "-";
+      const n = typeof val === "number" ? val : Number(val);
+      if (isNaN(n) || n === 0) return "-";
+      const abs = Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      return n < 0 ? `(${abs})` : abs;
+    };
+    const fmtVar = (val) => {
+      if (val == null) return { text: "-", neg: false };
+      const n = Number(val);
+      if (isNaN(n) || n === 0) return { text: "-", neg: false };
+      const abs = Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      return { text: n < 0 ? `-${abs}` : `+${abs}`, neg: n < 0 };
+    };
+    const fmtPct = (val) => {
+      if (val == null) return { text: "-", neg: false };
+      const n = Number(val);
+      if (isNaN(n) || n === 0) return { text: "-", neg: false };
+      const abs = Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+      return { text: n < 0 ? `-${abs}%` : `+${abs}%`, neg: n < 0 };
+    };
+    const drawVertLines = (top, bottom) => {
+      doc.setDrawColor(210, 210, 210); doc.setLineWidth(0.4);
+      doc.line(nameSepX, top, nameSepX, bottom);
+      for (let i = 0; i < nValCols - 1; i++) doc.line(valColRight(i), top, valColRight(i), bottom);
+    };
+    let y = MT;
+    const checkPageBreak = () => { if (y + ROW_H > PH - MB) { doc.addPage(); y = MT; } };
+    const drawSectionTitle = (title) => {
+      checkPageBreak(); y += 8;
+      doc.setFont("helvetica", "bold"); doc.setFontSize(10); doc.setTextColor(30, 80, 30);
+      doc.text(title, ML, y); y += 12;
+      doc.setDrawColor(190, 190, 190); doc.setLineWidth(0.5); doc.line(ML, y, PW - MR, y); y += 6;
+    };
+    const drawTableHeader = (label, cols) => {
+      checkPageBreak();
+      const top = y, bottom = y + ROW_H + 4;
+      doc.setFillColor(237, 239, 242); doc.rect(ML, top, CW, bottom - top, "F");
+      doc.setFont("helvetica", "bold"); doc.setFontSize(HDR_FONT); doc.setTextColor(60, 60, 60);
+      doc.text(label, ML + 4, bottom - 4);
+      cols.forEach((col, i) => doc.text(col, valColRight(i) - CELL_PAD, bottom - 4, { align: "right" }));
+      y = bottom;
+      doc.setDrawColor(30, 30, 30); doc.setLineWidth(0.8); doc.line(ML, y, PW - MR, y);
+      drawVertLines(top, y); y += 3;
+    };
+    const drawRow = (label, values, opts = {}) => {
+      checkPageBreak();
+      const { bold = false, indent = 0, rowType = "normal" } = opts;
+      const top = y, bottom = y + ROW_H;
+      if (bold) { doc.setFillColor(232, 234, 237); doc.rect(ML, top, CW, bottom - top, "F"); }
+      doc.setFont("helvetica", bold ? "bold" : "normal"); doc.setFontSize(DATA_FONT); doc.setTextColor(bold ? 15 : 45);
+      const lbl = doc.splitTextToSize(String(label), NAME_W - indent * 12 - 8)[0] ?? label;
+      doc.text(lbl, ML + indent * 12 + 4, bottom - 4);
+      values.forEach((val, i) => {
+        let text, neg = false;
+        if (rowType === "variance-amt") { const r = fmtVar(val); text = r.text; neg = r.neg; }
+        else if (rowType === "variance-pct") { const r = fmtPct(val); text = r.text; neg = r.neg; }
+        else { text = fmt(val); neg = typeof val === "number" && val < 0; }
+        if (!text || text === "") return;
+        doc.setTextColor(neg ? 180 : (bold ? 15 : 45), neg ? 30 : (bold ? 15 : 45), neg ? 30 : (bold ? 15 : 45));
+        doc.text(text, valColRight(i) - CELL_PAD, bottom - 4, { align: "right" });
+      });
+      doc.setDrawColor(218, 220, 224); doc.setLineWidth(0.3); doc.line(ML, bottom, PW - MR, bottom);
+      drawVertLines(top, bottom); y += ROW_H;
+    };
+    const spacer = () => { y += 4; };
+
+    // Title
+    doc.setFont("helvetica", "bold"); doc.setFontSize(13); doc.setTextColor(10, 10, 10);
+    doc.text("Bank Reconciliation", PW / 2, y, { align: "center" }); y += 16;
+    doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.setTextColor(60, 60, 60);
+    doc.text(`${monthLabel(months[0])} – ${monthLabel(months[months.length - 1])}`, PW / 2, y, { align: "center" }); y += 12;
+    doc.setDrawColor(190, 190, 190); doc.setLineWidth(0.5); doc.line(ML, y, PW - MR, y); y += 12;
+
+    const colHeaders = [...months.map(monthLabel), "TTM"];
+
+    // Bank balance tables — always export ALL banks, ignoring the dropdown filter
+    const drawManualBank = (bank) => {
+      if (!bank) return;
+      drawSectionTitle(bank.bankName || "Bank Account");
+      const monthMap = Object.fromEntries((bank.months || []).map((m) => [m.monthKey, m]));
+      const baseRows = months.map((mk) => {
+        const m = monthMap[mk];
+        return { month: mk, startingBalance: m?.startingBalance ?? 0, deposits: m?.deposits ?? 0, withdrawals: m?.withdrawals ?? 0, endingBalance: m?.endingBalance ?? 0 };
+      });
+      const rows = baseRows.map((r, i) => ({
+        ...r, intercompanyDeposits: 0, intercompanyWithdraws: 0,
+        footingCheck: r.endingBalance - (r.startingBalance + r.deposits - r.withdrawals),
+        priorMonthCheck: i === 0 ? 0 : baseRows[i - 1].endingBalance - r.startingBalance,
+        perBalanceSheet: null, variance: null, outstandingChecks: 0, unreconciledDollar: null, unreconciledPct: null,
+      }));
+      const ttm = rows.slice(-12).reduce((acc, r, i) => ({
+        startingBalance: i === 0 ? r.startingBalance : acc.startingBalance,
+        deposits: acc.deposits + r.deposits, withdrawals: acc.withdrawals + r.withdrawals, endingBalance: r.endingBalance,
+        intercompanyDeposits: 0, intercompanyWithdraws: 0,
+        footingCheck: acc.footingCheck + r.footingCheck, priorMonthCheck: acc.priorMonthCheck + r.priorMonthCheck,
+        perBalanceSheet: null, variance: null, outstandingChecks: 0, unreconciledDollar: null, unreconciledPct: null,
+      }), { startingBalance: 0, deposits: 0, withdrawals: 0, endingBalance: 0, intercompanyDeposits: 0, intercompanyWithdraws: 0,
+            footingCheck: 0, priorMonthCheck: 0, perBalanceSheet: null, variance: null, outstandingChecks: 0, unreconciledDollar: null, unreconciledPct: null });
+      const vals = (f) => [...rows.map((r) => r[f]), ttm[f]];
+      drawTableHeader(bank.bankName, colHeaders);
+      drawRow("Starting Balance", vals("startingBalance"), { bold: true });
+      drawRow("Deposits", vals("deposits")); drawRow("Withdrawals", vals("withdrawals"));
+      drawRow("Ending Balance", vals("endingBalance"), { bold: true }); spacer();
+      drawRow("Footing Check", vals("footingCheck")); drawRow("Prior Month Check", vals("priorMonthCheck")); spacer();
+      drawRow("Unreconciled $ Variance", vals("unreconciledDollar"), { rowType: "variance-amt" });
+      drawRow("Unreconciled % Variance", vals("unreconciledPct"), { rowType: "variance-pct" });
+    };
+
+    if (isManual) {
+      (extractedBankPdfData?.banks || []).forEach(drawManualBank);
+    } else {
+      for (const account of (qbBankActivity?.accounts || [])) {
+        drawSectionTitle(account.accountName);
+        const { rows, ttm } = buildAccountBalanceDataFromQB(account);
+        const vals = (f) => [...rows.map((r) => r[f]), ttm[f]];
+        drawTableHeader(account.accountName, colHeaders);
+        drawRow("Starting Balance", vals("startingBalance"), { bold: true });
+        drawRow("Deposits", vals("deposits")); drawRow("Withdrawals", vals("withdrawals"));
+        drawRow("Ending Balance", vals("endingBalance"), { bold: true }); spacer();
+        drawRow("Intercompany Deposits", vals("intercompanyDeposits"), { indent: 1 });
+        drawRow("Intercompany Withdrawals", vals("intercompanyWithdraws"), { indent: 1 }); spacer();
+        drawRow("Footing Check", vals("footingCheck")); drawRow("Prior Month Check", vals("priorMonthCheck")); spacer();
+        drawRow("Per Balance Sheet", vals("perBalanceSheet"), { bold: true });
+        drawRow("Variance", vals("variance"), { rowType: "variance-amt" }); spacer();
+        drawRow("Outstanding Checks", vals("outstandingChecks"));
+        drawRow("Unreconciled $ Variance", vals("unreconciledDollar"), { rowType: "variance-amt" });
+        drawRow("Unreconciled % Variance", vals("unreconciledPct"), { rowType: "variance-pct" });
+      }
+    }
+
+    // Activity Review
+    const actRows = isManual ? manualActivityRows : activityRows;
+    const actTTM = isManual ? manualActivityTTM : activityTTM;
+    if (actRows.length) {
+      drawSectionTitle("Activity Review");
+      const getAdj = (month, key) => reconAdjustments?.[`${month}_${key}`] ?? 0;
+      const adjTTM = (key) => months.slice(-12).reduce((s, m) => s + getAdj(m, key), 0);
+      const adjVals = (key) => [...actRows.map((r) => getAdj(r.month, key)), adjTTM(key)];
+      const depMap = {}, wdrMap = {};
+      addbackItems.forEach((item) => {
+        const map = item.section === "deposits" ? depMap : wdrMap;
+        Object.entries(item.monthAmounts || {}).forEach(([m, amt]) => { map[m] = (map[m] || 0) + Number(amt); });
+      });
+      const depUnrec = actRows.map((r) =>
+        r.depositsDollarVar + getAdj(r.month, "changeInAR") + getAdj(r.month, "changeInARRetentions")
+        + getAdj(r.month, "fixedAssetDisposals") + getAdj(r.month, "depositsOther") + (depMap[r.month] ?? 0));
+      const ttmDepUnrec = months.slice(-12).reduce((s, m) =>
+        s + getAdj(m, "changeInAR") + getAdj(m, "changeInARRetentions") + getAdj(m, "fixedAssetDisposals")
+        + getAdj(m, "depositsOther") + (depMap[m] ?? 0), actTTM.depositsDollarVar ?? 0);
+      const wdrUnrec = actRows.map((r) =>
+        r.withdrawsDollarVar + getAdj(r.month, "ownerWithdraws") + getAdj(r.month, "changeInCurrentLiabilities")
+        + getAdj(r.month, "changeInLTLiabilities") + getAdj(r.month, "depreciationExpense")
+        + getAdj(r.month, "amortizationExpense") + getAdj(r.month, "badDebtExpense")
+        + getAdj(r.month, "fixedAssetPurchases") + getAdj(r.month, "withdrawsOther") + (wdrMap[r.month] ?? 0));
+      const ttmWdrUnrec = months.slice(-12).reduce((s, m) =>
+        s + getAdj(m, "ownerWithdraws") + getAdj(m, "changeInCurrentLiabilities") + getAdj(m, "changeInLTLiabilities")
+        + getAdj(m, "depreciationExpense") + getAdj(m, "amortizationExpense") + getAdj(m, "badDebtExpense")
+        + getAdj(m, "fixedAssetPurchases") + getAdj(m, "withdrawsOther") + (wdrMap[m] ?? 0), actTTM.withdrawsDollarVar ?? 0);
+      const adjDepURaw = [...depUnrec, ttmDepUnrec];
+      const adjWdrURaw = [...wdrUnrec, ttmWdrUnrec];
+      const av = (f) => [...actRows.map((r) => r[f] ?? null), actTTM[f] ?? null];
+      drawTableHeader("Activity Review", colHeaders);
+      drawRow("Total Deposits", av("totalDeposits"), { bold: true });
+      drawRow("Intercompany Transfers", av("withdrawIntercompanyTransfers"), { indent: 1 });
+      drawRow("External Deposits", av("externalDeposits"), { bold: true });
+      drawRow("Sales per Financials", av("salesPerFinancials"));
+      drawRow("$ Variance", av("depositsDollarVar"), { rowType: "variance-amt" });
+      drawRow("% Variance", av("depositsPctVar"), { rowType: "variance-pct" }); spacer();
+      drawRow("Change in AR", adjVals("changeInAR"));
+      drawRow("Change in AR Retentions", adjVals("changeInARRetentions"));
+      drawRow("Fixed Asset Disposals", adjVals("fixedAssetDisposals"));
+      drawRow("Other", adjVals("depositsOther"));
+      addbackItems.filter((i) => i.section === "deposits").forEach((item) => {
+        drawRow(item.name, [...actRows.map((r) => item.monthAmounts[r.month] ?? null),
+          actRows.slice(-12).reduce((s, r) => s + (Number(item.monthAmounts[r.month]) || 0), 0)], { indent: 1 });
+      });
+      drawRow("Unreconciled Variance $", adjDepURaw, { rowType: "variance-amt" }); spacer();
+      drawRow("Total Withdrawals", av("totalWithdrawals"), { bold: true });
+      drawRow("Intercompany Transfers", av("intercompanyTransfers"), { indent: 1 });
+      drawRow("External Withdrawals", av("externalWithdraws"), { bold: true });
+      drawRow("Expenses per Financials", av("expensesPerFinancials"));
+      drawRow("$ Variance", av("withdrawsDollarVar"), { rowType: "variance-amt" });
+      drawRow("% Variance", av("withdrawsPctVar"), { rowType: "variance-pct" }); spacer();
+      drawRow("Owner Withdrawals", adjVals("ownerWithdraws"));
+      drawRow("Change in Current Liabilities", adjVals("changeInCurrentLiabilities"));
+      drawRow("Change in LT Liabilities", adjVals("changeInLTLiabilities"));
+      drawRow("Depreciation Expense", adjVals("depreciationExpense"));
+      drawRow("Amortization Expense", adjVals("amortizationExpense"));
+      drawRow("Bad Debt Expense", adjVals("badDebtExpense"));
+      drawRow("Fixed Asset Purchases", adjVals("fixedAssetPurchases"));
+      drawRow("Other", adjVals("withdrawsOther"));
+      addbackItems.filter((i) => i.section === "withdrawals").forEach((item) => {
+        drawRow(item.name, [...actRows.map((r) => item.monthAmounts[r.month] ?? null),
+          actRows.slice(-12).reduce((s, r) => s + (Number(item.monthAmounts[r.month]) || 0), 0)], { indent: 1 });
+      });
+      drawRow("Unreconciled Variance $", adjWdrURaw, { rowType: "variance-amt" });
+    }
+
+    // Footer
+    const totalPages = doc.getNumberOfPages();
+    const nowStr = new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
+    for (let p = 1; p <= totalPages; p++) {
+      doc.setPage(p); doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(150, 150, 150);
+      doc.text(nowStr, ML, PH - 16); doc.text(`${p} / ${totalPages}`, PW - MR, PH - 16, { align: "right" });
+    }
+    doc.save("Bank Reconciliation.pdf");
   };
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -2396,7 +3558,8 @@ export default function WorkspaceReconciliation() {
           </section>
         )}
 
-        {/* Bank Account Balances */}
+        {/* Bank Account Balances + Activity Review — wrapped for export */}
+        <div id="bank-recon-table" className="flex flex-col gap-6">
         <section className="card-base card-p w-full">
           <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
             <div>
@@ -2505,9 +3668,44 @@ export default function WorkspaceReconciliation() {
                   </select>
                 )}
               </div>
+              {/* Export dropdown */}
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setBankReconExportOpen((v) => !v)}
+                  disabled={bankReconIsExporting}
+                  className="btn-outline flex h-10 items-center gap-1.5 px-3 text-[13px]"
+                >
+                  <Download size={14} className={bankReconIsExporting ? "animate-pulse" : ""} />
+                  {bankReconIsExporting ? "Exporting…" : "Export"}
+                  <ChevronDown size={12} />
+                </button>
+                {bankReconExportOpen && (
+                  <>
+                    <div className="fixed inset-0 z-10" onClick={() => setBankReconExportOpen(false)} />
+                    <div className="absolute right-0 z-20 mt-1 w-48 overflow-hidden rounded-md border border-border bg-bg-card shadow-lg">
+                      <button
+                        type="button"
+                        onClick={() => handleBankReconExport("excel")}
+                        className="block w-full px-3 py-2 text-left text-[13px] text-text-primary transition-colors hover:bg-bg-page"
+                      >
+                        Export to Excel (.xlsx)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleBankReconExport("pdf")}
+                        className="block w-full px-3 py-2 text-left text-[13px] text-text-primary transition-colors hover:bg-bg-page"
+                      >
+                        Export to PDF (.pdf)
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
             </div>{/* end flex items-end gap-3 */}
           </div>
 
+          <div>
           {(isManualUpload || isManualGl || isQBManual) ? (
             extractedBankPdfData ? (
               renderManualBalanceAccountTable(
@@ -2531,6 +3729,7 @@ export default function WorkspaceReconciliation() {
               Fetch bank activity to see account balances.
             </div>
           )}
+          </div>
         </section>
 
         {/* Activity Review */}
@@ -2564,7 +3763,27 @@ export default function WorkspaceReconciliation() {
             </div>
           )}
         </section>
+        </div>{/* end bank-recon-table export wrapper */}
       </div>
+
+      {addbackPickerState?.open && (
+        <AddbackPickerModal
+          isOpen
+          section={addbackPickerState.section}
+          months={addbackPickerState.months || []}
+          clientId={clientId}
+          startDate={addbackPickerState.startDate}
+          endDate={addbackPickerState.endDate}
+          accountingMethod={bankActivityAccountingMethod}
+          getHeaders={getHeaders}
+          existingItems={addbackItems}
+          reportSource={selectedReportSource}
+          onAdd={(name, source, monthAmounts) =>
+            createAddbackItem(addbackPickerState.section, name, source, monthAmounts)
+          }
+          onClose={() => setAddbackPickerState(null)}
+        />
+      )}
     </>
   );
 }

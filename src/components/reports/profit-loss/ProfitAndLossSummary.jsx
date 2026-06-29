@@ -31,8 +31,11 @@ const calculatePctChange = (current, previous) => {
 
 const PNLRow = ({ line, depth = 0, columns }) => {
   const [isOpen, setIsOpen] = useState(depth < 1);
+  const [vendorsOpen, setVendorsOpen] = useState(false);
   const hasChildren = Boolean(line.children?.length);
   const isHeader = line.type === "header";
+  const isTotal = line.type === "total";
+  const hasVendors = !isTotal && !isHeader && Array.isArray(line.vendors) && line.vendors.length > 0;
   const nameLower = (line.name || "").toLowerCase();
 
   // Bold specific rows as per requirements
@@ -62,9 +65,13 @@ const PNLRow = ({ line, depth = 0, columns }) => {
   const ytdPct = calculatePctChange(currentYTD, prevYTD);
 
   const toggle = (e) => {
-    if (!hasChildren) return;
-    e.stopPropagation();
-    setIsOpen((prev) => !prev);
+    if (hasChildren) {
+      e.stopPropagation();
+      setIsOpen((prev) => !prev);
+    } else if (hasVendors) {
+      e.stopPropagation();
+      setVendorsOpen((prev) => !prev);
+    }
   };
 
   return (
@@ -73,8 +80,8 @@ const PNLRow = ({ line, depth = 0, columns }) => {
         onClick={toggle}
         className={cn(
           "group transition-colors border-b border-border-light",
-          hasChildren && "cursor-pointer hover:bg-bg-page/50",
-          !hasChildren && "hover:bg-bg-page/30",
+          (hasChildren || hasVendors) && "cursor-pointer hover:bg-bg-page/50",
+          !hasChildren && !hasVendors && "hover:bg-bg-page/30",
           isBold && "bg-bg-page/60 font-semibold border-b-2 border-text-primary",
           isHeader && depth === 0 && "bg-bg-page/30 border-t border-border"
         )}
@@ -94,6 +101,12 @@ const PNLRow = ({ line, depth = 0, columns }) => {
                     <ChevronDown size={14} className="text-text-muted group-hover:text-text-primary" />
                   ) : (
                     <ChevronRight size={14} className="text-text-muted group-hover:text-text-primary" />
+                  )
+                ) : hasVendors ? (
+                  vendorsOpen ? (
+                    <ChevronDown size={13} className="text-text-muted group-hover:text-text-primary" />
+                  ) : (
+                    <ChevronRight size={13} className="text-text-muted group-hover:text-text-primary" />
                   )
                 ) : null}
               </div>
@@ -212,6 +225,46 @@ const PNLRow = ({ line, depth = 0, columns }) => {
           <PNLRow key={child.id || `pnl-${depth}-${index}`} line={child} depth={depth + 1} columns={columns} />
         ))
       )}
+
+      {/* Vendor breakdown rows */}
+      {vendorsOpen && hasVendors && (
+        <>
+          <tr className="bg-bg-page/20">
+            <td
+              colSpan={50}
+              style={{ paddingLeft: `${(depth + 1) * 24 + 16}px` }}
+              className="py-1 text-[10px] font-bold uppercase tracking-widest text-text-muted"
+            >
+              Vendor
+            </td>
+          </tr>
+          {line.vendors.map((vendor) => (
+            <tr key={vendor.name} className="border-b border-border-light/50 hover:bg-bg-page/20">
+              <td className="py-1.5 px-4 text-left min-w-[320px]">
+                <div className="flex items-center">
+                  <div className="flex shrink-0">
+                    {Array.from({ length: depth + 2 }).map((_, i) => (
+                      <div key={i} className="w-6 h-5 border-r border-border-light/50 mr-[-1px]" />
+                    ))}
+                  </div>
+                  <span className="text-[13px] text-text-muted whitespace-nowrap pl-1">
+                    {vendor.name}
+                  </span>
+                </div>
+              </td>
+              {yearCols.map((col) => (
+                <td key={col.key} className="py-1.5 px-3 text-right tabular-nums text-[13px] text-text-muted whitespace-nowrap">
+                  {formatValue(vendor.amounts?.[col.key] || 0)}
+                </td>
+              ))}
+              {hasYTD && <td className="py-1.5 px-3 text-right text-[13px] text-text-muted/50 whitespace-nowrap">—</td>}
+              {yearCols.length > 1 && hasYTD && <><td className="py-1.5 px-3 text-right text-[13px] text-text-muted/50 whitespace-nowrap">—</td><td className="py-1.5 px-3 text-right text-[13px] text-text-muted/50 whitespace-nowrap">—</td></>}
+              {yearCols.length > 2 && hasYTD && <><td className="py-1.5 px-3 text-right text-[13px] text-text-muted/50 whitespace-nowrap">—</td><td className="py-1.5 px-3 text-right text-[13px] text-text-muted/50 whitespace-nowrap">—</td></>}
+              {hasYTD && <><td className="py-1.5 px-3 text-right text-[13px] text-text-muted/50 whitespace-nowrap">—</td><td className="py-1.5 px-3 text-right text-[13px] text-text-muted/50 whitespace-nowrap">—</td><td className="py-1.5 px-4 text-right text-[13px] text-text-muted/50 whitespace-nowrap">—</td></>}
+            </tr>
+          ))}
+        </>
+      )}
     </>
   );
 };
@@ -223,6 +276,7 @@ export default function ProfitAndLossSummary({
   title = "Profit & Loss",
   subtitle,
   entityName = "Company",
+  isPreview = false,
 }) {
   const { rows, columns } = useMemo(() => {
     if (!reportData) return { rows: [], columns: null };
@@ -236,9 +290,11 @@ export default function ProfitAndLossSummary({
   const hasYTD = !!(ytdComp?.currentKey);
 
   if (!columns && (!rows || rows.length === 0)) {
-
     return (
-      <div className="flex-1 flex flex-col items-center justify-center p-20 bg-bg-page/50 min-h-[500px]">
+      <div className={cn(
+        "flex-1 flex flex-col items-center justify-center",
+        isPreview ? "py-8" : "p-20 bg-bg-page/50 min-h-[500px]"
+      )}>
         <div className="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin mb-4" />
         <p className="text-text-muted font-medium">Fetching comparison data...</p>
       </div>
@@ -246,17 +302,17 @@ export default function ProfitAndLossSummary({
   }
 
   return (
-    <div className="flex-1 overflow-y-auto bg-bg-page/50 p-10 lg:p-16 font-inter">
-      <div className="max-w-[1500px] mx-auto card-base p-10 min-h-[1000px] flex flex-col rounded-sm shadow-xl">
+    <div className={cn("font-inter", isPreview ? "" : "flex-1 overflow-y-auto bg-bg-page/50 p-10 lg:p-16")}>
+      <div className={cn("flex flex-col", isPreview ? "" : "max-w-[1500px] mx-auto card-base p-10 min-h-[1000px] rounded-sm shadow-xl")}>
 
         {/* Header Section */}
-        <div className="flex flex-col items-center mb-12 relative">
-          <div className="w-12 h-1 bg-primary rounded-full mb-6" />
-          <h1 className="text-[22px] font-bold text-text-primary tracking-tight leading-none mb-2">
+        <div className={cn("flex flex-col items-center relative", isPreview ? "mb-4" : "mb-12")}>
+          <div className="w-12 h-1 bg-primary rounded-full mb-3" />
+          <h1 className="text-[20px] font-bold text-text-primary tracking-tight leading-none mb-1">
             {entityName}
           </h1>
-          <h2 className="text-[18px] font-medium text-text-secondary mb-4">{title}</h2>
-          {subtitle && (
+          <h2 className="text-[16px] font-medium text-text-secondary mb-2">{title}</h2>
+          {!isPreview && subtitle && (
             <div className="flex items-center gap-3 text-[12px] text-text-muted bg-bg-page px-4 py-1.5 rounded-full border border-border">
               <span>{subtitle}</span>
             </div>
@@ -264,7 +320,7 @@ export default function ProfitAndLossSummary({
         </div>
 
         <div className="overflow-x-auto flex-1">
-          <table className="min-w-max border-collapse">
+          <table className="w-full min-w-max border-collapse">
             <thead>
               {/* Row-level border-b on sticky <tr> elements renders through column
                   labels with border-collapse, making dates appear to sit on the
@@ -348,7 +404,7 @@ export default function ProfitAndLossSummary({
         </div>
 
         {/* Footer */}
-        <div className="mt-16 pt-8 border-t border-border flex flex-col items-center gap-4">
+        {!isPreview && <div className="mt-16 pt-8 border-t border-border flex flex-col items-center gap-4">
           <div className="flex items-center gap-8">
             <div className="flex flex-col items-center">
               <span className="text-[11px] text-text-muted mb-1">Generated on</span>
@@ -365,7 +421,7 @@ export default function ProfitAndLossSummary({
           <p className="text-[11px] text-text-muted text-center max-w-sm leading-relaxed">
             This Profit & Loss statement provides a detailed comparative analysis of the company&apos;s financial performance.
           </p>
-        </div>
+        </div>}
       </div>
 
       <style>{`

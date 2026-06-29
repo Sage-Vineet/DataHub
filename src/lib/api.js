@@ -447,6 +447,34 @@ export function listBrokerActivity(limit = 25) {
   return request(`/broker/activity?limit=${limit}`).then(ensureArray);
 }
 
+export function getWorkspacePageStateRequest(pageKey, options = {}) {
+  return request(`/workspace-page-state/${encodeURIComponent(pageKey)}`, options);
+}
+
+export function saveWorkspacePageStateRequest(pageKey, state, options = {}) {
+  return request(`/workspace-page-state/${encodeURIComponent(pageKey)}`, {
+    ...options,
+    method: 'PUT',
+    body: { state },
+  });
+}
+
+export function getCimQuestionnaireRequest(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/cim-questionnaire${query}`, options);
+}
+
+export function saveCimQuestionnaireRequest(state, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/cim-questionnaire${query}`, {
+    ...options,
+    method: 'PUT',
+    body: { state },
+  });
+}
+
 export async function uploadFile(file, options = {}) {
   if (!file) {
     throw new Error('Missing file for upload');
@@ -576,6 +604,14 @@ export function addEbitdaAdjustmentComment(adjustmentId, payload, options = {}) 
     body: payload,
     ...options,
   }).then((res) => res?.comment || res);
+}
+
+export function generateEbitdaComments(payload, options = {}) {
+  return request("/ebitda/generate-comments", {
+    method: "POST",
+    body: payload,
+    ...options,
+  }).then((res) => res?.comments || {});
 }
 
 export function listManualGlUploads(options = {}) {
@@ -1560,4 +1596,16 @@ export function markGroupMessagesRead(groupId) {
 
 export function getGroupUnreadCount(groupId) {
   return request(`/message-groups/${groupId}/messages/unread-count`).then(unwrapPayload);
+}
+
+export function getTaxReconciliationOverrides({ clientId } = {}) {
+  const qs = clientId ? `?clientId=${encodeURIComponent(clientId)}` : '';
+  return request(`/manual-report-uploads/tax-reconciliation-overrides${qs}`);
+}
+
+export function saveTaxReconciliationOverrides({ clientId, overrides } = {}) {
+  return request('/manual-report-uploads/tax-reconciliation-overrides', {
+    method: 'PUT',
+    body: { clientId, overrides },
+  });
 }

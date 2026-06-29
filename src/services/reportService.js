@@ -706,8 +706,11 @@ export async function fetchDashboardKPIs(start, end, options = {}) {
         ? {
           ...(start ? { startDate: start } : {}),
           ...(end ? { endDate: end } : {}),
+          ...(options?.datasetVersion ? { datasetVersion: String(options.datasetVersion) } : {}),
         }
-        : {};
+        : {
+          ...(options?.datasetVersion ? { datasetVersion: String(options.datasetVersion) } : {}),
+        };
 
     const [profitAndLossPayload, balanceSheetPayload] = await Promise.all([
       getManualStagedProfitLossSummary({ params: manualParams }).catch(() => null),
