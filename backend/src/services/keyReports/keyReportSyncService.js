@@ -284,6 +284,21 @@ async function generateFinancialTables(version, opts = {}) {
 
   logger.log('=== Sync started ===');
 
+  // Clear any previously generated (is_generated=true) rows so the carry-forward
+  // is recomputed from freshly extracted data. Extracted rows (is_generated=false)
+  // are left untouched — the extraction steps below will replace them per document.
+  try {
+    const [bsDel, plDel] = await Promise.all([
+      supabase.from('balance_sheet_entries').delete().eq('version_id', versionId).eq('is_generated', true),
+      supabase.from('profit_loss_entries').delete().eq('version_id', versionId).eq('is_generated', true),
+    ]);
+    if (!bsDel.error && !plDel.error) {
+      logger.log('  ✓ Cleared previously generated BS/P&L rows');
+    }
+  } catch (clearErr) {
+    logger.warn(`  Could not clear generated rows (migration 054 may not be applied yet): ${clearErr.message}`);
+  }
+
   const allMappings = await keyReportService.listMappings(versionId);
   const mappingsByCategory = groupMappingsByCategory(allMappings);
 

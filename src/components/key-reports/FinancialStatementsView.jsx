@@ -9,109 +9,133 @@ import {
 } from "lucide-react";
 import { getFinancialStatements } from "../../lib/api";
 
-// ─── Currency formatter ───────────────────────────────────────────────────────
-const fmt = (v) => {
+// ─── QB-style formatters ──────────────────────────────────────────────────────
+const fmt = (v, showDollar = false) => {
   const n = Number(v);
   if (!Number.isFinite(n)) return "—";
   const abs = Math.abs(n);
-  const str = abs.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
-  return n < 0 ? `(${str})` : str;
+  const str = abs.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const signed = n < 0 ? `(${str})` : str;
+  return showDollar ? `$${signed}` : signed;
 };
 
 const numCls = (v) => {
   const n = Number(v);
-  if (!Number.isFinite(n) || n === 0) return "text-gray-400";
+  if (!Number.isFinite(n) || n === 0) return "text-gray-500";
   return n < 0 ? "text-red-600" : "text-gray-900";
 };
 
-// ─── Collapsible Section ──────────────────────────────────────────────────────
-function CollapseSection({ label, total, defaultOpen = true, children, labelClass = "" }) {
-  const [open, setOpen] = useState(defaultOpen);
+// ─── QB PDF-style row primitives ──────────────────────────────────────────────
+function QBSectionHeader({ label }) {
   return (
-    <div>
-      <button
-        onClick={() => setOpen(o => !o)}
-        className="w-full flex items-center gap-1 px-4 py-1.5 bg-gray-100 hover:bg-gray-200 text-left"
-      >
-        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-        <span className={`text-sm font-semibold flex-1 ${labelClass}`}>{label}</span>
-        <span className={`text-sm font-semibold tabular-nums ${numCls(total)}`}>{fmt(total)}</span>
-      </button>
-      {open && children}
-    </div>
+    <tr className="bg-gray-100">
+      <td colSpan={2} className="py-1.5 px-4 text-xs font-semibold text-gray-700 tracking-wide">
+        {label}
+      </td>
+    </tr>
   );
 }
 
-// ─── Account Row ─────────────────────────────────────────────────────────────
-function AccountRow({ name, amount, indent = 1 }) {
+function QBGroupRow({ label, indent = 1 }) {
   return (
-    <div className="flex items-center px-4 py-0.5 hover:bg-gray-50 border-b border-gray-50">
-      <span className="text-xs text-gray-600 flex-1" style={{ paddingLeft: `${indent * 16}px` }}>{name}</span>
-      <span className={`text-xs tabular-nums ${numCls(amount)}`}>{fmt(amount)}</span>
-    </div>
+    <tr>
+      <td className="py-0.5 px-4 text-xs text-gray-700" style={{ paddingLeft: `${12 + indent * 16}px` }}>
+        {label}
+      </td>
+      <td />
+    </tr>
   );
 }
 
-// ─── Subtotal Row ─────────────────────────────────────────────────────────────
-function SubtotalRow({ label, amount, indent = 0, bold = false }) {
+function QBAccountRow({ name, amount, indent = 2 }) {
   return (
-    <div className={`flex items-center px-4 py-1 bg-gray-50 border-t border-gray-200 ${bold ? "border-t-2 border-gray-300" : ""}`}>
-      <span className={`text-xs flex-1 ${bold ? "font-bold" : "font-semibold"} text-gray-700`} style={{ paddingLeft: `${indent * 16}px` }}>{label}</span>
-      <span className={`text-xs tabular-nums font-semibold ${numCls(amount)}`}>{fmt(amount)}</span>
-    </div>
+    <tr className="hover:bg-gray-50">
+      <td className="py-0.5 px-4 text-xs text-gray-700" style={{ paddingLeft: `${12 + indent * 16}px` }}>
+        {name}
+      </td>
+      <td className={`py-0.5 px-4 text-right text-xs tabular-nums ${numCls(amount)}`}>
+        {fmt(amount)}
+      </td>
+    </tr>
+  );
+}
+
+function QBTotalRow({ label, amount, indent = 1, strong = false }) {
+  return (
+    <tr className="border-t border-gray-300">
+      <td className={`py-1 px-4 text-xs ${strong ? "font-bold" : "font-semibold"} text-gray-900`}
+          style={{ paddingLeft: `${12 + indent * 16}px` }}>
+        {label}
+      </td>
+      <td className={`py-1 px-4 text-right text-xs tabular-nums ${strong ? "font-bold" : "font-semibold"} ${numCls(amount)}`}>
+        {fmt(amount, true)}
+      </td>
+    </tr>
+  );
+}
+
+function QBReportTable({ children }) {
+  return (
+    <table className="w-full border-collapse">
+      <thead>
+        <tr className="border-b border-gray-200">
+          <th className="pb-2 px-4 text-left text-xs font-medium text-gray-400 uppercase tracking-wider w-full" />
+          <th className="pb-2 px-4 text-right text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap min-w-[120px]">
+            Total
+          </th>
+        </tr>
+      </thead>
+      <tbody>{children}</tbody>
+    </table>
   );
 }
 
 // ─── P&L Table ────────────────────────────────────────────────────────────────
 function ProfitLossTable({ statement: s }) {
   if (!s) return <EmptyState message="No Profit & Loss data for this period." />;
-
   return (
-    <div className="text-sm">
-      {/* Revenue */}
-      <CollapseSection label="Revenue" total={s.revenue?.total}>
-        {(s.revenue?.accounts || []).map((a, i) => (
-          <AccountRow key={i} name={a.name} amount={a.amount} />
-        ))}
-      </CollapseSection>
-      <SubtotalRow label="Total Revenue" amount={s.revenue?.total} />
+    <QBReportTable>
+      {/* Income */}
+      <QBGroupRow label="Income" indent={0} />
+      {(s.revenue?.accounts || []).map((a, i) => (
+        <QBAccountRow key={i} name={a.name} amount={a.amount} indent={1} />
+      ))}
+      <QBTotalRow label="Total Income" amount={s.revenue?.total} indent={0} />
 
-      {/* Cost of Sales */}
-      {(s.costOfSales?.accounts?.length > 0) && (
+      {/* Cost of Goods Sold */}
+      {s.costOfSales?.accounts?.length > 0 && (
         <>
-          <CollapseSection label="Cost of Sales" total={s.costOfSales?.total}>
-            {(s.costOfSales?.accounts || []).map((a, i) => (
-              <AccountRow key={i} name={a.name} amount={a.amount} />
-            ))}
-          </CollapseSection>
-          <SubtotalRow label="Total Cost of Sales" amount={s.costOfSales?.total} />
+          <tr><td colSpan={2} className="py-1" /></tr>
+          <QBGroupRow label="Cost of Goods Sold" indent={0} />
+          {s.costOfSales.accounts.map((a, i) => (
+            <QBAccountRow key={i} name={a.name} amount={a.amount} indent={1} />
+          ))}
+          <QBTotalRow label="Total Cost of Goods Sold" amount={s.costOfSales.total} indent={0} />
         </>
       )}
 
       {/* Gross Profit */}
-      <SubtotalRow label="Gross Profit" amount={s.grossProfit} bold />
+      <tr><td colSpan={2} className="py-0.5" /></tr>
+      <QBTotalRow label="Gross Profit" amount={s.grossProfit} indent={0} strong />
 
-      {/* Operating Expenses */}
-      <CollapseSection label="Operating Expenses" total={s.operatingExpenses?.total} labelClass="text-gray-800">
-        {Object.entries(s.operatingExpenses?.groups || {}).map(([group, g]) => (
-          <CollapseSection key={group} label={group} total={g.total} defaultOpen={false}>
-            {(g.accounts || []).map((a, i) => (
-              <AccountRow key={i} name={a.name} amount={a.amount} indent={2} />
-            ))}
-          </CollapseSection>
-        ))}
-      </CollapseSection>
-      <SubtotalRow label="Total Operating Expenses" amount={s.operatingExpenses?.total} />
-
-      {/* Operating Income */}
-      <SubtotalRow label="Operating Income" amount={s.operatingIncome} bold />
+      {/* Expenses */}
+      <tr><td colSpan={2} className="py-1" /></tr>
+      <QBGroupRow label="Expenses" indent={0} />
+      {Object.entries(s.operatingExpenses?.groups || {}).map(([group, g]) => (
+        <React.Fragment key={group}>
+          <QBGroupRow label={group} indent={1} />
+          {(g.accounts || []).map((a, i) => (
+            <QBAccountRow key={i} name={a.name} amount={a.amount} indent={2} />
+          ))}
+          <QBTotalRow label={`Total for ${group}`} amount={g.total} indent={1} />
+        </React.Fragment>
+      ))}
+      <QBTotalRow label="Total Expenses" amount={s.operatingExpenses?.total} indent={0} />
 
       {/* Net Income */}
-      <div className="flex items-center px-4 py-2 bg-blue-50 border-t-2 border-blue-300">
-        <span className="text-sm font-bold text-blue-900 flex-1">Net Income</span>
-        <span className={`text-sm font-bold tabular-nums ${numCls(s.netIncome)}`}>{fmt(s.netIncome)}</span>
-      </div>
-    </div>
+      <tr><td colSpan={2} className="py-0.5" /></tr>
+      <QBTotalRow label="Net Income" amount={s.netIncome} indent={0} strong />
+    </QBReportTable>
   );
 }
 
@@ -119,107 +143,90 @@ function ProfitLossTable({ statement: s }) {
 function BalanceSheetTable({ statement: s }) {
   if (!s) return <EmptyState message="No Balance Sheet data for this period." />;
 
-  const renderAssetGroups = (section) =>
+  const renderGroups = (section, indent = 2) =>
     Object.entries(section?.groups || {}).map(([group, g]) => (
-      <CollapseSection key={group} label={group} total={g.total} defaultOpen={false}>
+      <React.Fragment key={group}>
+        <QBGroupRow label={group} indent={indent} />
         {(g.accounts || []).map((a, i) => (
-          <AccountRow key={i} name={a.name} amount={a.amount} indent={2} />
+          <QBAccountRow key={i} name={a.name} amount={a.amount} indent={indent + 1} />
         ))}
-      </CollapseSection>
+        <QBTotalRow label={`Total for ${group}`} amount={g.total} indent={indent} />
+      </React.Fragment>
     ));
 
+  const hasFixedAssets = Object.keys(s.assets?.fixedAssets?.groups || {}).length > 0;
+  const hasOtherAssets = Object.keys(s.assets?.otherAssets?.groups || {}).length > 0;
+  const hasLongTerm = Object.keys(s.liabilities?.longTermLiabilities?.groups || {}).length > 0
+    || Math.abs(Number(s.liabilities?.longTermLiabilities?.total)) > 0;
+
   return (
-    <div className="text-sm">
-      {/* Assets */}
-      <div className="px-4 py-1.5 bg-blue-800 text-white">
-        <span className="font-semibold">ASSETS</span>
-      </div>
+    <QBReportTable>
+      {/* ASSETS */}
+      <QBSectionHeader label="Assets" />
+      <QBGroupRow label="Current Assets" indent={1} />
+      {renderGroups(s.assets?.currentAssets, 2)}
+      <QBTotalRow label="Total for Current Assets" amount={s.assets?.currentAssets?.total} indent={1} />
 
-      <CollapseSection label="Current Assets" total={s.assets?.currentAssets?.total}>
-        {renderAssetGroups(s.assets?.currentAssets)}
-      </CollapseSection>
-      <SubtotalRow label="Total Current Assets" amount={s.assets?.currentAssets?.total} />
-
-      <CollapseSection label="Fixed Assets" total={s.assets?.fixedAssets?.total} defaultOpen={false}>
-        {renderAssetGroups(s.assets?.fixedAssets)}
-      </CollapseSection>
-      <SubtotalRow label="Total Fixed Assets" amount={s.assets?.fixedAssets?.total} />
-
-      {Object.keys(s.assets?.otherAssets?.groups || {}).length > 0 && (
+      {hasFixedAssets && (
         <>
-          <CollapseSection label="Other Assets" total={s.assets?.otherAssets?.total} defaultOpen={false}>
-            {renderAssetGroups(s.assets?.otherAssets)}
-          </CollapseSection>
-          <SubtotalRow label="Total Other Assets" amount={s.assets?.otherAssets?.total} />
+          <tr><td colSpan={2} className="py-0.5" /></tr>
+          <QBGroupRow label="Fixed Assets" indent={1} />
+          {renderGroups(s.assets?.fixedAssets, 2)}
+          <QBTotalRow label="Total for Fixed Assets" amount={s.assets?.fixedAssets?.total} indent={1} />
         </>
       )}
 
-      <div className="flex items-center px-4 py-2 bg-blue-100 border-t-2 border-blue-400">
-        <span className="text-sm font-bold text-blue-900 flex-1">TOTAL ASSETS</span>
-        <span className={`text-sm font-bold tabular-nums ${numCls(s.totalAssets)}`}>{fmt(s.totalAssets)}</span>
-      </div>
+      {hasOtherAssets && (
+        <>
+          <tr><td colSpan={2} className="py-0.5" /></tr>
+          <QBGroupRow label="Other Assets" indent={1} />
+          {renderGroups(s.assets?.otherAssets, 2)}
+          <QBTotalRow label="Total for Other Assets" amount={s.assets?.otherAssets?.total} indent={1} />
+        </>
+      )}
 
-      {/* Liabilities */}
-      <div className="px-4 py-1.5 bg-orange-700 text-white mt-2">
-        <span className="font-semibold">LIABILITIES</span>
-      </div>
+      <tr><td colSpan={2} className="py-0.5" /></tr>
+      <QBTotalRow label="Total for Assets" amount={s.totalAssets} indent={0} strong />
 
-      <CollapseSection label="Current Liabilities" total={s.liabilities?.currentLiabilities?.total}>
-        {Object.entries(s.liabilities?.currentLiabilities?.groups || {}).map(([group, g]) => (
-          <CollapseSection key={group} label={group} total={g.total} defaultOpen={false}>
-            {(g.accounts || []).map((a, i) => (
-              <AccountRow key={i} name={a.name} amount={a.amount} indent={2} />
-            ))}
-          </CollapseSection>
-        ))}
-      </CollapseSection>
-      <SubtotalRow label="Total Current Liabilities" amount={s.liabilities?.currentLiabilities?.total} />
+      {/* LIABILITIES AND EQUITY */}
+      <tr><td colSpan={2} className="py-2" /></tr>
+      <QBSectionHeader label="Liabilities and Equity" />
 
-      <CollapseSection label="Long-Term Liabilities" total={s.liabilities?.longTermLiabilities?.total} defaultOpen={false}>
-        {Object.entries(s.liabilities?.longTermLiabilities?.groups || {}).map(([group, g]) => (
-          <CollapseSection key={group} label={group} total={g.total} defaultOpen={false}>
-            {(g.accounts || []).map((a, i) => (
-              <AccountRow key={i} name={a.name} amount={a.amount} indent={2} />
-            ))}
-          </CollapseSection>
-        ))}
-      </CollapseSection>
-      <SubtotalRow label="Total Long-Term Liabilities" amount={s.liabilities?.longTermLiabilities?.total} />
+      <QBGroupRow label="Liabilities" indent={1} />
+      <QBGroupRow label="Current Liabilities" indent={2} />
+      {renderGroups(s.liabilities?.currentLiabilities, 3)}
+      <QBTotalRow label="Total for Current Liabilities" amount={s.liabilities?.currentLiabilities?.total} indent={2} />
 
-      <div className="flex items-center px-4 py-2 bg-orange-100 border-t-2 border-orange-400">
-        <span className="text-sm font-bold text-orange-900 flex-1">TOTAL LIABILITIES</span>
-        <span className={`text-sm font-bold tabular-nums ${numCls(s.totalLiabilities)}`}>{fmt(s.totalLiabilities)}</span>
-      </div>
+      {hasLongTerm && (
+        <>
+          <tr><td colSpan={2} className="py-0.5" /></tr>
+          <QBGroupRow label="Long-term Liabilities" indent={2} />
+          {renderGroups(s.liabilities?.longTermLiabilities, 3)}
+          <QBTotalRow label="Total for Long-term Liabilities" amount={s.liabilities?.longTermLiabilities?.total} indent={2} />
+        </>
+      )}
 
-      {/* Equity */}
-      <div className="px-4 py-1.5 bg-green-700 text-white mt-2">
-        <span className="font-semibold">EQUITY</span>
-      </div>
-      <CollapseSection label="Equity Accounts" total={s.equity?.total}>
-        {(s.equity?.accounts || []).map((a, i) => (
-          <AccountRow key={i} name={a.name} amount={a.amount} />
-        ))}
-      </CollapseSection>
-      <div className="flex items-center px-4 py-2 bg-green-100 border-t-2 border-green-400">
-        <span className="text-sm font-bold text-green-900 flex-1">TOTAL EQUITY</span>
-        <span className={`text-sm font-bold tabular-nums ${numCls(s.totalEquity)}`}>{fmt(s.totalEquity)}</span>
-      </div>
+      <tr><td colSpan={2} className="py-0.5" /></tr>
+      <QBTotalRow label="Total for Liabilities" amount={s.totalLiabilities} indent={1} />
 
-      {/* Balance check */}
-      <div className={`flex items-center px-4 py-2 border-t-2 ${s.balanced ? "bg-green-50 border-green-500" : "bg-red-50 border-red-500"}`}>
-        <span className="text-sm font-bold flex-1 text-gray-900">TOTAL LIABILITIES & EQUITY</span>
-        <span className={`text-sm font-bold tabular-nums mr-4 ${numCls(s.totalLiabilitiesAndEquity)}`}>{fmt(s.totalLiabilitiesAndEquity)}</span>
-        {s.balanced
-          ? <CheckCircle size={14} className="text-green-600" />
-          : <AlertTriangle size={14} className="text-red-500" />}
-      </div>
+      <tr><td colSpan={2} className="py-0.5" /></tr>
+      <QBGroupRow label="Equity" indent={1} />
+      {(s.equity?.accounts || []).map((a, i) => (
+        <QBAccountRow key={i} name={a.name} amount={a.amount} indent={2} />
+      ))}
+      <QBTotalRow label="Total for Equity" amount={s.totalEquity} indent={1} />
+
+      <tr><td colSpan={2} className="py-0.5" /></tr>
+      <QBTotalRow label="Total for Liabilities and Equity" amount={s.totalLiabilitiesAndEquity} indent={0} strong />
 
       {!s.balanced && (
-        <div className="px-4 py-1 bg-red-50 text-xs text-red-700 border-b border-red-200">
-          Out of balance by {fmt(s.difference)}. Check for missing accounts or mapping errors.
-        </div>
+        <tr className="bg-red-50">
+          <td colSpan={2} className="px-4 py-1 text-xs text-red-700">
+            Out of balance by {fmt(s.difference)}. Check for missing accounts or mapping errors.
+          </td>
+        </tr>
       )}
-    </div>
+    </QBReportTable>
   );
 }
 
@@ -227,101 +234,108 @@ function BalanceSheetTable({ statement: s }) {
 function CashFlowTable({ statement: s }) {
   if (!s) return <EmptyState message="No Cash Flow data for this period." />;
 
-  const Section = ({ section, color }) => {
+  const CFSection = ({ section }) => {
     if (!section) return null;
-    const colorMap = {
-      blue:   { header: "bg-blue-800 text-white",   sub: "bg-blue-100 border-blue-400 text-blue-900" },
-      orange: { header: "bg-orange-700 text-white",  sub: "bg-orange-100 border-orange-400 text-orange-900" },
-      green:  { header: "bg-green-700 text-white",   sub: "bg-green-100 border-green-400 text-green-900" },
-    };
-    const c = colorMap[color] || colorMap.blue;
-
     return (
-      <div>
-        <div className={`px-4 py-1.5 ${c.header}`}>
-          <span className="font-semibold">{section.label?.toUpperCase()}</span>
-        </div>
+      <React.Fragment>
+        <QBGroupRow label={section.label} indent={1} />
         {(section.items || []).map((item, i) => (
-          <div key={i} className="flex items-center px-4 py-0.5 hover:bg-gray-50 border-b border-gray-50">
-            <span className="text-xs text-gray-600 flex-1 pl-4">{item.name}</span>
-            <span className={`text-xs tabular-nums ${numCls(item.amount)}`}>{fmt(item.amount)}</span>
-          </div>
+          <QBAccountRow key={i} name={item.name} amount={item.amount} indent={2} />
         ))}
-        <div className={`flex items-center px-4 py-2 ${c.sub} border-t-2`}>
-          <span className="text-sm font-bold flex-1">Net {section.label}</span>
-          <span className={`text-sm font-bold tabular-nums ${numCls(section.total)}`}>{fmt(section.total)}</span>
-        </div>
-      </div>
+        <QBTotalRow label={`Net ${section.label}`} amount={section.total} indent={1} />
+      </React.Fragment>
     );
   };
 
   return (
-    <div className="text-sm">
-      <Section section={s.operatingActivities}  color="blue" />
-      <Section section={s.investingActivities}  color="orange" />
-      <Section section={s.financingActivities}  color="green" />
-
-      <div className="mt-2 border-t-2 border-gray-400">
-        <div className="flex items-center px-4 py-1.5 bg-gray-50">
-          <span className="text-sm font-semibold flex-1 text-gray-700">Net Increase / (Decrease) in Cash</span>
-          <span className={`text-sm font-semibold tabular-nums ${numCls(s.netCashIncrease)}`}>{fmt(s.netCashIncrease)}</span>
-        </div>
-        <div className="flex items-center px-4 py-1.5 bg-gray-50 border-t border-gray-200">
-          <span className="text-sm font-semibold flex-1 text-gray-700">Opening Cash Balance</span>
-          <span className={`text-sm font-semibold tabular-nums ${numCls(s.openingCash)}`}>{fmt(s.openingCash)}</span>
-        </div>
-        <div className="flex items-center px-4 py-2 bg-blue-50 border-t-2 border-blue-300">
-          <span className="text-sm font-bold text-blue-900 flex-1">Ending Cash Balance</span>
-          <span className={`text-sm font-bold tabular-nums ${numCls(s.endingCash)}`}>{fmt(s.endingCash)}</span>
-        </div>
-      </div>
-    </div>
+    <QBReportTable>
+      <QBSectionHeader label="Cash Flow" />
+      <CFSection section={s.operatingActivities} />
+      <tr><td colSpan={2} className="py-0.5" /></tr>
+      <CFSection section={s.investingActivities} />
+      <tr><td colSpan={2} className="py-0.5" /></tr>
+      <CFSection section={s.financingActivities} />
+      <tr><td colSpan={2} className="py-1" /></tr>
+      <QBTotalRow label="Net Increase / (Decrease) in Cash" amount={s.netCashIncrease} indent={0} />
+      <QBAccountRow name="Opening Cash Balance" amount={s.openingCash} indent={1} />
+      <tr><td colSpan={2} className="py-0.5" /></tr>
+      <QBTotalRow label="Ending Cash Balance" amount={s.endingCash} indent={0} strong />
+    </QBReportTable>
   );
 }
+
+// ─── Shared multi-column grid helpers ─────────────────────────────────────────
+
+function buildPlRowDefs(datasets) {
+  // Union of all account names across every dataset (month or year).
+  const allRevAccounts = [...new Map(
+    datasets.flatMap(d => (d.statement?.revenue?.accounts || []).map(a => [a.name, a.name]))
+  ).values()];
+
+  const hasCos = datasets.some(d => (d.statement?.costOfSales?.accounts?.length || 0) > 0);
+  const allCosAccounts = hasCos ? [...new Map(
+    datasets.flatMap(d => (d.statement?.costOfSales?.accounts || []).map(a => [a.name, a.name]))
+  ).values()] : [];
+
+  const expGroupMap = new Map();
+  for (const d of datasets) {
+    for (const [g, gv] of Object.entries(d.statement?.operatingExpenses?.groups || {})) {
+      if (!expGroupMap.has(g)) expGroupMap.set(g, new Set());
+      for (const a of (gv.accounts || [])) expGroupMap.get(g).add(a.name);
+    }
+  }
+
+  return [
+    { label: "REVENUE",               type: "header" },
+    ...allRevAccounts.map(n => ({ label: n, type: "account", section: "revenue",  accountName: n })),
+    { label: "Total Revenue",         type: "subtotal", key: "revenue.total" },
+    ...(hasCos ? [
+      { label: "COST OF SALES",       type: "header" },
+      ...allCosAccounts.map(n => ({ label: n, type: "account", section: "cos", accountName: n })),
+      { label: "Total Cost of Sales", type: "subtotal", key: "costOfSales.total" },
+    ] : []),
+    { label: "Gross Profit",          type: "total",   key: "grossProfit" },
+    { label: "OPERATING EXPENSES",    type: "header" },
+    ...Array.from(expGroupMap.entries()).flatMap(([g, names]) => [
+      { label: g, type: "group" },
+      ...Array.from(names).map(n => ({ label: n, type: "account", group: g, accountName: n, indent: 1 })),
+    ]),
+    { label: "Total Expenses",        type: "subtotal", key: "operatingExpenses.total" },
+    { label: "Operating Income",      type: "total",   key: "operatingIncome" },
+    { label: "Net Income",            type: "grand",   key: "netIncome" },
+  ];
+}
+
+function getPlVal(stmt, row) {
+  if (!stmt) return null;
+  if (row.section === "revenue" && row.accountName)
+    return (stmt.revenue?.accounts || []).find(a => a.name === row.accountName)?.amount ?? null;
+  if (row.section === "cos" && row.accountName)
+    return (stmt.costOfSales?.accounts || []).find(a => a.name === row.accountName)?.amount ?? null;
+  if (row.group && row.accountName)
+    return (stmt.operatingExpenses?.groups?.[row.group]?.accounts || []).find(a => a.name === row.accountName)?.amount ?? null;
+  if (row.key) {
+    return row.key.split(".").reduce((o, k) => (o?.[k] !== undefined ? o[k] : null), stmt);
+  }
+  return null;
+}
+
+const PL_ROW_CLS = {
+  header:  "bg-gray-200 font-bold uppercase text-gray-700",
+  group:   "bg-gray-50 font-semibold text-gray-700",
+  account: "hover:bg-gray-50 text-gray-600",
+  subtotal:"bg-gray-100 font-semibold border-t border-gray-300 text-gray-700",
+  total:   "bg-gray-100 font-bold border-t-2 border-gray-300 text-gray-900",
+  grand:   "bg-blue-50 font-bold text-blue-900 border-t-2 border-blue-300",
+};
 
 // ─── Monthly P&L Grid ─────────────────────────────────────────────────────────
 function MonthlyPLGrid({ data }) {
   if (!data?.length) return <EmptyState message="No monthly Profit & Loss data. Upload a General Ledger file with transaction dates to enable monthly breakdown." />;
 
-  const months = data.map(d => ({ key: `${d.monthNumber}-${d.year}`, label: d.month.slice(0, 3), stmt: d.statement }));
-
-  const getVal = (stmt, path) => {
-    if (!path || !stmt) return null;
-    return path.split(".").reduce((o, k) => (o != null && o[k] !== undefined ? o[k] : null), stmt);
-  };
-
-  const rowDefs = [
-    { label: "REVENUE",                 key: null,                          type: "header" },
-    ...((data[0]?.statement?.revenue?.accounts || []).map((a, i) => ({
-      label: a.name, key: `revenue.accounts.${i}.amount`, type: "account",
-    }))),
-    { label: "Total Revenue",           key: "revenue.total",               type: "subtotal" },
-    ...((data[0]?.statement?.costOfSales?.accounts?.length
-      ? [
-          { label: "COST OF SALES",     key: null,                          type: "header" },
-          ...(data[0].statement.costOfSales.accounts.map((a, i) => ({ label: a.name, key: `costOfSales.accounts.${i}.amount`, type: "account" }))),
-          { label: "Total Cost of Sales", key: "costOfSales.total",         type: "subtotal" },
-        ] : []
-    )),
-    { label: "Gross Profit",            key: "grossProfit",                  type: "total" },
-    { label: "OPERATING EXPENSES",      key: null,                           type: "header" },
-    ...Object.entries(data[0]?.statement?.operatingExpenses?.groups || {}).flatMap(([g, gv]) => [
-      { label: g,         key: null,                                          type: "group" },
-      ...(gv.accounts || []).map((a, i) => ({ label: a.name, key: `operatingExpenses.groups.${g}.accounts.${i}.amount`, type: "account", indent: 1 })),
-    ]),
-    { label: "Total Operating Expenses",key: "operatingExpenses.total",      type: "subtotal" },
-    { label: "Operating Income",        key: "operatingIncome",              type: "total" },
-    { label: "Net Income",              key: "netIncome",                    type: "grand" },
-  ];
-
-  const rowCls = (type) => ({
-    header:  "bg-gray-200 font-bold uppercase text-gray-700",
-    group:   "bg-gray-50 font-semibold text-gray-700",
-    account: "hover:bg-gray-50 text-gray-600",
-    subtotal:"bg-gray-100 font-semibold border-t border-gray-300 text-gray-700",
-    total:   "bg-gray-100 font-bold border-t-2 border-gray-300 text-gray-900",
-    grand:   "bg-blue-50 font-bold text-blue-900 border-t-2 border-blue-300",
-  }[type] || "");
+  const months  = data.map(d => ({ key: `${d.monthNumber}-${d.year}`, label: d.month.slice(0, 3), stmt: d.statement }));
+  const rowDefs = buildPlRowDefs(data);
+  const rowCls  = (type) => PL_ROW_CLS[type] || "";
 
   return (
     <div className="overflow-x-auto">
@@ -344,7 +358,7 @@ function MonthlyPLGrid({ data }) {
                 {row.label}
               </td>
               {months.map(m => {
-                const val = getVal(m.stmt, row.key);
+                const val = getPlVal(m.stmt, row);
                 return (
                   <td key={m.key} className={`px-3 py-1 text-right tabular-nums ${val !== null ? numCls(val) : "text-gray-300"}`}>
                     {val !== null ? fmt(val) : "—"}
@@ -357,6 +371,300 @@ function MonthlyPLGrid({ data }) {
       </table>
     </div>
   );
+}
+
+// ─── All-Years P&L Grid ────────────────────────────────────────────────────────
+function AllYearsPLGrid({ yearly }) {
+  if (!yearly?.length) return <EmptyState message="No P&L data." />;
+
+  const sorted  = [...yearly].sort((a, b) => Number(a.year) - Number(b.year));
+  const rowDefs = buildPlRowDefs(sorted);
+  const rowCls  = (type) => PL_ROW_CLS[type] || "";
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="text-xs w-full border-collapse min-w-max">
+        <thead>
+          <tr className="bg-gray-100 border-b-2 border-gray-300">
+            <th className="sticky left-0 bg-gray-100 text-left px-3 py-2 w-48 font-semibold border-r border-gray-300 z-10">Account</th>
+            {sorted.map(e => (
+              <th key={e.year} className="px-3 py-2 text-right font-semibold min-w-28">FY {e.year}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rowDefs.map((row, ri) => (
+            <tr key={ri} className={`border-b border-gray-100 ${rowCls(row.type)}`}>
+              <td
+                className={`sticky left-0 px-3 py-1 border-r border-gray-300 z-10 ${rowCls(row.type) || "bg-white"}`}
+                style={{ paddingLeft: row.indent ? `${row.indent * 20 + 12}px` : undefined }}
+              >
+                {row.label}
+              </td>
+              {sorted.map(e => {
+                const val = getPlVal(e.statement, row);
+                return (
+                  <td key={e.year} className={`px-3 py-1 text-right tabular-nums ${val !== null ? numCls(val) : "text-gray-300"}`}>
+                    {val !== null ? fmt(val) : "—"}
+                  </td>
+                );
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ─── Shared Balance Sheet columnar grid helpers ───────────────────────────────
+
+function bsBuildGroupMap(datasets, secPath) {
+  const groupMap = new Map();
+  for (const d of datasets) {
+    const sec = secPath.split(".").reduce((o, k) => o?.[k], d.statement);
+    for (const [g, gv] of Object.entries(sec?.groups || {})) {
+      if (!groupMap.has(g)) groupMap.set(g, new Set());
+      for (const a of (gv.accounts || [])) groupMap.get(g).add(a.name);
+    }
+  }
+  return groupMap;
+}
+
+function bsBuildRowDefs(datasets) {
+  const currentAssetsGrps = bsBuildGroupMap(datasets, "assets.currentAssets");
+  const fixedAssetsGrps   = bsBuildGroupMap(datasets, "assets.fixedAssets");
+  const otherAssetsGrps   = bsBuildGroupMap(datasets, "assets.otherAssets");
+  const currLiabGrps      = bsBuildGroupMap(datasets, "liabilities.currentLiabilities");
+  const longTermLiabGrps  = bsBuildGroupMap(datasets, "liabilities.longTermLiabilities");
+  const equityAccounts    = [...new Map(
+    datasets.flatMap(d => (d.statement?.equity?.accounts || []).map(a => [a.name, a.name]))
+  ).values()];
+
+  const hasFixed    = fixedAssetsGrps.size > 0   || datasets.some(d => Math.abs(Number(d.statement?.assets?.fixedAssets?.total))              > 0.005);
+  const hasOther    = otherAssetsGrps.size > 0    || datasets.some(d => Math.abs(Number(d.statement?.assets?.otherAssets?.total))              > 0.005);
+  const hasLongTerm = longTermLiabGrps.size > 0   || datasets.some(d => Math.abs(Number(d.statement?.liabilities?.longTermLiabilities?.total)) > 0.005);
+
+  const buildSectionRows = (sp, label, groupMap, indent = 1) => {
+    if (groupMap.size === 0) return [];
+    const rows = [{ label, type: "group", indent }];
+    for (const [g, names] of groupMap) {
+      rows.push({ label: g,              type: "sub-group", indent: indent + 1 });
+      for (const name of names)
+        rows.push({ label: name, type: "account", indent: indent + 2, vk: "acct", sp, grp: g, name });
+      rows.push({ label: `Total ${g}`,   type: "subtotal",  indent: indent + 1, vk: "grpTotal", sp, grp: g });
+    }
+    rows.push({ label: `Total ${label}`, type: "total",     indent,             vk: "secTotal", sp });
+    return rows;
+  };
+
+  return [
+    { label: "ASSETS",                   type: "section-header" },
+    ...buildSectionRows("assets.currentAssets",              "Current Assets",        currentAssetsGrps),
+    ...(hasFixed    ? buildSectionRows("assets.fixedAssets",              "Fixed Assets",          fixedAssetsGrps)   : []),
+    ...(hasOther    ? buildSectionRows("assets.otherAssets",              "Other Assets",          otherAssetsGrps)   : []),
+    { label: "Total Assets",             type: "grand",  vk: "totalAssets" },
+    { label: "",                         type: "spacer" },
+    { label: "LIABILITIES AND EQUITY",  type: "section-header" },
+    ...buildSectionRows("liabilities.currentLiabilities",    "Current Liabilities",   currLiabGrps),
+    ...(hasLongTerm ? buildSectionRows("liabilities.longTermLiabilities", "Long-term Liabilities", longTermLiabGrps)  : []),
+    { label: "Total Liabilities",        type: "total",  vk: "totalLiab" },
+    { label: "Equity",                   type: "group",  indent: 1 },
+    ...equityAccounts.map(name => ({ label: name, type: "account", indent: 2, vk: "acct", sp: "equity", name })),
+    { label: "Total Equity",             type: "total",  vk: "totalEq" },
+    { label: "Total Liabilities & Equity", type: "grand", vk: "totalLiabEq" },
+  ];
+}
+
+function bsGetVal(stmt, row) {
+  if (!stmt) return null;
+  switch (row.vk) {
+    case "totalAssets":  return stmt.totalAssets  ?? null;
+    case "totalLiab":    return stmt.totalLiabilities ?? null;
+    case "totalEq":      return stmt.totalEquity  ?? null;
+    case "totalLiabEq":  return stmt.totalLiabilitiesAndEquity ?? null;
+    case "secTotal": { const s = row.sp.split(".").reduce((o, k) => o?.[k], stmt); return s?.total ?? null; }
+    case "grpTotal": { const s = row.sp.split(".").reduce((o, k) => o?.[k], stmt); return s?.groups?.[row.grp]?.total ?? null; }
+    case "acct": {
+      if (row.sp === "equity") return (stmt.equity?.accounts || []).find(a => a.name === row.name)?.amount ?? null;
+      const s = row.sp.split(".").reduce((o, k) => o?.[k], stmt);
+      return (s?.groups?.[row.grp]?.accounts || []).find(a => a.name === row.name)?.amount ?? null;
+    }
+    default: return null;
+  }
+}
+
+const BS_ROW_CLS = {
+  "section-header": "bg-gray-300 font-bold uppercase text-gray-800",
+  group:            "bg-gray-100 font-semibold text-gray-700",
+  "sub-group":      "bg-gray-50 font-medium text-gray-600",
+  account:          "hover:bg-gray-50 text-gray-600",
+  subtotal:         "bg-gray-100 font-semibold border-t border-gray-300 text-gray-700",
+  total:            "bg-gray-100 font-bold border-t-2 border-gray-300 text-gray-900",
+  grand:            "bg-blue-50 font-bold text-blue-900 border-t-2 border-blue-300",
+};
+
+// Generic columnar BS table — columns = [{key, label, statement}]
+function BSColumnarGrid({ columns }) {
+  const rowDefs = bsBuildRowDefs(columns.map(c => ({ statement: c.statement })));
+  const rowCls  = (type) => BS_ROW_CLS[type] || "";
+  return (
+    <div className="overflow-x-auto">
+      <table className="text-xs w-full border-collapse min-w-max">
+        <thead>
+          <tr className="bg-gray-100 border-b-2 border-gray-300">
+            <th className="sticky left-0 bg-gray-100 text-left px-3 py-2 w-48 font-semibold border-r border-gray-300 z-10">Account</th>
+            {columns.map(c => (
+              <th key={c.key} className="px-3 py-2 text-right font-semibold min-w-28 whitespace-nowrap">{c.label}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rowDefs.map((row, ri) => {
+            if (row.type === "spacer")
+              return <tr key={ri}><td colSpan={columns.length + 1} className="h-3" /></tr>;
+            return (
+              <tr key={ri} className={`border-b border-gray-100 ${rowCls(row.type)}`}>
+                <td
+                  className={`sticky left-0 px-3 py-1 border-r border-gray-300 z-10 ${rowCls(row.type) || "bg-white"}`}
+                  style={{ paddingLeft: row.indent ? `${row.indent * 16 + 12}px` : undefined }}
+                >
+                  {row.label}
+                </td>
+                {columns.map(c => {
+                  const val = bsGetVal(c.statement, row);
+                  return (
+                    <td key={c.key} className={`px-3 py-1 text-right tabular-nums ${val !== null ? numCls(val) : "text-gray-300"}`}>
+                      {val !== null ? fmt(val) : "—"}
+                    </td>
+                  );
+                })}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// All-Years Balance Sheet Grid (year columns)
+function AllYearsBSGrid({ yearly }) {
+  if (!yearly?.length) return <EmptyState message="No Balance Sheet data." />;
+  const sorted  = [...yearly].sort((a, b) => Number(a.year) - Number(b.year));
+  const columns = sorted.map(e => ({ key: e.year, label: `FY ${e.year}`, statement: e.statement }));
+  return <BSColumnarGrid columns={columns} />;
+}
+
+// Monthly Balance Sheet Grid (month columns)
+function MonthlyBSGrid({ data }) {
+  if (!data?.length) return <EmptyState message="No monthly Balance Sheet data. Upload a General Ledger file with transaction dates to enable monthly breakdown." />;
+  const columns = data.map(d => ({ key: `${d.monthNumber}-${d.year}`, label: `${d.month.slice(0, 3)} ${d.year}`, statement: d.statement }));
+  return <BSColumnarGrid columns={columns} />;
+}
+
+// ─── Shared Cash Flow columnar grid helpers ───────────────────────────────────
+
+const CF_SECTIONS = ["operatingActivities", "investingActivities", "financingActivities"];
+const CF_LABELS   = { operatingActivities: "Operating Activities", investingActivities: "Investing Activities", financingActivities: "Financing Activities" };
+
+function cfBuildRowDefs(datasets) {
+  const sectionItems = Object.fromEntries(
+    CF_SECTIONS.map(sec => [
+      sec,
+      [...new Map(datasets.flatMap(d => (d.statement?.[sec]?.items || []).map(a => [a.name, a.name]))).values()],
+    ])
+  );
+  return [
+    ...CF_SECTIONS.flatMap(sec => [
+      { label: CF_LABELS[sec],           type: "group",   indent: 0 },
+      ...sectionItems[sec].map(name => ({ label: name, type: "account", indent: 1, vk: "item", sec, name })),
+      { label: `Net ${CF_LABELS[sec]}`,  type: "subtotal",indent: 0,   vk: "secTotal", sec },
+      { label: "",                        type: "spacer" },
+    ]),
+    { label: "Net Increase / (Decrease) in Cash", type: "total",   vk: "netCash"  },
+    { label: "Opening Cash Balance",              type: "account", vk: "openCash", indent: 1 },
+    { label: "Ending Cash Balance",               type: "grand",   vk: "endCash"  },
+  ];
+}
+
+function cfGetVal(stmt, row) {
+  if (!stmt) return null;
+  switch (row.vk) {
+    case "item":     return (stmt[row.sec]?.items || []).find(a => a.name === row.name)?.amount ?? null;
+    case "secTotal": return stmt[row.sec]?.total ?? null;
+    case "netCash":  return stmt.netCashIncrease ?? null;
+    case "openCash": return stmt.openingCash     ?? null;
+    case "endCash":  return stmt.endingCash      ?? null;
+    default:         return null;
+  }
+}
+
+const CF_ROW_CLS = {
+  group:   "bg-gray-100 font-semibold text-gray-700",
+  account: "hover:bg-gray-50 text-gray-600",
+  subtotal:"bg-gray-100 font-semibold border-t border-gray-300 text-gray-700",
+  total:   "bg-gray-100 font-bold border-t-2 border-gray-300 text-gray-900",
+  grand:   "bg-blue-50 font-bold text-blue-900 border-t-2 border-blue-300",
+};
+
+// Generic columnar CF table — columns = [{key, label, statement}]
+function CFColumnarGrid({ columns }) {
+  const rowDefs = cfBuildRowDefs(columns.map(c => ({ statement: c.statement })));
+  const rowCls  = (type) => CF_ROW_CLS[type] || "";
+  return (
+    <div className="overflow-x-auto">
+      <table className="text-xs w-full border-collapse min-w-max">
+        <thead>
+          <tr className="bg-gray-100 border-b-2 border-gray-300">
+            <th className="sticky left-0 bg-gray-100 text-left px-3 py-2 w-48 font-semibold border-r border-gray-300 z-10">Account</th>
+            {columns.map(c => (
+              <th key={c.key} className="px-3 py-2 text-right font-semibold min-w-28 whitespace-nowrap">{c.label}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rowDefs.map((row, ri) => {
+            if (row.type === "spacer")
+              return <tr key={ri}><td colSpan={columns.length + 1} className="h-3" /></tr>;
+            return (
+              <tr key={ri} className={`border-b border-gray-100 ${rowCls(row.type)}`}>
+                <td
+                  className={`sticky left-0 px-3 py-1 border-r border-gray-300 z-10 ${rowCls(row.type) || "bg-white"}`}
+                  style={{ paddingLeft: row.indent ? `${row.indent * 20 + 12}px` : undefined }}
+                >
+                  {row.label}
+                </td>
+                {columns.map(c => {
+                  const val = cfGetVal(c.statement, row);
+                  return (
+                    <td key={c.key} className={`px-3 py-1 text-right tabular-nums ${val !== null ? numCls(val) : "text-gray-300"}`}>
+                      {val !== null ? fmt(val) : "—"}
+                    </td>
+                  );
+                })}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// All-Years Cash Flow Grid (year columns)
+function AllYearsCFGrid({ yearly }) {
+  if (!yearly?.length) return <EmptyState message="No Cash Flow data." />;
+  const sorted  = [...yearly].sort((a, b) => Number(a.year) - Number(b.year));
+  const columns = sorted.map(e => ({ key: e.year, label: `FY ${e.year}`, statement: e.statement }));
+  return <CFColumnarGrid columns={columns} />;
+}
+
+// Monthly Cash Flow Grid (month columns)
+function MonthlyCFGrid({ data }) {
+  if (!data?.length) return <EmptyState message="No monthly Cash Flow data available for this period." />;
+  const columns = data.map(d => ({ key: `${d.monthNumber}-${d.year}`, label: `${d.month.slice(0, 3)} ${d.year}`, statement: d.statement }));
+  return <CFColumnarGrid columns={columns} />;
 }
 
 // ─── Empty state ──────────────────────────────────────────────────────────────
@@ -507,6 +815,8 @@ export default function FinancialStatementsView({
   const [internalReport,setInternalReport]= useState("pl");
   const [period,        setPeriod]        = useState("yearly");
   const [yearFilter,    setYearFilter]    = useState(null);
+  const [monthFrom,     setMonthFrom]     = useState("");
+  const [monthTo,       setMonthTo]       = useState("");
 
   // When a controlled prop is given, use it; otherwise use local state.
   const report    = activeReportProp ?? internalReport;
@@ -546,14 +856,31 @@ export default function FinancialStatementsView({
     ...cfYearly.map(e => e.year),
   ])].sort();
 
-  const filterYear = (arr) => yearFilter ? arr.filter(e => e.year === yearFilter) : arr;
+  const filterYear       = (arr) => yearFilter ? arr.filter(e => String(e.year) === String(yearFilter)) : arr;
+  const filterMonthRange = (arr) => {
+    if (!monthFrom && !monthTo) return arr;
+    return arr.filter(e => {
+      const ym = `${e.year}-${String(e.monthNumber).padStart(2, "0")}`;
+      if (monthFrom && ym < monthFrom) return false;
+      if (monthTo   && ym > monthTo)   return false;
+      return true;
+    });
+  };
 
-  const plYear   = filterYear(plYearly)[0];
-  const bsYear   = filterYear(bsYearly)[0];
-  const cfYear   = filterYear(cfYearly)[0];
-  const plMonths = filterYear(plMonthly);
-  const bsMonths = filterYear(bsMonthly);
-  const cfMonths = filterYear(cfMonthly);
+  const plYearFiltered = filterYear(plYearly);
+  const bsYearFiltered = filterYear(bsYearly);
+  const cfYearFiltered = filterYear(cfYearly);
+
+  // Single-year view (when a specific year is selected, or only one year exists).
+  const showAllYears = !yearFilter && allYears.length > 1;
+  const plYear   = showAllYears ? null : plYearFiltered[0];
+  const bsYear   = showAllYears ? null : bsYearFiltered[0];
+  const cfYear   = showAllYears ? null : cfYearFiltered[0];
+
+  const plMonths = filterMonthRange(filterYear(plMonthly));
+  const bsMonths = filterMonthRange(filterYear(bsMonthly));
+  const cfMonths = filterMonthRange(filterYear(cfMonthly));
+
 
   return (
     <div className="space-y-4">
@@ -652,8 +979,26 @@ export default function FinancialStatementsView({
               </button>
             ))}
 
-            {/* Period toggle */}
-            <div className="ml-auto flex items-center gap-1 px-4">
+            {/* Period toggle + month range filter */}
+            <div className="ml-auto flex items-center gap-2 px-4 flex-wrap">
+              {period === "monthly" && (
+                <>
+                  <label className="text-xs text-gray-500">From</label>
+                  <input
+                    type="month"
+                    value={monthFrom}
+                    onChange={e => setMonthFrom(e.target.value)}
+                    className="text-xs border border-gray-300 rounded px-1 py-0.5"
+                  />
+                  <label className="text-xs text-gray-500">To</label>
+                  <input
+                    type="month"
+                    value={monthTo}
+                    onChange={e => setMonthTo(e.target.value)}
+                    className="text-xs border border-gray-300 rounded px-1 py-0.5"
+                  />
+                </>
+              )}
               {["yearly","monthly"].map(p => (
                 <button
                   key={p}
@@ -667,43 +1012,35 @@ export default function FinancialStatementsView({
           </div>
 
           {/* Statement content */}
-          <div className="overflow-auto max-h-[70vh]">
+          <div>
             {report === "pl" && (
               period === "yearly"
-                ? (plYear
-                    ? <ProfitLossTable statement={plYear.statement} />
-                    : <EmptyState message={`No P&L data for ${yearFilter ? `FY ${yearFilter}` : "any year"}.`} />)
+                ? (showAllYears
+                    ? <AllYearsPLGrid yearly={plYearly} />
+                    : plYear
+                      ? <ProfitLossTable statement={plYear.statement} />
+                      : <EmptyState message={`No P&L data for ${yearFilter ? `FY ${yearFilter}` : "any year"}.`} />)
                 : <MonthlyPLGrid data={plMonths} />
             )}
 
             {report === "bs" && (
               period === "yearly"
-                ? (bsYear
-                    ? <BalanceSheetTable statement={bsYear.statement} />
-                    : <EmptyState message={`No Balance Sheet data for ${yearFilter ? `FY ${yearFilter}` : "any year"}.`} />)
-                : (bsMonths.length
-                    ? bsMonths.map((e, i) => (
-                        <div key={i}>
-                          <div className="px-4 py-2 bg-gray-100 font-semibold text-sm border-b">{e.periodLabel}</div>
-                          <BalanceSheetTable statement={e.statement} />
-                        </div>
-                      ))
-                    : <EmptyState message="Monthly Balance Sheets require multiple BS files with different as-of dates." />)
+                ? (showAllYears
+                    ? <AllYearsBSGrid yearly={bsYearly} />
+                    : bsYear
+                      ? <BalanceSheetTable statement={bsYear.statement} />
+                      : <EmptyState message={`No Balance Sheet data for FY ${yearFilter}.`} />)
+                : <MonthlyBSGrid data={bsMonths} />
             )}
 
             {report === "cf" && (
               period === "yearly"
-                ? (cfYear
-                    ? <CashFlowTable statement={cfYear.statement} />
-                    : <EmptyState message={`No Cash Flow data for ${yearFilter ? `FY ${yearFilter}` : "any year"}.`} />)
-                : (cfMonths.length
-                    ? cfMonths.map((e, i) => (
-                        <div key={i}>
-                          <div className="px-4 py-2 bg-gray-100 font-semibold text-sm border-b">{e.periodLabel}</div>
-                          <CashFlowTable statement={e.statement} />
-                        </div>
-                      ))
-                    : <EmptyState message="Monthly Cash Flow is not available for this period." />)
+                ? (showAllYears
+                    ? <AllYearsCFGrid yearly={cfYearly} />
+                    : cfYear
+                      ? <CashFlowTable statement={cfYear.statement} />
+                      : <EmptyState message={`No Cash Flow data for FY ${yearFilter}.`} />)
+                : <MonthlyCFGrid data={cfMonths} />
             )}
           </div>
         </div>

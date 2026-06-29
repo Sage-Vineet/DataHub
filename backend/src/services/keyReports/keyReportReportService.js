@@ -275,6 +275,59 @@ async function aggregateGLByAccount(versionId, year) {
   return { accounts, rowsRead: rows.length };
 }
 
+// Month-aware version of aggregateGLForBS. Groups GL rows by transaction_date month
+// and returns a Map<monthNum, {bsMap, netIncome}> for cumulative monthly BS computation.
+// Returns null when no rows have a valid transaction_date (monthly breakdown impossible).
+async function aggregateGLForBSByMonth(versionId, year) {
+  const rows = await fetchAllGLRows(
+    versionId, year,
+    'distribution_account, split_account, amount, row_type, fiscal_year, transaction_date',
+  );
+  if (!rows.length) return null;
+
+  const plDistSeen = new Set();
+  for (const row of rows) {
+    const n = (row.distribution_account && String(row.distribution_account).trim()) || '';
+    if (!n) continue;
+    const t = classifyGLAccount(n, null);
+    if (t === 'revenue' || t === 'expense') plDistSeen.add(n);
+  }
+
+  const byMonth = new Map();
+  let hasDateData = false;
+
+  for (const row of rows) {
+    const dateStr  = String(row.transaction_date || '');
+    const monthNum = parseInt(dateStr.slice(5, 7), 10);
+    if (!(monthNum >= 1 && monthNum <= 12)) continue;
+    hasDateData = true;
+
+    if (!byMonth.has(monthNum)) byMonth.set(monthNum, { bsMap: new Map(), netIncome: 0 });
+    const mData   = byMonth.get(monthNum);
+    const distName = (row.distribution_account && String(row.distribution_account).trim()) || '';
+    const splitName= (row.split_account && String(row.split_account).trim()) || '';
+    const amount   = safeNum(row.amount);
+    const distType = distName ? classifyGLAccount(distName, null) : 'unknown';
+    const splitType= splitName ? classifyGLAccount(splitName, null) : 'unknown';
+
+    if (distType === 'asset' || distType === 'liability' || distType === 'equity') {
+      if (!mData.bsMap.has(distName)) mData.bsMap.set(distName, { net: 0, type: distType });
+      mData.bsMap.get(distName).net += amount;
+    } else if (distType === 'revenue') {
+      mData.netIncome += amount;
+    } else if (distType === 'expense') {
+      mData.netIncome -= amount;
+    }
+
+    // P&L split fallback
+    if (splitName && (splitType === 'revenue' || splitType === 'expense') && !plDistSeen.has(splitName)) {
+      mData.netIncome += amount;
+    }
+  }
+
+  return hasDateData ? byMonth : null;
+}
+
 async function aggregateGLForBS(versionId, year) {
   const rows = await fetchAllGLRows(
     versionId, year,
@@ -1536,4 +1589,5 @@ module.exports = {
   // COA-driven financialStatementService as a fallback for years with no
   // uploaded balance sheet.
   bsBalancesForYear,
+  aggregateGLForBSByMonth,
 };
