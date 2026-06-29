@@ -2035,15 +2035,24 @@ function getElementContent(slideNumber, element, fieldsById, fieldValues, assetV
   };
 }
 
-function isFieldComplete(field, fieldValues, assetValues, chartValues, globalDetails) {
-  if (field.hidden) return true;
-  if (isHandledByGlobalDetails(field)) return isResolvedByGlobalDetails(field, globalDetails);
+function hasFieldData(field, fieldValues, assetValues, chartValues) {
+  if (field.hidden) return false;
   if (isAssetField(field)) return Boolean(assetValues?.[getAssetKey(field)]?.dataUrl);
   if (isChartField(field)) return Boolean(normalizeText(chartValues?.[field.id]?.dataText));
   if (field.repeatableConfig) {
     return parseRepeatableEntries(fieldValues[field.id], field.repeatableConfig).some(hasRepeatableEntryValue);
   }
-  return Boolean(normalizeText(getStoredFieldValue(field, fieldValues) || getFieldValue(field, fieldValues, globalDetails)));
+  return Boolean(normalizeText(getStoredFieldValue(field, fieldValues)));
+}
+
+function getEditableTemplateFields(fields = [], globalDetails) {
+  return fields.filter(
+    (field) => !field.hidden && !isResolvedByGlobalDetails(field, globalDetails),
+  );
+}
+
+function countFieldsWithData(fields = [], fieldValues, assetValues, chartValues) {
+  return fields.filter((field) => hasFieldData(field, fieldValues, assetValues, chartValues)).length;
 }
 
 function createDefaultQuestion(field) {
@@ -3019,18 +3028,11 @@ function SectionDrawer({
         {sections.map((section) => {
           const isBasic = section.type === "basic";
           const sectionFields = section.slides.flatMap((slide) => fieldsBySlide[slide] || []);
-          const editableFields = sectionFields.filter(
-            (field) => !isResolvedByGlobalDetails(field, globalDetails),
-          );
+          const editableFields = getEditableTemplateFields(sectionFields, globalDetails);
           const basicCompleted = BASIC_DETAIL_FIELDS.filter(([key]) => normalizeText(globalDetails[key])).length;
           const completed = isBasic
-            ? basicCompleted +
-              editableFields.filter((field) =>
-                isFieldComplete(field, fieldValues, assetValues, chartValues, globalDetails),
-              ).length
-            : editableFields.filter((field) =>
-                isFieldComplete(field, fieldValues, assetValues, chartValues, globalDetails),
-              ).length;
+            ? basicCompleted + countFieldsWithData(editableFields, fieldValues, assetValues, chartValues)
+            : countFieldsWithData(editableFields, fieldValues, assetValues, chartValues);
           const total = (isBasic ? BASIC_DETAIL_FIELDS.length : 0) + editableFields.length;
           const isActive = activeSectionId === section.id;
 
@@ -3433,16 +3435,18 @@ function FieldPanel({
   onQuestionnaireToggle,
   onQuestionPromptChange,
 }) {
-  const editableFields = fields.filter(
-    (field) => !field.hidden && !isResolvedByGlobalDetails(field, globalDetails),
-  );
+  const editableFields = getEditableTemplateFields(fields, globalDetails);
+  const filledFieldCount = countFieldsWithData(editableFields, fieldValues, assetValues, chartValues);
 
   return (
     <div className="rounded-lg border border-border bg-white p-4 shadow-card">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-bold text-[#050505]">Slide {activeSlide} Fields</h3>
-        <span className="rounded-md bg-[#EEF6E0] px-2 py-1 text-[11px] font-bold text-[#476E2C]">
-          {editableFields.length}
+        <span
+          className="rounded-md bg-[#EEF6E0] px-2 py-1 text-[11px] font-bold text-[#476E2C]"
+          title={`${filledFieldCount} fields with data out of ${editableFields.length}`}
+        >
+          {filledFieldCount}/{editableFields.length}
         </span>
       </div>
 
@@ -4807,19 +4811,14 @@ export default function WorkspaceCimPrep() {
 
   const isBasicSection = activeSection.type === "basic";
   const activeFields = activeSlide ? fieldsBySlide[activeSlide] || [] : [];
-  const sectionEditableFields = activeSection.slides
-    .flatMap((slideNumber) => fieldsBySlide[slideNumber] || [])
-    .filter((field) => !field.hidden)
-    .filter((field) => !isResolvedByGlobalDetails(field, effectiveGlobalDetails));
+  const sectionEditableFields = getEditableTemplateFields(
+    activeSection.slides.flatMap((slideNumber) => fieldsBySlide[slideNumber] || []),
+    effectiveGlobalDetails,
+  );
   const basicCompleted = BASIC_DETAIL_FIELDS.filter(([key]) => normalizeText(effectiveGlobalDetails[key])).length;
   const sectionCompleted = isBasicSection
-    ? basicCompleted +
-      sectionEditableFields.filter((field) =>
-        isFieldComplete(field, fieldValues, assetValues, chartValues, effectiveGlobalDetails),
-      ).length
-    : sectionEditableFields.filter((field) =>
-        isFieldComplete(field, fieldValues, assetValues, chartValues, effectiveGlobalDetails),
-      ).length;
+    ? basicCompleted + countFieldsWithData(sectionEditableFields, fieldValues, assetValues, chartValues)
+    : countFieldsWithData(sectionEditableFields, fieldValues, assetValues, chartValues);
   const sectionFieldTotal = (isBasicSection ? BASIC_DETAIL_FIELDS.length : 0) + sectionEditableFields.length;
   const questionnaireCounts = getQuestionnaireCounts(questionnaireState);
 
