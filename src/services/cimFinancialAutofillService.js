@@ -13,6 +13,8 @@ import {
 import {
   getAllManualUploadedReports,
   getAllQMSUploadedReports,
+  getKeyReportVersion,
+  getKeyReportVersions,
   getManualStageFilterOptions,
   listManualGlDatasetVersions,
 } from "../lib/api";
@@ -45,6 +47,21 @@ const KPI_LABEL_TO_KEY = {
   "Gross Profit": "grossProfit",
 };
 
+const REPORT_CATEGORY_LABELS = {
+  profit_loss: "Profit & Loss",
+  balance_sheet: "Balance Sheet",
+  general_ledger: "General Ledger",
+  bank_statement: "Bank Statement",
+  tax_return: "Tax Return",
+};
+
+const SOURCE_LABELS = {
+  [REPORT_SOURCE_KEYS.QUICKBOOKS]: "QuickBooks Online",
+  [REPORT_SOURCE_KEYS.MANUAL_GL]: "Manual GL Upload",
+  [REPORT_SOURCE_KEYS.MANUAL_UPLOAD]: "Manual Upload",
+  [REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL]: "QuickBooks Manual",
+};
+
 function toNumber(value, fallback = 0) {
   if (value === null || value === undefined || value === "") return fallback;
   const numeric = typeof value === "number" ? value : Number(String(value).replace(/[$,%(),]/g, ""));
@@ -71,6 +88,124 @@ function mapKpisToMetrics(kpis = []) {
     if (key) metrics[key] = toNumber(card.rawValue ?? card.value, 0);
   });
   return metrics;
+}
+
+function getFinancialTolerance(...values) {
+  const scale = Math.max(0, ...values.map((value) => Math.abs(toNumber(value, 0))));
+  return Math.max(5, scale * 0.005);
+}
+
+function makeComparisonCheck({ id, year, label, actual, expected, sources }) {
+  const actualValue = toNumber(actual, 0);
+  const expectedValue = toNumber(expected, 0);
+  const difference = actualValue - expectedValue;
+  const tolerance = getFinancialTolerance(actualValue, expectedValue);
+  return {
+    id: `${year}:${id}`,
+    year,
+    label,
+    status: Math.abs(difference) <= tolerance ? "verified" : "discrepancy",
+    actual: actualValue,
+    expected: expectedValue,
+    difference,
+    tolerance,
+    sources,
+  };
+}
+
+function flattenMappingLedger(mappingsByCategory = {}) {
+  return Object.entries(mappingsByCategory).flatMap(([category, mappings]) =>
+    (Array.isArray(mappings) ? mappings : []).map((mapping) => ({
+      category,
+      categoryLabel: REPORT_CATEGORY_LABELS[category] || category,
+      fileName: mapping.fileName || "Linked report",
+      documentId: mapping.documentId || null,
+    })),
+  );
+}
+
+async function loadCimSourceLedger({ sourceKey, selectedDatasetVersion }) {
+  const sourceLabel = SOURCE_LABELS[sourceKey] || "Financial reports";
+  if (sourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS) {
+    return {
+      sourceKey,
+      sourceLabel,
+      status: "verified",
+      verified: true,
+      versionId: null,
+      versionName: "Live accounting connection",
+      lastSyncedAt: null,
+      documents: [{ category: "live_accounting", categoryLabel: sourceLabel, fileName: sourceLabel }],
+      issues: [],
+    };
+  }
+
+  try {
+    const response = await getKeyReportVersions();
+    const versions = response?.versions || [];
+    const requestedDatasetVersion = String(selectedDatasetVersion || "").trim();
+    const version = (
+      requestedDatasetVersion
+        ? versions.find((item) => String(item.resolvedDatasetVersion ?? "") === requestedDatasetVersion)
+        : null
+    ) || versions.find((item) => item.isActive) || versions[0] || null;
+
+    if (!version?.id) {
+      return {
+        sourceKey,
+        sourceLabel,
+        status: "unverified",
+        verified: false,
+        versionId: null,
+        versionName: "No Key Reports version",
+        lastSyncedAt: null,
+        documents: [],
+        issues: ["No active Key Reports version is available for this financial source."],
+      };
+    }
+
+    const detail = await getKeyReportVersion(version.id);
+    const mappings = detail?.mappingsByCategory || {};
+    const documents = flattenMappingLedger(mappings);
+    const hasProfitAndLoss = Boolean(mappings.profit_loss?.length);
+    const hasBalanceSheet = Boolean(mappings.balance_sheet?.length);
+    const hasGeneralLedger = Boolean(mappings.general_ledger?.length);
+    const hasCoreReports = sourceKey === REPORT_SOURCE_KEYS.MANUAL_GL
+      ? hasGeneralLedger || (hasProfitAndLoss && hasBalanceSheet)
+      : hasProfitAndLoss && hasBalanceSheet;
+    const synced = version.status === "synced" && Boolean(version.lastSyncedAt);
+    const issues = [];
+    if (!synced) issues.push("The selected Key Reports version has not completed a successful sync.");
+    if (!hasCoreReports) {
+      issues.push(sourceKey === REPORT_SOURCE_KEYS.MANUAL_GL
+        ? "Link a General Ledger or both Profit & Loss and Balance Sheet reports."
+        : "Link both Profit & Loss and Balance Sheet reports.");
+    }
+
+    return {
+      sourceKey,
+      sourceLabel,
+      status: synced && hasCoreReports ? "verified" : "unverified",
+      verified: synced && hasCoreReports,
+      versionId: version.id,
+      versionName: version.versionName || `Version ${version.versionNumber || ""}`.trim(),
+      lastSyncedAt: version.lastSyncedAt || null,
+      documents,
+      issues,
+    };
+  } catch (error) {
+    return {
+      sourceKey,
+      sourceLabel,
+      status: "unverified",
+      verified: false,
+      versionId: null,
+      versionName: "Source ledger unavailable",
+      lastSyncedAt: null,
+      documents: [],
+      issues: [error?.message || "Key Reports source validation failed."],
+    };
+  }
 }
 
 function getFiscalYearRange(year) {
@@ -394,6 +529,7 @@ function findCashflowAmount(rows, matchers = []) {
 }
 
 function extractCashflowMetrics(rows = []) {
+  const hasData = flattenRows(rows).length > 0;
   const cashFromOperations = findCashflowAmount(rows, [
     "cash from operations",
     "net cash from operating",
@@ -423,13 +559,48 @@ function extractCashflowMetrics(rows = []) {
     "property plant and equipment",
     "payments to acquire property",
   ]));
+  const changeInWorkingCapital = findCashflowAmount(rows, [
+    "changes in working capital",
+    "change in working capital",
+    "working capital changes",
+  ]);
+  const otherNonCashItems = findCashflowAmount(rows, [
+    "other non-cash",
+    "other noncash",
+    "non-cash adjustments",
+  ]);
+  const acquisitionsDispositions = findCashflowAmount(rows, [
+    "acquisitions",
+    "business acquisitions",
+    "purchase of business",
+    "proceeds from disposition",
+    "proceeds from sale of business",
+  ]);
+  const netBorrowingsRepayments = findCashflowAmount(rows, [
+    "net borrowings",
+    "borrowings repayments",
+    "proceeds from debt",
+    "repayment of debt",
+    "repayments of debt",
+  ]);
+  const dividendsDistributions = findCashflowAmount(rows, [
+    "dividends",
+    "distributions",
+    "owner distributions",
+  ]);
 
   return {
+    hasData,
     cashFromOperations,
     cashFromInvesting,
     cashFromFinancing,
     netChangeInCash,
     capitalExpenditures,
+    changeInWorkingCapital,
+    otherNonCashItems,
+    acquisitionsDispositions,
+    netBorrowingsRepayments,
+    dividendsDistributions,
     freeCashFlow: cashFromOperations - capitalExpenditures,
   };
 }
@@ -560,6 +731,7 @@ function enrichYearMetric({ year, metrics, ebitdaData, adjustmentTotal = 0, adju
     extractedGrossProfit,
   );
   const grossProfit = extractedGrossProfit || (hasGrossProfitData ? revenue - costOfGoodsSold : 0);
+  const sgaExpenses = Math.abs(toNumber(ebitdaData?.opex, 0));
   const depreciation = toNumber(ebitdaData?.components?.depreciation?.value, 0);
   const amortization = toNumber(ebitdaData?.components?.amortization?.value, 0);
   const interestExpense = toNumber(ebitdaData?.components?.interestExpense?.value, 0);
@@ -587,6 +759,7 @@ function enrichYearMetric({ year, metrics, ebitdaData, adjustmentTotal = 0, adju
     costOfGoodsSold,
     grossProfit,
     grossMargin: revenue > 0 && hasGrossProfitData ? (grossProfit / revenue) * 100 : 0,
+    sgaExpenses,
     depreciationAmortization: da,
     ebit,
     taxes,
@@ -597,6 +770,9 @@ function enrichYearMetric({ year, metrics, ebitdaData, adjustmentTotal = 0, adju
     netDebt,
     netDebtEbitdaRatio: adjustedEbitda ? netDebt / adjustedEbitda : 0,
     longTermDebtEbitdaRatio: baseEbitda ? toNumber(metrics.longTermDebt, 0) / baseEbitda : 0,
+    longTermDebtAdjustedEbitdaRatio: adjustedEbitda
+      ? toNumber(metrics.longTermDebt, 0) / adjustedEbitda
+      : 0,
     effectiveTaxRate: preTaxIncome > 0 ? (taxes / preTaxIncome) * 100 : 0,
     currentAssetsApprox:
       toNumber(metrics.cashAndBankBalance, 0) +
@@ -604,6 +780,151 @@ function enrichYearMetric({ year, metrics, ebitdaData, adjustmentTotal = 0, adju
       toNumber(metrics.inventoryValue, 0),
     currentLiabilitiesApprox: toNumber(metrics.accountPayable, 0),
     ...cashflow,
+  };
+}
+
+export function buildCimFinancialValidation({
+  sourceLedger,
+  years = [],
+  metricsByYear = {},
+  ebitdaByYear = {},
+  cashflowByYear = {},
+  adjustments = { totals: {} },
+  enrichedByYear = {},
+} = {}) {
+  const checks = [];
+  const calculations = [];
+
+  years.forEach((year) => {
+    const metrics = metricsByYear[year] || {};
+    const ebitdaData = ebitdaByYear[year] || null;
+    const cashflow = cashflowByYear[year] || {};
+    const enriched = enrichedByYear[year] || {};
+    const adjustmentTotal = toNumber(
+      adjustments?.totals?.[year] ?? adjustments?.totals?.[String(year)],
+      0,
+    );
+    const extractedAdjustment = toNumber(ebitdaData?.adjustedEbitda, 0) - toNumber(ebitdaData?.ebitda, 0);
+    const bridgeAdjustment = adjustmentTotal > 0 ? adjustmentTotal : extractedAdjustment;
+
+    if (ebitdaData?.hasData && Object.prototype.hasOwnProperty.call(metrics, "totalRevenue")) {
+      checks.push(makeComparisonCheck({
+        id: "revenue-cross-check",
+        year,
+        label: "Revenue agrees between Analytics and the P&L / EBITDA report",
+        actual: metrics.totalRevenue,
+        expected: ebitdaData.revenue,
+        sources: ["Analytics", "Profit & Loss"],
+      }));
+    }
+
+    const reportNetIncome = ebitdaData?.components?.netIncome?.value;
+    if (ebitdaData?.hasData && Object.prototype.hasOwnProperty.call(metrics, "netProfit")) {
+      checks.push(makeComparisonCheck({
+        id: "net-income-cross-check",
+        year,
+        label: "Net income agrees between Analytics and the P&L / EBITDA report",
+        actual: metrics.netProfit,
+        expected: reportNetIncome,
+        sources: ["Analytics", "Profit & Loss"],
+      }));
+    }
+
+    if (
+      Math.abs(toNumber(metrics.totalAssets, 0)) > 0.0001 &&
+      (Math.abs(toNumber(metrics.totalLiabilities, 0)) > 0.0001 ||
+        Math.abs(toNumber(metrics.totalEquity, 0)) > 0.0001)
+    ) {
+      checks.push(makeComparisonCheck({
+        id: "balance-sheet-equation",
+        year,
+        label: "Balance sheet balances: Assets = Liabilities + Equity",
+        actual: metrics.totalAssets,
+        expected: toNumber(metrics.totalLiabilities, 0) + toNumber(metrics.totalEquity, 0),
+        sources: ["Balance Sheet"],
+      }));
+    }
+
+    if (ebitdaData?.hasGrossProfitData) {
+      checks.push(makeComparisonCheck({
+        id: "gross-profit-formula",
+        year,
+        label: "Gross profit reconciles to Revenue - COGS",
+        actual: ebitdaData.grossProfit,
+        expected: toNumber(enriched.totalRevenue, 0) - toNumber(ebitdaData.costOfGoodsSold, 0),
+        sources: ["Profit & Loss"],
+      }));
+    }
+
+    if (ebitdaData?.hasData) {
+      checks.push(makeComparisonCheck({
+        id: "adjusted-ebitda-bridge",
+        year,
+        label: "Adjusted EBITDA reconciles to EBITDA plus approved adjustments",
+        actual: enriched.adjustedEbitda,
+        expected: toNumber(enriched.ebitda, 0) + bridgeAdjustment,
+        sources: ["EBITDA calculation", "Approved adjustments"],
+      }));
+    }
+
+    if (cashflow.hasData) {
+      checks.push(makeComparisonCheck({
+        id: "free-cash-flow-formula",
+        year,
+        label: "Free cash flow reconciles to CFO - Capex",
+        actual: enriched.freeCashFlow,
+        expected: toNumber(cashflow.cashFromOperations, 0) - toNumber(cashflow.capitalExpenditures, 0),
+        sources: ["Cash Flow Statement"],
+      }));
+    }
+
+    const addCalculation = (metric, formula, inputs, value) => {
+      if (!Number.isFinite(Number(value))) return;
+      calculations.push({ year, metric, formula, inputs, value: Number(value) });
+    };
+    if (ebitdaData?.hasGrossProfitData && enriched.totalRevenue) {
+      addCalculation("Gross margin", "Gross profit / Revenue", ["Gross profit", "Revenue"], enriched.grossMargin);
+    }
+    if (ebitdaData?.hasData && enriched.totalRevenue) {
+      addCalculation("Adjusted EBITDA margin", "Adjusted EBITDA / Revenue", ["Adjusted EBITDA", "Revenue"], enriched.ebitdaMargin);
+    }
+    if (cashflow.hasData) {
+      addCalculation("Free cash flow", "Cash from operations - Capex", ["Cash from operations", "Capex"], enriched.freeCashFlow);
+      addCalculation("FCF conversion", "Free cash flow / Adjusted EBITDA", ["Free cash flow", "Adjusted EBITDA"],
+        enriched.adjustedEbitda ? (toNumber(enriched.freeCashFlow, 0) / toNumber(enriched.adjustedEbitda, 0)) * 100 : 0);
+    }
+    if (Object.prototype.hasOwnProperty.call(metrics, "longTermDebt")) {
+      addCalculation("Net debt", "Debt - Cash", ["Debt", "Cash"], enriched.netDebt);
+      addCalculation("Long-term debt / EBITDA", "Long-term debt / Adjusted EBITDA", ["Long-term debt", "Adjusted EBITDA"],
+        enriched.longTermDebtAdjustedEbitdaRatio);
+    }
+  });
+
+  const discrepancies = checks.filter((check) => check.status === "discrepancy");
+  const sourceIssues = (sourceLedger?.issues || []).map((message, index) => ({
+    id: `source:${index}`,
+    year: null,
+    label: message,
+    status: "source_warning",
+    sources: [sourceLedger?.sourceLabel || "Financial source"],
+  }));
+  const issues = [...sourceIssues, ...discrepancies];
+
+  return {
+    validatedAt: new Date().toISOString(),
+    status: !sourceLedger?.verified || issues.length > 0 ? "review" : "verified",
+    sourceVerified: Boolean(sourceLedger?.verified),
+    sourceLedger,
+    checks,
+    calculations,
+    issues,
+    summary: {
+      verifiedChecks: checks.length - discrepancies.length,
+      discrepancies: discrepancies.length,
+      sourceWarnings: sourceIssues.length,
+      calculatedMetrics: calculations.length,
+      documentCount: sourceLedger?.documents?.length || 0,
+    },
   };
 }
 
@@ -624,6 +945,10 @@ export async function loadCimFinancialAutofillSnapshot({
   const isSingleFiscalYearRange = Boolean(
     selectedRange && selectedStartYear === selectedFiscalYear,
   );
+  const sourceLedgerPromise = loadCimSourceLedger({
+    sourceKey: normalizedSource,
+    selectedDatasetVersion: datasetVersion || selectedDatasetVersion,
+  });
   const availableYears = await getAvailableYears({
     clientId,
     sourceKey: normalizedSource,
@@ -769,6 +1094,16 @@ export async function loadCimFinancialAutofillSnapshot({
 
   const sortedAscending = sortYearsDescending(selectedYears).reverse();
   const latestYear = selectedFiscalYear || sortedAscending[sortedAscending.length - 1] || new Date().getFullYear();
+  const sourceLedger = await sourceLedgerPromise;
+  const validation = buildCimFinancialValidation({
+    sourceLedger,
+    years: sortedAscending,
+    metricsByYear,
+    ebitdaByYear,
+    cashflowByYear,
+    adjustments,
+    enrichedByYear,
+  });
 
   return {
     sourceKey: normalizedSource,
@@ -786,5 +1121,6 @@ export async function loadCimFinancialAutofillSnapshot({
       }
       : null,
     metricsByYear: enrichedByYear,
+    validation,
   };
 }
