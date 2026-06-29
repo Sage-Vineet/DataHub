@@ -333,9 +333,87 @@ const PL_ROW_CLS = {
 function MonthlyPLGrid({ data }) {
   if (!data?.length) return <EmptyState message="No monthly Profit & Loss data. Upload a General Ledger file with transaction dates to enable monthly breakdown." />;
 
-  const months  = data.map(d => ({ key: `${d.monthNumber}-${d.year}`, label: d.month.slice(0, 3), stmt: d.statement }));
+  const [expandedAccounts, setExpandedAccounts] = useState(new Set());
+  const toggleAccount = (key) => setExpandedAccounts(prev => {
+    const next = new Set(prev);
+    next.has(key) ? next.delete(key) : next.add(key);
+    return next;
+  });
+
+  const months  = data.map(d => ({ key: `${d.monthNumber}-${d.year}`, label: d.month.slice(0, 3), stmt: d.statement, vendors: d.vendorsByAccount || {} }));
   const rowDefs = buildPlRowDefs(data);
   const rowCls  = (type) => PL_ROW_CLS[type] || "";
+
+  // Collect all vendor names for an account across all months, sorted by total absolute amount.
+  const getVendorsForAccount = (accountName) => {
+    const totals = new Map();
+    for (const m of months) {
+      for (const v of (m.vendors[accountName] || [])) {
+        totals.set(v.name, (totals.get(v.name) || 0) + Math.abs(v.amount));
+      }
+    }
+    return Array.from(totals.keys()).sort((a, b) => totals.get(b) - totals.get(a));
+  };
+
+  const rows = [];
+  for (let ri = 0; ri < rowDefs.length; ri++) {
+    const row = rowDefs[ri];
+    const expandKey = row.accountName ? `${row.section || row.group || ""}-${row.accountName}` : null;
+    const vendorNames = row.type === "account" ? getVendorsForAccount(row.accountName) : [];
+    const isExpanded  = expandKey && expandedAccounts.has(expandKey);
+
+    rows.push(
+      <tr key={ri} className={`border-b border-gray-100 ${rowCls(row.type)}`}>
+        <td
+          className={`sticky left-0 px-3 py-1 border-r border-gray-300 z-10 ${rowCls(row.type) || "bg-white"}`}
+          style={{ paddingLeft: row.indent ? `${row.indent * 20 + 12}px` : undefined }}
+        >
+          {vendorNames.length > 0 ? (
+            <button
+              onClick={() => toggleAccount(expandKey)}
+              className="flex items-center gap-1 text-left hover:text-blue-600 w-full"
+            >
+              {isExpanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
+              {row.label}
+            </button>
+          ) : row.label}
+        </td>
+        {months.map(m => {
+          const val = getPlVal(m.stmt, row);
+          return (
+            <td key={m.key} className={`px-3 py-1 text-right tabular-nums ${val !== null ? numCls(val) : "text-gray-300"}`}>
+              {val !== null ? fmt(val) : "—"}
+            </td>
+          );
+        })}
+      </tr>,
+    );
+
+    // Vendor sub-rows (shown when account is expanded)
+    if (isExpanded && vendorNames.length > 0) {
+      for (const vName of vendorNames) {
+        rows.push(
+          <tr key={`${ri}-v-${vName}`} className="border-b border-gray-50 bg-blue-50/30">
+            <td
+              className="sticky left-0 bg-blue-50/30 px-3 py-0.5 border-r border-gray-200 z-10 text-gray-500 italic"
+              style={{ paddingLeft: `${(row.indent || 0) * 20 + 32}px` }}
+            >
+              {vName}
+            </td>
+            {months.map(m => {
+              const vEntry = (m.vendors[row.accountName] || []).find(v => v.name === vName);
+              const vAmt   = vEntry?.amount ?? null;
+              return (
+                <td key={m.key} className={`px-3 py-0.5 text-right tabular-nums text-xs ${vAmt !== null ? numCls(vAmt) + " opacity-80" : "text-gray-200"}`}>
+                  {vAmt !== null ? fmt(vAmt) : "—"}
+                </td>
+              );
+            })}
+          </tr>,
+        );
+      }
+    }
+  }
 
   return (
     <div className="overflow-x-auto">
@@ -348,26 +426,7 @@ function MonthlyPLGrid({ data }) {
             ))}
           </tr>
         </thead>
-        <tbody>
-          {rowDefs.map((row, ri) => (
-            <tr key={ri} className={`border-b border-gray-100 ${rowCls(row.type)}`}>
-              <td
-                className={`sticky left-0 px-3 py-1 border-r border-gray-300 z-10 ${rowCls(row.type) || "bg-white"}`}
-                style={{ paddingLeft: row.indent ? `${row.indent * 20 + 12}px` : undefined }}
-              >
-                {row.label}
-              </td>
-              {months.map(m => {
-                const val = getPlVal(m.stmt, row);
-                return (
-                  <td key={m.key} className={`px-3 py-1 text-right tabular-nums ${val !== null ? numCls(val) : "text-gray-300"}`}>
-                    {val !== null ? fmt(val) : "—"}
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
-        </tbody>
+        <tbody>{rows}</tbody>
       </table>
     </div>
   );
@@ -947,18 +1006,23 @@ export default function FinancialStatementsView({
             />
           </div>
 
-          {/* Year filter */}
-          {allYears.length > 1 && (
-            <div className="px-4 flex gap-1 pt-1">
-              {[null, ...allYears].map(y => (
-                <button
-                  key={y || "all"}
-                  onClick={() => setYearFilter(y)}
-                  className={`px-3 py-1 text-xs rounded-t border-b-2 transition-colors ${yearFilter === y ? "border-blue-500 text-blue-700 font-semibold bg-blue-50" : "border-transparent text-gray-500 hover:text-gray-700"}`}
-                >
-                  {y ? `FY ${y}` : "All Years"}
-                </button>
-              ))}
+          {/* Year filter — dropdown populated from returned data, never hardcoded */}
+          {allYears.length > 0 && (
+            <div className="px-4 pt-2 pb-1 flex items-center gap-2">
+              <label htmlFor="fy-select" className="text-xs text-gray-500 font-medium whitespace-nowrap">
+                Fiscal Year
+              </label>
+              <select
+                id="fy-select"
+                value={yearFilter ?? ""}
+                onChange={e => setYearFilter(e.target.value ? Number(e.target.value) : null)}
+                className="text-xs border border-gray-300 rounded px-2 py-1 bg-white text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-400 cursor-pointer"
+              >
+                <option value="">All Years</option>
+                {allYears.map(y => (
+                  <option key={y} value={y}>FY {y}</option>
+                ))}
+              </select>
             </div>
           )}
 

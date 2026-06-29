@@ -118,6 +118,22 @@ async function resolveYears(versionId, { year, startDate, endDate } = {}) {
   ]);
 
   const set = new Set([...plYears, ...bsYears, ...glYears]);
+
+  // Fallback: GL rows where fiscal_year is null but transaction_date carries the year.
+  // Handles GL extracted before migration 050 or where year-detection failed (e.g. 2025 GL).
+  const { data: glDateRows } = await supabase
+    .from('general_ledger_entries')
+    .select('transaction_date')
+    .eq('version_id', versionId)
+    .is('fiscal_year', null)
+    .not('transaction_date', 'is', null)
+    .or('row_type.eq.TRANSACTION,row_type.is.null')
+    .limit(200000);
+  for (const row of (glDateRows || [])) {
+    const y = parseInt(String(row.transaction_date || '').slice(0, 4), 10);
+    if (y >= 1990 && y <= 2100) set.add(y);
+  }
+
   let years = Array.from(set).filter((y) => y >= 1990 && y <= 2100).sort((a, b) => a - b);
 
   const lo = startDate ? parseInt(String(startDate).slice(0, 4), 10) : null;
@@ -225,8 +241,14 @@ async function fetchAllGLRows(versionId, year, columns, rowType = 'TRANSACTION')
       .from('general_ledger_entries')
       .select(columns)
       .eq('version_id', versionId)
-      .eq('fiscal_year', year);
-    if (rowType) q = q.eq('row_type', rowType);
+      // Include rows where fiscal_year is null but transaction_date falls in `year`
+      // (pre-migration-050 rows or rows where extraction failed to set fiscal_year).
+      .or(
+        `fiscal_year.eq.${year},` +
+        `and(fiscal_year.is.null,transaction_date.gte.${year}-01-01,transaction_date.lte.${year}-12-31)`,
+      );
+    // Include pre-migration-050 rows that have null row_type (valid transaction rows).
+    if (rowType) q = q.or(`row_type.eq.${rowType},row_type.is.null`);
     const { data, error } = await q
       .order('row_number', { ascending: true, nullsFirst: false })
       .order('id', { ascending: true })

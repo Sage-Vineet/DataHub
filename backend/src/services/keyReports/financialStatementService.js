@@ -265,18 +265,23 @@ function fuzzyMatch(lookup, name, accountNumber) {
   const k2 = normStrict(name);
   if (k2 && lookup.strict.has(k2)) return { id: lookup.strict.get(k2), confidence: 0.95 };
 
-  // Word-set Jaccard ≥ 0.60
-  const words1 = new Set(k1.split(" ").filter(w => w.length > 2));
+  // Word-set Jaccard similarity with a lowered threshold of 0.50 to catch more valid
+  // accounts (e.g. "Cost of Goods Sold" vs "Cost of Sales", "Rent Expense" vs "Rent").
+  // Also bonuses for: containment (substring), shared first word, shared last word.
+  const words1 = new Set(k1.split(" ").filter(w => w.length > 1));
+  const arr1   = [...words1];
   let bestId = null, bestScore = 0;
   for (const [k, id] of lookup.exact) {
-    const words2 = new Set(k.split(" ").filter(w => w.length > 2));
+    const words2 = new Set(k.split(" ").filter(w => w.length > 1));
     if (!words2.size || !words1.size) continue;
-    const inter = [...words1].filter(w => words2.has(w)).length;
-    const union = new Set([...words1, ...words2]).size;
-    const score = union > 0 ? inter / union : 0;
-    const sub   = (k1.includes(k) || k.includes(k1)) ? 0.10 : 0;
-    const total = Math.min(score + sub, 1.0);
-    if (total > bestScore && total >= 0.60) { bestScore = total; bestId = id; }
+    const inter = arr1.filter(w => words2.has(w)).length;
+    const union = new Set([...arr1, ...words2]).size;
+    const jaccard = union > 0 ? inter / union : 0;
+    const containsBonus  = (k1.includes(k) || k.includes(k1)) ? 0.10 : 0;
+    const firstWordBonus = (arr1[0] && arr1[0] === [...words2][0]) ? 0.05 : 0;
+    const lastWordBonus  = (arr1[arr1.length - 1] && arr1[arr1.length - 1] === [...words2][words2.size - 1]) ? 0.05 : 0;
+    const total = Math.min(jaccard + containsBonus + firstWordBonus + lastWordBonus, 1.0);
+    if (total > bestScore && total >= 0.50) { bestScore = total; bestId = id; }
   }
   if (bestId) return { id: bestId, confidence: bestScore };
 
@@ -700,21 +705,49 @@ function isBsAccount(acc) {
 // ─── Distinct years ───────────────────────────────────────────────────────────
 
 async function distinctYears(versionId) {
-  // Include general_ledger_entries so years that exist ONLY in GL (e.g. 2025
-  // when the P&L extraction failed) are still detected and generated via the
-  // GL carry-forward fallback in generateYearlyBs / generateYearlyPl.
-  const [pl, bs, gl] = await Promise.all([
-    supabase.from("profit_loss_entries").select("fiscal_year").eq("version_id", versionId).limit(50000),
-    supabase.from("balance_sheet_entries").select("fiscal_year").eq("version_id", versionId).limit(50000),
-    supabase.from("general_ledger_entries").select("fiscal_year").eq("version_id", versionId).not("fiscal_year", "is", null).limit(50000),
+  // Exclude is_generated rows from PL/BS so accumulated persisted rows never fill
+  // the query limit and push real uploaded-year rows out of the result set.
+  // Filter GL by TRANSACTION row_type to skip ACCOUNT_HEADER / BEGINNING_BALANCE /
+  // TOTAL_ROW rows (post-migration 050 rows that have null fiscal_year).
+  const [pl, bs, gl, glDateFallback] = await Promise.all([
+    supabase.from("profit_loss_entries").select("fiscal_year")
+      .eq("version_id", versionId)
+      .or("is_generated.is.null,is_generated.eq.false")
+      .limit(200000),
+    supabase.from("balance_sheet_entries").select("fiscal_year")
+      .eq("version_id", versionId)
+      .or("is_generated.is.null,is_generated.eq.false")
+      .limit(200000),
+    supabase.from("general_ledger_entries").select("fiscal_year")
+      .eq("version_id", versionId)
+      .or("row_type.eq.TRANSACTION,row_type.is.null")
+      .not("fiscal_year", "is", null)
+      .limit(200000),
+    // Fallback: GL rows where fiscal_year is null but transaction_date carries the
+    // year. Handles GL files extracted before migration 050 or where the extraction
+    // failed to assign a fiscal_year (e.g. 2025 GL with year-detection gap).
+    supabase.from("general_ledger_entries").select("transaction_date")
+      .eq("version_id", versionId)
+      .is("fiscal_year", null)
+      .not("transaction_date", "is", null)
+      .or("row_type.eq.TRANSACTION,row_type.is.null")
+      .limit(200000),
   ]);
   const set = new Set();
   for (const row of [...(pl.data || []), ...(bs.data || []), ...(gl.data || [])]) {
     const y = Number(row.fiscal_year);
     if (y >= 1990 && y <= 2100) set.add(y);
   }
+  // Infer fiscal years from transaction_date for GL rows that have no fiscal_year set.
+  for (const row of (glDateFallback.data || [])) {
+    const y = parseInt(String(row.transaction_date || "").slice(0, 4), 10);
+    if (y >= 1990 && y <= 2100) set.add(y);
+  }
   const years = Array.from(set).sort((a, b) => a - b);
-  console.log(`[FinStmt][Years] from pl=${pl.data?.length || 0} bs=${bs.data?.length || 0} gl=${gl.data?.length || 0} rows → [${years.join(", ")}]`);
+  console.log(
+    `[FinStmt][Years] pl=${pl.data?.length || 0} bs=${bs.data?.length || 0} ` +
+    `gl=${gl.data?.length || 0} glDateFallback=${glDateFallback.data?.length || 0} → [${years.join(", ")}]`,
+  );
   return years;
 }
 
@@ -896,18 +929,26 @@ async function generateYearlyPl(versionId, year, allCoa, unmappedSet) {
 // ─── Monthly P&L (via GL entries) ─────────────────────────────────────────────
 
 async function loadGlAmountsByMonth(versionId, year) {
+  // Include rows where row_type is null — those are pre-migration-050 transaction
+  // rows that were extracted before the TRANSACTION / ACCOUNT_HEADER enum was added.
+  // Also include rows where fiscal_year is null but transaction_date falls in `year`
+  // (handles GL files where year-detection failed during extraction).
   const { data, error } = await supabase
     .from("general_ledger_entries")
-    .select("distribution_account, account_name, account_number, amount, transaction_date, fiscal_year")
+    .select("distribution_account, account_name, account_number, amount, transaction_date, fiscal_year, transaction_name")
     .eq("version_id", versionId)
-    .eq("fiscal_year", year)
-    .eq("row_type", "TRANSACTION")
+    .or(
+      `fiscal_year.eq.${year},` +
+      `and(fiscal_year.is.null,transaction_date.gte.${year}-01-01,transaction_date.lte.${year}-12-31)`,
+    )
+    .or("row_type.eq.TRANSACTION,row_type.is.null")
     .limit(200000);
 
   if (error) { console.warn(`[FinStmt][GL] ${error.message}`); return null; }
   if (!data?.length) return null;
 
-  const byAccount   = new Map(); // norm(name) → { rawName, accountNumber, months: Map<month, amount> }
+  // norm(name) → { rawName, accountNumber, months: Map<month, amount>, vendors: Map<vendorName, Map<month, amount>> }
+  const byAccount   = new Map();
   const monthsFound = new Set();
 
   for (const row of data) {
@@ -917,11 +958,19 @@ async function loadGlAmountsByMonth(versionId, year) {
     const month   = parseInt(dateStr.slice(5, 7), 10);
     if (!(month >= 1 && month <= 12)) continue;
 
-    const key = norm(rawName);
+    const key    = norm(rawName);
+    const vendor = String(row.transaction_name || "").trim() || null;
     monthsFound.add(month);
-    if (!byAccount.has(key)) byAccount.set(key, { rawName, accountNumber: row.account_number, months: new Map() });
+    if (!byAccount.has(key)) {
+      byAccount.set(key, { rawName, accountNumber: row.account_number, months: new Map(), vendors: new Map() });
+    }
     const acc = byAccount.get(key);
     acc.months.set(month, (acc.months.get(month) || 0) + safeNum(row.amount));
+    if (vendor) {
+      if (!acc.vendors.has(vendor)) acc.vendors.set(vendor, new Map());
+      const vMap = acc.vendors.get(vendor);
+      vMap.set(month, (vMap.get(month) || 0) + safeNum(row.amount));
+    }
   }
 
   console.log(`[FinStmt][GL] ${data.length} rows → ${byAccount.size} accounts, months=[${Array.from(monthsFound).sort().join(",")}]`);
@@ -940,25 +989,45 @@ async function generateMonthlyPl(versionId, year, allCoa, unmappedSet) {
 
   return months.map((monthNum) => {
     const leafAmounts = new Map(plLeaves.map(a => [a.id, 0]));
+    // leafVendors: coaLeafId → vendorName → amount (for this month)
+    const leafVendors = new Map();
 
-    for (const [normKey, { rawName, accountNumber, months: monthMap }] of gl.byAccount) {
+    for (const [normKey, { rawName, accountNumber, months: monthMap, vendors }] of gl.byAccount) {
       const rawAmt = monthMap.get(monthNum) || 0;
       if (Math.abs(rawAmt) < 0.005) continue;
 
       let ids = glMappings?.get(normKey);
       if (!ids?.length && accountNumber) ids = glMappings?.get(`__num__${String(accountNumber).trim()}`);
 
+      let mappedIds = null;
       if (ids?.length) {
         for (const id of ids) {
-          if (leafAmounts.has(id))
+          if (leafAmounts.has(id)) {
             leafAmounts.set(id, (leafAmounts.get(id) || 0) + rawAmt / ids.length);
+          }
         }
+        mappedIds = ids.filter(id => leafAmounts.has(id));
       } else {
         const match = fuzzyMatch(fuzzyLookup, rawName, accountNumber);
         if (match?.id && leafAmounts.has(match.id)) {
           leafAmounts.set(match.id, (leafAmounts.get(match.id) || 0) + rawAmt);
+          mappedIds = [match.id];
         } else {
           unmappedSet.add(normKey);
+        }
+      }
+
+      // Propagate vendor breakdown to mapped COA leaves.
+      if (mappedIds?.length && vendors?.size) {
+        for (const id of mappedIds) {
+          if (!leafVendors.has(id)) leafVendors.set(id, new Map());
+          const vMap = leafVendors.get(id);
+          for (const [vName, vMonthMap] of vendors) {
+            const vAmt = vMonthMap.get(monthNum) || 0;
+            if (Math.abs(vAmt) < 0.005) continue;
+            const share = mappedIds.length > 1 ? vAmt / mappedIds.length : vAmt;
+            vMap.set(vName, (vMap.get(vName) || 0) + share);
+          }
         }
       }
     }
@@ -966,12 +1035,24 @@ async function generateMonthlyPl(versionId, year, allCoa, unmappedSet) {
     const { byId, roots, leaves } = buildTree(plAccounts);
     for (const root of roots) rollupNode(root, leafAmounts);
 
+    // Serialise vendor map keyed by COA leaf display name so the frontend can look
+    // it up directly via the account name shown in the statement rows.
+    const vendorsByAccount = {};
+    for (const [leafId, vMap] of leafVendors) {
+      const leaf = plLeaves.find(l => l.id === leafId);
+      const accountName = leaf?.name || String(leafId);
+      vendorsByAccount[accountName] = Array.from(vMap.entries())
+        .map(([name, amount]) => ({ name, amount: Math.round(amount * 100) / 100 }))
+        .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount));
+    }
+
     return {
-      month:       MONTH_NAMES[monthNum - 1],
-      monthNumber: monthNum,
-      year:        String(year),
-      periodLabel: `${MONTH_NAMES[monthNum - 1]} ${year}`,
-      statement:   buildPlStatement(leaves, byId),
+      month:           MONTH_NAMES[monthNum - 1],
+      monthNumber:     monthNum,
+      year:            String(year),
+      periodLabel:     `${MONTH_NAMES[monthNum - 1]} ${year}`,
+      statement:       buildPlStatement(leaves, byId),
+      vendorsByAccount,
     };
   });
 }
@@ -1394,14 +1475,26 @@ async function generateFinancialStatements(versionId, options = {}) {
 
   const unmappedSet = new Set();
 
-  const [plYearly, plMonthly, bsYearly, bsMonthly, cfYearly, cfMonthly] = await Promise.all([
+  // P&L and Cash Flow are year-independent — run concurrently for speed.
+  const [plYearly, plMonthly, cfYearly, cfMonthly] = await Promise.all([
     Promise.all(filteredYears.map(y => generateYearlyPl(versionId, y, allCoa, unmappedSet))),
     Promise.all(filteredYears.map(y => generateMonthlyPl(versionId, y, allCoa, unmappedSet))),
-    Promise.all(filteredYears.map(y => generateYearlyBs(versionId, y, allCoa, unmappedSet))),
-    Promise.all(filteredYears.map(y => generateMonthlyBs(versionId, y, allCoa, unmappedSet))),
     Promise.all(filteredYears.map(y => generateYearlyCf(versionId, y))),
     Promise.all(filteredYears.map(y => generateMonthlyCf(versionId, y))),
   ]);
+
+  // Balance Sheet has a carry-forward chain: BS(year) = BS(year-1 close) + GL(year).
+  // Each year must be fully persisted before the next year reads it as its prior-year
+  // base. Running concurrently causes hasGeneratedRows race conditions and computes
+  // the carry-forward independently per year instead of reusing prior-year results.
+  const bsYearly = [];
+  for (const y of filteredYears) {
+    bsYearly.push(await generateYearlyBs(versionId, y, allCoa, unmappedSet));
+  }
+  const bsMonthly = [];
+  for (const y of filteredYears) {
+    bsMonthly.push(await generateMonthlyBs(versionId, y, allCoa, unmappedSet));
+  }
 
   // Inject current-year Net Income into Balance Sheet Retained Earnings.
   for (let i = 0; i < filteredYears.length; i++) {
