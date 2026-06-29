@@ -1021,18 +1021,24 @@ async function generateMonthlyPlFromYearly(versionId, year, yearlyStatement) {
   let sortedDates = Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date));
 
   // Step 2: When BS only has one date (year-end snapshot), fall back to the GL
-  // month list — same source used by generateMonthlyBsFromGL. This ensures P&L
-  // monthly columns match BS monthly columns exactly.
+  // month list AND actual monthly net income from aggregateGLForBSByMonth.
+  // This is the same data source that drives generateMonthlyBsFromGL, so P&L
+  // monthly columns match BS monthly exactly AND each month's weight reflects
+  // the real GL activity for that month (not equal distribution).
   if (sortedDates.length <= 1) {
     const glByMonth = await aggregateGLForBSByMonth(versionId, year);
     if (glByMonth?.size) {
       const glMonths = Array.from(glByMonth.keys()).sort((a, b) => a - b);
-      sortedDates = glMonths.map(monthNum => ({
-        date:   `${year}-${String(monthNum).padStart(2, "0")}-28`,
-        monthNum,
-        niYTD:  0,
-        hasNI:  false,
-      }));
+      let cumNI = 0;
+      sortedDates = glMonths.map(monthNum => {
+        cumNI += safeNum(glByMonth.get(monthNum)?.netIncome);
+        return {
+          date:    `${year}-${String(monthNum).padStart(2, "0")}-28`,
+          monthNum,
+          niYTD:   cumNI,   // cumulative (YTD) NI through this month
+          hasNI:   true,    // use proportional distribution, not equal split
+        };
+      });
     }
   }
 
