@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
+  AlertTriangle,
   ArrowLeft,
   BarChart3,
   CalendarDays,
@@ -22,6 +23,7 @@ import {
   Trash2,
   Upload,
   Save,
+  ShieldCheck,
   X,
 } from "lucide-react";
 import {
@@ -2206,7 +2208,7 @@ function getAutoFillCagrYears(snapshot, fallbackYears = []) {
 
 function calculateAutoFillFcfConversion(metrics = {}) {
   const fcf = Number(metrics.freeCashFlow || 0);
-  const ebitda = Number(metrics.ebitda || metrics.adjustedEbitda || 0);
+  const ebitda = Number(metrics.adjustedEbitda || metrics.ebitda || 0);
   return Math.abs(ebitda) > 0.0001 ? (fcf / ebitda) * 100 : 0;
 }
 
@@ -2309,8 +2311,8 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
   const previous = getAutoFillYearMetrics(snapshot, previousYear);
   add(23, 5, 1, formatAutoFillPercent(revenueCagr));
   add(23, 5, 2, historyRange);
-  add(23, 5, 3, formatAutoFillPercent(getAutoFillYearMetrics(snapshot, firstCagrYear)?.reportedEbitdaMargin));
-  add(23, 5, 4, formatAutoFillPercent(latest.reportedEbitdaMargin));
+  add(23, 5, 3, formatAutoFillPercent(getAutoFillYearMetrics(snapshot, firstCagrYear)?.ebitdaMargin));
+  add(23, 5, 4, formatAutoFillPercent(latest.ebitdaMargin));
   add(23, 9, 0, formatAutoFillMillions(latest.totalRevenue));
   add(23, 10, 0, latestYear);
   add(23, 11, 0, formatAutoFillMillions(previous.totalRevenue));
@@ -2318,15 +2320,17 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
   add(23, 14, 0, formatAutoFillPercent(latest.grossMargin));
   add(23, 16, 0, formatAutoFillPercent(previous.grossMargin));
   add(23, 16, 1, previousYear);
-  add(23, 19, 0, formatAutoFillMillions(latest.ebitda));
-  add(23, 21, 0, formatAutoFillPercent(latest.reportedEbitdaMargin));
+  add(23, 19, 0, formatAutoFillMillions(latest.adjustedEbitda));
+  add(23, 21, 0, formatAutoFillPercent(latest.ebitdaMargin));
   add(23, 24, 0, formatAutoFillMillions(latest.freeCashFlow));
   add(23, 26, 0, formatAutoFillPercent(calculateAutoFillFcfConversion(latest)));
-  add(23, 29, 0, Number(latest.ebitda) ? formatAutoFillNumber(latest.longTermDebtEbitdaRatio, 1) : "");
+  add(23, 29, 0, Number(latest.adjustedEbitda)
+    ? formatAutoFillNumber(latest.longTermDebtAdjustedEbitdaRatio, 1)
+    : "");
   add(23, 31, 0, currentLongDate);
   addMergedOrder(23, 36, historyRange);
   addChart(23, 33, "bar", getAutoFillChartData(snapshot, historyYears.filter(Boolean), ["totalRevenue"]));
-  addChart(23, 35, "bar", getAutoFillChartData(snapshot, historyYears.filter(Boolean), ["ebitda", "reportedEbitdaMargin"]));
+  addChart(23, 35, "bar", getAutoFillChartData(snapshot, historyYears.filter(Boolean), ["adjustedEbitda", "ebitdaMargin"]));
 
   const incomeColumns = [...historyYears, latestYear];
   incomeColumns.forEach((year, columnIndex) => {
@@ -2335,6 +2339,10 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
     const metrics = getAutoFillYearMetrics(snapshot, year);
     add(24, 7, 5 + columnIndex, formatAutoFillMillions(metrics.totalRevenue));
     if (columnIndex < 4) add(24, 7, 10 + columnIndex, formatAutoFillPercent(calculateAutoFillGrowth(snapshot, year)));
+    add(24, 7, 14 + columnIndex, formatAutoFillMillions(metrics.costOfGoodsSold));
+    add(24, 7, 19 + columnIndex, formatAutoFillMillions(metrics.grossProfit));
+    add(24, 7, 24 + columnIndex, formatAutoFillPercent(metrics.grossMargin));
+    add(24, 7, 29 + columnIndex, formatAutoFillMillions(metrics.sgaExpenses));
     add(24, 7, 34 + columnIndex, formatAutoFillMillions(metrics.adjustedEbitda));
     add(24, 7, 39 + columnIndex, formatAutoFillPercent(metrics.ebitdaMargin));
     add(24, 7, 44 + columnIndex, formatAutoFillMillions(metrics.depreciationAmortization));
@@ -2384,9 +2392,14 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
     const metrics = getAutoFillYearMetrics(snapshot, year);
     add(27, 7, 4 + columnIndex, formatAutoFillMillions(metrics.netProfit));
     add(27, 7, 8 + columnIndex, formatAutoFillMillions(metrics.depreciationAmortization));
+    add(27, 7, 12 + columnIndex, formatAutoFillMillions(metrics.changeInWorkingCapital));
+    add(27, 7, 16 + columnIndex, formatAutoFillMillions(metrics.otherNonCashItems));
     add(27, 7, 20 + columnIndex, formatAutoFillMillions(metrics.cashFromOperations));
     add(27, 7, 24 + columnIndex, formatAutoFillMillions(metrics.capitalExpenditures));
+    add(27, 7, 28 + columnIndex, formatAutoFillMillions(metrics.acquisitionsDispositions));
     add(27, 7, 32 + columnIndex, formatAutoFillMillions(metrics.cashFromInvesting));
+    add(27, 7, 36 + columnIndex, formatAutoFillMillions(metrics.netBorrowingsRepayments));
+    add(27, 7, 40 + columnIndex, formatAutoFillMillions(metrics.dividendsDistributions));
     add(27, 7, 44 + columnIndex, formatAutoFillMillions(metrics.cashFromFinancing));
     add(27, 7, 48 + columnIndex, formatAutoFillMillions(metrics.netChangeInCash));
     add(27, 7, 52 + columnIndex, formatAutoFillMillions(metrics.freeCashFlow));
@@ -3688,6 +3701,71 @@ function FinancialAutofillModal({
   );
 }
 
+function formatValidationFigure(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "-";
+  return new Intl.NumberFormat("en-US", {
+    notation: "compact",
+    maximumFractionDigits: 2,
+  }).format(numeric);
+}
+
+function FinancialValidationBanner({ validation }) {
+  if (!validation) return null;
+  const verified = validation.status === "verified";
+  const summary = validation.summary || {};
+  const source = validation.sourceLedger || {};
+  const issues = validation.issues || [];
+  const Icon = verified ? ShieldCheck : AlertTriangle;
+
+  return (
+    <section className={`mb-4 border-y px-1 py-3 ${verified ? "border-[#CFE2B8] bg-[#F8FCF3]" : "border-amber-200 bg-amber-50"}`}>
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div className="flex min-w-0 items-start gap-3">
+          <span className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-md ${verified ? "bg-[#E6F3D3] text-[#476E2C]" : "bg-amber-100 text-amber-700"}`}>
+            <Icon size={18} />
+          </span>
+          <div className="min-w-0">
+            <p className="text-sm font-bold text-[#050505]">
+              {verified ? "Financial data verified" : "Financial data requires review"}
+            </p>
+            <p className="mt-0.5 text-xs text-[#6D6E71]">
+              {source.sourceLabel || "Financial source"}
+              {source.versionName ? ` / ${source.versionName}` : ""}
+              {source.lastSyncedAt ? ` / synced ${new Date(source.lastSyncedAt).toLocaleString("en-IN")}` : ""}
+            </p>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs font-semibold text-[#4B5563]">
+          <span>{summary.documentCount || 0} source documents</span>
+          <span>{summary.verifiedChecks || 0} checks passed</span>
+          <span>{summary.calculatedMetrics || 0} calculated metrics</span>
+          <span className={summary.discrepancies ? "text-[#C62026]" : ""}>
+            {summary.discrepancies || 0} discrepancies
+          </span>
+        </div>
+      </div>
+
+      {issues.length > 0 && (
+        <div className="mt-3 grid gap-2 border-t border-current/10 pt-3 lg:grid-cols-2">
+          {issues.slice(0, 6).map((issue) => (
+            <div key={issue.id} className="min-w-0 text-xs text-[#7C2D12]">
+              <span className="font-bold">{issue.year ? `FY${issue.year}: ` : ""}</span>
+              <span>{issue.label}</span>
+              {issue.status === "discrepancy" && (
+                <span className="ml-1 text-[#92400E]">
+                  ({formatValidationFigure(issue.actual)} vs. {formatValidationFigure(issue.expected)})
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function PreviewModal({
   open,
   previewSlideIndex,
@@ -4238,6 +4316,7 @@ export default function WorkspaceCimPrep() {
     loading: false,
     filledCount: 0,
     error: "",
+    validation: null,
   });
   const [activeSectionId, setActiveSectionId] = useState(BASIC_DETAILS_SECTION.id);
   const [activeSlide, setActiveSlide] = useState(BASIC_DETAILS_SECTION.slides[0]);
@@ -4352,6 +4431,13 @@ export default function WorkspaceCimPrep() {
           setFieldValues(state.fieldValues || {});
           setAssetValues(state.assetValues || {});
           setChartValues(state.chartValues || {});
+          setFinancialAutofillState((previous) => ({
+            ...previous,
+            validation: state.financialValidation || null,
+          }));
+          if (isValidFinancialAutofillRange(state.financialAutofillRange)) {
+            setFinancialAutofillRange(state.financialAutofillRange);
+          }
           setUpdatedAt(payload?.updatedAt || state.updatedAt || "");
           window.localStorage.setItem(localKey, JSON.stringify(state));
         } else {
@@ -4362,6 +4448,13 @@ export default function WorkspaceCimPrep() {
             setFieldValues(parsed.fieldValues || {});
             setAssetValues(parsed.assetValues || {});
             setChartValues(parsed.chartValues || {});
+            setFinancialAutofillState((previous) => ({
+              ...previous,
+              validation: parsed.financialValidation || null,
+            }));
+            if (isValidFinancialAutofillRange(parsed.financialAutofillRange)) {
+              setFinancialAutofillRange(parsed.financialAutofillRange);
+            }
             setUpdatedAt(parsed.updatedAt || "");
           }
         }
@@ -4374,6 +4467,13 @@ export default function WorkspaceCimPrep() {
             setFieldValues(parsed.fieldValues || {});
             setAssetValues(parsed.assetValues || {});
             setChartValues(parsed.chartValues || {});
+            setFinancialAutofillState((previous) => ({
+              ...previous,
+              validation: parsed.financialValidation || null,
+            }));
+            if (isValidFinancialAutofillRange(parsed.financialAutofillRange)) {
+              setFinancialAutofillRange(parsed.financialAutofillRange);
+            }
             setUpdatedAt(parsed.updatedAt || "");
           }
         } catch {
@@ -4466,20 +4566,34 @@ export default function WorkspaceCimPrep() {
       if (chartCount > 0) setChartValues(nextChartValues);
 
       const filledCount = fieldMerge.count + chartCount;
-      setFinancialAutofillState({ loading: false, filledCount, error: "" });
+      setFinancialAutofillState({
+        loading: false,
+        filledCount,
+        error: "",
+        validation: snapshot.validation || null,
+      });
       setFinancialAutofillRange(dateRange);
 
+      const discrepancyCount = snapshot.validation?.summary?.discrepancies || 0;
+      const sourceWarningCount = snapshot.validation?.summary?.sourceWarnings || 0;
       showToast({
-        type: filledCount > 0 ? "success" : "info",
-        title: filledCount > 0 ? "CIM Auto-filled" : "No Matching Financial Changes",
+        type: filledCount > 0 && discrepancyCount === 0 && sourceWarningCount === 0 ? "success" : "info",
+        title: discrepancyCount || sourceWarningCount
+          ? "CIM Auto-filled with Review Items"
+          : filledCount > 0 ? "CIM Auto-filled" : "No Matching Financial Changes",
         message: filledCount > 0
-          ? `${filledCount} CIM financial field${filledCount === 1 ? "" : "s"} refreshed for ${getFinancialAutofillRangeLabel(dateRange)}.`
+          ? `${filledCount} financial field${filledCount === 1 ? "" : "s"} refreshed; ${discrepancyCount + sourceWarningCount} review item${discrepancyCount + sourceWarningCount === 1 ? "" : "s"} flagged.`
           : "Financial source data matched the values already in the CIM.",
       });
       return true;
     } catch (error) {
       const message = error?.message || "Financial auto-fill failed.";
-      setFinancialAutofillState({ loading: false, filledCount: 0, error: message });
+      setFinancialAutofillState((previous) => ({
+        ...previous,
+        loading: false,
+        filledCount: 0,
+        error: message,
+      }));
       showToast({
         type: "error",
         title: "Auto-fill Failed",
@@ -4767,11 +4881,13 @@ export default function WorkspaceCimPrep() {
   const handleSave = useCallback(async () => {
     setSaving(true);
     const state = {
-      version: 1,
+      version: 2,
       globalDetails: effectiveGlobalDetails,
       fieldValues,
       assetValues,
       chartValues,
+      financialValidation: financialAutofillState.validation,
+      financialAutofillRange,
       updatedAt: new Date().toISOString(),
     };
     const localKey = getLocalStorageKey(clientId);
@@ -4799,9 +4915,29 @@ export default function WorkspaceCimPrep() {
     } finally {
       setSaving(false);
     }
-  }, [assetValues, chartValues, clientId, effectiveGlobalDetails, fieldValues, showToast]);
+  }, [
+    assetValues,
+    chartValues,
+    clientId,
+    effectiveGlobalDetails,
+    fieldValues,
+    financialAutofillRange,
+    financialAutofillState.validation,
+    showToast,
+  ]);
 
   const handleExport = useCallback(() => {
+    const validation = financialAutofillState.validation;
+    if (validation && validation.status !== "verified") {
+      const issueCount = validation.issues?.length || 0;
+      showToast({
+        type: "error",
+        title: "Financial Review Required",
+        message: `${issueCount} financial review item${issueCount === 1 ? "" : "s"} must be resolved and revalidated before exporting the CIM.`,
+      });
+      return;
+    }
+
     const missingSlides = PREVIEW_SLIDES.filter((slideNumber) => !layouts[slideNumber]);
     if (missingSlides.length > 0) {
       showToast({
@@ -4826,7 +4962,14 @@ export default function WorkspaceCimPrep() {
       title: "PPT Export Started",
       message: "Your editable CIM PowerPoint is downloading.",
     });
-  }, [company?.name, effectiveGlobalDetails, getExportElementContent, layouts, showToast]);
+  }, [
+    company?.name,
+    effectiveGlobalDetails,
+    financialAutofillState.validation,
+    getExportElementContent,
+    layouts,
+    showToast,
+  ]);
 
   const isBasicSection = activeSection.type === "basic";
   const activeFields = activeSlide ? fieldsBySlide[activeSlide] || [] : [];
@@ -4913,6 +5056,8 @@ export default function WorkspaceCimPrep() {
           </button>
         </div>
       </div>
+
+      <FinancialValidationBanner validation={financialAutofillState.validation} />
 
       <div className="grid gap-4 xl:grid-cols-[230px_minmax(0,1fr)_310px]">
         <SectionDrawer
