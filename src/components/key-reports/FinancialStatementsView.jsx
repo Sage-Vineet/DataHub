@@ -340,7 +340,7 @@ function MonthlyPLGrid({ data }) {
     return next;
   });
 
-  const months  = data.map(d => ({ key: `${d.monthNumber}-${d.year}`, label: d.month.slice(0, 3), stmt: d.statement, vendors: d.vendorsByAccount || {} }));
+  const months  = data.map(d => ({ key: `${d.monthNumber}-${d.year}`, label: `${d.month.slice(0, 3)} ${d.year}`, stmt: d.statement, vendors: d.vendorsByAccount || {} }));
   const rowDefs = buildPlRowDefs(data);
   const rowCls  = (type) => PL_ROW_CLS[type] || "";
 

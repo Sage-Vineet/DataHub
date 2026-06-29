@@ -978,9 +978,18 @@ async function generateYearlyPl(versionId, year, allCoa, unmappedSet) {
 
 // ─── Monthly P&L ─────────────────────────────────────────────────────────────
 
-// Fallback when GL has no transaction_date: distribute the yearly P&L statement
-// proportionally across months using per-month Net Income derived from monthly
-// balance_sheet_entries equity changes (same data source that makes BS monthly work).
+// Fallback when GL has no transaction_date usable for per-account P&L grouping:
+// distribute the yearly P&L statement proportionally across months.
+//
+// Month list priority (mirrors generateMonthlyBs logic so columns stay in sync):
+//   1. Multiple distinct as_of_date values in balance_sheet_entries → use those
+//   2. Only 1 date (year-end snapshot) → call aggregateGLForBSByMonth for the GL
+//      month list (same source that drives BS monthly via generateMonthlyBsFromGL)
+//
+// Distribution strategy:
+//   • If ≥ half the months have a "Net Income" row in BS entries: proportional to
+//     incremental monthly NI (YTD-delta).
+//   • Otherwise: equal split across all months.
 async function generateMonthlyPlFromYearly(versionId, year, yearlyStatement) {
   const yearlyNI = safeNum(yearlyStatement?.netIncome);
 
@@ -996,17 +1005,46 @@ async function generateMonthlyPlFromYearly(versionId, year, yearlyStatement) {
   if (error || !bsEntries?.length) return [];
 
   const NI_KW  = /net.*(income|loss)/i;
+  // Step 1: Collect every distinct as_of_date AND its YTD Net Income if present.
   const byDate = new Map();
   for (const e of bsEntries) {
-    if (!e.as_of_date || !NI_KW.test(e.account_name)) continue;
+    if (!e.as_of_date) continue;
     const monthNum = parseInt(e.as_of_date.slice(5, 7), 10);
     if (!(monthNum >= 1 && monthNum <= 12)) continue;
-    if (!byDate.has(e.as_of_date)) byDate.set(e.as_of_date, { date: e.as_of_date, monthNum, niYTD: 0 });
-    byDate.get(e.as_of_date).niYTD += safeNum(e.amount);
+    if (!byDate.has(e.as_of_date)) byDate.set(e.as_of_date, { date: e.as_of_date, monthNum, niYTD: 0, hasNI: false });
+    if (NI_KW.test(e.account_name)) {
+      byDate.get(e.as_of_date).niYTD += safeNum(e.amount);
+      byDate.get(e.as_of_date).hasNI  = true;
+    }
   }
 
-  const sortedDates = Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date));
+  let sortedDates = Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date));
+
+  // Step 2: When BS only has one date (year-end snapshot), fall back to the GL
+  // month list — same source used by generateMonthlyBsFromGL. This ensures P&L
+  // monthly columns match BS monthly columns exactly.
+  if (sortedDates.length <= 1) {
+    const glByMonth = await aggregateGLForBSByMonth(versionId, year);
+    if (glByMonth?.size) {
+      const glMonths = Array.from(glByMonth.keys()).sort((a, b) => a - b);
+      sortedDates = glMonths.map(monthNum => ({
+        date:   `${year}-${String(monthNum).padStart(2, "0")}-28`,
+        monthNum,
+        niYTD:  0,
+        hasNI:  false,
+      }));
+    }
+  }
+
   if (!sortedDates.length) return [];
+
+  // Use proportional NI only when most months have the Net Income row; otherwise
+  // split equally so monthly columns match BS monthly without distortion.
+  const niCount = sortedDates.filter(d => d.hasNI).length;
+  const useNI   = niCount >= Math.ceil(sortedDates.length / 2);
+  const n       = sortedDates.length;
+
+  console.log(`[FinStmt][PL][${year}] monthly fallback: ${n} months, ${niCount} with NI → ${useNI ? "proportional" : "equal"} split`);
 
   const scaleAccounts = (accounts, ratio) =>
     (accounts || []).map(a => ({ ...a, amount: round2(safeNum(a.amount) * ratio) }));
@@ -1045,12 +1083,14 @@ async function generateMonthlyPlFromYearly(versionId, year, yearlyStatement) {
   };
 
   return sortedDates.map((curr, i) => {
-    const prevYTD = i > 0 ? sortedDates[i - 1].niYTD : 0;
-    const monthNI = curr.niYTD - prevYTD;
-    // Proportional ratio; even distribution when yearly NI ≈ 0 (avoids divide-by-zero)
-    const ratio = Math.abs(yearlyNI) > 0.01
-      ? monthNI / yearlyNI
-      : 1 / sortedDates.length;
+    let ratio;
+    if (useNI) {
+      const prevYTD = i > 0 ? sortedDates[i - 1].niYTD : 0;
+      const monthNI = curr.niYTD - prevYTD;
+      ratio = Math.abs(yearlyNI) > 0.01 ? monthNI / yearlyNI : 1 / n;
+    } else {
+      ratio = 1 / n;
+    }
 
     return {
       month:            MONTH_NAMES[curr.monthNum - 1],
