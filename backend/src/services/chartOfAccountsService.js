@@ -29,11 +29,60 @@ const { refineAccounts } = require("./keyReports/geminiCoaClassifier");
 const TABLE_COA = "chart_of_accounts";
 const TABLE_TXN = "general_ledger_entries";
 const TABLE_BS = "balance_sheet_entries";
-const TABLE_MAPPINGS = "coa_account_mappings";
-const TABLE_ADJUSTMENTS = "coa_account_adjustments";
-const TABLE_HISTORY = "coa_classification_history";
-const TABLE_LEVELS = "coa_hierarchy_levels";
 const PAGE_SIZE = 1000;
+
+// Audit history (classification snapshots + per-edit adjustments) is stored
+// INLINE on each chart_of_accounts row in the `audit_log` jsonb array, rather
+// than in the former coa_account_mappings / coa_account_adjustments /
+// coa_classification_history / coa_hierarchy_levels side tables (all removed —
+// migration 055). Each entry: { kind, at, ...fields }.
+//   kind = "classification" → { method, hierarchy_snapshot, source, by }
+//   kind = "adjustment"     → { field_changed, old_value, new_value, by }
+function classificationAudit(method, snapshot, source, userId) {
+  return { kind: "classification", at: new Date().toISOString(), method, hierarchy_snapshot: snapshot, source, by: userId || null };
+}
+function adjustmentAudit(fieldChanged, oldValue, newValue, userId) {
+  return { kind: "adjustment", at: new Date().toISOString(), field_changed: fieldChanged, old_value: oldValue ?? null, new_value: newValue ?? null, by: userId || null };
+}
+function appendAudit(existing, ...entries) {
+  const log = Array.isArray(existing) ? existing.slice() : [];
+  log.push(...entries.filter(Boolean));
+  // Bound growth: keep the most recent 200 entries per account.
+  return log.length > 200 ? log.slice(log.length - 200) : log;
+}
+
+// Standardized hierarchy taxonomy (formerly the coa_hierarchy_levels seed table,
+// removed in migration 055). Kept in lock-step with coaHierarchyRules.STANDARD_PREFIX
+// and the deeper expense groups; served to the UI level filters.
+const HIERARCHY_LEVELS = Object.freeze([
+  { level_number: 1, statement_type: "profit_loss",   parent_label: null,                 label: "Income Statement", sort_order: 1, is_standard: true },
+  { level_number: 1, statement_type: "balance_sheet", parent_label: null,                 label: "Balance Sheet",    sort_order: 2, is_standard: true },
+  { level_number: 2, statement_type: "profit_loss",   parent_label: "Income Statement",   label: "Net Income",        sort_order: 1, is_standard: true },
+  { level_number: 2, statement_type: "balance_sheet", parent_label: "Balance Sheet",      label: "Total Assets",      sort_order: 2, is_standard: true },
+  { level_number: 2, statement_type: "balance_sheet", parent_label: "Balance Sheet",      label: "Total Liabilities", sort_order: 3, is_standard: true },
+  { level_number: 2, statement_type: "balance_sheet", parent_label: "Balance Sheet",      label: "Total Equity",      sort_order: 4, is_standard: true },
+  { level_number: 3, statement_type: "profit_loss",   parent_label: "Net Income",         label: "Pretax Income",         sort_order: 1, is_standard: true },
+  { level_number: 3, statement_type: "balance_sheet", parent_label: "Total Assets",       label: "Current Assets",        sort_order: 2, is_standard: true },
+  { level_number: 3, statement_type: "balance_sheet", parent_label: "Total Assets",       label: "Fixed Assets",          sort_order: 3, is_standard: true },
+  { level_number: 3, statement_type: "balance_sheet", parent_label: "Total Assets",       label: "Other Assets",          sort_order: 4, is_standard: true },
+  { level_number: 3, statement_type: "balance_sheet", parent_label: "Total Liabilities",  label: "Current Liabilities",   sort_order: 5, is_standard: true },
+  { level_number: 3, statement_type: "balance_sheet", parent_label: "Total Liabilities",  label: "Long-Term Liabilities", sort_order: 6, is_standard: true },
+  { level_number: 4, statement_type: "profit_loss",   parent_label: "Pretax Income",      label: "Operating Income", sort_order: 1, is_standard: true },
+  { level_number: 5, statement_type: "profit_loss",   parent_label: "Operating Income",   label: "Gross Profit",     sort_order: 1, is_standard: true },
+  { level_number: 6, statement_type: "profit_loss",   parent_label: "Gross Profit",       label: "Total Revenue",    sort_order: 1, is_standard: true },
+  { level_number: 6, statement_type: "profit_loss",   parent_label: "Gross Profit",       label: "Total Expenses",   sort_order: 2, is_standard: true },
+  { level_number: 7, statement_type: "profit_loss",   parent_label: "Total Revenue",      label: "Income",   sort_order: 1, is_standard: true },
+  { level_number: 7, statement_type: "profit_loss",   parent_label: "Total Expenses",     label: "Expenses", sort_order: 2, is_standard: true },
+  { level_number: 8, statement_type: "profit_loss",   parent_label: "Expenses", label: "Payroll and Labor",          sort_order: 1, is_standard: true },
+  { level_number: 8, statement_type: "profit_loss",   parent_label: "Expenses", label: "Cost of Sales",              sort_order: 2, is_standard: true },
+  { level_number: 8, statement_type: "profit_loss",   parent_label: "Expenses", label: "Occupancy",                  sort_order: 3, is_standard: true },
+  { level_number: 8, statement_type: "profit_loss",   parent_label: "Expenses", label: "Insurance",                  sort_order: 4, is_standard: true },
+  { level_number: 8, statement_type: "profit_loss",   parent_label: "Expenses", label: "Sales and Marketing",        sort_order: 5, is_standard: true },
+  { level_number: 8, statement_type: "profit_loss",   parent_label: "Expenses", label: "General and Administrative", sort_order: 6, is_standard: true },
+  { level_number: 8, statement_type: "profit_loss",   parent_label: "Expenses", label: "Vehicle and Travel",         sort_order: 7, is_standard: true },
+  { level_number: 8, statement_type: "profit_loss",   parent_label: "Expenses", label: "Repairs and Maintenance",    sort_order: 8, is_standard: true },
+  { level_number: 8, statement_type: "profit_loss",   parent_label: "Expenses", label: "Non-Cash and Below-Line",    sort_order: 9, is_standard: true },
+]);
 
 // Group (parent) node definitions, keyed by normalized account type. Retained
 // for the legacy 2-level summary + statement-type slicing.
@@ -146,7 +195,7 @@ async function collectBsAccounts(companyId, batchId) {
 async function collectGlAccountsFromEntries(companyId, versionId) {
   return fetchAllRows(() =>
     supabase.from("general_ledger_entries")
-      .select("distribution_account, split_account, account_section, fiscal_year")
+      .select("distribution_account, split_account, account_section, fiscal_year, account_name, account_number")
       .eq("company_id", companyId).eq("version_id", versionId)
       .order("id", { ascending: true }),
   );
@@ -156,15 +205,6 @@ async function collectBsAccountsFromEntries(companyId, versionId) {
   return fetchAllRows(() =>
     supabase.from("balance_sheet_entries")
       .select("account_name, account_number, section, is_total, hierarchy_level, fiscal_year")
-      .eq("company_id", companyId).eq("version_id", versionId)
-      .or("is_total.eq.false,is_total.is.null").order("id", { ascending: true }),
-  );
-}
-
-async function collectPlAccountsFromEntries(companyId, versionId) {
-  return fetchAllRows(() =>
-    supabase.from("profit_loss_entries")
-      .select("account_name, account_number, account_type, is_total, hierarchy_level, fiscal_year")
       .eq("company_id", companyId).eq("version_id", versionId)
       .or("is_total.eq.false,is_total.is.null").order("id", { ascending: true }),
   );
@@ -250,10 +290,13 @@ function buildCoaModel(glRows, bsRows, plRows) {
     addLeaf(r.account_name, r.account_number || null, r.account_type || null, "profit_loss", r.fiscal_year, "profit_loss_type");
   }
   for (const r of glRows || []) {
-    // GL has no account_number/account_name columns; extract from distribution_account.
-    // GL is an enrichment source — addLeaf merges into existing BS/PL accounts where possible.
-    const name = r.distribution_account || r.account_section || "";
-    addLeaf(name, null, null, "general_ledger", r.fiscal_year, "gl_type");
+    const name = r.distribution_account || r.account_section || r.account_name || "";
+    if (name) {
+      addLeaf(name, r.account_number || null, null, "general_ledger", r.fiscal_year, "gl_type");
+    }
+    if (r.split_account && !isNonAccountRow(r.split_account)) {
+      addLeaf(r.split_account, null, null, "general_ledger", r.fiscal_year, "gl_type");
+    }
   }
 
   const groups = Object.entries(GROUP_DEFS)
@@ -359,6 +402,13 @@ const TYPE_ORDER = Object.freeze({ income: 1, expense: 2, cogs: 3, asset: 4, lia
 
 function systemIdPrefix(accountType) {
   return SYSTEM_ID_PREFIX[accountType] || "ACC";
+}
+
+function normalBalanceFor(accountType) {
+  const t = String(accountType || "").trim().toLowerCase();
+  if (t === "asset" || t === "expense" || t === "cogs") return "debit";
+  if (t === "liability" || t === "equity" || t === "revenue" || t === "income") return "credit";
+  return "debit";
 }
 
 /**
@@ -542,26 +592,26 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
     return { accountCount: 0, leafCount: 0, skipped: true };
   }
 
-  // 1) Collect source accounts.
-  let glRows, bsRows, plRows;
+  // 1) Collect source accounts. The Chart of Accounts is built from the General
+  //    Ledger + Balance Sheet only (there is no profit_loss_entries table — P&L
+  //    accounts surface through the GL). plRows is always empty.
+  let glRows, bsRows;
   if (batchId) {
     [glRows, bsRows] = await Promise.all([
       collectGlAccounts(companyId, batchId),
       collectBsAccounts(companyId, batchId).catch(() => []),
     ]);
-    plRows = [];
   } else {
-    [glRows, bsRows, plRows] = await Promise.all([
+    [glRows, bsRows] = await Promise.all([
       collectGlAccountsFromEntries(companyId, versionId).catch((e) => {
         console.warn(`[ChartOfAccounts] GL enrichment skipped: ${e.message}`);
         return [];
       }),
       collectBsAccountsFromEntries(companyId, versionId).catch(() => []),
-      collectPlAccountsFromEntries(companyId, versionId).catch(() => []),
     ]);
   }
 
-  const { leaves } = buildCoaModel(glRows, bsRows, plRows);
+  const { leaves } = buildCoaModel(glRows, bsRows, []);
   if (!leaves.length) {
     // Nothing to build — clear derived rows so stale accounts don't linger.
     await supabase.from(TABLE_COA).delete().eq("version_id", versionId);
@@ -573,7 +623,7 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
   // 2) Load existing rows so we can preserve ids, originals, and adjustments.
   const { data: existingData, error: exErr } = await supabase
     .from(TABLE_COA)
-    .select("id, system_id, account_number, account_name, parent_account_id, original_name, original_hierarchy, adjusted_name, adjusted_hierarchy, metadata, classification_method, account_type, statement_type, level_1, level_2, level_3, level_4, level_5, level_6, level_7, level_8, level_9, level_10, level_11, level_12, level_13, level_14, level_15, base_account")
+    .select("id, system_id, normal_balance, account_number, account_name, parent_account_id, original_name, original_hierarchy, adjusted_name, adjusted_hierarchy, metadata, classification_method, account_type, statement_type, level_1, level_2, level_3, level_4, level_5, level_6, level_7, level_8, level_9, level_10, level_11, level_12, level_13, level_14, level_15, base_account")
     .eq("version_id", versionId);
   if (exErr) throw exErr;
   // Category (is_group) rows form the parent_account_id tree; leaves are the real
@@ -628,6 +678,7 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
         parent_account_id: parentAccountId,
         account_type: leaf.accountType,
         statement_type: leaf.statementType,
+        normal_balance: normalBalanceFor(leaf.accountType),
         is_active: true,
         sort_order: sortCounter,
         ...levelsToColumns(aiLevels),
@@ -639,6 +690,7 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
         adjusted_name: leaf.displayName,
         adjusted_hierarchy: aiSnapshot,
         metadata: { ...baseMeta, user_modified: false },
+        audit_log: [classificationAudit(leaf.classificationMethod, aiSnapshot, "generate", null)],
       });
       continue;
     }
@@ -651,6 +703,7 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
       system_id: existing.system_id || systemId,
       account_type: userModified ? existing.account_type : leaf.accountType,
       statement_type: userModified ? existing.statement_type : leaf.statementType,
+      normal_balance: existing.normal_balance || normalBalanceFor(userModified ? existing.account_type : leaf.accountType),
       sort_order: sortCounter,
       // original stays as first-seen; only backfill if it was never set.
       original_name: existing.original_name || leaf.displayName,
@@ -701,60 +754,11 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
     if (del.error) throw del.error;
   }
 
-  // 6) Resolve account ids for every leaf (existing + inserted).
-  const accountIdByKey = new Map();
-  for (const row of existingLeavesData) accountIdByKey.set(accountKey(row.account_number, row.account_name), row.id);
-  for (const [k, id] of insertedByKey.entries()) accountIdByKey.set(k, id);
-
-  // 7) Rebuild source→account mappings (pure derivative; safe to replace).
-  await supabase.from(TABLE_MAPPINGS).delete().eq("version_id", versionId);
-  const SOURCE_TABLE = {
-    general_ledger: "general_ledger_entries",
-    balance_sheet: "balance_sheet_entries",
-    profit_loss: "profit_loss_entries",
-  };
-  const mappingRows = [];
-  for (const leaf of hierarchical) {
-    const key = accountKey(leaf.accountNumber, leaf.accountName);
-    const accountId = accountIdByKey.get(key);
-    if (!accountId) continue;
-    for (const src of leaf.sources) {
-      mappingRows.push({
-        version_id: versionId,
-        company_id: companyId,
-        account_id: accountId,
-        source_table: SOURCE_TABLE[src] || src,
-        source_account_name: leaf.accountName,
-        source_account_number: leaf.accountNumber,
-        normalized_name: normName(leaf.accountName),
-      });
-    }
-  }
-  if (mappingRows.length) {
-    const insMap = await supabase.from(TABLE_MAPPINGS).insert(mappingRows);
-    if (insMap.error) throw insMap.error;
-  }
-
-  // 8) Record an initial classification-history snapshot for new accounts.
-  const historyRows = [];
-  for (const leaf of hierarchical) {
-    const key = accountKey(leaf.accountNumber, leaf.accountName);
-    const id = insertedByKey.get(key);
-    if (!id) continue; // only newly classified accounts
-    historyRows.push({
-      account_id: id,
-      version_id: versionId,
-      company_id: companyId,
-      classification_method: leaf.classificationMethod,
-      hierarchy_snapshot: hierarchySnapshot(leaf.levels, leaf.accountType, leaf.statementType, leaf.baseAccount),
-      source: "generate",
-    });
-  }
-  if (historyRows.length) {
-    await supabase.from(TABLE_HISTORY).insert(historyRows).then(({ error }) => {
-      if (error) console.warn(`[ChartOfAccounts] history insert skipped: ${error.message}`);
-    });
-  }
+  // The source→account name map and per-account classification history are no
+  // longer stored in side tables. The COA leaves ARE the name map (rebuilt in
+  // memory by the report layer), and the initial "generate" classification
+  // snapshot is seeded into each new row's audit_log above. Account ids are
+  // resolved here only for the return summary.
 
   return {
     accountCount: (updates.length + toInsert.length),
@@ -783,6 +787,7 @@ function mapRow(row) {
     accountIdName: row.account_id_name,
     accountType: row.account_type,
     statementType: row.statement_type,
+    normalBalance: row.normal_balance,
     parentAccountId: row.parent_account_id,
     isActive: row.is_active,
     sortOrder: row.sort_order,
@@ -896,50 +901,28 @@ async function loadAccount(accountId) {
   return data;
 }
 
-async function recordAdjustment(row, fieldChanged, oldValue, newValue, userId) {
-  await supabase.from(TABLE_ADJUSTMENTS).insert({
-    account_id: row.id,
-    version_id: row.version_id,
-    company_id: row.company_id,
-    field_changed: fieldChanged,
-    old_value: oldValue ?? null,
-    new_value: newValue ?? null,
-    changed_by: userId || null,
-  }).then(({ error }) => { if (error) console.warn(`[ChartOfAccounts] adjustment log skipped: ${error.message}`); });
-}
-
-async function recordHistory(row, method, levels, accountType, statementType, baseAccount, source, userId) {
-  await supabase.from(TABLE_HISTORY).insert({
-    account_id: row.id,
-    version_id: row.version_id,
-    company_id: row.company_id,
-    classification_method: method,
-    hierarchy_snapshot: hierarchySnapshot(levels, accountType, statementType, baseAccount),
-    source,
-    created_by: userId || null,
-  }).then(({ error }) => { if (error) console.warn(`[ChartOfAccounts] history log skipped: ${error.message}`); });
-}
-
 /**
  * Apply a user edit to a single account. Supports rename (adjustedName),
  * move/change-parent/reclassify (levels + accountType/statementType), and
- * active toggle. NEVER touches original_*. Writes adjustment + history audit.
+ * active toggle. NEVER touches original_*. Appends adjustment + classification
+ * entries to the row's inline audit_log (no side tables).
  */
 async function updateAccountHierarchy(accountId, patch = {}, userId = null) {
   const row = await loadAccount(accountId);
   const update = { updated_at: new Date().toISOString(), classification_method: "manual" };
   const meta = { ...(row.metadata || {}), user_modified: true };
   update.metadata = meta;
+  const audits = [];
   let changed = false;
 
   if (patch.adjustedName !== undefined && patch.adjustedName !== row.adjusted_name) {
-    await recordAdjustment(row, "name", row.adjusted_name, patch.adjustedName, userId);
+    audits.push(adjustmentAudit("name", row.adjusted_name, patch.adjustedName, userId));
     update.adjusted_name = String(patch.adjustedName || "").trim() || row.account_name;
     changed = true;
   }
 
   if (patch.accountType !== undefined && patch.accountType !== row.account_type) {
-    await recordAdjustment(row, "reclassify", row.account_type, patch.accountType, userId);
+    audits.push(adjustmentAudit("reclassify", row.account_type, patch.accountType, userId));
     update.account_type = patch.accountType;
     if (patch.statementType === undefined) {
       update.statement_type = statementTypeFor(patch.accountType);
@@ -954,7 +937,7 @@ async function updateAccountHierarchy(accountId, patch = {}, userId = null) {
     const nonNull = levels.filter(Boolean);
     const baseAccount = nonNull.length ? nonNull[nonNull.length - 1] : row.base_account;
     const hierarchyPath = nonNull.join(" > ");
-    await recordAdjustment(row, patch.movedParent ? "parent" : "level", columnsToLevels(row), levels, userId);
+    audits.push(adjustmentAudit(patch.movedParent ? "parent" : "level", columnsToLevels(row), levels, userId));
     Object.assign(update, levelsToColumns(levels), {
       base_account: baseAccount,
       hierarchy_path: hierarchyPath,
@@ -964,18 +947,20 @@ async function updateAccountHierarchy(accountId, patch = {}, userId = null) {
   }
 
   if (patch.isActive !== undefined && patch.isActive !== row.is_active) {
-    await recordAdjustment(row, "active", row.is_active, patch.isActive, userId);
+    audits.push(adjustmentAudit("active", row.is_active, patch.isActive, userId));
     update.is_active = patch.isActive;
     changed = true;
   }
 
   if (!changed) return mapRow(row);
 
+  const newLevels = columnsToLevels({ ...row, ...update });
+  const snapshot = hierarchySnapshot(newLevels, update.account_type || row.account_type, update.statement_type || row.statement_type, update.base_account || row.base_account);
+  audits.push(classificationAudit("manual", snapshot, "adjust", userId));
+  update.audit_log = appendAudit(row.audit_log, ...audits);
+
   const { data, error } = await supabase.from(TABLE_COA).update(update).eq("id", accountId).select("*").single();
   if (error) throw error;
-
-  const newLevels = columnsToLevels(data);
-  await recordHistory(data, "manual", newLevels, data.account_type, data.statement_type, data.base_account, "adjust", userId);
   return mapRow(data);
 }
 
@@ -1018,10 +1003,13 @@ async function resetAccount(accountId, userId = null) {
     metadata: { ...(row.metadata || {}), user_modified: false },
     ...levelsToColumns(levels),
   };
-  await recordAdjustment(row, "reset", columnsToLevels(row), levels, userId);
+  update.audit_log = appendAudit(
+    row.audit_log,
+    adjustmentAudit("reset", columnsToLevels(row), levels, userId),
+    classificationAudit("rule", original, "reset", userId),
+  );
   const { data, error } = await supabase.from(TABLE_COA).update(update).eq("id", accountId).select("*").single();
   if (error) throw error;
-  await recordHistory(data, "rule", levels, data.account_type, data.statement_type, data.base_account, "reset", userId);
   return mapRow(data);
 }
 
@@ -1038,25 +1026,45 @@ async function resetVersion(versionId, userId = null) {
   return { reset: modified.length };
 }
 
-/** Audit history (classification + adjustments) for a version. */
+/**
+ * Audit history (classification + adjustments) for a version, reconstructed from
+ * each account's inline audit_log. Return shape is unchanged for the frontend.
+ */
 async function getHistory(versionId) {
-  const [hist, adj] = await Promise.all([
-    supabase.from(TABLE_HISTORY).select("*").eq("version_id", versionId).order("created_at", { ascending: false }).limit(500),
-    supabase.from(TABLE_ADJUSTMENTS).select("*").eq("version_id", versionId).order("changed_at", { ascending: false }).limit(500),
-  ]);
-  if (hist.error) throw hist.error;
-  if (adj.error) throw adj.error;
-  return { classificationHistory: hist.data || [], adjustments: adj.data || [] };
+  const { data, error } = await supabase
+    .from(TABLE_COA)
+    .select("id, version_id, company_id, account_name, adjusted_name, audit_log")
+    .eq("version_id", versionId);
+  if (error) throw error;
+
+  const classificationHistory = [];
+  const adjustments = [];
+  for (const row of data || []) {
+    for (const e of Array.isArray(row.audit_log) ? row.audit_log : []) {
+      const common = {
+        account_id: row.id,
+        version_id: row.version_id,
+        company_id: row.company_id,
+        account_name: row.adjusted_name || row.account_name,
+      };
+      if (e.kind === "adjustment") {
+        adjustments.push({ ...common, field_changed: e.field_changed, old_value: e.old_value, new_value: e.new_value, changed_by: e.by || null, changed_at: e.at });
+      } else {
+        classificationHistory.push({ ...common, classification_method: e.method, hierarchy_snapshot: e.hierarchy_snapshot, source: e.source, created_by: e.by || null, created_at: e.at });
+      }
+    }
+  }
+  const byTime = (a, b) => String(b.created_at || b.changed_at).localeCompare(String(a.created_at || a.changed_at));
+  classificationHistory.sort(byTime);
+  adjustments.sort(byTime);
+  return { classificationHistory: classificationHistory.slice(0, 500), adjustments: adjustments.slice(0, 500) };
 }
 
-/** The standardized taxonomy reference (for UI level filters). */
+/** The standardized taxonomy reference (for UI level filters). Static — derived
+ *  from coaHierarchyRules (the generation engine's own vocabulary), replacing the
+ *  removed coa_hierarchy_levels seed table. */
 async function getHierarchyLevels() {
-  const { data, error } = await supabase
-    .from(TABLE_LEVELS).select("*")
-    .order("level_number", { ascending: true })
-    .order("sort_order", { ascending: true });
-  if (error) throw error;
-  return data || [];
+  return HIERARCHY_LEVELS;
 }
 
 // Legacy single-field update — retained for backward compatibility.
@@ -1194,6 +1202,133 @@ async function validateChartOfAccounts(companyId, versionId) {
   return { summary: { accountCount: all.length, leafCount: leaves.length, status, ...reports }, reports, rows };
 }
 
+async function ensureAccountExistsInCoa(versionId, companyId, accountName, accountNumber = null, explicitType = null) {
+  if (!versionId || !companyId || !accountName) return null;
+  const normalizedName = String(accountName).trim();
+  const normalizedNumber = accountNumber ? String(accountNumber).trim() : null;
+
+  // Check if account already exists
+  const { data: existing, error: findErr } = await supabase
+    .from(TABLE_COA)
+    .select("id")
+    .eq("version_id", versionId)
+    .eq("account_name", normalizedName)
+    .eq("account_number", normalizedNumber)
+    .maybeSingle();
+
+  if (findErr) {
+    console.error(`[ChartOfAccounts][ensureExists] Find error: ${findErr.message}`);
+  }
+  if (existing) return existing.id;
+
+  // It doesn't exist, let's insert it!
+  console.log(`[ChartOfAccounts][ensureExists] Dynamically inserting account: "${normalizedName}" (num: ${normalizedNumber || 'none'})`);
+  const type = explicitType || inferAccountType(normalizedName, normalizedNumber || "");
+  const stmtType = statementTypeFor(type);
+  const normalBalance = normalBalanceFor(type);
+
+  const { levels, standardizedDepth } = classifyStandardized({
+    accountName: normalizedName,
+    accountNumber: normalizedNumber,
+    accountType: type,
+    statementType: stmtType,
+  });
+
+  const { levels: finalLevels, hierarchyPath } = buildLevelsFromPath(
+    levels, standardizedDepth, [], normalizedName
+  );
+
+  const aiSnapshot = hierarchySnapshot(finalLevels, type, stmtType, normalizedName);
+  const accountIdName = normalizedNumber ? `${normalizedNumber} — ${normalizedName}` : normalizedName;
+
+  // Sync category nodes for the levels and get parent_account_id
+  const cats = buildDesiredCategories([{ levels: finalLevels, accountType: type, statementType: stmtType }]);
+  let parentAccountId = null;
+  try {
+    const { data: existingCats } = await supabase
+      .from(TABLE_COA)
+      .select("id, parent_account_id, metadata")
+      .eq("version_id", versionId);
+    const existingCatsData = (existingCats || []).filter((r) => r.metadata?.is_group);
+    const catIdByPath = await syncCategoryNodes(versionId, companyId, existingCatsData, cats);
+    parentAccountId = catIdByPath.get(leafCategoryKey(finalLevels)) || null;
+  } catch (catErr) {
+    console.warn(`[ChartOfAccounts][ensureExists] Category sync error: ${catErr.message}`);
+  }
+
+  // Find next sort_order
+  const { data: maxSort } = await supabase
+    .from(TABLE_COA)
+    .select("sort_order")
+    .eq("version_id", versionId)
+    .order("sort_order", { ascending: false })
+    .limit(1);
+  const sortCounter = ((maxSort?.[0]?.sort_order || 0) + 1);
+
+  // Determine system_id
+  const prefix = systemIdPrefix(type);
+  const { data: maxSys } = await supabase
+    .from(TABLE_COA)
+    .select("system_id")
+    .eq("version_id", versionId)
+    .like("system_id", `${prefix}-%`)
+    .order("system_id", { ascending: false })
+    .limit(1);
+  let nextNum = 1;
+  if (maxSys?.[0]?.system_id) {
+    const m = /^([A-Z]+)-(\d+)$/.exec(maxSys[0].system_id);
+    if (m) nextNum = Number(m[2]) + 1;
+  }
+  const systemId = `${prefix}-${String(nextNum).padStart(3, "0")}`;
+
+  const { data: inserted, error: insErr } = await supabase
+    .from(TABLE_COA)
+    .insert({
+      version_id: versionId,
+      company_id: companyId,
+      system_id: systemId,
+      account_number: normalizedNumber,
+      account_name: normalizedName,
+      account_id_name: accountIdName,
+      parent_account_id: parentAccountId,
+      account_type: type,
+      statement_type: stmtType,
+      normal_balance: normalBalance,
+      is_active: true,
+      sort_order: sortCounter,
+      ...levelsToColumns(finalLevels),
+      base_account: normalizedName,
+      hierarchy_path: hierarchyPath,
+      classification_method: "rule",
+      original_name: normalizedName,
+      original_hierarchy: aiSnapshot,
+      adjusted_name: normalizedName,
+      adjusted_hierarchy: aiSnapshot,
+      metadata: { is_group: false, sources: ["dynamic"], fiscal_years: [], user_modified: false },
+      audit_log: [classificationAudit("rule", aiSnapshot, "dynamic_insert", null)],
+    })
+    .select("id")
+    .single();
+
+  if (insErr) {
+    console.error(`[ChartOfAccounts][ensureExists] Insert error: ${insErr.message}`);
+    // If double insert occurred due to concurrency, try to query one more time
+    if (insErr.code === '23505') {
+      const { data: retry } = await supabase
+        .from(TABLE_COA)
+        .select("id")
+        .eq("version_id", versionId)
+        .eq("account_name", normalizedName)
+        .eq("account_number", normalizedNumber)
+        .maybeSingle();
+      if (retry) return retry.id;
+    }
+    throw insErr;
+  }
+
+  return inserted?.id || null;
+}
+
 module.exports = {
   generateChartOfAccounts,
   getChartOfAccounts,
@@ -1205,6 +1340,7 @@ module.exports = {
   getHistory,
   getHierarchyLevels,
   validateChartOfAccounts,
+  ensureAccountExistsInCoa,
   // exported for unit testing
   buildCoaModel,
   buildLeafHierarchies,
