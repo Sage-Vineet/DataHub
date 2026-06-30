@@ -1,6 +1,7 @@
 
 
 const { supabase } = require('../../db');
+const generatedReportSnapshots = require('./generatedReportSnapshotService');
 const { buildCashFlow, generatedCfToRows } = require('../manualCashFlowService');
 // chartOfAccountsService — ensureAccountExistsInCoa removed; COA is completed in Phase 2c before reports run
 const { listEbitdaAdjustments } = require('../ebitdaAdjustmentStore');
@@ -226,42 +227,53 @@ function classifyGLAccountFallback(name, accountType) {
   return 'unknown';
 }
 
-async function classifyAccountViaCoa(_companyId, versionId, name, accountNumber = null) {
-  if (!name) return 'unknown';
-  const normalizedName = String(name).trim();
-  const normalizedNumber = accountNumber ? String(accountNumber).trim() : null;
+function coaLookupKey(name, accountNumber = null) {
+  const normalizedName = String(name || '').trim().toLowerCase();
+  const normalizedNumber = accountNumber ? String(accountNumber).trim().toLowerCase() : '';
+  return `${normalizedNumber}::${normalizedName}`;
+}
 
-  // 1. Try to fetch from COA
-  const { data: coaAcc, error: coaErr } = await supabase
+async function loadCoaAccountTypeLookup(versionId) {
+  const lookup = new Map();
+  const { data, error } = await supabase
     .from("chart_of_accounts")
-    .select("account_type")
-    .eq("version_id", versionId)
-    .eq("account_name", normalizedName)
-    .eq("account_number", normalizedNumber)
-    .maybeSingle();
+    .select("account_name, adjusted_name, base_account, account_number, account_type, metadata")
+    .eq("version_id", versionId);
 
-  if (coaErr) {
-    console.error(`[classifyAccountViaCoa] Error finding account in COA: ${coaErr.message}`);
-  }
-  if (coaAcc?.account_type) {
-    return coaAcc.account_type;
+  if (error) {
+    console.warn(`[KeyReports][COA] Could not load account classification map: ${error.message}`);
+    return lookup;
   }
 
-  // 2. Try to fetch without number if number didn't match (for entries without account numbers)
-  if (normalizedNumber) {
-    const { data: coaAccNoNum } = await supabase
-      .from("chart_of_accounts")
-      .select("account_type")
-      .eq("version_id", versionId)
-      .eq("account_name", normalizedName)
-      .maybeSingle();
-    if (coaAccNoNum?.account_type) {
-      return coaAccNoNum.account_type;
+  for (const row of data || []) {
+    if (row.metadata?.is_group || !row.account_type) continue;
+    for (const name of [row.account_name, row.adjusted_name, row.base_account]) {
+      if (!String(name || '').trim()) continue;
+      const numberedKey = coaLookupKey(name, row.account_number);
+      const nameOnlyKey = coaLookupKey(name, null);
+      if (!lookup.has(numberedKey)) lookup.set(numberedKey, row.account_type);
+      if (!lookup.has(nameOnlyKey)) lookup.set(nameOnlyKey, row.account_type);
     }
   }
+  return lookup;
+}
 
-  // 3. Fallback to keyword classifier as a last resort
-  return classifyGLAccountFallback(name, null);
+function classifyAccountFromLookup(lookup, name, accountNumber = null) {
+  if (!name) return 'unknown';
+  const rawType = lookup.get(coaLookupKey(name, accountNumber))
+    || lookup.get(coaLookupKey(name, null));
+  return classifyGLAccountFallback(name, rawType);
+}
+
+// GL amount is debit minus credit. Reports display natural positive balances:
+// assets/expenses increase on debits; liabilities/equity/revenue increase on credits.
+function naturalBalanceMovement(accountType, amount) {
+  const value = safeNum(amount);
+  return accountType === 'liability' || accountType === 'equity' ? -value : value;
+}
+
+function netIncomeMovement(accountType, amount) {
+  return accountType === 'revenue' || accountType === 'expense' ? -safeNum(amount) : 0;
 }
 
 /** GL account key for a row — the account this row posts to. */
@@ -314,19 +326,14 @@ async function aggregateGLByAccount(versionId, year) {
     'account_name, split_account, amount, running_balance, row_type, fiscal_year, account_number',
   );
 
-  const { data: version } = await supabase
-    .from("key_report_versions")
-    .select("company_id")
-    .eq("id", versionId)
-    .single();
-  const companyId = version?.company_id;
+  const coaTypes = await loadCoaAccountTypeLookup(versionId);
 
   const accounts = new Map();
   const unclassified = [];
   for (const row of rows) {
     const name = glAccountName(row);
     if (!name) continue;
-    const type = await classifyAccountViaCoa(companyId, versionId, name, row.account_number);
+    const type = classifyAccountFromLookup(coaTypes, name, row.account_number);
     if (type === 'unknown') {
       unclassified.push({
         fiscal_year: row.fiscal_year,
@@ -356,18 +363,13 @@ async function aggregateGLForBSByMonth(versionId, year) {
   );
   if (!rows.length) return null;
 
-  const { data: version } = await supabase
-    .from("key_report_versions")
-    .select("company_id")
-    .eq("id", versionId)
-    .single();
-  const companyId = version?.company_id;
+  const coaTypes = await loadCoaAccountTypeLookup(versionId);
 
   const plDistSeen = new Set();
   for (const row of rows) {
     const n = (row.account_name && String(row.account_name).trim()) || '';
     if (!n) continue;
-    const t = await classifyAccountViaCoa(companyId, versionId, n, row.account_number);
+    const t = classifyAccountFromLookup(coaTypes, n, row.account_number);
     if (t === 'revenue' || t === 'expense') plDistSeen.add(n);
   }
 
@@ -385,16 +387,14 @@ async function aggregateGLForBSByMonth(versionId, year) {
     const distName = (row.account_name && String(row.account_name).trim()) || '';
     const splitName= (row.split_account && String(row.split_account).trim()) || '';
     const amount   = safeNum(row.amount);
-    const distType = distName ? await classifyAccountViaCoa(companyId, versionId, distName, row.account_number) : 'unknown';
-    const splitType= splitName ? await classifyAccountViaCoa(companyId, versionId, splitName, null) : 'unknown';
+    const distType = distName ? classifyAccountFromLookup(coaTypes, distName, row.account_number) : 'unknown';
+    const splitType= splitName ? classifyAccountFromLookup(coaTypes, splitName, null) : 'unknown';
 
     if (distType === 'asset' || distType === 'liability' || distType === 'equity') {
       if (!mData.bsMap.has(distName)) mData.bsMap.set(distName, { net: 0, type: distType });
-      mData.bsMap.get(distName).net += amount;
-    } else if (distType === 'revenue') {
-      mData.netIncome += amount;
-    } else if (distType === 'expense') {
-      mData.netIncome -= amount;
+      mData.bsMap.get(distName).net += naturalBalanceMovement(distType, amount);
+    } else if (distType === 'revenue' || distType === 'expense') {
+      mData.netIncome += netIncomeMovement(distType, amount);
     }
 
     // P&L split fallback
@@ -412,18 +412,13 @@ async function aggregateGLForBS(versionId, year) {
     'account_name, split_account, amount, running_balance, row_type, fiscal_year, account_number',
   );
 
-  const { data: version } = await supabase
-    .from("key_report_versions")
-    .select("company_id")
-    .eq("id", versionId)
-    .single();
-  const companyId = version?.company_id;
+  const coaTypes = await loadCoaAccountTypeLookup(versionId);
 
   const plDistSeen = new Set();
   for (const row of rows) {
     const n = (row.account_name && String(row.account_name).trim()) || '';
     if (!n) continue;
-    const t = await classifyAccountViaCoa(companyId, versionId, n, row.account_number);
+    const t = classifyAccountFromLookup(coaTypes, n, row.account_number);
     if (t === 'revenue' || t === 'expense') plDistSeen.add(n);
   }
 
@@ -436,25 +431,25 @@ async function aggregateGLForBS(versionId, year) {
     const splitName = (row.split_account && String(row.split_account).trim()) || '';
     const amount = safeNum(row.amount);
 
-    const distType = distName ? await classifyAccountViaCoa(companyId, versionId, distName, row.account_number) : 'unknown';
-    const splitType = splitName ? await classifyAccountViaCoa(companyId, versionId, splitName, null) : 'unknown';
+    const distType = distName ? classifyAccountFromLookup(coaTypes, distName, row.account_number) : 'unknown';
+    const splitType = splitName ? classifyAccountFromLookup(coaTypes, splitName, null) : 'unknown';
 
     // ── account_name (primary posting account) ─────────────────────────────
     if (distType === 'asset') {
       if (!bsMap.has(distName)) bsMap.set(distName, { net: 0, type: 'asset' });
-      bsMap.get(distName).net += amount;
+      bsMap.get(distName).net += naturalBalanceMovement(distType, amount);
     } else if (distType === 'liability') {
       if (!bsMap.has(distName)) bsMap.set(distName, { net: 0, type: 'liability' });
-      bsMap.get(distName).net += amount;
+      bsMap.get(distName).net += naturalBalanceMovement(distType, amount);
     } else if (distType === 'equity') {
       if (!bsMap.has(distName)) bsMap.set(distName, { net: 0, type: 'equity' });
-      bsMap.get(distName).net += amount;
+      bsMap.get(distName).net += naturalBalanceMovement(distType, amount);
     } else if (distType === 'revenue') {
       // Revenue credits are positive in QB's natural-balance GL export → add to NI.
-      netIncome += amount;
+      netIncome += netIncomeMovement(distType, amount);
     } else if (distType === 'expense') {
       // Expense debits are positive → subtract from NI.
-      netIncome += -amount;
+      netIncome += netIncomeMovement(distType, amount);
     } else {
       unclassified.push({
         fiscal_year: row.fiscal_year,
@@ -518,8 +513,9 @@ function buildPLFromGL(accounts, year) {
   const revenue = [];
   const expense = [];
   for (const acc of accounts.values()) {
-    if (acc.type === 'revenue') revenue.push({ name: acc.name, amount: -acc.net });
-    else if (acc.type === 'expense') expense.push({ name: acc.name, amount: acc.net });
+    const reportType = classifyGLAccountFallback(acc.name, acc.type);
+    if (reportType === 'revenue') revenue.push({ name: acc.name, amount: -acc.net });
+    else if (reportType === 'expense') expense.push({ name: acc.name, amount: acc.net });
   }
   const totalIncome = revenue.reduce((s, a) => s + a.amount, 0);
   const totalExpense = expense.reduce((s, a) => s + a.amount, 0);
@@ -777,12 +773,7 @@ async function aggregateGLByAccountMonth(versionId, year) {
     'account_name, amount, transaction_date, row_type, fiscal_year, account_number',
   );
 
-  const { data: version } = await supabase
-    .from("key_report_versions")
-    .select("company_id")
-    .eq("id", versionId)
-    .single();
-  const companyId = version?.company_id;
+  const coaTypes = await loadCoaAccountTypeLookup(versionId);
 
   const byAccount = new Map();
   const monthsPresent = new Set();
@@ -793,7 +784,7 @@ async function aggregateGLByAccountMonth(versionId, year) {
     if (!(month >= 1 && month <= 12)) continue;
     monthsPresent.add(month);
     if (!byAccount.has(name)) {
-      const type = await classifyAccountViaCoa(companyId, versionId, name, row.account_number);
+      const type = classifyAccountFromLookup(coaTypes, name, row.account_number);
       byAccount.set(name, { name, type, months: new Map() });
     }
     const acc = byAccount.get(name);
@@ -1032,8 +1023,16 @@ function buildPLHierarchicalRows(entriesByYear, years) {
  * (rows = hierarchical tree) AND with the multi-year detail format
  * (rows + columns.yearCols for the comparative renderer).
  */
-async function getProfitLossReport(versionId, { year, startDate, endDate, period } = {}) {
+async function getProfitLossReport(versionId, {
+  year, startDate, endDate, period, forceGenerate = false, persist = false, companyId = null,
+} = {}) {
   if (!versionId) throw new Error('versionId is required');
+
+  const isSnapshotEligible = !startDate && !endDate && period !== 'month';
+  if (!forceGenerate && isSnapshotEligible) {
+    const snapshot = await generatedReportSnapshots.getSnapshot(versionId, 'profit_loss', { year, period: 'year' });
+    if (snapshot) return { ...snapshot, source: 'generated_report_snapshots' };
+  }
 
   const years = await resolveYears(versionId, { year, startDate, endDate });
   console.log(`[KeyReports][PL] versionId=${versionId} years=[${years.join(',')}] range=${startDate || '-'}..${endDate || '-'} period=${period || 'year'}`);
@@ -1089,7 +1088,7 @@ async function getProfitLossReport(versionId, { year, startDate, endDate, period
 
   console.log(`[KeyReports][PL] versionId=${versionId} hierarchicalRows=${hierarchicalRows.length} generatedFromGL=${anyGenerated}`);
 
-  return {
+  const result = {
     source: 'key_reports_entry_tables',
     hierarchicalRows,
     rows: hierarchicalRows,
@@ -1097,6 +1096,24 @@ async function getProfitLossReport(versionId, { year, startDate, endDate, period
     yearCols,
     columns: { yearCols, ytdComparison: null },
   };
+
+  if (persist) {
+    if (!companyId) throw new Error('companyId is required when persisting generated reports');
+    const snapshots = [{ scope: { period: 'year' }, payload: result }];
+    for (const y of years) {
+      const rows = treesByYear[y] || [];
+      const cols = [{ key: `y${y}`, label: `FY ${y}` }];
+      snapshots.push({
+        scope: { year: y, period: 'year' },
+        payload: { ...result, hierarchicalRows: rows, rows, years: [y], yearCols: cols, columns: { yearCols: cols, ytdComparison: null } },
+      });
+    }
+    result.persistedSnapshots = await generatedReportSnapshots.replaceSnapshots(companyId, versionId, 'profit_loss', snapshots);
+  }
+  // Internal sync handoff: Cash Flow can reuse these trees instead of scanning
+  // the GL again. The property is removed before snapshot serialization above.
+  result.generatedTreesByYear = treesByYear;
+  return result;
 }
 
 // ─── Balance Sheet Summary ────────────────────────────────────────────────────
@@ -1595,8 +1612,16 @@ function mergeCfByYear(treesByYear, years) {
  * via the shared buildCashFlow engine). Reads are version-isolated and never touch
  * Manual GL staging, batches, or qb_synced_reports.
  */
-async function getCashflowReport(versionId, { year, startDate, endDate } = {}) {
+async function getCashflowReport(versionId, {
+  year, startDate, endDate, forceGenerate = false, persist = false, companyId = null,
+  profitLossTreesByYear = null,
+} = {}) {
   if (!versionId) throw new Error('versionId is required');
+
+  if (!forceGenerate && !startDate && !endDate) {
+    const snapshot = await generatedReportSnapshots.getSnapshot(versionId, 'cash_flow', { year, period: 'year' });
+    if (snapshot) return { ...snapshot, source: 'generated_report_snapshots' };
+  }
 
   console.log(`[KeyReports][CF] versionId=${versionId} year=${year || 'all'} range=${startDate || '-'}..${endDate || '-'}`);
 
@@ -1631,7 +1656,9 @@ async function getCashflowReport(versionId, { year, startDate, endDate } = {}) {
     const [bsCurr, bsPrev, plAgg] = await Promise.all([
       bsBalancesForYear(versionId, y),
       bsBalancesForYear(versionId, y - 1),
-      aggregateGLByAccount(versionId, y),
+      profitLossTreesByYear?.[y]
+        ? Promise.resolve({ accounts: null, rowsRead: 0 })
+        : aggregateGLByAccount(versionId, y),
     ]);
     rowsRead += (bsCurr.rowsRead || 0) + (bsPrev.rowsRead || 0) + (plAgg.rowsRead || 0);
 
@@ -1639,7 +1666,7 @@ async function getCashflowReport(versionId, { year, startDate, endDate } = {}) {
     const bsPrevTree = bsPrev.balances?.size
       ? buildBSFromBalances(bsPrev.balances, y - 1).hierarchicalRows
       : [];
-    const plTree = buildPLFromGL(plAgg.accounts, y) || [];
+    const plTree = profitLossTreesByYear?.[y] || buildPLFromGL(plAgg.accounts, y) || [];
 
     const cf = buildCashFlow({
       bsPrevRows: bsPrevTree,
@@ -1660,7 +1687,7 @@ async function getCashflowReport(versionId, { year, startDate, endDate } = {}) {
   }
   console.log(`[KeyReports][CF] versionId=${versionId} years=[${years.join(',')}] sections=${hierarchicalRows.length}`);
 
-  return {
+  const result = {
     source: 'key_reports_entry_tables',
     hierarchicalRows,
     rows,
@@ -1668,6 +1695,21 @@ async function getCashflowReport(versionId, { year, startDate, endDate } = {}) {
     yearCols,
     columns: { yearCols, ytdComparison: null },
   };
+
+  if (persist) {
+    if (!companyId) throw new Error('companyId is required when persisting generated reports');
+    const snapshots = [{ scope: { period: 'year' }, payload: result }];
+    for (const y of years) {
+      const rowsForYear = treesByYear[y] || [];
+      const cols = [{ key: `y${y}`, label: `FY ${y}`, isCurrent: true }];
+      snapshots.push({
+        scope: { year: y, period: 'year' },
+        payload: { ...result, hierarchicalRows: rowsForYear, rows: rowsForYear, years: [y], yearCols: cols, columns: { yearCols: cols, ytdComparison: null } },
+      });
+    }
+    result.persistedSnapshots = await generatedReportSnapshots.replaceSnapshots(companyId, versionId, 'cash_flow', snapshots);
+  }
+  return result;
 }
 
 /**
@@ -2058,7 +2100,6 @@ async function getKpiReport(versionId, { year } = {}) {
     years,
     byYear,
     validation: financials.validation || [],
-    unmappedAccounts: financials.unmappedAccounts || [],
   };
 }
 
@@ -2085,4 +2126,7 @@ module.exports = {
   bsBalancesForYear,
   aggregateGLForBSByMonth,
   aggregateGLForBS,
+  naturalBalanceMovement,
+  netIncomeMovement,
+  classifyGLAccountFallback,
 };

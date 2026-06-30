@@ -330,8 +330,8 @@ export async function getCashflow(startDate, endDate, accountingMethod, options 
   const sourceMode = options?.sourceMode || "quickbooks";
   const keyReportVersionId = options?.keyReportVersionId || null;
 
-  // Key Reports: build Cash Flow ONLY from this version's entry tables
-  // (balance_sheet_entries + profit_loss_entries) via the dedicated endpoint.
+  // Key Reports: read the generated Cash Flow endpoint (GL-derived P&L plus
+  // stored monthly Balance Sheets). Never use extracted P&L data.
   // NEVER falls through to Manual GL staging / batches / snapshots.
   if (keyReportVersionId) {
     try {
@@ -342,12 +342,18 @@ export async function getCashflow(startDate, endDate, accountingMethod, options 
         startDate: manualFilters.fromDate || null,
         endDate: manualFilters.toDate || null,
       });
-      const rows = response?.rows || response?.hierarchicalRows || [];
-      console.log("[KeyReports][CF][Summary] Loaded", rows.length, "rows from entry tables for version", keyReportVersionId);
-      return rows;
+      const rows = response?.hierarchicalRows || response?.rows || [];
+      console.log("[KeyReports][CF][Summary] Loaded", rows.length, "generated rows for version", keyReportVersionId);
+      return {
+        hierarchicalRows: rows,
+        rows,
+        yearCols: response?.yearCols || [],
+        columns: response?.columns,
+        source: response?.source || "key_reports_entry_tables",
+      };
     } catch (err) {
       console.warn("[KeyReports][CF][Summary] Entry table fetch failed:", err.message);
-      return [];
+      return { hierarchicalRows: [], rows: [], yearCols: [], source: "key_reports_entry_tables" };
     }
   }
 

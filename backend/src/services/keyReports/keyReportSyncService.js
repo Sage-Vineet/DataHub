@@ -6,11 +6,11 @@
  * Flow:
  *   1. Extract Tax Returns       → tax_return_entries
  *   2. Extract Bank Statements   → bank_statement_entries
- *   3. Extract Profit & Loss     → profit_loss_entries
- *   4. Extract Balance Sheets    → balance_sheet_entries
- *   5. Extract General Ledger    → general_ledger_entries
- *   6. Generate Chart of Accounts (from entry tables)
- *   7. Build & persist Validation Results (from entry table row counts)
+ *   3. Extract Balance Sheets    → balance_sheet_entries (opening/reconcile)
+ *   4. Extract General Ledger    → general_ledger_entries (source of truth)
+ *   5. Generate COA once, link GL, Trial Balance, and monthly Balance Sheets
+ *   6. Materialize P&L and Cash Flow render snapshots
+ *   7. Build and persist validation results
  */
 
 const { supabase } = require('../../db');
@@ -24,6 +24,7 @@ const { generateChartOfAccounts, validateChartOfAccounts, ensureCoaComplete } = 
 const { replaceValidationResults } = require('./keyReportValidationService');
 const { classifyWorkflowDocuments, generateTrialBalance, generateMonthlyBalanceSheets, generateReconciliation, linkGlToCoa } = require('./keyReportAccountingService');
 const keyReportService = require('./keyReportService');
+const keyReportReportService = require('./keyReportReportService');
 
 function normalizeUploadBinary(data) {
   if (!data) return Buffer.alloc(0);
@@ -336,8 +337,8 @@ async function generateFinancialTables(version, opts = {}) {
   }
   logger.log(`  Bank Statement result: ${extractionResults.bank_statement.success} succeeded, ${extractionResults.bank_statement.failed} failed, ${extractionResults.bank_statement.rowsExtracted} rows inserted`);
 
-  // NOTE: Profit & Loss is NOT extracted to a table. P&L is generated live from the
-  // General Ledger at report time (client requirement — no profit_loss_entries table).
+  // NOTE: Profit & Loss is NOT extracted to a table. P&L is generated from the
+  // General Ledger during sync and stored only as a render snapshot.
   // A linked P&L document may still be used as a temporary display-only fallback when
   // no GL exists, extracted on demand — it is never persisted as a reporting table.
 
@@ -500,10 +501,59 @@ async function generateFinancialTables(version, opts = {}) {
     reconciliationSummary = { ran: false, error: recErr.message };
   }
 
+  // P&L and Cash Flow are generated after the authoritative monthly Balance
+  // Sheets exist, then persisted as render-ready JSON. They are not accounting
+  // source tables and opening a report never mutates COA or re-runs this pipeline.
+  logger.log('--- Phase 6: Materialize P&L and Cash Flow snapshots ---');
+  let generatedReportSummary = { profitLoss: 0, profitLossYears: [], cashFlow: 0 };
+  try {
+    const pl = await keyReportReportService.getProfitLossReport(versionId, {
+      forceGenerate: true,
+      persist: true,
+      companyId,
+    });
+    generatedReportSummary.profitLoss = pl.persistedSnapshots || 0;
+    generatedReportSummary.profitLossYears = pl.years || [];
+    const cf = await keyReportReportService.getCashflowReport(versionId, {
+      forceGenerate: true,
+      persist: true,
+      companyId,
+      profitLossTreesByYear: pl.generatedTreesByYear,
+    });
+    generatedReportSummary.cashFlow = cf.persistedSnapshots || 0;
+    logger.log(`  ✓ Generated report snapshots: P&L=${generatedReportSummary.profitLoss}, Cash Flow=${generatedReportSummary.cashFlow}`);
+  } catch (reportErr) {
+    generatedReportSummary.error = reportErr.message;
+    logger.warn(`  Generated report snapshot persistence failed: ${reportErr.message}`);
+  }
+
   // Step 7: Validation Results (from entry table row counts + COA spec checks)
   logger.log('--- Step 7: Validation Results ---');
   logger.log(`  Building validation rows for years=[${years.join(', ')}]`);
   const validationRows = await buildValidationResultsFromEntryTables(versionId, mappingsByCategory, years, logger);
+
+  const plYears = generatedReportSummary.profitLossYears.length
+    ? generatedReportSummary.profitLossYears
+    : Array.from({ length: Math.max(0, (gate.glEndYear || 0) - (gate.glStartYear || 0) + 1) }, (_, i) => gate.glStartYear + i)
+      .filter((year) => Number.isInteger(year) && year > 0);
+  if (plYears.length) {
+    const generated = generatedReportSummary.profitLossYears.length > 0;
+    for (const year of plYears) {
+      validationRows.push({
+        dataType: 'profit_loss',
+        year,
+        status: generated ? 'success' : 'error',
+        severity: generated ? 'success' : 'error',
+        message: generated
+          ? `Profit & Loss generated successfully from General Ledger for ${year}.`
+          : `Profit & Loss generation failed for ${year}: ${generatedReportSummary.error || 'no generated rows'}`,
+        metadata: {
+          source: 'general_ledger_entries',
+          persistedSnapshots: generatedReportSummary.profitLoss,
+        },
+      });
+    }
+  }
 
   // Phase 1 gate rows (e.g. opening-balance-sheet-missing warning) carry through.
   if (gate.rows.length) validationRows.push(...gate.rows);
@@ -551,6 +601,7 @@ async function generateFinancialTables(version, opts = {}) {
       trialBalance: trialBalanceSummary,
       monthlyBalanceSheets: monthlyBsSummary,
       reconciliation: reconciliationSummary,
+      generatedReports: generatedReportSummary,
       documents: gate,
       message,
     },

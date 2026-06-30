@@ -36,7 +36,6 @@ import {
 import BalanceSheetReport from "../../../components/reports/balance-sheet/BalanceSheetReport";
 import ProfitAndLossReport from "../../../components/reports/profit-loss/ProfitAndLossReport";
 import CashflowReport from "../../../components/reports/cashflow/CashflowReport";
-import FinancialStatementsView from "../../../components/key-reports/FinancialStatementsView";
 import {
   normalizeAccountingMethod,
   sanitizeDateRange,
@@ -2401,33 +2400,10 @@ export default function WorkspaceReports() {
 
           <div className="flex-1 animate-in fade-in slide-in-from-bottom-2 duration-500">
             {/* ── COA-driven reports (Key Reports version active) ───────────────
-                When a Key Reports version is selected the Chart of Accounts is the
-                single source of truth. FinancialStatementsView reads from
-                chart_of_accounts → coa_account_mappings → entry tables.
-                The outer tabs (Balance Sheet / P&L / Cash Flow) remain the
-                navigation; activeReport keeps them in sync with the inner view.
+                Key Reports uses the stored report endpoints. The outer tabs remain
+                the navigation and render finalized accounting payloads directly.
             ──────────────────────────────────────────────────────────────────── */}
-            {kr.krActive && kr.selectedVersionId ? (
-              <div id="report-content">
-                <FinancialStatementsView
-                  versionId={kr.selectedVersionId}
-                  hasSyncedData={Boolean(kr.version?.lastSyncedAt)}
-                  notify={null}
-                  activeReport={
-                    selectedTab === "Balance Sheet" ? "bs"
-                    : selectedTab === "Profit & Loss" ? "pl"
-                    : "cf"
-                  }
-                  onActiveReportChange={(r) =>
-                    setSelectedTab(
-                      r === "bs" ? "Balance Sheet"
-                      : r === "pl" ? "Profit & Loss"
-                      : "Cashflow"
-                    )
-                  }
-                />
-              </div>
-            ) : isLoading ? (
+            {isLoading ? (
               <div className="flex flex-1 flex-col items-center justify-center py-20">
                 <div className="mb-6 h-12 w-12 animate-spin rounded-full border-4 border-border border-t-primary" />
                 <p className="animate-pulse text-[14px] font-medium text-text-muted">

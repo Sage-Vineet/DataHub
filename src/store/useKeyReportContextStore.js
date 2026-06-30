@@ -24,8 +24,8 @@ import { REPORT_SOURCE_KEYS } from "../lib/report-source";
 // Derive the flow type for a Key Reports version:
 //   "manual_gl"    — old-style: version has a resolvedBatchId pointing at a Manual GL
 //                    batch; reports still read from manual_gl_staged_transactions.
-//   "manual_upload"— new-style: version syncs directly into the five entry tables
-//                    (profit_loss_entries, balance_sheet_entries, etc.); reports read
+//   "manual_upload"— new-style: version syncs directly into the accounting tables
+//                    (GL, COA, generated Balance Sheets, etc.); reports read
 //                    ONLY from those tables via the /key-reports/versions/:id/reports/*
 //                    endpoints. The presence of GL documents does NOT imply a batch —
 //                    removing glCount from this check stops the report page from

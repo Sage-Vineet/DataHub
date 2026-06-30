@@ -5,9 +5,8 @@
 --   "There should not be any P&L table ... We do not need a P&L table at all,
 --    as the GL data is what will be needed to populate the P&L and other data."
 --
---   Profit & Loss is now generated ENTIRELY from general_ledger_entries at report
---   time (keyReportReportService.getProfitLossReport / financialStatementService
---   .generateYearlyPl). A linked P&L document may still be used as a temporary,
+--   Profit & Loss is now generated ENTIRELY from general_ledger_entries during
+--   sync and persisted only as a render snapshot. A linked P&L document may still be used as a temporary,
 --   display-only fallback (extracted on demand, never persisted).
 --
 -- PREREQUISITES: the application code that read/wrote profit_loss_entries has

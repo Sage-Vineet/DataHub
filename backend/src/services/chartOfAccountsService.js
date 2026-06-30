@@ -628,8 +628,36 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
   if (exErr) throw exErr;
   // Category (is_group) rows form the parent_account_id tree; leaves are the real
   // accounts. Keep them separate so the leaf upsert/stale-delete never touches them.
-  const existingLeavesData = (existingData || []).filter((r) => !r.metadata?.is_group);
+  let existingLeavesData = (existingData || []).filter((r) => !r.metadata?.is_group);
   const existingCatsData = (existingData || []).filter((r) => r.metadata?.is_group);
+
+  // Older schemas allowed identical leaves when account_number was NULL. Keep
+  // one deterministic row, repoint GL links, and remove the redundant copies.
+  const leavesByKey = new Map();
+  for (const row of existingLeavesData) {
+    const key = accountKey(row.account_number, row.account_name);
+    if (!leavesByKey.has(key)) leavesByKey.set(key, []);
+    leavesByKey.get(key).push(row);
+  }
+  const duplicateIds = [];
+  for (const rows of leavesByKey.values()) {
+    if (rows.length < 2) continue;
+    rows.sort((a, b) => {
+      const userDelta = Number(Boolean(b.metadata?.user_modified)) - Number(Boolean(a.metadata?.user_modified));
+      return userDelta || String(a.id).localeCompare(String(b.id));
+    });
+    const keeper = rows[0];
+    const redundantIds = rows.slice(1).map((row) => row.id);
+    const relink = await supabase.from('general_ledger_entries').update({ coa_id: keeper.id }).in('coa_id', redundantIds);
+    if (relink.error) throw relink.error;
+    duplicateIds.push(...redundantIds);
+  }
+  if (duplicateIds.length) {
+    const cleanup = await supabase.from(TABLE_COA).delete().in('id', duplicateIds);
+    if (cleanup.error) throw cleanup.error;
+    const duplicateSet = new Set(duplicateIds);
+    existingLeavesData = existingLeavesData.filter((row) => !duplicateSet.has(row.id));
+  }
   const existingByKey = new Map();
   for (const row of existingLeavesData) {
     existingByKey.set(accountKey(row.account_number, row.account_name), row);
@@ -1104,16 +1132,6 @@ async function validateChartOfAccounts(companyId, versionId) {
   const allIds = new Set(all.map((r) => r.id));
   const leaves = all.filter((r) => !r.metadata?.is_group);
 
-  let glAccounts = [];
-  try {
-    const glRows = await collectGlAccountsFromEntries(companyId, versionId);
-    glAccounts = glRows.map((r) => String(r.account_name || "").trim()).filter(Boolean);
-  } catch (_e) {
-    glAccounts = [];
-  }
-
-  const leafKeys = new Set(leaves.map((r) => normName(r.account_name)));
-
   const nullType = leaves.filter((r) => !r.account_type).map((r) => r.account_name);
   const invalidRows = leaves.filter((r) => isNonAccountRow(r.account_name)).map((r) => r.account_name);
   const noLevel = leaves.filter((r) => !r.level_1).map((r) => r.account_name);
@@ -1127,17 +1145,17 @@ async function validateChartOfAccounts(companyId, versionId) {
 
   const counts = new Map();
   for (const r of leaves) {
-    const k = normName(r.account_name);
+    const k = accountKey(r.account_number, r.account_name);
     counts.set(k, (counts.get(k) || 0) + 1);
   }
   const duplicates = leaves
-    .filter((r) => counts.get(normName(r.account_name)) > 1)
+    .filter((r) => counts.get(accountKey(r.account_number, r.account_name)) > 1)
     .map((r) => r.account_name)
     .filter((v, i, a) => a.indexOf(v) === i);
 
-  const unmapped = Array.from(
-    new Set(glAccounts.filter((n) => !isNonAccountRow(n) && !leafKeys.has(normName(n)))),
-  );
+  // ensureCoaComplete runs before validation. Missing GL accounts are an
+  // internal sync invariant, not a user-facing mapping workflow.
+  const unmapped = [];
 
   const typesByName = new Map();
   for (const r of leaves) {
@@ -1173,7 +1191,6 @@ async function validateChartOfAccounts(companyId, versionId) {
 
   const warnChecks = [
     [duplicates, (a) => `${a.length} duplicate account name(s): ${sample(a)}`],
-    [unmapped, (a) => `${a.length} General Ledger account(s) not represented in the Chart of Accounts: ${sample(a)}`],
     [noBase, (a) => `${a.length} account(s) missing a base account: ${sample(a)}`],
     [noSystemId, (a) => `${a.length} account(s) missing a System ID: ${sample(a)}`],
     [noPath, (a) => `${a.length} account(s) missing a hierarchy path: ${sample(a)}`],
@@ -1203,6 +1220,8 @@ async function validateChartOfAccounts(companyId, versionId) {
 }
 
 async function ensureAccountExistsInCoa(versionId, companyId, accountName, accountNumber = null, explicitType = null) {
+  throw new Error("Dynamic Chart of Accounts insertion is disabled. Run generateChartOfAccounts/ensureCoaComplete during sync before generating reports.");
+/*
   if (!versionId || !companyId || !accountName) return null;
   const normalizedName = String(accountName).trim();
   const normalizedNumber = accountNumber ? String(accountNumber).trim() : null;
@@ -1327,6 +1346,7 @@ async function ensureAccountExistsInCoa(versionId, companyId, accountName, accou
   }
 
   return inserted?.id || null;
+*/
 }
 
 // ─── Phase 2c: Bulk-complete COA from GL distinct accounts ───────────────────
@@ -1498,7 +1518,6 @@ module.exports = {
   getHistory,
   getHierarchyLevels,
   validateChartOfAccounts,
-  ensureAccountExistsInCoa,
   ensureCoaComplete,
   // exported for unit testing
   buildCoaModel,

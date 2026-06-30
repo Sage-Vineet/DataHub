@@ -424,7 +424,7 @@ export async function getProfitAndLoss(
 ) {
   const keyReportVersionId = options?.keyReportVersionId || null;
 
-  // Key Reports: read ONLY from profit_loss_entries — never from Manual GL staging.
+  // Key Reports: read the GL-derived P&L endpoint, never Manual GL staging.
   if (keyReportVersionId) {
     try {
       const manualFilters = options?.manualFilters || {};
@@ -438,7 +438,7 @@ export async function getProfitAndLoss(
         period: "year",
       });
       const hierarchicalRows = response?.hierarchicalRows || response?.rows || [];
-      console.log("[KeyReports][PL][Summary] Loaded", hierarchicalRows.length, "rows from profit_loss_entries for version", keyReportVersionId);
+      console.log("[KeyReports][PL][Summary] Loaded", hierarchicalRows.length, "GL-derived rows for version", keyReportVersionId);
       return {
         hierarchicalRows,
         rows: hierarchicalRows,
@@ -449,7 +449,7 @@ export async function getProfitAndLoss(
         noDataText: hierarchicalRows.length > 0 ? null : "No Profit & Loss data in Key Reports. Run Sync first.",
       };
     } catch (err) {
-      console.warn("[KeyReports][PL][Summary] Entry table fetch failed:", err.message);
+      console.warn("[KeyReports][PL][Summary] Report fetch failed:", err.message);
       return {
         hierarchicalRows: [],
         rows: [],

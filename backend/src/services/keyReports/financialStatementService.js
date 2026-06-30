@@ -1737,7 +1737,7 @@ async function generateFinancialStatements(versionId, options = {}) {
     return {
       companyName: options.companyName || "", currency: options.currency || "USD",
       reports: { profitAndLoss: { monthly: [], yearly: [] }, balanceSheet: { monthly: [], yearly: [] }, cashFlow: { monthly: [], yearly: [] } },
-      validation: missingData, unmappedAccounts: [], missingData,
+      validation: missingData, missingData,
     };
   }
 
@@ -1773,22 +1773,12 @@ async function generateFinancialStatements(versionId, options = {}) {
   }
 
   const validation       = validateAll(plYearly, bsYearly);
-  const unmappedAccounts = Array.from(unmappedSet).sort();
-
-  // Issue 5: enrich unmapped accounts with suggested COA type, confidence, and reason
-  const unmappedAccountDetails = unmappedAccounts.map(normName => ({
-    name:         normName,
-    ...suggestCoaType(normName),
-  }));
-
   console.log(
     `[FinStmt] v=${versionId} years=[${filteredYears.join(",")}]`,
     `| pl=${plYearly.length} bs=${bsYearly.length} cf=${cfYearly.length}`,
     `| monthly pl=${plMonthly.flat().length} cf=${cfMonthly.flat().length}`,
-    `| unmapped=${unmappedAccounts.length} warnings=${validation.length}`,
+    `| warnings=${validation.length}`,
   );
-  if (unmappedAccounts.length)
-    console.warn("[FinStmt] Unmapped:", unmappedAccounts.slice(0, 10));
 
   return {
     companyName: options.companyName || "",
@@ -1799,8 +1789,6 @@ async function generateFinancialStatements(versionId, options = {}) {
       cashFlow:      { monthly: cfMonthly.flat(), yearly: cfYearly },
     },
     validation,
-    unmappedAccounts,
-    unmappedAccountDetails,
     missingData: [],
   };
 }

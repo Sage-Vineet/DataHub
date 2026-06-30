@@ -736,23 +736,9 @@ function EmptyState({ message }) {
 }
 
 // ─── Validation Panel ─────────────────────────────────────────────────────────
-const SUGGESTED_TYPE_COLOR = {
-  revenue:   "text-green-700 bg-green-50",
-  expense:   "text-red-700 bg-red-50",
-  asset:     "text-blue-700 bg-blue-50",
-  liability: "text-orange-700 bg-orange-50",
-  equity:    "text-purple-700 bg-purple-50",
-  unknown:   "text-gray-600 bg-gray-100",
-};
-
-function ValidationPanel({ validation, unmappedAccounts, unmappedAccountDetails, missingData }) {
-  const [showAll, setShowAll] = useState(false);
+function ValidationPanel({ validation, missingData }) {
   const issues = [...(missingData || []), ...(validation || [])];
-  if (!issues.length && !unmappedAccounts?.length) return null;
-
-  const details = unmappedAccountDetails?.length ? unmappedAccountDetails : (unmappedAccounts || []).map(n => ({ name: n, suggestedType: 'unknown', confidence: 0, reason: '' }));
-  const PREVIEW = 5;
-  const shown = showAll ? details : details.slice(0, PREVIEW);
+  if (!issues.length) return null;
 
   return (
     <div className="mb-4 space-y-2">
@@ -762,37 +748,6 @@ function ValidationPanel({ validation, unmappedAccounts, unmappedAccountDetails,
           <div>
             <p className="text-sm font-semibold text-amber-800 mb-1">Validation Warnings</p>
             {issues.map((msg, i) => <p key={i} className="text-xs text-amber-700">{msg}</p>)}
-          </div>
-        </div>
-      )}
-      {details.length > 0 && (
-        <div className="bg-blue-50 border border-blue-200 rounded p-3">
-          <div className="flex items-start gap-2">
-            <AlertTriangle size={16} className="text-blue-500 mt-0.5 shrink-0" />
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-semibold text-blue-800 mb-2">{details.length} account{details.length !== 1 ? "s" : ""} not mapped to COA — suggested classifications below</p>
-              <div className="space-y-1">
-                {shown.map((d, i) => (
-                  <div key={i} className="flex items-center gap-2 text-xs">
-                    <span className="font-mono text-blue-700 truncate flex-1">{d.name}</span>
-                    <span className={`px-1.5 py-0.5 rounded text-xs font-medium shrink-0 ${SUGGESTED_TYPE_COLOR[d.suggestedType] || SUGGESTED_TYPE_COLOR.unknown}`}>
-                      {d.suggestedType}
-                    </span>
-                    {d.confidence > 0 && (
-                      <span className="text-gray-400 shrink-0">{Math.round(d.confidence * 100)}%</span>
-                    )}
-                  </div>
-                ))}
-              </div>
-              {details.length > PREVIEW && (
-                <button
-                  onClick={() => setShowAll(s => !s)}
-                  className="mt-2 text-xs text-blue-600 underline"
-                >
-                  {showAll ? "Show less" : `+${details.length - PREVIEW} more`}
-                </button>
-              )}
-            </div>
           </div>
         </div>
       )}
@@ -1037,8 +992,6 @@ export default function FinancialStatementsView({
           <div className="px-4 pt-3">
             <ValidationPanel
               validation={data.validation}
-              unmappedAccounts={data.unmappedAccounts}
-              unmappedAccountDetails={data.unmappedAccountDetails}
               missingData={data.missingData}
             />
           </div>

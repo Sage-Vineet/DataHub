@@ -239,9 +239,8 @@ function monthEndDate(year, m) {
   return `${year}-${String(m).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
 }
 
-// Natural-sign accumulation, matching keyReportReportService.bsBalancesForYear:
-// asset/liability/equity movements are added as-is (the GL netting already
-// captures debits and credits correctly).
+// Natural-sign accumulation. GL aggregation converts debit-minus-credit values
+// before they reach this running monthly balance map.
 function addRun(map, name, delta, type) {
   const key = String(name || "").trim();
   if (!key) return;
