@@ -2,7 +2,7 @@
 
 const { supabase } = require('../../db');
 const { buildCashFlow, generatedCfToRows } = require('../manualCashFlowService');
-const { ensureAccountExistsInCoa } = require('../chartOfAccountsService');
+// chartOfAccountsService — ensureAccountExistsInCoa removed; COA is completed in Phase 2c before reports run
 const { listEbitdaAdjustments } = require('../ebitdaAdjustmentStore');
 // NOTE: financialStatementService is lazy-required inside getQoeReport / getKpiReport
 // to avoid the circular dependency: financialStatementService → keyReportReportService.
@@ -60,7 +60,7 @@ function validateBalanceSheet(versionId, fiscalYear, sectionTotals, opts = {}) {
     if (opts.unclassified && opts.unclassified.length) {
       console.warn('[KEY_REPORTS_VALIDATION] Unclassified GL accounts excluded from this year:',
         opts.unclassified.map(u =>
-          `  "${u.distribution_account}" split="${u.split_account}" amt=${u.amount} rb=${u.running_balance} FY=${u.fiscal_year}`
+          `  "${u.account_name}" split="${u.split_account}" amt=${u.amount} rb=${u.running_balance} FY=${u.fiscal_year}`
         ).join('\n')
       );
     }
@@ -226,7 +226,7 @@ function classifyGLAccountFallback(name, accountType) {
   return 'unknown';
 }
 
-async function classifyAccountViaCoa(companyId, versionId, name, accountNumber = null) {
+async function classifyAccountViaCoa(_companyId, versionId, name, accountNumber = null) {
   if (!name) return 'unknown';
   const normalizedName = String(name).trim();
   const normalizedNumber = accountNumber ? String(accountNumber).trim() : null;
@@ -260,30 +260,13 @@ async function classifyAccountViaCoa(companyId, versionId, name, accountNumber =
     }
   }
 
-  // 3. Dynamically insert it
-  try {
-    const insertedId = await ensureAccountExistsInCoa(versionId, companyId, normalizedName, normalizedNumber);
-    if (insertedId) {
-      const { data: newRow } = await supabase
-        .from("chart_of_accounts")
-        .select("account_type")
-        .eq("id", insertedId)
-        .single();
-      if (newRow?.account_type) {
-        return newRow.account_type;
-      }
-    }
-  } catch (insErr) {
-    console.error(`[classifyAccountViaCoa] Dynamic insert failed for "${normalizedName}": ${insErr.message}`);
-  }
-
-  // 4. Fallback to keyword classifier as a last resort
+  // 3. Fallback to keyword classifier as a last resort
   return classifyGLAccountFallback(name, null);
 }
 
 /** GL account key for a row — the account this row posts to. */
 function glAccountName(row) {
-  return (row.distribution_account && String(row.distribution_account).trim()) || '';
+  return (row.account_name && String(row.account_name).trim()) || '';
 }
 
 /** Signed movement (debit − credit) for a GL transaction row. */
@@ -322,13 +305,13 @@ async function fetchAllGLRows(versionId, year, columns, rowType = 'TRANSACTION')
 
 /**
  * Read TRANSACTION GL rows for EXACTLY one fiscal year, aggregated per
- * distribution_account. Used for P&L report generation (existing callers).
+ * account_name. Used for P&L report generation (existing callers).
  * Returns { accounts: Map(name→{net,type}), rowsRead }.
  */
 async function aggregateGLByAccount(versionId, year) {
   const rows = await fetchAllGLRows(
     versionId, year,
-    'distribution_account, split_account, amount, running_balance, row_type, fiscal_year, account_number',
+    'account_name, split_account, amount, running_balance, row_type, fiscal_year, account_number',
   );
 
   const { data: version } = await supabase
@@ -347,7 +330,7 @@ async function aggregateGLByAccount(versionId, year) {
     if (type === 'unknown') {
       unclassified.push({
         fiscal_year: row.fiscal_year,
-        distribution_account: row.distribution_account,
+        account_name: row.account_name,
         split_account: row.split_account,
         amount: row.amount,
         running_balance: row.running_balance,
@@ -358,7 +341,7 @@ async function aggregateGLByAccount(versionId, year) {
   }
   if (unclassified.length) {
     console.warn(`[KeyReports][GL] versionId=${versionId} FY${year}: ${unclassified.length} unclassified GL accounts:`,
-      unclassified.map(u => `${u.distribution_account} (split:${u.split_account}) amt=${u.amount} rb=${u.running_balance}`).join(' | '));
+      unclassified.map(u => `${u.account_name} (split:${u.split_account}) amt=${u.amount} rb=${u.running_balance}`).join(' | '));
   }
   return { accounts, rowsRead: rows.length };
 }
@@ -369,7 +352,7 @@ async function aggregateGLByAccount(versionId, year) {
 async function aggregateGLForBSByMonth(versionId, year) {
   const rows = await fetchAllGLRows(
     versionId, year,
-    'distribution_account, split_account, amount, row_type, fiscal_year, transaction_date, account_number',
+    'account_name, split_account, amount, row_type, fiscal_year, transaction_date, account_number',
   );
   if (!rows.length) return null;
 
@@ -382,7 +365,7 @@ async function aggregateGLForBSByMonth(versionId, year) {
 
   const plDistSeen = new Set();
   for (const row of rows) {
-    const n = (row.distribution_account && String(row.distribution_account).trim()) || '';
+    const n = (row.account_name && String(row.account_name).trim()) || '';
     if (!n) continue;
     const t = await classifyAccountViaCoa(companyId, versionId, n, row.account_number);
     if (t === 'revenue' || t === 'expense') plDistSeen.add(n);
@@ -398,8 +381,8 @@ async function aggregateGLForBSByMonth(versionId, year) {
     hasDateData = true;
 
     if (!byMonth.has(monthNum)) byMonth.set(monthNum, { bsMap: new Map(), netIncome: 0 });
-    const mData   = byMonth.get(monthNum);
-    const distName = (row.distribution_account && String(row.distribution_account).trim()) || '';
+    const mData    = byMonth.get(monthNum);
+    const distName = (row.account_name && String(row.account_name).trim()) || '';
     const splitName= (row.split_account && String(row.split_account).trim()) || '';
     const amount   = safeNum(row.amount);
     const distType = distName ? await classifyAccountViaCoa(companyId, versionId, distName, row.account_number) : 'unknown';
@@ -426,7 +409,7 @@ async function aggregateGLForBSByMonth(versionId, year) {
 async function aggregateGLForBS(versionId, year) {
   const rows = await fetchAllGLRows(
     versionId, year,
-    'distribution_account, split_account, amount, running_balance, row_type, fiscal_year, account_number',
+    'account_name, split_account, amount, running_balance, row_type, fiscal_year, account_number',
   );
 
   const { data: version } = await supabase
@@ -438,7 +421,7 @@ async function aggregateGLForBS(versionId, year) {
 
   const plDistSeen = new Set();
   for (const row of rows) {
-    const n = (row.distribution_account && String(row.distribution_account).trim()) || '';
+    const n = (row.account_name && String(row.account_name).trim()) || '';
     if (!n) continue;
     const t = await classifyAccountViaCoa(companyId, versionId, n, row.account_number);
     if (t === 'revenue' || t === 'expense') plDistSeen.add(n);
@@ -449,14 +432,14 @@ async function aggregateGLForBS(versionId, year) {
   const unclassified = [];
 
   for (const row of rows) {
-    const distName = (row.distribution_account && String(row.distribution_account).trim()) || '';
+    const distName = (row.account_name && String(row.account_name).trim()) || '';
     const splitName = (row.split_account && String(row.split_account).trim()) || '';
     const amount = safeNum(row.amount);
 
     const distType = distName ? await classifyAccountViaCoa(companyId, versionId, distName, row.account_number) : 'unknown';
     const splitType = splitName ? await classifyAccountViaCoa(companyId, versionId, splitName, null) : 'unknown';
 
-    // ── distribution_account (primary posting account) ─────────────────────
+    // ── account_name (primary posting account) ─────────────────────────────
     if (distType === 'asset') {
       if (!bsMap.has(distName)) bsMap.set(distName, { net: 0, type: 'asset' });
       bsMap.get(distName).net += amount;
@@ -475,7 +458,7 @@ async function aggregateGLForBS(versionId, year) {
     } else {
       unclassified.push({
         fiscal_year: row.fiscal_year,
-        distribution_account: row.distribution_account,
+        account_name: row.account_name,
         split_account: row.split_account,
         amount: row.amount,
         running_balance: row.running_balance,
@@ -484,9 +467,9 @@ async function aggregateGLForBS(versionId, year) {
 
     // ── split_account ──────────────────────────────────────────────────────
     // Asset/Liability/Equity: NOT posted — QB already exports those accounts'
-    // own distribution rows, so applying the inverse here causes double-counting.
+    // own account_name rows, so applying the inverse here causes double-counting.
     // P&L: contribute to Net Income only as a fallback for P&L accounts that
-    // have no distribution row in this year's GL (e.g. partial exports).
+    // have no account_name row in this year's GL (e.g. partial exports).
     if (!splitName) continue;
     if ((splitType === 'revenue' || splitType === 'expense') && !plDistSeen.has(splitName)) {
       // splitAmount = -amount; netIncome += -(splitAmount) = amount
@@ -496,9 +479,9 @@ async function aggregateGLForBS(versionId, year) {
 
   if (unclassified.length) {
     console.warn(
-      `[KeyReports][BS][GL] versionId=${versionId} FY${year}: ${unclassified.length} unclassified distribution_account(s) — these rows are EXCLUDED from the Balance Sheet and may cause an imbalance:`,
+      `[KeyReports][BS][GL] versionId=${versionId} FY${year}: ${unclassified.length} unclassified account_name(s) — these rows are EXCLUDED from the Balance Sheet and may cause an imbalance:`,
       unclassified.map(u =>
-        `  distribution_account="${u.distribution_account}" split_account="${u.split_account}" amount=${u.amount} running_balance=${u.running_balance} fiscal_year=${u.fiscal_year}`
+        `  account_name="${u.account_name}" split_account="${u.split_account}" amount=${u.amount} running_balance=${u.running_balance} fiscal_year=${u.fiscal_year}`
       ).join('\n')
     );
   }
@@ -791,7 +774,7 @@ const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep
 async function aggregateGLByAccountMonth(versionId, year) {
   const rows = await fetchAllGLRows(
     versionId, year,
-    'distribution_account, amount, transaction_date, row_type, fiscal_year, account_number',
+    'account_name, amount, transaction_date, row_type, fiscal_year, account_number',
   );
 
   const { data: version } = await supabase
@@ -1437,7 +1420,7 @@ async function getGeneralLedgerReport(versionId, { year, startDate, endDate, pag
   let query = supabase
     .from('general_ledger_entries')
     .select(
-      'id,row_type,row_number,fiscal_year,transaction_date,distribution_account,transaction_type,transaction_num,transaction_name,memo_description,split_account,amount,running_balance',
+      'id,row_type,row_number,fiscal_year,fiscal_month,transaction_date,account_name,account_number,transaction_type,transaction_number,memo,split_account,amount,debit_amount,credit_amount,running_balance,coa_id',
       { count: 'exact' }
     )
     .eq('version_id', versionId)

@@ -167,7 +167,7 @@ async function fetchAllRows(buildQuery) {
 }
 
 async function collectGlAccounts(companyId, batchId) {
-  const select = "distribution_account, split_account, account_section, fiscal_year";
+  const select = "account_name, split_account, account_section, fiscal_year";
   let rows;
   try {
     rows = await fetchAllRows(() =>
@@ -195,7 +195,7 @@ async function collectBsAccounts(companyId, batchId) {
 async function collectGlAccountsFromEntries(companyId, versionId) {
   return fetchAllRows(() =>
     supabase.from("general_ledger_entries")
-      .select("distribution_account, split_account, account_section, fiscal_year, account_name, account_number")
+      .select("account_name, split_account, account_section, fiscal_year, account_number")
       .eq("company_id", companyId).eq("version_id", versionId)
       .order("id", { ascending: true }),
   );
@@ -290,7 +290,7 @@ function buildCoaModel(glRows, bsRows, plRows) {
     addLeaf(r.account_name, r.account_number || null, r.account_type || null, "profit_loss", r.fiscal_year, "profit_loss_type");
   }
   for (const r of glRows || []) {
-    const name = r.distribution_account || r.account_section || r.account_name || "";
+    const name = r.account_name || r.account_section || "";
     if (name) {
       addLeaf(name, r.account_number || null, null, "general_ledger", r.fiscal_year, "gl_type");
     }
@@ -1107,7 +1107,7 @@ async function validateChartOfAccounts(companyId, versionId) {
   let glAccounts = [];
   try {
     const glRows = await collectGlAccountsFromEntries(companyId, versionId);
-    glAccounts = glRows.map((r) => String(r.distribution_account || "").trim()).filter(Boolean);
+    glAccounts = glRows.map((r) => String(r.account_name || "").trim()).filter(Boolean);
   } catch (_e) {
     glAccounts = [];
   }
@@ -1329,6 +1329,164 @@ async function ensureAccountExistsInCoa(versionId, companyId, accountName, accou
   return inserted?.id || null;
 }
 
+// ─── Phase 2c: Bulk-complete COA from GL distinct accounts ───────────────────
+//
+// After generateChartOfAccounts + linkGlToCoa, any GL row still missing a
+// coa_id means its account_name is absent from the COA.  This function
+// finds those accounts in one query, classifies them with the rules engine
+// (no AI — must be fast), and bulk-inserts them in a single DB round-trip.
+// Called once per sync, before Phase 3 (Trial Balance). This guarantees
+// that report-generation phases never need to dynamically insert COA rows.
+//
+// Returns { added, skipped }.
+async function ensureCoaComplete(companyId, versionId) {
+  if (!companyId || !versionId) return { added: 0, skipped: 0 };
+
+  // 1. Collect distinct GL account_names that have no coa_id yet
+  const unlinkedNames = new Map(); // normKey → rawName
+  const PAGE = 1000;
+  let from = 0;
+  for (let page = 0; page < 500; page++) {
+    const { data, error } = await supabase
+      .from(TABLE_TXN)
+      .select("account_name")
+      .eq("company_id", companyId)
+      .eq("version_id", versionId)
+      .is("coa_id", null)
+      .not("account_name", "is", null)
+      .neq("account_name", "")
+      .range(from, from + PAGE - 1);
+    if (error || !data?.length) break;
+    for (const row of data) {
+      const raw = String(row.account_name).trim();
+      if (raw && !isNonAccountRow(raw)) unlinkedNames.set(normName(raw), raw);
+    }
+    if (data.length < PAGE) break;
+    from += PAGE;
+  }
+
+  if (unlinkedNames.size === 0) return { added: 0, skipped: 0 };
+
+  // 2. Compare against existing COA (account_name, base_account, adjusted_name)
+  const { data: existing } = await supabase
+    .from(TABLE_COA)
+    .select("account_name, base_account, adjusted_name")
+    .eq("version_id", versionId);
+
+  const existingSet = new Set();
+  for (const row of (existing || [])) {
+    if (row.account_name) existingSet.add(normName(row.account_name));
+    if (row.base_account)  existingSet.add(normName(row.base_account));
+    if (row.adjusted_name) existingSet.add(normName(row.adjusted_name));
+  }
+
+  const missing = [];
+  for (const [normKey, rawName] of unlinkedNames) {
+    if (!existingSet.has(normKey)) missing.push(rawName);
+  }
+
+  if (missing.length === 0) return { added: 0, skipped: unlinkedNames.size };
+
+  console.log(`[COA][ensureComplete] ${missing.length} GL accounts not in COA — bulk-inserting`);
+
+  // 3. Classify all missing accounts (rules-only — no AI round-trip needed here)
+  const classifiedLeaves = missing.map((accountName) => {
+    const type     = inferAccountType(accountName, "");
+    const stmtType = statementTypeFor(type);
+    const { levels, standardizedDepth } = classifyStandardized({
+      accountName, accountNumber: null, accountType: type, statementType: stmtType,
+    });
+    const { levels: finalLevels, hierarchyPath } = buildLevelsFromPath(
+      levels, standardizedDepth, [], accountName,
+    );
+    return { accountName, type, stmtType, finalLevels, hierarchyPath };
+  });
+
+  // 4. Sync category nodes for all new leaves (one pass)
+  const allCats = buildDesiredCategories(
+    classifiedLeaves.map(l => ({ levels: l.finalLevels, accountType: l.type, statementType: l.stmtType })),
+  );
+  let catIdByPath = new Map();
+  try {
+    const { data: existingCats } = await supabase
+      .from(TABLE_COA)
+      .select("id, parent_account_id, metadata")
+      .eq("version_id", versionId);
+    const existingCatsData = (existingCats || []).filter(r => r.metadata?.is_group);
+    catIdByPath = await syncCategoryNodes(versionId, companyId, existingCatsData, allCats);
+  } catch (catErr) {
+    console.warn(`[COA][ensureComplete] Category sync error: ${catErr.message}`);
+  }
+
+  // 5. Resolve sort_order base and per-prefix system_id counters (batch queries)
+  const { data: maxSortRow } = await supabase
+    .from(TABLE_COA).select("sort_order").eq("version_id", versionId)
+    .order("sort_order", { ascending: false }).limit(1);
+  let sortCounter = (maxSortRow?.[0]?.sort_order || 0) + 1;
+
+  const prefixCounters = {};
+  const prefixesNeeded = [...new Set(classifiedLeaves.map(l => systemIdPrefix(l.type)))];
+  await Promise.all(prefixesNeeded.map(async (prefix) => {
+    const { data: maxSys } = await supabase
+      .from(TABLE_COA).select("system_id").eq("version_id", versionId)
+      .like("system_id", `${prefix}-%`).order("system_id", { ascending: false }).limit(1);
+    let nextNum = 1;
+    if (maxSys?.[0]?.system_id) {
+      const m = /^([A-Z]+-?)(\d+)$/.exec(maxSys[0].system_id);
+      if (m) nextNum = Number(m[2]) + 1;
+    }
+    prefixCounters[prefix] = nextNum;
+  }));
+
+  // 6. Build insert payload
+  const insertRows = classifiedLeaves.map((leaf) => {
+    const prefix   = systemIdPrefix(leaf.type);
+    const systemId = `${prefix}-${String(prefixCounters[prefix]++).padStart(3, "0")}`;
+    const snapshot = hierarchySnapshot(leaf.finalLevels, leaf.type, leaf.stmtType, leaf.accountName);
+    const parentAccountId = catIdByPath.get(leafCategoryKey(leaf.finalLevels)) || null;
+    return {
+      version_id:           versionId,
+      company_id:           companyId,
+      system_id:            systemId,
+      account_number:       null,
+      account_name:         leaf.accountName,
+      account_id_name:      leaf.accountName,
+      parent_account_id:    parentAccountId,
+      account_type:         leaf.type,
+      statement_type:       leaf.stmtType,
+      normal_balance:       normalBalanceFor(leaf.type),
+      is_active:            true,
+      sort_order:           sortCounter++,
+      ...levelsToColumns(leaf.finalLevels),
+      base_account:         leaf.accountName,
+      hierarchy_path:       leaf.hierarchyPath,
+      classification_method: "rule",
+      original_name:        leaf.accountName,
+      original_hierarchy:   snapshot,
+      adjusted_name:        leaf.accountName,
+      adjusted_hierarchy:   snapshot,
+      metadata:  { is_group: false, sources: ["completion"], fiscal_years: [], user_modified: false },
+      audit_log: [classificationAudit("rule", snapshot, "bulk_completion", null)],
+    };
+  });
+
+  // 7. Bulk insert in chunks of 100 to stay within Supabase request limits
+  let added = 0;
+  const CHUNK = 100;
+  for (let i = 0; i < insertRows.length; i += CHUNK) {
+    const chunk = insertRows.slice(i, i + CHUNK);
+    const { error: insErr } = await supabase.from(TABLE_COA).insert(chunk);
+    if (insErr) {
+      console.warn(`[COA][ensureComplete] Bulk insert chunk failed: ${insErr.message}`);
+    } else {
+      added += chunk.length;
+    }
+  }
+
+  console.log(`[COA][ensureComplete] Added ${added}/${missing.length} accounts to COA (${unlinkedNames.size - missing.length} already existed)`);
+  return { added, skipped: unlinkedNames.size - missing.length };
+}
+
 module.exports = {
   generateChartOfAccounts,
   getChartOfAccounts,
@@ -1341,6 +1499,7 @@ module.exports = {
   getHierarchyLevels,
   validateChartOfAccounts,
   ensureAccountExistsInCoa,
+  ensureCoaComplete,
   // exported for unit testing
   buildCoaModel,
   buildLeafHierarchies,

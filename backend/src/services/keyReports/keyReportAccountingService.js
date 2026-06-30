@@ -406,7 +406,7 @@ async function generateMonthlyBalanceSheets(companyId, versionId, gate) {
 // ============================================================================
 
 function glAccountName(row) {
-  return (row.distribution_account && String(row.distribution_account).trim())
+  return (row.account_name && String(row.account_name).trim())
     || (row.account_section && String(row.account_section).trim())
     || "";
 }
@@ -435,7 +435,7 @@ async function fetchGlRowsForYear(companyId, versionId, year) {
   for (let page = 0; page < 1000; page += 1) {
     const { data, error } = await supabase
       .from(TABLE_GL)
-      .select("distribution_account, account_section, amount, running_balance, row_type, row_number, fiscal_year")
+      .select("account_name, account_section, amount, running_balance, row_type, row_number, fiscal_year")
       .eq("company_id", companyId)
       .eq("version_id", versionId)
       .eq("fiscal_year", year)
@@ -640,11 +640,117 @@ async function generateReconciliation(companyId, versionId, gate) {
   return { ran: true, stored: rows.length, year, summary };
 }
 
+// ============================================================================
+// PHASE 2b — Link GL rows to Chart of Accounts (populate coa_id)
+//
+// After COA generation, each TRANSACTION row in general_ledger_entries should
+// reference its matching chart_of_accounts row via coa_id. This enables reports
+// to use coa_id for fast lookups instead of string matching.
+//
+// Matching strategy (in order of precedence):
+//   1. Exact account_name match against chart_of_accounts.account_name
+//   2. Exact account_name match against chart_of_accounts.base_account
+//   3. Exact account_name match against chart_of_accounts.adjusted_name
+//
+// Only TRANSACTION rows (or rows without a row_type) are linked.
+// Non-leaf COA rows (is_group = true) are excluded.
+// ============================================================================
+
+async function linkGlToCoa(companyId, versionId) {
+  // Fetch all COA leaf nodes for this version.
+  const { data: coaRows, error: coaErr } = await supabase
+    .from("chart_of_accounts")
+    .select("id, account_name, base_account, adjusted_name, metadata")
+    .eq("version_id", versionId);
+
+  if (coaErr) {
+    console.warn(`[linkGlToCoa] COA fetch error: ${coaErr.message}`);
+    return { linked: 0, skipped: 0 };
+  }
+
+  if (!coaRows?.length) {
+    console.log("[linkGlToCoa] No COA rows found — skipping coa_id population");
+    return { linked: 0, skipped: 0 };
+  }
+
+  // Build lookup maps: normalized name → coa id (leaf nodes only).
+  const norm = (s) => String(s || "").toLowerCase().trim();
+  const byName = new Map();
+  for (const row of coaRows) {
+    if (row.metadata?.is_group) continue;
+    for (const field of [row.account_name, row.base_account, row.adjusted_name]) {
+      const k = norm(field);
+      if (k && !byName.has(k)) byName.set(k, row.id);
+    }
+  }
+
+  if (!byName.size) {
+    console.log("[linkGlToCoa] No COA leaf nodes found — skipping coa_id population");
+    return { linked: 0, skipped: 0 };
+  }
+
+  // Page through GL TRANSACTION rows for this version, batch-update coa_id.
+  const PAGE = 500;
+  let from = 0;
+  let linked = 0;
+  let skipped = 0;
+
+  for (;;) {
+    const { data: glRows, error: glErr } = await supabase
+      .from(TABLE_GL)
+      .select("id, account_name")
+      .eq("company_id", companyId)
+      .eq("version_id", versionId)
+      .or("row_type.eq.TRANSACTION,row_type.is.null")
+      .not("account_name", "is", null)
+      .is("coa_id", null)
+      .order("id", { ascending: true })
+      .range(from, from + PAGE - 1);
+
+    if (glErr) {
+      console.warn(`[linkGlToCoa] GL fetch error: ${glErr.message}`);
+      break;
+    }
+    if (!glRows?.length) break;
+
+    // Group by coa_id to minimise UPDATE calls.
+    const byCoa = new Map(); // coaId → [glId]
+    for (const row of glRows) {
+      const coaId = byName.get(norm(row.account_name));
+      if (coaId) {
+        if (!byCoa.has(coaId)) byCoa.set(coaId, []);
+        byCoa.get(coaId).push(row.id);
+      } else {
+        skipped++;
+      }
+    }
+
+    for (const [coaId, ids] of byCoa) {
+      const { error: updErr } = await supabase
+        .from(TABLE_GL)
+        .update({ coa_id: coaId })
+        .in("id", ids);
+      if (updErr) {
+        console.warn(`[linkGlToCoa] Update error for coa_id=${coaId}: ${updErr.message}`);
+      } else {
+        linked += ids.length;
+      }
+    }
+
+    if (glRows.length < PAGE) break;
+    from += PAGE;
+  }
+
+  console.log(`[linkGlToCoa] versionId=${versionId}: linked=${linked} skipped=${skipped}`);
+  return { linked, skipped };
+}
+
 module.exports = {
   classifyWorkflowDocuments,
   generateTrialBalance,
   generateMonthlyBalanceSheets,
   generateReconciliation,
+  linkGlToCoa,
   glYearRange,
   glDateRange,
   extractedBsBounds,

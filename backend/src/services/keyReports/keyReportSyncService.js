@@ -20,9 +20,9 @@ const bankStatementExtractionService = require('./bankStatementExtractionService
 const balanceSheetExtractionService = require('./balanceSheetExtractionService');
 const generalLedgerExtractionService = require('./generalLedgerExtractionService');
 
-const { generateChartOfAccounts, validateChartOfAccounts } = require('../chartOfAccountsService');
+const { generateChartOfAccounts, validateChartOfAccounts, ensureCoaComplete } = require('../chartOfAccountsService');
 const { replaceValidationResults } = require('./keyReportValidationService');
-const { classifyWorkflowDocuments, generateTrialBalance, generateMonthlyBalanceSheets, generateReconciliation } = require('./keyReportAccountingService');
+const { classifyWorkflowDocuments, generateTrialBalance, generateMonthlyBalanceSheets, generateReconciliation, linkGlToCoa } = require('./keyReportAccountingService');
 const keyReportService = require('./keyReportService');
 
 function normalizeUploadBinary(data) {
@@ -422,6 +422,37 @@ async function generateFinancialTables(version, opts = {}) {
   } catch (coaErr) {
     logger.warn(`  Chart of Accounts generation failed: ${coaErr.message}`);
     coaSummary = { error: coaErr.message, accountCount: 0 };
+  }
+
+  // ── PHASE 2b: Link GL rows to Chart of Accounts (populate coa_id) ────────────
+  // After COA is generated, resolve each GL transaction's account_name to a
+  // chart_of_accounts id. This is the foundation for coa_id-driven report queries.
+  logger.log('--- Phase 2b: Link GL → COA (populate coa_id) ---');
+  try {
+    const coaLinkResult = await linkGlToCoa(companyId, versionId);
+    logger.log(`  ✓ GL → COA: linked=${coaLinkResult.linked} skipped=${coaLinkResult.skipped}`);
+  } catch (linkErr) {
+    logger.warn(`  GL → COA link failed: ${linkErr.message}`);
+  }
+
+  // ── PHASE 2c: Bulk-complete COA from GL distinct accounts ─────────────────
+  // After COA generation + GL→COA linking, any GL row still missing a coa_id
+  // means its account_name is absent from the COA (name mismatch, newly
+  // extracted account, etc.).  This step inserts them in bulk so that all
+  // subsequent report-generation phases (Trial Balance, Monthly BS, P&L) can
+  // resolve every GL account via in-memory lookup without any DB writes.
+  logger.log('--- Phase 2c: Complete COA from unlinked GL accounts ---');
+  try {
+    const completionResult = await ensureCoaComplete(companyId, versionId);
+    logger.log(`  ✓ COA completion: ${completionResult.added} account(s) added, ${completionResult.skipped} already present`);
+    if (completionResult.added > 0) {
+      // Re-run GL→COA linking so newly added accounts get their coa_id
+      logger.log('  Re-running GL→COA link for newly added accounts...');
+      const relinkResult = await linkGlToCoa(companyId, versionId);
+      logger.log(`  ✓ Re-link: linked=${relinkResult.linked} skipped=${relinkResult.skipped}`);
+    }
+  } catch (completionErr) {
+    logger.warn(`  COA completion failed: ${completionErr.message}`);
   }
 
   // ── PHASE 3: Trial Balance (generated directly from the General Ledger) ─────

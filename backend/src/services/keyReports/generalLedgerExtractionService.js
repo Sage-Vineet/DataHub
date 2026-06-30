@@ -307,7 +307,8 @@ class GeneralLedgerExtractionService extends ExtractionServiceBase {
       // TRANSACTION rows must have a date
       if (rowType === 'TRANSACTION' && !row.transaction_date) { rejected++; return false; }
       // Every row must have at least one content field
-      if (!row.account_section && !row.account_name && !row.distribution_account && !row.memo_description) {
+      const acctName = row.distribution_account || row.account_name || '';
+      if (!row.account_section && !acctName && !row.memo_description && !row.memo) {
         rejected++;
         return false;
       }
@@ -318,35 +319,48 @@ class GeneralLedgerExtractionService extends ExtractionServiceBase {
   }
 
   transformRows(rows, metadata) {
-    return rows.map((row) => ({
-      version_id:    metadata.versionId,
-      company_id:    metadata.companyId,
-      source_file_id: metadata.documentId,
+    return rows.map((row) => {
+      const transDate = row.transaction_date || null;
+      const fiscalMonth = transDate
+        ? parseInt(String(transDate).slice(5, 7), 10) || null
+        : null;
 
-      // ── Row classification ──────────────────────────────────────────────────
-      row_type:      row.row_type || 'TRANSACTION',
-      row_number:    row.row_number != null ? Number(row.row_number) : null,
+      return {
+        version_id:     metadata.versionId,
+        company_id:     metadata.companyId,
+        source_file_id: metadata.documentId,
 
-      // ── Date / year (null for non-transaction rows) ─────────────────────────
-      transaction_date: row.transaction_date || null,
-      fiscal_year:      row.fiscal_year != null ? Number(row.fiscal_year) : null,
+        // ── Row classification ────────────────────────────────────────────────
+        row_type:   row.row_type || 'TRANSACTION',
+        row_number: row.row_number != null ? Number(row.row_number) : null,
 
-      // ── Account identity ────────────────────────────────────────────────────
-      account_section:      row.account_section || null,
-      distribution_account: row.distribution_account || row.account_name || null,
+        // ── Date / year / month (null for non-transaction rows) ───────────────
+        transaction_date: transDate,
+        fiscal_year:      row.fiscal_year != null ? Number(row.fiscal_year) : null,
+        fiscal_month:     fiscalMonth,
 
-      // ── Raw GL columns ──────────────────────────────────────────────────────
-      transaction_type:     row.transaction_type || null,
-      transaction_num:      row.transaction_num  || row.reference || null,
-      transaction_name:     row.transaction_name || null,
-      memo_description:     row.memo_description || row.description || null,
-      split_account:        row.split_account    || null,
-      amount:               row.amount        != null ? Number(row.amount)        : null,
-      running_balance:      row.running_balance != null ? Number(row.running_balance) : null,
-      raw_row_json:         row.raw_row_json  || null,
+        // ── Account identity ──────────────────────────────────────────────────
+        account_section: row.account_section || null,
+        // New canonical column: account_name replaces distribution_account.
+        // distribution_account (from extraction) takes priority over the legacy
+        // account_name field that the Python extractor also emits.
+        account_name:    row.distribution_account || row.account_name || null,
+        account_number:  row.account_number || null,
 
-      extracted_at: new Date().toISOString(),
-    }));
+        // ── Raw GL columns ────────────────────────────────────────────────────
+        transaction_type:   row.transaction_type || null,
+        transaction_number: row.transaction_num  || row.transaction_number || row.reference || null,
+        memo:               row.memo_description || row.memo || row.description || null,
+        split_account:      row.split_account    || null,
+        amount:             row.amount        != null ? Number(row.amount)        : null,
+        debit_amount:       row.debit         != null ? Number(row.debit)         : (row.debit_amount != null ? Number(row.debit_amount) : 0),
+        credit_amount:      row.credit        != null ? Number(row.credit)        : (row.credit_amount != null ? Number(row.credit_amount) : 0),
+        running_balance:    row.running_balance != null ? Number(row.running_balance) : null,
+        raw_row_json:       row.raw_row_json  || null,
+
+        extracted_at: new Date().toISOString(),
+      };
+    });
   }
 
   async insertRows(rows) {

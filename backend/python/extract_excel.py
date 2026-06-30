@@ -386,14 +386,15 @@ def extract_general_ledger(wb):
             fiscal_year         = int(date_str[:4])
             current_fiscal_year = fiscal_year
 
+            # account_name = the canonical posting account (new schema)
             if is_by_account:
-                account_name         = current_account_section or ''
-                account_num          = ''
-                distribution_account = current_account_section or ''
+                account_name = current_account_section or ''
+                account_num  = ''
             else:
-                account_name         = cell_str(get(row, 'account'))
-                account_num          = cell_str(get(row, 'account_num'))
-                distribution_account = account_name
+                account_name = cell_str(get(row, 'account'))
+                account_num  = cell_str(get(row, 'account_num'))
+
+            fiscal_month = int(date_str[5:7]) if date_str and len(date_str) >= 7 else None
 
             # Raw signed amount: prefer single Amount col; fall back to debit/credit
             raw_amount = parse_amount(get(row, 'amount'))
@@ -403,39 +404,33 @@ def extract_general_ledger(wb):
                 if d != 0 or c != 0:
                     raw_amount = d - c
 
-            # Legacy debit/credit for backward compatibility
             if col['debit'] >= 0 or col['credit'] >= 0:
-                debit  = parse_amount(get(row, 'debit'))  or 0
-                credit = parse_amount(get(row, 'credit')) or 0
+                debit_amount  = parse_amount(get(row, 'debit'))  or 0
+                credit_amount = parse_amount(get(row, 'credit')) or 0
             elif raw_amount is not None:
-                debit  = raw_amount if raw_amount >= 0 else 0
-                credit = abs(raw_amount) if raw_amount < 0 else 0
+                debit_amount  = raw_amount if raw_amount >= 0 else 0
+                credit_amount = abs(raw_amount) if raw_amount < 0 else 0
             else:
-                debit = credit = 0
+                debit_amount = credit_amount = 0
 
             result.append({
-                'row_type':           'TRANSACTION',
-                'row_number':         excel_row_num,
-                'transaction_date':   date_str,
-                'fiscal_year':        fiscal_year,
-                'account_section':    current_account_section,
-                'account_name':       account_name,
-                'account_number':     account_num or None,
-                'distribution_account': distribution_account,
-                'transaction_num':    cell_str(get(row, 'ref'))   or None,
-                'transaction_name':   cell_str(get(row, 'name'))  or None,
-                'memo_description':   cell_str(get(row, 'desc'))  or None,
-                'split_account':      cell_str(get(row, 'split')) or None,
-                'amount':             raw_amount,
-                'running_balance':    parse_amount(get(row, 'balance')),
-                # Legacy fields kept for backward compat
-                'description':        cell_str(get(row, 'desc'))  or None,
-                'reference':          cell_str(get(row, 'ref'))   or None,
-                'debit':              debit,
-                'credit':             credit,
-                'journal_type':       cell_str(get(row, 'type'))  or None,
-                'class':              cell_str(get(row, 'class_')) or None,
-                'raw_row_json':       raw_row_json,
+                'row_type':          'TRANSACTION',
+                'row_number':        excel_row_num,
+                'transaction_date':  date_str,
+                'fiscal_year':       fiscal_year,
+                'fiscal_month':      fiscal_month,
+                'account_section':   current_account_section,
+                'account_name':      account_name,
+                'account_number':    account_num or None,
+                'transaction_number': cell_str(get(row, 'ref'))   or None,
+                'transaction_type':  cell_str(get(row, 'type'))   or None,
+                'memo':              cell_str(get(row, 'desc'))   or None,
+                'split_account':     cell_str(get(row, 'split'))  or None,
+                'amount':            raw_amount,
+                'debit_amount':      debit_amount,
+                'credit_amount':     credit_amount,
+                'running_balance':   parse_amount(get(row, 'balance')),
+                'raw_row_json':      raw_row_json,
             })
             continue
 
