@@ -384,25 +384,26 @@ function normalizeContent(rawContent) {
   return { kind: "text", text: rawContent || "" };
 }
 
-function shouldSkipLogoPlaceholderShape(elements, index, slideNumber, getElementContent) {
+function shouldSkipLogoPlaceholderShape(elements, index, slideRef, getElementContent) {
   const logoElement = getMatchingLogoElement(elements, index);
   if (!logoElement) return false;
 
-  const logoContent = normalizeContent(getElementContent(slideNumber, logoElement));
+  const logoContent = normalizeContent(getElementContent(slideRef, logoElement));
   return logoContent.kind === "image" && Boolean(logoContent.dataUrl);
 }
 
-function slideXml(layout, slideNumber, getElementContent, mediaAllocator) {
+function slideXml(layout, slideRef, displaySlideNumber, getElementContent, mediaAllocator) {
   const elements = layout?.elements || [];
   const shapes = elements
     .map((element, index) => {
-      if (shouldSkipLogoPlaceholderShape(elements, index, slideNumber, getElementContent)) {
+      if (shouldSkipLogoPlaceholderShape(elements, index, slideRef, getElementContent)) {
         return "";
       }
 
       const content = isTopRightSlideNumberElement(element)
-        ? { kind: "text", text: String(slideNumber) }
-        : normalizeContent(getElementContent(slideNumber, element));
+        ? { kind: "text", text: String(displaySlideNumber) }
+        : normalizeContent(getElementContent(slideRef, element));
+      if (content.kind === "hidden") return "";
       if (element.kind === "table" && Array.isArray(element.cells)) {
         return tableXml(element, index, content.text ?? element.text ?? "");
       }
@@ -626,7 +627,8 @@ export function buildCimPptxBlob({ layouts, slideNumbers, getElementText, getEle
   const mediaFiles = [];
   const slideMedia = {};
 
-  slideNumbers.forEach((sourceSlideNumber, index) => {
+  slideNumbers.forEach((slideRef, index) => {
+    const sourceSlideNumber = typeof slideRef === "object" ? slideRef.sourceSlideNumber : slideRef;
     const relationships = [];
     const allocateMedia = (dataUrl) => {
       const media = parseDataUrl(dataUrl);
@@ -643,7 +645,8 @@ export function buildCimPptxBlob({ layouts, slideNumbers, getElementText, getEle
     slideMedia[index + 1] = relationships;
     slideMedia[`xml${index + 1}`] = slideXml(
       layouts[sourceSlideNumber],
-      sourceSlideNumber,
+      slideRef,
+      index + 1,
       resolveContent,
       allocateMedia,
     );

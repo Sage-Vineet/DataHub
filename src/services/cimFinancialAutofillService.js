@@ -2,6 +2,7 @@ import { fetchDashboardKPIs } from "./reportService";
 import { loadManualUploadDashboard } from "./manualUploadDashboardService";
 import { loadQMSDashboard } from "./qmsManualDashboardService";
 import { getCashflow } from "./cashflowService";
+import { getBalanceSheet } from "./balanceSheetService";
 import {
   extractEbitdaFromManualPLRows,
   getEbitdaData,
@@ -15,6 +16,8 @@ import {
   getAllQMSUploadedReports,
   getKeyReportVersion,
   getKeyReportVersions,
+  getCimBankReconciliationRequest,
+  getCimTaxReconciliationRequest,
   getManualStageFilterOptions,
   listManualGlDatasetVersions,
 } from "../lib/api";
@@ -73,6 +76,7 @@ function getCimAutofillCacheKey({ clientId, sourceKey, selectedDatasetVersion, d
     selectedDatasetVersion || "",
     dateRange?.startDate || "",
     dateRange?.endDate || "",
+    dateRange?.periodType || "calendar",
   ].join("|");
 }
 
@@ -255,7 +259,13 @@ async function loadCimSourceLedger({ sourceKey, selectedDatasetVersion }) {
   }
 }
 
-function getFiscalYearRange(year) {
+function getFiscalYearRange(year, periodType = "calendar") {
+  if (periodType === "fiscal") {
+    return {
+      start: `${Number(year) - 1}-04-01`,
+      end: `${year}-03-31`,
+    };
+  }
   return {
     start: `${year}-01-01`,
     end: `${year}-12-31`,
@@ -266,22 +276,45 @@ function isDateInput(value) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(value || ""));
 }
 
-function getYearFromDate(value) {
-  if (!isDateInput(value)) return 0;
-  const year = Number(String(value).slice(0, 4));
-  return Number.isInteger(year) && year > 0 ? year : 0;
-}
-
 function normalizeDateRange(dateRange) {
   const startDate = String(dateRange?.startDate || "").trim();
   const endDate = String(dateRange?.endDate || "").trim();
   if (!isDateInput(startDate) || !isDateInput(endDate)) return null;
   if (new Date(startDate) > new Date(endDate)) return null;
+  const periodType = dateRange?.periodType === "fiscal" ? "fiscal" : "calendar";
+  const end = new Date(`${endDate}T00:00:00`);
+  const endYear = end.getFullYear();
+  const annualFiscalYear = periodType === "fiscal"
+    ? (end.getMonth() > 2 ? endYear + 1 : endYear)
+    : endYear;
+  const annualRange = getFiscalYearRange(annualFiscalYear, periodType);
+  const trailingStart = new Date(end);
+  trailingStart.setFullYear(trailingStart.getFullYear() - 1);
+  trailingStart.setDate(trailingStart.getDate() + 1);
+
   return {
+    companyStartDate: isDateInput(dateRange?.companyStartDate) ? String(dateRange.companyStartDate) : "",
     startDate,
     endDate,
-    fiscalYear: getYearFromDate(endDate) || getYearFromDate(startDate),
+    periodType,
+    fiscalYear: annualFiscalYear,
+    annualStartDate: annualRange.start,
+    annualEndDate: annualRange.end,
+    trailingStartDate: [
+      trailingStart.getFullYear(),
+      String(trailingStart.getMonth() + 1).padStart(2, "0"),
+      String(trailingStart.getDate()).padStart(2, "0"),
+    ].join("-"),
   };
+}
+
+function getFiscalYearFromDate(value, periodType = "calendar") {
+  if (!isDateInput(value)) return 0;
+  const date = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return 0;
+  return periodType === "fiscal" && date.getMonth() > 2
+    ? date.getFullYear() + 1
+    : date.getFullYear();
 }
 
 function getInclusiveMonthSpan(startDate, endDate) {
@@ -378,7 +411,7 @@ async function getAvailableYears({ clientId, sourceKey, selectedDatasetVersion }
   return getDefaultCandidateYears();
 }
 
-async function loadKpisForYear({ clientId, sourceKey, sourceMode, year, datasetVersion }) {
+async function loadKpisForYear({ clientId, sourceKey, sourceMode, year, datasetVersion, periodType }) {
   if (sourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD) {
     return mapKpisToMetrics((await loadManualUploadDashboard(year, { clientId })).kpis || []);
   }
@@ -386,14 +419,14 @@ async function loadKpisForYear({ clientId, sourceKey, sourceMode, year, datasetV
     return mapKpisToMetrics((await loadQMSDashboard(year, { clientId })).kpis || []);
   }
 
-  const range = getFiscalYearRange(year);
+  const range = getFiscalYearRange(year, periodType);
   return mapKpisToMetrics(await fetchDashboardKPIs(range.start, range.end, {
     sourceMode,
     datasetVersion,
   }));
 }
 
-async function loadKpisByYear({ clientId, sourceKey, sourceMode, years, datasetVersion }) {
+async function loadKpisByYear({ clientId, sourceKey, sourceMode, years, datasetVersion, periodType }) {
   if (sourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD || sourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) {
     const dashboard = await loadCimDashboardOnce(sourceKey, clientId);
     const reports = dashboard?._raw?.reports || {};
@@ -412,6 +445,7 @@ async function loadKpisByYear({ clientId, sourceKey, sourceMode, years, datasetV
         sourceMode,
         year,
         datasetVersion,
+        periodType,
       });
     } catch {
       entries[year] = {};
@@ -482,7 +516,7 @@ function loadCachedEbitdaWorkspaceData({ clientId, sourceKey, datasetVersion }) 
   }
 }
 
-async function loadEbitdaByYear({ clientId, sourceKey, sourceMode, years, datasetVersion }) {
+async function loadEbitdaByYear({ clientId, sourceKey, sourceMode, years, datasetVersion, periodType }) {
   const cachedEntries = loadCachedEbitdaWorkspaceData({
     clientId,
     sourceKey,
@@ -510,7 +544,7 @@ async function loadEbitdaByYear({ clientId, sourceKey, sourceMode, years, datase
   const entries = {};
   await Promise.all(
     missingYears.map(async (year) => {
-      const range = getFiscalYearRange(year);
+      const range = getFiscalYearRange(year, periodType);
       try {
         entries[year] = await getEbitdaData(
           range.start,
@@ -557,14 +591,18 @@ function getLocalAdjustmentTotals(clientId, years) {
     const parsed = raw ? JSON.parse(raw) : null;
     const addbacks = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.addbacks) ? parsed.addbacks : [];
     const totals = {};
-    let count = 0;
+    const latestYear = Math.max(...years.map(Number).filter(Number.isFinite));
+    const count = addbacks.filter((addback) => {
+      const entry = addback?.values?.[latestYear] || addback?.values?.[String(latestYear)] || {};
+      const value = entry.userValue ?? entry.overrideValue ?? entry.apiValue ?? entry.value ?? 0;
+      return Math.abs(toNumber(value, 0)) > 0.0001;
+    }).length;
 
     years.forEach((year) => {
       totals[String(year)] = addbacks.reduce((sum, addback) => {
         const entry = addback?.values?.[year] || addback?.values?.[String(year)] || {};
         const value = entry.userValue ?? entry.overrideValue ?? entry.apiValue ?? entry.value ?? 0;
-        const numeric = Math.abs(toNumber(value, 0));
-        if (numeric > 0) count += 1;
+        const numeric = toNumber(value, 0);
         return sum + numeric;
       }, 0);
     });
@@ -711,8 +749,102 @@ function extractCashflowMetrics(rows = []) {
   };
 }
 
-async function loadCashflowMetricsForYear({ sourceMode, year, datasetVersion }) {
-  const range = getFiscalYearRange(year);
+function normalizeFinancialRowName(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function getFinancialRowAmount(row, year) {
+  if (row?.amounts && typeof row.amounts === "object") {
+    const direct = row.amounts[year] ?? row.amounts[String(year)];
+    if (direct !== undefined) return toNumber(direct, 0);
+    const values = Object.values(row.amounts);
+    if (values.length === 1) return toNumber(values[0], 0);
+  }
+  return getRowAmount(row);
+}
+
+function extractGroupedBalanceSheetMetrics(rows = [], year) {
+  const flat = flattenRows(rows).map((row) => ({
+    row,
+    name: normalizeFinancialRowName(getRowName(row)),
+    amount: getFinancialRowAmount(row, year),
+    hasChildren: Array.isArray(row?.children) && row.children.length > 0,
+  }));
+  const leaves = flat.filter((item) => !item.hasChildren && item.row?.type !== "total");
+  const sumMatches = (matchers) => leaves.reduce((sum, item) => (
+    matchers.some((matcher) => matcher.test(item.name)) ? sum + item.amount : sum
+  ), 0);
+  const exactTotal = (matchers) => {
+    const match = flat.find((item) => matchers.some((matcher) => matcher.test(item.name)));
+    return match ? match.amount : 0;
+  };
+
+  const prepaidOtherCurrent = sumMatches([
+    /prepaid/, /other current asset/, /short term asset/, /deferred cost/, /deposit current/,
+  ]);
+  const ppeNet = sumMatches([
+    /property plant/, /fixed asset/, /equipment/, /leasehold improvement/, /furniture/, /vehicle/,
+  ]);
+  const intangiblesGoodwill = sumMatches([
+    /goodwill/, /intangible/, /capitalized software/, /customer relationship/, /trade name/,
+  ]);
+  const accruedLiabilities = sumMatches([
+    /accrued/, /payroll liabilit/, /wages payable/, /sales tax payable/, /other current liabilit/,
+  ]);
+  const deferredRevenue = sumMatches([/deferred revenue/, /unearned revenue/, /customer deposit/]);
+  const currentDebt = sumMatches([
+    /current portion.*debt/, /short term debt/, /line of credit/, /credit card/, /current.*loan/,
+  ]);
+
+  return {
+    prepaidOtherCurrent,
+    ppeNet,
+    intangiblesGoodwill,
+    accruedLiabilities,
+    deferredRevenue,
+    currentDebt,
+    currentAssetsExact: exactTotal([/^total current assets?$/, /^current assets?$/]),
+    currentLiabilitiesExact: exactTotal([/^total current liabilities?$/, /^current liabilities?$/]),
+    totalLiabilitiesExact: exactTotal([/^total liabilities$/]),
+    totalLiabilitiesEquity: exactTotal([
+      /^total liabilities and equity$/,
+      /^total liabilities and shareholders equity$/,
+      /^total liabilities and stockholders equity$/,
+    ]),
+  };
+}
+
+async function loadBalanceSheetByYear({ sourceKey, sourceMode, years, datasetVersion, periodType }) {
+  if (sourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD || sourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) {
+    return {};
+  }
+
+  const entries = {};
+  await Promise.all(years.map(async (year) => {
+    const range = getFiscalYearRange(year, periodType);
+    try {
+      const payload = await getBalanceSheet(range.start, range.end, "Accrual", {
+        sourceMode,
+        manualFilters: {
+          fiscalYear: [String(year)],
+          ...(datasetVersion ? { datasetVersion: String(datasetVersion) } : {}),
+        },
+      });
+      entries[year] = extractGroupedBalanceSheetMetrics(payload?.rows || [], year);
+    } catch {
+      entries[year] = {};
+    }
+  }));
+  return entries;
+}
+
+async function loadCashflowMetricsForYear({ sourceMode, year, datasetVersion, periodType }) {
+  const range = getFiscalYearRange(year, periodType);
   const manualFilters = {
     fiscalYear: [String(year)],
     ...(datasetVersion ? { datasetVersion: String(datasetVersion) } : {}),
@@ -779,7 +911,7 @@ async function loadUploadedCashflowByYear({ clientId, getReports }) {
   return entries;
 }
 
-async function loadCashflowByYear({ clientId, sourceMode, years, datasetVersion }) {
+async function loadCashflowByYear({ clientId, sourceMode, years, datasetVersion, periodType }) {
   if (sourceMode === "quickbooks_manual") {
     return loadUploadedCashflowByYear({ clientId, getReports: getAllQMSUploadedReports });
   }
@@ -787,7 +919,7 @@ async function loadCashflowByYear({ clientId, sourceMode, years, datasetVersion 
   const entries = {};
   await Promise.all(
     years.map(async (year) => {
-      entries[year] = await loadCashflowMetricsForYear({ sourceMode, year, datasetVersion });
+      entries[year] = await loadCashflowMetricsForYear({ sourceMode, year, datasetVersion, periodType });
     }),
   );
   return entries;
@@ -821,11 +953,23 @@ async function loadCashflowForDateRange({
   });
 }
 
-function enrichYearMetric({ year, metrics, ebitdaData, adjustmentTotal = 0, adjustmentCount = 0, cashflow = {} }) {
+function enrichYearMetric({
+  year,
+  metrics,
+  ebitdaData,
+  adjustmentTotal = 0,
+  adjustmentCount = 0,
+  cashflow = {},
+  balanceSheet = {},
+}) {
   const revenue = toNumber(metrics.totalRevenue, 0) || toNumber(ebitdaData?.revenue, 0);
-  const baseEbitda = toNumber(ebitdaData?.ebitda, 0) || toNumber(ebitdaData?.adjustedEbitda, 0);
+  const hasReportedEbitda = Object.prototype.hasOwnProperty.call(ebitdaData || {}, "ebitda");
+  const baseEbitda = hasReportedEbitda
+    ? toNumber(ebitdaData?.ebitda, 0)
+    : toNumber(ebitdaData?.adjustedEbitda, 0);
   const fallbackAdjusted = toNumber(ebitdaData?.adjustedEbitda, baseEbitda);
-  const adjustedEbitda = adjustmentTotal > 0 ? baseEbitda + adjustmentTotal : fallbackAdjusted;
+  const hasAdjustmentTotal = Math.abs(toNumber(adjustmentTotal, 0)) > 0.0001;
+  const adjustedEbitda = hasAdjustmentTotal ? baseEbitda + adjustmentTotal : fallbackAdjusted;
   const costOfGoodsSold = Math.abs(
     toNumber(metrics.costOfGoodsSold, 0) || toNumber(ebitdaData?.costOfGoodsSold, 0),
   );
@@ -854,11 +998,12 @@ function enrichYearMetric({ year, metrics, ebitdaData, adjustmentTotal = 0, adju
   return {
     year,
     ...metrics,
+    ...balanceSheet,
     totalRevenue: revenue,
     netProfit,
     ebitda: baseEbitda,
     adjustedEbitda,
-    addbacksTotal: Math.max(0, adjustedEbitda - baseEbitda),
+    addbacksTotal: adjustedEbitda - baseEbitda,
     addbacksCount: adjustmentCount,
     ebitdaMargin: revenue > 0 ? (adjustedEbitda / revenue) * 100 : 0,
     reportedEbitdaMargin: revenue > 0 ? (baseEbitda / revenue) * 100 : 0,
@@ -881,10 +1026,21 @@ function enrichYearMetric({ year, metrics, ebitdaData, adjustmentTotal = 0, adju
       : 0,
     effectiveTaxRate: preTaxIncome > 0 ? (taxes / preTaxIncome) * 100 : 0,
     currentAssetsApprox:
-      toNumber(metrics.cashAndBankBalance, 0) +
-      toNumber(metrics.accountReceivable, 0) +
-      toNumber(metrics.inventoryValue, 0),
-    currentLiabilitiesApprox: toNumber(metrics.accountPayable, 0),
+      toNumber(balanceSheet.currentAssetsExact, 0) ||
+      (
+        toNumber(metrics.cashAndBankBalance, 0) +
+        toNumber(metrics.accountReceivable, 0) +
+        toNumber(metrics.inventoryValue, 0) +
+        toNumber(balanceSheet.prepaidOtherCurrent, 0)
+      ),
+    currentLiabilitiesApprox:
+      toNumber(balanceSheet.currentLiabilitiesExact, 0) ||
+      (
+        toNumber(metrics.accountPayable, 0) +
+        toNumber(balanceSheet.accruedLiabilities, 0) +
+        toNumber(balanceSheet.deferredRevenue, 0) +
+        toNumber(balanceSheet.currentDebt, 0)
+      ),
     ...cashflow,
   };
 }
@@ -911,7 +1067,7 @@ export function buildCimFinancialValidation({
       0,
     );
     const extractedAdjustment = toNumber(ebitdaData?.adjustedEbitda, 0) - toNumber(ebitdaData?.ebitda, 0);
-    const bridgeAdjustment = adjustmentTotal > 0 ? adjustmentTotal : extractedAdjustment;
+    const bridgeAdjustment = Math.abs(adjustmentTotal) > 0.0001 ? adjustmentTotal : extractedAdjustment;
 
     if (ebitdaData?.hasData && Object.prototype.hasOwnProperty.call(metrics, "totalRevenue")) {
       checks.push(makeComparisonCheck({
@@ -1034,6 +1190,87 @@ export function buildCimFinancialValidation({
   };
 }
 
+function normalizeBankReconciliationSnapshot(payload = {}, endDate = "") {
+  const data = payload?.found && payload?.data ? payload.data : payload;
+  const endMonth = String(endDate || "").slice(0, 7);
+  const accountRows = [];
+
+  if (Array.isArray(data?.accounts)) {
+    data.accounts.forEach((account) => {
+      const monthlyData = (account.monthlyData || [])
+        .filter((row) => !endMonth || String(row.month || row.monthKey || "") <= endMonth)
+        .sort((a, b) => String(a.month || a.monthKey || "").localeCompare(String(b.month || b.monthKey || "")));
+      const latest = monthlyData[monthlyData.length - 1];
+      if (!latest) return;
+      accountRows.push({
+        name: account.accountName || account.bankName || "Bank account",
+        bankName: account.bankName || account.accountName || "Bank",
+        month: latest.month || latest.monthKey || endMonth,
+        date: latest.statementEndDate || latest.endDate || endDate,
+        bankBalance: toNumber(latest.endingBalance, 0),
+        bookBalance: toNumber(latest.perBalanceSheet, 0),
+        variance: toNumber(latest.variance, toNumber(latest.endingBalance, 0) - toNumber(latest.perBalanceSheet, 0)),
+        status: latest.status || (Math.abs(toNumber(latest.variance, 0)) < 0.01 ? "Reconciled" : "Review"),
+      });
+    });
+  }
+
+  (data?.banks || []).forEach((bank) => {
+    (bank.accounts || []).forEach((account) => {
+      const months = (account.months || [])
+        .filter((row) => !endMonth || String(row.monthKey || row.month || "") <= endMonth)
+        .sort((a, b) => String(a.monthKey || a.month || "").localeCompare(String(b.monthKey || b.month || "")));
+      const latest = months[months.length - 1];
+      if (!latest) return;
+      accountRows.push({
+        name: account.accountName || bank.account_name || bank.bankName || bank.bank_name || "Bank account",
+        bankName: bank.bankName || bank.bank_name || account.bankName || "Bank",
+        month: latest.monthKey || latest.month || endMonth,
+        date: latest.statementEndDate || latest.statement_end_date || endDate,
+        bankBalance: toNumber(latest.endingBalance, 0),
+        bookBalance: toNumber(latest.perBalanceSheet ?? latest.bookBalance, 0),
+        variance: toNumber(latest.variance, 0),
+        status: latest.status || account.status || "Verified",
+      });
+    });
+  });
+
+  const latestMonth = accountRows.map((row) => row.month).sort().pop() || endMonth;
+  const latestRows = accountRows.filter((row) => row.month === latestMonth);
+  const bankBalance = latestRows.reduce((sum, row) => sum + row.bankBalance, 0);
+  const statedBookBalance = latestRows.reduce((sum, row) => sum + row.bookBalance, 0);
+  const bookBalance = statedBookBalance || bankBalance;
+  const variance = latestRows.reduce((sum, row) => sum + (row.variance || row.bankBalance - row.bookBalance), 0)
+    || bankBalance - bookBalance;
+
+  return {
+    hasData: latestRows.length > 0,
+    date: latestRows.map((row) => row.date).filter(Boolean).sort().pop() || endDate,
+    bankName: Array.from(new Set(latestRows.map((row) => row.bankName).filter(Boolean))).join(", "),
+    frequency: Array.isArray(data?.months) && data.months.length > 1 ? "Monthly" : "Periodic",
+    bankBalance,
+    bookBalance,
+    variance,
+    itemCount: latestRows.filter((row) => Math.abs(row.variance || row.bankBalance - row.bookBalance) > 0.01).length,
+    accounts: latestRows,
+  };
+}
+
+function normalizeTaxReconciliationSnapshot(payload = {}) {
+  const yearsPayload = payload?.years && typeof payload.years === "object"
+    ? payload.years
+    : payload?.year
+      ? { [payload.year]: { data: payload.data || [] } }
+      : {};
+  const periods = Object.keys(yearsPayload).map(Number).filter(Boolean).sort((a, b) => a - b);
+  const rowsByYear = {};
+  periods.forEach((year) => {
+    const value = yearsPayload[year] || yearsPayload[String(year)] || {};
+    rowsByYear[year] = Array.isArray(value) ? value : value.data || value.rows || [];
+  });
+  return { hasData: periods.some((year) => rowsByYear[year]?.length), periods, rowsByYear };
+}
+
 export async function loadCimFinancialAutofillSnapshot({
   clientId,
   sourceKey,
@@ -1066,10 +1303,8 @@ export async function loadCimFinancialAutofillSnapshot({
     : "";
   const selectedRange = normalizeDateRange(dateRange);
   const selectedFiscalYear = selectedRange?.fiscalYear || 0;
-  const selectedStartYear = getYearFromDate(selectedRange?.startDate);
-  const isSingleFiscalYearRange = Boolean(
-    selectedRange && selectedStartYear === selectedFiscalYear,
-  );
+  const periodType = selectedRange?.periodType || "calendar";
+  const selectedStartYear = getFiscalYearFromDate(selectedRange?.startDate, periodType);
   const sourceLedgerPromise = loadCimSourceLedger({
     sourceKey: normalizedSource,
     selectedDatasetVersion: datasetVersion || selectedDatasetVersion,
@@ -1080,19 +1315,17 @@ export async function loadCimFinancialAutofillSnapshot({
     sourceKey: normalizedSource,
     selectedDatasetVersion: datasetVersion,
   });
-  const recentYears = (
-    selectedFiscalYear
-      ? sortYearsDescending([
-        ...availableYears.filter((year) => Number(year) <= selectedFiscalYear),
-        selectedFiscalYear,
-      ])
-      : sortYearsDescending(availableYears)
-  ).slice(0, 5);
-  const years = sortYearsDescending([
-    ...recentYears,
-    selectedStartYear,
-    selectedFiscalYear,
-  ]);
+  const selectedCandidateYears = selectedFiscalYear
+    ? Array.from(
+      { length: Math.max(1, selectedFiscalYear - selectedStartYear + 1) },
+      (_, index) => selectedStartYear + index,
+    ).slice(0, 5)
+    : sortYearsDescending(availableYears).slice(0, 5).reverse();
+  const availableYearSet = new Set(availableYears.map(Number));
+  const years = sortYearsDescending(
+    selectedCandidateYears.filter((year) => availableYearSet.size === 0 || availableYearSet.has(Number(year))),
+  );
+  if (selectedFiscalYear && !years.includes(selectedFiscalYear)) years.unshift(selectedFiscalYear);
 
   const ebitdaPromise = loadEbitdaByYear({
     clientId,
@@ -1100,18 +1333,28 @@ export async function loadCimFinancialAutofillSnapshot({
     sourceMode,
     years,
     datasetVersion,
+    periodType,
   });
   const adjustmentsPromise = loadAdjustmentTotals({
     clientId,
     sourceKey: normalizedSource,
     years,
     datasetVersion,
+    periodType,
+  });
+  const balanceSheetPromise = loadBalanceSheetByYear({
+    sourceKey: normalizedSource,
+    sourceMode,
+    years,
+    datasetVersion,
+    periodType,
   });
   const cashflowPromise = loadCashflowByYear({
     clientId,
     sourceMode,
     years,
     datasetVersion,
+    periodType,
   });
 
   reportProgress(24, "Reading income statements and balance sheets");
@@ -1121,39 +1364,9 @@ export async function loadCimFinancialAutofillSnapshot({
     sourceMode,
     years,
     datasetVersion,
+    periodType,
   });
   reportProgress(42, "Cross-checking reported financial figures");
-
-  if (
-    isSingleFiscalYearRange &&
-    normalizedSource !== REPORT_SOURCE_KEYS.MANUAL_UPLOAD &&
-    normalizedSource !== REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL
-  ) {
-    try {
-      const annualMetrics = metricsByYear[selectedFiscalYear] || {};
-      const rangeMetrics = await loadKpisForDateRange({
-        clientId,
-        sourceKey: normalizedSource,
-        sourceMode,
-        startDate: selectedRange.startDate,
-        endDate: selectedRange.endDate,
-        fiscalYear: selectedFiscalYear,
-        datasetVersion,
-      });
-      metricsByYear[selectedFiscalYear] = {
-        ...annualMetrics,
-        ...rangeMetrics,
-        cashAndBankBalance:
-          toNumber(rangeMetrics.cashAndBankBalance, 0) || toNumber(annualMetrics.cashAndBankBalance, 0),
-        longTermDebt:
-          toNumber(rangeMetrics.longTermDebt, 0) || toNumber(annualMetrics.longTermDebt, 0),
-        totalDebt:
-          toNumber(rangeMetrics.totalDebt, 0) || toNumber(annualMetrics.totalDebt, 0),
-      };
-    } catch {
-      metricsByYear[selectedFiscalYear] = metricsByYear[selectedFiscalYear] || {};
-    }
-  }
 
   const usableYears = years.filter((year) => isMeaningfulMetricSet(metricsByYear[year]));
   const selectedYears = selectedFiscalYear
@@ -1165,49 +1378,51 @@ export async function loadCimFinancialAutofillSnapshot({
     : (usableYears.length ? usableYears : years);
   const ebitdaByYear = await ebitdaPromise;
   reportProgress(58, "Reconciling EBITDA and approved adjustments");
-  if (isSingleFiscalYearRange) {
-    try {
-      const rangeEbitda = await loadEbitdaForDateRange({
-        clientId,
-        sourceKey: normalizedSource,
-        sourceMode,
-        startDate: selectedRange.startDate,
-        endDate: selectedRange.endDate,
-        fiscalYear: selectedFiscalYear,
-        datasetVersion,
-      });
-      if (rangeEbitda && (
-        Math.abs(toNumber(rangeEbitda.ebitda, 0)) > 0.0001 ||
-        Math.abs(toNumber(rangeEbitda.adjustedEbitda, 0)) > 0.0001 ||
-        Math.abs(toNumber(rangeEbitda.revenue, 0)) > 0.0001
-      )) {
-        ebitdaByYear[selectedFiscalYear] = rangeEbitda;
-      }
-    } catch {
-      ebitdaByYear[selectedFiscalYear] = ebitdaByYear[selectedFiscalYear] || null;
-    }
+  let trailingEbitda = null;
+  try {
+    trailingEbitda = await loadEbitdaForDateRange({
+      clientId,
+      sourceKey: normalizedSource,
+      sourceMode,
+      startDate: selectedRange.trailingStartDate,
+      endDate: selectedRange.endDate,
+      fiscalYear: selectedFiscalYear,
+      datasetVersion,
+    });
+  } catch {
+    trailingEbitda = null;
   }
   const adjustments = await adjustmentsPromise;
   reportProgress(68, "Processing cash flow and capital expenditure data");
   const cashflowByYear = await cashflowPromise;
+  const balanceSheetByYear = await balanceSheetPromise;
   reportProgress(80, "Calculating margins, cash conversion, and leverage");
-  if (isSingleFiscalYearRange) {
-    try {
-      const rangeCashflow = await loadCashflowForDateRange({
+  let trailingCashflow = {};
+  let trailingKpis = {};
+  try {
+    [trailingCashflow, trailingKpis] = await Promise.all([
+      loadCashflowForDateRange({
         clientId,
         sourceKey: normalizedSource,
         sourceMode,
-        startDate: selectedRange.startDate,
+        startDate: selectedRange.trailingStartDate,
         endDate: selectedRange.endDate,
         fiscalYear: selectedFiscalYear,
         datasetVersion,
-      });
-      if (Object.values(rangeCashflow || {}).some((value) => Math.abs(toNumber(value, 0)) > 0.0001)) {
-        cashflowByYear[selectedFiscalYear] = rangeCashflow;
-      }
-    } catch {
-      cashflowByYear[selectedFiscalYear] = cashflowByYear[selectedFiscalYear] || {};
-    }
+      }),
+      loadKpisForDateRange({
+        clientId,
+        sourceKey: normalizedSource,
+        sourceMode,
+        startDate: selectedRange.trailingStartDate,
+        endDate: selectedRange.endDate,
+        fiscalYear: selectedFiscalYear,
+        datasetVersion,
+      }),
+    ]);
+  } catch {
+    trailingCashflow = {};
+    trailingKpis = {};
   }
 
   const enrichedByYear = {};
@@ -1219,12 +1434,52 @@ export async function loadCimFinancialAutofillSnapshot({
       adjustmentTotal: toNumber(adjustments.totals?.[year] ?? adjustments.totals?.[String(year)], 0),
       adjustmentCount: adjustments.count || 0,
       cashflow: cashflowByYear[year] || {},
+      balanceSheet: balanceSheetByYear[year] || {},
     });
+  });
+
+  const latestAnnualMetrics = enrichedByYear[selectedFiscalYear] || {};
+  const trailingMetrics = enrichYearMetric({
+    year: selectedFiscalYear,
+    metrics: { ...latestAnnualMetrics, ...trailingKpis },
+    ebitdaData: trailingEbitda || ebitdaByYear[selectedFiscalYear],
+    adjustmentTotal: selectedRange.trailingStartDate === selectedRange.annualStartDate && selectedRange.endDate === selectedRange.annualEndDate
+      ? toNumber(adjustments.totals?.[selectedFiscalYear] ?? adjustments.totals?.[String(selectedFiscalYear)], 0)
+      : 0,
+    adjustmentCount: adjustments.count || 0,
+    cashflow: trailingCashflow,
+    balanceSheet: balanceSheetByYear[selectedFiscalYear] || {},
   });
 
   const sortedAscending = sortYearsDescending(selectedYears).reverse();
   const latestYear = selectedFiscalYear || sortedAscending[sortedAscending.length - 1] || new Date().getFullYear();
   const sourceLedger = await sourceLedgerPromise;
+  const [bankPayload, taxPayload] = await Promise.all([
+    getCimBankReconciliationRequest({
+      clientId,
+      sourceKey: normalizedSource,
+      datasetVersion,
+      keyReportVersionId: sourceLedger?.versionId,
+    }).catch(() => null),
+    normalizedSource === REPORT_SOURCE_KEYS.QUICKBOOKS
+      ? Promise.all(sortedAscending.map((year) => getCimTaxReconciliationRequest({
+        clientId,
+        sourceKey: normalizedSource,
+        datasetVersion,
+        keyReportVersionId: sourceLedger?.versionId,
+        year,
+      }).catch(() => null))).then((responses) => ({
+        years: Object.fromEntries(responses
+          .filter((response) => response?.year)
+          .map((response) => [response.year, { data: response.data || [] }])),
+      }))
+      : getCimTaxReconciliationRequest({
+        clientId,
+        sourceKey: normalizedSource,
+        datasetVersion,
+        keyReportVersionId: sourceLedger?.versionId,
+      }).catch(() => null),
+  ]);
   reportProgress(90, "Validating accounting consistency and source support");
   const validation = buildCimFinancialValidation({
     sourceLedger,
@@ -1242,17 +1497,26 @@ export async function loadCimFinancialAutofillSnapshot({
     sourceMode,
     datasetVersion,
     years: sortedAscending,
+    availableYears: sortYearsDescending(availableYears).reverse(),
     latestYear,
     currentPeriod: selectedRange
       ? {
         startDate: selectedRange.startDate,
         endDate: selectedRange.endDate,
+        companyStartDate: selectedRange.companyStartDate,
         startFiscalYear: selectedStartYear,
         fiscalYear: selectedFiscalYear,
+        periodType,
+        annualStartDate: selectedRange.annualStartDate,
+        annualEndDate: selectedRange.annualEndDate,
+        trailingStartDate: selectedRange.trailingStartDate,
         months: getInclusiveMonthSpan(selectedRange.startDate, selectedRange.endDate),
       }
       : null,
     metricsByYear: enrichedByYear,
+    trailingMetrics,
+    bankReconciliation: normalizeBankReconciliationSnapshot(bankPayload || {}, selectedRange?.endDate),
+    taxReconciliation: normalizeTaxReconciliationSnapshot(taxPayload || {}),
     validation,
   };
   cimAutofillSnapshotCache.set(cacheKey, { cachedAt: Date.now(), snapshot });

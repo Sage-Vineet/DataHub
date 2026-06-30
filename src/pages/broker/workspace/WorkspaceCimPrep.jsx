@@ -850,6 +850,53 @@ const MIRRORED_FIELD_OVERRIDES = [
 
 const REPEATABLE_FIELD_OVERRIDES = [
   {
+    slide: 12,
+    key: "offerings",
+    fieldKind: "offerings",
+    label: "Products and services",
+    prompt: "Add each product or service with its complete CIM profile.",
+    addLabel: "Add product / service",
+    visibleOrder: 11,
+    pageSize: 3,
+    fields: [
+      { key: "image", label: "Logo or icon", inputType: "asset" },
+      { key: "name", label: "Product or service name", placeholder: "Offering name" },
+      { key: "category", label: "Category", placeholder: "Category" },
+      { key: "description", label: "Description, customer and benefit", placeholder: "What it does, who buys it, and the key benefit", inputType: "textarea" },
+      { key: "arr", label: "ARR (USD millions)", placeholder: "0.0" },
+      { key: "revenueShare", label: "Revenue share (%)", placeholder: "0" },
+      { key: "rightMetric", label: "Additional revenue metric (%)", placeholder: "0" },
+    ],
+    entries: [
+      { image: 10, name: 11, category: 12, description: 13, arr: 14, revenueShare: 15, rightMetric: 17 },
+      { image: 22, name: 23, category: 24, description: 25, arr: 26, revenueShare: 27, rightMetric: 29 },
+      { image: 34, name: 35, category: 36, description: 37, arr: 38, revenueShare: 39, rightMetric: 41 },
+    ],
+  },
+  {
+    slide: 15,
+    key: "management-team",
+    fieldKind: "people",
+    label: "Management team members",
+    prompt: "Add each team member's complete profile. Additional groups of four use continuation slides.",
+    addLabel: "Add person",
+    visibleOrder: 10,
+    pageSize: 4,
+    fields: [
+      { key: "photo", label: "Photo", inputType: "asset" },
+      { key: "name", label: "Full name", placeholder: "Full name" },
+      { key: "title", label: "Title", placeholder: "CEO / President" },
+      { key: "experience", label: "Years of experience", placeholder: "15" },
+      { key: "bio", label: "Short bio", placeholder: "Prior roles, expertise, and key achievements", inputType: "textarea" },
+    ],
+    entries: [
+      { photo: 9, name: 10, title: 11, experience: 12, bio: 14 },
+      { photo: 17, name: 18, title: 19, experience: 20, bio: 22 },
+      { photo: 25, name: 26, title: 27, experience: 28, bio: 30 },
+      { photo: 33, name: 34, title: 35, experience: 36, bio: 38 },
+    ],
+  },
+  {
     slide: 9,
     key: "milestones",
     fieldKind: "milestones",
@@ -1203,6 +1250,18 @@ function getRepeatableOverrideForTimelineElement(slideNumber, element) {
   return binding ? { override, binding } : null;
 }
 
+function getStructuredRepeatableBinding(slideNumber, element) {
+  for (const override of REPEATABLE_FIELD_OVERRIDES) {
+    if (override.slide !== slideNumber || !["offerings", "people"].includes(override.fieldKind)) continue;
+    for (let entryIndex = 0; entryIndex < (override.entries || []).length; entryIndex += 1) {
+      const entry = override.entries[entryIndex] || {};
+      const entryKey = Object.keys(entry).find((key) => Number(entry[key]) === Number(element.order));
+      if (entryKey) return { override, entryIndex, entryKey };
+    }
+  }
+  return null;
+}
+
 function extractTemplateFields(slideNumber, layout) {
   const elements = layout?.elements || [];
 
@@ -1228,6 +1287,39 @@ function extractTemplateFields(slideNumber, layout) {
       const repeatableTimeline = getRepeatableOverrideForTimelineElement(slideNumber, element);
       const repeatableTable = getRepeatableOverrideByTableOrder(slideNumber, element);
       const repeatableChart = getRepeatableOverrideByChartOrder(slideNumber, element);
+      const structuredRepeatable = getStructuredRepeatableBinding(slideNumber, element);
+
+      if (structuredRepeatable) {
+        const { override, entryIndex, entryKey } = structuredRepeatable;
+        const entryConfig = (override.fields || []).find((item) => item.key === entryKey) || {};
+        const tokenInfo = getTemplateTokens(element.text)[0] || {};
+        const structuredField = {
+          ...baseField,
+          id: `${parentId}:structured:${override.key}:${entryIndex}:${entryKey}`,
+          text: element.text,
+          token: tokenInfo.token,
+          tokenKey: tokenInfo.key,
+          occurrence: tokenInfo.occurrence || 0,
+          label: entryConfig.label || override.label,
+          fieldKind: entryConfig.inputType === "asset" ? "asset" : "text",
+          hidden: true,
+          structuredSourceId: makeRepeatableFieldId(slideNumber, override.key),
+          structuredEntryIndex: entryIndex,
+          structuredEntryKey: entryKey,
+          legacyFieldId: tokenInfo.token ? makeTokenFieldId(slideNumber, element, tokenInfo) : parentId,
+          legacyAssetKey: parentId,
+        };
+        if (element.order !== override.visibleOrder) return [structuredField];
+        return [{
+          ...baseField,
+          id: makeRepeatableFieldId(slideNumber, override.key),
+          text: element.text,
+          label: override.label,
+          prompt: override.prompt,
+          fieldKind: override.fieldKind,
+          repeatableConfig: override,
+        }, structuredField];
+      }
 
       if (repeatableChart) {
         return [{
@@ -1610,7 +1702,7 @@ function getStoredFieldValue(field, fieldValues) {
   return fieldValues[field.valueFieldId || field.id];
 }
 
-function parseRepeatableEntries(value, config = null) {
+function parseRepeatableEntries(value, _config = null) {
   if (Array.isArray(value)) return value;
   if (!normalizeText(value)) return [];
   try {
@@ -1628,13 +1720,88 @@ function stringifyRepeatableEntries(entries) {
 }
 
 function hasRepeatableEntryValue(entry) {
-  return Object.values(entry || {}).some((value) => normalizeText(value));
+  return Object.values(entry || {}).some((value) => (
+    value && typeof value === "object" ? Boolean(value.dataUrl) : Boolean(normalizeText(value))
+  ));
+}
+
+function buildCimExportSlides(fieldValues = {}) {
+  const repeatableSlides = new Map([
+    [12, { key: "offerings", pageSize: 3 }],
+    [15, { key: "management-team", pageSize: 4 }],
+  ]);
+  return TEMPLATE_SLIDES.flatMap((sourceSlideNumber) => {
+    const config = repeatableSlides.get(sourceSlideNumber);
+    if (!config) return [{ sourceSlideNumber, instanceIndex: 0 }];
+    const entries = parseRepeatableEntries(fieldValues[makeRepeatableFieldId(sourceSlideNumber, config.key)])
+      .filter(hasRepeatableEntryValue);
+    const pageCount = Math.max(1, Math.ceil(entries.length / config.pageSize));
+    return Array.from({ length: pageCount }, (_, instanceIndex) => ({ sourceSlideNumber, instanceIndex }));
+  });
+}
+
+function getRepeatableSlideConfig(slideNumber) {
+  if (slideNumber === 12) return { key: "offerings", pageSize: 3 };
+  if (slideNumber === 15) return { key: "management-team", pageSize: 4 };
+  return null;
+}
+
+function getEditorSlideRefs(slideNumbers = [], fieldValues = {}) {
+  return slideNumbers.flatMap((sourceSlideNumber) => {
+    const config = getRepeatableSlideConfig(sourceSlideNumber);
+    if (!config) return [{ sourceSlideNumber, instanceIndex: 0 }];
+    const entries = parseRepeatableEntries(
+      fieldValues[makeRepeatableFieldId(sourceSlideNumber, config.key)],
+    );
+    const pageCount = Math.max(1, Math.ceil(entries.length / config.pageSize));
+    return Array.from({ length: pageCount }, (_, instanceIndex) => ({ sourceSlideNumber, instanceIndex }));
+  });
+}
+
+function getFieldValuesForEditorSlide(fieldValues = {}, slideRef) {
+  const sourceSlideNumber = slideRef?.sourceSlideNumber || slideRef;
+  const instanceIndex = Number(slideRef?.instanceIndex || 0);
+  const config = getRepeatableSlideConfig(sourceSlideNumber);
+  if (!config) return fieldValues;
+  const fieldId = makeRepeatableFieldId(sourceSlideNumber, config.key);
+  const entries = parseRepeatableEntries(fieldValues[fieldId]);
+  return {
+    ...fieldValues,
+    [fieldId]: stringifyRepeatableEntries(
+      entries.slice(instanceIndex * config.pageSize, (instanceIndex + 1) * config.pageSize),
+    ),
+  };
+}
+
+function shouldHideUnusedManagementSlot(slideNumber, element, fieldValues = {}) {
+  if (slideNumber !== 15) return false;
+  const order = Number(element?.order || 0);
+  if (order < 7 || order > 38) return false;
+  const slotIndex = Math.floor((order - 7) / 8);
+  const fieldId = makeRepeatableFieldId(15, "management-team");
+  const entries = parseRepeatableEntries(fieldValues[fieldId]);
+  return !hasRepeatableEntryValue(entries[slotIndex]);
+}
+
+function getFieldValuesForExportSlide(fieldValues = {}, slideRef) {
+  const sourceSlideNumber = slideRef?.sourceSlideNumber || slideRef;
+  const instanceIndex = Number(slideRef?.instanceIndex || 0);
+  const config = getRepeatableSlideConfig(sourceSlideNumber);
+  if (!config) return fieldValues;
+  const fieldId = makeRepeatableFieldId(sourceSlideNumber, config.key);
+  const entries = parseRepeatableEntries(fieldValues[fieldId]).filter(hasRepeatableEntryValue);
+  return {
+    ...fieldValues,
+    [fieldId]: stringifyRepeatableEntries(
+      entries.slice(instanceIndex * config.pageSize, (instanceIndex + 1) * config.pageSize),
+    ),
+  };
 }
 
 function getStructuredFieldValue(field, fieldValues) {
   const entries = parseRepeatableEntries(fieldValues[field.structuredSourceId]);
   const entry = entries[field.structuredEntryIndex] || {};
-  return normalizeText(entry[field.structuredEntryKey]);
+  return normalizeText(entry[field.structuredEntryKey]) || normalizeText(fieldValues[field.legacyFieldId]);
 }
 
 function renderShareholdersTable(entries) {
@@ -1714,6 +1881,9 @@ function applyFieldValues(text, elementFields, fieldValues, globalDetails) {
     const saved = field.structuredSourceId
       ? getStructuredFieldValue(field, fieldValues)
       : getStoredFieldValue(field, fieldValues);
+    if (!normalizeText(saved) && field.slideNumber === 38 && field.order === 11) {
+      return String(new Date().getFullYear());
+    }
     return typeof saved === "string" && saved.trim()
       ? renderFieldDisplayTemplate(field, saved)
       : match;
@@ -2024,8 +2194,16 @@ function getElementContent(slideNumber, element, fieldsById, fieldValues, assetV
   const elementFields = getElementFields(slideNumber, element, fieldsById);
   const mediaField = elementFields.find((field) => isAssetField(field) || isChartField(field));
 
+  if (mediaField?.structuredSourceId && isAssetField(mediaField)) {
+    const entries = parseRepeatableEntries(fieldValues?.[mediaField.structuredSourceId]);
+    const media = entries[mediaField.structuredEntryIndex]?.[mediaField.structuredEntryKey];
+    if (media?.dataUrl) {
+      return { kind: "image", dataUrl: media.dataUrl, name: media.name || mediaField.label };
+    }
+  }
+
   if (mediaField && isAssetField(mediaField)) {
-    const asset = assetValues?.[getAssetKey(mediaField)];
+    const asset = assetValues?.[getAssetKey(mediaField)] || assetValues?.[mediaField.legacyAssetKey];
     if (asset?.dataUrl) {
       return { kind: "image", dataUrl: asset.dataUrl, name: asset.name || mediaField.label };
     }
@@ -2159,24 +2337,84 @@ function formatDateInputValue(date = new Date()) {
 }
 
 function getDefaultFinancialAutofillRange() {
-  const year = new Date().getFullYear();
+  const year = new Date().getFullYear() - 1;
   return {
-    startDate: formatDateInputValue(new Date(year, 0, 1)),
+    companyStartDate: "",
+    periodType: "calendar",
+    startDate: formatDateInputValue(new Date(year - 4, 0, 1)),
     endDate: formatDateInputValue(new Date(year, 11, 31)),
   };
 }
 
-function isValidFinancialAutofillRange(range = {}) {
+function getFinancialAutofillRangeError(range = {}) {
   const startDate = String(range.startDate || "");
   const endDate = String(range.endDate || "");
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(endDate)) return false;
-  return new Date(`${startDate}T00:00:00`) <= new Date(`${endDate}T00:00:00`);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
+    return "Select both financial period dates.";
+  }
+  const start = new Date(`${startDate}T00:00:00`);
+  const end = new Date(`${endDate}T00:00:00`);
+  if (start > end) return "The from date must be before the to date.";
+  const maximumEnd = new Date(start);
+  maximumEnd.setFullYear(maximumEnd.getFullYear() + 5);
+  maximumEnd.setDate(maximumEnd.getDate() - 1);
+  if (end > maximumEnd) return "The selected financial period cannot exceed five years.";
+  if (range.companyStartDate && !/^\d{4}-\d{2}-\d{2}$/.test(String(range.companyStartDate))) {
+    return "Choose a valid company operating start date.";
+  }
+  return "";
+}
+
+function isValidFinancialAutofillRange(range = {}) {
+  return !getFinancialAutofillRangeError(range);
 }
 
 function getFinancialAutofillRangeLabel(range = {}) {
   const start = formatAutoFillDate(range.startDate, "short");
   const end = formatAutoFillDate(range.endDate, "short");
   return start && end ? `${start} - ${end}` : "selected FY range";
+}
+
+function getTrailingTwelveMonthRange(range = {}) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(range.endDate || ""))) return null;
+  const end = new Date(`${range.endDate}T00:00:00`);
+  const start = new Date(end);
+  start.setFullYear(start.getFullYear() - 1);
+  start.setDate(start.getDate() + 1);
+  return {
+    startDate: formatDateInputValue(start),
+    endDate: range.endDate,
+  };
+}
+
+function convertFinancialRangePeriodType(range = {}, periodType = "calendar") {
+  const startYear = Number(String(range.startDate || "").slice(0, 4)) || new Date().getFullYear() - 5;
+  const rawEndYear = Number(String(range.endDate || "").slice(0, 4)) || startYear;
+  const currentCount = range.periodType === "fiscal"
+    ? Math.max(1, rawEndYear - startYear)
+    : Math.max(1, rawEndYear - startYear + 1);
+  const yearCount = Math.min(5, currentCount);
+  return periodType === "fiscal"
+    ? {
+      ...range,
+      periodType,
+      startDate: `${startYear}-04-01`,
+      endDate: `${startYear + yearCount}-03-31`,
+    }
+    : {
+      ...range,
+      periodType,
+      startDate: `${startYear}-01-01`,
+      endDate: `${startYear + yearCount - 1}-12-31`,
+    };
+}
+
+function getLastFinancialYearLabel(range = {}) {
+  const endYear = Number(String(range.endDate || "").slice(0, 4));
+  if (!endYear) return "";
+  return range.periodType === "fiscal"
+    ? `Apr. 1, ${endYear - 1} - Mar. 31, ${endYear}`
+    : `Jan. 1, ${endYear} - Dec. 31, ${endYear}`;
 }
 
 function getAutoFillYearRange(years = []) {
@@ -2272,11 +2510,14 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
   const years = snapshot?.years || [];
   const latestYear = snapshot?.latestYear || years[years.length - 1];
   const latest = getAutoFillYearMetrics(snapshot, latestYear);
+  const trailing = snapshot?.trailingMetrics || latest;
   const currentLongDate = getCurrentAutoFillLongDate(snapshot, latestYear);
   const currentShortDate = getCurrentAutoFillShortDate(snapshot, latestYear);
-  const currentPeriodMonths = snapshot?.currentPeriod?.months || 12;
-  const historyYears = alignAutoFillYears(years, 4);
-  const balanceYears = alignAutoFillYears(years, 3);
+  const currentPeriodMonths = 12;
+  const priorYears = years.filter((year) => Number(year) < Number(latestYear));
+  const historyYears = alignAutoFillYears(priorYears, 4);
+  const balanceYears = alignAutoFillYears(priorYears, 3);
+  const chartYears = years.slice(-5);
   const cagrYears = getAutoFillCagrYears(snapshot, historyYears);
   const selectedStartYear = Number(snapshot?.currentPeriod?.startFiscalYear || cagrYears[0] || 0);
   const selectedEndYear = Number(snapshot?.currentPeriod?.fiscalYear || latestYear || 0);
@@ -2352,10 +2593,22 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
   add(6, 31, 1, selectedRangeText);
   add(6, 31, 2, formatAutoFillPercent(marginExpansion));
   addMergedOrder(6, 32, selectedRangeText);
-  addChart(6, 28, "bar", getAutoFillChartData(snapshot, historyYears.filter(Boolean)));
+  addChart(6, 28, "bar", getAutoFillChartData(snapshot, chartYears.filter(Boolean)));
 
   add(9, 34, 0, formatAutoFillMillions(latest.totalRevenue));
   add(9, 36, 0, formatAutoFillPercent(latest.ebitdaMargin));
+  const companyStartDate = snapshot?.currentPeriod?.companyStartDate;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(companyStartDate || ""))) {
+    const companyStart = new Date(`${companyStartDate}T00:00:00`);
+    const periodEnd = new Date(`${snapshot.currentPeriod.endDate}T00:00:00`);
+    let operatingYears = periodEnd.getFullYear() - companyStart.getFullYear();
+    if (
+      periodEnd.getMonth() < companyStart.getMonth() ||
+      (periodEnd.getMonth() === companyStart.getMonth() && periodEnd.getDate() < companyStart.getDate())
+    ) operatingYears -= 1;
+    add(8, 6, 1, companyStart.getFullYear());
+    add(9, 5, 2, String(Math.max(0, operatingYears)));
+  }
 
   const previousYear = years[years.indexOf(latestYear) - 1] || null;
   const previous = getAutoFillYearMetrics(snapshot, previousYear);
@@ -2380,16 +2633,19 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
   add(23, 31, 0, currentLongDate);
   add(23, 36, 2, financialSource);
   addMergedOrder(23, 36, selectedRangeText);
-  addChart(23, 33, "bar", getAutoFillChartData(snapshot, historyYears.filter(Boolean), ["totalRevenue"]));
-  addChart(23, 35, "bar", getAutoFillChartData(snapshot, historyYears.filter(Boolean), ["adjustedEbitda", "ebitdaMargin"]));
+  addChart(23, 33, "bar", getAutoFillChartData(snapshot, chartYears.filter(Boolean), ["totalRevenue"]));
+  addChart(23, 35, "bar", getAutoFillChartData(snapshot, chartYears.filter(Boolean), ["adjustedEbitda", "ebitdaMargin"]));
 
-  const incomeColumns = [...historyYears, latestYear];
+  const incomeColumns = [
+    ...historyYears.map((year) => ({ year, metrics: getAutoFillYearMetrics(snapshot, year) })),
+    { year: latestYear, metrics: trailing, trailing: true },
+  ];
   add(24, 5, 0, selectedStartYear ? `FY${selectedStartYear}` : "");
   add(24, 5, 1, selectedEndYear ? `FY${selectedEndYear}` : "");
-  incomeColumns.forEach((year, columnIndex) => {
+  incomeColumns.forEach((column, columnIndex) => {
+    const { year, metrics } = column;
     if (columnIndex < 4) add(24, 7, columnIndex, year);
     if (columnIndex === 4) add(24, 7, 4, currentShortDate);
-    const metrics = getAutoFillYearMetrics(snapshot, year);
     add(24, 7, 5 + columnIndex, formatAutoFillMillions(metrics.totalRevenue));
     if (columnIndex < 4) add(24, 7, 10 + columnIndex, formatAutoFillPercent(calculateAutoFillGrowth(snapshot, year)));
     add(24, 7, 14 + columnIndex, formatAutoFillMillions(metrics.costOfGoodsSold));
@@ -2427,22 +2683,33 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
     add(26, 7, 4 + columnIndex, formatAutoFillMillions(metrics.cashAndBankBalance));
     add(26, 7, 8 + columnIndex, formatAutoFillMillions(metrics.accountReceivable));
     add(26, 7, 12 + columnIndex, formatAutoFillMillions(metrics.inventoryValue));
+    add(26, 7, 16 + columnIndex, formatAutoFillMillions(metrics.prepaidOtherCurrent));
     add(26, 7, 20 + columnIndex, formatAutoFillMillions(metrics.currentAssetsApprox));
+    add(26, 7, 24 + columnIndex, formatAutoFillMillions(metrics.ppeNet));
+    add(26, 7, 28 + columnIndex, formatAutoFillMillions(metrics.intangiblesGoodwill));
     add(26, 7, 32 + columnIndex, formatAutoFillMillions(metrics.totalAssets));
     add(26, 7, 36 + columnIndex, formatAutoFillMillions(metrics.accountPayable));
+    add(26, 7, 40 + columnIndex, formatAutoFillMillions(metrics.accruedLiabilities));
+    add(26, 7, 44 + columnIndex, formatAutoFillMillions(metrics.deferredRevenue));
+    add(26, 7, 48 + columnIndex, formatAutoFillMillions(metrics.currentDebt));
     add(26, 7, 52 + columnIndex, formatAutoFillMillions(metrics.currentLiabilitiesApprox));
     add(26, 7, 56 + columnIndex, formatAutoFillMillions(metrics.longTermDebt));
     add(26, 7, 60 + columnIndex, formatAutoFillMillions(metrics.totalEquity));
-    add(26, 7, 64 + columnIndex, formatAutoFillMillions(metrics.totalAssets));
+    add(26, 7, 64 + columnIndex, formatAutoFillMillions(
+      metrics.totalLiabilitiesEquity || Number(metrics.totalLiabilities || 0) + Number(metrics.totalEquity || 0),
+    ));
   });
   add(26, 8, 0, selectedStartYear ? `FY${selectedStartYear}` : "");
   add(26, 8, 1, selectedEndYear ? `FY${selectedEndYear}` : "");
 
-  const cashflowColumns = [...balanceYears, latestYear];
-  cashflowColumns.forEach((year, columnIndex) => {
+  const cashflowColumns = [
+    ...balanceYears.map((year) => ({ year, metrics: getAutoFillYearMetrics(snapshot, year) })),
+    { year: latestYear, metrics: trailing, trailing: true },
+  ];
+  cashflowColumns.forEach((column, columnIndex) => {
+    const { year, metrics } = column;
     if (columnIndex < 3) add(27, 7, columnIndex, year);
     if (columnIndex === 3) add(27, 7, 3, currentShortDate);
-    const metrics = getAutoFillYearMetrics(snapshot, year);
     add(27, 7, 4 + columnIndex, formatAutoFillMillions(metrics.netProfit));
     add(27, 7, 8 + columnIndex, formatAutoFillMillions(metrics.depreciationAmortization));
     add(27, 7, 12 + columnIndex, formatAutoFillMillions(metrics.changeInWorkingCapital));
@@ -2459,19 +2726,18 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
     add(27, 7, 56 + columnIndex, formatAutoFillPercent(calculateAutoFillFcfConversion(metrics)));
   });
   const cumulativeFcf = cashflowColumns
-    .filter(Boolean)
-    .reduce((sum, year) => sum + Number(getAutoFillYearMetrics(snapshot, year).freeCashFlow || 0), 0);
+    .filter((column) => column.year && !column.trailing)
+    .reduce((sum, column) => sum + Number(column.metrics.freeCashFlow || 0), 0);
   add(27, 5, 0, formatAutoFillMillions(cumulativeFcf));
   add(27, 5, 1, selectedRangeText);
   add(27, 6, 0, formatAutoFillPercent(calculateAutoFillFcfConversion(latest)));
 
-  add(28, 5, 0, formatAutoFillMillions(latest.workingCapital));
+  add(28, 5, 0, formatAutoFillMillions(trailing.workingCapital));
   add(28, 5, 1, String(currentPeriodMonths));
-  add(28, 9, 0, formatAutoFillMillions(latest.workingCapital));
-  add(28, 11, 0, formatAutoFillMillions(latest.workingCapital));
+  add(28, 9, 0, formatAutoFillMillions(trailing.workingCapital));
+  add(28, 11, 0, formatAutoFillMillions(trailing.workingCapital));
   add(28, 30, 0, latestYear);
-  [latestYear, latestYear].forEach((year, offset) => {
-    const metrics = getAutoFillYearMetrics(snapshot, year);
+  [latest, trailing].forEach((metrics, offset) => {
     add(28, 30, 1 + offset, formatAutoFillMillions(metrics.accountReceivable));
     add(28, 30, 3 + offset, formatAutoFillMillions(metrics.inventoryValue));
     add(28, 30, 7 + offset, formatAutoFillMillions(metrics.currentAssetsApprox));
@@ -2488,22 +2754,77 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
   add(29, 32, 1, currentLongDate);
   add(29, 32, 2, currentLongDate);
 
+  const bankReconciliation = snapshot?.bankReconciliation || {};
+  if (bankReconciliation.hasData) {
+    const reconciliationDate = formatAutoFillDate(bankReconciliation.date, "long") || currentLongDate;
+    const bookBalance = Number(bankReconciliation.bookBalance || latest.cashAndBankBalance || 0);
+    const bankBalance = Number(bankReconciliation.bankBalance || 0);
+    const variance = Number(bankReconciliation.variance || bankBalance - bookBalance);
+    add(29, 6, 0, reconciliationDate);
+    add(29, 9, 0, formatAutoFillMillions(bookBalance));
+    add(29, 14, 0, formatAutoFillMillions(bankBalance));
+    add(29, 16, 0, bankReconciliation.bankName);
+    add(29, 16, 1, reconciliationDate);
+    add(29, 19, 0, formatAutoFillThousands(variance));
+    add(29, 21, 0, String(bankReconciliation.itemCount || 0));
+    addElementOverride(29, 24, bankReconciliation.frequency || "Monthly");
+    const accountRows = (bankReconciliation.accounts || []).slice(0, 5).map((account) => {
+      const accountVariance = Number(account.variance || account.bankBalance - account.bookBalance || 0);
+      return `${account.name || account.bankName || "Bank account"} | ${formatAutoFillMillions(account.bankBalance)} | ${accountVariance >= 0 ? "Add" : "Deduct"} | ${account.status || (Math.abs(accountVariance) < 0.01 ? "Reconciled" : "Review")}`;
+    });
+    addElementOverride(29, 28, [
+      "Account / item | Amount ($M) | Direction | Status",
+      ...accountRows,
+      `Total bank statement balance | ${formatAutoFillMillions(bankBalance)} | -- | ${Math.abs(variance) < 0.01 ? "Reconciled" : "Review"}`,
+    ].join("\n"));
+    addElementOverride(29, 31, Math.abs(variance) < 0.01
+      ? `Bank statements and book cash reconcile as of ${reconciliationDate}. ${bankReconciliation.accounts?.length || 0} account(s) were reviewed.`
+      : `A net reconciling difference of $${formatAutoFillThousands(Math.abs(variance))}k remains as of ${reconciliationDate}. Review the account-level items before circulation.`);
+  }
+
   add(30, 5, 0, formatAutoFillPercent(latest.effectiveTaxRate));
   add(30, 9, 0, formatAutoFillPercent(latest.effectiveTaxRate));
   add(30, 14, 0, formatAutoFillMillions(latest.taxes));
   add(30, 16, 0, currentLongDate);
   add(30, 21, 0, currentLongDate);
-  const taxYears = [previousYear, latestYear, latestYear];
+  const taxPeriods = [previous, latest, trailing];
   add(30, 28, 0, previousYear);
   add(30, 28, 1, latestYear);
-  taxYears.forEach((year, columnIndex) => {
-    const metrics = getAutoFillYearMetrics(snapshot, year);
+  taxPeriods.forEach((metrics, columnIndex) => {
     add(30, 28, 2 + columnIndex, formatAutoFillMillions(metrics.preTaxIncome));
     add(30, 28, 5 + columnIndex, formatAutoFillPercent(metrics.effectiveTaxRate));
     add(30, 28, 8 + columnIndex, formatAutoFillMillions(metrics.taxes));
     add(30, 28, 23 + columnIndex, formatAutoFillMillions(metrics.taxes));
     add(30, 28, 26 + columnIndex, formatAutoFillPercent(metrics.effectiveTaxRate));
   });
+
+  const taxReconciliation = snapshot?.taxReconciliation || {};
+  if (taxReconciliation.hasData) {
+    const taxYears = (taxReconciliation.periods || []).slice(-3);
+    const labels = new Map();
+    taxYears.forEach((year) => {
+      (taxReconciliation.rowsByYear?.[year] || []).forEach((row) => {
+        const label = normalizeText(row.label || row.name || row.account || "");
+        if (!label) return;
+        const key = label.toLowerCase();
+        const value = Number(row.taxReturn ?? row.tax_return ?? row.amount ?? row.value ?? row.pl ?? 0);
+        if (!labels.has(key)) labels.set(key, { label, values: {} });
+        labels.get(key).values[year] = value;
+      });
+    });
+    const taxRows = Array.from(labels.values())
+      .sort((a, b) => {
+        const aTotal = taxYears.reduce((sum, year) => sum + Math.abs(Number(a.values[year] || 0)), 0);
+        const bTotal = taxYears.reduce((sum, year) => sum + Math.abs(Number(b.values[year] || 0)), 0);
+        return bTotal - aTotal;
+      })
+      .slice(0, 9);
+    addElementOverride(30, 27, "TAX RETURN / BOOK RECONCILIATION");
+    addElementOverride(30, 28, [
+      `Item | ${taxYears.map((year) => `FY${year}`).join(" | ")}`,
+      ...taxRows.map((row) => `${row.label} | ${taxYears.map((year) => formatAutoFillMillions(row.values[year])).join(" | ")}`),
+    ].join("\n"));
+  }
 
   add(32, 7, 0, latestYear);
   add(32, 7, 1, latestYear ? latestYear + 1 : "");
@@ -2517,19 +2838,6 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
   add(32, 7, 39, formatAutoFillMillions(latest.capitalExpenditures));
 
   return { fieldValues, chartValues };
-}
-
-function mergeEmptyAutofillValues(existing = {}, additions = {}, isFilled = normalizeText) {
-  let count = 0;
-  const next = { ...existing };
-
-  Object.entries(additions || {}).forEach(([key, value]) => {
-    if (!isFilled(value) || isFilled(existing[key])) return;
-    next[key] = value;
-    count += 1;
-  });
-
-  return { next, count };
 }
 
 function mergeOverwriteAutofillValues(existing = {}, additions = {}, isFilled = normalizeText) {
@@ -2785,13 +3093,16 @@ function getElementFieldId(slideNumber, element) {
   return makeFieldId(slideNumber, element);
 }
 
-function getElementDisplayText(slideNumber, element, fieldsById, fieldValues, globalDetails) {
+function getElementDisplayText(slideNumber, element, fieldsById, fieldValues, globalDetails, displaySlideNumber = slideNumber) {
   if (!element?.text) return "";
-  if (isTopRightSlideNumberElement(element)) return String(slideNumber);
+  if (isTopRightSlideNumberElement(element)) return String(displaySlideNumber);
+  const elementOverride = fieldValues?.[getElementAutofillKey("element_override", slideNumber, element.order)];
+  if (normalizeText(elementOverride)) return elementOverride;
   const elementFields = getElementFields(slideNumber, element, fieldsById);
 
   if (containsTemplateToken(element.text)) {
-    return applyFieldValues(element.text, elementFields, fieldValues, globalDetails);
+    const value = applyFieldValues(element.text, elementFields, fieldValues, globalDetails);
+    return `${value}${fieldValues?.[getElementAutofillKey("element_suffix", slideNumber, element.order)] || ""}`;
   }
   return element.text;
 }
@@ -2810,6 +3121,7 @@ function getHorizontalAlignment(value) {
 
 function SlideCanvas({
   slideNumber,
+  displaySlideNumber = slideNumber,
   layout,
   fields,
   fieldValues,
@@ -2841,6 +3153,9 @@ function SlideCanvas({
       style={{ aspectRatio: "16 / 9", backgroundColor: slideBackgroundColor }}
     >
       {elements.map((element, elementIndex) => {
+        if (shouldHideUnusedManagementSlot(slideNumber, element, fieldValues)) {
+          return null;
+        }
         if (shouldHideLogoPlaceholderShape(elements, elementIndex, resolvedAssetValues)) {
           return null;
         }
@@ -2865,6 +3180,7 @@ function SlideCanvas({
           fieldsById,
           fieldValues,
           globalDetails,
+          displaySlideNumber,
         );
         const style = elementFields[0]?.style || (element.text ? getElementStyle(element) : null);
         const fillColor = isRule
@@ -3328,6 +3644,7 @@ function RepeatableFieldControl({
   active,
   onFieldFocus,
   onFieldChange,
+  onRepeatablePageChange,
   questionnaireItem,
   onQuestionnaireToggle,
   onQuestionPromptChange,
@@ -3336,6 +3653,7 @@ function RepeatableFieldControl({
   const entryFields = config.fields || [];
   const parsedEntries = parseRepeatableEntries(value, config);
   const entries = parsedEntries.length ? parsedEntries : [{}];
+  const [expandedEntryIndex, setExpandedEntryIndex] = useState(0);
 
   const updateEntries = (nextEntries) => {
     const cleaned = nextEntries.length ? nextEntries : [{}];
@@ -3349,11 +3667,100 @@ function RepeatableFieldControl({
   };
 
   const addEntry = () => {
-    updateEntries([...entries, {}]);
+    const nextEntries = [...entries, {}];
+    updateEntries(nextEntries);
+    setExpandedEntryIndex(nextEntries.length - 1);
+    if (config.pageSize) {
+      onRepeatablePageChange?.(field.slideNumber, Math.floor((nextEntries.length - 1) / config.pageSize));
+    }
   };
 
   const removeEntry = (entryIndex) => {
-    updateEntries(entries.filter((_, index) => index !== entryIndex));
+    const nextEntries = entries.filter((_, index) => index !== entryIndex);
+    updateEntries(nextEntries);
+    const nextExpandedIndex = Math.max(0, Math.min(entryIndex, nextEntries.length - 1));
+    setExpandedEntryIndex(nextExpandedIndex);
+    if (config.pageSize) {
+      onRepeatablePageChange?.(field.slideNumber, Math.floor(nextExpandedIndex / config.pageSize));
+    }
+  };
+
+  const updateEntryAsset = (entryIndex, key, file) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => updateEntry(entryIndex, key, {
+      dataUrl: String(reader.result || ""),
+      name: file.name,
+      type: file.type,
+    });
+    reader.readAsDataURL(file);
+  };
+
+  const renderEntryInput = (entry, entryIndex, entryField) => {
+    if (entryField.inputType === "asset") {
+      const asset = entry[entryField.key];
+      return (
+        <div className="flex items-center gap-3 rounded-lg border border-border bg-white p-2.5">
+          <div className="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-[#F2F4F5]">
+            {asset?.dataUrl ? (
+              <img src={asset.dataUrl} alt={asset.name || entryField.label} className="h-full w-full object-cover" />
+            ) : (
+              <ImagePlus size={22} className="text-[#A5A5A5]" />
+            )}
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-[11px] font-semibold text-[#6D6E71]">
+              {asset?.name || "PNG or JPG headshot"}
+            </p>
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              <label className="inline-flex cursor-pointer items-center gap-1 rounded-md bg-[#EEF6E0] px-2 py-1.5 text-[11px] font-bold text-[#476E2C] transition hover:bg-[#DDEBCB]">
+                <Upload size={12} />
+                {asset?.dataUrl ? "Replace" : "Upload photo"}
+                <input
+                  type="file"
+                  accept="image/png,image/jpeg"
+                  className="sr-only"
+                  onChange={(event) => {
+                    updateEntryAsset(entryIndex, entryField.key, event.target.files?.[0]);
+                    event.target.value = "";
+                  }}
+                />
+              </label>
+              {asset?.dataUrl ? (
+                <button
+                  type="button"
+                  onClick={() => updateEntry(entryIndex, entryField.key, null)}
+                  className="rounded-md px-2 py-1.5 text-[11px] font-bold text-red-600 transition hover:bg-red-50"
+                >
+                  Remove
+                </button>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    if (entryField.inputType === "textarea" || entryField.key === "description" || entryField.key === "role") {
+      return (
+        <textarea
+          value={entry[entryField.key] || ""}
+          onChange={(event) => updateEntry(entryIndex, entryField.key, event.target.value)}
+          placeholder={entryField.placeholder || ""}
+          className="min-h-[84px] w-full resize-y rounded-md border border-border bg-white px-3 py-2 text-[12px] leading-relaxed text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20"
+          spellCheck={false}
+        />
+      );
+    }
+
+    return (
+      <input
+        value={entry[entryField.key] || ""}
+        onChange={(event) => updateEntry(entryIndex, entryField.key, event.target.value)}
+        placeholder={entryField.placeholder || ""}
+        className="h-10 w-full rounded-md border border-border bg-white px-3 text-[12px] text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20"
+      />
+    );
   };
 
   return (
@@ -3362,17 +3769,24 @@ function RepeatableFieldControl({
       onFocusCapture={() => onFieldFocus(field.id)}
       onClick={() => onFieldFocus(field.id)}
     >
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <span className="block min-w-0 truncate text-[11px] font-bold uppercase tracking-[0.06em] text-[#6D6E71]">
-          {field.label}
-        </span>
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <span className="block truncate text-[11px] font-bold uppercase tracking-[0.06em] text-[#6D6E71]">
+            {field.label}
+          </span>
+          {field.fieldKind === "people" ? (
+            <span className="mt-0.5 block text-[11px] font-semibold text-[#8A8F98]">
+              {entries.filter(hasRepeatableEntryValue).length} added · {Math.max(1, Math.ceil(entries.length / (config.pageSize || 4)))} management slide(s)
+            </span>
+          ) : null}
+        </div>
         <button
           type="button"
           onClick={(event) => {
             event.stopPropagation();
             addEntry();
           }}
-          className="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-white px-2 text-[11px] font-bold text-[#476E2C] transition hover:bg-[#EEF6E0]"
+          className="inline-flex h-8 shrink-0 items-center gap-1 rounded-md bg-[#476E2C] px-2.5 text-[11px] font-bold text-white transition hover:bg-[#365522]"
         >
           <Plus size={12} />
           {config.addLabel || "Add"}
@@ -3380,53 +3794,106 @@ function RepeatableFieldControl({
       </div>
 
       <div className="space-y-2">
-        {entries.map((entry, entryIndex) => (
-          <div key={entryIndex} className="rounded-md border border-border bg-[#FAFBFC] p-2">
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <span className="text-[11px] font-bold text-[#050505]">
-                {field.fieldKind === "shareholders" ? `Shareholder ${entryIndex + 1}` : `Milestone ${entryIndex + 1}`}
-              </span>
-              {entries.length > 1 && (
+        {entries.map((entry, entryIndex) => {
+          const isPerson = field.fieldKind === "people";
+          const expanded = !isPerson || expandedEntryIndex === entryIndex;
+          const entryLabel = field.fieldKind === "shareholders"
+            ? `Shareholder ${entryIndex + 1}`
+            : isPerson
+              ? `Person ${entryIndex + 1}`
+              : field.fieldKind === "offerings"
+                ? `Product / service ${entryIndex + 1}`
+                : `Milestone ${entryIndex + 1}`;
+
+          return (
+            <div
+              key={entryIndex}
+              className={`overflow-hidden rounded-lg border transition ${expanded ? "border-[#BFD99B] bg-[#F9FCF5]" : "border-border bg-white"}`}
+            >
+              <div className="flex min-h-11 items-center justify-between gap-2 px-3 py-2">
                 <button
                   type="button"
                   onClick={(event) => {
                     event.stopPropagation();
-                    removeEntry(entryIndex);
+                    if (isPerson) setExpandedEntryIndex(entryIndex);
+                    if (config.pageSize) {
+                      onRepeatablePageChange?.(field.slideNumber, Math.floor(entryIndex / config.pageSize));
+                    }
                   }}
-                  className="inline-flex h-6 items-center gap-1 rounded-md border border-border bg-white px-2 text-[10px] font-bold text-[#6D6E71] transition hover:border-red-200 hover:bg-red-50 hover:text-red-600"
+                  className="flex min-w-0 flex-1 items-center gap-2 text-left"
                 >
-                  <Trash2 size={11} />
-                  Remove
-                </button>
-              )}
-            </div>
-            <div className={field.fieldKind === "shareholders" ? "grid gap-2 md:grid-cols-[minmax(0,1fr)_96px_minmax(0,1fr)]" : "grid gap-2 md:grid-cols-[110px_minmax(0,1fr)]"}>
-              {entryFields.map((entryField) => (
-                <label key={entryField.key} className="block">
-                  <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.05em] text-[#6D6E71]">
-                    {entryField.label}
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#E6F3D3] text-[11px] font-extrabold text-[#476E2C]">
+                    {entryIndex + 1}
                   </span>
-                  {entryField.key === "description" || entryField.key === "role" ? (
-                    <textarea
-                      value={entry[entryField.key] || ""}
-                      onChange={(event) => updateEntry(entryIndex, entryField.key, event.target.value)}
-                      placeholder={entryField.placeholder || ""}
-                      className="min-h-[52px] w-full resize-y rounded-md border border-border bg-white px-2 py-1.5 text-[12px] leading-snug text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20"
-                      spellCheck={false}
-                    />
+                  <span className="min-w-0">
+                    <span className="block truncate text-[12px] font-bold text-[#050505]">
+                      {normalizeText(entry.name) || entryLabel}
+                    </span>
+                    {isPerson ? (
+                      <span className="block truncate text-[10px] font-semibold text-[#8A8F98]">
+                        {normalizeText(entry.title) || `Management slide ${Math.floor(entryIndex / (config.pageSize || 4)) + 1}`}
+                      </span>
+                    ) : null}
+                  </span>
+                </button>
+                {(entries.length > 1 || hasRepeatableEntryValue(entry)) ? (
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      removeEntry(entryIndex);
+                    }}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[#A5A5A5] transition hover:bg-red-50 hover:text-red-600"
+                    aria-label={`Remove ${entryLabel}`}
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                ) : null}
+              </div>
+
+              {expanded ? (
+                <div className="space-y-3 border-t border-[#DDEBCB] p-3">
+                  {isPerson ? (
+                    <>
+                      {entryFields.filter((entryField) => entryField.inputType === "asset").map((entryField) => (
+                        <div key={entryField.key}>{renderEntryInput(entry, entryIndex, entryField)}</div>
+                      ))}
+                      <div className="grid gap-3">
+                        {entryFields.filter((entryField) => !["asset", "textarea"].includes(entryField.inputType || "") && entryField.key !== "bio").map((entryField) => (
+                          <label key={entryField.key} className="block">
+                            <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.05em] text-[#6D6E71]">
+                              {entryField.label}
+                            </span>
+                            {renderEntryInput(entry, entryIndex, entryField)}
+                          </label>
+                        ))}
+                      </div>
+                      {entryFields.filter((entryField) => entryField.key === "bio").map((entryField) => (
+                        <label key={entryField.key} className="block">
+                          <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.05em] text-[#6D6E71]">
+                            {entryField.label}
+                          </span>
+                          {renderEntryInput(entry, entryIndex, entryField)}
+                        </label>
+                      ))}
+                    </>
                   ) : (
-                    <input
-                      value={entry[entryField.key] || ""}
-                      onChange={(event) => updateEntry(entryIndex, entryField.key, event.target.value)}
-                      placeholder={entryField.placeholder || ""}
-                      className="h-9 w-full rounded-md border border-border bg-white px-2 text-[12px] text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20"
-                    />
+                    <div className={field.fieldKind === "shareholders" ? "grid gap-2 md:grid-cols-[minmax(0,1fr)_96px_minmax(0,1fr)]" : "grid gap-2 md:grid-cols-[110px_minmax(0,1fr)]"}>
+                      {entryFields.map((entryField) => (
+                        <label key={entryField.key} className="block">
+                          <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.05em] text-[#6D6E71]">
+                            {entryField.label}
+                          </span>
+                          {renderEntryInput(entry, entryIndex, entryField)}
+                        </label>
+                      ))}
+                    </div>
                   )}
-                </label>
-              ))}
+                </div>
+              ) : null}
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       <QuestionnaireFieldActions
@@ -3505,6 +3972,7 @@ function QuestionnaireFieldActions({ field, item, onToggle, onPromptChange }) {
 
 function FieldPanel({
   activeSlide,
+  activeSlideInstance = 0,
   fields,
   fieldValues,
   assetValues,
@@ -3514,6 +3982,7 @@ function FieldPanel({
   activeFieldId,
   onFieldFocus,
   onFieldChange,
+  onRepeatablePageChange,
   onAssetUpload,
   onAssetRemove,
   onChartChange,
@@ -3526,7 +3995,9 @@ function FieldPanel({
   return (
     <div className="rounded-lg border border-border bg-white p-4 shadow-card">
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-bold text-[#050505]">Slide {activeSlide} Fields</h3>
+        <h3 className="text-sm font-bold text-[#050505]">
+          Slide {activeSlide}{activeSlideInstance > 0 ? `.${activeSlideInstance + 1}` : ""} Fields
+        </h3>
         <span
           className="rounded-md bg-[#EEF6E0] px-2 py-1 text-[11px] font-bold text-[#476E2C]"
           title={`${filledFieldCount} fields with data out of ${editableFields.length}`}
@@ -3581,6 +4052,7 @@ function FieldPanel({
                   active={activeFieldId === field.id}
                   onFieldFocus={onFieldFocus}
                   onFieldChange={onFieldChange}
+                  onRepeatablePageChange={onRepeatablePageChange}
                   questionnaireItem={questionnaireItem}
                   onQuestionnaireToggle={onQuestionnaireToggle}
                   onQuestionPromptChange={onQuestionPromptChange}
@@ -3640,7 +4112,6 @@ function FieldPanel({
 }
 
 function FinancialAutofillModal({
-  open,
   initialRange,
   loading,
   onClose,
@@ -3648,13 +4119,9 @@ function FinancialAutofillModal({
 }) {
   const [range, setRange] = useState(initialRange || getDefaultFinancialAutofillRange());
 
-  useEffect(() => {
-    if (open) setRange(initialRange || getDefaultFinancialAutofillRange());
-  }, [initialRange, open]);
-
-  if (!open) return null;
-
   const valid = isValidFinancialAutofillRange(range);
+  const rangeError = getFinancialAutofillRangeError(range);
+  const trailingRange = getTrailingTwelveMonthRange(range);
 
   const handleSubmit = (event) => {
     event.preventDefault();
@@ -3676,7 +4143,7 @@ function FinancialAutofillModal({
             <div>
               <h2 className="text-base font-bold text-[#050505]">Select Financial Year Range</h2>
               <p className="mt-1 text-sm leading-relaxed text-[#6D6E71]">
-                Current-year CIM financial fields will use this date range.
+                Choose up to five years for CIM financial analysis. Company-history fields remain independent.
               </p>
             </div>
           </div>
@@ -3691,6 +4158,37 @@ function FinancialAutofillModal({
         </div>
 
         <div className="space-y-4 px-5 py-5">
+          <label className="block">
+            <span className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.06em] text-[#6D6E71]">
+              Company operating since
+            </span>
+            <input
+              type="date"
+              value={range.companyStartDate || ""}
+              onChange={(event) => setRange((previous) => ({ ...previous, companyStartDate: event.target.value }))}
+              className="h-11 w-full rounded-md border border-border bg-white px-3 text-sm font-semibold text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20"
+              disabled={loading}
+            />
+            <span className="mt-1 block text-xs text-[#6D6E71]">
+              Used for company history and all-time operating information, not to limit the financial tables.
+            </span>
+          </label>
+
+          <label className="block">
+            <span className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.06em] text-[#6D6E71]">
+              Reporting year
+            </span>
+            <select
+              value={range.periodType || "calendar"}
+              onChange={(event) => setRange((previous) => convertFinancialRangePeriodType(previous, event.target.value))}
+              className="h-11 w-full rounded-md border border-border bg-white px-3 text-sm font-semibold text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20"
+              disabled={loading}
+            >
+              <option value="calendar">Calendar year (Jan 1 - Dec 31)</option>
+              <option value="fiscal">Fiscal year (Apr 1 - Mar 31)</option>
+            </select>
+          </label>
+
           <div className="grid gap-4 sm:grid-cols-2">
             <label className="block">
               <span className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.06em] text-[#6D6E71]">
@@ -3722,12 +4220,14 @@ function FinancialAutofillModal({
 
           {!valid && (
             <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">
-              Select a valid range where the from date is before the to date.
+              {rangeError}
             </p>
           )}
 
           <div className="rounded-md border border-[#DDEBCB] bg-[#F8FCF3] px-3 py-2 text-sm text-[#476E2C]">
-            This will overwrite financial auto-fill fields for {getFinancialAutofillRangeLabel(range)}.
+            Financial tables will use {getFinancialAutofillRangeLabel(range)} (maximum five years).
+            {valid ? ` Last financial year: ${getLastFinancialYearLabel(range)}.` : ""}
+            {trailingRange ? ` T12M will run from ${formatAutoFillDate(trailingRange.startDate, "short")} through ${formatAutoFillDate(trailingRange.endDate, "short")}.` : ""}
           </div>
         </div>
 
@@ -3874,9 +4374,12 @@ function PreviewModal({
 }) {
   if (!open) return null;
 
-  const activeSlide = PREVIEW_SLIDES[previewSlideIndex] || PREVIEW_SLIDES[0];
+  const previewSlides = buildCimExportSlides(fieldValues);
+  const activeSlideRef = previewSlides[previewSlideIndex] || previewSlides[0];
+  const activeSlide = activeSlideRef?.sourceSlideNumber || 1;
+  const activeFieldValues = getFieldValuesForExportSlide(fieldValues, activeSlideRef);
   const prevDisabled = previewSlideIndex <= 0;
-  const nextDisabled = previewSlideIndex >= PREVIEW_SLIDES.length - 1;
+  const nextDisabled = previewSlideIndex >= previewSlides.length - 1;
 
   return (
     <div className="fixed inset-0 z-[99999] bg-[#111827]/70 p-4 backdrop-blur-sm">
@@ -3887,7 +4390,7 @@ function PreviewModal({
             <div>
               <h2 className="text-sm font-bold text-[#050505]">PPT Preview</h2>
               <p className="text-xs text-[#6D6E71]">
-                Slide {previewSlideIndex + 1} of {PREVIEW_SLIDES.length}
+                Slide {previewSlideIndex + 1} of {previewSlides.length}
               </p>
             </div>
           </div>
@@ -3902,9 +4405,12 @@ function PreviewModal({
         <div className="grid min-h-0 flex-1 gap-4 p-4 lg:grid-cols-[180px_minmax(0,1fr)]">
           <div className="hidden overflow-y-auto rounded-lg border border-border bg-white p-2 lg:block">
             <div className="space-y-2">
-              {PREVIEW_SLIDES.map((slideNumber, index) => (
+              {previewSlides.map((slideRef, index) => {
+                const slideNumber = slideRef.sourceSlideNumber;
+                const scopedFieldValues = getFieldValuesForExportSlide(fieldValues, slideRef);
+                return (
                 <button
-                  key={slideNumber}
+                  key={`${slideNumber}-${slideRef.instanceIndex}`}
                   onClick={() => onSlideIndexChange(index)}
                   className={`block w-full overflow-hidden rounded-md border text-left transition ${
                     index === previewSlideIndex
@@ -3915,9 +4421,10 @@ function PreviewModal({
                   <div className="pointer-events-none">
                     <SlideCanvas
                       slideNumber={slideNumber}
+                      displaySlideNumber={index + 1}
                       layout={layouts[slideNumber]}
                       fields={fieldsBySlide[slideNumber] || []}
-                      fieldValues={fieldValues}
+                      fieldValues={scopedFieldValues}
                       assetValues={assetValues}
                       chartValues={chartValues}
                       globalDetails={globalDetails}
@@ -3925,7 +4432,8 @@ function PreviewModal({
                     />
                   </div>
                 </button>
-              ))}
+                );
+              })}
             </div>
           </div>
 
@@ -3933,9 +4441,10 @@ function PreviewModal({
             <div className="min-h-0 flex-1 overflow-auto">
               <SlideCanvas
                 slideNumber={activeSlide}
+                displaySlideNumber={previewSlideIndex + 1}
                 layout={layouts[activeSlide]}
                 fields={fieldsBySlide[activeSlide] || []}
-                fieldValues={fieldValues}
+                fieldValues={activeFieldValues}
                 assetValues={assetValues}
                 chartValues={chartValues}
                 globalDetails={globalDetails}
@@ -3953,7 +4462,7 @@ function PreviewModal({
               </button>
               <button
                 onClick={() =>
-                  onSlideIndexChange(Math.min(PREVIEW_SLIDES.length - 1, previewSlideIndex + 1))
+                  onSlideIndexChange(Math.min(previewSlides.length - 1, previewSlideIndex + 1))
                 }
                 disabled={nextDisabled}
                 className="theme-btn-secondary disabled:cursor-not-allowed disabled:opacity-50"
@@ -4416,6 +4925,7 @@ export default function WorkspaceCimPrep() {
   });
   const [activeSectionId, setActiveSectionId] = useState(BASIC_DETAILS_SECTION.id);
   const [activeSlide, setActiveSlide] = useState(BASIC_DETAILS_SECTION.slides[0]);
+  const [activeSlideInstance, setActiveSlideInstance] = useState(0);
   const [activeFieldId, setActiveFieldId] = useState("");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -4445,6 +4955,18 @@ export default function WorkspaceCimPrep() {
   const activeSection = useMemo(
     () => NAV_SECTIONS.find((section) => section.id === activeSectionId) || BASIC_DETAILS_SECTION,
     [activeSectionId],
+  );
+  const activeSectionSlideRefs = useMemo(
+    () => getEditorSlideRefs(activeSection.slides, fieldValues),
+    [activeSection.slides, fieldValues],
+  );
+  const activeSlideRef = useMemo(() => ({
+    sourceSlideNumber: activeSlide,
+    instanceIndex: activeSlideInstance,
+  }), [activeSlide, activeSlideInstance]);
+  const activeCanvasFieldValues = useMemo(
+    () => getFieldValuesForEditorSlide(fieldValues, activeSlideRef),
+    [activeSlideRef, fieldValues],
   );
   const advisorDefaults = useMemo(() => getBrokerAdvisorDefaults(user), [user]);
   const effectiveGlobalDetails = useMemo(() => ({
@@ -4485,23 +5007,6 @@ export default function WorkspaceCimPrep() {
       cancelled = true;
     };
   }, [clientId]);
-
-  useEffect(() => {
-    if (loading) return;
-
-    const copyrightField = (fieldsBySlide[38] || []).find((field) =>
-      field.order === 11 && getFieldTokenIndex(field) === 0,
-    );
-    if (!copyrightField) return;
-
-    const fieldId = copyrightField.valueFieldId || copyrightField.id;
-    const currentYear = String(new Date().getFullYear());
-    setFieldValues((previous) =>
-      previous[fieldId] === currentYear
-        ? previous
-        : { ...previous, [fieldId]: currentYear },
-    );
-  }, [fieldsBySlide, loading]);
 
   useEffect(() => {
     let cancelled = false;
@@ -4763,7 +5268,17 @@ export default function WorkspaceCimPrep() {
     const nextSection = NAV_SECTIONS.find((section) => section.id === sectionId) || BASIC_DETAILS_SECTION;
     setActiveSectionId(sectionId);
     setActiveSlide(nextSection.slides[0] || null);
+    setActiveSlideInstance(0);
     setActiveFieldId("");
+  }, []);
+
+  const handleRepeatablePageChange = useCallback((slideNumber, instanceIndex) => {
+    setActiveSlide(slideNumber);
+    setActiveSlideInstance(Math.max(0, Number(instanceIndex || 0)));
+    setActiveFieldId(makeRepeatableFieldId(
+      slideNumber,
+      slideNumber === 15 ? "management-team" : "offerings",
+    ));
   }, []);
 
   const handleGlobalChange = useCallback((key, value) => {
@@ -4956,6 +5471,7 @@ export default function WorkspaceCimPrep() {
       handleGlobalChange(key, item.clientNote);
       setActiveSectionId(BASIC_DETAILS_SECTION.id);
       setActiveSlide(item.slideNumber || 1);
+      setActiveSlideInstance(0);
       showToast({
         type: "success",
         title: "Client Note Added",
@@ -4966,6 +5482,7 @@ export default function WorkspaceCimPrep() {
     setFieldValues((previous) => ({ ...previous, [item.fieldId]: item.clientNote }));
     setActiveSectionId(item.sectionId || BASIC_DETAILS_SECTION.id);
     setActiveSlide(item.slideNumber);
+    setActiveSlideInstance(0);
     setActiveFieldId(item.fieldId);
     showToast({
       type: "success",
@@ -4988,6 +5505,7 @@ export default function WorkspaceCimPrep() {
     }));
     setActiveSectionId(item.sectionId || BASIC_DETAILS_SECTION.id);
     setActiveSlide(item.slideNumber);
+    setActiveSlideInstance(0);
     setActiveFieldId(item.fieldId || "");
     showToast({
       type: "success",
@@ -5006,14 +5524,19 @@ export default function WorkspaceCimPrep() {
     });
   }, [showToast]);
 
-  const getExportElementContent = useCallback((slideNumber, element) => {
+  const getExportElementContent = useCallback((slideRef, element) => {
+    const slideNumber = slideRef?.sourceSlideNumber || slideRef;
     const fieldsForSlide = fieldsBySlide[slideNumber] || [];
     const fieldsById = Object.fromEntries(fieldsForSlide.map((field) => [field.id, field]));
+    const exportFieldValues = getFieldValuesForExportSlide(fieldValues, slideRef);
+    if (shouldHideUnusedManagementSlot(slideNumber, element, exportFieldValues)) {
+      return { kind: "hidden" };
+    }
     return getElementContent(
       slideNumber,
       element,
       fieldsById,
-      fieldValues,
+      exportFieldValues,
       assetValues,
       chartValues,
       effectiveGlobalDetails,
@@ -5093,9 +5616,10 @@ export default function WorkspaceCimPrep() {
     const baseName = sanitizeFileName(
       effectiveGlobalDetails.projectName || effectiveGlobalDetails.companyLegalName || company?.name || "cim-prep",
     );
+    const exportSlides = buildCimExportSlides(fieldValues);
     exportCimPptx({
       layouts,
-      slideNumbers: PREVIEW_SLIDES,
+      slideNumbers: exportSlides,
       getElementContent: getExportElementContent,
       filename: `${baseName}-CIM.pptx`,
     });
@@ -5108,6 +5632,7 @@ export default function WorkspaceCimPrep() {
     company?.name,
     effectiveGlobalDetails,
     financialAutofillState.validation,
+    fieldValues,
     getExportElementContent,
     layouts,
     showToast,
@@ -5234,24 +5759,33 @@ export default function WorkspaceCimPrep() {
                 </p>
               </div>
 
-              {activeSection.slides.length > 0 && (
+              {activeSectionSlideRefs.length > 0 && (
                 <div className="flex gap-2 overflow-x-auto pb-1">
-                  {activeSection.slides.map((slideNumber) => (
+                  {activeSectionSlideRefs.map((slideRef) => {
+                    const slideNumber = slideRef.sourceSlideNumber;
+                    const instanceIndex = slideRef.instanceIndex || 0;
+                    const selected = activeSlide === slideNumber && activeSlideInstance === instanceIndex;
+                    return (
                     <button
-                      key={slideNumber}
+                      key={`${slideNumber}-${instanceIndex}`}
                       onClick={() => {
                         setActiveSlide(slideNumber);
+                        setActiveSlideInstance(instanceIndex);
                         setActiveFieldId("");
                       }}
                       className={`shrink-0 rounded-md border px-3 py-2 text-xs font-bold transition ${
-                        activeSlide === slideNumber
+                        selected
                           ? "border-[#8BC53D] bg-[#EEF6E0] text-[#476E2C]"
                           : "border-border bg-white text-[#6D6E71] hover:border-[#8BC53D]/60"
                       }`}
                     >
-                      Slide {slideNumber}
+                      Slide {slideNumber}{instanceIndex > 0 ? `.${instanceIndex + 1}` : ""}
+                      {instanceIndex > 0 ? (
+                        <span className="ml-1 rounded bg-[#476E2C] px-1 py-0.5 text-[9px] text-white">CONT.</span>
+                      ) : null}
                     </button>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -5266,9 +5800,10 @@ export default function WorkspaceCimPrep() {
             ) : (
               <SlideCanvas
                 slideNumber={activeSlide}
+                displaySlideNumber={activeSlideInstance > 0 ? `${activeSlide}.${activeSlideInstance + 1}` : activeSlide}
                 layout={layouts[activeSlide]}
                 fields={activeFields}
-                fieldValues={fieldValues}
+                fieldValues={activeCanvasFieldValues}
                 assetValues={assetValues}
                 chartValues={chartValues}
                 globalDetails={effectiveGlobalDetails}
@@ -5291,6 +5826,7 @@ export default function WorkspaceCimPrep() {
           )}
           <FieldPanel
             activeSlide={activeSlide}
+            activeSlideInstance={activeSlideInstance}
             fields={activeFields}
             fieldValues={fieldValues}
             assetValues={assetValues}
@@ -5300,6 +5836,7 @@ export default function WorkspaceCimPrep() {
             activeFieldId={activeFieldId}
             onFieldFocus={setActiveFieldId}
             onFieldChange={handleFieldChange}
+            onRepeatablePageChange={handleRepeatablePageChange}
             onAssetUpload={handleAssetUpload}
             onAssetRemove={handleAssetRemove}
             onChartChange={handleChartChange}
@@ -5323,13 +5860,14 @@ export default function WorkspaceCimPrep() {
         />
       )}
 
-      <FinancialAutofillModal
-        open={financialAutofillModalOpen}
-        initialRange={financialAutofillRange}
-        loading={financialAutofillState.loading}
-        onClose={() => setFinancialAutofillModalOpen(false)}
-        onConfirm={handleConfirmFinancialAutofill}
-      />
+      {financialAutofillModalOpen ? (
+        <FinancialAutofillModal
+          initialRange={financialAutofillRange}
+          loading={financialAutofillState.loading}
+          onClose={() => setFinancialAutofillModalOpen(false)}
+          onConfirm={handleConfirmFinancialAutofill}
+        />
+      ) : null}
 
       <FinancialAutofillProgressOverlay state={financialAutofillState} />
 
