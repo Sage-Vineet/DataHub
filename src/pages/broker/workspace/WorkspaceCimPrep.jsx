@@ -3710,12 +3710,12 @@ function RepeatableFieldControl({
           </div>
           <div className="min-w-0 flex-1">
             <p className="truncate text-[11px] font-semibold text-[#6D6E71]">
-              {asset?.name || "PNG or JPG headshot"}
+              {asset?.name || (entryField.key === "image" ? "PNG or JPG logo" : "PNG or JPG headshot")}
             </p>
             <div className="mt-2 flex flex-wrap gap-1.5">
               <label className="inline-flex cursor-pointer items-center gap-1 rounded-md bg-[#EEF6E0] px-2 py-1.5 text-[11px] font-bold text-[#476E2C] transition hover:bg-[#DDEBCB]">
                 <Upload size={12} />
-                {asset?.dataUrl ? "Replace" : "Upload photo"}
+                {asset?.dataUrl ? "Replace" : entryField.key === "image" ? "Upload logo" : "Upload photo"}
                 <input
                   type="file"
                   accept="image/png,image/jpeg"
@@ -3778,6 +3778,10 @@ function RepeatableFieldControl({
             <span className="mt-0.5 block text-[11px] font-semibold text-[#8A8F98]">
               {entries.filter(hasRepeatableEntryValue).length} added · {Math.max(1, Math.ceil(entries.length / (config.pageSize || 4)))} management slide(s)
             </span>
+          ) : field.fieldKind === "offerings" ? (
+            <span className="mt-0.5 block text-[11px] font-semibold text-[#8A8F98]">
+              {entries.filter(hasRepeatableEntryValue).length} added · {Math.max(1, Math.ceil(entries.length / (config.pageSize || 3)))} product slide(s)
+            </span>
           ) : null}
         </div>
         <button
@@ -3796,7 +3800,8 @@ function RepeatableFieldControl({
       <div className="space-y-2">
         {entries.map((entry, entryIndex) => {
           const isPerson = field.fieldKind === "people";
-          const expanded = !isPerson || expandedEntryIndex === entryIndex;
+          const isOffering = field.fieldKind === "offerings";
+          const expanded = (!isPerson && !isOffering) || expandedEntryIndex === entryIndex;
           const entryLabel = field.fieldKind === "shareholders"
             ? `Shareholder ${entryIndex + 1}`
             : isPerson
@@ -3815,7 +3820,7 @@ function RepeatableFieldControl({
                   type="button"
                   onClick={(event) => {
                     event.stopPropagation();
-                    if (isPerson) setExpandedEntryIndex(entryIndex);
+                    if (isPerson || isOffering) setExpandedEntryIndex(entryIndex);
                     if (config.pageSize) {
                       onRepeatablePageChange?.(field.slideNumber, Math.floor(entryIndex / config.pageSize));
                     }
@@ -3832,6 +3837,10 @@ function RepeatableFieldControl({
                     {isPerson ? (
                       <span className="block truncate text-[10px] font-semibold text-[#8A8F98]">
                         {normalizeText(entry.title) || `Management slide ${Math.floor(entryIndex / (config.pageSize || 4)) + 1}`}
+                      </span>
+                    ) : isOffering ? (
+                      <span className="block truncate text-[10px] font-semibold text-[#8A8F98]">
+                        {normalizeText(entry.category) || `Product slide ${Math.floor(entryIndex / (config.pageSize || 3)) + 1}`}
                       </span>
                     ) : null}
                   </span>
@@ -3869,6 +3878,30 @@ function RepeatableFieldControl({
                         ))}
                       </div>
                       {entryFields.filter((entryField) => entryField.key === "bio").map((entryField) => (
+                        <label key={entryField.key} className="block">
+                          <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.05em] text-[#6D6E71]">
+                            {entryField.label}
+                          </span>
+                          {renderEntryInput(entry, entryIndex, entryField)}
+                        </label>
+                      ))}
+                    </>
+                  ) : isOffering ? (
+                    <>
+                      {entryFields.filter((entryField) => entryField.inputType === "asset").map((entryField) => (
+                        <div key={entryField.key}>{renderEntryInput(entry, entryIndex, entryField)}</div>
+                      ))}
+                      <div className="grid gap-3 md:grid-cols-2">
+                        {entryFields.filter((entryField) => !["asset"].includes(entryField.inputType || "") && entryField.inputType !== "textarea" && entryField.key !== "description").map((entryField) => (
+                          <label key={entryField.key} className="block">
+                            <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.05em] text-[#6D6E71]">
+                              {entryField.label}
+                            </span>
+                            {renderEntryInput(entry, entryIndex, entryField)}
+                          </label>
+                        ))}
+                      </div>
+                      {entryFields.filter((entryField) => entryField.key === "description" || entryField.inputType === "textarea").map((entryField) => (
                         <label key={entryField.key} className="block">
                           <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.05em] text-[#6D6E71]">
                             {entryField.label}
