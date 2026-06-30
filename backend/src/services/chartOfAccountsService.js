@@ -195,7 +195,7 @@ async function collectBsAccounts(companyId, batchId) {
 async function collectGlAccountsFromEntries(companyId, versionId) {
   return fetchAllRows(() =>
     supabase.from("general_ledger_entries")
-      .select("distribution_account, split_account, account_section, fiscal_year")
+      .select("distribution_account, split_account, account_section, fiscal_year, account_name, account_number")
       .eq("company_id", companyId).eq("version_id", versionId)
       .order("id", { ascending: true }),
   );
@@ -290,10 +290,13 @@ function buildCoaModel(glRows, bsRows, plRows) {
     addLeaf(r.account_name, r.account_number || null, r.account_type || null, "profit_loss", r.fiscal_year, "profit_loss_type");
   }
   for (const r of glRows || []) {
-    // GL has no account_number/account_name columns; extract from distribution_account.
-    // GL is an enrichment source — addLeaf merges into existing BS/PL accounts where possible.
-    const name = r.distribution_account || r.account_section || "";
-    addLeaf(name, null, null, "general_ledger", r.fiscal_year, "gl_type");
+    const name = r.distribution_account || r.account_section || r.account_name || "";
+    if (name) {
+      addLeaf(name, r.account_number || null, null, "general_ledger", r.fiscal_year, "gl_type");
+    }
+    if (r.split_account && !isNonAccountRow(r.split_account)) {
+      addLeaf(r.split_account, null, null, "general_ledger", r.fiscal_year, "gl_type");
+    }
   }
 
   const groups = Object.entries(GROUP_DEFS)
@@ -399,6 +402,13 @@ const TYPE_ORDER = Object.freeze({ income: 1, expense: 2, cogs: 3, asset: 4, lia
 
 function systemIdPrefix(accountType) {
   return SYSTEM_ID_PREFIX[accountType] || "ACC";
+}
+
+function normalBalanceFor(accountType) {
+  const t = String(accountType || "").trim().toLowerCase();
+  if (t === "asset" || t === "expense" || t === "cogs") return "debit";
+  if (t === "liability" || t === "equity" || t === "revenue" || t === "income") return "credit";
+  return "debit";
 }
 
 /**
@@ -613,7 +623,7 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
   // 2) Load existing rows so we can preserve ids, originals, and adjustments.
   const { data: existingData, error: exErr } = await supabase
     .from(TABLE_COA)
-    .select("id, system_id, account_number, account_name, parent_account_id, original_name, original_hierarchy, adjusted_name, adjusted_hierarchy, metadata, classification_method, account_type, statement_type, level_1, level_2, level_3, level_4, level_5, level_6, level_7, level_8, level_9, level_10, level_11, level_12, level_13, level_14, level_15, base_account")
+    .select("id, system_id, normal_balance, account_number, account_name, parent_account_id, original_name, original_hierarchy, adjusted_name, adjusted_hierarchy, metadata, classification_method, account_type, statement_type, level_1, level_2, level_3, level_4, level_5, level_6, level_7, level_8, level_9, level_10, level_11, level_12, level_13, level_14, level_15, base_account")
     .eq("version_id", versionId);
   if (exErr) throw exErr;
   // Category (is_group) rows form the parent_account_id tree; leaves are the real
@@ -668,6 +678,7 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
         parent_account_id: parentAccountId,
         account_type: leaf.accountType,
         statement_type: leaf.statementType,
+        normal_balance: normalBalanceFor(leaf.accountType),
         is_active: true,
         sort_order: sortCounter,
         ...levelsToColumns(aiLevels),
@@ -692,6 +703,7 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
       system_id: existing.system_id || systemId,
       account_type: userModified ? existing.account_type : leaf.accountType,
       statement_type: userModified ? existing.statement_type : leaf.statementType,
+      normal_balance: existing.normal_balance || normalBalanceFor(userModified ? existing.account_type : leaf.accountType),
       sort_order: sortCounter,
       // original stays as first-seen; only backfill if it was never set.
       original_name: existing.original_name || leaf.displayName,
@@ -775,6 +787,7 @@ function mapRow(row) {
     accountIdName: row.account_id_name,
     accountType: row.account_type,
     statementType: row.statement_type,
+    normalBalance: row.normal_balance,
     parentAccountId: row.parent_account_id,
     isActive: row.is_active,
     sortOrder: row.sort_order,
@@ -1189,6 +1202,133 @@ async function validateChartOfAccounts(companyId, versionId) {
   return { summary: { accountCount: all.length, leafCount: leaves.length, status, ...reports }, reports, rows };
 }
 
+async function ensureAccountExistsInCoa(versionId, companyId, accountName, accountNumber = null, explicitType = null) {
+  if (!versionId || !companyId || !accountName) return null;
+  const normalizedName = String(accountName).trim();
+  const normalizedNumber = accountNumber ? String(accountNumber).trim() : null;
+
+  // Check if account already exists
+  const { data: existing, error: findErr } = await supabase
+    .from(TABLE_COA)
+    .select("id")
+    .eq("version_id", versionId)
+    .eq("account_name", normalizedName)
+    .eq("account_number", normalizedNumber)
+    .maybeSingle();
+
+  if (findErr) {
+    console.error(`[ChartOfAccounts][ensureExists] Find error: ${findErr.message}`);
+  }
+  if (existing) return existing.id;
+
+  // It doesn't exist, let's insert it!
+  console.log(`[ChartOfAccounts][ensureExists] Dynamically inserting account: "${normalizedName}" (num: ${normalizedNumber || 'none'})`);
+  const type = explicitType || inferAccountType(normalizedName, normalizedNumber || "");
+  const stmtType = statementTypeFor(type);
+  const normalBalance = normalBalanceFor(type);
+
+  const { levels, standardizedDepth } = classifyStandardized({
+    accountName: normalizedName,
+    accountNumber: normalizedNumber,
+    accountType: type,
+    statementType: stmtType,
+  });
+
+  const { levels: finalLevels, hierarchyPath } = buildLevelsFromPath(
+    levels, standardizedDepth, [], normalizedName
+  );
+
+  const aiSnapshot = hierarchySnapshot(finalLevels, type, stmtType, normalizedName);
+  const accountIdName = normalizedNumber ? `${normalizedNumber} — ${normalizedName}` : normalizedName;
+
+  // Sync category nodes for the levels and get parent_account_id
+  const cats = buildDesiredCategories([{ levels: finalLevels, accountType: type, statementType: stmtType }]);
+  let parentAccountId = null;
+  try {
+    const { data: existingCats } = await supabase
+      .from(TABLE_COA)
+      .select("id, parent_account_id, metadata")
+      .eq("version_id", versionId);
+    const existingCatsData = (existingCats || []).filter((r) => r.metadata?.is_group);
+    const catIdByPath = await syncCategoryNodes(versionId, companyId, existingCatsData, cats);
+    parentAccountId = catIdByPath.get(leafCategoryKey(finalLevels)) || null;
+  } catch (catErr) {
+    console.warn(`[ChartOfAccounts][ensureExists] Category sync error: ${catErr.message}`);
+  }
+
+  // Find next sort_order
+  const { data: maxSort } = await supabase
+    .from(TABLE_COA)
+    .select("sort_order")
+    .eq("version_id", versionId)
+    .order("sort_order", { ascending: false })
+    .limit(1);
+  const sortCounter = ((maxSort?.[0]?.sort_order || 0) + 1);
+
+  // Determine system_id
+  const prefix = systemIdPrefix(type);
+  const { data: maxSys } = await supabase
+    .from(TABLE_COA)
+    .select("system_id")
+    .eq("version_id", versionId)
+    .like("system_id", `${prefix}-%`)
+    .order("system_id", { ascending: false })
+    .limit(1);
+  let nextNum = 1;
+  if (maxSys?.[0]?.system_id) {
+    const m = /^([A-Z]+)-(\d+)$/.exec(maxSys[0].system_id);
+    if (m) nextNum = Number(m[2]) + 1;
+  }
+  const systemId = `${prefix}-${String(nextNum).padStart(3, "0")}`;
+
+  const { data: inserted, error: insErr } = await supabase
+    .from(TABLE_COA)
+    .insert({
+      version_id: versionId,
+      company_id: companyId,
+      system_id: systemId,
+      account_number: normalizedNumber,
+      account_name: normalizedName,
+      account_id_name: accountIdName,
+      parent_account_id: parentAccountId,
+      account_type: type,
+      statement_type: stmtType,
+      normal_balance: normalBalance,
+      is_active: true,
+      sort_order: sortCounter,
+      ...levelsToColumns(finalLevels),
+      base_account: normalizedName,
+      hierarchy_path: hierarchyPath,
+      classification_method: "rule",
+      original_name: normalizedName,
+      original_hierarchy: aiSnapshot,
+      adjusted_name: normalizedName,
+      adjusted_hierarchy: aiSnapshot,
+      metadata: { is_group: false, sources: ["dynamic"], fiscal_years: [], user_modified: false },
+      audit_log: [classificationAudit("rule", aiSnapshot, "dynamic_insert", null)],
+    })
+    .select("id")
+    .single();
+
+  if (insErr) {
+    console.error(`[ChartOfAccounts][ensureExists] Insert error: ${insErr.message}`);
+    // If double insert occurred due to concurrency, try to query one more time
+    if (insErr.code === '23505') {
+      const { data: retry } = await supabase
+        .from(TABLE_COA)
+        .select("id")
+        .eq("version_id", versionId)
+        .eq("account_name", normalizedName)
+        .eq("account_number", normalizedNumber)
+        .maybeSingle();
+      if (retry) return retry.id;
+    }
+    throw insErr;
+  }
+
+  return inserted?.id || null;
+}
+
 module.exports = {
   generateChartOfAccounts,
   getChartOfAccounts,
@@ -1200,6 +1340,7 @@ module.exports = {
   getHistory,
   getHierarchyLevels,
   validateChartOfAccounts,
+  ensureAccountExistsInCoa,
   // exported for unit testing
   buildCoaModel,
   buildLeafHierarchies,

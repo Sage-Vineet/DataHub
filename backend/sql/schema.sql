@@ -684,6 +684,7 @@ CREATE TABLE IF NOT EXISTS chart_of_accounts (
   adjusted_name text,
   adjusted_hierarchy jsonb,
   system_id text,                          -- client "System ID" (migration 052) e.g. INC-001
+  normal_balance text,                     -- normal balance (debit | credit)
   audit_log jsonb NOT NULL DEFAULT '[]'::jsonb,  -- inline classification + adjustment audit (migration 055)
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),

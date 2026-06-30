@@ -2,6 +2,11 @@
 
 const { supabase } = require('../../db');
 const { buildCashFlow, generatedCfToRows } = require('../manualCashFlowService');
+const { ensureAccountExistsInCoa } = require('../chartOfAccountsService');
+const { listEbitdaAdjustments } = require('../ebitdaAdjustmentStore');
+// NOTE: financialStatementService is lazy-required inside getQoeReport / getKpiReport
+// to avoid the circular dependency: financialStatementService → keyReportReportService.
+
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -199,7 +204,7 @@ const PRIORITY_EXPENSE_KW = ['credit card charges', 'credit card fees', 'bank ch
 // but represent money owed TO the company — check these before the broader LIABILITY sweep.
 const PRIORITY_ASSET_KW = ['loans to', 'loan to'];
 
-function classifyGLAccount(name, accountType) {
+function classifyGLAccountFallback(name, accountType) {
   const t = String(accountType || '').toLowerCase();
   if (t) {
     if (/asset/.test(t)) return 'asset';
@@ -219,6 +224,61 @@ function classifyGLAccount(name, accountType) {
   if (hit(EXPENSE_KW))          return 'expense';
   if (hit(EQUITY_KW))           return 'equity';
   return 'unknown';
+}
+
+async function classifyAccountViaCoa(companyId, versionId, name, accountNumber = null) {
+  if (!name) return 'unknown';
+  const normalizedName = String(name).trim();
+  const normalizedNumber = accountNumber ? String(accountNumber).trim() : null;
+
+  // 1. Try to fetch from COA
+  const { data: coaAcc, error: coaErr } = await supabase
+    .from("chart_of_accounts")
+    .select("account_type")
+    .eq("version_id", versionId)
+    .eq("account_name", normalizedName)
+    .eq("account_number", normalizedNumber)
+    .maybeSingle();
+
+  if (coaErr) {
+    console.error(`[classifyAccountViaCoa] Error finding account in COA: ${coaErr.message}`);
+  }
+  if (coaAcc?.account_type) {
+    return coaAcc.account_type;
+  }
+
+  // 2. Try to fetch without number if number didn't match (for entries without account numbers)
+  if (normalizedNumber) {
+    const { data: coaAccNoNum } = await supabase
+      .from("chart_of_accounts")
+      .select("account_type")
+      .eq("version_id", versionId)
+      .eq("account_name", normalizedName)
+      .maybeSingle();
+    if (coaAccNoNum?.account_type) {
+      return coaAccNoNum.account_type;
+    }
+  }
+
+  // 3. Dynamically insert it
+  try {
+    const insertedId = await ensureAccountExistsInCoa(versionId, companyId, normalizedName, normalizedNumber);
+    if (insertedId) {
+      const { data: newRow } = await supabase
+        .from("chart_of_accounts")
+        .select("account_type")
+        .eq("id", insertedId)
+        .single();
+      if (newRow?.account_type) {
+        return newRow.account_type;
+      }
+    }
+  } catch (insErr) {
+    console.error(`[classifyAccountViaCoa] Dynamic insert failed for "${normalizedName}": ${insErr.message}`);
+  }
+
+  // 4. Fallback to keyword classifier as a last resort
+  return classifyGLAccountFallback(name, null);
 }
 
 /** GL account key for a row — the account this row posts to. */
@@ -268,15 +328,22 @@ async function fetchAllGLRows(versionId, year, columns, rowType = 'TRANSACTION')
 async function aggregateGLByAccount(versionId, year) {
   const rows = await fetchAllGLRows(
     versionId, year,
-    'distribution_account, split_account, amount, running_balance, row_type, fiscal_year',
+    'distribution_account, split_account, amount, running_balance, row_type, fiscal_year, account_number',
   );
+
+  const { data: version } = await supabase
+    .from("key_report_versions")
+    .select("company_id")
+    .eq("id", versionId)
+    .single();
+  const companyId = version?.company_id;
 
   const accounts = new Map();
   const unclassified = [];
   for (const row of rows) {
     const name = glAccountName(row);
     if (!name) continue;
-    const type = classifyGLAccount(name, null);
+    const type = await classifyAccountViaCoa(companyId, versionId, name, row.account_number);
     if (type === 'unknown') {
       unclassified.push({
         fiscal_year: row.fiscal_year,
@@ -302,15 +369,22 @@ async function aggregateGLByAccount(versionId, year) {
 async function aggregateGLForBSByMonth(versionId, year) {
   const rows = await fetchAllGLRows(
     versionId, year,
-    'distribution_account, split_account, amount, row_type, fiscal_year, transaction_date',
+    'distribution_account, split_account, amount, row_type, fiscal_year, transaction_date, account_number',
   );
   if (!rows.length) return null;
+
+  const { data: version } = await supabase
+    .from("key_report_versions")
+    .select("company_id")
+    .eq("id", versionId)
+    .single();
+  const companyId = version?.company_id;
 
   const plDistSeen = new Set();
   for (const row of rows) {
     const n = (row.distribution_account && String(row.distribution_account).trim()) || '';
     if (!n) continue;
-    const t = classifyGLAccount(n, null);
+    const t = await classifyAccountViaCoa(companyId, versionId, n, row.account_number);
     if (t === 'revenue' || t === 'expense') plDistSeen.add(n);
   }
 
@@ -328,8 +402,8 @@ async function aggregateGLForBSByMonth(versionId, year) {
     const distName = (row.distribution_account && String(row.distribution_account).trim()) || '';
     const splitName= (row.split_account && String(row.split_account).trim()) || '';
     const amount   = safeNum(row.amount);
-    const distType = distName ? classifyGLAccount(distName, null) : 'unknown';
-    const splitType= splitName ? classifyGLAccount(splitName, null) : 'unknown';
+    const distType = distName ? await classifyAccountViaCoa(companyId, versionId, distName, row.account_number) : 'unknown';
+    const splitType= splitName ? await classifyAccountViaCoa(companyId, versionId, splitName, null) : 'unknown';
 
     if (distType === 'asset' || distType === 'liability' || distType === 'equity') {
       if (!mData.bsMap.has(distName)) mData.bsMap.set(distName, { net: 0, type: distType });
@@ -352,15 +426,21 @@ async function aggregateGLForBSByMonth(versionId, year) {
 async function aggregateGLForBS(versionId, year) {
   const rows = await fetchAllGLRows(
     versionId, year,
-    'distribution_account, split_account, amount, running_balance, row_type, fiscal_year',
+    'distribution_account, split_account, amount, running_balance, row_type, fiscal_year, account_number',
   );
 
-  
+  const { data: version } = await supabase
+    .from("key_report_versions")
+    .select("company_id")
+    .eq("id", versionId)
+    .single();
+  const companyId = version?.company_id;
+
   const plDistSeen = new Set();
   for (const row of rows) {
     const n = (row.distribution_account && String(row.distribution_account).trim()) || '';
     if (!n) continue;
-    const t = classifyGLAccount(n, null);
+    const t = await classifyAccountViaCoa(companyId, versionId, n, row.account_number);
     if (t === 'revenue' || t === 'expense') plDistSeen.add(n);
   }
 
@@ -373,8 +453,8 @@ async function aggregateGLForBS(versionId, year) {
     const splitName = (row.split_account && String(row.split_account).trim()) || '';
     const amount = safeNum(row.amount);
 
-    const distType = distName ? classifyGLAccount(distName, null) : 'unknown';
-    const splitType = splitName ? classifyGLAccount(splitName, null) : 'unknown';
+    const distType = distName ? await classifyAccountViaCoa(companyId, versionId, distName, row.account_number) : 'unknown';
+    const splitType = splitName ? await classifyAccountViaCoa(companyId, versionId, splitName, null) : 'unknown';
 
     // ── distribution_account (primary posting account) ─────────────────────
     if (distType === 'asset') {
@@ -711,8 +791,15 @@ const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep
 async function aggregateGLByAccountMonth(versionId, year) {
   const rows = await fetchAllGLRows(
     versionId, year,
-    'distribution_account, amount, transaction_date, row_type, fiscal_year',
+    'distribution_account, amount, transaction_date, row_type, fiscal_year, account_number',
   );
+
+  const { data: version } = await supabase
+    .from("key_report_versions")
+    .select("company_id")
+    .eq("id", versionId)
+    .single();
+  const companyId = version?.company_id;
 
   const byAccount = new Map();
   const monthsPresent = new Set();
@@ -723,7 +810,8 @@ async function aggregateGLByAccountMonth(versionId, year) {
     if (!(month >= 1 && month <= 12)) continue;
     monthsPresent.add(month);
     if (!byAccount.has(name)) {
-      byAccount.set(name, { name, type: classifyGLAccount(name, null), months: new Map() });
+      const type = await classifyAccountViaCoa(companyId, versionId, name, row.account_number);
+      byAccount.set(name, { name, type, months: new Map() });
     }
     const acc = byAccount.get(name);
     acc.months.set(month, (acc.months.get(month) || 0) + glNetMovement(row));
@@ -1697,6 +1785,300 @@ async function getReconciliationReport(versionId, { year } = {}) {
   return { source: 'bs_reconciliation_entries', rows, summary };
 }
 
+// ─── QoE (Quality of Earnings) ───────────────────────────────────────────────
+
+/**
+ * GET /key-reports/versions/:versionId/reports/qoe
+ *
+ * Returns a Quality of Earnings (QoE) report for each fiscal year:
+ *   - EBITDA base (Net Income + D&A + Interest + Taxes) from GL-driven P&L
+ *   - User-entered EBITDA adjustments from `ebitda_adjustments` tables
+ *   - Adjusted EBITDA per year
+ *
+ * Adjustment values are keyed by year in `adjustment.values[year].value`.
+ */
+async function getQoeReport(versionId, { year } = {}) {
+  if (!versionId) throw new Error('versionId is required');
+
+  // Look up companyId (needed for ebitdaAdjustmentStore scope)
+  const { data: versionRow } = await supabase
+    .from('key_report_versions')
+    .select('company_id')
+    .eq('id', versionId)
+    .single();
+  const companyId = versionRow?.company_id;
+
+  // Lazy require to avoid circular dependency (financialStatementService imports this module)
+  const { generateFinancialStatements } = require('./financialStatementService');
+
+  // Fetch financial statements to derive EBITDA components per year
+  const financials = await generateFinancialStatements(versionId, {
+    year: year ? parseInt(String(year), 10) : undefined,
+  });
+
+  const plYearly = financials.reports?.profitAndLoss?.yearly || [];
+
+  // Fetch EBITDA adjustments (user-entered) scoped to this version
+  let ebitdaResult = { adjustments: [] };
+  if (companyId) {
+    try {
+      ebitdaResult = await listEbitdaAdjustments({ companyId, versionId });
+    } catch (err) {
+      console.warn('[KeyReports][QoE] Failed to load EBITDA adjustments:', err.message);
+    }
+  }
+  const adjustments = ebitdaResult.adjustments || [];
+
+  // Helper: scan expense groups for D&A / Interest / Tax by keyword
+  function sumExpenseGroupsByKeyword(groups, ...keywords) {
+    let total = 0;
+    for (const [label, grp] of Object.entries(groups || {})) {
+      const lbl = label.toLowerCase();
+      if (keywords.some(kw => lbl.includes(kw))) {
+        total += safeNum(grp.total);
+      }
+    }
+    return total;
+  }
+
+  // Build per-year QoE rows
+  const years = plYearly.map(pl => Number(pl.year));
+
+  const byYear = plYearly.map(pl => {
+    const yr    = Number(pl.year);
+    const stmt  = pl.statement || {};
+    const ni    = safeNum(stmt.netIncome);
+    const rev   = safeNum(stmt.revenue?.total);
+    const cogs  = safeNum(stmt.costOfSales?.total);
+    const gp    = safeNum(stmt.grossProfit);
+    const opExp = safeNum(stmt.operatingExpenses?.total);
+    const expGroups = stmt.operatingExpenses?.groups || {};
+
+    // D&A — look for depreciation/amortization group inside operating expenses
+    const da = sumExpenseGroupsByKeyword(expGroups,
+      'depreciation', 'amortization', 'depr', 'amort');
+
+    // Interest expense
+    const interest = sumExpenseGroupsByKeyword(expGroups,
+      'interest');
+
+    // Taxes (income tax)
+    const taxes = sumExpenseGroupsByKeyword(expGroups,
+      'income tax', 'tax expense', 'provision for tax');
+
+    const ebitda = safeNum(ni + da + interest + taxes);
+
+    // Sum adjustments for this year
+    let totalAdjustments = 0;
+    const adjDetails = [];
+    for (const adj of adjustments) {
+      if (adj.status && adj.status !== 'approved' && adj.status !== 'active') continue;
+      const yrData = adj.values?.[String(yr)];
+      const adjVal = safeNum(yrData?.value);
+      if (adjVal !== 0) {
+        totalAdjustments += adjVal;
+        adjDetails.push({
+          id: adj.id,
+          typeKey: adj.typeKey,
+          typeName: adj.type?.label || adj.typeKey,
+          name: adj.name,
+          description: adj.description,
+          amount: adjVal,
+        });
+      }
+    }
+
+    const adjustedEbitda = safeNum(ebitda + totalAdjustments);
+    const ebitdaMargin         = rev !== 0 ? Math.round((ebitda / rev) * 10000) / 100 : null;
+    const adjustedEbitdaMargin = rev !== 0 ? Math.round((adjustedEbitda / rev) * 10000) / 100 : null;
+
+    return {
+      year: yr,
+      revenue: rev,
+      costOfSales: cogs,
+      grossProfit: gp,
+      operatingExpenses: opExp,
+      netIncome: ni,
+      depreciation: da,
+      interestExpense: interest,
+      taxExpense: taxes,
+      ebitda,
+      ebitdaMargin,
+      totalAdjustments,
+      adjustments: adjDetails,
+      adjustedEbitda,
+      adjustedEbitdaMargin,
+    };
+  });
+
+  console.log(`[KeyReports][QoE] versionId=${versionId} years=[${years.join(',')}] adjustments=${adjustments.length}`);
+
+  return {
+    source: 'gl_and_ebitda_adjustments',
+    years,
+    byYear,
+    adjustmentTypes: ebitdaResult.types || [],
+  };
+}
+
+// ─── KPI Report ───────────────────────────────────────────────────────────────
+
+/**
+ * GET /key-reports/versions/:versionId/reports/kpi
+ *
+ * Returns standard KPI metrics derived from the COA-driven Balance Sheet and
+ * P&L statements (generated by financialStatementService).
+ *
+ * KPIs per fiscal year:
+ *   Liquidity   → currentRatio, workingCapital
+ *   Leverage    → debtToEquity, debtRatio
+ *   Profitability → grossMargin, netMargin, returnOnAssets, returnOnEquity
+ *   Size        → totalAssets, totalLiabilities, totalEquity, revenue
+ */
+async function getKpiReport(versionId, { year } = {}) {
+  if (!versionId) throw new Error('versionId is required');
+
+  // Lazy require to avoid circular dependency (financialStatementService imports this module)
+  const { generateFinancialStatements } = require('./financialStatementService');
+
+  const financials = await generateFinancialStatements(versionId, {
+    year: year ? parseInt(String(year), 10) : undefined,
+  });
+
+  const plYearly = financials.reports?.profitAndLoss?.yearly || [];
+  const bsYearly = financials.reports?.balanceSheet?.yearly  || [];
+
+  // Index BS by year for fast lookup
+  const bsByYear = new Map(bsYearly.map(bs => [Number(bs.year), bs]));
+
+  // Helper: safely scan account lists/groups for named buckets
+  function sumGroupsByKeyword(groups, ...keywords) {
+    let total = 0;
+    for (const [label, grp] of Object.entries(groups || {})) {
+      const lbl = label.toLowerCase();
+      if (keywords.some(kw => lbl.includes(kw))) total += safeNum(grp.total);
+    }
+    return total;
+  }
+  function sumAccountsByKeyword(accounts, ...keywords) {
+    let total = 0;
+    for (const acc of accounts || []) {
+      const nm = String(acc.name || '').toLowerCase();
+      if (keywords.some(kw => nm.includes(kw))) total += safeNum(acc.amount);
+    }
+    return total;
+  }
+
+  const years = plYearly.map(pl => Number(pl.year));
+
+  const byYear = plYearly.map(pl => {
+    const yr   = Number(pl.year);
+    const stmt = pl.statement || {};
+    const bs   = bsByYear.get(yr);
+    const bss  = bs?.statement || {};
+
+    // ── P&L metrics ──────────────────────────────────────────────────────────
+    const revenue  = safeNum(stmt.revenue?.total);
+    const cogs     = safeNum(stmt.costOfSales?.total);
+    const grossProfit = safeNum(stmt.grossProfit);
+    const netIncome   = safeNum(stmt.netIncome);
+    const opExpenses  = safeNum(stmt.operatingExpenses?.total);
+    const ebitGroups  = stmt.operatingExpenses?.groups || {};
+    const da          = sumGroupsByKeyword(ebitGroups, 'depreciation', 'amortization', 'depr', 'amort');
+    const interest    = sumGroupsByKeyword(ebitGroups, 'interest');
+    const taxes       = sumGroupsByKeyword(ebitGroups, 'income tax', 'tax expense', 'provision for tax');
+    const ebitda      = safeNum(netIncome + da + interest + taxes);
+
+    // ── Balance Sheet metrics ─────────────────────────────────────────────────
+    const totalAssets      = safeNum(bss.totalAssets);
+    const totalLiabilities = safeNum(bss.liabilities?.total);
+    const totalEquity      = safeNum(bss.equity?.total);
+
+    // Section-level totals
+    const currentAssets      = safeNum(bss.assets?.currentAssets?.total);
+    const fixedAssets        = safeNum(bss.assets?.fixedAssets?.total);
+    const otherAssets        = safeNum(bss.assets?.otherAssets?.total);
+    const currentLiabilities = safeNum(bss.liabilities?.currentLiabilities?.total);
+    const longTermLiabilities = safeNum(bss.liabilities?.longTermLiabilities?.total);
+
+    // Spot accounts: cash, A/R, inventory, A/P
+    const curAssetAccounts = [
+      ...Object.values(bss.assets?.currentAssets?.groups || {}).flatMap(g => g.accounts || []),
+      ...Object.values(bss.assets?.otherAssets?.groups  || {}).flatMap(g => g.accounts || []),
+    ];
+    const cashAndBank        = sumAccountsByKeyword(curAssetAccounts, 'cash', 'bank', 'checking', 'savings');
+    const accountsReceivable = sumAccountsByKeyword(curAssetAccounts, 'receivable');
+    const inventory          = sumAccountsByKeyword(curAssetAccounts, 'inventory');
+
+    const curLiabAccounts = Object.values(bss.liabilities?.currentLiabilities?.groups  || {}).flatMap(g => g.accounts || []);
+    const ltLiabAccounts  = Object.values(bss.liabilities?.longTermLiabilities?.groups || {}).flatMap(g => g.accounts || []);
+    const accountsPayable = sumAccountsByKeyword(curLiabAccounts, 'payable');
+    const longTermDebt    = safeNum(longTermLiabilities) ||
+      sumAccountsByKeyword(ltLiabAccounts, 'loan', 'note', 'mortgage', 'debt', 'borrowing');
+
+    // ── Computed ratios ───────────────────────────────────────────────────────
+    const pct = (v) => v !== null ? Math.round(v * 10000) / 100 : null; // to %
+    const ratio = (n, d) => d !== 0 ? Math.round((n / d) * 1000) / 1000 : null;
+
+    const currentRatio    = ratio(currentAssets, currentLiabilities);
+    const workingCapital  = safeNum(currentAssets - currentLiabilities);
+    const debtToEquity    = ratio(totalLiabilities, totalEquity);
+    const debtRatio       = ratio(totalLiabilities, totalAssets);
+    const grossMargin     = pct(ratio(grossProfit, revenue));
+    const netMargin       = pct(ratio(netIncome, revenue));
+    const ebitdaMargin    = pct(ratio(ebitda, revenue));
+    const returnOnAssets  = pct(ratio(netIncome, totalAssets));
+    const returnOnEquity  = pct(ratio(netIncome, totalEquity));
+    const assetTurnover   = ratio(revenue, totalAssets);
+
+    return {
+      year: yr,
+      // Size
+      revenue,
+      costOfSales: cogs,
+      grossProfit,
+      netIncome,
+      ebitda,
+      totalAssets,
+      totalLiabilities,
+      totalEquity,
+      // Balance Sheet sections
+      currentAssets,
+      fixedAssets,
+      otherAssets,
+      currentLiabilities,
+      longTermLiabilities,
+      // Spot accounts
+      cashAndBank,
+      accountsReceivable,
+      inventory,
+      accountsPayable,
+      longTermDebt,
+      // Ratios
+      currentRatio,
+      workingCapital,
+      debtToEquity,
+      debtRatio,
+      grossMargin,
+      netMargin,
+      ebitdaMargin,
+      returnOnAssets,
+      returnOnEquity,
+      assetTurnover,
+    };
+  });
+
+  console.log(`[KeyReports][KPI] versionId=${versionId} years=[${years.join(',')}]`);
+
+  return {
+    source: 'generated_financial_statements',
+    years,
+    byYear,
+    validation: financials.validation || [],
+    unmappedAccounts: financials.unmappedAccounts || [],
+  };
+}
+
 // ─── Exports ──────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -1708,6 +2090,8 @@ module.exports = {
   getBankStatementReport,
   getTaxReturnReport,
   getCashflowReport,
+  getQoeReport,
+  getKpiReport,
   // Pure builders exported for the accuracy-validation harness (test fixtures).
   buildPLHierarchicalRows,
   buildBSHierarchicalRows,

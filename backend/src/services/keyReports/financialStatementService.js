@@ -23,6 +23,7 @@
 
 const { supabase } = require("../../db");
 const { getCashflowReport, bsBalancesForYear, aggregateGLForBSByMonth } = require("./keyReportReportService");
+const { ensureAccountExistsInCoa } = require("../chartOfAccountsService");
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
@@ -95,25 +96,7 @@ function classifyUnmappedBSAccount(name) {
   return null;
 }
 
-function makeSyntheticLeaf(rawName, amount, acType) {
-  const section = acType === 'asset'     ? 'Other Current Assets'
-    : acType === 'liability' ? 'Other Current Liabilities'
-    : 'Equity';
-  return {
-    id: `__synthetic__${norm(rawName)}`,
-    system_id: null, account_number: null,
-    account_name: rawName, adjusted_name: null, base_account: null,
-    account_type: acType, statement_type: 'balance_sheet',
-    parent_account_id: null, metadata: null, hierarchy_path: null,
-    level_1: acType === 'asset' ? 'Assets' : acType === 'liability' ? 'Liabilities' : 'Equity',
-    level_2: section,
-    level_3: null, level_4: null, level_5: null,
-    level_6: null, level_7: null, level_8: null, level_9: null, level_10: null,
-    level_11: null, level_12: null, level_13: null, level_14: null, level_15: null,
-    isGroup: false, children: [],
-    signedAmount: amount, displayAmount: amount, leafAmount: amount,
-  };
-}
+
 
 // ─── Calculated / summary row detection ───────────────────────────────────────
 
@@ -312,7 +295,7 @@ function fuzzyMatch(lookup, name, accountNumber) {
  * Only LEAF accounts receive amounts; category/group nodes stay at 0 (tree rollup fills them).
  * Summary rows (Gross Profit, Net Income, …) are skipped.
  */
-async function buildLeafAmountMap(versionId, sourceTable, year, leaves, unmappedSet) {
+async function buildLeafAmountMap(companyId, versionId, sourceTable, year, allCoa, leaves, unmappedSet) {
   const amountById = new Map(leaves.map(a => [a.id, 0]));
 
   let query = supabase
@@ -354,8 +337,8 @@ async function buildLeafAmountMap(versionId, sourceTable, year, leaves, unmapped
       if (!ids?.length && accountNumber) ids = mappings.get(`__num__${String(accountNumber).trim()}`);
       if (ids?.length) {
         for (const id of ids) {
-          if (amountById.has(id))
-            amountById.set(id, (amountById.get(id) || 0) + amount / ids.length);
+          if (!amountById.has(id)) amountById.set(id, 0);
+          amountById.set(id, (amountById.get(id) || 0) + amount / ids.length);
         }
         matched++;
       } else {
@@ -365,8 +348,26 @@ async function buildLeafAmountMap(versionId, sourceTable, year, leaves, unmapped
           amountById.set(result.id, (amountById.get(result.id) || 0) + amount);
           matched++;
         } else {
-          unmappedSet.add(normName);
-          missed++;
+          // Dynamic COA insert fallback
+          const explicitType = sourceTable === 'balance_sheet_entries' ? classifyUnmappedBSAccount(rawName) : null;
+          const filterFn = sourceTable === 'balance_sheet_entries' ? isBsAccount : isPlAccount;
+          const insertedId = await ensureAccountMapped(companyId, versionId, rawName, accountNumber, explicitType, allCoa, leaves, filterFn);
+          if (insertedId) {
+            if (!amountById.has(insertedId)) amountById.set(insertedId, 0);
+            amountById.set(insertedId, (amountById.get(insertedId) || 0) + amount);
+            matched++;
+            // Rebuild mappings and fuzzy lookup in place
+            const refreshedMappings = buildMappings(leaves);
+            const refreshedFuzzyLookup = buildFuzzyLookup(leaves);
+            mappings.clear();
+            for (const [k, v] of refreshedMappings) mappings.set(k, v);
+            fuzzyLookup.exact = refreshedFuzzyLookup.exact;
+            fuzzyLookup.strict = refreshedFuzzyLookup.strict;
+            fuzzyLookup.byNum = refreshedFuzzyLookup.byNum;
+          } else {
+            unmappedSet.add(normName);
+            missed++;
+          }
         }
       }
     }
@@ -384,8 +385,23 @@ async function buildLeafAmountMap(versionId, sourceTable, year, leaves, unmapped
         console.log(`[FinStmt][Fuzzy] "${rawName}" → ${result.id} (${(result.confidence * 100).toFixed(0)}%)`);
       matched++;
     } else {
-      unmappedSet.add(normName);
-      missed++;
+      // Dynamic COA insert fallback
+      const explicitType = sourceTable === 'balance_sheet_entries' ? classifyUnmappedBSAccount(rawName) : null;
+      const filterFn = sourceTable === 'balance_sheet_entries' ? isBsAccount : isPlAccount;
+      const insertedId = await ensureAccountMapped(companyId, versionId, rawName, accountNumber, explicitType, allCoa, leaves, filterFn);
+      if (insertedId) {
+        if (!amountById.has(insertedId)) amountById.set(insertedId, 0);
+        amountById.set(insertedId, (amountById.get(insertedId) || 0) + amount);
+        matched++;
+        // Rebuild fuzzy lookup in place
+        const refreshedFuzzyLookup = buildFuzzyLookup(leaves);
+        fuzzyLookup.exact = refreshedFuzzyLookup.exact;
+        fuzzyLookup.strict = refreshedFuzzyLookup.strict;
+        fuzzyLookup.byNum = refreshedFuzzyLookup.byNum;
+      } else {
+        unmappedSet.add(normName);
+        missed++;
+      }
     }
   }
   console.log(`[FinStmt][Fuzzy][${sourceTable}] ${matched} matched, ${missed} unmapped`);
@@ -719,6 +735,30 @@ function isBsAccount(acc) {
     (acc.statement_type == null && BS_TYPES.has(acc.account_type));
 }
 
+async function ensureAccountMapped(companyId, versionId, rawName, accountNumber, explicitType, allCoa, activeAccounts, filterFn) {
+  try {
+    const newId = await ensureAccountExistsInCoa(versionId, companyId, rawName, accountNumber, explicitType);
+    if (newId) {
+      const { data: refreshed } = await supabase
+        .from("chart_of_accounts")
+        .select("*")
+        .eq("version_id", versionId)
+        .eq("is_active", true)
+        .order("sort_order", { ascending: true });
+      if (refreshed) {
+        allCoa.length = 0;
+        allCoa.push(...refreshed);
+        activeAccounts.length = 0;
+        activeAccounts.push(...refreshed.filter(filterFn));
+      }
+      return newId;
+    }
+  } catch (err) {
+    console.error(`[FinStmt][ensureMapped] Failed: ${err.message}`);
+  }
+  return null;
+}
+
 // ─── Distinct years ───────────────────────────────────────────────────────────
 
 async function distinctYears(versionId) {
@@ -803,7 +843,7 @@ async function hasGeneratedRows(table, versionId, year) {
 
 // ─── Yearly P&L ───────────────────────────────────────────────────────────────
 
-async function generateYearlyPl(versionId, year, allCoa, unmappedSet) {
+async function generateYearlyPl(companyId, versionId, year, allCoa, unmappedSet) {
   const plAccounts = allCoa.filter(isPlAccount);
   const plLeaves   = plAccounts.filter(a => !a.metadata?.is_group);
 
@@ -822,14 +862,33 @@ async function generateYearlyPl(versionId, year, allCoa, unmappedSet) {
       if (!ids?.length && accountNumber) ids = glMappings?.get(`__num__${String(accountNumber).trim()}`);
       if (ids?.length) {
         for (const id of ids) {
-          if (leafAmounts.has(id)) leafAmounts.set(id, (leafAmounts.get(id) || 0) + totalAmt / ids.length);
+          if (!leafAmounts.has(id)) leafAmounts.set(id, 0);
+          leafAmounts.set(id, (leafAmounts.get(id) || 0) + totalAmt / ids.length);
         }
       } else {
         const match = fuzzyMatch(fuzzyLookup, rawName, accountNumber);
         if (match?.id && leafAmounts.has(match.id)) {
           leafAmounts.set(match.id, (leafAmounts.get(match.id) || 0) + totalAmt);
         } else {
-          unmappedSet.add(normKey);
+          // Dynamic COA insert fallback
+          const insertedId = await ensureAccountMapped(companyId, versionId, rawName, accountNumber, null, allCoa, plAccounts, isPlAccount);
+          if (insertedId) {
+            if (!leafAmounts.has(insertedId)) leafAmounts.set(insertedId, 0);
+            leafAmounts.set(insertedId, (leafAmounts.get(insertedId) || 0) + totalAmt);
+            // Rebuild leaves list in place
+            plLeaves.length = 0;
+            plLeaves.push(...plAccounts.filter(a => !a.metadata?.is_group));
+            // Rebuild mappings and fuzzy lookup
+            const refreshedMappings = buildMappings(plLeaves);
+            const refreshedFuzzyLookup = buildFuzzyLookup(plLeaves);
+            glMappings.clear();
+            for (const [k, v] of refreshedMappings) glMappings.set(k, v);
+            fuzzyLookup.exact = refreshedFuzzyLookup.exact;
+            fuzzyLookup.strict = refreshedFuzzyLookup.strict;
+            fuzzyLookup.byNum = refreshedFuzzyLookup.byNum;
+          } else {
+            unmappedSet.add(normKey);
+          }
         }
       }
     }
@@ -1059,7 +1118,7 @@ async function loadGlAmountsByMonth(versionId, year) {
   return monthsFound.size ? { byAccount, monthsFound } : null;
 }
 
-async function generateMonthlyPl(versionId, year, allCoa, unmappedSet, yearlyStatement = null) {
+async function generateMonthlyPl(companyId, versionId, year, allCoa, unmappedSet, yearlyStatement = null) {
   const gl = await loadGlAmountsByMonth(versionId, year);
   if (!gl) {
     // GL has no transaction_date — fall back to proportional distribution of the
@@ -1072,6 +1131,34 @@ async function generateMonthlyPl(versionId, year, allCoa, unmappedSet, yearlySta
   const plLeaves    = plAccounts.filter(a => !a.metadata?.is_group);
   const glMappings  = buildMappings(plLeaves);
   const fuzzyLookup = buildFuzzyLookup(plLeaves);
+
+  // Pre-pass: ensure all GL accounts are mapped in COA
+  for (const [normKey, { rawName, accountNumber, months: monthMap }] of gl.byAccount) {
+    const totalAmt = Array.from(monthMap.values()).reduce((s, v) => s + v, 0);
+    if (Math.abs(totalAmt) < 0.005) continue;
+    let ids = glMappings?.get(normKey);
+    if (!ids?.length && accountNumber) ids = glMappings?.get(`__num__${String(accountNumber).trim()}`);
+    if (!ids?.length) {
+      const match = fuzzyMatch(fuzzyLookup, rawName, accountNumber);
+      if (!match?.id) {
+        const insertedId = await ensureAccountMapped(companyId, versionId, rawName, accountNumber, null, allCoa, plAccounts, isPlAccount);
+        if (insertedId) {
+          plLeaves.length = 0;
+          plLeaves.push(...plAccounts.filter(a => !a.metadata?.is_group));
+          const refreshedMappings = buildMappings(plLeaves);
+          const refreshedFuzzyLookup = buildFuzzyLookup(plLeaves);
+          glMappings.clear();
+          for (const [k, v] of refreshedMappings) glMappings.set(k, v);
+          fuzzyLookup.exact = refreshedFuzzyLookup.exact;
+          fuzzyLookup.strict = refreshedFuzzyLookup.strict;
+          fuzzyLookup.byNum = refreshedFuzzyLookup.byNum;
+        } else {
+          unmappedSet.add(normKey);
+        }
+      }
+    }
+  }
+
   const months      = Array.from(gl.monthsFound).sort((a, b) => a - b);
 
   return months.map((monthNum) => {
@@ -1157,7 +1244,7 @@ async function generateMonthlyPl(versionId, year, allCoa, unmappedSet, yearlySta
 
 // ─── Yearly BS ────────────────────────────────────────────────────────────────
 
-async function generateYearlyBs(versionId, year, allCoa, unmappedSet) {
+async function generateYearlyBs(companyId, versionId, year, allCoa, unmappedSet) {
   const bsAccounts = allCoa.filter(isBsAccount);
   const bsLeaves   = bsAccounts.filter(a => !a.metadata?.is_group);
 
@@ -1197,7 +1284,6 @@ async function generateYearlyBs(versionId, year, allCoa, unmappedSet) {
   const { data: entries, error } = await query.limit(200000);
   if (error) throw new Error(`BS entries: ${error.message}`);
 
-  const syntheticLeaves    = [];
   let hasUploadedNetIncome = false;
   let glFallbackUsed       = false;
 
@@ -1222,17 +1308,22 @@ async function generateYearlyBs(versionId, year, allCoa, unmappedSet) {
             mapped++;
             mappedFromGL.add(norm(name));
           } else {
-            unmappedSet.add(norm(name));
+            // Dynamic COA insert fallback
+            const acType = classifyUnmappedBSAccount(name);
+            const insertedId = await ensureAccountMapped(companyId, versionId, name, null, acType, allCoa, bsLeaves, isBsAccount);
+            if (insertedId) {
+              if (!leafAmounts.has(insertedId)) leafAmounts.set(insertedId, 0);
+              leafAmounts.set(insertedId, (leafAmounts.get(insertedId) || 0) + safeNum(balance));
+              mapped++;
+              mappedFromGL.add(norm(name));
+              const refreshedFuzzyLookup = buildFuzzyLookup(bsLeaves);
+              fuzzyLookup.exact = refreshedFuzzyLookup.exact;
+              fuzzyLookup.strict = refreshedFuzzyLookup.strict;
+              fuzzyLookup.byNum = refreshedFuzzyLookup.byNum;
+            } else {
+              unmappedSet.add(norm(name));
+            }
           }
-        }
-        // Synthetic leaves for GL carry-forward balances that couldn't match any COA leaf.
-        for (const { name, balance } of balances.values()) {
-          if (Math.abs(safeNum(balance)) < 0.005 || mappedFromGL.has(norm(name))) continue;
-          const acType = classifyUnmappedBSAccount(name);
-          if (!acType) continue;
-          unmappedSet.delete(norm(name));
-          syntheticLeaves.push(makeSyntheticLeaf(name, safeNum(balance), acType));
-          if (/^net\s*(income|loss)/i.test(name)) hasUploadedNetIncome = true;
         }
         console.log(`[FinStmt][BS][${year}] GL carry-forward fallback: ${balances.size} balances, ${mapped} mapped to COA leaves`);
         glFallbackUsed = true;
@@ -1268,7 +1359,8 @@ async function generateYearlyBs(versionId, year, allCoa, unmappedSet) {
       if (!ids?.length && accountNumber) ids = bsMappings?.get(`__num__${String(accountNumber).trim()}`);
       if (ids?.length) {
         for (const id of ids) {
-          if (leafAmounts.has(id)) leafAmounts.set(id, (leafAmounts.get(id) || 0) + amount / ids.length);
+          if (!leafAmounts.has(id)) leafAmounts.set(id, 0);
+          leafAmounts.set(id, (leafAmounts.get(id) || 0) + amount / ids.length);
         }
         mappedKeys.add(normKey);
       } else {
@@ -1277,31 +1369,34 @@ async function generateYearlyBs(versionId, year, allCoa, unmappedSet) {
           leafAmounts.set(match.id, (leafAmounts.get(match.id) || 0) + amount);
           mappedKeys.add(normKey);
         } else {
-          unmappedSet.add(normKey);
+          // Dynamic COA insert fallback
+          const acType = classifyUnmappedBSAccount(rawName);
+          const insertedId = await ensureAccountMapped(companyId, versionId, rawName, accountNumber, acType, allCoa, bsLeaves, isBsAccount);
+          if (insertedId) {
+            if (!leafAmounts.has(insertedId)) leafAmounts.set(insertedId, 0);
+            leafAmounts.set(insertedId, (leafAmounts.get(insertedId) || 0) + amount);
+            mappedKeys.add(normKey);
+            const refreshedMappings = buildMappings(bsLeaves);
+            const refreshedFuzzyLookup = buildFuzzyLookup(bsLeaves);
+            bsMappings.clear();
+            for (const [k, v] of refreshedMappings) bsMappings.set(k, v);
+            fuzzyLookup.exact = refreshedFuzzyLookup.exact;
+            fuzzyLookup.strict = refreshedFuzzyLookup.strict;
+            fuzzyLookup.byNum = refreshedFuzzyLookup.byNum;
+          } else {
+            unmappedSet.add(normKey);
+          }
         }
       }
     }
-
-    // Accounts that couldn't match any COA leaf are classified by keyword and added
-    // as synthetic leaves. This keeps "Loans to MTP", "Net Income", etc. on the correct
-    // side of the Balance Sheet even before they are added to the COA.
-    for (const [normKey, { amount, rawName }] of entryTotals) {
-      if (mappedKeys.has(normKey)) continue;
-      if (Math.abs(safeNum(amount)) < 0.005) continue;
-      const acType = classifyUnmappedBSAccount(rawName);
-      if (!acType) continue;
-      unmappedSet.delete(normKey);
-      syntheticLeaves.push(makeSyntheticLeaf(rawName, safeNum(amount), acType));
-    }
   }
 
-  const { byId, roots, leaves } = buildTree(bsAccounts);
+  // Re-filter and rebuild the tree to include any newly dynamically added category/leaves
+  const refreshedBsAccounts = allCoa.filter(isBsAccount);
+  const { byId, roots, leaves } = buildTree(refreshedBsAccounts);
   for (const root of roots) rollupNode(root, leafAmounts);
 
-  const stmt = buildBsStatement([...leaves, ...syntheticLeaves], byId);
-  if (syntheticLeaves.length) {
-    console.log(`[FinStmt][BS][${year}] ${syntheticLeaves.length} synthetic leaf(ves) added for unmapped entries: ${syntheticLeaves.map(l => l.account_name).join(', ')}`);
-  }
+  const stmt = buildBsStatement(leaves, byId);
   console.log(`[FinStmt][BS][${year}] asOf=${latestDate} assets=${stmt.totalAssets} liab=${stmt.totalLiabilities} equity=${stmt.totalEquity} balanced=${stmt.balanced} glFallback=${glFallbackUsed}`);
 
   // NOTE: Balance Sheets are generated + STORED by the Phase-4 monthly engine during
@@ -1311,12 +1406,9 @@ async function generateYearlyBs(versionId, year, allCoa, unmappedSet) {
   return { year: String(year), asOfDate: latestDate || `${year}-12-31`, periodLabel: `FY ${year}`, statement: stmt, hasUploadedNetIncome };
 }
 
-// ─── Monthly BS ───────────────────────────────────────────────────────────────
 
-// Derive month-by-month BS snapshots from GL carry-forward when uploaded BS files
-// do not have multiple distinct as_of_date values (the common yearly-upload case).
-// BS(month M) = BS(prior year-end) + cumulative GL transactions(Jan..M) for BS-type accounts.
-async function generateMonthlyBsFromGL(versionId, year, allCoa, bsLeaves, unmappedSet) {
+
+async function generateMonthlyBsFromGL(companyId, versionId, year, allCoa, bsLeaves, unmappedSet) {
   // Use classifyGLAccount-based monthly aggregation (no transaction_date required for yearly,
   // but transaction_date IS required per-month — returns null when absent).
   const byMonth = await aggregateGLForBSByMonth(versionId, year);
@@ -1362,7 +1454,18 @@ async function generateMonthlyBsFromGL(versionId, year, allCoa, bsLeaves, unmapp
       if (match?.id && cumLeafGL.has(match.id)) {
         cumLeafGL.set(match.id, cumLeafGL.get(match.id) + net);
       } else {
-        unmappedSet.add(String(name).toLowerCase().trim());
+        const acType = classifyUnmappedBSAccount(name);
+        const insertedId = await ensureAccountMapped(companyId, versionId, name, null, acType, allCoa, bsLeaves, isBsAccount);
+        if (insertedId) {
+          if (!cumLeafGL.has(insertedId)) cumLeafGL.set(insertedId, 0);
+          cumLeafGL.set(insertedId, cumLeafGL.get(insertedId) + net);
+          const refreshedFuzzyLookup = buildFuzzyLookup(bsLeaves);
+          fuzzyLookup.exact = refreshedFuzzyLookup.exact;
+          fuzzyLookup.strict = refreshedFuzzyLookup.strict;
+          fuzzyLookup.byNum = refreshedFuzzyLookup.byNum;
+        } else {
+          unmappedSet.add(String(name).toLowerCase().trim());
+        }
       }
     }
     cumNI += monthNI;
@@ -1395,7 +1498,7 @@ async function generateMonthlyBsFromGL(versionId, year, allCoa, bsLeaves, unmapp
   return result;
 }
 
-async function generateMonthlyBs(versionId, year, allCoa, unmappedSet) {
+async function generateMonthlyBs(companyId, versionId, year, allCoa, unmappedSet) {
   const bsAccounts = allCoa.filter(isBsAccount);
   const bsLeaves   = bsAccounts.filter(a => !a.metadata?.is_group);
 
@@ -1424,7 +1527,7 @@ async function generateMonthlyBs(versionId, year, allCoa, unmappedSet) {
     byDate.get(key).push(e);
   }
   // Only one (or zero) distinct dates → fall back to GL carry-forward monthly snapshots.
-  if (byDate.size <= 1) return generateMonthlyBsFromGL(versionId, year, allCoa, bsLeaves, unmappedSet);
+  if (byDate.size <= 1) return generateMonthlyBsFromGL(companyId, versionId, year, allCoa, bsLeaves, unmappedSet);
 
   const bsMappings  = buildMappings(bsLeaves);
   const fuzzyLookup = buildFuzzyLookup(bsLeaves);
@@ -1444,19 +1547,36 @@ async function generateMonthlyBs(versionId, year, allCoa, unmappedSet) {
       if (!ids?.length && accountNumber) ids = bsMappings?.get(`__num__${String(accountNumber).trim()}`);
       if (ids?.length) {
         for (const id of ids) {
-          if (leafAmounts.has(id)) leafAmounts.set(id, (leafAmounts.get(id) || 0) + amount / ids.length);
+          if (!leafAmounts.has(id)) leafAmounts.set(id, 0);
+          leafAmounts.set(id, (leafAmounts.get(id) || 0) + amount / ids.length);
         }
       } else {
         const match = fuzzyMatch(fuzzyLookup, rawName, accountNumber);
         if (match?.id && leafAmounts.has(match.id)) {
           leafAmounts.set(match.id, (leafAmounts.get(match.id) || 0) + amount);
         } else {
-          unmappedSet.add(normKey);
+          // Dynamic COA insert fallback
+          const acType = classifyUnmappedBSAccount(rawName);
+          const insertedId = await ensureAccountMapped(companyId, versionId, rawName, accountNumber, acType, allCoa, bsLeaves, isBsAccount);
+          if (insertedId) {
+            if (!leafAmounts.has(insertedId)) leafAmounts.set(insertedId, 0);
+            leafAmounts.set(insertedId, (leafAmounts.get(insertedId) || 0) + amount);
+            const refreshedMappings = buildMappings(bsLeaves);
+            const refreshedFuzzyLookup = buildFuzzyLookup(bsLeaves);
+            bsMappings.clear();
+            for (const [k, v] of refreshedMappings) bsMappings.set(k, v);
+            fuzzyLookup.exact = refreshedFuzzyLookup.exact;
+            fuzzyLookup.strict = refreshedFuzzyLookup.strict;
+            fuzzyLookup.byNum = refreshedFuzzyLookup.byNum;
+          } else {
+            unmappedSet.add(normKey);
+          }
         }
       }
     }
 
-    const { byId, roots, leaves } = buildTree(bsAccounts);
+    const refreshedBsAccounts = allCoa.filter(isBsAccount);
+    const { byId, roots, leaves } = buildTree(refreshedBsAccounts);
     for (const root of roots) rollupNode(root, leafAmounts);
 
     const monthNum = parseInt(dateKey.slice(5, 7), 10);
@@ -1712,6 +1832,13 @@ function validateAll(plYearly, bsYearly) {
 async function generateFinancialStatements(versionId, options = {}) {
   if (!versionId) throw new Error("versionId is required");
 
+  const { data: version } = await supabase
+    .from("key_report_versions")
+    .select("company_id")
+    .eq("id", versionId)
+    .single();
+  const companyId = version?.company_id;
+
   const [allCoa, years] = await Promise.all([
     loadCoa(versionId),
     distinctYears(versionId),
@@ -1745,11 +1872,11 @@ async function generateFinancialStatements(versionId, options = {}) {
 
   // Yearly P&L must complete first so its statement can serve as a proportional
   // fallback for monthly P&L when GL has no transaction_date.
-  const plYearly = await Promise.all(filteredYears.map(y => generateYearlyPl(versionId, y, allCoa, unmappedSet)));
+  const plYearly = await Promise.all(filteredYears.map(y => generateYearlyPl(companyId, versionId, y, allCoa, unmappedSet)));
 
   // Monthly P&L, yearly CF, and monthly CF are year-independent — run concurrently.
   const [plMonthly, cfYearly, cfMonthly] = await Promise.all([
-    Promise.all(filteredYears.map((y, i) => generateMonthlyPl(versionId, y, allCoa, unmappedSet, plYearly[i]?.statement))),
+    Promise.all(filteredYears.map((y, i) => generateMonthlyPl(companyId, versionId, y, allCoa, unmappedSet, plYearly[i]?.statement))),
     Promise.all(filteredYears.map(y => generateYearlyCf(versionId, y))),
     Promise.all(filteredYears.map(y => generateMonthlyCf(versionId, y))),
   ]);
@@ -1760,11 +1887,11 @@ async function generateFinancialStatements(versionId, options = {}) {
   // the carry-forward independently per year instead of reusing prior-year results.
   const bsYearly = [];
   for (const y of filteredYears) {
-    bsYearly.push(await generateYearlyBs(versionId, y, allCoa, unmappedSet));
+    bsYearly.push(await generateYearlyBs(companyId, versionId, y, allCoa, unmappedSet));
   }
   const bsMonthly = [];
   for (const y of filteredYears) {
-    bsMonthly.push(await generateMonthlyBs(versionId, y, allCoa, unmappedSet));
+    bsMonthly.push(await generateMonthlyBs(companyId, versionId, y, allCoa, unmappedSet));
   }
 
   // Inject current-year Net Income into Balance Sheet Retained Earnings.

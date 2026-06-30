@@ -576,4 +576,36 @@ router.get("/key-reports/versions/:versionId/reports/financial-statements", asyn
   }
 });
 
+// ── Quality of Earnings ──────────────────────────────────────────────────────
+// GET /key-reports/versions/:versionId/reports/qoe?year=2024
+router.get("/key-reports/versions/:versionId/reports/qoe", async (req, res) => {
+  try {
+    const version = await loadVersionWithAccess(req, res);
+    if (!version) return;
+    const { year } = req.query;
+    const result = await keyReportReportService.getQoeReport(version.id, {
+      year: year ? parseInt(String(year), 10) : undefined,
+    });
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    return handleError(res, error, "GET reports/qoe");
+  }
+});
+
+// ── KPI Report ───────────────────────────────────────────────────────────────
+// GET /key-reports/versions/:versionId/reports/kpi?year=2024
+router.get("/key-reports/versions/:versionId/reports/kpi", async (req, res) => {
+  try {
+    const version = await loadVersionWithAccess(req, res);
+    if (!version) return;
+    const { year } = req.query;
+    const result = await keyReportReportService.getKpiReport(version.id, {
+      year: year ? parseInt(String(year), 10) : undefined,
+    });
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    return handleError(res, error, "GET reports/kpi");
+  }
+});
+
 module.exports = router;
