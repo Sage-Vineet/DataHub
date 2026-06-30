@@ -631,16 +631,9 @@ async function getActiveLinkedDocuments(companyId, reportCategory) {
 
 // ---- Extracted data viewer --------------------------------------------------
 
+// NOTE: no `profit_loss` entry — there is no profit_loss_entries table. P&L is
+// generated live from the General Ledger and is not browsable as raw extracted data.
 const ENTRY_TABLE_CONFIG = {
-  profit_loss: {
-    table: 'profit_loss_entries',
-    yearCol: 'fiscal_year',
-    yearIsDate: false,
-    searchCols: ['account_name', 'account_number', 'category'],
-    selectCols: 'id,fiscal_year,account_name,account_number,account_type,category,sub_category,amount,hierarchy_level,is_total,sort_order',
-    orderCol: 'sort_order',
-    orderSecondary: 'id',
-  },
   balance_sheet: {
     table: 'balance_sheet_entries',
     yearCol: 'fiscal_year',
@@ -654,8 +647,8 @@ const ENTRY_TABLE_CONFIG = {
     table: 'general_ledger_entries',
     yearCol: 'fiscal_year',
     yearIsDate: false,
-    searchCols: ['account_section', 'distribution_account', 'memo_description', 'split_account', 'transaction_name', 'transaction_num'],
-    selectCols: 'id,row_type,row_number,fiscal_year,transaction_date,account_section,distribution_account,transaction_type,transaction_num,transaction_name,memo_description,split_account,amount,running_balance',
+    searchCols: ['account_name', 'account_section', 'memo', 'split_account', 'transaction_number'],
+    selectCols: 'id,row_type,row_number,fiscal_year,fiscal_month,transaction_date,account_section,account_name,account_number,transaction_type,transaction_number,memo,split_account,amount,debit_amount,credit_amount,running_balance,coa_id',
     orderCol: 'row_number',
     orderSecondary: 'id',
   },
