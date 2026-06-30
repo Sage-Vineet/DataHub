@@ -17,12 +17,12 @@ const { supabase } = require('../../db');
 
 const taxReturnExtractionService = require('./taxReturnExtractionService');
 const bankStatementExtractionService = require('./bankStatementExtractionService');
-const profitLossExtractionService = require('./profitLossExtractionService');
 const balanceSheetExtractionService = require('./balanceSheetExtractionService');
 const generalLedgerExtractionService = require('./generalLedgerExtractionService');
 
 const { generateChartOfAccounts, validateChartOfAccounts } = require('../chartOfAccountsService');
 const { replaceValidationResults } = require('./keyReportValidationService');
+const { classifyWorkflowDocuments, generateTrialBalance, generateMonthlyBalanceSheets, generateReconciliation } = require('./keyReportAccountingService');
 const keyReportService = require('./keyReportService');
 
 function normalizeUploadBinary(data) {
@@ -182,7 +182,6 @@ async function buildValidationResultsFromEntryTables(versionId, mappingsByCatego
   const dataTypes = [
     { key: 'tax_return', table: 'tax_return_entries', yearCol: 'tax_year', isDateCol: false },
     { key: 'bank_statement', table: 'bank_statement_entries', yearCol: 'statement_month', isDateCol: true },
-    { key: 'profit_loss', table: 'profit_loss_entries', yearCol: 'fiscal_year', isDateCol: false },
     { key: 'balance_sheet', table: 'balance_sheet_entries', yearCol: 'fiscal_year', isDateCol: false },
     { key: 'general_ledger', table: 'general_ledger_entries', yearCol: 'fiscal_year', isDateCol: false },
   ];
@@ -190,7 +189,6 @@ async function buildValidationResultsFromEntryTables(versionId, mappingsByCatego
   const labels = {
     tax_return: 'Tax Return Data',
     bank_statement: 'Bank Statement Data',
-    profit_loss: 'Profit & Loss Data',
     balance_sheet: 'Balance Sheet Data',
     general_ledger: 'General Ledger Data',
   };
@@ -284,17 +282,14 @@ async function generateFinancialTables(version, opts = {}) {
 
   logger.log('=== Sync started ===');
 
-  // Clear any previously generated (is_generated=true) rows so the carry-forward
-  // is recomputed from freshly extracted data. Extracted rows (is_generated=false)
-  // are left untouched — the extraction steps below will replace them per document.
+  // Clear any previously generated (is_generated=true) balance-sheet rows so the
+  // monthly roll-forward is recomputed from freshly extracted data. Extracted rows
+  // (is_generated=false) are left untouched — extraction replaces them per document.
+  // (There is no profit_loss_entries table — P&L is generated live from the GL.)
   try {
-    const [bsDel, plDel] = await Promise.all([
-      supabase.from('balance_sheet_entries').delete().eq('version_id', versionId).eq('is_generated', true),
-      supabase.from('profit_loss_entries').delete().eq('version_id', versionId).eq('is_generated', true),
-    ]);
-    if (!bsDel.error && !plDel.error) {
-      logger.log('  ✓ Cleared previously generated BS/P&L rows');
-    }
+    const bsDel = await supabase
+      .from('balance_sheet_entries').delete().eq('version_id', versionId).eq('is_generated', true);
+    if (!bsDel.error) logger.log('  ✓ Cleared previously generated Balance Sheet rows');
   } catch (clearErr) {
     logger.warn(`  Could not clear generated rows (migration 054 may not be applied yet): ${clearErr.message}`);
   }
@@ -310,7 +305,6 @@ async function generateFinancialTables(version, opts = {}) {
   const extractionResults = {
     tax_return: { success: 0, failed: 0, rowsExtracted: 0 },
     bank_statement: { success: 0, failed: 0, rowsExtracted: 0 },
-    profit_loss: { success: 0, failed: 0, rowsExtracted: 0 },
     balance_sheet: { success: 0, failed: 0, rowsExtracted: 0 },
     general_ledger: { success: 0, failed: 0, rowsExtracted: 0 },
   };
@@ -319,7 +313,7 @@ async function generateFinancialTables(version, opts = {}) {
   const extractionErrors = [];
 
   // Step 1: Tax Returns
-  logger.log('--- Step 1/5: Tax Returns ---');
+  logger.log('--- Step 1/4: Tax Returns ---');
   const taxMappings = mappingsByCategory.tax_return || [];
   logger.log(`  ${taxMappings.length} file(s) to process`);
   for (const mapping of taxMappings) {
@@ -331,7 +325,7 @@ async function generateFinancialTables(version, opts = {}) {
   logger.log(`  Tax Return result: ${extractionResults.tax_return.success} succeeded, ${extractionResults.tax_return.failed} failed, ${extractionResults.tax_return.rowsExtracted} rows inserted`);
 
   // Step 2: Bank Statements
-  logger.log('--- Step 2/5: Bank Statements ---');
+  logger.log('--- Step 2/4: Bank Statements ---');
   const bankMappings = mappingsByCategory.bank_statement || [];
   logger.log(`  ${bankMappings.length} file(s) to process`);
   for (const mapping of bankMappings) {
@@ -342,20 +336,13 @@ async function generateFinancialTables(version, opts = {}) {
   }
   logger.log(`  Bank Statement result: ${extractionResults.bank_statement.success} succeeded, ${extractionResults.bank_statement.failed} failed, ${extractionResults.bank_statement.rowsExtracted} rows inserted`);
 
-  // Step 3: Profit & Loss
-  logger.log('--- Step 3/5: Profit & Loss ---');
-  const plMappings = mappingsByCategory.profit_loss || [];
-  logger.log(`  ${plMappings.length} file(s) to process`);
-  for (const mapping of plMappings) {
-    const result = await extractDocument(companyId, versionId, mapping, profitLossExtractionService, logger);
-    updateStats(extractionResults.profit_loss, result);
-    if (result.detectedYears) result.detectedYears.forEach((y) => allDetectedYears.add(y));
-    if (!result.success) extractionErrors.push({ step: 'profit_loss', ...result });
-  }
-  logger.log(`  P&L result: ${extractionResults.profit_loss.success} succeeded, ${extractionResults.profit_loss.failed} failed, ${extractionResults.profit_loss.rowsExtracted} rows inserted`);
+  // NOTE: Profit & Loss is NOT extracted to a table. P&L is generated live from the
+  // General Ledger at report time (client requirement — no profit_loss_entries table).
+  // A linked P&L document may still be used as a temporary display-only fallback when
+  // no GL exists, extracted on demand — it is never persisted as a reporting table.
 
-  // Step 4: Balance Sheets
-  logger.log('--- Step 4/5: Balance Sheets ---');
+  // Step 3: Balance Sheets
+  logger.log('--- Step 3/4: Balance Sheets ---');
   const bsMappings = mappingsByCategory.balance_sheet || [];
   logger.log(`  ${bsMappings.length} file(s) to process`);
   for (const mapping of bsMappings) {
@@ -366,8 +353,8 @@ async function generateFinancialTables(version, opts = {}) {
   }
   logger.log(`  Balance Sheet result: ${extractionResults.balance_sheet.success} succeeded, ${extractionResults.balance_sheet.failed} failed, ${extractionResults.balance_sheet.rowsExtracted} rows inserted`);
 
-  // Step 5: General Ledger
-  logger.log('--- Step 5/5: General Ledger ---');
+  // Step 4: General Ledger
+  logger.log('--- Step 4/4: General Ledger ---');
   const glMappings = mappingsByCategory.general_ledger || [];
   logger.log(`  ${glMappings.length} file(s) to process`);
   for (const mapping of glMappings) {
@@ -384,6 +371,48 @@ async function generateFinancialTables(version, opts = {}) {
   const totalRows = Object.values(extractionResults).reduce((sum, s) => sum + s.rowsExtracted, 0);
   logger.log(`Total rows inserted across all entry tables: ${totalRows}`);
 
+  // ── PHASE 1: Validate available documents (the accounting gate) ────────────
+  // General Ledger is the source of truth. With no GL the accounting workflow
+  // is halted — Chart of Accounts and all generated reports are skipped and a
+  // validation error is surfaced. Opening BS missing ⇒ warning (not a halt).
+  logger.log('--- Phase 1: Document validation gate ---');
+  const gate = await classifyWorkflowDocuments(companyId, versionId);
+  logger.log(
+    `  GL=${gate.hasGL ? `yes (${gate.glRowCount} rows, FY ${gate.glStartYear}–${gate.glEndYear})` : 'NO'}, ` +
+    `OpeningBS=${gate.hasOpeningBs ? 'yes' : 'no'}, EndingBS=${gate.hasEndingBs ? 'yes' : 'no'}, ` +
+    `canGenerate=${gate.canGenerate}`,
+  );
+
+  if (!gate.canGenerate) {
+    logger.warn('  ✗ Accounting workflow halted: General Ledger is required but was not found.');
+    const haltRows = await buildValidationResultsFromEntryTables(versionId, mappingsByCategory, years, logger);
+    haltRows.push(...gate.rows);
+    await replaceValidationResults(versionId, companyId, haltRows);
+    logger.log(`  ✓ ${haltRows.length} validation rows stored (workflow halted)`);
+    const haltMessage = 'Sync completed, but the accounting workflow was halted: no General Ledger data was found. Link a General Ledger file and re-sync.';
+    return {
+      success: true,
+      halted: true,
+      batchId: null,
+      datasetVersion: null,
+      years,
+      extractionResults,
+      coaSummary: null,
+      errors: extractionErrors.length > 0 ? extractionErrors : null,
+      summary: {
+        generated: false,
+        halted: true,
+        haltReason: 'general_ledger_required',
+        years,
+        totalRowsInserted: totalRows,
+        extractionResults,
+        documents: gate,
+        message: haltMessage,
+      },
+      message: haltMessage,
+    };
+  }
+
   // Step 6: Chart of Accounts (from general_ledger_entries + balance_sheet_entries)
   logger.log('--- Step 6: Chart of Accounts ---');
   let coaSummary = null;
@@ -395,10 +424,58 @@ async function generateFinancialTables(version, opts = {}) {
     coaSummary = { error: coaErr.message, accountCount: 0 };
   }
 
+  // ── PHASE 3: Trial Balance (generated directly from the General Ledger) ─────
+  logger.log('--- Phase 3: Trial Balance ---');
+  let trialBalanceSummary = null;
+  try {
+    trialBalanceSummary = await generateTrialBalance(companyId, versionId, gate);
+    logger.log(`  ✓ Trial Balance: ${trialBalanceSummary.stored} account-year row(s) for FY [${trialBalanceSummary.years.join(', ')}]`);
+  } catch (tbErr) {
+    logger.warn(`  Trial Balance generation failed: ${tbErr.message}`);
+    trialBalanceSummary = { error: tbErr.message, stored: 0, years: [] };
+  }
+
+  // ── PHASE 4: Monthly Balance Sheet engine ──────────────────────────────────
+  // Opening Balance Sheet + monthly GL activity → STORED monthly balances
+  // (balance_sheet_entries, is_generated=true). These generated month-end
+  // snapshots are the authoritative Balance Sheet records; uploaded balance
+  // sheets are the opening seed + (ending) reconciliation input only.
+  logger.log('--- Phase 4: Monthly Balance Sheets ---');
+  let monthlyBsSummary = null;
+  try {
+    monthlyBsSummary = await generateMonthlyBalanceSheets(companyId, versionId, gate);
+    logger.log(`  ✓ Monthly Balance Sheets: ${monthlyBsSummary.stored} row(s) across ${monthlyBsSummary.months} month-end snapshot(s) for FY [${monthlyBsSummary.years.join(', ')}]`);
+  } catch (mbsErr) {
+    logger.warn(`  Monthly Balance Sheet generation failed: ${mbsErr.message}`);
+    monthlyBsSummary = { error: mbsErr.message, stored: 0, months: 0, years: [] };
+  }
+
+  // ── PHASE 5: Reconciliation (generated ending BS vs uploaded ending BS) ─────
+  // Only runs when an Ending Balance Sheet was uploaded. Never overwrites the
+  // generated balances — produces a separate per-account variance report.
+  logger.log('--- Phase 5: Reconciliation ---');
+  let reconciliationSummary = null;
+  try {
+    const recon = await generateReconciliation(companyId, versionId, gate);
+    reconciliationSummary = recon;
+    if (recon.ran) {
+      const s = recon.summary;
+      logger.log(`  ✓ Reconciliation (FY ${recon.year}): ${recon.stored} account(s) — ${s.matched} match, ${s.differences} differ, ${s.missingInUploaded} missing-in-uploaded, ${s.missingInGenerated} missing-in-generated`);
+    } else {
+      logger.log(`  – Reconciliation skipped (${recon.summary?.reason || 'no ending balance sheet'})`);
+    }
+  } catch (recErr) {
+    logger.warn(`  Reconciliation failed: ${recErr.message}`);
+    reconciliationSummary = { ran: false, error: recErr.message };
+  }
+
   // Step 7: Validation Results (from entry table row counts + COA spec checks)
   logger.log('--- Step 7: Validation Results ---');
   logger.log(`  Building validation rows for years=[${years.join(', ')}]`);
   const validationRows = await buildValidationResultsFromEntryTables(versionId, mappingsByCategory, years, logger);
+
+  // Phase 1 gate rows (e.g. opening-balance-sheet-missing warning) carry through.
+  if (gate.rows.length) validationRows.push(...gate.rows);
 
   // Chart of Accounts validation (null type / invalid rows / duplicates / unmapped
   // GL / multi-category). Non-fatal: a validation failure must not fail the sync.
@@ -440,6 +517,10 @@ async function generateFinancialTables(version, opts = {}) {
       extractionResults,
       chartOfAccounts: coaSummary,
       chartOfAccountsValidation: coaValidation ? coaValidation.summary : null,
+      trialBalance: trialBalanceSummary,
+      monthlyBalanceSheets: monthlyBsSummary,
+      reconciliation: reconciliationSummary,
+      documents: gate,
       message,
     },
     message,

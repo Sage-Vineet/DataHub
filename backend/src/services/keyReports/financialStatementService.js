@@ -7,9 +7,9 @@
 //       ├─ Category nodes (metadata.is_group = true)  — structural, no amounts
 //       └─ Leaf accounts  (metadata.is_group = false) — map to entry table rows
 //               │
-//               └─ coa_account_mappings  (bridge: COA id ↔ entry row name)
+//               └─ in-memory name/number map built from the COA leaves
 //                       │
-//                       └─ entry tables  (profit_loss_entries / balance_sheet_entries / GL)
+//                       └─ entry tables  (balance_sheet_entries / GL)
 //
 // Report generation flow:
 //   1. Load ALL COA accounts (leaves + category nodes) with parent_account_id
@@ -224,34 +224,27 @@ function buildTree(coaAccounts) {
 }
 
 // ─── COA mappings bridge ───────────────────────────────────────────────────────
+// The Chart of Accounts rows ARE the mapping: each leaf's source name(s) and
+// number map to its account id. (The former coa_account_mappings table was a
+// precomputed copy of exactly this — it has been removed; we build it in-memory
+// from the COA leaves, which is both authoritative and always in sync.)
 
-async function loadMappings(versionId, sourceTable) {
-  const { data, error } = await supabase
-    .from("coa_account_mappings")
-    .select("account_id, source_account_name, normalized_name, source_account_number")
-    .eq("version_id", versionId)
-    .eq("source_table", sourceTable);
-
-  if (error) {
-    console.warn(`[FinStmt][Mappings][${sourceTable}] ${error.message} — name-match fallback`);
-    return null;
-  }
-
-  const map = new Map(); // norm(name) → account_id[]
-  for (const row of (data || [])) {
-    // Apply norm() so keys always match norm(entry.account_name).
-    const key = norm(row.normalized_name || row.source_account_name);
-    if (key) {
+function buildMappings(leaves) {
+  const map = new Map(); // norm(name) → account_id[]   (+ __num__<n> keys)
+  for (const acc of leaves || []) {
+    const names = [acc.adjusted_name, acc.account_name, acc.base_account].filter(Boolean);
+    for (const name of names) {
+      const key = norm(name);
+      if (!key) continue;
       if (!map.has(key)) map.set(key, []);
-      if (!map.get(key).includes(row.account_id)) map.get(key).push(row.account_id);
+      if (!map.get(key).includes(acc.id)) map.get(key).push(acc.id);
     }
-    if (row.source_account_number) {
-      const numKey = `__num__${String(row.source_account_number).trim()}`;
+    if (acc.account_number) {
+      const numKey = `__num__${String(acc.account_number).trim()}`;
       if (!map.has(numKey)) map.set(numKey, []);
-      if (!map.get(numKey).includes(row.account_id)) map.get(numKey).push(row.account_id);
+      if (!map.get(numKey).includes(acc.id)) map.get(numKey).push(acc.id);
     }
   }
-  console.log(`[FinStmt][Mappings][${sourceTable}] ${data?.length || 0} rows → ${map.size} keys`);
   return map;
 }
 
@@ -351,9 +344,9 @@ async function buildLeafAmountMap(versionId, sourceTable, year, leaves, unmapped
   // Build fuzzy lookup once — used in both the mapping-miss path and the no-mapping fallback.
   const fuzzyLookup = buildFuzzyLookup(leaves);
 
-  // Primary: use coa_account_mappings.  Entries that miss the mapping table are
-  // tried against fuzzy matching before being declared unmapped.
-  const mappings = await loadMappings(versionId, sourceTable);
+  // Primary: name/number map built from the COA leaves. Entries that miss the
+  // map are tried against fuzzy matching before being declared unmapped.
+  const mappings = buildMappings(leaves);
   let matched = 0, missed = 0;
   if (mappings && mappings.size > 0) {
     for (const [normName, { amount, rawName, accountNumber }] of entryTotals) {
@@ -377,7 +370,7 @@ async function buildLeafAmountMap(versionId, sourceTable, year, leaves, unmapped
         }
       }
     }
-    console.log(`[FinStmt][Map][${sourceTable}] ${matched} matched (incl. fuzzy), ${missed} unmapped via coa_account_mappings`);
+    console.log(`[FinStmt][Map][${sourceTable}] ${matched} matched (incl. fuzzy), ${missed} unmapped via COA name map`);
     return amountById;
   }
 
@@ -729,15 +722,12 @@ function isBsAccount(acc) {
 // ─── Distinct years ───────────────────────────────────────────────────────────
 
 async function distinctYears(versionId) {
-  // Exclude is_generated rows from PL/BS so accumulated persisted rows never fill
-  // the query limit and push real uploaded-year rows out of the result set.
-  // Filter GL by TRANSACTION row_type to skip ACCOUNT_HEADER / BEGINNING_BALANCE /
-  // TOTAL_ROW rows (post-migration 050 rows that have null fiscal_year).
-  const [pl, bs, gl, glDateFallback] = await Promise.all([
-    supabase.from("profit_loss_entries").select("fiscal_year")
-      .eq("version_id", versionId)
-      .or("is_generated.is.null,is_generated.eq.false")
-      .limit(200000),
+  // Years are sourced from the General Ledger (the accounting source of truth) and
+  // uploaded Balance Sheets. There is no profit_loss_entries table — P&L years are
+  // implied by the GL. Exclude is_generated BS rows so accumulated generated rows
+  // never push real uploaded-year rows out. Filter GL by TRANSACTION row_type to
+  // skip ACCOUNT_HEADER / BEGINNING_BALANCE / TOTAL_ROW rows (null fiscal_year).
+  const [bs, gl, glDateFallback] = await Promise.all([
     supabase.from("balance_sheet_entries").select("fiscal_year")
       .eq("version_id", versionId)
       .or("is_generated.is.null,is_generated.eq.false")
@@ -758,24 +748,13 @@ async function distinctYears(versionId) {
       .limit(200000),
   ]);
 
-  // Log query errors (e.g. is_generated column not yet migrated) so failures are
-  // visible in server logs rather than silently producing zero rows.
-  if (pl.error)            console.warn(`[FinStmt][Years] PL query error: ${pl.error.message}`);
   if (bs.error)            console.warn(`[FinStmt][Years] BS query error: ${bs.error.message}`);
   if (gl.error)            console.warn(`[FinStmt][Years] GL query error: ${gl.error.message}`);
   if (glDateFallback.error) console.warn(`[FinStmt][Years] GL-date query error: ${glDateFallback.error.message}`);
 
-  // If the is_generated-filtered PL/BS query failed (e.g. migration 054 not yet
-  // applied to Supabase so the column doesn't exist), fall back to an unfiltered
-  // query so uploaded years are never silently excluded.
-  let plData = pl.data;
+  // If the is_generated-filtered BS query failed (e.g. migration 054 not applied),
+  // fall back to an unfiltered query so uploaded years are never silently excluded.
   let bsData = bs.data;
-  if (pl.error) {
-    const fb = await supabase.from("profit_loss_entries").select("fiscal_year")
-      .eq("version_id", versionId).limit(200000);
-    plData = fb.data;
-    if (!fb.error) console.log("[FinStmt][Years] PL unfiltered fallback succeeded");
-  }
   if (bs.error) {
     const fb = await supabase.from("balance_sheet_entries").select("fiscal_year")
       .eq("version_id", versionId).limit(200000);
@@ -784,7 +763,7 @@ async function distinctYears(versionId) {
   }
 
   const set = new Set();
-  for (const row of [...(plData || []), ...(bsData || []), ...(gl.data || [])]) {
+  for (const row of [...(bsData || []), ...(gl.data || [])]) {
     const y = Number(row.fiscal_year);
     if (y >= 1990 && y <= 2100) set.add(y);
   }
@@ -795,27 +774,15 @@ async function distinctYears(versionId) {
   }
   const years = Array.from(set).sort((a, b) => a - b);
   console.log(
-    `[FinStmt][Years] pl=${plData?.length || 0} bs=${bsData?.length || 0} ` +
+    `[FinStmt][Years] bs=${bsData?.length || 0} ` +
     `gl=${gl.data?.length || 0} glDateFallback=${glDateFallback.data?.length || 0} → [${years.join(", ")}]`,
   );
   return years;
 }
 
-// ─── Version → company helper ─────────────────────────────────────────────────
-
-async function getVersionCompanyId(versionId) {
-  const { data } = await supabase
-    .from("key_report_versions")
-    .select("company_id")
-    .eq("id", versionId)
-    .maybeSingle();
-  return data?.company_id || null;
-}
-
-// ─── Generated report persistence ────────────────────────────────────────────
-// Persist GL-derived (generated) reports back to the entry tables so the
-// carry-forward chain can reuse them on the next call without re-generating.
-// Only called when no extracted (uploaded) rows exist for the year.
+// ─── Generated-row probe ──────────────────────────────────────────────────────
+// True when the Phase-4 monthly engine has stored generated (is_generated=true)
+// Balance Sheet rows for the year — used to prefer them over uploaded balance sheets.
 
 async function hasGeneratedRows(table, versionId, year) {
   try {
@@ -830,88 +797,9 @@ async function hasGeneratedRows(table, versionId, year) {
   } catch { return false; }
 }
 
-async function persistGeneratedPl(versionId, companyId, year, plStatement) {
-  try {
-    const rows = [];
-    let sort = 0;
-    const push = (name, amount, isTotal, hierarchyLevel) =>
-      rows.push({ version_id: versionId, company_id: companyId, source_file_id: null,
-        fiscal_year: year, account_name: name, amount: safeNum(amount),
-        is_total: isTotal, hierarchy_level: hierarchyLevel, sort_order: sort++,
-        is_generated: true });
-
-    push(plStatement.revenue?.label || "Income", 0, false, 0);
-    for (const a of plStatement.revenue?.accounts || []) push(a.name, a.amount, false, 1);
-    push("Total Revenue", plStatement.revenue?.total, true, 1);
-    for (const a of plStatement.costOfSales?.accounts || []) push(a.name, a.amount, false, 1);
-    if (plStatement.costOfSales?.accounts?.length)
-      push("Total Cost of Sales", plStatement.costOfSales?.total, true, 1);
-    push("Gross Profit", plStatement.grossProfit, true, 0);
-    push(plStatement.operatingExpenses?.label || "Expenses", 0, false, 0);
-    for (const [, g] of Object.entries(plStatement.operatingExpenses?.groups || {})) {
-      push(g.label, 0, false, 1);
-      for (const a of g.accounts || []) push(a.name, a.amount, false, 2);
-      push(`Total ${g.label}`, g.total, true, 1);
-    }
-    push("Total Expenses", plStatement.operatingExpenses?.total, true, 0);
-    push("Net Income", plStatement.netIncome, true, 0);
-
-    if (!rows.length) return;
-    const { error } = await supabase.from("profit_loss_entries").insert(rows);
-    if (error) console.warn(`[FinStmt][Persist][PL][${year}] ${error.message}`);
-    else console.log(`[FinStmt][Persist][PL][${year}] ${rows.length} rows stored (is_generated=true)`);
-  } catch (err) {
-    console.warn(`[FinStmt][Persist][PL][${year}] ${err.message}`);
-  }
-}
-
-async function persistGeneratedBs(versionId, companyId, year, bsStatement) {
-  try {
-    const rows = [];
-    let sort = 0;
-    const push = (name, amount, section, isTotal) =>
-      rows.push({ version_id: versionId, company_id: companyId, source_file_id: null,
-        fiscal_year: year, as_of_date: `${year}-12-31`, account_name: name,
-        amount: safeNum(amount), section, is_total: isTotal,
-        hierarchy_level: isTotal ? 1 : 2, sort_order: sort++, is_generated: true });
-
-    // Assets
-    for (const [, sec] of Object.entries({
-      ...(bsStatement.assets?.currentAssets ? { currentAssets: bsStatement.assets.currentAssets } : {}),
-      ...(bsStatement.assets?.fixedAssets   ? { fixedAssets:   bsStatement.assets.fixedAssets   } : {}),
-      ...(bsStatement.assets?.otherAssets   ? { otherAssets:   bsStatement.assets.otherAssets   } : {}),
-    })) {
-      for (const [, g] of Object.entries(sec?.groups || {})) {
-        for (const a of g.accounts || []) push(a.name, a.amount, "assets", false);
-        push(`Total ${g.label}`, g.total, "assets", true);
-      }
-    }
-    push("Total Assets", bsStatement.totalAssets, "assets", true);
-
-    // Liabilities
-    for (const [, sec] of Object.entries({
-      ...(bsStatement.liabilities?.currentLiabilities  ? { current:  bsStatement.liabilities.currentLiabilities  } : {}),
-      ...(bsStatement.liabilities?.longTermLiabilities ? { longterm: bsStatement.liabilities.longTermLiabilities } : {}),
-    })) {
-      for (const [, g] of Object.entries(sec?.groups || {})) {
-        for (const a of g.accounts || []) push(a.name, a.amount, "liabilities", false);
-        push(`Total ${g.label}`, g.total, "liabilities", true);
-      }
-    }
-    push("Total Liabilities", bsStatement.totalLiabilities, "liabilities", true);
-
-    // Equity
-    for (const a of bsStatement.equity?.accounts || []) push(a.name, a.amount, "equity", false);
-    push("Total Equity", bsStatement.totalEquity, "equity", true);
-
-    if (!rows.length) return;
-    const { error } = await supabase.from("balance_sheet_entries").insert(rows);
-    if (error) console.warn(`[FinStmt][Persist][BS][${year}] ${error.message}`);
-    else console.log(`[FinStmt][Persist][BS][${year}] ${rows.length} rows stored (is_generated=true)`);
-  } catch (err) {
-    console.warn(`[FinStmt][Persist][BS][${year}] ${err.message}`);
-  }
-}
+// NOTE: persistGeneratedPl / persistGeneratedBs were removed. Profit & Loss is
+// generated live from the GL (never persisted); Balance Sheets are generated +
+// STORED by the Phase-4 monthly engine during sync, not lazily on read.
 
 // ─── Yearly P&L ───────────────────────────────────────────────────────────────
 
@@ -919,38 +807,34 @@ async function generateYearlyPl(versionId, year, allCoa, unmappedSet) {
   const plAccounts = allCoa.filter(isPlAccount);
   const plLeaves   = plAccounts.filter(a => !a.metadata?.is_group);
 
-  const leafAmounts = await buildLeafAmountMap(versionId, "profit_loss_entries", year, plLeaves, unmappedSet);
-
-  // If profit_loss_entries has no data for this year, fall back to GL transactions.
-  // This handles years where the P&L file was not uploaded or extraction failed.
-  let glFallbackUsed = false;
-  const hasPlData = Array.from(leafAmounts.values()).some(v => Math.abs(v) > 0.005);
-  if (!hasPlData) {
-    const gl = await loadGlAmountsByMonth(versionId, year);
-    if (gl) {
-      const glMappings  = await loadMappings(versionId, "general_ledger_entries");
-      const fuzzyLookup = buildFuzzyLookup(plLeaves);
-      for (const [normKey, { rawName, accountNumber, months: monthMap }] of gl.byAccount) {
-        const totalAmt = Array.from(monthMap.values()).reduce((s, v) => s + v, 0);
-        if (Math.abs(totalAmt) < 0.005) continue;
-        let ids = glMappings?.get(normKey);
-        if (!ids?.length && accountNumber) ids = glMappings?.get(`__num__${String(accountNumber).trim()}`);
-        if (ids?.length) {
-          for (const id of ids) {
-            if (leafAmounts.has(id)) leafAmounts.set(id, (leafAmounts.get(id) || 0) + totalAmt / ids.length);
-          }
+  // Profit & Loss is generated ENTIRELY from the General Ledger (client
+  // requirement — there is no profit_loss_entries table). Map each GL account's
+  // yearly movement onto its P&L leaf via the COA name/number map + fuzzy fallback.
+  const leafAmounts = new Map(plLeaves.map(a => [a.id, 0]));
+  const gl = await loadGlAmountsByMonth(versionId, year);
+  if (gl) {
+    const glMappings  = buildMappings(plLeaves);
+    const fuzzyLookup = buildFuzzyLookup(plLeaves);
+    for (const [normKey, { rawName, accountNumber, months: monthMap }] of gl.byAccount) {
+      const totalAmt = Array.from(monthMap.values()).reduce((s, v) => s + v, 0);
+      if (Math.abs(totalAmt) < 0.005) continue;
+      let ids = glMappings?.get(normKey);
+      if (!ids?.length && accountNumber) ids = glMappings?.get(`__num__${String(accountNumber).trim()}`);
+      if (ids?.length) {
+        for (const id of ids) {
+          if (leafAmounts.has(id)) leafAmounts.set(id, (leafAmounts.get(id) || 0) + totalAmt / ids.length);
+        }
+      } else {
+        const match = fuzzyMatch(fuzzyLookup, rawName, accountNumber);
+        if (match?.id && leafAmounts.has(match.id)) {
+          leafAmounts.set(match.id, (leafAmounts.get(match.id) || 0) + totalAmt);
         } else {
-          const match = fuzzyMatch(fuzzyLookup, rawName, accountNumber);
-          if (match?.id && leafAmounts.has(match.id)) {
-            leafAmounts.set(match.id, (leafAmounts.get(match.id) || 0) + totalAmt);
-          } else {
-            unmappedSet.add(normKey);
-          }
+          unmappedSet.add(normKey);
         }
       }
-      glFallbackUsed = true;
-      console.log(`[FinStmt][PL][${year}] GL fallback: no profit_loss_entries found, derived from GL transactions`);
     }
+  } else {
+    console.warn(`[FinStmt][PL][${year}] no GL transactions — P&L renders zero (GL is the only P&L source)`);
   }
 
   const { byId, roots, leaves } = buildTree(plAccounts);
@@ -962,16 +846,6 @@ async function generateYearlyPl(versionId, year, allCoa, unmappedSet) {
 
   const stmt = buildPlStatement(leaves, byId);
   console.log(`[FinStmt][PL][${year}] rev=${stmt.revenue.total} cogs=${stmt.costOfSales.total} gp=${stmt.grossProfit} exp=${stmt.operatingExpenses.total} ni=${stmt.netIncome}`);
-
-  // Persist GL-generated P&L so subsequent calls skip GL re-processing.
-  // Only store if not already persisted (is_generated rows exist = skip).
-  if (glFallbackUsed) {
-    const alreadyGenerated = await hasGeneratedRows("profit_loss_entries", versionId, year);
-    if (!alreadyGenerated) {
-      const companyId = await getVersionCompanyId(versionId);
-      if (companyId) await persistGeneratedPl(versionId, companyId, year, stmt);
-    }
-  }
 
   return { year: String(year), periodLabel: `FY ${year}`, statement: stmt };
 }
@@ -1196,7 +1070,7 @@ async function generateMonthlyPl(versionId, year, allCoa, unmappedSet, yearlySta
 
   const plAccounts  = allCoa.filter(isPlAccount);
   const plLeaves    = plAccounts.filter(a => !a.metadata?.is_group);
-  const glMappings  = await loadMappings(versionId, "general_ledger_entries");
+  const glMappings  = buildMappings(plLeaves);
   const fuzzyLookup = buildFuzzyLookup(plLeaves);
   const months      = Array.from(gl.monthsFound).sort((a, b) => a - b);
 
@@ -1288,11 +1162,21 @@ async function generateYearlyBs(versionId, year, allCoa, unmappedSet) {
   const bsLeaves   = bsAccounts.filter(a => !a.metadata?.is_group);
 
   // Yearly BS = year-end snapshot (latest as_of_date for this year).
-  const { data: dateRows } = await supabase
-    .from("balance_sheet_entries")
-    .select("as_of_date")
-    .eq("version_id", versionId)
-    .eq("fiscal_year", year)
+  // Phase 4: prefer the generated monthly snapshots (authoritative); the latest
+  // (December) generated snapshot is the year-end Balance Sheet. Uploaded balance
+  // sheets are the opening seed + reconciliation input only.
+  const hasGen = await hasGeneratedRows("balance_sheet_entries", versionId, year);
+  const genFilter = (q) => hasGen
+    ? q.eq("is_generated", true)
+    : q.or("is_generated.is.null,is_generated.eq.false");
+
+  const { data: dateRows } = await genFilter(
+    supabase
+      .from("balance_sheet_entries")
+      .select("as_of_date")
+      .eq("version_id", versionId)
+      .eq("fiscal_year", year),
+  )
     .order("as_of_date", { ascending: false })
     .limit(1);
   const latestDate = dateRows?.[0]?.as_of_date || null;
@@ -1302,10 +1186,12 @@ async function generateYearlyBs(versionId, year, allCoa, unmappedSet) {
   // Load ALL rows (including is_total=true) so Net Income in the equity section of
   // an uploaded BS is not silently dropped. The is_total filter is applied in code below,
   // where we make an exception for the Net Income line.
-  let query = supabase
-    .from("balance_sheet_entries")
-    .select("account_name, account_number, amount, is_total")
-    .eq("version_id", versionId);
+  let query = genFilter(
+    supabase
+      .from("balance_sheet_entries")
+      .select("account_name, account_number, amount, is_total")
+      .eq("version_id", versionId),
+  );
   query = latestDate ? query.eq("as_of_date", latestDate) : query.eq("fiscal_year", year);
 
   const { data: entries, error } = await query.limit(200000);
@@ -1373,7 +1259,7 @@ async function generateYearlyBs(versionId, year, allCoa, unmappedSet) {
       if (isNI) hasUploadedNetIncome = true;
     }
 
-    const bsMappings  = await loadMappings(versionId, "balance_sheet_entries");
+    const bsMappings  = buildMappings(bsLeaves);
     const fuzzyLookup = buildFuzzyLookup(bsLeaves);
     const mappedKeys  = new Set();
 
@@ -1416,17 +1302,11 @@ async function generateYearlyBs(versionId, year, allCoa, unmappedSet) {
   if (syntheticLeaves.length) {
     console.log(`[FinStmt][BS][${year}] ${syntheticLeaves.length} synthetic leaf(ves) added for unmapped entries: ${syntheticLeaves.map(l => l.account_name).join(', ')}`);
   }
-  console.log(`[FinStmt][BS][${year}] asOf=${latestDate} assets=${stmt.totalAssets} liab=${stmt.totalLiabilities} equity=${stmt.totalEquity} balanced=${stmt.balanced}`);
+  console.log(`[FinStmt][BS][${year}] asOf=${latestDate} assets=${stmt.totalAssets} liab=${stmt.totalLiabilities} equity=${stmt.totalEquity} balanced=${stmt.balanced} glFallback=${glFallbackUsed}`);
 
-  // Persist GL-generated BS so subsequent calls skip GL re-processing.
-  // Only store if not already persisted (is_generated rows exist = skip).
-  if (glFallbackUsed) {
-    const alreadyGenerated = await hasGeneratedRows("balance_sheet_entries", versionId, year);
-    if (!alreadyGenerated) {
-      const companyId = await getVersionCompanyId(versionId);
-      if (companyId) await persistGeneratedBs(versionId, companyId, year, stmt);
-    }
-  }
+  // NOTE: Balance Sheets are generated + STORED by the Phase-4 monthly engine during
+  // sync (keyReportAccountingService.generateMonthlyBalanceSheets). This read path no
+  // longer persists — it only renders. (glFallbackUsed is retained for diagnostics.)
 
   return { year: String(year), asOfDate: latestDate || `${year}-12-31`, periodLabel: `FY ${year}`, statement: stmt, hasUploadedNetIncome };
 }
@@ -1519,12 +1399,19 @@ async function generateMonthlyBs(versionId, year, allCoa, unmappedSet) {
   const bsAccounts = allCoa.filter(isBsAccount);
   const bsLeaves   = bsAccounts.filter(a => !a.metadata?.is_group);
 
-  const { data: allEntries, error } = await supabase
+  // Phase 4: prefer the generated monthly snapshots (authoritative). They provide
+  // one as_of_date per month, which is exactly the month dimension this view wants.
+  const hasGen = await hasGeneratedRows("balance_sheet_entries", versionId, year);
+  let entriesQuery = supabase
     .from("balance_sheet_entries")
     .select("account_name, account_number, amount, as_of_date")
     .eq("version_id", versionId)
     .eq("fiscal_year", year)
-    .or("is_total.eq.false,is_total.is.null")
+    .or("is_total.eq.false,is_total.is.null");
+  entriesQuery = hasGen
+    ? entriesQuery.eq("is_generated", true)
+    : entriesQuery.or("is_generated.is.null,is_generated.eq.false");
+  const { data: allEntries, error } = await entriesQuery
     .order("as_of_date", { ascending: true })
     .limit(200000);
   if (error) throw error;
@@ -1539,7 +1426,7 @@ async function generateMonthlyBs(versionId, year, allCoa, unmappedSet) {
   // Only one (or zero) distinct dates → fall back to GL carry-forward monthly snapshots.
   if (byDate.size <= 1) return generateMonthlyBsFromGL(versionId, year, allCoa, bsLeaves, unmappedSet);
 
-  const bsMappings  = await loadMappings(versionId, "balance_sheet_entries");
+  const bsMappings  = buildMappings(bsLeaves);
   const fuzzyLookup = buildFuzzyLookup(bsLeaves);
   const result      = [];
 

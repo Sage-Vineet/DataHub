@@ -631,16 +631,9 @@ async function getActiveLinkedDocuments(companyId, reportCategory) {
 
 // ---- Extracted data viewer --------------------------------------------------
 
+// NOTE: no `profit_loss` entry — there is no profit_loss_entries table. P&L is
+// generated live from the General Ledger and is not browsable as raw extracted data.
 const ENTRY_TABLE_CONFIG = {
-  profit_loss: {
-    table: 'profit_loss_entries',
-    yearCol: 'fiscal_year',
-    yearIsDate: false,
-    searchCols: ['account_name', 'account_number', 'category'],
-    selectCols: 'id,fiscal_year,account_name,account_number,account_type,category,sub_category,amount,hierarchy_level,is_total,sort_order',
-    orderCol: 'sort_order',
-    orderSecondary: 'id',
-  },
   balance_sheet: {
     table: 'balance_sheet_entries',
     yearCol: 'fiscal_year',

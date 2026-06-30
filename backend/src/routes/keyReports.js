@@ -486,6 +486,30 @@ router.get("/key-reports/versions/:versionId/reports/balance-sheet", async (req,
   }
 });
 
+router.get("/key-reports/versions/:versionId/reports/trial-balance", async (req, res) => {
+  try {
+    const version = await loadVersionWithAccess(req, res);
+    if (!version) return;
+    const { year } = parseReportQuery(req.query);
+    const result = await keyReportReportService.getTrialBalanceReport(version.id, { year });
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    return handleError(res, error, "GET reports/trial-balance");
+  }
+});
+
+router.get("/key-reports/versions/:versionId/reports/reconciliation", async (req, res) => {
+  try {
+    const version = await loadVersionWithAccess(req, res);
+    if (!version) return;
+    const { year } = parseReportQuery(req.query);
+    const result = await keyReportReportService.getReconciliationReport(version.id, { year });
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    return handleError(res, error, "GET reports/reconciliation");
+  }
+});
+
 router.get("/key-reports/versions/:versionId/reports/cashflow", async (req, res) => {
   try {
     const version = await loadVersionWithAccess(req, res);
