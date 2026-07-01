@@ -88,6 +88,22 @@ function expenseGroupFor(name) {
   return "General and Administrative";
 }
 
+// ── Equity group (the standardized level under "Total Equity") ────────────────
+// Retained earnings + current/prior year net income roll up under a single
+// "Retained Earnings" group so Net Income nests correctly in Equity (the leaf
+// "Current Year Net Income" sits under "Retained Earnings"). Contributed capital
+// (stock / paid-in / member / partner capital) rolls up under "Contributed Capital".
+function equityGroupFor(name) {
+  const n = String(name || "").toLowerCase();
+  if (/retained earnings|net income|net loss|current year|prior year earnings|accumulated (?:deficit|earnings)/.test(n)) {
+    return "Retained Earnings";
+  }
+  if (/common stock|preferred stock|capital stock|treasury stock|paid.?in capital|contributed capital|capital contribution|owner'?s? (?:equity|capital)|member'?s? (?:equity|capital)|partner'?s? (?:equity|capital)/.test(n)) {
+    return "Contributed Capital";
+  }
+  return null;
+}
+
 // ── Asset sub-category + group ────────────────────────────────────────────────
 function assetSubAndGroup(name) {
   const n = String(name || "").toLowerCase();
@@ -171,8 +187,11 @@ function classifyStandardized(account) {
   } else if (type === "liability") {
     const [sub, group] = liabilitySubAndGroup(accountName, account.bsSection);
     labels.push(sub, group);
+  } else if (type === "equity") {
+    const group = equityGroupFor(accountName);
+    if (group) labels.push(group);
   }
-  // income / equity: prefix only — base account is appended directly afterwards.
+  // income: prefix only — base account is appended directly afterwards.
 
   // Drop any label that just repeats the one immediately above it.
   // The STANDARD_PREFIX no longer has intentional duplicates (the old
@@ -267,6 +286,7 @@ module.exports = {
   STANDARD_PREFIX,
   STATEMENT_BY_TYPE,
   expenseGroupFor,
+  equityGroupFor,
   assetSubAndGroup,
   liabilitySubAndGroup,
 };
