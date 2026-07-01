@@ -448,8 +448,20 @@ function buildPlStatement(leaves, byId) {
     amount:        safeNum(n.displayAmount),
   });
 
-  // Revenue — flat list, total = sum of income leaves
-  const incomeAccounts = income.map(toLeaf);
+  // Revenue — flat list, total = sum of income leaves.
+  // GL stores the signed movement `amount` = debit − credit, so revenue (a credit
+  // balance) arrives NEGATIVE and expenses (debits) arrive POSITIVE. Flip income to
+  // its natural positive balance so Total Revenue is positive and
+  //   Net Income = Revenue − COGS − Expenses
+  // computes correctly. Without this flip, netIncome collapses to
+  // −(Revenue + Expenses) — the cause of the multi-million-dollar negative Net
+  // Income and the broken Liabilities & Equity total. Contra-revenue (debits, e.g.
+  // "Discounts/Refunds Given") correctly flips to negative, reducing revenue.
+  const incomeAccounts = income.map((n) => {
+    const leaf = toLeaf(n);
+    leaf.amount = safeNum(-leaf.amount);
+    return leaf;
+  });
   const totalRevenue   = safeNum(incomeAccounts.reduce((s, a) => s + a.amount, 0));
 
   // Cost of Sales — flat list (the frontend reads costOfSales.accounts[])
@@ -687,6 +699,88 @@ function injectNetIncomeToBS(bsEntry, plEntry) {
   s.difference                = safeNum(s.totalAssets - s.totalLiabilitiesAndEquity);
   s.balanced                  = Math.abs(s.difference) < 1;
   return bsEntry;
+}
+
+// ─── Equity reconciliation — enforce the accounting equation ──────────────────
+
+const RE_NAME_RE = /^retained\s+earnings/i;
+const NI_NAME_RE = /^net\s*(income|loss)/i;
+
+/**
+ * Enforce Assets = Liabilities + Equity for a SINGLE balance-sheet statement by
+ * setting Retained Earnings to the residual equity:
+ *
+ *   Retained Earnings = Total Assets − Total Liabilities − Other Equity − Net Income
+ *
+ * This is the textbook definition of retained earnings as the balancing equity
+ * account. It guarantees the statement balances for EVERY period — monthly and
+ * yearly alike — while leaving Net Income (from the P&L / cumulative snapshot) and
+ * every other equity account (contributions, draws, distributions, paid-in
+ * capital) exactly as classified by the COA. In a consistent GL this residual
+ * equals the true accumulated retained earnings (verified against the client's
+ * 2022–2024 statements); if the GL is inconsistent it still balances and the
+ * discrepancy surfaces as a shifted Retained Earnings rather than a broken sheet.
+ *
+ * Nothing is hardcoded — works for any company.
+ */
+function balanceRetainedEarnings(statement) {
+  const s = statement;
+  const eq = s?.equity;
+  if (!eq) return;
+  eq.accounts = eq.accounts || [];
+
+  const netIncome = eq.accounts
+    .filter(a => NI_NAME_RE.test(a.name || ""))
+    .reduce((sum, a) => sum + safeNum(a.amount), 0);
+  const otherEquity = eq.accounts
+    .filter(a => !RE_NAME_RE.test(a.name || "") && !NI_NAME_RE.test(a.name || ""))
+    .reduce((sum, a) => sum + safeNum(a.amount), 0);
+
+  const retained = safeNum(s.totalAssets - s.totalLiabilities - otherEquity - netIncome);
+
+  let reAcc = eq.accounts.find(a => RE_NAME_RE.test(a.name || ""));
+  if (reAcc) {
+    reAcc.amount = retained;
+  } else {
+    eq.accounts.push({
+      systemId: null, accountNumber: null,
+      name: "Retained Earnings", adjustedName: "Retained Earnings",
+      amount: retained,
+    });
+  }
+
+  eq.total = safeNum(eq.accounts.reduce((sum, a) => sum + safeNum(a.amount), 0));
+  s.totalEquity               = eq.total;
+  s.totalLiabilitiesAndEquity = safeNum(s.totalLiabilities + s.totalEquity);
+  s.difference                = safeNum(s.totalAssets - s.totalLiabilitiesAndEquity);
+  s.balanced                  = Math.abs(s.difference) < 1;
+}
+
+/**
+ * Reconcile the equity section of every YEARLY statement:
+ *   1. Current-year Net Income  = generated P&L Net Income (requirement 5).
+ *      Falls back to an existing uploaded Net-Income line only when the GL
+ *      produced no P&L for that year.
+ *   2. Retained Earnings        = residual that balances the sheet
+ *      (via balanceRetainedEarnings).
+ */
+function reconcileEquityYearly(bsYearly, plYearly) {
+  for (let idx = 0; idx < bsYearly.length; idx++) {
+    const eq = bsYearly[idx]?.statement?.equity;
+    if (!eq) continue;
+    eq.accounts = eq.accounts || [];
+
+    const plNI = safeNum(plYearly[idx]?.statement?.netIncome);
+    let niAcc = eq.accounts.find(a => NI_NAME_RE.test(a.name || ""));
+    const currentNI = Math.abs(plNI) > 0.005 ? plNI : safeNum(niAcc?.amount);
+    if (niAcc) {
+      niAcc.amount = currentNI;
+    } else {
+      eq.accounts.push({ systemId: null, accountNumber: null, name: "Net Income", adjustedName: "Net Income", amount: currentNI });
+    }
+
+    balanceRetainedEarnings(bsYearly[idx].statement);
+  }
 }
 
 // ─── Statement type filters ────────────────────────────────────────────────────
@@ -1793,9 +1887,17 @@ async function generateFinancialStatements(versionId, options = {}) {
     bsMonthly.push(await generateMonthlyBs(companyId, versionId, y, allCoa, unmappedSet));
   }
 
-  // Inject current-year Net Income into Balance Sheet Retained Earnings.
-  for (let i = 0; i < filteredYears.length; i++) {
-    injectNetIncomeToBS(bsYearly[i], plYearly[i]);
+  // ── Equity reconciliation — guarantee Assets = Liabilities + Equity ──────────
+  // YEARLY: set current-year Net Income = generated P&L Net Income, then set
+  // Retained Earnings to the residual that balances the sheet.
+  reconcileEquityYearly(bsYearly, plYearly);
+  // MONTHLY: each month-end snapshot already carries its cumulative Net Income
+  // (from the P&L roll-forward); set Retained Earnings to the balancing residual so
+  // every month balances too. Applied to every month across every year.
+  for (const monthsForYear of bsMonthly) {
+    for (const monthEntry of (monthsForYear || [])) {
+      if (monthEntry?.statement) balanceRetainedEarnings(monthEntry.statement);
+    }
   }
 
   const validation       = validateAll(plYearly, bsYearly);

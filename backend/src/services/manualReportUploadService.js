@@ -15,6 +15,7 @@ const {
   buildBankResponseShape,
 } = require("./bankStatementExtractor");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { getGeminiModels } = require("../config/geminiModels");
 
 const PDF_WORKER_PATH = path.join(__dirname, "../workers/pdfParser.js");
 const PDF_PARSE_TIMEOUT_MS = 30000;
@@ -66,7 +67,9 @@ function _clearManualUploadProgress(companyId) {
    Works for both text-based and scanned/image-based PDFs.
 ========================================================= */
 
-const TAX_GEMINI_MODELS = ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash"];
+// Dynamically selected via GEMINI_MODELS / GEMINI_MODEL env; this array is the
+// default fallback order used when no override is configured.
+const TAX_GEMINI_MODELS = getGeminiModels(["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash"]);
 const _taxExtractCache = new Map();
 const _taxExtractSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -3076,7 +3079,7 @@ async function extractAndCacheReportAsOfDate(reportRow) {
   if (!asOfDate && isPdf && buffer?.length && process.env.GEMINI_API_KEY) {
     try {
       const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-      const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-lite" });
+      const model = genAI.getGenerativeModel({ model: TAX_GEMINI_MODELS[0] });
       const result = await model.generateContent([
         {
           inlineData: {
