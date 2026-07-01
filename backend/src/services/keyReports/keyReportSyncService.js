@@ -14,6 +14,7 @@
  */
 
 const { supabase } = require('../../db');
+const { fetchAllRows } = require('./pagedFetch');
 
 const taxReturnExtractionService = require('./taxReturnExtractionService');
 const bankStatementExtractionService = require('./bankStatementExtractionService');
@@ -138,13 +139,14 @@ function groupMappingsByCategory(allMappings) {
  * extracted from the first 4 chars of the ISO string.
  */
 async function getDistinctYearsFromTable(table, versionId, yearCol, isDateCol) {
-  const { data, error } = await supabase
-    .from(table)
-    .select(yearCol)
-    .eq('version_id', versionId)
-    .limit(10000);   // dedup in JS; 10k rows covers any realistic Key Reports dataset
-
-  if (error || !data) return new Set();
+  // Must page via fetchAllRows (.range()) — a single .limit(N) is silently capped
+  // at Supabase/PostgREST's server-side row ceiling (commonly 1000) regardless of
+  // N, which was truncating multi-thousand-row General Ledgers and losing years.
+  let data;
+  try {
+    data = await fetchAllRows(() => supabase.from(table).select(yearCol).eq('version_id', versionId));
+  } catch (_e) { return new Set(); }
+  if (!data) return new Set();
 
   const years = new Set();
   for (const row of data) {

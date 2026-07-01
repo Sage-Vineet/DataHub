@@ -23,6 +23,7 @@
 
 const { supabase } = require("../../db");
 const { getCashflowReport, bsBalancesForYear, aggregateGLForBSByMonth } = require("./keyReportReportService");
+const { fetchAllRows } = require("./pagedFetch");
 // ensureAccountExistsInCoa intentionally not imported — COA must be complete
 // before report generation begins (ensureCoaComplete runs in Phase 2c).
 
@@ -299,15 +300,15 @@ function fuzzyMatch(lookup, name, accountNumber) {
 async function buildLeafAmountMap(_companyId, versionId, sourceTable, year, _allCoa, leaves, unmappedSet) {
   const amountById = new Map(leaves.map(a => [a.id, 0]));
 
-  let query = supabase
-    .from(sourceTable)
-    .select("account_name, account_number, amount")
-    .eq("version_id", versionId)
-    .or("is_total.eq.false,is_total.is.null");
-  if (year) query = query.eq("fiscal_year", year);
-
-  const { data: entries, error } = await query.limit(200000);
-  if (error) throw new Error(`Entry load (${sourceTable}): ${error.message}`);
+  const entries = await fetchAllRows(() => {
+    let q = supabase
+      .from(sourceTable)
+      .select("account_name, account_number, amount")
+      .eq("version_id", versionId)
+      .or("is_total.eq.false,is_total.is.null");
+    if (year) q = q.eq("fiscal_year", year);
+    return q;
+  });
   if (!entries?.length) {
     console.warn(`[FinStmt][Entries][${sourceTable}] 0 rows for version=${versionId} year=${year}`);
     return amountById;
@@ -730,55 +731,72 @@ async function distinctYears(versionId) {
   // implied by the GL. Exclude is_generated BS rows so accumulated generated rows
   // never push real uploaded-year rows out. Filter GL by TRANSACTION row_type to
   // skip ACCOUNT_HEADER / BEGINNING_BALANCE / TOTAL_ROW rows (null fiscal_year).
-  const [bs, gl, glDateFallback] = await Promise.all([
-    supabase.from("balance_sheet_entries").select("fiscal_year")
-      .eq("version_id", versionId)
-      .or("is_generated.is.null,is_generated.eq.false")
-      .limit(200000),
-    supabase.from("general_ledger_entries").select("fiscal_year")
-      .eq("version_id", versionId)
-      .or("row_type.eq.TRANSACTION,row_type.is.null")
-      .not("fiscal_year", "is", null)
-      .limit(200000),
+  //
+  // IMPORTANT: every one of these reads uses fetchAllRows (.range() pagination),
+  // never a bare .limit(N) — Supabase/PostgREST caps a single query response at
+  // its server-side "Max Rows" setting (commonly 1000) regardless of the client
+  // .limit() value, which was silently truncating multi-thousand-row General
+  // Ledgers to their first page and losing every year after the first ~1000 rows.
+  let bsData;
+  try {
+    bsData = await fetchAllRows(() =>
+      supabase.from("balance_sheet_entries").select("fiscal_year")
+        .eq("version_id", versionId)
+        .or("is_generated.is.null,is_generated.eq.false"),
+    );
+  } catch (err) {
+    console.warn(`[FinStmt][Years] BS query error: ${err.message} — falling back to unfiltered`);
+    bsData = await fetchAllRows(() =>
+      supabase.from("balance_sheet_entries").select("fiscal_year").eq("version_id", versionId),
+    );
+    console.log("[FinStmt][Years] BS unfiltered fallback succeeded");
+  }
+
+  const [glRows, glDateFallbackRows] = await Promise.all([
+    fetchAllRows(() =>
+      supabase.from("general_ledger_entries")
+        .select("fiscal_year, source_file_id, account_name")
+        .eq("version_id", versionId)
+        .or("row_type.eq.TRANSACTION,row_type.is.null")
+        .not("fiscal_year", "is", null),
+    ),
     // Fallback: GL rows where fiscal_year is null but transaction_date carries the
     // year. Handles GL files extracted before migration 050 or where the extraction
     // failed to assign a fiscal_year (e.g. 2025 GL with year-detection gap).
-    supabase.from("general_ledger_entries").select("transaction_date")
-      .eq("version_id", versionId)
-      .is("fiscal_year", null)
-      .not("transaction_date", "is", null)
-      .or("row_type.eq.TRANSACTION,row_type.is.null")
-      .limit(200000),
+    fetchAllRows(() =>
+      supabase.from("general_ledger_entries").select("transaction_date")
+        .eq("version_id", versionId)
+        .is("fiscal_year", null)
+        .not("transaction_date", "is", null)
+        .or("row_type.eq.TRANSACTION,row_type.is.null"),
+    ),
   ]);
 
-  if (bs.error)            console.warn(`[FinStmt][Years] BS query error: ${bs.error.message}`);
-  if (gl.error)            console.warn(`[FinStmt][Years] GL query error: ${gl.error.message}`);
-  if (glDateFallback.error) console.warn(`[FinStmt][Years] GL-date query error: ${glDateFallback.error.message}`);
-
-  // If the is_generated-filtered BS query failed (e.g. migration 054 not applied),
-  // fall back to an unfiltered query so uploaded years are never silently excluded.
-  let bsData = bs.data;
-  if (bs.error) {
-    const fb = await supabase.from("balance_sheet_entries").select("fiscal_year")
-      .eq("version_id", versionId).limit(200000);
-    bsData = fb.data;
-    if (!fb.error) console.log("[FinStmt][Years] BS unfiltered fallback succeeded");
-  }
-
   const set = new Set();
-  for (const row of [...(bsData || []), ...(gl.data || [])]) {
+  for (const row of [...(bsData || []), ...glRows]) {
     const y = Number(row.fiscal_year);
     if (y >= 1990 && y <= 2100) set.add(y);
   }
   // Infer fiscal years from transaction_date for GL rows that have no fiscal_year set.
-  for (const row of (glDateFallback.data || [])) {
+  for (const row of glDateFallbackRows) {
     const y = parseInt(String(row.transaction_date || "").slice(0, 4), 10);
     if (y >= 1990 && y <= 2100) set.add(y);
   }
   const years = Array.from(set).sort((a, b) => a - b);
+
+  // Diagnostics: total GL rows retrieved, distinct fiscal years, distinct source
+  // file IDs, distinct account count — printed every time so a truncated read is
+  // immediately visible in the logs instead of silently producing missing years.
+  const glFiscalYears = Array.from(new Set(glRows.map((r) => r.fiscal_year))).sort((a, b) => a - b);
+  const distinctSourceFiles = new Set(glRows.map((r) => r.source_file_id).filter(Boolean));
+  const distinctAccounts = new Set(glRows.map((r) => String(r.account_name || "").trim()).filter(Boolean));
+  console.log(
+    `[FinStmt][Years] GL totalRows=${glRows.length} distinctFiscalYears=[${glFiscalYears.join(",")}] ` +
+    `distinctSourceFileIds=${distinctSourceFiles.size} distinctAccounts=${distinctAccounts.size}`,
+  );
   console.log(
     `[FinStmt][Years] bs=${bsData?.length || 0} ` +
-    `gl=${gl.data?.length || 0} glDateFallback=${glDateFallback.data?.length || 0} → [${years.join(", ")}]`,
+    `gl=${glRows.length} glDateFallback=${glDateFallbackRows.length} → [${years.join(", ")}]`,
   );
   return years;
 }
@@ -871,16 +889,20 @@ async function generateYearlyPl(_companyId, versionId, year, allCoa, unmappedSet
 async function generateMonthlyPlFromYearly(versionId, year, yearlyStatement) {
   const yearlyNI = safeNum(yearlyStatement?.netIncome);
 
-  const { data: bsEntries, error } = await supabase
-    .from("balance_sheet_entries")
-    .select("account_name, amount, as_of_date")
-    .eq("version_id", versionId)
-    .eq("fiscal_year", year)
-    .or("is_total.eq.false,is_total.is.null")
-    .order("as_of_date", { ascending: true })
-    .limit(200000);
+  let bsEntries;
+  try {
+    bsEntries = await fetchAllRows(() =>
+      supabase
+        .from("balance_sheet_entries")
+        .select("account_name, amount, as_of_date")
+        .eq("version_id", versionId)
+        .eq("fiscal_year", year)
+        .or("is_total.eq.false,is_total.is.null")
+        .order("as_of_date", { ascending: true }),
+    );
+  } catch (_e) { return []; }
 
-  if (error || !bsEntries?.length) return [];
+  if (!bsEntries?.length) return [];
 
   const NI_KW  = /net.*(income|loss)/i;
   // Step 1: Collect every distinct as_of_date AND its YTD Net Income if present.
@@ -1019,18 +1041,20 @@ async function loadGlAmountsByMonth(versionId, year) {
   // rows that were extracted before the TRANSACTION / ACCOUNT_HEADER enum was added.
   // Also include rows where fiscal_year is null but transaction_date falls in `year`
   // (handles GL files where year-detection failed during extraction).
-  const { data, error } = await supabase
-    .from("general_ledger_entries")
-    .select("account_name, account_number, amount, transaction_date, fiscal_year")
-    .eq("version_id", versionId)
-    .or(
-      `fiscal_year.eq.${year},` +
-      `and(fiscal_year.is.null,transaction_date.gte.${year}-01-01,transaction_date.lte.${year}-12-31)`,
-    )
-    .or("row_type.eq.TRANSACTION,row_type.is.null")
-    .limit(200000);
-
-  if (error) { console.warn(`[FinStmt][GL] ${error.message}`); return null; }
+  let data;
+  try {
+    data = await fetchAllRows(() =>
+      supabase
+        .from("general_ledger_entries")
+        .select("account_name, account_number, amount, transaction_date, fiscal_year")
+        .eq("version_id", versionId)
+        .or(
+          `fiscal_year.eq.${year},` +
+          `and(fiscal_year.is.null,transaction_date.gte.${year}-01-01,transaction_date.lte.${year}-12-31)`,
+        )
+        .or("row_type.eq.TRANSACTION,row_type.is.null"),
+    );
+  } catch (err) { console.warn(`[FinStmt][GL] ${err.message}`); return null; }
   if (!data?.length) return null;
 
   // norm(name) → { rawName, accountNumber, months: Map<month, amount>, vendors: Map<vendorName, Map<month, amount>> }
@@ -1053,7 +1077,7 @@ async function loadGlAmountsByMonth(versionId, year) {
     acc.months.set(month, (acc.months.get(month) || 0) + safeNum(row.amount));
   }
 
-  console.log(`[FinStmt][GL] ${data.length} rows → ${byAccount.size} accounts, months=[${Array.from(monthsFound).sort().join(",")}]`);
+  console.log(`[FinStmt][GL] FY${year}: ${data.length} rows (fully paginated) → ${byAccount.size} accounts, months=[${Array.from(monthsFound).sort().join(",")}]`);
   return monthsFound.size ? { byAccount, monthsFound } : null;
 }
 
@@ -1199,16 +1223,15 @@ async function generateYearlyBs(_companyId, versionId, year, allCoa, unmappedSet
   // Load ALL rows (including is_total=true) so Net Income in the equity section of
   // an uploaded BS is not silently dropped. The is_total filter is applied in code below,
   // where we make an exception for the Net Income line.
-  let query = genFilter(
-    supabase
-      .from("balance_sheet_entries")
-      .select("account_name, account_number, amount, is_total")
-      .eq("version_id", versionId),
-  );
-  query = latestDate ? query.eq("as_of_date", latestDate) : query.eq("fiscal_year", year);
-
-  const { data: entries, error } = await query.limit(200000);
-  if (error) throw new Error(`BS entries: ${error.message}`);
+  const entries = await fetchAllRows(() => {
+    let q = genFilter(
+      supabase
+        .from("balance_sheet_entries")
+        .select("account_name, account_number, amount, is_total")
+        .eq("version_id", versionId),
+    );
+    return latestDate ? q.eq("as_of_date", latestDate) : q.eq("fiscal_year", year);
+  });
 
   let hasUploadedNetIncome = false;
   let glFallbackUsed       = false;
@@ -1390,19 +1413,18 @@ async function generateMonthlyBs(companyId, versionId, year, allCoa, unmappedSet
   // Phase 4: prefer the generated monthly snapshots (authoritative). They provide
   // one as_of_date per month, which is exactly the month dimension this view wants.
   const hasGen = await hasGeneratedRows("balance_sheet_entries", versionId, year);
-  let entriesQuery = supabase
-    .from("balance_sheet_entries")
-    .select("account_name, account_number, amount, as_of_date")
-    .eq("version_id", versionId)
-    .eq("fiscal_year", year)
-    .or("is_total.eq.false,is_total.is.null");
-  entriesQuery = hasGen
-    ? entriesQuery.eq("is_generated", true)
-    : entriesQuery.or("is_generated.is.null,is_generated.eq.false");
-  const { data: allEntries, error } = await entriesQuery
-    .order("as_of_date", { ascending: true })
-    .limit(200000);
-  if (error) throw error;
+  const allEntries = await fetchAllRows(() => {
+    let q = supabase
+      .from("balance_sheet_entries")
+      .select("account_name, account_number, amount, as_of_date")
+      .eq("version_id", versionId)
+      .eq("fiscal_year", year)
+      .or("is_total.eq.false,is_total.is.null");
+    q = hasGen
+      ? q.eq("is_generated", true)
+      : q.or("is_generated.is.null,is_generated.eq.false");
+    return q.order("as_of_date", { ascending: true });
+  });
 
   const byDate = new Map();
   for (const e of (allEntries || [])) {
@@ -1514,16 +1536,20 @@ async function generateYearlyCf(versionId, year) {
 // Fallback when GL has no transaction_date: derive monthly CF from period-over-period
 // balance_sheet_entries deltas (same data source that makes BS monthly work).
 async function generateMonthlyCfFromBSDeltas(versionId, year) {
-  const { data: entries, error } = await supabase
-    .from("balance_sheet_entries")
-    .select("account_name, amount, as_of_date")
-    .eq("version_id", versionId)
-    .eq("fiscal_year", year)
-    .or("is_total.eq.false,is_total.is.null")
-    .order("as_of_date", { ascending: true })
-    .limit(200000);
+  let entries;
+  try {
+    entries = await fetchAllRows(() =>
+      supabase
+        .from("balance_sheet_entries")
+        .select("account_name, amount, as_of_date")
+        .eq("version_id", versionId)
+        .eq("fiscal_year", year)
+        .or("is_total.eq.false,is_total.is.null")
+        .order("as_of_date", { ascending: true }),
+    );
+  } catch (_e) { return []; }
 
-  if (error || !entries?.length) return [];
+  if (!entries?.length) return [];
 
   const byDate = new Map();
   for (const e of entries) {

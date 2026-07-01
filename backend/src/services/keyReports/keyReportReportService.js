@@ -3,6 +3,7 @@
 const { supabase } = require('../../db');
 const generatedReportSnapshots = require('./generatedReportSnapshotService');
 const { buildCashFlow, generatedCfToRows } = require('../manualCashFlowService');
+const { fetchAllRows } = require('./pagedFetch');
 // chartOfAccountsService — ensureAccountExistsInCoa removed; COA is completed in Phase 2c before reports run
 const { listEbitdaAdjustments } = require('../ebitdaAdjustmentStore');
 // NOTE: financialStatementService is lazy-required inside getQoeReport / getKpiReport
@@ -78,12 +79,11 @@ function validateBalanceSheet(versionId, fiscalYear, sectionTotals, opts = {}) {
 
 /** Distinct fiscal years present in any entry table for this version. */
 async function getDistinctYears(table, versionId, yearCol, isDateCol = false) {
-  const { data, error } = await supabase
-    .from(table)
-    .select(yearCol)
-    .eq('version_id', versionId)
-    .limit(200000);
-  if (error || !data) return [];
+  let data;
+  try {
+    data = await fetchAllRows(() => supabase.from(table).select(yearCol).eq('version_id', versionId));
+  } catch (_e) { return []; }
+  if (!data) return [];
   const set = new Set();
   for (const row of data) {
     const raw = row[yearCol];
@@ -126,15 +126,19 @@ async function resolveYears(versionId, { year, startDate, endDate } = {}) {
 
   // Fallback: GL rows where fiscal_year is null but transaction_date carries the year.
   // Handles GL extracted before migration 050 or where year-detection failed (e.g. 2025 GL).
-  const { data: glDateRows } = await supabase
-    .from('general_ledger_entries')
-    .select('transaction_date')
-    .eq('version_id', versionId)
-    .is('fiscal_year', null)
-    .not('transaction_date', 'is', null)
-    .or('row_type.eq.TRANSACTION,row_type.is.null')
-    .limit(200000);
-  for (const row of (glDateRows || [])) {
+  let glDateRows = [];
+  try {
+    glDateRows = await fetchAllRows(() =>
+      supabase
+        .from('general_ledger_entries')
+        .select('transaction_date')
+        .eq('version_id', versionId)
+        .is('fiscal_year', null)
+        .not('transaction_date', 'is', null)
+        .or('row_type.eq.TRANSACTION,row_type.is.null'),
+    );
+  } catch (_e) { /* leave empty — bsYears/glYears already resolved */ }
+  for (const row of glDateRows) {
     const y = parseInt(String(row.transaction_date || '').slice(0, 4), 10);
     if (y >= 1990 && y <= 2100) set.add(y);
   }
@@ -1722,16 +1726,16 @@ async function getCashflowReport(versionId, {
 async function getTrialBalanceReport(versionId, { year } = {}) {
   if (!versionId) throw new Error('versionId is required');
 
-  let q = supabase
-    .from('trial_balance_entries')
-    .select('fiscal_year, account_name, account_number, account_type, total_debits, total_credits, net_balance, opening_balance, closing_balance')
-    .eq('version_id', versionId)
-    .order('fiscal_year', { ascending: true })
-    .order('account_name', { ascending: true });
-  if (year) q = q.eq('fiscal_year', parseInt(String(year), 10));
-
-  const { data, error } = await q.limit(200000);
-  if (error) throw error;
+  const data = await fetchAllRows(() => {
+    let q = supabase
+      .from('trial_balance_entries')
+      .select('fiscal_year, account_name, account_number, account_type, total_debits, total_credits, net_balance, opening_balance, closing_balance')
+      .eq('version_id', versionId)
+      .order('fiscal_year', { ascending: true })
+      .order('account_name', { ascending: true });
+    if (year) q = q.eq('fiscal_year', parseInt(String(year), 10));
+    return q;
+  });
 
   const rows = (data || []).map((r) => ({
     fiscalYear: r.fiscal_year,
@@ -1769,16 +1773,16 @@ async function getTrialBalanceReport(versionId, { year } = {}) {
 async function getReconciliationReport(versionId, { year } = {}) {
   if (!versionId) throw new Error('versionId is required');
 
-  let q = supabase
-    .from('bs_reconciliation_entries')
-    .select('fiscal_year, account_name, account_type, section, generated_balance, uploaded_balance, variance, status, needs_review')
-    .eq('version_id', versionId)
-    .order('needs_review', { ascending: false })
-    .order('account_name', { ascending: true });
-  if (year) q = q.eq('fiscal_year', parseInt(String(year), 10));
-
-  const { data, error } = await q.limit(200000);
-  if (error) throw error;
+  const data = await fetchAllRows(() => {
+    let q = supabase
+      .from('bs_reconciliation_entries')
+      .select('fiscal_year, account_name, account_type, section, generated_balance, uploaded_balance, variance, status, needs_review')
+      .eq('version_id', versionId)
+      .order('needs_review', { ascending: false })
+      .order('account_name', { ascending: true });
+    if (year) q = q.eq('fiscal_year', parseInt(String(year), 10));
+    return q;
+  });
 
   const rows = (data || []).map((r) => ({
     fiscalYear: r.fiscal_year,
