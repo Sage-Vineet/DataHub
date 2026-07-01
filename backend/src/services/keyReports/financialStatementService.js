@@ -447,8 +447,20 @@ function buildPlStatement(leaves, byId) {
     amount:        safeNum(n.displayAmount),
   });
 
-  // Revenue — flat list, total = sum of income leaves
-  const incomeAccounts = income.map(toLeaf);
+  // Revenue — flat list, total = sum of income leaves.
+  // GL stores the signed movement `amount` = debit − credit, so revenue (a credit
+  // balance) arrives NEGATIVE and expenses (debits) arrive POSITIVE. Flip income to
+  // its natural positive balance so Total Revenue is positive and
+  //   Net Income = Revenue − COGS − Expenses
+  // computes correctly. Without this flip, netIncome collapses to
+  // −(Revenue + Expenses) — the cause of the multi-million-dollar negative Net
+  // Income and the broken Liabilities & Equity total. Contra-revenue (debits, e.g.
+  // "Discounts/Refunds Given") correctly flips to negative, reducing revenue.
+  const incomeAccounts = income.map((n) => {
+    const leaf = toLeaf(n);
+    leaf.amount = safeNum(-leaf.amount);
+    return leaf;
+  });
   const totalRevenue   = safeNum(incomeAccounts.reduce((s, a) => s + a.amount, 0));
 
   // Cost of Sales — flat list (the frontend reads costOfSales.accounts[])
