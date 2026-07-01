@@ -263,17 +263,32 @@ function shapeXml(element, index, text) {
       </p:sp>`;
 }
 
-function tableXml(element, index, text) {
+function tableXml(element, index, text, content = {}) {
   const rows = Number(element.rows || 0);
   const cols = Number(element.cols || 0);
-  const matrix = parseTableText(text || element.text, rows, cols);
+  const matrix = content.tableMatrix || parseTableText(text || element.text, rows, cols);
+  const visibleRows = content.visibleTableRows || Array.from({ length: rows }, (_, rowIndex) => rowIndex + 1);
+  const [sourceLeft = 0] = element.bbox || [];
+  const [targetLeft = sourceLeft, targetTop = Number(element.bbox?.[1] || 0)] = content.bbox || element.bbox || [];
+  const tableScaleX = Number(content.tableScaleX || 1);
 
-  return (element.cells || []).map((cell, cellIndex) => {
+  return (element.cells || []).filter((cell) => visibleRows.includes(Number(cell.row || 1))).map((cell, cellIndex) => {
     const rowIndex = Number(cell.row || 1) - 1;
     const colIndex = Number(cell.column || 1) - 1;
-    const cellText = matrix[rowIndex]?.[colIndex] || cell.text || "";
+    const matrixValue = matrix[rowIndex]?.[colIndex];
+    const cellText = content.suppressTemplateFallback
+      ? (matrixValue ?? "")
+      : (matrixValue || cell.text || "");
+    const [cellLeft = 0, cellTop = 0, cellWidth = 0, cellHeight = 0] = cell.bbox || [];
+    const compactRowIndex = visibleRows.indexOf(Number(cell.row || 1));
     const cellElement = {
       ...cell,
+      bbox: [
+        targetLeft + (cellLeft - sourceLeft) * tableScaleX,
+        content.compactTableRows ? targetTop + compactRowIndex * cellHeight : cellTop,
+        cellWidth * tableScaleX,
+        cellHeight,
+      ],
       aid: `${element.aid || element.id}/cell-${cell.index || cellIndex}`,
       id: `${element.id || index}-${cell.index || cellIndex}`,
       name: `${element.name || "Table"} Cell ${cell.index || cellIndex + 1}`,
@@ -405,15 +420,16 @@ function slideXml(layout, slideRef, displaySlideNumber, getElementContent, media
         : normalizeContent(getElementContent(slideRef, element));
       if (content.kind === "hidden") return "";
       if (element.kind === "table" && Array.isArray(element.cells)) {
-        return tableXml(element, index, content.text ?? element.text ?? "");
+        return tableXml(element, index, content.text ?? element.text ?? "", content);
       }
+      const effectiveElement = content.bbox ? { ...element, bbox: content.bbox } : element;
       if ((content.kind === "image" || content.kind === "chart") && content.dataUrl) {
         const media = mediaAllocator(content.dataUrl);
         if (media) {
-          return pictureXml(element, index, media, content.name || content.alt || content.kind);
+          return pictureXml(effectiveElement, index, media, content.name || content.alt || content.kind);
         }
       }
-      return shapeXml(element, index, content.text ?? "");
+      return shapeXml(effectiveElement, index, content.text ?? "");
     })
     .join("");
 
