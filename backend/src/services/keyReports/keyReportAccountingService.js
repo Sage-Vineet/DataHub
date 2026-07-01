@@ -154,12 +154,44 @@ async function classifyWorkflowDocuments(companyId, versionId) {
     };
   }
 
-  const [{ minYear, maxYear }, { minDate, maxDate }, { earliest, latest }] =
+  const [{ minYear: fyMinYear, maxYear: fyMaxYear }, { minDate, maxDate }, { earliest, latest }] =
     await Promise.all([
       glYearRange(companyId, versionId),
       glDateRange(companyId, versionId),
       extractedBsBounds(companyId, versionId),
     ]);
+
+  // Reconcile the fiscal-year bounds with the years implied by transaction_date.
+  // A GL row can have a valid transaction_date but a NULL fiscal_year (e.g. a
+  // year whose date-parsing set the date column but not the year, or rows
+  // extracted before fiscal_year was backfilled). glYearRange() ignores those
+  // rows, so relying on it alone SILENTLY DROPS such a year from every generator
+  // that loops glStartYear..glEndYear (Trial Balance, Monthly Balance Sheet, the
+  // P&L validation rows). The report renderers, by contrast, recover those years
+  // via resolveYears()'s transaction_date fallback — producing the classic
+  // "final fiscal year is missing from the generated reports" defect.
+  //
+  // Folding the transaction_date-derived min/max into the authoritative bounds
+  // keeps every generator on the SAME year set the renderers use. Generic — no
+  // company- or year-specific logic; works for any first/last year.
+  const yearOfIsoDate = (d) => {
+    const y = d ? parseInt(String(d).slice(0, 4), 10) : NaN;
+    return Number.isInteger(y) && y >= 1990 && y <= 2100 ? y : null;
+  };
+  const minDateYear = yearOfIsoDate(minDate);
+  const maxDateYear = yearOfIsoDate(maxDate);
+
+  const minCandidates = [fyMinYear, minDateYear].filter((v) => Number.isInteger(v));
+  const maxCandidates = [fyMaxYear, maxDateYear].filter((v) => Number.isInteger(v));
+  const minYear = minCandidates.length ? Math.min(...minCandidates) : null;
+  const maxYear = maxCandidates.length ? Math.max(...maxCandidates) : null;
+
+  if ((fyMinYear !== minYear || fyMaxYear !== maxYear)) {
+    console.warn(
+      `[KeyReports][GateYears] version=${versionId} fiscal_year bounds [${fyMinYear}..${fyMaxYear}] ` +
+      `extended to [${minYear}..${maxYear}] using transaction_date — a year had rows with NULL fiscal_year.`,
+    );
+  }
 
   const glStartDate = minDate || (minYear ? `${minYear}-01-01` : null);
   const glEndDate = maxDate || (maxYear ? `${maxYear}-12-31` : null);
@@ -434,10 +466,16 @@ async function fetchGlRowsForYear(companyId, versionId, year) {
   for (let page = 0; page < 1000; page += 1) {
     const { data, error } = await supabase
       .from(TABLE_GL)
-      .select("account_name, account_section, amount, running_balance, row_type, row_number, fiscal_year")
+      .select("account_name, account_section, amount, running_balance, row_type, row_number, fiscal_year, transaction_date")
       .eq("company_id", companyId)
       .eq("version_id", versionId)
-      .eq("fiscal_year", year)
+      // Include rows for `year` whose fiscal_year is NULL but whose
+      // transaction_date falls in the year — mirrors fetchAllGLRows so the Trial
+      // Balance covers the same rows the reports do (see Fix 1 rationale).
+      .or(
+        `fiscal_year.eq.${year},` +
+        `and(fiscal_year.is.null,transaction_date.gte.${year}-01-01,transaction_date.lte.${year}-12-31)`,
+      )
       .order("row_number", { ascending: true })
       .range(from, from + PAGE - 1);
     if (error) throw error;
