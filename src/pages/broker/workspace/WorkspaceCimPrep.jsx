@@ -858,6 +858,7 @@ const REPEATABLE_FIELD_OVERRIDES = [
     addLabel: "Add product / service",
     visibleOrder: 11,
     pageSize: 3,
+    slotElementRanges: [[7, 18], [19, 30], [31, 42]],
     fields: [
       { key: "image", label: "Logo or icon", inputType: "asset" },
       { key: "name", label: "Product or service name", placeholder: "Offering name" },
@@ -874,6 +875,32 @@ const REPEATABLE_FIELD_OVERRIDES = [
     ],
   },
   {
+    slide: 13,
+    key: "differentiators",
+    fieldKind: "differentiators",
+    label: "Company differentiators",
+    prompt: "Add each differentiator and explain why it matters to customers.",
+    addLabel: "Add differentiator",
+    visibleOrder: 9,
+    pageSize: 4,
+    slotElementRanges: [[7, 10], [11, 14], [15, 18], [19, 22]],
+    fields: [
+      { key: "title", label: "Differentiator", placeholder: "Distinct capability or advantage" },
+      {
+        key: "description",
+        label: "Why it matters",
+        placeholder: "Customer value, defensibility, pricing power, or competitive impact",
+        inputType: "textarea",
+      },
+    ],
+    entries: [
+      { title: 9, description: 10 },
+      { title: 13, description: 14 },
+      { title: 17, description: 18 },
+      { title: 21, description: 22 },
+    ],
+  },
+  {
     slide: 15,
     key: "management-team",
     fieldKind: "people",
@@ -882,6 +909,7 @@ const REPEATABLE_FIELD_OVERRIDES = [
     addLabel: "Add person",
     visibleOrder: 10,
     pageSize: 4,
+    slotElementRanges: [[7, 14], [15, 22], [23, 30], [31, 38]],
     fields: [
       { key: "photo", label: "Photo", inputType: "asset" },
       { key: "name", label: "Full name", placeholder: "Full name" },
@@ -931,10 +959,64 @@ const REPEATABLE_FIELD_OVERRIDES = [
     visibleOrder: 10,
     tableOrder: 10,
     chartOrder: 8,
+    pageSize: 4,
     fields: [
       { key: "name", label: "Enter the shareholder's name.", placeholder: "Founder / Name" },
       { key: "ownership", label: "What percentage of the company does this shareholder own (%)?", placeholder: "45" },
       { key: "role", label: "What is this shareholder's role or designation?", placeholder: "Founder & CEO" },
+    ],
+  },
+  {
+    slide: 18,
+    key: "competitors",
+    fieldKind: "competitors",
+    label: "Competitive landscape",
+    prompt: "Add each company once with its chart position and summary details.",
+    addLabel: "Add company",
+    visibleOrder: 10,
+    tableOrder: 10,
+    chartOrder: 8,
+    pageSize: 5,
+    fields: [
+      { key: "name", label: "Company / competitor", placeholder: "Company name" },
+      { key: "xScore", label: "X-axis score", placeholder: "8" },
+      { key: "yScore", label: "Y-axis score", placeholder: "9" },
+      { key: "size", label: "Size (USD millions)", placeholder: "25" },
+      {
+        key: "differentiation",
+        label: "Key differentiator",
+        placeholder: "Short description of its market position",
+        inputType: "textarea",
+      },
+    ],
+  },
+  {
+    slide: 35,
+    key: "initiatives",
+    fieldKind: "initiatives",
+    label: "Growth initiatives",
+    prompt: "Add each initiative with its timing, action, and expected impact.",
+    addLabel: "Add initiative",
+    visibleOrder: 10,
+    pageSize: 4,
+    slotElementRanges: [[7, 13], [14, 20], [21, 27], [28, 34]],
+    fields: [
+      { key: "timeframe", label: "Timeframe", placeholder: "Near-Term (0-12 mo)" },
+      { key: "title", label: "Initiative", placeholder: "Initiative name" },
+      {
+        key: "description",
+        label: "Action and expected outcome",
+        placeholder: "Specific action, target outcome, and strategic or financial impact",
+        inputType: "textarea",
+      },
+      { key: "metricValue", label: "Impact value", placeholder: "$5M / 3% / 1.5x" },
+      { key: "metricLabel", label: "Impact metric", placeholder: "Revenue Opportunity" },
+    ],
+    entries: [
+      { timeframe: 9, title: 10, description: 11, metricValue: 12, metricLabel: 13 },
+      { timeframe: 16, title: 17, description: 18, metricValue: 19, metricLabel: 20 },
+      { timeframe: 23, title: 24, description: 25, metricValue: 26, metricLabel: 27 },
+      { timeframe: 30, title: 31, description: 32, metricValue: 33, metricLabel: 34 },
     ],
   },
 ];
@@ -1252,10 +1334,12 @@ function getRepeatableOverrideForTimelineElement(slideNumber, element) {
 
 function getStructuredRepeatableBinding(slideNumber, element) {
   for (const override of REPEATABLE_FIELD_OVERRIDES) {
-    if (override.slide !== slideNumber || !["offerings", "people"].includes(override.fieldKind)) continue;
+    if (override.slide !== slideNumber || !Array.isArray(override.entries)) continue;
     for (let entryIndex = 0; entryIndex < (override.entries || []).length; entryIndex += 1) {
       const entry = override.entries[entryIndex] || {};
-      const entryKey = Object.keys(entry).find((key) => Number(entry[key]) === Number(element.order));
+      const entryKey = Object.keys(entry).find((key) => (
+        !key.endsWith("Order") && Number(entry[key]) === Number(element.order)
+      ));
       if (entryKey) return { override, entryIndex, entryKey };
     }
   }
@@ -1329,7 +1413,7 @@ function extractTemplateFields(slideNumber, layout) {
           label: `${repeatableChart.label} chart`,
           fieldKind: "chart",
           hidden: true,
-          chartKind: "ownershipPie",
+          chartKind: repeatableChart.fieldKind === "competitors" ? "positioningMatrix" : "ownershipPie",
           structuredSourceId: makeRepeatableFieldId(slideNumber, repeatableChart.key),
         }];
       }
@@ -1436,6 +1520,7 @@ function extractTemplateFields(slideNumber, layout) {
               text: tokenInfo.raw,
               token: tokenInfo.token,
               tokenKey: tokenInfo.key,
+              tokenIndex: tokenInfo.index,
               occurrence: tokenInfo.occurrence,
               label: override?.label || getFieldLabel(tokenInfo.raw),
               prompt: override?.prompt || override?.label,
@@ -1473,6 +1558,7 @@ function extractTemplateFields(slideNumber, layout) {
             text: tokenInfo.raw,
             token: tokenInfo.token,
             tokenKey: tokenInfo.key,
+            tokenIndex: tokenInfo.index,
             occurrence: tokenInfo.occurrence,
             label: override?.label || getFieldLabel(tokenInfo.raw),
             prompt: override?.prompt || override?.label,
@@ -1726,12 +1812,8 @@ function hasRepeatableEntryValue(entry) {
 }
 
 function buildCimExportSlides(fieldValues = {}) {
-  const repeatableSlides = new Map([
-    [12, { key: "offerings", pageSize: 3 }],
-    [15, { key: "management-team", pageSize: 4 }],
-  ]);
   return TEMPLATE_SLIDES.flatMap((sourceSlideNumber) => {
-    const config = repeatableSlides.get(sourceSlideNumber);
+    const config = getRepeatableSlideConfig(sourceSlideNumber);
     if (!config) return [{ sourceSlideNumber, instanceIndex: 0 }];
     const entries = parseRepeatableEntries(fieldValues[makeRepeatableFieldId(sourceSlideNumber, config.key)])
       .filter(hasRepeatableEntryValue);
@@ -1741,9 +1823,10 @@ function buildCimExportSlides(fieldValues = {}) {
 }
 
 function getRepeatableSlideConfig(slideNumber) {
-  if (slideNumber === 12) return { key: "offerings", pageSize: 3 };
-  if (slideNumber === 15) return { key: "management-team", pageSize: 4 };
-  return null;
+  const config = REPEATABLE_FIELD_OVERRIDES.find((item) => (
+    item.slide === slideNumber && Number(item.pageSize || 0) > 0
+  ));
+  return config ? { key: config.key, pageSize: config.pageSize } : null;
 }
 
 function getEditorSlideRefs(slideNumbers = [], fieldValues = {}) {
@@ -1773,13 +1856,15 @@ function getFieldValuesForEditorSlide(fieldValues = {}, slideRef) {
   };
 }
 
-function shouldHideUnusedManagementSlot(slideNumber, element, fieldValues = {}) {
-  if (slideNumber !== 15) return false;
+function shouldHideUnusedRepeatableSlot(slideNumber, element, fieldValues = {}) {
+  const config = REPEATABLE_FIELD_OVERRIDES.find((item) => (
+    item.slide === slideNumber && Array.isArray(item.slotElementRanges)
+  ));
+  if (!config) return false;
   const order = Number(element?.order || 0);
-  if (order < 7 || order > 38) return false;
-  const slotIndex = Math.floor((order - 7) / 8);
-  const fieldId = makeRepeatableFieldId(15, "management-team");
-  const entries = parseRepeatableEntries(fieldValues[fieldId]);
+  const slotIndex = config.slotElementRanges.findIndex(([start, end]) => order >= start && order <= end);
+  if (slotIndex < 0) return false;
+  const entries = parseRepeatableEntries(fieldValues[makeRepeatableFieldId(slideNumber, config.key)]);
   return !hasRepeatableEntryValue(entries[slotIndex]);
 }
 
@@ -1804,20 +1889,46 @@ function getStructuredFieldValue(field, fieldValues) {
   return normalizeText(entry[field.structuredEntryKey]) || normalizeText(fieldValues[field.legacyFieldId]);
 }
 
-function renderShareholdersTable(entries) {
-  const rows = entries.filter(hasRepeatableEntryValue).slice(0, 4);
-  const bodyRows = rows.map((entry) => {
-    const name = normalizeText(entry.name) || "Shareholder";
-    const ownership = normalizeText(entry.ownership);
-    const role = normalizeText(entry.role);
-    return `${name} | ${ownership ? `${ownership.replace(/%$/, "")}%` : ""} | ${role}`;
-  });
+function getStructuredTableContent(field, entries) {
+  const rows = entries.filter(hasRepeatableEntryValue).slice(0, field.repeatableConfig?.pageSize || 5);
+  if (field.fieldKind === "shareholders") {
+    const matrix = Array.from({ length: 6 }, () => ["", "", ""]);
+    matrix[0] = ["Shareholder", "Ownership %", "Role"];
+    rows.forEach((entry, index) => {
+      const ownership = normalizeText(entry.ownership).replace(/%$/, "");
+      matrix[index + 1] = [
+        normalizeText(entry.name),
+        ownership ? `${ownership}%` : "",
+        normalizeText(entry.role),
+      ];
+    });
+    matrix[5] = ["Total", "100%", ""];
+    return {
+      kind: "table",
+      tableMatrix: matrix,
+      visibleTableRows: [1, ...rows.map((_, index) => index + 2), 6],
+      suppressTemplateFallback: true,
+      compactTableRows: true,
+    };
+  }
 
-  return [
-    "Shareholder | Ownership % | Role",
-    ...bodyRows,
-    "Total | 100%",
-  ].join("\n");
+  const matrix = Array.from({ length: 6 }, () => ["", "", ""]);
+  matrix[0] = ["Competitor", "Size", "Key Differentiator"];
+  rows.forEach((entry, index) => {
+    const size = normalizeText(entry.size);
+    matrix[index + 1] = [
+      normalizeText(entry.name),
+      size ? `$${size.replace(/^\$/, "").replace(/M$/i, "")}M` : "",
+      normalizeText(entry.differentiation),
+    ];
+  });
+  return {
+    kind: "table",
+    tableMatrix: matrix,
+    visibleTableRows: [1, ...rows.map((_, index) => index + 2)],
+    suppressTemplateFallback: true,
+    compactTableRows: true,
+  };
 }
 
 function getShareholderChartDataText(entries) {
@@ -1851,12 +1962,6 @@ function applyFieldValues(text, elementFields, fieldValues, globalDetails) {
   );
   if (fullTextField) {
     return renderFieldDisplayTemplate(fullTextField, getStoredFieldValue(fullTextField, fieldValues));
-  }
-
-  const structuredTableField = elementFields.find((field) => field.structuredTable);
-  if (structuredTableField) {
-    const entries = parseRepeatableEntries(fieldValues[structuredTableField.id], structuredTableField.repeatableConfig);
-    if (entries.some(hasRepeatableEntryValue)) return renderShareholdersTable(entries);
   }
 
   let output = String(text || "");
@@ -2160,6 +2265,87 @@ function buildChartSvg(field, chartConfig = {}) {
   </svg>`;
 }
 
+function wrapSvgText(value, maxCharacters = 24, maxLines = 3) {
+  const words = normalizeText(value).split(" ").filter(Boolean);
+  const lines = [];
+  words.forEach((word) => {
+    const current = lines[lines.length - 1] || "";
+    if (!current || `${current} ${word}`.length > maxCharacters) lines.push(word);
+    else lines[lines.length - 1] = `${current} ${word}`;
+  });
+  if (lines.length > maxLines) {
+    const clipped = lines.slice(0, maxLines);
+    clipped[maxLines - 1] = `${clipped[maxLines - 1].slice(0, Math.max(1, maxCharacters - 1))}…`;
+    return clipped;
+  }
+  return lines;
+}
+
+function buildTimelineSvg(entries) {
+  const rows = entries.filter(hasRepeatableEntryValue);
+  const width = 1200;
+  const height = 210;
+  const lineY = 104;
+  const sidePadding = Math.min(80, Math.max(36, width / Math.max(rows.length * 3, 1)));
+  const usableWidth = width - sidePadding * 2;
+  const step = rows.length > 1 ? usableWidth / (rows.length - 1) : 0;
+  const labelWidth = Math.max(92, Math.min(190, usableWidth / Math.max(rows.length, 1)));
+  const maxCharacters = Math.max(12, Math.floor(labelWidth / 7));
+
+  const milestones = rows.map((entry, index) => {
+    const x = rows.length === 1 ? width / 2 : sidePadding + index * step;
+    const above = index % 2 === 0;
+    const descriptionLines = wrapSvgText(entry.description, maxCharacters, 3);
+    const descriptionY = above ? 135 : 28;
+    const yearY = above ? 42 : 180;
+    const connectorY = above ? 67 : 128;
+    const lineHeight = 17;
+    const description = descriptionLines.map((line, lineIndex) => (
+      `<tspan x="${x}" dy="${lineIndex === 0 ? 0 : lineHeight}">${escapeSvg(line)}</tspan>`
+    )).join("");
+    return `
+      <line x1="${x}" y1="${lineY}" x2="${x}" y2="${connectorY}" stroke="#8BC53D" stroke-width="2"/>
+      <circle cx="${x}" cy="${lineY}" r="8" fill="#8BC53D" stroke="#476E2C" stroke-width="2"/>
+      <text x="${x}" y="${yearY}" text-anchor="middle" font-size="18" font-weight="700" fill="#476E2C">${escapeSvg(entry.year || "")}</text>
+      <text x="${x}" y="${descriptionY}" text-anchor="middle" font-size="14" fill="#333333">${description}</text>
+    `;
+  }).join("");
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+    <rect width="${width}" height="${height}" fill="#FFFFFF"/>
+    <line x1="${sidePadding}" y1="${lineY}" x2="${width - sidePadding}" y2="${lineY}" stroke="#476E2C" stroke-width="3"/>
+    <g font-family="Calibri, Arial, sans-serif">${milestones}</g>
+  </svg>`;
+}
+
+function buildPositioningMatrixSvg(entries) {
+  const rows = entries.filter((entry) => normalizeText(entry.name));
+  const plot = { x: 110, y: 55, width: 760, height: 365 };
+  const grid = Array.from({ length: 6 }, (_, index) => {
+    const x = plot.x + (plot.width * index) / 5;
+    const y = plot.y + (plot.height * index) / 5;
+    return `<line x1="${x}" y1="${plot.y}" x2="${x}" y2="${plot.y + plot.height}" stroke="#E5E7EB" stroke-width="1"/>
+      <line x1="${plot.x}" y1="${y}" x2="${plot.x + plot.width}" y2="${y}" stroke="#E5E7EB" stroke-width="1"/>`;
+  }).join("");
+  const points = rows.map((entry, index) => {
+    const xScore = Math.max(0, Math.min(10, parseChartNumber(entry.xScore) ?? 5));
+    const yScore = Math.max(0, Math.min(10, parseChartNumber(entry.yScore) ?? 5));
+    const x = plot.x + (xScore / 10) * plot.width;
+    const y = plot.y + plot.height - (yScore / 10) * plot.height;
+    const color = CHART_COLORS[index % CHART_COLORS.length];
+    return `<circle cx="${x}" cy="${y}" r="11" fill="${color}" stroke="#FFFFFF" stroke-width="3"/>
+      <text x="${x + 15}" y="${y - 13}" font-size="18" font-weight="700" fill="#243F18">${escapeSvg(entry.name)}</text>`;
+  }).join("");
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="960" height="520" viewBox="0 0 960 520">
+    <rect width="960" height="520" fill="#FFFFFF"/>
+    <g font-family="Calibri, Arial, sans-serif">${grid}${points}</g>
+    <line x1="${plot.x}" y1="${plot.y + plot.height}" x2="${plot.x + plot.width}" y2="${plot.y + plot.height}" stroke="#476E2C" stroke-width="3"/>
+    <line x1="${plot.x}" y1="${plot.y}" x2="${plot.x}" y2="${plot.y + plot.height}" stroke="#476E2C" stroke-width="3"/>
+    <text x="${plot.x + plot.width / 2}" y="485" text-anchor="middle" font-family="Calibri, Arial, sans-serif" font-size="20" font-weight="700" fill="#476E2C">Dimension A</text>
+    <text x="32" y="${plot.y + plot.height / 2}" text-anchor="middle" transform="rotate(-90 32 ${plot.y + plot.height / 2})" font-family="Calibri, Arial, sans-serif" font-size="20" font-weight="700" fill="#476E2C">Dimension B</text>
+  </svg>`;
+}
+
 function svgToDataUrl(svg) {
   return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 }
@@ -2173,8 +2359,11 @@ function getChartConfig(field, chartValues) {
 }
 
 function getChartDataUrl(field, chartValues, fieldValues = {}) {
-  if (field.chartKind === "ownershipPie") {
+  if (field.chartKind === "ownershipPie" || field.chartKind === "positioningMatrix") {
     const entries = parseRepeatableEntries(fieldValues[field.structuredSourceId]);
+    if (field.chartKind === "positioningMatrix") {
+      return svgToDataUrl(buildPositioningMatrixSvg(entries));
+    }
     const dataText = getShareholderChartDataText(entries);
     return svgToDataUrl(buildChartSvg(
       { ...field, label: "Ownership Summary", text: "[Ownership Summary]" },
@@ -2185,42 +2374,135 @@ function getChartDataUrl(field, chartValues, fieldValues = {}) {
   return svgToDataUrl(buildChartSvg(field, getChartConfig(field, chartValues)));
 }
 
+function getElementLayoutOverride(slideNumber, element) {
+  const order = Number(element?.order || 0);
+  const metricCards = {
+    6: {
+      values: [9, 14, 19, 24],
+      labels: [10, 15, 20, 25],
+      details: [11, 16, 21, 26],
+      valueBox: [null, 158.4, null, 56],
+      labelBox: [null, 228, null, 24],
+      detailBox: [null, 258, null, 26],
+    },
+    17: {
+      values: [9, 14, 19, 24],
+      labels: [10, 15, 20, 25],
+      details: [11, 16, 21, 26],
+      valueBox: [null, 158.4, null, 54],
+      labelBox: [null, 226, null, 24],
+      detailBox: [null, 255, null, 24],
+    },
+    28: {
+      values: [9, 14, 19, 24],
+      labels: [10, 15, 20, 25],
+      details: [11, 16, 21, 26],
+      valueBox: [null, 158.4, null, 54],
+      labelBox: [null, 226, null, 24],
+      detailBox: [null, 255, null, 24],
+    },
+  };
+  const metricConfig = metricCards[slideNumber];
+  if (metricConfig) {
+    const sourceBox = element.bbox || [0, 0, 0, 0];
+    const template = metricConfig.values.includes(order)
+      ? metricConfig.valueBox
+      : metricConfig.labels.includes(order)
+        ? metricConfig.labelBox
+        : metricConfig.details.includes(order)
+          ? metricConfig.detailBox
+          : null;
+    if (template) {
+      return {
+        bbox: template.map((value, index) => value === null ? sourceBox[index] : value),
+      };
+    }
+  }
+
+  if (slideNumber === 32 && order === 7) {
+    return { bbox: [33.6, 148.8, 590.4, 441.6], tableScaleX: 590.4 / 816 };
+  }
+  if (slideNumber === 32 && order === 9) {
+    return { bbox: [652.8, 148.8, 592.32, 441.6] };
+  }
+  return {};
+}
+
+function withElementLayout(slideNumber, element, content) {
+  return { ...content, ...getElementLayoutOverride(slideNumber, element) };
+}
+
 function getElementAutofillKey(kind, slideNumber, order) {
   return `__cim_${kind}__:${slideNumber}:${order}`;
 }
 
 function getElementContent(slideNumber, element, fieldsById, fieldValues, assetValues, chartValues, globalDetails) {
-  if (!element?.text) return { kind: "text", text: "" };
+  if (slideNumber === 9 && Number(element?.order || 0) >= 8 && Number(element?.order || 0) <= 31) {
+    return { kind: "hidden" };
+  }
+  if (slideNumber === 9 && Number(element?.order || 0) === 7) {
+    const entries = parseRepeatableEntries(fieldValues?.[makeRepeatableFieldId(9, "milestones")])
+      .filter(hasRepeatableEntryValue);
+    return entries.length
+      ? {
+          kind: "chart",
+          dataUrl: svgToDataUrl(buildTimelineSvg(entries)),
+          name: "Company growth milestones",
+          bbox: [28.8, 142, 1222.08, 216],
+        }
+      : { kind: "hidden" };
+  }
+  if (!element?.text) return withElementLayout(slideNumber, element, { kind: "text", text: "" });
   const elementFields = getElementFields(slideNumber, element, fieldsById);
+  const structuredTableField = elementFields.find((field) => field.structuredTable);
+  if (structuredTableField) {
+    const entries = parseRepeatableEntries(
+      fieldValues?.[structuredTableField.id],
+      structuredTableField.repeatableConfig,
+    );
+    return withElementLayout(
+      slideNumber,
+      element,
+      getStructuredTableContent(structuredTableField, entries),
+    );
+  }
   const mediaField = elementFields.find((field) => isAssetField(field) || isChartField(field));
 
   if (mediaField?.structuredSourceId && isAssetField(mediaField)) {
     const entries = parseRepeatableEntries(fieldValues?.[mediaField.structuredSourceId]);
     const media = entries[mediaField.structuredEntryIndex]?.[mediaField.structuredEntryKey];
     if (media?.dataUrl) {
-      return { kind: "image", dataUrl: media.dataUrl, name: media.name || mediaField.label };
+      return withElementLayout(slideNumber, element, { kind: "image", dataUrl: media.dataUrl, name: media.name || mediaField.label });
     }
   }
 
   if (mediaField && isAssetField(mediaField)) {
     const asset = assetValues?.[getAssetKey(mediaField)] || assetValues?.[mediaField.legacyAssetKey];
     if (asset?.dataUrl) {
-      return { kind: "image", dataUrl: asset.dataUrl, name: asset.name || mediaField.label };
+      return withElementLayout(slideNumber, element, { kind: "image", dataUrl: asset.dataUrl, name: asset.name || mediaField.label });
     }
   }
 
   if (mediaField && isChartField(mediaField)) {
-    return { kind: "chart", dataUrl: getChartDataUrl(mediaField, chartValues, fieldValues), name: mediaField.label };
+    if (mediaField.structuredSourceId) {
+      const entries = parseRepeatableEntries(fieldValues?.[mediaField.structuredSourceId]).filter(hasRepeatableEntryValue);
+      if (!entries.length) return { kind: "hidden" };
+    }
+    return withElementLayout(slideNumber, element, {
+      kind: "chart",
+      dataUrl: getChartDataUrl(mediaField, chartValues, fieldValues),
+      name: mediaField.label,
+    });
   }
 
   const displayText = getElementDisplayText(slideNumber, element, fieldsById, fieldValues, globalDetails);
   const override = fieldValues?.[getElementAutofillKey("element_override", slideNumber, element.order)];
   const suffix = fieldValues?.[getElementAutofillKey("element_suffix", slideNumber, element.order)];
 
-  return {
+  return withElementLayout(slideNumber, element, {
     kind: "text",
     text: override || `${displayText}${suffix || ""}`,
-  };
+  });
 }
 
 function hasFieldData(field, fieldValues, assetValues, chartValues) {
@@ -2373,6 +2655,44 @@ function getFinancialAutofillRangeLabel(range = {}) {
   const start = formatAutoFillDate(range.startDate, "short");
   const end = formatAutoFillDate(range.endDate, "short");
   return start && end ? `${start} - ${end}` : "selected FY range";
+}
+
+function getSlide24ActivePeriodCount(range = {}) {
+  if (!range || !range.startDate || !range.endDate) return 5;
+  const startYear = Number(String(range.startDate).slice(0, 4));
+  const rawEndYear = Number(String(range.endDate).slice(0, 4));
+  if (!startYear || !rawEndYear || rawEndYear < startYear) return 5;
+  const currentCount = range.periodType === "fiscal"
+    ? Math.max(1, rawEndYear - startYear)
+    : Math.max(1, rawEndYear - startYear + 1);
+  return Math.min(5, currentCount);
+}
+
+const SLIDE_24_ORDER_7_ROW_DEFS = [
+  { start: 0, count: 5 },
+  { start: 5, count: 5 },
+  { start: 10, count: 4 },
+  { start: 14, count: 5 },
+  { start: 19, count: 5 },
+  { start: 24, count: 5 },
+  { start: 29, count: 5 },
+  { start: 34, count: 5 },
+  { start: 39, count: 5 },
+  { start: 44, count: 5 },
+  { start: 49, count: 5 },
+  { start: 54, count: 5 },
+  { start: 59, count: 5 },
+  { start: 64, count: 5 },
+];
+
+function getSlide24ColumnIndex(field) {
+  if (field.slideNumber !== 24 || field.order !== 7) return null;
+  const ti = field.tokenIndex;
+  if (ti === null || ti === undefined) return null;
+  for (const { start, count } of SLIDE_24_ORDER_7_ROW_DEFS) {
+    if (ti >= start && ti < start + count) return ti - start;
+  }
+  return null;
 }
 
 function getTrailingTwelveMonthRange(range = {}) {
@@ -3153,14 +3473,25 @@ function SlideCanvas({
       style={{ aspectRatio: "16 / 9", backgroundColor: slideBackgroundColor }}
     >
       {elements.map((element, elementIndex) => {
-        if (shouldHideUnusedManagementSlot(slideNumber, element, fieldValues)) {
+        if (shouldHideUnusedRepeatableSlot(slideNumber, element, fieldValues)) {
           return null;
         }
         if (shouldHideLogoPlaceholderShape(elements, elementIndex, resolvedAssetValues)) {
           return null;
         }
 
-        const [left = 0, top = 0, width = 0, height = 0] = element.bbox || [];
+        const content = getElementContent(
+          slideNumber,
+          element,
+          fieldsById,
+          fieldValues,
+          resolvedAssetValues,
+          resolvedChartValues,
+          globalDetails,
+        );
+        if (content.kind === "hidden") return null;
+
+        const [left = 0, top = 0, width = 0, height = 0] = content.bbox || element.bbox || [];
         const isRule = width === 0 || height === 0;
         const ruleWidth = Math.max(Number(element.lineWidth || 1) * scale, 1);
         const elementWidth = Math.max(width * scale, width === 0 ? ruleWidth : 1);
@@ -3182,7 +3513,7 @@ function SlideCanvas({
           globalDetails,
           displaySlideNumber,
         );
-        const style = elementFields[0]?.style || (element.text ? getElementStyle(element) : null);
+        const style = elementFields[0]?.style || getElementStyle(element);
         const fillColor = isRule
           ? cssColor(element.lineColor || element.fillColor, "transparent")
           : cssColor(element.fillColor, "transparent");
@@ -3200,14 +3531,16 @@ function SlideCanvas({
         };
 
         if (element.kind === "table" && Array.isArray(element.cells)) {
-          const tableText = getElementDisplayText(
-            slideNumber,
-            element,
-            fieldsById,
-            fieldValues,
-            globalDetails,
+          const tableText = content.kind === "table"
+            ? ""
+            : getElementDisplayText(slideNumber, element, fieldsById, fieldValues, globalDetails);
+          const matrix = content.tableMatrix || parseTableText(tableText, element.rows, element.cols);
+          const visibleRows = content.visibleTableRows || Array.from(
+            { length: Number(element.rows || 0) },
+            (_, index) => index + 1,
           );
-          const matrix = parseTableText(tableText, element.rows, element.cols);
+          const sourceTableLeft = Number(element.bbox?.[0] || 0);
+          const tableScaleX = Number(content.tableScaleX || 1);
 
           return (
             <div
@@ -3225,22 +3558,31 @@ function SlideCanvas({
                     : "none",
               }}
             >
-              {element.cells.map((cell) => {
+              {element.cells.filter((cell) => visibleRows.includes(Number(cell.row || 1))).map((cell) => {
                 const [cellLeft = 0, cellTop = 0, cellWidth = 0, cellHeight = 0] = cell.bbox || [];
                 const cellStyle = getElementStyle(cell);
                 const cellInsets = cellStyle.insets || {};
                 const rowIndex = Number(cell.row || 1) - 1;
                 const colIndex = Number(cell.column || 1) - 1;
-                const cellText = matrix[rowIndex]?.[colIndex] || applyGlobalDetails(cell.text, globalDetails);
+                const compactRowIndex = visibleRows.indexOf(Number(cell.row || 1));
+                const effectiveCellLeft = left + (cellLeft - sourceTableLeft) * tableScaleX;
+                const effectiveCellTop = content.compactTableRows
+                  ? top + compactRowIndex * cellHeight
+                  : cellTop;
+                const effectiveCellWidth = cellWidth * tableScaleX;
+                const matrixValue = matrix[rowIndex]?.[colIndex];
+                const cellText = content.suppressTemplateFallback
+                  ? (matrixValue ?? "")
+                  : (matrixValue || applyGlobalDetails(cell.text, globalDetails));
 
                 return (
                   <div
                     key={`${slideNumber}-${element.id}-cell-${cell.index}`}
                     className="absolute overflow-hidden"
                     style={{
-                      left: cellLeft * scale - left * scale,
-                      top: cellTop * scale - top * scale,
-                      width: Math.max(cellWidth * scale, 1),
+                      left: effectiveCellLeft * scale - left * scale,
+                      top: effectiveCellTop * scale - top * scale,
+                      width: Math.max(effectiveCellWidth * scale, 1),
                       height: Math.max(cellHeight * scale, 1),
                       display: "flex",
                       alignItems: getVerticalAlignment(cellStyle.verticalAlignment),
@@ -3270,7 +3612,7 @@ function SlideCanvas({
           );
         }
 
-        if (!element.text) {
+        if (!element.text && content.kind !== "image" && content.kind !== "chart") {
           return (
             <div
               key={`${slideNumber}-${element.order}-${element.id}`}
@@ -3301,16 +3643,6 @@ function SlideCanvas({
           overflow: "hidden",
           letterSpacing: 0,
         };
-        const content = getElementContent(
-          slideNumber,
-          element,
-          fieldsById,
-          fieldValues,
-          resolvedAssetValues,
-          resolvedChartValues,
-          globalDetails,
-        );
-
         if ((content.kind === "image" || content.kind === "chart") && content.dataUrl) {
           return (
             <div
@@ -3741,13 +4073,13 @@ function RepeatableFieldControl({
       );
     }
 
-    if (entryField.inputType === "textarea" || entryField.key === "description" || entryField.key === "role") {
+    if (entryField.inputType === "textarea" || entryField.key === "description") {
       return (
         <textarea
           value={entry[entryField.key] || ""}
           onChange={(event) => updateEntry(entryIndex, entryField.key, event.target.value)}
           placeholder={entryField.placeholder || ""}
-          className="min-h-[84px] w-full resize-y rounded-md border border-border bg-white px-3 py-2 text-[12px] leading-relaxed text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20"
+          className="min-h-[84px] w-full resize-y rounded-md border border-border bg-white px-3 py-2 text-[12px] leading-normal text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20"
           spellCheck={false}
         />
       );
@@ -3758,7 +4090,7 @@ function RepeatableFieldControl({
         value={entry[entryField.key] || ""}
         onChange={(event) => updateEntry(entryIndex, entryField.key, event.target.value)}
         placeholder={entryField.placeholder || ""}
-        className="h-10 w-full rounded-md border border-border bg-white px-3 text-[12px] text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20"
+        className="h-10 w-full rounded-md border border-border bg-white px-3 text-[12px] leading-normal text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20"
       />
     );
   };
@@ -3774,13 +4106,9 @@ function RepeatableFieldControl({
           <span className="block truncate text-[11px] font-bold uppercase tracking-[0.06em] text-[#6D6E71]">
             {field.label}
           </span>
-          {field.fieldKind === "people" ? (
+          {config.pageSize ? (
             <span className="mt-0.5 block text-[11px] font-semibold text-[#8A8F98]">
-              {entries.filter(hasRepeatableEntryValue).length} added · {Math.max(1, Math.ceil(entries.length / (config.pageSize || 4)))} management slide(s)
-            </span>
-          ) : field.fieldKind === "offerings" ? (
-            <span className="mt-0.5 block text-[11px] font-semibold text-[#8A8F98]">
-              {entries.filter(hasRepeatableEntryValue).length} added · {Math.max(1, Math.ceil(entries.length / (config.pageSize || 3)))} product slide(s)
+              {entries.filter(hasRepeatableEntryValue).length} added · {Math.max(1, Math.ceil(entries.length / config.pageSize))} slide(s)
             </span>
           ) : null}
         </div>
@@ -3801,14 +4129,23 @@ function RepeatableFieldControl({
         {entries.map((entry, entryIndex) => {
           const isPerson = field.fieldKind === "people";
           const isOffering = field.fieldKind === "offerings";
-          const expanded = (!isPerson && !isOffering) || expandedEntryIndex === entryIndex;
+          const isMilestone = field.fieldKind === "milestones";
+          const isShareholder = field.fieldKind === "shareholders";
+          const isGroupedEntry = ["differentiators", "competitors", "initiatives"].includes(field.fieldKind);
+          const expanded = expandedEntryIndex === entryIndex;
           const entryLabel = field.fieldKind === "shareholders"
             ? `Shareholder ${entryIndex + 1}`
             : isPerson
               ? `Person ${entryIndex + 1}`
               : field.fieldKind === "offerings"
                 ? `Product / service ${entryIndex + 1}`
-                : `Milestone ${entryIndex + 1}`;
+                : field.fieldKind === "differentiators"
+                  ? `Differentiator ${entryIndex + 1}`
+                  : field.fieldKind === "competitors"
+                    ? `Company ${entryIndex + 1}`
+                    : field.fieldKind === "initiatives"
+                      ? `Initiative ${entryIndex + 1}`
+                      : `Milestone ${entryIndex + 1}`;
 
           return (
             <div
@@ -3820,7 +4157,7 @@ function RepeatableFieldControl({
                   type="button"
                   onClick={(event) => {
                     event.stopPropagation();
-                    if (isPerson || isOffering) setExpandedEntryIndex(entryIndex);
+                    setExpandedEntryIndex(entryIndex);
                     if (config.pageSize) {
                       onRepeatablePageChange?.(field.slideNumber, Math.floor(entryIndex / config.pageSize));
                     }
@@ -3832,7 +4169,11 @@ function RepeatableFieldControl({
                   </span>
                   <span className="min-w-0">
                     <span className="block truncate text-[12px] font-bold text-[#050505]">
-                      {normalizeText(entry.name) || entryLabel}
+                      {isMilestone
+                        ? normalizeText(entry.year) || entryLabel
+                        : isShareholder
+                          ? normalizeText(entry.name) || entryLabel
+                          : normalizeText(entry.name) || normalizeText(entry.title) || entryLabel}
                     </span>
                     {isPerson ? (
                       <span className="block truncate text-[10px] font-semibold text-[#8A8F98]">
@@ -3841,6 +4182,14 @@ function RepeatableFieldControl({
                     ) : isOffering ? (
                       <span className="block truncate text-[10px] font-semibold text-[#8A8F98]">
                         {normalizeText(entry.category) || `Product slide ${Math.floor(entryIndex / (config.pageSize || 3)) + 1}`}
+                      </span>
+                    ) : isShareholder && normalizeText(entry.role) ? (
+                      <span className="block truncate text-[10px] font-semibold text-[#8A8F98]">
+                        {entry.role}
+                      </span>
+                    ) : isMilestone && normalizeText(entry.description) ? (
+                      <span className="block truncate text-[10px] font-semibold text-[#8A8F98]">
+                        {entry.description}
                       </span>
                     ) : null}
                   </span>
@@ -3910,8 +4259,51 @@ function RepeatableFieldControl({
                         </label>
                       ))}
                     </>
+                  ) : isMilestone ? (
+                    <div className="space-y-2">
+                      {entryFields.map((entryField) => (
+                        <label key={entryField.key} className="block">
+                          <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.05em] text-[#6D6E71]">
+                            {entryField.label}
+                          </span>
+                          {renderEntryInput(entry, entryIndex, entryField)}
+                        </label>
+                      ))}
+                    </div>
+                  ) : isShareholder ? (
+                    <div className="space-y-2">
+                      {entryFields.map((entryField) => (
+                        <label key={entryField.key} className="block">
+                          <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.05em] text-[#6D6E71]">
+                            {entryField.label}
+                          </span>
+                          {renderEntryInput(entry, entryIndex, entryField)}
+                        </label>
+                      ))}
+                    </div>
+                  ) : isGroupedEntry ? (
+                    <>
+                      <div className="grid gap-3 md:grid-cols-2">
+                        {entryFields.filter((entryField) => entryField.inputType !== "textarea" && entryField.key !== "description").map((entryField) => (
+                          <label key={entryField.key} className="block">
+                            <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.05em] text-[#6D6E71]">
+                              {entryField.label}
+                            </span>
+                            {renderEntryInput(entry, entryIndex, entryField)}
+                          </label>
+                        ))}
+                      </div>
+                      {entryFields.filter((entryField) => entryField.inputType === "textarea" || entryField.key === "description").map((entryField) => (
+                        <label key={entryField.key} className="block">
+                          <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.05em] text-[#6D6E71]">
+                            {entryField.label}
+                          </span>
+                          {renderEntryInput(entry, entryIndex, entryField)}
+                        </label>
+                      ))}
+                    </>
                   ) : (
-                    <div className={field.fieldKind === "shareholders" ? "grid gap-2 md:grid-cols-[minmax(0,1fr)_96px_minmax(0,1fr)]" : "grid gap-2 md:grid-cols-[110px_minmax(0,1fr)]"}>
+                    <div className="grid gap-2 md:grid-cols-[110px_minmax(0,1fr)]">
                       {entryFields.map((entryField) => (
                         <label key={entryField.key} className="block">
                           <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.05em] text-[#6D6E71]">
@@ -4012,6 +4404,7 @@ function FieldPanel({
   chartValues,
   questionnaireState,
   globalDetails,
+  financialAutofillRange,
   activeFieldId,
   onFieldFocus,
   onFieldChange,
@@ -4022,7 +4415,17 @@ function FieldPanel({
   onQuestionnaireToggle,
   onQuestionPromptChange,
 }) {
-  const editableFields = getEditableTemplateFields(fields, globalDetails);
+  const allEditableFields = getEditableTemplateFields(fields, globalDetails);
+  const slide24ActivePeriods = activeSlide === 24
+    ? getSlide24ActivePeriodCount(financialAutofillRange)
+    : 5;
+  const slide24FirstActiveCol = 5 - slide24ActivePeriods;
+  const editableFields = activeSlide === 24
+    ? allEditableFields.filter((field) => {
+        const col = getSlide24ColumnIndex(field);
+        return col === null || col >= slide24FirstActiveCol;
+      })
+    : allEditableFields;
   const filledFieldCount = countFieldsWithData(editableFields, fieldValues, assetValues, chartValues);
 
   return (
@@ -4337,56 +4740,262 @@ function formatValidationFigure(value) {
   }).format(numeric);
 }
 
+function formatCurrency(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "—";
+  const abs = Math.abs(numeric);
+  const sign = numeric < 0 ? "-" : "";
+  if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(2)}M`;
+  if (abs >= 1_000) return `${sign}$${(abs / 1_000).toFixed(1)}K`;
+  return `${sign}$${abs.toFixed(0)}`;
+}
+
+const ISSUE_PLAIN_ENGLISH = {
+  "revenue-cross-check": {
+    what: "Revenue figures don't match between your accounting system and the uploaded P&L report.",
+    why: "This usually happens when the fiscal year date range doesn't align, or the P&L report was generated for a different period than what's loaded in Analytics.",
+    fix: [
+      "Check that the date range in \"Auto-fill Financials\" matches your fiscal year exactly.",
+      "Re-sync your QuickBooks connection, then run Auto-fill again.",
+      "If using a manual upload, make sure you uploaded the correct year's P&L report.",
+    ],
+  },
+  "net-income-cross-check": {
+    what: "Net income figures don't match between your accounting system and the P&L report.",
+    why: "Often caused by tax entries, adjusting journal entries, or accruals that appear in one source but not the other.",
+    fix: [
+      "Confirm both sources cover the same date range.",
+      "Check for year-end adjusting entries in QuickBooks that may not be reflected in the uploaded report.",
+      "Re-run Auto-fill after any corrections.",
+    ],
+  },
+  "gross-profit-formula": {
+    what: "Gross Profit should equal Revenue minus Cost of Goods Sold, but the numbers don't add up.",
+    why: "This usually means some expense accounts are being classified as COGS in one source but as operating expenses in the other — or COGS data is missing entirely.",
+    fix: [
+      "Check that all Cost of Goods Sold accounts are tagged correctly in QuickBooks.",
+      "If COGS is zero or negative, some expense accounts may be miscategorized.",
+      "Re-upload the P&L report after correcting your chart of accounts.",
+    ],
+  },
+  "adjusted-ebitda-bridge": {
+    what: "Adjusted EBITDA doesn't match EBITDA plus the approved add-backs.",
+    why: "There may be pending or unapproved EBITDA adjustments, or the add-back amounts were entered manually and don't match what's in the EBITDA calculation.",
+    fix: [
+      "Go to the EBITDA Adjustments section and approve any pending adjustments.",
+      "Check that add-back values match across the EBITDA calculation and the CIM fields.",
+      "Re-run Auto-fill after approving adjustments.",
+    ],
+  },
+  "free-cash-flow-formula": {
+    what: "Free Cash Flow should equal Cash from Operations minus Capital Expenditures, but there's a difference.",
+    why: "The cash flow statement may be incomplete, or CapEx entries might be categorized under a different account.",
+    fix: [
+      "Make sure a Cash Flow Statement is uploaded or synced for this year.",
+      "Check that capital expenditure accounts are correctly tagged.",
+      "Re-run Auto-fill to pick up any updated cash flow data.",
+    ],
+  },
+  "balance-sheet-equation": {
+    what: "Assets don't equal Liabilities plus Equity — the balance sheet doesn't balance.",
+    why: "A common cause is missing accounts, retained earnings not being carried forward, or the balance sheet covering a different date than expected.",
+    fix: [
+      "Confirm the balance sheet is dated at the end of the fiscal year, not mid-year.",
+      "Check for any accounts that may have been excluded from the upload.",
+      "Re-export the balance sheet from QuickBooks and re-upload.",
+    ],
+  },
+};
+
+function getIssueExplanation(issue) {
+  const baseId = String(issue.id || "").replace(/-\d+$/, "");
+  return ISSUE_PLAIN_ENGLISH[baseId] || null;
+}
+
+function FinancialValidationIssueCard({ issue }) {
+  const [open, setOpen] = useState(false);
+  const explanation = getIssueExplanation(issue);
+  const isDiscrepancy = issue.status === "discrepancy";
+  const isSourceWarning = issue.status === "source_warning";
+
+  return (
+    <div className={`rounded-lg border ${isSourceWarning ? "border-blue-200 bg-blue-50" : "border-amber-200 bg-white"}`}>
+      <button
+        type="button"
+        onClick={() => setOpen((prev) => !prev)}
+        className="flex w-full items-start gap-3 p-3 text-left"
+      >
+        <span className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold ${isSourceWarning ? "bg-blue-100 text-blue-700" : "bg-amber-100 text-amber-700"}`}>
+          {isSourceWarning ? "!" : "≠"}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-[12px] font-bold text-[#050505]">
+            {issue.year ? <span className="text-[#476E2C]">FY{issue.year} · </span> : null}
+            {isDiscrepancy ? (
+              <>
+                {String(issue.label || "").split(" agrees ")[0].split(" reconciles")[0]}
+                {" "}
+                <span className="font-normal text-[#6D6E71]">numbers don't match</span>
+              </>
+            ) : (
+              issue.label
+            )}
+          </span>
+          {isDiscrepancy && (
+            <span className="mt-0.5 block text-[11px] text-[#6D6E71]">
+              Your accounting shows{" "}
+              <span className="font-bold text-[#C62026]">{formatCurrency(issue.actual)}</span>
+              {" "}· P&L report shows{" "}
+              <span className="font-bold text-[#C62026]">{formatCurrency(issue.expected)}</span>
+              {" "}
+              <span className="text-[#9CA3AF]">(difference: {formatCurrency(Math.abs(Number(issue.actual) - Number(issue.expected)))})</span>
+            </span>
+          )}
+        </span>
+        <span className={`shrink-0 text-[10px] font-bold uppercase tracking-wide transition ${isSourceWarning ? "text-blue-600" : "text-amber-700"}`}>
+          {open ? "▲ hide" : "▼ fix"}
+        </span>
+      </button>
+
+      {open && explanation && (
+        <div className="border-t border-current/10 px-4 pb-4 pt-3">
+          <p className="text-[12px] text-[#374151]">
+            <span className="font-bold text-[#050505]">What happened: </span>
+            {explanation.what}
+          </p>
+          <p className="mt-2 text-[12px] text-[#374151]">
+            <span className="font-bold text-[#050505]">Why this happens: </span>
+            {explanation.why}
+          </p>
+          <div className="mt-3">
+            <p className="mb-1.5 text-[11px] font-bold uppercase tracking-[0.06em] text-[#476E2C]">How to fix it</p>
+            <ol className="space-y-1">
+              {explanation.fix.map((step, index) => (
+                <li key={index} className="flex items-start gap-2 text-[12px] text-[#374151]">
+                  <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-[#E6F3D3] text-[10px] font-bold text-[#476E2C]">
+                    {index + 1}
+                  </span>
+                  {step}
+                </li>
+              ))}
+            </ol>
+          </div>
+        </div>
+      )}
+
+      {open && !explanation && isSourceWarning && (
+        <div className="border-t border-current/10 px-4 pb-4 pt-3">
+          <p className="text-[12px] text-[#374151]">
+            <span className="font-bold text-[#050505]">How to fix: </span>
+            Re-sync your accounting connection or re-upload the report, then click{" "}
+            <span className="font-semibold">"Auto-fill Financials"</span> to revalidate.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function FinancialValidationBanner({ validation }) {
+  const [expanded, setExpanded] = useState(false);
   if (!validation) return null;
   const verified = validation.status === "verified";
   const summary = validation.summary || {};
   const source = validation.sourceLedger || {};
   const issues = validation.issues || [];
-  const Icon = verified ? ShieldCheck : AlertTriangle;
+  const sourceWarnings = issues.filter((i) => i.status === "source_warning");
+  const discrepancies = issues.filter((i) => i.status === "discrepancy");
+  const totalIssues = issues.length;
+
+  if (verified) {
+    return (
+      <section className="mb-4 flex items-center gap-3 rounded-lg border border-[#CFE2B8] bg-[#F8FCF3] px-4 py-3">
+        <ShieldCheck size={18} className="shrink-0 text-[#476E2C]" />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-bold text-[#476E2C]">All financial checks passed — ready to export</p>
+          <p className="mt-0.5 text-xs text-[#6D6E71]">
+            {summary.verifiedChecks || 0} checks verified · {summary.calculatedMetrics || 0} metrics calculated
+            {source.sourceLabel ? ` · ${source.sourceLabel}` : ""}
+            {source.lastSyncedAt ? ` · synced ${new Date(source.lastSyncedAt).toLocaleString("en-IN")}` : ""}
+          </p>
+        </div>
+      </section>
+    );
+  }
 
   return (
-    <section className={`mb-4 border-y px-1 py-3 ${verified ? "border-[#CFE2B8] bg-[#F8FCF3]" : "border-amber-200 bg-amber-50"}`}>
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-        <div className="flex min-w-0 items-start gap-3">
-          <span className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-md ${verified ? "bg-[#E6F3D3] text-[#476E2C]" : "bg-amber-100 text-amber-700"}`}>
-            <Icon size={18} />
-          </span>
-          <div className="min-w-0">
-            <p className="text-sm font-bold text-[#050505]">
-              {verified ? "Financial data verified" : "Financial data requires review"}
-            </p>
-            <p className="mt-0.5 text-xs text-[#6D6E71]">
-              {source.sourceLabel || "Financial source"}
-              {source.versionName ? ` / ${source.versionName}` : ""}
-              {source.lastSyncedAt ? ` / synced ${new Date(source.lastSyncedAt).toLocaleString("en-IN")}` : ""}
-            </p>
+    <section className="mb-4 overflow-hidden rounded-lg border border-amber-200 bg-amber-50">
+      <button
+        type="button"
+        onClick={() => setExpanded((prev) => !prev)}
+        className="flex w-full items-start gap-3 px-4 py-3 text-left"
+      >
+        <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-600" />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-bold text-[#050505]">
+            Financial data needs review before export
+          </p>
+          <p className="mt-1 text-xs text-[#6D6E71]">
+            {source.sourceLabel || "Financial source"}
+            {source.versionName ? ` · ${source.versionName}` : ""}
+            {source.lastSyncedAt ? ` · synced ${new Date(source.lastSyncedAt).toLocaleString("en-IN")}` : ""}
+          </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {summary.verifiedChecks > 0 && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-[#E6F3D3] px-2 py-0.5 text-[11px] font-semibold text-[#476E2C]">
+                ✓ {summary.verifiedChecks} checks passed
+              </span>
+            )}
+            {discrepancies.length > 0 && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800">
+                ≠ {discrepancies.length} number{discrepancies.length === 1 ? "" : "s"} don't match
+              </span>
+            )}
+            {sourceWarnings.length > 0 && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-semibold text-blue-800">
+                ! {sourceWarnings.length} connection issue{sourceWarnings.length === 1 ? "" : "s"}
+              </span>
+            )}
           </div>
         </div>
+        <span className="shrink-0 text-[11px] font-bold text-amber-700">
+          {expanded ? "▲ hide" : `▼ see ${totalIssues} issue${totalIssues === 1 ? "" : "s"}`}
+        </span>
+      </button>
 
-        <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs font-semibold text-[#4B5563]">
-          <span>{summary.documentCount || 0} source documents</span>
-          <span>{summary.verifiedChecks || 0} checks passed</span>
-          <span>{summary.calculatedMetrics || 0} calculated metrics</span>
-          <span className={summary.discrepancies ? "text-[#C62026]" : ""}>
-            {summary.discrepancies || 0} discrepancies
-          </span>
-        </div>
-      </div>
+      {expanded && (
+        <div className="border-t border-amber-200 bg-white px-4 py-4">
+          <p className="mb-3 text-[12px] text-[#6D6E71]">
+            Fix each issue below and then click{" "}
+            <span className="font-semibold text-[#050505]">Auto-fill Financials</span>{" "}
+            to revalidate. All issues must be cleared before you can export the CIM.
+          </p>
 
-      {issues.length > 0 && (
-        <div className="mt-3 grid gap-2 border-t border-current/10 pt-3 lg:grid-cols-2">
-          {issues.slice(0, 6).map((issue) => (
-            <div key={issue.id} className="min-w-0 text-xs text-[#7C2D12]">
-              <span className="font-bold">{issue.year ? `FY${issue.year}: ` : ""}</span>
-              <span>{issue.label}</span>
-              {issue.status === "discrepancy" && (
-                <span className="ml-1 text-[#92400E]">
-                  ({formatValidationFigure(issue.actual)} vs. {formatValidationFigure(issue.expected)})
-                </span>
-              )}
+          {sourceWarnings.length > 0 && (
+            <div className="mb-4">
+              <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.06em] text-blue-700">
+                Connection issues ({sourceWarnings.length})
+              </p>
+              <div className="space-y-2">
+                {sourceWarnings.map((issue) => (
+                  <FinancialValidationIssueCard key={issue.id} issue={issue} />
+                ))}
+              </div>
             </div>
-          ))}
+          )}
+
+          {discrepancies.length > 0 && (
+            <div>
+              <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.06em] text-amber-700">
+                Numbers that don't match ({discrepancies.length})
+              </p>
+              <div className="space-y-2">
+                {discrepancies.map((issue) => (
+                  <FinancialValidationIssueCard key={issue.id} issue={issue} />
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </section>
@@ -5306,12 +5915,10 @@ export default function WorkspaceCimPrep() {
   }, []);
 
   const handleRepeatablePageChange = useCallback((slideNumber, instanceIndex) => {
+    const config = getRepeatableSlideConfig(slideNumber);
     setActiveSlide(slideNumber);
     setActiveSlideInstance(Math.max(0, Number(instanceIndex || 0)));
-    setActiveFieldId(makeRepeatableFieldId(
-      slideNumber,
-      slideNumber === 15 ? "management-team" : "offerings",
-    ));
+    if (config) setActiveFieldId(makeRepeatableFieldId(slideNumber, config.key));
   }, []);
 
   const handleGlobalChange = useCallback((key, value) => {
@@ -5562,7 +6169,7 @@ export default function WorkspaceCimPrep() {
     const fieldsForSlide = fieldsBySlide[slideNumber] || [];
     const fieldsById = Object.fromEntries(fieldsForSlide.map((field) => [field.id, field]));
     const exportFieldValues = getFieldValuesForExportSlide(fieldValues, slideRef);
-    if (shouldHideUnusedManagementSlot(slideNumber, element, exportFieldValues)) {
+    if (shouldHideUnusedRepeatableSlot(slideNumber, element, exportFieldValues)) {
       return { kind: "hidden" };
     }
     return getElementContent(
@@ -5628,10 +6235,15 @@ export default function WorkspaceCimPrep() {
     const validation = financialAutofillState.validation;
     if (validation && validation.status !== "verified") {
       const issueCount = validation.issues?.length || 0;
+      const discrepancyCount = validation.issues?.filter((i) => i.status === "discrepancy").length || 0;
+      const warningCount = validation.issues?.filter((i) => i.status === "source_warning").length || 0;
+      const parts = [];
+      if (discrepancyCount) parts.push(`${discrepancyCount} number mismatch${discrepancyCount === 1 ? "" : "es"}`);
+      if (warningCount) parts.push(`${warningCount} connection issue${warningCount === 1 ? "" : "s"}`);
       showToast({
         type: "error",
-        title: "Financial Review Required",
-        message: `${issueCount} financial review item${issueCount === 1 ? "" : "s"} must be resolved and revalidated before exporting the CIM.`,
+        title: "Fix financial issues before exporting",
+        message: `${parts.join(" and ")} found. Expand the yellow banner above, fix each issue, then click "Auto-fill Financials" to revalidate.`,
       });
       return;
     }
@@ -5673,10 +6285,14 @@ export default function WorkspaceCimPrep() {
 
   const isBasicSection = activeSection.type === "basic";
   const activeFields = activeSlide ? fieldsBySlide[activeSlide] || [] : [];
+  const slide24FirstActiveCol = 5 - getSlide24ActivePeriodCount(financialAutofillRange);
   const sectionEditableFields = getEditableTemplateFields(
     activeSection.slides.flatMap((slideNumber) => fieldsBySlide[slideNumber] || []),
     effectiveGlobalDetails,
-  );
+  ).filter((field) => {
+    const col = getSlide24ColumnIndex(field);
+    return col === null || col >= slide24FirstActiveCol;
+  });
   const basicCompleted = BASIC_DETAIL_FIELDS.filter(([key]) => normalizeText(effectiveGlobalDetails[key])).length;
   const sectionCompleted = isBasicSection
     ? basicCompleted + countFieldsWithData(sectionEditableFields, fieldValues, assetValues, chartValues)
@@ -5866,6 +6482,7 @@ export default function WorkspaceCimPrep() {
             chartValues={chartValues}
             questionnaireState={questionnaireState}
             globalDetails={effectiveGlobalDetails}
+            financialAutofillRange={financialAutofillRange}
             activeFieldId={activeFieldId}
             onFieldFocus={setActiveFieldId}
             onFieldChange={handleFieldChange}
