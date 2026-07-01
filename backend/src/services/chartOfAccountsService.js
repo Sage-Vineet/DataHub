@@ -19,12 +19,9 @@
 // ============================================================================
 
 const { supabase } = require("../db");
-const {
-  normalizeAccountType,
-  inferAccountType,
-} = require("./manualGlMultiYearService");
 const { classifyStandardized, buildLevelsFromPath, MAX_LEVELS } = require("./keyReports/coaHierarchyRules");
 const { refineAccounts } = require("./keyReports/geminiCoaClassifier");
+const { classifyAccount } = require("./keyReports/coaAccountClassifier");
 
 const TABLE_COA = "chart_of_accounts";
 const TABLE_TXN = "general_ledger_entries";
@@ -227,34 +224,23 @@ function buildCoaModel(glRows, bsRows, plRows) {
     if (bsSection && !leaf.bsSection) leaf.bsSection = bsSection;
   };
 
-  // P&L accounts whose type is unset can be misclassified as BS types by the
-  // broad keyword regex in inferAccountType (e.g. "Bank Charges & Fees" matches
-  // \bbank\b → "asset", "Car & Truck" matches \btruck\b → "asset").
-  // Only promote to a BS type from a P&L source when there is a STRONG signal.
-  const PL_STRONG_ASSET_RE = /\b(checking|savings|receivable|a\/r|inventory|prepaid|equipment|machinery|furniture|fixture|computer|building|cash\s+(and|&)\s+(cash\s+)?equivalent|money\s+market|undeposited|petty\s+cash|certificate\s+of\s+deposit)\b/i;
-  // "credit card" intentionally excluded: "Credit Card Bill / Charges / Fees" are P&L expenses,
-  // not balance-sheet liabilities. Only "Credit Card Payable" (has "payable") survives as liability.
-  const PL_STRONG_LIAB_RE  = /\b(payable|a\/p|loan|mortgage|note\s+payable|line\s+of\s+credit)\b/i;
-  const PL_STRONG_EQUITY_RE = /\b(retained\s+earnings|owner.?s?\s+equity|capital\s+stock|common\s+stock)\b/i;
-  const BS_TYPES_SET = new Set(["asset", "liability", "equity"]);
-
   const addLeaf = (accountName, accountNumber, explicitType, source, fiscalYear, classificationSource, bsSection) => {
     const name = String(accountName || "").trim();
     if (!name) return;
     if (isNonAccountRow(name)) return;
     const number = accountNumber ? String(accountNumber).trim() : null;
-    const normalized = normalizeAccountType(explicitType);
-    let type = normalized || inferAccountType(name, number || "");
-    // Guard: without an explicit type, P&L-sourced accounts should not silently
-    // become BS types — keyword inference is too broad (bank → asset, truck → asset).
-    if (!normalized && source === "profit_loss" && BS_TYPES_SET.has(type)) {
-      const strong =
-        (type === "asset"     && PL_STRONG_ASSET_RE.test(name)) ||
-        (type === "liability" && PL_STRONG_LIAB_RE.test(name))  ||
-        (type === "equity"    && PL_STRONG_EQUITY_RE.test(name));
-      if (!strong) type = "expense";
-    }
-    const resolvedSource = normalized ? classificationSource : "keyword";
+    // Deterministic, accounting-aware classification (multi-signal, priority-ordered).
+    // Replaces the old asset-first single-keyword inference that misclassified
+    // "Bank Charges" (→asset), "Credit Card Fees" (→liability), "Car & Truck" (→asset),
+    // "Loans to X" (→expense). The classifier honours the Balance-Sheet section and any
+    // explicit type first, then applies accounting rules with ambiguous-noun context.
+    const { accountType: type, reason } = classifyAccount({
+      accountName: name,
+      accountNumber: number,
+      bsSection,
+      explicitType,
+    });
+    const resolvedSource = reason;
     const key = normName(name);
     const bucket = leavesByName.get(key) || [];
 
@@ -298,6 +284,31 @@ function buildCoaModel(glRows, bsRows, plRows) {
       addLeaf(r.split_account, null, null, "general_ledger", r.fiscal_year, "gl_type");
     }
   }
+
+  // Ensure the standard equity components always exist in the COA's Equity section.
+  // "Net Income" (Current Year Net Income) and "Retained Earnings" are computed
+  // closing lines rather than GL accounts, and isNonAccountRow() intentionally
+  // strips "Net Income" from extracted rows — so inject them here (bypassing that
+  // guard) if the source data didn't already provide them. Their VALUES are filled
+  // by the Balance Sheet engine (bsBalancesForYear / monthly snapshots), which maps
+  // its "Net Income" / "Retained Earnings" equity balances onto these leaves.
+  const ensureEquityLeaf = (name) => {
+    const key = normName(name);
+    if (leavesByName.has(key)) return;
+    usedGroups.add("equity");
+    leavesByName.set(key, [{
+      accountName: name,
+      accountNumber: null,
+      accountType: "equity",
+      statementType: "balance_sheet",
+      classificationSource: "synthetic_equity",
+      sources: new Set(["generated"]),
+      fiscalYears: new Set(),
+      bsSection: null,
+    }]);
+  };
+  ensureEquityLeaf("Retained Earnings");
+  ensureEquityLeaf("Net Income");
 
   const groups = Object.entries(GROUP_DEFS)
     .filter(([type]) => usedGroups.has(type))
@@ -412,8 +423,11 @@ function normalBalanceFor(accountType) {
 }
 
 /**
- * Assign a stable system_id to every (deduped) leaf. Existing rows keep their id;
- * new accounts get the next number for their prefix. Returns Map<accountKey, sid>.
+ * Assign a system_id to every (deduped) leaf. The id's PREFIX must always match
+ * the account's current section (INC / EXP / BS). An existing id is kept only when
+ * its prefix still matches; if the account was reclassified (e.g. an expense that
+ * is now income), a fresh id is issued for the correct prefix so the System ID
+ * always tracks the section. Returns Map<accountKey, sid>.
  */
 function assignSystemIds(leaves, existingByKey) {
   const maxByPrefix = {};
@@ -432,9 +446,15 @@ function assignSystemIds(leaves, existingByKey) {
   for (const leaf of ordered) {
     const key = accountKey(leaf.accountNumber, leaf.accountName);
     if (byKey.has(key)) continue;
-    const existing = existingByKey.get(key);
-    if (existing?.system_id) { byKey.set(key, existing.system_id); continue; }
     const prefix = systemIdPrefix(leaf.accountType);
+    const existing = existingByKey.get(key);
+    const existingPrefix = /^([A-Z]+)-\d+$/.exec(existing?.system_id || "")?.[1];
+    // Keep the existing id ONLY if its prefix still matches the current section.
+    if (existing?.system_id && existingPrefix === prefix) {
+      byKey.set(key, existing.system_id);
+      continue;
+    }
+    // New account, or reclassified into a different section → issue a correct-prefix id.
     const n = (maxByPrefix[prefix] || 0) + 1;
     maxByPrefix[prefix] = n;
     byKey.set(key, `${prefix}-${String(n).padStart(3, "0")}`);
@@ -727,8 +747,10 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
     const userModified = Boolean(existing.metadata?.user_modified);
     const patch = {
       account_id_name: accountIdName,
-      // Backfill system_id once; never renumber a previously-assigned account.
-      system_id: existing.system_id || systemId,
+      // system_id comes from assignSystemIds: it preserves the id when the section
+      // prefix is unchanged and re-issues a correct-prefix id when the account was
+      // reclassified into a different section.
+      system_id: systemId || existing.system_id,
       account_type: userModified ? existing.account_type : leaf.accountType,
       statement_type: userModified ? existing.statement_type : leaf.statementType,
       normal_balance: existing.normal_balance || normalBalanceFor(userModified ? existing.account_type : leaf.accountType),
@@ -1132,8 +1154,15 @@ async function validateChartOfAccounts(companyId, versionId) {
   const allIds = new Set(all.map((r) => r.id));
   const leaves = all.filter((r) => !r.metadata?.is_group);
 
+  // Standard equity closing lines are legitimate COA accounts even though
+  // isNonAccountRow() strips them from extracted data (they read as "totals").
+  const isStandardEquityLine = (r) =>
+    r.account_type === "equity" && /^(net income|net loss|retained earnings|current year (?:net )?(?:income|earnings))$/i.test(String(r.account_name || "").trim());
+
   const nullType = leaves.filter((r) => !r.account_type).map((r) => r.account_name);
-  const invalidRows = leaves.filter((r) => isNonAccountRow(r.account_name)).map((r) => r.account_name);
+  const invalidRows = leaves
+    .filter((r) => isNonAccountRow(r.account_name) && !isStandardEquityLine(r))
+    .map((r) => r.account_name);
   const noLevel = leaves.filter((r) => !r.level_1).map((r) => r.account_name);
   const noBase = leaves.filter((r) => !r.base_account).map((r) => r.account_name);
   const noSystemId = leaves.filter((r) => !r.system_id).map((r) => r.account_name);
@@ -1242,7 +1271,7 @@ async function ensureAccountExistsInCoa(versionId, companyId, accountName, accou
 
   // It doesn't exist, let's insert it!
   console.log(`[ChartOfAccounts][ensureExists] Dynamically inserting account: "${normalizedName}" (num: ${normalizedNumber || 'none'})`);
-  const type = explicitType || inferAccountType(normalizedName, normalizedNumber || "");
+  const type = classifyAccount({ accountName: normalizedName, accountNumber: normalizedNumber, explicitType }).accountType;
   const stmtType = statementTypeFor(type);
   const normalBalance = normalBalanceFor(type);
 
@@ -1411,7 +1440,7 @@ async function ensureCoaComplete(companyId, versionId) {
 
   // 3. Classify all missing accounts (rules-only — no AI round-trip needed here)
   const classifiedLeaves = missing.map((accountName) => {
-    const type     = inferAccountType(accountName, "");
+    const type     = classifyAccount({ accountName }).accountType;
     const stmtType = statementTypeFor(type);
     const { levels, standardizedDepth } = classifyStandardized({
       accountName, accountNumber: null, accountType: type, statementType: stmtType,

@@ -324,6 +324,14 @@ class GeneralLedgerExtractionService extends ExtractionServiceBase {
       const fiscalMonth = transDate
         ? parseInt(String(transDate).slice(5, 7), 10) || null
         : null;
+      // Guarantee fiscal_year is populated whenever a transaction_date exists.
+      // Keep the extractor's fiscal_year if present; otherwise derive it from the
+      // date's year. A NULL fiscal_year on a dated row is the root cause of the
+      // final fiscal year being dropped from the generated Trial Balance /
+      // Balance Sheet — the year-enumeration bounds ignore NULL fiscal_year rows.
+      const fiscalYear = row.fiscal_year != null
+        ? Number(row.fiscal_year)
+        : (transDate ? (parseInt(String(transDate).slice(0, 4), 10) || null) : null);
 
       return {
         version_id:     metadata.versionId,
@@ -336,7 +344,7 @@ class GeneralLedgerExtractionService extends ExtractionServiceBase {
 
         // ── Date / year / month (null for non-transaction rows) ───────────────
         transaction_date: transDate,
-        fiscal_year:      row.fiscal_year != null ? Number(row.fiscal_year) : null,
+        fiscal_year:      fiscalYear,
         fiscal_month:     fiscalMonth,
 
         // ── Account identity ──────────────────────────────────────────────────
