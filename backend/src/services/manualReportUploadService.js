@@ -592,9 +592,17 @@ No markdown, no explanation.`;
 }
 
 async function verifyScheduleKItems(pdfBuffer, formType, reconcilingItems) {
-  if (!reconcilingItems.length) return reconcilingItems; // nothing to verify
+  const ft = String(formType || "").toUpperCase();
+  // C-Corporations (Form 1120, NOT 1120-S) have no Schedule K — nothing to fetch.
+  const isCCorp = ft.includes("1120") && !ft.includes("1120-S") && !ft.includes("1120S");
+  if (isCCorp) return [];
+
+  // Run the Schedule-K-focused pass even when the broad extraction found nothing.
+  // The prompt asks the model to scan the ENTIRE Schedule K "Total amount" column
+  // and ADD any non-zero lines the first pass missed — so this doubles as a
+  // recovery pass when Schedule K wasn't captured on the first extraction.
   const pdfBase64 = pdfBuffer.toString("base64");
-  const prompt = buildScheduleKVerificationPrompt(formType, reconcilingItems);
+  const prompt = buildScheduleKVerificationPrompt(formType || "1120-S", reconcilingItems);
 
   for (const modelName of TAX_GEMINI_MODELS) {
     try {
@@ -612,12 +620,20 @@ async function verifyScheduleKItems(pdfBuffer, formType, reconcilingItems) {
         .map((i) => ({ label: String(i.label || "").trim(), value: Number(i.value) || 0 }))
         .filter((i) => i.label && i.value !== 0);
       console.log(`[ScheduleKVerify] formType=${formType} — ${reconcilingItems.length} in, ${clean.length} confirmed via ${modelName}`);
+
+      // Non-destructive guard: never let a single flaky verify pass WIPE Schedule K
+      // items the first extraction confidently found. An empty verify result is
+      // only trusted when there was nothing to begin with.
+      if (clean.length === 0 && reconcilingItems.length > 0) {
+        console.warn(`[ScheduleKVerify] verify returned 0 items but extraction had ${reconcilingItems.length} — keeping original extraction to avoid dropping Schedule K data`);
+        return reconcilingItems;
+      }
       return clean;
     } catch (err) {
       console.warn(`[ScheduleKVerify] model=${modelName} failed: ${err.message}`);
     }
   }
-  // If verification completely fails, keep the original items unchanged
+  // If every verification attempt failed, keep the original items unchanged.
   return reconcilingItems;
 }
 
