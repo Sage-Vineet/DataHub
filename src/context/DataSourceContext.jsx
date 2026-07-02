@@ -88,7 +88,8 @@ export const DataSourceProvider = ({ children }) => {
         // keeps this context in sync whenever the user confirms a switch on the
         // Connections page — no need for the API response to do it.
         const serverNormalized = source ? normalizeReportSourceKey(source) : null;
-        const normalized = localSource || serverNormalized || stored || REPORT_SOURCE_KEYS.QUICKBOOKS;
+        // Key Reports is the application-wide default data source.
+        const normalized = localSource || serverNormalized || stored || REPORT_SOURCE_KEYS.KEY_REPORTS;
         if (serverNormalized && localSource && serverNormalized !== localSource) {
           console.log('[SOURCE_CHANGE_BLOCKED]', {
             attemptedSource: serverNormalized,
@@ -107,7 +108,7 @@ export const DataSourceProvider = ({ children }) => {
         if (clientIdRef.current !== clientId) return;
         // Preserve prior snapshot metadata on transient failures so
         // disconnected/cached indicators do not flicker away.
-        if (!stored) setActiveSource(REPORT_SOURCE_KEYS.QUICKBOOKS);
+        if (!stored) setActiveSource(REPORT_SOURCE_KEYS.KEY_REPORTS);
       })
       .finally(() => {
         if (clientIdRef.current === clientId) setIsLoadingSource(false);

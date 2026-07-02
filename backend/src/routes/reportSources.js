@@ -41,7 +41,7 @@ router.get("/report-sources", async (req, res) => {
     if (!requireClientAccess(req, res, clientId)) return;
 
     const state = await dataSourceService.getDataSourceState(clientId);
-    const selectedSource = state.activeSource || REPORT_SOURCE_KEYS.QUICKBOOKS;
+    const selectedSource = state.activeSource || REPORT_SOURCE_KEYS.KEY_REPORTS;
     const activeSource = state.activeSource || null;
 
     return res.json({
