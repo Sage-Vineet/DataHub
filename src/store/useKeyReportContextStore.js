@@ -172,6 +172,25 @@ const INACTIVE_CONTEXT = {
   loadingDetail: false,
 };
 
+// Returns an INACTIVE Key Reports context regardless of whether versions exist.
+// Consumer pages call this when the active data source is NOT "key_reports", so
+// that a company merely HAVING Key Report versions never overrides the
+// Connections-page selection (QuickBooks / Manual GL / Manual Upload / QB Manual).
+// The version list is preserved only so a page can still show which versions
+// exist; it has no effect on data while the context is masked inactive.
+export function maskKeyReportContext(ctx, active) {
+  if (active) return ctx;
+  // Fully inactive: krActive=false, no selectedVersionId/version, availability
+  // all-enabled, loading settled. This guarantees consumer pages never send a
+  // keyReportVersionId and never take the KR override path when the active data
+  // source is one of the 4 connections.
+  return {
+    ...INACTIVE_CONTEXT,
+    loadedCompanyId: ctx?.loadedCompanyId ?? null,
+    error: null,
+  };
+}
+
 export function selectKeyReportContext(state) {
   const { versions, selectedVersionId, detail } = state;
   const version = detail?.version || null;
