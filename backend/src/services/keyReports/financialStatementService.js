@@ -905,13 +905,19 @@ async function generateYearlyPl(_companyId, versionId, year, allCoa, unmappedSet
   // Profit & Loss is generated ENTIRELY from the General Ledger (client
   // requirement — there is no profit_loss_entries table). Map each GL account's
   // yearly movement onto its P&L leaf via the COA name/number map + fuzzy fallback.
+  //
+  // Uses loadGlAmountsYearly (not loadGlAmountsByMonth) so that GL rows with a
+  // valid fiscal_year but a null/missing transaction_date are included in the
+  // yearly totals. loadGlAmountsByMonth silently drops those rows because it
+  // cannot assign them to a month bucket, causing Total Expenses / Net Income to
+  // be understated relative to the Trial Balance.
   const leafAmounts = new Map(plLeaves.map(a => [a.id, 0]));
-  const gl = await loadGlAmountsByMonth(versionId, year);
+  const gl = await loadGlAmountsYearly(versionId, year);
   if (gl) {
     const glMappings  = buildMappings(plLeaves);
     const fuzzyLookup = buildFuzzyLookup(plLeaves);
-    for (const [normKey, { rawName, accountNumber, months: monthMap }] of gl.byAccount) {
-      const totalAmt = Array.from(monthMap.values()).reduce((s, v) => s + v, 0);
+    for (const [normKey, { rawName, accountNumber, total }] of gl) {
+      const totalAmt = total;
       if (Math.abs(totalAmt) < 0.005) continue;
       let ids = glMappings?.get(normKey);
       if (!ids?.length && accountNumber) ids = glMappings?.get(`__num__${String(accountNumber).trim()}`);
@@ -1108,6 +1114,52 @@ function buildGlDirectPlStatement(byAccount, monthNum) {
     operatingIncome:  netIncome,
     netIncome,
   };
+}
+
+/**
+ * Yearly GL accumulation for generateYearlyPl.
+ *
+ * Reads ALL TRANSACTION (or null row_type) rows for the fiscal year and sums
+ * each account's amount without any transaction_date filter. This is intentional:
+ * some GL rows carry a valid fiscal_year but a null transaction_date (e.g. manual
+ * journal entries or year-end adjustments). loadGlAmountsByMonth silently drops
+ * those rows because it cannot assign them to a month; that caused yearly totals
+ * (Total Expenses, Operating Income, Net Income) to be understated relative to the
+ * Trial Balance, which accumulates the same rows without a date check.
+ *
+ * loadGlAmountsByMonth remains unchanged and is still used for MONTHLY P&L.
+ */
+async function loadGlAmountsYearly(versionId, year) {
+  let data;
+  try {
+    data = await fetchAllRows(() =>
+      supabase
+        .from("general_ledger_entries")
+        .select("account_name, account_number, amount, fiscal_year")
+        .eq("version_id", versionId)
+        .or(
+          `fiscal_year.eq.${year},` +
+          `and(fiscal_year.is.null,transaction_date.gte.${year}-01-01,transaction_date.lte.${year}-12-31)`,
+        )
+        .or("row_type.eq.TRANSACTION,row_type.is.null"),
+    );
+  } catch (err) { console.warn(`[FinStmt][GL][${year}] yearly read failed: ${err.message}`); return null; }
+  if (!data?.length) return null;
+
+  // norm(name) → { rawName, accountNumber, total }
+  const byAccount = new Map();
+  for (const row of data) {
+    const rawName = String(row.account_name || "").trim();
+    if (!rawName || isSummaryRow(rawName)) continue;
+    const key = norm(rawName);
+    if (!byAccount.has(key)) {
+      byAccount.set(key, { rawName, accountNumber: row.account_number, total: 0 });
+    }
+    byAccount.get(key).total += safeNum(row.amount);
+  }
+
+  console.log(`[FinStmt][GL][${year}] yearly: ${data.length} rows → ${byAccount.size} accounts`);
+  return byAccount.size ? byAccount : null;
 }
 
 async function loadGlAmountsByMonth(versionId, year) {
