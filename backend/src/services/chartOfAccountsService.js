@@ -20,13 +20,17 @@
 
 const { supabase } = require("../db");
 const { classifyStandardized, buildLevelsFromPath, MAX_LEVELS } = require("./keyReports/coaHierarchyRules");
-const { refineAccounts } = require("./keyReports/geminiCoaClassifier");
+const { refineAccounts, classifyAccountsWithAI } = require("./keyReports/geminiCoaClassifier");
 const { classifyAccount } = require("./keyReports/coaAccountClassifier");
 
 const TABLE_COA = "chart_of_accounts";
 const TABLE_TXN = "general_ledger_entries";
 const TABLE_BS = "balance_sheet_entries";
 const PAGE_SIZE = 1000;
+
+// Minimum Gemini confidence to prefer the AI classification over keyword rules.
+// Below this threshold the deterministic coaAccountClassifier result is used instead.
+const AI_CONFIDENCE_THRESHOLD = 0.75;
 
 // Audit history (classification snapshots + per-edit adjustments) is stored
 // INLINE on each chart_of_accounts row in the `audit_log` jsonb array, rather
@@ -126,9 +130,18 @@ const SECTION_LABEL_SET = new Set([
   "current liabilities", "long-term liabilities", "long term liabilities",
   "other current liabilities", "other liabilities", "cost of goods sold",
   "liabilities and equity", "liabilities & equity", "total liabilities and equity",
+  // Additional section headers that appear in exported financial statements
+  "stockholders equity", "stockholders' equity", "shareholders equity", "shareholders' equity",
+  "members equity", "members' equity", "owners equity", "owners' equity",
+  "total stockholders equity", "total stockholders' equity",
+  "cost of sales", "gross margin", "gross revenue",
+  "operating expenses", "other income", "other expenses",
+  "other income and expenses", "other income (expense)",
+  "non-operating income", "non-operating expenses",
 ]);
 
-const TOTAL_NAME_RE = /(^total\b|\btotal$|\bnet income\b|\bnet loss\b|\bgross profit\b|\bnet operating income\b|\bnet operating loss\b|\boperating income\b|\bpretax income\b|\bincome before taxes?\b|\bnet revenue\b)/i;
+const TOTAL_NAME_RE =
+  /(^total\b|\btotal$|\bnet income\b|\bnet loss\b|\bgross profit\b|\bnet operating income\b|\bnet operating loss\b|\boperating income\b|\bpretax income\b|\bincome before taxes?\b|\bnet revenue\b|\bsubtotal\b|^less\b|^less:\s*$)/i;
 
 function isTotalName(name) {
   return TOTAL_NAME_RE.test(String(name || "").trim());
@@ -207,13 +220,74 @@ async function collectBsAccountsFromEntries(companyId, versionId) {
   );
 }
 
+// ── Normalization helpers ─────────────────────────────────────────────────────
+
+// Strip a leading GL account-code prefix when one is present in the name field
+// (e.g. "1000 - Cash" → "Cash", "10200 Checking" → "Checking").
+// The raw name is always preserved in the database; this produces cleaner AI input.
+const LEADING_ACCT_CODE_RE = /^\d{3,7}[\s\-\.]+/;
+function normalizeForGemini(rawName) {
+  const cleaned = String(rawName || '')
+    .trim()
+    .replace(LEADING_ACCT_CODE_RE, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned || String(rawName || '').trim();
+}
+
+/**
+ * Collect the set of unique account names from GL + BS rows to send to the AI
+ * classification pre-pass.
+ *
+ * The `key` field matches the normName(rawName) that addLeaf uses internally, so
+ * aiResults look-ups inside buildCoaModel align correctly.
+ *
+ * The `accountName` field sent to Gemini is normalizeForGemini(rawName) — the raw
+ * name with leading account-code prefixes stripped, for cleaner AI input.
+ *
+ * @param {Array} glRows - GL rows (from collectGlAccountsFromEntries)
+ * @param {Array} bsRows - BS rows (from collectBsAccountsFromEntries)
+ * @returns {Array<{key, accountName, accountNumber, bsSection}>}
+ */
+function collectUniqueAccountNames(glRows, bsRows) {
+  const seen = new Map(); // normKey → descriptor
+  const add = (rawName, accountNumber, bsSection) => {
+    const name = String(rawName || '').trim();
+    if (!name || isNonAccountRow(name)) return;
+    const key = normName(name);
+    if (seen.has(key)) return;
+    seen.set(key, {
+      key,
+      accountName: normalizeForGemini(name),
+      accountNumber: accountNumber ? String(accountNumber).trim() : null,
+      bsSection: bsSection || null,
+    });
+  };
+  for (const r of bsRows || []) {
+    if (r.account_name) add(r.account_name, r.account_number, r.section);
+  }
+  for (const r of glRows || []) {
+    if (r.account_name) add(r.account_name, r.account_number, r.account_section);
+    if (r.split_account && !isNonAccountRow(r.split_account)) add(r.split_account, null, null);
+  }
+  return Array.from(seen.values());
+}
+
+// ── COA leaf model ────────────────────────────────────────────────────────────
+
 /**
  * Build the in-memory COA leaf model from raw account rows.
  * Source precedence (spec): Balance Sheet → Profit & Loss → General Ledger.
  * Pure function. (Unchanged from the prior 2-level engine — still the dedup +
  * classification core; the hierarchy layer is built on top of its leaves.)
+ *
+ * @param {Array}  glRows     GL transaction rows
+ * @param {Array}  bsRows     Balance Sheet rows
+ * @param {Array}  plRows     P&L rows (always empty — no profit_loss_entries table)
+ * @param {Map}    aiResults  Pre-computed AI classification Map from classifyAccountsWithAI.
+ *                            Keys are normName(accountName). Pass new Map() to use rules only.
  */
-function buildCoaModel(glRows, bsRows, plRows) {
+function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map()) {
   const leavesByName = new Map();
   const usedGroups = new Set();
 
@@ -229,19 +303,57 @@ function buildCoaModel(glRows, bsRows, plRows) {
     if (!name) return;
     if (isNonAccountRow(name)) return;
     const number = accountNumber ? String(accountNumber).trim() : null;
-    // Deterministic, accounting-aware classification (multi-signal, priority-ordered).
-    // Replaces the old asset-first single-keyword inference that misclassified
-    // "Bank Charges" (→asset), "Credit Card Fees" (→liability), "Car & Truck" (→asset),
-    // "Loans to X" (→expense). The classifier honours the Balance-Sheet section and any
-    // explicit type first, then applies accounting rules with ambiguous-noun context.
-    const { accountType: type, reason } = classifyAccount({
-      accountName: name,
-      accountNumber: number,
-      bsSection,
-      explicitType,
-    });
-    const resolvedSource = reason;
     const key = normName(name);
+
+    // ── AI pre-classification result ─────────────────────────────────────────
+    // Keyed by normName(accountName) — same key computed below — so look-ups align.
+    const aiResult = aiResults.get(key);
+
+    // AI detected this as a calculated/section row (e.g. "Total Assets") even if
+    // isNonAccountRow didn't catch it — exclude it.
+    if (aiResult?.skip) return;
+
+    // ── Classification priority ──────────────────────────────────────────────
+    // 0. Balance Sheet section header — always authoritative regardless of AI.
+    const bsSectionType = bsSection ? accountTypeFromBsSection(bsSection) : '';
+
+    let type, resolvedSource, classificationMethod, aiNormalizedName, aiDeeperLevels, confidence;
+
+    if (bsSectionType) {
+      // BS section is authoritative. AI is still used for display name / deeper levels.
+      type = bsSectionType;
+      resolvedSource = 'balance_sheet_section';
+      classificationMethod = 'rule';
+      aiNormalizedName = aiResult?.normalizedName || null;
+      aiDeeperLevels = aiResult?.deeperLevels || [];
+      confidence = aiResult?.confidence ?? null;
+    } else if (aiResult?.accountType && aiResult.confidence >= AI_CONFIDENCE_THRESHOLD) {
+      // AI classified with sufficient confidence — AI wins over keyword rules.
+      // This correctly handles: bank accounts (→asset), credit card accounts (→liability),
+      // vehicle/fleet (→asset), insurance premiums (→expense), owner distributions (→equity).
+      type = aiResult.accountType;
+      resolvedSource = `ai_${aiResult.confidence.toFixed(2)}`;
+      classificationMethod = 'gemini';
+      aiNormalizedName = aiResult.normalizedName || null;
+      aiDeeperLevels = aiResult.deeperLevels || [];
+      confidence = aiResult.confidence;
+    } else {
+      // Fallback: deterministic multi-signal keyword-rules classification.
+      // Used when AI had low confidence, the batch failed, or GEMINI_API_KEY is absent.
+      const { accountType: ruleType, reason } = classifyAccount({
+        accountName: name,
+        accountNumber: number,
+        bsSection,
+        explicitType,
+      });
+      type = ruleType;
+      resolvedSource = reason;
+      classificationMethod = 'rule';
+      aiNormalizedName = aiResult?.normalizedName || null; // keep AI name even at low confidence
+      aiDeeperLevels = [];
+      confidence = aiResult?.confidence ?? null;
+    }
+
     const bucket = leavesByName.get(key) || [];
 
     const target = bucket.find((l) => {
@@ -260,6 +372,10 @@ function buildCoaModel(glRows, bsRows, plRows) {
       accountType: type,
       statementType: statementTypeFor(type),
       classificationSource: resolvedSource,
+      classificationMethod,
+      aiNormalizedName,
+      aiDeeperLevels,
+      confidence,
       sources: new Set([source]),
       fiscalYears: new Set(fiscalYear ? [Number(fiscalYear)] : []),
       bsSection: bsSection || null,
@@ -321,15 +437,30 @@ function buildCoaModel(glRows, bsRows, plRows) {
 // ── Hierarchy assembly (rules + optional Gemini) ─────────────────────────────
 
 /**
- * Enrich each leaf with its full 15-level hierarchy. Runs the deterministic
- * rule classifier first, then a single (batched) Gemini refinement pass over
- * the deduped account set. Always resolves — Gemini failure ⇒ rule-only paths.
+ * Enrich each leaf with its full 15-level hierarchy.
+ *
+ * Pipeline:
+ *   1. Deterministic standardized levels (coaHierarchyRules.classifyStandardized) —
+ *      always runs; produces the fixed anchor levels for every account type.
+ *   2. Deeper level resolution — two sources, in priority order:
+ *      a. leaf.aiDeeperLevels: pre-computed by classifyAccountsWithAI in the
+ *         pre-pass.  Accounts with these skip the refineAccounts call entirely,
+ *         reducing the total number of Gemini API calls.
+ *      b. refineAccounts (existing): called only for accounts that don't have
+ *         pre-computed AI deeper levels.  Receives the full standardized path so
+ *         Gemini never re-generates fixed levels.
+ *   3. Post-filter: strip any AI deeperLevel label already present in the
+ *      standardized path (prevents duplicates when AI echoes a standardized label).
+ *   4. Final path assembly via buildLevelsFromPath.
+ *
+ * Always resolves — Gemini failures fall back to rule-only paths.
  *
  * @returns {Promise<Array>} leaves augmented with:
- *   { levels:string[15], hierarchyPath, baseAccount, displayName, classificationMethod }
+ *   { levels, hierarchyPath, baseAccount, displayName, classificationMethod }
  */
 async function buildLeafHierarchies(leaves) {
-  // 1) Deterministic standardized levels 1–4.
+  // 1) Deterministic standardized levels — now driven by the AI-classified accountType
+  //    (or rules-classified fallback) set during buildCoaModel.
   const enriched = leaves.map((leaf) => {
     const { levels, standardizedDepth } = classifyStandardized({
       accountName: leaf.accountName,
@@ -341,10 +472,12 @@ async function buildLeafHierarchies(leaves) {
     return { leaf, stdLevels: levels, standardizedDepth };
   });
 
-  // 2) Optional AI refinement (deeper levels + normalized names).
-  // Pass the COMPLETE standardized path so Gemini never re-generates levels
-  // that the rule engine already placed (which caused duplicates and arbitrary nodes).
-  const refineInput = enriched.map(({ leaf, stdLevels, standardizedDepth }) => ({
+  // 2a) Accounts that already have AI deeper levels from the classification pre-pass
+  //     skip the refineAccounts call to avoid a redundant Gemini round-trip.
+  const needsRefinement = enriched.filter(({ leaf }) => !leaf.aiDeeperLevels?.length);
+
+  // 2b) refineAccounts for the remainder — same behaviour as before.
+  const refineInput = needsRefinement.map(({ leaf, stdLevels, standardizedDepth }) => ({
     key: accountKey(leaf.accountNumber, leaf.accountName),
     accountName: leaf.accountName,
     accountNumber: leaf.accountNumber,
@@ -353,31 +486,50 @@ async function buildLeafHierarchies(leaves) {
   }));
 
   let refinements = new Map();
-  try {
-    refinements = await refineAccounts(refineInput);
-  } catch (err) {
-    console.warn(`[ChartOfAccounts] Gemini refinement skipped: ${err.message}`);
-    refinements = new Map();
+  if (refineInput.length) {
+    try {
+      refinements = await refineAccounts(refineInput);
+    } catch (err) {
+      console.warn(`[ChartOfAccounts] Gemini refinement skipped: ${err.message}`);
+    }
   }
 
-  // 3) Assemble final paths.
+  // 3 + 4) Assemble final 15-level paths.
   return enriched.map(({ leaf, stdLevels, standardizedDepth }) => {
     const key = accountKey(leaf.accountNumber, leaf.accountName);
     const refinement = refinements.get(key);
-    const deeperLevels = refinement?.deeperLevels || [];
-    const displayName = refinement?.normalizedName || leaf.accountName;
-    const classificationMethod = refinement ? "hybrid" : "rule";
+
+    // Prefer AI deeper levels (classification pre-pass); fall back to refineAccounts.
+    const rawDeeper = leaf.aiDeeperLevels?.length
+      ? leaf.aiDeeperLevels
+      : (refinement?.deeperLevels || []);
+
+    // Post-filter: remove labels already present in the standardized path.
+    // Prevents duplicates when the AI echoes a fixed level (e.g. "Current Assets"
+    // or "Bank Accounts" for an asset that classifyStandardized already placed there).
+    const stdPathSet = new Set(stdLevels.filter(Boolean).map((l) => l.toLowerCase()));
+    const filteredDeeper = rawDeeper.filter((l) => l && !stdPathSet.has(l.toLowerCase()));
+
+    // Display name: prefer AI-normalised name from either source.
+    const displayName = leaf.aiNormalizedName || refinement?.normalizedName || leaf.accountName;
+
+    // Classification method: escalate to 'gemini'/'hybrid' when AI contributed.
+    const baseMethod = leaf.classificationMethod || 'rule';
+    const classificationMethod =
+      baseMethod === 'gemini'
+        ? 'gemini'
+        : (filteredDeeper.length || refinement?.normalizedName)
+        ? 'hybrid'
+        : 'rule';
 
     const { levels, hierarchyPath } = buildLevelsFromPath(
-      stdLevels, standardizedDepth, deeperLevels, displayName,
+      stdLevels, standardizedDepth, filteredDeeper, displayName,
     );
 
     return {
       ...leaf,
       levels,
       hierarchyPath,
-      // base_account = the source account name (never null for a leaf).
-      // displayName may be AI-normalised; baseAccount is always the original.
       baseAccount: leaf.accountName || displayName,
       displayName,
       classificationMethod,
@@ -599,6 +751,52 @@ async function syncCategoryNodes(versionId, companyId, existingCatsData, desired
 }
 
 /**
+ * Post-generation sanity check: verify that every leaf's level_1/level_2
+ * match the expected labels for its accountType.  Logs warnings for any
+ * anomalies and returns them for the caller to include in the response.
+ * Never throws — this is purely informational.
+ *
+ * @param {Array} hierarchical - output of buildLeafHierarchies
+ * @returns {Array<{accountName, accountType, level1, level2, expected1, expected2}>}
+ */
+function validateHierarchyConsistency(hierarchical) {
+  const EXPECTED = {
+    asset:     { level1: 'Balance Sheet',    level2: 'Total Assets' },
+    liability: { level1: 'Balance Sheet',    level2: 'Total Liabilities' },
+    equity:    { level1: 'Balance Sheet',    level2: 'Total Equity' },
+    income:    { level1: 'Income Statement', level2: 'Net Income' },
+    cogs:      { level1: 'Income Statement', level2: 'Net Income' },
+    expense:   { level1: 'Income Statement', level2: 'Net Income' },
+  };
+  const issues = [];
+  for (const leaf of hierarchical) {
+    const exp = EXPECTED[leaf.accountType];
+    if (!exp) continue;
+    const l1 = leaf.levels[0] || '';
+    const l2 = leaf.levels[1] || '';
+    if (l1 !== exp.level1 || l2 !== exp.level2) {
+      issues.push({
+        accountName: leaf.accountName,
+        accountType: leaf.accountType,
+        level1: l1, level2: l2,
+        expected1: exp.level1, expected2: exp.level2,
+      });
+    }
+  }
+  if (issues.length) {
+    console.warn(
+      `[ChartOfAccounts][validateHierarchy] ${issues.length} anomaly/anomalies:\n` +
+      issues.slice(0, 10).map((i) =>
+        `  "${i.accountName}" (${i.accountType}): L1="${i.level1}" L2="${i.level2}"` +
+        ` (expected "${i.expected1}" / "${i.expected2}")`
+      ).join('\n') +
+      (issues.length > 10 ? `\n  ... and ${issues.length - 10} more` : ''),
+    );
+  }
+  return issues;
+}
+
+/**
  * Regenerate and persist the Chart of Accounts for a Key Report version.
  * Preserves account ids (and their audit history) + user adjustments via an
  * upsert-by-stable-key merge.
@@ -631,7 +829,30 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
     ]);
   }
 
-  const { leaves } = buildCoaModel(glRows, bsRows, []);
+  // 1b) AI classification pre-pass.
+  //     Collect the unique account set, compute a keyword-rules hint for each
+  //     (so Gemini sees a "rulesHint" signal alongside the raw name), then
+  //     call classifyAccountsWithAI once for the entire version.  This single
+  //     batched call replaces the per-leaf classifyAccount call for accounts
+  //     where Gemini has sufficient confidence (≥ AI_CONFIDENCE_THRESHOLD).
+  const uniqueAccounts = collectUniqueAccountNames(glRows, bsRows);
+  const accountsForAI = uniqueAccounts.map((a) => {
+    const { accountType: ruleType } = classifyAccount({
+      accountName: a.accountName,
+      accountNumber: a.accountNumber,
+      bsSection: a.bsSection,
+    });
+    return { ...a, rulesHint: ruleType || '' };
+  });
+
+  let aiResults = new Map();
+  try {
+    aiResults = await classifyAccountsWithAI(accountsForAI);
+  } catch (err) {
+    console.warn(`[ChartOfAccounts] AI pre-pass failed (rules-only fallback): ${err.message}`);
+  }
+
+  const { leaves } = buildCoaModel(glRows, bsRows, [], aiResults);
   if (!leaves.length) {
     // Nothing to build — clear derived rows so stale accounts don't linger.
     await supabase.from(TABLE_COA).delete().eq("version_id", versionId);
@@ -639,6 +860,7 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
   }
 
   const hierarchical = await buildLeafHierarchies(leaves);
+  const validationIssues = validateHierarchyConsistency(hierarchical);
 
   // 2) Load existing rows so we can preserve ids, originals, and adjustments.
   const { data: existingData, error: exErr } = await supabase
@@ -816,6 +1038,7 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
     inserted: toInsert.length,
     updated: updates.length,
     deleted: staleIds.length,
+    validationIssues: validationIssues.length,
   };
 }
 
