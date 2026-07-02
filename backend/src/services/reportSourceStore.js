@@ -36,18 +36,22 @@ const SOURCE_KEY_ALIASES = new Map([
 ]);
 
 function normalizeSourceKey(value) {
+  // Key Reports is the default data source when none is specified/recognized.
   const normalized = String(value || "").trim().toLowerCase();
-  if (!normalized) return REPORT_SOURCE_KEYS.QUICKBOOKS;
-  return SOURCE_KEY_ALIASES.get(normalized) || REPORT_SOURCE_KEYS.QUICKBOOKS;
+  if (!normalized) return REPORT_SOURCE_KEYS.KEY_REPORTS;
+  return SOURCE_KEY_ALIASES.get(normalized) || REPORT_SOURCE_KEYS.KEY_REPORTS;
 }
 
 function getDefaultRows(companyId) {
   return [
     {
       company_id: companyId,
+      // Key Reports is the default selection for a brand-new company. QuickBooks
+      // is no longer selected by default; when no row is selected the resolver
+      // falls back to Key Reports (see syncReportSourceRecords / getDataSourceState).
       source_key: REPORT_SOURCE_KEYS.QUICKBOOKS,
       source_label: REPORT_SOURCE_LABELS[REPORT_SOURCE_KEYS.QUICKBOOKS],
-      is_selected: true,
+      is_selected: false,
       is_available: false,
       is_connected: false,
       metadata: {},
@@ -595,7 +599,8 @@ async function syncReportSourceRecords(companyId) {
     return rows;
   }
 
-  await setSelectedReportSource(companyId, REPORT_SOURCE_KEYS.QUICKBOOKS);
+  // No source selected yet → default to Key Reports.
+  await setSelectedReportSource(companyId, REPORT_SOURCE_KEYS.KEY_REPORTS);
   return syncReportSourceRecords(companyId);
 }
 

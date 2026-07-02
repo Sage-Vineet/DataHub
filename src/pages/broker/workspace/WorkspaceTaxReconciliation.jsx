@@ -23,6 +23,7 @@ import {
   listManualGlDatasetVersions,
   getTaxReconciliationOverrides,
   saveTaxReconciliationOverrides,
+  getKeyReportVersionReport,
 } from "../../../lib/api";
 import { useDataSource } from "../../../context/DataSourceContext";
 
@@ -539,22 +540,58 @@ export default function WorkspaceTaxReconciliation() {
 
         setSyncStatus({ status: "loading", message: "Reading financial PDFs from DataRoom…" });
 
-        // 1. Fetch P&L years and Tax Return years in parallel
+        // 1. Resolve P&L (per year) + Tax Return years.
         const forceParam = forceRefresh ? "&force=1" : "";
-        const [plRes, taxRes] = await Promise.all([
-          fetch(`${API_BASE_URL}/manual-report-uploads/pl-for-tax?clientId=${clientId || ""}${forceParam}${krVersionParam}`, { headers })
-            .then((r) => r.json()).catch(() => ({ success: false })),
-          fetch(`${API_BASE_URL}/manual-report-uploads/tax-data?clientId=${clientId || ""}${forceParam}${krVersionParam}`, { headers })
-            .then((r) => r.json()).catch(() => ({ success: false })),
-        ]);
 
-        // plYears: { 2023: { year, data: [{label, pl}] }, ... }
-        const plYears = (plRes.success && plRes.years) ? plRes.years : {};
+        // The P&L source depends on the mode:
+        //  • Key Reports mode → the P&L is GL-derived and lives in the selected
+        //    Version's entry tables (the same endpoint the Reports page uses).
+        //    The manual-upload P&L folder is NOT used, because a KR version's
+        //    books come from its linked GL / P&L documents.
+        //  • Manual Upload connection mode → the uploaded P&L files (pl-for-tax).
+        // The Tax Return side always comes from the KR-version-aware tax-data
+        // endpoint (it resolves the linked Tax Return document server-side).
+        let plYears = {};
+        let taxRes;
+        if (kr.krActive && kr.selectedVersionId) {
+          const [plEntries, taxResRaw] = await Promise.all([
+            Promise.all(selectedYears.map(async (y) => {
+              try {
+                const resp = await getKeyReportVersionReport(
+                  kr.selectedVersionId,
+                  "profit-loss",
+                  { year: String(y), period: "year" },
+                );
+                const rows = resp?.hierarchicalRows || resp?.rows || [];
+                const data = extractTaxRowsFromManualPL(rows);
+                // Skip years with no P&L so empty years don't create blank columns.
+                return data.some((d) => Number(d.pl) !== 0) ? [y, { year: y, data }] : null;
+              } catch {
+                return null;
+              }
+            })),
+            fetch(`${API_BASE_URL}/manual-report-uploads/tax-data?clientId=${clientId || ""}${forceParam}${krVersionParam}`, { headers })
+              .then((r) => r.json()).catch(() => ({ success: false })),
+          ]);
+          plYears = Object.fromEntries(plEntries.filter(Boolean));
+          taxRes = taxResRaw;
+        } else {
+          const [plRes, taxResRaw] = await Promise.all([
+            fetch(`${API_BASE_URL}/manual-report-uploads/pl-for-tax?clientId=${clientId || ""}${forceParam}${krVersionParam}`, { headers })
+              .then((r) => r.json()).catch(() => ({ success: false })),
+            fetch(`${API_BASE_URL}/manual-report-uploads/tax-data?clientId=${clientId || ""}${forceParam}${krVersionParam}`, { headers })
+              .then((r) => r.json()).catch(() => ({ success: false })),
+          ]);
+          // plYears: { 2023: { year, data: [{label, pl}] }, ... }
+          plYears = (plRes.success && plRes.years) ? plRes.years : {};
+          if (plRes.warning) allWarnings.push(plRes.warning);
+          if (Array.isArray(plRes.warnings)) allWarnings.push(...plRes.warnings);
+          taxRes = taxResRaw;
+        }
+
         // taxYears: { 2022: { year, data: [{label, taxReturn, isReconcilingItem}] }, ... }
         const taxYears = (taxRes.success && taxRes.years) ? taxRes.years : {};
 
-        if (plRes.warning) allWarnings.push(plRes.warning);
-        if (Array.isArray(plRes.warnings)) allWarnings.push(...plRes.warnings);
         if (taxRes.warning) allWarnings.push(taxRes.warning);
         if (Array.isArray(taxRes.warnings)) allWarnings.push(...taxRes.warnings);
 
@@ -780,7 +817,7 @@ export default function WorkspaceTaxReconciliation() {
     } finally {
       setIsLoading(false);
     }
-  }, [selectedYears, accountingMethod, clientId, getHeaders, isManualGL, isManualMode, isQBManual, currentYear, selectedVersion]);
+  }, [selectedYears, accountingMethod, clientId, getHeaders, isManualGL, isManualMode, isQBManual, currentYear, selectedVersion, kr.krActive, kr.selectedVersionId]);
 
   // Key Reports tax return gate — the "Tax Return missing in Key Reports" banner
   // and its "link in Key Reports" prompt ONLY apply when Key Reports is the active
