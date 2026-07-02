@@ -597,6 +597,79 @@ async function callGeminiWithContent(contents, modelName, fileName) {
   return parsed;
 }
 
+// ─── AI self-correction (recheck) ─────────────────────────────────────────────
+// A statement is flagged "Needs Review" when its numbers don't satisfy the bank
+// balance equation (beginning + deposits - withdrawals - fees ≈ ending). Rather
+// than surface an unverified row, we ask the AI to re-examine the document with
+// the failing values called out, then adopt the corrected result if — and only
+// if — it now reconciles. This raises report accuracy and drives statuses toward
+// "Verified" without ever fabricating a pass.
+function stmtMatchKey(s) {
+  return `${String(s.account_number || "").toLowerCase()}|${s.period_end || s.period_start || ""}`;
+}
+
+function buildRecheckPrompt(failing) {
+  const lines = failing.map((s, i) => {
+    const computed = (s.beginning_balance + s.deposits - s.withdrawals - s.fees);
+    return `${i + 1}. Bank="${s.bank_name_clean || s.bank_name}", account ending "${s.account_number || "?"}", ` +
+      `period ${s.period_start || "?"} to ${s.period_end || "?"} — extracted: ` +
+      `startingBalance=${s.beginning_balance}, deposits=${s.deposits}, withdrawals=${s.withdrawals}, ` +
+      `fees=${s.fees}, endingBalance=${s.ending_balance}. ` +
+      `This FAILS the check: ${s.beginning_balance} + ${s.deposits} - ${s.withdrawals} - ${s.fees} = ` +
+      `${computed.toFixed(2)}, which does not equal endingBalance ${s.ending_balance}.`;
+  }).join("\n");
+
+  return `${GEMINI_PROMPT}
+
+RECHECK MODE — a previous extraction of the account(s) below FAILED the balance self-check
+(startingBalance + deposits - withdrawals - fees MUST equal endingBalance within $1.00).
+Re-examine the document VERY carefully for these specific accounts and correct whichever value(s)
+were misread. Common causes: swapping startingBalance and endingBalance, missing one or more
+deposits/withdrawals, using a summary total or a running/available balance instead of the true
+period totals, reading the wrong statement period, or transposed digits.
+
+Previously-extracted (incorrect) values:
+${lines}
+
+Return the corrected data for ALL accounts found in the document (not only the failing ones),
+using the exact JSON schema described above. Every returned account MUST satisfy
+startingBalance + deposits - withdrawals - fees = endingBalance (within $1.00).`;
+}
+
+async function recheckNeedsReview(statements, contentPrefix, fileName, modelName) {
+  const failing = statements.filter((s) => s.status === "Needs Review");
+  if (!failing.length) return statements;
+
+  console.log(`[BankPDF] ${failing.length} statement(s) need review in "${fileName}" — running AI recheck (${modelName})...`);
+  try {
+    const parsed = await callGeminiWithContent(
+      [...contentPrefix, { text: buildRecheckPrompt(failing) }],
+      modelName,
+      fileName,
+    );
+    const rechecked = parsed.map(normalizeGeminiStatement);
+    const byKey = new Map(rechecked.map((s) => [stmtMatchKey(s), s]));
+
+    let fixed = 0;
+    const merged = statements.map((s) => {
+      if (s.status !== "Needs Review") return s;
+      const match = byKey.get(stmtMatchKey(s));
+      // Only adopt the recheck when it genuinely reconciles — never mask a real
+      // discrepancy by relabeling.
+      if (match && match.status === "Verified") {
+        fixed++;
+        return match;
+      }
+      return s;
+    });
+    console.log(`[BankPDF] AI recheck reconciled ${fixed}/${failing.length} statement(s) in "${fileName}".`);
+    return merged;
+  } catch (err) {
+    console.warn(`[BankPDF] AI recheck failed for "${fileName}": ${err.message}`);
+    return statements;
+  }
+}
+
 async function extractViaGemini(pdfBase64, fileName) {
   let lastError = null;
 
@@ -618,7 +691,13 @@ async function extractViaGemini(pdfBase64, fileName) {
         }
         const stamped = parsed.map(normalizeGeminiStatement);
         console.log(`[BankPDF] Gemini PDF extracted ${stamped.length} statement(s) from "${fileName}"`);
-        return stamped;
+        // AI self-correction pass for any statement that failed the balance check.
+        return await recheckNeedsReview(
+          stamped,
+          [{ inlineData: { mimeType: "application/pdf", data: pdfBase64 } }],
+          fileName,
+          modelName,
+        );
       } catch (err) {
         lastError = err;
         const msg = err.message || String(err);
@@ -664,7 +743,14 @@ ${rawText.slice(0, 30000)}
       if (parsed.length === 0) return [];
       const stamped = parsed.map(normalizeGeminiStatement);
       console.log(`[BankPDF] Gemini text extracted ${stamped.length} statement(s) from "${fileName}"`);
-      return stamped;
+      // AI self-correction pass — re-reads the same source text for any statement
+      // that failed the balance check.
+      return await recheckNeedsReview(
+        stamped,
+        [{ text: `Source bank statement text:\n---\n${rawText.slice(0, 30000)}\n---` }],
+        fileName,
+        modelName,
+      );
     } catch (err) {
       lastError = err;
       const msg = err.message || String(err);

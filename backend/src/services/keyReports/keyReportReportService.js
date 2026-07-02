@@ -269,15 +269,19 @@ function classifyAccountFromLookup(lookup, name, accountNumber = null) {
   return classifyGLAccountFallback(name, rawType);
 }
 
-// GL amount is debit minus credit. Reports display natural positive balances:
-// assets/expenses increase on debits; liabilities/equity/revenue increase on credits.
+// QB GL uses natural-balance convention: increases in any account's natural
+// direction are stored as positive amounts (asset debits positive, liability/
+// equity/revenue credits positive, expense debits positive). No sign flip needed.
 function naturalBalanceMovement(accountType, amount) {
-  const value = safeNum(amount);
-  return accountType === 'liability' || accountType === 'equity' ? -value : value;
+  return safeNum(amount);
 }
 
 function netIncomeMovement(accountType, amount) {
-  return accountType === 'revenue' || accountType === 'expense' ? -safeNum(amount) : 0;
+  const value = safeNum(amount);
+  // Natural-balance: revenue positive → adds to NI; expense/cogs positive → reduces NI.
+  if (accountType === 'revenue') return value;
+  if (accountType === 'expense' || accountType === 'cogs') return -value;
+  return 0;
 }
 
 /** GL account key for a row — the account this row posts to. */
@@ -518,7 +522,7 @@ function buildPLFromGL(accounts, year) {
   const expense = [];
   for (const acc of accounts.values()) {
     const reportType = classifyGLAccountFallback(acc.name, acc.type);
-    if (reportType === 'revenue') revenue.push({ name: acc.name, amount: -acc.net });
+    if (reportType === 'revenue') revenue.push({ name: acc.name, amount: acc.net });
     else if (reportType === 'expense') expense.push({ name: acc.name, amount: acc.net });
   }
   const totalIncome = revenue.reduce((s, a) => s + a.amount, 0);
@@ -822,7 +826,7 @@ function buildPLFromGLMonthly(agg, year) {
   const revenue = [];
   const expense = [];
   for (const acc of agg.byAccount.values()) {
-    if (acc.type === 'revenue') revenue.push({ name: acc.name, amounts: monthAmount(acc, -1) });
+    if (acc.type === 'revenue') revenue.push({ name: acc.name, amounts: monthAmount(acc, +1) });
     else if (acc.type === 'expense') expense.push({ name: acc.name, amounts: monthAmount(acc, +1) });
   }
   const totalIncome = sumCols(...revenue.map((r) => r.amounts));
@@ -871,9 +875,10 @@ function buildBSFromGLMonthly(agg, year, openingBalances) {
     for (const acc of agg.byAccount.values()) {
       const delta = acc.months.get(c.month) || 0;
       if (acc.type === 'asset') running.set(acc.name, (running.get(acc.name) || 0) + delta);
-      else if (acc.type === 'liability') running.set(acc.name, (running.get(acc.name) || 0) - delta);
-      else if (acc.type === 'equity') running.set(acc.name, (running.get(acc.name) || 0) - delta);
-      else if (acc.type === 'revenue' || acc.type === 'expense') monthNet += -delta;
+      else if (acc.type === 'liability') running.set(acc.name, (running.get(acc.name) || 0) + delta);
+      else if (acc.type === 'equity') running.set(acc.name, (running.get(acc.name) || 0) + delta);
+      else if (acc.type === 'revenue') monthNet += delta;
+      else if (acc.type === 'expense') monthNet += -delta;
     }
     retained += monthNet;
     const snapshot = new Map();

@@ -1,33 +1,64 @@
 // ============================================================================
-// Chart of Accounts — Gemini deep-level refiner (Key Reports redesign)
+// Chart of Accounts — AI classification engine (Key Reports redesign)
 //
-// Takes the deduped list of accounts (each already placed into the STANDARDIZED
-// levels 1–4 by coaHierarchyRules) and asks Gemini to:
-//   (a) propose the deeper, company-specific category labels that sit BETWEEN
-//       the standardized group (level 4) and the base account, and
-//   (b) suggest a normalized display name for the account.
+// classifyAccountsWithAI(accounts)
+//   Single batched Gemini call that classifies every unique GL account into:
+//     • accountType  — 6-type model (asset | liability | equity | income | cogs | expense)
+//     • section      — accounting section within the financial statement
+//                      (e.g. "Current Assets", "Operating Expenses")
+//     • deeperLevels — 0–2 company-specific sub-category labels below section
+//     • normalBalance — "debit" or "credit"
+//     • normalizedName — clean display name
+//     • confidence   — 0–1 score; below AI_NEEDS_REVIEW_THRESHOLD the account is
+//                      flagged for manual review rather than forced into a type
+//     • isReportRow  — true for calculated totals / headers (Total Assets,
+//                      Net Income, etc.) — these must NOT be inserted into the COA
 //
-// This is strictly ADDITIVE and NON-FATAL: any failure (no API key, quota,
-// malformed JSON, timeout) resolves to an empty refinement map, and the caller
-// falls back to the rule-only classification. It never throws to the sync path.
+// All keyword / regex / hardcoded classification logic has been removed.
+// The AI is solely responsible for all accounting decisions.
 //
-// Reuses the Gemini client conventions from geminiFinancialParser.js (model
-// fallback list, fixed-delay quota retry, code-fence-tolerant JSON parsing).
+// This function is NON-FATAL: any failure (no API key, quota, malformed JSON,
+// timeout) resolves to an empty Map, and the caller marks affected accounts
+// as needsReview rather than applying a fallback classification.
+//
+// Reuses Gemini client conventions from geminiFinancialParser.js.
 // ============================================================================
 
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { getGeminiModels } = require("../../config/geminiModels");
 
-// Dynamically selected via GEMINI_MODELS / GEMINI_MODEL env; this array is the
-// default fallback order used when no override is configured.
 const GEMINI_MODELS = getGeminiModels(["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash"]);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Cap how many accounts we send in one prompt; batch the rest. Keeps prompts
-// well within token limits and bounds latency.
-const BATCH_SIZE = 60;
-// Hard cap on total accounts refined per generation — a runaway/cost guard.
+// Maximum accounts per Gemini prompt.  Keeps token usage bounded.
+const CLASSIFY_BATCH_SIZE = 45;
+// Hard cap — cost/runaway guard.
 const MAX_ACCOUNTS = 600;
+
+// The exact section strings the AI is instructed to return.
+// Must stay in sync with SECTION_STANDARD_LEVELS in coaHierarchyRules.js.
+const VALID_SECTIONS = new Set([
+  "Current Assets", "Fixed Assets", "Other Assets",
+  "Current Liabilities", "Long-Term Liabilities", "Equity",
+  "Revenue", "Cost of Goods Sold", "Operating Expenses",
+  "Other Income", "Other Expense",
+]);
+
+// Valid 6-type accountType values.
+const VALID_ACCOUNT_TYPES = new Set([
+  "asset", "liability", "equity", "income", "cogs", "expense",
+]);
+
+// Standard hierarchy labels that the AI must NOT echo into deeperLevels.
+// They are already placed by aiSectionToStandardLevels before the base account.
+const EXCLUDED_DEEPER_LABELS = new Set([
+  "income statement", "balance sheet",
+  "net income", "pretax income", "operating income",
+  "gross profit", "total revenue", "total expenses",
+  "total assets", "total liabilities", "total equity",
+  "income", "expenses",
+  "net loss", "total liabilities and equity",
+]);
 
 function parseJsonFromText(text = "") {
   const cleaned = String(text)
@@ -41,10 +72,8 @@ function parseJsonFromText(text = "") {
 async function callGeminiText(prompt) {
   if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY not set");
   let lastError = null;
-
   for (const modelName of GEMINI_MODELS) {
     let retries = 2;
-    const retryDelay = 3000;
     while (retries > 0) {
       try {
         const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
@@ -58,90 +87,232 @@ async function callGeminiText(prompt) {
         const isNotFound = msg.includes("404") || msg.toLowerCase().includes("not found");
         console.warn(`[CoaClassifier] Model ${modelName} failed: ${msg}`);
         if (isNotFound) break;
-        if (isQuota && retries > 1) {
-          await sleep(retryDelay);
-          retries -= 1;
-        } else {
-          break;
-        }
+        if (isQuota && retries > 1) { await sleep(3000); retries -= 1; } else break;
       }
     }
   }
-  throw new Error(`Gemini COA refinement failed: ${String(lastError?.message || "unknown error")}`);
+  throw new Error(`Gemini COA classification failed: ${String(lastError?.message || "unknown")}`);
 }
 
-function buildPrompt(batch) {
-  // Each item: { key, accountName, accountNumber, standardizedPath }
-  // standardizedPath is the COMPLETE already-classified hierarchy (all fixed levels).
+function normalizeAccountType(raw) {
+  const t = String(raw || "").toLowerCase().trim();
+  if (t === "asset" || t === "assets") return "asset";
+  if (t === "liability" || t === "liabilities") return "liability";
+  if (t === "equity") return "equity";
+  if (t === "income" || t === "revenue") return "income";
+  if (t === "cogs" || t.startsWith("cost of goods") || t.startsWith("cost of sales") || t.startsWith("cost of")) return "cogs";
+  if (t === "expense" || t === "expenses") return "expense";
+  return "";
+}
+
+/**
+ * Build the Gemini prompt for a batch of accounts.
+ *
+ * @param {Array<{key, accountName, accountNumber, bsSection}>} batch
+ */
+function buildClassifyPrompt(batch) {
   const lines = batch.map((a) => {
-    const standardized = a.standardizedPath
-      || [a.level1, a.level2, a.level3, a.level4].filter(Boolean).join(" > ");
-    const num = a.accountNumber ? ` (#${a.accountNumber})` : "";
-    return `- key="${a.key}" account="${a.accountName}"${num} fixed_hierarchy="${standardized}"`;
+    const num     = a.accountNumber ? ` [#${a.accountNumber}]`        : "";
+    const section = a.bsSection     ? ` [BS section: ${a.bsSection}]` : "";
+    return `- key="${a.key}" name="${a.accountName}"${num}${section}`;
   });
 
-  return `You are a financial chart-of-accounts expert for an ERP system.
+  return `You are a Certified Public Accountant (CPA) with deep knowledge of GAAP, IFRS, and every major ERP system (QuickBooks, Xero, Sage, NetSuite, Dynamics, SAP).
 
-For each account below, ALL fixed hierarchy levels are already set in fixed_hierarchy.
-Your ONLY job is to suggest 0–3 concise company-specific sub-category labels that sit
-BETWEEN the last fixed level and the base account itself.
+Classify each General Ledger account below purely from its semantic meaning.
 
-Critical rules:
-1. NEVER repeat or include any label already present in fixed_hierarchy.
-2. NEVER include the account name itself in deeperLevels.
-3. NEVER create arbitrary business names, location names, bank names, or
-   operational groupings (e.g. "Operating Accounts", "Primary Business", "Provident Bank").
-4. Only add a label if it meaningfully categorizes the account within a standard
-   financial chart-of-accounts. When in doubt, return an empty array [].
-5. Keep labels short and professional (e.g. "Employee Benefits", "Restaurant Revenue").
-6. "normalizedName": clean, human-readable version of the account name.
-   Fix casing, expand obvious abbreviations. Do NOT invent meaning.
-7. Return STRICT JSON only — no markdown, no prose.
+──────────────────────────────────────────────────────────────────────────────
+ACCOUNT TYPE — choose exactly one of these six values:
+  asset       Cash, bank/checking/savings, A/R, inventory, PP&E, vehicles owned, prepaid, deposits
+  liability   A/P, loans payable, credit card accounts, accrued liabilities, deferred revenue
+  equity      Owner equity / draws / distributions, retained earnings, contributed capital
+  income      Sales, revenue, service fees, interest/rental income (credit-normal P&L)
+  cogs        Cost of goods sold, direct materials, direct labor, direct costs
+  expense     Operating expenses (debit-normal P&L): salaries, rent, insurance, utilities, repairs
 
-Output format:
-{ "accounts": [ { "key": "<echo key>", "deeperLevels": ["..."], "normalizedName": "..." } ] }
+SECTION — choose exactly one of these values (must match the accountType):
+  For asset:     "Current Assets"  |  "Fixed Assets"  |  "Other Assets"
+  For liability: "Current Liabilities"  |  "Long-Term Liabilities"
+  For equity:    "Equity"
+  For income:    "Revenue"  |  "Other Income"
+  For cogs:      "Cost of Goods Sold"
+  For expense:   "Operating Expenses"  |  "Other Expense"
 
-Accounts:
+CRITICAL ACCOUNTING RULES:
+  • Bank/checking/savings ACCOUNT → asset, "Current Assets"
+  • Bank FEE / CHARGE / SERVICE   → expense, "Operating Expenses"
+  • Credit card ACCOUNT (Visa, AMEX, MC, Discover, store card) → liability, "Current Liabilities"
+  • Credit card BILL / credit card bill account / credit card payment → expense, "Operating Expenses" (do NOT classify as liability)
+  • Credit card FEE / INTEREST    → expense, "Operating Expenses"
+  • Vehicle/fleet OWNERSHIP (motor vehicles, company trucks, fleet) → asset, "Fixed Assets"
+  • Fuel, repairs, mileage, car & truck expenses → expense, "Operating Expenses"
+  • Insurance PREMIUMS PAID → expense, "Operating Expenses"
+  • Insurance RECEIVABLE / DEPOSIT → asset, "Current Assets"
+  • Owner draws / distributions / dividends paid → equity, "Equity"
+  • Prepaid X → asset, "Current Assets"
+  • Accrued X → liability, "Current Liabilities"
+  • X Receivable / Due From → asset
+  • X Payable / Due To → liability
+  • Loans TO others (you are the lender) → asset
+  • Loans FROM others (you are the borrower) → liability
+  • Long-term loans / mortgages with "long-term" signal → liability, "Long-Term Liabilities"
+  • SBA / EIDL / PPP loans → liability, "Long-Term Liabilities"
+  • Accumulated Depreciation → asset, "Fixed Assets"  (contra-asset)
+  • Goodwill, intangibles, deposits, notes receivable, Other Long-term Assets (or Other Long Term Assets) → asset, "Other Assets"
+  • If [BS section] is provided it is authoritative — use it to confirm the correct accountType
+
+IS REPORT ROW — set isReportRow: true ONLY for calculated totals, subtotals, or section headers
+that are not real accounts. These must NEVER be inserted into the Chart of Accounts.
+  isReportRow=true examples:
+    "Total Assets", "Total Liabilities", "Total Equity", "Net Income", "Net Loss",
+    "Gross Profit", "Operating Income", "Total Revenue", "Total Expenses",
+    "Pretax Income", "Income Before Taxes", "Total Liabilities and Equity",
+    "Assets", "Liabilities", "Equity", "Income", "Expenses", "Revenue",
+    "Current Assets", "Fixed Assets", "Current Liabilities", "Long-Term Liabilities",
+    "Subtotal", "Less:", "Cost of Goods Sold" (when it appears as a section header),
+    date lines ("As of Dec 31 2024"), metadata ("Accrual Basis", "Cash Basis"),
+    any line that is clearly a report subtotal and not a posting account
+
+DEEPER LEVELS — 0 to 2 short sub-category labels that sit between the section and the
+base account in the hierarchy.  Return [] when none are needed.
+  Do NOT include any of: Income Statement, Balance Sheet, Net Income, Pretax Income,
+    Operating Income, Gross Profit, Total Revenue, Total Expenses, Total Assets,
+    Total Liabilities, Total Equity, Expenses, Income, Net Loss.
+  Useful examples by type:
+    checking / savings account    → ["Bank Accounts"]
+    credit card account           → ["Credit Cards"]
+    vehicle owned                 → ["Vehicles"]
+    equipment owned               → ["Machinery & Equipment"]
+    accounts receivable           → ["Accounts Receivable"]
+    inventory                     → ["Inventory"]
+    prepaid expenses              → ["Prepaid Expenses"]
+    accounts payable              → ["Accounts Payable"]
+    payroll / wages               → ["Payroll and Labor"]
+    insurance expense             → ["Insurance"]
+    repairs / maintenance         → ["Repairs and Maintenance"]
+    rent / utilities              → ["Occupancy"]
+    officer/owner loans payable   → ["Long-Term Loans"]
+    generic sales revenue         → []
+    owner equity account          → []
+
+NORMAL BALANCE:
+  debit  → asset, expense, cogs
+  credit → liability, equity, income
+
+NORMALIZED NAME — clean title-case version of the account name.
+  Strip leading numeric codes (e.g. "1000 - " or "10200 "). Fix casing.
+  Expand obvious abbreviations. Do NOT invent meaning.
+
+CONFIDENCE — 0.00 to 1.00.  Reflect genuine uncertainty; do not default to 0.99 for everything.
+  High (≥ 0.90): unambiguous account (e.g. "Checking Account", "Accounts Receivable")
+  Medium (0.70–0.89): common account with minor ambiguity
+  Low (< 0.70): genuinely ambiguous; reviewable by a human accountant
+
+──────────────────────────────────────────────────────────────────────────────
+Return STRICT JSON only — no markdown, no prose, no commentary:
+{
+  "accounts": [
+    {
+      "key": "<echo key exactly>",
+      "isReportRow": false,
+      "accountType": "<one of: asset|liability|equity|income|cogs|expense>",
+      "section": "<one of the section values above>",
+      "deeperLevels": [],
+      "normalBalance": "<debit|credit>",
+      "normalizedName": "<clean display name>",
+      "confidence": 0.95
+    }
+  ]
+}
+
+Accounts to classify:
 ${lines.join("\n")}`;
 }
 
 /**
- * Refine a list of accounts with Gemini.
+ * AI-driven account type + hierarchy classification.
  *
- * @param {Array<{key,accountName,accountNumber,level1,level2,level3,level4}>} accounts
- * @returns {Promise<Map<string,{deeperLevels:string[], normalizedName:string|null}>>}
- *   keyed by `key`. Empty map on any failure (caller falls back to rules).
+ * Classifies unique GL account names into the 6-type model, detects report
+ * rows (isReportRow), returns the accounting section and deeper hierarchy
+ * hints, and provides a normalized display name and confidence score.
+ *
+ * Non-fatal: any failure returns an empty Map so the caller can mark affected
+ * accounts as needsReview rather than applying incorrect hardcoded fallbacks.
+ *
+ * @param {Array<{key, accountName, accountNumber, bsSection}>} accounts
+ *   key         — normName(rawAccountName); must match the key used in addLeaf
+ *   accountName — normalizeForGemini(rawName) (leading account codes stripped)
+ *   accountNumber — optional GL account number string
+ *   bsSection   — optional BS section label (authoritative when present)
+ * @returns {Promise<Map<string, {
+ *   accountType: string,
+ *   section: string,
+ *   deeperLevels: string[],
+ *   normalBalance: string,
+ *   normalizedName: string|null,
+ *   confidence: number,
+ *   isReportRow: boolean
+ * }>>}
  */
-async function refineAccounts(accounts) {
+async function classifyAccountsWithAI(accounts) {
   const out = new Map();
   if (!process.env.GEMINI_API_KEY) {
-    console.log("[CoaClassifier] GEMINI_API_KEY not set — skipping AI refinement (rule-only).");
+    console.log("[CoaClassifier] GEMINI_API_KEY not set — AI classification skipped (accounts flagged for review).");
     return out;
   }
   const list = (accounts || []).slice(0, MAX_ACCOUNTS);
   if (!list.length) return out;
 
-  for (let i = 0; i < list.length; i += BATCH_SIZE) {
-    const batch = list.slice(i, i + BATCH_SIZE);
+  let failedBatches = 0;
+  for (let i = 0; i < list.length; i += CLASSIFY_BATCH_SIZE) {
+    const batch = list.slice(i, i + CLASSIFY_BATCH_SIZE);
     try {
-      const text = await callGeminiText(buildPrompt(batch));
+      const text = await callGeminiText(buildClassifyPrompt(batch));
       const parsed = parseJsonFromText(text);
       const rows = Array.isArray(parsed?.accounts) ? parsed.accounts : [];
+
       for (const r of rows) {
         const key = String(r?.key || "").trim();
         if (!key) continue;
-        const deeperLevels = Array.isArray(r.deeperLevels)
-          ? r.deeperLevels.map((x) => String(x || "").trim()).filter(Boolean).slice(0, 6)
-          : [];
+
+        const isReportRow = Boolean(r.isReportRow);
+        if (isReportRow) {
+          out.set(key, { isReportRow: true, accountType: "", section: "", deeperLevels: [], normalBalance: "", normalizedName: null, confidence: 1 });
+          continue;
+        }
+
+        const rawType    = normalizeAccountType(r.accountType);
+        const accountType = VALID_ACCOUNT_TYPES.has(rawType) ? rawType : "";
+        const section    = VALID_SECTIONS.has(String(r.section || "")) ? String(r.section) : "";
+        const confidence = Math.min(1, Math.max(0, Number(r.confidence) || 0));
         const normalizedName = r.normalizedName ? String(r.normalizedName).trim() : null;
-        out.set(key, { deeperLevels, normalizedName });
+        const normalBalance  = String(r.normalBalance || "").toLowerCase() === "credit" ? "credit" : "debit";
+
+        const deeperLevels = Array.isArray(r.deeperLevels)
+          ? r.deeperLevels
+              .map((x) => String(x || "").trim())
+              .filter((x) => x && !EXCLUDED_DEEPER_LABELS.has(x.toLowerCase()))
+              .slice(0, 3)
+          : [];
+
+        out.set(key, { isReportRow: false, accountType, section, deeperLevels, normalBalance, normalizedName, confidence });
       }
     } catch (err) {
-      // Non-fatal: log and continue. Accounts in this batch keep rule-only paths.
-      console.warn(`[CoaClassifier] batch ${i / BATCH_SIZE} refinement skipped: ${err.message}`);
+      failedBatches += 1;
+      console.warn(`[CoaClassifier] batch ${Math.floor(i / CLASSIFY_BATCH_SIZE) + 1} failed: ${err.message}`);
     }
   }
+
+  const classified   = [...out.values()].filter((v) => !v.isReportRow && v.accountType).length;
+  const reportRows   = [...out.values()].filter((v) => v.isReportRow).length;
+  const noResult     = list.length - out.size;
+  console.log(
+    `[CoaClassifier] ${list.length} accounts → ${classified} classified, ` +
+    `${reportRows} report rows excluded` +
+    (noResult     ? `, ${noResult} received no AI result (will be flagged for review)` : "") +
+    (failedBatches ? `, ${failedBatches} batch(es) failed`                             : ""),
+  );
   return out;
 }
 
-module.exports = { refineAccounts };
+module.exports = { classifyAccountsWithAI };

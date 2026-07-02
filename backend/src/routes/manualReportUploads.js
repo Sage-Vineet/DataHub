@@ -1414,6 +1414,10 @@ router.get("/manual-upload/bank-data", async (req, res) => {
     // drives which documents this Manual Upload flow reads.
     const datasetVersion = String(req.query.datasetVersion || "").trim() || null;
     const keyReportVersionId = String(req.query.keyReportVersionId || "").trim() || null;
+    // When a Key Report Version drives this request the active connection source
+    // is "key_reports" — report that in the response instead of the underlying
+    // manual_upload flow used to read the linked documents.
+    const responseSource = keyReportVersionId ? "key_reports" : "manual_upload";
 
     // Fetch P&L financials in parallel — merges Sales/Expenses per Financials into this response
     const plFinancialsPromise = extractPlFinancials(clientId, MANUAL_REPORT_UPLOAD_SOURCE, {
@@ -1435,7 +1439,7 @@ router.get("/manual-upload/bank-data", async (req, res) => {
       return null;
     });
 
-    console.log(`[BANK SOURCE] source=manual_upload clientId=${clientId} — resolving bank statement from active Key Reports version...`);
+    console.log(`[BANK SOURCE] source=${responseSource} clientId=${clientId} — resolving bank statement from active Key Reports version...`);
 
     // Bank statement is resolved strictly from the active Key Reports version
     // (version-aware cache + live extraction handled by runBankExtraction). BS
@@ -1447,7 +1451,7 @@ router.get("/manual-upload/bank-data", async (req, res) => {
       return res.json({
         success: true,
         empty: true,
-        source: "manual_upload",
+        source: responseSource,
         banks: [],
         months: [],
         totals: [],
@@ -1459,7 +1463,7 @@ router.get("/manual-upload/bank-data", async (req, res) => {
 
     return res.json({
       success: true,
-      source: "manual_upload",
+      source: responseSource,
       banks: bankBody.banks,
       months: bankBody.months || [],
       totals: bankBody.totals || [],
