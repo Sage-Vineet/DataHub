@@ -1,35 +1,21 @@
 // ============================================================================
-// Chart of Accounts — deterministic hierarchy rules (Key Reports redesign)
+// Chart of Accounts — hierarchy assembly (Key Reports redesign)
 //
-// Pure, dependency-light rule engine that places an account into the client's
-// STANDARDIZED financial-statement hierarchy. Levels 1–N are fixed anchors that
-// are identical across every company; deeper company-specific levels are added
-// by the optional Gemini refiner (see geminiCoaClassifier.js / buildLevelsFromPath).
+// Provides:
+//   aiSectionToStandardLevels(section, accountType)
+//     Maps the AI-returned section label to the fixed structural labels that
+//     form levels 1–N of the standard hierarchy.  This is a pure lookup table —
+//     it does NOT match keywords on account names.  Account name analysis is
+//     entirely the responsibility of the AI classification layer.
 //
-// Fixed anchor hierarchy:
+//   buildLevelsFromPath(standardizedLevels, standardizedDepth, deeperLabels, baseAccount)
+//     Assembles the final MAX_LEVELS-slot array from:
+//       1. Standard structural levels (from aiSectionToStandardLevels)
+//       2. AI-provided deeper company-specific labels
+//       3. The base account name
+//     Deduplicates consecutive equal labels and fits within MAX_LEVELS.
 //
-//   P&L accounts (income / expense / cogs):
-//     L1: Income Statement
-//     L2: Net Income
-//     L3: Pretax Income
-//     L4: Operating Income
-//     L5: Gross Profit
-//     L6: Total Revenue  OR  Total Expenses
-//     L7: Income          OR  Expenses
-//     L8: (expense group, rule-derived — e.g. "Payroll and Labor")
-//     L9+: company-specific (Gemini)
-//     Ln: base account
-//
-//   Balance Sheet accounts (asset / liability / equity):
-//     L1: Balance Sheet
-//     L2: Total Assets  |  Total Liabilities  |  Total Equity
-//     L3: (sub-category — e.g. Current Assets / Long-Term Liabilities)
-//     L4: (group — e.g. Bank Accounts / Credit Cards)
-//     L5+: company-specific (Gemini)
-//     Ln: base account
-//
-// This engine never calls the network, so it is fast, reproducible, and always
-// available as the fallback when Gemini is unavailable.
+// No network calls.  No keyword/regex matching on account names.
 // ============================================================================
 
 const MAX_LEVELS = 15;
@@ -43,226 +29,107 @@ const STATEMENT_BY_TYPE = Object.freeze({
   expense: "profit_loss",
 });
 
-// Fixed standardized anchor levels per account type. These are the same for
-// EVERY company. Company-specific levels (and asset/liability sub/group) are
-// appended after; the base account is appended last by buildLevelsFromPath.
-const STANDARD_PREFIX = Object.freeze({
-  // P&L: L1=statement, L2–L7=rollup chain, then company-specific, then base.
-  income: [
-    "Income Statement", "Net Income", "Pretax Income",
-    "Operating Income", "Gross Profit", "Total Revenue", "Income",
-  ],
-  expense: [
-    "Income Statement", "Net Income", "Pretax Income",
-    "Operating Income", "Gross Profit", "Total Expenses", "Expenses",
-  ],
-  cogs: [
-    "Income Statement", "Net Income", "Pretax Income",
-    "Operating Income", "Gross Profit", "Total Expenses", "Expenses",
-  ],
-  // Balance Sheet: L1=statement, L2=top rollup, then sub+group from rules, then base.
+// ── Section → standard structural labels ─────────────────────────────────────
+//
+// Each value is the ordered array of fixed rollup labels that precede the
+// company-specific levels (from AI) and the base account.
+//
+// These labels are the same for EVERY company regardless of ERP or industry.
+// They define the fixed anchor nodes (Income Statement, Balance Sheet, Total
+// Assets, Current Assets, etc.) that every downstream report expects to find.
+//
+// The mapping is keyed by the exact section string the AI is instructed to
+// return (see geminiCoaClassifier.buildClassifyPrompt).  Case-sensitive to
+// prevent accidental mismatches; the AI is instructed to use these exact strings.
+
+const SECTION_STANDARD_LEVELS = Object.freeze({
+  // ── Balance Sheet ──────────────────────────────────────────────────────────
+  "Current Assets":        ["Balance Sheet", "Total Assets",      "Current Assets"],
+  "Fixed Assets":          ["Balance Sheet", "Total Assets",      "Fixed Assets"],
+  "Other Assets":          ["Balance Sheet", "Total Assets",      "Other Assets"],
+  "Current Liabilities":   ["Balance Sheet", "Total Liabilities", "Current Liabilities"],
+  "Long-Term Liabilities": ["Balance Sheet", "Total Liabilities", "Long-Term Liabilities"],
+  "Equity":                ["Balance Sheet", "Total Equity"],
+
+  // ── Profit & Loss ─────────────────────────────────────────────────────────
+  // Revenue and COGS/OpEx share the same rollup chain to "Gross Profit", then
+  // split into "Total Revenue / Income" vs "Total Expenses / Expenses".
+  "Revenue":            ["Income Statement", "Net Income", "Pretax Income", "Operating Income", "Gross Profit", "Total Revenue",   "Income"],
+  "Cost of Goods Sold": ["Income Statement", "Net Income", "Pretax Income", "Operating Income", "Gross Profit", "Total Expenses",  "Expenses"],
+  "Operating Expenses": ["Income Statement", "Net Income", "Pretax Income", "Operating Income", "Gross Profit", "Total Expenses",  "Expenses"],
+  // Other Income / Other Expense appear below Operating Income — short chain.
+  "Other Income":       ["Income Statement", "Net Income", "Pretax Income"],
+  "Other Expense":      ["Income Statement", "Net Income", "Pretax Income"],
+});
+
+// Fallback by 6-type accountType when the AI does not return a recognised
+// section or the section field is absent.
+const TYPE_STANDARD_LEVELS = Object.freeze({
   asset:     ["Balance Sheet", "Total Assets"],
   liability: ["Balance Sheet", "Total Liabilities"],
   equity:    ["Balance Sheet", "Total Equity"],
+  income:    ["Income Statement", "Net Income", "Pretax Income", "Operating Income", "Gross Profit", "Total Revenue",  "Income"],
+  cogs:      ["Income Statement", "Net Income", "Pretax Income", "Operating Income", "Gross Profit", "Total Expenses", "Expenses"],
+  expense:   ["Income Statement", "Net Income", "Pretax Income", "Operating Income", "Gross Profit", "Total Expenses", "Expenses"],
 });
 
-// ── Expense company groups (the standardized level that sits under "Expenses") ──
-// First match wins; order matters (more specific before the generic catch-all).
-const EXPENSE_GROUP_RULES = [
-  [/payroll|salar|wages|401\s*k|employee benefit|\bbenefits?\b|worker'?s? ?comp|\bofficer\b|\blabor\b/, "Payroll and Labor"],
-  [/food|beverage|job suppl|meals tax|cost of (goods|sales)|merchandise|raw material/, "Cost of Sales"],
-  [/\brent\b|lease|real estate tax|propert(?:y|ies) tax|utilit|water|sewer|alarm|electric|natural gas/, "Occupancy"],
-  [/car (?:and|&) truck|\btruck\b|\btravel\b|mileage|\bauto\b|\bvehicle\b|\bfuel\b|gasoline/, "Vehicle and Travel"],
-  [/repair|maintenance|rubbish|\btrash\b|removal|janitor|cleaning/, "Repairs and Maintenance"],
-  [/advertis|marketing|promotion|charitable|contribution|entertainment/, "Sales and Marketing"],
-  [/insurance/, "Insurance"],
-  [/depreciation|amortization|interest (?:paid|expense)|\binterest\b|education|bad debt|below.line|non.?cash/, "Non-Cash and Below-Line"],
-  [/.*/, "General and Administrative"],
-];
-
-function expenseGroupFor(name) {
-  const n = String(name || "").toLowerCase();
-  for (const [re, label] of EXPENSE_GROUP_RULES) {
-    if (re.test(n)) return label;
-  }
-  return "General and Administrative";
-}
-
-// ── Equity group (the standardized level under "Total Equity") ────────────────
-// Retained earnings + current/prior year net income roll up under a single
-// "Retained Earnings" group so Net Income nests correctly in Equity (the leaf
-// "Current Year Net Income" sits under "Retained Earnings"). Contributed capital
-// (stock / paid-in / member / partner capital) rolls up under "Contributed Capital".
-function equityGroupFor(name) {
-  const n = String(name || "").toLowerCase();
-  if (/retained earnings|net income|net loss|current year|prior year earnings|accumulated (?:deficit|earnings)/.test(n)) {
-    return "Retained Earnings";
-  }
-  if (/common stock|preferred stock|capital stock|treasury stock|paid.?in capital|contributed capital|capital contribution|owner'?s? (?:equity|capital)|member'?s? (?:equity|capital)|partner'?s? (?:equity|capital)/.test(n)) {
-    return "Contributed Capital";
-  }
-  return null;
-}
-
-// ── Asset sub-category + group ────────────────────────────────────────────────
-function assetSubAndGroup(name) {
-  const n = String(name || "").toLowerCase();
-  // Sub-category (level 3).
-  let sub;
-  if (/equipment|furniture|fixture|machinery|building|\bland\b|leasehold|accumulated depreciation|construction in progress|\bvehicle\b/.test(n)) {
-    sub = "Fixed Assets";
-  } else if (/amortization|goodwill|intangible|other long.?term|\bdeposit\b|financing cost|note receivable/.test(n)) {
-    sub = "Other Assets";
-  } else {
-    sub = "Current Assets";
-  }
-
-  // Group (level 4).
-  let group = null;
-  if (/money market|checking|savings|\bbank\b|petty cash|\bcash\b/.test(n)) group = "Bank Accounts";
-  else if (/receivable|\ba\/r\b/.test(n)) group = "Accounts Receivable";
-  else if (/inventory|stock on hand/.test(n)) group = "Inventory";
-  else if (/prepaid/.test(n)) group = "Prepaid Expenses";
-  else if (/loans? to|due from|loan receivable/.test(n)) group = "Other Current Assets";
-  else if (/accumulated depreciation/.test(n)) group = "Accumulated Depreciation";
-  else if (/machinery|equipment/.test(n)) group = "Machinery & Equipment";
-  else if (/furniture|fixture/.test(n)) group = "Furniture & Fixtures";
-  else if (/leasehold/.test(n)) group = "Leasehold Improvements";
-  else if (/\bvehicle\b|\btruck\b/.test(n)) group = "Vehicles";
-  else if (/\bland\b/.test(n)) group = "Land Improvements";
-  else if (/construction in progress/.test(n)) group = "Construction in Progress";
-  else if (/amortization|financing cost|goodwill|intangible/.test(n)) group = "Other Long-Term Assets";
-  else if (sub === "Current Assets") group = "Other Current Assets";
-  else if (sub === "Fixed Assets") group = "Other Fixed Assets";
-  else group = "Other Long-Term Assets";
-
-  return [sub, group];
-}
-
-// ── Liability sub-category + group ────────────────────────────────────────────
-function liabilitySubAndGroup(name, bsSection) {
-  const n = String(name || "").toLowerCase();
-  if (/credit card/.test(n)) return ["Current Liabilities", "Credit Cards"];
-
-  // Use the actual BS section from the uploaded statement when available —
-  // keyword inference can't reliably tell current from long-term for loans.
-  if (bsSection) {
-    const s = String(bsSection).toLowerCase();
-    if (/long.?term/.test(s)) return ["Long-Term Liabilities", "Long-Term Loans"];
-    if (/current/.test(s)) return ["Current Liabilities", "Other Current Liabilities"];
-  }
-
-  // Fallback: only route to Long-Term when there is an explicit signal.
-  // Default loans to Current — avoids mis-placing short-term or PPP/EIDL/officer loans.
-  if (/\blong.?term\b/.test(n)) return ["Long-Term Liabilities", "Long-Term Loans"];
-  if (/\bsba\b/.test(n)) return ["Long-Term Liabilities", "Long-Term Loans"];
-  if (/loan|note payable|mortgage|line of credit|\beidl\b|\bppp\b/.test(n)) {
-    return ["Current Liabilities", "Other Current Liabilities"];
-  }
-  return ["Current Liabilities", "Other Current Liabilities"];
-}
-
 /**
- * Produce the standardized rollup labels for an account (levels 1..N), with the
- * base account intentionally NOT yet appended (buildLevelsFromPath adds it plus
- * any Gemini deeper levels).
+ * Return the ordered array of standard structural rollup labels for an account.
+ * Pure lookup — never examines the account name.
  *
- * @param {object} account
- *   { accountName, accountNumber, accountType (normalized 6-type), statementType }
- * @returns {{ levels: (string|null)[], standardizedDepth: number }}
- *   levels is a 15-slot array (rollup labels in 1..standardizedDepth, rest null).
+ * @param {string} section     AI-returned section (e.g. "Current Assets")
+ * @param {string} accountType 6-type model value (e.g. "asset")
+ * @returns {string[]}         ordered labels, deepest-first ending before base account
  */
-function classifyStandardized(account) {
-  const { accountName, accountType } = account;
-  const type = accountType || "";
-
-  const prefix = (STANDARD_PREFIX[type] || []).slice();
-  const labels = prefix.slice();
-
-  if (type === "expense" || type === "cogs") {
-    labels.push(expenseGroupFor(accountName));
-  } else if (type === "asset") {
-    const [sub, group] = assetSubAndGroup(accountName);
-    labels.push(sub, group);
-  } else if (type === "liability") {
-    const [sub, group] = liabilitySubAndGroup(accountName, account.bsSection);
-    labels.push(sub, group);
-  } else if (type === "equity") {
-    const group = equityGroupFor(accountName);
-    if (group) labels.push(group);
-  }
-  // income: prefix only — base account is appended directly afterwards.
-
-  // Drop any label that just repeats the one immediately above it.
-  // The STANDARD_PREFIX no longer has intentional duplicates (the old
-  // "Total Assets > Total Assets" pair has been replaced with the clean
-  // "Balance Sheet > Total Assets" pair).
-  const compact = [];
-  for (let i = 0; i < labels.length; i += 1) {
-    const label = labels[i];
-    if (!label) continue;
-    if (compact.length && compact[compact.length - 1].toLowerCase() === label.toLowerCase()) continue;
-    compact.push(label);
-  }
-
-  const levels = new Array(MAX_LEVELS).fill(null);
-  for (let i = 0; i < compact.length && i < MAX_LEVELS; i += 1) levels[i] = compact[i];
-  return { levels, standardizedDepth: Math.min(compact.length, MAX_LEVELS) };
+function aiSectionToStandardLevels(section, accountType) {
+  return (
+    SECTION_STANDARD_LEVELS[String(section || "")] ||
+    TYPE_STANDARD_LEVELS[String(accountType || "")] ||
+    ["Income Statement"]
+  ).slice(); // return a mutable copy
 }
 
 /**
- * Assemble the final 15-level path: standardized rollup levels, then any deeper
- * company-specific labels (from Gemini), then the base account at the deepest slot.
+ * Assemble the final 15-level path:
+ *   standard rollup levels → AI deeper company-specific labels → base account.
  *
- * The build is done in three stages:
- *   1. Collect every segment in order (standardized → Gemini deeper → base account).
- *   2. Strip consecutive duplicates (case-insensitive, whitespace-normalised).
- *      This removes spurious repeats injected when Gemini echoes a standardized label
- *      or includes the account name in its deeperLevels list.
+ * Steps:
+ *   1. Collect every segment in order.
+ *   2. Strip consecutive duplicates (case-insensitive).
+ *      Removes echoed labels when AI returns a standardized label in deeperLevels
+ *      or includes the account name as its last deeperLevel entry.
  *   3. Fit within MAX_LEVELS, keeping the base account in the deepest slot.
+ *   4. Fill the fixed-size MAX_LEVELS-slot array.
  *
- * @param {(string|null)[]} standardizedLevels  15-slot array from classifyStandardized
- * @param {number} standardizedDepth            count of standardized levels
- * @param {string[]} deeperLabels               extra category labels (Gemini), ordered
- * @param {string} baseAccount                  the source account display name
+ * @param {(string|null)[]} standardizedLevels  MAX_LEVELS-slot array from labelsToLevelArray
+ * @param {number} standardizedDepth            count of non-null standard labels
+ * @param {string[]} deeperLabels               AI-provided deeper category labels
+ * @param {string} baseAccount                  display name for the base account
  * @returns {{ levels: (string|null)[], hierarchyPath: string }}
  */
 function buildLevelsFromPath(standardizedLevels, standardizedDepth, deeperLabels, baseAccount) {
-  // ── 1. Collect all segments ────────────────────────────────────────────────
+  // 1. Collect all segments.
   const raw = [];
-
   for (let i = 0; i < standardizedDepth; i++) {
     const l = String(standardizedLevels[i] || "").trim();
     if (l) raw.push(l);
   }
-
   for (const label of deeperLabels || []) {
     const l = String(label || "").trim();
     if (l) raw.push(l);
   }
-
   const base = String(baseAccount || "").trim();
   if (base) raw.push(base);
 
-  // ── 2. Remove consecutive duplicates (Rules 1, 2, 5, 6, 9) ───────────────
-  // Case-insensitive, whitespace-normalised. This handles:
-  //   • Gemini echoing a standardized label that sits right above its output.
-  //   • Gemini including the account name as its last deeperLevel item, which
-  //     would otherwise duplicate the base account appended in step 1.
-  //   • Any back-to-back identical strings anywhere in the collected path.
+  // 2. Remove consecutive duplicates.
   const deduped = [];
   for (const label of raw) {
-    if (
-      !deduped.length ||
-      deduped[deduped.length - 1].toLowerCase() !== label.toLowerCase()
-    ) {
+    if (!deduped.length || deduped[deduped.length - 1].toLowerCase() !== label.toLowerCase()) {
       deduped.push(label);
     }
   }
 
-  // ── 3. Fit within MAX_LEVELS (Rule 8: base account is always last) ─────────
-  // If the de-duped path is longer than MAX_LEVELS, truncate intermediate levels
-  // but ensure the base account still occupies the final slot.
+  // 3. Fit within MAX_LEVELS; base account always occupies the final slot.
   let path = deduped;
   if (path.length > MAX_LEVELS) {
     path = base
@@ -270,23 +137,32 @@ function buildLevelsFromPath(standardizedLevels, standardizedDepth, deeperLabels
       : deduped.slice(0, MAX_LEVELS);
   }
 
-  // ── 4. Fill the fixed-size 15-slot array ──────────────────────────────────
+  // 4. Fill the fixed-size array.
   const levels = new Array(MAX_LEVELS).fill(null);
   for (let i = 0; i < path.length; i++) levels[i] = path[i];
 
-  const hierarchyPath = path.join(" > ");
-  return { levels, hierarchyPath };
+  return { levels, hierarchyPath: path.join(" > ") };
+}
+
+/**
+ * Convert a plain ordered labels array into a MAX_LEVELS-slot null-padded array.
+ * Used to feed standard label arrays into buildLevelsFromPath.
+ *
+ * @param {string[]} labels
+ * @returns {(string|null)[]}
+ */
+function labelsToLevelArray(labels) {
+  const arr = new Array(MAX_LEVELS).fill(null);
+  for (let i = 0; i < labels.length && i < MAX_LEVELS; i++) arr[i] = labels[i];
+  return arr;
 }
 
 module.exports = {
   MAX_LEVELS,
-  classifyStandardized,
-  buildLevelsFromPath,
-  // exported for testing / reuse
-  STANDARD_PREFIX,
   STATEMENT_BY_TYPE,
-  expenseGroupFor,
-  equityGroupFor,
-  assetSubAndGroup,
-  liabilitySubAndGroup,
+  SECTION_STANDARD_LEVELS,
+  TYPE_STANDARD_LEVELS,
+  aiSectionToStandardLevels,
+  labelsToLevelArray,
+  buildLevelsFromPath,
 };

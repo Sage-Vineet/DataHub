@@ -212,6 +212,10 @@ function makeLabelOverride(slide, order, tokenIndex, label, extra = {}) {
 
 const SLIDE_24_HISTORICAL_PERIODS = ["FY[Y-3]", "FY[Y-2]", "FY[Y-1]", "FY[Y]"];
 const SLIDE_24_ALL_PERIODS = [...SLIDE_24_HISTORICAL_PERIODS, "LTM"];
+const SLIDE_24_CAPEX_TOKEN_START = 59;
+const SLIDE_24_CAPEX_TOKEN_END = 63;
+const SLIDE_24_FCF_TOKEN_START = 64;
+const SLIDE_24_FCF_TOKEN_END = 68;
 const THREE_YEAR_LTM_PERIODS = ["FY[Y-2]", "FY[Y-1]", "FY[Y]", "LTM"];
 const TWO_YEAR_LTM_PERIODS = ["FY[Y-1]", "FY[Y]", "LTM"];
 const FY_LTM_PERIODS = ["FY[Y]", "LTM"];
@@ -496,14 +500,12 @@ const FIELD_LABEL_OVERRIDES = [
   ...makeSlide24MetricRowOverrides(14, "What was cost of goods sold"),
   ...makeSlide24MetricRowOverrides(19, "What was gross profit"),
   ...makeSlide24MetricRowOverrides(24, "What was gross margin"),
-  ...makeSlide24MetricRowOverrides(29, "What were SG&A expenses"),
-  ...makeSlide24MetricRowOverrides(34, "What was EBITDA"),
-  ...makeSlide24MetricRowOverrides(39, "What was EBITDA margin"),
+  ...makeSlide24MetricRowOverrides(29, "What were operating expenses"),
+  ...makeSlide24MetricRowOverrides(34, "What was adjusted EBITDA"),
+  ...makeSlide24MetricRowOverrides(39, "What was adjusted EBITDA margin"),
   ...makeSlide24MetricRowOverrides(44, "What was depreciation and amortization"),
-  ...makeSlide24MetricRowOverrides(49, "What was EBIT"),
+  ...makeSlide24MetricRowOverrides(49, "What was adjusted EBIT"),
   ...makeSlide24MetricRowOverrides(54, "What was net income"),
-  ...makeSlide24MetricRowOverrides(59, "What was CapEx"),
-  ...makeSlide24MetricRowOverrides(64, "What was Free Cash Flow"),
   { slide: 24, order: 8, tokenIndex: 0, label: "List any add-backs or normalizations." },
   { slide: 25, order: 5, tokenIndex: 0, label: "What is adjusted EBITDA (USD millions)?" },
   { slide: 25, order: 5, tokenIndex: 1, label: "How many EBITDA add-backs are included?" },
@@ -1279,6 +1281,112 @@ function getElementStyle(element) {
     insets: resolved.insets || { top: 0, right: 0, bottom: 0, left: 0 },
     lineHeight: 1.08,
   };
+}
+
+function restructureSlide24Table(layout) {
+  if (!layout?.elements) return layout;
+
+  const table = layout.elements.find((element) => element.order === 7 && element.kind === "table");
+  if (!table?.cells) return layout;
+
+  const rowHeight = Number(table.bbox?.[3] || 0) / 12;
+  const tableTop = Number(table.bbox?.[1] || 0);
+  const summaryRows = new Set([5, 8, 11, 12]);
+  const ratioRows = new Set([3, 6, 9]);
+  const detailRows = new Set([4, 7, 10]);
+  const rowLabels = {
+    7: "Operating Expenses",
+    8: "Adjusted EBITDA",
+    9: "Adjusted EBITDA Margin",
+    11: "Adjusted EBIT",
+  };
+
+  const cells = table.cells
+    .filter((cell) => ![13, 14].includes(Number(cell.row)))
+    .map((cell) => {
+      const sourceRow = Number(cell.row || 1);
+      const column = Number(cell.column || 1);
+      const isHeader = sourceRow === 1;
+      const isSummary = summaryRows.has(sourceRow);
+      const isRatio = ratioRows.has(sourceRow);
+      const isRevenue = sourceRow === 2;
+      const text = column === 1
+        ? (sourceRow === 1 ? "Historical Income Statement" : rowLabels[sourceRow] || cell.text || "")
+        : (sourceRow === 1 && column === 6 ? "LTM [Date]" : cell.text || "");
+      const color = isHeader ? "#FFFFFF" : isSummary || isRevenue ? "#2F3033" : "#6D6E71";
+      const bold = isHeader || isSummary || isRevenue;
+      const italic = isRatio;
+      const [left = 0, , width = 0] = cell.bbox || [];
+
+      return {
+        ...cell,
+        bbox: [left, tableTop + (sourceRow - 1) * rowHeight, width, rowHeight],
+        text,
+        textPreview: text.replace(/\s+/g, " ").trim(),
+        fillColor: isHeader ? "#476E2C" : isSummary ? "#EFEFF1" : "#FFFFFF",
+        resolvedTextStyle: {
+          ...(cell.resolvedTextStyle || {}),
+          verticalAlignment: "middle",
+          insets: {
+            top: 0,
+            right: 8,
+            bottom: 0,
+            left: column === 1 && detailRows.has(sourceRow) ? 20 : 8,
+          },
+        },
+        paragraphs: [{
+          index: 1,
+          text,
+          marginLeft: 0,
+          indent: 0,
+          resolvedTextStyle: { alignment: column === 1 ? "left" : "center" },
+          runs: [{
+            index: 1,
+            text,
+            fontSize: 12.67,
+            typeface: "Calibri",
+            color,
+            ...(bold ? { bold: true } : {}),
+            ...(italic ? { italic: true } : {}),
+          }],
+        }],
+      };
+    });
+
+  const text = [
+    "Historical Income Statement | FY[Y-3]A | FY[Y-2]A | FY[Y-1]A | FY[Y]A | LTM [Date]",
+    "Revenue | $[X]M | $[X]M | $[X]M | $[X]M | $[X]M",
+    "YoY Growth | [X]% | [X]% | [X]% | [X]% | —",
+    "Cost of Goods Sold | ([X]M) | ([X]M) | ([X]M) | ([X]M) | ([X]M)",
+    "Gross Profit | $[X]M | $[X]M | $[X]M | $[X]M | $[X]M",
+    "Gross Margin | [X]% | [X]% | [X]% | [X]% | [X]%",
+    "Operating Expenses | ([X]M) | ([X]M) | ([X]M) | ([X]M) | ([X]M)",
+    "Adjusted EBITDA | $[X]M | $[X]M | $[X]M | $[X]M | $[X]M",
+    "Adjusted EBITDA Margin | [X]% | [X]% | [X]% | [X]% | [X]%",
+    "D&A | ([X]M) | ([X]M) | ([X]M) | ([X]M) | ([X]M)",
+    "Adjusted EBIT | $[X]M | $[X]M | $[X]M | $[X]M | $[X]M",
+    "Net Income | $[X]M | $[X]M | $[X]M | $[X]M | $[X]M",
+    "CapEx | ([X]M) | ([X]M) | ([X]M) | ([X]M) | ([X]M)",
+    "Free Cash Flow | $[X]M | $[X]M | $[X]M | $[X]M | $[X]M",
+  ].join("\n");
+
+  return {
+    ...layout,
+    elements: layout.elements.map((element) =>
+      element === table
+        ? {
+            ...element,
+            text,
+            textPreview: text.split("\n").filter((_, index) => ![12, 13].includes(index)).join(" | "),
+            cells,
+          }
+        : element,
+    ),
+  };
+}
+
+function prepareCimLayout(slideNumber, layout) {
+  return slideNumber === 24 ? restructureSlide24Table(layout) : layout;
 }
 
 function makeFieldId(slideNumber, element) {
@@ -2517,7 +2625,15 @@ function hasFieldData(field, fieldValues, assetValues, chartValues) {
 
 function getEditableTemplateFields(fields = [], globalDetails) {
   const editableFields = fields.filter(
-    (field) => !field.hidden && !isResolvedByGlobalDetails(field, globalDetails),
+    (field) => {
+      const tokenIndex = getFieldTokenIndex(field);
+      const isSlide24CapEx = field.slideNumber === 24 && field.order === 7 &&
+        tokenIndex >= SLIDE_24_CAPEX_TOKEN_START && tokenIndex <= SLIDE_24_CAPEX_TOKEN_END;
+      const isSlide24FreeCashFlow = field.slideNumber === 24 && field.order === 7 &&
+        tokenIndex >= SLIDE_24_FCF_TOKEN_START && tokenIndex <= SLIDE_24_FCF_TOKEN_END;
+      return !field.hidden && !isSlide24CapEx && !isSlide24FreeCashFlow &&
+        !isResolvedByGlobalDetails(field, globalDetails);
+    },
   );
 
   const slideOneAdvisorLogos = editableFields.filter((field) =>
@@ -2681,13 +2797,11 @@ const SLIDE_24_ORDER_7_ROW_DEFS = [
   { start: 44, count: 5 },
   { start: 49, count: 5 },
   { start: 54, count: 5 },
-  { start: 59, count: 5 },
-  { start: 64, count: 5 },
 ];
 
 function getSlide24ColumnIndex(field) {
   if (field.slideNumber !== 24 || field.order !== 7) return null;
-  const ti = field.tokenIndex;
+  const ti = getFieldTokenIndex(field);
   if (ti === null || ti === undefined) return null;
   for (const { start, count } of SLIDE_24_ORDER_7_ROW_DEFS) {
     if (ti >= start && ti < start + count) return ti - start;
@@ -2971,14 +3085,12 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
     add(24, 7, 14 + columnIndex, formatAutoFillMillions(metrics.costOfGoodsSold));
     add(24, 7, 19 + columnIndex, formatAutoFillMillions(metrics.grossProfit));
     add(24, 7, 24 + columnIndex, formatAutoFillPercent(metrics.grossMargin));
-    add(24, 7, 29 + columnIndex, formatAutoFillMillions(metrics.sgaExpenses));
+    add(24, 7, 29 + columnIndex, formatAutoFillMillions(metrics.operatingExpenses || metrics.sgaExpenses));
     add(24, 7, 34 + columnIndex, formatAutoFillMillions(metrics.adjustedEbitda));
     add(24, 7, 39 + columnIndex, formatAutoFillPercent(metrics.ebitdaMargin));
     add(24, 7, 44 + columnIndex, formatAutoFillMillions(metrics.depreciationAmortization));
     add(24, 7, 49 + columnIndex, formatAutoFillMillions(metrics.ebit));
     add(24, 7, 54 + columnIndex, formatAutoFillMillions(metrics.netProfit));
-    add(24, 7, 59 + columnIndex, formatAutoFillMillions(metrics.capitalExpenditures));
-    add(24, 7, 64 + columnIndex, formatAutoFillMillions(metrics.freeCashFlow));
   });
 
   add(25, 5, 0, formatAutoFillMillions(latest.adjustedEbitda));
@@ -3320,10 +3432,10 @@ function getQuestionnaireTemplateFields(section, fieldsBySlide, globalDetails) {
   }
 
   const seen = new Set();
-  const fields = section.slides
-    .flatMap((slideNumber) => fieldsBySlide[slideNumber] || [])
-    .filter((field) => !field.hidden)
-    .filter((field) => !isResolvedByGlobalDetails(field, globalDetails))
+  const fields = getEditableTemplateFields(
+    section.slides.flatMap((slideNumber) => fieldsBySlide[slideNumber] || []),
+    globalDetails,
+  )
     .filter((field) => {
       const key = `${field.fieldKind}:${normalizeText(field.label).toLowerCase()}:${normalizeText(field.sourceText || field.text).toLowerCase()}`;
       if (seen.has(key)) return false;
@@ -5660,7 +5772,7 @@ export default function WorkspaceCimPrep() {
             const slideNumber = index + 1;
             const response = await fetch(getSlideLayoutPath(slideNumber), { cache: "no-store" });
             if (!response.ok) return [slideNumber, null];
-            return [slideNumber, await response.json()];
+            return [slideNumber, prepareCimLayout(slideNumber, await response.json())];
           }),
         );
         if (!cancelled) setLayouts(Object.fromEntries(entries));
