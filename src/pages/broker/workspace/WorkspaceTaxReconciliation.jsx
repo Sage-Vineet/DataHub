@@ -21,7 +21,6 @@ import {
   getManualStagedProfitLossSummary,
   getManualStageFilterOptions,
   listManualGlDatasetVersions,
-  getActiveKeyReportMappings,
   getTaxReconciliationOverrides,
   saveTaxReconciliationOverrides,
 } from "../../../lib/api";
@@ -30,6 +29,7 @@ import { useDataSource } from "../../../context/DataSourceContext";
 import {
   useKeyReportContextStore,
   selectKeyReportContext,
+  maskKeyReportContext,
 } from "../../../store/useKeyReportContextStore";
 import { useShallow } from "zustand/react/shallow";
 import KeyReportVersionSelector from "../../../components/key-reports/KeyReportVersionSelector";
@@ -297,10 +297,13 @@ export default function WorkspaceTaxReconciliation() {
 
   // Dataset version selection removed — consolidated into Key Reports.
 
-  // Key Reports is the single source of truth: when a Version is selected, the
-  // tax reconciliation's flow comes from THAT Version (manual_gl vs manual_upload),
-  // not the Connections-page active data source.
-  const kr = useKeyReportContextStore(useShallow(selectKeyReportContext));
+  // Key Reports drives this page ONLY when the active data source is
+  // "key_reports" (activated from the Key Reports page). For the 4 connection
+  // modes the KR context is masked inactive so the Connections-page selection
+  // is authoritative. activeSourceMode resolves to "key_reports" in that mode.
+  const krSelected = activeSourceMode === 'key_reports';
+  const rawKr = useKeyReportContextStore(useShallow(selectKeyReportContext));
+  const kr = useMemo(() => maskKeyReportContext(rawKr, krSelected), [rawKr, krSelected]);
   const effectiveSourceMode = kr.krActive
     ? (kr.flowType === 'manual_gl' ? 'manual' : 'manual_upload')
     : activeSourceMode;
@@ -779,45 +782,27 @@ export default function WorkspaceTaxReconciliation() {
     }
   }, [selectedYears, accountingMethod, clientId, getHeaders, isManualGL, isManualMode, isQBManual, currentYear, selectedVersion]);
 
-  // Key Reports tax return gate — validates that a tax return is linked before
-  // loading any reconciliation data. For manual_upload and quickbooks_manual modes
-  // the backend now falls back to connection-page synced files, so the gate is
-  // bypassed; it only applies to QB Online where KR linking is the sole data path.
+  // Key Reports tax return gate — the "Tax Return missing in Key Reports" banner
+  // and its "link in Key Reports" prompt ONLY apply when Key Reports is the active
+  // data source. In the 4 connection modes (QuickBooks Online / Manual GL / Manual
+  // Upload / QB Manual) tax reconciliation is driven by that connection, not by a
+  // Key Report Version, so the gate is always "ok" and the KR banner is hidden.
   useEffect(() => {
     if (!clientId) return;
-    // Key Reports-driven: the gate reflects whether THIS Version has a Tax Return
-    // linked (auto-detected). Tax Reconciliation requires GL/P&L + a Tax Return.
-    if (kr.krActive) {
-      if (kr.loadingDetail) {
-        setKrTaxGate({ status: "loading" });
-        return;
-      }
-      const ok = kr.availability.tax;
-      setKrTaxGate({ status: ok ? "ok" : "missing" });
-      // Removed matrixData clearing — allow what's available (like P&L) to render
-      return;
-    }
-    // Legacy (no Key Report versions): manual_upload / QMS fall back to synced
-    // files; only QB Online requires an active-version tax-return link.
-    if (!activeSource) return;
-    if (isManualMode || isQBManual) {
+    if (!krSelected) {
+      // Not in Key Reports mode → never show the KR-linking banner.
       setKrTaxGate({ status: "ok" });
       return;
     }
-    let cancelled = false;
-    setKrTaxGate({ status: "loading" });
-    getActiveKeyReportMappings()
-      .then((mappings) => {
-        if (cancelled) return;
-        const hasTaxReturn = (mappings?.tax_return?.length || 0) > 0;
-        setKrTaxGate({ status: hasTaxReturn ? "ok" : "missing" });
-        // Removed matrixData clearing — allow what's available to render
-      })
-      .catch(() => {
-        if (!cancelled) setKrTaxGate({ status: "ok" }); // fail open
-      });
-    return () => { cancelled = true; };
-  }, [activeSource, clientId, isManualMode, isQBManual, kr.krActive, kr.loadingDetail, kr.availability.tax]);
+    // Key Reports mode: the gate reflects whether THIS Version has a Tax Return
+    // linked (auto-detected). Tax Reconciliation requires GL/P&L + a Tax Return.
+    if (kr.loadingDetail) {
+      setKrTaxGate({ status: "loading" });
+      return;
+    }
+    const ok = kr.availability.tax;
+    setKrTaxGate({ status: ok ? "ok" : "missing" });
+  }, [clientId, krSelected, kr.loadingDetail, kr.availability.tax]);
 
   // Auto-load on first visit. In Manual GL mode, wait until the version is
   // resolved before loading — and include selectedVersion in the deps so this
@@ -1348,8 +1333,8 @@ export default function WorkspaceTaxReconciliation() {
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div className="flex flex-wrap items-center gap-3">
               {syncStatus?.message && <SyncStatus sync={syncStatus} />}
-              {/* Unified Key Reports Version selector is the single source of truth */}
-              <KeyReportVersionSelector clientId={clientId} variant="filter" />
+              {/* Key Reports Version selector — only when Key Reports is the active source */}
+              {krSelected && <KeyReportVersionSelector clientId={clientId} variant="filter" />}
             </div>
             <button
               type="button"

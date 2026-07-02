@@ -29,8 +29,11 @@ import {
   syncKeyReportVersion,
   getKeyReportPopupPreference,
   setKeyReportPopupPreference,
+  setSelectedReportSource,
 } from "../../../lib/api";
 import { useToast } from "../../../context/ToastContext";
+import { emitWorkspaceDataSourceUpdated } from "../../../lib/dataSourceEvents";
+import { REPORT_SOURCE_KEYS } from "../../../lib/report-source";
 import DataRoomFilePicker from "../../../components/key-reports/DataRoomFilePicker";
 import KeyReportsEducationPopup from "../../../components/key-reports/KeyReportsEducationPopup";
 import ChartOfAccountsGrid from "../../../components/key-reports/ChartOfAccountsGrid";
@@ -191,6 +194,28 @@ export default function WorkspaceKeyReports() {
     }
   };
 
+  // Silently make Key Reports the active data source for this company (no
+  // confirmation popup — confirmSwitch bypasses the modal used on the Connections
+  // page). The workspace event keeps DataSourceContext / the header badge / the
+  // consumer pages (Reports, EBITDA, Bank & Tax Reconciliation) in sync so they
+  // read from the selected Key Report Version. Best-effort: a switch failure must
+  // never block the AI Processing flow.
+  const switchToKeyReportsSource = useCallback(async () => {
+    if (!clientId) return;
+    try {
+      await setSelectedReportSource(REPORT_SOURCE_KEYS.KEY_REPORTS, {
+        clientId,
+        confirmSwitch: true,
+      });
+      emitWorkspaceDataSourceUpdated({
+        clientId,
+        sourceKey: REPORT_SOURCE_KEYS.KEY_REPORTS,
+      });
+    } catch (switchErr) {
+      console.warn("[KeyReports] Failed to switch active source to Key Reports:", switchErr?.message);
+    }
+  }, [clientId]);
+
   const handleActivate = async () => {
     if (!selectedVersionId) return;
     setBusy(true);
@@ -231,8 +256,11 @@ export default function WorkspaceKeyReports() {
         error: null,
       });
       await Promise.all([loadDetail(selectedVersionId), loadVersions()]);
+      // Running AI Processing makes Key Reports the active data source for this
+      // company, switching away from whatever Connections mode was selected.
+      await switchToKeyReportsSource();
       const warnCount = res?.warnings?.length || 0;
-      notify(`AI analysis complete${warnCount ? ` (${warnCount} warning${warnCount === 1 ? "" : "s"})` : ""}.`, "success");
+      notify(`AI analysis complete${warnCount ? ` (${warnCount} warning${warnCount === 1 ? "" : "s"})` : ""}. Key Reports is now the active data source.`, "success");
       setActiveStep("coa");
     } catch (e) {
       const message = e.message || "Sync failed.";

@@ -31,7 +31,7 @@ import { REPORT_SOURCE_KEYS, normalizeReportSourceKey } from "../../../lib/repor
 import QBDisconnectedBanner from "../../../components/common/QBDisconnectedBanner";
 import EbitdaAdjustmentsPanel from "../../../components/reports/ebitda/EbitdaAdjustmentsPanel";
 import { useDataSource } from "../../../context/DataSourceContext";
-import { useKeyReportContextStore, selectKeyReportContext } from "../../../store/useKeyReportContextStore";
+import { useKeyReportContextStore, selectKeyReportContext, maskKeyReportContext } from "../../../store/useKeyReportContextStore";
 import { useShallow } from "zustand/react/shallow";
 import KeyReportVersionSelector from "../../../components/key-reports/KeyReportVersionSelector";
 
@@ -155,7 +155,16 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000
 export default function WorkspaceEbitda() {
   const { clientId } = useParams();
   const { activeSource, activeSourceMode } = useDataSource();
-  const kr = useKeyReportContextStore(useShallow(selectKeyReportContext));
+  // Key Reports drives this page ONLY when the active data source is
+  // "key_reports" (activated from the Key Reports page). For the 4 connection
+  // modes the KR context is masked inactive so the Connections-page selection
+  // is authoritative.
+  const krSelected = useMemo(
+    () => normalizeReportSourceKey(activeSource) === REPORT_SOURCE_KEYS.KEY_REPORTS,
+    [activeSource],
+  );
+  const rawKr = useKeyReportContextStore(useShallow(selectKeyReportContext));
+  const kr = useMemo(() => maskKeyReportContext(rawKr, krSelected), [rawKr, krSelected]);
 
   const accountingMethod = "Accrual";
 
@@ -355,6 +364,17 @@ export default function WorkspaceEbitda() {
           }
         }
       } catch { /* ignore corrupt cache */ }
+    }
+
+    // Key Reports is the active source but no usable Key Report Version resolved
+    // yet. Don't fall through to the QuickBooks path — show an empty state.
+    if (reportSource === REPORT_SOURCE_KEYS.KEY_REPORTS) {
+      setMultiYearData(null);
+      setYears([]);
+      setError("");
+      setIsLoading(false);
+      setIsDataInitialized(true);
+      return;
     }
 
     setIsLoading(true);
@@ -1041,8 +1061,8 @@ export default function WorkspaceEbitda() {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
-            {/* Unified Key Reports Version selector is the single source of truth */}
-            <KeyReportVersionSelector clientId={clientId} variant="filter" />
+            {/* Key Reports Version selector — only when Key Reports is the active source */}
+            {krSelected && <KeyReportVersionSelector clientId={clientId} variant="filter" />}
             {/* Refresh button removed */}
           </div>
         </div>

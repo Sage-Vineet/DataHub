@@ -6,6 +6,7 @@ const REPORT_SOURCE_KEYS = {
   MANUAL_GL: "manual_gl_upload",
   MANUAL_UPLOAD: "manual_upload_excel_pdf",
   QUICKBOOKS_MANUAL: "quickbooks_manual",
+  KEY_REPORTS: "key_reports",
 };
 
 const REPORT_SOURCE_LABELS = {
@@ -13,6 +14,7 @@ const REPORT_SOURCE_LABELS = {
   [REPORT_SOURCE_KEYS.MANUAL_GL]: "Manual GL Upload",
   [REPORT_SOURCE_KEYS.MANUAL_UPLOAD]: "Manual Upload (Excel or PDF)",
   [REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL]: "QuickBooks Manual",
+  [REPORT_SOURCE_KEYS.KEY_REPORTS]: "Key Reports",
 };
 
 const VALID_SOURCE_KEYS = Object.values(REPORT_SOURCE_KEYS);
@@ -28,6 +30,9 @@ const SOURCE_KEY_ALIASES = new Map([
   ["manual_report_upload", REPORT_SOURCE_KEYS.MANUAL_UPLOAD],
   ["quickbooks_manual", REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL],
   ["qb_manual", REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL],
+  ["key_reports", REPORT_SOURCE_KEYS.KEY_REPORTS],
+  ["keyreports", REPORT_SOURCE_KEYS.KEY_REPORTS],
+  ["key_report", REPORT_SOURCE_KEYS.KEY_REPORTS],
 ]);
 
 function normalizeSourceKey(value) {
@@ -69,6 +74,15 @@ function getDefaultRows(companyId) {
       company_id: companyId,
       source_key: REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL,
       source_label: REPORT_SOURCE_LABELS[REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL],
+      is_selected: false,
+      is_available: false,
+      is_connected: false,
+      metadata: {},
+    },
+    {
+      company_id: companyId,
+      source_key: REPORT_SOURCE_KEYS.KEY_REPORTS,
+      source_label: REPORT_SOURCE_LABELS[REPORT_SOURCE_KEYS.KEY_REPORTS],
       is_selected: false,
       is_available: false,
       is_connected: false,
