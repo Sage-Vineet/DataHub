@@ -7,11 +7,13 @@
 // never-overwritten ORIGINAL (AI) classification beside a user-editable ADJUSTED
 // one, plus mapping + audit-history tables.
 //
-// Classification is HYBRID:
-//   1. coaHierarchyRules        — deterministic standardized levels 1–4.
-//   2. geminiCoaClassifier      — optional AI refinement for deeper, company-
-//                                 specific levels (5–15) + normalized names.
-//   The Gemini step is non-fatal; on any failure the rule-only path stands.
+// Classification is 100% AI-driven:
+//   classifyAccountsWithAI (geminiCoaClassifier) is the sole classification
+//   authority for every unique GL account.  No keyword matching, regex rules,
+//   or hardcoded dictionaries remain.  Accounts below the confidence threshold
+//   are flagged needsReview: true in metadata for human review; they are NOT
+//   reclassified by any fallback rule engine.  If Gemini is unavailable all
+//   accounts are flagged for review and no silent mis-classification occurs.
 //
 // Persistence uses an UPSERT-by-stable-key merge (NOT delete-then-insert) so
 // that account ids — and therefore the adjustment/classification audit history
@@ -19,18 +21,19 @@
 // ============================================================================
 
 const { supabase } = require("../db");
-const { classifyStandardized, buildLevelsFromPath, MAX_LEVELS } = require("./keyReports/coaHierarchyRules");
-const { refineAccounts, classifyAccountsWithAI } = require("./keyReports/geminiCoaClassifier");
-const { classifyAccount } = require("./keyReports/coaAccountClassifier");
+const { aiSectionToStandardLevels, labelsToLevelArray, buildLevelsFromPath, MAX_LEVELS } = require("./keyReports/coaHierarchyRules");
+const { classifyAccountsWithAI } = require("./keyReports/geminiCoaClassifier");
 
 const TABLE_COA = "chart_of_accounts";
 const TABLE_TXN = "general_ledger_entries";
 const TABLE_BS = "balance_sheet_entries";
 const PAGE_SIZE = 1000;
 
-// Minimum Gemini confidence to prefer the AI classification over keyword rules.
-// Below this threshold the deterministic coaAccountClassifier result is used instead.
-const AI_CONFIDENCE_THRESHOLD = 0.75;
+// AI confidence below this value → account is inserted with needsReview: true
+// in its metadata so a human can verify the classification.  The AI result is
+// still used (never replaced by keyword rules) since any AI result is more
+// informative than a blind default.
+const AI_NEEDS_REVIEW_THRESHOLD = 0.70;
 
 // Audit history (classification snapshots + per-edit adjustments) is stored
 // INLINE on each chart_of_accounts row in the `audit_log` jsonb array, rather
@@ -102,14 +105,6 @@ function statementTypeFor(accountType) {
   return BALANCE_SHEET_TYPES.has(accountType) ? "balance_sheet" : "profit_loss";
 }
 
-function accountTypeFromBsSection(section) {
-  const s = String(section || "").toLowerCase();
-  if (s.includes("asset")) return "asset";
-  if (s.includes("liabilit")) return "liability";
-  if (s.includes("equity")) return "equity";
-  return "";
-}
-
 function normName(accountName) {
   return String(accountName || "").trim().toLowerCase();
 }
@@ -120,45 +115,22 @@ function accountKey(number, name) {
   return `${String(number || "").trim().toLowerCase()}::${normName(name)}`;
 }
 
-// ── Invalid-row guards (unchanged) ──────────────────────────────────────────
-const NON_ACCOUNT_RE =
+// ── Metadata row guard ────────────────────────────────────────────────────────
+//
+// Catches only software-generated noise that is definitively not an accounting
+// account: empty strings, date lines, and ERP header rows.  Report totals
+// (Total Assets, Net Income, etc.) and section headers (Assets, Liabilities,
+// etc.) are NOT filtered here — the AI classifies those as isReportRow: true
+// and they are excluded from the COA during buildCoaModel.
+//
+// Do NOT expand this regex with accounting keywords; that would re-introduce
+// the hardcoded classification logic that was explicitly removed.
+const METADATA_ROW_RE =
   /^(accrual basis|cash basis|report generated|date generated|generated on|as of\b|unrealized gains?)/i;
 
-const SECTION_LABEL_SET = new Set([
-  "assets", "liabilities", "equity", "income", "revenue", "expense", "expenses",
-  "current assets", "fixed assets", "other assets", "other current assets",
-  "current liabilities", "long-term liabilities", "long term liabilities",
-  "other current liabilities", "other liabilities", "cost of goods sold",
-  "liabilities and equity", "liabilities & equity", "total liabilities and equity",
-  // Additional section headers that appear in exported financial statements
-  "stockholders equity", "stockholders' equity", "shareholders equity", "shareholders' equity",
-  "members equity", "members' equity", "owners equity", "owners' equity",
-  "total stockholders equity", "total stockholders' equity",
-  "cost of sales", "gross margin", "gross revenue",
-  "operating expenses", "other income", "other expenses",
-  "other income and expenses", "other income (expense)",
-  "non-operating income", "non-operating expenses",
-]);
-
-const TOTAL_NAME_RE =
-  /(^total\b|\btotal$|\bnet income\b|\bnet loss\b|\bgross profit\b|\bnet operating income\b|\bnet operating loss\b|\boperating income\b|\bpretax income\b|\bincome before taxes?\b|\bnet revenue\b|\bsubtotal\b|^less\b|^less:\s*$)/i;
-
-function isTotalName(name) {
-  return TOTAL_NAME_RE.test(String(name || "").trim());
-}
-
-function isSectionLabel(name) {
-  const n = String(name || "").trim().toLowerCase().replace(/\s+/g, " ");
-  return SECTION_LABEL_SET.has(n);
-}
-
-function isNonAccountRow(name) {
+function isMetadataRow(name) {
   const n = String(name || "").trim();
-  if (!n) return true;
-  if (NON_ACCOUNT_RE.test(n)) return true;
-  if (isTotalName(n)) return true;
-  if (isSectionLabel(n)) return true;
-  return false;
+  return !n || METADATA_ROW_RE.test(n);
 }
 
 // ── Source collectors (unchanged) ───────────────────────────────────────────
@@ -239,11 +211,14 @@ function normalizeForGemini(rawName) {
  * Collect the set of unique account names from GL + BS rows to send to the AI
  * classification pre-pass.
  *
- * The `key` field matches the normName(rawName) that addLeaf uses internally, so
- * aiResults look-ups inside buildCoaModel align correctly.
+ * Only obvious software-metadata rows (dates, "Accrual Basis", etc.) are
+ * excluded here via isMetadataRow.  Report totals, section headers, and all
+ * other rows are passed to the AI — it is the AI's job (isReportRow: true) to
+ * decide what is a real account vs. a calculated row.
  *
- * The `accountName` field sent to Gemini is normalizeForGemini(rawName) — the raw
- * name with leading account-code prefixes stripped, for cleaner AI input.
+ * The `key` field matches the normName(rawName) that addLeaf uses internally.
+ * The `accountName` sent to Gemini is normalizeForGemini(rawName) — the raw
+ * name with leading account-code prefixes stripped.
  *
  * @param {Array} glRows - GL rows (from collectGlAccountsFromEntries)
  * @param {Array} bsRows - BS rows (from collectBsAccountsFromEntries)
@@ -252,8 +227,8 @@ function normalizeForGemini(rawName) {
 function collectUniqueAccountNames(glRows, bsRows) {
   const seen = new Map(); // normKey → descriptor
   const add = (rawName, accountNumber, bsSection) => {
-    const name = String(rawName || '').trim();
-    if (!name || isNonAccountRow(name)) return;
+    const name = String(rawName || "").trim();
+    if (!name || isMetadataRow(name)) return;
     const key = normName(name);
     if (seen.has(key)) return;
     seen.set(key, {
@@ -268,7 +243,7 @@ function collectUniqueAccountNames(glRows, bsRows) {
   }
   for (const r of glRows || []) {
     if (r.account_name) add(r.account_name, r.account_number, r.account_section);
-    if (r.split_account && !isNonAccountRow(r.split_account)) add(r.split_account, null, null);
+    if (r.split_account) add(r.split_account, null, null);
   }
   return Array.from(seen.values());
 }
@@ -277,15 +252,19 @@ function collectUniqueAccountNames(glRows, bsRows) {
 
 /**
  * Build the in-memory COA leaf model from raw account rows.
- * Source precedence (spec): Balance Sheet → Profit & Loss → General Ledger.
- * Pure function. (Unchanged from the prior 2-level engine — still the dedup +
- * classification core; the hierarchy layer is built on top of its leaves.)
  *
- * @param {Array}  glRows     GL transaction rows
- * @param {Array}  bsRows     Balance Sheet rows
- * @param {Array}  plRows     P&L rows (always empty — no profit_loss_entries table)
- * @param {Map}    aiResults  Pre-computed AI classification Map from classifyAccountsWithAI.
- *                            Keys are normName(accountName). Pass new Map() to use rules only.
+ * Classification is 100% AI-driven:
+ *   • isReportRow: true  → row excluded from COA entirely (report total / header)
+ *   • confidence ≥ threshold → accountType / section / deeperLevels used as-is
+ *   • confidence < threshold → same AI result used, but needsReview: true set
+ *   • no AI result at all   → accountType defaults to "expense", needsReview: true
+ *
+ * No keyword rules, no fallback classification engine.
+ *
+ * @param {Array}  glRows    GL transaction rows
+ * @param {Array}  bsRows    Balance Sheet rows
+ * @param {Array}  plRows    P&L rows (always empty — no profit_loss_entries table)
+ * @param {Map}    aiResults classifyAccountsWithAI result keyed by normName(accountName)
  */
 function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map()) {
   const leavesByName = new Map();
@@ -298,64 +277,37 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map()) {
     if (bsSection && !leaf.bsSection) leaf.bsSection = bsSection;
   };
 
-  const addLeaf = (accountName, accountNumber, explicitType, source, fiscalYear, classificationSource, bsSection) => {
+  const addLeaf = (accountName, accountNumber, source, fiscalYear, bsSection) => {
     const name = String(accountName || "").trim();
-    if (!name) return;
-    if (isNonAccountRow(name)) return;
+    // isMetadataRow catches only ERP noise (date lines, "Accrual Basis", etc.).
+    // Report totals / section headers are excluded by AI isReportRow detection below.
+    if (!name || isMetadataRow(name)) return;
     const number = accountNumber ? String(accountNumber).trim() : null;
     const key = normName(name);
 
-    // ── AI pre-classification result ─────────────────────────────────────────
-    // Keyed by normName(accountName) — same key computed below — so look-ups align.
     const aiResult = aiResults.get(key);
 
-    // AI detected this as a calculated/section row (e.g. "Total Assets") even if
-    // isNonAccountRow didn't catch it — exclude it.
-    if (aiResult?.skip) return;
+    // AI identified this as a calculated/header row — exclude from COA entirely.
+    if (aiResult?.isReportRow) return;
 
-    // ── Classification priority ──────────────────────────────────────────────
-    // 0. Balance Sheet section header — always authoritative regardless of AI.
-    const bsSectionType = bsSection ? accountTypeFromBsSection(bsSection) : '';
-
-    let type, resolvedSource, classificationMethod, aiNormalizedName, aiDeeperLevels, confidence;
-
-    if (bsSectionType) {
-      // BS section is authoritative. AI is still used for display name / deeper levels.
-      type = bsSectionType;
-      resolvedSource = 'balance_sheet_section';
-      classificationMethod = 'rule';
-      aiNormalizedName = aiResult?.normalizedName || null;
-      aiDeeperLevels = aiResult?.deeperLevels || [];
-      confidence = aiResult?.confidence ?? null;
-    } else if (aiResult?.accountType && aiResult.confidence >= AI_CONFIDENCE_THRESHOLD) {
-      // AI classified with sufficient confidence — AI wins over keyword rules.
-      // This correctly handles: bank accounts (→asset), credit card accounts (→liability),
-      // vehicle/fleet (→asset), insurance premiums (→expense), owner distributions (→equity).
-      type = aiResult.accountType;
-      resolvedSource = `ai_${aiResult.confidence.toFixed(2)}`;
-      classificationMethod = 'gemini';
-      aiNormalizedName = aiResult.normalizedName || null;
-      aiDeeperLevels = aiResult.deeperLevels || [];
-      confidence = aiResult.confidence;
-    } else {
-      // Fallback: deterministic multi-signal keyword-rules classification.
-      // Used when AI had low confidence, the batch failed, or GEMINI_API_KEY is absent.
-      const { accountType: ruleType, reason } = classifyAccount({
-        accountName: name,
-        accountNumber: number,
-        bsSection,
-        explicitType,
-      });
-      type = ruleType;
-      resolvedSource = reason;
-      classificationMethod = 'rule';
-      aiNormalizedName = aiResult?.normalizedName || null; // keep AI name even at low confidence
-      aiDeeperLevels = [];
-      confidence = aiResult?.confidence ?? null;
-    }
+    // AI result drives the classification.  Low or absent confidence → needsReview.
+    const accountType        = aiResult?.accountType || "expense";
+    const aiSection          = aiResult?.section     || "";
+    const aiDeeperLevels     = aiResult?.deeperLevels    || [];
+    const aiNormalizedName   = aiResult?.normalizedName  || null;
+    const aiNormalBalance    = aiResult?.normalBalance   || null;
+    const confidence         = aiResult?.confidence      ?? null;
+    const needsReview        = !aiResult || (confidence !== null && confidence < AI_NEEDS_REVIEW_THRESHOLD);
+    const classificationMethod =
+      !aiResult            ? "unclassified"         :
+      needsReview          ? "ai_low_confidence"    :
+                             "gemini";
+    const resolvedSource     =
+      !aiResult            ? "no_ai_result"         :
+      confidence !== null  ? `ai_${confidence.toFixed(2)}` :
+                             "gemini";
 
     const bucket = leavesByName.get(key) || [];
-
     const target = bucket.find((l) => {
       if (number && l.accountNumber) return l.accountNumber === number;
       return true;
@@ -365,17 +317,20 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map()) {
       return;
     }
 
-    usedGroups.add(type);
+    usedGroups.add(accountType);
     const leaf = {
       accountName: name,
       accountNumber: number,
-      accountType: type,
-      statementType: statementTypeFor(type),
+      accountType,
+      statementType: statementTypeFor(accountType),
       classificationSource: resolvedSource,
       classificationMethod,
+      aiSection,
       aiNormalizedName,
       aiDeeperLevels,
+      aiNormalBalance,
       confidence,
+      needsReview,
       sources: new Set([source]),
       fiscalYears: new Set(fiscalYear ? [Number(fiscalYear)] : []),
       bsSection: bsSection || null,
@@ -385,29 +340,22 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map()) {
   };
 
   for (const r of bsRows || []) {
-    const type = accountTypeFromBsSection(r.section);
-    addLeaf(r.account_name, r.account_number || null, type, "balance_sheet", r.fiscal_year, "balance_sheet_section", r.section);
+    addLeaf(r.account_name, r.account_number || null, "balance_sheet", r.fiscal_year, r.section);
   }
   for (const r of plRows || []) {
-    addLeaf(r.account_name, r.account_number || null, r.account_type || null, "profit_loss", r.fiscal_year, "profit_loss_type");
+    addLeaf(r.account_name, r.account_number || null, "profit_loss", r.fiscal_year, null);
   }
   for (const r of glRows || []) {
     const name = r.account_name || r.account_section || "";
-    if (name) {
-      addLeaf(name, r.account_number || null, null, "general_ledger", r.fiscal_year, "gl_type");
-    }
-    if (r.split_account && !isNonAccountRow(r.split_account)) {
-      addLeaf(r.split_account, null, null, "general_ledger", r.fiscal_year, "gl_type");
-    }
+    if (name) addLeaf(name, r.account_number || null, "general_ledger", r.fiscal_year, null);
+    if (r.split_account) addLeaf(r.split_account, null, "general_ledger", r.fiscal_year, null);
   }
 
-  // Ensure the standard equity components always exist in the COA's Equity section.
-  // "Net Income" (Current Year Net Income) and "Retained Earnings" are computed
-  // closing lines rather than GL accounts, and isNonAccountRow() intentionally
-  // strips "Net Income" from extracted rows — so inject them here (bypassing that
-  // guard) if the source data didn't already provide them. Their VALUES are filled
-  // by the Balance Sheet engine (bsBalancesForYear / monthly snapshots), which maps
-  // its "Net Income" / "Retained Earnings" equity balances onto these leaves.
+  // Inject synthetic equity closing lines.  "Net Income" and "Retained Earnings"
+  // are computed balances, not real GL accounts.  The AI would mark any extracted
+  // "Net Income" row as isReportRow: true, so they never enter via addLeaf — we
+  // inject them here with a fixed equity classification so the Balance Sheet engine
+  // (bsBalancesForYear / monthly snapshots) can map its closing balances onto them.
   const ensureEquityLeaf = (name) => {
     const key = normName(name);
     if (leavesByName.has(key)) return;
@@ -418,6 +366,13 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map()) {
       accountType: "equity",
       statementType: "balance_sheet",
       classificationSource: "synthetic_equity",
+      classificationMethod: "rule",
+      aiSection: "Equity",
+      aiNormalizedName: name,
+      aiDeeperLevels: [],
+      aiNormalBalance: "credit",
+      confidence: 1,
+      needsReview: false,
       sources: new Set(["generated"]),
       fiscalYears: new Set(),
       bsSection: null,
@@ -434,96 +389,44 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map()) {
   return { groups, leaves };
 }
 
-// ── Hierarchy assembly (rules + optional Gemini) ─────────────────────────────
+// ── Hierarchy assembly (AI-driven) ───────────────────────────────────────────
 
 /**
  * Enrich each leaf with its full 15-level hierarchy.
  *
- * Pipeline:
- *   1. Deterministic standardized levels (coaHierarchyRules.classifyStandardized) —
- *      always runs; produces the fixed anchor levels for every account type.
- *   2. Deeper level resolution — two sources, in priority order:
- *      a. leaf.aiDeeperLevels: pre-computed by classifyAccountsWithAI in the
- *         pre-pass.  Accounts with these skip the refineAccounts call entirely,
- *         reducing the total number of Gemini API calls.
- *      b. refineAccounts (existing): called only for accounts that don't have
- *         pre-computed AI deeper levels.  Receives the full standardized path so
- *         Gemini never re-generates fixed levels.
- *   3. Post-filter: strip any AI deeperLevel label already present in the
- *      standardized path (prevents duplicates when AI echoes a standardized label).
- *   4. Final path assembly via buildLevelsFromPath.
+ * Pipeline (pure AI — no keyword matching, no second Gemini call):
+ *   1. Standard structural levels:  aiSectionToStandardLevels(leaf.aiSection, leaf.accountType)
+ *      maps the AI-returned section string to the fixed L1-Ln rollup labels defined
+ *      in coaHierarchyRules.SECTION_STANDARD_LEVELS.  This is a pure lookup table.
+ *   2. AI deeper levels:  leaf.aiDeeperLevels from the classification pre-pass are
+ *      appended after the standard levels.  Duplicate labels (AI echoing a standard
+ *      level) are stripped before assembly.
+ *   3. Final path assembly via buildLevelsFromPath (dedup + fit within MAX_LEVELS).
  *
- * Always resolves — Gemini failures fall back to rule-only paths.
+ * This function is synchronous — all AI work was done in the classifyAccountsWithAI
+ * pre-pass.  No network calls here.
  *
- * @returns {Promise<Array>} leaves augmented with:
- *   { levels, hierarchyPath, baseAccount, displayName, classificationMethod }
+ * @param {Array} leaves — output of buildCoaModel
+ * @returns {Array} leaves augmented with { levels, hierarchyPath, baseAccount, displayName }
  */
-async function buildLeafHierarchies(leaves) {
-  // 1) Deterministic standardized levels — now driven by the AI-classified accountType
-  //    (or rules-classified fallback) set during buildCoaModel.
-  const enriched = leaves.map((leaf) => {
-    const { levels, standardizedDepth } = classifyStandardized({
-      accountName: leaf.accountName,
-      accountNumber: leaf.accountNumber,
-      accountType: leaf.accountType,
-      statementType: leaf.statementType,
-      bsSection: leaf.bsSection,
-    });
-    return { leaf, stdLevels: levels, standardizedDepth };
-  });
+function buildLeafHierarchies(leaves) {
+  return leaves.map((leaf) => {
+    // 1. Standard structural levels derived from AI-returned section.
+    const stdLabels  = aiSectionToStandardLevels(leaf.aiSection, leaf.accountType);
+    const stdArr     = labelsToLevelArray(stdLabels);
+    const stdPathSet = new Set(stdLabels.map((l) => l.toLowerCase()));
 
-  // 2a) Accounts that already have AI deeper levels from the classification pre-pass
-  //     skip the refineAccounts call to avoid a redundant Gemini round-trip.
-  const needsRefinement = enriched.filter(({ leaf }) => !leaf.aiDeeperLevels?.length);
+    // 2. AI deeper levels, with standard-label echoes removed.
+    const filteredDeeper = (leaf.aiDeeperLevels || []).filter(
+      (l) => l && !stdPathSet.has(l.toLowerCase()),
+    );
 
-  // 2b) refineAccounts for the remainder — same behaviour as before.
-  const refineInput = needsRefinement.map(({ leaf, stdLevels, standardizedDepth }) => ({
-    key: accountKey(leaf.accountNumber, leaf.accountName),
-    accountName: leaf.accountName,
-    accountNumber: leaf.accountNumber,
-    level1: stdLevels[0], level2: stdLevels[1], level3: stdLevels[2], level4: stdLevels[3],
-    standardizedPath: stdLevels.slice(0, standardizedDepth).filter(Boolean).join(" > "),
-  }));
+    // 3. Display name (AI-normalised when available).
+    const displayName = leaf.aiNormalizedName || leaf.accountName;
 
-  let refinements = new Map();
-  if (refineInput.length) {
-    try {
-      refinements = await refineAccounts(refineInput);
-    } catch (err) {
-      console.warn(`[ChartOfAccounts] Gemini refinement skipped: ${err.message}`);
-    }
-  }
-
-  // 3 + 4) Assemble final 15-level paths.
-  return enriched.map(({ leaf, stdLevels, standardizedDepth }) => {
-    const key = accountKey(leaf.accountNumber, leaf.accountName);
-    const refinement = refinements.get(key);
-
-    // Prefer AI deeper levels (classification pre-pass); fall back to refineAccounts.
-    const rawDeeper = leaf.aiDeeperLevels?.length
-      ? leaf.aiDeeperLevels
-      : (refinement?.deeperLevels || []);
-
-    // Post-filter: remove labels already present in the standardized path.
-    // Prevents duplicates when the AI echoes a fixed level (e.g. "Current Assets"
-    // or "Bank Accounts" for an asset that classifyStandardized already placed there).
-    const stdPathSet = new Set(stdLevels.filter(Boolean).map((l) => l.toLowerCase()));
-    const filteredDeeper = rawDeeper.filter((l) => l && !stdPathSet.has(l.toLowerCase()));
-
-    // Display name: prefer AI-normalised name from either source.
-    const displayName = leaf.aiNormalizedName || refinement?.normalizedName || leaf.accountName;
-
-    // Classification method: escalate to 'gemini'/'hybrid' when AI contributed.
-    const baseMethod = leaf.classificationMethod || 'rule';
-    const classificationMethod =
-      baseMethod === 'gemini'
-        ? 'gemini'
-        : (filteredDeeper.length || refinement?.normalizedName)
-        ? 'hybrid'
-        : 'rule';
-
+    // 4. Assemble.
     const { levels, hierarchyPath } = buildLevelsFromPath(
-      stdLevels, standardizedDepth, filteredDeeper, displayName,
+      stdArr, stdLabels.length, filteredDeeper, displayName,
     );
 
     return {
@@ -532,7 +435,6 @@ async function buildLeafHierarchies(leaves) {
       hierarchyPath,
       baseAccount: leaf.accountName || displayName,
       displayName,
-      classificationMethod,
     };
   });
 }
@@ -829,27 +731,17 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
     ]);
   }
 
-  // 1b) AI classification pre-pass.
-  //     Collect the unique account set, compute a keyword-rules hint for each
-  //     (so Gemini sees a "rulesHint" signal alongside the raw name), then
-  //     call classifyAccountsWithAI once for the entire version.  This single
-  //     batched call replaces the per-leaf classifyAccount call for accounts
-  //     where Gemini has sufficient confidence (≥ AI_CONFIDENCE_THRESHOLD).
+  // 1b) AI classification pre-pass — sole classification authority.
+  //     Collect every unique account name (metadata rows filtered, report totals
+  //     are detected by AI not by regex), then call classifyAccountsWithAI once
+  //     for the entire version in batched Gemini prompts.
   const uniqueAccounts = collectUniqueAccountNames(glRows, bsRows);
-  const accountsForAI = uniqueAccounts.map((a) => {
-    const { accountType: ruleType } = classifyAccount({
-      accountName: a.accountName,
-      accountNumber: a.accountNumber,
-      bsSection: a.bsSection,
-    });
-    return { ...a, rulesHint: ruleType || '' };
-  });
 
   let aiResults = new Map();
   try {
-    aiResults = await classifyAccountsWithAI(accountsForAI);
+    aiResults = await classifyAccountsWithAI(uniqueAccounts);
   } catch (err) {
-    console.warn(`[ChartOfAccounts] AI pre-pass failed (rules-only fallback): ${err.message}`);
+    console.warn(`[ChartOfAccounts] AI pre-pass failed — accounts will be flagged for review: ${err.message}`);
   }
 
   const { leaves } = buildCoaModel(glRows, bsRows, [], aiResults);
@@ -859,7 +751,7 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
     return { accountCount: 0, leafCount: 0 };
   }
 
-  const hierarchical = await buildLeafHierarchies(leaves);
+  const hierarchical = buildLeafHierarchies(leaves);
   const validationIssues = validateHierarchyConsistency(hierarchical);
 
   // 2) Load existing rows so we can preserve ids, originals, and adjustments.
@@ -922,18 +814,22 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
     if (seenKeys.has(key)) continue;
     seenKeys.add(key);
 
-    const aiLevels = leaf.levels;
+    const aiLevels   = leaf.levels;
     const aiSnapshot = hierarchySnapshot(aiLevels, leaf.accountType, leaf.statementType, leaf.baseAccount);
     const accountIdName = leaf.accountNumber ? `${leaf.accountNumber} — ${leaf.accountName}` : leaf.accountName;
-    const baseMeta = {
+    // Prefer AI-provided normal balance; fall back to the type-based default.
+    const normalBal = leaf.aiNormalBalance || normalBalanceFor(leaf.accountType);
+    const baseMeta  = {
       is_group: false,
       sources: Array.from(leaf.sources),
       fiscal_years: Array.from(leaf.fiscalYears).sort((a, b) => a - b),
       classification_source: leaf.classificationSource || null,
+      ai_confidence: leaf.confidence ?? null,
+      needs_review: leaf.needsReview || false,
     };
     sortCounter += 1;
-    const existing = existingByKey.get(key);
-    const systemId = systemIdByKey.get(key) || null;
+    const existing        = existingByKey.get(key);
+    const systemId        = systemIdByKey.get(key) || null;
     const parentAccountId = catIdByPath.get(leafCategoryKey(leaf.levels)) || null;
 
     if (!existing) {
@@ -948,7 +844,7 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
         parent_account_id: parentAccountId,
         account_type: leaf.accountType,
         statement_type: leaf.statementType,
-        normal_balance: normalBalanceFor(leaf.accountType),
+        normal_balance: normalBal,
         is_active: true,
         sort_order: sortCounter,
         ...levelsToColumns(aiLevels),
@@ -1362,7 +1258,7 @@ async function updateAccount(accountId, patch = {}) {
 
 // ── Validation engine (extended with level-integrity checks) ─────────────────
 async function validateChartOfAccounts(companyId, versionId) {
-  const empty = { nullType: [], invalidRows: [], duplicates: [], unmapped: [], multiCategory: [], noLevel: [], noBase: [], noSystemId: [], noPath: [], badParent: [] };
+  const empty = { nullType: [], invalidRows: [], needsReviewList: [], duplicates: [], unmapped: [], multiCategory: [], noLevel: [], noBase: [], noSystemId: [], noPath: [], badParent: [] };
   if (!companyId || !versionId) {
     return { summary: { accountCount: 0, leafCount: 0, status: "warning", ...empty }, reports: empty, rows: [] };
   }
@@ -1373,25 +1269,20 @@ async function validateChartOfAccounts(companyId, versionId) {
     .eq("version_id", versionId);
   if (error) throw error;
 
-  const all = coaData || [];
+  const all    = coaData || [];
   const allIds = new Set(all.map((r) => r.id));
   const leaves = all.filter((r) => !r.metadata?.is_group);
 
-  // Standard equity closing lines are legitimate COA accounts even though
-  // isNonAccountRow() strips them from extracted data (they read as "totals").
-  const isStandardEquityLine = (r) =>
-    r.account_type === "equity" && /^(net income|net loss|retained earnings|current year (?:net )?(?:income|earnings))$/i.test(String(r.account_name || "").trim());
-
-  const nullType = leaves.filter((r) => !r.account_type).map((r) => r.account_name);
-  const invalidRows = leaves
-    .filter((r) => isNonAccountRow(r.account_name) && !isStandardEquityLine(r))
-    .map((r) => r.account_name);
-  const noLevel = leaves.filter((r) => !r.level_1).map((r) => r.account_name);
-  const noBase = leaves.filter((r) => !r.base_account).map((r) => r.account_name);
-  const noSystemId = leaves.filter((r) => !r.system_id).map((r) => r.account_name);
-  const noPath = leaves.filter((r) => !r.hierarchy_path).map((r) => r.account_name);
-  // parent_account_id must be NULL or resolve to another row in this version.
-  const badParent = leaves
+  const nullType    = leaves.filter((r) => !r.account_type).map((r) => r.account_name);
+  // Software-metadata rows that slipped through (should be extremely rare with AI filtering).
+  const invalidRows = leaves.filter((r) => isMetadataRow(r.account_name)).map((r) => r.account_name);
+  // Accounts the AI flagged for human review (low confidence or no AI result).
+  const needsReviewList = leaves.filter((r) => r.metadata?.needs_review).map((r) => r.account_name);
+  const noLevel     = leaves.filter((r) => !r.level_1).map((r) => r.account_name);
+  const noBase      = leaves.filter((r) => !r.base_account).map((r) => r.account_name);
+  const noSystemId  = leaves.filter((r) => !r.system_id).map((r) => r.account_name);
+  const noPath      = leaves.filter((r) => !r.hierarchy_path).map((r) => r.account_name);
+  const badParent   = leaves
     .filter((r) => r.parent_account_id && !allIds.has(r.parent_account_id))
     .map((r) => r.account_name);
 
@@ -1405,8 +1296,6 @@ async function validateChartOfAccounts(companyId, versionId) {
     .map((r) => r.account_name)
     .filter((v, i, a) => a.indexOf(v) === i);
 
-  // ensureCoaComplete runs before validation. Missing GL accounts are an
-  // internal sync invariant, not a user-facing mapping workflow.
   const unmapped = [];
 
   const typesByName = new Map();
@@ -1419,7 +1308,7 @@ async function validateChartOfAccounts(companyId, versionId) {
     .filter(([, set]) => set.size > 1)
     .map(([k]) => k);
 
-  const reports = { nullType, invalidRows, duplicates, unmapped, multiCategory, noLevel, noBase, noSystemId, noPath, badParent };
+  const reports = { nullType, invalidRows, needsReviewList, duplicates, unmapped, multiCategory, noLevel, noBase, noSystemId, noPath, badParent };
 
   const sample = (arr, n = 8) =>
     arr.slice(0, n).join(", ") + (arr.length > n ? ` … (+${arr.length - n} more)` : "");
@@ -1428,11 +1317,11 @@ async function validateChartOfAccounts(companyId, versionId) {
   let worst = "success";
 
   const errorChecks = [
-    [nullType, (a) => `${a.length} account(s) missing a category: ${sample(a)}`],
-    [invalidRows, (a) => `${a.length} invalid row(s) (header/total/section) present in the Chart of Accounts: ${sample(a)}`],
+    [nullType,      (a) => `${a.length} account(s) missing a category: ${sample(a)}`],
+    [invalidRows,   (a) => `${a.length} metadata row(s) found in the Chart of Accounts (should not appear): ${sample(a)}`],
     [multiCategory, (a) => `${a.length} account(s) classified into more than one category: ${sample(a)}`],
-    [noLevel, (a) => `${a.length} account(s) missing a hierarchy (no Level 1): ${sample(a)}`],
-    [badParent, (a) => `${a.length} account(s) have a parent_account_id that does not resolve to a row in this version: ${sample(a)}`],
+    [noLevel,       (a) => `${a.length} account(s) missing a hierarchy (no Level 1): ${sample(a)}`],
+    [badParent,     (a) => `${a.length} account(s) have a parent_account_id that does not resolve to a row in this version: ${sample(a)}`],
   ];
   for (const [arr, msg] of errorChecks) {
     if (arr.length) {
@@ -1442,10 +1331,11 @@ async function validateChartOfAccounts(companyId, versionId) {
   }
 
   const warnChecks = [
-    [duplicates, (a) => `${a.length} duplicate account name(s): ${sample(a)}`],
-    [noBase, (a) => `${a.length} account(s) missing a base account: ${sample(a)}`],
-    [noSystemId, (a) => `${a.length} account(s) missing a System ID: ${sample(a)}`],
-    [noPath, (a) => `${a.length} account(s) missing a hierarchy path: ${sample(a)}`],
+    [needsReviewList, (a) => `${a.length} account(s) flagged for manual review (low AI confidence): ${sample(a)}`],
+    [duplicates,      (a) => `${a.length} duplicate account name(s): ${sample(a)}`],
+    [noBase,          (a) => `${a.length} account(s) missing a base account: ${sample(a)}`],
+    [noSystemId,      (a) => `${a.length} account(s) missing a System ID: ${sample(a)}`],
+    [noPath,          (a) => `${a.length} account(s) missing a hierarchy path: ${sample(a)}`],
   ];
   for (const [arr, msg] of warnChecks) {
     if (arr.length) {
@@ -1462,7 +1352,7 @@ async function validateChartOfAccounts(companyId, versionId) {
     severity: status,
     message: leaves.length
       ? status === "success"
-        ? `Chart of Accounts generated successfully (${leaves.length} accounts, all classified into a hierarchy).`
+        ? `Chart of Accounts generated successfully (${leaves.length} accounts, all AI-classified).`
         : `Chart of Accounts generated with issues (${leaves.length} accounts).`
       : "Chart of Accounts not generated.",
     metadata: { accountCount: all.length, leafCount: leaves.length, reports },
@@ -1473,148 +1363,22 @@ async function validateChartOfAccounts(companyId, versionId) {
 
 async function ensureAccountExistsInCoa(versionId, companyId, accountName, accountNumber = null, explicitType = null) {
   throw new Error("Dynamic Chart of Accounts insertion is disabled. Run generateChartOfAccounts/ensureCoaComplete during sync before generating reports.");
-/*
-  if (!versionId || !companyId || !accountName) return null;
-  const normalizedName = String(accountName).trim();
-  const normalizedNumber = accountNumber ? String(accountNumber).trim() : null;
-
-  // Check if account already exists
-  const { data: existing, error: findErr } = await supabase
-    .from(TABLE_COA)
-    .select("id")
-    .eq("version_id", versionId)
-    .eq("account_name", normalizedName)
-    .eq("account_number", normalizedNumber)
-    .maybeSingle();
-
-  if (findErr) {
-    console.error(`[ChartOfAccounts][ensureExists] Find error: ${findErr.message}`);
-  }
-  if (existing) return existing.id;
-
-  // It doesn't exist, let's insert it!
-  console.log(`[ChartOfAccounts][ensureExists] Dynamically inserting account: "${normalizedName}" (num: ${normalizedNumber || 'none'})`);
-  const type = classifyAccount({ accountName: normalizedName, accountNumber: normalizedNumber, explicitType }).accountType;
-  const stmtType = statementTypeFor(type);
-  const normalBalance = normalBalanceFor(type);
-
-  const { levels, standardizedDepth } = classifyStandardized({
-    accountName: normalizedName,
-    accountNumber: normalizedNumber,
-    accountType: type,
-    statementType: stmtType,
-  });
-
-  const { levels: finalLevels, hierarchyPath } = buildLevelsFromPath(
-    levels, standardizedDepth, [], normalizedName
-  );
-
-  const aiSnapshot = hierarchySnapshot(finalLevels, type, stmtType, normalizedName);
-  const accountIdName = normalizedNumber ? `${normalizedNumber} — ${normalizedName}` : normalizedName;
-
-  // Sync category nodes for the levels and get parent_account_id
-  const cats = buildDesiredCategories([{ levels: finalLevels, accountType: type, statementType: stmtType }]);
-  let parentAccountId = null;
-  try {
-    const { data: existingCats } = await supabase
-      .from(TABLE_COA)
-      .select("id, parent_account_id, metadata")
-      .eq("version_id", versionId);
-    const existingCatsData = (existingCats || []).filter((r) => r.metadata?.is_group);
-    const catIdByPath = await syncCategoryNodes(versionId, companyId, existingCatsData, cats);
-    parentAccountId = catIdByPath.get(leafCategoryKey(finalLevels)) || null;
-  } catch (catErr) {
-    console.warn(`[ChartOfAccounts][ensureExists] Category sync error: ${catErr.message}`);
-  }
-
-  // Find next sort_order
-  const { data: maxSort } = await supabase
-    .from(TABLE_COA)
-    .select("sort_order")
-    .eq("version_id", versionId)
-    .order("sort_order", { ascending: false })
-    .limit(1);
-  const sortCounter = ((maxSort?.[0]?.sort_order || 0) + 1);
-
-  // Determine system_id
-  const prefix = systemIdPrefix(type);
-  const { data: maxSys } = await supabase
-    .from(TABLE_COA)
-    .select("system_id")
-    .eq("version_id", versionId)
-    .like("system_id", `${prefix}-%`)
-    .order("system_id", { ascending: false })
-    .limit(1);
-  let nextNum = 1;
-  if (maxSys?.[0]?.system_id) {
-    const m = /^([A-Z]+)-(\d+)$/.exec(maxSys[0].system_id);
-    if (m) nextNum = Number(m[2]) + 1;
-  }
-  const systemId = `${prefix}-${String(nextNum).padStart(3, "0")}`;
-
-  const { data: inserted, error: insErr } = await supabase
-    .from(TABLE_COA)
-    .insert({
-      version_id: versionId,
-      company_id: companyId,
-      system_id: systemId,
-      account_number: normalizedNumber,
-      account_name: normalizedName,
-      account_id_name: accountIdName,
-      parent_account_id: parentAccountId,
-      account_type: type,
-      statement_type: stmtType,
-      normal_balance: normalBalance,
-      is_active: true,
-      sort_order: sortCounter,
-      ...levelsToColumns(finalLevels),
-      base_account: normalizedName,
-      hierarchy_path: hierarchyPath,
-      classification_method: "rule",
-      original_name: normalizedName,
-      original_hierarchy: aiSnapshot,
-      adjusted_name: normalizedName,
-      adjusted_hierarchy: aiSnapshot,
-      metadata: { is_group: false, sources: ["dynamic"], fiscal_years: [], user_modified: false },
-      audit_log: [classificationAudit("rule", aiSnapshot, "dynamic_insert", null)],
-    })
-    .select("id")
-    .single();
-
-  if (insErr) {
-    console.error(`[ChartOfAccounts][ensureExists] Insert error: ${insErr.message}`);
-    // If double insert occurred due to concurrency, try to query one more time
-    if (insErr.code === '23505') {
-      const { data: retry } = await supabase
-        .from(TABLE_COA)
-        .select("id")
-        .eq("version_id", versionId)
-        .eq("account_name", normalizedName)
-        .eq("account_number", normalizedNumber)
-        .maybeSingle();
-      if (retry) return retry.id;
-    }
-    throw insErr;
-  }
-
-  return inserted?.id || null;
-*/
 }
 
 // ─── Phase 2c: Bulk-complete COA from GL distinct accounts ───────────────────
 //
 // After generateChartOfAccounts + linkGlToCoa, any GL row still missing a
-// coa_id means its account_name is absent from the COA.  This function
-// finds those accounts in one query, classifies them with the rules engine
-// (no AI — must be fast), and bulk-inserts them in a single DB round-trip.
-// Called once per sync, before Phase 3 (Trial Balance). This guarantees
-// that report-generation phases never need to dynamically insert COA rows.
+// coa_id means its account_name was not in the set sent to generateChartOfAccounts.
+// This function finds those accounts, classifies them via the same AI pipeline
+// (classifyAccountsWithAI), and bulk-inserts them before Phase 3 (Trial Balance).
+// Accounts that receive no AI result or low-confidence results are flagged
+// needsReview: true — no keyword-rule fallback is applied.
 //
 // Returns { added, skipped }.
 async function ensureCoaComplete(companyId, versionId) {
   if (!companyId || !versionId) return { added: 0, skipped: 0 };
 
-  // 1. Collect distinct GL account_names that have no coa_id yet
+  // 1. Collect distinct GL account_names that have no coa_id yet.
   const unlinkedNames = new Map(); // normKey → rawName
   const PAGE = 1000;
   let from = 0;
@@ -1631,7 +1395,7 @@ async function ensureCoaComplete(companyId, versionId) {
     if (error || !data?.length) break;
     for (const row of data) {
       const raw = String(row.account_name).trim();
-      if (raw && !isNonAccountRow(raw)) unlinkedNames.set(normName(raw), raw);
+      if (raw && !isMetadataRow(raw)) unlinkedNames.set(normName(raw), raw);
     }
     if (data.length < PAGE) break;
     from += PAGE;
@@ -1639,65 +1403,94 @@ async function ensureCoaComplete(companyId, versionId) {
 
   if (unlinkedNames.size === 0) return { added: 0, skipped: 0 };
 
-  // 2. Compare against existing COA (account_name, base_account, adjusted_name)
-  const { data: existing } = await supabase
+  // 2. Compare against existing COA to find truly missing accounts.
+  const { data: existingRows } = await supabase
     .from(TABLE_COA)
     .select("account_name, base_account, adjusted_name")
     .eq("version_id", versionId);
 
   const existingSet = new Set();
-  for (const row of (existing || [])) {
+  for (const row of (existingRows || [])) {
     if (row.account_name) existingSet.add(normName(row.account_name));
     if (row.base_account)  existingSet.add(normName(row.base_account));
     if (row.adjusted_name) existingSet.add(normName(row.adjusted_name));
   }
 
-  const missing = [];
+  const missingRaw = [];
   for (const [normKey, rawName] of unlinkedNames) {
-    if (!existingSet.has(normKey)) missing.push(rawName);
+    if (!existingSet.has(normKey)) missingRaw.push(rawName);
+  }
+  if (missingRaw.length === 0) return { added: 0, skipped: unlinkedNames.size };
+
+  console.log(`[COA][ensureComplete] ${missingRaw.length} GL accounts not in COA — classifying via AI`);
+
+  // 3. AI classification — same pipeline as generateChartOfAccounts.
+  const accountsForAI = missingRaw.map((rawName) => ({
+    key: normName(rawName),
+    accountName: normalizeForGemini(rawName),
+    accountNumber: null,
+    bsSection: null,
+  }));
+  let aiResults = new Map();
+  try {
+    aiResults = await classifyAccountsWithAI(accountsForAI);
+  } catch (err) {
+    console.warn(`[COA][ensureComplete] AI classification failed — accounts flagged for review: ${err.message}`);
   }
 
-  if (missing.length === 0) return { added: 0, skipped: unlinkedNames.size };
-
-  console.log(`[COA][ensureComplete] ${missing.length} GL accounts not in COA — bulk-inserting`);
-
-  // 3. Classify all missing accounts (rules-only — no AI round-trip needed here)
-  const classifiedLeaves = missing.map((accountName) => {
-    const type     = classifyAccount({ accountName }).accountType;
-    const stmtType = statementTypeFor(type);
-    const { levels, standardizedDepth } = classifyStandardized({
-      accountName, accountNumber: null, accountType: type, statementType: stmtType,
+  // 4. Build leaf descriptors (no keyword rules — pure AI output).
+  const classifiedLeaves = missingRaw
+    .filter((rawName) => {
+      const aiResult = aiResults.get(normName(rawName));
+      return !aiResult?.isReportRow; // exclude AI-detected report rows
+    })
+    .map((rawName) => {
+      const key      = normName(rawName);
+      const aiResult = aiResults.get(key);
+      const type     = aiResult?.accountType || "expense";
+      const section  = aiResult?.section     || "";
+      const deeper   = aiResult?.deeperLevels || [];
+      const confidence  = aiResult?.confidence ?? null;
+      const needsReview = !aiResult || (confidence !== null && confidence < AI_NEEDS_REVIEW_THRESHOLD);
+      const displayName = aiResult?.normalizedName || rawName;
+      const normalBal   = aiResult?.normalBalance || normalBalanceFor(type);
+      const stmtType    = statementTypeFor(type);
+      const stdLabels   = aiSectionToStandardLevels(section, type);
+      const stdArr      = labelsToLevelArray(stdLabels);
+      const stdPathSet  = new Set(stdLabels.map((l) => l.toLowerCase()));
+      const filteredDeeper = deeper.filter((l) => l && !stdPathSet.has(l.toLowerCase()));
+      const { levels: finalLevels, hierarchyPath } = buildLevelsFromPath(
+        stdArr, stdLabels.length, filteredDeeper, displayName,
+      );
+      const classificationMethod = !aiResult ? "unclassified" : needsReview ? "ai_low_confidence" : "gemini";
+      return { rawName, displayName, type, stmtType, finalLevels, hierarchyPath,
+               normalBal, confidence, needsReview, classificationMethod };
     });
-    const { levels: finalLevels, hierarchyPath } = buildLevelsFromPath(
-      levels, standardizedDepth, [], accountName,
-    );
-    return { accountName, type, stmtType, finalLevels, hierarchyPath };
-  });
 
-  // 4. Sync category nodes for all new leaves (one pass)
+  if (classifiedLeaves.length === 0) return { added: 0, skipped: unlinkedNames.size };
+
+  // 5. Sync category nodes for all new leaves.
   const allCats = buildDesiredCategories(
-    classifiedLeaves.map(l => ({ levels: l.finalLevels, accountType: l.type, statementType: l.stmtType })),
+    classifiedLeaves.map((l) => ({ levels: l.finalLevels, accountType: l.type, statementType: l.stmtType })),
   );
   let catIdByPath = new Map();
   try {
     const { data: existingCats } = await supabase
-      .from(TABLE_COA)
-      .select("id, parent_account_id, metadata")
-      .eq("version_id", versionId);
-    const existingCatsData = (existingCats || []).filter(r => r.metadata?.is_group);
+      .from(TABLE_COA).select("id, parent_account_id, metadata").eq("version_id", versionId);
+    const existingCatsData = (existingCats || []).filter((r) => r.metadata?.is_group);
     catIdByPath = await syncCategoryNodes(versionId, companyId, existingCatsData, allCats);
   } catch (catErr) {
     console.warn(`[COA][ensureComplete] Category sync error: ${catErr.message}`);
   }
 
-  // 5. Resolve sort_order base and per-prefix system_id counters (batch queries)
+  // 6. Resolve sort_order + system_id counters.
   const { data: maxSortRow } = await supabase
     .from(TABLE_COA).select("sort_order").eq("version_id", versionId)
     .order("sort_order", { ascending: false }).limit(1);
   let sortCounter = (maxSortRow?.[0]?.sort_order || 0) + 1;
 
   const prefixCounters = {};
-  const prefixesNeeded = [...new Set(classifiedLeaves.map(l => systemIdPrefix(l.type)))];
+  const prefixesNeeded = [...new Set(classifiedLeaves.map((l) => systemIdPrefix(l.type)))];
   await Promise.all(prefixesNeeded.map(async (prefix) => {
     const { data: maxSys } = await supabase
       .from(TABLE_COA).select("system_id").eq("version_id", versionId)
@@ -1710,39 +1503,42 @@ async function ensureCoaComplete(companyId, versionId) {
     prefixCounters[prefix] = nextNum;
   }));
 
-  // 6. Build insert payload
+  // 7. Build insert payload.
   const insertRows = classifiedLeaves.map((leaf) => {
-    const prefix   = systemIdPrefix(leaf.type);
-    const systemId = `${prefix}-${String(prefixCounters[prefix]++).padStart(3, "0")}`;
-    const snapshot = hierarchySnapshot(leaf.finalLevels, leaf.type, leaf.stmtType, leaf.accountName);
+    const prefix          = systemIdPrefix(leaf.type);
+    const systemId        = `${prefix}-${String(prefixCounters[prefix]++).padStart(3, "0")}`;
+    const snapshot        = hierarchySnapshot(leaf.finalLevels, leaf.type, leaf.stmtType, leaf.rawName);
     const parentAccountId = catIdByPath.get(leafCategoryKey(leaf.finalLevels)) || null;
     return {
-      version_id:           versionId,
-      company_id:           companyId,
-      system_id:            systemId,
-      account_number:       null,
-      account_name:         leaf.accountName,
-      account_id_name:      leaf.accountName,
-      parent_account_id:    parentAccountId,
-      account_type:         leaf.type,
-      statement_type:       leaf.stmtType,
-      normal_balance:       normalBalanceFor(leaf.type),
-      is_active:            true,
-      sort_order:           sortCounter++,
+      version_id:            versionId,
+      company_id:            companyId,
+      system_id:             systemId,
+      account_number:        null,
+      account_name:          leaf.rawName,
+      account_id_name:       leaf.rawName,
+      parent_account_id:     parentAccountId,
+      account_type:          leaf.type,
+      statement_type:        leaf.stmtType,
+      normal_balance:        leaf.normalBal,
+      is_active:             true,
+      sort_order:            sortCounter++,
       ...levelsToColumns(leaf.finalLevels),
-      base_account:         leaf.accountName,
-      hierarchy_path:       leaf.hierarchyPath,
-      classification_method: "rule",
-      original_name:        leaf.accountName,
-      original_hierarchy:   snapshot,
-      adjusted_name:        leaf.accountName,
-      adjusted_hierarchy:   snapshot,
-      metadata:  { is_group: false, sources: ["completion"], fiscal_years: [], user_modified: false },
-      audit_log: [classificationAudit("rule", snapshot, "bulk_completion", null)],
+      base_account:          leaf.rawName,
+      hierarchy_path:        leaf.hierarchyPath,
+      classification_method: leaf.classificationMethod,
+      original_name:         leaf.displayName,
+      original_hierarchy:    snapshot,
+      adjusted_name:         leaf.displayName,
+      adjusted_hierarchy:    snapshot,
+      metadata: {
+        is_group: false, sources: ["completion"], fiscal_years: [],
+        user_modified: false, ai_confidence: leaf.confidence, needs_review: leaf.needsReview,
+      },
+      audit_log: [classificationAudit(leaf.classificationMethod, snapshot, "bulk_completion", null)],
     };
   });
 
-  // 7. Bulk insert in chunks of 100 to stay within Supabase request limits
+  // 8. Bulk insert in chunks of 100.
   let added = 0;
   const CHUNK = 100;
   for (let i = 0; i < insertRows.length; i += CHUNK) {
@@ -1755,8 +1551,8 @@ async function ensureCoaComplete(companyId, versionId) {
     }
   }
 
-  console.log(`[COA][ensureComplete] Added ${added}/${missing.length} accounts to COA (${unlinkedNames.size - missing.length} already existed)`);
-  return { added, skipped: unlinkedNames.size - missing.length };
+  console.log(`[COA][ensureComplete] Added ${added}/${missingRaw.length} accounts to COA (${unlinkedNames.size - missingRaw.length} already existed)`);
+  return { added, skipped: unlinkedNames.size - missingRaw.length };
 }
 
 module.exports = {
@@ -1775,5 +1571,5 @@ module.exports = {
   buildCoaModel,
   buildLeafHierarchies,
   buildTree,
-  isNonAccountRow,
+  isMetadataRow,
 };
