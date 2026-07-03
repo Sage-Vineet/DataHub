@@ -468,15 +468,6 @@ const FIELD_LABEL_OVERRIDES = [
   { slide: 20, order: 5, tokenIndex: 1, label: "What is the company's primary revenue model?" },
   { slide: 20, order: 6, tokenIndex: 0, label: "What operating characteristic defines the model?" },
   { slide: 20, order: 6, tokenIndex: 1, label: "What gross margin does the model generate (%)?" },
-  { slide: 20, order: 9, tokenIndex: 0, label: "What is the first revenue stream?" },
-  { slide: 20, order: 10, tokenIndex: 0, label: "What revenue share comes from the first stream (%)?" },
-  { slide: 20, order: 13, tokenIndex: 0, label: "Describe how the first revenue stream scales." },
-  { slide: 20, order: 16, tokenIndex: 0, label: "What is the second revenue stream?" },
-  { slide: 20, order: 17, tokenIndex: 0, label: "What revenue share comes from the second stream (%)?" },
-  { slide: 20, order: 20, tokenIndex: 0, label: "Describe how the second revenue stream scales." },
-  { slide: 20, order: 23, tokenIndex: 0, label: "What is the third revenue stream?" },
-  { slide: 20, order: 24, tokenIndex: 0, label: "What revenue share comes from the third stream (%)?" },
-  { slide: 20, order: 27, tokenIndex: 0, label: "Describe how the third revenue stream scales." },
   { slide: 20, order: 28, tokenIndex: 0, label: "What period supports the revenue model data?" },
   { slide: 21, order: 5, tokenIndex: 1, label: "What key characteristic defines the operating model?" },
   { slide: 21, order: 10, tokenIndex: 0, label: "What is average operational cycle time in days?" },
@@ -887,6 +878,32 @@ const REPEATABLE_FIELD_OVERRIDES = [
       { title: 13, description: 14 },
       { title: 17, description: 18 },
       { title: 21, description: 22 },
+    ],
+  },
+  {
+    slide: 20,
+    key: "revenue-streams",
+    fieldKind: "revenueStreams",
+    label: "Revenue streams",
+    prompt: "Add each revenue stream with its share of total revenue and how it scales. Additional groups of three use continuation slides.",
+    addLabel: "Add revenue stream",
+    visibleOrder: 9,
+    pageSize: 3,
+    slotElementRanges: [[7, 13], [14, 20], [21, 27]],
+    fields: [
+      { key: "name", label: "Revenue stream", placeholder: "Revenue stream name" },
+      { key: "share", label: "Share of revenue (%)", placeholder: "35" },
+      {
+        key: "description",
+        label: "How this revenue scales",
+        placeholder: "2-3 sentences describing how this revenue is generated, what drives growth, and retention dynamics",
+        inputType: "textarea",
+      },
+    ],
+    entries: [
+      { name: 9, share: 10, description: 13 },
+      { name: 16, share: 17, description: 20 },
+      { name: 23, share: 24, description: 27 },
     ],
   },
   {
@@ -1716,6 +1733,94 @@ function restructureSlide27Table(layout) {
   };
 }
 
+const SLIDE_30_TAX_ROW_DEFS = [
+  { label: "Total Revenue", matchKeys: ["total revenue"] },
+  { label: "Total Cost of Goods Sold", matchKeys: ["total cost of goods sold"] },
+  { label: "Gross Profit", matchKeys: ["gross profit"] },
+  { label: "Officer Wages / Guaranteed Payments", matchKeys: ["officer wages", "guaranteed payments"] },
+  { label: "Depreciation Expense", matchKeys: ["depreciation expense"] },
+  { label: "Amortization Expense", matchKeys: ["amortization expense"] },
+  { label: "Total Interest Expense", matchKeys: ["total interest expense"] },
+  { label: "All Other Expenses", matchKeys: ["all other expenses"] },
+  { label: "All Other Income", matchKeys: ["all other income"] },
+  { label: "Net Income", matchKeys: ["net income"] },
+];
+const SLIDE_30_TAX_HIGHLIGHT_ROW_INDEXES = new Set([2, 9]);
+const SLIDE_30_TAX_TABLE_COLUMN_COUNT = 7;
+
+function restructureSlide30TaxTable(layout) {
+  if (!layout?.elements) return layout;
+  const table = layout.elements.find((element) => element.order === 28 && element.kind === "table");
+  if (!table?.cells) return layout;
+
+  const columnCount = SLIDE_30_TAX_TABLE_COLUMN_COUNT;
+  const rowCount = SLIDE_30_TAX_ROW_DEFS.length + 1;
+  const tableLeft = 33.6;
+  const tableTop = Number(table.bbox?.[1] || 336);
+  const tableWidth = 1212.48;
+  const rowHeight = 26.4;
+  const labelWidth = tableWidth * 0.26;
+  const valueWidth = (tableWidth - labelWidth) / (columnCount - 1);
+
+  const cells = Array.from({ length: rowCount }, (_, rowIndex) =>
+    Array.from({ length: columnCount }, (_, columnIndex) => {
+      const row = rowIndex + 1;
+      const column = columnIndex + 1;
+      const isHeader = row === 1;
+      const dataIndex = row - 2;
+      const isHighlight = !isHeader && SLIDE_30_TAX_HIGHLIGHT_ROW_INDEXES.has(dataIndex);
+      const left = column === 1 ? tableLeft : tableLeft + labelWidth + (column - 2) * valueWidth;
+      const width = column === 1 ? labelWidth : valueWidth;
+
+      return {
+        index: rowIndex * columnCount + column,
+        row,
+        column,
+        bbox: [left, tableTop + rowIndex * rowHeight, width, rowHeight],
+        fillColor: isHeader ? "#476E2C" : isHighlight ? "#EFEFF1" : "#FFFFFF",
+        lineColor: "#E5E7EB",
+        resolvedTextStyle: { alignment: column === 1 ? "left" : "center" },
+        paragraphs: [{
+          index: 1,
+          resolvedTextStyle: { alignment: column === 1 ? "left" : "center" },
+          runs: [{
+            index: 1,
+            fontSize: 11.5,
+            typeface: "Calibri",
+            color: isHeader ? "#FFFFFF" : isHighlight ? "#2F3033" : "#6D6E71",
+            ...((isHeader || isHighlight || column === 1) ? { bold: true } : {}),
+          }],
+        }],
+      };
+    }),
+  ).flat();
+
+  return {
+    ...layout,
+    elements: layout.elements.map((element) =>
+      element === table
+        ? { ...element, bbox: [tableLeft, tableTop, tableWidth, rowCount * rowHeight], rows: rowCount, cols: columnCount, cells }
+        : element,
+    ),
+  };
+}
+
+function getSlide30TaxFiscalYears(currentPeriod) {
+  const startDate = currentPeriod?.startDate;
+  const endDate = currentPeriod?.endDate;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(startDate || "")) || !/^\d{4}-\d{2}-\d{2}$/.test(String(endDate || ""))) {
+    return [];
+  }
+  const startYear = Number(startDate.slice(0, 4));
+  const endYear = Number(endDate.slice(0, 4));
+  const isFullYearEnd = endDate.slice(5) === "12-31";
+  const lastCompleteYear = isFullYearEnd ? endYear : endYear - 1;
+  if (!Number.isFinite(startYear) || !Number.isFinite(lastCompleteYear) || lastCompleteYear < startYear) return [];
+  const years = [];
+  for (let year = startYear; year <= lastCompleteYear; year += 1) years.push(year);
+  return years.slice(-(SLIDE_30_TAX_TABLE_COLUMN_COUNT - 2));
+}
+
 function normalizeSlide35InitiativeDescriptions(layout) {
   if (!layout?.elements) return layout;
   const override = REPEATABLE_FIELD_OVERRIDES.find((item) => item.slide === 35 && item.key === "initiatives");
@@ -1740,6 +1845,7 @@ function normalizeSlide35InitiativeDescriptions(layout) {
 function prepareCimLayout(slideNumber, layout) {
   if (slideNumber === 24) return restructureSlide24Table(layout);
   if (slideNumber === 27) return restructureSlide27Table(layout);
+  if (slideNumber === 30) return restructureSlide30TaxTable(layout);
   if (slideNumber === 35) return normalizeSlide35InitiativeDescriptions(layout);
   return layout;
 }
@@ -3029,6 +3135,9 @@ function getElementContent(slideNumber, element, fieldsById, fieldValues, assetV
         }
       : { kind: "hidden" };
   }
+  if (slideNumber === 30 && [29, 30, 31].includes(Number(element?.order || 0))) {
+    return { kind: "hidden" };
+  }
   if (slideNumber === 25) {
     const bridgeContent = getSlide25ElementContent(element, fieldValues);
     if (bridgeContent) return withElementLayout(slideNumber, element, bridgeContent);
@@ -3091,6 +3200,13 @@ function getElementContent(slideNumber, element, fieldsById, fieldValues, assetV
   if (slideNumber === 24 && element.order === 7 && element.kind === "table") {
     content.text = content.text.replace(/\[[^\]]+\]/g, "");
     content.visibleTableColumns = getSlide24VisibleTableColumns(elementFields, fieldValues);
+    content.compactTableColumns = true;
+    content.suppressTemplateFallback = true;
+  }
+  if (slideNumber === 30 && element.order === 28 && element.kind === "table") {
+    const headerLine = String(content.text || "").split("\n")[0] || "";
+    const columnCount = Math.max(1, headerLine.split("|").length);
+    content.visibleTableColumns = Array.from({ length: columnCount }, (_, index) => index + 1);
     content.compactTableColumns = true;
     content.suppressTemplateFallback = true;
   }
@@ -3812,44 +3928,30 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
   add(30, 14, 0, formatAutoFillMillions(latest.taxes));
   add(30, 16, 0, currentLongDate);
   add(30, 21, 0, currentLongDate);
-  const taxPeriods = [previous, latest, trailing];
-  add(30, 28, 0, previousYear);
-  add(30, 28, 1, latestYear);
-  taxPeriods.forEach((metrics, columnIndex) => {
-    add(30, 28, 2 + columnIndex, formatAutoFillMillions(metrics.preTaxIncome));
-    add(30, 28, 5 + columnIndex, formatAutoFillPercent(metrics.effectiveTaxRate));
-    add(30, 28, 8 + columnIndex, formatAutoFillMillions(metrics.taxes));
-    add(30, 28, 23 + columnIndex, formatAutoFillMillions(metrics.taxes));
-    add(30, 28, 26 + columnIndex, formatAutoFillPercent(metrics.effectiveTaxRate));
-  });
 
   const taxReconciliation = snapshot?.taxReconciliation || {};
-  if (taxReconciliation.hasData) {
-    const taxYears = (taxReconciliation.periods || []).slice(-3);
-    const labels = new Map();
-    taxYears.forEach((year) => {
-      (taxReconciliation.rowsByYear?.[year] || []).forEach((row) => {
-        const label = normalizeText(row.label || row.name || row.account || "");
-        if (!label) return;
-        const key = label.toLowerCase();
-        const value = Number(row.taxReturn ?? row.tax_return ?? row.amount ?? row.value ?? row.pl ?? 0);
-        if (!labels.has(key)) labels.set(key, { label, values: {} });
-        labels.get(key).values[year] = value;
-      });
+  const taxYears = getSlide30TaxFiscalYears(snapshot?.currentPeriod);
+  const taxRowsByYearLower = {};
+  taxYears.forEach((year) => {
+    taxRowsByYearLower[year] = new Map(
+      (taxReconciliation.rowsByYear?.[year] || []).map((row) => [
+        normalizeText(row.label || row.name || row.account || "").toLowerCase(),
+        row,
+      ]),
+    );
+  });
+  const taxLtmLabel = currentShortDate ? `LTM ${currentShortDate}` : "LTM";
+  const taxHeaderCells = ["Item", ...taxYears.map((year) => `FY${year}`), taxLtmLabel];
+  const taxDataRows = SLIDE_30_TAX_ROW_DEFS.map(({ label, matchKeys }) => {
+    const values = taxYears.map((year) => {
+      const row = matchKeys.map((key) => taxRowsByYearLower[year]?.get(key)).find(Boolean);
+      const value = row ? Number(row.taxReturn ?? row.tax_return ?? row.amount ?? 0) : null;
+      return value === null || !Number.isFinite(value) ? "-" : formatAutoFillMillions(value);
     });
-    const taxRows = Array.from(labels.values())
-      .sort((a, b) => {
-        const aTotal = taxYears.reduce((sum, year) => sum + Math.abs(Number(a.values[year] || 0)), 0);
-        const bTotal = taxYears.reduce((sum, year) => sum + Math.abs(Number(b.values[year] || 0)), 0);
-        return bTotal - aTotal;
-      })
-      .slice(0, 9);
-    addElementOverride(30, 27, "TAX RETURN / BOOK RECONCILIATION");
-    addElementOverride(30, 28, [
-      `Item | ${taxYears.map((year) => `FY${year}`).join(" | ")}`,
-      ...taxRows.map((row) => `${row.label} | ${taxYears.map((year) => formatAutoFillMillions(row.values[year])).join(" | ")}`),
-    ].join("\n"));
-  }
+    return [label, ...values, "-"].join(" | ");
+  });
+  addElementOverride(30, 27, "TAX RETURN / BOOK RECONCILIATION");
+  addElementOverride(30, 28, [taxHeaderCells.join(" | "), ...taxDataRows].join("\n"));
 
   add(32, 7, 0, latestYear);
   add(32, 7, 1, latestYear ? latestYear + 1 : "");
@@ -4891,7 +4993,7 @@ function RepeatableFieldControl({
           const isOffering = field.fieldKind === "offerings";
           const isMilestone = field.fieldKind === "milestones";
           const isShareholder = field.fieldKind === "shareholders";
-          const isGroupedEntry = ["differentiators", "competitors", "initiatives"].includes(field.fieldKind);
+          const isGroupedEntry = ["differentiators", "competitors", "initiatives", "revenueStreams"].includes(field.fieldKind);
           const expanded = expandedEntryIndex === entryIndex;
           const entryLabel = field.fieldKind === "shareholders"
             ? `Shareholder ${entryIndex + 1}`
@@ -4905,7 +5007,9 @@ function RepeatableFieldControl({
                     ? `Company ${entryIndex + 1}`
                     : field.fieldKind === "initiatives"
                       ? `Initiative ${entryIndex + 1}`
-                      : `Milestone ${entryIndex + 1}`;
+                      : field.fieldKind === "revenueStreams"
+                        ? `Revenue Stream ${entryIndex + 1}`
+                        : `Milestone ${entryIndex + 1}`;
 
           return (
             <div
