@@ -36,11 +36,16 @@ const { supabase } = require("../db");
 const { canAccessCompany } = require("../services/permissionService");
 const { runBsBankBalancesExtraction, runBankExtraction } = require("./quickbooks/reconciliation/bankVsBooks");
 const keyReportService = require("../services/keyReports/keyReportService");
+const { getMonthlyPlFinancials } = require("../services/keyReports/financialStatementService");
 
 // Version-aware cache for Key Reports-resolved tax return extraction. Kept
 // separate from the Sync All tax_return cache so existing data is untouched;
 // keyed by the linked document set so switching the active version refreshes it.
-const TAX_RETURN_KR_CACHE_TYPE = "tax_return_kr_v1";
+// v2: cache is now persistent PER document-set (per Key Report version) instead
+// of a single overwritten row, so switching versions / refreshing reuses the
+// cached extraction (incl. Schedule K) instead of re-calling Gemini. Bump also
+// invalidates v1 rows so the Schedule K verification fix takes effect once.
+const TAX_RETURN_KR_CACHE_TYPE = "tax_return_kr_v2";
 
 // Extracts monthly Total Income and Total Expenses from the latest P&L stored in qb_synced_reports.
 // Returns { totalIncome: { "YYYY-MM": number }, totalExpenses: { "YYYY-MM": number } } or null.
@@ -923,18 +928,23 @@ router.get("/manual-report-uploads/tax-data", async (req, res) => {
 
     const forceRefresh = req.query.force === "1" || req.query.force === "true";
 
-    // ── Fast path: version-aware Key Reports cache ─────────────────────────
-    const { data: stored } = await supabase
+    // ── Fast path: version-aware Key Reports cache (persistent per document set)
+    //    Each version's linked docs produce a distinct signature and its own cache
+    //    row, so switching versions reuses that version's cache instead of
+    //    re-extracting via Gemini.
+    const { data: storedRows } = await supabase
       .from("qb_synced_reports")
       .select("data, updated_at")
       .eq("company_id", clientId)
       .eq("report_type", TAX_RETURN_KR_CACHE_TYPE)
       .eq("source", MANUAL_REPORT_UPLOAD_SOURCE)
-      .maybeSingle();
+      .order("updated_at", { ascending: false });
+    const stored = (storedRows || []).find(
+      (r) => r?.data?.tax_return?.documentSignature === documentSignature,
+    );
 
     if (
       !forceRefresh &&
-      stored?.data?.tax_return?.documentSignature === documentSignature &&
       stored?.data?.tax_return?.taxYears &&
       Object.keys(stored.data.tax_return.taxYears).length > 0
     ) {
@@ -1016,24 +1026,39 @@ router.get("/manual-report-uploads/tax-data", async (req, res) => {
       }
     }
 
-    // Persist a version-aware cache so subsequent loads of the same active
-    // version are instant (delete stale entry first, then insert fresh).
+    // Persist a version-aware cache so subsequent loads of the same version are
+    // instant. Persistent PER document set: update this version's row if present,
+    // otherwise insert — other versions' cache rows are left intact so switching
+    // back to them stays a cache hit (no re-extraction).
     if (Object.keys(years).length > 0) {
       const now = new Date().toISOString();
+      const payload = { tax_return: { taxYears: years, documentSignature } };
       try {
-        await supabase.from("qb_synced_reports").delete()
+        const { data: existingRows } = await supabase
+          .from("qb_synced_reports")
+          .select("id, data")
           .eq("company_id", clientId)
           .eq("report_type", TAX_RETURN_KR_CACHE_TYPE)
           .eq("source", MANUAL_REPORT_UPLOAD_SOURCE);
-        await supabase.from("qb_synced_reports").insert({
-          company_id: clientId,
-          report_type: TAX_RETURN_KR_CACHE_TYPE,
-          source: MANUAL_REPORT_UPLOAD_SOURCE,
-          data: { tax_return: { taxYears: years, documentSignature } },
-          status: "synced",
-          last_synced_at: now,
-          updated_at: now,
-        });
+        const existing = (existingRows || []).find(
+          (r) => r?.data?.tax_return?.documentSignature === documentSignature,
+        );
+        if (existing?.id) {
+          await supabase
+            .from("qb_synced_reports")
+            .update({ data: payload, status: "synced", last_synced_at: now, updated_at: now })
+            .eq("id", existing.id);
+        } else {
+          await supabase.from("qb_synced_reports").insert({
+            company_id: clientId,
+            report_type: TAX_RETURN_KR_CACHE_TYPE,
+            source: MANUAL_REPORT_UPLOAD_SOURCE,
+            data: payload,
+            status: "synced",
+            last_synced_at: now,
+            updated_at: now,
+          });
+        }
       } catch (cacheErr) {
         console.warn(`[TaxData] KR cache write failed (non-fatal): ${cacheErr.message}`);
       }
@@ -1419,11 +1444,20 @@ router.get("/manual-upload/bank-data", async (req, res) => {
     // manual_upload flow used to read the linked documents.
     const responseSource = keyReportVersionId ? "key_reports" : "manual_upload";
 
-    // Fetch P&L financials in parallel — merges Sales/Expenses per Financials into this response
-    const plFinancialsPromise = extractPlFinancials(clientId, MANUAL_REPORT_UPLOAD_SOURCE, {
-      keyReportVersionId,
-      datasetVersion
-    }).catch(() => null);
+    // Fetch P&L financials in parallel — merges Sales/Expenses per Financials into
+    // this response. In Key Reports mode (a version is selected) the figures come
+    // from THIS version's generated P&L: Sales per Financials = monthly "Total for
+    // Income", Expenses per Financials = monthly "Net Operating Income". Otherwise
+    // (plain Manual Upload) fall back to the uploaded-P&L extraction.
+    const plFinancialsPromise = keyReportVersionId
+      ? getMonthlyPlFinancials(keyReportVersionId).catch((e) => {
+          console.warn(`[BANK SOURCE] KR P&L financials failed (non-fatal): ${e.message}`);
+          return null;
+        })
+      : extractPlFinancials(clientId, MANUAL_REPORT_UPLOAD_SOURCE, {
+          keyReportVersionId,
+          datasetVersion,
+        }).catch(() => null);
 
     // Start BS bank accounts fetch in parallel — merges /bs-bank-balances into this response
     const bsBankAccountsPromise = runBsBankBalancesExtraction(

@@ -360,7 +360,26 @@ async function validateVersion(versionId) {
 // Sync: persist mappings (already persisted), validate, generate backend
 // financial tables, and update sync status. Idempotent + re-syncable.
 // Table generation is delegated to keyReportSyncService (Step 5).
+// Single-flight guard: prevents a double-clicked "Run AI Processing" (or a
+// frontend retry) from launching a second full extraction/report pipeline for
+// the same version. Concurrent callers share the in-flight job's result. The
+// entry is always cleared in finally, and an in-memory map naturally recovers
+// after a process restart, so a crashed job never leaves a permanent lock.
+const _inFlightSyncs = new Map();
+
 async function syncVersion(versionId, userId = null, opts = {}) {
+  if (_inFlightSyncs.has(versionId)) {
+    console.log(`[KeyReports] Sync already in progress for version ${versionId} — reusing in-flight job`);
+    return _inFlightSyncs.get(versionId);
+  }
+  const job = _syncVersionInner(versionId, userId, opts).finally(() => {
+    _inFlightSyncs.delete(versionId);
+  });
+  _inFlightSyncs.set(versionId, job);
+  return job;
+}
+
+async function _syncVersionInner(versionId, userId = null, opts = {}) {
   const version = await getVersion(versionId);
   if (!version) throw new Error("Version not found.");
 

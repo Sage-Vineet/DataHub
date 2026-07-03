@@ -739,7 +739,7 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
 
   let aiResults = new Map();
   try {
-    aiResults = await classifyAccountsWithAI(uniqueAccounts);
+    aiResults = await classifyAccountsWithAI(uniqueAccounts, { companyId });
   } catch (err) {
     console.warn(`[ChartOfAccounts] AI pre-pass failed — accounts will be flagged for review: ${err.message}`);
   }
@@ -1433,7 +1433,7 @@ async function ensureCoaComplete(companyId, versionId) {
   }));
   let aiResults = new Map();
   try {
-    aiResults = await classifyAccountsWithAI(accountsForAI);
+    aiResults = await classifyAccountsWithAI(accountsForAI, { companyId });
   } catch (err) {
     console.warn(`[COA][ensureComplete] AI classification failed — accounts flagged for review: ${err.message}`);
   }

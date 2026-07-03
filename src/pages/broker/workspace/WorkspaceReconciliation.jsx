@@ -160,6 +160,38 @@ const getStoredWorkspaceState = (clientId) => {
     return null;
   }
 };
+
+// Per-slot cache for the extracted Bank Reconciliation data, isolated by
+// (company, connection mode, Key Report version). Keeping the DATA in its own
+// slot key — separate from the client-level settings above — means switching
+// version or connection mode restores that exact slot's table instantly and
+// never shows another version/mode's numbers.
+const getReconDataKey = (clientId, source, version) =>
+  `${RECONCILIATION_STORAGE_PREFIX}-data:${clientId || "default"}:${source || "default"}:${version || "default"}`;
+
+const getStoredReconData = (clientId, source, version) => {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(getReconDataKey(clientId, source, version));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+};
+
+const saveStoredReconData = (clientId, source, version, data) => {
+  if (typeof window === "undefined" || !clientId || !source) return;
+  try {
+    window.sessionStorage.setItem(
+      getReconDataKey(clientId, source, version),
+      JSON.stringify(data),
+    );
+  } catch {
+    // Ignore quota/serialization issues — this is a display cache only.
+  }
+};
 const fmtAmt = (val) => {
   if (val == null || val === 0) return "-";
   return formatNumber(val, 2);
@@ -1155,6 +1187,52 @@ export default function WorkspaceReconciliation() {
     selectedReportSource,
   ]);
 
+  // Slot identity for the per-version / per-connection-mode data cache. kr is
+  // masked outside Key Reports mode, so the version dimension is "default" for
+  // the 4 connection modes and the selected Key Report Version in KR mode.
+  const reconDataVersion = kr.krActive ? String(kr.selectedVersionId || "default") : "default";
+
+  // Persist the extracted Bank Reconciliation data for the current slot so
+  // returning to this version + connection mode restores the table instantly.
+  useEffect(() => {
+    if (!clientId || !selectedReportSource) return;
+    saveStoredReconData(clientId, selectedReportSource, reconDataVersion, {
+      extractedBankPdfData: extractedBankPdfData ?? null,
+      qbBankActivity: qbBankActivity ?? null,
+      qbOneBankActivity: qbOneBankActivity ?? null,
+      plFinancials: plFinancials ?? null,
+      bsBankBalances: bsBankBalances ?? null,
+      savedAt: new Date().toISOString(),
+    });
+  }, [
+    clientId,
+    selectedReportSource,
+    reconDataVersion,
+    extractedBankPdfData,
+    qbBankActivity,
+    qbOneBankActivity,
+    plFinancials,
+    bsBankBalances,
+  ]);
+
+  // Restore the cached data for the current slot on mount and whenever the
+  // version / connection mode changes — an instant, correctly-isolated view.
+  // The unified loader still runs afterwards to refresh from the backend.
+  useEffect(() => {
+    if (!clientId || !selectedReportSource) return;
+    const slot = getStoredReconData(clientId, selectedReportSource, reconDataVersion);
+    if (!slot) return;
+    if (slot.extractedBankPdfData) {
+      setExtractedBankPdfData(slot.extractedBankPdfData);
+      setExtractedBankPdfFetchStatus({ status: "success", message: "Restored saved data." });
+    }
+    if (slot.qbBankActivity) setQbBankActivity(slot.qbBankActivity);
+    if (slot.qbOneBankActivity) setQbOneBankActivity(slot.qbOneBankActivity);
+    if (slot.plFinancials) setPlFinancials(slot.plFinancials);
+    if (slot.bsBankBalances) setBsBankBalances(slot.bsBankBalances);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clientId, selectedReportSource, reconDataVersion]);
+
   // ── Load saved snapshot from DB (no QB connection needed) ─────────────────
   const loadSavedQBBankActivity = useCallback(async () => {
     if (!clientId) return;
@@ -1500,12 +1578,19 @@ export default function WorkspaceReconciliation() {
       .catch(() => {});
   }, [clientId, getHeaders]);
 
-  // Load persisted addback items — isolated by company AND connection mode.
+  // Load persisted addback items — isolated by company AND connection mode, and
+  // additionally by Key Report Version when in Key Reports mode (each version has
+  // its own addbacks). kr is masked outside Key Reports mode, so addbackVersionId
+  // is null for the 4 connection modes.
+  const addbackVersionId = kr.krActive ? kr.selectedVersionId : null;
   useEffect(() => {
     if (!clientId || !selectedReportSource) return;
     setAddbackItems([]); // clear immediately so old mode's items never flash
+    const versionParam = addbackVersionId
+      ? `&keyReportVersionId=${encodeURIComponent(addbackVersionId)}`
+      : "";
     fetch(
-      `${BANK_RECON_ADDBACK_ITEMS_ENDPOINT}?clientId=${clientId}&reportSource=${encodeURIComponent(selectedReportSource)}`,
+      `${BANK_RECON_ADDBACK_ITEMS_ENDPOINT}?clientId=${clientId}&reportSource=${encodeURIComponent(selectedReportSource)}${versionParam}`,
       { headers: getHeaders() },
     )
       .then((r) => (r.ok ? r.json() : null))
@@ -1513,7 +1598,7 @@ export default function WorkspaceReconciliation() {
         if (d?.success && Array.isArray(d.items)) setAddbackItems(d.items);
       })
       .catch(() => {});
-  }, [clientId, getHeaders, selectedReportSource]);
+  }, [clientId, getHeaders, selectedReportSource, addbackVersionId]);
 
   const saveAdjustment = useCallback(
     async (month, rowKey, amount) => {
@@ -1538,7 +1623,7 @@ export default function WorkspaceReconciliation() {
         const resp = await fetch(BANK_RECON_ADDBACK_ITEMS_ENDPOINT, {
           method: "POST",
           headers: { ...getHeaders(), "Content-Type": "application/json" },
-          body: JSON.stringify({ clientId, section, name, source, monthAmounts, reportSource: selectedReportSource }),
+          body: JSON.stringify({ clientId, section, name, source, monthAmounts, reportSource: selectedReportSource, keyReportVersionId: addbackVersionId }),
         });
         const data = await resp.json();
         if (data?.success && data.item) {
@@ -1546,7 +1631,7 @@ export default function WorkspaceReconciliation() {
         }
       } catch { /* stays in local state */ }
     },
-    [clientId, getHeaders, selectedReportSource],
+    [clientId, getHeaders, selectedReportSource, addbackVersionId],
   );
 
   const updateAddbackItemAmounts = useCallback(
@@ -1604,6 +1689,21 @@ export default function WorkspaceReconciliation() {
   useEffect(() => {
     if (!clientId || !selectedReportSource || !isSourceConfirmedByServer) return;
 
+    // Instant return: if this exact slot (company + connection mode + version) is
+    // already cached in session storage, the restore effect has painted it — skip
+    // the network fetch so revisiting the page is instant. The Refresh button
+    // calls the loaders directly (bypassing this effect) to force a fresh fetch.
+    const manualSource =
+      selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD ||
+      selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_GL ||
+      selectedReportSource === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL;
+    if (manualSource) {
+      const slot = getStoredReconData(clientId, selectedReportSource, reconDataVersion);
+      if (slot && (slot.extractedBankPdfData || slot.bsBankBalances || slot.plFinancials)) {
+        return;
+      }
+    }
+
     if (selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD) {
       // Manual Upload → single endpoint returns both bank data and balanceSheetBankAccounts
       void loadManualBankData();
@@ -1625,7 +1725,7 @@ export default function WorkspaceReconciliation() {
       void loadBsBankBalances("quickbooks_manual", { keyReportVersionId: krVersionIdRef.current });
     }
     // QUICKBOOKS (QB Online) uses its own separate data flow — no action here
-  }, [clientId, selectedReportSource, isSourceConfirmedByServer, kr.resolvedDatasetVersion, kr.selectedVersionId, loadExtractedBankPdfData, loadManualBankData, loadQMSBankData, loadBsBankBalances]);
+  }, [clientId, selectedReportSource, isSourceConfirmedByServer, reconDataVersion, kr.resolvedDatasetVersion, kr.selectedVersionId, loadExtractedBankPdfData, loadManualBankData, loadQMSBankData, loadBsBankBalances]);
 
   // Auto-restore QB Online bank activity from DB on page load.
   // Fires when the server confirms the source is QB Online and there is no

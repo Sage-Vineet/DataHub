@@ -1965,4 +1965,103 @@ async function generateFinancialStatements(versionId, options = {}) {
   };
 }
 
-module.exports = { generateFinancialStatements };
+/**
+ * Monthly "per Financials" figures for the Bank Reconciliation Activity Review,
+ * sourced from THIS Key Report version's generated P&L (the same statements the
+ * /reports/financial-statements endpoint returns).
+ *
+ * Mapping (per product spec):
+ *   Sales per Financials    ← monthly "Total for Income"  (statement.revenue.total)
+ *   Expenses per Financials ← monthly "Net Operating Income" (statement.operatingIncome)
+ *
+ * Keyed by "YYYY-MM" to match the Activity Review's monthKey. Spans every fiscal
+ * year present in the version (no year filter), so multi-year ranges are covered.
+ *
+ * @returns {Promise<{ totalIncome: Object<string,number>, totalExpenses: Object<string,number> }>}
+ */
+const PL_FINANCIALS_CACHE_TYPE = "kr_pl_financials_v1";
+
+function computeMonthlyPlFinancials(fs) {
+  const monthly = fs?.reports?.profitAndLoss?.monthly || [];
+  const totalIncome = {};
+  const totalExpenses = {};
+  for (const entry of monthly) {
+    const year = Number(entry?.year);
+    const monthNum = Number(entry?.monthNumber);
+    if (!Number.isInteger(year) || !(monthNum >= 1 && monthNum <= 12)) continue;
+    const key = `${year}-${String(monthNum).padStart(2, "0")}`;
+    totalIncome[key] = round2(safeNum(entry.statement?.revenue?.total));
+    totalExpenses[key] = round2(safeNum(entry.statement?.operatingIncome));
+  }
+  return { totalIncome, totalExpenses };
+}
+
+async function getMonthlyPlFinancials(versionId) {
+  if (!versionId) return { totalIncome: {}, totalExpenses: {} };
+
+  // Cache keyed by version + its last sync time. generateFinancialStatements is
+  // expensive (regenerates all P&L/BS/CF), so the Bank Reconciliation page must
+  // not pay that cost on every load. The cache is invalidated automatically when
+  // the version is re-synced (last_synced_at changes), so results stay correct.
+  const { data: ver } = await supabase
+    .from("key_report_versions")
+    .select("company_id, last_synced_at")
+    .eq("id", versionId)
+    .maybeSingle();
+  const companyId = ver?.company_id || null;
+  const syncedAt = ver?.last_synced_at || null;
+
+  if (companyId) {
+    try {
+      const { data: rows } = await supabase
+        .from("qb_synced_reports")
+        .select("data")
+        .eq("company_id", companyId)
+        .eq("report_type", PL_FINANCIALS_CACHE_TYPE)
+        .order("updated_at", { ascending: false });
+      const hit = (rows || []).find(
+        (r) => r?.data?.versionId === versionId && r?.data?.syncedAt === syncedAt && r?.data?.plFinancials,
+      );
+      if (hit) return hit.data.plFinancials;
+    } catch {
+      // Cache read failed → fall through to compute.
+    }
+  }
+
+  const fs = await generateFinancialStatements(versionId, {});
+  const result = computeMonthlyPlFinancials(fs);
+
+  if (companyId) {
+    try {
+      const { data: existingRows } = await supabase
+        .from("qb_synced_reports")
+        .select("id, data")
+        .eq("company_id", companyId)
+        .eq("report_type", PL_FINANCIALS_CACHE_TYPE);
+      const existing = (existingRows || []).find((r) => r?.data?.versionId === versionId);
+      const payload = { versionId, syncedAt, plFinancials: result };
+      const now = new Date().toISOString();
+      if (existing?.id) {
+        await supabase
+          .from("qb_synced_reports")
+          .update({ data: payload, status: "synced", updated_at: now })
+          .eq("id", existing.id);
+      } else {
+        await supabase.from("qb_synced_reports").insert({
+          company_id: companyId,
+          report_type: PL_FINANCIALS_CACHE_TYPE,
+          source: "manual_report_upload",
+          data: payload,
+          status: "synced",
+          updated_at: now,
+        });
+      }
+    } catch {
+      // Cache write is best-effort — never block the response.
+    }
+  }
+
+  return result;
+}
+
+module.exports = { generateFinancialStatements, getMonthlyPlFinancials };

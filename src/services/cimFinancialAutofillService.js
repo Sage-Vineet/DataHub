@@ -981,7 +981,12 @@ function enrichYearMetric({
     extractedGrossProfit,
   );
   const grossProfit = extractedGrossProfit || (hasGrossProfitData ? revenue - costOfGoodsSold : 0);
-  const sgaExpenses = Math.abs(toNumber(ebitdaData?.opex, 0));
+  const reportedOperatingExpenses = Math.abs(toNumber(ebitdaData?.opex, 0));
+  const operatingExpenses = reportedOperatingExpenses || (
+    hasGrossProfitData && ebitdaData?.hasData
+      ? Math.abs(grossProfit - baseEbitda)
+      : 0
+  );
   const depreciation = toNumber(ebitdaData?.components?.depreciation?.value, 0);
   const amortization = toNumber(ebitdaData?.components?.amortization?.value, 0);
   const interestExpense = toNumber(ebitdaData?.components?.interestExpense?.value, 0);
@@ -1010,7 +1015,8 @@ function enrichYearMetric({
     costOfGoodsSold,
     grossProfit,
     grossMargin: revenue > 0 && hasGrossProfitData ? (grossProfit / revenue) * 100 : 0,
-    sgaExpenses,
+    operatingExpenses,
+    sgaExpenses: operatingExpenses,
     depreciationAmortization: da,
     ebit,
     taxes,

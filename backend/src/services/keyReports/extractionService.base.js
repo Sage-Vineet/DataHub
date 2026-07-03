@@ -8,17 +8,98 @@
  * and implement extract() + insertRows() to store data.
  */
 
+const crypto = require("crypto");
 const { supabase } = require("../../db");
+
+// Bump either version to invalidate all cached extractions (e.g. after changing a
+// parser or the extract() logic). The cache identity includes both.
+const DEFAULT_PARSER_VERSION = "v1";
+const DEFAULT_EXTRACTION_VERSION = "v1";
+// Skip caching extractions larger than this many rows (avoids giant JSONB blobs
+// for very large General Ledgers). Such files simply re-extract each run.
+const MAX_CACHEABLE_ROWS = 50000;
+
+function docCacheEnabled() {
+  return String(process.env.KEY_REPORT_DOC_CACHE || "on").toLowerCase() !== "off";
+}
 
 class ExtractionServiceBase {
   constructor(dataType, tableName) {
     this.dataType = dataType; // 'profit_loss', 'balance_sheet', etc.
     this.tableName = tableName; // Database table name
+    // Cache-identity versions — a subclass can override if it changes its parser
+    // or extraction algorithm so stale cache entries are not reused.
+    this.parserVersion = DEFAULT_PARSER_VERSION;
+    this.extractionVersion = DEFAULT_EXTRACTION_VERSION;
     this.logger = {
       log: (msg) => console.log(`[${this.dataType}] ${msg}`),
       warn: (msg) => console.warn(`[${this.dataType}] WARNING: ${msg}`),
       error: (msg) => console.error(`[${this.dataType}] ERROR: ${msg}`),
     };
+  }
+
+  // ── Document extraction cache ───────────────────────────────────────────────
+  // The expensive work is extract() (download already done by the caller, then
+  // parse + Gemini/Python AI). Its output is version-agnostic raw rows, so we
+  // cache it by the file's content fingerprint and reuse across re-syncs and
+  // version duplication. On a hit we skip parse+AI entirely and only run the
+  // cheap per-version validate/transform/insert.
+
+  _fingerprint(fileBuffer) {
+    return crypto.createHash("sha256").update(fileBuffer).digest("hex");
+  }
+
+  async _readExtractionCache(companyId, documentId, fingerprint) {
+    if (!docCacheEnabled() || !companyId || !documentId) return null;
+    try {
+      const { data, error } = await supabase
+        .from("key_report_document_processing")
+        .select("extracted_data, row_count")
+        .eq("company_id", companyId)
+        .eq("document_id", documentId)
+        .eq("document_fingerprint", fingerprint)
+        .eq("data_type", this.dataType)
+        .eq("parser_version", this.parserVersion)
+        .eq("extraction_version", this.extractionVersion)
+        .eq("processing_status", "completed")
+        .maybeSingle();
+      if (error || !data) return null;
+      const ed = data.extracted_data;
+      if (!ed || !Array.isArray(ed.rows)) return null;
+      return ed;
+    } catch {
+      // Table not present (migration 065 not applied) or any other error → miss.
+      return null;
+    }
+  }
+
+  async _writeExtractionCache(companyId, documentId, fingerprint, fileName, extractedData) {
+    if (!docCacheEnabled() || !companyId || !documentId) return;
+    const rows = extractedData?.rows || [];
+    if (rows.length > MAX_CACHEABLE_ROWS) return;
+    try {
+      await supabase
+        .from("key_report_document_processing")
+        .upsert(
+          {
+            company_id: companyId,
+            document_id: documentId,
+            data_type: this.dataType,
+            document_fingerprint: fingerprint,
+            parser_version: this.parserVersion,
+            extraction_version: this.extractionVersion,
+            file_name: fileName || null,
+            processing_status: "completed",
+            extracted_data: extractedData,
+            row_count: rows.length,
+            processing_completed_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "company_id,document_id,document_fingerprint,data_type,parser_version,extraction_version" },
+        );
+    } catch {
+      // Non-fatal — caching is an optimization, never a correctness dependency.
+    }
   }
 
   /**
@@ -39,15 +120,29 @@ class ExtractionServiceBase {
       // 1. Delete any existing rows for this version+document (idempotent re-sync)
       await this.deleteExistingRows(versionId, documentId);
 
-      // 2. Extract raw data from file
-      const extractedData = await this.extract({ fileName, fileBuffer });
+      // 2. Extract raw data from file — reuse cached extract() output when the
+      //    file content is unchanged (skips download-independent parse + AI).
+      const fingerprint = this._fingerprint(fileBuffer);
+      let extractedData = await this._readExtractionCache(companyId, documentId, fingerprint);
+      const cacheHit = Boolean(extractedData);
+      if (cacheHit) {
+        this.logger.log(`[${this.dataType}] "${fileName}": cache HIT — reusing ${extractedData.rows.length} extracted row(s) (skipped parse + AI)`);
+      } else {
+        extractedData = await this.extract({ fileName, fileBuffer });
+      }
 
       const rawCount = extractedData?.rows?.length || 0;
-      this.logger.log(`[${this.dataType}] "${fileName}": Rows detected = ${rawCount}`);
+      this.logger.log(`[${this.dataType}] "${fileName}": Rows detected = ${rawCount}${cacheHit ? ' (cached)' : ''}`);
 
       if (!extractedData || rawCount === 0) {
         this.logger.warn(`[${this.dataType}] No data extracted from "${fileName}"`);
-        return { success: false, fileName, rowsExtracted: 0, error: 'No data found in file' };
+        return { success: false, fileName, rowsExtracted: 0, error: 'No data found in file', cacheHit };
+      }
+
+      // Persist the fresh extraction so the next re-sync / duplicated version
+      // reuses it. Only on a miss; version-agnostic by fingerprint.
+      if (!cacheHit) {
+        await this._writeExtractionCache(companyId, documentId, fingerprint, fileName, extractedData);
       }
 
       // 3. Validate (lenient — only rejects rows that would violate NOT NULL constraints)
@@ -112,6 +207,7 @@ class ExtractionServiceBase {
         rowsInserted,
         duplicates,
         detectedYears,
+        cacheHit,
         error: null,
       };
     } catch (error) {
