@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
-  AlertTriangle,
   ArrowLeft,
   BarChart3,
   CalendarDays,
@@ -2865,6 +2864,22 @@ function getElementLayoutOverride(slideNumber, element) {
       labelBox: [null, 226, null, 24],
       detailBox: [null, 255, null, 24],
     },
+    29: {
+      values: [9, 14, 19, 24],
+      labels: [10, 15, 20, 25],
+      details: [11, 16, 21, 26],
+      valueBox: [null, 158.4, null, 52],
+      labelBox: [null, 220, null, 24],
+      detailBox: [null, 250, null, 24],
+    },
+    30: {
+      values: [9, 14, 19, 24],
+      labels: [10, 15, 20, 25],
+      details: [11, 16, 21, 26],
+      valueBox: [null, 158.4, null, 52],
+      labelBox: [null, 220, null, 24],
+      detailBox: [null, 250, null, 24],
+    },
   };
   const metricConfig = metricCards[slideNumber];
   if (metricConfig) {
@@ -3510,6 +3525,9 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
   const marginExpansion =
     Number(latest.ebitdaMargin || 0) -
     Number(getAutoFillYearMetrics(snapshot, firstHistoryYear)?.ebitdaMargin || 0);
+  const previousYear = years[years.indexOf(latestYear) - 1] || null;
+  const previous = getAutoFillYearMetrics(snapshot, previousYear);
+  const grossMarginChange = Number(latest.grossMargin || 0) - Number(previous.grossMargin || 0);
 
   const add = (slide, order, tokenIndex, value) => {
     const cleanValue = typeof value === "string" ? value.trim() : value;
@@ -3565,6 +3583,8 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
   add(6, 6, 1, currentLongDate);
   add(6, 9, 0, formatAutoFillMillions(latest.totalRevenue));
   add(6, 11, 0, formatAutoFillPercent(calculateAutoFillGrowth(snapshot, latestYear)));
+  add(6, 14, 0, formatAutoFillPercent(latest.grossMargin));
+  add(6, 16, 0, formatAutoFillPercent(grossMarginChange));
   add(6, 19, 0, formatAutoFillMillions(latest.adjustedEbitda));
   add(6, 21, 0, formatAutoFillPercent(latest.ebitdaMargin));
   add(6, 31, 0, formatAutoFillPercent(revenueCagr));
@@ -3588,8 +3608,6 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
     add(9, 5, 2, String(Math.max(0, operatingYears)));
   }
 
-  const previousYear = years[years.indexOf(latestYear) - 1] || null;
-  const previous = getAutoFillYearMetrics(snapshot, previousYear);
   add(23, 5, 1, formatAutoFillPercent(revenueCagr));
   add(23, 5, 2, selectedRangeText);
   add(23, 5, 3, formatAutoFillPercent(getAutoFillYearMetrics(snapshot, firstCagrYear)?.ebitdaMargin));
@@ -5923,264 +5941,22 @@ function formatValidationFigure(value) {
   }).format(numeric);
 }
 
-function formatCurrency(value) {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return "—";
-  const abs = Math.abs(numeric);
-  const sign = numeric < 0 ? "-" : "";
-  if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(2)}M`;
-  if (abs >= 1_000) return `${sign}$${(abs / 1_000).toFixed(1)}K`;
-  return `${sign}$${abs.toFixed(0)}`;
-}
-
-const ISSUE_PLAIN_ENGLISH = {
-  "revenue-cross-check": {
-    what: "Revenue figures don't match between your accounting system and the uploaded P&L report.",
-    why: "This usually happens when the fiscal year date range doesn't align, or the P&L report was generated for a different period than what's loaded in Analytics.",
-    fix: [
-      "Check that the date range in \"Auto-fill Financials\" matches your fiscal year exactly.",
-      "Re-sync your QuickBooks connection, then run Auto-fill again.",
-      "If using a manual upload, make sure you uploaded the correct year's P&L report.",
-    ],
-  },
-  "net-income-cross-check": {
-    what: "Net income figures don't match between your accounting system and the P&L report.",
-    why: "Often caused by tax entries, adjusting journal entries, or accruals that appear in one source but not the other.",
-    fix: [
-      "Confirm both sources cover the same date range.",
-      "Check for year-end adjusting entries in QuickBooks that may not be reflected in the uploaded report.",
-      "Re-run Auto-fill after any corrections.",
-    ],
-  },
-  "gross-profit-formula": {
-    what: "Gross Profit should equal Revenue minus Cost of Goods Sold, but the numbers don't add up.",
-    why: "This usually means some expense accounts are being classified as COGS in one source but as operating expenses in the other — or COGS data is missing entirely.",
-    fix: [
-      "Check that all Cost of Goods Sold accounts are tagged correctly in QuickBooks.",
-      "If COGS is zero or negative, some expense accounts may be miscategorized.",
-      "Re-upload the P&L report after correcting your chart of accounts.",
-    ],
-  },
-  "adjusted-ebitda-bridge": {
-    what: "Adjusted EBITDA doesn't match EBITDA plus the approved add-backs.",
-    why: "There may be pending or unapproved EBITDA adjustments, or the add-back amounts were entered manually and don't match what's in the EBITDA calculation.",
-    fix: [
-      "Go to the EBITDA Adjustments section and approve any pending adjustments.",
-      "Check that add-back values match across the EBITDA calculation and the CIM fields.",
-      "Re-run Auto-fill after approving adjustments.",
-    ],
-  },
-  "free-cash-flow-formula": {
-    what: "Free Cash Flow should equal Cash from Operations minus Capital Expenditures, but there's a difference.",
-    why: "The cash flow statement may be incomplete, or CapEx entries might be categorized under a different account.",
-    fix: [
-      "Make sure a Cash Flow Statement is uploaded or synced for this year.",
-      "Check that capital expenditure accounts are correctly tagged.",
-      "Re-run Auto-fill to pick up any updated cash flow data.",
-    ],
-  },
-  "balance-sheet-equation": {
-    what: "Assets don't equal Liabilities plus Equity — the balance sheet doesn't balance.",
-    why: "A common cause is missing accounts, retained earnings not being carried forward, or the balance sheet covering a different date than expected.",
-    fix: [
-      "Confirm the balance sheet is dated at the end of the fiscal year, not mid-year.",
-      "Check for any accounts that may have been excluded from the upload.",
-      "Re-export the balance sheet from QuickBooks and re-upload.",
-    ],
-  },
-};
-
-function getIssueExplanation(issue) {
-  const baseId = String(issue.id || "").replace(/-\d+$/, "");
-  return ISSUE_PLAIN_ENGLISH[baseId] || null;
-}
-
-function FinancialValidationIssueCard({ issue }) {
-  const [open, setOpen] = useState(false);
-  const explanation = getIssueExplanation(issue);
-  const isDiscrepancy = issue.status === "discrepancy";
-  const isSourceWarning = issue.status === "source_warning";
-
-  return (
-    <div className={`rounded-lg border ${isSourceWarning ? "border-blue-200 bg-blue-50" : "border-amber-200 bg-white"}`}>
-      <button
-        type="button"
-        onClick={() => setOpen((prev) => !prev)}
-        className="flex w-full items-start gap-3 p-3 text-left"
-      >
-        <span className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold ${isSourceWarning ? "bg-blue-100 text-blue-700" : "bg-amber-100 text-amber-700"}`}>
-          {isSourceWarning ? "!" : "≠"}
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="block text-[12px] font-bold text-[#050505]">
-            {issue.year ? <span className="text-[#476E2C]">FY{issue.year} · </span> : null}
-            {isDiscrepancy ? (
-              <>
-                {String(issue.label || "").split(" agrees ")[0].split(" reconciles")[0]}
-                {" "}
-                <span className="font-normal text-[#6D6E71]">numbers don't match</span>
-              </>
-            ) : (
-              issue.label
-            )}
-          </span>
-          {isDiscrepancy && (
-            <span className="mt-0.5 block text-[11px] text-[#6D6E71]">
-              Your accounting shows{" "}
-              <span className="font-bold text-[#C62026]">{formatCurrency(issue.actual)}</span>
-              {" "}· P&L report shows{" "}
-              <span className="font-bold text-[#C62026]">{formatCurrency(issue.expected)}</span>
-              {" "}
-              <span className="text-[#9CA3AF]">(difference: {formatCurrency(Math.abs(Number(issue.actual) - Number(issue.expected)))})</span>
-            </span>
-          )}
-        </span>
-        <span className={`shrink-0 text-[10px] font-bold uppercase tracking-wide transition ${isSourceWarning ? "text-blue-600" : "text-amber-700"}`}>
-          {open ? "▲ hide" : "▼ fix"}
-        </span>
-      </button>
-
-      {open && explanation && (
-        <div className="border-t border-current/10 px-4 pb-4 pt-3">
-          <p className="text-[12px] text-[#374151]">
-            <span className="font-bold text-[#050505]">What happened: </span>
-            {explanation.what}
-          </p>
-          <p className="mt-2 text-[12px] text-[#374151]">
-            <span className="font-bold text-[#050505]">Why this happens: </span>
-            {explanation.why}
-          </p>
-          <div className="mt-3">
-            <p className="mb-1.5 text-[11px] font-bold uppercase tracking-[0.06em] text-[#476E2C]">How to fix it</p>
-            <ol className="space-y-1">
-              {explanation.fix.map((step, index) => (
-                <li key={index} className="flex items-start gap-2 text-[12px] text-[#374151]">
-                  <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-[#E6F3D3] text-[10px] font-bold text-[#476E2C]">
-                    {index + 1}
-                  </span>
-                  {step}
-                </li>
-              ))}
-            </ol>
-          </div>
-        </div>
-      )}
-
-      {open && !explanation && isSourceWarning && (
-        <div className="border-t border-current/10 px-4 pb-4 pt-3">
-          <p className="text-[12px] text-[#374151]">
-            <span className="font-bold text-[#050505]">How to fix: </span>
-            Re-sync your accounting connection or re-upload the report, then click{" "}
-            <span className="font-semibold">"Auto-fill Financials"</span> to revalidate.
-          </p>
-        </div>
-      )}
-    </div>
-  );
-}
-
 function FinancialValidationBanner({ validation }) {
-  const [expanded, setExpanded] = useState(false);
-  if (!validation) return null;
-  const verified = validation.status === "verified";
+  if (!validation || validation.status !== "verified") return null;
   const summary = validation.summary || {};
   const source = validation.sourceLedger || {};
-  const issues = validation.issues || [];
-  const sourceWarnings = issues.filter((i) => i.status === "source_warning");
-  const discrepancies = issues.filter((i) => i.status === "discrepancy");
-  const totalIssues = issues.length;
-
-  if (verified) {
-    return (
-      <section className="mb-4 flex items-center gap-3 rounded-lg border border-[#CFE2B8] bg-[#F8FCF3] px-4 py-3">
-        <ShieldCheck size={18} className="shrink-0 text-[#476E2C]" />
-        <div className="min-w-0 flex-1">
-          <p className="text-sm font-bold text-[#476E2C]">All financial checks passed — ready to export</p>
-          <p className="mt-0.5 text-xs text-[#6D6E71]">
-            {summary.verifiedChecks || 0} checks verified · {summary.calculatedMetrics || 0} metrics calculated
-            {source.sourceLabel ? ` · ${source.sourceLabel}` : ""}
-            {source.lastSyncedAt ? ` · synced ${new Date(source.lastSyncedAt).toLocaleString("en-IN")}` : ""}
-          </p>
-        </div>
-      </section>
-    );
-  }
 
   return (
-    <section className="mb-4 overflow-hidden rounded-lg border border-amber-200 bg-amber-50">
-      <button
-        type="button"
-        onClick={() => setExpanded((prev) => !prev)}
-        className="flex w-full items-start gap-3 px-4 py-3 text-left"
-      >
-        <AlertTriangle size={18} className="mt-0.5 shrink-0 text-amber-600" />
-        <div className="min-w-0 flex-1">
-          <p className="text-sm font-bold text-[#050505]">
-            Financial data needs review before export
-          </p>
-          <p className="mt-1 text-xs text-[#6D6E71]">
-            {source.sourceLabel || "Financial source"}
-            {source.versionName ? ` · ${source.versionName}` : ""}
-            {source.lastSyncedAt ? ` · synced ${new Date(source.lastSyncedAt).toLocaleString("en-IN")}` : ""}
-          </p>
-          <div className="mt-2 flex flex-wrap gap-2">
-            {summary.verifiedChecks > 0 && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-[#E6F3D3] px-2 py-0.5 text-[11px] font-semibold text-[#476E2C]">
-                ✓ {summary.verifiedChecks} checks passed
-              </span>
-            )}
-            {discrepancies.length > 0 && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800">
-                ≠ {discrepancies.length} number{discrepancies.length === 1 ? "" : "s"} don't match
-              </span>
-            )}
-            {sourceWarnings.length > 0 && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2 py-0.5 text-[11px] font-semibold text-blue-800">
-                ! {sourceWarnings.length} connection issue{sourceWarnings.length === 1 ? "" : "s"}
-              </span>
-            )}
-          </div>
-        </div>
-        <span className="shrink-0 text-[11px] font-bold text-amber-700">
-          {expanded ? "▲ hide" : `▼ see ${totalIssues} issue${totalIssues === 1 ? "" : "s"}`}
-        </span>
-      </button>
-
-      {expanded && (
-        <div className="border-t border-amber-200 bg-white px-4 py-4">
-          <p className="mb-3 text-[12px] text-[#6D6E71]">
-            Fix each issue below and then click{" "}
-            <span className="font-semibold text-[#050505]">Auto-fill Financials</span>{" "}
-            to revalidate. All issues must be cleared before you can export the CIM.
-          </p>
-
-          {sourceWarnings.length > 0 && (
-            <div className="mb-4">
-              <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.06em] text-blue-700">
-                Connection issues ({sourceWarnings.length})
-              </p>
-              <div className="space-y-2">
-                {sourceWarnings.map((issue) => (
-                  <FinancialValidationIssueCard key={issue.id} issue={issue} />
-                ))}
-              </div>
-            </div>
-          )}
-
-          {discrepancies.length > 0 && (
-            <div>
-              <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.06em] text-amber-700">
-                Numbers that don't match ({discrepancies.length})
-              </p>
-              <div className="space-y-2">
-                {discrepancies.map((issue) => (
-                  <FinancialValidationIssueCard key={issue.id} issue={issue} />
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
+    <section className="mb-4 flex items-center gap-3 rounded-lg border border-[#CFE2B8] bg-[#F8FCF3] px-4 py-3">
+      <ShieldCheck size={18} className="shrink-0 text-[#476E2C]" />
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-bold text-[#476E2C]">All financial checks passed — ready to export</p>
+        <p className="mt-0.5 text-xs text-[#6D6E71]">
+          {summary.verifiedChecks || 0} checks verified · {summary.calculatedMetrics || 0} metrics calculated
+          {source.sourceLabel ? ` · ${source.sourceLabel}` : ""}
+          {source.lastSyncedAt ? ` · synced ${new Date(source.lastSyncedAt).toLocaleString("en-IN")}` : ""}
+        </p>
+      </div>
     </section>
   );
 }
@@ -7542,22 +7318,6 @@ export default function WorkspaceCimPrep() {
   ]);
 
   const handleExport = useCallback(() => {
-    const validation = financialAutofillState.validation;
-    if (validation && validation.status !== "verified") {
-      const issueCount = validation.issues?.length || 0;
-      const discrepancyCount = validation.issues?.filter((i) => i.status === "discrepancy").length || 0;
-      const warningCount = validation.issues?.filter((i) => i.status === "source_warning").length || 0;
-      const parts = [];
-      if (discrepancyCount) parts.push(`${discrepancyCount} number mismatch${discrepancyCount === 1 ? "" : "es"}`);
-      if (warningCount) parts.push(`${warningCount} connection issue${warningCount === 1 ? "" : "s"}`);
-      showToast({
-        type: "error",
-        title: "Fix financial issues before exporting",
-        message: `${parts.join(" and ")} found. Expand the yellow banner above, fix each issue, then click "Auto-fill Financials" to revalidate.`,
-      });
-      return;
-    }
-
     const missingSlides = PREVIEW_SLIDES.filter((slideNumber) => !layouts[slideNumber]);
     if (missingSlides.length > 0) {
       showToast({
@@ -7586,7 +7346,6 @@ export default function WorkspaceCimPrep() {
   }, [
     company?.name,
     effectiveGlobalDetails,
-    financialAutofillState.validation,
     fieldValues,
     getExportElementContent,
     layouts,
