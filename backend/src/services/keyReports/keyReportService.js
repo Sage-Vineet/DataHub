@@ -77,7 +77,12 @@ async function listVersions(companyId) {
     .eq("company_id", companyId)
     .order("version_number", { ascending: false });
   if (error) throw error;
-  return (data || []).map(normalizeVersion);
+  return (data || [])
+    .map(normalizeVersion)
+    // QA/perf-testing clones are never real client data — exclude them at the
+    // source so no consumer (Key Reports page, EBITDA, Reports, etc.) ever
+    // has to filter them out client-side.
+    .filter((v) => !String(v.versionName || "").toUpperCase().includes("PERF-TEST"));
 }
 
 async function getVersion(versionId) {
