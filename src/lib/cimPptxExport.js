@@ -268,11 +268,21 @@ function tableXml(element, index, text, content = {}) {
   const cols = Number(element.cols || 0);
   const matrix = content.tableMatrix || parseTableText(text || element.text, rows, cols);
   const visibleRows = content.visibleTableRows || Array.from({ length: rows }, (_, rowIndex) => rowIndex + 1);
+  const visibleColumns = content.visibleTableColumns || Array.from({ length: cols }, (_, colIndex) => colIndex + 1);
   const [sourceLeft = 0] = element.bbox || [];
   const [targetLeft = sourceLeft, targetTop = Number(element.bbox?.[1] || 0)] = content.bbox || element.bbox || [];
   const tableScaleX = Number(content.tableScaleX || 1);
+  const sourceLabelWidth = Number(
+    (element.cells || []).find((cell) => Number(cell.column || 1) === 1)?.bbox?.[2] || 0,
+  );
+  const compactValueWidth = visibleColumns.length > 1
+    ? (Number(element.bbox?.[2] || 0) - sourceLabelWidth) / (visibleColumns.length - 1)
+    : 0;
 
-  return (element.cells || []).filter((cell) => visibleRows.includes(Number(cell.row || 1))).map((cell, cellIndex) => {
+  return (element.cells || []).filter((cell) => (
+    visibleRows.includes(Number(cell.row || 1)) &&
+    visibleColumns.includes(Number(cell.column || 1))
+  )).map((cell, cellIndex) => {
     const rowIndex = Number(cell.row || 1) - 1;
     const colIndex = Number(cell.column || 1) - 1;
     const matrixValue = matrix[rowIndex]?.[colIndex];
@@ -281,12 +291,19 @@ function tableXml(element, index, text, content = {}) {
       : (matrixValue || cell.text || "");
     const [cellLeft = 0, cellTop = 0, cellWidth = 0, cellHeight = 0] = cell.bbox || [];
     const compactRowIndex = visibleRows.indexOf(Number(cell.row || 1));
+    const compactColumnIndex = visibleColumns.indexOf(Number(cell.column || 1));
     const cellElement = {
       ...cell,
       bbox: [
-        targetLeft + (cellLeft - sourceLeft) * tableScaleX,
+        content.compactTableColumns
+          ? targetLeft + (compactColumnIndex === 0
+            ? 0
+            : sourceLabelWidth + (compactColumnIndex - 1) * compactValueWidth)
+          : targetLeft + (cellLeft - sourceLeft) * tableScaleX,
         content.compactTableRows ? targetTop + compactRowIndex * cellHeight : cellTop,
-        cellWidth * tableScaleX,
+        content.compactTableColumns
+          ? (compactColumnIndex === 0 ? sourceLabelWidth : compactValueWidth)
+          : cellWidth * tableScaleX,
         cellHeight,
       ],
       aid: `${element.aid || element.id}/cell-${cell.index || cellIndex}`,

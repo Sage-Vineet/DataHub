@@ -245,8 +245,12 @@ export function getCimBankReconciliationRequest({
   if (datasetVersion) params.append('datasetVersion', String(datasetVersion));
   if (keyReportVersionId) params.append('keyReportVersionId', String(keyReportVersionId));
   if (sourceKey) params.append('source', sourceKey);
-  if (sourceKey === 'quickbooks') return request(`/qb-bank-activity/saved?${params}`);
-  if (sourceKey === 'manual_upload') return request(`/manual-upload/bank-data?${params}`);
+  if (sourceKey === 'quickbooks' || sourceKey === 'quickbooks_online') {
+    return request(`/qb-bank-activity/saved?${params}`);
+  }
+  if (sourceKey === 'manual_upload' || sourceKey === 'manual_upload_excel_pdf') {
+    return request(`/manual-upload/bank-data?${params}`);
+  }
   if (sourceKey === 'quickbooks_manual') return request(`/manual-report-uploads/qms-bank-data?${params}`);
   return request(`/extract-bank-pdf-records?${params}`);
 }
@@ -257,7 +261,8 @@ export function getCimTaxReconciliationRequest({ clientId, sourceKey, datasetVer
   if (datasetVersion) params.append('datasetVersion', String(datasetVersion));
   if (keyReportVersionId) params.append('keyReportVersionId', String(keyReportVersionId));
   if (year) params.append('start_date', `${year}-01-01`);
-  return request(`${sourceKey === 'quickbooks' ? '/tax-data' : '/manual-report-uploads/tax-data'}?${params}`);
+  const isQuickBooks = sourceKey === 'quickbooks' || sourceKey === 'quickbooks_online';
+  return request(`${isQuickBooks ? '/tax-data' : '/manual-report-uploads/tax-data'}?${params}`);
 }
 
 export function brokerSignupRequest(payload) {
