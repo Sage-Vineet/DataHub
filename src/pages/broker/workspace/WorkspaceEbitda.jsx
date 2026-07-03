@@ -17,10 +17,12 @@ import {
   deleteEbitdaAdjustment,
   generateEbitdaComments,
   listEbitdaAdjustmentTypes,
+  getFinancialStatements,
 } from "../../../lib/api";
 import {
   getEbitdaData,
   extractEbitdaFromManualPLRows,
+  extractEbitdaFromKeyReportStatement,
 } from "../../../services/ebitdaService";
 import {
   loadAdjustmentWorkspaceData,
@@ -433,12 +435,34 @@ export default function WorkspaceEbitda() {
         if (ebitdaCacheKey && hasUsableEbitdaData(results)) {
           try { sessionStorage.setItem(ebitdaCacheKey, JSON.stringify({ multiYearData: results, years: availableYears })); } catch { /* quota exceeded */ }
         }
+      } else if (isManualUpload && requestKrVersionId) {
+        // Modern GL/COA-driven Key Reports version — this flow never stores a
+        // raw uploaded P&L document, so read the SAME generated statement the
+        // Financial Reports tab reads instead of getAllManualUploadedReports.
+        const stmtResult = await getFinancialStatements(requestKrVersionId);
+        const yearly = stmtResult?.reports?.profitAndLoss?.yearly || [];
+
+        if (!yearly.length) {
+          throw new Error("No Profit & Loss data found for this Key Report version. Run AI Processing in Key Reports first.");
+        }
+
+        const newData = {};
+        for (const entry of yearly) {
+          if (!entry?.year) continue;
+          newData[entry.year] = extractEbitdaFromKeyReportStatement(entry.statement, entry.periodLabel || String(entry.year));
+        }
+        const newYears = Object.keys(newData).map(Number).sort((a, b) => b - a);
+
+        if (activeSourceRef.current !== requestSource || latestKrVersionRef.current !== requestKrVersionId) return;
+        setYears(newYears);
+        setMultiYearData(newData);
+        if (ebitdaCacheKey && hasUsableEbitdaData(newData)) {
+          try { sessionStorage.setItem(ebitdaCacheKey, JSON.stringify({ multiYearData: newData, years: newYears })); } catch { /* quota exceeded */ }
+        }
       } else if (isManualUpload) {
-        // Fetch ALL uploaded P&L files so every year is represented
-        const params = {
-          clientId,
-          ...(requestKrVersionId ? { keyReportVersionId: requestKrVersionId } : {}),
-        };
+        // Legacy standalone Manual Upload connection (not Key-Reports-driven):
+        // fetch ALL uploaded P&L files so every year is represented.
+        const params = { clientId };
         const result = await getAllManualUploadedReports("profit_and_loss", params);
         const files = (result?.files || []).filter((f) => f.data?.rows?.length);
 
@@ -499,10 +523,7 @@ export default function WorkspaceEbitda() {
 
         // Sort years newest → oldest to match QuickBooks column order
         const newYears = Array.from(yearFileMap.keys()).sort((a, b) => b - a);
-        // Discard if the source OR the selected Key Report version changed
-        // while this request was in flight — otherwise a slow old-version
-        // response would overwrite the newer version's data.
-        if (activeSourceRef.current !== requestSource || latestKrVersionRef.current !== requestKrVersionId) return;
+        if (activeSourceRef.current !== requestSource) return;
         setYears(newYears);
         setMultiYearData(newData);
         if (ebitdaCacheKey && hasUsableEbitdaData(newData)) {
