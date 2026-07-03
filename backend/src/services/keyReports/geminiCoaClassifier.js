@@ -26,6 +26,7 @@
 
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { getGeminiModels } = require("../../config/geminiModels");
+const { supabase } = require("../../db");
 
 const GEMINI_MODELS = getGeminiModels(["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash"]);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -34,6 +35,86 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const CLASSIFY_BATCH_SIZE = 45;
 // Hard cap — cost/runaway guard.
 const MAX_ACCOUNTS = 600;
+
+// ── Classification reuse cache ────────────────────────────────────────────────
+// Confident AI classifications are cached per company by normalized account name
+// so re-syncs only send NEW / low-confidence accounts to Gemini. Reuse reproduces
+// the exact prior AI result (accuracy-neutral). Low-confidence and no-result
+// accounts are intentionally NOT cached so they are re-attempted and continue to
+// surface in Review & Adjust. Bump CLASSIFIER_CACHE_VERSION to invalidate all
+// cached classifications after any change to the prompt or output handling.
+const CLASSIFIER_CACHE_VERSION = "v1";
+const CACHE_MIN_CONFIDENCE = 0.85;
+
+function coaCacheEnabled() {
+  return String(process.env.KEY_REPORT_COA_CACHE || "on").toLowerCase() !== "off";
+}
+
+function isCacheableClassification(v) {
+  return Boolean(v && (v.isReportRow || (v.accountType && Number(v.confidence) >= CACHE_MIN_CONFIDENCE)));
+}
+
+// Fill `out` with any cached classifications for the given accounts and return
+// the subset of accounts that still need AI classification. Company-scoped;
+// degrades to "classify everything" if disabled, no companyId, or table absent.
+async function primeFromClassificationCache(companyId, list, out) {
+  if (!coaCacheEnabled() || !companyId) return list;
+  try {
+    // Only accounts WITHOUT a bsSection are cache-eligible. When a bsSection is
+    // present the prompt treats it as authoritative, so a name-only cached result
+    // could be wrong for that context — those are always classified fresh.
+    const keys = [...new Set(list.filter((a) => !a.bsSection).map((a) => a.key).filter(Boolean))];
+    if (!keys.length) return list;
+
+    const cached = new Map();
+    const CHUNK = 200;
+    for (let i = 0; i < keys.length; i += CHUNK) {
+      const { data, error } = await supabase
+        .from("key_report_coa_classification_cache")
+        .select("normalized_name, classification")
+        .eq("company_id", companyId)
+        .eq("classifier_version", CLASSIFIER_CACHE_VERSION)
+        .in("normalized_name", keys.slice(i, i + CHUNK));
+      if (error) return list; // table missing / error → no cache
+      for (const row of data || []) {
+        if (row?.normalized_name && row.classification) cached.set(row.normalized_name, row.classification);
+      }
+    }
+    if (!cached.size) return list;
+
+    const misses = [];
+    for (const a of list) {
+      const hit = !a.bsSection ? cached.get(a.key) : null;
+      if (hit) out.set(a.key, hit);
+      else misses.push(a);
+    }
+    return misses;
+  } catch {
+    return list; // graceful — never block classification on a cache error
+  }
+}
+
+async function writeClassificationCache(companyId, entries) {
+  if (!coaCacheEnabled() || !companyId || !entries.length) return;
+  try {
+    const now = new Date().toISOString();
+    const rows = entries.map((e) => ({
+      company_id: companyId,
+      normalized_name: e.key,
+      classifier_version: CLASSIFIER_CACHE_VERSION,
+      classification: e.classification,
+      updated_at: now,
+    }));
+    const CHUNK = 200;
+    for (let i = 0; i < rows.length; i += CHUNK) {
+      await supabase
+        .from("key_report_coa_classification_cache")
+        .upsert(rows.slice(i, i + CHUNK), { onConflict: "company_id,normalized_name,classifier_version" });
+    }
+  } catch {
+    // Non-fatal — caching is an optimization, never a correctness dependency.
+  }
+}
 
 // The exact section strings the AI is instructed to return.
 // Must stay in sync with SECTION_STANDARD_LEVELS in coaHierarchyRules.js.
@@ -254,18 +335,38 @@ ${lines.join("\n")}`;
  *   isReportRow: boolean
  * }>>}
  */
-async function classifyAccountsWithAI(accounts) {
+async function classifyAccountsWithAI(accounts, opts = {}) {
   const out = new Map();
-  if (!process.env.GEMINI_API_KEY) {
-    console.log("[CoaClassifier] GEMINI_API_KEY not set — AI classification skipped (accounts flagged for review).");
-    return out;
-  }
+  const companyId = opts.companyId || null;
   const list = (accounts || []).slice(0, MAX_ACCOUNTS);
   if (!list.length) return out;
 
+  // 1. Reuse confident classifications already cached for this company. Only the
+  //    remaining (new / previously low-confidence) accounts go to the AI.
+  const remaining = await primeFromClassificationCache(companyId, list, out);
+  const reusedCount = out.size;
+
+  if (!process.env.GEMINI_API_KEY) {
+    console.log(
+      reusedCount
+        ? `[CoaClassifier] GEMINI_API_KEY not set — reused ${reusedCount} cached classification(s); ${remaining.length} account(s) flagged for review.`
+        : "[CoaClassifier] GEMINI_API_KEY not set — AI classification skipped (accounts flagged for review).",
+    );
+    return out;
+  }
+
+  if (!remaining.length) {
+    console.log(`[CoaClassifier] ${list.length} accounts → all ${reusedCount} served from classification cache (0 AI calls).`);
+    return out;
+  }
+
+  // Only cache accounts that were classified WITHOUT a bsSection (see prime()).
+  const cacheableKeys = new Set(remaining.filter((a) => !a.bsSection).map((a) => a.key));
+
+  const toStore = [];
   let failedBatches = 0;
-  for (let i = 0; i < list.length; i += CLASSIFY_BATCH_SIZE) {
-    const batch = list.slice(i, i + CLASSIFY_BATCH_SIZE);
+  for (let i = 0; i < remaining.length; i += CLASSIFY_BATCH_SIZE) {
+    const batch = remaining.slice(i, i + CLASSIFY_BATCH_SIZE);
     try {
       const text = await callGeminiText(buildClassifyPrompt(batch));
       const parsed = parseJsonFromText(text);
@@ -277,7 +378,9 @@ async function classifyAccountsWithAI(accounts) {
 
         const isReportRow = Boolean(r.isReportRow);
         if (isReportRow) {
-          out.set(key, { isReportRow: true, accountType: "", section: "", deeperLevels: [], normalBalance: "", normalizedName: null, confidence: 1 });
+          const value = { isReportRow: true, accountType: "", section: "", deeperLevels: [], normalBalance: "", normalizedName: null, confidence: 1 };
+          out.set(key, value);
+          if (isCacheableClassification(value) && cacheableKeys.has(key)) toStore.push({ key, classification: value });
           continue;
         }
 
@@ -295,7 +398,9 @@ async function classifyAccountsWithAI(accounts) {
               .slice(0, 3)
           : [];
 
-        out.set(key, { isReportRow: false, accountType, section, deeperLevels, normalBalance, normalizedName, confidence });
+        const value = { isReportRow: false, accountType, section, deeperLevels, normalBalance, normalizedName, confidence };
+        out.set(key, value);
+        if (isCacheableClassification(value) && cacheableKeys.has(key)) toStore.push({ key, classification: value });
       }
     } catch (err) {
       failedBatches += 1;
@@ -303,11 +408,15 @@ async function classifyAccountsWithAI(accounts) {
     }
   }
 
+  // Persist newly-classified confident results for reuse on the next sync.
+  await writeClassificationCache(companyId, toStore);
+
   const classified   = [...out.values()].filter((v) => !v.isReportRow && v.accountType).length;
   const reportRows   = [...out.values()].filter((v) => v.isReportRow).length;
   const noResult     = list.length - out.size;
   console.log(
-    `[CoaClassifier] ${list.length} accounts → ${classified} classified, ` +
+    `[CoaClassifier] ${list.length} accounts → ${classified} classified ` +
+    `(${reusedCount} reused from cache, ${remaining.length} sent to AI), ` +
     `${reportRows} report rows excluded` +
     (noResult     ? `, ${noResult} received no AI result (will be flagged for review)` : "") +
     (failedBatches ? `, ${failedBatches} batch(es) failed`                             : ""),

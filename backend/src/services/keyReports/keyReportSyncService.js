@@ -26,6 +26,33 @@ const { replaceValidationResults } = require('./keyReportValidationService');
 const { classifyWorkflowDocuments, generateTrialBalance, generateMonthlyBalanceSheets, generateReconciliation, linkGlToCoa } = require('./keyReportAccountingService');
 const keyReportService = require('./keyReportService');
 const keyReportReportService = require('./keyReportReportService');
+const { performance } = require('perf_hooks');
+
+// How many linked documents to extract concurrently. Extraction is the dominant
+// cost (download + parse + Gemini/Python AI) and each document is independent
+// (writes only its own version+document rows), so bounded parallelism is safe.
+// Kept modest by default to respect the DB pool and Gemini rate limits.
+const EXTRACTION_CONCURRENCY = Math.max(
+  1,
+  parseInt(process.env.KEY_REPORT_EXTRACTION_CONCURRENCY || '4', 10) || 4,
+);
+
+// Run `worker` over `items` with at most `limit` in flight. Never rejects for an
+// individual item — extractDocument already returns a {success:false} result on
+// error, so one failed document cannot discard the others (Step 20 requirement).
+async function mapWithConcurrency(items, limit, worker) {
+  const results = new Array(items.length);
+  let cursor = 0;
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (true) {
+      const i = cursor++;
+      if (i >= items.length) break;
+      results[i] = await worker(items[i], i);
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
 
 function normalizeUploadBinary(data) {
   if (!data) return Buffer.alloc(0);
@@ -285,6 +312,18 @@ async function generateFinancialTables(version, opts = {}) {
 
   logger.log('=== Sync started ===');
 
+  // High-resolution phase instrumentation. `mark(label)` records the elapsed ms
+  // since the previous mark; the structured summary is logged at the end and
+  // returned in summary.timings so the real bottleneck is measured, not guessed.
+  const perfStart = performance.now();
+  let perfLast = perfStart;
+  const timings = {};
+  const mark = (label) => {
+    const now = performance.now();
+    timings[label] = Math.round(now - perfLast);
+    perfLast = now;
+  };
+
   // Clear any previously generated (is_generated=true) balance-sheet rows so the
   // monthly roll-forward is recomputed from freshly extracted data. Extracted rows
   // (is_generated=false) are left untouched — extraction replaces them per document.
@@ -315,58 +354,62 @@ async function generateFinancialTables(version, opts = {}) {
   const allDetectedYears = new Set();
   const extractionErrors = [];
 
-  // Step 1: Tax Returns
-  logger.log('--- Step 1/4: Tax Returns ---');
-  const taxMappings = mappingsByCategory.tax_return || [];
-  logger.log(`  ${taxMappings.length} file(s) to process`);
-  for (const mapping of taxMappings) {
-    const result = await extractDocument(companyId, versionId, mapping, taxReturnExtractionService, logger);
-    updateStats(extractionResults.tax_return, result);
-    if (result.detectedYears) result.detectedYears.forEach((y) => allDetectedYears.add(y));
-    if (!result.success) extractionErrors.push({ step: 'tax_return', ...result });
-  }
-  logger.log(`  Tax Return result: ${extractionResults.tax_return.success} succeeded, ${extractionResults.tax_return.failed} failed, ${extractionResults.tax_return.rowsExtracted} rows inserted`);
-
-  // Step 2: Bank Statements
-  logger.log('--- Step 2/4: Bank Statements ---');
-  const bankMappings = mappingsByCategory.bank_statement || [];
-  logger.log(`  ${bankMappings.length} file(s) to process`);
-  for (const mapping of bankMappings) {
-    const result = await extractDocument(companyId, versionId, mapping, bankStatementExtractionService, logger);
-    updateStats(extractionResults.bank_statement, result);
-    if (result.detectedYears) result.detectedYears.forEach((y) => allDetectedYears.add(y));
-    if (!result.success) extractionErrors.push({ step: 'bank_statement', ...result });
-  }
-  logger.log(`  Bank Statement result: ${extractionResults.bank_statement.success} succeeded, ${extractionResults.bank_statement.failed} failed, ${extractionResults.bank_statement.rowsExtracted} rows inserted`);
-
   // NOTE: Profit & Loss is NOT extracted to a table. P&L is generated from the
-  // General Ledger during sync and stored only as a render snapshot.
-  // A linked P&L document may still be used as a temporary display-only fallback when
-  // no GL exists, extracted on demand — it is never persisted as a reporting table.
+  // General Ledger during sync and stored only as a render snapshot. A linked P&L
+  // document may still be used as a temporary display-only fallback when no GL
+  // exists, extracted on demand — it is never persisted as a reporting table.
 
-  // Step 3: Balance Sheets
-  logger.log('--- Step 3/4: Balance Sheets ---');
-  const bsMappings = mappingsByCategory.balance_sheet || [];
-  logger.log(`  ${bsMappings.length} file(s) to process`);
-  for (const mapping of bsMappings) {
-    const result = await extractDocument(companyId, versionId, mapping, balanceSheetExtractionService, logger);
-    updateStats(extractionResults.balance_sheet, result);
-    if (result.detectedYears) result.detectedYears.forEach((y) => allDetectedYears.add(y));
-    if (!result.success) extractionErrors.push({ step: 'balance_sheet', ...result });
-  }
-  logger.log(`  Balance Sheet result: ${extractionResults.balance_sheet.success} succeeded, ${extractionResults.balance_sheet.failed} failed, ${extractionResults.balance_sheet.rowsExtracted} rows inserted`);
+  // ── Extraction (Steps 1–4) — all linked documents processed with bounded
+  //    concurrency instead of sequentially. Order across categories does not
+  //    matter: every extractor writes only its own table for its own
+  //    version+document, and all downstream phases run AFTER extraction.
+  const serviceByCategory = {
+    tax_return: taxReturnExtractionService,
+    bank_statement: bankStatementExtractionService,
+    balance_sheet: balanceSheetExtractionService,
+    general_ledger: generalLedgerExtractionService,
+  };
+  const extractionOrder = ['tax_return', 'bank_statement', 'balance_sheet', 'general_ledger'];
 
-  // Step 4: General Ledger
-  logger.log('--- Step 4/4: General Ledger ---');
-  const glMappings = mappingsByCategory.general_ledger || [];
-  logger.log(`  ${glMappings.length} file(s) to process`);
-  for (const mapping of glMappings) {
-    const result = await extractDocument(companyId, versionId, mapping, generalLedgerExtractionService, logger);
-    updateStats(extractionResults.general_ledger, result);
-    if (result.detectedYears) result.detectedYears.forEach((y) => allDetectedYears.add(y));
-    if (!result.success) extractionErrors.push({ step: 'general_ledger', ...result });
+  const extractionTasks = [];
+  for (const category of extractionOrder) {
+    const service = serviceByCategory[category];
+    const mappings = mappingsByCategory[category] || [];
+    logger.log(`  ${category}: ${mappings.length} file(s) to process`);
+    for (const mapping of mappings) extractionTasks.push({ category, mapping, service });
   }
-  logger.log(`  GL result: ${extractionResults.general_ledger.success} succeeded, ${extractionResults.general_ledger.failed} failed, ${extractionResults.general_ledger.rowsExtracted} rows inserted`);
+
+  logger.log(`--- Extraction: ${extractionTasks.length} document(s), concurrency ${EXTRACTION_CONCURRENCY} ---`);
+  const docStats = { total: extractionTasks.length, cached: 0, processed: 0, failed: 0 };
+
+  const extractionOutcomes = await mapWithConcurrency(
+    extractionTasks,
+    EXTRACTION_CONCURRENCY,
+    async ({ category, mapping, service }) => {
+      const result = await extractDocument(companyId, versionId, mapping, service, logger);
+      return { category, result };
+    },
+  );
+
+  for (const { category, result } of extractionOutcomes) {
+    updateStats(extractionResults[category], result);
+    if (result.detectedYears) result.detectedYears.forEach((y) => allDetectedYears.add(y));
+    if (!result.success) {
+      extractionErrors.push({ step: category, ...result });
+      docStats.failed += 1;
+    } else if (result.cacheHit) {
+      docStats.cached += 1;
+    } else {
+      docStats.processed += 1;
+    }
+  }
+
+  for (const category of extractionOrder) {
+    const s = extractionResults[category];
+    logger.log(`  ${category} result: ${s.success} succeeded, ${s.failed} failed, ${s.rowsExtracted} rows inserted`);
+  }
+  logger.log(`  Documents: ${docStats.cached} cached (reused), ${docStats.processed} freshly processed, ${docStats.failed} failed`);
+  mark('extraction');
 
   const years = Array.from(allDetectedYears).sort((a, b) => a - b);
   logger.log(`Detected fiscal years: [${years.join(', ')}]`);
@@ -385,6 +428,7 @@ async function generateFinancialTables(version, opts = {}) {
     `OpeningBS=${gate.hasOpeningBs ? 'yes' : 'no'}, EndingBS=${gate.hasEndingBs ? 'yes' : 'no'}, ` +
     `canGenerate=${gate.canGenerate}`,
   );
+  mark('document_gate');
 
   if (!gate.canGenerate) {
     logger.warn('  ✗ Accounting workflow halted: General Ledger is required but was not found.');
@@ -410,6 +454,8 @@ async function generateFinancialTables(version, opts = {}) {
         totalRowsInserted: totalRows,
         extractionResults,
         documents: gate,
+        documentProcessing: docStats,
+        timings,
         message: haltMessage,
       },
       message: haltMessage,
@@ -426,6 +472,7 @@ async function generateFinancialTables(version, opts = {}) {
     logger.warn(`  Chart of Accounts generation failed: ${coaErr.message}`);
     coaSummary = { error: coaErr.message, accountCount: 0 };
   }
+  mark('chart_of_accounts');
 
   // ── PHASE 2b: Link GL rows to Chart of Accounts (populate coa_id) ────────────
   // After COA is generated, resolve each GL transaction's account_name to a
@@ -457,6 +504,7 @@ async function generateFinancialTables(version, opts = {}) {
   } catch (completionErr) {
     logger.warn(`  COA completion failed: ${completionErr.message}`);
   }
+  mark('coa_linking');
 
   // ── PHASE 3: Trial Balance (generated directly from the General Ledger) ─────
   logger.log('--- Phase 3: Trial Balance ---');
@@ -468,6 +516,7 @@ async function generateFinancialTables(version, opts = {}) {
     logger.warn(`  Trial Balance generation failed: ${tbErr.message}`);
     trialBalanceSummary = { error: tbErr.message, stored: 0, years: [] };
   }
+  mark('trial_balance');
 
   // ── PHASE 4: Monthly Balance Sheet engine ──────────────────────────────────
   // Opening Balance Sheet + monthly GL activity → STORED monthly balances
@@ -483,6 +532,7 @@ async function generateFinancialTables(version, opts = {}) {
     logger.warn(`  Monthly Balance Sheet generation failed: ${mbsErr.message}`);
     monthlyBsSummary = { error: mbsErr.message, stored: 0, months: 0, years: [] };
   }
+  mark('monthly_balance_sheets');
 
   // ── PHASE 5: Reconciliation (generated ending BS vs uploaded ending BS) ─────
   // Only runs when an Ending Balance Sheet was uploaded. Never overwrites the
@@ -502,6 +552,7 @@ async function generateFinancialTables(version, opts = {}) {
     logger.warn(`  Reconciliation failed: ${recErr.message}`);
     reconciliationSummary = { ran: false, error: recErr.message };
   }
+  mark('reconciliation');
 
   // P&L and Cash Flow are generated after the authoritative monthly Balance
   // Sheets exist, then persisted as render-ready JSON. They are not accounting
@@ -528,6 +579,7 @@ async function generateFinancialTables(version, opts = {}) {
     generatedReportSummary.error = reportErr.message;
     logger.warn(`  Generated report snapshot persistence failed: ${reportErr.message}`);
   }
+  mark('report_snapshots');
 
   // Step 7: Validation Results (from entry table row counts + COA spec checks)
   logger.log('--- Step 7: Validation Results ---');
@@ -578,6 +630,15 @@ async function generateFinancialTables(version, opts = {}) {
 
   await replaceValidationResults(versionId, companyId, validationRows);
   logger.log(`  ✓ ${validationRows.length} validation rows stored`);
+  mark('validation');
+
+  const totalMs = Math.round(performance.now() - perfStart);
+  timings.total = totalMs;
+  logger.log(
+    `[Perf] ` +
+    Object.entries(timings).map(([k, v]) => `${k}=${v}ms`).join(' ') +
+    ` | docs: ${docStats.cached} cached / ${docStats.processed} processed / ${docStats.failed} failed`,
+  );
 
   logger.log('=== Sync complete ===');
 
@@ -605,6 +666,8 @@ async function generateFinancialTables(version, opts = {}) {
       reconciliation: reconciliationSummary,
       generatedReports: generatedReportSummary,
       documents: gate,
+      documentProcessing: docStats,
+      timings,
       message,
     },
     message,

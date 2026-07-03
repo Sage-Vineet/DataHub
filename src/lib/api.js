@@ -1235,7 +1235,10 @@ export function getLatestManualUploadedReport(statementType, options = {}) {
 
 export function getAllManualUploadedReports(statementType, options = {}) {
   const clientId = options.clientId ?? resolveClientIdFromLocation();
-  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  const params = new URLSearchParams();
+  if (clientId) params.set("clientId", clientId);
+  if (options.keyReportVersionId) params.set("keyReportVersionId", options.keyReportVersionId);
+  const query = params.toString() ? `?${params}` : "";
   return request(
     `/manual-report-uploads/reports/${encodeURIComponent(statementType)}/all${query}`,
     options,
@@ -1244,7 +1247,10 @@ export function getAllManualUploadedReports(statementType, options = {}) {
 
 export function getAllQMSUploadedReports(statementType, options = {}) {
   const clientId = options.clientId ?? resolveClientIdFromLocation();
-  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  const params = new URLSearchParams();
+  if (clientId) params.set("clientId", clientId);
+  if (options.keyReportVersionId) params.set("keyReportVersionId", options.keyReportVersionId);
+  const query = params.toString() ? `?${params}` : "";
   return request(
     `/manual-report-uploads/qms-reports/${encodeURIComponent(statementType)}/all${query}`,
     options,

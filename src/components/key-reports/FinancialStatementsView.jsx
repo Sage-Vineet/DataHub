@@ -893,6 +893,13 @@ export default function FinancialStatementsView({
     }
   }, [versionId, hasSyncedData, yearFilter, notify]);
 
+  // Auto-fetch report when component mounts or when versionId/hasSyncedData changes
+  React.useEffect(() => {
+    if (versionId && hasSyncedData && !data && !loading) {
+      void generate();
+    }
+  }, [versionId, hasSyncedData, generate, data, loading]);
+
   const plYearly  = data?.reports?.profitAndLoss?.yearly  || [];
   const plMonthly = data?.reports?.profitAndLoss?.monthly || [];
   const bsYearly  = data?.reports?.balanceSheet?.yearly   || [];
@@ -935,33 +942,14 @@ export default function FinancialStatementsView({
   return (
     <div className="space-y-4">
       {/* Toolbar */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <button
-          onClick={generate}
-          disabled={loading || !hasSyncedData}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
-          {data ? "Regenerate" : "Generate"} Reports
-        </button>
-
-        {data && (
+      {data && (
+        <div className="flex items-center gap-3 flex-wrap">
           <button
             onClick={() => exportToExcel(data)}
             className="flex items-center gap-2 px-3 py-2 border border-gray-300 bg-white text-gray-700 rounded text-sm hover:bg-gray-50"
           >
             <Download size={14} /> Export Excel
           </button>
-        )}
-
-        {!hasSyncedData && (
-          <p className="text-xs text-amber-600">Sync data first before generating reports.</p>
-        )}
-      </div>
-
-      {!data && !loading && (
-        <div className="py-16 text-center text-gray-400">
-          <p className="text-sm">Click "Generate Reports" to build P&L, Balance Sheet, and Cash Flow from your uploaded data.</p>
         </div>
       )}
 

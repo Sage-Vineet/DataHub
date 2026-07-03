@@ -197,12 +197,17 @@ export default function WorkspaceEbitda() {
 
   // Dataset version selection removed — consolidated into Key Reports.
   const selectedVersion = kr.resolvedDatasetVersion;
+  // The SELECTED Key Report version id — drives the manual_upload / QB-manual
+  // flows (the modern GL/COA-driven Key Reports versions), same as the other
+  // Key Report consumer pages (Reports, Bank & Tax Reconciliation).
+  const krVersionId = kr.krActive ? kr.selectedVersionId : null;
 
   const activeSourceRef = useRef(reportSource);
   // Tracks the currently-selected version so an in-flight request for a
   // previous version can be discarded if the user switches mid-fetch
   // (last-write-wins guard — prevents stale-version data overwriting fresh).
   const latestVersionRef = useRef(selectedVersion);
+  const latestKrVersionRef = useRef(krVersionId);
   const prevReportSourceForClearRef = useRef(reportSource);
   const adjustmentLoadTokenRef = useRef(0);
 
@@ -213,6 +218,10 @@ export default function WorkspaceEbitda() {
   useEffect(() => {
     latestVersionRef.current = selectedVersion;
   }, [selectedVersion]);
+
+  useEffect(() => {
+    latestKrVersionRef.current = krVersionId;
+  }, [krVersionId]);
 
   // Extract unique P&L accounts for addback dropdown (dynamic from API data)
   const plAccountOptions = useMemo(() => {
@@ -343,14 +352,17 @@ export default function WorkspaceEbitda() {
   // Manual GL internal version loading removed — consolidated into Key Reports.
 
   // Cache key includes version so switching versions always fetches fresh data
-  // and never serves a cached result from a different version.
+  // and never serves a cached result from a different version. Manual GL keys
+  // on the resolved dataset version; the manual_upload / QB-manual flows (the
+  // modern GL/COA-driven Key Reports versions) key on the Key Report version id.
   const ebitdaCacheKey = clientId && reportSource
-    ? `ebitda_data_${clientId}_${reportSource}${isManualGl && selectedVersion ? `_v${selectedVersion}` : ""}`
+    ? `ebitda_data_${clientId}_${reportSource}${isManualGl && selectedVersion ? `_v${selectedVersion}` : ""}${!isManualGl && krVersionId ? `_kr${krVersionId}` : ""}`
     : null;
 
   const handleGenerate = useCallback(async (skipCache = false) => {
     const requestSource = reportSource;
     const requestVersion = selectedVersion;
+    const requestKrVersionId = krVersionId;
     if (!skipCache && ebitdaCacheKey) {
       try {
         const cached = sessionStorage.getItem(ebitdaCacheKey);
@@ -425,7 +437,7 @@ export default function WorkspaceEbitda() {
         // Fetch ALL uploaded P&L files so every year is represented
         const params = {
           clientId,
-          ...(kr.krActive && kr.selectedVersionId ? { keyReportVersionId: kr.selectedVersionId } : {}),
+          ...(requestKrVersionId ? { keyReportVersionId: requestKrVersionId } : {}),
         };
         const result = await getAllManualUploadedReports("profit_and_loss", params);
         const files = (result?.files || []).filter((f) => f.data?.rows?.length);
@@ -487,7 +499,10 @@ export default function WorkspaceEbitda() {
 
         // Sort years newest → oldest to match QuickBooks column order
         const newYears = Array.from(yearFileMap.keys()).sort((a, b) => b - a);
-        if (activeSourceRef.current !== requestSource) return;
+        // Discard if the source OR the selected Key Report version changed
+        // while this request was in flight — otherwise a slow old-version
+        // response would overwrite the newer version's data.
+        if (activeSourceRef.current !== requestSource || latestKrVersionRef.current !== requestKrVersionId) return;
         setYears(newYears);
         setMultiYearData(newData);
         if (ebitdaCacheKey && hasUsableEbitdaData(newData)) {
@@ -497,7 +512,7 @@ export default function WorkspaceEbitda() {
         // QuickBooks Manual: read all synced P&L files from qb_synced_reports
         const params = {
           clientId,
-          ...(kr.krActive && kr.selectedVersionId ? { keyReportVersionId: kr.selectedVersionId } : {}),
+          ...(requestKrVersionId ? { keyReportVersionId: requestKrVersionId } : {}),
         };
         const result = await getAllQMSUploadedReports("profit_and_loss", params);
         const files = (result?.files || []).filter((f) => f.data?.rows?.length);
@@ -554,7 +569,7 @@ export default function WorkspaceEbitda() {
         }
 
         const newYears = Array.from(yearFileMap.keys()).sort((a, b) => b - a);
-        if (activeSourceRef.current !== requestSource) return;
+        if (activeSourceRef.current !== requestSource || latestKrVersionRef.current !== requestKrVersionId) return;
         setYears(newYears);
         setMultiYearData(newData);
         if (ebitdaCacheKey && hasUsableEbitdaData(newData)) {
@@ -591,20 +606,23 @@ export default function WorkspaceEbitda() {
     } finally {
       if (activeSourceRef.current === requestSource) setIsLoading(false);
     }
-  }, [isManualGl, isManualUpload, isQBManual, clientId, ebitdaCacheKey, accountingMethod, selectedVersion]);
+  }, [isManualGl, isManualUpload, isQBManual, clientId, ebitdaCacheKey, accountingMethod, selectedVersion, krVersionId]);
 
   useEffect(() => {
     handleGenerate(isManualUpload || isQBManual);
   }, [handleGenerate]);
 
-  // When the selected Manual GL version changes, discard any cached result and
-  // re-generate so EBITDA always reflects the chosen version's transactions.
-  const prevVersionRef = useRef(selectedVersion);
+  // When the selected version changes — the Manual GL dataset version, or the
+  // Key Report version id for the manual_upload / QB-manual flows (the modern
+  // GL/COA-driven Key Reports versions) — discard any stale result and
+  // re-generate so EBITDA always reflects the chosen version's data.
+  const versionSignal = isManualGl ? selectedVersion : krVersionId;
+  const prevVersionRef = useRef(versionSignal);
   useEffect(() => {
-    if (!isManualGl) return;
-    if (prevVersionRef.current === selectedVersion) return;
-    prevVersionRef.current = selectedVersion;
-    if (!selectedVersion) return;
+    if (!isManualGl && !krVersionId) return;
+    if (prevVersionRef.current === versionSignal) return;
+    prevVersionRef.current = versionSignal;
+    if (!versionSignal) return;
 
     // Check cache before clearing/loading to minimize UI jumps
     let inCache = false;
@@ -628,7 +646,7 @@ export default function WorkspaceEbitda() {
 
     setIsDataInitialized(false);
     setError("");
-  }, [isManualGl, selectedVersion, ebitdaCacheKey]);
+  }, [isManualGl, versionSignal, krVersionId, ebitdaCacheKey]);
 
   // Load adjustment types for non-ManualGL modes (QB, Manual Upload, QB Manual)
   useEffect(() => {

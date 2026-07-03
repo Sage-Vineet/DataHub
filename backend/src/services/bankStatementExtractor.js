@@ -670,6 +670,138 @@ async function recheckNeedsReview(statements, contentPrefix, fileName, modelName
   }
 }
 
+// ─── Account-number double verification ───────────────────────────────────────
+// Bank account numbers are the identity of every row on the reconciliation page
+// and are easily misread by OCR/AI (transposed or wrong digits). We re-read the
+// account number with a dedicated, focused prompt and only accept a CORRECTION
+// when two independent verification reads AGREE with each other (and differ from
+// the first extraction) — i.e. the number must be confirmed twice before we
+// change it. When the first verification already confirms the original, no second
+// call is made.
+
+function cleanBankLabel(name) {
+  return String(name || "")
+    .replace(/\s*\(\d{2,}\)\s*$/, "") // strip trailing " (1234)" account suffix
+    .toLowerCase()
+    .trim();
+}
+
+function acctVerifyKey(bankName, period) {
+  return `${cleanBankLabel(bankName)}|${period || ""}`;
+}
+
+function buildAccountNumberVerifyPrompt(statements) {
+  const lines = statements
+    .map((s, i) =>
+      `${i + 1}. Bank="${s.bank_name_clean || s.bank_name}", ` +
+      `statement period ${s.period_start || "?"} to ${s.period_end || "?"}, ` +
+      `previously read account ending "${s.account_number || "?"}".`,
+    )
+    .join("\n");
+
+  return `You are verifying the BANK ACCOUNT NUMBER on a bank statement. Account numbers are
+frequently misread — digits get transposed or confused (0/8, 1/7, 5/6, 3/8). Re-read each
+account number CAREFULLY, digit by digit, from the statement header/account summary.
+
+For each account listed, return the LAST 4 DIGITS exactly as printed. If the number is masked
+(e.g. ****6067, xxxx-6067, ...6067) use the last 4 visible digits. Do NOT guess — if you truly
+cannot read it, return the digits you can see.
+
+Accounts to verify:
+${lines}
+
+Return ONLY a raw JSON array (no markdown, no prose), one object per account:
+[{"bankName":"<bank name>","statementEndDate":"<period end date as printed>","accountNumberLast4":"<4 digits>"}]`;
+}
+
+async function readAccountNumbers(statements, contentPrefix, fileName, modelName) {
+  try {
+    const parsed = await callGeminiWithContent(
+      [...contentPrefix, { text: buildAccountNumberVerifyPrompt(statements) }],
+      modelName,
+      fileName,
+    );
+    if (!Array.isArray(parsed)) return null;
+    const map = new Map();
+    for (const r of parsed) {
+      const last4 = String(r.accountNumberLast4 ?? r.accountNumber ?? "")
+        .replace(/\D/g, "")
+        .slice(-4);
+      if (!last4) continue;
+      const bank = cleanBankLabel(r.bankName);
+      map.set(`${bank}|${r.statementEndDate || ""}`, last4);
+      map.set(`${bank}|`, last4); // bank-only fallback for single-account documents
+    }
+    return map;
+  } catch (err) {
+    console.warn(`[BankPDF] account-number read failed for "${fileName}": ${err.message}`);
+    return null;
+  }
+}
+
+function lookupAcct(map, s) {
+  if (!map) return null;
+  return (
+    map.get(acctVerifyKey(s.bank_name_clean || s.bank_name, s.period_end)) ||
+    map.get(acctVerifyKey(s.bank_name_clean || s.bank_name, s.period_start)) ||
+    map.get(acctVerifyKey(s.bank_name_clean || s.bank_name, "")) ||
+    null
+  );
+}
+
+function applyAccountNumber(s, last4) {
+  const cleanName = String(s.bank_name_clean || s.bank_name || "").replace(/\s*\(\d{2,}\)\s*$/, "").trim();
+  return {
+    ...s,
+    account_number: last4,
+    bank_name: cleanName ? `${cleanName} (${last4})` : s.bank_name,
+  };
+}
+
+async function verifyAccountNumbers(statements, contentPrefix, fileName, modelName) {
+  if (!statements.length) return statements;
+
+  const v1 = await readAccountNumbers(statements, contentPrefix, fileName, modelName);
+  if (!v1) return statements; // verification unavailable → keep original extraction
+
+  // Only pay for a second verification read when the first disagrees with the
+  // original extraction for at least one account.
+  const anyDisagreement = statements.some((s) => {
+    const a = lookupAcct(v1, s);
+    return a && a !== s.account_number;
+  });
+  const v2 = anyDisagreement
+    ? await readAccountNumbers(statements, contentPrefix, fileName, modelName)
+    : null;
+
+  let corrected = 0;
+  const out = statements.map((s) => {
+    const initial = s.account_number || null;
+    const a = lookupAcct(v1, s);
+    const b = lookupAcct(v2, s);
+
+    let winner = initial;
+    if (a && a === initial) {
+      winner = initial; // first verification confirms the original — trusted
+    } else if (a && b && a === b) {
+      winner = a; // both independent verifications agree on a different value
+    } // else: no two-way agreement → keep the original (never guess)
+
+    if (winner && winner !== initial) {
+      corrected += 1;
+      console.warn(
+        `[BankPDF] Account # corrected for "${s.bank_name_clean || s.bank_name}" ` +
+        `(${s.period_end || s.period_start || "?"}): "${initial}" → "${winner}" (confirmed twice)`,
+      );
+      return applyAccountNumber(s, winner);
+    }
+    return s;
+  });
+
+  if (corrected) console.log(`[BankPDF] Account-number verification in "${fileName}": ${corrected} correction(s)`);
+  return out;
+}
+
 async function extractViaGemini(pdfBase64, fileName) {
   let lastError = null;
 
@@ -691,13 +823,11 @@ async function extractViaGemini(pdfBase64, fileName) {
         }
         const stamped = parsed.map(normalizeGeminiStatement);
         console.log(`[BankPDF] Gemini PDF extracted ${stamped.length} statement(s) from "${fileName}"`);
+        const pdfContent = [{ inlineData: { mimeType: "application/pdf", data: pdfBase64 } }];
         // AI self-correction pass for any statement that failed the balance check.
-        return await recheckNeedsReview(
-          stamped,
-          [{ inlineData: { mimeType: "application/pdf", data: pdfBase64 } }],
-          fileName,
-          modelName,
-        );
+        const rechecked = await recheckNeedsReview(stamped, pdfContent, fileName, modelName);
+        // Double-verify each account number before returning.
+        return await verifyAccountNumbers(rechecked, pdfContent, fileName, modelName);
       } catch (err) {
         lastError = err;
         const msg = err.message || String(err);
@@ -743,14 +873,12 @@ ${rawText.slice(0, 30000)}
       if (parsed.length === 0) return [];
       const stamped = parsed.map(normalizeGeminiStatement);
       console.log(`[BankPDF] Gemini text extracted ${stamped.length} statement(s) from "${fileName}"`);
+      const textContent = [{ text: `Source bank statement text:\n---\n${rawText.slice(0, 30000)}\n---` }];
       // AI self-correction pass — re-reads the same source text for any statement
       // that failed the balance check.
-      return await recheckNeedsReview(
-        stamped,
-        [{ text: `Source bank statement text:\n---\n${rawText.slice(0, 30000)}\n---` }],
-        fileName,
-        modelName,
-      );
+      const rechecked = await recheckNeedsReview(stamped, textContent, fileName, modelName);
+      // Double-verify each account number before returning.
+      return await verifyAccountNumbers(rechecked, textContent, fileName, modelName);
     } catch (err) {
       lastError = err;
       const msg = err.message || String(err);

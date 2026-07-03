@@ -9,12 +9,10 @@ import {
   Trash2,
   FileText,
   Loader2,
-  Star,
   ListTree,
   Sparkles,
   Upload,
   BarChart3,
-  ClipboardCheck,
   ArrowRight,
   ArrowLeft,
 } from "lucide-react";
@@ -23,7 +21,6 @@ import {
   createKeyReportVersion,
   getKeyReportVersion,
   duplicateKeyReportVersion,
-  activateKeyReportVersion,
   addKeyReportMapping,
   removeKeyReportMapping,
   syncKeyReportVersion,
@@ -48,15 +45,10 @@ const CATEGORIES = [
   { key: "tax_return", label: "Tax Returns", required: false },
 ];
 
-// The COA-centric workflow. Steps 4 & 5 share the tree grid (it is both the
-// view and the adjust surface); edits persist immediately.
 const STEPS = [
-  { key: "details", label: "Key Report Details", icon: FileText },
-  { key: "upload", label: "Upload Statements", icon: Upload },
+  { key: "upload", label: "Upload Financial Statements", icon: Upload },
   { key: "ai", label: "AI Processing", icon: Sparkles },
   { key: "coa", label: "Chart of Accounts", icon: ListTree },
-  { key: "review", label: "Review & Adjust", icon: ClipboardCheck },
-  { key: "save", label: "Save Hierarchy", icon: CheckCircle2 },
   { key: "reports", label: "Financial Reports", icon: BarChart3 },
 ];
 
@@ -86,7 +78,7 @@ export default function WorkspaceKeyReports() {
   const [syncState, setSyncState] = useState(() => createInitialSyncState());
   const [pickerCategory, setPickerCategory] = useState(null);
   const [showPopup, setShowPopup] = useState(false);
-  const [activeStep, setActiveStep] = useState("details");
+  const [activeStep, setActiveStep] = useState("upload");
 
   const notify = useCallback(
     (msg, type = "info") => {
@@ -112,11 +104,12 @@ export default function WorkspaceKeyReports() {
     try {
       const res = await getKeyReportVersions();
       const list = res?.versions || [];
-      setVersions(list);
+      const filtered = list.filter(v => !v.versionName?.includes("PERF-TEST"));
+      setVersions(filtered);
       setSelectedVersionId((prev) => {
-        if (prev && list.some((v) => v.id === prev)) return prev;
-        const active = list.find((v) => v.isActive);
-        return active?.id || list[0]?.id || null;
+        if (prev && filtered.some((v) => v.id === prev)) return prev;
+        const active = filtered.find((v) => v.isActive);
+        return active?.id || filtered[0]?.id || null;
       });
     } catch (e) {
       notify(e.message || "Failed to load Key Reports.", "error");
@@ -150,10 +143,9 @@ export default function WorkspaceKeyReports() {
     void Promise.resolve().then(() => setSyncState(createInitialSyncState()));
   }, [selectedVersionId]);
 
-  // Land on the Chart of Accounts once a version has been synced.
+  // Land on Chart of Accounts once a version has been synced.
   useEffect(() => {
     if (detail?.version?.lastSyncedAt) setActiveStep("coa");
-    else setActiveStep("details");
   }, [detail?.version?.id, detail?.version?.lastSyncedAt]);
 
   const linkedDocumentIds = useMemo(() => {
@@ -215,21 +207,6 @@ export default function WorkspaceKeyReports() {
       console.warn("[KeyReports] Failed to switch active source to Key Reports:", switchErr?.message);
     }
   }, [clientId]);
-
-  const handleActivate = async () => {
-    if (!selectedVersionId) return;
-    setBusy(true);
-    try {
-      await activateKeyReportVersion(selectedVersionId);
-      await loadVersions();
-      await loadDetail(selectedVersionId);
-      notify("This version is now the official source of truth.", "success");
-    } catch (e) {
-      notify(e.message || "Failed to activate version.", "error");
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const handleSync = async () => {
     if (!selectedVersionId) return;
@@ -461,45 +438,6 @@ export default function WorkspaceKeyReports() {
           )}
 
           {/* Step content */}
-          {activeStep === "details" && (
-            <div className="rounded-2xl border border-border bg-white p-5">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-center gap-3">
-                  <span className="text-sm font-semibold text-text-primary">
-                    {version?.versionName || `Version ${version?.versionNumber}`}
-                  </span>
-                  {version?.isActive ? (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-[#EEF6E0] px-2.5 py-0.5 text-xs font-semibold text-primary">
-                      <Star size={12} /> Official source
-                    </span>
-                  ) : (
-                    <span className="rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-text-muted">
-                      {version?.status || "draft"}
-                    </span>
-                  )}
-                  {version?.lastSyncedAt && (
-                    <span className="text-xs text-text-muted">
-                      Last synced {new Date(version.lastSyncedAt).toLocaleString()}
-                    </span>
-                  )}
-                </div>
-                {!version?.isActive && (
-                  <button
-                    onClick={handleActivate}
-                    disabled={busy || syncing}
-                    className="flex items-center gap-1.5 rounded-xl border border-primary px-3 py-2 text-sm font-semibold text-primary hover:bg-[#F0F7E6] disabled:opacity-50"
-                  >
-                    <CheckCircle2 size={15} /> Set as official
-                  </button>
-                )}
-              </div>
-              <p className="mt-4 text-sm text-secondary">
-                This Key Report version is a container for the official financial statements that drive the Chart of
-                Accounts and every downstream report. Set it as the official source once its Chart of Accounts is reviewed.
-              </p>
-            </div>
-          )}
-
           {activeStep === "upload" && (
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               {CATEGORIES.map((cat) => {
@@ -580,37 +518,8 @@ export default function WorkspaceKeyReports() {
             </div>
           )}
 
-          {(activeStep === "coa" || activeStep === "review") && (
+          {activeStep === "coa" && (
             <ChartOfAccountsGrid versionId={selectedVersionId} hasSyncedData={hasSyncedData} notify={notify} />
-          )}
-
-          {activeStep === "save" && (
-            <div className="rounded-2xl border border-border bg-white p-6 text-center">
-              <CheckCircle2 size={28} className="mx-auto text-primary" />
-              <p className="mt-3 text-sm font-semibold text-text-primary">Your Chart of Accounts is saved</p>
-              <p className="mx-auto mt-1 max-w-lg text-sm text-secondary">
-                Every edit you make in the Chart of Accounts is persisted automatically, with the original AI
-                classification kept so you can always restore it. Activate this version to make it the official source
-                of truth for all financial reports.
-              </p>
-              <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
-                {!version?.isActive && (
-                  <button
-                    onClick={handleActivate}
-                    disabled={busy || syncing}
-                    className="flex items-center gap-1.5 rounded-xl border border-primary px-3 py-2 text-sm font-semibold text-primary hover:bg-[#F0F7E6] disabled:opacity-50"
-                  >
-                    <Star size={15} /> Set as official source
-                  </button>
-                )}
-                <button
-                  onClick={() => goTo("reports")}
-                  className="flex items-center gap-1.5 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-white hover:opacity-90"
-                >
-                  Go to Financial Reports <ArrowRight size={15} />
-                </button>
-              </div>
-            </div>
           )}
 
           {activeStep === "reports" && (
