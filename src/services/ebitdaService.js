@@ -604,6 +604,60 @@ export function extractEbitdaFromManualPLRows(rows, asOfDate) {
   });
 }
 
+/**
+ * Converts a GL/COA-computed P&L statement (from
+ * key-reports/.../reports/financial-statements — the SAME endpoint the
+ * Financial Reports tab reads) into the flat row-tree shape
+ * extractEbitdaFromManualPLRows expects.
+ *
+ * Only leaf accounts are emitted for the operating-expense groups — the
+ * per-group subtotal is intentionally omitted, since a group label (e.g.
+ * "Depreciation & Amortization") can re-match the same EBITDA component
+ * pattern as its own child accounts and double-count the total.
+ */
+export function buildManualPlRowsFromKeyReportStatement(statement) {
+  if (!statement) return [];
+  const rows = [];
+
+  for (const a of (statement.revenue?.accounts || [])) {
+    rows.push({ name: a.name, amount: a.amount, type: "data" });
+  }
+  rows.push({ name: statement.revenue?.label || "Total Income", amount: statement.revenue?.total ?? 0, type: "total" });
+
+  const cosAccounts = statement.costOfSales?.accounts || [];
+  for (const a of cosAccounts) {
+    rows.push({ name: a.name, amount: a.amount, type: "data" });
+  }
+  if (cosAccounts.length) {
+    rows.push({ name: statement.costOfSales?.label || "Total Cost of Goods Sold", amount: statement.costOfSales?.total ?? 0, type: "total" });
+  }
+
+  rows.push({ name: "Gross Profit", amount: statement.grossProfit ?? 0, type: "total" });
+
+  for (const group of Object.values(statement.operatingExpenses?.groups || {})) {
+    for (const a of (group.accounts || [])) {
+      rows.push({ name: a.name, amount: a.amount, type: "data" });
+    }
+  }
+  rows.push({ name: statement.operatingExpenses?.label || "Total Expenses", amount: statement.operatingExpenses?.total ?? 0, type: "total" });
+
+  rows.push({ name: "Net Income", amount: statement.netIncome ?? 0, type: "total" });
+
+  return rows;
+}
+
+/**
+ * Extracts EBITDA components from a Key Reports GL/COA-computed P&L
+ * statement — used when Key Reports drives the EBITDA page, so EBITDA reads
+ * from the exact same generated statement as the Financial Reports tab
+ * instead of a raw uploaded P&L document (which the modern GL-driven Key
+ * Reports flow never populates).
+ */
+export function extractEbitdaFromKeyReportStatement(statement, periodLabel) {
+  const rows = buildManualPlRowsFromKeyReportStatement(statement);
+  return extractEbitdaFromManualPLRows(rows, periodLabel);
+}
+
 /* ------------------------------------------------------------------ */
 /*  Public API                                                        */
 /* ------------------------------------------------------------------ */
