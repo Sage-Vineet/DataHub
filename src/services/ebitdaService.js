@@ -537,6 +537,8 @@ function buildEbitdaFromFlatRows(flatRows, periodMeta = {}) {
     grossProfit: hasGrossProfitData ? resolvedGrossProfit : 0,
     hasGrossProfitData,
     opex: opex.total,
+    hasOperatingExpensesData: opex.items.length > 0,
+    hasDepreciationAmortizationData: depreciation.items.length > 0 || amortization.items.length > 0,
     components: {
       netIncome: { label: netIncomeMatch.label || "Net Income", value: netIncomeMatch.value, total: netIncomeMatch.value, matchedAccounts: [netIncomeMatch] },
       interestIncome: { label: "Total Interest Income", value: interestIncome.total, total: interestIncome.total, matchedAccounts: interestIncome.items },
@@ -735,6 +737,8 @@ export async function getEbitdaData(startDate, endDate, accountingMethod, source
       grossProfit: hasGrossProfitData ? resolvedGrossProfit : 0,
       hasGrossProfitData,
       opex: opex.total,
+      hasOperatingExpensesData: opex.items.length > 0,
+      hasDepreciationAmortizationData: depreciation.items.length > 0 || amortization.items.length > 0,
       components: {
         netIncome: {
           label: netIncomeMatch.label || "Net Income",

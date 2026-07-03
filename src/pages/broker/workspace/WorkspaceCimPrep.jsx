@@ -40,9 +40,12 @@ import { useToast } from "../../../context/ToastContext";
 import { REPORT_SOURCE_KEYS, normalizeReportSourceKey } from "../../../lib/report-source";
 import { loadCimFinancialAutofillSnapshot } from "../../../services/cimFinancialAutofillService";
 import { useDatasetVersionStore } from "../../../store/useDatasetVersionStore";
+import { useKeyReportContextStore } from "../../../store/useKeyReportContextStore";
 
 const SLIDE_WIDTH = 1280;
 const PAGE_KEY = "cim-prep";
+const SLIDE_25_BRIDGE_FIELD_ID = "25:structured:ebitda-bridge";
+const SLIDE_27_CASHFLOW_FIELD_ID = "27:structured:cashflow-statement";
 const TEMPLATE_SLIDE_COUNT = 38;
 const TEMPLATE_SLIDES = Array.from({ length: TEMPLATE_SLIDE_COUNT }, (_, index) => index + 1);
 
@@ -67,6 +70,29 @@ const BASIC_DETAILS_SECTION = {
   type: "basic",
   slides: [1, 2, 3],
 };
+
+const SLIDE_25_BRIDGE_FIELD = Object.freeze({
+  id: SLIDE_25_BRIDGE_FIELD_ID,
+  parentId: SLIDE_25_BRIDGE_FIELD_ID,
+  slideNumber: 25,
+  order: 8,
+  label: "EBITDA bridge",
+  prompt: "Provide reported EBITDA and any EBITDA adjustments.",
+  fieldKind: "ebitdaBridge",
+  sourceText: "Reported EBITDA, adjustments, and adjusted EBITDA",
+  excludeFromQuestionnaire: true,
+});
+
+const SLIDE_27_CASHFLOW_FIELD = Object.freeze({
+  id: SLIDE_27_CASHFLOW_FIELD_ID,
+  parentId: SLIDE_27_CASHFLOW_FIELD_ID,
+  slideNumber: 27,
+  order: 7,
+  label: "Cash flow statement by period",
+  fieldKind: "cashflowStatement",
+  sourceText: "Cash Flow report rows by selected period",
+  excludeFromQuestionnaire: true,
+});
 
 const NAV_SECTIONS = [BASIC_DETAILS_SECTION, ...SECTION_SLIDES];
 
@@ -210,12 +236,8 @@ function makeLabelOverride(slide, order, tokenIndex, label, extra = {}) {
   return { slide, order, tokenIndex, label, ...extra };
 }
 
-const SLIDE_24_HISTORICAL_PERIODS = ["FY[Y-3]", "FY[Y-2]", "FY[Y-1]", "FY[Y]"];
+const SLIDE_24_HISTORICAL_PERIODS = ["FY[Y-4]", "FY[Y-3]", "FY[Y-2]", "FY[Y-1]", "FY[Y]"];
 const SLIDE_24_ALL_PERIODS = [...SLIDE_24_HISTORICAL_PERIODS, "LTM"];
-const SLIDE_24_CAPEX_TOKEN_START = 59;
-const SLIDE_24_CAPEX_TOKEN_END = 63;
-const SLIDE_24_FCF_TOKEN_START = 64;
-const SLIDE_24_FCF_TOKEN_END = 68;
 const THREE_YEAR_LTM_PERIODS = ["FY[Y-2]", "FY[Y-1]", "FY[Y]", "LTM"];
 const TWO_YEAR_LTM_PERIODS = ["FY[Y-1]", "FY[Y]", "LTM"];
 const FY_LTM_PERIODS = ["FY[Y]", "LTM"];
@@ -490,38 +512,30 @@ const FIELD_LABEL_OVERRIDES = [
   { slide: 24, order: 5, tokenIndex: 0, label: "What is the first financial year shown?" },
   { slide: 24, order: 5, tokenIndex: 1, label: "What is the last financial year shown?" },
   { slide: 24, order: 6, tokenIndex: 0, label: "Which accounting basis are figures presented on?" },
-  { slide: 24, order: 7, tokenIndex: 0, label: "Which fiscal year is FY[Y-3]?" },
-  { slide: 24, order: 7, tokenIndex: 1, label: "Which fiscal year is FY[Y-2]?" },
-  { slide: 24, order: 7, tokenIndex: 2, label: "Which fiscal year is FY[Y-1]?" },
-  { slide: 24, order: 7, tokenIndex: 3, label: "Which fiscal year is FY[Y]?" },
-  { slide: 24, order: 7, tokenIndex: 4, label: "What is the LTM period end date?" },
-  ...makeSlide24MetricRowOverrides(5, "What was revenue"),
-  ...makeSlide24MetricRowOverrides(10, "What was YoY revenue growth", SLIDE_24_HISTORICAL_PERIODS),
-  ...makeSlide24MetricRowOverrides(14, "What was cost of goods sold"),
-  ...makeSlide24MetricRowOverrides(19, "What was gross profit"),
-  ...makeSlide24MetricRowOverrides(24, "What was gross margin"),
-  ...makeSlide24MetricRowOverrides(29, "What were operating expenses"),
-  ...makeSlide24MetricRowOverrides(34, "What was adjusted EBITDA"),
-  ...makeSlide24MetricRowOverrides(39, "What was adjusted EBITDA margin"),
-  ...makeSlide24MetricRowOverrides(44, "What was depreciation and amortization"),
-  ...makeSlide24MetricRowOverrides(49, "What was adjusted EBIT"),
-  ...makeSlide24MetricRowOverrides(54, "What was net income"),
+  { slide: 24, order: 7, tokenIndex: 0, label: "What is the first financial year column?" },
+  { slide: 24, order: 7, tokenIndex: 1, label: "What is the second financial year column?" },
+  { slide: 24, order: 7, tokenIndex: 2, label: "What is the third financial year column?" },
+  { slide: 24, order: 7, tokenIndex: 3, label: "What is the fourth financial year column?" },
+  { slide: 24, order: 7, tokenIndex: 4, label: "What is the fifth financial year column?" },
+  { slide: 24, order: 7, tokenIndex: 5, label: "What is the LTM period end date?" },
+  ...makeSlide24MetricRowOverrides(6, "What was revenue"),
+  ...makeSlide24MetricRowOverrides(12, "What was YoY revenue growth", SLIDE_24_HISTORICAL_PERIODS),
+  ...makeSlide24MetricRowOverrides(17, "What was cost of goods sold"),
+  ...makeSlide24MetricRowOverrides(23, "What was gross profit"),
+  ...makeSlide24MetricRowOverrides(29, "What was gross margin"),
+  ...makeSlide24MetricRowOverrides(35, "What were operating expenses"),
+  ...makeSlide24MetricRowOverrides(41, "What was adjusted EBITDA"),
+  ...makeSlide24MetricRowOverrides(47, "What was adjusted EBITDA margin"),
+  ...makeSlide24MetricRowOverrides(53, "What was depreciation and amortization"),
+  ...makeSlide24MetricRowOverrides(59, "What was adjusted EBIT"),
+  ...makeSlide24MetricRowOverrides(65, "What was net income"),
   { slide: 24, order: 8, tokenIndex: 0, label: "List any add-backs or normalizations." },
   { slide: 25, order: 5, tokenIndex: 0, label: "What is adjusted EBITDA (USD millions)?" },
-  { slide: 25, order: 5, tokenIndex: 1, label: "How many EBITDA add-backs are included?" },
-  { slide: 25, order: 5, tokenIndex: 2, label: "What is total add-backs value (USD millions)?" },
-  { slide: 25, order: 10, tokenIndex: 0, label: "What is reported EBITDA (USD millions)?" },
-  { slide: 25, order: 10, tokenIndex: 1, label: "What is owner compensation normalization (USD thousands)?" },
-  { slide: 25, order: 10, tokenIndex: 2, label: "What are one-time legal and advisory fees (USD thousands)?" },
-  { slide: 25, order: 10, tokenIndex: 3, label: "What is non-cash stock compensation (USD thousands)?" },
-  { slide: 25, order: 10, tokenIndex: 4, label: "What is related-party transaction adjustment (USD thousands)?" },
-  { slide: 25, order: 10, tokenIndex: 5, label: "What is restructuring or severance adjustment (USD thousands)?" },
-  { slide: 25, order: 10, tokenIndex: 6, label: "What are other one-time items (USD thousands)?" },
-  { slide: 25, order: 10, tokenIndex: 7, label: "What is adjusted EBITDA after add-backs (USD millions)?" },
-  { slide: 25, order: 10, tokenIndex: 8, label: "What is adjusted EBITDA margin (%)?" },
-  { slide: 25, order: 13, tokenIndex: 0, label: "Explain owner compensation normalization rationale." },
-  { slide: 25, order: 13, tokenIndex: 1, label: "Explain legal or advisory fee adjustment rationale." },
-  { slide: 25, order: 13, tokenIndex: 2, label: "Explain stock-based compensation adjustment rationale." },
+  { slide: 25, order: 5, tokenIndex: 1, label: "How many EBITDA adjustments are included?" },
+  { slide: 25, order: 5, tokenIndex: 2, label: "What is the total EBITDA adjustment value (USD millions)?" },
+  { slide: 25, order: 13, tokenIndex: 0, label: "Explain the primary EBITDA adjustment rationale." },
+  { slide: 25, order: 13, tokenIndex: 1, label: "Explain the second EBITDA adjustment rationale." },
+  { slide: 25, order: 13, tokenIndex: 2, label: "Explain the third EBITDA adjustment rationale." },
   { slide: 26, order: 5, tokenIndex: 0, label: "What is the balance sheet date?" },
   { slide: 26, order: 5, tokenIndex: 1, label: "What are total assets (USD millions)?" },
   { slide: 26, order: 5, tokenIndex: 2, label: "How would you describe the capital structure?" },
@@ -551,24 +565,6 @@ const FIELD_LABEL_OVERRIDES = [
   { slide: 27, order: 5, tokenIndex: 0, label: "What is cumulative free cash flow (USD millions)?" },
   { slide: 27, order: 5, tokenIndex: 1, label: "Which financial years does cumulative FCF cover?" },
   { slide: 27, order: 6, tokenIndex: 0, label: "What is free cash flow conversion (%)?" },
-  { slide: 27, order: 7, tokenIndex: 0, label: "Which fiscal year is the FY[Y-2]A column?" },
-  { slide: 27, order: 7, tokenIndex: 1, label: "Which fiscal year is the FY[Y-1]A column?" },
-  { slide: 27, order: 7, tokenIndex: 2, label: "Which fiscal year is the FY[Y]A column?" },
-  { slide: 27, order: 7, tokenIndex: 3, label: "What is the LTM cash flow date?" },
-  ...makePeriodMetricOverrides(27, 7, 4, "What was net income", THREE_YEAR_LTM_PERIODS),
-  ...makePeriodMetricOverrides(27, 7, 8, "What was D&A", THREE_YEAR_LTM_PERIODS),
-  ...makePeriodMetricOverrides(27, 7, 12, "What was change in working capital", THREE_YEAR_LTM_PERIODS),
-  ...makePeriodMetricOverrides(27, 7, 16, "What were other non-cash items", THREE_YEAR_LTM_PERIODS),
-  ...makePeriodMetricOverrides(27, 7, 20, "What was cash from operations", THREE_YEAR_LTM_PERIODS),
-  ...makePeriodMetricOverrides(27, 7, 24, "What were capital expenditures", THREE_YEAR_LTM_PERIODS),
-  ...makePeriodMetricOverrides(27, 7, 28, "What were acquisitions or dispositions", THREE_YEAR_LTM_PERIODS),
-  ...makePeriodMetricOverrides(27, 7, 32, "What was cash from investing", THREE_YEAR_LTM_PERIODS),
-  ...makePeriodMetricOverrides(27, 7, 36, "What were net borrowings or repayments", THREE_YEAR_LTM_PERIODS),
-  ...makePeriodMetricOverrides(27, 7, 40, "What were dividends or distributions", THREE_YEAR_LTM_PERIODS),
-  ...makePeriodMetricOverrides(27, 7, 44, "What was cash from financing", THREE_YEAR_LTM_PERIODS),
-  ...makePeriodMetricOverrides(27, 7, 48, "What was net change in cash", THREE_YEAR_LTM_PERIODS),
-  ...makePeriodMetricOverrides(27, 7, 52, "What was free cash flow", THREE_YEAR_LTM_PERIODS),
-  ...makePeriodMetricOverrides(27, 7, 56, "What was FCF conversion", THREE_YEAR_LTM_PERIODS),
   { slide: 28, order: 5, tokenIndex: 0, label: "What is average net working capital (USD millions)?" },
   { slide: 28, order: 5, tokenIndex: 1, label: "How many trailing months are measured?" },
   { slide: 28, order: 5, tokenIndex: 2, label: "What is the NWC cycle in days?" },
@@ -751,14 +747,6 @@ const MIRRORED_FIELD_OVERRIDES = [
     sourceSlide: 23,
     sourceOrder: 5,
     sourceTokenIndex: 4,
-  },
-  {
-    slide: 25,
-    order: 10,
-    tokenIndex: 7,
-    sourceSlide: 25,
-    sourceOrder: 5,
-    sourceTokenIndex: 0,
   },
   {
     slide: 26,
@@ -1115,14 +1103,6 @@ const CHART_FIELD_OVERRIDES = [
     chartDataPlaceholder: "FY2023,3.2,17.8\nFY2024,4.1,19.1\nFY2025,5.0,20.0\nFY2026,6.2,21.4",
   },
   {
-    slide: 25,
-    order: 8,
-    label: "Adjusted EBITDA waterfall chart",
-    prompt: "Enter reported EBITDA, each add-back, and adjusted EBITDA.",
-    chartHelp: "Use rows: item, value. Positive values add to EBITDA.",
-    chartDataPlaceholder: "Reported EBITDA,5.0\nOwner compensation,0.3\nLegal fees,0.2\nStock compensation,0.1\nAdjusted EBITDA,5.6",
-  },
-  {
     slide: 28,
     order: 28,
     label: "Monthly net working capital chart",
@@ -1224,6 +1204,289 @@ function normalizeText(text) {
   return String(text || "").replace(/\s+/g, " ").trim();
 }
 
+function normalizeSlide25Bridge(value) {
+  let parsed = value;
+  if (typeof value === "string" && value.trim()) {
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      parsed = {};
+    }
+  }
+  if (!parsed || typeof parsed !== "object") parsed = {};
+
+  return {
+    reportedEbitda: normalizeText(parsed.reportedEbitda),
+    adjustments: (Array.isArray(parsed.adjustments) ? parsed.adjustments : [])
+      .map((adjustment, index) => ({
+        id: adjustment?.id || `adjustment-${index + 1}`,
+        label: normalizeText(adjustment?.label),
+        amount: normalizeText(adjustment?.amount),
+        nature: normalizeText(adjustment?.nature),
+        commentary: normalizeText(adjustment?.commentary),
+      })),
+  };
+}
+
+function stringifySlide25Bridge(value) {
+  return JSON.stringify(normalizeSlide25Bridge(value));
+}
+
+function getSlide25BridgeFigures(value) {
+  const bridge = normalizeSlide25Bridge(value);
+  const reported = parseChartNumber(bridge.reportedEbitda);
+  const adjustments = bridge.adjustments
+    .map((adjustment) => ({ ...adjustment, numericAmount: parseChartNumber(adjustment.amount) }))
+    .filter((adjustment) => adjustment.label && adjustment.numericAmount !== null);
+  const adjustmentTotal = adjustments.reduce((sum, adjustment) => sum + adjustment.numericAmount, 0);
+  return {
+    ...bridge,
+    reported,
+    adjustments,
+    adjustmentTotal,
+    adjusted: reported === null ? null : reported + adjustmentTotal,
+  };
+}
+
+function formatSlide25Millions(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return "";
+  const formatted = formatAutoFillNumber(Math.abs(numeric), 1);
+  return numeric < 0 ? `($${formatted}M)` : `$${formatted}M`;
+}
+
+function normalizeSlide27Cashflow(value) {
+  let parsed = value;
+  if (typeof value === "string" && value.trim()) {
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      parsed = {};
+    }
+  }
+  if (!parsed || typeof parsed !== "object") parsed = {};
+
+  const columns = (Array.isArray(parsed.columns) ? parsed.columns : []).map((column, index) => ({
+    key: normalizeText(column?.key) || `period-${index + 1}`,
+    label: normalizeText(column?.label) || `Period ${index + 1}`,
+  }));
+  const rows = (Array.isArray(parsed.rows) ? parsed.rows : []).map((row, index) => ({
+    key: normalizeText(row?.key) || `cashflow-row-${index + 1}`,
+    label: normalizeText(row?.label),
+    type: normalizeText(row?.type) || "data",
+    depth: Math.max(0, Number(row?.depth || 0)),
+    manual: Boolean(row?.manual),
+    values: Object.fromEntries(columns.map((column) => [
+      column.key,
+      normalizeText(row?.values?.[column.key]) || "-",
+    ])),
+  })).filter((row) => row.label);
+
+  return { columns, rows, placeholder: Boolean(parsed.placeholder) };
+}
+
+function stringifySlide27Cashflow(value) {
+  return JSON.stringify(normalizeSlide27Cashflow(value));
+}
+
+function mergeSlide27ManualRows(existingValue, nextValue) {
+  const existing = normalizeSlide27Cashflow(existingValue);
+  const next = normalizeSlide27Cashflow(nextValue);
+  const manualRows = existing.rows.filter((row) => row.manual);
+  if (!manualRows.length) return stringifySlide27Cashflow(next);
+
+  const existingColumnByLabel = new Map(existing.columns.map((column) => [column.label, column]));
+  const rows = [...next.rows];
+  manualRows.forEach((row) => {
+    if (rows.some((candidate) => candidate.key === row.key)) return;
+    rows.push({
+      ...row,
+      values: Object.fromEntries(next.columns.map((column) => {
+        const previousColumn = existingColumnByLabel.get(column.label);
+        return [column.key, row.values[column.key] || row.values[previousColumn?.key] || "-"];
+      })),
+    });
+  });
+  return stringifySlide27Cashflow({ ...next, rows });
+}
+
+function formatSlide27CashflowValue(value) {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return "-";
+  const numeric = Number(value);
+  if (Math.abs(numeric) < 0.0001) return "0";
+  const formatted = formatAutoFillNumber(Math.abs(numeric) / 1_000_000, 1);
+  return numeric < 0 ? `($${formatted}M)` : `$${formatted}M`;
+}
+
+function normalizeCashflowRowLabel(value) {
+  return normalizeText(value).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function buildSlide27CashflowRows(periods = []) {
+  const rowsFor = (period) => period.metrics?.cashflowReportRows || [];
+  const mostCompleteRows = [...periods]
+    .sort((first, second) => rowsFor(second).length - rowsFor(first).length)
+    .flatMap((period, index) => index === 0 ? rowsFor(period) : []);
+
+  const sectionDetails = { investing: [], financing: [] };
+  const seenDetails = { investing: new Set(), financing: new Set() };
+  const collectDetails = (rows) => {
+    let section = "";
+    rows.forEach((row) => {
+      const normalized = normalizeCashflowRowLabel(row.label);
+      if (/operating activit/.test(normalized) && !normalized.startsWith("net ")) {
+        section = "operating";
+        return;
+      }
+      if (/investing activit/.test(normalized) && !normalized.startsWith("net ")) {
+        section = "investing";
+        return;
+      }
+      if (/financing activit/.test(normalized) && !normalized.startsWith("net ")) {
+        section = "financing";
+        return;
+      }
+      if (/^(beginning|opening|net increase|net change|ending)\b/.test(normalized)) section = "";
+      if (!sectionDetails[section] || row.type === "total" || normalized.startsWith("net cash")) return;
+      if (!normalized || seenDetails[section].has(normalized)) return;
+      seenDetails[section].add(normalized);
+      sectionDetails[section].push({
+        key: `${section}:${normalized.replace(/\s+/g, "-")}`,
+        label: row.label,
+        type: row.type || "data",
+        depth: Math.max(1, Number(row.depth || 1)),
+        matcher: (candidate) => normalizeCashflowRowLabel(candidate.label) === normalized,
+      });
+    });
+  };
+  collectDetails(mostCompleteRows);
+  periods.forEach((period) => collectDetails(rowsFor(period)));
+
+  if (!sectionDetails.investing.length) {
+    ["Purchase of Fixed Assets", "Sale of Fixed Assets", "Security Deposits", "Investments"].forEach((label) => {
+      const normalized = normalizeCashflowRowLabel(label);
+      sectionDetails.investing.push({
+        key: `investing:${normalized.replace(/\s+/g, "-")}`,
+        label,
+        type: "data",
+        depth: 1,
+        matcher: (row) => normalizeCashflowRowLabel(row.label) === normalized,
+      });
+    });
+  }
+  if (!sectionDetails.financing.length) {
+    ["Equity Contribution", "Dividends"].forEach((label) => {
+      const normalized = normalizeCashflowRowLabel(label);
+      sectionDetails.financing.push({
+        key: `financing:${normalized.replace(/\s+/g, "-")}`,
+        label,
+        type: "data",
+        depth: 1,
+        matcher: (row) => normalizeCashflowRowLabel(row.label) === normalized,
+      });
+    });
+  }
+
+  const fixedRows = [
+    {
+      key: "operating-section",
+      label: "Cash Flows from Operating Activities",
+      type: "header",
+      depth: 0,
+      matcher: (row) => /operating activit/.test(normalizeCashflowRowLabel(row.label)) && !normalizeCashflowRowLabel(row.label).startsWith("net "),
+    },
+    { key: "net-income", label: "Net Income", type: "data", depth: 1, matcher: (row) => normalizeCashflowRowLabel(row.label) === "net income" },
+    { key: "depreciation", label: "Depreciation", type: "data", depth: 1, matcher: (row) => normalizeCashflowRowLabel(row.label) === "depreciation" },
+    { key: "amortization", label: "Amortization", type: "data", depth: 1, matcher: (row) => normalizeCashflowRowLabel(row.label) === "amortization" },
+    { key: "net-working-capital", label: "Net changes in working capital", type: "data", depth: 1, matcher: (row) => normalizeCashflowRowLabel(row.label) === "net changes in working capital" },
+    {
+      key: "net-operating",
+      label: "Net Cash from Operating Activities",
+      type: "total",
+      depth: 0,
+      matcher: (row) => /^net cash.*operating activit/.test(normalizeCashflowRowLabel(row.label)),
+    },
+    {
+      key: "investing-section",
+      label: "Cash Flows from Investing Activities",
+      type: "header",
+      depth: 0,
+      matcher: (row) => /investing activit/.test(normalizeCashflowRowLabel(row.label)) && !normalizeCashflowRowLabel(row.label).startsWith("net "),
+    },
+    ...sectionDetails.investing,
+    {
+      key: "net-investing",
+      label: "Net Cash from Investing Activities",
+      type: "total",
+      depth: 0,
+      matcher: (row) => /^net cash.*investing activit/.test(normalizeCashflowRowLabel(row.label)),
+    },
+    {
+      key: "financing-section",
+      label: "Cash Flows from Financing Activities",
+      type: "header",
+      depth: 0,
+      matcher: (row) => /financing activit/.test(normalizeCashflowRowLabel(row.label)) && !normalizeCashflowRowLabel(row.label).startsWith("net "),
+    },
+    ...sectionDetails.financing,
+    {
+      key: "net-financing",
+      label: "Net Cash from Financing Activities",
+      type: "total",
+      depth: 0,
+      matcher: (row) => /^net cash.*financing activit/.test(normalizeCashflowRowLabel(row.label)),
+    },
+    {
+      key: "beginning-cash",
+      label: "Beginning Cash Balance",
+      type: "data",
+      depth: 0,
+      matcher: (row) => /^(beginning|opening) cash( balance)?$/.test(normalizeCashflowRowLabel(row.label)),
+    },
+    {
+      key: "net-increase-cash",
+      label: "Net Increase (Decrease) in Cash",
+      type: "total",
+      depth: 0,
+      matcher: (row) => /^net (increase|change|decrease).*cash/.test(normalizeCashflowRowLabel(row.label)),
+    },
+    {
+      key: "ending-cash",
+      label: "Ending Cash Balance",
+      type: "total",
+      depth: 0,
+      matcher: (row) => /^ending cash( balance)?$/.test(normalizeCashflowRowLabel(row.label)),
+    },
+  ];
+
+  return fixedRows.map(({ matcher, ...row }) => ({
+    ...row,
+    manual: false,
+    values: Object.fromEntries(periods.map((period) => {
+      const sourceRow = rowsFor(period).find(matcher);
+      return [period.key, formatSlide27CashflowValue(sourceRow?.amount)];
+    })),
+  }));
+}
+
+function buildSlide27PlaceholderCashflow(range = {}) {
+  const startYear = Number(String(range.startDate || "").slice(0, 4));
+  const periodType = range.periodType === "fiscal" ? "fiscal" : "calendar";
+  const annualCount = Math.max(1, getSlide24ActivePeriodCount(range) - 1);
+  const columns = Array.from({ length: annualCount }, (_, index) => {
+    const year = periodType === "fiscal" ? startYear + index + 1 : startYear + index;
+    return { key: `fy-${year}`, label: formatSlide24Year(year, periodType) };
+  });
+  const ltmDate = formatAutoFillDate(range.endDate, "short");
+  columns.push({ key: "ltm", label: ltmDate ? `LTM ${ltmDate}` : "LTM" });
+  const periods = columns.map((column) => ({ ...column, metrics: { cashflowReportRows: [] } }));
+  return {
+    columns,
+    rows: buildSlide27CashflowRows(periods),
+    placeholder: true,
+  };
+}
+
 function normalizeTokenKey(value) {
   return normalizeText(value).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 }
@@ -1289,8 +1552,14 @@ function restructureSlide24Table(layout) {
   const table = layout.elements.find((element) => element.order === 7 && element.kind === "table");
   if (!table?.cells) return layout;
 
-  const rowHeight = Number(table.bbox?.[3] || 0) / 12;
+  const rowCount = 12;
+  const columnCount = 7;
+  const tableLeft = Number(table.bbox?.[0] || 0);
+  const tableWidth = Number(table.bbox?.[2] || 0);
+  const rowHeight = Number(table.bbox?.[3] || 0) / rowCount;
   const tableTop = Number(table.bbox?.[1] || 0);
+  const labelWidth = Number(table.cells.find((cell) => Number(cell.column) === 1)?.bbox?.[2] || tableWidth * 0.24);
+  const valueWidth = (tableWidth - labelWidth) / (columnCount - 1);
   const summaryRows = new Set([5, 8, 11, 12]);
   const ratioRows = new Set([3, 6, 9]);
   const detailRows = new Set([4, 7, 10]);
@@ -1301,31 +1570,38 @@ function restructureSlide24Table(layout) {
     11: "Adjusted EBIT",
   };
 
-  const cells = table.cells
-    .filter((cell) => ![13, 14].includes(Number(cell.row)))
-    .map((cell) => {
-      const sourceRow = Number(cell.row || 1);
-      const column = Number(cell.column || 1);
+  const sourceCellsByPosition = new Map(
+    table.cells.map((cell) => [`${Number(cell.row || 1)}:${Number(cell.column || 1)}`, cell]),
+  );
+  const cells = Array.from({ length: rowCount }, (_, rowIndex) =>
+    Array.from({ length: columnCount }, (_, columnIndex) => {
+      const sourceRow = rowIndex + 1;
+      const column = columnIndex + 1;
+      const sourceCell = sourceCellsByPosition.get(`${sourceRow}:${Math.min(column, 6)}`) || {};
       const isHeader = sourceRow === 1;
       const isSummary = summaryRows.has(sourceRow);
       const isRatio = ratioRows.has(sourceRow);
       const isRevenue = sourceRow === 2;
       const text = column === 1
-        ? (sourceRow === 1 ? "Historical Income Statement" : rowLabels[sourceRow] || cell.text || "")
-        : (sourceRow === 1 && column === 6 ? "LTM [Date]" : cell.text || "");
+        ? (sourceRow === 1 ? "Historical Income Statement" : rowLabels[sourceRow] || sourceCell.text || "")
+        : (sourceRow === 1 && column === 7 ? "LTM [Date]" : sourceCell.text || "");
       const color = isHeader ? "#FFFFFF" : isSummary || isRevenue ? "#2F3033" : "#6D6E71";
       const bold = isHeader || isSummary || isRevenue;
       const italic = isRatio;
-      const [left = 0, , width = 0] = cell.bbox || [];
+      const left = column === 1 ? tableLeft : tableLeft + labelWidth + (column - 2) * valueWidth;
+      const width = column === 1 ? labelWidth : valueWidth;
 
       return {
-        ...cell,
+        ...sourceCell,
+        index: rowIndex * columnCount + column,
+        row: sourceRow,
+        column,
         bbox: [left, tableTop + (sourceRow - 1) * rowHeight, width, rowHeight],
         text,
         textPreview: text.replace(/\s+/g, " ").trim(),
         fillColor: isHeader ? "#476E2C" : isSummary ? "#EFEFF1" : "#FFFFFF",
         resolvedTextStyle: {
-          ...(cell.resolvedTextStyle || {}),
+          ...(sourceCell.resolvedTextStyle || {}),
           verticalAlignment: "middle",
           insets: {
             top: 0,
@@ -1351,23 +1627,22 @@ function restructureSlide24Table(layout) {
           }],
         }],
       };
-    });
+    }),
+  ).flat();
 
   const text = [
-    "Historical Income Statement | FY[Y-3]A | FY[Y-2]A | FY[Y-1]A | FY[Y]A | LTM [Date]",
-    "Revenue | $[X]M | $[X]M | $[X]M | $[X]M | $[X]M",
-    "YoY Growth | [X]% | [X]% | [X]% | [X]% | —",
-    "Cost of Goods Sold | ([X]M) | ([X]M) | ([X]M) | ([X]M) | ([X]M)",
-    "Gross Profit | $[X]M | $[X]M | $[X]M | $[X]M | $[X]M",
-    "Gross Margin | [X]% | [X]% | [X]% | [X]% | [X]%",
-    "Operating Expenses | ([X]M) | ([X]M) | ([X]M) | ([X]M) | ([X]M)",
-    "Adjusted EBITDA | $[X]M | $[X]M | $[X]M | $[X]M | $[X]M",
-    "Adjusted EBITDA Margin | [X]% | [X]% | [X]% | [X]% | [X]%",
-    "D&A | ([X]M) | ([X]M) | ([X]M) | ([X]M) | ([X]M)",
-    "Adjusted EBIT | $[X]M | $[X]M | $[X]M | $[X]M | $[X]M",
-    "Net Income | $[X]M | $[X]M | $[X]M | $[X]M | $[X]M",
-    "CapEx | ([X]M) | ([X]M) | ([X]M) | ([X]M) | ([X]M)",
-    "Free Cash Flow | $[X]M | $[X]M | $[X]M | $[X]M | $[X]M",
+    "Historical Income Statement | [FY] | [FY] | [FY] | [FY] | [FY] | LTM [Date]",
+    "Revenue | [Revenue] | [Revenue] | [Revenue] | [Revenue] | [Revenue] | [Revenue]",
+    "YoY Growth | [YoY] | [YoY] | [YoY] | [YoY] | [YoY] | -",
+    "COGS | [COGS] | [COGS] | [COGS] | [COGS] | [COGS] | [COGS]",
+    "Gross Profit | [Gross Profit] | [Gross Profit] | [Gross Profit] | [Gross Profit] | [Gross Profit] | [Gross Profit]",
+    "Gross Margin | [Gross Margin] | [Gross Margin] | [Gross Margin] | [Gross Margin] | [Gross Margin] | [Gross Margin]",
+    "Operating Expenses | [Operating Expenses] | [Operating Expenses] | [Operating Expenses] | [Operating Expenses] | [Operating Expenses] | [Operating Expenses]",
+    "Adjusted EBITDA | [Adjusted EBITDA] | [Adjusted EBITDA] | [Adjusted EBITDA] | [Adjusted EBITDA] | [Adjusted EBITDA] | [Adjusted EBITDA]",
+    "Adjusted EBITDA Margin | [Adjusted EBITDA Margin] | [Adjusted EBITDA Margin] | [Adjusted EBITDA Margin] | [Adjusted EBITDA Margin] | [Adjusted EBITDA Margin] | [Adjusted EBITDA Margin]",
+    "D&A | [D&A] | [D&A] | [D&A] | [D&A] | [D&A] | [D&A]",
+    "Adjusted EBIT | [Adjusted EBIT] | [Adjusted EBIT] | [Adjusted EBIT] | [Adjusted EBIT] | [Adjusted EBIT] | [Adjusted EBIT]",
+    "Net Income | [Net Income] | [Net Income] | [Net Income] | [Net Income] | [Net Income] | [Net Income]",
   ].join("\n");
 
   return {
@@ -1376,8 +1651,10 @@ function restructureSlide24Table(layout) {
       element === table
         ? {
             ...element,
+            rows: rowCount,
+            cols: columnCount,
             text,
-            textPreview: text.split("\n").filter((_, index) => ![12, 13].includes(index)).join(" | "),
+            textPreview: text.replace(/\n/g, " | "),
             cells,
           }
         : element,
@@ -1385,8 +1662,87 @@ function restructureSlide24Table(layout) {
   };
 }
 
+function restructureSlide27Table(layout) {
+  if (!layout?.elements) return layout;
+  const table = layout.elements.find((element) => element.order === 7 && element.kind === "table");
+  if (!table?.cells) return layout;
+
+  const rowCount = 24;
+  const columnCount = 7;
+  const tableLeft = Number(table.bbox?.[0] || 0);
+  const tableTop = Number(table.bbox?.[1] || 0);
+  const tableWidth = Number(table.bbox?.[2] || 0);
+  const rowHeight = Number(table.bbox?.[3] || 0) / rowCount;
+  const labelWidth = Number(table.cells.find((cell) => Number(cell.column) === 1)?.bbox?.[2] || tableWidth * 0.28);
+  const valueWidth = (tableWidth - labelWidth) / (columnCount - 1);
+  const sourceCellsByPosition = new Map(
+    table.cells.map((cell) => [`${Number(cell.row || 1)}:${Number(cell.column || 1)}`, cell]),
+  );
+  const cells = Array.from({ length: rowCount }, (_, rowIndex) =>
+    Array.from({ length: columnCount }, (_, columnIndex) => {
+      const row = rowIndex + 1;
+      const column = columnIndex + 1;
+      const sourceStyleRow = row <= 18 ? row : 3;
+      const sourceCell = sourceCellsByPosition.get(`${sourceStyleRow}:${Math.min(column, 5)}`) || {};
+      const left = column === 1 ? tableLeft : tableLeft + labelWidth + (column - 2) * valueWidth;
+      return {
+        ...sourceCell,
+        index: rowIndex * columnCount + column,
+        row,
+        column,
+        bbox: [left, tableTop + rowIndex * rowHeight, column === 1 ? labelWidth : valueWidth, rowHeight],
+        resolvedTextStyle: {
+          ...(sourceCell.resolvedTextStyle || {}),
+          alignment: column === 1 ? "left" : "center",
+        },
+        paragraphs: (sourceCell.paragraphs || []).map((paragraph) => ({
+          ...paragraph,
+          resolvedTextStyle: {
+            ...(paragraph.resolvedTextStyle || {}),
+            alignment: column === 1 ? "left" : "center",
+          },
+          runs: (paragraph.runs || []).map((run) => ({ ...run, fontSize: Math.min(Number(run.fontSize || 10.5), 10.5) })),
+        })),
+      };
+    }),
+  ).flat();
+
+  return {
+    ...layout,
+    elements: layout.elements.map((element) =>
+      element === table
+        ? { ...element, rows: rowCount, cols: columnCount, cells }
+        : element,
+    ),
+  };
+}
+
+function normalizeSlide35InitiativeDescriptions(layout) {
+  if (!layout?.elements) return layout;
+  const override = REPEATABLE_FIELD_OVERRIDES.find((item) => item.slide === 35 && item.key === "initiatives");
+  const descriptionOrders = new Set((override?.entries || []).map((entry) => entry.description));
+  if (!descriptionOrders.size) return layout;
+
+  return {
+    ...layout,
+    elements: layout.elements.map((element) => {
+      if (!descriptionOrders.has(element.order)) return element;
+      return {
+        ...element,
+        paragraphs: (element.paragraphs || []).map((paragraph) => ({
+          ...paragraph,
+          runs: (paragraph.runs || []).map((run) => ({ ...run, fontSize: 12.67, bold: false })),
+        })),
+      };
+    }),
+  };
+}
+
 function prepareCimLayout(slideNumber, layout) {
-  return slideNumber === 24 ? restructureSlide24Table(layout) : layout;
+  if (slideNumber === 24) return restructureSlide24Table(layout);
+  if (slideNumber === 27) return restructureSlide27Table(layout);
+  if (slideNumber === 35) return normalizeSlide35InitiativeDescriptions(layout);
+  return layout;
 }
 
 function makeFieldId(slideNumber, element) {
@@ -2544,6 +2900,104 @@ function getElementAutofillKey(kind, slideNumber, order) {
   return `__cim_${kind}__:${slideNumber}:${order}`;
 }
 
+function getSlide25ElementContent(element, fieldValues = {}) {
+  const order = Number(element?.order || 0);
+  if (![5, 8, 9, 10].includes(order)) return null;
+
+  const bridge = getSlide25BridgeFigures(fieldValues[SLIDE_25_BRIDGE_FIELD_ID]);
+  if (order === 5) {
+    if (bridge.reported === null || bridge.adjustments.length) return null;
+    return {
+      kind: "text",
+      text: `Adjusted EBITDA of ${formatSlide25Millions(bridge.adjusted)} equals reported EBITDA`,
+    };
+  }
+  if (bridge.reported === null) {
+    return { kind: "hidden" };
+  }
+
+  const adjustmentCount = bridge.adjustments.length;
+  const reportedText = formatSlide25Millions(bridge.reported);
+  const adjustedText = formatSlide25Millions(bridge.adjusted);
+
+  if (order === 8) {
+    const chartData = [
+      `Reported EBITDA,${bridge.reported}`,
+      ...bridge.adjustments.map((adjustment) =>
+        `${adjustment.label.replace(/[,|]/g, " ")},${adjustment.numericAmount}`,
+      ),
+      `Adjusted EBITDA,${bridge.adjusted}`,
+    ].join("\n");
+    return {
+      kind: "chart",
+      dataUrl: svgToDataUrl(buildChartSvg(
+        { ...SLIDE_25_BRIDGE_FIELD, text: "Adjusted EBITDA waterfall", label: "Adjusted EBITDA bridge" },
+        { type: "waterfall", dataText: chartData },
+      )),
+      name: "Adjusted EBITDA bridge",
+    };
+  }
+  if (order === 9) {
+    return { kind: "text", text: adjustmentCount ? "ADJUSTMENT SCHEDULE" : "EBITDA RECONCILIATION" };
+  }
+  if (order === 10) {
+    const scheduleAdjustments = bridge.adjustments.slice(0, 6);
+    const matrix = Array.from({ length: 9 }, () => ["", "", ""]);
+    matrix[0] = ["Item", "$M", "Nature"];
+    matrix[1] = ["Reported EBITDA", reportedText, "Reported"];
+    scheduleAdjustments.forEach((adjustment, index) => {
+      matrix[index + 2] = [
+        adjustment.label,
+        formatSlide25Millions(adjustment.numericAmount),
+        adjustment.nature,
+      ];
+    });
+    matrix[8] = ["Adjusted EBITDA", adjustedText, adjustmentCount ? "After adjustments" : "Equals reported EBITDA"];
+    return {
+      kind: "table",
+      tableMatrix: matrix,
+      visibleTableRows: [
+        1,
+        2,
+        ...scheduleAdjustments.map((_, index) => index + 3),
+        9,
+      ],
+      compactTableRows: true,
+      suppressTemplateFallback: true,
+    };
+  }
+
+  return null;
+}
+
+function getSlide27ElementContent(element, fieldValues = {}) {
+  const order = Number(element?.order || 0);
+  if (order !== 7) return null;
+
+  const cashflow = normalizeSlide27Cashflow(fieldValues[SLIDE_27_CASHFLOW_FIELD_ID]);
+  const columns = cashflow.columns.slice(0, 6);
+
+  const rows = cashflow.rows.slice(0, 23);
+  const matrix = Array.from({ length: 24 }, () => Array.from({ length: 7 }, () => ""));
+  matrix[0] = ["Cash Flow Classification", ...columns.map((column) => column.label)];
+  rows.forEach((row, rowIndex) => {
+    matrix[rowIndex + 1] = [
+      `${"  ".repeat(Math.min(row.depth, 3))}${row.label}`,
+      ...columns.map((column) => row.values[column.key] || "-"),
+    ];
+  });
+
+  return {
+    kind: "table",
+    tableMatrix: matrix,
+    visibleTableRows: Array.from({ length: rows.length + 1 }, (_, index) => index + 1),
+    visibleTableColumns: Array.from({ length: columns.length + 1 }, (_, index) => index + 1),
+    compactTableRows: true,
+    compactTableColumns: true,
+    suppressTemplateFallback: true,
+  };
+}
+
 function getElementContent(slideNumber, element, fieldsById, fieldValues, assetValues, chartValues, globalDetails) {
   if (slideNumber === 9 && Number(element?.order || 0) >= 8 && Number(element?.order || 0) <= 31) {
     return { kind: "hidden" };
@@ -2559,6 +3013,14 @@ function getElementContent(slideNumber, element, fieldsById, fieldValues, assetV
           bbox: [28.8, 142, 1222.08, 216],
         }
       : { kind: "hidden" };
+  }
+  if (slideNumber === 25) {
+    const bridgeContent = getSlide25ElementContent(element, fieldValues);
+    if (bridgeContent) return withElementLayout(slideNumber, element, bridgeContent);
+  }
+  if (slideNumber === 27) {
+    const cashflowContent = getSlide27ElementContent(element, fieldValues);
+    if (cashflowContent) return withElementLayout(slideNumber, element, cashflowContent);
   }
   if (!element?.text) return withElementLayout(slideNumber, element, { kind: "text", text: "" });
   const elementFields = getElementFields(slideNumber, element, fieldsById);
@@ -2607,14 +3069,27 @@ function getElementContent(slideNumber, element, fieldsById, fieldValues, assetV
   const override = fieldValues?.[getElementAutofillKey("element_override", slideNumber, element.order)];
   const suffix = fieldValues?.[getElementAutofillKey("element_suffix", slideNumber, element.order)];
 
-  return withElementLayout(slideNumber, element, {
+  const content = {
     kind: "text",
     text: override || `${displayText}${suffix || ""}`,
-  });
+  };
+  if (slideNumber === 24 && element.order === 7 && element.kind === "table") {
+    content.text = content.text.replace(/\[[^\]]+\]/g, "");
+    content.visibleTableColumns = getSlide24VisibleTableColumns(elementFields, fieldValues);
+    content.compactTableColumns = true;
+    content.suppressTemplateFallback = true;
+  }
+  return withElementLayout(slideNumber, element, content);
 }
 
 function hasFieldData(field, fieldValues, assetValues, chartValues) {
   if (field.hidden) return false;
+  if (field.fieldKind === "ebitdaBridge") {
+    return getSlide25BridgeFigures(fieldValues[field.id]).reported !== null;
+  }
+  if (field.fieldKind === "cashflowStatement") {
+    return normalizeSlide27Cashflow(fieldValues[field.id]).rows.length > 0;
+  }
   if (isAssetField(field)) return Boolean(assetValues?.[getAssetKey(field)]?.dataUrl);
   if (isChartField(field)) return Boolean(normalizeText(chartValues?.[field.id]?.dataText));
   if (field.repeatableConfig) {
@@ -2624,17 +3099,26 @@ function hasFieldData(field, fieldValues, assetValues, chartValues) {
 }
 
 function getEditableTemplateFields(fields = [], globalDetails) {
+  const includesSlide25 = fields.some((field) => field.slideNumber === 25);
+  const includesSlide27 = fields.some((field) => field.slideNumber === 27);
   const editableFields = fields.filter(
-    (field) => {
-      const tokenIndex = getFieldTokenIndex(field);
-      const isSlide24CapEx = field.slideNumber === 24 && field.order === 7 &&
-        tokenIndex >= SLIDE_24_CAPEX_TOKEN_START && tokenIndex <= SLIDE_24_CAPEX_TOKEN_END;
-      const isSlide24FreeCashFlow = field.slideNumber === 24 && field.order === 7 &&
-        tokenIndex >= SLIDE_24_FCF_TOKEN_START && tokenIndex <= SLIDE_24_FCF_TOKEN_END;
-      return !field.hidden && !isSlide24CapEx && !isSlide24FreeCashFlow &&
-        !isResolvedByGlobalDetails(field, globalDetails);
-    },
+    (field) => !(
+      (field.slideNumber === 25 && [8, 10].includes(field.order)) ||
+      (field.slideNumber === 27 && field.order === 7)
+    ),
+  ).filter(
+    (field) => !field.hidden && !isResolvedByGlobalDetails(field, globalDetails),
   );
+
+  const insertStructuredField = (structuredField) => {
+    const insertAt = editableFields.findIndex((field) =>
+      field.slideNumber === structuredField.slideNumber && field.order > structuredField.order,
+    );
+    if (insertAt < 0) editableFields.push(structuredField);
+    else editableFields.splice(insertAt, 0, structuredField);
+  };
+  if (includesSlide25) insertStructuredField(SLIDE_25_BRIDGE_FIELD);
+  if (includesSlide27) insertStructuredField(SLIDE_27_CASHFLOW_FIELD);
 
   const slideOneAdvisorLogos = editableFields.filter((field) =>
     field.slideNumber === 1 && isAssetField(field) && getAssetKey(field) === "advisor-logo",
@@ -2774,29 +3258,43 @@ function getFinancialAutofillRangeLabel(range = {}) {
 }
 
 function getSlide24ActivePeriodCount(range = {}) {
-  if (!range || !range.startDate || !range.endDate) return 5;
+  if (!range || !range.startDate || !range.endDate) return 6;
   const startYear = Number(String(range.startDate).slice(0, 4));
   const rawEndYear = Number(String(range.endDate).slice(0, 4));
-  if (!startYear || !rawEndYear || rawEndYear < startYear) return 5;
+  if (!startYear || !rawEndYear || rawEndYear < startYear) return 6;
   const currentCount = range.periodType === "fiscal"
     ? Math.max(1, rawEndYear - startYear)
     : Math.max(1, rawEndYear - startYear + 1);
-  return Math.min(5, currentCount);
+  return Math.min(5, currentCount) + 1;
 }
 
 const SLIDE_24_ORDER_7_ROW_DEFS = [
-  { start: 0, count: 5 },
-  { start: 5, count: 5 },
-  { start: 10, count: 4 },
-  { start: 14, count: 5 },
-  { start: 19, count: 5 },
-  { start: 24, count: 5 },
-  { start: 29, count: 5 },
-  { start: 34, count: 5 },
-  { start: 39, count: 5 },
-  { start: 44, count: 5 },
-  { start: 49, count: 5 },
-  { start: 54, count: 5 },
+  { start: 0, count: 6 },
+  { start: 6, count: 6 },
+  { start: 12, count: 5 },
+  { start: 17, count: 6 },
+  { start: 23, count: 6 },
+  { start: 29, count: 6 },
+  { start: 35, count: 6 },
+  { start: 41, count: 6 },
+  { start: 47, count: 6 },
+  { start: 53, count: 6 },
+  { start: 59, count: 6 },
+  { start: 65, count: 6 },
+];
+
+const SLIDE_24_CARD_METRICS = [
+  { label: "Revenue", start: 6, count: 6 },
+  { label: "YoY Growth", start: 12, count: 5 },
+  { label: "COGS", start: 17, count: 6 },
+  { label: "Gross Profit", start: 23, count: 6 },
+  { label: "Gross Margin", start: 29, count: 6 },
+  { label: "Operating Expenses", start: 35, count: 6 },
+  { label: "Adjusted EBITDA", start: 41, count: 6 },
+  { label: "Adjusted EBITDA Margin", start: 47, count: 6 },
+  { label: "D&A", start: 53, count: 6 },
+  { label: "Adjusted EBIT", start: 59, count: 6 },
+  { label: "Net Income", start: 65, count: 6 },
 ];
 
 function getSlide24ColumnIndex(field) {
@@ -2807,6 +3305,25 @@ function getSlide24ColumnIndex(field) {
     if (ti >= start && ti < start + count) return ti - start;
   }
   return null;
+}
+
+function isSlide24FieldActive(field, range = {}) {
+  const column = getSlide24ColumnIndex(field);
+  if (column === null) return true;
+  const annualCount = Math.max(1, getSlide24ActivePeriodCount(range) - 1);
+  return column < annualCount || column === 5;
+}
+
+function getSlide24VisibleTableColumns(elementFields = [], fieldValues = {}) {
+  const annualHeadingColumns = elementFields
+    .map((field) => ({ field, tokenIndex: getFieldTokenIndex(field) }))
+    .filter(({ field, tokenIndex }) =>
+      tokenIndex >= 0 && tokenIndex < 5 && normalizeText(getStoredFieldValue(field, fieldValues)),
+    )
+    .map(({ tokenIndex }) => tokenIndex)
+    .sort((a, b) => a - b);
+  if (!annualHeadingColumns.length) return [1, 2, 3, 4, 5, 6, 7];
+  return [1, ...annualHeadingColumns.map((column) => column + 2), 7];
 }
 
 function getTrailingTwelveMonthRange(range = {}) {
@@ -2874,6 +3391,33 @@ function calculateAutoFillGrowth(snapshot, year) {
   const current = getAutoFillMetric(snapshot, year, "totalRevenue");
   const previous = getAutoFillMetric(snapshot, years[index - 1], "totalRevenue");
   return previous ? ((current - previous) / Math.abs(previous)) * 100 : 0;
+}
+
+function formatSlide24Year(year, periodType = "calendar") {
+  const numericYear = Number(year);
+  if (!numericYear) return "";
+  if (periodType === "fiscal") {
+    return `FY${numericYear - 1}-${String(numericYear).slice(-2)}`;
+  }
+  return `FY${numericYear}`;
+}
+
+function formatSlide24Millions(value, { expense = false, missing = "-", zero = "0" } = {}) {
+  if (value === null || value === undefined || value === "") return missing;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return missing;
+  if (Math.abs(numeric) < 0.0001) return zero;
+  const formatted = formatAutoFillNumber(Math.abs(numeric) / 1_000_000, 1);
+  if (expense) return `(${formatted}M)`;
+  if (numeric < 0) return `($${formatted}M)`;
+  return `$${formatted}M`;
+}
+
+function formatSlide24Percent(value, { missing = "-" } = {}) {
+  if (value === null || value === undefined || value === "") return missing;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return missing;
+  return `${formatAutoFillNumber(numeric, 1)}%`;
 }
 
 function calculateAutoFillCagr(snapshot, years = []) {
@@ -3011,7 +3555,7 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
   addElementSuffix(24, 8, ` Source: ${reportsSource}.`);
   addElementOverride(23, 36, `Source: ${reportsSource}; ${selectedRangeText}.`);
   addElementOverride(26, 8, `Source: ${financialSource}; Reports; ${selectedRangeText}.`);
-  addElementOverride(27, 8, `Note: Free Cash Flow = Cash from Operations less CapEx. Source: ${financialSource}; Reports.`);
+  addElementOverride(27, 8, `Source: ${financialSource}; Cash Flow report; ${selectedRangeText}.`);
   addElementOverride(29, 32, `Source: ${financialSource}; Quality of Earnings - Bank Reconciliation; as of ${sourceAsOfDate}.`);
   addElementOverride(30, 32, `Source: ${financialSource}; Quality of Earnings - Tax Reconciliation; ${selectedRangeText}; as of ${sourceAsOfDate}.`);
 
@@ -3070,40 +3614,76 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
   addChart(23, 33, "bar", getAutoFillChartData(snapshot, chartYears.filter(Boolean), ["totalRevenue"]));
   addChart(23, 35, "bar", getAutoFillChartData(snapshot, chartYears.filter(Boolean), ["adjustedEbitda", "ebitdaMargin"]));
 
+  const incomeYears = selectedStartYear && selectedEndYear && selectedEndYear >= selectedStartYear
+    ? Array.from(
+        { length: Math.min(5, selectedEndYear - selectedStartYear + 1) },
+        (_, index) => selectedStartYear + index,
+      )
+    : years.slice(0, 5);
   const incomeColumns = [
-    ...historyYears.map((year) => ({ year, metrics: getAutoFillYearMetrics(snapshot, year) })),
+    ...incomeYears.map((year) => ({ year, metrics: getAutoFillYearMetrics(snapshot, year) })),
     { year: latestYear, metrics: trailing, trailing: true },
   ];
-  add(24, 5, 0, selectedStartYear ? `FY${selectedStartYear}` : "");
-  add(24, 5, 1, selectedEndYear ? `FY${selectedEndYear}` : "");
+  const slide24PeriodType = snapshot?.currentPeriod?.periodType || "calendar";
+  add(24, 5, 0, formatSlide24Year(selectedStartYear, slide24PeriodType));
+  add(24, 5, 1, formatSlide24Year(selectedEndYear, slide24PeriodType));
   incomeColumns.forEach((column, columnIndex) => {
-    const { year, metrics } = column;
-    if (columnIndex < 4) add(24, 7, columnIndex, year);
-    if (columnIndex === 4) add(24, 7, 4, currentShortDate);
-    add(24, 7, 5 + columnIndex, formatAutoFillMillions(metrics.totalRevenue));
-    if (columnIndex < 4) add(24, 7, 10 + columnIndex, formatAutoFillPercent(calculateAutoFillGrowth(snapshot, year)));
-    add(24, 7, 14 + columnIndex, formatAutoFillMillions(metrics.costOfGoodsSold));
-    add(24, 7, 19 + columnIndex, formatAutoFillMillions(metrics.grossProfit));
-    add(24, 7, 24 + columnIndex, formatAutoFillPercent(metrics.grossMargin));
-    add(24, 7, 29 + columnIndex, formatAutoFillMillions(metrics.operatingExpenses || metrics.sgaExpenses));
-    add(24, 7, 34 + columnIndex, formatAutoFillMillions(metrics.adjustedEbitda));
-    add(24, 7, 39 + columnIndex, formatAutoFillPercent(metrics.ebitdaMargin));
-    add(24, 7, 44 + columnIndex, formatAutoFillMillions(metrics.depreciationAmortization));
-    add(24, 7, 49 + columnIndex, formatAutoFillMillions(metrics.ebit));
-    add(24, 7, 54 + columnIndex, formatAutoFillMillions(metrics.netProfit));
+    const { year, metrics, trailing: isTrailing } = column;
+    const tableColumnIndex = isTrailing ? 5 : columnIndex;
+    if (isTrailing) add(24, 7, 5, currentShortDate);
+    else add(24, 7, columnIndex, formatSlide24Year(year, slide24PeriodType));
+    add(24, 7, 6 + tableColumnIndex, formatSlide24Millions(metrics.totalRevenue));
+    if (!isTrailing) {
+      const yearIndex = years.indexOf(year);
+      const growth = yearIndex > 0 ? calculateAutoFillGrowth(snapshot, year) : null;
+      add(24, 7, 12 + columnIndex, formatSlide24Percent(growth));
+    }
+    add(24, 7, 17 + tableColumnIndex, formatSlide24Millions(metrics.costOfGoodsSold, { expense: true }));
+    add(24, 7, 23 + tableColumnIndex, formatSlide24Millions(
+      metrics.hasGrossProfitData ? metrics.grossProfit : Number.NaN,
+    ));
+    add(24, 7, 29 + tableColumnIndex, formatSlide24Percent(
+      metrics.hasGrossProfitData && Number(metrics.totalRevenue) ? metrics.grossMargin : Number.NaN,
+    ));
+    add(24, 7, 35 + tableColumnIndex, formatSlide24Millions(
+      metrics.hasOperatingExpensesData ? metrics.operatingExpenses : Number.NaN,
+      { expense: true },
+    ));
+    add(24, 7, 41 + tableColumnIndex, formatSlide24Millions(
+      metrics.hasAdjustedEbitdaData ? metrics.adjustedEbitda : Number.NaN,
+    ));
+    add(24, 7, 47 + tableColumnIndex, formatSlide24Percent(
+      metrics.hasAdjustedEbitdaData && Number(metrics.totalRevenue) ? metrics.ebitdaMargin : Number.NaN,
+    ));
+    add(24, 7, 53 + tableColumnIndex, formatSlide24Millions(
+      metrics.hasDepreciationAmortizationData ? metrics.depreciationAmortization : Number.NaN,
+      { expense: true },
+    ));
+    add(24, 7, 59 + tableColumnIndex, formatSlide24Millions(
+      metrics.hasAdjustedEbitData ? metrics.ebit : Number.NaN,
+    ));
+    add(24, 7, 65 + tableColumnIndex, formatSlide24Millions(metrics.netProfit));
   });
 
-  add(25, 5, 0, formatAutoFillMillions(latest.adjustedEbitda));
-  add(25, 5, 1, latest.addbacksCount ? String(latest.addbacksCount) : "");
-  add(25, 5, 2, formatAutoFillMillions(latest.addbacksTotal));
-  add(25, 10, 0, formatAutoFillMillions(latest.ebitda));
-  add(25, 10, 7, formatAutoFillMillions(latest.adjustedEbitda));
-  add(25, 10, 8, formatAutoFillPercent(latest.ebitdaMargin));
-  addChart(25, 8, "waterfall", [
-    `Reported EBITDA,${formatAutoFillMillions(latest.ebitda)}`,
-    latest.addbacksTotal ? `Adjustments,${formatAutoFillMillions(latest.addbacksTotal)}` : "",
-    `Adjusted EBITDA,${formatAutoFillMillions(latest.adjustedEbitda)}`,
-  ].filter(Boolean).join("\n"));
+  const slide25Adjustments = (
+    snapshot?.adjustments?.itemsByYear?.[String(latestYear)] || []
+  ).map((adjustment, index) => ({
+    id: adjustment.id || `adjustment-${index + 1}`,
+    label: adjustment.label || "",
+    amount: formatAutoFillMillions(adjustment.amount),
+    nature: adjustment.nature || "",
+    commentary: adjustment.commentary || "",
+  }));
+  fieldValues[SLIDE_25_BRIDGE_FIELD_ID] = stringifySlide25Bridge({
+    reportedEbitda: formatAutoFillMillions(latest.ebitda),
+    adjustments: slide25Adjustments,
+  });
+  const slide25AdjustmentTotal = (
+    snapshot?.adjustments?.itemsByYear?.[String(latestYear)] || []
+  ).reduce((sum, adjustment) => sum + Number(adjustment.amount || 0), 0);
+  add(25, 5, 0, formatAutoFillMillions(Number(latest.ebitda || 0) + slide25AdjustmentTotal));
+  add(25, 5, 1, String(slide25Adjustments.length));
+  add(25, 5, 2, slide25AdjustmentTotal ? formatAutoFillMillions(slide25AdjustmentTotal) : "0");
 
   add(26, 5, 0, currentLongDate);
   add(26, 5, 1, formatAutoFillMillions(latest.totalAssets));
@@ -3134,35 +3714,30 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
   add(26, 8, 0, selectedStartYear ? `FY${selectedStartYear}` : "");
   add(26, 8, 1, selectedEndYear ? `FY${selectedEndYear}` : "");
 
-  const cashflowColumns = [
-    ...balanceYears.map((year) => ({ year, metrics: getAutoFillYearMetrics(snapshot, year) })),
-    { year: latestYear, metrics: trailing, trailing: true },
+  const cashflowPeriods = [
+    ...incomeYears.map((year) => ({
+      key: `fy-${year}`,
+      label: formatSlide24Year(year, slide24PeriodType),
+      metrics: getAutoFillYearMetrics(snapshot, year),
+    })),
+    {
+      key: "ltm",
+      label: currentShortDate ? `LTM ${currentShortDate}` : "LTM",
+      metrics: trailing,
+    },
   ];
-  cashflowColumns.forEach((column, columnIndex) => {
-    const { year, metrics } = column;
-    if (columnIndex < 3) add(27, 7, columnIndex, year);
-    if (columnIndex === 3) add(27, 7, 3, currentShortDate);
-    add(27, 7, 4 + columnIndex, formatAutoFillMillions(metrics.netProfit));
-    add(27, 7, 8 + columnIndex, formatAutoFillMillions(metrics.depreciationAmortization));
-    add(27, 7, 12 + columnIndex, formatAutoFillMillions(metrics.changeInWorkingCapital));
-    add(27, 7, 16 + columnIndex, formatAutoFillMillions(metrics.otherNonCashItems));
-    add(27, 7, 20 + columnIndex, formatAutoFillMillions(metrics.cashFromOperations));
-    add(27, 7, 24 + columnIndex, formatAutoFillMillions(metrics.capitalExpenditures));
-    add(27, 7, 28 + columnIndex, formatAutoFillMillions(metrics.acquisitionsDispositions));
-    add(27, 7, 32 + columnIndex, formatAutoFillMillions(metrics.cashFromInvesting));
-    add(27, 7, 36 + columnIndex, formatAutoFillMillions(metrics.netBorrowingsRepayments));
-    add(27, 7, 40 + columnIndex, formatAutoFillMillions(metrics.dividendsDistributions));
-    add(27, 7, 44 + columnIndex, formatAutoFillMillions(metrics.cashFromFinancing));
-    add(27, 7, 48 + columnIndex, formatAutoFillMillions(metrics.netChangeInCash));
-    add(27, 7, 52 + columnIndex, formatAutoFillMillions(metrics.freeCashFlow));
-    add(27, 7, 56 + columnIndex, formatAutoFillPercent(calculateAutoFillFcfConversion(metrics)));
+  fieldValues[SLIDE_27_CASHFLOW_FIELD_ID] = stringifySlide27Cashflow({
+    columns: cashflowPeriods.map(({ key, label }) => ({ key, label })),
+    rows: buildSlide27CashflowRows(cashflowPeriods),
+    placeholder: false,
   });
-  const cumulativeFcf = cashflowColumns
-    .filter((column) => column.year && !column.trailing)
-    .reduce((sum, column) => sum + Number(column.metrics.freeCashFlow || 0), 0);
-  add(27, 5, 0, formatAutoFillMillions(cumulativeFcf));
+  const cumulativeFcf = incomeYears.reduce(
+    (sum, year) => sum + Number(getAutoFillYearMetrics(snapshot, year).freeCashFlow || 0),
+    0,
+  );
+  add(27, 5, 0, cumulativeFcf ? formatAutoFillMillions(cumulativeFcf) : "0");
   add(27, 5, 1, selectedRangeText);
-  add(27, 6, 0, formatAutoFillPercent(calculateAutoFillFcfConversion(latest)));
+  add(27, 6, 0, formatAutoFillPercent(calculateAutoFillFcfConversion(trailing)) || "0");
 
   add(28, 5, 0, formatAutoFillMillions(trailing.workingCapital));
   add(28, 5, 1, String(currentPeriodMonths));
@@ -3284,6 +3859,40 @@ function mergeOverwriteAutofillValues(existing = {}, additions = {}, isFilled = 
   });
 
   return { next, count };
+}
+
+function withoutFieldValues(existing = {}, fields = []) {
+  const next = { ...existing };
+  fields.forEach((field) => {
+    delete next[field.valueFieldId || field.id];
+  });
+  return next;
+}
+
+function getSlide24PeriodHeadingValues(fields = [], range = {}) {
+  const headings = {};
+  const fieldByTokenIndex = new Map(
+    fields
+      .filter((field) => field.slideNumber === 24 && field.order === 7)
+      .map((field) => [getFieldTokenIndex(field), field]),
+  );
+  const startYear = Number(String(range.startDate || "").slice(0, 4));
+  const periodType = range.periodType === "fiscal" ? "fiscal" : "calendar";
+  const annualCount = Math.max(1, getSlide24ActivePeriodCount(range) - 1);
+
+  Array.from({ length: annualCount }, (_, index) => index).forEach((columnIndex) => {
+    const field = fieldByTokenIndex.get(columnIndex);
+    if (!field || !startYear) return;
+    const fiscalYear = periodType === "fiscal"
+      ? startYear + columnIndex + 1
+      : startYear + columnIndex;
+    headings[field.valueFieldId || field.id] = formatSlide24Year(fiscalYear, periodType);
+  });
+
+  const ltmField = fieldByTokenIndex.get(5);
+  const ltmDate = formatAutoFillDate(range.endDate, "short");
+  if (ltmField && ltmDate) headings[ltmField.valueFieldId || ltmField.id] = ltmDate;
+  return headings;
 }
 
 function getSectionForSlide(slideNumber) {
@@ -3436,6 +4045,7 @@ function getQuestionnaireTemplateFields(section, fieldsBySlide, globalDetails) {
     section.slides.flatMap((slideNumber) => fieldsBySlide[slideNumber] || []),
     globalDetails,
   )
+    .filter((field) => !field.excludeFromQuestionnaire)
     .filter((field) => {
       const key = `${field.fieldKind}:${normalizeText(field.label).toLowerCase()}:${normalizeText(field.sourceText || field.text).toLowerCase()}`;
       if (seen.has(key)) return false;
@@ -3645,14 +4255,24 @@ function SlideCanvas({
         if (element.kind === "table" && Array.isArray(element.cells)) {
           const tableText = content.kind === "table"
             ? ""
-            : getElementDisplayText(slideNumber, element, fieldsById, fieldValues, globalDetails);
+            : content.text ?? getElementDisplayText(slideNumber, element, fieldsById, fieldValues, globalDetails);
           const matrix = content.tableMatrix || parseTableText(tableText, element.rows, element.cols);
           const visibleRows = content.visibleTableRows || Array.from(
             { length: Number(element.rows || 0) },
             (_, index) => index + 1,
           );
+          const visibleColumns = content.visibleTableColumns || Array.from(
+            { length: Number(element.cols || 0) },
+            (_, index) => index + 1,
+          );
           const sourceTableLeft = Number(element.bbox?.[0] || 0);
           const tableScaleX = Number(content.tableScaleX || 1);
+          const sourceLabelWidth = Number(
+            element.cells.find((cell) => Number(cell.column || 1) === 1)?.bbox?.[2] || 0,
+          );
+          const compactValueWidth = visibleColumns.length > 1
+            ? (Number(element.bbox?.[2] || 0) - sourceLabelWidth) / (visibleColumns.length - 1)
+            : 0;
 
           return (
             <div
@@ -3670,18 +4290,28 @@ function SlideCanvas({
                     : "none",
               }}
             >
-              {element.cells.filter((cell) => visibleRows.includes(Number(cell.row || 1))).map((cell) => {
+              {element.cells.filter((cell) => (
+                visibleRows.includes(Number(cell.row || 1)) &&
+                visibleColumns.includes(Number(cell.column || 1))
+              )).map((cell) => {
                 const [cellLeft = 0, cellTop = 0, cellWidth = 0, cellHeight = 0] = cell.bbox || [];
                 const cellStyle = getElementStyle(cell);
                 const cellInsets = cellStyle.insets || {};
                 const rowIndex = Number(cell.row || 1) - 1;
                 const colIndex = Number(cell.column || 1) - 1;
                 const compactRowIndex = visibleRows.indexOf(Number(cell.row || 1));
-                const effectiveCellLeft = left + (cellLeft - sourceTableLeft) * tableScaleX;
+                const compactColumnIndex = visibleColumns.indexOf(Number(cell.column || 1));
+                const effectiveCellLeft = content.compactTableColumns
+                  ? left + (compactColumnIndex === 0
+                    ? 0
+                    : sourceLabelWidth + (compactColumnIndex - 1) * compactValueWidth)
+                  : left + (cellLeft - sourceTableLeft) * tableScaleX;
                 const effectiveCellTop = content.compactTableRows
                   ? top + compactRowIndex * cellHeight
                   : cellTop;
-                const effectiveCellWidth = cellWidth * tableScaleX;
+                const effectiveCellWidth = content.compactTableColumns
+                  ? (compactColumnIndex === 0 ? sourceLabelWidth : compactValueWidth)
+                  : cellWidth * tableScaleX;
                 const matrixValue = matrix[rowIndex]?.[colIndex];
                 const cellText = content.suppressTemplateFallback
                   ? (matrixValue ?? "")
@@ -4443,6 +5073,361 @@ function RepeatableFieldControl({
   );
 }
 
+function Slide24YearCards({ fields, fieldValues, range, activeFieldId, onFieldFocus, onFieldChange }) {
+  const annualCount = Math.max(1, getSlide24ActivePeriodCount(range) - 1);
+  const columns = [...Array.from({ length: annualCount }, (_, index) => index), 5];
+  const [expandedColumn, setExpandedColumn] = useState(columns[0] ?? 0);
+  const fieldByTokenIndex = new Map(fields.map((field) => [getFieldTokenIndex(field), field]));
+  const startYear = Number(String(range?.startDate || "").slice(0, 4));
+  const periodType = range?.periodType || "calendar";
+
+  const getDefaultPeriodLabel = (column) => {
+    if (column === 5) return "LTM";
+    if (!startYear) return `Financial Year ${column + 1}`;
+    const year = periodType === "fiscal" ? startYear + column + 1 : startYear + column;
+    return formatSlide24Year(year, periodType);
+  };
+
+  return (
+    <div className={fieldCardClass(fields.some((field) => field.id === activeFieldId))}>
+      <div className="mb-3">
+        <span className="block text-[11px] font-bold uppercase tracking-[0.06em] text-[#6D6E71]">
+          Historical income statement by period
+        </span>
+        <span className="mt-0.5 block text-[11px] font-semibold text-[#8A8F98]">
+          Auto-filled values remain editable. Empty fields stay blank on the slide.
+        </span>
+      </div>
+
+      <div className="space-y-2">
+        {columns.map((column, cardIndex) => {
+          const periodField = fieldByTokenIndex.get(column);
+          const storedPeriod = periodField ? normalizeText(fieldValues[periodField.id]) : "";
+          const periodLabel = column === 5
+            ? `LTM${storedPeriod ? ` · ${storedPeriod}` : ""}`
+            : storedPeriod || getDefaultPeriodLabel(column);
+          const metricFields = SLIDE_24_CARD_METRICS.flatMap((metric) => {
+            if (column >= metric.count) return [];
+            const metricField = fieldByTokenIndex.get(metric.start + column);
+            return metricField ? [{ ...metric, field: metricField }] : [];
+          });
+          const populatedCount = metricFields.filter(({ field }) => normalizeText(fieldValues[field.id])).length;
+          const expanded = expandedColumn === column;
+
+          return (
+            <div
+              key={column}
+              className={`overflow-hidden rounded-lg border transition ${expanded ? "border-[#BFD99B] bg-[#F9FCF5]" : "border-border bg-white"}`}
+            >
+              <button
+                type="button"
+                onClick={() => setExpandedColumn(expanded ? null : column)}
+                className="flex min-h-12 w-full items-center justify-between gap-3 px-3 py-2 text-left"
+              >
+                <span className="flex min-w-0 items-center gap-2.5">
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#E6F3D3] text-[11px] font-extrabold text-[#476E2C]">
+                    {cardIndex + 1}
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block truncate text-[12px] font-bold text-[#050505]">{periodLabel}</span>
+                    <span className="block text-[10px] font-semibold text-[#8A8F98]">
+                      {populatedCount}/{metricFields.length} values entered
+                    </span>
+                  </span>
+                </span>
+                <ChevronRight
+                  size={15}
+                  className={`shrink-0 text-[#6D6E71] transition-transform ${expanded ? "rotate-90" : ""}`}
+                />
+              </button>
+
+              {expanded ? (
+                <div className="space-y-3 border-t border-[#DDEBCB] p-3">
+                  {periodField ? (
+                    <label className="block">
+                      <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.05em] text-[#6D6E71]">
+                        {column === 5 ? "LTM end date" : "Financial year heading"}
+                      </span>
+                      <input
+                        value={fieldValues[periodField.id] || ""}
+                        onFocus={() => onFieldFocus(periodField.id)}
+                        onChange={(event) => onFieldChange(periodField.id, event.target.value)}
+                        className="h-10 w-full rounded-md border border-border bg-white px-3 text-[12px] text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20"
+                      />
+                    </label>
+                  ) : null}
+
+                  <div className="grid gap-3 md:grid-cols-2">
+                    {metricFields.map(({ label, field }) => (
+                      <label key={field.id} className="block">
+                        <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.05em] text-[#6D6E71]">
+                          {label}
+                        </span>
+                        <input
+                          value={fieldValues[field.id] || ""}
+                          onFocus={() => onFieldFocus(field.id)}
+                          onChange={(event) => onFieldChange(field.id, event.target.value)}
+                          className="h-10 w-full rounded-md border border-border bg-white px-3 text-[12px] text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20"
+                        />
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function Slide25EbitdaBridgeCard({ field, value, active, onFieldFocus, onFieldChange }) {
+  const bridge = normalizeSlide25Bridge(value);
+  const figures = getSlide25BridgeFigures(value);
+
+  const updateBridge = (nextBridge) => {
+    onFieldChange(field.id, stringifySlide25Bridge(nextBridge));
+  };
+  const updateAdjustment = (index, key, nextValue) => {
+    const adjustments = bridge.adjustments.map((adjustment, adjustmentIndex) =>
+      adjustmentIndex === index ? { ...adjustment, [key]: nextValue } : adjustment,
+    );
+    updateBridge({ ...bridge, adjustments });
+  };
+  const addAdjustment = () => {
+    let nextIndex = 1;
+    while (bridge.adjustments.some((adjustment) => adjustment.id === `manual-adjustment-${nextIndex}`)) {
+      nextIndex += 1;
+    }
+    updateBridge({
+      ...bridge,
+      adjustments: [
+        ...bridge.adjustments,
+        { id: `manual-adjustment-${nextIndex}`, label: "", amount: "", nature: "", commentary: "" },
+      ],
+    });
+  };
+  const removeAdjustment = (index) => {
+    updateBridge({
+      ...bridge,
+      adjustments: bridge.adjustments.filter((_, adjustmentIndex) => adjustmentIndex !== index),
+    });
+  };
+
+  return (
+    <div className={fieldCardClass(active)} onFocus={() => onFieldFocus(field.id)}>
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-[11px] font-bold uppercase tracking-[0.06em] text-[#6D6E71]">
+          EBITDA bridge
+        </span>
+        <button
+          type="button"
+          onClick={addAdjustment}
+          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[#BFD99B] bg-white px-2.5 text-[11px] font-bold text-[#476E2C] transition hover:bg-[#EEF6E0]"
+        >
+          <Plus size={13} />
+          Add adjustment
+        </button>
+      </div>
+
+      <div className="mt-3 grid grid-cols-2 gap-3">
+        <label className="block">
+          <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.05em] text-[#6D6E71]">
+            Reported EBITDA ($M)
+          </span>
+          <input
+            value={bridge.reportedEbitda}
+            onChange={(event) => updateBridge({ ...bridge, reportedEbitda: event.target.value })}
+            className="h-10 w-full rounded-md border border-border bg-white px-3 text-[12px] font-semibold text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20"
+            inputMode="decimal"
+          />
+        </label>
+        <label className="block">
+          <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.05em] text-[#6D6E71]">
+            Adjusted EBITDA ($M)
+          </span>
+          <input
+            value={figures.adjusted === null ? "" : formatAutoFillNumber(figures.adjusted, 1)}
+            readOnly
+            className="h-10 w-full rounded-md border border-[#DDEBCB] bg-[#F4F9EC] px-3 text-[12px] font-bold text-[#243F18] outline-none"
+          />
+        </label>
+      </div>
+
+      {bridge.adjustments.length > 0 ? (
+        <div className="mt-4 border-t border-[#DDEBCB]">
+          {bridge.adjustments.map((adjustment, index) => (
+            <div key={adjustment.id} className="border-b border-[#E8EDEF] py-3 last:border-b-0">
+              <div className="grid grid-cols-[minmax(0,1fr)_92px_32px] gap-2">
+                <label className="block">
+                  <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.05em] text-[#6D6E71]">
+                    Adjustment {index + 1}
+                  </span>
+                  <input
+                    value={adjustment.label}
+                    onChange={(event) => updateAdjustment(index, "label", event.target.value)}
+                    className="h-9 w-full rounded-md border border-border bg-white px-2.5 text-[12px] text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.05em] text-[#6D6E71]">
+                    Amount ($M)
+                  </span>
+                  <input
+                    value={adjustment.amount}
+                    onChange={(event) => updateAdjustment(index, "amount", event.target.value)}
+                    className="h-9 w-full rounded-md border border-border bg-white px-2.5 text-[12px] text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20"
+                    inputMode="decimal"
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={() => removeAdjustment(index)}
+                  className="mt-5 flex h-9 w-8 items-center justify-center rounded-md text-[#8A8F98] transition hover:bg-red-50 hover:text-red-600"
+                  title={`Remove adjustment ${index + 1}`}
+                  aria-label={`Remove adjustment ${index + 1}`}
+                >
+                  <Trash2 size={15} />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function Slide27CashflowCard({ field, value, active, onFieldFocus, onFieldChange }) {
+  const cashflow = normalizeSlide27Cashflow(value);
+  const [expandedPeriod, setExpandedPeriod] = useState(cashflow.columns[0]?.key || "");
+
+  const updateValue = (rowKey, periodKey, nextValue) => {
+    const rows = cashflow.rows.map((row) =>
+      row.key === rowKey
+        ? { ...row, values: { ...row.values, [periodKey]: nextValue || "-" } }
+        : row,
+    );
+    onFieldChange(field.id, stringifySlide27Cashflow({ ...cashflow, rows }));
+  };
+  const updateRowLabel = (rowKey, label) => {
+    const rows = cashflow.rows.map((row) => row.key === rowKey ? { ...row, label } : row);
+    onFieldChange(field.id, stringifySlide27Cashflow({ ...cashflow, rows }));
+  };
+  const addRow = () => {
+    let nextIndex = 1;
+    while (cashflow.rows.some((row) => row.key === `manual-cashflow-row-${nextIndex}`)) nextIndex += 1;
+    const rows = [
+      ...cashflow.rows,
+      {
+        key: `manual-cashflow-row-${nextIndex}`,
+        label: "Manual cash flow item",
+        type: "data",
+        depth: 1,
+        manual: true,
+        values: Object.fromEntries(cashflow.columns.map((column) => [column.key, "-"])),
+      },
+    ];
+    onFieldChange(field.id, stringifySlide27Cashflow({ ...cashflow, rows }));
+  };
+  const removeRow = (rowKey) => {
+    onFieldChange(field.id, stringifySlide27Cashflow({
+      ...cashflow,
+      rows: cashflow.rows.filter((row) => row.key !== rowKey),
+    }));
+  };
+
+  return (
+    <div className={fieldCardClass(active)} onFocus={() => onFieldFocus(field.id)}>
+      <div className="flex items-center justify-between gap-3">
+        <span className="block text-[11px] font-bold uppercase tracking-[0.06em] text-[#6D6E71]">
+          Cash flow statement by period
+        </span>
+        <button
+          type="button"
+          onClick={addRow}
+          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-[#BFD99B] bg-white px-2.5 text-[11px] font-bold text-[#476E2C] transition hover:bg-[#EEF6E0]"
+        >
+          <Plus size={13} />
+          Add row
+        </button>
+      </div>
+      <div className="mt-3 space-y-2">
+        {cashflow.columns.map((column, columnIndex) => {
+          const expanded = expandedPeriod === column.key;
+          const editableRows = cashflow.rows.filter((row) => row.type !== "header");
+          const populatedCount = editableRows.filter((row) => row.values[column.key] !== "-").length;
+          return (
+            <div key={column.key} className="overflow-hidden rounded-lg border border-border bg-white">
+              <button
+                type="button"
+                onClick={() => setExpandedPeriod(expanded ? "" : column.key)}
+                className="flex min-h-12 w-full items-center justify-between gap-3 px-3 py-2 text-left"
+              >
+                <span className="flex min-w-0 items-center gap-2.5">
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#E6F3D3] text-[11px] font-extrabold text-[#476E2C]">
+                    {columnIndex + 1}
+                  </span>
+                  <span>
+                    <span className="block text-[12px] font-bold text-[#050505]">{column.label}</span>
+                    <span className="block text-[10px] font-semibold text-[#8A8F98]">
+                      {populatedCount}/{editableRows.length} values entered
+                    </span>
+                  </span>
+                </span>
+                <ChevronRight
+                  size={15}
+                  className={`shrink-0 text-[#6D6E71] transition-transform ${expanded ? "rotate-90" : ""}`}
+                />
+              </button>
+              {expanded ? (
+                <div className="border-t border-[#DDEBCB] px-3 py-2">
+                  {cashflow.rows.map((row) => row.type === "header" ? (
+                    <div key={row.key} className="mt-2 bg-[#EEF6E0] px-2 py-1.5 text-[10px] font-bold uppercase text-[#476E2C] first:mt-0">
+                      {row.label}
+                    </div>
+                  ) : (
+                    <div key={row.key} className={`grid items-center gap-2 border-b border-[#EEF0F2] py-2 last:border-b-0 ${row.manual ? "grid-cols-[minmax(0,1fr)_108px_28px]" : "grid-cols-[minmax(0,1fr)_108px]"}`}>
+                      {row.manual ? (
+                        <input
+                          value={row.label}
+                          onChange={(event) => updateRowLabel(row.key, event.target.value)}
+                          className="h-8 min-w-0 rounded-md border border-border bg-white px-2 text-[11px] font-semibold text-[#55585D] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20"
+                        />
+                      ) : (
+                        <span className="truncate text-[11px] font-semibold text-[#55585D]" title={row.label}>
+                          {row.label}
+                        </span>
+                      )}
+                      <input
+                        value={row.values[column.key] || "-"}
+                        onChange={(event) => updateValue(row.key, column.key, event.target.value)}
+                        className="h-8 w-full rounded-md border border-border bg-white px-2 text-right text-[11px] text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20"
+                      />
+                      {row.manual ? (
+                        <button
+                          type="button"
+                          onClick={() => removeRow(row.key)}
+                          className="flex h-8 w-7 items-center justify-center rounded-md text-[#8A8F98] transition hover:bg-red-50 hover:text-red-600"
+                          title="Remove manual row"
+                          aria-label="Remove manual row"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function QuestionnaireStatusPill({ status }) {
   const meta = QUESTIONNAIRE_STATUS_META[status] || QUESTIONNAIRE_STATUS_META.open;
   return (
@@ -4528,17 +5513,16 @@ function FieldPanel({
   onQuestionPromptChange,
 }) {
   const allEditableFields = getEditableTemplateFields(fields, globalDetails);
-  const slide24ActivePeriods = activeSlide === 24
-    ? getSlide24ActivePeriodCount(financialAutofillRange)
-    : 5;
-  const slide24FirstActiveCol = 5 - slide24ActivePeriods;
-  const editableFields = activeSlide === 24
-    ? allEditableFields.filter((field) => {
-        const col = getSlide24ColumnIndex(field);
-        return col === null || col >= slide24FirstActiveCol;
-      })
+  const activeEditableFields = activeSlide === 24
+    ? allEditableFields.filter((field) => isSlide24FieldActive(field, financialAutofillRange))
     : allEditableFields;
-  const filledFieldCount = countFieldsWithData(editableFields, fieldValues, assetValues, chartValues);
+  const slide24TableFields = activeSlide === 24
+    ? activeEditableFields.filter((field) => field.order === 7)
+    : [];
+  const editableFields = activeSlide === 24
+    ? activeEditableFields.filter((field) => field.order !== 7)
+    : activeEditableFields;
+  const filledFieldCount = countFieldsWithData(activeEditableFields, fieldValues, assetValues, chartValues);
 
   return (
     <div className="rounded-lg border border-border bg-white p-4 shadow-card">
@@ -4548,16 +5532,50 @@ function FieldPanel({
         </h3>
         <span
           className="rounded-md bg-[#EEF6E0] px-2 py-1 text-[11px] font-bold text-[#476E2C]"
-          title={`${filledFieldCount} fields with data out of ${editableFields.length}`}
+          title={`${filledFieldCount} fields with data out of ${activeEditableFields.length}`}
         >
-          {filledFieldCount}/{editableFields.length}
+          {filledFieldCount}/{activeEditableFields.length}
         </span>
       </div>
 
       <div className="mt-3 max-h-[520px] space-y-3 overflow-y-auto pr-1">
+        {slide24TableFields.length ? (
+          <Slide24YearCards
+            fields={slide24TableFields}
+            fieldValues={fieldValues}
+            range={financialAutofillRange}
+            activeFieldId={activeFieldId}
+            onFieldFocus={onFieldFocus}
+            onFieldChange={onFieldChange}
+          />
+        ) : null}
         {editableFields.length > 0 ? (
           editableFields.map((field) => {
             const questionnaireItem = questionnaireState?.items?.[field.id];
+            if (field.fieldKind === "ebitdaBridge") {
+              return (
+                <Slide25EbitdaBridgeCard
+                  key={field.id}
+                  field={field}
+                  value={fieldValues[field.id] || ""}
+                  active={activeFieldId === field.id}
+                  onFieldFocus={onFieldFocus}
+                  onFieldChange={onFieldChange}
+                />
+              );
+            }
+            if (field.fieldKind === "cashflowStatement") {
+              return (
+                <Slide27CashflowCard
+                  key={field.id}
+                  field={field}
+                  value={fieldValues[field.id] || ""}
+                  active={activeFieldId === field.id}
+                  onFieldFocus={onFieldFocus}
+                  onFieldChange={onFieldChange}
+                />
+              );
+            }
             if (isAssetField(field)) {
               return (
                 <AssetFieldControl
@@ -4661,27 +5679,46 @@ function FieldPanel({
 
 function FinancialAutofillModal({
   initialRange,
+  initialReportVersionId,
+  reportVersions,
+  reportVersionsLoading,
+  reportVersionsError,
   loading,
   onClose,
   onConfirm,
 }) {
   const [range, setRange] = useState(initialRange || getDefaultFinancialAutofillRange());
+  const [reportVersionId, setReportVersionId] = useState(initialReportVersionId || "");
 
-  const valid = isValidFinancialAutofillRange(range);
+  const hasReportVersions = reportVersions.length > 0;
+  const reportVersionValid = !hasReportVersions || reportVersions.some((version) => version.id === reportVersionId);
+  const valid = isValidFinancialAutofillRange(range)
+    && reportVersionValid
+    && !reportVersionsLoading
+    && !reportVersionsError;
   const rangeError = getFinancialAutofillRangeError(range);
+  const formError = rangeError || (!reportVersionValid ? "Select a valid reports version." : "");
   const trailingRange = getTrailingTwelveMonthRange(range);
+
+  useEffect(() => {
+    if (!hasReportVersions || reportVersions.some((version) => version.id === reportVersionId)) return;
+    const fallback = reportVersions.find((version) => version.id === initialReportVersionId)
+      || reportVersions.find((version) => version.isActive)
+      || reportVersions[0];
+    setReportVersionId(fallback?.id || "");
+  }, [hasReportVersions, initialReportVersionId, reportVersionId, reportVersions]);
 
   const handleSubmit = (event) => {
     event.preventDefault();
     if (!valid || loading) return;
-    onConfirm(range);
+    onConfirm({ dateRange: range, reportVersionId });
   };
 
   return (
     <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-[#111827]/70 p-4 backdrop-blur-sm">
       <form
         onSubmit={handleSubmit}
-        className="w-full max-w-lg overflow-hidden rounded-lg bg-white shadow-2xl"
+        className="flex max-h-[calc(100vh-2rem)] w-full max-w-lg flex-col overflow-hidden rounded-lg bg-white shadow-2xl"
       >
         <div className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
           <div className="flex items-start gap-3">
@@ -4689,9 +5726,9 @@ function FinancialAutofillModal({
               <CalendarDays size={20} />
             </span>
             <div>
-              <h2 className="text-base font-bold text-[#050505]">Select Financial Year Range</h2>
+              <h2 className="text-base font-bold text-[#050505]">Select Financial Period and Reports Version</h2>
               <p className="mt-1 text-sm leading-relaxed text-[#6D6E71]">
-                Choose up to five years for CIM financial analysis. Company-history fields remain independent.
+                Choose the exact reports version and up to five years for CIM financial analysis.
               </p>
             </div>
           </div>
@@ -4705,7 +5742,7 @@ function FinancialAutofillModal({
           </button>
         </div>
 
-        <div className="space-y-4 px-5 py-5">
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-5">
           <label className="block">
             <span className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.06em] text-[#6D6E71]">
               Company operating since
@@ -4737,6 +5774,40 @@ function FinancialAutofillModal({
             </select>
           </label>
 
+          <label className="block">
+            <span className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.06em] text-[#6D6E71]">
+              Reports version
+            </span>
+            <select
+              value={reportVersionId}
+              onChange={(event) => setReportVersionId(event.target.value)}
+              className="h-11 w-full rounded-md border border-border bg-white px-3 text-sm font-semibold text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20 disabled:bg-[#F7F8FA] disabled:text-[#A5A5A5]"
+              disabled={loading || reportVersionsLoading || !hasReportVersions}
+              required={hasReportVersions}
+            >
+              {reportVersionsLoading ? <option value="">Loading report versions...</option> : null}
+              {!reportVersionsLoading && !hasReportVersions ? (
+                <option value="">No saved report versions - use current financial source</option>
+              ) : null}
+              {reportVersions.map((version) => (
+                <option key={version.id} value={version.id}>
+                  {version.versionName || `Version ${version.versionNumber || ""}`.trim()}
+                  {version.isActive ? " (Official)" : ""}
+                  {version.status ? ` - ${version.status}` : ""}
+                </option>
+              ))}
+            </select>
+            <span className="mt-1 block text-xs text-[#6D6E71]">
+              Auto-fill will read only the reports and generated financials linked to this version.
+            </span>
+          </label>
+
+          {reportVersionsError ? (
+            <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">
+              {reportVersionsError}
+            </p>
+          ) : null}
+
           <div className="grid gap-4 sm:grid-cols-2">
             <label className="block">
               <span className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.06em] text-[#6D6E71]">
@@ -4766,9 +5837,9 @@ function FinancialAutofillModal({
             </label>
           </div>
 
-          {!valid && (
+          {formError && (
             <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">
-              {rangeError}
+              {formError}
             </p>
           )}
 
@@ -5662,6 +6733,12 @@ export default function WorkspaceCimPrep() {
   const { activeSource } = useDataSource();
   const { showToast } = useToast();
   const selectedDatasetVersion = useDatasetVersionStore((state) => state.selectedVersion);
+  const reportVersions = useKeyReportContextStore((state) => state.versions);
+  const selectedReportVersionId = useKeyReportContextStore((state) => state.selectedVersionId);
+  const reportVersionsLoading = useKeyReportContextStore((state) => state.loading);
+  const reportVersionsError = useKeyReportContextStore((state) => state.error);
+  const fetchReportVersions = useKeyReportContextStore((state) => state.fetchVersions);
+  const selectReportVersion = useKeyReportContextStore((state) => state.selectVersion);
   const [company, setCompany] = useState(null);
   const [layouts, setLayouts] = useState({});
   const [globalDetails, setGlobalDetails] = useState(() => createDefaultGlobalDetails());
@@ -5689,6 +6766,7 @@ export default function WorkspaceCimPrep() {
   const [questionnaireOpen, setQuestionnaireOpen] = useState(false);
   const [financialAutofillModalOpen, setFinancialAutofillModalOpen] = useState(false);
   const [financialAutofillRange, setFinancialAutofillRange] = useState(() => getDefaultFinancialAutofillRange());
+  const [financialAutofillReportVersionId, setFinancialAutofillReportVersionId] = useState("");
   const reportSource = useMemo(
     () => normalizeReportSourceKey(activeSource) || REPORT_SOURCE_KEYS.QUICKBOOKS,
     [activeSource],
@@ -5763,6 +6841,79 @@ export default function WorkspaceCimPrep() {
   }, [clientId]);
 
   useEffect(() => {
+    if (clientId) void fetchReportVersions(clientId);
+  }, [clientId, fetchReportVersions]);
+
+  useEffect(() => {
+    if (loading || reportVersionsLoading || !reportVersions.length) return;
+    setFinancialAutofillReportVersionId((previous) => {
+      if (previous && reportVersions.some((version) => version.id === previous)) return previous;
+      return selectedReportVersionId || reportVersions.find((version) => version.isActive)?.id || reportVersions[0].id;
+    });
+  }, [loading, reportVersions, reportVersionsLoading, selectedReportVersionId]);
+
+  useEffect(() => {
+    if (loading || !isValidFinancialAutofillRange(financialAutofillRange)) return;
+
+    const slide24HeadingFields = (fieldsBySlide[24] || []).filter((field) => {
+      const tokenIndex = getFieldTokenIndex(field);
+      return field.order === 7 && tokenIndex >= 0 && tokenIndex <= 5;
+    });
+    if (!slide24HeadingFields.length) return;
+
+    const headingValues = getSlide24PeriodHeadingValues(
+      slide24HeadingFields,
+      financialAutofillRange,
+    );
+    setFieldValues((previous) => {
+      const next = {
+        ...withoutFieldValues(previous, slide24HeadingFields),
+        ...headingValues,
+      };
+      const changed = slide24HeadingFields.some((field) => {
+        const fieldId = field.valueFieldId || field.id;
+        return normalizeText(previous[fieldId]) !== normalizeText(next[fieldId]);
+      });
+      return changed ? next : previous;
+    });
+  }, [fieldsBySlide, financialAutofillRange, loading]);
+
+  useEffect(() => {
+    if (loading || !isValidFinancialAutofillRange(financialAutofillRange)) return;
+    if (!(fieldsBySlide[27] || []).length) return;
+
+    setFieldValues((previous) => {
+      const existing = normalizeSlide27Cashflow(previous[SLIDE_27_CASHFLOW_FIELD_ID]);
+      const placeholder = buildSlide27PlaceholderCashflow(financialAutofillRange);
+      if (existing.rows.length && !existing.placeholder) {
+        const hasLtmColumn = existing.columns.some((column) => (
+          column.key === "ltm" || /^ltm\b/i.test(column.label)
+        ));
+        if (hasLtmColumn) return previous;
+
+        const ltmColumn = placeholder.columns.at(-1);
+        const nextValue = stringifySlide27Cashflow({
+          ...existing,
+          columns: [...existing.columns, ltmColumn],
+          rows: existing.rows.map((row) => ({
+            ...row,
+            values: { ...row.values, [ltmColumn.key]: "-" },
+          })),
+          placeholder: false,
+        });
+        return { ...previous, [SLIDE_27_CASHFLOW_FIELD_ID]: nextValue };
+      }
+
+      const nextValue = mergeSlide27ManualRows(
+        existing,
+        placeholder,
+      );
+      if (previous[SLIDE_27_CASHFLOW_FIELD_ID] === nextValue) return previous;
+      return { ...previous, [SLIDE_27_CASHFLOW_FIELD_ID]: nextValue };
+    });
+  }, [fieldsBySlide, financialAutofillRange, loading]);
+
+  useEffect(() => {
     let cancelled = false;
 
     async function loadLayouts() {
@@ -5810,6 +6961,9 @@ export default function WorkspaceCimPrep() {
           if (isValidFinancialAutofillRange(state.financialAutofillRange)) {
             setFinancialAutofillRange(state.financialAutofillRange);
           }
+          if (state.financialAutofillReportVersionId) {
+            setFinancialAutofillReportVersionId(String(state.financialAutofillReportVersionId));
+          }
           setUpdatedAt(payload?.updatedAt || state.updatedAt || "");
           window.localStorage.setItem(localKey, JSON.stringify(state));
         } else {
@@ -5826,6 +6980,9 @@ export default function WorkspaceCimPrep() {
             }));
             if (isValidFinancialAutofillRange(parsed.financialAutofillRange)) {
               setFinancialAutofillRange(parsed.financialAutofillRange);
+            }
+            if (parsed.financialAutofillReportVersionId) {
+              setFinancialAutofillReportVersionId(String(parsed.financialAutofillReportVersionId));
             }
             setUpdatedAt(parsed.updatedAt || "");
           }
@@ -5845,6 +7002,9 @@ export default function WorkspaceCimPrep() {
             }));
             if (isValidFinancialAutofillRange(parsed.financialAutofillRange)) {
               setFinancialAutofillRange(parsed.financialAutofillRange);
+            }
+            if (parsed.financialAutofillReportVersionId) {
+              setFinancialAutofillReportVersionId(String(parsed.financialAutofillReportVersionId));
             }
             setUpdatedAt(parsed.updatedAt || "");
           }
@@ -5892,7 +7052,7 @@ export default function WorkspaceCimPrep() {
     };
   }, [clientId]);
 
-  const handleFinancialAutofill = useCallback(async ({ dateRange } = {}) => {
+  const handleFinancialAutofill = useCallback(async ({ dateRange, reportVersionId = "" } = {}) => {
     if (!clientId || templateFieldCount === 0) {
       showToast({
         type: "info",
@@ -5910,19 +7070,28 @@ export default function WorkspaceCimPrep() {
       return false;
     }
 
+    const reportVersion = reportVersions.find((version) => version.id === reportVersionId) || null;
+    const selectedReportSource = reportVersion
+      ? (reportVersion.resolvedBatchId ? REPORT_SOURCE_KEYS.MANUAL_GL : REPORT_SOURCE_KEYS.MANUAL_UPLOAD)
+      : reportSource;
+    const reportDatasetVersion = reportVersion?.resolvedDatasetVersion ?? selectedDatasetVersion;
+
     setFinancialAutofillState((previous) => ({
       ...previous,
       loading: true,
       error: "",
       progress: 4,
-      progressMessage: "Preparing the selected date range",
+      progressMessage: reportVersion
+        ? `Preparing ${reportVersion.versionName || `Version ${reportVersion.versionNumber || ""}`.trim()}`
+        : "Preparing the selected date range",
     }));
 
     try {
       const snapshot = await loadCimFinancialAutofillSnapshot({
         clientId,
-        sourceKey: reportSource,
-        selectedDatasetVersion,
+        sourceKey: selectedReportSource,
+        selectedDatasetVersion: reportDatasetVersion,
+        selectedReportVersionId: reportVersionId,
         dateRange,
         onProgress: ({ progress, message }) => {
           setFinancialAutofillState((previous) => ({
@@ -5939,7 +7108,20 @@ export default function WorkspaceCimPrep() {
         progressMessage: "Updating CIM fields, tables, and charts",
       }));
       const additions = buildCimFinancialAutofillValues(fieldsBySlide, snapshot);
-      const fieldMerge = mergeOverwriteAutofillValues(fieldValues, additions.fieldValues);
+      additions.fieldValues[SLIDE_27_CASHFLOW_FIELD_ID] = mergeSlide27ManualRows(
+        fieldValues[SLIDE_27_CASHFLOW_FIELD_ID],
+        additions.fieldValues[SLIDE_27_CASHFLOW_FIELD_ID],
+      );
+      const slide24TableFields = (fieldsBySlide[24] || []).filter((field) => field.order === 7);
+      const replacedTemplateFields = [
+        ...slide24TableFields,
+        ...(fieldsBySlide[25] || []).filter((field) => [8, 10].includes(field.order)),
+        ...(fieldsBySlide[27] || []).filter((field) => field.order === 7),
+      ];
+      const fieldMerge = mergeOverwriteAutofillValues(
+        withoutFieldValues(fieldValues, replacedTemplateFields),
+        additions.fieldValues,
+      );
 
       let chartCount = 0;
       const nextChartValues = { ...chartValues };
@@ -5953,7 +7135,7 @@ export default function WorkspaceCimPrep() {
         };
       });
 
-      if (fieldMerge.count > 0) setFieldValues(fieldMerge.next);
+      setFieldValues(fieldMerge.next);
       if (chartCount > 0) setChartValues(nextChartValues);
 
       const filledCount = fieldMerge.count + chartCount;
@@ -5972,6 +7154,7 @@ export default function WorkspaceCimPrep() {
         progressMessage: "Financial auto-fill complete",
       });
       setFinancialAutofillRange(dateRange);
+      setFinancialAutofillReportVersionId(reportVersionId);
 
       const discrepancyCount = snapshot.validation?.summary?.discrepancies || 0;
       const sourceWarningCount = snapshot.validation?.summary?.sourceWarnings || 0;
@@ -6008,15 +7191,28 @@ export default function WorkspaceCimPrep() {
     fieldValues,
     fieldsBySlide,
     reportSource,
+    reportVersions,
     selectedDatasetVersion,
     showToast,
     templateFieldCount,
   ]);
 
-  const handleConfirmFinancialAutofill = useCallback((dateRange) => {
+  const handleConfirmFinancialAutofill = useCallback(({ dateRange, reportVersionId }) => {
     setFinancialAutofillModalOpen(false);
-    void handleFinancialAutofill({ dateRange });
-  }, [handleFinancialAutofill]);
+    setFinancialAutofillRange(dateRange);
+    setFinancialAutofillReportVersionId(reportVersionId || "");
+    if (reportVersionId) void selectReportVersion(reportVersionId);
+    const slide24HeadingFields = (fieldsBySlide[24] || []).filter((field) => {
+      const tokenIndex = getFieldTokenIndex(field);
+      return field.order === 7 && tokenIndex >= 0 && tokenIndex <= 5;
+    });
+    const headingValues = getSlide24PeriodHeadingValues(slide24HeadingFields, dateRange);
+    setFieldValues((previous) => ({
+      ...withoutFieldValues(previous, slide24HeadingFields),
+      ...headingValues,
+    }));
+    void handleFinancialAutofill({ dateRange, reportVersionId });
+  }, [fieldsBySlide, handleFinancialAutofill, selectReportVersion]);
 
   const handleSectionSelect = useCallback((sectionId) => {
     const nextSection = NAV_SECTIONS.find((section) => section.id === sectionId) || BASIC_DETAILS_SECTION;
@@ -6305,6 +7501,7 @@ export default function WorkspaceCimPrep() {
       chartValues,
       financialValidation: financialAutofillState.validation,
       financialAutofillRange,
+      financialAutofillReportVersionId,
       updatedAt: new Date().toISOString(),
     };
     const localKey = getLocalStorageKey(clientId);
@@ -6339,6 +7536,7 @@ export default function WorkspaceCimPrep() {
     effectiveGlobalDetails,
     fieldValues,
     financialAutofillRange,
+    financialAutofillReportVersionId,
     financialAutofillState.validation,
     showToast,
   ]);
@@ -6397,14 +7595,10 @@ export default function WorkspaceCimPrep() {
 
   const isBasicSection = activeSection.type === "basic";
   const activeFields = activeSlide ? fieldsBySlide[activeSlide] || [] : [];
-  const slide24FirstActiveCol = 5 - getSlide24ActivePeriodCount(financialAutofillRange);
   const sectionEditableFields = getEditableTemplateFields(
     activeSection.slides.flatMap((slideNumber) => fieldsBySlide[slideNumber] || []),
     effectiveGlobalDetails,
-  ).filter((field) => {
-    const col = getSlide24ColumnIndex(field);
-    return col === null || col >= slide24FirstActiveCol;
-  });
+  ).filter((field) => isSlide24FieldActive(field, financialAutofillRange));
   const basicCompleted = BASIC_DETAIL_FIELDS.filter(([key]) => normalizeText(effectiveGlobalDetails[key])).length;
   const sectionCompleted = isBasicSection
     ? basicCompleted + countFieldsWithData(sectionEditableFields, fieldValues, assetValues, chartValues)
@@ -6625,6 +7819,10 @@ export default function WorkspaceCimPrep() {
       {financialAutofillModalOpen ? (
         <FinancialAutofillModal
           initialRange={financialAutofillRange}
+          initialReportVersionId={financialAutofillReportVersionId}
+          reportVersions={reportVersions}
+          reportVersionsLoading={reportVersionsLoading}
+          reportVersionsError={reportVersionsError}
           loading={financialAutofillState.loading}
           onClose={() => setFinancialAutofillModalOpen(false)}
           onConfirm={handleConfirmFinancialAutofill}
