@@ -17,6 +17,31 @@ function safeNum(v) {
   return Number.isFinite(n) ? n : 0;
 }
 
+// A persisted generated_report_snapshots row (P&L / Cash Flow) is only refreshed
+// by a full Sync (forceGenerate+persist). Chart of Accounts reclassification
+// (regenerate / manual edit / reset — see routes/keyReports.js) writes directly to
+// chart_of_accounts and does NOT touch the snapshot, so a snapshot generated before
+// the latest COA change would silently keep serving stale section totals (including
+// Net Income) even though the COA — and any live, non-cached view built from it —
+// is already correct. Treat the snapshot as stale whenever the COA was touched at
+// or after it was generated, so the caller falls back to a live recompute instead.
+async function isSnapshotStale(versionId, generatedAt) {
+  if (!generatedAt) return true;
+  try {
+    const { data, error } = await supabase
+      .from('chart_of_accounts')
+      .select('updated_at')
+      .eq('version_id', versionId)
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error || !data?.updated_at) return false; // no COA rows / column missing → trust the snapshot
+    return new Date(data.updated_at).getTime() >= new Date(generatedAt).getTime();
+  } catch {
+    return false; // never let a staleness check itself break report generation
+  }
+}
+
 // Standardized audit log required by the Key Reports report contract (spec #14).
 // Emitted ONCE PER FISCAL YEAR so it is provable, per year, which table the data
 // came from and whether the year was generated from GL or rendered directly from
@@ -1040,7 +1065,10 @@ async function getProfitLossReport(versionId, {
   const isSnapshotEligible = !startDate && !endDate && period !== 'month';
   if (!forceGenerate && isSnapshotEligible) {
     const snapshot = await generatedReportSnapshots.getSnapshot(versionId, 'profit_loss', { year, period: 'year' });
-    if (snapshot) return { ...snapshot, source: 'generated_report_snapshots' };
+    if (snapshot && !(await isSnapshotStale(versionId, snapshot.generatedAt))) {
+      return { ...snapshot, source: 'generated_report_snapshots' };
+    }
+    if (snapshot) console.log(`[KeyReports][PL] versionId=${versionId} snapshot stale (COA changed since ${snapshot.generatedAt}) — recomputing live`);
   }
 
   const years = await resolveYears(versionId, { year, startDate, endDate });
@@ -1629,7 +1657,10 @@ async function getCashflowReport(versionId, {
 
   if (!forceGenerate && !startDate && !endDate) {
     const snapshot = await generatedReportSnapshots.getSnapshot(versionId, 'cash_flow', { year, period: 'year' });
-    if (snapshot) return { ...snapshot, source: 'generated_report_snapshots' };
+    if (snapshot && !(await isSnapshotStale(versionId, snapshot.generatedAt))) {
+      return { ...snapshot, source: 'generated_report_snapshots' };
+    }
+    if (snapshot) console.log(`[KeyReports][CF] versionId=${versionId} snapshot stale (COA changed since ${snapshot.generatedAt}) — recomputing live`);
   }
 
   console.log(`[KeyReports][CF] versionId=${versionId} year=${year || 'all'} range=${startDate || '-'}..${endDate || '-'}`);

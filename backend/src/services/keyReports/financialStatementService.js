@@ -233,6 +233,41 @@ function buildMappings(leaves) {
   return map;
 }
 
+// ─── Accounting modifier words ─────────────────────────────────────────────────
+// Words/phrases that change an account's accounting meaning rather than just its
+// spelling. "Meal Tax" and "Accrued Meal Tax" are different accounts with different
+// balances — fuzzy matching must never bridge a query and a candidate that disagree
+// on which of these modifiers they carry, no matter how similar the remaining words
+// are. This list is generic accounting vocabulary, not tied to any specific account.
+const MODIFIER_PHRASES = ["non current", "long term", "short term"];
+const MODIFIER_WORDS = [
+  "accrued", "deferred", "prepaid", "prepayment", "provision", "allowance",
+  "reserve", "unearned", "payable", "receivable", "amortization", "amortized",
+  "depreciation", "accumulated", "restricted", "current", "impairment",
+  "valuation", "clearing", "suspense", "estimated", "contra",
+];
+
+/** Set of accounting-modifier phrases/words present in a norm()-ed account name. */
+function extractModifiers(normalized) {
+  let s = ` ${normalized} `;
+  const found = new Set();
+  for (const phrase of MODIFIER_PHRASES) {
+    const re = new RegExp(`\\b${phrase.replace(" ", "\\s+")}\\b`);
+    if (re.test(s)) { found.add(phrase); s = s.replace(re, " "); }
+  }
+  for (const word of MODIFIER_WORDS) {
+    if (new RegExp(`\\b${word}\\b`).test(s)) found.add(word);
+  }
+  return found;
+}
+
+/** True only when both names carry exactly the same set of accounting modifiers. */
+function sameModifiers(a, b) {
+  if (a.size !== b.size) return false;
+  for (const m of a) if (!b.has(m)) return false;
+  return true;
+}
+
 // ─── Multi-strategy fuzzy fallback matcher ────────────────────────────────────
 
 function buildFuzzyLookup(leaves) {
@@ -270,10 +305,16 @@ function fuzzyMatch(lookup, name, accountNumber) {
   // Word-set Jaccard similarity with a lowered threshold of 0.50 to catch more valid
   // accounts (e.g. "Cost of Goods Sold" vs "Cost of Sales", "Rent Expense" vs "Rent").
   // Also bonuses for: containment (substring), shared first word, shared last word.
+  //
+  // Hard gate: a candidate whose accounting-modifier set differs from the query's
+  // (Accrued / Prepaid / Payable / Current / …) is never a fuzzy candidate — those
+  // words change the account's meaning, not just its spelling. See extractModifiers.
+  const queryModifiers = extractModifiers(k1);
   const words1 = new Set(k1.split(" ").filter(w => w.length > 1));
   const arr1   = [...words1];
   let bestId = null, bestScore = 0;
   for (const [k, id] of lookup.exact) {
+    if (!sameModifiers(queryModifiers, extractModifiers(k))) continue;
     const words2 = new Set(k.split(" ").filter(w => w.length > 1));
     if (!words2.size || !words1.size) continue;
     const inter = arr1.filter(w => words2.has(w)).length;
@@ -1999,17 +2040,22 @@ function computeMonthlyPlFinancials(fs) {
 async function getMonthlyPlFinancials(versionId) {
   if (!versionId) return { totalIncome: {}, totalExpenses: {} };
 
-  // Cache keyed by version + its last sync time. generateFinancialStatements is
-  // expensive (regenerates all P&L/BS/CF), so the Bank Reconciliation page must
-  // not pay that cost on every load. The cache is invalidated automatically when
-  // the version is re-synced (last_synced_at changes), so results stay correct.
-  const { data: ver } = await supabase
-    .from("key_report_versions")
-    .select("company_id, last_synced_at")
-    .eq("id", versionId)
-    .maybeSingle();
+  // Cache keyed by version + its last sync time AND the Chart of Accounts'
+  // latest update. generateFinancialStatements is expensive (regenerates all
+  // P&L/BS/CF), so the Bank Reconciliation page must not pay that cost on every
+  // load. last_synced_at alone is not enough: COA reclassification (regenerate /
+  // manual edit / reset via routes/keyReports.js) writes chart_of_accounts
+  // directly and does NOT bump last_synced_at, so a cache keyed on syncedAt alone
+  // would keep serving pre-reclassification totals indefinitely. Folding in COA's
+  // own updated_at makes the cache invalidate on either signal.
+  const [{ data: ver }, { data: coaRow }] = await Promise.all([
+    supabase.from("key_report_versions").select("company_id, last_synced_at").eq("id", versionId).maybeSingle(),
+    supabase.from("chart_of_accounts").select("updated_at").eq("version_id", versionId)
+      .order("updated_at", { ascending: false }).limit(1).maybeSingle(),
+  ]);
   const companyId = ver?.company_id || null;
   const syncedAt = ver?.last_synced_at || null;
+  const coaUpdatedAt = coaRow?.updated_at || null;
 
   if (companyId) {
     try {
@@ -2020,7 +2066,8 @@ async function getMonthlyPlFinancials(versionId) {
         .eq("report_type", PL_FINANCIALS_CACHE_TYPE)
         .order("updated_at", { ascending: false });
       const hit = (rows || []).find(
-        (r) => r?.data?.versionId === versionId && r?.data?.syncedAt === syncedAt && r?.data?.plFinancials,
+        (r) => r?.data?.versionId === versionId && r?.data?.syncedAt === syncedAt &&
+          r?.data?.coaUpdatedAt === coaUpdatedAt && r?.data?.plFinancials,
       );
       if (hit) return hit.data.plFinancials;
     } catch {
@@ -2039,7 +2086,7 @@ async function getMonthlyPlFinancials(versionId) {
         .eq("company_id", companyId)
         .eq("report_type", PL_FINANCIALS_CACHE_TYPE);
       const existing = (existingRows || []).find((r) => r?.data?.versionId === versionId);
-      const payload = { versionId, syncedAt, plFinancials: result };
+      const payload = { versionId, syncedAt, coaUpdatedAt, plFinancials: result };
       const now = new Date().toISOString();
       if (existing?.id) {
         await supabase
