@@ -43,7 +43,7 @@ const MAX_ACCOUNTS = 600;
 // accounts are intentionally NOT cached so they are re-attempted and continue to
 // surface in Review & Adjust. Bump CLASSIFIER_CACHE_VERSION to invalidate all
 // cached classifications after any change to the prompt or output handling.
-const CLASSIFIER_CACHE_VERSION = "v1";
+const CLASSIFIER_CACHE_VERSION = "v2";
 const CACHE_MIN_CONFIDENCE = 0.85;
 
 function coaCacheEnabled() {
@@ -207,7 +207,8 @@ ACCOUNT TYPE — choose exactly one of these six values:
   asset       Cash, bank/checking/savings, A/R, inventory, PP&E, vehicles owned, prepaid, deposits
   liability   A/P, loans payable, credit card accounts, accrued liabilities, deferred revenue
   equity      Owner equity / draws / distributions, retained earnings, contributed capital
-  income      Sales, revenue, service fees, interest/rental income (credit-normal P&L)
+  income      Sales, revenue, service fees, interest/rental income (credit-normal P&L),
+              plus contra-revenue: refunds/discounts/returns GIVEN to customers
   cogs        Cost of goods sold, direct materials, direct labor, direct costs
   expense     Operating expenses (debit-normal P&L): salaries, rent, insurance, utilities, repairs
 
@@ -240,6 +241,10 @@ CRITICAL ACCOUNTING RULES:
   • SBA / EIDL / PPP loans → liability, "Long-Term Liabilities"
   • Accumulated Depreciation → asset, "Fixed Assets"  (contra-asset)
   • Goodwill, intangibles, deposits, notes receivable, Other Long-term Assets (or Other Long Term Assets) → asset, "Other Assets"
+  • Refunds / Discounts / Returns / Allowances GIVEN to customers (e.g. "Refunds to Customers",
+    "Discounts/Refunds Given", "Sales Returns and Allowances") → income, "Revenue"
+    (contra-revenue: it reduces total revenue, it is NOT an operating expense, even though
+    money is flowing out — classify by what it nets against, not by cash direction)
   • If [BS section] is provided it is authoritative — use it to confirm the correct accountType
 
 IS REPORT ROW — set isReportRow: true ONLY for calculated totals, subtotals, or section headers
