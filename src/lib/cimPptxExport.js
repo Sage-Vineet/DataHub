@@ -1,6 +1,13 @@
 import { strToU8, zipSync } from "fflate";
 
 const EMU_PER_PX = 9525;
+// Font sizes in the layout data are authored in the same 96-DPI canvas-px unit as bbox
+// coordinates (the browser preview renders them as literal CSS px). OOXML's <a:rPr sz="">
+// is always hundredths of a POINT, never px, so every font size must go through this same
+// 96-DPI conversion (1px = 0.75pt) that toEmu() already applies to positions/sizes —
+// otherwise exported text renders ~33% larger than the preview, which is what was pushing
+// single-line titles onto a second line and overlapping the content below them.
+const PX_TO_PT = 0.75;
 const SLIDE_WIDTH_PX = 1280;
 const SLIDE_HEIGHT_PX = 720;
 const SLIDE_WIDTH_EMU = SLIDE_WIDTH_PX * EMU_PER_PX;
@@ -162,7 +169,7 @@ function getElementStyle(element) {
   const paragraphStyle = firstParagraph.resolvedTextStyle || {};
 
   return {
-    fontSize: Number(firstRun.fontSize || element.resolvedFontSize || 12),
+    fontSize: Number(firstRun.fontSize || element.resolvedFontSize || 12) * PX_TO_PT,
     typeface: firstRun.typeface || resolved.typeface || "Calibri",
     bold: Boolean(firstRun.bold || runs.some((run) => run.bold)),
     italic: Boolean(firstRun.italic),
@@ -233,10 +240,16 @@ function shapeXml(element, index, text) {
   const geometry = element.geometry === "ellipse" ? "ellipse" : "rect";
   const hasText = typeof text === "string" && text.length > 0;
   const insets = style.insets || {};
+  // Match the browser preview's text model exactly: a fixed-size box rendered at the
+  // element's literal font size, with overflow clipped rather than auto-shrunk. The
+  // previous universal normAutofit(65%) had no relationship to actual content length,
+  // so short text rendered needlessly tiny while long text still overflowed its box —
+  // producing a slide that looked structurally different from (and often overlapped
+  // relative to) the in-app preview, which never shrinks text.
   const textBody = hasText
     ? `<p:txBody>
         <a:bodyPr wrap="square" vertOverflow="clip" horzOverflow="clip" anchor="${style.vertical === "middle" ? "ctr" : style.vertical === "bottom" ? "b" : "t"}" lIns="${toEmu(insets.left)}" rIns="${toEmu(insets.right)}" tIns="${toEmu(insets.top)}" bIns="${toEmu(insets.bottom)}">
-          <a:normAutofit fontScale="65000" lnSpcReduction="20000"/>
+          <a:noAutofit/>
         </a:bodyPr>
         <a:lstStyle/>
         ${paragraphXml(text, style)}

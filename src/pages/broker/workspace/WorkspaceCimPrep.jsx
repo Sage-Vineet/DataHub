@@ -12,6 +12,7 @@ import {
   Download,
   Eye,
   FileText,
+  Flag,
   ImagePlus,
   Loader2,
   MessageSquareText,
@@ -19,6 +20,7 @@ import {
   Plus,
   RefreshCw,
   Send,
+  Share2,
   Trash2,
   Upload,
   Save,
@@ -27,29 +29,35 @@ import {
 } from "lucide-react";
 import {
   getCimQuestionnaireRequest,
+  getCimReviewRequest,
   getCompanyRequest,
   getWorkspacePageStateRequest,
+  listUsersRequest,
   saveCimQuestionnaireRequest,
+  saveCimReviewRequest,
   saveWorkspacePageStateRequest,
 } from "../../../lib/api";
 import { exportCimPptx } from "../../../lib/cimPptxExport";
 import { useAuth } from "../../../context/AuthContext";
 import { useDataSource } from "../../../context/DataSourceContext";
 import { useToast } from "../../../context/ToastContext";
+import { CLIENT_SUB_ROLES } from "../../../lib/roles";
 import { REPORT_SOURCE_KEYS, normalizeReportSourceKey } from "../../../lib/report-source";
 import { loadCimFinancialAutofillSnapshot } from "../../../services/cimFinancialAutofillService";
 import { useDatasetVersionStore } from "../../../store/useDatasetVersionStore";
 import { useKeyReportContextStore } from "../../../store/useKeyReportContextStore";
+import Modal from "../../../components/common/Modal";
+import CimFieldNoteThread from "../../../components/cim/CimFieldNoteThread";
 
 const SLIDE_WIDTH = 1280;
 const PAGE_KEY = "cim-prep";
 const SLIDE_25_BRIDGE_FIELD_ID = "25:structured:ebitda-bridge";
 const SLIDE_27_CASHFLOW_FIELD_ID = "27:structured:cashflow-statement";
-const TEMPLATE_SLIDE_COUNT = 38;
-const TEMPLATE_SLIDES = Array.from({ length: TEMPLATE_SLIDE_COUNT }, (_, index) => index + 1);
+export const TEMPLATE_SLIDE_COUNT = 38;
+export const TEMPLATE_SLIDES = Array.from({ length: TEMPLATE_SLIDE_COUNT }, (_, index) => index + 1);
 const CIM_FINANCIAL_MAX_DECIMALS = 3;
 
-const SECTION_SLIDES = [
+export const SECTION_SLIDES = [
   { id: "executive-summary", number: "01", title: "Executive Summary", slides: [4, 5, 6] },
   { id: "company-overview", number: "02", title: "Company Overview", slides: [7, 8, 9, 10] },
   { id: "products-services", number: "03", title: "Products & Services", slides: [11, 12, 13] },
@@ -63,7 +71,7 @@ const SECTION_SLIDES = [
   { id: "closing", number: "11", title: "Closing", slides: [38] },
 ];
 
-const BASIC_DETAILS_SECTION = {
+export const BASIC_DETAILS_SECTION = {
   id: "basic-details",
   number: "BD",
   title: "Basic Details",
@@ -94,7 +102,7 @@ const SLIDE_27_CASHFLOW_FIELD = Object.freeze({
   excludeFromQuestionnaire: true,
 });
 
-const NAV_SECTIONS = [BASIC_DETAILS_SECTION, ...SECTION_SLIDES];
+export const NAV_SECTIONS = [BASIC_DETAILS_SECTION, ...SECTION_SLIDES];
 
 const BASIC_DETAIL_FIELD_DEFINITIONS = [
   { key: "companyName", label: "Company name", slides: [1], maxLength: 70 },
@@ -1149,7 +1157,7 @@ function padSlide(slideNumber) {
   return String(slideNumber).padStart(2, "0");
 }
 
-function getSlideLayoutPath(slideNumber) {
+export function getSlideLayoutPath(slideNumber) {
   return `/cim-template/layouts/source-slide-${padSlide(slideNumber)}.layout.json`;
 }
 
@@ -1985,7 +1993,7 @@ function normalizeSlide35InitiativeDescriptions(layout) {
   };
 }
 
-function prepareCimLayout(slideNumber, layout) {
+export function prepareCimLayout(slideNumber, layout) {
   if (slideNumber === 24) return restructureSlide24Table(layout);
   if (slideNumber === 26) return restructureSlide26Table(layout);
   if (slideNumber === 27) return restructureSlide27Table(layout);
@@ -2059,7 +2067,7 @@ function getStructuredRepeatableBinding(slideNumber, element) {
   return null;
 }
 
-function extractTemplateFields(slideNumber, layout) {
+export function extractTemplateFields(slideNumber, layout) {
   const elements = layout?.elements || [];
 
   return elements
@@ -2364,7 +2372,7 @@ function applyGlobalDetails(text, details) {
   });
 }
 
-function getFieldKind(fieldOrText) {
+export function getFieldKind(fieldOrText) {
   if (fieldOrText && typeof fieldOrText === "object" && fieldOrText.fieldKind) {
     return fieldOrText.fieldKind;
   }
@@ -2524,7 +2532,7 @@ function hasRepeatableEntryValue(entry) {
   ));
 }
 
-function buildCimExportSlides(fieldValues = {}) {
+export function buildCimExportSlides(fieldValues = {}) {
   return TEMPLATE_SLIDES.flatMap((sourceSlideNumber) => {
     const config = getRepeatableSlideConfig(sourceSlideNumber);
     if (!config) return [{ sourceSlideNumber, instanceIndex: 0 }];
@@ -2581,7 +2589,7 @@ function shouldHideUnusedRepeatableSlot(slideNumber, element, fieldValues = {}) 
   return !hasRepeatableEntryValue(entries[slotIndex]);
 }
 
-function getFieldValuesForExportSlide(fieldValues = {}, slideRef) {
+export function getFieldValuesForExportSlide(fieldValues = {}, slideRef) {
   const sourceSlideNumber = slideRef?.sourceSlideNumber || slideRef;
   const instanceIndex = Number(slideRef?.instanceIndex || 0);
   const config = getRepeatableSlideConfig(sourceSlideNumber);
@@ -2651,7 +2659,7 @@ function getShareholderChartDataText(entries) {
     .join("\n");
 }
 
-function formatFieldDisplayValue(field, value) {
+export function formatFieldDisplayValue(field, value) {
   const raw = String(value || "").trim();
   if (field.displayFormat === "unsignedPercent") {
     return raw.replace(/^\+/, "").replace(/%$/, "").trim();
@@ -4353,6 +4361,50 @@ function getQuestionnaireCounts(questionnaireState) {
   };
 }
 
+function normalizeCimReviewState(state) {
+  const items = {};
+  if (state?.items && typeof state.items === "object") {
+    Object.entries(state.items).forEach(([fieldId, item]) => {
+      items[fieldId] = {
+        id: item?.id || fieldId,
+        fieldId: item?.fieldId || fieldId,
+        slideNumber: item?.slideNumber ?? null,
+        sectionId: item?.sectionId || "",
+        sectionTitle: item?.sectionTitle || "",
+        label: item?.label || "",
+        fieldKind: item?.fieldKind || "text",
+        status: item?.status === "resolved" ? "resolved" : "open",
+        notes: Array.isArray(item?.notes) ? item.notes : [],
+        resolvedBy: item?.resolvedBy || null,
+        resolvedAt: item?.resolvedAt || null,
+        createdAt: item?.createdAt || new Date().toISOString(),
+        updatedAt: item?.updatedAt || new Date().toISOString(),
+      };
+    });
+  }
+
+  return {
+    version: 1,
+    ownerUserId: state?.ownerUserId || null,
+    sharedAt: state?.sharedAt || null,
+    sharedBy: state?.sharedBy || null,
+    sharedWith: Array.isArray(state?.sharedWith) ? state.sharedWith : [],
+    items,
+    history: Array.isArray(state?.history) ? state.history : [],
+    updatedAt: state?.updatedAt || "",
+    updatedBy: state?.updatedBy || null,
+  };
+}
+
+function getCimReviewCounts(reviewState) {
+  const items = Object.values(reviewState?.items || {});
+  return {
+    total: items.length,
+    open: items.filter((item) => item.status === "open").length,
+    resolved: items.filter((item) => item.status === "resolved").length,
+  };
+}
+
 function makeQuestionnaireBatchId() {
   return `cimq:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -4555,7 +4607,7 @@ function getHorizontalAlignment(value) {
   return "flex-start";
 }
 
-function SlideCanvas({
+export function SlideCanvas({
   slideNumber,
   displaySlideNumber = slideNumber,
   layout,
@@ -4980,6 +5032,10 @@ function AssetFieldControl({
   questionnaireItem,
   onQuestionnaireToggle,
   onQuestionPromptChange,
+  reviewItem,
+  onReviewAddNote,
+  onReviewResolve,
+  onReviewReopen,
 }) {
   return (
     <div
@@ -5039,6 +5095,13 @@ function AssetFieldControl({
         onToggle={onQuestionnaireToggle}
         onPromptChange={onQuestionPromptChange}
       />
+      <CimReviewFieldBadge
+        field={field}
+        item={reviewItem}
+        onAddNote={onReviewAddNote}
+        onResolve={onReviewResolve}
+        onReopen={onReviewReopen}
+      />
     </div>
   );
 }
@@ -5052,6 +5115,10 @@ function ChartFieldControl({
   questionnaireItem,
   onQuestionnaireToggle,
   onQuestionPromptChange,
+  reviewItem,
+  onReviewAddNote,
+  onReviewResolve,
+  onReviewReopen,
 }) {
   const config = getChartConfig(field, chartValues);
   const dataUrl = getChartDataUrl(field, chartValues);
@@ -5102,6 +5169,13 @@ function ChartFieldControl({
         onToggle={onQuestionnaireToggle}
         onPromptChange={onQuestionPromptChange}
       />
+      <CimReviewFieldBadge
+        field={field}
+        item={reviewItem}
+        onAddNote={onReviewAddNote}
+        onResolve={onReviewResolve}
+        onReopen={onReviewReopen}
+      />
     </div>
   );
 }
@@ -5116,6 +5190,10 @@ function RepeatableFieldControl({
   questionnaireItem,
   onQuestionnaireToggle,
   onQuestionPromptChange,
+  reviewItem,
+  onReviewAddNote,
+  onReviewResolve,
+  onReviewReopen,
 }) {
   const config = field.repeatableConfig || {};
   const entryFields = config.fields || [];
@@ -5464,6 +5542,13 @@ function RepeatableFieldControl({
         item={questionnaireItem}
         onToggle={onQuestionnaireToggle}
         onPromptChange={onQuestionPromptChange}
+      />
+      <CimReviewFieldBadge
+        field={field}
+        item={reviewItem}
+        onAddNote={onReviewAddNote}
+        onResolve={onReviewResolve}
+        onReopen={onReviewReopen}
       />
     </div>
   );
@@ -5931,6 +6016,63 @@ function Slide27CashflowCard({ field, value, active, onFieldFocus, onFieldChange
   );
 }
 
+function CimSharePickerModal({ onClose, teamMembers, sharedWith, onShare }) {
+  const [selectedIds, setSelectedIds] = useState(() => sharedWith.map((member) => member.id));
+
+  const toggleMember = (id) => {
+    setSelectedIds((previous) =>
+      previous.includes(id) ? previous.filter((candidate) => candidate !== id) : [...previous, id],
+    );
+  };
+
+  return (
+    <Modal isOpen onClose={onClose} title="Share CIM for review" size="md">
+      <p className="mb-3 text-sm text-[#6D6E71]">
+        Select which client team members can view this CIM and raise notes for review.
+      </p>
+      {teamMembers.length === 0 ? (
+        <p className="rounded-md border border-dashed border-border bg-[#FAFBFC] p-4 text-sm text-[#6D6E71]">
+          No client team members found for this company yet.
+        </p>
+      ) : (
+        <div className="max-h-72 space-y-1.5 overflow-y-auto">
+          {teamMembers.map((member) => (
+            <label
+              key={member.id}
+              className="flex cursor-pointer items-center gap-2.5 rounded-md border border-border px-3 py-2 text-sm transition hover:bg-[#FAFBFC]"
+            >
+              <input
+                type="checkbox"
+                checked={selectedIds.includes(member.id)}
+                onChange={() => toggleMember(member.id)}
+                className="h-4 w-4 rounded border-border text-[#8BC53D] focus:ring-[#8BC53D]"
+              />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-semibold text-[#050505]">{member.name || member.email}</span>
+                <span className="block truncate text-xs text-[#6D6E71]">{member.email}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+      )}
+      <div className="mt-4 flex justify-end gap-2">
+        <button type="button" onClick={onClose} className="theme-btn-secondary">
+          Cancel
+        </button>
+        <button
+          type="button"
+          onClick={() => onShare(selectedIds)}
+          disabled={selectedIds.length === 0}
+          className="theme-btn-primary disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          <Share2 size={16} />
+          Share
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
 function QuestionnaireStatusPill({ status }) {
   const meta = QUESTIONNAIRE_STATUS_META[status] || QUESTIONNAIRE_STATUS_META.open;
   return (
@@ -5995,6 +6137,50 @@ function QuestionnaireFieldActions({ field, item, onToggle, onPromptChange }) {
   );
 }
 
+function CimReviewFieldBadge({ field, item, onAddNote, onResolve, onReopen }) {
+  const [open, setOpen] = useState(false);
+  if (!item) return null;
+  const isOpen = item.status !== "resolved";
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          setOpen(true);
+        }}
+        className={`mt-2 inline-flex h-7 items-center gap-1 rounded-md border px-2 text-[11px] font-bold transition ${
+          isOpen
+            ? "border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100"
+            : "border-border bg-white text-[#6D6E71] hover:bg-[#FAFBFC]"
+        }`}
+      >
+        <Flag size={12} />
+        {isOpen ? "Client flagged" : "Resolved"}
+        {item.notes?.length > 0 && (
+          <span className="ml-0.5 rounded-full bg-white/70 px-1.5 text-[10px]">{item.notes.length}</span>
+        )}
+      </button>
+      {open && (
+        <Modal isOpen={open} onClose={() => setOpen(false)} title={field.label} size="sm">
+          <CimFieldNoteThread
+            notes={item.notes || []}
+            status={item.status}
+            resolvedBy={item.resolvedBy}
+            resolvedAt={item.resolvedAt}
+            canResolve
+            canReopen
+            onAddNote={(body) => onAddNote(field.id, body)}
+            onResolve={(body) => onResolve(field.id, body)}
+            onReopen={() => onReopen(field.id)}
+          />
+        </Modal>
+      )}
+    </>
+  );
+}
+
 function FieldPanel({
   activeSlide,
   activeSlideInstance = 0,
@@ -6003,6 +6189,7 @@ function FieldPanel({
   assetValues,
   chartValues,
   questionnaireState,
+  reviewState,
   globalDetails,
   financialAutofillRange,
   activeFieldId,
@@ -6014,6 +6201,9 @@ function FieldPanel({
   onChartChange,
   onQuestionnaireToggle,
   onQuestionPromptChange,
+  onReviewAddNote,
+  onReviewResolve,
+  onReviewReopen,
 }) {
   const allEditableFields = getEditableTemplateFields(fields, globalDetails);
   const activeEditableFields = activeSlide === 24
@@ -6070,6 +6260,7 @@ function FieldPanel({
         {editableFields.length > 0 ? (
           editableFields.map((field) => {
             const questionnaireItem = questionnaireState?.items?.[field.id];
+            const reviewItem = reviewState?.items?.[field.id];
             if (field.fieldKind === "ebitdaBridge") {
               return (
                 <Slide25EbitdaBridgeCard
@@ -6107,6 +6298,10 @@ function FieldPanel({
                   questionnaireItem={questionnaireItem}
                   onQuestionnaireToggle={onQuestionnaireToggle}
                   onQuestionPromptChange={onQuestionPromptChange}
+                  reviewItem={reviewItem}
+                  onReviewAddNote={onReviewAddNote}
+                  onReviewResolve={onReviewResolve}
+                  onReviewReopen={onReviewReopen}
                 />
               );
             }
@@ -6123,6 +6318,10 @@ function FieldPanel({
                   questionnaireItem={questionnaireItem}
                   onQuestionnaireToggle={onQuestionnaireToggle}
                   onQuestionPromptChange={onQuestionPromptChange}
+                  reviewItem={reviewItem}
+                  onReviewAddNote={onReviewAddNote}
+                  onReviewResolve={onReviewResolve}
+                  onReviewReopen={onReviewReopen}
                 />
               );
             }
@@ -6140,6 +6339,10 @@ function FieldPanel({
                   questionnaireItem={questionnaireItem}
                   onQuestionnaireToggle={onQuestionnaireToggle}
                   onQuestionPromptChange={onQuestionPromptChange}
+                  reviewItem={reviewItem}
+                  onReviewAddNote={onReviewAddNote}
+                  onReviewResolve={onReviewResolve}
+                  onReviewReopen={onReviewReopen}
                 />
               );
             }
@@ -6181,6 +6384,13 @@ function FieldPanel({
                   item={questionnaireItem}
                   onToggle={onQuestionnaireToggle}
                   onPromptChange={onQuestionPromptChange}
+                />
+                <CimReviewFieldBadge
+                  field={field}
+                  item={reviewItem}
+                  onAddNote={onReviewAddNote}
+                  onResolve={onReviewResolve}
+                  onReopen={onReviewReopen}
                 />
               </label>
             );
@@ -7002,6 +7212,86 @@ function QuestionnaireReviewModal({
   );
 }
 
+function CimReviewModal({ onClose, reviewState, onAddNote, onResolve, onReopen }) {
+  const [filter, setFilter] = useState("open");
+  const items = Object.values(reviewState?.items || {})
+    .filter((item) => (filter === "all" ? true : filter === "resolved" ? item.status === "resolved" : item.status !== "resolved"))
+    .sort((a, b) => Number(a.slideNumber || 0) - Number(b.slideNumber || 0) || String(a.label || "").localeCompare(String(b.label || "")));
+  const counts = getCimReviewCounts(reviewState);
+
+  return (
+    <div className="fixed inset-0 z-[99999] bg-[#111827]/70 p-4 backdrop-blur-sm">
+      <div className="mx-auto flex h-full max-w-4xl flex-col overflow-hidden rounded-lg bg-[#F7F8FA] shadow-2xl">
+        <div className="flex items-center justify-between border-b border-border bg-white px-4 py-3">
+          <div className="flex items-center gap-2">
+            <Flag size={17} className="text-[#476E2C]" />
+            <div>
+              <h2 className="text-sm font-bold text-[#050505]">CIM Review Notes</h2>
+              <p className="text-xs text-[#6D6E71]">
+                {counts.open} open · {counts.resolved} resolved
+                {reviewState?.sharedAt ? ` · Shared ${new Date(reviewState.sharedAt).toLocaleString("en-IN")}` : ""}
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            className="rounded-md p-2 text-[#6D6E71] transition hover:bg-bg-page hover:text-[#050505]"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="flex gap-2 border-b border-border bg-white px-4 py-2.5">
+          {[["open", "Open"], ["resolved", "Resolved"], ["all", "All"]].map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => setFilter(value)}
+              className={`rounded-md border px-3 py-1.5 text-xs font-bold transition ${
+                filter === value
+                  ? "border-[#8BC53D] bg-[#EEF6E0] text-[#476E2C]"
+                  : "border-border bg-white text-[#6D6E71] hover:border-[#8BC53D]/60"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
+          {items.length === 0 ? (
+            <div className="flex min-h-[200px] items-center justify-center rounded-lg border border-dashed border-border bg-white text-center text-sm text-[#6D6E71]">
+              {reviewState?.sharedAt ? "No notes here yet." : "Share this CIM with the client team to start collecting review notes."}
+            </div>
+          ) : (
+            items.map((item) => (
+              <div key={item.id} className="rounded-lg border border-border bg-white p-3.5 shadow-card">
+                <p className="text-xs font-semibold text-[#6D6E71]">
+                  Slide {item.slideNumber} · {item.sectionTitle}
+                </p>
+                <h3 className="mt-1 text-sm font-bold text-[#050505]">{item.label}</h3>
+                <div className="mt-2.5">
+                  <CimFieldNoteThread
+                    notes={item.notes || []}
+                    status={item.status}
+                    resolvedBy={item.resolvedBy}
+                    resolvedAt={item.resolvedAt}
+                    canResolve
+                    canReopen
+                    onAddNote={(body) => onAddNote(item.id, body)}
+                    onResolve={(body) => onResolve(item.id, body)}
+                    onReopen={() => onReopen(item.id)}
+                  />
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function WorkspaceCimPrep() {
   const { clientId } = useParams();
   const navigate = useNavigate();
@@ -7022,6 +7312,8 @@ export default function WorkspaceCimPrep() {
   const [assetValues, setAssetValues] = useState({});
   const [chartValues, setChartValues] = useState({});
   const [questionnaireState, setQuestionnaireState] = useState(() => normalizeQuestionnaireState());
+  const [reviewState, setReviewState] = useState(() => normalizeCimReviewState());
+  const [companyUsers, setCompanyUsers] = useState([]);
   const [financialAutofillState, setFinancialAutofillState] = useState({
     loading: false,
     filledCount: 0,
@@ -7040,6 +7332,8 @@ export default function WorkspaceCimPrep() {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewSlideIndex, setPreviewSlideIndex] = useState(0);
   const [questionnaireOpen, setQuestionnaireOpen] = useState(false);
+  const [reviewPickerOpen, setReviewPickerOpen] = useState(false);
+  const [reviewModalOpen, setReviewModalOpen] = useState(false);
   const [financialAutofillModalOpen, setFinancialAutofillModalOpen] = useState(false);
   const [financialAutofillRange, setFinancialAutofillRange] = useState(() => getDefaultFinancialAutofillRange());
   const [financialAutofillReportVersionId, setFinancialAutofillReportVersionId] = useState("");
@@ -7332,6 +7626,167 @@ export default function WorkspaceCimPrep() {
       cancelled = true;
     };
   }, [clientId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadReviewState() {
+      try {
+        const payload = await getCimReviewRequest({ clientId });
+        if (cancelled) return;
+        setReviewState(normalizeCimReviewState(payload?.state || {}));
+      } catch {
+        // Review state is optional until the CIM has been shared; ignore load failures.
+      }
+    }
+
+    async function loadCompanyUsers() {
+      try {
+        const users = await listUsersRequest();
+        if (cancelled) return;
+        setCompanyUsers(Array.isArray(users) ? users : []);
+      } catch {
+        // Team-member list is only needed to populate the share picker.
+      }
+    }
+
+    loadReviewState();
+    loadCompanyUsers();
+    return () => {
+      cancelled = true;
+    };
+  }, [clientId]);
+
+  const persistCimReviewState = useCallback(async (nextState, toastOptions = null) => {
+    const state = normalizeCimReviewState(nextState);
+    try {
+      const payload = await saveCimReviewRequest(state, { clientId });
+      setReviewState(normalizeCimReviewState(payload?.state || state));
+      if (toastOptions?.success) {
+        showToast({ type: "success", title: toastOptions.success, message: toastOptions.message || "" });
+      }
+    } catch (error) {
+      showToast({
+        type: "error",
+        title: toastOptions?.errorTitle || "Failed to update CIM review",
+        message: error?.message || "Please try again.",
+      });
+    }
+  }, [clientId, showToast]);
+
+  const clientTeamMembers = useMemo(() => {
+    return companyUsers.filter((candidate) => {
+      const inCompany =
+        String(candidate.company_id) === String(clientId) ||
+        (candidate.assigned_companies || []).some((company) => String(company.id) === String(clientId));
+      if (!inCompany) return false;
+      return CLIENT_SUB_ROLES.includes(candidate.sub_role);
+    });
+  }, [companyUsers, clientId]);
+
+  const reviewCounts = useMemo(() => getCimReviewCounts(reviewState), [reviewState]);
+
+  const handleShareCimForReview = useCallback((selectedMemberIds) => {
+    const selectedMembers = clientTeamMembers
+      .filter((member) => selectedMemberIds.includes(member.id))
+      .map((member) => ({ id: member.id, name: member.name, email: member.email, sharedAt: new Date().toISOString() }));
+    const now = new Date().toISOString();
+    const historyEntry = {
+      id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      type: reviewState.sharedAt ? "reshared" : "shared",
+      at: now,
+      by: getQuestionnaireUserSummary(user),
+      fieldId: null,
+      summary: `Shared CIM for review with ${selectedMembers.length} team member${selectedMembers.length === 1 ? "" : "s"}`,
+    };
+    const nextState = normalizeCimReviewState({
+      ...reviewState,
+      ownerUserId: user?.id || reviewState.ownerUserId,
+      sharedAt: now,
+      sharedBy: getQuestionnaireUserSummary(user),
+      sharedWith: selectedMembers,
+      history: [historyEntry, ...(reviewState.history || [])].slice(0, 25),
+    });
+    setReviewState(nextState);
+    setReviewPickerOpen(false);
+    void persistCimReviewState(nextState, {
+      success: "CIM shared for review",
+      message: `${selectedMembers.length} team member${selectedMembers.length === 1 ? "" : "s"} can now review this CIM.`,
+    });
+  }, [clientTeamMembers, persistCimReviewState, reviewState, user]);
+
+  const handleResolveCimReviewItem = useCallback((fieldId, resolutionBody = "") => {
+    const item = reviewState.items[fieldId];
+    if (!item) return;
+    const now = new Date().toISOString();
+    const resolver = getQuestionnaireUserSummary(user);
+    const notes = resolutionBody.trim()
+      ? [...item.notes, { id: `note_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, author: resolver, body: resolutionBody.trim(), createdAt: now, kind: "resolution" }]
+      : item.notes;
+    const nextItem = { ...item, status: "resolved", resolvedBy: resolver, resolvedAt: now, notes, updatedAt: now };
+    const historyEntry = {
+      id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      type: "resolved",
+      at: now,
+      by: resolver,
+      fieldId,
+      summary: `${resolver.name} resolved ${item.label || fieldId}`,
+    };
+    const nextState = normalizeCimReviewState({
+      ...reviewState,
+      items: { ...reviewState.items, [fieldId]: nextItem },
+      history: [historyEntry, ...(reviewState.history || [])].slice(0, 25),
+    });
+    setReviewState(nextState);
+    void persistCimReviewState(nextState);
+  }, [persistCimReviewState, reviewState, user]);
+
+  const handleReopenCimReviewItem = useCallback((fieldId) => {
+    const item = reviewState.items[fieldId];
+    if (!item) return;
+    const now = new Date().toISOString();
+    const actor = getQuestionnaireUserSummary(user);
+    const nextItem = { ...item, status: "open", resolvedBy: null, resolvedAt: null, updatedAt: now };
+    const historyEntry = {
+      id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      type: "reopened",
+      at: now,
+      by: actor,
+      fieldId,
+      summary: `${actor.name} reopened ${item.label || fieldId}`,
+    };
+    const nextState = normalizeCimReviewState({
+      ...reviewState,
+      items: { ...reviewState.items, [fieldId]: nextItem },
+      history: [historyEntry, ...(reviewState.history || [])].slice(0, 25),
+    });
+    setReviewState(nextState);
+    void persistCimReviewState(nextState);
+  }, [persistCimReviewState, reviewState, user]);
+
+  const handleAddCimReviewNote = useCallback((fieldId, body) => {
+    const item = reviewState.items[fieldId];
+    if (!item || !body.trim()) return;
+    const now = new Date().toISOString();
+    const author = getQuestionnaireUserSummary(user);
+    const note = { id: `note_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`, author, body: body.trim(), createdAt: now, kind: "note" };
+    const nextItem = { ...item, notes: [...item.notes, note], updatedAt: now };
+    const historyEntry = {
+      id: `evt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      type: "note_added",
+      at: now,
+      by: author,
+      fieldId,
+      summary: `${author.name} raised a note on ${item.label || fieldId}`,
+    };
+    const nextState = normalizeCimReviewState({
+      ...reviewState,
+      items: { ...reviewState.items, [fieldId]: nextItem },
+      history: [historyEntry, ...(reviewState.history || [])].slice(0, 25),
+    });
+    setReviewState(nextState);
+    void persistCimReviewState(nextState);
+  }, [persistCimReviewState, reviewState, user]);
 
   const handleFinancialAutofill = useCallback(async ({ dateRange, reportVersionId = "" } = {}) => {
     if (!clientId || templateFieldCount === 0) {
@@ -7925,6 +8380,31 @@ export default function WorkspaceCimPrep() {
             )}
           </button>
           <button
+            onClick={() => setReviewPickerOpen(true)}
+            className="group relative flex h-10 w-10 items-center justify-center rounded-md border border-border bg-white text-[#6D6E71] transition hover:border-[#8BC53D] hover:bg-[#EEF6E0] hover:text-[#476E2C]"
+            aria-label="Share for Review"
+          >
+            <Share2 size={16} />
+            <span className="pointer-events-none absolute right-0 top-full z-50 mt-2 whitespace-nowrap rounded-md bg-[#050505] px-2 py-1 text-xs font-semibold text-white opacity-0 shadow-lg transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+              Share for Review
+            </span>
+          </button>
+          <button
+            onClick={() => setReviewModalOpen(true)}
+            className="group relative flex h-10 w-10 items-center justify-center rounded-md border border-border bg-white text-[#6D6E71] transition hover:border-[#8BC53D] hover:bg-[#EEF6E0] hover:text-[#476E2C]"
+            aria-label="Review notes"
+          >
+            <Flag size={16} />
+            {reviewCounts.open > 0 && (
+              <span className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-red-500 text-[10px] font-bold text-white">
+                {reviewCounts.open}
+              </span>
+            )}
+            <span className="pointer-events-none absolute right-0 top-full z-50 mt-2 whitespace-nowrap rounded-md bg-[#050505] px-2 py-1 text-xs font-semibold text-white opacity-0 shadow-lg transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+              Review notes
+            </span>
+          </button>
+          <button
             onClick={() => {
               const index = PREVIEW_SLIDES.indexOf(activeSlide);
               setPreviewSlideIndex(index >= 0 ? index : 0);
@@ -8061,6 +8541,7 @@ export default function WorkspaceCimPrep() {
             assetValues={assetValues}
             chartValues={chartValues}
             questionnaireState={questionnaireState}
+            reviewState={reviewState}
             globalDetails={effectiveGlobalDetails}
             financialAutofillRange={financialAutofillRange}
             activeFieldId={activeFieldId}
@@ -8072,6 +8553,9 @@ export default function WorkspaceCimPrep() {
             onChartChange={handleChartChange}
             onQuestionnaireToggle={handleQuestionnaireToggle}
             onQuestionPromptChange={handleQuestionPromptChange}
+            onReviewAddNote={handleAddCimReviewNote}
+            onReviewResolve={handleResolveCimReviewItem}
+            onReviewReopen={handleReopenCimReviewItem}
           />
         </aside>
       </div>
@@ -8087,6 +8571,25 @@ export default function WorkspaceCimPrep() {
           onUseClientNote={handleUseClientNote}
           onUseClientAsset={handleUseClientAsset}
           onCopyNote={handleCopyQuestionNote}
+        />
+      )}
+
+      {reviewModalOpen && (
+        <CimReviewModal
+          onClose={() => setReviewModalOpen(false)}
+          reviewState={reviewState}
+          onAddNote={handleAddCimReviewNote}
+          onResolve={handleResolveCimReviewItem}
+          onReopen={handleReopenCimReviewItem}
+        />
+      )}
+
+      {reviewPickerOpen && (
+        <CimSharePickerModal
+          onClose={() => setReviewPickerOpen(false)}
+          teamMembers={clientTeamMembers}
+          sharedWith={reviewState.sharedWith}
+          onShare={handleShareCimForReview}
         />
       )}
 
