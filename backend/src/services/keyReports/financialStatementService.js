@@ -1010,17 +1010,24 @@ async function generateYearlyPl(_companyId, versionId, year, allCoa, unmappedSet
 async function generateMonthlyPlFromYearly(versionId, year, yearlyStatement) {
   const yearlyNI = safeNum(yearlyStatement?.netIncome);
 
+  const hasGen = await hasGeneratedRows("balance_sheet_entries", versionId, year);
+  const genFilter = (q) => hasGen
+    ? q.eq("is_generated", true)
+    : q.or("is_generated.is.null,is_generated.eq.false");
+
   let bsEntries;
   try {
-    bsEntries = await fetchAllRows(() =>
-      supabase
-        .from("balance_sheet_entries")
-        .select("account_name, amount, as_of_date")
-        .eq("version_id", versionId)
-        .eq("fiscal_year", year)
-        .or("is_total.eq.false,is_total.is.null")
-        .order("as_of_date", { ascending: true }),
-    );
+    bsEntries = await fetchAllRows(() => {
+      let q = genFilter(
+        supabase
+          .from("balance_sheet_entries")
+          .select("account_name, amount, as_of_date")
+          .eq("version_id", versionId)
+          .eq("fiscal_year", year)
+          .or("is_total.eq.false,is_total.is.null")
+      );
+      return q.order("as_of_date", { ascending: true });
+    });
   } catch (_e) { return []; }
 
   if (!bsEntries?.length) return [];
@@ -1703,17 +1710,24 @@ async function generateYearlyCf(versionId, year) {
 // Fallback when GL has no transaction_date: derive monthly CF from period-over-period
 // balance_sheet_entries deltas (same data source that makes BS monthly work).
 async function generateMonthlyCfFromBSDeltas(versionId, year) {
+  const hasGen = await hasGeneratedRows("balance_sheet_entries", versionId, year);
+  const genFilter = (q) => hasGen
+    ? q.eq("is_generated", true)
+    : q.or("is_generated.is.null,is_generated.eq.false");
+
   let entries;
   try {
-    entries = await fetchAllRows(() =>
-      supabase
-        .from("balance_sheet_entries")
-        .select("account_name, amount, as_of_date")
-        .eq("version_id", versionId)
-        .eq("fiscal_year", year)
-        .or("is_total.eq.false,is_total.is.null")
-        .order("as_of_date", { ascending: true }),
-    );
+    entries = await fetchAllRows(() => {
+      let q = genFilter(
+        supabase
+          .from("balance_sheet_entries")
+          .select("account_name, amount, as_of_date")
+          .eq("version_id", versionId)
+          .eq("fiscal_year", year)
+          .or("is_total.eq.false,is_total.is.null")
+      );
+      return q.order("as_of_date", { ascending: true });
+    });
   } catch (_e) { return []; }
 
   if (!entries?.length) return [];

@@ -180,11 +180,17 @@ async function resolveYears(versionId, { year, startDate, endDate } = {}) {
 
 /** True when an extracted report table already holds rows for this fiscal year. */
 async function hasExtractedRows(table, versionId, year) {
-  const { count, error } = await supabase
+  let query = supabase
     .from(table)
     .select('id', { count: 'exact', head: true })
     .eq('version_id', versionId)
     .eq('fiscal_year', year);
+
+  if (table === 'balance_sheet_entries' || table === 'profit_loss_entries') {
+    query = query.or('is_generated.is.null,is_generated.eq.false');
+  }
+
+  const { count, error } = await query;
   if (error) return false;
   return (count || 0) > 0;
 }
@@ -666,6 +672,7 @@ async function bsBalancesForYear(versionId, year, depth = 0) {
       .select('account_name, account_type, section, amount, hierarchy_level, is_total, sort_order, fiscal_year, as_of_date')
       .eq('version_id', versionId)
       .eq('fiscal_year', year)
+      .or('is_generated.is.null,is_generated.eq.false')
       .order('sort_order', { ascending: true, nullsFirst: false })
       .order('id', { ascending: true });
     if (error) throw error;
