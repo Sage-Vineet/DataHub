@@ -439,12 +439,14 @@ async function generateFinancialTables(version, opts = {}) {
   mark('document_gate');
 
   if (!gate.canGenerate) {
-    logger.warn('  ✗ Accounting workflow halted: General Ledger is required but was not found.');
+    const haltReason = gate.haltReason || 'general_ledger_required';
+    const haltMessage = gate.haltMessage ||
+      'Sync completed, but the accounting workflow was halted: required accounting data was not found. Re-sync after linking the missing file.';
+    logger.warn(`  ✗ Accounting workflow halted: ${haltReason}.`);
     const haltRows = await buildValidationResultsFromEntryTables(versionId, mappingsByCategory, years, logger);
     haltRows.push(...gate.rows);
     await replaceValidationResults(versionId, companyId, haltRows);
     logger.log(`  ✓ ${haltRows.length} validation rows stored (workflow halted)`);
-    const haltMessage = 'Sync completed, but the accounting workflow was halted: no General Ledger data was found. Link a General Ledger file and re-sync.';
     return {
       success: true,
       halted: true,
@@ -457,7 +459,7 @@ async function generateFinancialTables(version, opts = {}) {
       summary: {
         generated: false,
         halted: true,
-        haltReason: 'general_ledger_required',
+        haltReason,
         years,
         totalRowsInserted: totalRows,
         extractionResults,

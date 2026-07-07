@@ -103,8 +103,9 @@ async function glRowCount(companyId, versionId) {
  *
  * Rules (client Data Table WF):
  *   - General Ledger REQUIRED. Absent ⇒ canGenerate = false (halt downstream).
- *   - Opening Balance Sheet required for the roll-forward. Absent ⇒ warning;
- *     the monthly engine will start from a zero opening position.
+ *   - Opening Balance Sheet REQUIRED for the roll-forward. Absent ⇒
+ *     canGenerate = false (halt downstream) — without it every generated
+ *     balance would start from a fabricated zero opening position.
  *   - Ending Balance Sheet OPTIONAL — used only for reconciliation.
  *
  * @returns {Promise<{
@@ -129,6 +130,8 @@ async function classifyWorkflowDocuments(companyId, versionId) {
       hasGL: false, glRowCount: 0, glStartYear: null, glEndYear: null,
       glStartDate: null, glEndDate: null, openingBs: null, endingBs: null,
       hasOpeningBs: false, hasEndingBs: false, canGenerate: false, rows,
+      haltReason: "general_ledger_required",
+      haltMessage: "Sync completed, but the accounting workflow was halted: no General Ledger data was found. Link a General Ledger file and re-sync.",
     };
   }
 
@@ -142,7 +145,7 @@ async function classifyWorkflowDocuments(companyId, versionId) {
       status: "error",
       severity: "error",
       message:
-        "General Ledger is required to generate accounting reports. " +
+        "Upload a General Ledger before generating Key Reports. " +
         "No General Ledger data was found — the accounting workflow is halted. " +
         "Link a General Ledger file and re-sync.",
       metadata: { gate: "gl_required", canGenerate: false },
@@ -151,6 +154,8 @@ async function classifyWorkflowDocuments(companyId, versionId) {
       hasGL: false, glRowCount: 0, glStartYear: null, glEndYear: null,
       glStartDate: null, glEndDate: null, openingBs: null, endingBs: null,
       hasOpeningBs: false, hasEndingBs: false, canGenerate: false, rows,
+      haltReason: "general_ledger_required",
+      haltMessage: "Sync completed, but the accounting workflow was halted: no General Ledger data was found. Link a General Ledger file and re-sync.",
     };
   }
 
@@ -214,15 +219,30 @@ async function classifyWorkflowDocuments(companyId, versionId) {
     rows.push({
       dataType: "balance_sheet",
       year: minYear || null,
-      status: "warning",
-      severity: "warning",
+      status: "error",
+      severity: "error",
       message:
-        "No Opening Balance Sheet was found at or before the General Ledger " +
-        "start. Monthly balance sheets will be rolled forward from a zero " +
-        "opening position. Link the opening (prior period-end) balance sheet " +
-        "for accurate balances.",
-      metadata: { gate: "opening_bs_missing", glStartDate },
+        "An Opening Balance Sheet is required to generate financial statements. " +
+        "Please upload and link an Opening Balance Sheet (a snapshot at or " +
+        "before the General Ledger's start date) and re-sync.",
+      metadata: { gate: "opening_bs_required", canGenerate: false, glStartDate },
     });
+    return {
+      hasGL: true,
+      glRowCount: glCount,
+      glStartYear: minYear,
+      glEndYear: maxYear,
+      glStartDate,
+      glEndDate,
+      openingBs: null,
+      endingBs: hasEndingBs ? latest : null,
+      hasOpeningBs: false,
+      hasEndingBs,
+      canGenerate: false,
+      rows,
+      haltReason: "opening_balance_sheet_required",
+      haltMessage: "Sync completed, but the accounting workflow was halted: no Opening Balance Sheet was found. Link an Opening Balance Sheet and re-sync.",
+    };
   }
 
   return {

@@ -1183,7 +1183,7 @@ async function loadGlAmountsYearly(versionId, year) {
     data = await fetchAllRows(() =>
       supabase
         .from("general_ledger_entries")
-        .select("account_name, account_number, amount, fiscal_year")
+        .select("account_name, split_account, account_number, amount, fiscal_year")
         .eq("version_id", versionId)
         .or(
           `fiscal_year.eq.${year},` +
@@ -1196,12 +1196,31 @@ async function loadGlAmountsYearly(versionId, year) {
 
   // norm(name) → { rawName, accountNumber, total }
   const byAccount = new Map();
+  const namesWithOwnRow = new Set();
   for (const row of data) {
     const rawName = String(row.account_name || "").trim();
     if (!rawName || isSummaryRow(rawName)) continue;
     const key = norm(rawName);
+    namesWithOwnRow.add(key);
     if (!byAccount.has(key)) {
       byAccount.set(key, { rawName, accountNumber: row.account_number, total: 0 });
+    }
+    byAccount.get(key).total += safeNum(row.amount);
+  }
+
+  // split_account fallback — mirrors keyReportReportService.aggregateGLByAccount's
+  // plDistSeen rule: pick up an account that only ever appears via split_account
+  // this year (e.g. a partial GL export), attributed under its own name, but only
+  // if it doesn't already have its own account_name row (avoids double-counting).
+  // Kept identical in intent to the Balance Sheet/Cash Flow aggregator so P&L and
+  // Financial Statements agree on Net Income for the same version+year.
+  for (const row of data) {
+    const splitName = String(row.split_account || "").trim();
+    if (!splitName || isSummaryRow(splitName)) continue;
+    const key = norm(splitName);
+    if (namesWithOwnRow.has(key)) continue;
+    if (!byAccount.has(key)) {
+      byAccount.set(key, { rawName: splitName, accountNumber: null, total: 0 });
     }
     byAccount.get(key).total += safeNum(row.amount);
   }
