@@ -275,6 +275,22 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map()) {
     if (fiscalYear) leaf.fiscalYears.add(Number(fiscalYear));
     if (!leaf.accountNumber && number) leaf.accountNumber = number;
     if (bsSection && !leaf.bsSection) leaf.bsSection = bsSection;
+    if (bsSection) {
+      const normSec = String(bsSection).toLowerCase().trim();
+      if (normSec.includes("asset")) {
+        leaf.accountType = "asset";
+        leaf.statementType = "balance_sheet";
+        if (!leaf.aiSection || !leaf.aiSection.toLowerCase().includes("asset")) leaf.aiSection = "Current Assets";
+      } else if (normSec.includes("liab")) {
+        leaf.accountType = "liability";
+        leaf.statementType = "balance_sheet";
+        if (!leaf.aiSection || !leaf.aiSection.toLowerCase().includes("liabilit")) leaf.aiSection = "Current Liabilities";
+      } else if (normSec.includes("equity") || normSec.includes("capital") || normSec.includes("owner") || normSec.includes("member")) {
+        leaf.accountType = "equity";
+        leaf.statementType = "balance_sheet";
+        leaf.aiSection = "Equity";
+      }
+    }
   };
 
   const addLeaf = (accountName, accountNumber, source, fiscalYear, bsSection) => {
@@ -291,8 +307,21 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map()) {
     if (aiResult?.isReportRow) return;
 
     // AI result drives the classification.  Low or absent confidence → needsReview.
-    const accountType        = aiResult?.accountType || "expense";
-    const aiSection          = aiResult?.section     || "";
+    let accountType        = aiResult?.accountType || "expense";
+    let aiSection          = aiResult?.section     || "";
+    if (bsSection) {
+      const normSec = String(bsSection).toLowerCase().trim();
+      if (normSec.includes("asset")) {
+        accountType = "asset";
+        if (!aiSection || !aiSection.toLowerCase().includes("asset")) aiSection = "Current Assets";
+      } else if (normSec.includes("liab")) {
+        accountType = "liability";
+        if (!aiSection || !aiSection.toLowerCase().includes("liabilit")) aiSection = "Current Liabilities";
+      } else if (normSec.includes("equity") || normSec.includes("capital") || normSec.includes("owner") || normSec.includes("member")) {
+        accountType = "equity";
+        aiSection = "Equity";
+      }
+    }
     const aiDeeperLevels     = aiResult?.deeperLevels    || [];
     const aiNormalizedName   = aiResult?.normalizedName  || null;
     const aiNormalBalance    = aiResult?.normalBalance   || null;
@@ -861,17 +890,21 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
       continue;
     }
 
-    // Existing account. NEVER overwrite original_*. Preserve adjustments.
+    // Existing account. NEVER overwrite original_*. Preserve adjustments and classifications.
     const userModified = Boolean(existing.metadata?.user_modified);
+    const resolvedType = existing.account_type || leaf.accountType;
+    const resolvedStmt = existing.statement_type || leaf.statementType;
+    const resolvedNormal = existing.normal_balance || normalBal;
+
     const patch = {
       account_id_name: accountIdName,
       // system_id comes from assignSystemIds: it preserves the id when the section
       // prefix is unchanged and re-issues a correct-prefix id when the account was
       // reclassified into a different section.
       system_id: systemId || existing.system_id,
-      account_type: userModified ? existing.account_type : leaf.accountType,
-      statement_type: userModified ? existing.statement_type : leaf.statementType,
-      normal_balance: existing.normal_balance || normalBalanceFor(userModified ? existing.account_type : leaf.accountType),
+      account_type: resolvedType,
+      statement_type: resolvedStmt,
+      normal_balance: resolvedNormal,
       sort_order: sortCounter,
       // original stays as first-seen; only backfill if it was never set.
       original_name: existing.original_name || leaf.displayName,
@@ -883,15 +916,31 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
       // Keep the user's adjusted hierarchy + display name + level columns +
       // their existing parent_account_id. (No level/adjusted changes here.)
     } else {
-      // Refresh the adjusted view + level columns with the latest AI result.
-      Object.assign(patch, levelsToColumns(aiLevels), {
-        parent_account_id: parentAccountId,
-        base_account: leaf.baseAccount,
-        hierarchy_path: leaf.hierarchyPath,
-        classification_method: leaf.classificationMethod,
-        adjusted_name: leaf.displayName,
-        adjusted_hierarchy: aiSnapshot,
-      });
+      // If we are preserving existing classification, we should also preserve existing levels and parent relationships.
+      // Only set them if the existing account did not have them set.
+      const hasExistingLevels = columnsToLevels(existing).some(Boolean);
+      if (hasExistingLevels) {
+        // Preserve existing levels and hierarchy
+        const existingLevels = columnsToLevels(existing);
+        Object.assign(patch, levelsToColumns(existingLevels), {
+          parent_account_id: existing.parent_account_id,
+          base_account: existing.base_account || leaf.baseAccount,
+          hierarchy_path: existing.hierarchy_path || leaf.hierarchyPath,
+          classification_method: existing.classification_method || leaf.classificationMethod,
+          adjusted_name: existing.adjusted_name || leaf.displayName,
+          adjusted_hierarchy: existing.adjusted_hierarchy || aiSnapshot,
+        });
+      } else {
+        // Backfill with the latest AI result
+        Object.assign(patch, levelsToColumns(aiLevels), {
+          parent_account_id: parentAccountId,
+          base_account: leaf.baseAccount,
+          hierarchy_path: leaf.hierarchyPath,
+          classification_method: leaf.classificationMethod,
+          adjusted_name: leaf.displayName,
+          adjusted_hierarchy: aiSnapshot,
+        });
+      }
     }
     updates.push({ id: existing.id, patch });
   }

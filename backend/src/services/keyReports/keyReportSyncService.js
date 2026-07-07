@@ -171,7 +171,11 @@ async function getDistinctYearsFromTable(table, versionId, yearCol, isDateCol) {
   // N, which was truncating multi-thousand-row General Ledgers and losing years.
   let data;
   try {
-    data = await fetchAllRows(() => supabase.from(table).select(yearCol).eq('version_id', versionId));
+    let q = supabase.from(table).select(yearCol).eq('version_id', versionId);
+    if (table === 'balance_sheet_entries' || table === 'profit_loss_entries') {
+      q = q.or('is_generated.is.null,is_generated.eq.false');
+    }
+    data = await fetchAllRows(() => q);
   } catch (_e) { return new Set(); }
   if (!data) return new Set();
 
@@ -246,6 +250,10 @@ async function buildValidationResultsFromEntryTables(versionId, mappingsByCatego
           .from(dt.table)
           .select('id', { count: 'exact', head: true })
           .eq('version_id', versionId);
+
+        if (dt.key === 'balance_sheet' || dt.key === 'profit_loss') {
+          countQuery = countQuery.or('is_generated.is.null,is_generated.eq.false');
+        }
 
         if (dt.isDateCol) {
           // Filter bank_statement_entries by statement_month year range
@@ -431,12 +439,14 @@ async function generateFinancialTables(version, opts = {}) {
   mark('document_gate');
 
   if (!gate.canGenerate) {
-    logger.warn('  ✗ Accounting workflow halted: General Ledger is required but was not found.');
+    const haltReason = gate.haltReason || 'general_ledger_required';
+    const haltMessage = gate.haltMessage ||
+      'Sync completed, but the accounting workflow was halted: required accounting data was not found. Re-sync after linking the missing file.';
+    logger.warn(`  ✗ Accounting workflow halted: ${haltReason}.`);
     const haltRows = await buildValidationResultsFromEntryTables(versionId, mappingsByCategory, years, logger);
     haltRows.push(...gate.rows);
     await replaceValidationResults(versionId, companyId, haltRows);
     logger.log(`  ✓ ${haltRows.length} validation rows stored (workflow halted)`);
-    const haltMessage = 'Sync completed, but the accounting workflow was halted: no General Ledger data was found. Link a General Ledger file and re-sync.';
     return {
       success: true,
       halted: true,
@@ -449,7 +459,7 @@ async function generateFinancialTables(version, opts = {}) {
       summary: {
         generated: false,
         halted: true,
-        haltReason: 'general_ledger_required',
+        haltReason,
         years,
         totalRowsInserted: totalRows,
         extractionResults,

@@ -180,11 +180,17 @@ async function resolveYears(versionId, { year, startDate, endDate } = {}) {
 
 /** True when an extracted report table already holds rows for this fiscal year. */
 async function hasExtractedRows(table, versionId, year) {
-  const { count, error } = await supabase
+  let query = supabase
     .from(table)
     .select('id', { count: 'exact', head: true })
     .eq('version_id', versionId)
     .eq('fiscal_year', year);
+
+  if (table === 'balance_sheet_entries' || table === 'profit_loss_entries') {
+    query = query.or('is_generated.is.null,is_generated.eq.false');
+  }
+
+  const { count, error } = await query;
   if (error) return false;
   return (count || 0) > 0;
 }
@@ -361,6 +367,18 @@ async function aggregateGLByAccount(versionId, year) {
 
   const coaTypes = await loadCoaAccountTypeLookup(versionId);
 
+  // Accounts that already post their own account_name row this year — the
+  // split_account fallback below only fires for revenue/expense accounts that
+  // don't. Mirrors aggregateGLForBS's plDistSeen rule exactly so the P&L total
+  // and the Balance Sheet/Cash Flow Net Income agree for the same version+year.
+  const plDistSeen = new Set();
+  for (const row of rows) {
+    const n = glAccountName(row);
+    if (!n) continue;
+    const t = classifyAccountFromLookup(coaTypes, n, row.account_number);
+    if (t === 'revenue' || t === 'expense') plDistSeen.add(n);
+  }
+
   const accounts = new Map();
   const unclassified = [];
   for (const row of rows) {
@@ -378,6 +396,17 @@ async function aggregateGLByAccount(versionId, year) {
     }
     if (!accounts.has(name)) accounts.set(name, { name, net: 0, type });
     accounts.get(name).net += glNetMovement(row);
+
+    // P&L split fallback — same rule as aggregateGLForBS: pick up a
+    // revenue/expense account that only appears via split_account this year
+    // (e.g. a partial GL export), attributed as its own line under that name.
+    const splitName = (row.split_account && String(row.split_account).trim()) || '';
+    if (!splitName) continue;
+    const splitType = classifyAccountFromLookup(coaTypes, splitName, null);
+    if ((splitType === 'revenue' || splitType === 'expense') && !plDistSeen.has(splitName)) {
+      if (!accounts.has(splitName)) accounts.set(splitName, { name: splitName, net: 0, type: splitType });
+      accounts.get(splitName).net += safeNum(row.amount);
+    }
   }
   if (unclassified.length) {
     console.warn(`[KeyReports][GL] versionId=${versionId} FY${year}: ${unclassified.length} unclassified GL accounts:`,
@@ -666,6 +695,7 @@ async function bsBalancesForYear(versionId, year, depth = 0) {
       .select('account_name, account_type, section, amount, hierarchy_level, is_total, sort_order, fiscal_year, as_of_date')
       .eq('version_id', versionId)
       .eq('fiscal_year', year)
+      .or('is_generated.is.null,is_generated.eq.false')
       .order('sort_order', { ascending: true, nullsFirst: false })
       .order('id', { ascending: true });
     if (error) throw error;
@@ -2166,6 +2196,7 @@ module.exports = {
   bsBalancesForYear,
   aggregateGLForBSByMonth,
   aggregateGLForBS,
+  aggregateGLByAccount,
   naturalBalanceMovement,
   netIncomeMovement,
   classifyGLAccountFallback,

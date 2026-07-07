@@ -29,6 +29,18 @@ const REPORT_CATEGORIES = {
 };
 const VALID_CATEGORIES = new Set(Object.values(REPORT_CATEGORIES));
 
+// Entry table that holds a category's extracted rows, keyed by (version_id,
+// source_file_id). Mirrors each extraction service's `tableName` — kept here
+// too so removeMapping can clean up without loading the extraction services.
+// profit_loss has no entry table (dropped by migration 056; P&L is generated
+// from the General Ledger).
+const ENTRY_TABLE_BY_CATEGORY = {
+  [REPORT_CATEGORIES.GENERAL_LEDGER]: "general_ledger_entries",
+  [REPORT_CATEGORIES.BALANCE_SHEET]: "balance_sheet_entries",
+  [REPORT_CATEGORIES.BANK_STATEMENT]: "bank_statement_entries",
+  [REPORT_CATEGORIES.TAX_RETURN]: "tax_return_entries",
+};
+
 function normalizeVersion(row) {
   if (!row) return null;
   return {
@@ -314,6 +326,22 @@ async function removeMapping(mappingId) {
   if (error) throw error;
 
   if (row.document_id) {
+    // Delete this document's already-extracted rows for THIS category so a
+    // future replace/delete doesn't leave stale data mixed into the version's
+    // aggregates (glRowCount, COA generation, Trial Balance, etc. all filter
+    // by version_id only, not by which documents are still mapped).
+    const entryTable = ENTRY_TABLE_BY_CATEGORY[row.report_category];
+    if (entryTable) {
+      const { error: entryErr } = await supabase
+        .from(entryTable)
+        .delete()
+        .eq("version_id", row.version_id)
+        .eq("source_file_id", row.document_id);
+      if (entryErr) {
+        console.warn(`[KeyReports] removeMapping: failed to delete ${entryTable} rows for document ${row.document_id}: ${entryErr.message}`);
+      }
+    }
+
     const { data: remaining } = await supabase
       .from("key_report_file_mappings")
       .select("id")
