@@ -506,6 +506,28 @@ export function saveCimQuestionnaireRequest(state, options = {}) {
   });
 }
 
+export function getCimReviewRequest(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/cim-review${query}`, options);
+}
+
+export function saveCimReviewRequest(state, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/cim-review${query}`, {
+    ...options,
+    method: 'PUT',
+    body: { state },
+  });
+}
+
+export function getCimReviewContentRequest(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/cim-review/content${query}`, options);
+}
+
 export async function uploadFile(file, options = {}) {
   if (!file) {
     throw new Error('Missing file for upload');
