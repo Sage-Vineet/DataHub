@@ -311,14 +311,20 @@ function WorkspaceSidebar({ company, onClose }) {
 }
 
 // Module-level cache so the companies list is fetched at most once per session,
-// regardless of how many times WorkspaceTopbar mounts or the company switches.
+// per signed-in broker, regardless of how many times WorkspaceTopbar mounts.
 let cachedSwitchCompanies = null;
+
+function getCachedSwitchCompanies(userId) {
+  if (!userId || cachedSwitchCompanies?.userId !== userId) return null;
+  return cachedSwitchCompanies.companies;
+}
 
 function WorkspaceTopbar({ company, onMenuClick }) {
   const navigate = useNavigate();
   const { user } = useAuth();
+  const userId = user?.id ? String(user.id) : "";
   const [showSwitch, setShowSwitch] = useState(false);
-  const [companies, setCompanies] = useState(cachedSwitchCompanies ?? []);
+  const [companies, setCompanies] = useState(() => getCachedSwitchCompanies(userId) ?? []);
   const [search, setSearch] = useState('');
   const switchRef = useRef(null);
   const searchRef = useRef(null);
@@ -343,19 +349,33 @@ function WorkspaceTopbar({ company, onMenuClick }) {
   }, [showSwitch]);
 
   useEffect(() => {
-    if (cachedSwitchCompanies) return;
     let cancelled = false;
+    const applyCompanies = (nextCompanies) => {
+      queueMicrotask(() => {
+        if (!cancelled) setCompanies(nextCompanies);
+      });
+    };
+
+    const cached = getCachedSwitchCompanies(userId);
+    if (cached) {
+      applyCompanies(cached);
+      return () => { cancelled = true; };
+    }
+
+    applyCompanies([]);
+    if (!userId) return () => { cancelled = true; };
+
     listCompaniesRequest()
       .then((data) => {
         if (!cancelled) {
           const mapped = data.map((item) => ({ ...item, logo: item.logo || companyLogo(item.name) }));
-          cachedSwitchCompanies = mapped;
+          cachedSwitchCompanies = { userId, companies: mapped };
           setCompanies(mapped);
         }
       })
       .catch(() => { if (!cancelled) setCompanies([]); });
     return () => { cancelled = true; };
-  }, []);
+  }, [userId]);
 
   const filteredCompanies = search.trim()
     ? companies.filter((c) => {
