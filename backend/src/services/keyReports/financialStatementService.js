@@ -30,11 +30,11 @@ const { fetchAllRows } = require("./pagedFetch");
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
 const safeNum = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
-const round2  = (v) => Math.round(safeNum(v) * 100) / 100;
+const round2 = (v) => Math.round(safeNum(v) * 100) / 100;
 
 const MONTH_NAMES = [
-  "January","February","March","April","May","June",
-  "July","August","September","October","November","December",
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
 ];
 const LEVEL_KEYS = Array.from({ length: 15 }, (_, i) => `level_${i + 1}`);
 
@@ -60,9 +60,9 @@ const displayName = (acc) => acc.adjusted_name || acc.base_account || acc.accoun
 // Mirrors classifyGLAccount in keyReportReportService but scoped to BS types.
 
 const _BS_PRIORITY_ASSET_KW = ['loans to', 'loan to'];
-const _BS_LIABILITY_KW      = ['payable', 'accrued', 'credit card', 'loan', 'liability', 'mortgage', 'deferred', 'unearned'];
-const _BS_ASSET_KW          = ['cash', 'bank', 'checking', 'savings', 'receivable', 'inventory', 'prepaid', 'deposit', 'money market', 'equipment', 'furniture', 'vehicle', 'building', 'land', 'property', 'accumulated depreciation', 'goodwill', 'intangible', 'investment', 'due from', 'asset'];
-const _BS_EQUITY_KW         = ['equity', 'capital', 'retained earnings', 'owner', 'member', 'distribution', 'draw', 'net income', 'net loss'];
+const _BS_LIABILITY_KW = ['payable', 'accrued', 'credit card', 'loan', 'liability', 'mortgage', 'deferred', 'unearned'];
+const _BS_ASSET_KW = ['cash', 'bank', 'checking', 'savings', 'receivable', 'inventory', 'prepaid', 'deposit', 'money market', 'equipment', 'furniture', 'vehicle', 'building', 'land', 'property', 'accumulated depreciation', 'goodwill', 'intangible', 'investment', 'due from', 'asset'];
+const _BS_EQUITY_KW = ['equity', 'capital', 'retained earnings', 'owner', 'member', 'distribution', 'draw', 'net income', 'net loss'];
 
 // P&L keyword lists for COA suggestion in unmapped account report (Issue 5)
 const _PL_PRIORITY_EXPENSE_KW = ['credit card charges', 'credit card fees', 'bank charges', 'bank fees'];
@@ -78,13 +78,13 @@ function suggestCoaType(normName) {
   const n = String(normName || '').toLowerCase();
   const hitKw = (kws) => { for (const k of kws) { if (n.includes(k)) return k; } return null; };
   let kw;
-  if ((kw = hitKw(_BS_PRIORITY_ASSET_KW)))   return { suggestedType: 'asset',     confidence: 0.90, reason: `keyword match: "${kw}"` };
-  if ((kw = hitKw(_PL_PRIORITY_EXPENSE_KW))) return { suggestedType: 'expense',   confidence: 0.90, reason: `keyword match: "${kw}"` };
-  if ((kw = hitKw(_PL_REVENUE_KW)))          return { suggestedType: 'revenue',   confidence: 0.85, reason: `keyword match: "${kw}"` };
-  if ((kw = hitKw(_BS_LIABILITY_KW)))        return { suggestedType: 'liability', confidence: 0.80, reason: `keyword match: "${kw}"` };
-  if ((kw = hitKw(_BS_ASSET_KW)))            return { suggestedType: 'asset',     confidence: 0.80, reason: `keyword match: "${kw}"` };
-  if ((kw = hitKw(_PL_EXPENSE_KW)))          return { suggestedType: 'expense',   confidence: 0.75, reason: `keyword match: "${kw}"` };
-  if ((kw = hitKw(_BS_EQUITY_KW)))           return { suggestedType: 'equity',    confidence: 0.75, reason: `keyword match: "${kw}"` };
+  if ((kw = hitKw(_BS_PRIORITY_ASSET_KW))) return { suggestedType: 'asset', confidence: 0.90, reason: `keyword match: "${kw}"` };
+  if ((kw = hitKw(_PL_PRIORITY_EXPENSE_KW))) return { suggestedType: 'expense', confidence: 0.90, reason: `keyword match: "${kw}"` };
+  if ((kw = hitKw(_PL_REVENUE_KW))) return { suggestedType: 'revenue', confidence: 0.85, reason: `keyword match: "${kw}"` };
+  if ((kw = hitKw(_BS_LIABILITY_KW))) return { suggestedType: 'liability', confidence: 0.80, reason: `keyword match: "${kw}"` };
+  if ((kw = hitKw(_BS_ASSET_KW))) return { suggestedType: 'asset', confidence: 0.80, reason: `keyword match: "${kw}"` };
+  if ((kw = hitKw(_PL_EXPENSE_KW))) return { suggestedType: 'expense', confidence: 0.75, reason: `keyword match: "${kw}"` };
+  if ((kw = hitKw(_BS_EQUITY_KW))) return { suggestedType: 'equity', confidence: 0.75, reason: `keyword match: "${kw}"` };
   return { suggestedType: 'unknown', confidence: 0, reason: 'no keyword match — manual classification required' };
 }
 
@@ -92,9 +92,9 @@ function classifyUnmappedBSAccount(name) {
   const n = String(name || '').toLowerCase();
   const hit = (kws) => kws.some(k => n.includes(k));
   if (hit(_BS_PRIORITY_ASSET_KW)) return 'asset';
-  if (hit(_BS_LIABILITY_KW))      return 'liability';
-  if (hit(_BS_ASSET_KW))          return 'asset';
-  if (hit(_BS_EQUITY_KW))         return 'equity';
+  if (hit(_BS_LIABILITY_KW)) return 'liability';
+  if (hit(_BS_ASSET_KW)) return 'asset';
+  if (hit(_BS_EQUITY_KW)) return 'equity';
   return null;
 }
 
@@ -165,7 +165,7 @@ async function loadCoa(versionId) {
   if (error) throw new Error(`COA load: ${error.message}`);
   const accounts = data || [];
   const leaves = accounts.filter(a => !a.metadata?.is_group);
-  const groups = accounts.filter(a =>  a.metadata?.is_group);
+  const groups = accounts.filter(a => a.metadata?.is_group);
   console.log(`[FinStmt][COA] ${accounts.length} accounts (${leaves.length} leaves, ${groups.length} groups)`);
   return accounts;
 }
@@ -185,13 +185,13 @@ function buildTree(coaAccounts) {
   for (const acc of coaAccounts) {
     byId.set(acc.id, {
       ...acc,
-      isGroup:       Boolean(acc.metadata?.is_group),
-      children:      [],
+      isGroup: Boolean(acc.metadata?.is_group),
+      children: [],
       // Filled by rollupNode:
-      signedAmount:  0,
+      signedAmount: 0,
       displayAmount: 0,
       // Filled by assignAmounts:
-      leafAmount:    0,
+      leafAmount: 0,
     });
   }
 
@@ -236,14 +236,14 @@ function buildMappings(leaves) {
 // ─── Multi-strategy fuzzy fallback matcher ────────────────────────────────────
 
 function buildFuzzyLookup(leaves) {
-  const exact  = new Map();
+  const exact = new Map();
   const strict = new Map();
-  const byNum  = new Map();
+  const byNum = new Map();
   for (const acc of leaves) {
     const names = [acc.adjusted_name, acc.account_name, acc.base_account].filter(Boolean);
     for (const name of names) {
       const k1 = norm(name);
-      if (k1 && !exact.has(k1))  exact.set(k1, acc.id);
+      if (k1 && !exact.has(k1)) exact.set(k1, acc.id);
       const k2 = normStrict(name);
       if (k2 && !strict.has(k2)) strict.set(k2, acc.id);
     }
@@ -267,26 +267,31 @@ function fuzzyMatch(lookup, name, accountNumber) {
   const k2 = normStrict(name);
   if (k2 && lookup.strict.has(k2)) return { id: lookup.strict.get(k2), confidence: 0.95 };
 
-  // Word-set Jaccard similarity with a lowered threshold of 0.50 to catch more valid
-  // accounts (e.g. "Cost of Goods Sold" vs "Cost of Sales", "Rent Expense" vs "Rent").
-  // Also bonuses for: containment (substring), shared first word, shared last word.
-  const words1 = new Set(k1.split(" ").filter(w => w.length > 1));
-  const arr1   = [...words1];
-  let bestId = null, bestScore = 0;
-  for (const [k, id] of lookup.exact) {
-    const words2 = new Set(k.split(" ").filter(w => w.length > 1));
-    if (!words2.size || !words1.size) continue;
-    const inter = arr1.filter(w => words2.has(w)).length;
-    const union = new Set([...arr1, ...words2]).size;
-    const jaccard = union > 0 ? inter / union : 0;
-    const containsBonus  = (k1.includes(k) || k.includes(k1)) ? 0.10 : 0;
-    const firstWordBonus = (arr1[0] && arr1[0] === [...words2][0]) ? 0.05 : 0;
-    const lastWordBonus  = (arr1[arr1.length - 1] && arr1[arr1.length - 1] === [...words2][words2.size - 1]) ? 0.05 : 0;
-    const total = Math.min(jaccard + containsBonus + firstWordBonus + lastWordBonus, 1.0);
-    if (total > bestScore && total >= 0.50) { bestScore = total; bestId = id; }
-  }
-  if (bestId) return { id: bestId, confidence: bestScore };
+  // // Word-set Jaccard similarity with a lowered threshold of 0.50 to catch more valid
+  // // accounts (e.g. "Cost of Goods Sold" vs "Cost of Sales", "Rent Expense" vs "Rent").
+  // // Also bonuses for: containment (substring), shared first word, shared last word.
+  // const words1 = new Set(k1.split(" ").filter(w => w.length > 1));
+  // const arr1   = [...words1];
+  // let bestId = null, bestScore = 0;
+  // for (const [k, id] of lookup.exact) {
+  //   const words2 = new Set(k.split(" ").filter(w => w.length > 1));
+  //   if (!words2.size || !words1.size) continue;
+  //   const inter = arr1.filter(w => words2.has(w)).length;
+  //   const union = new Set([...arr1, ...words2]).size;
+  //   const jaccard = union > 0 ? inter / union : 0;
+  //   const containsBonus  = (k1.includes(k) || k.includes(k1)) ? 0.10 : 0;
+  //   const firstWordBonus = (arr1[0] && arr1[0] === [...words2][0]) ? 0.05 : 0;
+  //   const lastWordBonus  = (arr1[arr1.length - 1] && arr1[arr1.length - 1] === [...words2][words2.size - 1]) ? 0.05 : 0;
+  //   const total = Math.min(jaccard + containsBonus + firstWordBonus + lastWordBonus, 1.0);
+  //   if (total > bestScore && total >= 0.50) { bestScore = total; bestId = id; }
+  // }
+  // if (bestId) return { id: bestId, confidence: bestScore };
 
+  // Fuzzy/similarity fallback intentionally DISABLED. Accounts are matched only
+  // by exact name (`norm`), exact strict name (`normStrict`), or account number.
+  // Similar-but-different names (e.g. "Meals Tax" vs "Accrued Meals Tax") must
+  // stay separate; an unmatched entry is left unmapped, never folded into a
+  // look-alike account.
   return null;
 }
 
@@ -393,16 +398,16 @@ const ROLLUP_SIGN = { income: 1, cogs: -1, expense: -1, asset: 1, liability: 1, 
 function rollupNode(node, leafAmountById) {
   if (!node.isGroup) {
     // Leaf: raw amount (always positive from entries) × sign
-    const raw  = safeNum(leafAmountById.get(node.id) || 0);
+    const raw = safeNum(leafAmountById.get(node.id) || 0);
     const sign = ROLLUP_SIGN[node.account_type] ?? 1;
-    node.leafAmount    = raw;
-    node.signedAmount  = raw * sign;
+    node.leafAmount = raw;
+    node.signedAmount = raw * sign;
     node.displayAmount = raw; // always positive for individual account display
     return;
   }
   // Group: recurse then aggregate
   for (const child of node.children) rollupNode(child, leafAmountById);
-  node.signedAmount  = node.children.reduce((s, c) => s + c.signedAmount, 0);
+  node.signedAmount = node.children.reduce((s, c) => s + c.signedAmount, 0);
   node.displayAmount = Math.abs(node.signedAmount);
 }
 
@@ -433,19 +438,19 @@ function groupLabelFor(node, byId) {
  * Totals = calculated from leaf sums; never read from entry summary rows.
  */
 function buildPlStatement(leaves, byId) {
-  const income  = leaves.filter(n => n.account_type === "income");
-  const cogs    = leaves.filter(n => n.account_type === "cogs");
+  const income = leaves.filter(n => n.account_type === "income");
+  const cogs = leaves.filter(n => n.account_type === "cogs");
   const expense = leaves.filter(n => n.account_type === "expense");
 
   // Amounts come from the DB (numeric 18,2) — preserve exact precision; do NOT
   // apply Math.round() to individual account amounts.
   const toLeaf = (n) => ({
-    systemId:      n.system_id      || null,
+    systemId: n.system_id || null,
     accountNumber: n.account_number || null,
-    name:          displayName(n),
-    adjustedName:  n.adjusted_name  || null,
+    name: displayName(n),
+    adjustedName: n.adjusted_name || null,
     hierarchyPath: n.hierarchy_path || null,
-    amount:        safeNum(n.displayAmount),
+    amount: safeNum(n.displayAmount),
   });
 
   // Revenue — flat list, total = sum of income leaves.
@@ -454,11 +459,11 @@ function buildPlStatement(leaves, byId) {
   // No sign flip needed. Contra-revenue (sales returns, discounts) arrive NEGATIVE
   // in the GL and naturally reduce Total Revenue without any special handling.
   const incomeAccounts = income.map(toLeaf);
-  const totalRevenue   = safeNum(incomeAccounts.reduce((s, a) => s + a.amount, 0));
+  const totalRevenue = safeNum(incomeAccounts.reduce((s, a) => s + a.amount, 0));
 
   // Cost of Sales — flat list (the frontend reads costOfSales.accounts[])
   const cogsAccounts = cogs.map(toLeaf);
-  const totalCogs    = safeNum(cogsAccounts.reduce((s, a) => s + a.amount, 0));
+  const totalCogs = safeNum(cogsAccounts.reduce((s, a) => s + a.amount, 0));
 
   // Gross Profit — calculated
   const grossProfit = safeNum(totalRevenue - totalCogs);
@@ -472,30 +477,30 @@ function buildPlStatement(leaves, byId) {
     expenseGroupMap[grp].accounts.push(leaf);
     expenseGroupMap[grp].total = safeNum(expenseGroupMap[grp].total + leaf.amount);
   }
-  const totalExpenses   = safeNum(Object.values(expenseGroupMap).reduce((s, g) => s + g.total, 0));
+  const totalExpenses = safeNum(Object.values(expenseGroupMap).reduce((s, g) => s + g.total, 0));
   const operatingIncome = safeNum(grossProfit - totalExpenses);
-  const netIncome       = operatingIncome;
+  const netIncome = operatingIncome;
 
-  const incomeSectionLabel  = income[0]?.level_6  || income[0]?.level_7  || "Total Revenue";
-  const cogsSectionLabel    = cogs[0]?.level_6    || cogs[0]?.level_7    || "Cost of Sales";
+  const incomeSectionLabel = income[0]?.level_6 || income[0]?.level_7 || "Total Revenue";
+  const cogsSectionLabel = cogs[0]?.level_6 || cogs[0]?.level_7 || "Cost of Sales";
   const expenseSectionLabel = expense[0]?.level_6 || expense[0]?.level_7 || "Total Expenses";
 
   return {
     revenue: {
-      label:    incomeSectionLabel,
+      label: incomeSectionLabel,
       accounts: incomeAccounts,
-      total:    totalRevenue,
+      total: totalRevenue,
     },
     costOfSales: {
-      label:    cogsSectionLabel,
+      label: cogsSectionLabel,
       accounts: cogsAccounts,      // flat list — matches frontend expectation
-      total:    totalCogs,
+      total: totalCogs,
     },
     grossProfit,
     operatingExpenses: {
-      label:  expenseSectionLabel,
+      label: expenseSectionLabel,
       groups: expenseGroupMap,
-      total:  totalExpenses,
+      total: totalExpenses,
     },
     operatingIncome,
     pretaxIncome: operatingIncome,
@@ -509,18 +514,18 @@ function buildPlStatement(leaves, byId) {
  * direct parent category node names or level_2/level_3 as fallback.
  */
 function buildBsStatement(leaves, byId) {
-  const assets      = leaves.filter(n => n.account_type === "asset");
+  const assets = leaves.filter(n => n.account_type === "asset");
   const liabilities = leaves.filter(n => n.account_type === "liability");
-  const equities    = leaves.filter(n => n.account_type === "equity");
+  const equities = leaves.filter(n => n.account_type === "equity");
 
   // Preserve exact DB precision — do NOT apply Math.round() to individual amounts.
   const toLeaf = (n) => ({
-    systemId:      n.system_id      || null,
+    systemId: n.system_id || null,
     accountNumber: n.account_number || null,
-    name:          displayName(n),
-    adjustedName:  n.adjusted_name  || null,
+    name: displayName(n),
+    adjustedName: n.adjusted_name || null,
     hierarchyPath: n.hierarchy_path || null,
-    amount:        safeNum(n.displayAmount),
+    amount: safeNum(n.displayAmount),
   });
 
   // Patterns that mark a label as a top-level aggregate rather than a useful
@@ -530,10 +535,10 @@ function buildBsStatement(leaves, byId) {
 
   function resolveSecGrp(n) {
     const parentNode = n.parent_account_id ? byId.get(n.parent_account_id) : null;
-    const grandNode  = parentNode?.parent_account_id ? byId.get(parentNode.parent_account_id) : null;
+    const grandNode = parentNode?.parent_account_id ? byId.get(parentNode.parent_account_id) : null;
 
     let grpLabel = parentNode ? displayName(parentNode) : null;
-    let secLabel = grandNode  ? displayName(grandNode)  : null;
+    let secLabel = grandNode ? displayName(grandNode) : null;
 
     // When the grandNode is an unhelpful aggregate (e.g. "Total Assets") or
     // doesn't exist, fall back to the leaf's level columns which always carry
@@ -579,15 +584,15 @@ function buildBsStatement(leaves, byId) {
     return sections;
   }
 
-  const assetSections  = buildGroupMap(assets);
-  const liabSections   = buildGroupMap(liabilities);
+  const assetSections = buildGroupMap(assets);
+  const liabSections = buildGroupMap(liabilities);
   const equityAccounts = equities.map(toLeaf);
 
-  const totalAssets      = safeNum(Object.values(assetSections).reduce((s, sec) => s + sec.total, 0));
+  const totalAssets = safeNum(Object.values(assetSections).reduce((s, sec) => s + sec.total, 0));
   const totalLiabilities = safeNum(Object.values(liabSections).reduce((s, sec) => s + sec.total, 0));
-  const totalEquity      = safeNum(equityAccounts.reduce((s, a) => s + a.amount, 0));
-  const totalLE          = safeNum(totalLiabilities + totalEquity);
-  const difference       = safeNum(totalAssets - totalLE);
+  const totalEquity = safeNum(equityAccounts.reduce((s, a) => s + a.amount, 0));
+  const totalLE = safeNum(totalLiabilities + totalEquity);
+  const difference = safeNum(totalAssets - totalLE);
 
   const findSection = (sections, patterns) =>
     Object.entries(sections).find(([label]) =>
@@ -612,39 +617,39 @@ function buildBsStatement(leaves, byId) {
   }
 
   // Map tree sections to canonical frontend keys (pattern-match on section label).
-  const currentAssets = findSection(assetSections, ["current"])            || { label: "Current Assets",        groups: {}, total: 0 };
-  const fixedAssets   = findSection(assetSections, ["fixed", "property"])  || { label: "Fixed Assets",           groups: {}, total: 0 };
-  const otherAssets   = findSection(assetSections, ["other", "long.?term asset", "noncurrent asset"]) || { label: "Other Assets", groups: {}, total: 0 };
+  const currentAssets = findSection(assetSections, ["current"]) || { label: "Current Assets", groups: {}, total: 0 };
+  const fixedAssets = findSection(assetSections, ["fixed", "property"]) || { label: "Fixed Assets", groups: {}, total: 0 };
+  const otherAssets = findSection(assetSections, ["other", "long.?term asset", "noncurrent asset"]) || { label: "Other Assets", groups: {}, total: 0 };
   mergeSurplus(assetSections, [currentAssets, fixedAssets, otherAssets], currentAssets);
 
-  const currentLiab  = findSection(liabSections, ["current"])              || { label: "Current Liabilities",   groups: {}, total: 0 };
+  const currentLiab = findSection(liabSections, ["current"]) || { label: "Current Liabilities", groups: {}, total: 0 };
   const longTermLiab = findSection(liabSections, ["long", "noncurrent liabilit", "non.current liabilit"]) || { label: "Long-Term Liabilities", groups: {}, total: 0 };
   mergeSurplus(liabSections, [currentLiab, longTermLiab], currentLiab);
 
   return {
     assets: {
       label: assets[0]?.level_1 || "Total Assets",
-      currentAssets:  { label: currentAssets.label, groups: currentAssets.groups, total: currentAssets.total },
-      fixedAssets:    { label: fixedAssets.label,   groups: fixedAssets.groups,   total: fixedAssets.total },
-      otherAssets:    { label: otherAssets.label,   groups: otherAssets.groups,   total: otherAssets.total },
+      currentAssets: { label: currentAssets.label, groups: currentAssets.groups, total: currentAssets.total },
+      fixedAssets: { label: fixedAssets.label, groups: fixedAssets.groups, total: fixedAssets.total },
+      otherAssets: { label: otherAssets.label, groups: otherAssets.groups, total: otherAssets.total },
       total: totalAssets,
     },
     liabilities: {
       label: "Liabilities",
-      currentLiabilities:  { label: currentLiab.label,  groups: currentLiab.groups,  total: currentLiab.total },
+      currentLiabilities: { label: currentLiab.label, groups: currentLiab.groups, total: currentLiab.total },
       longTermLiabilities: { label: longTermLiab.label, groups: longTermLiab.groups, total: longTermLiab.total },
       total: totalLiabilities,
     },
     equity: {
-      label:    "Equity",
+      label: "Equity",
       accounts: equityAccounts,
-      total:    totalEquity,
+      total: totalEquity,
     },
     totalAssets,
     totalLiabilities,
     totalEquity,
     totalLiabilitiesAndEquity: totalLE,
-    balanced:  Math.abs(difference) < 1,
+    balanced: Math.abs(difference) < 1,
     difference,
   };
 }
@@ -686,10 +691,10 @@ function injectNetIncomeToBS(bsEntry, plEntry) {
 
   eq.total = safeNum((eq.accounts || []).reduce((s, a) => s + a.amount, 0));
   const s = bsEntry.statement;
-  s.totalEquity               = eq.total;
+  s.totalEquity = eq.total;
   s.totalLiabilitiesAndEquity = safeNum(s.totalLiabilities + s.totalEquity);
-  s.difference                = safeNum(s.totalAssets - s.totalLiabilitiesAndEquity);
-  s.balanced                  = Math.abs(s.difference) < 1;
+  s.difference = safeNum(s.totalAssets - s.totalLiabilitiesAndEquity);
+  s.balanced = Math.abs(s.difference) < 1;
   return bsEntry;
 }
 
@@ -742,10 +747,10 @@ function balanceRetainedEarnings(statement) {
   }
 
   eq.total = safeNum(eq.accounts.reduce((sum, a) => sum + safeNum(a.amount), 0));
-  s.totalEquity               = eq.total;
+  s.totalEquity = eq.total;
   s.totalLiabilitiesAndEquity = safeNum(s.totalLiabilities + s.totalEquity);
-  s.difference                = safeNum(s.totalAssets - s.totalLiabilitiesAndEquity);
-  s.balanced                  = Math.abs(s.difference) < 1;
+  s.difference = safeNum(s.totalAssets - s.totalLiabilitiesAndEquity);
+  s.balanced = Math.abs(s.difference) < 1;
 }
 
 /**
@@ -900,7 +905,7 @@ async function hasGeneratedRows(table, versionId, year) {
 
 async function generateYearlyPl(_companyId, versionId, year, allCoa, unmappedSet) {
   const plAccounts = allCoa.filter(isPlAccount);
-  const plLeaves   = plAccounts.filter(a => !a.metadata?.is_group);
+  const plLeaves = plAccounts.filter(a => !a.metadata?.is_group);
 
   // Profit & Loss is generated ENTIRELY from the General Ledger (client
   // requirement — there is no profit_loss_entries table). Map each GL account's
@@ -914,7 +919,7 @@ async function generateYearlyPl(_companyId, versionId, year, allCoa, unmappedSet
   const leafAmounts = new Map(plLeaves.map(a => [a.id, 0]));
   const gl = await loadGlAmountsYearly(versionId, year);
   if (gl) {
-    const glMappings  = buildMappings(plLeaves);
+    const glMappings = buildMappings(plLeaves);
     const fuzzyLookup = buildFuzzyLookup(plLeaves);
     for (const [normKey, { rawName, accountNumber, total }] of gl) {
       const totalAmt = total;
@@ -984,7 +989,7 @@ async function generateMonthlyPlFromYearly(versionId, year, yearlyStatement) {
 
   if (!bsEntries?.length) return [];
 
-  const NI_KW  = /net.*(income|loss)/i;
+  const NI_KW = /net.*(income|loss)/i;
   // Step 1: Collect every distinct as_of_date AND its YTD Net Income if present.
   const byDate = new Map();
   for (const e of bsEntries) {
@@ -994,7 +999,7 @@ async function generateMonthlyPlFromYearly(versionId, year, yearlyStatement) {
     if (!byDate.has(e.as_of_date)) byDate.set(e.as_of_date, { date: e.as_of_date, monthNum, niYTD: 0, hasNI: false });
     if (NI_KW.test(e.account_name)) {
       byDate.get(e.as_of_date).niYTD += safeNum(e.amount);
-      byDate.get(e.as_of_date).hasNI  = true;
+      byDate.get(e.as_of_date).hasNI = true;
     }
   }
 
@@ -1013,10 +1018,10 @@ async function generateMonthlyPlFromYearly(versionId, year, yearlyStatement) {
       sortedDates = glMonths.map(monthNum => {
         cumNI += safeNum(glByMonth.get(monthNum)?.netIncome);
         return {
-          date:    `${year}-${String(monthNum).padStart(2, "0")}-28`,
+          date: `${year}-${String(monthNum).padStart(2, "0")}-28`,
           monthNum,
-          niYTD:   cumNI,   // cumulative (YTD) NI through this month
-          hasNI:   true,    // use proportional distribution, not equal split
+          niYTD: cumNI,   // cumulative (YTD) NI through this month
+          hasNI: true,    // use proportional distribution, not equal split
         };
       });
     }
@@ -1027,8 +1032,8 @@ async function generateMonthlyPlFromYearly(versionId, year, yearlyStatement) {
   // Use proportional NI only when most months have the Net Income row; otherwise
   // split equally so monthly columns match BS monthly without distortion.
   const niCount = sortedDates.filter(d => d.hasNI).length;
-  const useNI   = niCount >= Math.ceil(sortedDates.length / 2);
-  const n       = sortedDates.length;
+  const useNI = niCount >= Math.ceil(sortedDates.length / 2);
+  const n = sortedDates.length;
 
   console.log(`[FinStmt][PL][${year}] monthly fallback: ${n} months, ${niCount} with NI → ${useNI ? "proportional" : "equal"} split`);
 
@@ -1037,25 +1042,25 @@ async function generateMonthlyPlFromYearly(versionId, year, yearlyStatement) {
 
   const scaleStmt = (stmt, ratio) => {
     const revenue = {
-      label:    stmt.revenue?.label,
+      label: stmt.revenue?.label,
       accounts: scaleAccounts(stmt.revenue?.accounts, ratio),
-      total:    round2(safeNum(stmt.revenue?.total) * ratio),
+      total: round2(safeNum(stmt.revenue?.total) * ratio),
     };
     const costOfSales = {
-      label:    stmt.costOfSales?.label,
+      label: stmt.costOfSales?.label,
       accounts: scaleAccounts(stmt.costOfSales?.accounts, ratio),
-      total:    round2(safeNum(stmt.costOfSales?.total) * ratio),
+      total: round2(safeNum(stmt.costOfSales?.total) * ratio),
     };
     const grossProfit = round2(safeNum(stmt.grossProfit) * ratio);
     const scaledGroups = {};
     for (const [g, gv] of Object.entries(stmt.operatingExpenses?.groups || {})) {
       scaledGroups[g] = {
-        label:    gv.label,
+        label: gv.label,
         accounts: scaleAccounts(gv.accounts, ratio),
-        total:    round2(safeNum(gv.total) * ratio),
+        total: round2(safeNum(gv.total) * ratio),
       };
     }
-    const totalExpenses   = round2(safeNum(stmt.operatingExpenses?.total) * ratio);
+    const totalExpenses = round2(safeNum(stmt.operatingExpenses?.total) * ratio);
     const operatingIncome = round2(safeNum(stmt.operatingIncome) * ratio);
     return {
       revenue,
@@ -1064,7 +1069,7 @@ async function generateMonthlyPlFromYearly(versionId, year, yearlyStatement) {
       operatingExpenses: { label: stmt.operatingExpenses?.label, groups: scaledGroups, total: totalExpenses },
       operatingIncome,
       pretaxIncome: operatingIncome,
-      netIncome:    operatingIncome,
+      netIncome: operatingIncome,
     };
   };
 
@@ -1079,11 +1084,11 @@ async function generateMonthlyPlFromYearly(versionId, year, yearlyStatement) {
     }
 
     return {
-      month:            MONTH_NAMES[curr.monthNum - 1],
-      monthNumber:      curr.monthNum,
-      year:             String(year),
-      periodLabel:      `${MONTH_NAMES[curr.monthNum - 1]} ${year}`,
-      statement:        scaleStmt(yearlyStatement, ratio),
+      month: MONTH_NAMES[curr.monthNum - 1],
+      monthNumber: curr.monthNum,
+      year: String(year),
+      periodLabel: `${MONTH_NAMES[curr.monthNum - 1]} ${year}`,
+      statement: scaleStmt(yearlyStatement, ratio),
       vendorsByAccount: {},
     };
   });
@@ -1102,16 +1107,16 @@ function buildGlDirectPlStatement(byAccount, monthNum) {
       expenses.push({ name: rawName, amount: round2(Math.abs(amt)) });
     }
   }
-  const totalRevenue  = round2(revenue.reduce((s, a) => s + a.amount, 0));
+  const totalRevenue = round2(revenue.reduce((s, a) => s + a.amount, 0));
   const totalExpenses = round2(expenses.reduce((s, a) => s + a.amount, 0));
-  const grossProfit   = totalRevenue;
-  const netIncome     = round2(totalRevenue - totalExpenses);
+  const grossProfit = totalRevenue;
+  const netIncome = round2(totalRevenue - totalExpenses);
   return {
-    revenue:          { label: "Total Revenue",  accounts: revenue,   total: totalRevenue },
-    costOfSales:      { label: "Cost of Sales",  accounts: [],        total: 0 },
+    revenue: { label: "Total Revenue", accounts: revenue, total: totalRevenue },
+    costOfSales: { label: "Cost of Sales", accounts: [], total: 0 },
     grossProfit,
     operatingExpenses: { label: "Total Expenses", groups: { "Operating Expenses": { label: "Operating Expenses", accounts: expenses, total: totalExpenses } }, total: totalExpenses },
-    operatingIncome:  netIncome,
+    operatingIncome: netIncome,
     netIncome,
   };
 }
@@ -1184,14 +1189,14 @@ async function loadGlAmountsByMonth(versionId, year) {
   if (!data?.length) return null;
 
   // norm(name) → { rawName, accountNumber, months: Map<month, amount>, vendors: Map<vendorName, Map<month, amount>> }
-  const byAccount   = new Map();
+  const byAccount = new Map();
   const monthsFound = new Set();
 
   for (const row of data) {
     const rawName = String(row.account_name || "").trim();
     if (!rawName || isSummaryRow(rawName)) continue;
     const dateStr = String(row.transaction_date || "");
-    const month   = parseInt(dateStr.slice(5, 7), 10);
+    const month = parseInt(dateStr.slice(5, 7), 10);
     if (!(month >= 1 && month <= 12)) continue;
 
     const key = norm(rawName);
@@ -1216,9 +1221,9 @@ async function generateMonthlyPl(_companyId, versionId, year, allCoa, unmappedSe
     return [];
   }
 
-  const plAccounts  = allCoa.filter(isPlAccount);
-  const plLeaves    = plAccounts.filter(a => !a.metadata?.is_group);
-  const glMappings  = buildMappings(plLeaves);
+  const plAccounts = allCoa.filter(isPlAccount);
+  const plLeaves = plAccounts.filter(a => !a.metadata?.is_group);
+  const glMappings = buildMappings(plLeaves);
   const fuzzyLookup = buildFuzzyLookup(plLeaves);
 
   // Pre-pass: ensure all GL accounts are mapped in COA
@@ -1235,7 +1240,7 @@ async function generateMonthlyPl(_companyId, versionId, year, allCoa, unmappedSe
     }
   }
 
-  const months      = Array.from(gl.monthsFound).sort((a, b) => a - b);
+  const months = Array.from(gl.monthsFound).sort((a, b) => a - b);
 
   return months.map((monthNum) => {
     const leafAmounts = new Map(plLeaves.map(a => [a.id, 0]));
@@ -1308,11 +1313,11 @@ async function generateMonthlyPl(_companyId, versionId, year, allCoa, unmappedSe
     }
 
     return {
-      month:           MONTH_NAMES[monthNum - 1],
-      monthNumber:     monthNum,
-      year:            String(year),
-      periodLabel:     `${MONTH_NAMES[monthNum - 1]} ${year}`,
-      statement:       buildPlStatement(leaves, byId),
+      month: MONTH_NAMES[monthNum - 1],
+      monthNumber: monthNum,
+      year: String(year),
+      periodLabel: `${MONTH_NAMES[monthNum - 1]} ${year}`,
+      statement: buildPlStatement(leaves, byId),
       vendorsByAccount,
     };
   });
@@ -1322,7 +1327,7 @@ async function generateMonthlyPl(_companyId, versionId, year, allCoa, unmappedSe
 
 async function generateYearlyBs(_companyId, versionId, year, allCoa, unmappedSet) {
   const bsAccounts = allCoa.filter(isBsAccount);
-  const bsLeaves   = bsAccounts.filter(a => !a.metadata?.is_group);
+  const bsLeaves = bsAccounts.filter(a => !a.metadata?.is_group);
 
   // Yearly BS = year-end snapshot (latest as_of_date for this year).
   // Phase 4: prefer the generated monthly snapshots (authoritative); the latest
@@ -1360,7 +1365,7 @@ async function generateYearlyBs(_companyId, versionId, year, allCoa, unmappedSet
   });
 
   let hasUploadedNetIncome = false;
-  let glFallbackUsed       = false;
+  let glFallbackUsed = false;
 
   if (!entries?.length) {
     console.warn(`[FinStmt][BS][${year}] NO balance_sheet_entries found for version=${versionId} year=${year} asOf=${latestDate || 'N/A'}. Falling back to GL carry-forward (BS=prior-year close + GL).`);
@@ -1372,7 +1377,7 @@ async function generateYearlyBs(_companyId, versionId, year, allCoa, unmappedSet
     try {
       const { balances } = await bsBalancesForYear(versionId, year);
       if (balances && balances.size) {
-        const fuzzyLookup  = buildFuzzyLookup(bsLeaves);
+        const fuzzyLookup = buildFuzzyLookup(bsLeaves);
         let mapped = 0;
         const mappedFromGL = new Set();
         for (const { name, balance } of balances.values()) {
@@ -1411,9 +1416,9 @@ async function generateYearlyBs(_companyId, versionId, year, allCoa, unmappedSet
       if (isNI) hasUploadedNetIncome = true;
     }
 
-    const bsMappings  = buildMappings(bsLeaves);
+    const bsMappings = buildMappings(bsLeaves);
     const fuzzyLookup = buildFuzzyLookup(bsLeaves);
-    const mappedKeys  = new Set();
+    const mappedKeys = new Set();
 
     for (const [normKey, { amount, rawName, accountNumber }] of entryTotals) {
       let ids = bsMappings?.get(normKey);
@@ -1476,18 +1481,18 @@ async function generateMonthlyBsFromGL(_companyId, versionId, year, allCoa, bsLe
     console.warn(`[FinStmt][BS][${year}] monthly GL fallback: prior year load failed — ${e.message}`);
   }
 
-  const bsAccounts  = allCoa.filter(isBsAccount);
+  const bsAccounts = allCoa.filter(isBsAccount);
   const fuzzyLookup = buildFuzzyLookup(bsLeaves);
   // Find a Net Income leaf in equity section for cumulative P&L injection
   const niLeaf = bsLeaves.find(a => /net.*(income|loss)/i.test(String(a.account_name || a.name || '')))
-              || bsLeaves.find(a => /retained/i.test(String(a.account_name || a.name || '')));
+    || bsLeaves.find(a => /retained/i.test(String(a.account_name || a.name || '')));
 
   const months = Array.from(byMonth.keys()).sort((a, b) => a - b);
 
   // cumLeafGL[leafId] = accumulated GL BS movements Jan..currentMonth
   const cumLeafGL = new Map(bsLeaves.map(a => [a.id, 0]));
-  let   cumNI     = 0;
-  const result    = [];
+  let cumNI = 0;
+  const result = [];
 
   for (const monthNum of months) {
     const { bsMap, netIncome: monthNI } = byMonth.get(monthNum);
@@ -1519,12 +1524,12 @@ async function generateMonthlyBsFromGL(_companyId, versionId, year, allCoa, bsLe
     for (const root of roots) rollupNode(root, leafAmounts);
 
     result.push({
-      month:       MONTH_NAMES[monthNum - 1],
+      month: MONTH_NAMES[monthNum - 1],
       monthNumber: monthNum,
-      year:        String(year),
-      asOfDate:    `${year}-${String(monthNum).padStart(2, "0")}-28`,
+      year: String(year),
+      asOfDate: `${year}-${String(monthNum).padStart(2, "0")}-28`,
       periodLabel: `${MONTH_NAMES[monthNum - 1]} ${year}`,
-      statement:   buildBsStatement(leaves, byId),
+      statement: buildBsStatement(leaves, byId),
     });
   }
 
@@ -1534,7 +1539,7 @@ async function generateMonthlyBsFromGL(_companyId, versionId, year, allCoa, bsLe
 
 async function generateMonthlyBs(companyId, versionId, year, allCoa, unmappedSet) {
   const bsAccounts = allCoa.filter(isBsAccount);
-  const bsLeaves   = bsAccounts.filter(a => !a.metadata?.is_group);
+  const bsLeaves = bsAccounts.filter(a => !a.metadata?.is_group);
 
   // Phase 4: prefer the generated monthly snapshots (authoritative). They provide
   // one as_of_date per month, which is exactly the month dimension this view wants.
@@ -1562,9 +1567,9 @@ async function generateMonthlyBs(companyId, versionId, year, allCoa, unmappedSet
   // Only one (or zero) distinct dates → fall back to GL carry-forward monthly snapshots.
   if (byDate.size <= 1) return generateMonthlyBsFromGL(companyId, versionId, year, allCoa, bsLeaves, unmappedSet);
 
-  const bsMappings  = buildMappings(bsLeaves);
+  const bsMappings = buildMappings(bsLeaves);
   const fuzzyLookup = buildFuzzyLookup(bsLeaves);
-  const result      = [];
+  const result = [];
 
   for (const [dateKey, dateEntries] of Array.from(byDate).sort(([a], [b]) => a.localeCompare(b))) {
     const leafAmounts = new Map(bsLeaves.map(a => [a.id, 0]));
@@ -1614,12 +1619,12 @@ async function generateMonthlyBs(companyId, versionId, year, allCoa, unmappedSet
 
     const monthNum = parseInt(dateKey.slice(5, 7), 10);
     result.push({
-      month:       MONTH_NAMES[monthNum - 1] || dateKey,
+      month: MONTH_NAMES[monthNum - 1] || dateKey,
       monthNumber: monthNum,
-      year:        String(year),
-      asOfDate:    dateKey,
+      year: String(year),
+      asOfDate: dateKey,
       periodLabel: `${MONTH_NAMES[monthNum - 1] || dateKey} ${year}`,
-      statement:   buildBsStatement(leaves, byId),
+      statement: buildBsStatement(leaves, byId),
     });
   }
   return result;
@@ -1632,20 +1637,20 @@ function convertCfRow(row) {
 }
 
 function convertCfTree(rows) {
-  const find  = (id) => rows.find(r => r.id === id || r.id?.includes(id));
-  const op    = find("operating");
-  const inv   = find("investing");
-  const fin   = find("financing");
-  const net   = rows.find(r => /net.*(cash|change)/i.test(r.name) && r.type === "total");
-  const open  = rows.find(r => /opening|beginning/i.test(r.name));
+  const find = (id) => rows.find(r => r.id === id || r.id?.includes(id));
+  const op = find("operating");
+  const inv = find("investing");
+  const fin = find("financing");
+  const net = rows.find(r => /net.*(cash|change)/i.test(r.name) && r.type === "total");
+  const open = rows.find(r => /opening|beginning/i.test(r.name));
   const close = rows.find(r => /ending/i.test(r.name));
   return {
-    operatingActivities:  { label: "Operating Activities",  items: (op?.children  || []).map(convertCfRow), total: safeNum(op?.amount  || 0) },
-    investingActivities:  { label: "Investing Activities",  items: (inv?.children || []).map(convertCfRow), total: safeNum(inv?.amount || 0) },
-    financingActivities:  { label: "Financing Activities",  items: (fin?.children || []).map(convertCfRow), total: safeNum(fin?.amount || 0) },
-    netCashIncrease: safeNum(net?.amount  || 0),
-    openingCash:     safeNum(open?.amount || 0),
-    endingCash:      safeNum(close?.amount || 0),
+    operatingActivities: { label: "Operating Activities", items: (op?.children || []).map(convertCfRow), total: safeNum(op?.amount || 0) },
+    investingActivities: { label: "Investing Activities", items: (inv?.children || []).map(convertCfRow), total: safeNum(inv?.amount || 0) },
+    financingActivities: { label: "Financing Activities", items: (fin?.children || []).map(convertCfRow), total: safeNum(fin?.amount || 0) },
+    netCashIncrease: safeNum(net?.amount || 0),
+    openingCash: safeNum(open?.amount || 0),
+    endingCash: safeNum(close?.amount || 0),
   };
 }
 
@@ -1680,8 +1685,8 @@ async function generateMonthlyCfFromBSDeltas(versionId, year) {
   const byDate = new Map();
   for (const e of entries) {
     if (isSummaryRow(e.account_name)) continue;
-    const dateKey  = e.as_of_date;
-    if (!dateKey)  continue;
+    const dateKey = e.as_of_date;
+    if (!dateKey) continue;
     const monthNum = parseInt(dateKey.slice(5, 7), 10);
     if (!(monthNum >= 1 && monthNum <= 12)) continue;
     if (!byDate.has(dateKey)) byDate.set(dateKey, new Map());
@@ -1694,29 +1699,29 @@ async function generateMonthlyCfFromBSDeltas(versionId, year) {
   const sortedDates = Array.from(byDate.keys()).sort();
   if (sortedDates.length < 2) return [];
 
-  const CASH_KW         = /cash|checking|savings|petty/i;
-  const NI_KW           = /net.*(income|loss)/i;
-  const WC_ASSET_KW     = /receivable|inventory|prepaid|deposit|due from/i;
-  const WC_LIAB_KW      = /payable|accrued|credit card|unearned|deferred revenue/i;
-  const INVEST_KW       = /equipment|property|building|land|vehicle|furniture|ppe|intangible|invest/i;
+  const CASH_KW = /cash|checking|savings|petty/i;
+  const NI_KW = /net.*(income|loss)/i;
+  const WC_ASSET_KW = /receivable|inventory|prepaid|deposit|due from/i;
+  const WC_LIAB_KW = /payable|accrued|credit card|unearned|deferred revenue/i;
+  const INVEST_KW = /equipment|property|building|land|vehicle|furniture|ppe|intangible|invest/i;
   const FINANCE_LIAB_KW = /loan|mortgage|bond|note payable|line of credit|long.term/i;
-  const EQUITY_KW       = /equity|retained|owner|capital/i;
+  const EQUITY_KW = /equity|retained|owner|capital/i;
 
   let runningCash = 0;
-  const result    = [];
+  const result = [];
 
   for (let i = 1; i < sortedDates.length; i++) {
-    const prevMap  = byDate.get(sortedDates[i - 1]);
-    const currMap  = byDate.get(sortedDates[i]);
+    const prevMap = byDate.get(sortedDates[i - 1]);
+    const currMap = byDate.get(sortedDates[i]);
     const currDate = sortedDates[i];
     const monthNum = parseInt(currDate.slice(5, 7), 10);
-    const allKeys  = new Set([...prevMap.keys(), ...currMap.keys()]);
+    const allKeys = new Set([...prevMap.keys(), ...currMap.keys()]);
 
     let operatingBase = 0, wcAdj = 0, investingTotal = 0, financingTotal = 0;
     const opAdjItems = [], invItems = [], finItems = [];
 
     for (const k of allKeys) {
-      const name  = (currMap.get(k) || prevMap.get(k)).name;
+      const name = (currMap.get(k) || prevMap.get(k)).name;
       const delta = safeNum(currMap.get(k)?.amount) - safeNum(prevMap.get(k)?.amount);
       if (!delta || CASH_KW.test(name)) continue;
 
@@ -1741,15 +1746,15 @@ async function generateMonthlyCfFromBSDeltas(versionId, year) {
     }
 
     const operatingTotal = round2(operatingBase + wcAdj);
-    const netCash        = round2(operatingTotal + investingTotal + financingTotal);
-    const openingCash    = round2(runningCash);
-    runningCash         += netCash;
-    const endingCash     = round2(runningCash);
+    const netCash = round2(operatingTotal + investingTotal + financingTotal);
+    const openingCash = round2(runningCash);
+    runningCash += netCash;
+    const endingCash = round2(runningCash);
 
     result.push({
-      month:       MONTH_NAMES[monthNum - 1],
+      month: MONTH_NAMES[monthNum - 1],
       monthNumber: monthNum,
-      year:        String(year),
+      year: String(year),
       periodLabel: `${MONTH_NAMES[monthNum - 1]} ${year}`,
       statement: {
         operatingActivities: {
@@ -1757,8 +1762,8 @@ async function generateMonthlyCfFromBSDeltas(versionId, year) {
           items: [{ name: "Net Income", amount: round2(operatingBase) }, ...opAdjItems],
           total: operatingTotal,
         },
-        investingActivities:  { label: "Investing Activities",  items: invItems, total: round2(investingTotal) },
-        financingActivities:  { label: "Financing Activities",  items: finItems, total: round2(financingTotal) },
+        investingActivities: { label: "Investing Activities", items: invItems, total: round2(investingTotal) },
+        financingActivities: { label: "Financing Activities", items: finItems, total: round2(financingTotal) },
         netCashIncrease: netCash,
         openingCash,
         endingCash,
@@ -1778,11 +1783,11 @@ async function generateMonthlyCf(versionId, year) {
       return generateMonthlyCfFromBSDeltas(versionId, year);
     }
 
-    const CASH_KW          = /cash|checking|savings|petty/i;
-    const WC_ASSET_KW      = /receivable|inventory|prepaid|deposit|due from/i;
-    const WC_LIAB_KW       = /payable|accrued|credit card|unearned|deferred revenue/i;
-    const INVEST_KW        = /equipment|property|building|land|vehicle|furniture|ppe|intangible|invest/i;
-    const FINANCE_LIAB_KW  = /loan|mortgage|bond|note payable|line of credit|long.term/i;
+    const CASH_KW = /cash|checking|savings|petty/i;
+    const WC_ASSET_KW = /receivable|inventory|prepaid|deposit|due from/i;
+    const WC_LIAB_KW = /payable|accrued|credit card|unearned|deferred revenue/i;
+    const INVEST_KW = /equipment|property|building|land|vehicle|furniture|ppe|intangible|invest/i;
+    const FINANCE_LIAB_KW = /loan|mortgage|bond|note payable|line of credit|long.term/i;
 
     const months = Array.from(glByMonth.keys()).sort((a, b) => a - b);
     let runningCash = 0;
@@ -1944,7 +1949,7 @@ async function generateFinancialStatements(versionId, options = {}) {
     }
   }
 
-  const validation       = validateAll(plYearly, bsYearly);
+  const validation = validateAll(plYearly, bsYearly);
   console.log(
     `[FinStmt] v=${versionId} years=[${filteredYears.join(",")}]`,
     `| pl=${plYearly.length} bs=${bsYearly.length} cf=${cfYearly.length}`,
@@ -1954,11 +1959,11 @@ async function generateFinancialStatements(versionId, options = {}) {
 
   return {
     companyName: options.companyName || "",
-    currency:    options.currency    || "USD",
+    currency: options.currency || "USD",
     reports: {
       profitAndLoss: { monthly: plMonthly.flat(), yearly: plYearly },
-      balanceSheet:  { monthly: bsMonthly.flat(), yearly: bsYearly },
-      cashFlow:      { monthly: cfMonthly.flat(), yearly: cfYearly },
+      balanceSheet: { monthly: bsMonthly.flat(), yearly: bsYearly },
+      cashFlow: { monthly: cfMonthly.flat(), yearly: cfYearly },
     },
     validation,
     missingData: [],

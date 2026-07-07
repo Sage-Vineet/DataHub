@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import Header from "../../../components/Header";
 
-import { getStoredToken, setSelectedReportSource, loadSavedQBBankActivityRequest } from "../../../lib/api";
+import { getStoredToken, setSelectedReportSource, loadSavedQBBankActivityRequest, getKeyReportVersionReport } from "../../../lib/api";
 import { useDataSource } from "../../../context/DataSourceContext";
 import { useDatasetVersionStore } from "../../../store/useDatasetVersionStore";
 import {
@@ -572,6 +572,53 @@ function parseManualPLItems(files) {
   return { plIncomeItems, plExpenseItems };
 }
 
+// Parse Key Reports' /reports/profit-loss (period=month) response(s) into
+// plIncomeItems / plExpenseItems arrays, matching parseManualPLItems' output
+// shape. Month columns come back keyed "m{year}_{mm}" (see keyReportReportService
+// buildPLFromGLMonthly) — converted here to "{year}-{mm}" to match the rest of
+// this file's month-key convention. Accepts one hierarchicalRows tree per
+// fiscal year and merges same-named accounts across years.
+function parseKeyReportsPLItems(yearlyRowSets) {
+  const byName = { pl_income: new Map(), pl_expense: new Map() };
+
+  function extractItems(rowList, bucket) {
+    for (const row of (rowList || [])) {
+      if (row.type === "data" && row.name) {
+        const monthAmounts = {};
+        Object.entries(row.amounts || {}).forEach(([colKey, val]) => {
+          const m = /^m(\d{4})_(\d{2})$/.exec(colKey);
+          const mk = m ? `${m[1]}-${m[2]}` : colKey;
+          if (val != null && val !== 0) monthAmounts[mk] = val;
+        });
+        const existing = byName[bucket].get(row.name);
+        if (existing) {
+          Object.assign(existing.monthAmounts, monthAmounts);
+        } else {
+          byName[bucket].set(row.name, { name: row.name, source: bucket, monthAmounts });
+        }
+      }
+      if (row.children?.length) extractItems(row.children, bucket);
+    }
+  }
+
+  for (const rows of yearlyRowSets) {
+    for (const row of (rows || [])) {
+      if (row.type !== "header") continue;
+      const sn = (row.name || "").toLowerCase();
+      if (sn.includes("income") || sn.includes("revenue")) {
+        extractItems(row.children || [], "pl_income");
+      } else if (sn.includes("expense") || sn.includes("cost")) {
+        extractItems(row.children || [], "pl_expense");
+      }
+    }
+  }
+
+  return {
+    plIncomeItems: Array.from(byName.pl_income.values()),
+    plExpenseItems: Array.from(byName.pl_expense.values()),
+  };
+}
+
 function AddbackPickerModal({
   isOpen,
   section,
@@ -583,12 +630,20 @@ function AddbackPickerModal({
   getHeaders,
   existingItems,
   reportSource,
+  keyReportVersionId,
   onAdd,
   onClose,
 }) {
-  const isQBOnline = reportSource === "quickbooks_online";
-  const isManualUpload = reportSource === "manual_upload_excel_pdf";
-  const hasPLData = isQBOnline || isManualUpload;
+  // Key Reports mode takes priority: its effectiveSource can literally equal
+  // "manual_upload_excel_pdf" (same string as the legacy Connections-page Manual
+  // Upload source), so isManualUpload/isQBOnline must be gated off whenever a
+  // Key Reports version is active — otherwise this falls through to the
+  // Connections-page-scoped endpoints, which know nothing about Key Reports'
+  // linked documents and return an empty file list.
+  const isKeyReports = Boolean(keyReportVersionId);
+  const isQBOnline = !isKeyReports && reportSource === "quickbooks_online";
+  const isManualUpload = !isKeyReports && reportSource === "manual_upload_excel_pdf";
+  const hasPLData = isQBOnline || isManualUpload || isKeyReports;
 
   // Default tab: deposits→income items, withdrawals→expense items; no-P&L modes→manual only
   const defaultTab = hasPLData ? (section === "withdrawals" ? "expense" : "income") : "manual";
@@ -640,8 +695,33 @@ function AddbackPickerModal({
         })
         .catch(() => setFetchError("Could not load P&L items from manual upload."))
         .finally(() => setLoading(false));
+    } else if (isKeyReports) {
+      // Resolve the P&L directly from the selected Key Reports version's own
+      // report endpoint (version-scoped), not the Connections-page manual-upload
+      // file list — Key Reports documents are linked per-version, not per-client.
+      const startYear = Number(String(startDate).slice(0, 4));
+      const endYear = Number(String(endDate).slice(0, 4)) || startYear;
+      const years = [];
+      for (let y = startYear; y <= endYear; y++) if (y) years.push(y);
+
+      Promise.all(
+        (years.length ? years : [startYear]).map((year) =>
+          getKeyReportVersionReport(keyReportVersionId, "profit-loss", { year, period: "month" })
+            .then((resp) => resp?.hierarchicalRows || resp?.rows || [])
+            .catch(() => []),
+        ),
+      )
+        .then((yearlyRowSets) => {
+          const parsed = parseKeyReportsPLItems(yearlyRowSets);
+          if (!parsed.plIncomeItems.length && !parsed.plExpenseItems.length) {
+            setFetchError("No Profit & Loss data found for the selected Key Reports version/period.");
+          }
+          setLineItems(parsed);
+        })
+        .catch(() => setFetchError("Could not load P&L items from Key Reports."))
+        .finally(() => setLoading(false));
     }
-  }, [isOpen, reportSource, section, clientId, startDate, endDate, accountingMethod]);
+  }, [isOpen, reportSource, keyReportVersionId, section, clientId, startDate, endDate, accountingMethod]);
 
   if (!isOpen) return null;
 
@@ -3888,6 +3968,7 @@ export default function WorkspaceReconciliation() {
           getHeaders={getHeaders}
           existingItems={addbackItems}
           reportSource={selectedReportSource}
+          keyReportVersionId={kr.krActive ? kr.selectedVersionId : null}
           onAdd={(name, source, monthAmounts) =>
             createAddbackItem(addbackPickerState.section, name, source, monthAmounts)
           }

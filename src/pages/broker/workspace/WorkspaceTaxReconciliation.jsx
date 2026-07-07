@@ -1378,7 +1378,7 @@ export default function WorkspaceTaxReconciliation() {
               onClick={() => {
                 try { window.sessionStorage.removeItem(getStorageKey(clientId)); } catch { /* ignore */ }
                 setMatrixData({});
-                void loadData();
+                void loadData(true);
               }}
               disabled={isLoading}
               className="inline-flex h-9 items-center justify-center gap-2 rounded-xl bg-primary px-4 text-[13px] font-semibold text-white transition hover:bg-primary-dark disabled:cursor-not-allowed disabled:opacity-70"
