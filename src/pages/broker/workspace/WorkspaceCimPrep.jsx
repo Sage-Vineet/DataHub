@@ -47,6 +47,7 @@ const SLIDE_25_BRIDGE_FIELD_ID = "25:structured:ebitda-bridge";
 const SLIDE_27_CASHFLOW_FIELD_ID = "27:structured:cashflow-statement";
 const TEMPLATE_SLIDE_COUNT = 38;
 const TEMPLATE_SLIDES = Array.from({ length: TEMPLATE_SLIDE_COUNT }, (_, index) => index + 1);
+const CIM_FINANCIAL_MAX_DECIMALS = 3;
 
 const SECTION_SLIDES = [
   { id: "executive-summary", number: "01", title: "Executive Summary", slides: [4, 5, 6] },
@@ -237,7 +238,7 @@ function makeLabelOverride(slide, order, tokenIndex, label, extra = {}) {
 
 const SLIDE_24_HISTORICAL_PERIODS = ["FY[Y-4]", "FY[Y-3]", "FY[Y-2]", "FY[Y-1]", "FY[Y]"];
 const SLIDE_24_ALL_PERIODS = [...SLIDE_24_HISTORICAL_PERIODS, "LTM"];
-const THREE_YEAR_LTM_PERIODS = ["FY[Y-2]", "FY[Y-1]", "FY[Y]", "LTM"];
+const SLIDE_26_ALL_PERIODS = ["Year 1", "Year 2", "Year 3", "Year 4", "Year 5", "LTM"];
 const TWO_YEAR_LTM_PERIODS = ["FY[Y-1]", "FY[Y]", "LTM"];
 const FY_LTM_PERIODS = ["FY[Y]", "LTM"];
 const PROJECTION_PERIODS = ["FY[Y]A (Base)", "FY[Y+1]E", "FY[Y+2]E", "FY[Y+3]E", "FY[Y+4]E"];
@@ -530,26 +531,28 @@ const FIELD_LABEL_OVERRIDES = [
   { slide: 26, order: 5, tokenIndex: 1, label: "What are total assets (USD millions)?" },
   { slide: 26, order: 5, tokenIndex: 2, label: "How would you describe the capital structure?" },
   { slide: 26, order: 6, tokenIndex: 0, label: "What balance sheet quality does the company reflect?" },
-  { slide: 26, order: 7, tokenIndex: 0, label: "Which fiscal year is the FY[Y-2]A column?" },
-  { slide: 26, order: 7, tokenIndex: 1, label: "Which fiscal year is the FY[Y-1]A column?" },
-  { slide: 26, order: 7, tokenIndex: 2, label: "Which fiscal year is the FY[Y]A column?" },
-  { slide: 26, order: 7, tokenIndex: 3, label: "What is the LTM balance sheet date?" },
-  ...makePeriodMetricOverrides(26, 7, 4, "What were cash and equivalents", THREE_YEAR_LTM_PERIODS),
-  ...makePeriodMetricOverrides(26, 7, 8, "What were accounts receivable", THREE_YEAR_LTM_PERIODS),
-  ...makePeriodMetricOverrides(26, 7, 12, "What was inventory", THREE_YEAR_LTM_PERIODS),
-  ...makePeriodMetricOverrides(26, 7, 16, "What were prepaid and other current assets", THREE_YEAR_LTM_PERIODS),
-  ...makePeriodMetricOverrides(26, 7, 20, "What were total current assets", THREE_YEAR_LTM_PERIODS),
-  ...makePeriodMetricOverrides(26, 7, 24, "What was net PP&E", THREE_YEAR_LTM_PERIODS),
-  ...makePeriodMetricOverrides(26, 7, 28, "What were intangibles and goodwill", THREE_YEAR_LTM_PERIODS),
-  ...makePeriodMetricOverrides(26, 7, 32, "What were total assets", THREE_YEAR_LTM_PERIODS),
-  ...makePeriodMetricOverrides(26, 7, 36, "What were accounts payable", THREE_YEAR_LTM_PERIODS),
-  ...makePeriodMetricOverrides(26, 7, 40, "What were accrued liabilities", THREE_YEAR_LTM_PERIODS),
-  ...makePeriodMetricOverrides(26, 7, 44, "What was deferred revenue", THREE_YEAR_LTM_PERIODS),
-  ...makePeriodMetricOverrides(26, 7, 48, "What was current portion of debt", THREE_YEAR_LTM_PERIODS),
-  ...makePeriodMetricOverrides(26, 7, 52, "What were total current liabilities", THREE_YEAR_LTM_PERIODS),
-  ...makePeriodMetricOverrides(26, 7, 56, "What was long-term debt", THREE_YEAR_LTM_PERIODS),
-  ...makePeriodMetricOverrides(26, 7, 60, "What was total shareholders' equity", THREE_YEAR_LTM_PERIODS),
-  ...makePeriodMetricOverrides(26, 7, 64, "What were total liabilities and equity", THREE_YEAR_LTM_PERIODS),
+  { slide: 26, order: 7, tokenIndex: 0, label: "What is the first year column?" },
+  { slide: 26, order: 7, tokenIndex: 1, label: "What is the second year column?" },
+  { slide: 26, order: 7, tokenIndex: 2, label: "What is the third year column?" },
+  { slide: 26, order: 7, tokenIndex: 3, label: "What is the fourth year column?" },
+  { slide: 26, order: 7, tokenIndex: 4, label: "What is the fifth year column?" },
+  { slide: 26, order: 7, tokenIndex: 5, label: "What is the LTM balance sheet date?" },
+  ...makePeriodMetricOverrides(26, 7, 6, "What were cash and equivalents", SLIDE_26_ALL_PERIODS),
+  ...makePeriodMetricOverrides(26, 7, 12, "What were accounts receivable", SLIDE_26_ALL_PERIODS),
+  ...makePeriodMetricOverrides(26, 7, 18, "What was inventory", SLIDE_26_ALL_PERIODS),
+  ...makePeriodMetricOverrides(26, 7, 24, "What were prepaid and other current assets", SLIDE_26_ALL_PERIODS),
+  ...makePeriodMetricOverrides(26, 7, 30, "What were total current assets", SLIDE_26_ALL_PERIODS),
+  ...makePeriodMetricOverrides(26, 7, 36, "What was net PP&E", SLIDE_26_ALL_PERIODS),
+  ...makePeriodMetricOverrides(26, 7, 42, "What were intangibles and goodwill", SLIDE_26_ALL_PERIODS),
+  ...makePeriodMetricOverrides(26, 7, 48, "What were total assets", SLIDE_26_ALL_PERIODS),
+  ...makePeriodMetricOverrides(26, 7, 54, "What were accounts payable", SLIDE_26_ALL_PERIODS),
+  ...makePeriodMetricOverrides(26, 7, 60, "What were accrued liabilities", SLIDE_26_ALL_PERIODS),
+  ...makePeriodMetricOverrides(26, 7, 66, "What was deferred revenue", SLIDE_26_ALL_PERIODS),
+  ...makePeriodMetricOverrides(26, 7, 72, "What was current portion of debt", SLIDE_26_ALL_PERIODS),
+  ...makePeriodMetricOverrides(26, 7, 78, "What were total current liabilities", SLIDE_26_ALL_PERIODS),
+  ...makePeriodMetricOverrides(26, 7, 84, "What was long-term debt", SLIDE_26_ALL_PERIODS),
+  ...makePeriodMetricOverrides(26, 7, 90, "What was total shareholders' equity", SLIDE_26_ALL_PERIODS),
+  ...makePeriodMetricOverrides(26, 7, 96, "What were total liabilities and equity", SLIDE_26_ALL_PERIODS),
   { slide: 26, order: 8, tokenIndex: 0, label: "What is the first audited financial year?" },
   { slide: 26, order: 8, tokenIndex: 1, label: "What is the last audited financial year?" },
   { slide: 27, order: 5, tokenIndex: 0, label: "What is cumulative free cash flow (USD millions)?" },
@@ -1267,7 +1270,7 @@ function getSlide25BridgeFigures(value) {
 function formatSlide25Millions(value) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return "";
-  const formatted = formatAutoFillNumber(Math.abs(numeric), 1);
+  const formatted = formatAutoFillNumber(Math.abs(numeric));
   return numeric < 0 ? `($${formatted}M)` : `$${formatted}M`;
 }
 
@@ -1330,7 +1333,7 @@ function formatSlide27CashflowValue(value) {
   if (value === null || value === undefined || !Number.isFinite(Number(value))) return "-";
   const numeric = Number(value);
   if (Math.abs(numeric) < 0.0001) return "0";
-  const formatted = formatAutoFillNumber(Math.abs(numeric) / 1_000_000, 1);
+  const formatted = formatAutoFillNumber(Math.abs(numeric) / 1_000_000);
   return numeric < 0 ? `($${formatted}M)` : `$${formatted}M`;
 }
 
@@ -1678,6 +1681,146 @@ function restructureSlide24Table(layout) {
   };
 }
 
+function restructureSlide26Table(layout) {
+  if (!layout?.elements) return layout;
+
+  const table = layout.elements.find((element) => element.order === 7 && element.kind === "table");
+  if (!table?.cells) return layout;
+
+  const rowCount = 19;
+  const columnCount = 7;
+  const tableLeft = Number(table.bbox?.[0] || 0);
+  const tableTop = Number(table.bbox?.[1] || 0);
+  const tableWidth = Number(table.bbox?.[2] || 0);
+  const rowHeight = Number(table.bbox?.[3] || 0) / rowCount;
+  const labelWidth = Number(table.cells.find((cell) => Number(cell.column) === 1)?.bbox?.[2] || tableWidth * 0.32);
+  const valueWidth = (tableWidth - labelWidth) / (columnCount - 1);
+  const sectionRows = new Set([2, 11]);
+  const totalRows = new Set([7, 10, 16, 19]);
+  const rowLabels = [
+    "Balance Sheet",
+    "ASSETS",
+    "Cash & Equivalents",
+    "Accounts Receivable",
+    "Inventory",
+    "Prepaid & Other Current",
+    "Total Current Assets",
+    "PP&E (net)",
+    "Intangibles & Goodwill",
+    "Total Assets",
+    "LIABILITIES & EQUITY",
+    "Accounts Payable",
+    "Accrued Liabilities",
+    "Deferred Revenue",
+    "Current Portion of Debt",
+    "Total Current Liabilities",
+    "Long-Term Debt",
+    "Total Shareholders Equity",
+    "Total Liabilities & Equity",
+  ];
+
+  const sourceCellsByPosition = new Map(
+    table.cells.map((cell) => [`${Number(cell.row || 1)}:${Number(cell.column || 1)}`, cell]),
+  );
+  const getCellText = (row, column) => {
+    if (column === 1) return rowLabels[row - 1] || "";
+    if (row === 1) return column === 7 ? "LTM [Date]" : "[Year]";
+    if (sectionRows.has(row)) return "";
+    return "$[Amount]M";
+  };
+
+  const cells = Array.from({ length: rowCount }, (_, rowIndex) =>
+    Array.from({ length: columnCount }, (_, columnIndex) => {
+      const row = rowIndex + 1;
+      const column = columnIndex + 1;
+      const sourceCell = sourceCellsByPosition.get(`${row}:${Math.min(column, 5)}`) || {};
+      const isHeader = row === 1;
+      const isSection = sectionRows.has(row);
+      const isTotal = totalRows.has(row);
+      const text = getCellText(row, column);
+      const left = column === 1 ? tableLeft : tableLeft + labelWidth + (column - 2) * valueWidth;
+      const width = column === 1 ? labelWidth : valueWidth;
+      const color = isHeader ? "#FFFFFF" : isSection ? "#476E2C" : isTotal ? "#2F3033" : "#6D6E71";
+      const bold = isHeader || isSection || isTotal || column === 1;
+
+      return {
+        ...sourceCell,
+        index: rowIndex * columnCount + column,
+        row,
+        column,
+        bbox: [left, tableTop + rowIndex * rowHeight, width, rowHeight],
+        text,
+        textPreview: text.replace(/\s+/g, " ").trim(),
+        fillColor: isHeader ? "#476E2C" : isSection ? "#EEF6E0" : isTotal ? "#EFEFF1" : "#FFFFFF",
+        resolvedTextStyle: {
+          ...(sourceCell.resolvedTextStyle || {}),
+          verticalAlignment: "middle",
+          insets: {
+            top: 0,
+            right: 7,
+            bottom: 0,
+            left: column === 1 && !isHeader && !isSection ? 14 : 7,
+          },
+        },
+        paragraphs: [{
+          index: 1,
+          text,
+          marginLeft: 0,
+          indent: 0,
+          resolvedTextStyle: { alignment: column === 1 ? "left" : "center" },
+          runs: [{
+            index: 1,
+            text,
+            fontSize: column === 1 ? 10.8 : 10.4,
+            typeface: "Calibri",
+            color,
+            ...(bold ? { bold: true } : {}),
+          }],
+        }],
+      };
+    }),
+  ).flat();
+
+  const valueCells = Array.from({ length: 6 }, () => "$[Amount]M").join(" | ");
+  const text = [
+    "Balance Sheet | [Year] | [Year] | [Year] | [Year] | [Year] | LTM [Date]",
+    "ASSETS | | | | | |",
+    `Cash & Equivalents | ${valueCells}`,
+    `Accounts Receivable | ${valueCells}`,
+    `Inventory | ${valueCells}`,
+    `Prepaid & Other Current | ${valueCells}`,
+    `Total Current Assets | ${valueCells}`,
+    `PP&E (net) | ${valueCells}`,
+    `Intangibles & Goodwill | ${valueCells}`,
+    `Total Assets | ${valueCells}`,
+    "LIABILITIES & EQUITY | | | | | |",
+    `Accounts Payable | ${valueCells}`,
+    `Accrued Liabilities | ${valueCells}`,
+    `Deferred Revenue | ${valueCells}`,
+    `Current Portion of Debt | ${valueCells}`,
+    `Total Current Liabilities | ${valueCells}`,
+    `Long-Term Debt | ${valueCells}`,
+    `Total Shareholders Equity | ${valueCells}`,
+    `Total Liabilities & Equity | ${valueCells}`,
+  ].join("\n");
+
+  return {
+    ...layout,
+    elements: layout.elements.map((element) =>
+      element === table
+        ? {
+            ...element,
+            rows: rowCount,
+            cols: columnCount,
+            text,
+            textPreview: text.replace(/\n/g, " | "),
+            cells,
+          }
+        : element,
+    ),
+  };
+}
+
 function restructureSlide27Table(layout) {
   if (!layout?.elements) return layout;
   const table = layout.elements.find((element) => element.order === 7 && element.kind === "table");
@@ -1844,6 +1987,7 @@ function normalizeSlide35InitiativeDescriptions(layout) {
 
 function prepareCimLayout(slideNumber, layout) {
   if (slideNumber === 24) return restructureSlide24Table(layout);
+  if (slideNumber === 26) return restructureSlide26Table(layout);
   if (slideNumber === 27) return restructureSlide27Table(layout);
   if (slideNumber === 30) return restructureSlide30TaxTable(layout);
   if (slideNumber === 35) return normalizeSlide35InitiativeDescriptions(layout);
@@ -2644,9 +2788,8 @@ function escapeSvg(value = "") {
 function formatChartValue(value) {
   const numeric = Number(value || 0);
   const absolute = Math.abs(numeric);
-  if (absolute >= 1000) return `${Math.round(numeric / 100) / 10}k`;
-  if (absolute >= 100) return String(Math.round(numeric));
-  return String(Math.round(numeric * 10) / 10);
+  if (absolute >= 1000) return `${formatAutoFillNumber(numeric / 1000)}k`;
+  return formatAutoFillNumber(numeric);
 }
 
 function getChartTitle(field) {
@@ -2762,7 +2905,7 @@ function buildPieChart(data) {
     angle = endAngle;
     return `
       <path d="${path}" fill="${CHART_COLORS[index % CHART_COLORS.length]}" stroke="#FFFFFF" stroke-width="3"/>
-      <text x="${labelX}" y="${labelY}" text-anchor="middle" font-size="18" font-weight="700" fill="#243F18">${Math.round((value / total) * 100)}%</text>
+      <text x="${labelX}" y="${labelY}" text-anchor="middle" font-size="18" font-weight="700" fill="#243F18">${formatAutoFillNumber((value / total) * 100)}%</text>
     `;
   }).join("");
   const legend = data.map((row, index) => `
@@ -3203,6 +3346,15 @@ function getElementContent(slideNumber, element, fieldsById, fieldValues, assetV
     content.compactTableColumns = true;
     content.suppressTemplateFallback = true;
   }
+  if (slideNumber === 26 && element.order === 5) {
+    content.text = cleanSlide26MoneyPlaceholderText(content.text);
+  }
+  if (slideNumber === 26 && element.order === 7 && element.kind === "table") {
+    content.text = cleanSlide26MoneyPlaceholderText(content.text).replace(/\[[^\]]+\]/g, "");
+    content.visibleTableColumns = getSlide26VisibleTableColumns(elementFields, fieldValues);
+    content.compactTableColumns = true;
+    content.suppressTemplateFallback = true;
+  }
   if (slideNumber === 30 && element.order === 28 && element.kind === "table") {
     const headerLine = String(content.text || "").split("\n")[0] || "";
     const columnCount = Math.max(1, headerLine.split("|").length);
@@ -3281,26 +3433,30 @@ function getFieldTokenIndex(field) {
   return match ? Number(match[1]) : null;
 }
 
-function formatAutoFillNumber(value, digits = 1) {
+function formatAutoFillNumber(value, digits = CIM_FINANCIAL_MAX_DECIMALS) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return "";
-  const fixed = numeric.toFixed(digits);
+  const decimalPlaces = Number.isInteger(Number(digits))
+    ? Math.max(0, Math.min(6, Number(digits)))
+    : CIM_FINANCIAL_MAX_DECIMALS;
+  const rounded = Math.abs(numeric) < 0.5 / (10 ** decimalPlaces) ? 0 : numeric;
+  const fixed = rounded.toFixed(decimalPlaces);
   return fixed.replace(/\.0+$/, "").replace(/(\.\d*[1-9])0+$/, "$1");
 }
 
-function formatAutoFillMillions(value, digits = 1) {
+function formatAutoFillMillions(value, digits = CIM_FINANCIAL_MAX_DECIMALS) {
   const numeric = Number(value || 0);
   if (!Number.isFinite(numeric) || Math.abs(numeric) < 0.0001) return "";
   return formatAutoFillNumber(numeric / 1_000_000, digits);
 }
 
-function formatAutoFillThousands(value, digits = 0) {
+function formatAutoFillThousands(value, digits = CIM_FINANCIAL_MAX_DECIMALS) {
   const numeric = Number(value || 0);
   if (!Number.isFinite(numeric) || Math.abs(numeric) < 0.0001) return "";
   return formatAutoFillNumber(numeric / 1_000, digits);
 }
 
-function formatAutoFillPercent(value, digits = 1) {
+function formatAutoFillPercent(value, digits = CIM_FINANCIAL_MAX_DECIMALS) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric) || Math.abs(numeric) < 0.0001) return "";
   return formatAutoFillNumber(numeric, digits);
@@ -3428,6 +3584,45 @@ const SLIDE_24_CARD_METRICS = [
   { label: "Net Income", start: 65, count: 6 },
 ];
 
+const SLIDE_26_ORDER_7_ROW_DEFS = [
+  { start: 0, count: 6 },
+  { start: 6, count: 6 },
+  { start: 12, count: 6 },
+  { start: 18, count: 6 },
+  { start: 24, count: 6 },
+  { start: 30, count: 6 },
+  { start: 36, count: 6 },
+  { start: 42, count: 6 },
+  { start: 48, count: 6 },
+  { start: 54, count: 6 },
+  { start: 60, count: 6 },
+  { start: 66, count: 6 },
+  { start: 72, count: 6 },
+  { start: 78, count: 6 },
+  { start: 84, count: 6 },
+  { start: 90, count: 6 },
+  { start: 96, count: 6 },
+];
+
+const SLIDE_26_CARD_METRICS = [
+  { label: "Cash & Equivalents", start: 6, count: 6 },
+  { label: "Accounts Receivable", start: 12, count: 6 },
+  { label: "Inventory", start: 18, count: 6 },
+  { label: "Prepaid & Other Current", start: 24, count: 6 },
+  { label: "Total Current Assets", start: 30, count: 6 },
+  { label: "PP&E (net)", start: 36, count: 6 },
+  { label: "Intangibles & Goodwill", start: 42, count: 6 },
+  { label: "Total Assets", start: 48, count: 6 },
+  { label: "Accounts Payable", start: 54, count: 6 },
+  { label: "Accrued Liabilities", start: 60, count: 6 },
+  { label: "Deferred Revenue", start: 66, count: 6 },
+  { label: "Current Portion of Debt", start: 72, count: 6 },
+  { label: "Total Current Liabilities", start: 78, count: 6 },
+  { label: "Long-Term Debt", start: 84, count: 6 },
+  { label: "Total Shareholders Equity", start: 90, count: 6 },
+  { label: "Total Liabilities & Equity", start: 96, count: 6 },
+];
+
 function getSlide24ColumnIndex(field) {
   if (field.slideNumber !== 24 || field.order !== 7) return null;
   const ti = getFieldTokenIndex(field);
@@ -3449,6 +3644,35 @@ function getSlide24VisibleTableColumns(elementFields = [], fieldValues = {}) {
   const annualHeadingColumns = elementFields
     .map((field) => ({ field, tokenIndex: getFieldTokenIndex(field) }))
     .filter(({ field, tokenIndex }) =>
+      tokenIndex >= 0 && tokenIndex < 5 && normalizeText(getStoredFieldValue(field, fieldValues)),
+    )
+    .map(({ tokenIndex }) => tokenIndex)
+    .sort((a, b) => a - b);
+  if (!annualHeadingColumns.length) return [1, 2, 3, 4, 5, 6, 7];
+  return [1, ...annualHeadingColumns.map((column) => column + 2), 7];
+}
+
+function getSlide26ColumnIndex(field) {
+  if (field.slideNumber !== 26 || field.order !== 7) return null;
+  const ti = getFieldTokenIndex(field);
+  if (ti === null || ti === undefined) return null;
+  for (const { start, count } of SLIDE_26_ORDER_7_ROW_DEFS) {
+    if (ti >= start && ti < start + count) return ti - start;
+  }
+  return null;
+}
+
+function isSlide26FieldActive(field, range = {}) {
+  const column = getSlide26ColumnIndex(field);
+  if (column === null) return true;
+  const annualCount = Math.max(1, getSlide24ActivePeriodCount(range) - 1);
+  return column < annualCount || column === 5;
+}
+
+function getSlide26VisibleTableColumns(elementFields = [], fieldValues = {}) {
+  const annualHeadingColumns = elementFields
+    .map((field) => ({ field, tokenIndex: getFieldTokenIndex(field) }))
+    .filter(({ tokenIndex, field }) =>
       tokenIndex >= 0 && tokenIndex < 5 && normalizeText(getStoredFieldValue(field, fieldValues)),
     )
     .map(({ tokenIndex }) => tokenIndex)
@@ -3533,12 +3757,17 @@ function formatSlide24Year(year, periodType = "calendar") {
   return `FY${numericYear}`;
 }
 
+function formatSlide26Year(year) {
+  const numericYear = Number(year);
+  return numericYear ? String(numericYear) : "";
+}
+
 function formatSlide24Millions(value, { expense = false, missing = "-", zero = "0" } = {}) {
   if (value === null || value === undefined || value === "") return missing;
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return missing;
   if (Math.abs(numeric) < 0.0001) return zero;
-  const formatted = formatAutoFillNumber(Math.abs(numeric) / 1_000_000, 1);
+  const formatted = formatAutoFillNumber(Math.abs(numeric) / 1_000_000);
   if (expense) return `(${formatted}M)`;
   if (numeric < 0) return `($${formatted}M)`;
   return `$${formatted}M`;
@@ -3548,7 +3777,27 @@ function formatSlide24Percent(value, { missing = "-" } = {}) {
   if (value === null || value === undefined || value === "") return missing;
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return missing;
-  return `${formatAutoFillNumber(numeric, 1)}%`;
+  return `${formatAutoFillNumber(numeric)}%`;
+}
+
+function isDashValue(value) {
+  return /^[-–—]$|^dash$/i.test(String(value ?? "").trim());
+}
+
+function formatSlide26Millions(value, { missing = "-", zero = "0" } = {}) {
+  if (value === null || value === undefined || value === "") return missing;
+  if (isDashValue(value)) return missing;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return missing;
+  if (Math.abs(numeric) < 0.0001) return zero;
+  return formatAutoFillNumber(numeric / 1_000_000);
+}
+
+function cleanSlide26MoneyPlaceholderText(text) {
+  return String(text || "")
+    .replace(/\$-M/g, "-")
+    .replace(/\$0M/g, "0")
+    .replace(/\$\[[^\]]+\]M/g, "-");
 }
 
 function calculateAutoFillCagr(snapshot, years = []) {
@@ -3625,7 +3874,6 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
   const currentPeriodMonths = 12;
   const priorYears = years.filter((year) => Number(year) < Number(latestYear));
   const historyYears = alignAutoFillYears(priorYears, 4);
-  const balanceYears = alignAutoFillYears(priorYears, 3);
   const chartYears = years.slice(-5);
   const cagrYears = getAutoFillCagrYears(snapshot, historyYears);
   const selectedStartYear = Number(snapshot?.currentPeriod?.startFiscalYear || cagrYears[0] || 0);
@@ -3740,7 +3988,7 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
   add(23, 24, 0, formatAutoFillMillions(latest.freeCashFlow));
   add(23, 26, 0, formatAutoFillPercent(calculateAutoFillFcfConversion(latest)));
   add(23, 29, 0, Number(latest.adjustedEbitda)
-    ? formatAutoFillNumber(latest.longTermDebtAdjustedEbitdaRatio, 1)
+    ? formatAutoFillNumber(latest.longTermDebtAdjustedEbitdaRatio)
     : "");
   add(23, 31, 0, currentLongDate);
   add(23, 36, 2, financialSource);
@@ -3820,33 +4068,37 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
   add(25, 5, 2, slide25AdjustmentTotal ? formatAutoFillMillions(slide25AdjustmentTotal) : "0");
 
   add(26, 5, 0, currentLongDate);
-  add(26, 5, 1, formatAutoFillMillions(latest.totalAssets));
-  const balanceColumns = [...balanceYears, latestYear];
-  balanceColumns.forEach((year, columnIndex) => {
-    if (columnIndex < 3) add(26, 7, columnIndex, year);
-    if (columnIndex === 3) add(26, 7, 3, currentShortDate);
-    const metrics = getAutoFillYearMetrics(snapshot, year);
-    add(26, 7, 4 + columnIndex, formatAutoFillMillions(metrics.cashAndBankBalance));
-    add(26, 7, 8 + columnIndex, formatAutoFillMillions(metrics.accountReceivable));
-    add(26, 7, 12 + columnIndex, formatAutoFillMillions(metrics.inventoryValue));
-    add(26, 7, 16 + columnIndex, formatAutoFillMillions(metrics.prepaidOtherCurrent));
-    add(26, 7, 20 + columnIndex, formatAutoFillMillions(metrics.currentAssetsApprox));
-    add(26, 7, 24 + columnIndex, formatAutoFillMillions(metrics.ppeNet));
-    add(26, 7, 28 + columnIndex, formatAutoFillMillions(metrics.intangiblesGoodwill));
-    add(26, 7, 32 + columnIndex, formatAutoFillMillions(metrics.totalAssets));
-    add(26, 7, 36 + columnIndex, formatAutoFillMillions(metrics.accountPayable));
-    add(26, 7, 40 + columnIndex, formatAutoFillMillions(metrics.accruedLiabilities));
-    add(26, 7, 44 + columnIndex, formatAutoFillMillions(metrics.deferredRevenue));
-    add(26, 7, 48 + columnIndex, formatAutoFillMillions(metrics.currentDebt));
-    add(26, 7, 52 + columnIndex, formatAutoFillMillions(metrics.currentLiabilitiesApprox));
-    add(26, 7, 56 + columnIndex, formatAutoFillMillions(metrics.longTermDebt));
-    add(26, 7, 60 + columnIndex, formatAutoFillMillions(metrics.totalEquity));
-    add(26, 7, 64 + columnIndex, formatAutoFillMillions(
+  add(26, 5, 1, formatSlide26Millions(latest.totalAssets));
+  const balanceColumns = [
+    ...incomeYears.map((year) => ({ year, metrics: getAutoFillYearMetrics(snapshot, year), trailing: false })),
+    { year: latestYear, metrics: trailing, trailing: true },
+  ];
+  balanceColumns.forEach((column, columnIndex) => {
+    const { year, metrics, trailing: isTrailing } = column;
+    const tableColumnIndex = isTrailing ? 5 : columnIndex;
+    if (isTrailing) add(26, 7, 5, currentShortDate);
+    else add(26, 7, columnIndex, formatSlide26Year(year));
+    add(26, 7, 6 + tableColumnIndex, formatSlide26Millions(metrics.cashAndBankBalance));
+    add(26, 7, 12 + tableColumnIndex, formatSlide26Millions(metrics.accountReceivable));
+    add(26, 7, 18 + tableColumnIndex, formatSlide26Millions(metrics.inventoryValue));
+    add(26, 7, 24 + tableColumnIndex, formatSlide26Millions(metrics.prepaidOtherCurrent));
+    add(26, 7, 30 + tableColumnIndex, formatSlide26Millions(metrics.currentAssetsApprox));
+    add(26, 7, 36 + tableColumnIndex, formatSlide26Millions(metrics.ppeNet));
+    add(26, 7, 42 + tableColumnIndex, formatSlide26Millions(metrics.intangiblesGoodwill));
+    add(26, 7, 48 + tableColumnIndex, formatSlide26Millions(metrics.totalAssets));
+    add(26, 7, 54 + tableColumnIndex, formatSlide26Millions(metrics.accountPayable));
+    add(26, 7, 60 + tableColumnIndex, formatSlide26Millions(metrics.accruedLiabilities));
+    add(26, 7, 66 + tableColumnIndex, formatSlide26Millions(metrics.deferredRevenue));
+    add(26, 7, 72 + tableColumnIndex, formatSlide26Millions(metrics.currentDebt));
+    add(26, 7, 78 + tableColumnIndex, formatSlide26Millions(metrics.currentLiabilitiesApprox));
+    add(26, 7, 84 + tableColumnIndex, formatSlide26Millions(metrics.longTermDebt));
+    add(26, 7, 90 + tableColumnIndex, formatSlide26Millions(metrics.totalEquity));
+    add(26, 7, 96 + tableColumnIndex, formatSlide26Millions(
       metrics.totalLiabilitiesEquity || Number(metrics.totalLiabilities || 0) + Number(metrics.totalEquity || 0),
     ));
   });
-  add(26, 8, 0, selectedStartYear ? `FY${selectedStartYear}` : "");
-  add(26, 8, 1, selectedEndYear ? `FY${selectedEndYear}` : "");
+  add(26, 8, 0, formatSlide26Year(selectedStartYear));
+  add(26, 8, 1, formatSlide26Year(selectedEndYear));
 
   const cashflowPeriods = [
     ...incomeYears.map((year) => ({
@@ -4007,6 +4259,28 @@ function getSlide24PeriodHeadingValues(fields = [], range = {}) {
       ? startYear + columnIndex + 1
       : startYear + columnIndex;
     headings[field.valueFieldId || field.id] = formatSlide24Year(fiscalYear, periodType);
+  });
+
+  const ltmField = fieldByTokenIndex.get(5);
+  const ltmDate = formatAutoFillDate(range.endDate, "short");
+  if (ltmField && ltmDate) headings[ltmField.valueFieldId || ltmField.id] = ltmDate;
+  return headings;
+}
+
+function getSlide26PeriodHeadingValues(fields = [], range = {}) {
+  const headings = {};
+  const fieldByTokenIndex = new Map(
+    fields
+      .filter((field) => field.slideNumber === 26 && field.order === 7)
+      .map((field) => [getFieldTokenIndex(field), field]),
+  );
+  const startYear = Number(String(range.startDate || "").slice(0, 4));
+  const annualCount = Math.max(1, getSlide24ActivePeriodCount(range) - 1);
+
+  Array.from({ length: annualCount }, (_, index) => index).forEach((columnIndex) => {
+    const field = fieldByTokenIndex.get(columnIndex);
+    if (!field || !startYear) return;
+    headings[field.valueFieldId || field.id] = formatSlide26Year(startYear + columnIndex);
   });
 
   const ltmField = fieldByTokenIndex.get(5);
@@ -5304,6 +5578,113 @@ function Slide24YearCards({ fields, fieldValues, range, activeFieldId, onFieldFo
   );
 }
 
+function Slide26YearCards({ fields, fieldValues, range, activeFieldId, onFieldFocus, onFieldChange }) {
+  const annualCount = Math.max(1, getSlide24ActivePeriodCount(range) - 1);
+  const columns = [...Array.from({ length: annualCount }, (_, index) => index), 5];
+  const [expandedColumn, setExpandedColumn] = useState(columns[0] ?? 0);
+  const fieldByTokenIndex = new Map(fields.map((field) => [getFieldTokenIndex(field), field]));
+  const startYear = Number(String(range?.startDate || "").slice(0, 4));
+
+  const getDefaultPeriodLabel = (column) => {
+    if (column === 5) return "LTM";
+    if (!startYear) return `Year ${column + 1}`;
+    return formatSlide26Year(startYear + column);
+  };
+
+  return (
+    <div className={fieldCardClass(fields.some((field) => field.id === activeFieldId))}>
+      <div className="mb-3">
+        <span className="block text-[11px] font-bold uppercase tracking-[0.06em] text-[#6D6E71]">
+          Balance sheet by period
+        </span>
+        <span className="mt-0.5 block text-[11px] font-semibold text-[#8A8F98]">
+          Auto-filled values remain editable. Empty fields stay blank on the slide.
+        </span>
+      </div>
+
+      <div className="space-y-2">
+        {columns.map((column, cardIndex) => {
+          const periodField = fieldByTokenIndex.get(column);
+          const storedPeriod = periodField ? normalizeText(fieldValues[periodField.id]) : "";
+          const periodLabel = column === 5
+            ? `LTM${storedPeriod ? ` · ${storedPeriod}` : ""}`
+            : storedPeriod || getDefaultPeriodLabel(column);
+          const metricFields = SLIDE_26_CARD_METRICS.flatMap((metric) => {
+            if (column >= metric.count) return [];
+            const metricField = fieldByTokenIndex.get(metric.start + column);
+            return metricField ? [{ ...metric, field: metricField }] : [];
+          });
+          const populatedCount = metricFields.filter(({ field }) => normalizeText(fieldValues[field.id])).length;
+          const expanded = expandedColumn === column;
+
+          return (
+            <div
+              key={column}
+              className={`overflow-hidden rounded-lg border transition ${expanded ? "border-[#BFD99B] bg-[#F9FCF5]" : "border-border bg-white"}`}
+            >
+              <button
+                type="button"
+                onClick={() => setExpandedColumn(expanded ? null : column)}
+                className="flex min-h-12 w-full items-center justify-between gap-3 px-3 py-2 text-left"
+              >
+                <span className="flex min-w-0 items-center gap-2.5">
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#E6F3D3] text-[11px] font-extrabold text-[#476E2C]">
+                    {cardIndex + 1}
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block truncate text-[12px] font-bold text-[#050505]">{periodLabel}</span>
+                    <span className="block text-[10px] font-semibold text-[#8A8F98]">
+                      {populatedCount}/{metricFields.length} values entered
+                    </span>
+                  </span>
+                </span>
+                <ChevronRight
+                  size={15}
+                  className={`shrink-0 text-[#6D6E71] transition-transform ${expanded ? "rotate-90" : ""}`}
+                />
+              </button>
+
+              {expanded ? (
+                <div className="space-y-3 border-t border-[#DDEBCB] p-3">
+                  {periodField ? (
+                    <label className="block">
+                      <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.05em] text-[#6D6E71]">
+                        {column === 5 ? "LTM end date" : "Year heading"}
+                      </span>
+                      <input
+                        value={fieldValues[periodField.id] || ""}
+                        onFocus={() => onFieldFocus(periodField.id)}
+                        onChange={(event) => onFieldChange(periodField.id, event.target.value)}
+                        className="h-10 w-full rounded-md border border-border bg-white px-3 text-[12px] text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20"
+                      />
+                    </label>
+                  ) : null}
+
+                  <div className="grid gap-3 md:grid-cols-2">
+                    {metricFields.map(({ label, field }) => (
+                      <label key={field.id} className="block">
+                        <span className="mb-1 block text-[10px] font-bold uppercase tracking-[0.05em] text-[#6D6E71]">
+                          {label}
+                        </span>
+                        <input
+                          value={fieldValues[field.id] || ""}
+                          onFocus={() => onFieldFocus(field.id)}
+                          onChange={(event) => onFieldChange(field.id, event.target.value)}
+                          className="h-10 w-full rounded-md border border-border bg-white px-3 text-[12px] text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20"
+                        />
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function Slide25EbitdaBridgeCard({ field, value, active, onFieldFocus, onFieldChange }) {
   const bridge = normalizeSlide25Bridge(value);
   const figures = getSlide25BridgeFigures(value);
@@ -5370,7 +5751,7 @@ function Slide25EbitdaBridgeCard({ field, value, active, onFieldFocus, onFieldCh
             Adjusted EBITDA ($M)
           </span>
           <input
-            value={figures.adjusted === null ? "" : formatAutoFillNumber(figures.adjusted, 1)}
+            value={figures.adjusted === null ? "" : formatAutoFillNumber(figures.adjusted)}
             readOnly
             className="h-10 w-full rounded-md border border-[#DDEBCB] bg-[#F4F9EC] px-3 text-[12px] font-bold text-[#243F18] outline-none"
           />
@@ -5637,11 +6018,16 @@ function FieldPanel({
   const allEditableFields = getEditableTemplateFields(fields, globalDetails);
   const activeEditableFields = activeSlide === 24
     ? allEditableFields.filter((field) => isSlide24FieldActive(field, financialAutofillRange))
-    : allEditableFields;
+    : activeSlide === 26
+      ? allEditableFields.filter((field) => isSlide26FieldActive(field, financialAutofillRange))
+      : allEditableFields;
   const slide24TableFields = activeSlide === 24
     ? activeEditableFields.filter((field) => field.order === 7)
     : [];
-  const editableFields = activeSlide === 24
+  const slide26TableFields = activeSlide === 26
+    ? activeEditableFields.filter((field) => field.order === 7)
+    : [];
+  const editableFields = activeSlide === 24 || activeSlide === 26
     ? activeEditableFields.filter((field) => field.order !== 7)
     : activeEditableFields;
   const filledFieldCount = countFieldsWithData(activeEditableFields, fieldValues, assetValues, chartValues);
@@ -5664,6 +6050,16 @@ function FieldPanel({
         {slide24TableFields.length ? (
           <Slide24YearCards
             fields={slide24TableFields}
+            fieldValues={fieldValues}
+            range={financialAutofillRange}
+            activeFieldId={activeFieldId}
+            onFieldFocus={onFieldFocus}
+            onFieldChange={onFieldChange}
+          />
+        ) : null}
+        {slide26TableFields.length ? (
+          <Slide26YearCards
+            fields={slide26TableFields}
             fieldValues={fieldValues}
             range={financialAutofillRange}
             activeFieldId={activeFieldId}
@@ -6739,18 +7135,23 @@ export default function WorkspaceCimPrep() {
       const tokenIndex = getFieldTokenIndex(field);
       return field.order === 7 && tokenIndex >= 0 && tokenIndex <= 5;
     });
-    if (!slide24HeadingFields.length) return;
+    const slide26HeadingFields = (fieldsBySlide[26] || []).filter((field) => {
+      const tokenIndex = getFieldTokenIndex(field);
+      return field.order === 7 && tokenIndex >= 0 && tokenIndex <= 5;
+    });
+    const headingFields = [...slide24HeadingFields, ...slide26HeadingFields];
+    if (!headingFields.length) return;
 
-    const headingValues = getSlide24PeriodHeadingValues(
-      slide24HeadingFields,
-      financialAutofillRange,
-    );
+    const headingValues = {
+      ...getSlide24PeriodHeadingValues(slide24HeadingFields, financialAutofillRange),
+      ...getSlide26PeriodHeadingValues(slide26HeadingFields, financialAutofillRange),
+    };
     setFieldValues((previous) => {
       const next = {
-        ...withoutFieldValues(previous, slide24HeadingFields),
+        ...withoutFieldValues(previous, headingFields),
         ...headingValues,
       };
-      const changed = slide24HeadingFields.some((field) => {
+      const changed = headingFields.some((field) => {
         const fieldId = field.valueFieldId || field.id;
         return normalizeText(previous[fieldId]) !== normalizeText(next[fieldId]);
       });
@@ -6993,8 +7394,10 @@ export default function WorkspaceCimPrep() {
         additions.fieldValues[SLIDE_27_CASHFLOW_FIELD_ID],
       );
       const slide24TableFields = (fieldsBySlide[24] || []).filter((field) => field.order === 7);
+      const slide26TableFields = (fieldsBySlide[26] || []).filter((field) => field.order === 7);
       const replacedTemplateFields = [
         ...slide24TableFields,
+        ...slide26TableFields,
         ...(fieldsBySlide[25] || []).filter((field) => [8, 10].includes(field.order)),
         ...(fieldsBySlide[27] || []).filter((field) => field.order === 7),
       ];
@@ -7086,9 +7489,17 @@ export default function WorkspaceCimPrep() {
       const tokenIndex = getFieldTokenIndex(field);
       return field.order === 7 && tokenIndex >= 0 && tokenIndex <= 5;
     });
-    const headingValues = getSlide24PeriodHeadingValues(slide24HeadingFields, dateRange);
+    const slide26HeadingFields = (fieldsBySlide[26] || []).filter((field) => {
+      const tokenIndex = getFieldTokenIndex(field);
+      return field.order === 7 && tokenIndex >= 0 && tokenIndex <= 5;
+    });
+    const headingFields = [...slide24HeadingFields, ...slide26HeadingFields];
+    const headingValues = {
+      ...getSlide24PeriodHeadingValues(slide24HeadingFields, dateRange),
+      ...getSlide26PeriodHeadingValues(slide26HeadingFields, dateRange),
+    };
     setFieldValues((previous) => ({
-      ...withoutFieldValues(previous, slide24HeadingFields),
+      ...withoutFieldValues(previous, headingFields),
       ...headingValues,
     }));
     void handleFinancialAutofill({ dateRange, reportVersionId });

@@ -7,6 +7,17 @@ function isAdmin(user) {
 }
 
 function normalizeCompanyIds(user) {
+  if (Array.isArray(user?.direct_company_ids)) {
+    return Array.from(
+      new Set(
+        [
+          ...(user.direct_company_ids || []),
+          user?.company_id,
+        ].filter(Boolean).map(String),
+      ),
+    );
+  }
+
   return Array.from(
     new Set(
       [
