@@ -19,9 +19,11 @@ import {
   getManualCashFlowPeriods,
   listManualGlDatasetVersions,
   getFinancialStatements,
+  getFinancialStatements,
 } from "../../../lib/api";
 import {
   transformKeyReportFinancials,
+  readCachedFinancials,
   writeCachedFinancials,
 } from "../../../lib/keyReportFinancials";
 import { MANUAL_GL_STAGED_EVENT } from "../../../lib/dataSourceEvents";
@@ -122,6 +124,7 @@ function saveStoredReportsState(clientId, state) {
     // Ignore quota/serialisation issues.
   }
 }
+
 
 
 const MANUAL_DATE_RANGE_OPTIONS = [
@@ -481,6 +484,7 @@ export default function WorkspaceReports() {
   const [filtersCollapsed, setFiltersCollapsed] = useState(false);
   // Period granularity: "Month" (monthly columns) | "Year" (annual columns).
   const [reportPeriod, setReportPeriod] = useState(storedState?.reportPeriod || "Month");
+  const [reportPeriod, setReportPeriod] = useState(storedState?.reportPeriod || "Month");
   // Year range selectors — shown when reportPeriod === "Year".
   const [yearRangeStart, setYearRangeStart] = useState(null);
   const [yearRangeEnd, setYearRangeEnd] = useState(null);
@@ -554,6 +558,7 @@ export default function WorkspaceReports() {
       const nextState = restoredState || {};
       setSelectedTab(nextState.selectedTab || "Balance Sheet");
       setReportType(nextState.reportType || "Summary");
+      setReportPeriod(nextState.reportPeriod || "Month");
       setReportPeriod(nextState.reportPeriod || "Month");
       setDateRange(nextState.dateRange || "This Month");
       setCustomRange({
@@ -646,7 +651,14 @@ export default function WorkspaceReports() {
   // endpoint — regardless of which document categories are linked — so every
   // tab is always selectable. (The report body shows its own empty state if a
   // given period has no data.) Legacy sources keep all tabs enabled too.
+  // In Key Reports mode all three statements (Profit & Loss, Balance Sheet,
+  // Cash Flow) are produced together by the /reports/financial-statements
+  // endpoint — regardless of which document categories are linked — so every
+  // tab is always selectable. (The report body shows its own empty state if a
+  // given period has no data.) Legacy sources keep all tabs enabled too.
   const reportTabAvailability = useCallback(
+    () => ({ enabled: true }),
+    [],
     () => ({ enabled: true }),
     [],
   );
@@ -680,6 +692,10 @@ export default function WorkspaceReports() {
   // ("<tab>|<reportType>"); the generate effect skips the network call when the
   // signature is unchanged. A ref (not state) avoids extra re-renders.
   const reportSignaturesRef = useRef({});
+  // Cache the raw Key Reports financial-statements response per version so that
+  // switching tabs / period (Month↔Year) doesn't refetch — the response already
+  // carries P&L, Balance Sheet and Cash Flow for every period.
+  const krFinancialsCacheRef = useRef({ versionId: null, data: null });
   // Cache the raw Key Reports financial-statements response per version so that
   // switching tabs / period (Month↔Year) doesn't refetch — the response already
   // carries P&L, Balance Sheet and Cash Flow for every period.
@@ -942,6 +958,7 @@ export default function WorkspaceReports() {
       selectedTab,
       reportType,
       reportPeriod,
+      reportPeriod,
       dateRange,
       customRange,
       accountingMethod,
@@ -968,6 +985,7 @@ export default function WorkspaceReports() {
     customRange,
     dateRange,
     reportType,
+    reportPeriod,
     reportPeriod,
     reportsData,
     selectedReportSource,
@@ -1326,24 +1344,19 @@ export default function WorkspaceReports() {
     if (kr.krActive && kr.selectedVersionId) {
       setIsLoading(true);
       try {
-        // L1 in-memory cache (same mount) only. The sessionStorage L2 cache is
-        // deliberately NOT read here: it is keyed by versionId with no staleness
-        // signal, so after a re-generate (the numbers change but the versionId
-        // does not) an L2 hit would serve the PRE-regenerate response — often the
-        // empty "no data yet" payload from before the version finished generating —
-        // with NO network call, leaving the report blank. The backend now has a
-        // fast, staleness-aware result cache (keyed by last_synced_at + COA edit),
-        // so going to the network is both correct and quick (~1.5s).
+        // L1: in-memory (same mount). L2: sessionStorage (survives navigation).
+        // Only hit the network on a genuine first load / cache miss.
         let response =
           krFinancialsCacheRef.current.versionId === kr.selectedVersionId
             ? krFinancialsCacheRef.current.data
             : null;
         if (!response) {
+          response = readCachedFinancials(clientId, kr.selectedVersionId);
+        }
+        if (!response) {
           response = await getFinancialStatements(kr.selectedVersionId, {
             currency: "USD",
           });
-          // Refresh the L2 cache with the fresh payload so other pages (e.g. Bank
-          // Reconciliation) reuse the current numbers rather than a stale copy.
           writeCachedFinancials(clientId, kr.selectedVersionId, response);
         }
         krFinancialsCacheRef.current = {
@@ -1678,7 +1691,6 @@ export default function WorkspaceReports() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     selectedQMSRowId[selectedTab],
     selectedManualCfYear,
-    krSelected,
     kr.krActive,
     kr.selectedVersionId,
   ]);
@@ -2437,7 +2449,35 @@ export default function WorkspaceReports() {
                       className="h-9 min-w-[150px] rounded-md border border-border-input bg-bg-card px-3 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
                     />
                   </div>
+              // Date-range filters for non-manual sources. Hidden in Year mode
+                  // (the From Year / To Year selectors drive the range instead).
+                  reportPeriod !== "Year" && (
+                  <>
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
+                        Date From
+                      </label>
+                      <input
+                        type="date"
+                        value={manualFilters.fromDate || ""}
+                        onChange={(e) => handleDateFromChange(e.target.value)}
+                        className="h-9 min-w-[150px] rounded-md border border-border-input bg-bg-card px-3 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                      />
+                    </div>
 
+                    <div className="flex flex-col gap-1.5">
+                      <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
+                        Date To
+                      </label>
+                      <input
+                        type="date"
+                        value={manualFilters.toDate || ""}
+                        onChange={(e) => handleDateToChange(e.target.value)}
+                        className="h-9 min-w-[150px] rounded-md border border-border-input bg-bg-card px-3 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                      />
+                    </div>
+                  </>
+                  )
                   <div className="flex flex-col gap-1.5">
                     <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
                       Date To
