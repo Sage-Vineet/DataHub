@@ -17,6 +17,25 @@
  * remain fully functional in the backend.
  */
 
+/**
+ * WorkspaceKeyReports — redesigned 2-stage Generate workflow.
+ *
+ * Stage 1  Link Documents
+ *   • GL, Bank Statements, Tax Returns connection cards
+ *   • Link / Unlink files per category
+ *
+ * Stage 2  Generate
+ *   • Single "Generate" button
+ *   • GenerateProgressPanel while in-flight
+ *   • KeyReportSyncDashboard (Validation Dashboard) once done
+ *   • Collapsible COA editor below the Validation Dashboard
+ *   • "Open Reports" button
+ *
+ * All existing business logic, API calls, and backend services are preserved.
+ * The old /sync endpoint is superseded by /generate in the UI only; both
+ * remain fully functional in the backend.
+ */
+
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
@@ -28,7 +47,14 @@ import {
   FileText,
   Loader2,
   Zap,
+  Zap,
   ArrowRight,
+  ExternalLink,
+  ChevronDown,
+  ChevronUp,
+  AlertCircle,
+  BookOpen,
+  LayoutDashboard,
   ExternalLink,
   ChevronDown,
   ChevronUp,
@@ -43,6 +69,7 @@ import {
   duplicateKeyReportVersion,
   addKeyReportMapping,
   removeKeyReportMapping,
+  generateKeyReportVersion,
   getKeyReportPopupPreference,
   setKeyReportPopupPreference,
   setSelectedReportSource,
@@ -64,7 +91,11 @@ import KeyReportSyncDashboard from "../../../components/key-reports/KeyReportSyn
 import ChartOfAccountsGrid from "../../../components/key-reports/ChartOfAccountsGrid";
 import GenerateProgressPanel from "../../../components/key-reports/GenerateProgressPanel";
 import { cn } from "../../../lib/utils";
+import ChartOfAccountsGrid from "../../../components/key-reports/ChartOfAccountsGrid";
+import GenerateProgressPanel from "../../../components/key-reports/GenerateProgressPanel";
+import { cn } from "../../../lib/utils";
 
+// ── Document category definitions ────────────────────────────────────────────
 // ── Document category definitions ────────────────────────────────────────────
 const CATEGORIES = [
   { key: "profit_loss", label: "Profit & Loss", required: true, icon: BookOpen },
@@ -74,34 +105,10 @@ const CATEGORIES = [
   { key: "tax_return", label: "Tax Returns", required: false, icon: FileText },
 ];
 
-// ── Selected-version persistence (per client, survives navigation) ────────────
-const SELECTED_VERSION_STORAGE_PREFIX = "keyReports.selectedVersionId";
-
-function selectedVersionStorageKey(clientId) {
-  return `${SELECTED_VERSION_STORAGE_PREFIX}:${clientId || "default"}`;
-}
-
-function readStoredVersionId(clientId) {
-  try {
-    return sessionStorage.getItem(selectedVersionStorageKey(clientId)) || null;
-  } catch {
-    return null;
-  }
-}
-
-function writeStoredVersionId(clientId, versionId) {
-  try {
-    const key = selectedVersionStorageKey(clientId);
-    if (versionId) sessionStorage.setItem(key, versionId);
-    else sessionStorage.removeItem(key);
-  } catch {
-    /* sessionStorage unavailable — non-fatal */
-  }
-}
-
 // ── Generate state factory ────────────────────────────────────────────────────
 function createInitialGenerateState() {
   return {
+    status: "idle",        // "idle" | "generating" | "done" | "error"
     status: "idle",        // "idle" | "generating" | "done" | "error"
     startedAt: null,
     finishedAt: null,
@@ -110,7 +117,19 @@ function createInitialGenerateState() {
     validationResults: [],
     error: null,
     errorStage: null,      // stage key where failure occurred
+    errorStage: null,      // stage key where failure occurred
   };
+}
+
+// ── Map backend error to approximate stage key ────────────────────────────────
+function inferErrorStage(message = "") {
+  const m = message.toLowerCase();
+  if (m.includes("chart of accounts") || m.includes("coa")) return "coa";
+  if (m.includes("financial report") || m.includes("profit") || m.includes("balance")) return "financial_reports";
+  if (m.includes("snapshot")) return "snapshots";
+  if (m.includes("validation")) return "validation";
+  if (m.includes("general ledger") || m.includes("gl")) return "reading_gl";
+  return "ai_processing";
 }
 
 // ── Small helpers ─────────────────────────────────────────────────────────────
@@ -195,24 +214,19 @@ export default function WorkspaceKeyReports() {
 
   // ── Version / detail state ────────────────────────────────────────────────
   const [versions, setVersions] = useState([]);
-  const [selectedVersionId, setSelectedVersionId] = useState(() => readStoredVersionId(clientId));
+  const [selectedVersionId, setSelectedVersionId] = useState(null);
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
 
   // ── Generate workflow state ───────────────────────────────────────────────
-  // Generation state is owned by the module-level manager (survives navigation
-  // and persists per version in sessionStorage). We re-render on its updates via
-  // a tick and read the selected version's state each render.
-  const [, setGenTick] = useState(0);
-  useEffect(() => subscribeGeneration(() => setGenTick((t) => t + 1)), []);
-
-  const generateState =
-    getGenerationState(clientId, selectedVersionId) || createInitialGenerateState();
+  const [generateState, setGenerateState] = useState(() => createInitialGenerateState());
   const generating = generateState.status === "generating";
 
   // ── File-picker state ─────────────────────────────────────────────────────
   const [pickerCategory, setPickerCategory] = useState(null);
+
+  // ── Education popup ───────────────────────────────────────────────────────
 
   // ── Education popup ───────────────────────────────────────────────────────
   const [showPopup, setShowPopup] = useState(false);
@@ -220,9 +234,7 @@ export default function WorkspaceKeyReports() {
   // ── COA editor visibility (collapsible below Validation Dashboard) ────────
   const [showCoa, setShowCoa] = useState(false);
 
-  // ── Export data state ─────────────────────────────────────────────────────
-  const [exporting, setExporting] = useState(false);
-
+  // ── Notification helper ───────────────────────────────────────────────────
   // ── Notification helper ───────────────────────────────────────────────────
   const notify = useCallback(
     (msg, type = "info") => {
@@ -232,6 +244,7 @@ export default function WorkspaceKeyReports() {
   );
 
   // ── Education popup preference ────────────────────────────────────────────
+  // ── Education popup preference ────────────────────────────────────────────
   useEffect(() => {
     let cancelled = false;
     getKeyReportPopupPreference()
@@ -240,6 +253,7 @@ export default function WorkspaceKeyReports() {
     return () => { cancelled = true; };
   }, []);
 
+  // ── Version loading ───────────────────────────────────────────────────────
   // ── Version loading ───────────────────────────────────────────────────────
   const loadVersions = useCallback(async () => {
     setLoading(true);
@@ -267,14 +281,9 @@ export default function WorkspaceKeyReports() {
     void Promise.resolve().then(() => loadVersions());
   }, [loadVersions]);
 
-  // Persist the selected version so it is restored when the user navigates away
-  // and returns to this page within the same session.
-  useEffect(() => {
-    writeStoredVersionId(clientId, selectedVersionId);
-  }, [clientId, selectedVersionId]);
-
   // ── Version detail loading ────────────────────────────────────────────────
   const loadDetail = useCallback(async (versionId) => {
+    if (!versionId) { setDetail(null); return; }
     if (!versionId) { setDetail(null); return; }
     try {
       const res = await getKeyReportVersion(versionId);
@@ -288,17 +297,10 @@ export default function WorkspaceKeyReports() {
     void Promise.resolve().then(() => loadDetail(selectedVersionId));
   }, [selectedVersionId, loadDetail]);
 
-  // After the version detail loads, reconcile any orphaned "generating" state
-  // left by a hard page reload (the in-memory request was lost). Uses the
-  // server's lastSyncedAt + persisted validation results to promote to done or
-  // reset to idle, so the user never sees a permanent spinner.
+  // Reset generate state when the user switches versions.
   useEffect(() => {
-    if (!selectedVersionId || !detail?.version) return;
-    reconcileGeneration(clientId, selectedVersionId, {
-      lastSyncedAt: detail.version.lastSyncedAt,
-      validationResults: detail.validationResults,
-    });
-  }, [clientId, selectedVersionId, detail]);
+    void Promise.resolve().then(() => setGenerateState(createInitialGenerateState()));
+  }, [selectedVersionId]);
 
   // ── Derived data ──────────────────────────────────────────────────────────
   const version = detail?.version;
@@ -394,6 +396,7 @@ export default function WorkspaceKeyReports() {
   };
 
   // ── File linking ──────────────────────────────────────────────────────────
+  // ── File linking ──────────────────────────────────────────────────────────
   const handleLinkFiles = async (docs) => {
     if (!selectedVersionId || !pickerCategory || !docs?.length) return;
     try {
@@ -401,7 +404,7 @@ export default function WorkspaceKeyReports() {
         reportCategory: pickerCategory,
         documentIds: docs.map((d) => d.id),
       });
-      clearGeneration(clientId, selectedVersionId);
+      setGenerateState(createInitialGenerateState());
       await loadDetail(selectedVersionId);
       notify(`Linked ${docs.length} file${docs.length === 1 ? "" : "s"}.`, "success");
     } catch (e) {
@@ -412,7 +415,7 @@ export default function WorkspaceKeyReports() {
   const handleUnlink = async (mappingId) => {
     try {
       await removeKeyReportMapping(mappingId);
-      clearGeneration(clientId, selectedVersionId);
+      setGenerateState(createInitialGenerateState());
       await loadDetail(selectedVersionId);
       notify("File unlinked.", "success");
     } catch (e) {
@@ -421,11 +424,6 @@ export default function WorkspaceKeyReports() {
   };
 
   // ── Generate workflow ─────────────────────────────────────────────────────
-  // The actual generation runs in the module-level manager (survives navigation
-  // and persists per-version state). We kick it off, then — if still mounted —
-  // refresh the version detail and switch the active source once it finishes.
-  // The completion toast is emitted by the notify effect above, so it fires even
-  // if the user leaves the page mid-sync and returns later.
   const runGenerate = async () => {
     if (!selectedVersionId) return;
     if (linkedDocumentCount === 0) {
@@ -436,19 +434,51 @@ export default function WorkspaceKeyReports() {
       return;
     }
 
-    const versionId = selectedVersionId;
-    const versionMeta = versions.find((v) => v.id === versionId);
-    const versionLabel =
-      versionMeta?.versionName || `Version ${versionMeta?.versionNumber ?? ""}`.trim();
+    const startedAt = new Date().toISOString();
+    setGenerateState({
+      ...createInitialGenerateState(),
+      status: "generating",
+      startedAt,
+    });
     setShowCoa(false); // collapse COA editor during generation
 
-    const result = await startGeneration(clientId, versionId, versionLabel);
+    try {
+      const res = await generateKeyReportVersion(selectedVersionId);
 
-    if (result?.ok) {
-      await Promise.all([loadDetail(versionId), loadVersions()]);
+      setGenerateState({
+        status: "done",
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        summary: res?.result?.summary || null,
+        warnings: Array.isArray(res?.warnings) ? res.warnings : [],
+        validationResults: Array.isArray(res?.validationResults) ? res.validationResults : [],
+        error: null,
+        errorStage: null,
+      });
+
+      await Promise.all([loadDetail(selectedVersionId), loadVersions()]);
       // Switch the active data source to Key Reports so Reports pages
       // immediately serve from the newly generated data.
       await switchToKeyReportsSource();
+
+      const warnCount = res?.warnings?.length || 0;
+      notify(
+        `Generation complete${warnCount ? ` (${warnCount} warning${warnCount === 1 ? "" : "s"})` : ""}. Reports are ready.`,
+        "success"
+      );
+    } catch (e) {
+      const message = e.message || "Generation failed.";
+      setGenerateState({
+        status: "error",
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        summary: null,
+        warnings: [],
+        validationResults: [],
+        error: message,
+        errorStage: inferErrorStage(message),
+      });
+      notify(message, "error");
     }
   };
 
@@ -458,20 +488,6 @@ export default function WorkspaceKeyReports() {
   // ── Education popup ───────────────────────────────────────────────────────
   const dismissPopupForever = () => {
     setKeyReportPopupPreference(true).catch(() => { });
-  };
-
-  // ── Export data ────────────────────────────────────────────────────────────
-  const handleExportData = async () => {
-    if (!selectedVersionId) return;
-    setExporting(true);
-    try {
-      await exportKeyReportData(selectedVersionId);
-      notify("Data exported successfully.", "success");
-    } catch (e) {
-      notify(e.message || "Failed to export data.", "error");
-    } finally {
-      setExporting(false);
-    }
   };
 
   // ── Render states ─────────────────────────────────────────────────────────
@@ -491,7 +507,12 @@ export default function WorkspaceKeyReports() {
   return (
     <div className="p-6">
       {/* Education popup */}
+      {/* Education popup */}
       {showPopup && (
+        <KeyReportsEducationPopup
+          onClose={() => setShowPopup(false)}
+          onDismissForever={dismissPopupForever}
+        />
         <KeyReportsEducationPopup
           onClose={() => setShowPopup(false)}
           onDismissForever={dismissPopupForever}
@@ -499,9 +520,11 @@ export default function WorkspaceKeyReports() {
       )}
 
       {/* File picker modal */}
+      {/* File picker modal */}
       <DataRoomFilePicker
         isOpen={!!pickerCategory}
         companyId={clientId}
+        title={`Link files — ${CATEGORIES.find((c) => c.key === pickerCategory)?.label || ""}`}
         title={`Link files — ${CATEGORIES.find((c) => c.key === pickerCategory)?.label || ""}`}
         alreadyLinkedIds={linkedDocumentIds}
         onClose={() => setPickerCategory(null)}
@@ -510,263 +533,347 @@ export default function WorkspaceKeyReports() {
 
       {/* ── Page header ────────────────────────────────────────────────── */}
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-bold text-text-primary">Key Reports</h1>
-          <p className="mt-1 text-sm text-text-secondary">
-            Link your financial documents and click <strong>Generate</strong> to
-            build AI-powered financial reports.
-          </p>
-        </div>
+        {/* ── Page header ────────────────────────────────────────────────── */}
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h1 className="text-xl font-bold text-text-primary">Key Reports</h1>
+            <p className="mt-1 text-sm text-text-secondary">
+              Link your financial documents and click <strong>Generate</strong> to
+              build AI-powered financial reports.
+              <p className="mt-1 text-sm text-text-secondary">
+                Link your financial documents and click <strong>Generate</strong> to
+                build AI-powered financial reports.
+              </p>
+          </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Version selector */}
-          <select
-            value={selectedVersionId || ""}
-            onChange={(e) => setSelectedVersionId(e.target.value)}
-            disabled={generating}
-            className="rounded-xl border border-border bg-white px-3 py-2 text-sm text-text-primary disabled:opacity-50"
-          >
-            {versions.length === 0 && <option value="">No versions</option>}
-            {versions.map((v) => (
-              <option key={v.id} value={v.id}>
-                {v.versionName || `Version ${v.versionNumber}`}
-                {v.isActive ? " ✦ (official)" : ""}
-              </option>
-            ))}
-          </select>
 
-          <button
-            onClick={handleCreateVersion}
-            disabled={busy || generating}
-            className="flex items-center gap-1.5 rounded-xl border border-border bg-white px-3 py-2 text-sm font-semibold text-text-primary hover:bg-bg-page disabled:opacity-50"
-          >
-            <Plus size={15} /> New
-          </button>
-
-          <button
-            onClick={handleDuplicate}
-            disabled={busy || generating || !selectedVersionId}
-            className="flex items-center gap-1.5 rounded-xl border border-border bg-white px-3 py-2 text-sm font-semibold text-text-primary hover:bg-bg-page disabled:opacity-50"
-          >
-            <Copy size={15} /> Duplicate
-          </button>
-        </div>
-      </div>
-
-      {/* ── Loading state ──────────────────────────────────────────────── */}
-      {loading ? (
-        <div className="flex items-center gap-2 py-16 text-sm text-text-muted">
-          <Loader2 size={16} className="animate-spin" /> Loading…
-        </div>
-
-      ) : versions.length === 0 ? (
-        /* ── Empty state ──────────────────────────────────────────────── */
-        <div className="rounded-2xl border border-dashed border-border bg-white p-10 text-center">
-          <FileText size={28} className="mx-auto text-text-muted" />
-          <p className="mt-3 text-sm font-medium text-text-primary">No Key Report versions yet</p>
-          <p className="mt-1 text-sm text-text-secondary">
-            Create your first version to start linking financial documents.
-          </p>
-          <button
-            onClick={handleCreateVersion}
-            disabled={busy}
-            className="mx-auto mt-4 flex items-center gap-1.5 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
-          >
-            <Plus size={15} /> Create Version 1
-          </button>
-        </div>
-
-      ) : (
-        <div className="space-y-6">
-
-          {/* ══ STAGE 1: Link Documents ════════════════════════════════════ */}
-          <section>
-            <div className="mb-4 flex items-center gap-2">
-              <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-xs font-bold text-white">
-                1
-              </span>
-              <h2 className="text-base font-bold text-text-primary">Link Documents</h2>
-              {linkedDocumentCount > 0 && (
-                <span className="ml-auto flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
-                  <CheckCircle2 size={12} />
-                  {linkedDocumentCount} document{linkedDocumentCount !== 1 ? "s" : ""} linked
-                </span>
-              )}
-            </div>
-
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {CATEGORIES.map((cat) => (
-                <CategoryCard
-                  key={cat.key}
-                  cat={cat}
-                  items={mappingsByCategory[cat.key] || []}
-                  generating={generating}
-                  onLinkClick={(key) => setPickerCategory(key)}
-                  onUnlink={handleUnlink}
-                />
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Version selector */}
+            {/* Version selector */}
+            <select
+              value={selectedVersionId || ""}
+              onChange={(e) => setSelectedVersionId(e.target.value)}
+              disabled={generating}
+              disabled={generating}
+              className="rounded-xl border border-border bg-white px-3 py-2 text-sm text-text-primary disabled:opacity-50"
+            >
+              {versions.length === 0 && <option value="">No versions</option>}
+              {versions.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.versionName || `Version ${v.versionNumber}`}
+                  {v.isActive ? " ✦ (official)" : ""}
+                  {v.isActive ? " ✦ (official)" : ""}
+                </option>
               ))}
-            </div>
-          </section>
+            </select>
 
-          {/* ══ STAGE 2: Generate ══════════════════════════════════════════ */}
-          <section>
-            <div className="mb-4 flex items-center gap-2">
-              <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-xs font-bold text-white">
-                2
-              </span>
-              <h2 className="text-base font-bold text-text-primary">Generate</h2>
-              {isDone && (
-                <span className="ml-auto flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
-                  <CheckCircle2 size={12} /> Reports ready
+
+            <button
+              onClick={handleCreateVersion}
+              disabled={busy || generating}
+              disabled={busy || generating}
+              className="flex items-center gap-1.5 rounded-xl border border-border bg-white px-3 py-2 text-sm font-semibold text-text-primary hover:bg-bg-page disabled:opacity-50"
+            >
+              <Plus size={15} /> New
+            </button>
+
+
+            <button
+              onClick={handleDuplicate}
+              disabled={busy || generating || !selectedVersionId}
+              disabled={busy || generating || !selectedVersionId}
+              className="flex items-center gap-1.5 rounded-xl border border-border bg-white px-3 py-2 text-sm font-semibold text-text-primary hover:bg-bg-page disabled:opacity-50"
+            >
+              <Copy size={15} /> Duplicate
+            </button>
+          </div>
+        </div>
+
+        {/* ── Loading state ──────────────────────────────────────────────── */}
+        {/* ── Loading state ──────────────────────────────────────────────── */}
+        {loading ? (
+          <div className="flex items-center gap-2 py-16 text-sm text-text-muted">
+            <Loader2 size={16} className="animate-spin" /> Loading…
+            <Loader2 size={16} className="animate-spin" /> Loading…
+          </div>
+
+
+        ) : versions.length === 0 ? (
+          /* ── Empty state ──────────────────────────────────────────────── */
+          /* ── Empty state ──────────────────────────────────────────────── */
+          <div className="rounded-2xl border border-dashed border-border bg-white p-10 text-center">
+            <FileText size={28} className="mx-auto text-text-muted" />
+            <p className="mt-3 text-sm font-medium text-text-primary">No Key Report versions yet</p>
+            <p className="mt-1 text-sm text-text-secondary">
+              Create your first version to start linking financial documents.
+            </p>
+            <p className="mt-1 text-sm text-text-secondary">
+              Create your first version to start linking financial documents.
+            </p>
+            <button
+              onClick={handleCreateVersion}
+              disabled={busy}
+              className="mx-auto mt-4 flex items-center gap-1.5 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+            >
+              <Plus size={15} /> Create Version 1
+            </button>
+          </div>
+
+        ) : (
+          <div className="space-y-6">
+
+            {/* ══ STAGE 1: Link Documents ════════════════════════════════════ */}
+            <section>
+              <div className="mb-4 flex items-center gap-2">
+                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-xs font-bold text-white">
+                  1
                 </span>
-              )}
-              {isError && (
-                <span className="ml-auto flex items-center gap-1.5 rounded-full bg-red-50 px-3 py-1 text-xs font-semibold text-red-700">
-                  <AlertCircle size={12} /> Generation failed
-                </span>
-              )}
-            </div>
-
-            {/* ── Generate button row (only shown when not actively running) ── */}
-            {!generating && (
-              <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border bg-white px-5 py-4">
-                <div>
-                  <p className="text-sm font-bold text-text-primary">
-                    {isDone
-                      ? "Re-Generate"
-                      : hasSyncedData
-                        ? "Re-Generate Reports"
-                        : "Generate Reports"}
-                  </p>
-                  <p className="mt-0.5 text-sm text-text-secondary">
-                    {isDone || hasSyncedData
-                      ? "Re-run AI Processing, COA, and all Financial Reports with the latest linked documents."
-                      : "Run AI Processing, build Chart of Accounts, and generate all Financial Reports in one step."}
-                    {linkedDocumentCount === 0 && (
-                      <span className="ml-1 font-medium text-amber-600">
-                        Link at least one document first.
-                      </span>
-                    )}
-                  </p>
-                </div>
-
-                <button
-                  id="btn-generate-key-reports"
-                  onClick={handleGenerateClick}
-                  disabled={!selectedVersionId || linkedDocumentCount === 0}
-                  className="flex items-center gap-2 rounded-xl bg-primary px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:opacity-90 disabled:opacity-40"
-                >
-                  <Zap size={15} />
-                  {isDone || hasSyncedData ? "Re-Generate" : "Generate"}
-                </button>
-              </div>
-            )}
-
-            {/* ── Progress panel (during / after generation) ─────────────── */}
-            {generateState.status !== "idle" && (
-              <GenerateProgressPanel
-                key={generateState.startedAt || "idle"}
-                status={generateState.status}
-                startedAt={generateState.startedAt}
-                finishedAt={generateState.finishedAt}
-                errorStage={generateState.errorStage}
-                errorMessage={generateState.error}
-                onRetry={handleRetry}
-              />
-            )}
-
-            {/* ── Validation Dashboard (after done OR from persisted data) ── */}
-            {showValidationDashboard && !generating && (
-              <div className={cn(generateState.status !== "idle" && "mt-4")}>
-                <KeyReportSyncDashboard
-                  version={version}
-                  syncState={displaySyncState}
-                  hasLinkedDocuments={linkedDocumentCount > 0}
-                />
-              </div>
-            )}
-
-            {/* ── Open Reports button ────────────────────────────────────── */}
-            {(isDone || hasSyncedData) && !generating && (
-              <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-emerald-200 bg-emerald-50/60 px-5 py-4">
-                <div>
-                  <p className="text-sm font-bold text-emerald-800">
-                    Reports are ready
-                  </p>
-                  <p className="mt-0.5 text-sm text-emerald-700">
-                    P&L, Balance Sheet, Cash Flow and EBITDA are all populated
-                    from the generated data.
-                  </p>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    id="btn-export-data"
-                    onClick={handleExportData}
-                    disabled={exporting}
-                    className="flex items-center gap-2 rounded-xl border border-emerald-600 bg-white px-4 py-2.5 text-sm font-semibold text-emerald-600 hover:bg-emerald-50 disabled:opacity-50"
-                  >
-                    {exporting ? (
-                      <>
-                        <Loader2 size={14} className="animate-spin" />
-                        Exporting…
-                      </>
-                    ) : (
-                      <>
-                        <FileText size={14} />
-                        Export Data
-                      </>
-                    )}
-                  </button>
-                  <button
-                    id="btn-open-reports"
-                    onClick={() =>
-                      navigate(`/broker/client/${clientId}/reports`)
-                    }
-                    className="flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700"
-                  >
-                    Open Reports <ExternalLink size={14} />
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {/* ── Collapsible COA editor ─────────────────────────────────── */}
-            {hasSyncedData && !generating && (
-              <div className="mt-4">
-                <button
-                  onClick={() => setShowCoa((v) => !v)}
-                  className="flex w-full items-center justify-between rounded-2xl border border-border bg-white px-5 py-3.5 text-left transition hover:bg-bg-page"
-                >
-                  <div className="flex items-center gap-2">
-                    <ArrowRight size={14} className="text-primary" />
-                    <span className="text-sm font-semibold text-text-primary">
-                      Edit Chart of Accounts
-                    </span>
-                    <span className="text-xs text-text-muted">
-                      — optional: review and adjust account classifications
-                    </span>
-                  </div>
-                  {showCoa ? (
-                    <ChevronUp size={16} className="text-text-muted" />
-                  ) : (
-                    <ChevronDown size={16} className="text-text-muted" />
-                  )}
-                </button>
-
-                {showCoa && (
-                  <div className="mt-2">
-                    <ChartOfAccountsGrid
-                      versionId={selectedVersionId}
-                      hasSyncedData={hasSyncedData}
-                      notify={notify}
-                    />
-                  </div>
+                <h2 className="text-base font-bold text-text-primary">Link Documents</h2>
+                {linkedDocumentCount > 0 && (
+                  <span className="ml-auto flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
+                    <CheckCircle2 size={12} />
+                    {linkedDocumentCount} document{linkedDocumentCount !== 1 ? "s" : ""} linked
+                  </span>
                 )}
               </div>
+
+              ) : (
+              <div className="space-y-6">
+
+                {/* ══ STAGE 1: Link Documents ════════════════════════════════════ */}
+                <section>
+                  <div className="mb-4 flex items-center gap-2">
+                    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-xs font-bold text-white">
+                      1
+                    </span>
+                    <h2 className="text-base font-bold text-text-primary">Link Documents</h2>
+                    {linkedDocumentCount > 0 && (
+                      <span className="ml-auto flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
+                        <CheckCircle2 size={12} />
+                        {linkedDocumentCount} document{linkedDocumentCount !== 1 ? "s" : ""} linked
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    {CATEGORIES.map((cat) => (
+                      <CategoryCard
+                        key={cat.key}
+                        cat={cat}
+                        items={mappingsByCategory[cat.key] || []}
+                        generating={generating}
+                        onLinkClick={(key) => setPickerCategory(key)}
+                        onUnlink={handleUnlink}
+                      />
+                    ))}
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                      {CATEGORIES.map((cat) => (
+                        <CategoryCard
+                          key={cat.key}
+                          cat={cat}
+                          items={mappingsByCategory[cat.key] || []}
+                          generating={generating}
+                          onLinkClick={(key) => setPickerCategory(key)}
+                          onUnlink={handleUnlink}
+                        />
+                      ))}
+                    </div>
+                </section>
+
+                {/* ══ STAGE 2: Generate ══════════════════════════════════════════ */}
+                <section>
+                  <div className="mb-4 flex items-center gap-2">
+                    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-xs font-bold text-white">
+                      2
+                    </span>
+                    <h2 className="text-base font-bold text-text-primary">Generate</h2>
+                    {isDone && (
+                      <span className="ml-auto flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
+                        <CheckCircle2 size={12} /> Reports ready
+                      </span>
+                    )}
+                    {isError && (
+                      <span className="ml-auto flex items-center gap-1.5 rounded-full bg-red-50 px-3 py-1 text-xs font-semibold text-red-700">
+                        <AlertCircle size={12} /> Generation failed
+                      </span>
+                    )}
+                </section>
+
+                {/* ══ STAGE 2: Generate ══════════════════════════════════════════ */}
+                <section>
+                  <div className="mb-4 flex items-center gap-2">
+                    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-xs font-bold text-white">
+                      2
+                    </span>
+                    <h2 className="text-base font-bold text-text-primary">Generate</h2>
+                    {isDone && (
+                      <span className="ml-auto flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
+                        <CheckCircle2 size={12} /> Reports ready
+                      </span>
+                    )}
+                    {isError && (
+                      <span className="ml-auto flex items-center gap-1.5 rounded-full bg-red-50 px-3 py-1 text-xs font-semibold text-red-700">
+                        <AlertCircle size={12} /> Generation failed
+                      </span>
+                    )}
+                  </div>
+
+                  {/* ── Generate button row (only shown when not actively running) ── */}
+                  {!generating && (
+                    <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border bg-white px-5 py-4">
+
+                      {/* ── Generate button row (only shown when not actively running) ── */}
+                      {!generating && (
+                        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border bg-white px-5 py-4">
+                          <div>
+                            <p className="text-sm font-bold text-text-primary">
+                              {isDone
+                                ? "Re-Generate"
+                                : hasSyncedData
+                                  ? "Re-Generate Reports"
+                                  : "Generate Reports"}
+                            </p>
+                            <p className="mt-0.5 text-sm text-text-secondary">
+                              {isDone || hasSyncedData
+                                ? "Re-run AI Processing, COA, and all Financial Reports with the latest linked documents."
+                                : "Run AI Processing, build Chart of Accounts, and generate all Financial Reports in one step."}
+                              {linkedDocumentCount === 0 && (
+                                <span className="ml-1 font-medium text-amber-600">
+                                  Link at least one document first.
+                                </span>
+                              )}
+                            </p>
+                          </div>
+
+
+                          <button
+                            id="btn-generate-key-reports"
+                            onClick={handleGenerateClick}
+                            disabled={!selectedVersionId || linkedDocumentCount === 0}
+                            className="flex items-center gap-2 rounded-xl bg-primary px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:opacity-90 disabled:opacity-40"
+                            id="btn-generate-key-reports"
+                            onClick={handleGenerateClick}
+                            disabled={!selectedVersionId || linkedDocumentCount === 0}
+                            className="flex items-center gap-2 rounded-xl bg-primary px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:opacity-90 disabled:opacity-40"
+                          >
+                            <Zap size={15} />
+                            {isDone || hasSyncedData ? "Re-Generate" : "Generate"}
+                            <Zap size={15} />
+                            {isDone || hasSyncedData ? "Re-Generate" : "Generate"}
+                          </button>
+                        </div>
+                      )}
+
+                      {/* ── Progress panel (during / after generation) ─────────────── */}
+                      {generateState.status !== "idle" && (
+                        <GenerateProgressPanel
+                          key={generateState.startedAt || "idle"}
+                          status={generateState.status}
+                          startedAt={generateState.startedAt}
+                          finishedAt={generateState.finishedAt}
+                          errorStage={generateState.errorStage}
+                          errorMessage={generateState.error}
+                          onRetry={handleRetry}
+                        />
+                      )}
+
+                      {/* ── Validation Dashboard (after done OR from persisted data) ── */}
+                      {showValidationDashboard && !generating && (
+                        <div className={cn(generateState.status !== "idle" && "mt-4")}>
+                          <KeyReportSyncDashboard
+                            version={version}
+                            syncState={displaySyncState}
+                            hasLinkedDocuments={linkedDocumentCount > 0}
+                          />
+                        </div>
+                      )}
             )}
-          </section>
+
+                      {/* ── Progress panel (during / after generation) ─────────────── */}
+                      {generateState.status !== "idle" && (
+                        <GenerateProgressPanel
+                          key={generateState.startedAt || "idle"}
+                          status={generateState.status}
+                          startedAt={generateState.startedAt}
+                          finishedAt={generateState.finishedAt}
+                          errorStage={generateState.errorStage}
+                          errorMessage={generateState.error}
+                          onRetry={handleRetry}
+                        />
+                      )}
+
+                      {/* ── Validation Dashboard (after done OR from persisted data) ── */}
+                      {showValidationDashboard && !generating && (
+                        <div className={cn(generateState.status !== "idle" && "mt-4")}>
+                          <KeyReportSyncDashboard
+                            version={version}
+                            syncState={displaySyncState}
+                            hasLinkedDocuments={linkedDocumentCount > 0}
+                          />
+                        </div>
+                      )}
+
+                      {/* ── Open Reports button ────────────────────────────────────── */}
+                      {(isDone || hasSyncedData) && !generating && (
+                        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-emerald-200 bg-emerald-50/60 px-5 py-4">
+                          <div>
+                            <p className="text-sm font-bold text-emerald-800">
+                              Reports are ready
+                            </p>
+                            <p className="mt-0.5 text-sm text-emerald-700">
+                              P&L, Balance Sheet, Cash Flow and EBITDA are all populated
+                              from the generated data.
+                            </p>
+                          </div>
+                          <button
+                            id="btn-open-reports"
+                            onClick={() =>
+                              navigate(`/broker/client/${clientId}/reports`)
+                            }
+                            className="flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700"
+                          >
+                            Open Reports <ExternalLink size={14} />
+                          </button>
+                        </div>
+                      )}
+
+                      {/* ── Collapsible COA editor ─────────────────────────────────── */}
+                      {hasSyncedData && !generating && (
+                        <div className="mt-4">
+                          <button
+                            onClick={() => setShowCoa((v) => !v)}
+                            className="flex w-full items-center justify-between rounded-2xl border border-border bg-white px-5 py-3.5 text-left transition hover:bg-bg-page"
+                          >
+                            <div className="flex items-center gap-2">
+                              <ArrowRight size={14} className="text-primary" />
+                              <span className="text-sm font-semibold text-text-primary">
+                                Edit Chart of Accounts
+                              </span>
+                              <span className="text-xs text-text-muted">
+                                — optional: review and adjust account classifications
+                              </span>
+                            </div>
+                            {showCoa ? (
+                              <ChevronUp size={16} className="text-text-muted" />
+                            ) : (
+                              <ChevronDown size={16} className="text-text-muted" />
+                            )}
+                          </button>
+
+                          {showCoa && (
+                            <div className="mt-2">
+                              <ChartOfAccountsGrid
+                                versionId={selectedVersionId}
+                                hasSyncedData={hasSyncedData}
+                                notify={notify}
+                              />
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </section>
         </div>
       )}
-    </div>
-  );
+          </div>
+        );
 }
