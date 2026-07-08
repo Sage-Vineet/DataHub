@@ -289,7 +289,7 @@ export default function KeyReportSyncDashboard({
         : "Sync dashboard";
 
   const subtitle = isProcessing
-    ? `Processing ${versionLabel} now. Stay on this page while the sync finishes.`
+    ? `Your data is being generated. This may take a few minutes — the application will automatically update when processing completes.`
     : isComplete
       ? `Latest sync results for ${versionLabel}.`
       : isError
@@ -520,7 +520,7 @@ export default function KeyReportSyncDashboard({
               No validation results yet.
             </p>
             <p className="mt-1 text-sm text-text-secondary">
-              Sync the selected Key Reports version to generate the dashboard.
+              Click Generate to build your financial reports.
             </p>
           </div>
         )}

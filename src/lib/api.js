@@ -1452,6 +1452,15 @@ export function syncKeyReportVersion(versionId) {
   return request(`/key-reports/versions/${versionId}/sync`, { method: 'POST', body: {} });
 }
 
+/**
+ * Single-click full workflow: AI Processing → COA → Financial Reports →
+ * Snapshots → Validation. Calls the /generate endpoint (semantic alias for
+ * /sync). Returns the same shape as syncKeyReportVersion.
+ */
+export function generateKeyReportVersion(versionId) {
+  return request(`/key-reports/versions/${versionId}/generate`, { method: 'POST', body: {} });
+}
+
 export async function getActiveKeyReportMappings() {
   const res = await getKeyReportVersions();
   const versions = res?.versions || [];
