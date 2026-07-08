@@ -315,19 +315,8 @@ router.post("/key-reports/versions/:versionId/generate", async (req, res) => {
   try {
     const version = await loadVersionWithAccess(req, res);
     if (!version) return;
-    // Run the sync pipeline AND warm the Bank/Tax Reconciliation caches
-    // concurrently. Warm-up reads the raw linked files (independent of the
-    // pipeline's generated tables), so it overlaps the pipeline and adds ~no
-    // wall-clock — yet the reconciliation pages are a guaranteed cache hit
-    // (instant) once this returns instead of running a multi-minute extraction on
-    // first visit. Warm-up is fully non-fatal (see warmReconciliationCaches).
-    const [result] = await Promise.all([
-      keyReportService.syncVersion(version.id, req.user?.id),
-      warmReconciliationCaches(version.companyId, version.id),
-    ]);
-    res.json({ success: true, ...result });
-    warmFinancialStatementsCache(version.id, result);
-    return;
+    const result = await keyReportService.syncVersion(version.id, req.user?.id);
+    return res.json({ success: true, ...result });
   } catch (error) {
     return handleError(res, error, "POST generate");
   }
