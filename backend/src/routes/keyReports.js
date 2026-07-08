@@ -237,6 +237,23 @@ router.post("/key-reports/versions/:versionId/sync", async (req, res) => {
   }
 });
 
+// ---- Generate (semantic alias for /sync — single-click full workflow) ------
+// Calls the identical syncVersion pipeline: AI extraction → COA → Financial
+// Reports → Snapshots → Validation. Kept as a separate route so the new UI
+// can use clean "Generate" language while the existing /sync endpoint remains
+// fully backward-compatible for any existing integrations.
+
+router.post("/key-reports/versions/:versionId/generate", async (req, res) => {
+  try {
+    const version = await loadVersionWithAccess(req, res);
+    if (!version) return;
+    const result = await keyReportService.syncVersion(version.id, req.user?.id);
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    return handleError(res, error, "POST generate");
+  }
+});
+
 router.get("/key-reports/versions/:versionId/extracted-data", async (req, res) => {
   try {
     const version = await loadVersionWithAccess(req, res);
