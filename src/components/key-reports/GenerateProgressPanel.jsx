@@ -353,7 +353,10 @@ export default function GenerateProgressPanel({
       </div>
 
       {/* ── Stage list ──────────────────────────────────────────────── */}
-      {(isGenerating || isDone || isError) && (
+      {/* Hidden once generation is complete — the "Generation Complete" header
+          card above already conveys the finished state; the per-stage list is
+          only useful while running or when a stage failed (to show which + Retry). */}
+      {(isGenerating || isError) && (
         <div className="rounded-2xl border border-border bg-white p-4">
           <p className="mb-3 text-xs font-semibold uppercase tracking-[0.18em] text-text-muted">
             Progress
