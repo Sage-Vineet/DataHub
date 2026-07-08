@@ -14,6 +14,7 @@ import { MessageNotificationsProvider } from "./context/MessageNotificationsCont
 import { ToastProvider, useToast } from "./context/ToastContext";
 import { DataSourceProvider } from "./context/DataSourceContext";
 import ErrorBoundary from "./components/common/ErrorBoundary";
+import KeyReportGenerationToaster from "./components/key-reports/KeyReportGenerationToaster";
 import Layout from "./components/layout/Layout";
 import BrokerLayout from "./components/layout/BrokerLayout";
 import ClientWorkspaceLayout from "./components/layout/ClientWorkspaceLayout";
@@ -502,6 +503,8 @@ export default function App() {
               <ErrorBoundary>
                 <AppRoutes />
               </ErrorBoundary>
+              {/* App-level: pops Key Reports generation-complete toasts on any page */}
+              <KeyReportGenerationToaster />
             </DataSourceProvider>
           </ToastProvider>
         </MessageNotificationsProvider>
