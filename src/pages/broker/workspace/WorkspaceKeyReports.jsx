@@ -43,6 +43,7 @@ import {
   duplicateKeyReportVersion,
   addKeyReportMapping,
   removeKeyReportMapping,
+  generateKeyReportVersion,
   getKeyReportPopupPreference,
   setKeyReportPopupPreference,
   setSelectedReportSource,
@@ -74,31 +75,6 @@ const CATEGORIES = [
   { key: "tax_return", label: "Tax Returns", required: false, icon: FileText },
 ];
 
-// ── Selected-version persistence (per client, survives navigation) ────────────
-const SELECTED_VERSION_STORAGE_PREFIX = "keyReports.selectedVersionId";
-
-function selectedVersionStorageKey(clientId) {
-  return `${SELECTED_VERSION_STORAGE_PREFIX}:${clientId || "default"}`;
-}
-
-function readStoredVersionId(clientId) {
-  try {
-    return sessionStorage.getItem(selectedVersionStorageKey(clientId)) || null;
-  } catch {
-    return null;
-  }
-}
-
-function writeStoredVersionId(clientId, versionId) {
-  try {
-    const key = selectedVersionStorageKey(clientId);
-    if (versionId) sessionStorage.setItem(key, versionId);
-    else sessionStorage.removeItem(key);
-  } catch {
-    /* sessionStorage unavailable — non-fatal */
-  }
-}
-
 // ── Generate state factory ────────────────────────────────────────────────────
 function createInitialGenerateState() {
   return {
@@ -111,6 +87,17 @@ function createInitialGenerateState() {
     error: null,
     errorStage: null,      // stage key where failure occurred
   };
+}
+
+// ── Map backend error to approximate stage key ────────────────────────────────
+function inferErrorStage(message = "") {
+  const m = message.toLowerCase();
+  if (m.includes("chart of accounts") || m.includes("coa")) return "coa";
+  if (m.includes("financial report") || m.includes("profit") || m.includes("balance")) return "financial_reports";
+  if (m.includes("snapshot")) return "snapshots";
+  if (m.includes("validation")) return "validation";
+  if (m.includes("general ledger") || m.includes("gl")) return "reading_gl";
+  return "ai_processing";
 }
 
 // ── Small helpers ─────────────────────────────────────────────────────────────
@@ -201,14 +188,7 @@ export default function WorkspaceKeyReports() {
   const [busy, setBusy] = useState(false);
 
   // ── Generate workflow state ───────────────────────────────────────────────
-  // Generation state is owned by the module-level manager (survives navigation
-  // and persists per version in sessionStorage). We re-render on its updates via
-  // a tick and read the selected version's state each render.
-  const [, setGenTick] = useState(0);
-  useEffect(() => subscribeGeneration(() => setGenTick((t) => t + 1)), []);
-
-  const generateState =
-    getGenerationState(clientId, selectedVersionId) || createInitialGenerateState();
+  const [generateState, setGenerateState] = useState(() => createInitialGenerateState());
   const generating = generateState.status === "generating";
 
   // ── File-picker state ─────────────────────────────────────────────────────
@@ -219,9 +199,6 @@ export default function WorkspaceKeyReports() {
 
   // ── COA editor visibility (collapsible below Validation Dashboard) ────────
   const [showCoa, setShowCoa] = useState(false);
-
-  // ── Export data state ─────────────────────────────────────────────────────
-  const [exporting, setExporting] = useState(false);
 
   // ── Notification helper ───────────────────────────────────────────────────
   const notify = useCallback(
@@ -267,12 +244,6 @@ export default function WorkspaceKeyReports() {
     void Promise.resolve().then(() => loadVersions());
   }, [loadVersions]);
 
-  // Persist the selected version so it is restored when the user navigates away
-  // and returns to this page within the same session.
-  useEffect(() => {
-    writeStoredVersionId(clientId, selectedVersionId);
-  }, [clientId, selectedVersionId]);
-
   // ── Version detail loading ────────────────────────────────────────────────
   const loadDetail = useCallback(async (versionId) => {
     if (!versionId) { setDetail(null); return; }
@@ -288,17 +259,10 @@ export default function WorkspaceKeyReports() {
     void Promise.resolve().then(() => loadDetail(selectedVersionId));
   }, [selectedVersionId, loadDetail]);
 
-  // After the version detail loads, reconcile any orphaned "generating" state
-  // left by a hard page reload (the in-memory request was lost). Uses the
-  // server's lastSyncedAt + persisted validation results to promote to done or
-  // reset to idle, so the user never sees a permanent spinner.
+  // Reset generate state when the user switches versions.
   useEffect(() => {
-    if (!selectedVersionId || !detail?.version) return;
-    reconcileGeneration(clientId, selectedVersionId, {
-      lastSyncedAt: detail.version.lastSyncedAt,
-      validationResults: detail.validationResults,
-    });
-  }, [clientId, selectedVersionId, detail]);
+    void Promise.resolve().then(() => setGenerateState(createInitialGenerateState()));
+  }, [selectedVersionId]);
 
   // ── Derived data ──────────────────────────────────────────────────────────
   const version = detail?.version;
@@ -401,7 +365,7 @@ export default function WorkspaceKeyReports() {
         reportCategory: pickerCategory,
         documentIds: docs.map((d) => d.id),
       });
-      clearGeneration(clientId, selectedVersionId);
+      setGenerateState(createInitialGenerateState());
       await loadDetail(selectedVersionId);
       notify(`Linked ${docs.length} file${docs.length === 1 ? "" : "s"}.`, "success");
     } catch (e) {
@@ -412,7 +376,7 @@ export default function WorkspaceKeyReports() {
   const handleUnlink = async (mappingId) => {
     try {
       await removeKeyReportMapping(mappingId);
-      clearGeneration(clientId, selectedVersionId);
+      setGenerateState(createInitialGenerateState());
       await loadDetail(selectedVersionId);
       notify("File unlinked.", "success");
     } catch (e) {
@@ -421,11 +385,6 @@ export default function WorkspaceKeyReports() {
   };
 
   // ── Generate workflow ─────────────────────────────────────────────────────
-  // The actual generation runs in the module-level manager (survives navigation
-  // and persists per-version state). We kick it off, then — if still mounted —
-  // refresh the version detail and switch the active source once it finishes.
-  // The completion toast is emitted by the notify effect above, so it fires even
-  // if the user leaves the page mid-sync and returns later.
   const runGenerate = async () => {
     if (!selectedVersionId) return;
     if (linkedDocumentCount === 0) {
@@ -436,19 +395,51 @@ export default function WorkspaceKeyReports() {
       return;
     }
 
-    const versionId = selectedVersionId;
-    const versionMeta = versions.find((v) => v.id === versionId);
-    const versionLabel =
-      versionMeta?.versionName || `Version ${versionMeta?.versionNumber ?? ""}`.trim();
+    const startedAt = new Date().toISOString();
+    setGenerateState({
+      ...createInitialGenerateState(),
+      status: "generating",
+      startedAt,
+    });
     setShowCoa(false); // collapse COA editor during generation
 
-    const result = await startGeneration(clientId, versionId, versionLabel);
+    try {
+      const res = await generateKeyReportVersion(selectedVersionId);
 
-    if (result?.ok) {
-      await Promise.all([loadDetail(versionId), loadVersions()]);
+      setGenerateState({
+        status: "done",
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        summary: res?.result?.summary || null,
+        warnings: Array.isArray(res?.warnings) ? res.warnings : [],
+        validationResults: Array.isArray(res?.validationResults) ? res.validationResults : [],
+        error: null,
+        errorStage: null,
+      });
+
+      await Promise.all([loadDetail(selectedVersionId), loadVersions()]);
       // Switch the active data source to Key Reports so Reports pages
       // immediately serve from the newly generated data.
       await switchToKeyReportsSource();
+
+      const warnCount = res?.warnings?.length || 0;
+      notify(
+        `Generation complete${warnCount ? ` (${warnCount} warning${warnCount === 1 ? "" : "s"})` : ""}. Reports are ready.`,
+        "success"
+      );
+    } catch (e) {
+      const message = e.message || "Generation failed.";
+      setGenerateState({
+        status: "error",
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        summary: null,
+        warnings: [],
+        validationResults: [],
+        error: message,
+        errorStage: inferErrorStage(message),
+      });
+      notify(message, "error");
     }
   };
 
