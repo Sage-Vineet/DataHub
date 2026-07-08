@@ -18,7 +18,13 @@ import {
   getAllQMSUploadedReports,
   getManualCashFlowPeriods,
   listManualGlDatasetVersions,
+  getFinancialStatements,
 } from "../../../lib/api";
+import {
+  transformKeyReportFinancials,
+  readCachedFinancials,
+  writeCachedFinancials,
+} from "../../../lib/keyReportFinancials";
 import { MANUAL_GL_STAGED_EVENT } from "../../../lib/dataSourceEvents";
 import { useDataSource } from "../../../context/DataSourceContext";
 import {
@@ -117,6 +123,7 @@ function saveStoredReportsState(clientId, state) {
     // Ignore quota/serialisation issues.
   }
 }
+
 
 const MANUAL_DATE_RANGE_OPTIONS = [
   "All Dates",
@@ -474,7 +481,7 @@ export default function WorkspaceReports() {
   // Collapsible filter bar (reclaims vertical space for the report).
   const [filtersCollapsed, setFiltersCollapsed] = useState(false);
   // Period granularity: "Month" (monthly columns) | "Year" (annual columns).
-  const [reportPeriod, setReportPeriod] = useState("Month");
+  const [reportPeriod, setReportPeriod] = useState(storedState?.reportPeriod || "Month");
   // Year range selectors — shown when reportPeriod === "Year".
   const [yearRangeStart, setYearRangeStart] = useState(null);
   const [yearRangeEnd, setYearRangeEnd] = useState(null);
@@ -548,6 +555,7 @@ export default function WorkspaceReports() {
       const nextState = restoredState || {};
       setSelectedTab(nextState.selectedTab || "Balance Sheet");
       setReportType(nextState.reportType || "Summary");
+      setReportPeriod(nextState.reportPeriod || "Month");
       setDateRange(nextState.dateRange || "This Month");
       setCustomRange({
         start: nextState.customRange?.start || defaultCustomStart,
@@ -634,31 +642,14 @@ export default function WorkspaceReports() {
     [selectedReportSource],
   );
 
-  // Auto-detect which report tabs the SELECTED Key Report Version can produce,
-  // from its linked document categories. When no Key Report version is active,
-  // all tabs are enabled (legacy behavior). Cash Flow needs both P&L and BS.
+  // In Key Reports mode all three statements (Profit & Loss, Balance Sheet,
+  // Cash Flow) are produced together by the /reports/financial-statements
+  // endpoint — regardless of which document categories are linked — so every
+  // tab is always selectable. (The report body shows its own empty state if a
+  // given period has no data.) Legacy sources keep all tabs enabled too.
   const reportTabAvailability = useCallback(
-    (tabKey) => {
-      if (!kr.krActive) return { enabled: true };
-      const a = kr.availability;
-      if (tabKey === "Profit & Loss") {
-        return a.profitLoss
-          ? { enabled: true }
-          : { enabled: false, reason: "Link a General Ledger (or P&L) document in Key Reports." };
-      }
-      if (tabKey === "Balance Sheet") {
-        return a.balanceSheet
-          ? { enabled: true }
-          : { enabled: false, reason: "Link a Balance Sheet document in Key Reports." };
-      }
-      if (tabKey === "Cashflow") {
-        return a.profitLoss && a.balanceSheet
-          ? { enabled: true }
-          : { enabled: false, reason: "Cash Flow needs both Profit & Loss and Balance Sheet docs (or GL) linked in Key Reports." };
-      }
-      return { enabled: true };
-    },
-    [kr.krActive, kr.availability.profitLoss, kr.availability.balanceSheet],
+    () => ({ enabled: true }),
+    [],
   );
 
   // If the active tab becomes unavailable for the selected Version, fall back to
@@ -690,6 +681,10 @@ export default function WorkspaceReports() {
   // ("<tab>|<reportType>"); the generate effect skips the network call when the
   // signature is unchanged. A ref (not state) avoids extra re-renders.
   const reportSignaturesRef = useRef({});
+  // Cache the raw Key Reports financial-statements response per version so that
+  // switching tabs / period (Month↔Year) doesn't refetch — the response already
+  // carries P&L, Balance Sheet and Cash Flow for every period.
+  const krFinancialsCacheRef = useRef({ versionId: null, data: null });
   const currentSignature = useMemo(
     () =>
       JSON.stringify({
@@ -947,6 +942,7 @@ export default function WorkspaceReports() {
     saveStoredReportsState(clientId, {
       selectedTab,
       reportType,
+      reportPeriod,
       dateRange,
       customRange,
       accountingMethod,
@@ -973,6 +969,7 @@ export default function WorkspaceReports() {
     customRange,
     dateRange,
     reportType,
+    reportPeriod,
     reportsData,
     selectedReportSource,
     selectedTab,
@@ -1322,6 +1319,85 @@ export default function WorkspaceReports() {
     const slotKey = `${selectedTab}|${effectiveReportType}`;
     const signatureAtStart = currentSignatureRef.current;
 
+    // Key Reports active with a resolved version → render the COA-driven
+    // financial statements (P&L / Balance Sheet / Cash Flow) straight from the
+    // /reports/financial-statements endpoint. The response is transformed into
+    // the same { rows, columns } detail shape the manual-upload renderers use,
+    // so the Reports UI is unchanged and the Period / Year filters keep working.
+    if (kr.krActive && kr.selectedVersionId) {
+      setIsLoading(true);
+      try {
+        // L1: in-memory (same mount). L2: sessionStorage (survives navigation).
+        // Only hit the network on a genuine first load / cache miss.
+        let response =
+          krFinancialsCacheRef.current.versionId === kr.selectedVersionId
+            ? krFinancialsCacheRef.current.data
+            : null;
+        if (!response) {
+          response = readCachedFinancials(clientId, kr.selectedVersionId);
+        }
+        if (!response) {
+          response = await getFinancialStatements(kr.selectedVersionId, {
+            currency: "USD",
+          });
+          writeCachedFinancials(clientId, kr.selectedVersionId, response);
+        }
+        krFinancialsCacheRef.current = {
+          versionId: kr.selectedVersionId,
+          data: response,
+        };
+
+        const isYearMode = reportPeriod === "Year";
+        // Month mode honours the Date From / Date To pickers (stored in
+        // appliedManualFilters as fromDate/toDate).
+        const monthStart = !isYearMode ? appliedManualFilters?.fromDate || null : null;
+        const monthEnd = !isYearMode ? appliedManualFilters?.toDate || null : null;
+        const detail = transformKeyReportFinancials(response, {
+          tab: selectedTab,
+          period: reportPeriod,
+          yearStart: isYearMode ? yearRangeStart : null,
+          yearEnd: isYearMode ? yearRangeEnd : null,
+          monthStart,
+          monthEnd,
+        });
+
+        // Derive display dates from the resolved columns for the report header/export.
+        const cols = detail.columns?.yearCols || [];
+        const firstYear = cols.length ? String(cols[0].label).match(/(\d{4})/)?.[1] : null;
+        const lastYear = cols.length ? String(cols[cols.length - 1].label).match(/(\d{4})/)?.[1] : null;
+
+        setAppliedReportType("Detail");
+        setAppliedAccountingMethod(accountingMethod);
+        setAppliedStartDate(monthStart || (firstYear ? `${firstYear}-01-01` : ""));
+        setAppliedEndDate(monthEnd || (lastYear ? `${lastYear}-12-31` : ""));
+
+        setReportsData((previous) => ({
+          ...previous,
+          [selectedTab]: {
+            ...previous[selectedTab],
+            detail,
+            summary: [],
+          },
+        }));
+
+        if (currentSignatureRef.current === signatureAtStart) {
+          reportSignaturesRef.current[slotKey] = signatureAtStart;
+        }
+      } catch (error) {
+        console.error(
+          "[KeyReports][Report] financial-statements fetch failed:",
+          error,
+        );
+        setReportsData((previous) => ({
+          ...previous,
+          [selectedTab]: createInitialReportsData()[selectedTab],
+        }));
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
+
     // Key Reports is the active source but no usable Key Report Version resolved
     // yet (e.g. none created/synced). Do NOT fall through to the QuickBooks fetch
     // path — leave the report empty until a version is available.
@@ -1595,6 +1671,7 @@ export default function WorkspaceReports() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     selectedQMSRowId[selectedTab],
     selectedManualCfYear,
+    kr.krActive,
     kr.selectedVersionId,
   ]);
 
@@ -2337,32 +2414,35 @@ export default function WorkspaceReports() {
                 )}
               </>
             ) : (
-              // Always show these date filters for other sources when Date Range filters are required (requirements 3 & 4)
-              <>
-                <div className="flex flex-col gap-1.5">
-                  <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
-                    Date From
-                  </label>
-                  <input
-                    type="date"
-                    value={manualFilters.fromDate || ""}
-                    onChange={(e) => handleDateFromChange(e.target.value)}
-                    className="h-9 min-w-[150px] rounded-md border border-border-input bg-bg-card px-3 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-                  />
-                </div>
+              // Date-range filters for non-manual sources. Hidden in Year mode
+              // (the From Year / To Year selectors drive the range instead).
+              reportPeriod !== "Year" && (
+                <>
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
+                      Date From
+                    </label>
+                    <input
+                      type="date"
+                      value={manualFilters.fromDate || ""}
+                      onChange={(e) => handleDateFromChange(e.target.value)}
+                      className="h-9 min-w-[150px] rounded-md border border-border-input bg-bg-card px-3 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                    />
+                  </div>
 
-                <div className="flex flex-col gap-1.5">
-                  <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
-                    Date To
-                  </label>
-                  <input
-                    type="date"
-                    value={manualFilters.toDate || ""}
-                    onChange={(e) => handleDateToChange(e.target.value)}
-                    className="h-9 min-w-[150px] rounded-md border border-border-input bg-bg-card px-3 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-                  />
-                </div>
-              </>
+                  <div className="flex flex-col gap-1.5">
+                    <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
+                      Date To
+                    </label>
+                    <input
+                      type="date"
+                      value={manualFilters.toDate || ""}
+                      onChange={(e) => handleDateToChange(e.target.value)}
+                      className="h-9 min-w-[150px] rounded-md border border-border-input bg-bg-card px-3 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                    />
+                  </div>
+                </>
+              )
             )}
 
 

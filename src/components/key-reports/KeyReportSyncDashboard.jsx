@@ -483,36 +483,6 @@ export default function KeyReportSyncDashboard({
                 ))}
               </div>
             </div>
-
-            {matrix.detailRows.length > 0 && (
-              <div className="mt-4 space-y-2">
-                <h3 className="text-xs font-semibold uppercase tracking-[0.18em] text-secondary">
-                  Validation messages
-                </h3>
-                <div className="space-y-2">
-                  {matrix.detailRows.slice(0, 12).map((item) => {
-                    const meta = STATUS_META[item.status] || STATUS_META.idle;
-                    return (
-                      <div
-                        key={`${item.rowKey}:${item.column}:${item.message}`}
-                        className="rounded-xl border border-border bg-bg-page px-3 py-2"
-                      >
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className={cn("rounded-full border px-2 py-0.5 text-[11px] font-semibold", meta.badge)}>
-                            {meta.label}
-                          </span>
-                          <span className="text-xs font-semibold text-text-primary">
-                            {item.rowLabel}
-                          </span>
-                          <span className="text-xs text-text-muted">{item.column}</span>
-                        </div>
-                        <p className="mt-1 text-sm text-text-secondary">{item.message}</p>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
           </>
         ) : (
           <div className="mt-4 rounded-xl border border-dashed border-border bg-bg-page px-4 py-8 text-center">
