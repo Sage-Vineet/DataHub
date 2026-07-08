@@ -474,20 +474,6 @@ export default function WorkspaceKeyReports() {
     }
   };
 
-  // ── Export data ────────────────────────────────────────────────────────────
-  const handleExportData = async () => {
-    if (!selectedVersionId) return;
-    setExporting(true);
-    try {
-      await exportKeyReportData(selectedVersionId);
-      notify("Data exported successfully.", "success");
-    } catch (e) {
-      notify(e.message || "Failed to export data.", "error");
-    } finally {
-      setExporting(false);
-    }
-  };
-
   // ── Render states ─────────────────────────────────────────────────────────
   const isDone = generateState.status === "done";
   const isError = generateState.status === "error";
@@ -661,8 +647,8 @@ export default function WorkspaceKeyReports() {
                         Link at least one document first.
                       </span>
                     )}
-                  </p >
-                </div >
+                  </p>
+                </div>
 
                 <button
                   id="btn-generate-key-reports"
@@ -673,123 +659,114 @@ export default function WorkspaceKeyReports() {
                   <Zap size={15} />
                   {isDone || hasSyncedData ? "Re-Generate" : "Generate"}
                 </button>
-              </div >
-            )
-            }
+              </div>
+            )}
 
             {/* ── Progress panel (during / after generation) ─────────────── */}
-            {
-              generateState.status !== "idle" && (
-                <GenerateProgressPanel
-                  key={generateState.startedAt || "idle"}
-                  status={generateState.status}
-                  startedAt={generateState.startedAt}
-                  finishedAt={generateState.finishedAt}
-                  errorStage={generateState.errorStage}
-                  errorMessage={generateState.error}
-                  onRetry={handleRetry}
-                />
-              )
-            }
+            {generateState.status !== "idle" && (
+              <GenerateProgressPanel
+                key={generateState.startedAt || "idle"}
+                status={generateState.status}
+                startedAt={generateState.startedAt}
+                finishedAt={generateState.finishedAt}
+                errorStage={generateState.errorStage}
+                errorMessage={generateState.error}
+                onRetry={handleRetry}
+              />
+            )}
 
             {/* ── Validation Dashboard (after done OR from persisted data) ── */}
-            {
-              showValidationDashboard && !generating && (
-                <div className={cn(generateState.status !== "idle" && "mt-4")}>
-                  <KeyReportSyncDashboard
-                    version={version}
-                    syncState={displaySyncState}
-                    hasLinkedDocuments={linkedDocumentCount > 0}
-                  />
-                </div>
-              )
-            }
+            {showValidationDashboard && !generating && (
+              <div className={cn(generateState.status !== "idle" && "mt-4")}>
+                <KeyReportSyncDashboard
+                  version={version}
+                  syncState={displaySyncState}
+                  hasLinkedDocuments={linkedDocumentCount > 0}
+                />
+              </div>
+            )}
 
             {/* ── Open Reports button ────────────────────────────────────── */}
-            {
-              (isDone || hasSyncedData) && !generating && (
-                <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-emerald-200 bg-emerald-50/60 px-5 py-4">
-                  <div>
-                    <p className="text-sm font-bold text-emerald-800">
-                      Reports are ready
-                    </p>
-                    <p className="mt-0.5 text-sm text-emerald-700">
-                      P&L, Balance Sheet, Cash Flow and EBITDA are all populated
-                      from the generated data.
-                    </p>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      id="btn-export-data"
-                      onClick={handleExportData}
-                      disabled={exporting}
-                      className="flex items-center gap-2 rounded-xl border border-emerald-600 bg-white px-4 py-2.5 text-sm font-semibold text-emerald-600 hover:bg-emerald-50 disabled:opacity-50"
-                    >
-                      {exporting ? (
-                        <>
-                          <Loader2 size={14} className="animate-spin" />
-                          Exporting…
-                        </>
-                      ) : (
-                        <>
-                          <FileText size={14} />
-                          Export Data
-                        </>
-                      )}
-                    </button>
-                    <button
-                      id="btn-open-reports"
-                      onClick={() =>
-                        navigate(`/broker/client/${clientId}/reports`)
-                      }
-                      className="flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700"
-                    >
-                      Open Reports <ExternalLink size={14} />
-                    </button>
-                  </div>
+            {(isDone || hasSyncedData) && !generating && (
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-emerald-200 bg-emerald-50/60 px-5 py-4">
+                <div>
+                  <p className="text-sm font-bold text-emerald-800">
+                    Reports are ready
+                  </p>
+                  <p className="mt-0.5 text-sm text-emerald-700">
+                    P&L, Balance Sheet, Cash Flow and EBITDA are all populated
+                    from the generated data.
+                  </p>
                 </div>
-              )
-            }
-
-            {/* ── Collapsible COA editor ─────────────────────────────────── */}
-            {
-              hasSyncedData && !generating && (
-                <div className="mt-4">
+                <div className="flex flex-wrap items-center gap-2">
                   <button
-                    onClick={() => setShowCoa((v) => !v)}
-                    className="flex w-full items-center justify-between rounded-2xl border border-border bg-white px-5 py-3.5 text-left transition hover:bg-bg-page"
+                    id="btn-export-data"
+                    onClick={handleExportData}
+                    disabled={exporting}
+                    className="flex items-center gap-2 rounded-xl border border-emerald-600 bg-white px-4 py-2.5 text-sm font-semibold text-emerald-600 hover:bg-emerald-50 disabled:opacity-50"
                   >
-                    <div className="flex items-center gap-2">
-                      <ArrowRight size={14} className="text-primary" />
-                      <span className="text-sm font-semibold text-text-primary">
-                        Edit Chart of Accounts
-                      </span>
-                      <span className="text-xs text-text-muted">
-                        — optional: review and adjust account classifications
-                      </span>
-                    </div>
-                    {showCoa ? (
-                      <ChevronUp size={16} className="text-text-muted" />
+                    {exporting ? (
+                      <>
+                        <Loader2 size={14} className="animate-spin" />
+                        Exporting…
+                      </>
                     ) : (
-                      <ChevronDown size={16} className="text-text-muted" />
+                      <>
+                        <FileText size={14} />
+                        Export Data
+                      </>
                     )}
                   </button>
-
-                  {showCoa && (
-                    <div className="mt-2">
-                      <ChartOfAccountsGrid
-                        versionId={selectedVersionId}
-                        hasSyncedData={hasSyncedData}
-                        notify={notify}
-                      />
-                    </div>
-                  )}
+                  <button
+                    id="btn-open-reports"
+                    onClick={() =>
+                      navigate(`/broker/client/${clientId}/reports`)
+                    }
+                    className="flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700"
+                  >
+                    Open Reports <ExternalLink size={14} />
+                  </button>
                 </div>
-              )
-            }
-          </section >
-        </div >
+              </div>
+            )}
+
+            {/* ── Collapsible COA editor ─────────────────────────────────── */}
+            {hasSyncedData && !generating && (
+              <div className="mt-4">
+                <button
+                  onClick={() => setShowCoa((v) => !v)}
+                  className="flex w-full items-center justify-between rounded-2xl border border-border bg-white px-5 py-3.5 text-left transition hover:bg-bg-page"
+                >
+                  <div className="flex items-center gap-2">
+                    <ArrowRight size={14} className="text-primary" />
+                    <span className="text-sm font-semibold text-text-primary">
+                      Edit Chart of Accounts
+                    </span>
+                    <span className="text-xs text-text-muted">
+                      — optional: review and adjust account classifications
+                    </span>
+                  </div>
+                  {showCoa ? (
+                    <ChevronUp size={16} className="text-text-muted" />
+                  ) : (
+                    <ChevronDown size={16} className="text-text-muted" />
+                  )}
+                </button>
+
+                {showCoa && (
+                  <div className="mt-2">
+                    <ChartOfAccountsGrid
+                      versionId={selectedVersionId}
+                      hasSyncedData={hasSyncedData}
+                      notify={notify}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
+        </div>
       )}
-    </div >
+    </div>
   );
 }
