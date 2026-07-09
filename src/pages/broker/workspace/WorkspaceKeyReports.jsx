@@ -73,6 +73,7 @@ import {
   setKeyReportPopupPreference,
   setSelectedReportSource,
   exportKeyReportData,
+  exportKeyReportData,
 } from "../../../lib/api";
 import {
   subscribeGeneration,
@@ -254,7 +255,9 @@ export default function WorkspaceKeyReports() {
   // ── COA editor visibility (collapsible below Validation Dashboard) ────────
   const [showCoa, setShowCoa] = useState(false);
 
-  // ── Notification helper ───────────────────────────────────────────────────
+  // ── Export data state ─────────────────────────────────────────────────────
+  const [exporting, setExporting] = useState(false);
+
   // ── Notification helper ───────────────────────────────────────────────────
   const notify = useCallback(
     (msg, type = "info") => {
@@ -526,6 +529,20 @@ export default function WorkspaceKeyReports() {
   // ── Education popup ───────────────────────────────────────────────────────
   const dismissPopupForever = () => {
     setKeyReportPopupPreference(true).catch(() => { });
+  };
+
+  // ── Export data ────────────────────────────────────────────────────────────
+  const handleExportData = async () => {
+    if (!selectedVersionId) return;
+    setExporting(true);
+    try {
+      await exportKeyReportData(selectedVersionId);
+      notify("Data exported successfully.", "success");
+    } catch (e) {
+      notify(e.message || "Failed to export data.", "error");
+    } finally {
+      setExporting(false);
+    }
   };
 
   // ── Render states ─────────────────────────────────────────────────────────
@@ -863,15 +880,35 @@ export default function WorkspaceKeyReports() {
                               from the generated data.
                             </p>
                           </div>
-                          <button
-                            id="btn-open-reports"
-                            onClick={() =>
-                              navigate(`/broker/client/${clientId}/reports`)
-                            }
-                            className="flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700"
-                          >
-                            Open Reports <ExternalLink size={14} />
-                          </button>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              id="btn-export-data"
+                              onClick={handleExportData}
+                              disabled={exporting}
+                              className="flex items-center gap-2 rounded-xl border border-emerald-600 bg-white px-4 py-2.5 text-sm font-semibold text-emerald-600 hover:bg-emerald-50 disabled:opacity-50"
+                            >
+                              {exporting ? (
+                                <>
+                                  <Loader2 size={14} className="animate-spin" />
+                                  Exporting…
+                                </>
+                              ) : (
+                                <>
+                                  <FileText size={14} />
+                                  Export Data
+                                </>
+                              )}
+                            </button>
+                            <button
+                              id="btn-open-reports"
+                              onClick={() =>
+                                navigate(`/broker/client/${clientId}/reports`)
+                              }
+                              className="flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700"
+                            >
+                              Open Reports <ExternalLink size={14} />
+                            </button>
+                          </div>
                         </div>
                       )}
 
