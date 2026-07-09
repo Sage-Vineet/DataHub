@@ -8,6 +8,13 @@ const chartOfAccountsService = require("../services/chartOfAccountsService");
 const keyReportReportService = require("../services/keyReports/keyReportReportService");
 const { generateFinancialStatements } = require("../services/keyReports/financialStatementService");
 const { normalizeError, isConnectionError } = require("../utils/dbErrorHandler");
+// Reconciliation extraction helpers — used to pre-warm the Bank & Tax
+// Reconciliation caches immediately after a version is generated, so those pages
+// load instantly (cache hit) instead of running a multi-minute live extraction on
+// first visit. These are the SAME functions (and cache keys) the pages use.
+const { runBankExtraction, runBsBankBalancesExtraction } = require("./quickbooks/reconciliation/bankVsBooks");
+const { runTaxExtraction } = require("./manualReportUploads");
+const { MANUAL_REPORT_UPLOAD_SOURCE } = require("../services/manualReportUploadService");
 
 const router = express.Router();
 router.use(requireAuth);
@@ -224,13 +231,57 @@ router.delete("/key-reports/mappings/:mappingId", async (req, res) => {
   }
 });
 
+// Pre-warm the Bank & Tax Reconciliation caches for a freshly generated version.
+//
+// Generate extracts the linked bank/tax files into the entry tables, but the
+// Bank/Tax Reconciliation pages run their OWN (summary-level) Gemini extraction,
+// cached lazily on first page visit — which is why that first visit took minutes.
+// Here we run that same extraction now, using the identical functions and
+// cache-key path the pages use, so by the time Generate reports success the pages
+// are a guaranteed cache hit and load instantly.
+//
+// Fully non-fatal: every branch is settled and swallowed, so a warm-up failure
+// never fails the generate — the page simply falls back to its lazy extraction.
+async function warmReconciliationCaches(companyId, versionId) {
+  if (!companyId || !versionId) return;
+  try {
+    const results = await Promise.allSettled([
+      // Bank statement summary (report_type "bank_reconciliation_kr_v2")
+      runBankExtraction(companyId, MANUAL_REPORT_UPLOAD_SOURCE, "Manual Upload Source", null, versionId),
+      // Balance-Sheet bank balances (report_type "bs_bank_balances_cache_v2")
+      runBsBankBalancesExtraction(companyId, MANUAL_REPORT_UPLOAD_SOURCE, "Manual Upload Source", null, null, versionId),
+      // Tax return summary (report_type "tax_return_kr_v2")
+      runTaxExtraction(companyId, { keyReportVersionId: versionId }),
+    ]);
+    const labels = ["bank", "bs-bank-balances", "tax"];
+    results.forEach((r, i) => {
+      if (r.status === "rejected") {
+        console.warn(`[KeyReports] Reconciliation warm-up (${labels[i]}) failed (non-fatal): ${r.reason?.message || r.reason}`);
+      }
+    });
+    console.log(`[KeyReports] Reconciliation caches warmed for version ${versionId} (company ${companyId}).`);
+  } catch (err) {
+    // Defensive: allSettled shouldn't throw, but never let warm-up break generate.
+    console.warn(`[KeyReports] Reconciliation warm-up error (non-fatal): ${err?.message || err}`);
+  }
+}
+
 // ---- Sync ------------------------------------------------------------------
 
 router.post("/key-reports/versions/:versionId/sync", async (req, res) => {
   try {
     const version = await loadVersionWithAccess(req, res);
     if (!version) return;
-    const result = await keyReportService.syncVersion(version.id, req.user?.id);
+    // Run the sync pipeline AND warm the Bank/Tax Reconciliation caches
+    // concurrently. Warm-up reads the raw linked files (independent of the
+    // pipeline's generated tables), so it overlaps the pipeline and adds ~no
+    // wall-clock — yet the reconciliation pages are a guaranteed cache hit
+    // (instant) once this returns instead of running a multi-minute extraction on
+    // first visit. Warm-up is fully non-fatal (see warmReconciliationCaches).
+    const [result] = await Promise.all([
+      keyReportService.syncVersion(version.id, req.user?.id),
+      warmReconciliationCaches(version.companyId, version.id),
+    ]);
     return res.json({ success: true, ...result });
   } catch (error) {
     return handleError(res, error, "POST sync");
@@ -247,7 +298,16 @@ router.post("/key-reports/versions/:versionId/generate", async (req, res) => {
   try {
     const version = await loadVersionWithAccess(req, res);
     if (!version) return;
-    const result = await keyReportService.syncVersion(version.id, req.user?.id);
+    // Run the sync pipeline AND warm the Bank/Tax Reconciliation caches
+    // concurrently. Warm-up reads the raw linked files (independent of the
+    // pipeline's generated tables), so it overlaps the pipeline and adds ~no
+    // wall-clock — yet the reconciliation pages are a guaranteed cache hit
+    // (instant) once this returns instead of running a multi-minute extraction on
+    // first visit. Warm-up is fully non-fatal (see warmReconciliationCaches).
+    const [result] = await Promise.all([
+      keyReportService.syncVersion(version.id, req.user?.id),
+      warmReconciliationCaches(version.companyId, version.id),
+    ]);
     return res.json({ success: true, ...result });
   } catch (error) {
     return handleError(res, error, "POST generate");
