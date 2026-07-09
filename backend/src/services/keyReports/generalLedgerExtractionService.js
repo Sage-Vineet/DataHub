@@ -278,14 +278,16 @@ class GeneralLedgerExtractionService extends ExtractionServiceBase {
       }
 
       // ── ACCOUNT HEADER ───────────────────────────────────────────────────────
+      // Account headers (e.g., "Business Checking", "Business Money Market") are
+      // used ONLY to set the currentAccountSection for subsequent transactions.
+      // They are NOT saved to the database—only the section name is retained for
+      // context. This prevents hundreds of non-transaction rows from cluttering
+      // the general_ledger_entries table.
       if (firstCell) {
         currentAccountSection = firstCell;
-        rows.push({
-          row_type: 'ACCOUNT_HEADER', row_number: excelRowNum,
-          account_name: firstCell, account_section: firstCell,
-          description: null, running_balance: null,
-          fiscal_year: currentFiscalYear, transaction_date: null, raw_row_json: rawRowJson,
-        });
+        // DO NOT PUSH ACCOUNT_HEADER to rows — it's not a transaction.
+        // The currentAccountSection will be used as account_section for
+        // subsequent transaction rows.
       }
     }
 
