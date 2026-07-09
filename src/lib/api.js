@@ -245,8 +245,12 @@ export function getCimBankReconciliationRequest({
   if (datasetVersion) params.append('datasetVersion', String(datasetVersion));
   if (keyReportVersionId) params.append('keyReportVersionId', String(keyReportVersionId));
   if (sourceKey) params.append('source', sourceKey);
-  if (sourceKey === 'quickbooks') return request(`/qb-bank-activity/saved?${params}`);
-  if (sourceKey === 'manual_upload') return request(`/manual-upload/bank-data?${params}`);
+  if (sourceKey === 'quickbooks' || sourceKey === 'quickbooks_online') {
+    return request(`/qb-bank-activity/saved?${params}`);
+  }
+  if (sourceKey === 'manual_upload' || sourceKey === 'manual_upload_excel_pdf') {
+    return request(`/manual-upload/bank-data?${params}`);
+  }
   if (sourceKey === 'quickbooks_manual') return request(`/manual-report-uploads/qms-bank-data?${params}`);
   return request(`/extract-bank-pdf-records?${params}`);
 }
@@ -257,7 +261,8 @@ export function getCimTaxReconciliationRequest({ clientId, sourceKey, datasetVer
   if (datasetVersion) params.append('datasetVersion', String(datasetVersion));
   if (keyReportVersionId) params.append('keyReportVersionId', String(keyReportVersionId));
   if (year) params.append('start_date', `${year}-01-01`);
-  return request(`${sourceKey === 'quickbooks' ? '/tax-data' : '/manual-report-uploads/tax-data'}?${params}`);
+  const isQuickBooks = sourceKey === 'quickbooks' || sourceKey === 'quickbooks_online';
+  return request(`${isQuickBooks ? '/tax-data' : '/manual-report-uploads/tax-data'}?${params}`);
 }
 
 export function brokerSignupRequest(payload) {
@@ -499,6 +504,28 @@ export function saveCimQuestionnaireRequest(state, options = {}) {
     method: 'PUT',
     body: { state },
   });
+}
+
+export function getCimReviewRequest(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/cim-review${query}`, options);
+}
+
+export function saveCimReviewRequest(state, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/cim-review${query}`, {
+    ...options,
+    method: 'PUT',
+    body: { state },
+  });
+}
+
+export function getCimReviewContentRequest(options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
+  return request(`/cim-review/content${query}`, options);
 }
 
 export async function uploadFile(file, options = {}) {
@@ -1518,6 +1545,56 @@ export function getKeyReportPopupPreference() {
 
 export function setKeyReportPopupPreference(dismissed) {
   return request('/key-reports/popup-preference', { method: 'PUT', body: { dismissed } });
+}
+
+export async function exportKeyReportData(versionId) {
+  if (!versionId) {
+    throw new Error('versionId is required');
+  }
+
+  const token = getStoredToken();
+  const clientId = resolveClientIdFromLocation();
+  const headers = {
+    'Cache-Control': 'no-store',
+    ...(clientId ? { 'X-Client-Id': clientId } : {}),
+  };
+
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  const url = buildUrl(`/key-reports/versions/${versionId}/export`);
+  const response = await fetch(url, {
+    method: 'GET',
+    headers,
+    credentials: 'omit',
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    throw new Error(text || `Export failed: ${response.status}`);
+  }
+
+  // Get filename from Content-Disposition header
+  const contentDisposition = response.headers.get('Content-Disposition');
+  let fileName = 'KeyReports_Data.xlsx';
+  if (contentDisposition) {
+    const match = contentDisposition.match(/filename="([^"]+)"/);
+    if (match) fileName = match[1];
+  }
+
+  const blob = await response.blob();
+
+  // Trigger download
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(link.href);
+
+  return { success: true, fileName };
 }
 
 // ---- Chart of Accounts -----------------------------------------------------

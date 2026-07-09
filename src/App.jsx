@@ -32,6 +32,7 @@ import ClientConnections from "./pages/client/Connections";
 import ClientMessages from "./pages/client/Messages";
 import ClientProfile from "./pages/client/Profile";
 import ClientCimQuestionnaire from "./pages/client/CimQuestionnaire";
+import ClientCimReview from "./pages/client/CimReview";
 import UserPortalDashboard from "./pages/user/PortalDashboard";
 import UserCompanyDetails from "./pages/user/CompanyDetails";
 import UserDocuments from "./pages/user/Documents";
@@ -425,6 +426,14 @@ function AppRoutes() {
         element={
           <ProtectedRoute allowedRole="client">
             <ClientCimQuestionnaire />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/client/cim-review"
+        element={
+          <ProtectedRoute allowedRole="client">
+            <ClientCimReview />
           </ProtectedRoute>
         }
       />
