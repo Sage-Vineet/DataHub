@@ -874,6 +874,207 @@ function enrichTaxYears(taxYears) {
   return enriched;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Reusable core for Tax Reconciliation data.
+//
+// Resolves the tax return(s) linked in the SELECTED Key Reports version, serves
+// from the version-aware cache when warm, otherwise Gemini-extracts and caches
+// (keyed by the linked-document signature). Returns the response body object; the
+// route forwards it verbatim, and the Generate flow calls it to PRE-WARM the
+// cache so the Tax Reconciliation page loads instantly instead of running a
+// multi-minute live extraction on first visit.
+// ─────────────────────────────────────────────────────────────────────────────
+async function runTaxExtraction(clientId, { datasetVersion = null, keyReportVersionId = null, forceRefresh = false } = {}) {
+  // Centralised resolver: one call yields the selected version's full document
+  // context; the tax_return field is the source set for this reconciliation. An
+  // explicit Key Reports versionId takes priority over the dataset version.
+  const { versionId, taxReturn: linkedDocs } = await keyReportService.getVersionReportContext(
+    clientId,
+    { datasetVersion, versionId: keyReportVersionId },
+  );
+  const documentSignature = linkedDocs.map((d) => d.id).filter(Boolean).sort().join(",");
+
+  if (!linkedDocs.length) {
+    // Fall back to tax return data synced via the connection page (Sync All).
+    // Both manual_upload and quickbooks_manual sync tax returns with
+    // source=MANUAL_REPORT_UPLOAD_SOURCE and report_type="tax_return".
+    const { data: synced } = await supabase
+      .from("qb_synced_reports")
+      .select("data, updated_at")
+      .eq("company_id", clientId)
+      .eq("source", MANUAL_REPORT_UPLOAD_SOURCE)
+      .eq("report_type", STATEMENT_TYPES.TAX_RETURN)
+      .order("updated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const taxYears = synced?.data?.tax_return?.taxYears;
+    if (taxYears && Object.keys(taxYears).length > 0) {
+      console.log(`[TaxData] No KR mapping — using connection-page synced tax data for ${clientId} (${Object.keys(taxYears).length} year(s))`);
+      return {
+        success: true,
+        years: enrichTaxYears(taxYears),
+        source: "synced",
+        updatedAt: synced.updated_at,
+      };
+    }
+    return {
+      success: true,
+      years: {},
+      source: "empty",
+      warning: "No tax return data found. Upload tax return PDFs via the Connections page and sync, or link a Tax Return in Key Reports.",
+    };
+  }
+
+  // ── Fast path: version-aware Key Reports cache (persistent per document set)
+  //    Each version's linked docs produce a distinct signature and its own cache
+  //    row, so switching versions reuses that version's cache instead of
+  //    re-extracting via Gemini.
+  const { data: storedRows } = await supabase
+    .from("qb_synced_reports")
+    .select("data, updated_at")
+    .eq("company_id", clientId)
+    .eq("report_type", TAX_RETURN_KR_CACHE_TYPE)
+    .eq("source", MANUAL_REPORT_UPLOAD_SOURCE)
+    .order("updated_at", { ascending: false });
+  const stored = (storedRows || []).find(
+    (r) => r?.data?.tax_return?.documentSignature === documentSignature,
+  );
+
+  if (
+    !forceRefresh &&
+    stored?.data?.tax_return?.taxYears &&
+    Object.keys(stored.data.tax_return.taxYears).length > 0
+  ) {
+    console.log(`[TaxData] Serving ${Object.keys(stored.data.tax_return.taxYears).length} year(s) from KR cache (version=${versionId})`);
+    return {
+      success: true,
+      years: enrichTaxYears(stored.data.tax_return.taxYears),
+      source: "db_cache",
+      updatedAt: stored.updated_at,
+    };
+  }
+
+  if (forceRefresh) {
+    console.log(`[TaxData] force=1 — clearing in-memory cache for fresh extraction`);
+    clearTaxExtractCache();
+  }
+
+  // ── Real-time extraction over the Key Reports-linked documents ─────────
+  const documents = linkedDocs;
+  console.log(`[TaxData] Realtime extraction over ${documents.length} Key Reports-linked tax return document(s) (version=${versionId})`);
+  documents.forEach((d) => console.log(`  "${d.name}" upload_id=${d.upload_id} file_url=${d.file_url}`));
+
+  const years = {};
+  const warnings = [];
+
+  const settlements = await Promise.allSettled(
+    documents.map(async (doc) => {
+      const fileName = String(doc.name || "");
+      let uploadId = doc.upload_id || null;
+      let uploadData = null;
+
+      if (uploadId) {
+        const { data: up } = await supabase.from("uploads")
+          .select("id, data, file_name, content_type").eq("id", uploadId).maybeSingle();
+        if (up?.data) uploadData = up;
+      }
+      if (!uploadData && doc.file_url) {
+        const m = String(doc.file_url).match(/\/uploads\/([0-9a-f-]{36})\/content/i);
+        if (m) {
+          uploadId = m[1];
+          const { data: up } = await supabase.from("uploads")
+            .select("id, data, file_name, content_type").eq("id", uploadId).maybeSingle();
+          if (up?.data) uploadData = up;
+        }
+      }
+
+      if (!uploadData?.data) {
+        console.warn(`[TaxData] No binary for "${fileName}"`);
+        return null;
+      }
+
+      const storedName = String(uploadData.file_name || fileName).toLowerCase();
+      const ct = String(uploadData.content_type || "").toLowerCase();
+      if (!storedName.endsWith(".pdf") && !ct.includes("pdf") && !fileName.toLowerCase().endsWith(".pdf")) {
+        console.log(`[TaxData] Skipping non-PDF "${fileName}"`);
+        return null;
+      }
+
+      const buffer = normalizeUploadBinary(uploadData.data);
+      if (!buffer?.length) { console.warn(`[TaxData] Empty buffer for "${fileName}"`); return null; }
+
+      console.log(`[TaxData] Sending "${fileName}" (${buffer.length} bytes) to Gemini...`);
+      const cacheKey = `tax_rt_${clientId}_${uploadId}`;
+      const { extracted, status } = await extractTaxDataWithVerification(buffer, cacheKey);
+      return { extracted, fileName, status };
+    })
+  );
+
+  for (const s of settlements) {
+    if (s.status === "fulfilled" && s.value?.extracted?.year) {
+      const { extracted, fileName, status } = s.value;
+      const year = Number(extracted.year);
+      years[year] = { year, fileName, status: status || "Needs Review", data: buildTaxReturnResponseData(extracted) };
+      console.log(`[TaxData] year=${year} status=${status} from "${fileName}"`);
+    } else if (s.status === "rejected") {
+      const msg = s.reason?.message || String(s.reason);
+      warnings.push(`Extraction failed: ${msg}`);
+      console.warn(`[TaxData] ${msg}`);
+    }
+  }
+
+  // Persist a version-aware cache so subsequent loads of the same version are
+  // instant. Persistent PER document set: update this version's row if present,
+  // otherwise insert — other versions' cache rows are left intact so switching
+  // back to them stays a cache hit (no re-extraction).
+  if (Object.keys(years).length > 0) {
+    const now = new Date().toISOString();
+    const payload = { tax_return: { taxYears: years, documentSignature } };
+    try {
+      const { data: existingRows } = await supabase
+        .from("qb_synced_reports")
+        .select("id, data")
+        .eq("company_id", clientId)
+        .eq("report_type", TAX_RETURN_KR_CACHE_TYPE)
+        .eq("source", MANUAL_REPORT_UPLOAD_SOURCE);
+      const existing = (existingRows || []).find(
+        (r) => r?.data?.tax_return?.documentSignature === documentSignature,
+      );
+      if (existing?.id) {
+        await supabase
+          .from("qb_synced_reports")
+          .update({ data: payload, status: "synced", last_synced_at: now, updated_at: now })
+          .eq("id", existing.id);
+      } else {
+        await supabase.from("qb_synced_reports").insert({
+          company_id: clientId,
+          report_type: TAX_RETURN_KR_CACHE_TYPE,
+          source: MANUAL_REPORT_UPLOAD_SOURCE,
+          data: payload,
+          status: "synced",
+          last_synced_at: now,
+          updated_at: now,
+        });
+      }
+    } catch (cacheErr) {
+      console.warn(`[TaxData] KR cache write failed (non-fatal): ${cacheErr.message}`);
+    }
+  }
+
+  return {
+    success: true,
+    years,
+    source: "realtime",
+    documentCount: documents.length,
+    warnings: warnings.length ? warnings : undefined,
+  };
+}
+
+/* ===========================
+   GET /manual-report-uploads/tax-data
+   Returns multi-year tax return data for the selected Key Reports version.
+   Thin wrapper around runTaxExtraction (shared with the Generate warm-up path).
+=========================== */
 router.get("/manual-report-uploads/tax-data", async (req, res) => {
   try {
     const clientId = resolveClientId(req);
@@ -886,191 +1087,10 @@ router.get("/manual-report-uploads/tax-data", async (req, res) => {
     //    refreshes it.
     const datasetVersion = String(req.query.datasetVersion || "").trim() || null;
     const keyReportVersionId = String(req.query.keyReportVersionId || "").trim() || null;
-    // Centralised resolver: one call yields the selected version's full document
-    // context; the tax_return field is the source set for this reconciliation. An
-    // explicit Key Reports versionId takes priority over the dataset version.
-    const { versionId, taxReturn: linkedDocs } = await keyReportService.getVersionReportContext(
-      clientId,
-      { datasetVersion, versionId: keyReportVersionId },
-    );
-    const documentSignature = linkedDocs.map((d) => d.id).filter(Boolean).sort().join(",");
-
-    if (!linkedDocs.length) {
-      // Fall back to tax return data synced via the connection page (Sync All).
-      // Both manual_upload and quickbooks_manual sync tax returns with
-      // source=MANUAL_REPORT_UPLOAD_SOURCE and report_type="tax_return".
-      const { data: synced } = await supabase
-        .from("qb_synced_reports")
-        .select("data, updated_at")
-        .eq("company_id", clientId)
-        .eq("source", MANUAL_REPORT_UPLOAD_SOURCE)
-        .eq("report_type", STATEMENT_TYPES.TAX_RETURN)
-        .order("updated_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      const taxYears = synced?.data?.tax_return?.taxYears;
-      if (taxYears && Object.keys(taxYears).length > 0) {
-        console.log(`[TaxData] No KR mapping — using connection-page synced tax data for ${clientId} (${Object.keys(taxYears).length} year(s))`);
-        return res.json({
-          success: true,
-          years: enrichTaxYears(taxYears),
-          source: "synced",
-          updatedAt: synced.updated_at,
-        });
-      }
-      return res.json({
-        success: true,
-        years: {},
-        source: "empty",
-        warning: "No tax return data found. Upload tax return PDFs via the Connections page and sync, or link a Tax Return in Key Reports.",
-      });
-    }
-
     const forceRefresh = req.query.force === "1" || req.query.force === "true";
 
-    // ── Fast path: version-aware Key Reports cache (persistent per document set)
-    //    Each version's linked docs produce a distinct signature and its own cache
-    //    row, so switching versions reuses that version's cache instead of
-    //    re-extracting via Gemini.
-    const { data: storedRows } = await supabase
-      .from("qb_synced_reports")
-      .select("data, updated_at")
-      .eq("company_id", clientId)
-      .eq("report_type", TAX_RETURN_KR_CACHE_TYPE)
-      .eq("source", MANUAL_REPORT_UPLOAD_SOURCE)
-      .order("updated_at", { ascending: false });
-    const stored = (storedRows || []).find(
-      (r) => r?.data?.tax_return?.documentSignature === documentSignature,
-    );
-
-    if (
-      !forceRefresh &&
-      stored?.data?.tax_return?.taxYears &&
-      Object.keys(stored.data.tax_return.taxYears).length > 0
-    ) {
-      console.log(`[TaxData] Serving ${Object.keys(stored.data.tax_return.taxYears).length} year(s) from KR cache (version=${versionId})`);
-      return res.json({
-        success: true,
-        years: enrichTaxYears(stored.data.tax_return.taxYears),
-        source: "db_cache",
-        updatedAt: stored.updated_at,
-      });
-    }
-
-    if (forceRefresh) {
-      console.log(`[TaxData] force=1 — clearing in-memory cache for fresh extraction`);
-      clearTaxExtractCache();
-    }
-
-    // ── Real-time extraction over the Key Reports-linked documents ─────────
-    const documents = linkedDocs;
-    console.log(`[TaxData] Realtime extraction over ${documents.length} Key Reports-linked tax return document(s) (version=${versionId})`);
-    documents.forEach((d) => console.log(`  "${d.name}" upload_id=${d.upload_id} file_url=${d.file_url}`));
-
-    const years = {};
-    const warnings = [];
-
-    const settlements = await Promise.allSettled(
-      documents.map(async (doc) => {
-        const fileName = String(doc.name || "");
-        let uploadId = doc.upload_id || null;
-        let uploadData = null;
-
-        if (uploadId) {
-          const { data: up } = await supabase.from("uploads")
-            .select("id, data, file_name, content_type").eq("id", uploadId).maybeSingle();
-          if (up?.data) uploadData = up;
-        }
-        if (!uploadData && doc.file_url) {
-          const m = String(doc.file_url).match(/\/uploads\/([0-9a-f-]{36})\/content/i);
-          if (m) {
-            uploadId = m[1];
-            const { data: up } = await supabase.from("uploads")
-              .select("id, data, file_name, content_type").eq("id", uploadId).maybeSingle();
-            if (up?.data) uploadData = up;
-          }
-        }
-
-        if (!uploadData?.data) {
-          console.warn(`[TaxData] No binary for "${fileName}"`);
-          return null;
-        }
-
-        const storedName = String(uploadData.file_name || fileName).toLowerCase();
-        const ct = String(uploadData.content_type || "").toLowerCase();
-        if (!storedName.endsWith(".pdf") && !ct.includes("pdf") && !fileName.toLowerCase().endsWith(".pdf")) {
-          console.log(`[TaxData] Skipping non-PDF "${fileName}"`);
-          return null;
-        }
-
-        const buffer = normalizeUploadBinary(uploadData.data);
-        if (!buffer?.length) { console.warn(`[TaxData] Empty buffer for "${fileName}"`); return null; }
-
-        console.log(`[TaxData] Sending "${fileName}" (${buffer.length} bytes) to Gemini...`);
-        const cacheKey = `tax_rt_${clientId}_${uploadId}`;
-        const { extracted, status } = await extractTaxDataWithVerification(buffer, cacheKey);
-        return { extracted, fileName, status };
-      })
-    );
-
-    for (const s of settlements) {
-      if (s.status === "fulfilled" && s.value?.extracted?.year) {
-        const { extracted, fileName, status } = s.value;
-        const year = Number(extracted.year);
-        years[year] = { year, fileName, status: status || "Needs Review", data: buildTaxReturnResponseData(extracted) };
-        console.log(`[TaxData] year=${year} status=${status} from "${fileName}"`);
-      } else if (s.status === "rejected") {
-        const msg = s.reason?.message || String(s.reason);
-        warnings.push(`Extraction failed: ${msg}`);
-        console.warn(`[TaxData] ${msg}`);
-      }
-    }
-
-    // Persist a version-aware cache so subsequent loads of the same version are
-    // instant. Persistent PER document set: update this version's row if present,
-    // otherwise insert — other versions' cache rows are left intact so switching
-    // back to them stays a cache hit (no re-extraction).
-    if (Object.keys(years).length > 0) {
-      const now = new Date().toISOString();
-      const payload = { tax_return: { taxYears: years, documentSignature } };
-      try {
-        const { data: existingRows } = await supabase
-          .from("qb_synced_reports")
-          .select("id, data")
-          .eq("company_id", clientId)
-          .eq("report_type", TAX_RETURN_KR_CACHE_TYPE)
-          .eq("source", MANUAL_REPORT_UPLOAD_SOURCE);
-        const existing = (existingRows || []).find(
-          (r) => r?.data?.tax_return?.documentSignature === documentSignature,
-        );
-        if (existing?.id) {
-          await supabase
-            .from("qb_synced_reports")
-            .update({ data: payload, status: "synced", last_synced_at: now, updated_at: now })
-            .eq("id", existing.id);
-        } else {
-          await supabase.from("qb_synced_reports").insert({
-            company_id: clientId,
-            report_type: TAX_RETURN_KR_CACHE_TYPE,
-            source: MANUAL_REPORT_UPLOAD_SOURCE,
-            data: payload,
-            status: "synced",
-            last_synced_at: now,
-            updated_at: now,
-          });
-        }
-      } catch (cacheErr) {
-        console.warn(`[TaxData] KR cache write failed (non-fatal): ${cacheErr.message}`);
-      }
-    }
-
-    return res.json({
-      success: true,
-      years,
-      source: "realtime",
-      documentCount: documents.length,
-      warnings: warnings.length ? warnings : undefined,
-    });
+    const body = await runTaxExtraction(clientId, { datasetVersion, keyReportVersionId, forceRefresh });
+    return res.json(body);
   } catch (err) {
     console.error("[TaxData] Error:", err);
     return res.status(500).json({ success: false, error: err.message });
@@ -1591,3 +1611,6 @@ router.put("/manual-report-uploads/tax-reconciliation-overrides", async (req, re
 });
 
 module.exports = router;
+// Exposed for the Key Reports Generate flow to pre-warm the Tax Reconciliation
+// cache (same extraction + cache-key path the page uses).
+module.exports.runTaxExtraction = runTaxExtraction;

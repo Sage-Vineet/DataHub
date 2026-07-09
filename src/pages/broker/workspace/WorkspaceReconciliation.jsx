@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import Header from "../../../components/Header";
 
-import { getStoredToken, setSelectedReportSource, loadSavedQBBankActivityRequest } from "../../../lib/api";
+import { getStoredToken, setSelectedReportSource, loadSavedQBBankActivityRequest, getFinancialStatements } from "../../../lib/api";
+import { readCachedFinancials, writeCachedFinancials } from "../../../lib/keyReportFinancials";
 import { useDataSource } from "../../../context/DataSourceContext";
 import { useDatasetVersionStore } from "../../../store/useDatasetVersionStore";
 import {
@@ -191,6 +192,25 @@ const saveStoredReconData = (clientId, source, version, data) => {
   } catch {
     // Ignore quota/serialization issues — this is a display cache only.
   }
+};
+
+// Derive the Activity Review's monthly P&L figures — { totalIncome, totalExpenses }
+// keyed "YYYY-MM" — from a Key Reports financial-statements response. Mirrors the
+// backend's computeMonthlyPlFinancials (revenue.total → income, operatingIncome →
+// expenses) so the numbers are identical, and keys match the bank data's monthKey.
+const computePlFinancialsFromFs = (resp) => {
+  const monthly = resp?.reports?.profitAndLoss?.monthly || [];
+  const totalIncome = {};
+  const totalExpenses = {};
+  for (const e of monthly) {
+    const year = Number(e?.year);
+    const monthNum = Number(e?.monthNumber);
+    if (!Number.isInteger(year) || !(monthNum >= 1 && monthNum <= 12)) continue;
+    const key = `${year}-${String(monthNum).padStart(2, "0")}`;
+    totalIncome[key] = Number(e?.statement?.revenue?.total) || 0;
+    totalExpenses[key] = Number(e?.statement?.operatingIncome) || 0;
+  }
+  return { totalIncome, totalExpenses };
 };
 const fmtAmt = (val) => {
   if (val == null || val === 0) return "-";
@@ -1469,7 +1489,9 @@ export default function WorkspaceReconciliation() {
     }
     setIsLoadingExtractedBankPdfData(true);
     setExtractedBankPdfError("");
-    setPlFinancials(null);
+    // In Key Reports mode the P&L figures are owned by the dedicated
+    // financial-statements fetch (see effect below); don't reset/clobber them here.
+    if (!krVersionIdRef.current) setPlFinancials(null);
     setExtractedBankPdfFetchStatus({
       status: "loading",
       message: "Loading bank statement data from Manual Upload source...",
@@ -1490,8 +1512,10 @@ export default function WorkspaceReconciliation() {
       } else {
         setBsBankBalances(null);
       }
-      // Set P&L financials (Sales/Expenses per Financials for Activity Review)
-      setPlFinancials(data.plFinancials ?? null);
+      // Set P&L financials (Sales/Expenses per Financials for Activity Review).
+      // In Key Reports mode these come from the financial-statements fetch below
+      // (reliable), so only apply the bank-data-merged value outside KR mode.
+      if (!krVersionIdRef.current) setPlFinancials(data.plFinancials ?? null);
       if (data.empty) {
         setExtractedBankPdfData(null);
         setExtractedBankPdfFetchStatus({
@@ -1726,6 +1750,35 @@ export default function WorkspaceReconciliation() {
     }
     // QUICKBOOKS (QB Online) uses its own separate data flow — no action here
   }, [clientId, selectedReportSource, isSourceConfirmedByServer, reconDataVersion, kr.resolvedDatasetVersion, kr.selectedVersionId, loadExtractedBankPdfData, loadManualBankData, loadQMSBankData, loadBsBankBalances]);
+
+  // Key Reports: source the Activity Review's "Sales per Financials" /
+  // "Expenses per Financials" directly from the selected version's financial
+  // statements — the same endpoint the Reports page uses. The bank-data endpoint
+  // also computes these, but it runs the heavy generateFinancialStatements in
+  // parallel with the multi-minute bank extraction and can fail under load,
+  // leaving the rows blank. Fetching them separately here (reusing the Reports
+  // page's sessionStorage cache, invalidated on regenerate) is reliable and cheap.
+  useEffect(() => {
+    const versionId = kr.krActive ? kr.selectedVersionId : null;
+    if (!clientId || !versionId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        let resp = readCachedFinancials(clientId, versionId);
+        if (!resp) {
+          resp = await getFinancialStatements(versionId, { currency: "USD" });
+          if (resp) writeCachedFinancials(clientId, versionId, resp);
+        }
+        if (cancelled || !resp) return;
+        setPlFinancials(computePlFinancialsFromFs(resp));
+      } catch {
+        /* non-fatal — leave any existing P&L figures in place */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [clientId, kr.krActive, kr.selectedVersionId]);
 
   // Auto-restore QB Online bank activity from DB on page load.
   // Fires when the server confirms the source is QB Online and there is no

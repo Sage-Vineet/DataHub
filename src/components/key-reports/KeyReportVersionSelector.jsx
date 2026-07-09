@@ -11,8 +11,14 @@ export default function KeyReportVersionSelector({ clientId, className = "", var
     const selectVersion = useKeyReportContextStore((s) => s.selectVersion);
     const ctx = useKeyReportContextStore(useShallow(selectKeyReportContext));
 
+    // Force a fresh fetch on mount so this dropdown always reflects the latest
+    // Key Reports versions. Without `force`, the shared store caches the list per
+    // company and never refetches — so a version created/generated on the Key
+    // Reports page (e.g. Version 5) would never appear here. This selector lives
+    // only on the consumer pages (Reports / Bank & Tax Reconciliation / EBITDA),
+    // so refreshing on each visit is the correct, low-cost behavior.
     useEffect(() => {
-        if (clientId) fetchVersions(clientId);
+        if (clientId) fetchVersions(clientId, true);
     }, [clientId, fetchVersions]);
 
     if (!ctx.versions.length) return null;
