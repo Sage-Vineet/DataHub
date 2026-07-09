@@ -56,9 +56,44 @@ function parseDate(v) {
   }
   const s = String(v).trim();
   if (!s) return null;
-  // Common formats: MM/DD/YYYY, MM-DD-YYYY, YYYY-MM-DD, M/D/YY
+
+  // GL transaction dates are calendar dates, not instants in time. Parse their
+  // components directly so converting to UTC cannot move local midnight to the
+  // preceding day (for example, 2025-03-31 becoming 2025-03-30).
+  let match = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+  let year;
+  let month;
+  let day;
+  if (match) {
+    [, year, month, day] = match.map(Number);
+  } else {
+    match = s.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2}|\d{4})$/);
+    if (match) {
+      month = Number(match[1]);
+      day = Number(match[2]);
+      year = Number(match[3]);
+      if (year < 100) year += year >= 70 ? 1900 : 2000;
+    }
+  }
+
+  if (year != null) {
+    const valid = new Date(Date.UTC(year, month - 1, day));
+    if (
+      valid.getUTCFullYear() === year &&
+      valid.getUTCMonth() === month - 1 &&
+      valid.getUTCDate() === day
+    ) {
+      return `${String(year).padStart(4, '0')}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    }
+    return null;
+  }
+
+  // Last-resort support for textual Excel dates. Use local calendar components;
+  // toISOString() would apply a timezone conversion and can change the date.
   const d = new Date(s);
-  if (!isNaN(d.getTime())) return d.toISOString().split('T')[0];
+  if (!isNaN(d.getTime())) {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
   return null;
 }
 
@@ -88,6 +123,10 @@ function findColByAliases(headerRow, aliases) {
 class GeneralLedgerExtractionService extends ExtractionServiceBase {
   constructor() {
     super('general_ledger', 'general_ledger_entries');
+    // v1 cached rows may contain transaction dates shifted back by one day by
+    // the former timezone-sensitive JS parser. Force a fresh extraction so a
+    // re-sync cannot delete rows and then reinsert the stale shifted dates.
+    this.parserVersion = 'v2-date-only';
   }
 
   async extract({ fileName, fileBuffer }) {
