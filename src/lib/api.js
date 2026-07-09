@@ -1479,6 +1479,15 @@ export function syncKeyReportVersion(versionId) {
   return request(`/key-reports/versions/${versionId}/sync`, { method: 'POST', body: {} });
 }
 
+/**
+ * Single-click full workflow: AI Processing → COA → Financial Reports →
+ * Snapshots → Validation. Calls the /generate endpoint (semantic alias for
+ * /sync). Returns the same shape as syncKeyReportVersion.
+ */
+export function generateKeyReportVersion(versionId) {
+  return request(`/key-reports/versions/${versionId}/generate`, { method: 'POST', body: {} });
+}
+
 export async function getActiveKeyReportMappings() {
   const res = await getKeyReportVersions();
   const versions = res?.versions || [];
@@ -1536,6 +1545,56 @@ export function getKeyReportPopupPreference() {
 
 export function setKeyReportPopupPreference(dismissed) {
   return request('/key-reports/popup-preference', { method: 'PUT', body: { dismissed } });
+}
+
+export async function exportKeyReportData(versionId) {
+  if (!versionId) {
+    throw new Error('versionId is required');
+  }
+
+  const token = getStoredToken();
+  const clientId = resolveClientIdFromLocation();
+  const headers = {
+    'Cache-Control': 'no-store',
+    ...(clientId ? { 'X-Client-Id': clientId } : {}),
+  };
+
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  const url = buildUrl(`/key-reports/versions/${versionId}/export`);
+  const response = await fetch(url, {
+    method: 'GET',
+    headers,
+    credentials: 'omit',
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    throw new Error(text || `Export failed: ${response.status}`);
+  }
+
+  // Get filename from Content-Disposition header
+  const contentDisposition = response.headers.get('Content-Disposition');
+  let fileName = 'KeyReports_Data.xlsx';
+  if (contentDisposition) {
+    const match = contentDisposition.match(/filename="([^"]+)"/);
+    if (match) fileName = match[1];
+  }
+
+  const blob = await response.blob();
+
+  // Trigger download
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(link.href);
+
+  return { success: true, fileName };
 }
 
 // ---- Chart of Accounts -----------------------------------------------------

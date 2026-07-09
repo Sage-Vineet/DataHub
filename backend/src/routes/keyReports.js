@@ -7,6 +7,7 @@ const userPreferenceService = require("../services/userPreferenceService");
 const chartOfAccountsService = require("../services/chartOfAccountsService");
 const keyReportReportService = require("../services/keyReports/keyReportReportService");
 const { generateFinancialStatements } = require("../services/keyReports/financialStatementService");
+const { exportKeyReportData } = require("../services/keyReports/keyReportExportService");
 const { normalizeError, isConnectionError } = require("../utils/dbErrorHandler");
 
 const router = express.Router();
@@ -234,6 +235,23 @@ router.post("/key-reports/versions/:versionId/sync", async (req, res) => {
     return res.json({ success: true, ...result });
   } catch (error) {
     return handleError(res, error, "POST sync");
+  }
+});
+
+// ---- Generate (semantic alias for /sync — single-click full workflow) ------
+// Calls the identical syncVersion pipeline: AI extraction → COA → Financial
+// Reports → Snapshots → Validation. Kept as a separate route so the new UI
+// can use clean "Generate" language while the existing /sync endpoint remains
+// fully backward-compatible for any existing integrations.
+
+router.post("/key-reports/versions/:versionId/generate", async (req, res) => {
+  try {
+    const version = await loadVersionWithAccess(req, res);
+    if (!version) return;
+    const result = await keyReportService.syncVersion(version.id, req.user?.id);
+    return res.json({ success: true, ...result });
+  } catch (error) {
+    return handleError(res, error, "POST generate");
   }
 });
 
@@ -605,6 +623,26 @@ router.get("/key-reports/versions/:versionId/reports/kpi", async (req, res) => {
     return res.json({ success: true, ...result });
   } catch (error) {
     return handleError(res, error, "GET reports/kpi");
+  }
+});
+
+// ── Export Data ──────────────────────────────────────────────────────────────
+// GET /key-reports/versions/:versionId/export
+// Exports all raw synced data for the selected version as an Excel workbook
+router.get("/key-reports/versions/:versionId/export", async (req, res) => {
+  try {
+    const version = await loadVersionWithAccess(req, res);
+    if (!version) return;
+
+    const { fileName, buffer } = await exportKeyReportData(version.id);
+
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="${fileName}"`);
+    res.setHeader("Content-Length", buffer.length);
+
+    return res.send(buffer);
+  } catch (error) {
+    return handleError(res, error, "GET export");
   }
 });
 

@@ -859,7 +859,10 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
     sortCounter += 1;
     const existing        = existingByKey.get(key);
     const systemId        = systemIdByKey.get(key) || null;
-    const parentAccountId = catIdByPath.get(leafCategoryKey(leaf.levels)) || null;
+    // Only set parent_account_id if the parent category actually exists in catIdByPath.
+    // If a parent is referenced that doesn't exist, set it to null to avoid FK violation.
+    const leafCatKey = leafCategoryKey(leaf.levels);
+    const parentAccountId = (leafCatKey && catIdByPath.has(leafCatKey)) ? catIdByPath.get(leafCatKey) : null;
 
     if (!existing) {
       // Brand-new account: original = adjusted = AI result.
@@ -915,6 +918,11 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
     if (userModified) {
       // Keep the user's adjusted hierarchy + display name + level columns +
       // their existing parent_account_id. (No level/adjusted changes here.)
+      // But validate that the existing parent still exists in catIdByPath.
+      if (existing.parent_account_id && !Array.from(catIdByPath.values()).includes(existing.parent_account_id)) {
+        // Parent no longer exists; clear it to avoid FK violation
+        patch.parent_account_id = null;
+      }
     } else {
       // If we are preserving existing classification, we should also preserve existing levels and parent relationships.
       // Only set them if the existing account did not have them set.
@@ -922,8 +930,12 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
       if (hasExistingLevels) {
         // Preserve existing levels and hierarchy
         const existingLevels = columnsToLevels(existing);
+        // Validate that the existing parent_account_id still exists
+        const validParentId = (existing.parent_account_id && Array.from(catIdByPath.values()).includes(existing.parent_account_id))
+          ? existing.parent_account_id
+          : null;
         Object.assign(patch, levelsToColumns(existingLevels), {
-          parent_account_id: existing.parent_account_id,
+          parent_account_id: validParentId,
           base_account: existing.base_account || leaf.baseAccount,
           hierarchy_path: existing.hierarchy_path || leaf.hierarchyPath,
           classification_method: existing.classification_method || leaf.classificationMethod,
