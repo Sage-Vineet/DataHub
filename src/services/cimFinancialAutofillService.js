@@ -3,12 +3,15 @@ import { loadManualUploadDashboard } from "./manualUploadDashboardService";
 import { loadQMSDashboard } from "./qmsManualDashboardService";
 import { getCashflow } from "./cashflowService";
 import { getBalanceSheet } from "./balanceSheetService";
+import { getProfitAndLoss } from "./profitAndLossService";
 import {
   extractEbitdaFromManualPLRows,
   getEbitdaData,
 } from "./ebitdaService";
 import {
   calculateAdjustmentTotalsByYear,
+  filterAdjustmentsByApprovalStatus,
+  getAdjustmentYearValue,
   loadAdjustmentWorkspaceData,
 } from "./ebitdaAdjustmentService";
 import {
@@ -69,11 +72,12 @@ const CIM_AUTOFILL_CACHE_TTL_MS = 2 * 60 * 1000;
 const cimAutofillSnapshotCache = new Map();
 const cimDashboardRequestCache = new Map();
 
-function getCimAutofillCacheKey({ clientId, sourceKey, selectedDatasetVersion, dateRange }) {
+function getCimAutofillCacheKey({ clientId, sourceKey, selectedDatasetVersion, selectedReportVersionId, dateRange }) {
   return [
     clientId || "",
     sourceKey || "",
     selectedDatasetVersion || "",
+    selectedReportVersionId || "",
     dateRange?.startDate || "",
     dateRange?.endDate || "",
     dateRange?.periodType || "calendar",
@@ -175,9 +179,9 @@ function flattenMappingLedger(mappingsByCategory = {}) {
   );
 }
 
-async function loadCimSourceLedger({ sourceKey, selectedDatasetVersion }) {
+async function loadCimSourceLedger({ sourceKey, selectedDatasetVersion, selectedReportVersionId }) {
   const sourceLabel = SOURCE_LABELS[sourceKey] || "Financial reports";
-  if (sourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS) {
+  if (sourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS && !selectedReportVersionId) {
     return {
       sourceKey,
       sourceLabel,
@@ -194,9 +198,12 @@ async function loadCimSourceLedger({ sourceKey, selectedDatasetVersion }) {
   try {
     const response = await getKeyReportVersions();
     const versions = response?.versions || [];
+    const requestedReportVersionId = String(selectedReportVersionId || "").trim();
     const requestedDatasetVersion = String(selectedDatasetVersion || "").trim();
     const version = (
-      requestedDatasetVersion
+      requestedReportVersionId
+        ? versions.find((item) => String(item.id) === requestedReportVersionId)
+        : requestedDatasetVersion
         ? versions.find((item) => String(item.resolvedDatasetVersion ?? "") === requestedDatasetVersion)
         : null
     ) || versions.find((item) => item.isActive) || versions[0] || null;
@@ -235,11 +242,12 @@ async function loadCimSourceLedger({ sourceKey, selectedDatasetVersion }) {
 
     return {
       sourceKey,
-      sourceLabel,
+      sourceLabel: SOURCE_LABELS[version.resolvedBatchId ? REPORT_SOURCE_KEYS.MANUAL_GL : REPORT_SOURCE_KEYS.MANUAL_UPLOAD] || sourceLabel,
       status: synced && hasCoreReports ? "verified" : "unverified",
       verified: synced && hasCoreReports,
       versionId: version.id,
       versionName: version.versionName || `Version ${version.versionNumber || ""}`.trim(),
+      datasetVersion: version.resolvedDatasetVersion ?? selectedDatasetVersion ?? null,
       lastSyncedAt: version.lastSyncedAt || null,
       documents,
       issues,
@@ -386,8 +394,9 @@ async function getManualGlDatasetVersion(clientId, selectedDatasetVersion) {
   }
 }
 
-async function getAvailableYears({ clientId, sourceKey, selectedDatasetVersion }) {
+async function getAvailableYears({ clientId, sourceKey, selectedDatasetVersion, keyReportVersionId }) {
   const normalizedSource = normalizeReportSourceKey(sourceKey) || REPORT_SOURCE_KEYS.QUICKBOOKS;
+  if (keyReportVersionId) return [];
 
   if (normalizedSource === REPORT_SOURCE_KEYS.MANUAL_UPLOAD) {
     const dashboard = await loadCimDashboardOnce(normalizedSource, clientId);
@@ -426,7 +435,20 @@ async function loadKpisForYear({ clientId, sourceKey, sourceMode, year, datasetV
   }));
 }
 
-async function loadKpisByYear({ clientId, sourceKey, sourceMode, years, datasetVersion, periodType }) {
+async function loadKpisByYear({ clientId, sourceKey, sourceMode, years, datasetVersion, periodType, keyReportVersionId }) {
+  if (keyReportVersionId) {
+    const entries = {};
+    await Promise.all(years.map(async (year) => {
+      entries[year] = await loadKeyReportMetricsForYear({
+        year,
+        periodType,
+        keyReportVersionId,
+        sourceMode,
+      });
+    }));
+    return entries;
+  }
+
   if (sourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD || sourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) {
     const dashboard = await loadCimDashboardOnce(sourceKey, clientId);
     const reports = dashboard?._raw?.reports || {};
@@ -462,7 +484,19 @@ async function loadKpisForDateRange({
   endDate,
   fiscalYear,
   datasetVersion,
+  keyReportVersionId,
 }) {
+  if (keyReportVersionId) {
+    return loadKeyReportMetricsForYear({
+      year: fiscalYear,
+      periodType: "calendar",
+      keyReportVersionId,
+      sourceMode,
+      startDate,
+      endDate,
+    });
+  }
+
   if (sourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD) {
     return mapKpisToMetrics((await loadManualUploadDashboard(fiscalYear, { clientId })).kpis || []);
   }
@@ -476,8 +510,8 @@ async function loadKpisForDateRange({
   }));
 }
 
-async function loadUploadedEbitdaByYear({ clientId, getReports }) {
-  const result = await getReports("profit_and_loss", { clientId }).catch(() => null);
+async function loadUploadedEbitdaByYear({ clientId, getReports, keyReportVersionId }) {
+  const result = await getReports("profit_and_loss", { clientId, keyReportVersionId }).catch(() => null);
   const files = (result?.files || []).filter((file) => Array.isArray(file?.data?.rows) && file.data.rows.length);
   const fileByYear = new Map();
 
@@ -516,7 +550,25 @@ function loadCachedEbitdaWorkspaceData({ clientId, sourceKey, datasetVersion }) 
   }
 }
 
-async function loadEbitdaByYear({ clientId, sourceKey, sourceMode, years, datasetVersion, periodType }) {
+async function loadEbitdaByYear({ clientId, sourceKey, sourceMode, years, datasetVersion, periodType, keyReportVersionId }) {
+  if (keyReportVersionId) {
+    const entries = {};
+    await Promise.all(years.map(async (year) => {
+      const range = getFiscalYearRange(year, periodType);
+      try {
+        const payload = await getProfitAndLoss(range.start, range.end, "Accrual", {
+          sourceMode,
+          keyReportVersionId,
+          manualFilters: { fiscalYear: String(year), fromDate: range.start, toDate: range.end },
+        });
+        entries[year] = extractEbitdaFromManualPLRows(payload?.hierarchicalRows || payload?.rows || []);
+      } catch {
+        entries[year] = null;
+      }
+    }));
+    return entries;
+  }
+
   const cachedEntries = loadCachedEbitdaWorkspaceData({
     clientId,
     sourceKey,
@@ -569,10 +621,21 @@ async function loadEbitdaForDateRange({
   endDate,
   fiscalYear,
   datasetVersion,
+  keyReportVersionId,
 }) {
+  if (keyReportVersionId) {
+    const payload = await getProfitAndLoss(startDate, endDate, "Accrual", {
+      sourceMode,
+      keyReportVersionId,
+      manualFilters: { fiscalYear: String(fiscalYear), fromDate: startDate, toDate: endDate },
+    });
+    return extractEbitdaFromManualPLRows(payload?.hierarchicalRows || payload?.rows || []);
+  }
+
   if (sourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD || sourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) {
     const uploaded = await loadUploadedEbitdaByYear({
       clientId,
+      keyReportVersionId,
       getReports: sourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD
         ? getAllManualUploadedReports
         : getAllQMSUploadedReports,
@@ -584,32 +647,50 @@ async function loadEbitdaForDateRange({
   return getEbitdaData(startDate, endDate, "Accrual", ebitdaSourceMode || sourceMode, datasetVersion);
 }
 
+function getAdjustmentLabel(adjustment = {}) {
+  const explicitLabel = adjustment.name || adjustment.label || adjustment.typeLabel ||
+    adjustment.linkedAccountName || adjustment.accountName;
+  if (explicitLabel) return String(explicitLabel).trim();
+  return String(adjustment.typeKey || adjustment.type || "")
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase())
+    .trim();
+}
+
+function buildAdjustmentItemsByYear(adjustments = [], years = []) {
+  const approvedAdjustments = filterAdjustmentsByApprovalStatus(adjustments, "approved");
+  return Object.fromEntries((years || []).map((year) => [String(year), approvedAdjustments
+    .map((adjustment, index) => ({
+      id: adjustment.id || `${year}-adjustment-${index + 1}`,
+      label: getAdjustmentLabel(adjustment),
+      amount: getAdjustmentYearValue(adjustment, year),
+      nature: String(adjustment.nature || adjustment.description || "").trim(),
+      commentary: String(
+        adjustment.supportingExplanation || adjustment.overrideReason || adjustment.internalNotes || "",
+      ).trim(),
+    }))
+    .filter((adjustment) => adjustment.label && Math.abs(toNumber(adjustment.amount, 0)) > 0.0001)]));
+}
+
 function getLocalAdjustmentTotals(clientId, years) {
-  if (typeof window === "undefined") return { totals: {}, count: 0 };
+  if (typeof window === "undefined") return { totals: {}, count: 0, itemsByYear: {} };
   try {
     const raw = window.localStorage.getItem(`ebitda_addbacks_${clientId}`);
     const parsed = raw ? JSON.parse(raw) : null;
     const addbacks = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.addbacks) ? parsed.addbacks : [];
     const totals = {};
     const latestYear = Math.max(...years.map(Number).filter(Number.isFinite));
-    const count = addbacks.filter((addback) => {
-      const entry = addback?.values?.[latestYear] || addback?.values?.[String(latestYear)] || {};
-      const value = entry.userValue ?? entry.overrideValue ?? entry.apiValue ?? entry.value ?? 0;
-      return Math.abs(toNumber(value, 0)) > 0.0001;
-    }).length;
+    const itemsByYear = buildAdjustmentItemsByYear(addbacks, years);
+    const count = itemsByYear[String(latestYear)]?.length || 0;
 
     years.forEach((year) => {
-      totals[String(year)] = addbacks.reduce((sum, addback) => {
-        const entry = addback?.values?.[year] || addback?.values?.[String(year)] || {};
-        const value = entry.userValue ?? entry.overrideValue ?? entry.apiValue ?? entry.value ?? 0;
-        const numeric = toNumber(value, 0);
-        return sum + numeric;
-      }, 0);
+      totals[String(year)] = (itemsByYear[String(year)] || [])
+        .reduce((sum, adjustment) => sum + toNumber(adjustment.amount, 0), 0);
     });
 
-    return { totals, count };
+    return { totals, count, itemsByYear };
   } catch {
-    return { totals: {}, count: 0 };
+    return { totals: {}, count: 0, itemsByYear: {} };
   }
 }
 
@@ -622,10 +703,12 @@ async function loadAdjustmentTotals({ clientId, sourceKey, years, datasetVersion
         sourceKey,
       });
       const totals = calculateAdjustmentTotalsByYear(adjustments || [], years, "approved");
-      const count = (adjustments || []).filter((adjustment) => adjustment?.status !== "deleted").length;
-      return { totals, count };
+      const itemsByYear = buildAdjustmentItemsByYear(adjustments || [], years);
+      const latestYear = Math.max(...years.map(Number).filter(Number.isFinite));
+      const count = itemsByYear[String(latestYear)]?.length || 0;
+      return { totals, count, itemsByYear };
     } catch {
-      return { totals: {}, count: 0 };
+      return { totals: {}, count: 0, itemsByYear: {} };
     }
   }
 
@@ -650,49 +733,131 @@ function getRowName(row) {
   return String(row?.name || row?.label || row?.Header?.ColData?.[0]?.value || row?.Summary?.ColData?.[0]?.value || row?.ColData?.[0]?.value || "");
 }
 
-function getRowAmount(row) {
-  if (row?.amount !== undefined) return toNumber(row.amount, 0);
-  if (row?.value !== undefined) return toNumber(row.value, 0);
+function getRowAmount(row, year = null) {
+  if (row?.amount !== undefined) return row.amount === null || row.amount === "" ? null : toNumber(row.amount, 0);
+  if (row?.value !== undefined) return row.value === null || row.value === "" ? null : toNumber(row.value, 0);
+  if (row?.amounts && typeof row.amounts === "object") {
+    const yearKeys = year ? [String(year), `y${year}`, `FY${year}`, `FY ${year}`] : [];
+    const matchingKey = yearKeys.find((key) => Object.prototype.hasOwnProperty.call(row.amounts, key));
+    if (matchingKey) {
+      const value = row.amounts[matchingKey];
+      return value === null || value === "" ? null : toNumber(value, 0);
+    }
+    const amountValues = Object.values(row.amounts);
+    if (amountValues.length === 1) {
+      return amountValues[0] === null || amountValues[0] === "" ? null : toNumber(amountValues[0], 0);
+    }
+  }
+  if (Array.isArray(row?.colAmounts) && row.colAmounts.length) {
+    const value = row.colAmounts[row.colAmounts.length - 1];
+    return value === null || value === "" ? null : toNumber(value, 0);
+  }
   const colData = row?.Summary?.ColData || row?.ColData || [];
   for (let index = colData.length - 1; index >= 0; index -= 1) {
     if (colData[index]?.value !== undefined && colData[index].value !== "") {
       return toNumber(colData[index].value, 0);
     }
   }
-  return 0;
+  return null;
 }
 
-function findCashflowAmount(rows, matchers = []) {
+function findCashflowAmount(rows, matchers = [], year = null) {
   const normalizedMatchers = matchers.map((matcher) => String(matcher).toLowerCase());
   const flat = flattenRows(rows);
   const match = flat.find((row) => {
     const name = getRowName(row).toLowerCase();
     return normalizedMatchers.some((matcher) => name.includes(matcher));
   });
-  return match ? getRowAmount(match) : 0;
+  return match ? toNumber(getRowAmount(match, year), 0) : 0;
 }
 
-function extractCashflowMetrics(rows = []) {
+function normalizeCashflowReportRows(rows = [], year = null) {
+  const output = [];
+  const workingCapitalRows = new Map();
+
+  const walk = (items, depth = 0, parentKey = "root", inheritedSection = "") => {
+    let activeSection = inheritedSection;
+    (Array.isArray(items) ? items : []).forEach((row, index) => {
+      if (!row || typeof row !== "object") return;
+      const label = getRowName(row).trim();
+      const normalizedLabel = label.toLowerCase();
+      if (/operating activit/.test(normalizedLabel) && !normalizedLabel.startsWith("net ")) activeSection = "operating";
+      if (/investing activit/.test(normalizedLabel) && !normalizedLabel.startsWith("net ")) activeSection = "investing";
+      if (/financing activit/.test(normalizedLabel) && !normalizedLabel.startsWith("net ")) activeSection = "financing";
+      const rowKey = `${parentKey}:${label.toLowerCase().replace(/[^a-z0-9]+/g, "-") || index}`;
+      const amount = getRowAmount(row, year);
+      const isWorkingCapitalMovement = activeSection === "operating" && /^changes? in\b/i.test(label) &&
+        !/^net changes? in cash\b/i.test(label);
+
+      if (label && isWorkingCapitalMovement) {
+        const childRows = [
+          ...(Array.isArray(row.children) ? row.children : []),
+          ...(Array.isArray(row.Rows?.Row) ? row.Rows.Row : []),
+        ];
+        const childAmounts = flattenRows(childRows)
+          .map((child) => getRowAmount(child, year))
+          .filter((childAmount) => childAmount !== null);
+        const childTotal = childAmounts.reduce((sum, childAmount) => sum + Number(childAmount || 0), 0);
+        const consolidatedAmount = childAmounts.length && (amount === null || (!amount && childTotal))
+          ? childTotal
+          : amount;
+        const consolidationKey = `${parentKey}:net-working-capital`;
+        const existingIndex = workingCapitalRows.get(consolidationKey);
+        if (existingIndex === undefined) {
+          workingCapitalRows.set(consolidationKey, output.length);
+          output.push({
+            key: consolidationKey,
+            label: "Net changes in working capital",
+            type: "data",
+            depth,
+            amount: consolidatedAmount,
+          });
+        } else if (consolidatedAmount !== null) {
+          const existing = output[existingIndex];
+          existing.amount = Number(existing.amount || 0) + Number(consolidatedAmount || 0);
+        }
+      } else if (label) {
+        output.push({
+          key: rowKey,
+          label,
+          type: row.type || (/^(total\b|net cash\b|net (increase|decrease)\b|ending cash\b)/i.test(label) ? "total" : "data"),
+          depth,
+          amount,
+        });
+      }
+
+      if (!isWorkingCapitalMovement) {
+        if (Array.isArray(row.children)) walk(row.children, depth + 1, rowKey, activeSection);
+        if (Array.isArray(row.Rows?.Row)) walk(row.Rows.Row, depth + 1, rowKey, activeSection);
+      }
+    });
+  };
+
+  walk(rows);
+  return output;
+}
+
+function extractCashflowMetrics(rows = [], year = null) {
   const hasData = flattenRows(rows).length > 0;
   const cashFromOperations = findCashflowAmount(rows, [
     "cash from operations",
     "net cash from operating",
     "net cash provided by operating",
-  ]);
+  ], year);
   const cashFromInvesting = findCashflowAmount(rows, [
     "cash from investing",
     "net cash from investing",
     "capital expenditures",
-  ]);
+  ], year);
   const cashFromFinancing = findCashflowAmount(rows, [
     "cash from financing",
     "net cash from financing",
-  ]);
+  ], year);
   const netChangeInCash = findCashflowAmount(rows, [
     "net change in cash",
     "net increase",
     "net decrease",
-  ]);
+  ], year);
   const capitalExpenditures = Math.abs(findCashflowAmount(rows, [
     "capital expenditures",
     "capex",
@@ -702,36 +867,36 @@ function extractCashflowMetrics(rows = []) {
     "purchases of property",
     "property plant and equipment",
     "payments to acquire property",
-  ]));
+  ], year));
   const changeInWorkingCapital = findCashflowAmount(rows, [
     "changes in working capital",
     "change in working capital",
     "working capital changes",
-  ]);
+  ], year);
   const otherNonCashItems = findCashflowAmount(rows, [
     "other non-cash",
     "other noncash",
     "non-cash adjustments",
-  ]);
+  ], year);
   const acquisitionsDispositions = findCashflowAmount(rows, [
     "acquisitions",
     "business acquisitions",
     "purchase of business",
     "proceeds from disposition",
     "proceeds from sale of business",
-  ]);
+  ], year);
   const netBorrowingsRepayments = findCashflowAmount(rows, [
     "net borrowings",
     "borrowings repayments",
     "proceeds from debt",
     "repayment of debt",
     "repayments of debt",
-  ]);
+  ], year);
   const dividendsDistributions = findCashflowAmount(rows, [
     "dividends",
     "distributions",
     "owner distributions",
-  ]);
+  ], year);
 
   return {
     hasData,
@@ -746,6 +911,7 @@ function extractCashflowMetrics(rows = []) {
     netBorrowingsRepayments,
     dividendsDistributions,
     freeCashFlow: cashFromOperations - capitalExpenditures,
+    cashflowReportRows: normalizeCashflowReportRows(rows, year),
   };
 }
 
@@ -800,17 +966,32 @@ function extractGroupedBalanceSheetMetrics(rows = [], year) {
   const currentDebt = sumMatches([
     /current portion.*debt/, /short term debt/, /line of credit/, /credit card/, /current.*loan/,
   ]);
+  const cashAndBankBalance = sumMatches([/cash/, /bank account/, /checking/, /savings/]);
+  const accountReceivable = sumMatches([/accounts? receivable/, /trade receivable/]);
+  const inventoryValue = sumMatches([/inventory/, /stock in trade/]);
+  const accountPayable = sumMatches([/accounts? payable/, /trade payable/]);
+  const longTermDebt = sumMatches([/long term debt/, /non current.*loan/, /term loan/]);
+  const currentAssetsExact = exactTotal([/^total current assets?$/, /^current assets?$/]);
+  const currentLiabilitiesExact = exactTotal([/^total current liabilities?$/, /^current liabilities?$/]);
 
   return {
+    cashAndBankBalance,
+    accountReceivable,
+    inventoryValue,
+    accountPayable,
+    longTermDebt,
     prepaidOtherCurrent,
     ppeNet,
     intangiblesGoodwill,
     accruedLiabilities,
     deferredRevenue,
     currentDebt,
-    currentAssetsExact: exactTotal([/^total current assets?$/, /^current assets?$/]),
-    currentLiabilitiesExact: exactTotal([/^total current liabilities?$/, /^current liabilities?$/]),
+    currentAssetsExact,
+    currentLiabilitiesExact,
+    workingCapital: currentAssetsExact - currentLiabilitiesExact,
+    totalAssets: exactTotal([/^total assets?$/]),
     totalLiabilitiesExact: exactTotal([/^total liabilities$/]),
+    totalEquity: exactTotal([/^total equity$/, /^shareholders equity$/, /^stockholders equity$/]),
     totalLiabilitiesEquity: exactTotal([
       /^total liabilities and equity$/,
       /^total liabilities and shareholders equity$/,
@@ -819,8 +1000,53 @@ function extractGroupedBalanceSheetMetrics(rows = [], year) {
   };
 }
 
-async function loadBalanceSheetByYear({ sourceKey, sourceMode, years, datasetVersion, periodType }) {
-  if (sourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD || sourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) {
+async function loadKeyReportMetricsForYear({
+  year,
+  periodType,
+  keyReportVersionId,
+  sourceMode,
+  startDate,
+  endDate,
+}) {
+  const range = startDate && endDate
+    ? { start: startDate, end: endDate }
+    : getFiscalYearRange(year, periodType);
+  try {
+    const [profitLoss, balanceSheet] = await Promise.all([
+      getProfitAndLoss(range.start, range.end, "Accrual", {
+        sourceMode,
+        keyReportVersionId,
+        manualFilters: { fiscalYear: String(year), fromDate: range.start, toDate: range.end },
+      }),
+      getBalanceSheet(range.start, range.end, "Accrual", {
+        sourceMode,
+        keyReportVersionId,
+        manualFilters: { fiscalYear: String(year), fromDate: range.start, toDate: range.end },
+      }),
+    ]);
+    const profitLossRows = profitLoss?.hierarchicalRows || profitLoss?.rows || [];
+    const ebitda = extractEbitdaFromManualPLRows(profitLossRows, range.end);
+    const balance = extractGroupedBalanceSheetMetrics(balanceSheet?.rows || [], year);
+    const netProfit = toNumber(ebitda?.components?.netIncome?.value, 0);
+    const totalRevenue = toNumber(ebitda?.revenue, 0);
+    return {
+      totalRevenue,
+      totalExpenses: totalRevenue - netProfit,
+      netProfit,
+      costOfGoodsSold: toNumber(ebitda?.costOfGoodsSold, 0),
+      grossProfit: toNumber(ebitda?.grossProfit, 0),
+      ...balance,
+      totalLiabilities: balance.totalLiabilitiesExact,
+      currentAssetsApprox: balance.currentAssetsExact,
+      currentLiabilitiesApprox: balance.currentLiabilitiesExact,
+    };
+  } catch {
+    return {};
+  }
+}
+
+async function loadBalanceSheetByYear({ sourceKey, sourceMode, years, datasetVersion, periodType, keyReportVersionId }) {
+  if (!keyReportVersionId && (sourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD || sourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL)) {
     return {};
   }
 
@@ -830,6 +1056,7 @@ async function loadBalanceSheetByYear({ sourceKey, sourceMode, years, datasetVer
     try {
       const payload = await getBalanceSheet(range.start, range.end, "Accrual", {
         sourceMode,
+        keyReportVersionId,
         manualFilters: {
           fiscalYear: [String(year)],
           ...(datasetVersion ? { datasetVersion: String(datasetVersion) } : {}),
@@ -843,10 +1070,12 @@ async function loadBalanceSheetByYear({ sourceKey, sourceMode, years, datasetVer
   return entries;
 }
 
-async function loadCashflowMetricsForYear({ sourceMode, year, datasetVersion, periodType }) {
+async function loadCashflowMetricsForYear({ sourceMode, year, datasetVersion, periodType, keyReportVersionId }) {
   const range = getFiscalYearRange(year, periodType);
   const manualFilters = {
     fiscalYear: [String(year)],
+    fromDate: range.start,
+    toDate: range.end,
     ...(datasetVersion ? { datasetVersion: String(datasetVersion) } : {}),
   };
 
@@ -855,21 +1084,24 @@ async function loadCashflowMetricsForYear({ sourceMode, year, datasetVersion, pe
       sourceMode,
       manualFilters,
       year,
+      keyReportVersionId,
     });
     const rows = Array.isArray(payload)
       ? payload
       : payload?.rows || payload?.data?.rows || payload?.hierarchicalRows || [];
 
-    return extractCashflowMetrics(rows);
+    return extractCashflowMetrics(rows, year);
   } catch {
     return {};
   }
 }
 
-async function loadCashflowMetricsForDateRange({ sourceMode, startDate, endDate, fiscalYear, datasetVersion }) {
+async function loadCashflowMetricsForDateRange({ sourceMode, startDate, endDate, fiscalYear, datasetVersion, keyReportVersionId }) {
   const manualFilters = {
     ...(startDate ? { startDate } : {}),
     ...(endDate ? { endDate } : {}),
+    ...(startDate ? { fromDate: startDate } : {}),
+    ...(endDate ? { toDate: endDate } : {}),
     ...(fiscalYear ? { fiscalYear: [String(fiscalYear)] } : {}),
     ...(datasetVersion ? { datasetVersion: String(datasetVersion) } : {}),
   };
@@ -879,19 +1111,20 @@ async function loadCashflowMetricsForDateRange({ sourceMode, startDate, endDate,
       sourceMode,
       manualFilters,
       year: fiscalYear,
+      keyReportVersionId,
     });
     const rows = Array.isArray(payload)
       ? payload
       : payload?.rows || payload?.data?.rows || payload?.hierarchicalRows || [];
 
-    return extractCashflowMetrics(rows);
+    return extractCashflowMetrics(rows, fiscalYear);
   } catch {
     return {};
   }
 }
 
-async function loadUploadedCashflowByYear({ clientId, getReports }) {
-  const result = await getReports("cash_flow", { clientId }).catch(() => null);
+async function loadUploadedCashflowByYear({ clientId, getReports, keyReportVersionId }) {
+  const result = await getReports("cash_flow", { clientId, keyReportVersionId }).catch(() => null);
   const files = (result?.files || []).filter((file) => Array.isArray(file?.data?.rows) && file.data.rows.length);
   const fileByYear = new Map();
 
@@ -906,20 +1139,26 @@ async function loadUploadedCashflowByYear({ clientId, getReports }) {
 
   const entries = {};
   fileByYear.forEach((file, year) => {
-    entries[year] = extractCashflowMetrics(normalizeUploadedProfitLossRows(file));
+    entries[year] = extractCashflowMetrics(normalizeUploadedProfitLossRows(file), year);
   });
   return entries;
 }
 
-async function loadCashflowByYear({ clientId, sourceMode, years, datasetVersion, periodType }) {
-  if (sourceMode === "quickbooks_manual") {
-    return loadUploadedCashflowByYear({ clientId, getReports: getAllQMSUploadedReports });
+async function loadCashflowByYear({ clientId, sourceMode, years, datasetVersion, periodType, keyReportVersionId }) {
+  if (!keyReportVersionId && sourceMode === "quickbooks_manual") {
+    return loadUploadedCashflowByYear({ clientId, getReports: getAllQMSUploadedReports, keyReportVersionId });
   }
 
   const entries = {};
   await Promise.all(
     years.map(async (year) => {
-      entries[year] = await loadCashflowMetricsForYear({ sourceMode, year, datasetVersion, periodType });
+      entries[year] = await loadCashflowMetricsForYear({
+        sourceMode,
+        year,
+        datasetVersion,
+        periodType,
+        keyReportVersionId,
+      });
     }),
   );
   return entries;
@@ -933,10 +1172,12 @@ async function loadCashflowForDateRange({
   endDate,
   fiscalYear,
   datasetVersion,
+  keyReportVersionId,
 }) {
-  if (sourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD || sourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) {
+  if (!keyReportVersionId && (sourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD || sourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL)) {
     const uploaded = await loadUploadedCashflowByYear({
       clientId,
+      keyReportVersionId,
       getReports: sourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD
         ? getAllManualUploadedReports
         : getAllQMSUploadedReports,
@@ -950,6 +1191,7 @@ async function loadCashflowForDateRange({
     endDate,
     fiscalYear,
     datasetVersion,
+    keyReportVersionId,
   });
 }
 
@@ -982,6 +1224,11 @@ function enrichYearMetric({
   );
   const grossProfit = extractedGrossProfit || (hasGrossProfitData ? revenue - costOfGoodsSold : 0);
   const reportedOperatingExpenses = Math.abs(toNumber(ebitdaData?.opex, 0));
+  const hasOperatingExpensesData = Boolean(
+    ebitdaData?.hasOperatingExpensesData ||
+    reportedOperatingExpenses ||
+    (hasGrossProfitData && ebitdaData?.hasData),
+  );
   const operatingExpenses = reportedOperatingExpenses || (
     hasGrossProfitData && ebitdaData?.hasData
       ? Math.abs(grossProfit - baseEbitda)
@@ -994,6 +1241,12 @@ function enrichYearMetric({
   const taxes = toNumber(ebitdaData?.components?.taxes?.value, 0);
   const netProfit = toNumber(metrics.netProfit, 0) || toNumber(ebitdaData?.components?.netIncome?.value, 0);
   const da = depreciation + amortization;
+  const hasAdjustedEbitdaData = Boolean(ebitdaData?.hasData);
+  const hasDepreciationAmortizationData = Boolean(
+    ebitdaData?.hasDepreciationAmortizationData ||
+    ebitdaData?.components?.depreciation?.matchedAccounts?.length ||
+    ebitdaData?.components?.amortization?.matchedAccounts?.length,
+  );
   const ebit = adjustedEbitda - da;
   const preTaxIncome = netProfit + taxes;
   const cash = toNumber(metrics.cashAndBankBalance, 0);
@@ -1014,11 +1267,16 @@ function enrichYearMetric({
     reportedEbitdaMargin: revenue > 0 ? (baseEbitda / revenue) * 100 : 0,
     costOfGoodsSold,
     grossProfit,
+    hasGrossProfitData,
     grossMargin: revenue > 0 && hasGrossProfitData ? (grossProfit / revenue) * 100 : 0,
     operatingExpenses,
+    hasOperatingExpensesData,
     sgaExpenses: operatingExpenses,
     depreciationAmortization: da,
+    hasDepreciationAmortizationData,
+    hasAdjustedEbitdaData,
     ebit,
+    hasAdjustedEbitData: hasAdjustedEbitdaData && hasDepreciationAmortizationData,
     taxes,
     interestExpense,
     interestIncome,
@@ -1281,6 +1539,7 @@ export async function loadCimFinancialAutofillSnapshot({
   clientId,
   sourceKey,
   selectedDatasetVersion = "",
+  selectedReportVersionId = "",
   dateRange = null,
   onProgress,
 } = {}) {
@@ -1293,6 +1552,7 @@ export async function loadCimFinancialAutofillSnapshot({
     clientId,
     sourceKey: normalizedSource,
     selectedDatasetVersion,
+    selectedReportVersionId,
     dateRange,
   });
   const cached = cimAutofillSnapshotCache.get(cacheKey);
@@ -1314,12 +1574,14 @@ export async function loadCimFinancialAutofillSnapshot({
   const sourceLedgerPromise = loadCimSourceLedger({
     sourceKey: normalizedSource,
     selectedDatasetVersion: datasetVersion || selectedDatasetVersion,
+    selectedReportVersionId,
   });
   reportProgress(16, "Finding available fiscal periods");
   const availableYears = await getAvailableYears({
     clientId,
     sourceKey: normalizedSource,
     selectedDatasetVersion: datasetVersion,
+    keyReportVersionId: selectedReportVersionId,
   });
   const selectedCandidateYears = selectedFiscalYear
     ? Array.from(
@@ -1340,6 +1602,7 @@ export async function loadCimFinancialAutofillSnapshot({
     years,
     datasetVersion,
     periodType,
+    keyReportVersionId: selectedReportVersionId,
   });
   const adjustmentsPromise = loadAdjustmentTotals({
     clientId,
@@ -1347,6 +1610,7 @@ export async function loadCimFinancialAutofillSnapshot({
     years,
     datasetVersion,
     periodType,
+    keyReportVersionId: selectedReportVersionId,
   });
   const balanceSheetPromise = loadBalanceSheetByYear({
     sourceKey: normalizedSource,
@@ -1354,6 +1618,7 @@ export async function loadCimFinancialAutofillSnapshot({
     years,
     datasetVersion,
     periodType,
+    keyReportVersionId: selectedReportVersionId,
   });
   const cashflowPromise = loadCashflowByYear({
     clientId,
@@ -1361,6 +1626,7 @@ export async function loadCimFinancialAutofillSnapshot({
     years,
     datasetVersion,
     periodType,
+    keyReportVersionId: selectedReportVersionId,
   });
 
   reportProgress(24, "Reading income statements and balance sheets");
@@ -1371,6 +1637,7 @@ export async function loadCimFinancialAutofillSnapshot({
     years,
     datasetVersion,
     periodType,
+    keyReportVersionId: selectedReportVersionId,
   });
   reportProgress(42, "Cross-checking reported financial figures");
 
@@ -1394,6 +1661,7 @@ export async function loadCimFinancialAutofillSnapshot({
       endDate: selectedRange.endDate,
       fiscalYear: selectedFiscalYear,
       datasetVersion,
+      keyReportVersionId: selectedReportVersionId,
     });
   } catch {
     trailingEbitda = null;
@@ -1415,6 +1683,7 @@ export async function loadCimFinancialAutofillSnapshot({
         endDate: selectedRange.endDate,
         fiscalYear: selectedFiscalYear,
         datasetVersion,
+        keyReportVersionId: selectedReportVersionId,
       }),
       loadKpisForDateRange({
         clientId,
@@ -1424,6 +1693,7 @@ export async function loadCimFinancialAutofillSnapshot({
         endDate: selectedRange.endDate,
         fiscalYear: selectedFiscalYear,
         datasetVersion,
+        keyReportVersionId: selectedReportVersionId,
       }),
     ]);
   } catch {
@@ -1521,6 +1791,7 @@ export async function loadCimFinancialAutofillSnapshot({
       : null,
     metricsByYear: enrichedByYear,
     trailingMetrics,
+    adjustments,
     bankReconciliation: normalizeBankReconciliationSnapshot(bankPayload || {}, selectedRange?.endDate),
     taxReconciliation: normalizeTaxReconciliationSnapshot(taxPayload || {}),
     validation,

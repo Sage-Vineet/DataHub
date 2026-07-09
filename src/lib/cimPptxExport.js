@@ -1,6 +1,13 @@
 import { strToU8, zipSync } from "fflate";
 
 const EMU_PER_PX = 9525;
+// Font sizes in the layout data are authored in the same 96-DPI canvas-px unit as bbox
+// coordinates (the browser preview renders them as literal CSS px). OOXML's <a:rPr sz="">
+// is always hundredths of a POINT, never px, so every font size must go through this same
+// 96-DPI conversion (1px = 0.75pt) that toEmu() already applies to positions/sizes —
+// otherwise exported text renders ~33% larger than the preview, which is what was pushing
+// single-line titles onto a second line and overlapping the content below them.
+const PX_TO_PT = 0.75;
 const SLIDE_WIDTH_PX = 1280;
 const SLIDE_HEIGHT_PX = 720;
 const SLIDE_WIDTH_EMU = SLIDE_WIDTH_PX * EMU_PER_PX;
@@ -162,7 +169,7 @@ function getElementStyle(element) {
   const paragraphStyle = firstParagraph.resolvedTextStyle || {};
 
   return {
-    fontSize: Number(firstRun.fontSize || element.resolvedFontSize || 12),
+    fontSize: Number(firstRun.fontSize || element.resolvedFontSize || 12) * PX_TO_PT,
     typeface: firstRun.typeface || resolved.typeface || "Calibri",
     bold: Boolean(firstRun.bold || runs.some((run) => run.bold)),
     italic: Boolean(firstRun.italic),
@@ -233,10 +240,16 @@ function shapeXml(element, index, text) {
   const geometry = element.geometry === "ellipse" ? "ellipse" : "rect";
   const hasText = typeof text === "string" && text.length > 0;
   const insets = style.insets || {};
+  // Match the browser preview's text model exactly: a fixed-size box rendered at the
+  // element's literal font size, with overflow clipped rather than auto-shrunk. The
+  // previous universal normAutofit(65%) had no relationship to actual content length,
+  // so short text rendered needlessly tiny while long text still overflowed its box —
+  // producing a slide that looked structurally different from (and often overlapped
+  // relative to) the in-app preview, which never shrinks text.
   const textBody = hasText
     ? `<p:txBody>
         <a:bodyPr wrap="square" vertOverflow="clip" horzOverflow="clip" anchor="${style.vertical === "middle" ? "ctr" : style.vertical === "bottom" ? "b" : "t"}" lIns="${toEmu(insets.left)}" rIns="${toEmu(insets.right)}" tIns="${toEmu(insets.top)}" bIns="${toEmu(insets.bottom)}">
-          <a:normAutofit fontScale="65000" lnSpcReduction="20000"/>
+          <a:noAutofit/>
         </a:bodyPr>
         <a:lstStyle/>
         ${paragraphXml(text, style)}
@@ -268,11 +281,21 @@ function tableXml(element, index, text, content = {}) {
   const cols = Number(element.cols || 0);
   const matrix = content.tableMatrix || parseTableText(text || element.text, rows, cols);
   const visibleRows = content.visibleTableRows || Array.from({ length: rows }, (_, rowIndex) => rowIndex + 1);
+  const visibleColumns = content.visibleTableColumns || Array.from({ length: cols }, (_, colIndex) => colIndex + 1);
   const [sourceLeft = 0] = element.bbox || [];
   const [targetLeft = sourceLeft, targetTop = Number(element.bbox?.[1] || 0)] = content.bbox || element.bbox || [];
   const tableScaleX = Number(content.tableScaleX || 1);
+  const sourceLabelWidth = Number(
+    (element.cells || []).find((cell) => Number(cell.column || 1) === 1)?.bbox?.[2] || 0,
+  );
+  const compactValueWidth = visibleColumns.length > 1
+    ? (Number(element.bbox?.[2] || 0) - sourceLabelWidth) / (visibleColumns.length - 1)
+    : 0;
 
-  return (element.cells || []).filter((cell) => visibleRows.includes(Number(cell.row || 1))).map((cell, cellIndex) => {
+  return (element.cells || []).filter((cell) => (
+    visibleRows.includes(Number(cell.row || 1)) &&
+    visibleColumns.includes(Number(cell.column || 1))
+  )).map((cell, cellIndex) => {
     const rowIndex = Number(cell.row || 1) - 1;
     const colIndex = Number(cell.column || 1) - 1;
     const matrixValue = matrix[rowIndex]?.[colIndex];
@@ -281,12 +304,19 @@ function tableXml(element, index, text, content = {}) {
       : (matrixValue || cell.text || "");
     const [cellLeft = 0, cellTop = 0, cellWidth = 0, cellHeight = 0] = cell.bbox || [];
     const compactRowIndex = visibleRows.indexOf(Number(cell.row || 1));
+    const compactColumnIndex = visibleColumns.indexOf(Number(cell.column || 1));
     const cellElement = {
       ...cell,
       bbox: [
-        targetLeft + (cellLeft - sourceLeft) * tableScaleX,
+        content.compactTableColumns
+          ? targetLeft + (compactColumnIndex === 0
+            ? 0
+            : sourceLabelWidth + (compactColumnIndex - 1) * compactValueWidth)
+          : targetLeft + (cellLeft - sourceLeft) * tableScaleX,
         content.compactTableRows ? targetTop + compactRowIndex * cellHeight : cellTop,
-        cellWidth * tableScaleX,
+        content.compactTableColumns
+          ? (compactColumnIndex === 0 ? sourceLabelWidth : compactValueWidth)
+          : cellWidth * tableScaleX,
         cellHeight,
       ],
       aid: `${element.aid || element.id}/cell-${cell.index || cellIndex}`,
