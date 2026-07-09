@@ -220,6 +220,9 @@ export default function WorkspaceKeyReports() {
   // ── COA editor visibility (collapsible below Validation Dashboard) ────────
   const [showCoa, setShowCoa] = useState(false);
 
+  // ── Export data state ─────────────────────────────────────────────────────
+  const [exporting, setExporting] = useState(false);
+
   // ── Notification helper ───────────────────────────────────────────────────
   const notify = useCallback(
     (msg, type = "info") => {
