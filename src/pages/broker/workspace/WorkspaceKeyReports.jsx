@@ -474,6 +474,20 @@ export default function WorkspaceKeyReports() {
     }
   };
 
+  // ── Export data ────────────────────────────────────────────────────────────
+  const handleExportData = async () => {
+    if (!selectedVersionId) return;
+    setExporting(true);
+    try {
+      await exportKeyReportData(selectedVersionId);
+      notify("Data exported successfully.", "success");
+    } catch (e) {
+      notify(e.message || "Failed to export data.", "error");
+    } finally {
+      setExporting(false);
+    }
+  };
+
   // ── Render states ─────────────────────────────────────────────────────────
   const isDone = generateState.status === "done";
   const isError = generateState.status === "error";
