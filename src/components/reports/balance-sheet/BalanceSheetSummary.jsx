@@ -71,7 +71,7 @@ function BSRow({ row, isCollapsed, onToggle, columns }) {
   const [vendorsOpen, setVendorsOpen] = useState(false);
 
   const { name, amounts, depth, hasChildren, isTotal, isHeader } = row;
-  const { yearCols, changeCols } = columns;
+  const { yearCols = [], changeCols = [] } = columns || {};
   const hasVendors = !isTotal && !isHeader && Array.isArray(row.vendors) && row.vendors.length > 0;
 
   const nameLower = (name || "").toLowerCase();
