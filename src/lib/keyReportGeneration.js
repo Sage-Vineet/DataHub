@@ -118,6 +118,30 @@ export function startGeneration(clientId, versionId, versionLabel = "") {
       // Freshly synced data — drop any cached financial-statements response so
       // the Reports page refetches the new numbers instead of a stale copy.
       clearCachedFinancials(clientId, versionId);
+      // The backend returns `success: true` even when the accounting workflow was
+      // HALTED (e.g. no Opening Balance Sheet, or a required file failed to
+      // extract). In that case NO Chart of Accounts or financial reports were
+      // generated, so treating it as "done" wrongly shows "Generation Complete"
+      // while every report stays empty. Surface the halt as an error with the
+      // backend's explanation so the user knows what to fix.
+      if (res?.halted) {
+        const message =
+          res?.message ||
+          "Generation was halted: required accounting data (e.g. an Opening Balance Sheet) is missing or failed to extract. Fix the linked files and re-generate.";
+        writeState(clientId, versionId, {
+          ...identity,
+          status: "error",
+          startedAt,
+          finishedAt: new Date().toISOString(),
+          summary: res?.summary || null,
+          warnings: Array.isArray(res?.warnings) ? res.warnings : [],
+          validationResults: Array.isArray(res?.validationResults) ? res.validationResults : [],
+          error: message,
+          errorStage: "preparing",
+          notified: false,
+        });
+        return { ok: false, error: message, halted: true };
+      }
       writeState(clientId, versionId, {
         ...identity,
         status: "done",

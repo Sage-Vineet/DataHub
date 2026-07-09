@@ -267,20 +267,6 @@ async function warmReconciliationCaches(companyId, versionId) {
   }
 }
 
-// Background-warm the financial-statements RESULT cache after a generate/sync.
-// generateFinancialStatements is expensive (many GL scans); warming it now — with
-// the COA the sync just built — means the Reports page (and the Reconciliation
-// P&L fetch) hit a warm cache and load instantly instead of paying the full
-// compute on first visit. Fire-and-forget (not awaited), so it never delays the
-// generate response or risks a request timeout; skipped when the workflow halted
-// (no COA was generated). Fully non-fatal.
-function warmFinancialStatementsCache(versionId, result) {
-  if (!versionId || result?.halted) return;
-  generateFinancialStatements(versionId, { currency: "USD" })
-    .then(() => console.log(`[KeyReports] Financial-statements cache warmed for version ${versionId}.`))
-    .catch((e) => console.warn(`[KeyReports] Financial-statements cache warm failed (non-fatal): ${e?.message || e}`));
-}
-
 // ---- Sync ------------------------------------------------------------------
 
 router.post("/key-reports/versions/:versionId/sync", async (req, res) => {
@@ -297,9 +283,7 @@ router.post("/key-reports/versions/:versionId/sync", async (req, res) => {
       keyReportService.syncVersion(version.id, req.user?.id),
       warmReconciliationCaches(version.companyId, version.id),
     ]);
-    res.json({ success: true, ...result });
-    warmFinancialStatementsCache(version.id, result);
-    return;
+    return res.json({ success: true, ...result });
   } catch (error) {
     return handleError(res, error, "POST sync");
   }
@@ -315,7 +299,16 @@ router.post("/key-reports/versions/:versionId/generate", async (req, res) => {
   try {
     const version = await loadVersionWithAccess(req, res);
     if (!version) return;
-    const result = await keyReportService.syncVersion(version.id, req.user?.id);
+    // Run the sync pipeline AND warm the Bank/Tax Reconciliation caches
+    // concurrently. Warm-up reads the raw linked files (independent of the
+    // pipeline's generated tables), so it overlaps the pipeline and adds ~no
+    // wall-clock — yet the reconciliation pages are a guaranteed cache hit
+    // (instant) once this returns instead of running a multi-minute extraction on
+    // first visit. Warm-up is fully non-fatal (see warmReconciliationCaches).
+    const [result] = await Promise.all([
+      keyReportService.syncVersion(version.id, req.user?.id),
+      warmReconciliationCaches(version.companyId, version.id),
+    ]);
     return res.json({ success: true, ...result });
   } catch (error) {
     return handleError(res, error, "POST generate");
