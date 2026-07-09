@@ -7516,6 +7516,32 @@ export default function WorkspaceCimPrep() {
   useEffect(() => {
     let cancelled = false;
 
+    function applyLoadedCimPrepState(data) {
+      setGlobalDetails((previous) => ({ ...previous, ...(data.globalDetails || {}) }));
+      setFieldValues(data.fieldValues || {});
+      setAssetValues(data.assetValues || {});
+      setChartValues(data.chartValues || {});
+      setFinancialAutofillState((previous) => ({
+        ...previous,
+        validation: data.financialValidation || null,
+      }));
+      if (isValidFinancialAutofillRange(data.financialAutofillRange)) {
+        setFinancialAutofillRange(data.financialAutofillRange);
+      }
+      if (data.financialAutofillReportVersionId) {
+        setFinancialAutofillReportVersionId(String(data.financialAutofillReportVersionId));
+      }
+    }
+
+    function readLocalCimPrepDraft(localKey) {
+      try {
+        const local = window.localStorage.getItem(localKey);
+        return local ? JSON.parse(local) : null;
+      } catch {
+        return null;
+      }
+    }
+
     async function loadSavedState() {
       setLoading(true);
       const localKey = getLocalStorageKey(clientId);
@@ -7524,67 +7550,40 @@ export default function WorkspaceCimPrep() {
         const payload = await getWorkspacePageStateRequest(PAGE_KEY, { clientId });
         if (cancelled) return;
         const state = payload?.state || null;
-        if (state) {
-          setGlobalDetails((previous) => ({ ...previous, ...(state.globalDetails || {}) }));
-          setFieldValues(state.fieldValues || {});
-          setAssetValues(state.assetValues || {});
-          setChartValues(state.chartValues || {});
-          setFinancialAutofillState((previous) => ({
-            ...previous,
-            validation: state.financialValidation || null,
-          }));
-          if (isValidFinancialAutofillRange(state.financialAutofillRange)) {
-            setFinancialAutofillRange(state.financialAutofillRange);
-          }
-          if (state.financialAutofillReportVersionId) {
-            setFinancialAutofillReportVersionId(String(state.financialAutofillReportVersionId));
-          }
-          setUpdatedAt(payload?.updatedAt || state.updatedAt || "");
-          window.localStorage.setItem(localKey, JSON.stringify(state));
-        } else {
-          const local = window.localStorage.getItem(localKey);
-          if (local) {
-            const parsed = JSON.parse(local);
-            setGlobalDetails((previous) => ({ ...previous, ...(parsed.globalDetails || {}) }));
-            setFieldValues(parsed.fieldValues || {});
-            setAssetValues(parsed.assetValues || {});
-            setChartValues(parsed.chartValues || {});
-            setFinancialAutofillState((previous) => ({
-              ...previous,
-              validation: parsed.financialValidation || null,
-            }));
-            if (isValidFinancialAutofillRange(parsed.financialAutofillRange)) {
-              setFinancialAutofillRange(parsed.financialAutofillRange);
-            }
-            if (parsed.financialAutofillReportVersionId) {
-              setFinancialAutofillReportVersionId(String(parsed.financialAutofillReportVersionId));
-            }
-            setUpdatedAt(parsed.updatedAt || "");
-          }
+        const backendUpdatedAt = payload?.updatedAt || state?.updatedAt || "";
+        const localDraft = readLocalCimPrepDraft(localKey);
+        // A prior save that failed leaves its only copy of the user's edits marked
+        // "unsynced" in localStorage. If that draft is newer than whatever the backend
+        // just returned, it represents work the server has never seen — trusting the
+        // backend response here would silently erase it, which is exactly the "saved,
+        // then a refresh wiped everything" failure mode this is fixing.
+        const draftHasUnsyncedNewerWork = localDraft?.unsynced &&
+          (!backendUpdatedAt || new Date(localDraft.updatedAt || 0) > new Date(backendUpdatedAt));
+
+        if (draftHasUnsyncedNewerWork) {
+          applyLoadedCimPrepState(localDraft);
+          setUpdatedAt(backendUpdatedAt || "");
+          showToast({
+            type: "error",
+            title: "Unsaved changes recovered",
+            message: "Your last save didn't reach the server. We've restored those changes from this browser — click Save to sync them now.",
+            duration: 10000,
+          });
+        } else if (state) {
+          applyLoadedCimPrepState(state);
+          setUpdatedAt(backendUpdatedAt);
+          window.localStorage.setItem(localKey, JSON.stringify({ ...state, updatedAt: backendUpdatedAt, unsynced: false }));
+        } else if (localDraft) {
+          applyLoadedCimPrepState(localDraft);
+          setUpdatedAt(localDraft.updatedAt || "");
         }
       } catch {
-        try {
-          const local = window.localStorage.getItem(localKey);
-          if (local && !cancelled) {
-            const parsed = JSON.parse(local);
-            setGlobalDetails((previous) => ({ ...previous, ...(parsed.globalDetails || {}) }));
-            setFieldValues(parsed.fieldValues || {});
-            setAssetValues(parsed.assetValues || {});
-            setChartValues(parsed.chartValues || {});
-            setFinancialAutofillState((previous) => ({
-              ...previous,
-              validation: parsed.financialValidation || null,
-            }));
-            if (isValidFinancialAutofillRange(parsed.financialAutofillRange)) {
-              setFinancialAutofillRange(parsed.financialAutofillRange);
-            }
-            if (parsed.financialAutofillReportVersionId) {
-              setFinancialAutofillReportVersionId(String(parsed.financialAutofillReportVersionId));
-            }
-            setUpdatedAt(parsed.updatedAt || "");
+        if (!cancelled) {
+          const localDraft = readLocalCimPrepDraft(localKey);
+          if (localDraft) {
+            applyLoadedCimPrepState(localDraft);
+            setUpdatedAt(localDraft.updatedAt || "");
           }
-        } catch {
-          // Ignore malformed local drafts.
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -7595,7 +7594,7 @@ export default function WorkspaceCimPrep() {
     return () => {
       cancelled = true;
     };
-  }, [clientId]);
+  }, [clientId, showToast]);
 
   useEffect(() => {
     let cancelled = false;
@@ -8256,21 +8255,25 @@ export default function WorkspaceCimPrep() {
       const payload = await saveWorkspacePageStateRequest(PAGE_KEY, state, { clientId });
       const savedAt = payload?.updatedAt || state.updatedAt;
       setUpdatedAt(savedAt);
-      window.localStorage.setItem(localKey, JSON.stringify({ ...state, updatedAt: savedAt }));
+      window.localStorage.setItem(localKey, JSON.stringify({ ...state, updatedAt: savedAt, unsynced: false }));
       showToast({
         type: "success",
         title: "CIM Prep Saved",
         message: "Your CIM changes were saved for this company.",
       });
-    } catch (error) {
-      window.localStorage.setItem(localKey, JSON.stringify(state));
-      setUpdatedAt(state.updatedAt);
+    } catch {
+      // The backend write did not succeed — keep the browser-local copy as an explicit
+      // "unsynced" draft (never silently presented as if it reached the server), and do
+      // NOT advance the displayed "Saved" timestamp: it must always reflect the last
+      // change we actually confirmed the backend has, otherwise a refresh later reads the
+      // real (older) backend state back and looks like data vanished, at the exact
+      // timestamp the UI had just claimed was current.
+      window.localStorage.setItem(localKey, JSON.stringify({ ...state, unsynced: true }));
       showToast({
-        type: "info",
-        title: "CIM Prep Saved Locally",
-        message: error?.message
-          ? "Backend save failed, so a local draft was kept in this browser."
-          : "A local draft was kept in this browser.",
+        type: "error",
+        title: "CIM Prep NOT Saved",
+        message: "Your changes could not be saved to the server and only exist in this browser. Do not close this tab or refresh — click Save again to retry.",
+        duration: 10000,
       });
     } finally {
       setSaving(false);
