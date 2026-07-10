@@ -87,7 +87,7 @@ function validateBalanceSheet(versionId, fiscalYear, sectionTotals, opts = {}) {
     if (opts.unclassified && opts.unclassified.length) {
       console.warn('[KEY_REPORTS_VALIDATION] Unclassified GL accounts excluded from this year:',
         opts.unclassified.map(u =>
-          `  "${u.account_name}" split="${u.split_account}" amt=${u.amount} rb=${u.running_balance} FY=${u.fiscal_year}`
+          `  "${u.account_name}" split="${u.split_account}" amt=${u.amount} rb=${u.running_balance} date=${u.transaction_date}`
         ).join('\n')
       );
     }
@@ -142,31 +142,17 @@ async function resolveYears(versionId, { year, startDate, endDate } = {}) {
     return y > 0 ? [y] : [];
   }
 
+  // GL years come from transaction_date directly (date_dimension refactor,
+  // migration 069 — fiscal_year/fiscal_month no longer exist on
+  // general_ledger_entries). getDistinctYears' isDateCol mode parses the year
+  // out of the date string itself, so there is no longer a "fiscal_year is
+  // null but transaction_date has it" split to fall back on.
   const [bsYears, glYears] = await Promise.all([
     getDistinctYears('balance_sheet_entries', versionId, 'fiscal_year'),
-    getDistinctYears('general_ledger_entries', versionId, 'fiscal_year'),
+    getDistinctYears('general_ledger_entries', versionId, 'transaction_date', true),
   ]);
 
   const set = new Set([...bsYears, ...glYears]);
-
-  // Fallback: GL rows where fiscal_year is null but transaction_date carries the year.
-  // Handles GL extracted before migration 050 or where year-detection failed (e.g. 2025 GL).
-  let glDateRows = [];
-  try {
-    glDateRows = await fetchAllRows(() =>
-      supabase
-        .from('general_ledger_entries')
-        .select('transaction_date')
-        .eq('version_id', versionId)
-        .is('fiscal_year', null)
-        .not('transaction_date', 'is', null)
-        .or('row_type.eq.TRANSACTION,row_type.is.null'),
-    );
-  } catch (_e) { /* leave empty — bsYears/glYears already resolved */ }
-  for (const row of glDateRows) {
-    const y = parseInt(String(row.transaction_date || '').slice(0, 4), 10);
-    if (y >= 1990 && y <= 2100) set.add(y);
-  }
 
   let years = Array.from(set).filter((y) => y >= 1990 && y <= 2100).sort((a, b) => a - b);
 
@@ -330,16 +316,17 @@ async function fetchAllGLRows(versionId, year, columns, rowType = 'TRANSACTION')
   const PAGE = 1000;
   const out = [];
   for (let from = 0; ; from += PAGE) {
+    // fiscal_year no longer exists on general_ledger_entries (migration 069 —
+    // date_dimension refactor); every row (including BEGINNING_BALANCE/TOTAL_ROW,
+    // which the extractor now stamps with a Jan-1/Dec-31 sentinel date for their
+    // year) has a real transaction_date, so a plain range filter is sufficient —
+    // no more null-fiscal_year fallback needed.
     let q = supabase
       .from('general_ledger_entries')
       .select(columns)
       .eq('version_id', versionId)
-      // Include rows where fiscal_year is null but transaction_date falls in `year`
-      // (pre-migration-050 rows or rows where extraction failed to set fiscal_year).
-      .or(
-        `fiscal_year.eq.${year},` +
-        `and(fiscal_year.is.null,transaction_date.gte.${year}-01-01,transaction_date.lte.${year}-12-31)`,
-      );
+      .gte('transaction_date', `${year}-01-01`)
+      .lte('transaction_date', `${year}-12-31`);
     // Include pre-migration-050 rows that have null row_type (valid transaction rows).
     if (rowType) q = q.or(`row_type.eq.${rowType},row_type.is.null`);
     const { data, error } = await q
@@ -362,7 +349,7 @@ async function fetchAllGLRows(versionId, year, columns, rowType = 'TRANSACTION')
 async function aggregateGLByAccount(versionId, year) {
   const rows = await fetchAllGLRows(
     versionId, year,
-    'account_name, split_account, amount, running_balance, row_type, fiscal_year, account_number',
+    'account_name, split_account, amount, running_balance, row_type, transaction_date, account_number',
   );
 
   const coaTypes = await loadCoaAccountTypeLookup(versionId);
@@ -387,7 +374,7 @@ async function aggregateGLByAccount(versionId, year) {
     const type = classifyAccountFromLookup(coaTypes, name, row.account_number);
     if (type === 'unknown') {
       unclassified.push({
-        fiscal_year: row.fiscal_year,
+        transaction_date: row.transaction_date,
         account_name: row.account_name,
         split_account: row.split_account,
         amount: row.amount,
@@ -421,7 +408,7 @@ async function aggregateGLByAccount(versionId, year) {
 async function aggregateGLForBSByMonth(versionId, year) {
   const rows = await fetchAllGLRows(
     versionId, year,
-    'account_name, split_account, amount, row_type, fiscal_year, transaction_date, account_number',
+    'account_name, split_account, amount, row_type, transaction_date, account_number',
   );
   if (!rows.length) return null;
 
@@ -471,7 +458,7 @@ async function aggregateGLForBSByMonth(versionId, year) {
 async function aggregateGLForBS(versionId, year) {
   const rows = await fetchAllGLRows(
     versionId, year,
-    'account_name, split_account, amount, running_balance, row_type, fiscal_year, account_number',
+    'account_name, split_account, amount, running_balance, row_type, transaction_date, account_number',
   );
 
   const coaTypes = await loadCoaAccountTypeLookup(versionId);
@@ -514,7 +501,7 @@ async function aggregateGLForBS(versionId, year) {
       netIncome += netIncomeMovement(distType, amount);
     } else {
       unclassified.push({
-        fiscal_year: row.fiscal_year,
+        transaction_date: row.transaction_date,
         account_name: row.account_name,
         split_account: row.split_account,
         amount: row.amount,
@@ -538,7 +525,7 @@ async function aggregateGLForBS(versionId, year) {
     console.warn(
       `[KeyReports][BS][GL] versionId=${versionId} FY${year}: ${unclassified.length} unclassified account_name(s) — these rows are EXCLUDED from the Balance Sheet and may cause an imbalance:`,
       unclassified.map(u =>
-        `  account_name="${u.account_name}" split_account="${u.split_account}" amount=${u.amount} running_balance=${u.running_balance} fiscal_year=${u.fiscal_year}`
+        `  account_name="${u.account_name}" split_account="${u.split_account}" amount=${u.amount} running_balance=${u.running_balance} transaction_date=${u.transaction_date}`
       ).join('\n')
     );
   }
@@ -833,7 +820,7 @@ const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep
 async function aggregateGLByAccountMonth(versionId, year) {
   const rows = await fetchAllGLRows(
     versionId, year,
-    'account_name, amount, transaction_date, row_type, fiscal_year, account_number',
+    'account_name, amount, transaction_date, row_type, account_number',
   );
 
   const coaTypes = await loadCoaAccountTypeLookup(versionId);
@@ -1501,10 +1488,14 @@ async function getGeneralLedgerReport(versionId, { year, startDate, endDate, pag
   const from = (parsedPage - 1) * parsedSize;
   const to = from + parsedSize - 1;
 
+  // fiscal_year/fiscal_month no longer exist on general_ledger_entries
+  // (migration 069). Filtering uses transaction_date directly (robust — never
+  // depends on date_id having resolved); year/month/quarter/month_name for
+  // display come from the key_report_date_dimension join instead.
   let query = supabase
     .from('general_ledger_entries')
     .select(
-      'id,row_type,row_number,fiscal_year,fiscal_month,transaction_date,account_name,account_number,transaction_type,transaction_number,memo,split_account,amount,debit_amount,credit_amount,running_balance,coa_id',
+      'id,row_type,row_number,transaction_date,date_id,account_name,account_number,transaction_type,transaction_number,memo,split_account,vendor,customer,entity_type,amount,debit_amount,credit_amount,running_balance,coa_id,key_report_date_dimension(year,month,quarter,month_name)',
       { count: 'exact' }
     )
     .eq('version_id', versionId)
@@ -1512,11 +1503,11 @@ async function getGeneralLedgerReport(versionId, { year, startDate, endDate, pag
     .order('id', { ascending: true })
     .range(from, to);
 
-  // A single fiscal_year wins (spec #8 — never mix years); otherwise an explicit
+  // A single year wins (spec #8 — never mix years); otherwise an explicit
   // date range narrows the transaction_date window (spec #11).
   if (year) {
     const y = parseInt(String(year), 10);
-    if (y > 0) query = query.eq('fiscal_year', y);
+    if (y > 0) query = query.gte('transaction_date', `${y}-01-01`).lte('transaction_date', `${y}-12-31`);
   } else {
     if (startDate) query = query.gte('transaction_date', String(startDate));
     if (endDate) query = query.lte('transaction_date', String(endDate));
@@ -1525,7 +1516,7 @@ async function getGeneralLedgerReport(versionId, { year, startDate, endDate, pag
   const { data, count, error } = await query;
   if (error) throw error;
 
-  const years = await getDistinctYears('general_ledger_entries', versionId, 'fiscal_year');
+  const years = await getDistinctYears('general_ledger_entries', versionId, 'transaction_date', true);
   auditReport(versionId, 'general_ledger', year ? parseInt(String(year), 10) : null, count || 0, { generatedFromGL: true });
 
   return {

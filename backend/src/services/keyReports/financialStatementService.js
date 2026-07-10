@@ -845,7 +845,12 @@ async function distinctYears(versionId) {
   // uploaded Balance Sheets. There is no profit_loss_entries table — P&L years are
   // implied by the GL. Exclude is_generated BS rows so accumulated generated rows
   // never push real uploaded-year rows out. Filter GL by TRANSACTION row_type to
-  // skip ACCOUNT_HEADER / BEGINNING_BALANCE / TOTAL_ROW rows (null fiscal_year).
+  // skip ACCOUNT_HEADER rows.
+  //
+  // GL years now come straight from transaction_date (migration 069 —
+  // fiscal_year/fiscal_month no longer exist on general_ledger_entries; every
+  // TRANSACTION/BEGINNING_BALANCE/TOTAL_ROW row always has a real date now, so
+  // there is no more "fiscal_year is null" fallback branch to run separately).
   //
   // IMPORTANT: every one of these reads uses fetchAllRows (.range() pagination),
   // never a bare .limit(N) — Supabase/PostgREST caps a single query response at
@@ -867,51 +872,39 @@ async function distinctYears(versionId) {
     console.log("[FinStmt][Years] BS unfiltered fallback succeeded");
   }
 
-  const [glRows, glDateFallbackRows] = await Promise.all([
-    fetchAllRows(() =>
-      supabase.from("general_ledger_entries")
-        .select("fiscal_year, source_file_id, account_name")
-        .eq("version_id", versionId)
-        .or("row_type.eq.TRANSACTION,row_type.is.null")
-        .not("fiscal_year", "is", null),
-    ),
-    // Fallback: GL rows where fiscal_year is null but transaction_date carries the
-    // year. Handles GL files extracted before migration 050 or where the extraction
-    // failed to assign a fiscal_year (e.g. 2025 GL with year-detection gap).
-    fetchAllRows(() =>
-      supabase.from("general_ledger_entries").select("transaction_date")
-        .eq("version_id", versionId)
-        .is("fiscal_year", null)
-        .not("transaction_date", "is", null)
-        .or("row_type.eq.TRANSACTION,row_type.is.null"),
-    ),
-  ]);
+  const glRows = await fetchAllRows(() =>
+    supabase.from("general_ledger_entries")
+      .select("transaction_date, source_file_id, account_name")
+      .eq("version_id", versionId)
+      .or("row_type.eq.TRANSACTION,row_type.is.null")
+      .not("transaction_date", "is", null),
+  );
+
+  const glYearOf = (row) => parseInt(String(row.transaction_date || "").slice(0, 4), 10);
 
   const set = new Set();
-  for (const row of [...(bsData || []), ...glRows]) {
+  for (const row of (bsData || [])) {
     const y = Number(row.fiscal_year);
     if (y >= 1990 && y <= 2100) set.add(y);
   }
-  // Infer fiscal years from transaction_date for GL rows that have no fiscal_year set.
-  for (const row of glDateFallbackRows) {
-    const y = parseInt(String(row.transaction_date || "").slice(0, 4), 10);
+  for (const row of glRows) {
+    const y = glYearOf(row);
     if (y >= 1990 && y <= 2100) set.add(y);
   }
   const years = Array.from(set).sort((a, b) => a - b);
 
-  // Diagnostics: total GL rows retrieved, distinct fiscal years, distinct source
+  // Diagnostics: total GL rows retrieved, distinct years, distinct source
   // file IDs, distinct account count — printed every time so a truncated read is
   // immediately visible in the logs instead of silently producing missing years.
-  const glFiscalYears = Array.from(new Set(glRows.map((r) => r.fiscal_year))).sort((a, b) => a - b);
+  const glDistinctYears = Array.from(new Set(glRows.map(glYearOf))).sort((a, b) => a - b);
   const distinctSourceFiles = new Set(glRows.map((r) => r.source_file_id).filter(Boolean));
   const distinctAccounts = new Set(glRows.map((r) => String(r.account_name || "").trim()).filter(Boolean));
   console.log(
-    `[FinStmt][Years] GL totalRows=${glRows.length} distinctFiscalYears=[${glFiscalYears.join(",")}] ` +
+    `[FinStmt][Years] GL totalRows=${glRows.length} distinctYears=[${glDistinctYears.join(",")}] ` +
     `distinctSourceFileIds=${distinctSourceFiles.size} distinctAccounts=${distinctAccounts.size}`,
   );
   console.log(
-    `[FinStmt][Years] bs=${bsData?.length || 0} ` +
-    `gl=${glRows.length} glDateFallback=${glDateFallbackRows.length} → [${years.join(", ")}]`,
+    `[FinStmt][Years] bs=${bsData?.length || 0} gl=${glRows.length} → [${years.join(", ")}]`,
   );
   return years;
 }
@@ -1167,15 +1160,18 @@ function buildGlDirectPlStatement(byAccount, monthNum) {
 /**
  * Yearly GL accumulation for generateYearlyPl.
  *
- * Reads ALL TRANSACTION (or null row_type) rows for the fiscal year and sums
- * each account's amount without any transaction_date filter. This is intentional:
- * some GL rows carry a valid fiscal_year but a null transaction_date (e.g. manual
- * journal entries or year-end adjustments). loadGlAmountsByMonth silently drops
- * those rows because it cannot assign them to a month; that caused yearly totals
- * (Total Expenses, Operating Income, Net Income) to be understated relative to the
- * Trial Balance, which accumulates the same rows without a date check.
+ * Reads ALL TRANSACTION (or null row_type) rows for the year via transaction_date
+ * range. fiscal_year/fiscal_month no longer exist on general_ledger_entries
+ * (migration 069 — date_dimension refactor). Historically some GL rows carried
+ * a valid fiscal_year but a null transaction_date (manual journal entries /
+ * year-end adjustments); migration 069 backfills a sentinel transaction_date
+ * (fiscal_year-06-30) for any such pre-existing row before dropping the column,
+ * so a plain date-range filter here is safe and cannot silently drop them the
+ * way it could before that backfill existed. New rows always have a real date
+ * — validateRows() in generalLedgerExtractionService.js rejects any dateless
+ * TRANSACTION row at extraction time.
  *
- * loadGlAmountsByMonth remains unchanged and is still used for MONTHLY P&L.
+ * loadGlAmountsByMonth remains unchanged in intent and is still used for MONTHLY P&L.
  */
 async function loadGlAmountsYearly(versionId, year) {
   let data;
@@ -1183,12 +1179,10 @@ async function loadGlAmountsYearly(versionId, year) {
     data = await fetchAllRows(() =>
       supabase
         .from("general_ledger_entries")
-        .select("account_name, split_account, account_number, amount, fiscal_year")
+        .select("account_name, split_account, account_number, amount, transaction_date")
         .eq("version_id", versionId)
-        .or(
-          `fiscal_year.eq.${year},` +
-          `and(fiscal_year.is.null,transaction_date.gte.${year}-01-01,transaction_date.lte.${year}-12-31)`,
-        )
+        .gte("transaction_date", `${year}-01-01`)
+        .lte("transaction_date", `${year}-12-31`)
         .or("row_type.eq.TRANSACTION,row_type.is.null"),
     );
   } catch (err) { console.warn(`[FinStmt][GL][${year}] yearly read failed: ${err.message}`); return null; }
@@ -1232,19 +1226,18 @@ async function loadGlAmountsYearly(versionId, year) {
 async function loadGlAmountsByMonth(versionId, year) {
   // Include rows where row_type is null — those are pre-migration-050 transaction
   // rows that were extracted before the TRANSACTION / ACCOUNT_HEADER enum was added.
-  // Also include rows where fiscal_year is null but transaction_date falls in `year`
-  // (handles GL files where year-detection failed during extraction).
+  // fiscal_year no longer exists (migration 069) — a plain transaction_date range
+  // filter is sufficient now that pre-existing dateless rows have been backfilled
+  // with a sentinel date (see loadGlAmountsYearly's docstring).
   let data;
   try {
     data = await fetchAllRows(() =>
       supabase
         .from("general_ledger_entries")
-        .select("account_name, account_number, amount, transaction_date, fiscal_year")
+        .select("account_name, account_number, amount, transaction_date")
         .eq("version_id", versionId)
-        .or(
-          `fiscal_year.eq.${year},` +
-          `and(fiscal_year.is.null,transaction_date.gte.${year}-01-01,transaction_date.lte.${year}-12-31)`,
-        )
+        .gte("transaction_date", `${year}-01-01`)
+        .lte("transaction_date", `${year}-12-31`)
         .or("row_type.eq.TRANSACTION,row_type.is.null"),
     );
   } catch (err) { console.warn(`[FinStmt][GL] ${err.message}`); return null; }

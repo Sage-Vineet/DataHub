@@ -697,10 +697,13 @@ const ENTRY_TABLE_CONFIG = {
   },
   general_ledger: {
     table: 'general_ledger_entries',
-    yearCol: 'fiscal_year',
-    yearIsDate: false,
+    // fiscal_year/fiscal_month no longer exist (migration 069 — date_dimension
+    // refactor); transaction_date is always populated (including for
+    // BEGINNING_BALANCE/TOTAL_ROW sentinel dates), so a date-range filter works.
+    yearCol: 'transaction_date',
+    yearIsDate: true,
     searchCols: ['account_name', 'account_section', 'memo', 'split_account', 'transaction_number'],
-    selectCols: 'id,row_type,row_number,fiscal_year,fiscal_month,transaction_date,account_section,account_name,account_number,transaction_type,transaction_number,memo,split_account,amount,debit_amount,credit_amount,running_balance,coa_id',
+    selectCols: 'id,row_type,row_number,transaction_date,date_id,account_section,account_name,account_number,transaction_type,transaction_number,memo,split_account,vendor,customer,entity_type,amount,debit_amount,credit_amount,running_balance,coa_id',
     orderCol: 'row_number',
     orderSecondary: 'id',
   },

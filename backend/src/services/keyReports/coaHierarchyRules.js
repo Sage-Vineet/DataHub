@@ -35,8 +35,30 @@ const STATEMENT_BY_TYPE = Object.freeze({
 // company-specific levels (from AI) and the base account.
 //
 // These labels are the same for EVERY company regardless of ERP or industry.
-// They define the fixed anchor nodes (Income Statement, Balance Sheet, Total
-// Assets, Current Assets, etc.) that every downstream report expects to find.
+//
+// UNIFIED hierarchy (client spec): there is ONE root, "Total Liabilities and
+// Equity", alongside its parallel "Total Assets" root — not two disconnected
+// "Income Statement" / "Balance Sheet" trees. Net Income (and therefore the
+// entire P&L rollup chain) nests under Total Equity, since period net income
+// rolls into equity:
+//   Total Liabilities and Equity
+//     └─ Total Equity
+//          ├─ Equity                              (pure equity accounts)
+//          └─ Net Income
+//               └─ Pretax Income
+//                    └─ Operating Income
+//                         └─ Gross Profit
+//                              ├─ Total Revenue  → Income
+//                              └─ Total Expenses → Expenses → (9 groups)
+//   Total Assets
+//     ├─ Current Assets / Fixed Assets / Other Assets
+//   Total Liabilities and Equity
+//     └─ Total Liabilities
+//          └─ Current Liabilities / Long-Term Liabilities
+//
+// buildLevelsFromPath collapses consecutive duplicate labels, so a
+// self-referential stub (e.g. repeating "Total Assets" before its
+// subcategory) is intentionally omitted below — it would be stripped anyway.
 //
 // The mapping is keyed by the exact section string the AI is instructed to
 // return (see geminiCoaClassifier.buildClassifyPrompt).  Case-sensitive to
@@ -44,33 +66,33 @@ const STATEMENT_BY_TYPE = Object.freeze({
 
 const SECTION_STANDARD_LEVELS = Object.freeze({
   // ── Balance Sheet ──────────────────────────────────────────────────────────
-  "Current Assets":        ["Balance Sheet", "Total Assets",      "Current Assets"],
-  "Fixed Assets":          ["Balance Sheet", "Total Assets",      "Fixed Assets"],
-  "Other Assets":          ["Balance Sheet", "Total Assets",      "Other Assets"],
-  "Current Liabilities":   ["Balance Sheet", "Total Liabilities", "Current Liabilities"],
-  "Long-Term Liabilities": ["Balance Sheet", "Total Liabilities", "Long-Term Liabilities"],
-  "Equity":                ["Balance Sheet", "Total Equity"],
+  "Current Assets":        ["Total Assets", "Current Assets"],
+  "Fixed Assets":          ["Total Assets", "Fixed Assets"],
+  "Other Assets":          ["Total Assets", "Other Assets"],
+  "Current Liabilities":   ["Total Liabilities and Equity", "Total Liabilities", "Current Liabilities"],
+  "Long-Term Liabilities": ["Total Liabilities and Equity", "Total Liabilities", "Long-Term Liabilities"],
+  "Equity":                ["Total Liabilities and Equity", "Total Equity", "Equity"],
 
-  // ── Profit & Loss ─────────────────────────────────────────────────────────
+  // ── Profit & Loss (nests under Total Equity → Net Income) ──────────────────
   // Revenue and COGS/OpEx share the same rollup chain to "Gross Profit", then
   // split into "Total Revenue / Income" vs "Total Expenses / Expenses".
-  "Revenue":            ["Income Statement", "Net Income", "Pretax Income", "Operating Income", "Gross Profit", "Total Revenue",   "Income"],
-  "Cost of Goods Sold": ["Income Statement", "Net Income", "Pretax Income", "Operating Income", "Gross Profit", "Total Expenses",  "Expenses"],
-  "Operating Expenses": ["Income Statement", "Net Income", "Pretax Income", "Operating Income", "Gross Profit", "Total Expenses",  "Expenses"],
+  "Revenue":            ["Total Liabilities and Equity", "Total Equity", "Net Income", "Pretax Income", "Operating Income", "Gross Profit", "Total Revenue",  "Income"],
+  "Cost of Goods Sold": ["Total Liabilities and Equity", "Total Equity", "Net Income", "Pretax Income", "Operating Income", "Gross Profit", "Total Expenses", "Expenses"],
+  "Operating Expenses": ["Total Liabilities and Equity", "Total Equity", "Net Income", "Pretax Income", "Operating Income", "Gross Profit", "Total Expenses", "Expenses"],
   // Other Income / Other Expense appear below Operating Income — short chain.
-  "Other Income":       ["Income Statement", "Net Income", "Pretax Income"],
-  "Other Expense":      ["Income Statement", "Net Income", "Pretax Income"],
+  "Other Income":       ["Total Liabilities and Equity", "Total Equity", "Net Income", "Pretax Income"],
+  "Other Expense":      ["Total Liabilities and Equity", "Total Equity", "Net Income", "Pretax Income"],
 });
 
 // Fallback by 6-type accountType when the AI does not return a recognised
 // section or the section field is absent.
 const TYPE_STANDARD_LEVELS = Object.freeze({
-  asset:     ["Balance Sheet", "Total Assets"],
-  liability: ["Balance Sheet", "Total Liabilities"],
-  equity:    ["Balance Sheet", "Total Equity"],
-  income:    ["Income Statement", "Net Income", "Pretax Income", "Operating Income", "Gross Profit", "Total Revenue",  "Income"],
-  cogs:      ["Income Statement", "Net Income", "Pretax Income", "Operating Income", "Gross Profit", "Total Expenses", "Expenses"],
-  expense:   ["Income Statement", "Net Income", "Pretax Income", "Operating Income", "Gross Profit", "Total Expenses", "Expenses"],
+  asset:     ["Total Assets"],
+  liability: ["Total Liabilities and Equity", "Total Liabilities"],
+  equity:    ["Total Liabilities and Equity", "Total Equity"],
+  income:    ["Total Liabilities and Equity", "Total Equity", "Net Income", "Pretax Income", "Operating Income", "Gross Profit", "Total Revenue",  "Income"],
+  cogs:      ["Total Liabilities and Equity", "Total Equity", "Net Income", "Pretax Income", "Operating Income", "Gross Profit", "Total Expenses", "Expenses"],
+  expense:   ["Total Liabilities and Equity", "Total Equity", "Net Income", "Pretax Income", "Operating Income", "Gross Profit", "Total Expenses", "Expenses"],
 });
 
 /**
@@ -85,7 +107,7 @@ function aiSectionToStandardLevels(section, accountType) {
   return (
     SECTION_STANDARD_LEVELS[String(section || "")] ||
     TYPE_STANDARD_LEVELS[String(accountType || "")] ||
-    ["Income Statement"]
+    ["Total Liabilities and Equity"]
   ).slice(); // return a mutable copy
 }
 
