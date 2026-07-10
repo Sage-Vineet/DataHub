@@ -16,6 +16,7 @@ import {
   ImagePlus,
   Loader2,
   MessageSquareText,
+  Palette,
   PanelLeft,
   Plus,
   RefreshCw,
@@ -30,14 +31,25 @@ import {
 import {
   getCimQuestionnaireRequest,
   getCimReviewRequest,
+  getCimStyleProfilesRequest,
   getCompanyRequest,
   getWorkspacePageStateRequest,
   listUsersRequest,
   saveCimQuestionnaireRequest,
   saveCimReviewRequest,
+  saveCimStyleProfilesRequest,
   saveWorkspacePageStateRequest,
 } from "../../../lib/api";
 import { exportCimPptx } from "../../../lib/cimPptxExport";
+import {
+  DEFAULT_CIM_STYLE_PROFILE,
+  DEFAULT_CIM_STYLE_PROFILE_ID,
+  applyCimTemplateStyleProfile,
+  applyCimTemplateStyleProfilesToLayouts,
+  getActiveCimStyleProfile,
+  isDefaultCimStyleProfile,
+  normalizeCimStyleProfilesState,
+} from "../../../lib/cimTemplateStyleProfiles";
 import { useAuth } from "../../../context/AuthContext";
 import { useDataSource } from "../../../context/DataSourceContext";
 import { useToast } from "../../../context/ToastContext";
@@ -48,6 +60,7 @@ import { useDatasetVersionStore } from "../../../store/useDatasetVersionStore";
 import { useKeyReportContextStore } from "../../../store/useKeyReportContextStore";
 import Modal from "../../../components/common/Modal";
 import CimFieldNoteThread from "../../../components/cim/CimFieldNoteThread";
+import CimTemplateStyleEditor from "../../../components/cim/CimTemplateStyleEditor";
 
 const SLIDE_WIDTH = 1280;
 const PAGE_KEY = "cim-prep";
@@ -134,6 +147,33 @@ const CHART_TYPES = [
 ];
 
 const CHART_COLORS = ["#8BC53D", "#476E2C", "#A5A5A5", "#6D6E71", "#243F18"];
+
+function getCimChartStyle(styleProfile = null) {
+  if (!styleProfile || isDefaultCimStyleProfile(styleProfile)) {
+    return {
+      palette: CHART_COLORS,
+      backgroundColor: "#FFFFFF",
+      gridColor: "#E5E7EB",
+      labelColor: "#6D6E71",
+      titleColor: "#476E2C",
+      axisFontFamily: "Calibri",
+      legendPosition: "right",
+    };
+  }
+  const profile = normalizeCimStyleProfilesState({
+    activeProfileId: styleProfile.id,
+    profiles: [DEFAULT_CIM_STYLE_PROFILE, styleProfile],
+  }).profiles.find((item) => item.id === styleProfile.id) || styleProfile;
+  return {
+    palette: profile.charts?.palette?.length ? profile.charts.palette : CHART_COLORS,
+    backgroundColor: profile.charts?.backgroundColor || "#FFFFFF",
+    gridColor: profile.charts?.gridColor || "#E5E7EB",
+    labelColor: profile.charts?.labelColor || "#6D6E71",
+    titleColor: profile.charts?.titleColor || "#476E2C",
+    axisFontFamily: profile.charts?.axisFontFamily || profile.typography?.roles?.body?.fontFamily || "Calibri",
+    legendPosition: profile.charts?.legendPosition || "right",
+  };
+}
 
 const QUESTIONNAIRE_STATUS_META = {
   open: { label: "Open", color: "#A86F0B", bg: "#FEF3C7" },
@@ -1218,6 +1258,10 @@ function getQuestionnaireLocalStorageKey(clientId) {
   return `datahub:cim-questionnaire:${clientId || "default"}`;
 }
 
+function getStyleProfilesLocalStorageKey() {
+  return "datahub:cim-style-profiles";
+}
+
 function sanitizeFileName(value) {
   const cleaned = String(value || "cim-prep")
     .trim()
@@ -1565,11 +1609,15 @@ function getElementStyle(element) {
     fontFamily: `${firstRun.typeface || resolved.typeface || "Calibri"}, Calibri, Aptos, Arial, sans-serif`,
     fontWeight: firstRun.bold || runs.some((run) => run.bold) ? 700 : 400,
     fontStyle: firstRun.italic ? "italic" : "normal",
+    textDecoration: firstRun.underline ? "underline" : "none",
     color: cssColor(firstRun.color, "#333333"),
     textAlign: alignment === "center" ? "center" : alignment === "right" ? "right" : "left",
     verticalAlignment: resolved.verticalAlignment || "top",
     insets: resolved.insets || { top: 0, right: 0, bottom: 0, left: 0 },
-    lineHeight: 1.08,
+    lineHeight: Number(firstParagraph.resolvedTextStyle?.lineSpacing || resolved.lineSpacing || 1.08),
+    paragraphSpacing: Number(firstParagraph.resolvedTextStyle?.paragraphSpacing || resolved.paragraphSpacing || 0),
+    letterSpacing: Number(firstRun.letterSpacing || 0),
+    wrap: resolved.wrap !== false,
   };
 }
 
@@ -2812,7 +2860,7 @@ function getChartTitle(field) {
   return text.slice(0, 72) || field?.label || "Chart";
 }
 
-function chartGrid(plot, minValue, maxValue) {
+function chartGrid(plot, minValue, maxValue, chartStyle = getCimChartStyle()) {
   const lines = [];
   const range = maxValue - minValue || 1;
 
@@ -2820,19 +2868,20 @@ function chartGrid(plot, minValue, maxValue) {
     const value = minValue + (range * index) / 4;
     const y = plot.y + plot.height - ((value - minValue) / range) * plot.height;
     lines.push(`
-      <line x1="${plot.x}" y1="${y}" x2="${plot.x + plot.width}" y2="${y}" stroke="#E5E7EB" stroke-width="1"/>
-      <text x="${plot.x - 10}" y="${y + 4}" text-anchor="end" font-size="18" fill="#6D6E71">${escapeSvg(formatChartValue(value))}</text>
+      <line x1="${plot.x}" y1="${y}" x2="${plot.x + plot.width}" y2="${y}" stroke="${chartStyle.gridColor}" stroke-width="1"/>
+      <text x="${plot.x - 10}" y="${y + 4}" text-anchor="end" font-size="18" fill="${chartStyle.labelColor}">${escapeSvg(formatChartValue(value))}</text>
     `);
   }
 
   return lines.join("");
 }
 
-function buildBarChart(data, plot) {
+function buildBarChart(data, plot, chartStyle = getCimChartStyle()) {
   const seriesCount = Math.max(1, ...data.map((row) => row.values.length));
   const maxValue = Math.max(1, ...data.flatMap((row) => row.values.map((value) => Math.max(0, value))));
   const groupWidth = plot.width / Math.max(data.length, 1);
   const barWidth = Math.min(42, (groupWidth * 0.68) / seriesCount);
+  const palette = chartStyle.palette || CHART_COLORS;
 
   const bars = data.flatMap((row, rowIndex) =>
     Array.from({ length: seriesCount }, (_, seriesIndex) => {
@@ -2845,30 +2894,31 @@ function buildBarChart(data, plot) {
         seriesIndex * barWidth;
       const y = plot.y + plot.height - barHeight;
       return `
-        <rect x="${x}" y="${y}" width="${barWidth - 3}" height="${barHeight}" fill="${CHART_COLORS[seriesIndex % CHART_COLORS.length]}"/>
-        <text x="${x + (barWidth - 3) / 2}" y="${y - 7}" text-anchor="middle" font-size="17" font-weight="700" fill="#476E2C">${escapeSvg(formatChartValue(value))}</text>
+        <rect x="${x}" y="${y}" width="${barWidth - 3}" height="${barHeight}" fill="${palette[seriesIndex % palette.length]}"/>
+        <text x="${x + (barWidth - 3) / 2}" y="${y - 7}" text-anchor="middle" font-size="17" font-weight="700" fill="${chartStyle.titleColor}">${escapeSvg(formatChartValue(value))}</text>
       `;
     }),
   ).join("");
 
   const labels = data.map((row, rowIndex) => {
     const x = plot.x + rowIndex * groupWidth + groupWidth / 2;
-    return `<text x="${x}" y="${plot.y + plot.height + 32}" text-anchor="middle" font-size="18" fill="#6D6E71">${escapeSvg(row.label)}</text>`;
+    return `<text x="${x}" y="${plot.y + plot.height + 32}" text-anchor="middle" font-size="18" fill="${chartStyle.labelColor}">${escapeSvg(row.label)}</text>`;
   }).join("");
 
-  return `${chartGrid(plot, 0, maxValue)}${bars}${labels}`;
+  return `${chartGrid(plot, 0, maxValue, chartStyle)}${bars}${labels}`;
 }
 
-function buildLineChart(data, plot) {
+function buildLineChart(data, plot, chartStyle = getCimChartStyle()) {
   const seriesCount = Math.max(1, ...data.map((row) => row.values.length));
   const values = data.flatMap((row) => row.values);
   const minValue = Math.min(0, ...values);
   const maxValue = Math.max(1, ...values);
   const range = maxValue - minValue || 1;
   const step = data.length > 1 ? plot.width / (data.length - 1) : plot.width;
+  const palette = chartStyle.palette || CHART_COLORS;
   const labels = data.map((row, rowIndex) => {
     const x = plot.x + rowIndex * step;
-    return `<text x="${x}" y="${plot.y + plot.height + 32}" text-anchor="middle" font-size="18" fill="#6D6E71">${escapeSvg(row.label)}</text>`;
+    return `<text x="${x}" y="${plot.y + plot.height + 32}" text-anchor="middle" font-size="18" fill="${chartStyle.labelColor}">${escapeSvg(row.label)}</text>`;
   }).join("");
   const series = Array.from({ length: seriesCount }, (_, seriesIndex) => {
     const points = data.map((row, rowIndex) => {
@@ -2878,15 +2928,15 @@ function buildLineChart(data, plot) {
       return [x, y, value];
     });
     const pointList = points.map(([x, y]) => `${x},${y}`).join(" ");
-    const color = CHART_COLORS[seriesIndex % CHART_COLORS.length];
+    const color = palette[seriesIndex % palette.length];
     const dots = points.map(([x, y, value]) => `
       <circle cx="${x}" cy="${y}" r="5" fill="${color}"/>
-      <text x="${x}" y="${y - 12}" text-anchor="middle" font-size="17" font-weight="700" fill="#476E2C">${escapeSvg(formatChartValue(value))}</text>
+      <text x="${x}" y="${y - 12}" text-anchor="middle" font-size="17" font-weight="700" fill="${chartStyle.titleColor}">${escapeSvg(formatChartValue(value))}</text>
     `).join("");
     return `<polyline points="${pointList}" fill="none" stroke="${color}" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>${dots}`;
   }).join("");
 
-  return `${chartGrid(plot, minValue, maxValue)}${series}${labels}`;
+  return `${chartGrid(plot, minValue, maxValue, chartStyle)}${series}${labels}`;
 }
 
 function polarToCartesian(cx, cy, radius, angle) {
@@ -2901,9 +2951,10 @@ function piePath(cx, cy, radius, startAngle, endAngle) {
   return `M ${cx} ${cy} L ${startX} ${startY} A ${radius} ${radius} 0 ${largeArc} 0 ${endX} ${endY} Z`;
 }
 
-function buildPieChart(data) {
+function buildPieChart(data, chartStyle = getCimChartStyle()) {
   const total = data.reduce((sum, row) => sum + Math.abs(row.values[0] || 0), 0) || 1;
   let angle = 0;
+  const palette = chartStyle.palette || CHART_COLORS;
   const slices = data.map((row, index) => {
     const value = Math.abs(row.values[0] || 0);
     const endAngle = angle + (value / total) * 360;
@@ -2912,21 +2963,22 @@ function buildPieChart(data) {
     const path = piePath(330, 278, 145, angle, endAngle);
     angle = endAngle;
     return `
-      <path d="${path}" fill="${CHART_COLORS[index % CHART_COLORS.length]}" stroke="#FFFFFF" stroke-width="3"/>
-      <text x="${labelX}" y="${labelY}" text-anchor="middle" font-size="18" font-weight="700" fill="#243F18">${formatAutoFillNumber((value / total) * 100)}%</text>
+      <path d="${path}" fill="${palette[index % palette.length]}" stroke="#FFFFFF" stroke-width="3"/>
+      <text x="${labelX}" y="${labelY}" text-anchor="middle" font-size="18" font-weight="700" fill="${chartStyle.titleColor}">${formatAutoFillNumber((value / total) * 100)}%</text>
     `;
   }).join("");
   const legend = data.map((row, index) => `
-    <rect x="575" y="${175 + index * 42}" width="22" height="22" fill="${CHART_COLORS[index % CHART_COLORS.length]}"/>
-    <text x="612" y="${193 + index * 42}" font-size="22" fill="#333333">${escapeSvg(row.label)}</text>
+    <rect x="575" y="${175 + index * 42}" width="22" height="22" fill="${palette[index % palette.length]}"/>
+    <text x="612" y="${193 + index * 42}" font-size="22" fill="${chartStyle.labelColor}">${escapeSvg(row.label)}</text>
   `).join("");
 
-  return `${slices}${legend}`;
+  return `${slices}${chartStyle.legendPosition === "none" ? "" : legend}`;
 }
 
-function buildWaterfallChart(data, plot) {
+function buildWaterfallChart(data, plot, chartStyle = getCimChartStyle()) {
   const steps = [];
   let running = 0;
+  const palette = chartStyle.palette || CHART_COLORS;
 
   data.forEach((row, index) => {
     const value = row.values[0] || 0;
@@ -2948,40 +3000,41 @@ function buildWaterfallChart(data, plot) {
     const x = plot.x + index * groupWidth + (groupWidth - barWidth) / 2;
     const y = Math.min(yFor(step.start), yFor(step.end));
     const height = Math.max(2, Math.abs(yFor(step.start) - yFor(step.end)));
-    const color = step.isTotal ? "#476E2C" : step.value >= 0 ? "#8BC53D" : "#A5A5A5";
+    const color = step.isTotal ? palette[1 % palette.length] : step.value >= 0 ? palette[0] : palette[2 % palette.length];
     const labelX = plot.x + index * groupWidth + groupWidth / 2;
     const connector = index < steps.length - 1
-      ? `<line x1="${x + barWidth}" y1="${yFor(step.end)}" x2="${plot.x + (index + 1) * groupWidth + (groupWidth - barWidth) / 2}" y2="${yFor(step.end)}" stroke="#A5A5A5" stroke-width="2" stroke-dasharray="5 4"/>`
+      ? `<line x1="${x + barWidth}" y1="${yFor(step.end)}" x2="${plot.x + (index + 1) * groupWidth + (groupWidth - barWidth) / 2}" y2="${yFor(step.end)}" stroke="${chartStyle.gridColor}" stroke-width="2" stroke-dasharray="5 4"/>`
       : "";
     return `
       <rect x="${x}" y="${y}" width="${barWidth}" height="${height}" fill="${color}"/>
-      <text x="${labelX}" y="${y - 8}" text-anchor="middle" font-size="17" font-weight="700" fill="#476E2C">${escapeSvg(formatChartValue(step.end))}</text>
-      <text x="${labelX}" y="${plot.y + plot.height + 32}" text-anchor="middle" font-size="16" fill="#6D6E71">${escapeSvg(step.label)}</text>
+      <text x="${labelX}" y="${y - 8}" text-anchor="middle" font-size="17" font-weight="700" fill="${chartStyle.titleColor}">${escapeSvg(formatChartValue(step.end))}</text>
+      <text x="${labelX}" y="${plot.y + plot.height + 32}" text-anchor="middle" font-size="16" fill="${chartStyle.labelColor}">${escapeSvg(step.label)}</text>
       ${connector}
     `;
   }).join("");
 
-  return `${chartGrid(plot, minValue, maxValue)}${bars}`;
+  return `${chartGrid(plot, minValue, maxValue, chartStyle)}${bars}`;
 }
 
-function buildChartSvg(field, chartConfig = {}) {
+function buildChartSvg(field, chartConfig = {}, styleProfile = null) {
   const type = chartConfig.type || getDefaultChartType(field);
   const data = parseChartData(chartConfig.dataText || "", getDefaultChartData(field, type));
   const plot = { x: 86, y: 105, width: 780, height: 290 };
+  const chartStyle = getCimChartStyle(styleProfile);
   const chart =
     type === "pie"
-      ? buildPieChart(data)
+      ? buildPieChart(data, chartStyle)
       : type === "line"
-        ? buildLineChart(data, plot)
+        ? buildLineChart(data, plot, chartStyle)
         : type === "waterfall"
-          ? buildWaterfallChart(data, plot)
-          : buildBarChart(data, plot);
+          ? buildWaterfallChart(data, plot, chartStyle)
+          : buildBarChart(data, plot, chartStyle);
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="960" height="520" viewBox="0 0 960 520">
-    <rect width="960" height="520" fill="#FFFFFF"/>
-    <text x="48" y="56" font-family="Calibri, Arial, sans-serif" font-size="28" font-weight="700" fill="#476E2C">${escapeSvg(getChartTitle(field))}</text>
-    <line x1="48" y1="76" x2="912" y2="76" stroke="#8BC53D" stroke-width="3"/>
-    <g font-family="Calibri, Arial, sans-serif">${chart}</g>
+    <rect width="960" height="520" fill="${chartStyle.backgroundColor}"/>
+    <text x="48" y="56" font-family="${escapeSvg(chartStyle.axisFontFamily)}, Arial, sans-serif" font-size="28" font-weight="700" fill="${chartStyle.titleColor}">${escapeSvg(getChartTitle(field))}</text>
+    <line x1="48" y1="76" x2="912" y2="76" stroke="${chartStyle.palette?.[0] || "#8BC53D"}" stroke-width="3"/>
+    <g font-family="${escapeSvg(chartStyle.axisFontFamily)}, Arial, sans-serif">${chart}</g>
   </svg>`;
 }
 
@@ -3001,8 +3054,9 @@ function wrapSvgText(value, maxCharacters = 24, maxLines = 3) {
   return lines;
 }
 
-function buildTimelineSvg(entries) {
+function buildTimelineSvg(entries, styleProfile = null) {
   const rows = entries.filter(hasRepeatableEntryValue);
+  const chartStyle = getCimChartStyle(styleProfile);
   const width = 1200;
   const height = 210;
   const lineY = 104;
@@ -3024,45 +3078,46 @@ function buildTimelineSvg(entries) {
       `<tspan x="${x}" dy="${lineIndex === 0 ? 0 : lineHeight}">${escapeSvg(line)}</tspan>`
     )).join("");
     return `
-      <line x1="${x}" y1="${lineY}" x2="${x}" y2="${connectorY}" stroke="#8BC53D" stroke-width="2"/>
-      <circle cx="${x}" cy="${lineY}" r="8" fill="#8BC53D" stroke="#476E2C" stroke-width="2"/>
-      <text x="${x}" y="${yearY}" text-anchor="middle" font-size="18" font-weight="700" fill="#476E2C">${escapeSvg(entry.year || "")}</text>
-      <text x="${x}" y="${descriptionY}" text-anchor="middle" font-size="14" fill="#333333">${description}</text>
+      <line x1="${x}" y1="${lineY}" x2="${x}" y2="${connectorY}" stroke="${chartStyle.palette[0]}" stroke-width="2"/>
+      <circle cx="${x}" cy="${lineY}" r="8" fill="${chartStyle.palette[0]}" stroke="${chartStyle.titleColor}" stroke-width="2"/>
+      <text x="${x}" y="${yearY}" text-anchor="middle" font-size="18" font-weight="700" fill="${chartStyle.titleColor}">${escapeSvg(entry.year || "")}</text>
+      <text x="${x}" y="${descriptionY}" text-anchor="middle" font-size="14" fill="${chartStyle.labelColor}">${description}</text>
     `;
   }).join("");
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
-    <rect width="${width}" height="${height}" fill="#FFFFFF"/>
-    <line x1="${sidePadding}" y1="${lineY}" x2="${width - sidePadding}" y2="${lineY}" stroke="#476E2C" stroke-width="3"/>
-    <g font-family="Calibri, Arial, sans-serif">${milestones}</g>
+    <rect width="${width}" height="${height}" fill="${chartStyle.backgroundColor}"/>
+    <line x1="${sidePadding}" y1="${lineY}" x2="${width - sidePadding}" y2="${lineY}" stroke="${chartStyle.titleColor}" stroke-width="3"/>
+    <g font-family="${escapeSvg(chartStyle.axisFontFamily)}, Arial, sans-serif">${milestones}</g>
   </svg>`;
 }
 
-function buildPositioningMatrixSvg(entries) {
+function buildPositioningMatrixSvg(entries, styleProfile = null) {
   const rows = entries.filter((entry) => normalizeText(entry.name));
+  const chartStyle = getCimChartStyle(styleProfile);
   const plot = { x: 110, y: 55, width: 760, height: 365 };
   const grid = Array.from({ length: 6 }, (_, index) => {
     const x = plot.x + (plot.width * index) / 5;
     const y = plot.y + (plot.height * index) / 5;
-    return `<line x1="${x}" y1="${plot.y}" x2="${x}" y2="${plot.y + plot.height}" stroke="#E5E7EB" stroke-width="1"/>
-      <line x1="${plot.x}" y1="${y}" x2="${plot.x + plot.width}" y2="${y}" stroke="#E5E7EB" stroke-width="1"/>`;
+    return `<line x1="${x}" y1="${plot.y}" x2="${x}" y2="${plot.y + plot.height}" stroke="${chartStyle.gridColor}" stroke-width="1"/>
+      <line x1="${plot.x}" y1="${y}" x2="${plot.x + plot.width}" y2="${y}" stroke="${chartStyle.gridColor}" stroke-width="1"/>`;
   }).join("");
   const points = rows.map((entry, index) => {
     const xScore = Math.max(0, Math.min(10, parseChartNumber(entry.xScore) ?? 5));
     const yScore = Math.max(0, Math.min(10, parseChartNumber(entry.yScore) ?? 5));
     const x = plot.x + (xScore / 10) * plot.width;
     const y = plot.y + plot.height - (yScore / 10) * plot.height;
-    const color = CHART_COLORS[index % CHART_COLORS.length];
+    const color = chartStyle.palette[index % chartStyle.palette.length];
     return `<circle cx="${x}" cy="${y}" r="11" fill="${color}" stroke="#FFFFFF" stroke-width="3"/>
-      <text x="${x + 15}" y="${y - 13}" font-size="18" font-weight="700" fill="#243F18">${escapeSvg(entry.name)}</text>`;
+      <text x="${x + 15}" y="${y - 13}" font-size="18" font-weight="700" fill="${chartStyle.titleColor}">${escapeSvg(entry.name)}</text>`;
   }).join("");
   return `<svg xmlns="http://www.w3.org/2000/svg" width="960" height="520" viewBox="0 0 960 520">
-    <rect width="960" height="520" fill="#FFFFFF"/>
-    <g font-family="Calibri, Arial, sans-serif">${grid}${points}</g>
-    <line x1="${plot.x}" y1="${plot.y + plot.height}" x2="${plot.x + plot.width}" y2="${plot.y + plot.height}" stroke="#476E2C" stroke-width="3"/>
-    <line x1="${plot.x}" y1="${plot.y}" x2="${plot.x}" y2="${plot.y + plot.height}" stroke="#476E2C" stroke-width="3"/>
-    <text x="${plot.x + plot.width / 2}" y="485" text-anchor="middle" font-family="Calibri, Arial, sans-serif" font-size="20" font-weight="700" fill="#476E2C">Dimension A</text>
-    <text x="32" y="${plot.y + plot.height / 2}" text-anchor="middle" transform="rotate(-90 32 ${plot.y + plot.height / 2})" font-family="Calibri, Arial, sans-serif" font-size="20" font-weight="700" fill="#476E2C">Dimension B</text>
+    <rect width="960" height="520" fill="${chartStyle.backgroundColor}"/>
+    <g font-family="${escapeSvg(chartStyle.axisFontFamily)}, Arial, sans-serif">${grid}${points}</g>
+    <line x1="${plot.x}" y1="${plot.y + plot.height}" x2="${plot.x + plot.width}" y2="${plot.y + plot.height}" stroke="${chartStyle.titleColor}" stroke-width="3"/>
+    <line x1="${plot.x}" y1="${plot.y}" x2="${plot.x}" y2="${plot.y + plot.height}" stroke="${chartStyle.titleColor}" stroke-width="3"/>
+    <text x="${plot.x + plot.width / 2}" y="485" text-anchor="middle" font-family="${escapeSvg(chartStyle.axisFontFamily)}, Arial, sans-serif" font-size="20" font-weight="700" fill="${chartStyle.titleColor}">Dimension A</text>
+    <text x="32" y="${plot.y + plot.height / 2}" text-anchor="middle" transform="rotate(-90 32 ${plot.y + plot.height / 2})" font-family="${escapeSvg(chartStyle.axisFontFamily)}, Arial, sans-serif" font-size="20" font-weight="700" fill="${chartStyle.titleColor}">Dimension B</text>
   </svg>`;
 }
 
@@ -3078,20 +3133,21 @@ function getChartConfig(field, chartValues) {
   };
 }
 
-function getChartDataUrl(field, chartValues, fieldValues = {}) {
+function getChartDataUrl(field, chartValues, fieldValues = {}, styleProfile = null) {
   if (field.chartKind === "ownershipPie" || field.chartKind === "positioningMatrix") {
     const entries = parseRepeatableEntries(fieldValues[field.structuredSourceId]);
     if (field.chartKind === "positioningMatrix") {
-      return svgToDataUrl(buildPositioningMatrixSvg(entries));
+      return svgToDataUrl(buildPositioningMatrixSvg(entries, styleProfile));
     }
     const dataText = getShareholderChartDataText(entries);
     return svgToDataUrl(buildChartSvg(
       { ...field, label: "Ownership Summary", text: "[Ownership Summary]" },
       { type: "pie", dataText },
+      styleProfile,
     ));
   }
 
-  return svgToDataUrl(buildChartSvg(field, getChartConfig(field, chartValues)));
+  return svgToDataUrl(buildChartSvg(field, getChartConfig(field, chartValues), styleProfile));
 }
 
 function getElementLayoutOverride(slideNumber, element) {
@@ -3172,7 +3228,7 @@ function getElementAutofillKey(kind, slideNumber, order) {
   return `__cim_${kind}__:${slideNumber}:${order}`;
 }
 
-function getSlide25ElementContent(element, fieldValues = {}) {
+function getSlide25ElementContent(element, fieldValues = {}, styleProfile = null) {
   const order = Number(element?.order || 0);
   if (![5, 8, 9, 10].includes(order)) return null;
 
@@ -3205,6 +3261,7 @@ function getSlide25ElementContent(element, fieldValues = {}) {
       dataUrl: svgToDataUrl(buildChartSvg(
         { ...SLIDE_25_BRIDGE_FIELD, text: "Adjusted EBITDA waterfall", label: "Adjusted EBITDA bridge" },
         { type: "waterfall", dataText: chartData },
+        styleProfile,
       )),
       name: "Adjusted EBITDA bridge",
     };
@@ -3270,7 +3327,13 @@ function getSlide27ElementContent(element, fieldValues = {}) {
   };
 }
 
-function getElementContent(slideNumber, element, fieldsById, fieldValues, assetValues, chartValues, globalDetails) {
+function getElementContent(slideNumber, element, fieldsById, fieldValues, assetValues, chartValues, globalDetails, styleProfile = null) {
+  if (element?.kind === "styleImage" && element.dataUrl) {
+    return { kind: "image", dataUrl: element.dataUrl, name: element.name || "Brand image" };
+  }
+  if (element?.kind === "styleText") {
+    return { kind: "text", text: element.text || "" };
+  }
   if (slideNumber === 9 && Number(element?.order || 0) >= 8 && Number(element?.order || 0) <= 31) {
     return { kind: "hidden" };
   }
@@ -3280,7 +3343,7 @@ function getElementContent(slideNumber, element, fieldsById, fieldValues, assetV
     return entries.length
       ? {
           kind: "chart",
-          dataUrl: svgToDataUrl(buildTimelineSvg(entries)),
+          dataUrl: svgToDataUrl(buildTimelineSvg(entries, styleProfile)),
           name: "Company growth milestones",
           bbox: [28.8, 142, 1222.08, 216],
         }
@@ -3290,7 +3353,7 @@ function getElementContent(slideNumber, element, fieldsById, fieldValues, assetV
     return { kind: "hidden" };
   }
   if (slideNumber === 25) {
-    const bridgeContent = getSlide25ElementContent(element, fieldValues);
+    const bridgeContent = getSlide25ElementContent(element, fieldValues, styleProfile);
     if (bridgeContent) return withElementLayout(slideNumber, element, bridgeContent);
   }
   if (slideNumber === 27) {
@@ -3335,7 +3398,7 @@ function getElementContent(slideNumber, element, fieldsById, fieldValues, assetV
     }
     return withElementLayout(slideNumber, element, {
       kind: "chart",
-      dataUrl: getChartDataUrl(mediaField, chartValues, fieldValues),
+      dataUrl: getChartDataUrl(mediaField, chartValues, fieldValues, styleProfile),
       name: mediaField.label,
     });
   }
@@ -4616,6 +4679,7 @@ export function SlideCanvas({
   assetValues,
   chartValues,
   globalDetails,
+  styleProfile = null,
   activeFieldId,
   onFieldFocus,
   onFieldChange,
@@ -4656,6 +4720,7 @@ export function SlideCanvas({
           resolvedAssetValues,
           resolvedChartValues,
           globalDetails,
+          styleProfile,
         );
         if (content.kind === "hidden") return null;
 
@@ -4785,11 +4850,12 @@ export function SlideCanvas({
                       fontSize: Math.max(cellStyle.fontSize * scale, 5),
                       fontWeight: cellStyle.fontWeight,
                       fontStyle: cellStyle.fontStyle,
+                      textDecoration: cellStyle.textDecoration,
                       color: cellStyle.color,
                       textAlign: cellStyle.textAlign,
                       lineHeight: cellStyle.lineHeight,
-                      whiteSpace: "pre-wrap",
-                      letterSpacing: 0,
+                      whiteSpace: cellStyle.wrap === false ? "nowrap" : "pre-wrap",
+                      letterSpacing: cellStyle.letterSpacing,
                     }}
                   >
                     <span className="block w-full">{cellText}</span>
@@ -4824,12 +4890,13 @@ export function SlideCanvas({
           fontSize: Math.max(style.fontSize * scale, 5),
           fontWeight: style.fontWeight,
           fontStyle: style.fontStyle,
+          textDecoration: style.textDecoration,
           color: style.color,
           textAlign: style.textAlign,
           lineHeight: style.lineHeight,
-          whiteSpace: "pre-wrap",
+          whiteSpace: style.wrap === false ? "nowrap" : "pre-wrap",
           overflow: "hidden",
-          letterSpacing: 0,
+          letterSpacing: style.letterSpacing,
         };
         if ((content.kind === "image" || content.kind === "chart") && content.dataUrl) {
           return (
@@ -4850,9 +4917,16 @@ export function SlideCanvas({
                   ? "transparent"
                   : fillColor === "transparent" ? "#FFFFFF" : fillColor,
                 padding: content.kind === "image" ? 0 : Math.max(4 * scale, 2),
+                opacity: Number(element.opacity ?? 1),
+                borderRadius: element.imageCornerRadius ? Math.max(Number(element.imageCornerRadius || 0) * scale, 0) : undefined,
+                border: element.imageBorderWidth
+                  ? `${Math.max(Number(element.imageBorderWidth || 0) * scale, 0.5)}px solid ${cssColor(element.imageBorderColor, "#FFFFFF")}`
+                  : commonStyle.border,
                 boxShadow:
                   !previewMode && field && activeFieldId === field.id
                     ? "0 0 0 2px rgba(139, 197, 61, 0.5)"
+                    : element.imageShadow
+                      ? "0 10px 22px rgba(17,24,39,0.16)"
                     : undefined,
               }}
             >
@@ -5110,6 +5184,7 @@ function ChartFieldControl({
   field,
   active,
   chartValues,
+  styleProfile,
   onFieldFocus,
   onChartChange,
   questionnaireItem,
@@ -5121,7 +5196,7 @@ function ChartFieldControl({
   onReviewReopen,
 }) {
   const config = getChartConfig(field, chartValues);
-  const dataUrl = getChartDataUrl(field, chartValues);
+  const dataUrl = getChartDataUrl(field, chartValues, {}, styleProfile);
 
   return (
     <div
@@ -6188,6 +6263,7 @@ function FieldPanel({
   fieldValues,
   assetValues,
   chartValues,
+  styleProfile,
   questionnaireState,
   reviewState,
   globalDetails,
@@ -6313,6 +6389,7 @@ function FieldPanel({
                   field={field}
                   active={activeFieldId === field.id}
                   chartValues={chartValues}
+                  styleProfile={styleProfile}
                   onFieldFocus={onFieldFocus}
                   onChartChange={onChartChange}
                   questionnaireItem={questionnaireItem}
@@ -6682,6 +6759,7 @@ function PreviewModal({
   assetValues,
   chartValues,
   globalDetails,
+  styleProfile,
 }) {
   if (!open) return null;
 
@@ -6739,6 +6817,7 @@ function PreviewModal({
                       assetValues={assetValues}
                       chartValues={chartValues}
                       globalDetails={globalDetails}
+                      styleProfile={styleProfile}
                       previewMode
                     />
                   </div>
@@ -6759,6 +6838,7 @@ function PreviewModal({
                 assetValues={assetValues}
                 chartValues={chartValues}
                 globalDetails={globalDetails}
+                styleProfile={styleProfile}
                 previewMode
               />
             </div>
@@ -7313,6 +7393,8 @@ export default function WorkspaceCimPrep() {
   const [chartValues, setChartValues] = useState({});
   const [questionnaireState, setQuestionnaireState] = useState(() => normalizeQuestionnaireState());
   const [reviewState, setReviewState] = useState(() => normalizeCimReviewState());
+  const [styleProfilesState, setStyleProfilesState] = useState(() => normalizeCimStyleProfilesState());
+  const [activeStyleProfileId, setActiveStyleProfileId] = useState(DEFAULT_CIM_STYLE_PROFILE_ID);
   const [companyUsers, setCompanyUsers] = useState([]);
   const [financialAutofillState, setFinancialAutofillState] = useState({
     loading: false,
@@ -7334,6 +7416,8 @@ export default function WorkspaceCimPrep() {
   const [questionnaireOpen, setQuestionnaireOpen] = useState(false);
   const [reviewPickerOpen, setReviewPickerOpen] = useState(false);
   const [reviewModalOpen, setReviewModalOpen] = useState(false);
+  const [styleEditorOpen, setStyleEditorOpen] = useState(false);
+  const [styleProfilesSaving, setStyleProfilesSaving] = useState(false);
   const [financialAutofillModalOpen, setFinancialAutofillModalOpen] = useState(false);
   const [financialAutofillRange, setFinancialAutofillRange] = useState(() => getDefaultFinancialAutofillRange());
   const [financialAutofillReportVersionId, setFinancialAutofillReportVersionId] = useState("");
@@ -7349,6 +7433,14 @@ export default function WorkspaceCimPrep() {
     }
     return result;
   }, [layouts]);
+  const activeStyleProfile = useMemo(() => (
+    styleProfilesState.profiles.find((profile) => profile.id === activeStyleProfileId) ||
+    getActiveCimStyleProfile(styleProfilesState)
+  ), [activeStyleProfileId, styleProfilesState]);
+  const styledLayouts = useMemo(
+    () => applyCimTemplateStyleProfilesToLayouts(layouts, activeStyleProfile),
+    [activeStyleProfile, layouts],
+  );
   const templateFieldCount = useMemo(
     () => Object.values(fieldsBySlide).reduce((sum, fields) => sum + fields.length, 0),
     [fieldsBySlide],
@@ -7413,6 +7505,48 @@ export default function WorkspaceCimPrep() {
   useEffect(() => {
     if (clientId) void fetchReportVersions(clientId);
   }, [clientId, fetchReportVersions]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const localKey = getStyleProfilesLocalStorageKey();
+
+    async function loadStyleProfiles() {
+      try {
+        const payload = await getCimStyleProfilesRequest({ clientId });
+        if (cancelled) return;
+        const state = normalizeCimStyleProfilesState(payload?.state || {});
+        setStyleProfilesState((previous) => normalizeCimStyleProfilesState({
+          ...state,
+          profiles: [...(previous.profiles || []), ...(state.profiles || [])],
+        }));
+        setActiveStyleProfileId((previous) => (
+          previous && previous !== DEFAULT_CIM_STYLE_PROFILE_ID ? previous : state.activeProfileId || DEFAULT_CIM_STYLE_PROFILE_ID
+        ));
+        window.localStorage.setItem(localKey, JSON.stringify(state));
+      } catch {
+        try {
+          const local = window.localStorage.getItem(localKey);
+          if (!cancelled && local) {
+            const state = normalizeCimStyleProfilesState(JSON.parse(local));
+            setStyleProfilesState((previous) => normalizeCimStyleProfilesState({
+              ...state,
+              profiles: [...(previous.profiles || []), ...(state.profiles || [])],
+            }));
+            setActiveStyleProfileId((previous) => (
+              previous && previous !== DEFAULT_CIM_STYLE_PROFILE_ID ? previous : state.activeProfileId || DEFAULT_CIM_STYLE_PROFILE_ID
+            ));
+          }
+        } catch {
+          // Malformed local style profiles should never block CIM prep.
+        }
+      }
+    }
+
+    void loadStyleProfiles();
+    return () => {
+      cancelled = true;
+    };
+  }, [clientId]);
 
   useEffect(() => {
     if (loading || reportVersionsLoading || !reportVersions.length) return;
@@ -7530,6 +7664,21 @@ export default function WorkspaceCimPrep() {
       }
       if (data.financialAutofillReportVersionId) {
         setFinancialAutofillReportVersionId(String(data.financialAutofillReportVersionId));
+      }
+      if (data.styleProfileId) {
+        setActiveStyleProfileId(String(data.styleProfileId));
+      } else if (data.styleProfiles?.activeProfileId) {
+        setActiveStyleProfileId(String(data.styleProfiles.activeProfileId));
+      }
+      if (data.styleProfiles) {
+        setStyleProfilesState((previous) => normalizeCimStyleProfilesState({
+          ...previous,
+          ...data.styleProfiles,
+          profiles: [
+            ...(previous.profiles || []),
+            ...(Array.isArray(data.styleProfiles.profiles) ? data.styleProfiles.profiles : []),
+          ],
+        }));
       }
     }
 
@@ -7959,6 +8108,39 @@ export default function WorkspaceCimPrep() {
     void handleFinancialAutofill({ dateRange, reportVersionId });
   }, [fieldsBySlide, handleFinancialAutofill, selectReportVersion]);
 
+  const handleSaveStyleProfiles = useCallback(async (nextState) => {
+    const normalized = normalizeCimStyleProfilesState(nextState);
+    const previousState = styleProfilesState;
+    const previousActiveId = activeStyleProfileId;
+    setStyleProfilesSaving(true);
+    try {
+      const payload = await saveCimStyleProfilesRequest(normalized, { clientId });
+      const savedState = normalizeCimStyleProfilesState(payload?.state || normalized);
+      const nextActiveId = savedState.profiles.some((profile) => profile.id === normalized.activeProfileId)
+        ? normalized.activeProfileId
+        : savedState.activeProfileId || DEFAULT_CIM_STYLE_PROFILE_ID;
+      setStyleProfilesState(savedState);
+      setActiveStyleProfileId(nextActiveId);
+      window.localStorage.setItem(getStyleProfilesLocalStorageKey(), JSON.stringify(savedState));
+      showToast({
+        type: "success",
+        title: "Template Style Saved",
+        message: "The selected CIM style profile will be used for preview and export.",
+      });
+    } catch (error) {
+      setStyleProfilesState(previousState);
+      setActiveStyleProfileId(previousActiveId);
+      showToast({
+        type: "error",
+        title: "Style Save Failed",
+        message: error?.message || "The template style profile could not be saved.",
+      });
+      throw error;
+    } finally {
+      setStyleProfilesSaving(false);
+    }
+  }, [activeStyleProfileId, clientId, showToast, styleProfilesState]);
+
   const handleSectionSelect = useCallback((sectionId) => {
     const nextSection = NAV_SECTIONS.find((section) => section.id === sectionId) || BASIC_DETAILS_SECTION;
     setActiveSectionId(sectionId);
@@ -8233,8 +8415,9 @@ export default function WorkspaceCimPrep() {
       assetValues,
       chartValues,
       effectiveGlobalDetails,
+      activeStyleProfile,
     );
-  }, [assetValues, chartValues, effectiveGlobalDetails, fieldValues, fieldsBySlide]);
+  }, [activeStyleProfile, assetValues, chartValues, effectiveGlobalDetails, fieldValues, fieldsBySlide]);
 
   const handleSave = useCallback(async () => {
     setSaving(true);
@@ -8247,6 +8430,13 @@ export default function WorkspaceCimPrep() {
       financialValidation: financialAutofillState.validation,
       financialAutofillRange,
       financialAutofillReportVersionId,
+      styleProfileId: activeStyleProfileId,
+      styleProfiles: {
+        version: styleProfilesState.version,
+        activeProfileId: activeStyleProfileId,
+        profiles: styleProfilesState.profiles.filter((profile) => profile.id === activeStyleProfileId && !profile.isDefault),
+        updatedAt: styleProfilesState.updatedAt,
+      },
       updatedAt: new Date().toISOString(),
     };
     const localKey = getLocalStorageKey(clientId);
@@ -8282,16 +8472,18 @@ export default function WorkspaceCimPrep() {
     assetValues,
     chartValues,
     clientId,
+    activeStyleProfileId,
     effectiveGlobalDetails,
     fieldValues,
     financialAutofillRange,
     financialAutofillReportVersionId,
     financialAutofillState.validation,
     showToast,
+    styleProfilesState,
   ]);
 
   const handleExport = useCallback(() => {
-    const missingSlides = PREVIEW_SLIDES.filter((slideNumber) => !layouts[slideNumber]);
+    const missingSlides = PREVIEW_SLIDES.filter((slideNumber) => !styledLayouts[slideNumber]);
     if (missingSlides.length > 0) {
       showToast({
         type: "error",
@@ -8306,10 +8498,11 @@ export default function WorkspaceCimPrep() {
     );
     const exportSlides = buildCimExportSlides(fieldValues);
     exportCimPptx({
-      layouts,
+      layouts: styledLayouts,
       slideNumbers: exportSlides,
       getElementContent: getExportElementContent,
       filename: `${baseName}-CIM.pptx`,
+      styleProfile: isDefaultCimStyleProfile(activeStyleProfile) ? null : activeStyleProfile,
     });
     showToast({
       type: "success",
@@ -8321,7 +8514,8 @@ export default function WorkspaceCimPrep() {
     effectiveGlobalDetails,
     fieldValues,
     getExportElementContent,
-    layouts,
+    activeStyleProfile,
+    styledLayouts,
     showToast,
   ]);
 
@@ -8372,15 +8566,18 @@ export default function WorkspaceCimPrep() {
           </button>
           <button
             onClick={() => setQuestionnaireOpen(true)}
-            className="theme-btn-secondary"
+            className="group relative flex h-10 w-10 items-center justify-center rounded-md border border-border bg-white text-[#6D6E71] transition hover:border-[#8BC53D] hover:bg-[#EEF6E0] hover:text-[#476E2C]"
+            aria-label={`Questionnaire${questionnaireCounts.total > 0 ? ` (${questionnaireCounts.total})` : ""}`}
           >
             <ClipboardList size={16} />
-            Questionnaire
             {questionnaireCounts.total > 0 && (
-              <span className="ml-1 rounded-full bg-[#EEF6E0] px-1.5 py-0.5 text-[11px] font-bold text-[#476E2C]">
+              <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full border-2 border-white bg-[#8BC53D] px-1 text-[10px] font-bold leading-none text-white">
                 {questionnaireCounts.total}
               </span>
             )}
+            <span className="pointer-events-none absolute right-0 top-full z-50 mt-2 whitespace-nowrap rounded-md bg-[#050505] px-2 py-1 text-xs font-semibold text-white opacity-0 shadow-lg transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+              Questionnaire
+            </span>
           </button>
           <button
             onClick={() => setReviewPickerOpen(true)}
@@ -8405,6 +8602,19 @@ export default function WorkspaceCimPrep() {
             )}
             <span className="pointer-events-none absolute right-0 top-full z-50 mt-2 whitespace-nowrap rounded-md bg-[#050505] px-2 py-1 text-xs font-semibold text-white opacity-0 shadow-lg transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
               Review notes
+            </span>
+          </button>
+          <button
+            onClick={() => setStyleEditorOpen(true)}
+            className="group relative flex h-10 w-10 items-center justify-center rounded-md border border-border bg-white text-[#6D6E71] transition hover:border-[#8BC53D] hover:bg-[#EEF6E0] hover:text-[#476E2C]"
+            aria-label="Customize template"
+          >
+            <Palette size={16} />
+            {!isDefaultCimStyleProfile(activeStyleProfile) ? (
+              <span className="absolute -right-1 -top-1 h-3 w-3 rounded-full border-2 border-white bg-[#8BC53D]" />
+            ) : null}
+            <span className="pointer-events-none absolute right-0 top-full z-50 mt-2 whitespace-nowrap rounded-md bg-[#050505] px-2 py-1 text-xs font-semibold text-white opacity-0 shadow-lg transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+              {isDefaultCimStyleProfile(activeStyleProfile) ? "Customize template" : `Template: ${activeStyleProfile.name}`}
             </span>
           </button>
           <button
@@ -8513,12 +8723,13 @@ export default function WorkspaceCimPrep() {
               <SlideCanvas
                 slideNumber={activeSlide}
                 displaySlideNumber={activeSlideInstance > 0 ? `${activeSlide}.${activeSlideInstance + 1}` : activeSlide}
-                layout={layouts[activeSlide]}
+                layout={styledLayouts[activeSlide]}
                 fields={activeFields}
                 fieldValues={activeCanvasFieldValues}
                 assetValues={assetValues}
                 chartValues={chartValues}
                 globalDetails={effectiveGlobalDetails}
+                styleProfile={activeStyleProfile}
                 activeFieldId={activeFieldId}
                 onFieldFocus={setActiveFieldId}
                 onFieldChange={handleFieldChange}
@@ -8543,6 +8754,7 @@ export default function WorkspaceCimPrep() {
             fieldValues={fieldValues}
             assetValues={assetValues}
             chartValues={chartValues}
+            styleProfile={activeStyleProfile}
             questionnaireState={questionnaireState}
             reviewState={reviewState}
             globalDetails={effectiveGlobalDetails}
@@ -8609,6 +8821,35 @@ export default function WorkspaceCimPrep() {
         />
       ) : null}
 
+      {styleEditorOpen ? (
+        <CimTemplateStyleEditor
+          open
+          profilesState={{
+            ...styleProfilesState,
+            activeProfileId: activeStyleProfileId,
+          }}
+          previewSlides={TEMPLATE_SLIDES}
+          sections={NAV_SECTIONS}
+          saving={styleProfilesSaving}
+          onClose={() => setStyleEditorOpen(false)}
+          onSave={handleSaveStyleProfiles}
+          renderPreview={({ profile, slideNumber }) => (
+            <SlideCanvas
+              slideNumber={slideNumber}
+              displaySlideNumber={slideNumber}
+              layout={applyCimTemplateStyleProfile(slideNumber, layouts[slideNumber], profile)}
+              fields={fieldsBySlide[slideNumber] || []}
+              fieldValues={fieldValues}
+              assetValues={assetValues}
+              chartValues={chartValues}
+              globalDetails={effectiveGlobalDetails}
+              styleProfile={profile}
+              previewMode
+            />
+          )}
+        />
+      ) : null}
+
       <FinancialAutofillProgressOverlay state={financialAutofillState} />
 
       <PreviewModal
@@ -8616,12 +8857,13 @@ export default function WorkspaceCimPrep() {
         previewSlideIndex={previewSlideIndex}
         onClose={() => setPreviewOpen(false)}
         onSlideIndexChange={setPreviewSlideIndex}
-        layouts={layouts}
+        layouts={styledLayouts}
         fieldsBySlide={fieldsBySlide}
         fieldValues={fieldValues}
         assetValues={assetValues}
         chartValues={chartValues}
         globalDetails={effectiveGlobalDetails}
+        styleProfile={activeStyleProfile}
       />
     </div>
   );
