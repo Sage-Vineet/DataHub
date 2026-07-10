@@ -22,7 +22,6 @@ import {
 } from "../../../lib/api";
 import {
   transformKeyReportFinancials,
-  readCachedFinancials,
   writeCachedFinancials,
 } from "../../../lib/keyReportFinancials";
 import { MANUAL_GL_STAGED_EVENT } from "../../../lib/dataSourceEvents";
@@ -1327,19 +1326,24 @@ export default function WorkspaceReports() {
     if (kr.krActive && kr.selectedVersionId) {
       setIsLoading(true);
       try {
-        // L1: in-memory (same mount). L2: sessionStorage (survives navigation).
-        // Only hit the network on a genuine first load / cache miss.
+        // L1 in-memory cache (same mount) only. The sessionStorage L2 cache is
+        // deliberately NOT read here: it is keyed by versionId with no staleness
+        // signal, so after a re-generate (the numbers change but the versionId
+        // does not) an L2 hit would serve the PRE-regenerate response — often the
+        // empty "no data yet" payload from before the version finished generating —
+        // with NO network call, leaving the report blank. The backend now has a
+        // fast, staleness-aware result cache (keyed by last_synced_at + COA edit),
+        // so going to the network is both correct and quick (~1.5s).
         let response =
           krFinancialsCacheRef.current.versionId === kr.selectedVersionId
             ? krFinancialsCacheRef.current.data
             : null;
         if (!response) {
-          response = readCachedFinancials(clientId, kr.selectedVersionId);
-        }
-        if (!response) {
           response = await getFinancialStatements(kr.selectedVersionId, {
             currency: "USD",
           });
+          // Refresh the L2 cache with the fresh payload so other pages (e.g. Bank
+          // Reconciliation) reuse the current numbers rather than a stale copy.
           writeCachedFinancials(clientId, kr.selectedVersionId, response);
         }
         krFinancialsCacheRef.current = {
@@ -1399,9 +1403,12 @@ export default function WorkspaceReports() {
     }
 
     // Key Reports is the active source but no usable Key Report Version resolved
-    // yet (e.g. none created/synced). Do NOT fall through to the QuickBooks fetch
-    // path — leave the report empty until a version is available.
-    if (selectedSourceMode === "key_reports") {
+    // yet (e.g. none created/synced, or the version detail is still loading). Do
+    // NOT fall through to the QuickBooks / manual fetch path — that leaks a
+    // profit-and-loss request (which 404s when there's no QuickBooks connection)
+    // and paints an empty report. Gate on krSelected too so this also covers the
+    // brief window before the active source resolves and krActive settles.
+    if (krSelected || selectedSourceMode === "key_reports") {
       setReportsData((prev) => ({
         ...prev,
         [selectedTab]: createInitialReportsData()[selectedTab],
@@ -1671,6 +1678,7 @@ export default function WorkspaceReports() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     selectedQMSRowId[selectedTab],
     selectedManualCfYear,
+    krSelected,
     kr.krActive,
     kr.selectedVersionId,
   ]);
