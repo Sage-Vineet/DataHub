@@ -22,7 +22,6 @@ import {
 } from "../../../lib/api";
 import {
   transformKeyReportFinancials,
-  readCachedFinancials,
   writeCachedFinancials,
 } from "../../../lib/keyReportFinancials";
 import { MANUAL_GL_STAGED_EVENT } from "../../../lib/dataSourceEvents";
@@ -1327,19 +1326,24 @@ export default function WorkspaceReports() {
     if (kr.krActive && kr.selectedVersionId) {
       setIsLoading(true);
       try {
-        // L1: in-memory (same mount). L2: sessionStorage (survives navigation).
-        // Only hit the network on a genuine first load / cache miss.
+        // L1 in-memory cache (same mount) only. The sessionStorage L2 cache is
+        // deliberately NOT read here: it is keyed by versionId with no staleness
+        // signal, so after a re-generate (the numbers change but the versionId
+        // does not) an L2 hit would serve the PRE-regenerate response — often the
+        // empty "no data yet" payload from before the version finished generating —
+        // with NO network call, leaving the report blank. The backend now has a
+        // fast, staleness-aware result cache (keyed by last_synced_at + COA edit),
+        // so going to the network is both correct and quick (~1.5s).
         let response =
           krFinancialsCacheRef.current.versionId === kr.selectedVersionId
             ? krFinancialsCacheRef.current.data
             : null;
         if (!response) {
-          response = readCachedFinancials(clientId, kr.selectedVersionId);
-        }
-        if (!response) {
           response = await getFinancialStatements(kr.selectedVersionId, {
             currency: "USD",
           });
+          // Refresh the L2 cache with the fresh payload so other pages (e.g. Bank
+          // Reconciliation) reuse the current numbers rather than a stale copy.
           writeCachedFinancials(clientId, kr.selectedVersionId, response);
         }
         krFinancialsCacheRef.current = {
@@ -1674,6 +1678,7 @@ export default function WorkspaceReports() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     selectedQMSRowId[selectedTab],
     selectedManualCfYear,
+    krSelected,
     kr.krActive,
     kr.selectedVersionId,
   ]);
