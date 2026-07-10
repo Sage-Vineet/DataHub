@@ -4970,8 +4970,8 @@ export function SlideCanvas({
               type="button"
               onClick={() => onFieldFocus(field.id)}
               className={`absolute overflow-hidden rounded-[2px] border border-dashed outline-none transition ${activeFieldId === field.id
-                  ? "border-[#8BC53D] ring-2 ring-[#8BC53D]/30"
-                  : "border-[#8BC53D]/60 hover:border-[#8BC53D]"
+                ? "border-[#8BC53D] ring-2 ring-[#8BC53D]/30"
+                : "border-[#8BC53D]/60 hover:border-[#8BC53D]"
                 }`}
               style={{
                 ...textStyle,
@@ -5007,8 +5007,8 @@ export function SlideCanvas({
             onChange={(event) => onFieldChange(field.id, event.target.value)}
             maxLength={field.maxLength || undefined}
             className={`absolute resize-none overflow-hidden rounded-[2px] border px-1 py-0.5 outline-none transition ${activeFieldId === field.id
-                ? "border-[#8BC53D] ring-2 ring-[#8BC53D]/30"
-                : "border-[#8BC53D]/45 hover:border-[#8BC53D]"
+              ? "border-[#8BC53D] ring-2 ring-[#8BC53D]/30"
+              : "border-[#8BC53D]/45 hover:border-[#8BC53D]"
               }`}
             style={{
               ...textStyle,
@@ -5057,8 +5057,8 @@ function SectionDrawer({
               key={section.id}
               onClick={() => onSelectSection(section.id)}
               className={`flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left transition ${isActive
-                  ? "bg-[#EEF6E0] text-[#476E2C]"
-                  : "text-[#6D6E71] hover:bg-[#F0F7E6] hover:text-[#1A1A2E]"
+                ? "bg-[#EEF6E0] text-[#476E2C]"
+                : "text-[#6D6E71] hover:bg-[#F0F7E6] hover:text-[#1A1A2E]"
                 }`}
             >
               <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[#476E2C] text-xs font-bold text-white">
@@ -6245,8 +6245,8 @@ function CimReviewFieldBadge({ field, item, onAddNote, onResolve, onReopen }) {
           setOpen(true);
         }}
         className={`mt-2 inline-flex h-7 items-center gap-1 rounded-md border px-2 text-[11px] font-bold transition ${isOpen
-            ? "border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100"
-            : "border-border bg-white text-[#6D6E71] hover:bg-[#FAFBFC]"
+          ? "border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100"
+          : "border-border bg-white text-[#6D6E71] hover:bg-[#FAFBFC]"
           }`}
       >
         <Flag size={12} />
@@ -6880,8 +6880,8 @@ function PreviewModal({
                     key={`${slideNumber}-${slideRef.instanceIndex}`}
                     onClick={() => onSlideIndexChange(index)}
                     className={`block w-full overflow-hidden rounded-md border text-left transition ${index === previewSlideIndex
-                        ? "border-[#8BC53D] ring-2 ring-[#8BC53D]/25"
-                        : "border-border hover:border-[#8BC53D]/60"
+                      ? "border-[#8BC53D] ring-2 ring-[#8BC53D]/25"
+                      : "border-border hover:border-[#8BC53D]/60"
                       }`}
                   >
                     <div className="pointer-events-none">
@@ -7115,8 +7115,8 @@ function QuestionnaireReviewModal({
                     type="button"
                     onClick={() => setBuilderSectionId(section.id)}
                     className={`flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left transition ${active
-                        ? "bg-[#EEF6E0] text-[#476E2C]"
-                        : "text-[#6D6E71] hover:bg-[#F0F7E6] hover:text-[#050505]"
+                      ? "bg-[#EEF6E0] text-[#476E2C]"
+                      : "text-[#6D6E71] hover:bg-[#F0F7E6] hover:text-[#050505]"
                       }`}
                   >
                     <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[#476E2C] text-xs font-bold text-white">
@@ -7403,8 +7403,8 @@ function CimReviewModal({ onClose, reviewState, onAddNote, onResolve, onReopen }
               type="button"
               onClick={() => setFilter(value)}
               className={`rounded-md border px-3 py-1.5 text-xs font-bold transition ${filter === value
-                  ? "border-[#8BC53D] bg-[#EEF6E0] text-[#476E2C]"
-                  : "border-border bg-white text-[#6D6E71] hover:border-[#8BC53D]/60"
+                ? "border-[#8BC53D] bg-[#EEF6E0] text-[#476E2C]"
+                : "border-border bg-white text-[#6D6E71] hover:border-[#8BC53D]/60"
                 }`}
             >
               {label}
@@ -8228,39 +8228,6 @@ export default function WorkspaceCimPrep() {
     setSelectedDatasetVersion,
   ]);
 
-  const handleSaveStyleProfiles = useCallback(async (nextState) => {
-    const normalized = normalizeCimStyleProfilesState(nextState);
-    const previousState = styleProfilesState;
-    const previousActiveId = activeStyleProfileId;
-    setStyleProfilesSaving(true);
-    try {
-      const payload = await saveCimStyleProfilesRequest(normalized, { clientId });
-      const savedState = normalizeCimStyleProfilesState(payload?.state || normalized);
-      const nextActiveId = savedState.profiles.some((profile) => profile.id === normalized.activeProfileId)
-        ? normalized.activeProfileId
-        : savedState.activeProfileId || DEFAULT_CIM_STYLE_PROFILE_ID;
-      setStyleProfilesState(savedState);
-      setActiveStyleProfileId(nextActiveId);
-      window.localStorage.setItem(getStyleProfilesLocalStorageKey(), JSON.stringify(savedState));
-      showToast({
-        type: "success",
-        title: "Template Style Saved",
-        message: "The selected CIM style profile will be used for preview and export.",
-      });
-    } catch (error) {
-      setStyleProfilesState(previousState);
-      setActiveStyleProfileId(previousActiveId);
-      showToast({
-        type: "error",
-        title: "Style Save Failed",
-        message: error?.message || "The template style profile could not be saved.",
-      });
-      throw error;
-    } finally {
-      setStyleProfilesSaving(false);
-    }
-  }, [activeStyleProfileId, clientId, showToast, styleProfilesState]);
-
   const handleSectionSelect = useCallback((sectionId) => {
     const nextSection = NAV_SECTIONS.find((section) => section.id === sectionId) || BASIC_DETAILS_SECTION;
     setActiveSectionId(sectionId);
@@ -8431,10 +8398,10 @@ export default function WorkspaceCimPrep() {
 
     const effectiveReportVersionId = isKeyReportsSource
       ? financialAutofillReportVersionId ||
-        selectedReportVersionId ||
-        reportVersions.find((version) => version.isActive)?.id ||
-        reportVersions[0]?.id ||
-        ""
+      selectedReportVersionId ||
+      reportVersions.find((version) => version.isActive)?.id ||
+      reportVersions[0]?.id ||
+      ""
       : "";
     if (isKeyReportsSource && !effectiveReportVersionId) {
       throw new Error("Choose a Key Reports version before analyzing a custom template.");
@@ -9184,8 +9151,8 @@ export default function WorkspaceCimPrep() {
                           setActiveFieldId("");
                         }}
                         className={`shrink-0 rounded-md border px-3 py-2 text-xs font-bold transition ${selected
-                            ? "border-[#8BC53D] bg-[#EEF6E0] text-[#476E2C]"
-                            : "border-border bg-white text-[#6D6E71] hover:border-[#8BC53D]/60"
+                          ? "border-[#8BC53D] bg-[#EEF6E0] text-[#476E2C]"
+                          : "border-border bg-white text-[#6D6E71] hover:border-[#8BC53D]/60"
                           }`}
                       >
                         Slide {slideNumber}{instanceIndex > 0 ? `.${instanceIndex + 1}` : ""}
