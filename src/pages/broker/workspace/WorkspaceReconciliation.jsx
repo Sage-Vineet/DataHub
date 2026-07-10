@@ -592,6 +592,56 @@ function parseManualPLItems(files) {
   return { plIncomeItems, plExpenseItems };
 }
 
+// Parse P&L income/expense line items from a Key Reports financial-statements
+// response (the same payload the Reports page renders). Produces the same
+// { name, source, monthAmounts } shape parseManualPLItems returns, with
+// monthAmounts keyed "YYYY-MM" to match the bank-activity month keys. Scans the
+// monthly statements for per-month amounts, then the yearly statements so every
+// P&L account name still appears even when the version has no monthly breakdown.
+function parsePLItemsFromFinancials(response) {
+  const pl = response?.reports?.profitAndLoss || {};
+  const incomeByName = new Map();
+  const expenseByName = new Map();
+  const ensure = (map, source, name) => {
+    const nm = String(name || "").trim();
+    if (!nm) return null;
+    let item = map.get(nm);
+    if (!item) { item = { name: nm, source, monthAmounts: {} }; map.set(nm, item); }
+    return item;
+  };
+  const addMonth = (map, source, name, mk, amount) => {
+    const item = ensure(map, source, name);
+    if (item && mk && amount != null && amount !== 0) {
+      item.monthAmounts[mk] = (item.monthAmounts[mk] || 0) + amount;
+    }
+  };
+  const scan = (st, mk) => {
+    if (!st) return;
+    for (const a of (st.revenue?.accounts || [])) {
+      if (mk) addMonth(incomeByName, "pl_income", a.name, mk, Number(a.amount) || 0);
+      else ensure(incomeByName, "pl_income", a.name);
+    }
+    for (const a of (st.costOfSales?.accounts || [])) {
+      if (mk) addMonth(expenseByName, "pl_expense", a.name, mk, Number(a.amount) || 0);
+      else ensure(expenseByName, "pl_expense", a.name);
+    }
+    for (const g of Object.values(st.operatingExpenses?.groups || {})) {
+      for (const a of (g.accounts || [])) {
+        if (mk) addMonth(expenseByName, "pl_expense", a.name, mk, Number(a.amount) || 0);
+        else ensure(expenseByName, "pl_expense", a.name);
+      }
+    }
+  };
+  for (const e of (pl.monthly || [])) {
+    const y = Number(e?.year);
+    const mn = Number(e?.monthNumber);
+    const mk = Number.isInteger(y) && mn >= 1 && mn <= 12 ? `${y}-${String(mn).padStart(2, "0")}` : null;
+    scan(e?.statement, mk);
+  }
+  for (const e of (pl.yearly || [])) scan(e?.statement, null);
+  return { plIncomeItems: [...incomeByName.values()], plExpenseItems: [...expenseByName.values()] };
+}
+
 function AddbackPickerModal({
   isOpen,
   section,
@@ -603,12 +653,17 @@ function AddbackPickerModal({
   getHeaders,
   existingItems,
   reportSource,
+  krVersionId,
   onAdd,
   onClose,
 }) {
   const isQBOnline = reportSource === "quickbooks_online";
   const isManualUpload = reportSource === "manual_upload_excel_pdf";
-  const hasPLData = isQBOnline || isManualUpload;
+  // Key Reports mode: P&L line items come from the selected version's generated
+  // financial statements (same source the Reports page uses), not the QB/manual
+  // endpoints — which is why the picker showed "No items available" in KR mode.
+  const isKeyReports = Boolean(krVersionId);
+  const hasPLData = isQBOnline || isManualUpload || isKeyReports;
 
   // Default tab: deposits→income items, withdrawals→expense items; no-P&L modes→manual only
   const defaultTab = hasPLData ? (section === "withdrawals" ? "expense" : "income") : "manual";
@@ -629,6 +684,28 @@ function AddbackPickerModal({
     if (!hasPLData || !clientId) return;
 
     setLoading(true);
+
+    if (isKeyReports) {
+      // KR: derive P&L income/expense items from the version's financial
+      // statements (reusing the Reports page's sessionStorage cache).
+      let cancelled = false;
+      (async () => {
+        try {
+          let resp = readCachedFinancials(clientId, krVersionId);
+          if (!resp) {
+            resp = await getFinancialStatements(krVersionId, { currency: "USD" });
+            if (resp) writeCachedFinancials(clientId, krVersionId, resp);
+          }
+          if (cancelled) return;
+          setLineItems(parsePLItemsFromFinancials(resp));
+        } catch {
+          if (!cancelled) setFetchError("Could not load P&L items for this Key Reports version.");
+        } finally {
+          if (!cancelled) setLoading(false);
+        }
+      })();
+      return () => { cancelled = true; };
+    }
 
     if (isQBOnline) {
       const params = new URLSearchParams({
@@ -661,7 +738,7 @@ function AddbackPickerModal({
         .catch(() => setFetchError("Could not load P&L items from manual upload."))
         .finally(() => setLoading(false));
     }
-  }, [isOpen, reportSource, section, clientId, startDate, endDate, accountingMethod]);
+  }, [isOpen, reportSource, section, clientId, startDate, endDate, accountingMethod, krVersionId]);
 
   if (!isOpen) return null;
 
@@ -3941,6 +4018,7 @@ export default function WorkspaceReconciliation() {
           getHeaders={getHeaders}
           existingItems={addbackItems}
           reportSource={selectedReportSource}
+          krVersionId={kr.krActive ? kr.selectedVersionId : null}
           onAdd={(name, source, monthAmounts) =>
             createAddbackItem(addbackPickerState.section, name, source, monthAmounts)
           }

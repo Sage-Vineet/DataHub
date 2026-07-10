@@ -23,8 +23,9 @@ import {
   listManualGlDatasetVersions,
   getTaxReconciliationOverrides,
   saveTaxReconciliationOverrides,
-  getKeyReportVersionReport,
+  getFinancialStatements,
 } from "../../../lib/api";
+import { readCachedFinancials, writeCachedFinancials } from "../../../lib/keyReportFinancials";
 import { useDataSource } from "../../../context/DataSourceContext";
 
 import {
@@ -118,6 +119,34 @@ function extractTaxRowsFromManualPL(rows) {
     { label: "All Other Income", pl: otherIncome },
     { label: "Net Income", pl: netIncome },
   ];
+}
+
+// Build the flat P&L rows (name / amount / type) that extractTaxRowsFromManualPL
+// consumes, from a Key Reports financial-statements response for one fiscal year.
+// This lets the Tax Reconciliation P&L come from the SAME working source the
+// Reports page uses (generateFinancialStatements) instead of the profit-loss
+// report endpoint — which currently errors on some versions and left the P&L
+// column blank. Section totals are typed "total" (so findByPatterns prefers
+// them); individual accounts are typed "data" so the Officer Wages / Depreciation
+// / Amortization / Interest line matches still work.
+function financialsToPLRows(response, year) {
+  const yr = String(year);
+  const entry = (response?.reports?.profitAndLoss?.yearly || []).find((e) => String(e?.year) === yr);
+  const st = entry?.statement;
+  if (!st) return [];
+  const rows = [];
+  const num = (v) => Number(v) || 0;
+  rows.push({ name: "Total Revenue", amount: num(st.revenue?.total), type: "total" });
+  rows.push({ name: "Total Cost of Goods Sold", amount: num(st.costOfSales?.total), type: "total" });
+  rows.push({ name: "Gross Profit", amount: num(st.grossProfit), type: "total" });
+  for (const g of Object.values(st.operatingExpenses?.groups || {})) {
+    for (const a of (g.accounts || [])) rows.push({ name: a.name, amount: num(a.amount), type: "data" });
+  }
+  for (const a of (st.costOfSales?.accounts || [])) rows.push({ name: a.name, amount: num(a.amount), type: "data" });
+  rows.push({ name: "Total Expenses", amount: num(st.operatingExpenses?.total), type: "total" });
+  for (const a of (st.revenue?.accounts || [])) rows.push({ name: a.name, amount: num(a.amount), type: "data" });
+  rows.push({ name: "Net Income", amount: num(st.netIncome), type: "total" });
+  return rows;
 }
 
 // ── Formatting ─────────────────────────────────────────────────────────────
@@ -554,25 +583,27 @@ export default function WorkspaceTaxReconciliation() {
         let plYears = {};
         let taxRes;
         if (kr.krActive && kr.selectedVersionId) {
-          const [plEntries, taxResRaw] = await Promise.all([
-            Promise.all(selectedYears.map(async (y) => {
-              try {
-                const resp = await getKeyReportVersionReport(
-                  kr.selectedVersionId,
-                  "profit-loss",
-                  { year: String(y), period: "year" },
-                );
-                const rows = resp?.hierarchicalRows || resp?.rows || [];
-                const data = extractTaxRowsFromManualPL(rows);
-                // Skip years with no P&L so empty years don't create blank columns.
-                return data.some((d) => Number(d.pl) !== 0) ? [y, { year: y, data }] : null;
-              } catch {
-                return null;
+          // P&L comes from the version's generated financial statements — the same
+          // reliable source the Reports page uses (reusing its sessionStorage
+          // cache). The previous profit-loss report endpoint errored on some
+          // versions, which left this whole P&L column blank.
+          const [fsResp, taxResRaw] = await Promise.all([
+            (async () => {
+              let resp = readCachedFinancials(clientId, kr.selectedVersionId);
+              if (!resp) {
+                resp = await getFinancialStatements(kr.selectedVersionId, { currency: "USD" }).catch(() => null);
+                if (resp) writeCachedFinancials(clientId, kr.selectedVersionId, resp);
               }
-            })),
+              return resp;
+            })(),
             fetch(`${API_BASE_URL}/manual-report-uploads/tax-data?clientId=${clientId || ""}${forceParam}${krVersionParam}`, { headers })
               .then((r) => r.json()).catch(() => ({ success: false })),
           ]);
+          const plEntries = selectedYears.map((y) => {
+            const data = extractTaxRowsFromManualPL(financialsToPLRows(fsResp, y));
+            // Skip years with no P&L so empty years don't create blank columns.
+            return data.some((d) => Number(d.pl) !== 0) ? [y, { year: y, data }] : null;
+          });
           plYears = Object.fromEntries(plEntries.filter(Boolean));
           taxRes = taxResRaw;
         } else {
