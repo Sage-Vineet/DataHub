@@ -217,7 +217,9 @@ async function buildValidationResultsFromEntryTables(versionId, mappingsByCatego
     { key: 'tax_return', table: 'tax_return_entries', yearCol: 'tax_year', isDateCol: false },
     { key: 'bank_statement', table: 'bank_statement_entries', yearCol: 'statement_month', isDateCol: true },
     { key: 'balance_sheet', table: 'balance_sheet_entries', yearCol: 'fiscal_year', isDateCol: false },
-    { key: 'general_ledger', table: 'general_ledger_entries', yearCol: 'fiscal_year', isDateCol: false },
+    // fiscal_year no longer exists on general_ledger_entries (migration 069) —
+    // transaction_date is always populated, so a date-range filter works.
+    { key: 'general_ledger', table: 'general_ledger_entries', yearCol: 'transaction_date', isDateCol: true },
   ];
 
   const labels = {

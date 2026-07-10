@@ -723,3 +723,36 @@ CREATE TABLE IF NOT EXISTS workspace_page_state (
 
 CREATE INDEX IF NOT EXISTS idx_workspace_page_state_company
   ON workspace_page_state(company_id, updated_at DESC);
+
+-- ============================================================================
+-- Key Report Date Dimension (migration 067) — client Excel spec: id/date/year/month/
+-- quarter/month_name only, no fiscal_* columns. general_ledger_entries.date_id
+-- (nullable FK, additive) is defined by migration 067; transaction_date is
+-- unchanged and remains the column every GL filter uses directly.
+--
+-- Named key_report_date_dimension (not date_dimension) to avoid collision
+-- with the existing date_dimension table, which has a different schema.
+--
+-- NOTE: general_ledger_entries (created by migration 049, reshaped by 050/060,
+-- backfilled by 063) predates this schema.sql mirroring convention and is not
+-- reproduced here in full — see backend/sql/migrations/049, 050, 060, 063 for
+-- its authoritative definition. Migrations 067 (date_id) and 068
+-- (vendor/customer/entity_type) are additive columns on that table. Migration
+-- 069 subsequently DROPPED fiscal_year/fiscal_month from general_ledger_entries
+-- entirely (client Date Architecture Refactor) — year/month/quarter/month_name
+-- now come exclusively from the date_id → key_report_date_dimension join;
+-- filtering uses transaction_date directly. If reproducing this table's DDL
+-- from scratch, do not include fiscal_year/fiscal_month.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS key_report_date_dimension (
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  date        date NOT NULL,
+  year        integer NOT NULL,
+  month       integer NOT NULL,
+  quarter     integer NOT NULL,
+  month_name  text NOT NULL,
+  CONSTRAINT uq_key_report_date_dimension_date UNIQUE (date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_key_report_date_dimension_year_month
+  ON key_report_date_dimension(year, month);

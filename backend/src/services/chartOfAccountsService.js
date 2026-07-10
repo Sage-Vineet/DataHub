@@ -56,36 +56,43 @@ function appendAudit(existing, ...entries) {
 }
 
 // Standardized hierarchy taxonomy (formerly the coa_hierarchy_levels seed table,
-// removed in migration 055). Kept in lock-step with coaHierarchyRules.STANDARD_PREFIX
-// and the deeper expense groups; served to the UI level filters.
+// removed in migration 055). Kept in lock-step with coaHierarchyRules'
+// SECTION_STANDARD_LEVELS/TYPE_STANDARD_LEVELS and the deeper expense groups;
+// served to the UI level filters (GET /key-reports/hierarchy-levels).
+//
+// UNIFIED hierarchy (client spec): one root "Total Liabilities and Equity"
+// (Net Income nests under Total Equity), plus its parallel "Total Assets"
+// root — not the split "Income Statement"/"Balance Sheet" two-root model
+// this replaced. Positions below mirror exactly what buildLevelsFromPath
+// actually emits (self-referential stubs are omitted — they'd be deduped).
 const HIERARCHY_LEVELS = Object.freeze([
-  { level_number: 1, statement_type: "profit_loss",   parent_label: null,                 label: "Income Statement", sort_order: 1, is_standard: true },
-  { level_number: 1, statement_type: "balance_sheet", parent_label: null,                 label: "Balance Sheet",    sort_order: 2, is_standard: true },
-  { level_number: 2, statement_type: "profit_loss",   parent_label: "Income Statement",   label: "Net Income",        sort_order: 1, is_standard: true },
-  { level_number: 2, statement_type: "balance_sheet", parent_label: "Balance Sheet",      label: "Total Assets",      sort_order: 2, is_standard: true },
-  { level_number: 2, statement_type: "balance_sheet", parent_label: "Balance Sheet",      label: "Total Liabilities", sort_order: 3, is_standard: true },
-  { level_number: 2, statement_type: "balance_sheet", parent_label: "Balance Sheet",      label: "Total Equity",      sort_order: 4, is_standard: true },
-  { level_number: 3, statement_type: "profit_loss",   parent_label: "Net Income",         label: "Pretax Income",         sort_order: 1, is_standard: true },
-  { level_number: 3, statement_type: "balance_sheet", parent_label: "Total Assets",       label: "Current Assets",        sort_order: 2, is_standard: true },
-  { level_number: 3, statement_type: "balance_sheet", parent_label: "Total Assets",       label: "Fixed Assets",          sort_order: 3, is_standard: true },
-  { level_number: 3, statement_type: "balance_sheet", parent_label: "Total Assets",       label: "Other Assets",          sort_order: 4, is_standard: true },
-  { level_number: 3, statement_type: "balance_sheet", parent_label: "Total Liabilities",  label: "Current Liabilities",   sort_order: 5, is_standard: true },
-  { level_number: 3, statement_type: "balance_sheet", parent_label: "Total Liabilities",  label: "Long-Term Liabilities", sort_order: 6, is_standard: true },
-  { level_number: 4, statement_type: "profit_loss",   parent_label: "Pretax Income",      label: "Operating Income", sort_order: 1, is_standard: true },
-  { level_number: 5, statement_type: "profit_loss",   parent_label: "Operating Income",   label: "Gross Profit",     sort_order: 1, is_standard: true },
-  { level_number: 6, statement_type: "profit_loss",   parent_label: "Gross Profit",       label: "Total Revenue",    sort_order: 1, is_standard: true },
-  { level_number: 6, statement_type: "profit_loss",   parent_label: "Gross Profit",       label: "Total Expenses",   sort_order: 2, is_standard: true },
-  { level_number: 7, statement_type: "profit_loss",   parent_label: "Total Revenue",      label: "Income",   sort_order: 1, is_standard: true },
-  { level_number: 7, statement_type: "profit_loss",   parent_label: "Total Expenses",     label: "Expenses", sort_order: 2, is_standard: true },
-  { level_number: 8, statement_type: "profit_loss",   parent_label: "Expenses", label: "Payroll and Labor",          sort_order: 1, is_standard: true },
-  { level_number: 8, statement_type: "profit_loss",   parent_label: "Expenses", label: "Cost of Sales",              sort_order: 2, is_standard: true },
-  { level_number: 8, statement_type: "profit_loss",   parent_label: "Expenses", label: "Occupancy",                  sort_order: 3, is_standard: true },
-  { level_number: 8, statement_type: "profit_loss",   parent_label: "Expenses", label: "Insurance",                  sort_order: 4, is_standard: true },
-  { level_number: 8, statement_type: "profit_loss",   parent_label: "Expenses", label: "Sales and Marketing",        sort_order: 5, is_standard: true },
-  { level_number: 8, statement_type: "profit_loss",   parent_label: "Expenses", label: "General and Administrative", sort_order: 6, is_standard: true },
-  { level_number: 8, statement_type: "profit_loss",   parent_label: "Expenses", label: "Vehicle and Travel",         sort_order: 7, is_standard: true },
-  { level_number: 8, statement_type: "profit_loss",   parent_label: "Expenses", label: "Repairs and Maintenance",    sort_order: 8, is_standard: true },
-  { level_number: 8, statement_type: "profit_loss",   parent_label: "Expenses", label: "Non-Cash and Below-Line",    sort_order: 9, is_standard: true },
+  { level_number: 1, statement_type: "balance_sheet", parent_label: null,                        label: "Total Liabilities and Equity", sort_order: 1, is_standard: true },
+  { level_number: 1, statement_type: "balance_sheet", parent_label: null,                        label: "Total Assets",                 sort_order: 2, is_standard: true },
+  { level_number: 2, statement_type: "balance_sheet", parent_label: "Total Liabilities and Equity", label: "Total Liabilities", sort_order: 1, is_standard: true },
+  { level_number: 2, statement_type: "balance_sheet", parent_label: "Total Liabilities and Equity", label: "Total Equity",      sort_order: 2, is_standard: true },
+  { level_number: 2, statement_type: "balance_sheet", parent_label: "Total Assets",                  label: "Current Assets",   sort_order: 3, is_standard: true },
+  { level_number: 2, statement_type: "balance_sheet", parent_label: "Total Assets",                  label: "Fixed Assets",     sort_order: 4, is_standard: true },
+  { level_number: 2, statement_type: "balance_sheet", parent_label: "Total Assets",                  label: "Other Assets",     sort_order: 5, is_standard: true },
+  { level_number: 3, statement_type: "balance_sheet", parent_label: "Total Liabilities", label: "Current Liabilities",   sort_order: 1, is_standard: true },
+  { level_number: 3, statement_type: "balance_sheet", parent_label: "Total Liabilities", label: "Long-Term Liabilities", sort_order: 2, is_standard: true },
+  { level_number: 3, statement_type: "profit_loss",   parent_label: "Total Equity",      label: "Net Income",            sort_order: 3, is_standard: true },
+  { level_number: 3, statement_type: "balance_sheet", parent_label: "Total Equity",      label: "Equity",                sort_order: 4, is_standard: true },
+  { level_number: 4, statement_type: "profit_loss",   parent_label: "Net Income",         label: "Pretax Income",    sort_order: 1, is_standard: true },
+  { level_number: 5, statement_type: "profit_loss",   parent_label: "Pretax Income",      label: "Operating Income", sort_order: 1, is_standard: true },
+  { level_number: 6, statement_type: "profit_loss",   parent_label: "Operating Income",   label: "Gross Profit",     sort_order: 1, is_standard: true },
+  { level_number: 7, statement_type: "profit_loss",   parent_label: "Gross Profit",       label: "Total Revenue",    sort_order: 1, is_standard: true },
+  { level_number: 7, statement_type: "profit_loss",   parent_label: "Gross Profit",       label: "Total Expenses",   sort_order: 2, is_standard: true },
+  { level_number: 8, statement_type: "profit_loss",   parent_label: "Total Revenue",      label: "Income",   sort_order: 1, is_standard: true },
+  { level_number: 8, statement_type: "profit_loss",   parent_label: "Total Expenses",     label: "Expenses", sort_order: 2, is_standard: true },
+  { level_number: 9, statement_type: "profit_loss",   parent_label: "Expenses", label: "Payroll and Labor",          sort_order: 1, is_standard: true },
+  { level_number: 9, statement_type: "profit_loss",   parent_label: "Expenses", label: "Cost of Sales",              sort_order: 2, is_standard: true },
+  { level_number: 9, statement_type: "profit_loss",   parent_label: "Expenses", label: "Occupancy",                  sort_order: 3, is_standard: true },
+  { level_number: 9, statement_type: "profit_loss",   parent_label: "Expenses", label: "Insurance",                  sort_order: 4, is_standard: true },
+  { level_number: 9, statement_type: "profit_loss",   parent_label: "Expenses", label: "Sales and Marketing",        sort_order: 5, is_standard: true },
+  { level_number: 9, statement_type: "profit_loss",   parent_label: "Expenses", label: "General and Administrative", sort_order: 6, is_standard: true },
+  { level_number: 9, statement_type: "profit_loss",   parent_label: "Expenses", label: "Vehicle and Travel",         sort_order: 7, is_standard: true },
+  { level_number: 9, statement_type: "profit_loss",   parent_label: "Expenses", label: "Repairs and Maintenance",    sort_order: 8, is_standard: true },
+  { level_number: 9, statement_type: "profit_loss",   parent_label: "Expenses", label: "Non-Cash and Below-Line",    sort_order: 9, is_standard: true },
 ]);
 
 // Group (parent) node definitions, keyed by normalized account type. Retained
@@ -175,12 +182,21 @@ async function collectBsAccounts(companyId, batchId) {
 }
 
 async function collectGlAccountsFromEntries(companyId, versionId) {
+  // fiscal_year no longer exists on general_ledger_entries (migration 069) —
+  // transaction_date is selected instead; callers derive the year from it.
   return fetchAllRows(() =>
     supabase.from("general_ledger_entries")
-      .select("account_name, split_account, account_section, fiscal_year, account_number")
+      .select("account_name, split_account, account_section, transaction_date, account_number")
       .eq("company_id", companyId).eq("version_id", versionId)
       .order("id", { ascending: true }),
   );
+}
+
+// Year from a general_ledger_entries row's transaction_date (replaces the old
+// fiscal_year column read for GL-sourced COA leaves).
+function glRowYear(row) {
+  const y = parseInt(String(row?.transaction_date || "").slice(0, 4), 10);
+  return Number.isInteger(y) ? y : null;
 }
 
 async function collectBsAccountsFromEntries(companyId, versionId) {
@@ -375,9 +391,10 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map()) {
     addLeaf(r.account_name, r.account_number || null, "profit_loss", r.fiscal_year, null);
   }
   for (const r of glRows || []) {
+    const glYear = glRowYear(r);
     const name = r.account_name || r.account_section || "";
-    if (name) addLeaf(name, r.account_number || null, "general_ledger", r.fiscal_year, null);
-    if (r.split_account) addLeaf(r.split_account, null, "general_ledger", r.fiscal_year, null);
+    if (name) addLeaf(name, r.account_number || null, "general_ledger", glYear, null);
+    if (r.split_account) addLeaf(r.split_account, null, "general_ledger", glYear, null);
   }
 
   // Inject synthetic equity closing lines.  "Net Income" and "Retained Earnings"
@@ -691,13 +708,20 @@ async function syncCategoryNodes(versionId, companyId, existingCatsData, desired
  * @returns {Array<{accountName, accountType, level1, level2, expected1, expected2}>}
  */
 function validateHierarchyConsistency(hierarchical) {
+  // Unified hierarchy (client spec): Net Income nests under Total Equity, so
+  // income/cogs/expense share the same L1/L2 anchor as equity — L2 is not
+  // type-discriminating anymore, this only checks each type's leaves are
+  // internally consistent with the anchor they're supposed to share.
+  // Assets have no stable L2 (it's the subcategory: Current/Fixed/Other
+  // Assets) — level2 is intentionally omitted (undefined) for asset so that
+  // check is skipped rather than false-flagging every asset leaf.
   const EXPECTED = {
-    asset:     { level1: 'Balance Sheet',    level2: 'Total Assets' },
-    liability: { level1: 'Balance Sheet',    level2: 'Total Liabilities' },
-    equity:    { level1: 'Balance Sheet',    level2: 'Total Equity' },
-    income:    { level1: 'Income Statement', level2: 'Net Income' },
-    cogs:      { level1: 'Income Statement', level2: 'Net Income' },
-    expense:   { level1: 'Income Statement', level2: 'Net Income' },
+    asset:     { level1: 'Total Assets' },
+    liability: { level1: 'Total Liabilities and Equity', level2: 'Total Liabilities' },
+    equity:    { level1: 'Total Liabilities and Equity', level2: 'Total Equity' },
+    income:    { level1: 'Total Liabilities and Equity', level2: 'Total Equity' },
+    cogs:      { level1: 'Total Liabilities and Equity', level2: 'Total Equity' },
+    expense:   { level1: 'Total Liabilities and Equity', level2: 'Total Equity' },
   };
   const issues = [];
   for (const leaf of hierarchical) {
@@ -705,12 +729,14 @@ function validateHierarchyConsistency(hierarchical) {
     if (!exp) continue;
     const l1 = leaf.levels[0] || '';
     const l2 = leaf.levels[1] || '';
-    if (l1 !== exp.level1 || l2 !== exp.level2) {
+    const l1Bad = l1 !== exp.level1;
+    const l2Bad = exp.level2 != null && l2 !== exp.level2;
+    if (l1Bad || l2Bad) {
       issues.push({
         accountName: leaf.accountName,
         accountType: leaf.accountType,
         level1: l1, level2: l2,
-        expected1: exp.level1, expected2: exp.level2,
+        expected1: exp.level1, expected2: exp.level2 ?? '(any)',
       });
     }
   }
@@ -1033,7 +1059,7 @@ function mapRow(row) {
 
 // Stable ordering for the standardized top levels; everything else alpha.
 const LEVEL_ORDER = new Map([
-  ["Income Statement", 1], ["Balance Sheet", 2],
+  ["Total Liabilities and Equity", 1], ["Total Assets", 2],
   ["Assets", 1], ["Liabilities", 2], ["Equity", 3],
   ["Revenue", 4], ["Cost of Goods Sold", 5], ["Operating Expenses", 6],
 ]);
