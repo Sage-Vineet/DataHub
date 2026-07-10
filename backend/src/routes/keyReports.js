@@ -267,6 +267,20 @@ async function warmReconciliationCaches(companyId, versionId) {
   }
 }
 
+// Background-warm the financial-statements RESULT cache after a generate/sync.
+// generateFinancialStatements is expensive (many GL scans); warming it now — with
+// the COA the sync just built — means the Reports page (and the Reconciliation
+// P&L fetch) hit a warm cache and load instantly instead of paying the full
+// compute on first visit. Fire-and-forget (not awaited), so it never delays the
+// generate response or risks a request timeout; skipped when the workflow halted
+// (no COA was generated). Fully non-fatal.
+function warmFinancialStatementsCache(versionId, result) {
+  if (!versionId || result?.halted) return;
+  generateFinancialStatements(versionId, { currency: "USD" })
+    .then(() => console.log(`[KeyReports] Financial-statements cache warmed for version ${versionId}.`))
+    .catch((e) => console.warn(`[KeyReports] Financial-statements cache warm failed (non-fatal): ${e?.message || e}`));
+}
+
 // ---- Sync ------------------------------------------------------------------
 
 router.post("/key-reports/versions/:versionId/sync", async (req, res) => {
@@ -283,7 +297,9 @@ router.post("/key-reports/versions/:versionId/sync", async (req, res) => {
       keyReportService.syncVersion(version.id, req.user?.id),
       warmReconciliationCaches(version.companyId, version.id),
     ]);
-    return res.json({ success: true, ...result });
+    res.json({ success: true, ...result });
+    warmFinancialStatementsCache(version.id, result);
+    return;
   } catch (error) {
     return handleError(res, error, "POST sync");
   }
@@ -309,7 +325,9 @@ router.post("/key-reports/versions/:versionId/generate", async (req, res) => {
       keyReportService.syncVersion(version.id, req.user?.id),
       warmReconciliationCaches(version.companyId, version.id),
     ]);
-    return res.json({ success: true, ...result });
+    res.json({ success: true, ...result });
+    warmFinancialStatementsCache(version.id, result);
+    return;
   } catch (error) {
     return handleError(res, error, "POST generate");
   }
