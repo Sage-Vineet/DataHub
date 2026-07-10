@@ -54,7 +54,7 @@ import { useAuth } from "../../../context/AuthContext";
 import { useDataSource } from "../../../context/DataSourceContext";
 import { useToast } from "../../../context/ToastContext";
 import { CLIENT_SUB_ROLES } from "../../../lib/roles";
-import { REPORT_SOURCE_KEYS, normalizeReportSourceKey } from "../../../lib/report-source";
+import { REPORT_SOURCE_KEYS, getReportSourceLabel, normalizeReportSourceKey } from "../../../lib/report-source";
 import { loadCimFinancialAutofillSnapshot } from "../../../services/cimFinancialAutofillService";
 import { useDatasetVersionStore } from "../../../store/useDatasetVersionStore";
 import { useKeyReportContextStore } from "../../../store/useKeyReportContextStore";
@@ -1725,13 +1725,13 @@ function restructureSlide24Table(layout) {
     elements: layout.elements.map((element) =>
       element === table
         ? {
-            ...element,
-            rows: rowCount,
-            cols: columnCount,
-            text,
-            textPreview: text.replace(/\n/g, " | "),
-            cells,
-          }
+          ...element,
+          rows: rowCount,
+          cols: columnCount,
+          text,
+          textPreview: text.replace(/\n/g, " | "),
+          cells,
+        }
         : element,
     ),
   };
@@ -1865,13 +1865,13 @@ function restructureSlide26Table(layout) {
     elements: layout.elements.map((element) =>
       element === table
         ? {
-            ...element,
-            rows: rowCount,
-            cols: columnCount,
-            text,
-            textPreview: text.replace(/\n/g, " | "),
-            cells,
-          }
+          ...element,
+          rows: rowCount,
+          cols: columnCount,
+          text,
+          textPreview: text.replace(/\n/g, " | "),
+          cells,
+        }
         : element,
     ),
   };
@@ -3342,11 +3342,11 @@ function getElementContent(slideNumber, element, fieldsById, fieldValues, assetV
       .filter(hasRepeatableEntryValue);
     return entries.length
       ? {
-          kind: "chart",
-          dataUrl: svgToDataUrl(buildTimelineSvg(entries, styleProfile)),
-          name: "Company growth milestones",
-          bbox: [28.8, 142, 1222.08, 216],
-        }
+        kind: "chart",
+        dataUrl: svgToDataUrl(buildTimelineSvg(entries, styleProfile)),
+        name: "Company growth milestones",
+        bbox: [28.8, 142, 1222.08, 216],
+      }
       : { kind: "hidden" };
   }
   if (slideNumber === 30 && [29, 30, 31].includes(Number(element?.order || 0))) {
@@ -4069,9 +4069,9 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
 
   const incomeYears = selectedStartYear && selectedEndYear && selectedEndYear >= selectedStartYear
     ? Array.from(
-        { length: Math.min(5, selectedEndYear - selectedStartYear + 1) },
-        (_, index) => selectedStartYear + index,
-      )
+      { length: Math.min(5, selectedEndYear - selectedStartYear + 1) },
+      (_, index) => selectedStartYear + index,
+    )
     : years.slice(0, 5);
   const incomeColumns = [
     ...incomeYears.map((year) => ({ year, metrics: getAutoFillYearMetrics(snapshot, year) })),
@@ -4902,9 +4902,8 @@ export function SlideCanvas({
           return (
             <div
               key={`${slideNumber}-${element.order}-${element.id}`}
-              className={`absolute overflow-hidden ${
-                !previewMode && field ? "cursor-pointer" : ""
-              }`}
+              className={`absolute overflow-hidden ${!previewMode && field ? "cursor-pointer" : ""
+                }`}
               onClick={() => {
                 if (!previewMode && field) onFieldFocus(field.id);
               }}
@@ -4927,7 +4926,7 @@ export function SlideCanvas({
                     ? "0 0 0 2px rgba(139, 197, 61, 0.5)"
                     : element.imageShadow
                       ? "0 10px 22px rgba(17,24,39,0.16)"
-                    : undefined,
+                      : undefined,
               }}
             >
               <img
@@ -4946,11 +4945,10 @@ export function SlideCanvas({
               key={`${slideNumber}-${element.order}-${element.id}`}
               type="button"
               onClick={() => onFieldFocus(field.id)}
-              className={`absolute overflow-hidden rounded-[2px] border border-dashed outline-none transition ${
-                activeFieldId === field.id
+              className={`absolute overflow-hidden rounded-[2px] border border-dashed outline-none transition ${activeFieldId === field.id
                   ? "border-[#8BC53D] ring-2 ring-[#8BC53D]/30"
                   : "border-[#8BC53D]/60 hover:border-[#8BC53D]"
-              }`}
+                }`}
               style={{
                 ...textStyle,
                 backgroundColor: fillColor === "transparent" ? "rgba(255,255,255,0.88)" : fillColor,
@@ -4984,11 +4982,10 @@ export function SlideCanvas({
             onClick={() => onFieldFocus(field.id)}
             onChange={(event) => onFieldChange(field.id, event.target.value)}
             maxLength={field.maxLength || undefined}
-            className={`absolute resize-none overflow-hidden rounded-[2px] border px-1 py-0.5 outline-none transition ${
-              activeFieldId === field.id
+            className={`absolute resize-none overflow-hidden rounded-[2px] border px-1 py-0.5 outline-none transition ${activeFieldId === field.id
                 ? "border-[#8BC53D] ring-2 ring-[#8BC53D]/30"
                 : "border-[#8BC53D]/45 hover:border-[#8BC53D]"
-            }`}
+              }`}
             style={{
               ...textStyle,
               display: "block",
@@ -5035,11 +5032,10 @@ function SectionDrawer({
             <button
               key={section.id}
               onClick={() => onSelectSection(section.id)}
-              className={`flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left transition ${
-                isActive
+              className={`flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left transition ${isActive
                   ? "bg-[#EEF6E0] text-[#476E2C]"
                   : "text-[#6D6E71] hover:bg-[#F0F7E6] hover:text-[#1A1A2E]"
-              }`}
+                }`}
             >
               <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[#476E2C] text-xs font-bold text-white">
                 {section.number}
@@ -5091,9 +5087,8 @@ function GlobalDetailsPanel({ activeSlide, globalDetails, onChange, compact = fa
 }
 
 function fieldCardClass(active) {
-  return `block rounded-md border p-3 transition ${
-    active ? "border-[#8BC53D] bg-[#F7FBF1]" : "border-border bg-white"
-  }`;
+  return `block rounded-md border p-3 transition ${active ? "border-[#8BC53D] bg-[#F7FBF1]" : "border-border bg-white"
+    }`;
 }
 
 function AssetFieldControl({
@@ -6225,11 +6220,10 @@ function CimReviewFieldBadge({ field, item, onAddNote, onResolve, onReopen }) {
           event.stopPropagation();
           setOpen(true);
         }}
-        className={`mt-2 inline-flex h-7 items-center gap-1 rounded-md border px-2 text-[11px] font-bold transition ${
-          isOpen
+        className={`mt-2 inline-flex h-7 items-center gap-1 rounded-md border px-2 text-[11px] font-bold transition ${isOpen
             ? "border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100"
             : "border-border bg-white text-[#6D6E71] hover:bg-[#FAFBFC]"
-        }`}
+          }`}
       >
         <Flag size={12} />
         {isOpen ? "Client flagged" : "Resolved"}
@@ -6485,38 +6479,64 @@ function FieldPanel({
 function FinancialAutofillModal({
   initialRange,
   initialReportVersionId,
+  initialDatasetVersion,
+  sourceLabel,
+  versionMode,
   reportVersions,
   reportVersionsLoading,
   reportVersionsError,
+  datasetVersions,
+  datasetVersionsLoading,
+  datasetVersionsError,
   loading,
   onClose,
   onConfirm,
 }) {
   const [range, setRange] = useState(initialRange || getDefaultFinancialAutofillRange());
   const [reportVersionId, setReportVersionId] = useState(initialReportVersionId || "");
+  const [datasetVersion, setDatasetVersion] = useState(initialDatasetVersion || "");
 
-  const hasReportVersions = reportVersions.length > 0;
-  const reportVersionValid = !hasReportVersions || reportVersions.some((version) => version.id === reportVersionId);
+  const needsReportVersion = versionMode === "key_reports";
+  const needsDatasetVersion = versionMode === "manual_gl";
+  const hasReportVersions = needsReportVersion && reportVersions.length > 0;
+  const hasDatasetVersions = needsDatasetVersion && datasetVersions.length > 0;
+  const fallbackReportVersion = reportVersions.find((version) => version.id === initialReportVersionId)
+    || reportVersions.find((version) => version.isActive)
+    || reportVersions[0]
+    || null;
+  const effectiveReportVersionId = reportVersions.some((version) => version.id === reportVersionId)
+    ? reportVersionId
+    : fallbackReportVersion?.id || "";
+  const fallbackDatasetVersion = datasetVersions.find((version) => String(version.value ?? version.id) === String(initialDatasetVersion))
+    || datasetVersions.find((version) => version.isActive || version.is_active)
+    || datasetVersions[0]
+    || null;
+  const effectiveDatasetVersion = datasetVersions.some((version) => String(version.value ?? version.id) === String(datasetVersion))
+    ? datasetVersion
+    : fallbackDatasetVersion ? String(fallbackDatasetVersion.value ?? fallbackDatasetVersion.id) : "";
+  const reportVersionValid = !needsReportVersion || reportVersions.some((version) => version.id === effectiveReportVersionId);
+  const datasetVersionValid = !needsDatasetVersion || datasetVersions.some((version) => String(version.value ?? version.id) === String(effectiveDatasetVersion));
   const valid = isValidFinancialAutofillRange(range)
     && reportVersionValid
-    && !reportVersionsLoading
-    && !reportVersionsError;
+    && datasetVersionValid
+    && (!needsReportVersion || (!reportVersionsLoading && !reportVersionsError))
+    && (!needsDatasetVersion || (!datasetVersionsLoading && !datasetVersionsError));
   const rangeError = getFinancialAutofillRangeError(range);
-  const formError = rangeError || (!reportVersionValid ? "Select a valid reports version." : "");
+  const formError = rangeError
+    || (needsReportVersion && !hasReportVersions && !reportVersionsLoading ? "No Key Reports version is available for this company." : "")
+    || (needsReportVersion && !reportVersionValid ? "Select a valid reports version." : "")
+    || (needsDatasetVersion && !hasDatasetVersions && !datasetVersionsLoading ? "No Manual GL version is available for this company." : "")
+    || (needsDatasetVersion && !datasetVersionValid ? "Select a valid Manual GL version." : "");
   const trailingRange = getTrailingTwelveMonthRange(range);
-
-  useEffect(() => {
-    if (!hasReportVersions || reportVersions.some((version) => version.id === reportVersionId)) return;
-    const fallback = reportVersions.find((version) => version.id === initialReportVersionId)
-      || reportVersions.find((version) => version.isActive)
-      || reportVersions[0];
-    setReportVersionId(fallback?.id || "");
-  }, [hasReportVersions, initialReportVersionId, reportVersionId, reportVersions]);
 
   const handleSubmit = (event) => {
     event.preventDefault();
     if (!valid || loading) return;
-    onConfirm({ dateRange: range, reportVersionId });
+    onConfirm({
+      dateRange: range,
+      reportVersionId: needsReportVersion ? effectiveReportVersionId : "",
+      datasetVersion: needsDatasetVersion ? effectiveDatasetVersion : "",
+    });
   };
 
   return (
@@ -6531,9 +6551,11 @@ function FinancialAutofillModal({
               <CalendarDays size={20} />
             </span>
             <div>
-              <h2 className="text-base font-bold text-[#050505]">Select Financial Period and Reports Version</h2>
+              <h2 className="text-base font-bold text-[#050505]">
+                {needsReportVersion || needsDatasetVersion ? "Select Financial Period and Version" : "Select Financial Period"}
+              </h2>
               <p className="mt-1 text-sm leading-relaxed text-[#6D6E71]">
-                Choose the exact reports version and up to five years for CIM financial analysis.
+                Auto-fill will read from {sourceLabel || "the active financial source"} and replicate the same connected-source data used in Reports.
               </p>
             </div>
           </div>
@@ -6579,37 +6601,69 @@ function FinancialAutofillModal({
             </select>
           </label>
 
-          <label className="block">
-            <span className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.06em] text-[#6D6E71]">
-              Reports version
-            </span>
-            <select
-              value={reportVersionId}
-              onChange={(event) => setReportVersionId(event.target.value)}
-              className="h-11 w-full rounded-md border border-border bg-white px-3 text-sm font-semibold text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20 disabled:bg-[#F7F8FA] disabled:text-[#A5A5A5]"
-              disabled={loading || reportVersionsLoading || !hasReportVersions}
-              required={hasReportVersions}
-            >
-              {reportVersionsLoading ? <option value="">Loading report versions...</option> : null}
-              {!reportVersionsLoading && !hasReportVersions ? (
-                <option value="">No saved report versions - use current financial source</option>
-              ) : null}
-              {reportVersions.map((version) => (
-                <option key={version.id} value={version.id}>
-                  {version.versionName || `Version ${version.versionNumber || ""}`.trim()}
-                  {version.isActive ? " (Official)" : ""}
-                  {version.status ? ` - ${version.status}` : ""}
-                </option>
-              ))}
-            </select>
-            <span className="mt-1 block text-xs text-[#6D6E71]">
-              Auto-fill will read only the reports and generated financials linked to this version.
-            </span>
-          </label>
+          {needsReportVersion ? (
+            <label className="block">
+              <span className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.06em] text-[#6D6E71]">
+                Reports version
+              </span>
+              <select
+                value={effectiveReportVersionId}
+                onChange={(event) => setReportVersionId(event.target.value)}
+                className="h-11 w-full rounded-md border border-border bg-white px-3 text-sm font-semibold text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20 disabled:bg-[#F7F8FA] disabled:text-[#A5A5A5]"
+                disabled={loading || reportVersionsLoading || !hasReportVersions}
+                required
+              >
+                {reportVersionsLoading ? <option value="">Loading report versions...</option> : null}
+                {!reportVersionsLoading && !hasReportVersions ? (
+                  <option value="">No Key Reports versions available</option>
+                ) : null}
+                {reportVersions.map((version) => (
+                  <option key={version.id} value={version.id}>
+                    {version.versionName || `Version ${version.versionNumber || ""}`.trim()}
+                    {version.isActive ? " (Official)" : ""}
+                    {version.status ? ` - ${version.status}` : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
 
-          {reportVersionsError ? (
+          {needsDatasetVersion ? (
+            <label className="block">
+              <span className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.06em] text-[#6D6E71]">
+                Manual GL version
+              </span>
+              <select
+                value={effectiveDatasetVersion}
+                onChange={(event) => setDatasetVersion(event.target.value)}
+                className="h-11 w-full rounded-md border border-border bg-white px-3 text-sm font-semibold text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20 disabled:bg-[#F7F8FA] disabled:text-[#A5A5A5]"
+                disabled={loading || datasetVersionsLoading || !hasDatasetVersions}
+                required
+              >
+                {datasetVersionsLoading ? <option value="">Loading Manual GL versions...</option> : null}
+                {!datasetVersionsLoading && !hasDatasetVersions ? (
+                  <option value="">No Manual GL versions available</option>
+                ) : null}
+                {datasetVersions.map((version) => (
+                  <option key={version.id || version.value} value={String(version.value ?? version.id)}>
+                    {version.label || `Version ${version.value ?? version.versionNumber ?? ""}`.trim()}
+                    {version.isActive || version.is_active ? " (Active)" : ""}
+                    {version.status ? ` - ${version.status}` : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+
+          {needsReportVersion && reportVersionsError ? (
             <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">
               {reportVersionsError}
+            </p>
+          ) : null}
+
+          {needsDatasetVersion && datasetVersionsError ? (
+            <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">
+              {datasetVersionsError}
             </p>
           ) : null}
 
@@ -6798,30 +6852,29 @@ function PreviewModal({
                 const slideNumber = slideRef.sourceSlideNumber;
                 const scopedFieldValues = getFieldValuesForExportSlide(fieldValues, slideRef);
                 return (
-                <button
-                  key={`${slideNumber}-${slideRef.instanceIndex}`}
-                  onClick={() => onSlideIndexChange(index)}
-                  className={`block w-full overflow-hidden rounded-md border text-left transition ${
-                    index === previewSlideIndex
-                      ? "border-[#8BC53D] ring-2 ring-[#8BC53D]/25"
-                      : "border-border hover:border-[#8BC53D]/60"
-                  }`}
-                >
-                  <div className="pointer-events-none">
-                    <SlideCanvas
-                      slideNumber={slideNumber}
-                      displaySlideNumber={index + 1}
-                      layout={layouts[slideNumber]}
-                      fields={fieldsBySlide[slideNumber] || []}
-                      fieldValues={scopedFieldValues}
-                      assetValues={assetValues}
-                      chartValues={chartValues}
-                      globalDetails={globalDetails}
-                      styleProfile={styleProfile}
-                      previewMode
-                    />
-                  </div>
-                </button>
+                  <button
+                    key={`${slideNumber}-${slideRef.instanceIndex}`}
+                    onClick={() => onSlideIndexChange(index)}
+                    className={`block w-full overflow-hidden rounded-md border text-left transition ${index === previewSlideIndex
+                        ? "border-[#8BC53D] ring-2 ring-[#8BC53D]/25"
+                        : "border-border hover:border-[#8BC53D]/60"
+                      }`}
+                  >
+                    <div className="pointer-events-none">
+                      <SlideCanvas
+                        slideNumber={slideNumber}
+                        displaySlideNumber={index + 1}
+                        layout={layouts[slideNumber]}
+                        fields={fieldsBySlide[slideNumber] || []}
+                        fieldValues={scopedFieldValues}
+                        assetValues={assetValues}
+                        chartValues={chartValues}
+                        globalDetails={globalDetails}
+                        styleProfile={styleProfile}
+                        previewMode
+                      />
+                    </div>
+                  </button>
                 );
               })}
             </div>
@@ -7037,11 +7090,10 @@ function QuestionnaireReviewModal({
                     key={section.id}
                     type="button"
                     onClick={() => setBuilderSectionId(section.id)}
-                    className={`flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left transition ${
-                      active
+                    className={`flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left transition ${active
                         ? "bg-[#EEF6E0] text-[#476E2C]"
                         : "text-[#6D6E71] hover:bg-[#F0F7E6] hover:text-[#050505]"
-                    }`}
+                      }`}
                   >
                     <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[#476E2C] text-xs font-bold text-white">
                       {section.number}
@@ -7099,9 +7151,8 @@ function QuestionnaireReviewModal({
                 return (
                   <div
                     key={field.id}
-                    className={`rounded-lg border p-3 transition ${
-                      selected ? "border-[#8BC53D] bg-[#F7FBF1]" : "border-border bg-white"
-                    }`}
+                    className={`rounded-lg border p-3 transition ${selected ? "border-[#8BC53D] bg-[#F7FBF1]" : "border-border bg-white"
+                      }`}
                   >
                     <label className="flex cursor-pointer items-start gap-3">
                       <input
@@ -7170,121 +7221,121 @@ function QuestionnaireReviewModal({
             {items.length > 0 ? (
               <div className="space-y-3">
                 {items.map((item) => {
-                const note = normalizeText(item.clientNote);
-                const canUseNote = note && item.fieldKind === "text";
-                const clientAsset = item.clientAsset?.dataUrl ? item.clientAsset : null;
-                const canUseAsset = clientAsset && item.fieldKind === "asset";
+                  const note = normalizeText(item.clientNote);
+                  const canUseNote = note && item.fieldKind === "text";
+                  const clientAsset = item.clientAsset?.dataUrl ? item.clientAsset : null;
+                  const canUseAsset = clientAsset && item.fieldKind === "asset";
 
-                return (
-                  <article key={item.id} className="rounded-lg border border-border bg-[#FAFBFC] p-3">
-                    <div className="flex flex-col gap-3">
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <QuestionnaireStatusPill status={item.status} />
-                          <span className="text-xs font-semibold text-[#6D6E71]">
-                            {item.sectionTitle}
-                          </span>
-                        </div>
-                        <h3 className="mt-2 text-sm font-bold text-[#050505]">{item.label}</h3>
-                        <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-[#6D6E71]">
-                          {item.prompt}
-                        </p>
-                      </div>
-                      <div className="flex shrink-0 flex-wrap gap-2">
-                        {canUseNote && (
-                          <button
-                            type="button"
-                            onClick={() => onUseClientNote(item)}
-                            className="theme-btn-secondary h-9 px-3 text-xs"
-                          >
-                            <FileText size={14} />
-                            Use Note
-                          </button>
-                        )}
-                        {canUseAsset && (
-                          <button
-                            type="button"
-                            onClick={() => onUseClientAsset(item)}
-                            className="theme-btn-secondary h-9 px-3 text-xs"
-                          >
-                            <ImagePlus size={14} />
-                            Use Image
-                          </button>
-                        )}
-                        {note && (
-                          <button
-                            type="button"
-                            onClick={() => onCopyNote(item)}
-                            className="theme-btn-secondary h-9 px-3 text-xs"
-                          >
-                            <Copy size={14} />
-                            Copy
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => updateStatus(item.id, item.status === "resolved" ? "open" : "resolved")}
-                          className="theme-btn-secondary h-9 px-3 text-xs"
-                        >
-                          <CheckCircle2 size={14} />
-                          {item.status === "resolved" ? "Reopen" : "Resolve"}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => archiveItem(item.id)}
-                          className="theme-btn-secondary h-9 px-3 text-xs text-red-600 hover:border-red-200 hover:bg-red-50"
-                        >
-                          <Trash2 size={14} />
-                          Remove
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="mt-3 rounded-md border border-border bg-white p-3">
-                      <p className="mb-1 text-[11px] font-bold uppercase tracking-[0.06em] text-[#6D6E71]">
-                        Client response
-                      </p>
-                      {clientAsset && (
-                        <div className="mb-3 overflow-hidden rounded-md border border-border bg-[#F7F8FA] p-2">
-                          <img
-                            src={clientAsset.dataUrl}
-                            alt={clientAsset.name || item.label}
-                            className="max-h-40 w-full object-contain"
-                          />
-                          <p className="mt-2 truncate text-xs text-[#6D6E71]">{clientAsset.name || "Uploaded image"}</p>
-                        </div>
-                      )}
-                      {note ? (
-                        <div>
-                          <p className="whitespace-pre-wrap text-sm leading-relaxed text-[#050505]">
-                            {item.clientNote}
-                          </p>
-                          <p className="mt-2 text-xs text-[#A5A5A5]">
-                            Updated {item.clientUpdatedAt ? new Date(item.clientUpdatedAt).toLocaleString("en-IN") : "recently"}
-                            {item.clientUpdatedBy?.name ? ` by ${item.clientUpdatedBy.name}` : ""}
+                  return (
+                    <article key={item.id} className="rounded-lg border border-border bg-[#FAFBFC] p-3">
+                      <div className="flex flex-col gap-3">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <QuestionnaireStatusPill status={item.status} />
+                            <span className="text-xs font-semibold text-[#6D6E71]">
+                              {item.sectionTitle}
+                            </span>
+                          </div>
+                          <h3 className="mt-2 text-sm font-bold text-[#050505]">{item.label}</h3>
+                          <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-[#6D6E71]">
+                            {item.prompt}
                           </p>
                         </div>
-                      ) : (
-                        <p className="text-sm text-[#A5A5A5]">
-                          {clientAsset ? "No text note included." : "No client response yet."}
+                        <div className="flex shrink-0 flex-wrap gap-2">
+                          {canUseNote && (
+                            <button
+                              type="button"
+                              onClick={() => onUseClientNote(item)}
+                              className="theme-btn-secondary h-9 px-3 text-xs"
+                            >
+                              <FileText size={14} />
+                              Use Note
+                            </button>
+                          )}
+                          {canUseAsset && (
+                            <button
+                              type="button"
+                              onClick={() => onUseClientAsset(item)}
+                              className="theme-btn-secondary h-9 px-3 text-xs"
+                            >
+                              <ImagePlus size={14} />
+                              Use Image
+                            </button>
+                          )}
+                          {note && (
+                            <button
+                              type="button"
+                              onClick={() => onCopyNote(item)}
+                              className="theme-btn-secondary h-9 px-3 text-xs"
+                            >
+                              <Copy size={14} />
+                              Copy
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => updateStatus(item.id, item.status === "resolved" ? "open" : "resolved")}
+                            className="theme-btn-secondary h-9 px-3 text-xs"
+                          >
+                            <CheckCircle2 size={14} />
+                            {item.status === "resolved" ? "Reopen" : "Resolve"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => archiveItem(item.id)}
+                            className="theme-btn-secondary h-9 px-3 text-xs text-red-600 hover:border-red-200 hover:bg-red-50"
+                          >
+                            <Trash2 size={14} />
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="mt-3 rounded-md border border-border bg-white p-3">
+                        <p className="mb-1 text-[11px] font-bold uppercase tracking-[0.06em] text-[#6D6E71]">
+                          Client response
                         </p>
-                      )}
-                    </div>
-                  </article>
-                );
-              })}
+                        {clientAsset && (
+                          <div className="mb-3 overflow-hidden rounded-md border border-border bg-[#F7F8FA] p-2">
+                            <img
+                              src={clientAsset.dataUrl}
+                              alt={clientAsset.name || item.label}
+                              className="max-h-40 w-full object-contain"
+                            />
+                            <p className="mt-2 truncate text-xs text-[#6D6E71]">{clientAsset.name || "Uploaded image"}</p>
+                          </div>
+                        )}
+                        {note ? (
+                          <div>
+                            <p className="whitespace-pre-wrap text-sm leading-relaxed text-[#050505]">
+                              {item.clientNote}
+                            </p>
+                            <p className="mt-2 text-xs text-[#A5A5A5]">
+                              Updated {item.clientUpdatedAt ? new Date(item.clientUpdatedAt).toLocaleString("en-IN") : "recently"}
+                              {item.clientUpdatedBy?.name ? ` by ${item.clientUpdatedBy.name}` : ""}
+                            </p>
+                          </div>
+                        ) : (
+                          <p className="text-sm text-[#A5A5A5]">
+                            {clientAsset ? "No text note included." : "No client response yet."}
+                          </p>
+                        )}
+                      </div>
+                    </article>
+                  );
+                })}
               </div>
-          ) : (
-            <div className="flex min-h-[320px] items-center justify-center rounded-lg border border-dashed border-border bg-white text-center">
-              <div>
-                <ClipboardList size={30} className="mx-auto mb-3 text-[#8BC53D]" />
-                <h3 className="text-sm font-bold text-[#050505]">No selected questions yet</h3>
-                <p className="mt-1 text-sm text-[#6D6E71]">
-                  Select prepared questions or add a custom question.
-                </p>
+            ) : (
+              <div className="flex min-h-[320px] items-center justify-center rounded-lg border border-dashed border-border bg-white text-center">
+                <div>
+                  <ClipboardList size={30} className="mx-auto mb-3 text-[#8BC53D]" />
+                  <h3 className="text-sm font-bold text-[#050505]">No selected questions yet</h3>
+                  <p className="mt-1 text-sm text-[#6D6E71]">
+                    Select prepared questions or add a custom question.
+                  </p>
+                </div>
               </div>
-            </div>
-          )}
+            )}
           </aside>
         </div>
       </div>
@@ -7327,11 +7378,10 @@ function CimReviewModal({ onClose, reviewState, onAddNote, onResolve, onReopen }
               key={value}
               type="button"
               onClick={() => setFilter(value)}
-              className={`rounded-md border px-3 py-1.5 text-xs font-bold transition ${
-                filter === value
+              className={`rounded-md border px-3 py-1.5 text-xs font-bold transition ${filter === value
                   ? "border-[#8BC53D] bg-[#EEF6E0] text-[#476E2C]"
                   : "border-border bg-white text-[#6D6E71] hover:border-[#8BC53D]/60"
-              }`}
+                }`}
             >
               {label}
             </button>
@@ -7379,6 +7429,12 @@ export default function WorkspaceCimPrep() {
   const { activeSource } = useDataSource();
   const { showToast } = useToast();
   const selectedDatasetVersion = useDatasetVersionStore((state) => state.selectedVersion);
+  const manualGlDatasetVersions = useDatasetVersionStore((state) => state.versions);
+  const activeManualGlDatasetVersion = useDatasetVersionStore((state) => state.activeVersion);
+  const manualGlDatasetVersionsLoading = useDatasetVersionStore((state) => state.isLoading);
+  const manualGlDatasetVersionsError = useDatasetVersionStore((state) => state.error);
+  const fetchManualGlDatasetVersions = useDatasetVersionStore((state) => state.fetchVersions);
+  const setSelectedDatasetVersion = useDatasetVersionStore((state) => state.setSelectedVersion);
   const reportVersions = useKeyReportContextStore((state) => state.versions);
   const selectedReportVersionId = useKeyReportContextStore((state) => state.selectedVersionId);
   const reportVersionsLoading = useKeyReportContextStore((state) => state.loading);
@@ -7421,10 +7477,27 @@ export default function WorkspaceCimPrep() {
   const [financialAutofillModalOpen, setFinancialAutofillModalOpen] = useState(false);
   const [financialAutofillRange, setFinancialAutofillRange] = useState(() => getDefaultFinancialAutofillRange());
   const [financialAutofillReportVersionId, setFinancialAutofillReportVersionId] = useState("");
+  const [financialAutofillDatasetVersion, setFinancialAutofillDatasetVersion] = useState("");
   const reportSource = useMemo(
     () => normalizeReportSourceKey(activeSource) || REPORT_SOURCE_KEYS.QUICKBOOKS,
     [activeSource],
   );
+  const reportSourceLabel = useMemo(() => getReportSourceLabel(reportSource), [reportSource]);
+  const isKeyReportsSource = reportSource === REPORT_SOURCE_KEYS.KEY_REPORTS;
+  const isManualGlSource = reportSource === REPORT_SOURCE_KEYS.MANUAL_GL;
+  const manualGlAutofillDatasetVersion = String(
+    financialAutofillDatasetVersion ||
+    selectedDatasetVersion ||
+    activeManualGlDatasetVersion?.value ||
+    activeManualGlDatasetVersion?.dataset_version ||
+    "",
+  );
+  const financialAutofillVersionMode = isKeyReportsSource
+    ? "key_reports"
+    : isManualGlSource && (manualGlDatasetVersionsLoading || manualGlDatasetVersions.length > 1)
+      ? "manual_gl"
+      : "none";
+  const financialAutofillReportVersions = isKeyReportsSource ? reportVersions : [];
 
   const fieldsBySlide = useMemo(() => {
     const result = {};
@@ -7503,58 +7576,34 @@ export default function WorkspaceCimPrep() {
   }, [clientId]);
 
   useEffect(() => {
-    if (clientId) void fetchReportVersions(clientId);
-  }, [clientId, fetchReportVersions]);
+    if (clientId && isKeyReportsSource) void fetchReportVersions(clientId);
+  }, [clientId, fetchReportVersions, isKeyReportsSource]);
 
   useEffect(() => {
-    let cancelled = false;
-    const localKey = getStyleProfilesLocalStorageKey();
+    if (clientId && isManualGlSource) void fetchManualGlDatasetVersions(clientId);
+  }, [clientId, fetchManualGlDatasetVersions, isManualGlSource]);
 
-    async function loadStyleProfiles() {
-      try {
-        const payload = await getCimStyleProfilesRequest({ clientId });
-        if (cancelled) return;
-        const state = normalizeCimStyleProfilesState(payload?.state || {});
-        setStyleProfilesState((previous) => normalizeCimStyleProfilesState({
-          ...state,
-          profiles: [...(previous.profiles || []), ...(state.profiles || [])],
-        }));
-        setActiveStyleProfileId((previous) => (
-          previous && previous !== DEFAULT_CIM_STYLE_PROFILE_ID ? previous : state.activeProfileId || DEFAULT_CIM_STYLE_PROFILE_ID
-        ));
-        window.localStorage.setItem(localKey, JSON.stringify(state));
-      } catch {
-        try {
-          const local = window.localStorage.getItem(localKey);
-          if (!cancelled && local) {
-            const state = normalizeCimStyleProfilesState(JSON.parse(local));
-            setStyleProfilesState((previous) => normalizeCimStyleProfilesState({
-              ...state,
-              profiles: [...(previous.profiles || []), ...(state.profiles || [])],
-            }));
-            setActiveStyleProfileId((previous) => (
-              previous && previous !== DEFAULT_CIM_STYLE_PROFILE_ID ? previous : state.activeProfileId || DEFAULT_CIM_STYLE_PROFILE_ID
-            ));
-          }
-        } catch {
-          // Malformed local style profiles should never block CIM prep.
-        }
-      }
+  useEffect(() => {
+    if (!isKeyReportsSource) {
+      window.queueMicrotask(() => setFinancialAutofillReportVersionId(""));
+      return;
     }
-
-    void loadStyleProfiles();
-    return () => {
-      cancelled = true;
-    };
-  }, [clientId]);
-
-  useEffect(() => {
     if (loading || reportVersionsLoading || !reportVersions.length) return;
-    setFinancialAutofillReportVersionId((previous) => {
+    window.queueMicrotask(() => setFinancialAutofillReportVersionId((previous) => {
       if (previous && reportVersions.some((version) => version.id === previous)) return previous;
       return selectedReportVersionId || reportVersions.find((version) => version.isActive)?.id || reportVersions[0].id;
-    });
-  }, [loading, reportVersions, reportVersionsLoading, selectedReportVersionId]);
+    }));
+  }, [isKeyReportsSource, loading, reportVersions, reportVersionsLoading, selectedReportVersionId]);
+
+  useEffect(() => {
+    if (!isManualGlSource) {
+      window.queueMicrotask(() => setFinancialAutofillDatasetVersion(""));
+      return;
+    }
+    window.queueMicrotask(() => setFinancialAutofillDatasetVersion((previous) => (
+      selectedDatasetVersion || previous || activeManualGlDatasetVersion?.value || activeManualGlDatasetVersion?.dataset_version || ""
+    )));
+  }, [activeManualGlDatasetVersion, isManualGlSource, selectedDatasetVersion]);
 
   useEffect(() => {
     if (loading || !isValidFinancialAutofillRange(financialAutofillRange)) return;
@@ -7665,20 +7714,8 @@ export default function WorkspaceCimPrep() {
       if (data.financialAutofillReportVersionId) {
         setFinancialAutofillReportVersionId(String(data.financialAutofillReportVersionId));
       }
-      if (data.styleProfileId) {
-        setActiveStyleProfileId(String(data.styleProfileId));
-      } else if (data.styleProfiles?.activeProfileId) {
-        setActiveStyleProfileId(String(data.styleProfiles.activeProfileId));
-      }
-      if (data.styleProfiles) {
-        setStyleProfilesState((previous) => normalizeCimStyleProfilesState({
-          ...previous,
-          ...data.styleProfiles,
-          profiles: [
-            ...(previous.profiles || []),
-            ...(Array.isArray(data.styleProfiles.profiles) ? data.styleProfiles.profiles : []),
-          ],
-        }));
+      if (data.financialAutofillDatasetVersion) {
+        setFinancialAutofillDatasetVersion(String(data.financialAutofillDatasetVersion));
       }
     }
 
@@ -7936,7 +7973,7 @@ export default function WorkspaceCimPrep() {
     void persistCimReviewState(nextState);
   }, [persistCimReviewState, reviewState, user]);
 
-  const handleFinancialAutofill = useCallback(async ({ dateRange, reportVersionId = "" } = {}) => {
+  const handleFinancialAutofill = useCallback(async ({ dateRange, reportVersionId = "", datasetVersion = "" } = {}) => {
     if (!clientId || templateFieldCount === 0) {
       showToast({
         type: "info",
@@ -7954,11 +7991,40 @@ export default function WorkspaceCimPrep() {
       return false;
     }
 
-    const reportVersion = reportVersions.find((version) => version.id === reportVersionId) || null;
+    const effectiveReportVersionId = isKeyReportsSource ? reportVersionId : "";
+    if (isKeyReportsSource && !effectiveReportVersionId) {
+      showToast({
+        type: "error",
+        title: "Select Reports Version",
+        message: "Choose a Key Reports version before auto-filling CIM financials.",
+      });
+      return false;
+    }
+    const reportVersion = isKeyReportsSource
+      ? reportVersions.find((version) => version.id === effectiveReportVersionId) || null
+      : null;
+    if (isKeyReportsSource && !reportVersion) {
+      showToast({
+        type: "error",
+        title: "Reports Version Unavailable",
+        message: "The selected Key Reports version is no longer available. Please choose another version.",
+      });
+      return false;
+    }
     const selectedReportSource = reportVersion
       ? (reportVersion.resolvedBatchId ? REPORT_SOURCE_KEYS.MANUAL_GL : REPORT_SOURCE_KEYS.MANUAL_UPLOAD)
       : reportSource;
-    const reportDatasetVersion = reportVersion?.resolvedDatasetVersion ?? selectedDatasetVersion;
+    const reportDatasetVersion = selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_GL
+      ? String(
+        reportVersion?.resolvedDatasetVersion ||
+        datasetVersion ||
+        financialAutofillDatasetVersion ||
+        selectedDatasetVersion ||
+        activeManualGlDatasetVersion?.value ||
+        activeManualGlDatasetVersion?.dataset_version ||
+        "",
+      )
+      : "";
 
     setFinancialAutofillState((previous) => ({
       ...previous,
@@ -7967,7 +8033,7 @@ export default function WorkspaceCimPrep() {
       progress: 4,
       progressMessage: reportVersion
         ? `Preparing ${reportVersion.versionName || `Version ${reportVersion.versionNumber || ""}`.trim()}`
-        : "Preparing the selected date range",
+        : `Preparing ${getReportSourceLabel(selectedReportSource)}`,
     }));
 
     try {
@@ -7975,7 +8041,7 @@ export default function WorkspaceCimPrep() {
         clientId,
         sourceKey: selectedReportSource,
         selectedDatasetVersion: reportDatasetVersion,
-        selectedReportVersionId: reportVersionId,
+        selectedReportVersionId: effectiveReportVersionId,
         dateRange,
         onProgress: ({ progress, message }) => {
           setFinancialAutofillState((previous) => ({
@@ -8040,7 +8106,8 @@ export default function WorkspaceCimPrep() {
         progressMessage: "Financial auto-fill complete",
       });
       setFinancialAutofillRange(dateRange);
-      setFinancialAutofillReportVersionId(reportVersionId);
+      setFinancialAutofillReportVersionId(effectiveReportVersionId);
+      setFinancialAutofillDatasetVersion(reportDatasetVersion);
 
       const discrepancyCount = snapshot.validation?.summary?.discrepancies || 0;
       const sourceWarningCount = snapshot.validation?.summary?.sourceWarnings || 0;
@@ -8076,6 +8143,9 @@ export default function WorkspaceCimPrep() {
     clientId,
     fieldValues,
     fieldsBySlide,
+    financialAutofillDatasetVersion,
+    activeManualGlDatasetVersion,
+    isKeyReportsSource,
     reportSource,
     reportVersions,
     selectedDatasetVersion,
@@ -8083,11 +8153,15 @@ export default function WorkspaceCimPrep() {
     templateFieldCount,
   ]);
 
-  const handleConfirmFinancialAutofill = useCallback(({ dateRange, reportVersionId }) => {
+  const handleConfirmFinancialAutofill = useCallback(({ dateRange, reportVersionId, datasetVersion }) => {
+    const effectiveReportVersionId = isKeyReportsSource ? reportVersionId || "" : "";
+    const effectiveDatasetVersion = isManualGlSource ? datasetVersion || manualGlAutofillDatasetVersion || "" : "";
     setFinancialAutofillModalOpen(false);
     setFinancialAutofillRange(dateRange);
-    setFinancialAutofillReportVersionId(reportVersionId || "");
-    if (reportVersionId) void selectReportVersion(reportVersionId);
+    setFinancialAutofillReportVersionId(effectiveReportVersionId);
+    setFinancialAutofillDatasetVersion(effectiveDatasetVersion);
+    if (effectiveReportVersionId) void selectReportVersion(effectiveReportVersionId);
+    if (effectiveDatasetVersion) setSelectedDatasetVersion(effectiveDatasetVersion);
     const slide24HeadingFields = (fieldsBySlide[24] || []).filter((field) => {
       const tokenIndex = getFieldTokenIndex(field);
       return field.order === 7 && tokenIndex >= 0 && tokenIndex <= 5;
@@ -8105,8 +8179,20 @@ export default function WorkspaceCimPrep() {
       ...withoutFieldValues(previous, headingFields),
       ...headingValues,
     }));
-    void handleFinancialAutofill({ dateRange, reportVersionId });
-  }, [fieldsBySlide, handleFinancialAutofill, selectReportVersion]);
+    void handleFinancialAutofill({
+      dateRange,
+      reportVersionId: effectiveReportVersionId,
+      datasetVersion: effectiveDatasetVersion,
+    });
+  }, [
+    fieldsBySlide,
+    handleFinancialAutofill,
+    isKeyReportsSource,
+    isManualGlSource,
+    manualGlAutofillDatasetVersion,
+    selectReportVersion,
+    setSelectedDatasetVersion,
+  ]);
 
   const handleSaveStyleProfiles = useCallback(async (nextState) => {
     const normalized = normalizeCimStyleProfilesState(nextState);
@@ -8314,11 +8400,11 @@ export default function WorkspaceCimPrep() {
         item.archived
           ? item
           : {
-              ...item,
-              batchId,
-              sentAt: now,
-              updatedAt: now,
-            },
+            ...item,
+            batchId,
+            sentAt: now,
+            updatedAt: now,
+          },
       ]),
     );
     const historyEntry = buildQuestionnaireHistoryEntry(activeItems, batchId, now, user);
@@ -8430,13 +8516,7 @@ export default function WorkspaceCimPrep() {
       financialValidation: financialAutofillState.validation,
       financialAutofillRange,
       financialAutofillReportVersionId,
-      styleProfileId: activeStyleProfileId,
-      styleProfiles: {
-        version: styleProfilesState.version,
-        activeProfileId: activeStyleProfileId,
-        profiles: styleProfilesState.profiles.filter((profile) => profile.id === activeStyleProfileId && !profile.isDefault),
-        updatedAt: styleProfilesState.updatedAt,
-      },
+      financialAutofillDatasetVersion,
       updatedAt: new Date().toISOString(),
     };
     const localKey = getLocalStorageKey(clientId);
@@ -8476,6 +8556,7 @@ export default function WorkspaceCimPrep() {
     effectiveGlobalDetails,
     fieldValues,
     financialAutofillRange,
+    financialAutofillDatasetVersion,
     financialAutofillReportVersionId,
     financialAutofillState.validation,
     showToast,
@@ -8688,24 +8769,23 @@ export default function WorkspaceCimPrep() {
                     const instanceIndex = slideRef.instanceIndex || 0;
                     const selected = activeSlide === slideNumber && activeSlideInstance === instanceIndex;
                     return (
-                    <button
-                      key={`${slideNumber}-${instanceIndex}`}
-                      onClick={() => {
-                        setActiveSlide(slideNumber);
-                        setActiveSlideInstance(instanceIndex);
-                        setActiveFieldId("");
-                      }}
-                      className={`shrink-0 rounded-md border px-3 py-2 text-xs font-bold transition ${
-                        selected
-                          ? "border-[#8BC53D] bg-[#EEF6E0] text-[#476E2C]"
-                          : "border-border bg-white text-[#6D6E71] hover:border-[#8BC53D]/60"
-                      }`}
-                    >
-                      Slide {slideNumber}{instanceIndex > 0 ? `.${instanceIndex + 1}` : ""}
-                      {instanceIndex > 0 ? (
-                        <span className="ml-1 rounded bg-[#476E2C] px-1 py-0.5 text-[9px] text-white">CONT.</span>
-                      ) : null}
-                    </button>
+                      <button
+                        key={`${slideNumber}-${instanceIndex}`}
+                        onClick={() => {
+                          setActiveSlide(slideNumber);
+                          setActiveSlideInstance(instanceIndex);
+                          setActiveFieldId("");
+                        }}
+                        className={`shrink-0 rounded-md border px-3 py-2 text-xs font-bold transition ${selected
+                            ? "border-[#8BC53D] bg-[#EEF6E0] text-[#476E2C]"
+                            : "border-border bg-white text-[#6D6E71] hover:border-[#8BC53D]/60"
+                          }`}
+                      >
+                        Slide {slideNumber}{instanceIndex > 0 ? `.${instanceIndex + 1}` : ""}
+                        {instanceIndex > 0 ? (
+                          <span className="ml-1 rounded bg-[#476E2C] px-1 py-0.5 text-[9px] text-white">CONT.</span>
+                        ) : null}
+                      </button>
                     );
                   })}
                 </div>
@@ -8812,9 +8892,15 @@ export default function WorkspaceCimPrep() {
         <FinancialAutofillModal
           initialRange={financialAutofillRange}
           initialReportVersionId={financialAutofillReportVersionId}
-          reportVersions={reportVersions}
-          reportVersionsLoading={reportVersionsLoading}
-          reportVersionsError={reportVersionsError}
+          initialDatasetVersion={manualGlAutofillDatasetVersion}
+          sourceLabel={reportSourceLabel}
+          versionMode={financialAutofillVersionMode}
+          reportVersions={financialAutofillReportVersions}
+          reportVersionsLoading={isKeyReportsSource && reportVersionsLoading}
+          reportVersionsError={isKeyReportsSource ? reportVersionsError : null}
+          datasetVersions={manualGlDatasetVersions}
+          datasetVersionsLoading={isManualGlSource && manualGlDatasetVersionsLoading}
+          datasetVersionsError={isManualGlSource ? manualGlDatasetVersionsError : null}
           loading={financialAutofillState.loading}
           onClose={() => setFinancialAutofillModalOpen(false)}
           onConfirm={handleConfirmFinancialAutofill}
