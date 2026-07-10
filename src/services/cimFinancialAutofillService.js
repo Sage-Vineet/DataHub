@@ -179,7 +179,7 @@ function flattenMappingLedger(mappingsByCategory = {}) {
   );
 }
 
-async function loadCimSourceLedger({ sourceKey, selectedDatasetVersion, selectedReportVersionId }) {
+async function loadCimSourceLedger({ clientId, sourceKey, selectedDatasetVersion, selectedReportVersionId }) {
   const sourceLabel = SOURCE_LABELS[sourceKey] || "Financial reports";
   if (sourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS && !selectedReportVersionId) {
     return {
@@ -193,6 +193,58 @@ async function loadCimSourceLedger({ sourceKey, selectedDatasetVersion, selected
       documents: [{ category: "live_accounting", categoryLabel: sourceLabel, fileName: sourceLabel }],
       issues: [],
     };
+  }
+
+  if (!selectedReportVersionId) {
+    if (sourceKey === REPORT_SOURCE_KEYS.MANUAL_GL) {
+      try {
+        const versions = await listManualGlDatasetVersions({ clientId });
+        const selectedVersionKey = String(selectedDatasetVersion || "").trim();
+        const version = selectedVersionKey
+          ? versions.find((item) => String(item.value ?? item.dataset_version ?? item.version_number ?? "") === selectedVersionKey)
+          : versions.find((item) => item.isActive || item.is_active) || versions[0] || null;
+        return {
+          sourceKey,
+          sourceLabel,
+          status: version ? "verified" : "unverified",
+          verified: Boolean(version),
+          versionId: null,
+          versionName: version?.label || (selectedVersionKey ? `Version ${selectedVersionKey}` : "Current Manual GL source"),
+          datasetVersion: version?.value ?? version?.dataset_version ?? selectedDatasetVersion ?? null,
+          lastSyncedAt: version?.createdAt || version?.created_at || null,
+          documents: [{ category: "manual_gl", categoryLabel: sourceLabel, fileName: version?.label || sourceLabel }],
+          issues: version ? [] : ["No Manual GL dataset version is available for this company."],
+        };
+      } catch (error) {
+        return {
+          sourceKey,
+          sourceLabel,
+          status: selectedDatasetVersion ? "verified" : "unverified",
+          verified: Boolean(selectedDatasetVersion),
+          versionId: null,
+          versionName: selectedDatasetVersion ? `Version ${selectedDatasetVersion}` : "Manual GL source",
+          datasetVersion: selectedDatasetVersion || null,
+          lastSyncedAt: null,
+          documents: [{ category: "manual_gl", categoryLabel: sourceLabel, fileName: sourceLabel }],
+          issues: selectedDatasetVersion ? [] : [error?.message || "Manual GL source validation failed."],
+        };
+      }
+    }
+
+    if (sourceKey === REPORT_SOURCE_KEYS.MANUAL_UPLOAD || sourceKey === REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL) {
+      return {
+        sourceKey,
+        sourceLabel,
+        status: "verified",
+        verified: true,
+        versionId: null,
+        versionName: "Current connected source",
+        datasetVersion: null,
+        lastSyncedAt: null,
+        documents: [{ category: "connected_source", categoryLabel: sourceLabel, fileName: sourceLabel }],
+        issues: [],
+      };
+    }
   }
 
   try {
@@ -1572,6 +1624,7 @@ export async function loadCimFinancialAutofillSnapshot({
   const periodType = selectedRange?.periodType || "calendar";
   const selectedStartYear = getFiscalYearFromDate(selectedRange?.startDate, periodType);
   const sourceLedgerPromise = loadCimSourceLedger({
+    clientId,
     sourceKey: normalizedSource,
     selectedDatasetVersion: datasetVersion || selectedDatasetVersion,
     selectedReportVersionId,
@@ -1735,14 +1788,14 @@ export async function loadCimFinancialAutofillSnapshot({
       clientId,
       sourceKey: normalizedSource,
       datasetVersion,
-      keyReportVersionId: sourceLedger?.versionId,
+      keyReportVersionId: selectedReportVersionId,
     }).catch(() => null),
     normalizedSource === REPORT_SOURCE_KEYS.QUICKBOOKS
       ? Promise.all(sortedAscending.map((year) => getCimTaxReconciliationRequest({
         clientId,
         sourceKey: normalizedSource,
         datasetVersion,
-        keyReportVersionId: sourceLedger?.versionId,
+        keyReportVersionId: selectedReportVersionId,
         year,
       }).catch(() => null))).then((responses) => ({
         years: Object.fromEntries(responses
@@ -1753,7 +1806,7 @@ export async function loadCimFinancialAutofillSnapshot({
         clientId,
         sourceKey: normalizedSource,
         datasetVersion,
-        keyReportVersionId: sourceLedger?.versionId,
+        keyReportVersionId: selectedReportVersionId,
       }).catch(() => null),
   ]);
   reportProgress(90, "Validating accounting consistency and source support");

@@ -42,7 +42,7 @@ import { useAuth } from "../../../context/AuthContext";
 import { useDataSource } from "../../../context/DataSourceContext";
 import { useToast } from "../../../context/ToastContext";
 import { CLIENT_SUB_ROLES } from "../../../lib/roles";
-import { REPORT_SOURCE_KEYS, normalizeReportSourceKey } from "../../../lib/report-source";
+import { REPORT_SOURCE_KEYS, getReportSourceLabel, normalizeReportSourceKey } from "../../../lib/report-source";
 import { loadCimFinancialAutofillSnapshot } from "../../../services/cimFinancialAutofillService";
 import { useDatasetVersionStore } from "../../../store/useDatasetVersionStore";
 import { useKeyReportContextStore } from "../../../store/useKeyReportContextStore";
@@ -6408,38 +6408,64 @@ function FieldPanel({
 function FinancialAutofillModal({
   initialRange,
   initialReportVersionId,
+  initialDatasetVersion,
+  sourceLabel,
+  versionMode,
   reportVersions,
   reportVersionsLoading,
   reportVersionsError,
+  datasetVersions,
+  datasetVersionsLoading,
+  datasetVersionsError,
   loading,
   onClose,
   onConfirm,
 }) {
   const [range, setRange] = useState(initialRange || getDefaultFinancialAutofillRange());
   const [reportVersionId, setReportVersionId] = useState(initialReportVersionId || "");
+  const [datasetVersion, setDatasetVersion] = useState(initialDatasetVersion || "");
 
-  const hasReportVersions = reportVersions.length > 0;
-  const reportVersionValid = !hasReportVersions || reportVersions.some((version) => version.id === reportVersionId);
+  const needsReportVersion = versionMode === "key_reports";
+  const needsDatasetVersion = versionMode === "manual_gl";
+  const hasReportVersions = needsReportVersion && reportVersions.length > 0;
+  const hasDatasetVersions = needsDatasetVersion && datasetVersions.length > 0;
+  const fallbackReportVersion = reportVersions.find((version) => version.id === initialReportVersionId)
+    || reportVersions.find((version) => version.isActive)
+    || reportVersions[0]
+    || null;
+  const effectiveReportVersionId = reportVersions.some((version) => version.id === reportVersionId)
+    ? reportVersionId
+    : fallbackReportVersion?.id || "";
+  const fallbackDatasetVersion = datasetVersions.find((version) => String(version.value ?? version.id) === String(initialDatasetVersion))
+    || datasetVersions.find((version) => version.isActive || version.is_active)
+    || datasetVersions[0]
+    || null;
+  const effectiveDatasetVersion = datasetVersions.some((version) => String(version.value ?? version.id) === String(datasetVersion))
+    ? datasetVersion
+    : fallbackDatasetVersion ? String(fallbackDatasetVersion.value ?? fallbackDatasetVersion.id) : "";
+  const reportVersionValid = !needsReportVersion || reportVersions.some((version) => version.id === effectiveReportVersionId);
+  const datasetVersionValid = !needsDatasetVersion || datasetVersions.some((version) => String(version.value ?? version.id) === String(effectiveDatasetVersion));
   const valid = isValidFinancialAutofillRange(range)
     && reportVersionValid
-    && !reportVersionsLoading
-    && !reportVersionsError;
+    && datasetVersionValid
+    && (!needsReportVersion || (!reportVersionsLoading && !reportVersionsError))
+    && (!needsDatasetVersion || (!datasetVersionsLoading && !datasetVersionsError));
   const rangeError = getFinancialAutofillRangeError(range);
-  const formError = rangeError || (!reportVersionValid ? "Select a valid reports version." : "");
+  const formError = rangeError
+    || (needsReportVersion && !hasReportVersions && !reportVersionsLoading ? "No Key Reports version is available for this company." : "")
+    || (needsReportVersion && !reportVersionValid ? "Select a valid reports version." : "")
+    || (needsDatasetVersion && !hasDatasetVersions && !datasetVersionsLoading ? "No Manual GL version is available for this company." : "")
+    || (needsDatasetVersion && !datasetVersionValid ? "Select a valid Manual GL version." : "");
   const trailingRange = getTrailingTwelveMonthRange(range);
-
-  useEffect(() => {
-    if (!hasReportVersions || reportVersions.some((version) => version.id === reportVersionId)) return;
-    const fallback = reportVersions.find((version) => version.id === initialReportVersionId)
-      || reportVersions.find((version) => version.isActive)
-      || reportVersions[0];
-    setReportVersionId(fallback?.id || "");
-  }, [hasReportVersions, initialReportVersionId, reportVersionId, reportVersions]);
 
   const handleSubmit = (event) => {
     event.preventDefault();
     if (!valid || loading) return;
-    onConfirm({ dateRange: range, reportVersionId });
+    onConfirm({
+      dateRange: range,
+      reportVersionId: needsReportVersion ? effectiveReportVersionId : "",
+      datasetVersion: needsDatasetVersion ? effectiveDatasetVersion : "",
+    });
   };
 
   return (
@@ -6454,9 +6480,11 @@ function FinancialAutofillModal({
               <CalendarDays size={20} />
             </span>
             <div>
-              <h2 className="text-base font-bold text-[#050505]">Select Financial Period and Reports Version</h2>
+              <h2 className="text-base font-bold text-[#050505]">
+                {needsReportVersion || needsDatasetVersion ? "Select Financial Period and Version" : "Select Financial Period"}
+              </h2>
               <p className="mt-1 text-sm leading-relaxed text-[#6D6E71]">
-                Choose the exact reports version and up to five years for CIM financial analysis.
+                Auto-fill will read from {sourceLabel || "the active financial source"} and replicate the same connected-source data used in Reports.
               </p>
             </div>
           </div>
@@ -6502,37 +6530,69 @@ function FinancialAutofillModal({
             </select>
           </label>
 
-          <label className="block">
-            <span className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.06em] text-[#6D6E71]">
-              Reports version
-            </span>
-            <select
-              value={reportVersionId}
-              onChange={(event) => setReportVersionId(event.target.value)}
-              className="h-11 w-full rounded-md border border-border bg-white px-3 text-sm font-semibold text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20 disabled:bg-[#F7F8FA] disabled:text-[#A5A5A5]"
-              disabled={loading || reportVersionsLoading || !hasReportVersions}
-              required={hasReportVersions}
-            >
-              {reportVersionsLoading ? <option value="">Loading report versions...</option> : null}
-              {!reportVersionsLoading && !hasReportVersions ? (
-                <option value="">No saved report versions - use current financial source</option>
-              ) : null}
-              {reportVersions.map((version) => (
-                <option key={version.id} value={version.id}>
-                  {version.versionName || `Version ${version.versionNumber || ""}`.trim()}
-                  {version.isActive ? " (Official)" : ""}
-                  {version.status ? ` - ${version.status}` : ""}
-                </option>
-              ))}
-            </select>
-            <span className="mt-1 block text-xs text-[#6D6E71]">
-              Auto-fill will read only the reports and generated financials linked to this version.
-            </span>
-          </label>
+          {needsReportVersion ? (
+            <label className="block">
+              <span className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.06em] text-[#6D6E71]">
+                Reports version
+              </span>
+              <select
+                value={effectiveReportVersionId}
+                onChange={(event) => setReportVersionId(event.target.value)}
+                className="h-11 w-full rounded-md border border-border bg-white px-3 text-sm font-semibold text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20 disabled:bg-[#F7F8FA] disabled:text-[#A5A5A5]"
+                disabled={loading || reportVersionsLoading || !hasReportVersions}
+                required
+              >
+                {reportVersionsLoading ? <option value="">Loading report versions...</option> : null}
+                {!reportVersionsLoading && !hasReportVersions ? (
+                  <option value="">No Key Reports versions available</option>
+                ) : null}
+                {reportVersions.map((version) => (
+                  <option key={version.id} value={version.id}>
+                    {version.versionName || `Version ${version.versionNumber || ""}`.trim()}
+                    {version.isActive ? " (Official)" : ""}
+                    {version.status ? ` - ${version.status}` : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
 
-          {reportVersionsError ? (
+          {needsDatasetVersion ? (
+            <label className="block">
+              <span className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.06em] text-[#6D6E71]">
+                Manual GL version
+              </span>
+              <select
+                value={effectiveDatasetVersion}
+                onChange={(event) => setDatasetVersion(event.target.value)}
+                className="h-11 w-full rounded-md border border-border bg-white px-3 text-sm font-semibold text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20 disabled:bg-[#F7F8FA] disabled:text-[#A5A5A5]"
+                disabled={loading || datasetVersionsLoading || !hasDatasetVersions}
+                required
+              >
+                {datasetVersionsLoading ? <option value="">Loading Manual GL versions...</option> : null}
+                {!datasetVersionsLoading && !hasDatasetVersions ? (
+                  <option value="">No Manual GL versions available</option>
+                ) : null}
+                {datasetVersions.map((version) => (
+                  <option key={version.id || version.value} value={String(version.value ?? version.id)}>
+                    {version.label || `Version ${version.value ?? version.versionNumber ?? ""}`.trim()}
+                    {version.isActive || version.is_active ? " (Active)" : ""}
+                    {version.status ? ` - ${version.status}` : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+
+          {needsReportVersion && reportVersionsError ? (
             <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">
               {reportVersionsError}
+            </p>
+          ) : null}
+
+          {needsDatasetVersion && datasetVersionsError ? (
+            <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">
+              {datasetVersionsError}
             </p>
           ) : null}
 
@@ -7299,6 +7359,12 @@ export default function WorkspaceCimPrep() {
   const { activeSource } = useDataSource();
   const { showToast } = useToast();
   const selectedDatasetVersion = useDatasetVersionStore((state) => state.selectedVersion);
+  const manualGlDatasetVersions = useDatasetVersionStore((state) => state.versions);
+  const activeManualGlDatasetVersion = useDatasetVersionStore((state) => state.activeVersion);
+  const manualGlDatasetVersionsLoading = useDatasetVersionStore((state) => state.isLoading);
+  const manualGlDatasetVersionsError = useDatasetVersionStore((state) => state.error);
+  const fetchManualGlDatasetVersions = useDatasetVersionStore((state) => state.fetchVersions);
+  const setSelectedDatasetVersion = useDatasetVersionStore((state) => state.setSelectedVersion);
   const reportVersions = useKeyReportContextStore((state) => state.versions);
   const selectedReportVersionId = useKeyReportContextStore((state) => state.selectedVersionId);
   const reportVersionsLoading = useKeyReportContextStore((state) => state.loading);
@@ -7337,10 +7403,27 @@ export default function WorkspaceCimPrep() {
   const [financialAutofillModalOpen, setFinancialAutofillModalOpen] = useState(false);
   const [financialAutofillRange, setFinancialAutofillRange] = useState(() => getDefaultFinancialAutofillRange());
   const [financialAutofillReportVersionId, setFinancialAutofillReportVersionId] = useState("");
+  const [financialAutofillDatasetVersion, setFinancialAutofillDatasetVersion] = useState("");
   const reportSource = useMemo(
     () => normalizeReportSourceKey(activeSource) || REPORT_SOURCE_KEYS.QUICKBOOKS,
     [activeSource],
   );
+  const reportSourceLabel = useMemo(() => getReportSourceLabel(reportSource), [reportSource]);
+  const isKeyReportsSource = reportSource === REPORT_SOURCE_KEYS.KEY_REPORTS;
+  const isManualGlSource = reportSource === REPORT_SOURCE_KEYS.MANUAL_GL;
+  const manualGlAutofillDatasetVersion = String(
+    financialAutofillDatasetVersion ||
+    selectedDatasetVersion ||
+    activeManualGlDatasetVersion?.value ||
+    activeManualGlDatasetVersion?.dataset_version ||
+    "",
+  );
+  const financialAutofillVersionMode = isKeyReportsSource
+    ? "key_reports"
+    : isManualGlSource && (manualGlDatasetVersionsLoading || manualGlDatasetVersions.length > 1)
+      ? "manual_gl"
+      : "none";
+  const financialAutofillReportVersions = isKeyReportsSource ? reportVersions : [];
 
   const fieldsBySlide = useMemo(() => {
     const result = {};
@@ -7411,16 +7494,34 @@ export default function WorkspaceCimPrep() {
   }, [clientId]);
 
   useEffect(() => {
-    if (clientId) void fetchReportVersions(clientId);
-  }, [clientId, fetchReportVersions]);
+    if (clientId && isKeyReportsSource) void fetchReportVersions(clientId);
+  }, [clientId, fetchReportVersions, isKeyReportsSource]);
 
   useEffect(() => {
+    if (clientId && isManualGlSource) void fetchManualGlDatasetVersions(clientId);
+  }, [clientId, fetchManualGlDatasetVersions, isManualGlSource]);
+
+  useEffect(() => {
+    if (!isKeyReportsSource) {
+      window.queueMicrotask(() => setFinancialAutofillReportVersionId(""));
+      return;
+    }
     if (loading || reportVersionsLoading || !reportVersions.length) return;
-    setFinancialAutofillReportVersionId((previous) => {
+    window.queueMicrotask(() => setFinancialAutofillReportVersionId((previous) => {
       if (previous && reportVersions.some((version) => version.id === previous)) return previous;
       return selectedReportVersionId || reportVersions.find((version) => version.isActive)?.id || reportVersions[0].id;
-    });
-  }, [loading, reportVersions, reportVersionsLoading, selectedReportVersionId]);
+    }));
+  }, [isKeyReportsSource, loading, reportVersions, reportVersionsLoading, selectedReportVersionId]);
+
+  useEffect(() => {
+    if (!isManualGlSource) {
+      window.queueMicrotask(() => setFinancialAutofillDatasetVersion(""));
+      return;
+    }
+    window.queueMicrotask(() => setFinancialAutofillDatasetVersion((previous) => (
+      selectedDatasetVersion || previous || activeManualGlDatasetVersion?.value || activeManualGlDatasetVersion?.dataset_version || ""
+    )));
+  }, [activeManualGlDatasetVersion, isManualGlSource, selectedDatasetVersion]);
 
   useEffect(() => {
     if (loading || !isValidFinancialAutofillRange(financialAutofillRange)) return;
@@ -7530,6 +7631,9 @@ export default function WorkspaceCimPrep() {
       }
       if (data.financialAutofillReportVersionId) {
         setFinancialAutofillReportVersionId(String(data.financialAutofillReportVersionId));
+      }
+      if (data.financialAutofillDatasetVersion) {
+        setFinancialAutofillDatasetVersion(String(data.financialAutofillDatasetVersion));
       }
     }
 
@@ -7787,7 +7891,7 @@ export default function WorkspaceCimPrep() {
     void persistCimReviewState(nextState);
   }, [persistCimReviewState, reviewState, user]);
 
-  const handleFinancialAutofill = useCallback(async ({ dateRange, reportVersionId = "" } = {}) => {
+  const handleFinancialAutofill = useCallback(async ({ dateRange, reportVersionId = "", datasetVersion = "" } = {}) => {
     if (!clientId || templateFieldCount === 0) {
       showToast({
         type: "info",
@@ -7805,11 +7909,40 @@ export default function WorkspaceCimPrep() {
       return false;
     }
 
-    const reportVersion = reportVersions.find((version) => version.id === reportVersionId) || null;
+    const effectiveReportVersionId = isKeyReportsSource ? reportVersionId : "";
+    if (isKeyReportsSource && !effectiveReportVersionId) {
+      showToast({
+        type: "error",
+        title: "Select Reports Version",
+        message: "Choose a Key Reports version before auto-filling CIM financials.",
+      });
+      return false;
+    }
+    const reportVersion = isKeyReportsSource
+      ? reportVersions.find((version) => version.id === effectiveReportVersionId) || null
+      : null;
+    if (isKeyReportsSource && !reportVersion) {
+      showToast({
+        type: "error",
+        title: "Reports Version Unavailable",
+        message: "The selected Key Reports version is no longer available. Please choose another version.",
+      });
+      return false;
+    }
     const selectedReportSource = reportVersion
       ? (reportVersion.resolvedBatchId ? REPORT_SOURCE_KEYS.MANUAL_GL : REPORT_SOURCE_KEYS.MANUAL_UPLOAD)
       : reportSource;
-    const reportDatasetVersion = reportVersion?.resolvedDatasetVersion ?? selectedDatasetVersion;
+    const reportDatasetVersion = selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_GL
+      ? String(
+        reportVersion?.resolvedDatasetVersion ||
+        datasetVersion ||
+        financialAutofillDatasetVersion ||
+        selectedDatasetVersion ||
+        activeManualGlDatasetVersion?.value ||
+        activeManualGlDatasetVersion?.dataset_version ||
+        "",
+      )
+      : "";
 
     setFinancialAutofillState((previous) => ({
       ...previous,
@@ -7818,7 +7951,7 @@ export default function WorkspaceCimPrep() {
       progress: 4,
       progressMessage: reportVersion
         ? `Preparing ${reportVersion.versionName || `Version ${reportVersion.versionNumber || ""}`.trim()}`
-        : "Preparing the selected date range",
+        : `Preparing ${getReportSourceLabel(selectedReportSource)}`,
     }));
 
     try {
@@ -7826,7 +7959,7 @@ export default function WorkspaceCimPrep() {
         clientId,
         sourceKey: selectedReportSource,
         selectedDatasetVersion: reportDatasetVersion,
-        selectedReportVersionId: reportVersionId,
+        selectedReportVersionId: effectiveReportVersionId,
         dateRange,
         onProgress: ({ progress, message }) => {
           setFinancialAutofillState((previous) => ({
@@ -7891,7 +8024,8 @@ export default function WorkspaceCimPrep() {
         progressMessage: "Financial auto-fill complete",
       });
       setFinancialAutofillRange(dateRange);
-      setFinancialAutofillReportVersionId(reportVersionId);
+      setFinancialAutofillReportVersionId(effectiveReportVersionId);
+      setFinancialAutofillDatasetVersion(reportDatasetVersion);
 
       const discrepancyCount = snapshot.validation?.summary?.discrepancies || 0;
       const sourceWarningCount = snapshot.validation?.summary?.sourceWarnings || 0;
@@ -7927,6 +8061,9 @@ export default function WorkspaceCimPrep() {
     clientId,
     fieldValues,
     fieldsBySlide,
+    financialAutofillDatasetVersion,
+    activeManualGlDatasetVersion,
+    isKeyReportsSource,
     reportSource,
     reportVersions,
     selectedDatasetVersion,
@@ -7934,11 +8071,15 @@ export default function WorkspaceCimPrep() {
     templateFieldCount,
   ]);
 
-  const handleConfirmFinancialAutofill = useCallback(({ dateRange, reportVersionId }) => {
+  const handleConfirmFinancialAutofill = useCallback(({ dateRange, reportVersionId, datasetVersion }) => {
+    const effectiveReportVersionId = isKeyReportsSource ? reportVersionId || "" : "";
+    const effectiveDatasetVersion = isManualGlSource ? datasetVersion || manualGlAutofillDatasetVersion || "" : "";
     setFinancialAutofillModalOpen(false);
     setFinancialAutofillRange(dateRange);
-    setFinancialAutofillReportVersionId(reportVersionId || "");
-    if (reportVersionId) void selectReportVersion(reportVersionId);
+    setFinancialAutofillReportVersionId(effectiveReportVersionId);
+    setFinancialAutofillDatasetVersion(effectiveDatasetVersion);
+    if (effectiveReportVersionId) void selectReportVersion(effectiveReportVersionId);
+    if (effectiveDatasetVersion) setSelectedDatasetVersion(effectiveDatasetVersion);
     const slide24HeadingFields = (fieldsBySlide[24] || []).filter((field) => {
       const tokenIndex = getFieldTokenIndex(field);
       return field.order === 7 && tokenIndex >= 0 && tokenIndex <= 5;
@@ -7956,8 +8097,20 @@ export default function WorkspaceCimPrep() {
       ...withoutFieldValues(previous, headingFields),
       ...headingValues,
     }));
-    void handleFinancialAutofill({ dateRange, reportVersionId });
-  }, [fieldsBySlide, handleFinancialAutofill, selectReportVersion]);
+    void handleFinancialAutofill({
+      dateRange,
+      reportVersionId: effectiveReportVersionId,
+      datasetVersion: effectiveDatasetVersion,
+    });
+  }, [
+    fieldsBySlide,
+    handleFinancialAutofill,
+    isKeyReportsSource,
+    isManualGlSource,
+    manualGlAutofillDatasetVersion,
+    selectReportVersion,
+    setSelectedDatasetVersion,
+  ]);
 
   const handleSectionSelect = useCallback((sectionId) => {
     const nextSection = NAV_SECTIONS.find((section) => section.id === sectionId) || BASIC_DETAILS_SECTION;
@@ -8247,6 +8400,7 @@ export default function WorkspaceCimPrep() {
       financialValidation: financialAutofillState.validation,
       financialAutofillRange,
       financialAutofillReportVersionId,
+      financialAutofillDatasetVersion,
       updatedAt: new Date().toISOString(),
     };
     const localKey = getLocalStorageKey(clientId);
@@ -8285,6 +8439,7 @@ export default function WorkspaceCimPrep() {
     effectiveGlobalDetails,
     fieldValues,
     financialAutofillRange,
+    financialAutofillDatasetVersion,
     financialAutofillReportVersionId,
     financialAutofillState.validation,
     showToast,
@@ -8600,9 +8755,15 @@ export default function WorkspaceCimPrep() {
         <FinancialAutofillModal
           initialRange={financialAutofillRange}
           initialReportVersionId={financialAutofillReportVersionId}
-          reportVersions={reportVersions}
-          reportVersionsLoading={reportVersionsLoading}
-          reportVersionsError={reportVersionsError}
+          initialDatasetVersion={manualGlAutofillDatasetVersion}
+          sourceLabel={reportSourceLabel}
+          versionMode={financialAutofillVersionMode}
+          reportVersions={financialAutofillReportVersions}
+          reportVersionsLoading={isKeyReportsSource && reportVersionsLoading}
+          reportVersionsError={isKeyReportsSource ? reportVersionsError : null}
+          datasetVersions={manualGlDatasetVersions}
+          datasetVersionsLoading={isManualGlSource && manualGlDatasetVersionsLoading}
+          datasetVersionsError={isManualGlSource ? manualGlDatasetVersionsError : null}
           loading={financialAutofillState.loading}
           onClose={() => setFinancialAutofillModalOpen(false)}
           onConfirm={handleConfirmFinancialAutofill}
