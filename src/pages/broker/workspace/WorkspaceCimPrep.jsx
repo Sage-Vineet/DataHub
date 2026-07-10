@@ -7580,48 +7580,14 @@ export default function WorkspaceCimPrep() {
   }, [clientId, fetchReportVersions, isKeyReportsSource]);
 
   useEffect(() => {
-    let cancelled = false;
-    const localKey = getStyleProfilesLocalStorageKey();
-
-    async function loadStyleProfiles() {
-      try {
-        const payload = await getCimStyleProfilesRequest({ clientId });
-        if (cancelled) return;
-        const state = normalizeCimStyleProfilesState(payload?.state || {});
-        setStyleProfilesState((previous) => normalizeCimStyleProfilesState({
-          ...state,
-          profiles: [...(previous.profiles || []), ...(state.profiles || [])],
-        }));
-        setActiveStyleProfileId((previous) => (
-          previous && previous !== DEFAULT_CIM_STYLE_PROFILE_ID ? previous : state.activeProfileId || DEFAULT_CIM_STYLE_PROFILE_ID
-        ));
-        window.localStorage.setItem(localKey, JSON.stringify(state));
-      } catch {
-        try {
-          const local = window.localStorage.getItem(localKey);
-          if (!cancelled && local) {
-            const state = normalizeCimStyleProfilesState(JSON.parse(local));
-            setStyleProfilesState((previous) => normalizeCimStyleProfilesState({
-              ...state,
-              profiles: [...(previous.profiles || []), ...(state.profiles || [])],
-            }));
-            setActiveStyleProfileId((previous) => (
-              previous && previous !== DEFAULT_CIM_STYLE_PROFILE_ID ? previous : state.activeProfileId || DEFAULT_CIM_STYLE_PROFILE_ID
-            ));
-          }
-        } catch {
-          // Malformed local style profiles should never block CIM prep.
-        }
-      }
-    }
-
-    void loadStyleProfiles();
-    return () => {
-      cancelled = true;
-    };
-  }, [clientId]);
+    if (clientId && isManualGlSource) void fetchManualGlDatasetVersions(clientId);
+  }, [clientId, fetchManualGlDatasetVersions, isManualGlSource]);
 
   useEffect(() => {
+    if (!isKeyReportsSource) {
+      window.queueMicrotask(() => setFinancialAutofillReportVersionId(""));
+      return;
+    }
     if (loading || reportVersionsLoading || !reportVersions.length) return;
     window.queueMicrotask(() => setFinancialAutofillReportVersionId((previous) => {
       if (previous && reportVersions.some((version) => version.id === previous)) return previous;
@@ -7748,20 +7714,8 @@ export default function WorkspaceCimPrep() {
       if (data.financialAutofillReportVersionId) {
         setFinancialAutofillReportVersionId(String(data.financialAutofillReportVersionId));
       }
-      if (data.styleProfileId) {
-        setActiveStyleProfileId(String(data.styleProfileId));
-      } else if (data.styleProfiles?.activeProfileId) {
-        setActiveStyleProfileId(String(data.styleProfiles.activeProfileId));
-      }
-      if (data.styleProfiles) {
-        setStyleProfilesState((previous) => normalizeCimStyleProfilesState({
-          ...previous,
-          ...data.styleProfiles,
-          profiles: [
-            ...(previous.profiles || []),
-            ...(Array.isArray(data.styleProfiles.profiles) ? data.styleProfiles.profiles : []),
-          ],
-        }));
+      if (data.financialAutofillDatasetVersion) {
+        setFinancialAutofillDatasetVersion(String(data.financialAutofillDatasetVersion));
       }
     }
 
@@ -8562,13 +8516,7 @@ export default function WorkspaceCimPrep() {
       financialValidation: financialAutofillState.validation,
       financialAutofillRange,
       financialAutofillReportVersionId,
-      styleProfileId: activeStyleProfileId,
-      styleProfiles: {
-        version: styleProfilesState.version,
-        activeProfileId: activeStyleProfileId,
-        profiles: styleProfilesState.profiles.filter((profile) => profile.id === activeStyleProfileId && !profile.isDefault),
-        updatedAt: styleProfilesState.updatedAt,
-      },
+      financialAutofillDatasetVersion,
       updatedAt: new Date().toISOString(),
     };
     const localKey = getLocalStorageKey(clientId);
