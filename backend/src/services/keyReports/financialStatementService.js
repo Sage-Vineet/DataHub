@@ -1940,15 +1940,69 @@ function validateAll(plYearly, bsYearly) {
 
 // ─── Main entry point ─────────────────────────────────────────────────────────
 
+// Result-cache report_type for the full financial-statements payload. Bump the
+// suffix to invalidate all cached rows after a shape change.
+const FIN_STMT_CACHE_TYPE = "kr_financial_statements_v1";
+
+// In-flight de-duplication. The generate-time background warm and a user's
+// Reports / Reconciliation load can ask for the same version's statements at the
+// same moment; without this, BOTH would run the full (heavy) compute in parallel,
+// doubling DB load. Here the second caller awaits the first's in-flight compute.
+const _fsInflight = new Map();
+
 async function generateFinancialStatements(versionId, options = {}) {
+  if (options.noCache === true) return _generateFinancialStatementsImpl(versionId, options);
+  const yearKey = options.year ? String(Number(options.year)) : "all";
+  const key = `${versionId}:${yearKey}:${options.currency || "USD"}:${options.companyName || ""}`;
+  const existing = _fsInflight.get(key);
+  if (existing) return existing;
+  const p = _generateFinancialStatementsImpl(versionId, options);
+  _fsInflight.set(key, p);
+  p.then(() => _fsInflight.delete(key), () => _fsInflight.delete(key));
+  return p;
+}
+
+async function _generateFinancialStatementsImpl(versionId, options = {}) {
   if (!versionId) throw new Error("versionId is required");
 
-  const { data: version } = await supabase
-    .from("key_report_versions")
-    .select("company_id")
-    .eq("id", versionId)
-    .single();
+  // Version + latest COA edit drive the result-cache key below: the cache
+  // invalidates whenever the version is re-generated (last_synced_at changes) or
+  // the Chart of Accounts is edited (chart_of_accounts.updated_at changes) —
+  // exactly the two signals that change the numbers.
+  const [{ data: version }, { data: coaRow }] = await Promise.all([
+    supabase.from("key_report_versions").select("company_id, last_synced_at").eq("id", versionId).single(),
+    supabase.from("chart_of_accounts").select("updated_at").eq("version_id", versionId)
+      .order("updated_at", { ascending: false }).limit(1).maybeSingle(),
+  ]);
   const companyId = version?.company_id;
+  const syncedAt = version?.last_synced_at || null;
+  const coaUpdatedAt = coaRow?.updated_at || null;
+  const yearKey = options.year ? String(Number(options.year)) : "all";
+
+  // ── Result cache ────────────────────────────────────────────────────────────
+  // generateFinancialStatements is expensive (it scans the GL many times per
+  // year). Cache the full result in qb_synced_reports so repeat loads of the
+  // Reports / Reconciliation pages return instantly. companyName/currency are
+  // presentation-only and re-applied on a hit, so they never fragment the cache.
+  // Pass options.noCache = true to force a fresh compute.
+  if (options.noCache !== true && companyId) {
+    try {
+      const { data: rows } = await supabase
+        .from("qb_synced_reports").select("data")
+        .eq("company_id", companyId).eq("report_type", FIN_STMT_CACHE_TYPE)
+        .order("updated_at", { ascending: false });
+      const hit = (rows || []).find(
+        (r) => r?.data?.versionId === versionId && r?.data?.syncedAt === syncedAt &&
+          r?.data?.coaUpdatedAt === coaUpdatedAt && String(r?.data?.yearKey) === yearKey && r?.data?.result,
+      );
+      if (hit) {
+        console.log(`[FinStmt][Cache] hit v=${versionId} year=${yearKey}`);
+        return { ...hit.data.result, companyName: options.companyName || "", currency: options.currency || "USD" };
+      }
+    } catch {
+      /* cache read failed — fall through to compute */
+    }
+  }
 
   const [allCoa, years] = await Promise.all([
     loadCoa(versionId),
@@ -2026,7 +2080,7 @@ async function generateFinancialStatements(versionId, options = {}) {
     `| warnings=${validation.length}`,
   );
 
-  return {
+  const result = {
     companyName: options.companyName || "",
     currency:    options.currency    || "USD",
     reports: {
@@ -2037,6 +2091,34 @@ async function generateFinancialStatements(versionId, options = {}) {
     validation,
     missingData: [],
   };
+
+  // Persist to the result cache (best-effort). One row per (version, yearKey):
+  // a re-generate/COA edit changes the key and this overwrites the stale row.
+  if (options.noCache !== true && companyId) {
+    try {
+      const now = new Date().toISOString();
+      const payload = { versionId, syncedAt, coaUpdatedAt, yearKey, result };
+      const { data: existingRows } = await supabase
+        .from("qb_synced_reports").select("id, data")
+        .eq("company_id", companyId).eq("report_type", FIN_STMT_CACHE_TYPE);
+      const existing = (existingRows || []).find(
+        (r) => r?.data?.versionId === versionId && String(r?.data?.yearKey) === yearKey,
+      );
+      if (existing?.id) {
+        await supabase.from("qb_synced_reports")
+          .update({ data: payload, status: "synced", updated_at: now }).eq("id", existing.id);
+      } else {
+        await supabase.from("qb_synced_reports").insert({
+          company_id: companyId, report_type: FIN_STMT_CACHE_TYPE, source: "manual_report_upload",
+          data: payload, status: "synced", updated_at: now,
+        });
+      }
+    } catch {
+      /* cache write is best-effort — never block the response */
+    }
+  }
+
+  return result;
 }
 
 /**
