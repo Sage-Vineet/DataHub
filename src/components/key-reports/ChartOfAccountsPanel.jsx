@@ -28,6 +28,7 @@ const STATEMENT_LABELS = {
 export default function ChartOfAccountsPanel({ versionId, hasSyncedData, notify }) {
   const [tree, setTree] = useState([]);
   const [accountCount, setAccountCount] = useState(0);
+  const [reusedLeaves, setReusedLeaves] = useState([]);
   const [loading, setLoading] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
   const [collapsed, setCollapsed] = useState({});
@@ -38,6 +39,7 @@ export default function ChartOfAccountsPanel({ versionId, hasSyncedData, notify 
     if (!versionId) {
       setTree([]);
       setAccountCount(0);
+      setReusedLeaves([]);
       return;
     }
     setLoading(true);
@@ -45,10 +47,12 @@ export default function ChartOfAccountsPanel({ versionId, hasSyncedData, notify 
       const res = await getChartOfAccounts(versionId);
       setTree(res?.tree || []);
       setAccountCount(res?.accountCount || 0);
+      setReusedLeaves(res?.reusedLeaves || []);
     } catch (e) {
       notify?.(e.message || "Failed to load Chart of Accounts.", "error");
       setTree([]);
       setAccountCount(0);
+      setReusedLeaves([]);
     } finally {
       setLoading(false);
     }
@@ -65,6 +69,7 @@ export default function ChartOfAccountsPanel({ versionId, hasSyncedData, notify 
       const res = await regenerateChartOfAccounts(versionId);
       setTree(res?.tree || []);
       setAccountCount(res?.accountCount || 0);
+      setReusedLeaves(res?.reusedLeaves || []);
       notify?.("Chart of Accounts regenerated.", "success");
     } catch (e) {
       notify?.(e.message || "Failed to regenerate Chart of Accounts.", "error");
@@ -233,6 +238,58 @@ export default function ChartOfAccountsPanel({ versionId, hasSyncedData, notify 
           })}
         </div>
       )}
+
+      {/* Reused Leaves — accounts whose hierarchy was reused verbatim from a
+          prior Chart of Accounts (classification_source === "reused_from_coa"). */}
+      <div className="mt-6 border-t border-border pt-4">
+        <div className="mb-2 flex items-center gap-2">
+          <ListTree size={15} className="text-primary" />
+          <h3 className="text-sm font-bold text-text-primary">Reused Leaves</h3>
+          <span className="rounded-full bg-bg-page px-2 py-0.5 text-xs text-text-muted">
+            {reusedLeaves.length} account{reusedLeaves.length === 1 ? "" : "s"}
+          </span>
+        </div>
+        {reusedLeaves.length === 0 ? (
+          <p className="py-4 text-center text-xs text-text-muted">
+            No reused accounts — every account was freshly classified.
+          </p>
+        ) : (
+          <div className="overflow-x-auto rounded-xl border border-border">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="bg-bg-page text-[11px] uppercase tracking-wide text-text-muted">
+                  <th className="px-3 py-2 font-semibold">Account #</th>
+                  <th className="px-3 py-2 font-semibold">Account Name</th>
+                  <th className="px-3 py-2 font-semibold">Type</th>
+                  <th className="px-3 py-2 font-semibold">Statement</th>
+                  <th className="px-3 py-2 font-semibold">Hierarchy Path</th>
+                  <th className="px-3 py-2 font-semibold">Method</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {reusedLeaves.map((acct) => (
+                  <tr key={acct.id} className="hover:bg-bg-page">
+                    <td className="px-3 py-1.5 font-mono text-xs text-text-muted">
+                      {acct.accountNumber || "—"}
+                    </td>
+                    <td className="px-3 py-1.5 text-text-primary">{acct.accountName}</td>
+                    <td className="px-3 py-1.5 capitalize text-text-muted">{acct.accountType}</td>
+                    <td className="px-3 py-1.5 text-text-muted">
+                      {STATEMENT_LABELS[acct.statementType] || acct.statementType || "—"}
+                    </td>
+                    <td className="px-3 py-1.5 text-xs text-text-muted" title={acct.hierarchyPath}>
+                      {acct.hierarchyPath || "—"}
+                    </td>
+                    <td className="px-3 py-1.5 text-xs text-text-muted">
+                      {acct.classificationMethod || "reused"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

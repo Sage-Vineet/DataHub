@@ -66,33 +66,33 @@ function appendAudit(existing, ...entries) {
 // this replaced. Positions below mirror exactly what buildLevelsFromPath
 // actually emits (self-referential stubs are omitted — they'd be deduped).
 const HIERARCHY_LEVELS = Object.freeze([
-  { level_number: 1, statement_type: "balance_sheet", parent_label: null,                        label: "Total Liabilities and Equity", sort_order: 1, is_standard: true },
-  { level_number: 1, statement_type: "balance_sheet", parent_label: null,                        label: "Total Assets",                 sort_order: 2, is_standard: true },
+  { level_number: 1, statement_type: "balance_sheet", parent_label: null, label: "Total Liabilities and Equity", sort_order: 1, is_standard: true },
+  { level_number: 1, statement_type: "balance_sheet", parent_label: null, label: "Total Assets", sort_order: 2, is_standard: true },
   { level_number: 2, statement_type: "balance_sheet", parent_label: "Total Liabilities and Equity", label: "Total Liabilities", sort_order: 1, is_standard: true },
-  { level_number: 2, statement_type: "balance_sheet", parent_label: "Total Liabilities and Equity", label: "Total Equity",      sort_order: 2, is_standard: true },
-  { level_number: 2, statement_type: "balance_sheet", parent_label: "Total Assets",                  label: "Current Assets",   sort_order: 3, is_standard: true },
-  { level_number: 2, statement_type: "balance_sheet", parent_label: "Total Assets",                  label: "Fixed Assets",     sort_order: 4, is_standard: true },
-  { level_number: 2, statement_type: "balance_sheet", parent_label: "Total Assets",                  label: "Other Assets",     sort_order: 5, is_standard: true },
-  { level_number: 3, statement_type: "balance_sheet", parent_label: "Total Liabilities", label: "Current Liabilities",   sort_order: 1, is_standard: true },
+  { level_number: 2, statement_type: "balance_sheet", parent_label: "Total Liabilities and Equity", label: "Total Equity", sort_order: 2, is_standard: true },
+  { level_number: 2, statement_type: "balance_sheet", parent_label: "Total Assets", label: "Current Assets", sort_order: 3, is_standard: true },
+  { level_number: 2, statement_type: "balance_sheet", parent_label: "Total Assets", label: "Fixed Assets", sort_order: 4, is_standard: true },
+  { level_number: 2, statement_type: "balance_sheet", parent_label: "Total Assets", label: "Other Assets", sort_order: 5, is_standard: true },
+  { level_number: 3, statement_type: "balance_sheet", parent_label: "Total Liabilities", label: "Current Liabilities", sort_order: 1, is_standard: true },
   { level_number: 3, statement_type: "balance_sheet", parent_label: "Total Liabilities", label: "Long-Term Liabilities", sort_order: 2, is_standard: true },
-  { level_number: 3, statement_type: "profit_loss",   parent_label: "Total Equity",      label: "Net Income",            sort_order: 3, is_standard: true },
-  { level_number: 3, statement_type: "balance_sheet", parent_label: "Total Equity",      label: "Equity",                sort_order: 4, is_standard: true },
-  { level_number: 4, statement_type: "profit_loss",   parent_label: "Net Income",         label: "Pretax Income",    sort_order: 1, is_standard: true },
-  { level_number: 5, statement_type: "profit_loss",   parent_label: "Pretax Income",      label: "Operating Income", sort_order: 1, is_standard: true },
-  { level_number: 6, statement_type: "profit_loss",   parent_label: "Operating Income",   label: "Gross Profit",     sort_order: 1, is_standard: true },
-  { level_number: 7, statement_type: "profit_loss",   parent_label: "Gross Profit",       label: "Total Revenue",    sort_order: 1, is_standard: true },
-  { level_number: 7, statement_type: "profit_loss",   parent_label: "Gross Profit",       label: "Total Expenses",   sort_order: 2, is_standard: true },
-  { level_number: 8, statement_type: "profit_loss",   parent_label: "Total Revenue",      label: "Income",   sort_order: 1, is_standard: true },
-  { level_number: 8, statement_type: "profit_loss",   parent_label: "Total Expenses",     label: "Expenses", sort_order: 2, is_standard: true },
-  { level_number: 9, statement_type: "profit_loss",   parent_label: "Expenses", label: "Payroll and Labor",          sort_order: 1, is_standard: true },
-  { level_number: 9, statement_type: "profit_loss",   parent_label: "Expenses", label: "Cost of Sales",              sort_order: 2, is_standard: true },
-  { level_number: 9, statement_type: "profit_loss",   parent_label: "Expenses", label: "Occupancy",                  sort_order: 3, is_standard: true },
-  { level_number: 9, statement_type: "profit_loss",   parent_label: "Expenses", label: "Insurance",                  sort_order: 4, is_standard: true },
-  { level_number: 9, statement_type: "profit_loss",   parent_label: "Expenses", label: "Sales and Marketing",        sort_order: 5, is_standard: true },
-  { level_number: 9, statement_type: "profit_loss",   parent_label: "Expenses", label: "General and Administrative", sort_order: 6, is_standard: true },
-  { level_number: 9, statement_type: "profit_loss",   parent_label: "Expenses", label: "Vehicle and Travel",         sort_order: 7, is_standard: true },
-  { level_number: 9, statement_type: "profit_loss",   parent_label: "Expenses", label: "Repairs and Maintenance",    sort_order: 8, is_standard: true },
-  { level_number: 9, statement_type: "profit_loss",   parent_label: "Expenses", label: "Non-Cash and Below-Line",    sort_order: 9, is_standard: true },
+  { level_number: 3, statement_type: "profit_loss", parent_label: "Total Equity", label: "Net Income", sort_order: 3, is_standard: true },
+  { level_number: 3, statement_type: "balance_sheet", parent_label: "Total Equity", label: "Equity", sort_order: 4, is_standard: true },
+  { level_number: 4, statement_type: "profit_loss", parent_label: "Net Income", label: "Pretax Income", sort_order: 1, is_standard: true },
+  { level_number: 5, statement_type: "profit_loss", parent_label: "Pretax Income", label: "Operating Income", sort_order: 1, is_standard: true },
+  { level_number: 6, statement_type: "profit_loss", parent_label: "Operating Income", label: "Gross Profit", sort_order: 1, is_standard: true },
+  { level_number: 7, statement_type: "profit_loss", parent_label: "Gross Profit", label: "Total Revenue", sort_order: 1, is_standard: true },
+  { level_number: 7, statement_type: "profit_loss", parent_label: "Gross Profit", label: "Total Expenses", sort_order: 2, is_standard: true },
+  { level_number: 8, statement_type: "profit_loss", parent_label: "Total Revenue", label: "Income", sort_order: 1, is_standard: true },
+  { level_number: 8, statement_type: "profit_loss", parent_label: "Total Expenses", label: "Expenses", sort_order: 2, is_standard: true },
+  { level_number: 9, statement_type: "profit_loss", parent_label: "Expenses", label: "Payroll and Labor", sort_order: 1, is_standard: true },
+  { level_number: 9, statement_type: "profit_loss", parent_label: "Expenses", label: "Cost of Sales", sort_order: 2, is_standard: true },
+  { level_number: 9, statement_type: "profit_loss", parent_label: "Expenses", label: "Occupancy", sort_order: 3, is_standard: true },
+  { level_number: 9, statement_type: "profit_loss", parent_label: "Expenses", label: "Insurance", sort_order: 4, is_standard: true },
+  { level_number: 9, statement_type: "profit_loss", parent_label: "Expenses", label: "Sales and Marketing", sort_order: 5, is_standard: true },
+  { level_number: 9, statement_type: "profit_loss", parent_label: "Expenses", label: "General and Administrative", sort_order: 6, is_standard: true },
+  { level_number: 9, statement_type: "profit_loss", parent_label: "Expenses", label: "Vehicle and Travel", sort_order: 7, is_standard: true },
+  { level_number: 9, statement_type: "profit_loss", parent_label: "Expenses", label: "Repairs and Maintenance", sort_order: 8, is_standard: true },
+  { level_number: 9, statement_type: "profit_loss", parent_label: "Expenses", label: "Non-Cash and Below-Line", sort_order: 9, is_standard: true },
 ]);
 
 // Group (parent) node definitions, keyed by normalized account type. Retained
@@ -208,6 +208,34 @@ async function collectBsAccountsFromEntries(companyId, versionId) {
   );
 }
 
+/**
+ * Step 6: Load every existing (non-group) COA leaf for this company, keyed by
+ * accountKey(account_number, account_name), so Steps 7/8 can reuse a known
+ * account's hierarchy instead of re-classifying it with AI.
+ *
+ * Scoped by company_id (not version_id) so classifications made in an earlier
+ * version/period are reused when a new version is generated.
+ */
+async function fetchExistingCoaLookup(companyId) {
+  const levelCols = Array.from({ length: MAX_LEVELS }, (_, i) => `level_${i + 1}`).join(", ");
+  const rows = await fetchAllRows(() =>
+    supabase.from(TABLE_COA)
+      .select(
+        `account_number, account_name, account_type, statement_type, normal_balance, ` +
+        `base_account, hierarchy_path, adjusted_name, original_name, classification_method, metadata, ${levelCols}`,
+      )
+      .eq("company_id", companyId)
+      .order("id", { ascending: true }),
+  );
+  const lookup = new Map();
+  for (const row of rows) {
+    if (row.metadata?.is_group) continue; // category nodes aren't real accounts
+    const key = accountKey(row.account_number, row.account_name);
+    if (!lookup.has(key)) lookup.set(key, row);
+  }
+  return lookup;
+}
+
 // ── Normalization helpers ─────────────────────────────────────────────────────
 
 // Strip a leading GL account-code prefix when one is present in the name field
@@ -261,7 +289,9 @@ function collectUniqueAccountNames(glRows, bsRows) {
     if (r.account_name) add(r.account_name, r.account_number, r.account_section);
     if (r.split_account) add(r.split_account, null, null);
   }
-  return Array.from(seen.values());
+  const result = Array.from(seen.values());
+  console.log("[ChartOfAccounts][collectUniqueAccountNames] Unique accounts extracted:", result);
+  return result;
 }
 
 // ── COA leaf model ────────────────────────────────────────────────────────────
@@ -323,8 +353,8 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map()) {
     if (aiResult?.isReportRow) return;
 
     // AI result drives the classification.  Low or absent confidence → needsReview.
-    let accountType        = aiResult?.accountType || "expense";
-    let aiSection          = aiResult?.section     || "";
+    let accountType = aiResult?.accountType || "expense";
+    let aiSection = aiResult?.section || "";
     if (bsSection) {
       const normSec = String(bsSection).toLowerCase().trim();
       if (normSec.includes("asset")) {
@@ -338,19 +368,19 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map()) {
         aiSection = "Equity";
       }
     }
-    const aiDeeperLevels     = aiResult?.deeperLevels    || [];
-    const aiNormalizedName   = aiResult?.normalizedName  || null;
-    const aiNormalBalance    = aiResult?.normalBalance   || null;
-    const confidence         = aiResult?.confidence      ?? null;
-    const needsReview        = !aiResult || (confidence !== null && confidence < AI_NEEDS_REVIEW_THRESHOLD);
+    const aiDeeperLevels = aiResult?.deeperLevels || [];
+    const aiNormalizedName = aiResult?.normalizedName || null;
+    const aiNormalBalance = aiResult?.normalBalance || null;
+    const confidence = aiResult?.confidence ?? null;
+    const needsReview = !aiResult || (confidence !== null && confidence < AI_NEEDS_REVIEW_THRESHOLD);
     const classificationMethod =
-      !aiResult            ? "unclassified"         :
-      needsReview          ? "ai_low_confidence"    :
-                             "gemini";
-    const resolvedSource     =
-      !aiResult            ? "no_ai_result"         :
-      confidence !== null  ? `ai_${confidence.toFixed(2)}` :
-                             "gemini";
+      !aiResult ? "unclassified" :
+        needsReview ? "ai_low_confidence" :
+          "gemini";
+    const resolvedSource =
+      !aiResult ? "no_ai_result" :
+        confidence !== null ? `ai_${confidence.toFixed(2)}` :
+          "gemini";
 
     const bucket = leavesByName.get(key) || [];
     const target = bucket.find((l) => {
@@ -458,8 +488,8 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map()) {
 function buildLeafHierarchies(leaves) {
   return leaves.map((leaf) => {
     // 1. Standard structural levels derived from AI-returned section.
-    const stdLabels  = aiSectionToStandardLevels(leaf.aiSection, leaf.accountType);
-    const stdArr     = labelsToLevelArray(stdLabels);
+    const stdLabels = aiSectionToStandardLevels(leaf.aiSection, leaf.accountType);
+    const stdArr = labelsToLevelArray(stdLabels);
     const stdPathSet = new Set(stdLabels.map((l) => l.toLowerCase()));
 
     // 2. AI deeper levels, with standard-label echoes removed.
@@ -483,6 +513,40 @@ function buildLeafHierarchies(leaves) {
       displayName,
     };
   });
+}
+
+
+/**
+ * Step 7.1 / 8.1: build a ready-to-persist leaf for an account that already
+ * exists in the COA — reuse its stored hierarchy verbatim, no AI call. Shape
+ * matches buildLeafHierarchies' output so it merges directly downstream.
+ */
+function buildReusedLeaf(descriptor, existingRow, source) {
+  const levels = columnsToLevels(existingRow);
+  const accountType = existingRow.account_type || "expense";
+  const statementType = existingRow.statement_type || statementTypeFor(accountType);
+  const displayName = existingRow.adjusted_name || existingRow.original_name || descriptor.accountName;
+  return {
+    accountName: existingRow.account_name || descriptor.accountName,
+    accountNumber: descriptor.accountNumber || existingRow.account_number || null,
+    accountType,
+    statementType,
+    classificationSource: "reused_from_coa",
+    classificationMethod: existingRow.classification_method || "reused",
+    aiSection: null,
+    aiNormalizedName: displayName,
+    aiDeeperLevels: [],
+    aiNormalBalance: existingRow.normal_balance || null,
+    confidence: 1,
+    needsReview: false,
+    sources: new Set([source]),
+    fiscalYears: new Set(),
+    bsSection: descriptor.bsSection || null,
+    levels,
+    hierarchyPath: existingRow.hierarchy_path || levels.filter(Boolean).join(" > "),
+    baseAccount: existingRow.base_account || displayName,
+    displayName,
+  };
 }
 
 // ── Persistence helpers ──────────────────────────────────────────────────────
@@ -716,12 +780,12 @@ function validateHierarchyConsistency(hierarchical) {
   // Assets) — level2 is intentionally omitted (undefined) for asset so that
   // check is skipped rather than false-flagging every asset leaf.
   const EXPECTED = {
-    asset:     { level1: 'Total Assets' },
+    asset: { level1: 'Total Assets' },
     liability: { level1: 'Total Liabilities and Equity', level2: 'Total Liabilities' },
-    equity:    { level1: 'Total Liabilities and Equity', level2: 'Total Equity' },
-    income:    { level1: 'Total Liabilities and Equity', level2: 'Total Equity' },
-    cogs:      { level1: 'Total Liabilities and Equity', level2: 'Total Equity' },
-    expense:   { level1: 'Total Liabilities and Equity', level2: 'Total Equity' },
+    equity: { level1: 'Total Liabilities and Equity', level2: 'Total Equity' },
+    income: { level1: 'Total Liabilities and Equity', level2: 'Total Equity' },
+    cogs: { level1: 'Total Liabilities and Equity', level2: 'Total Equity' },
+    expense: { level1: 'Total Liabilities and Equity', level2: 'Total Equity' },
   };
   const issues = [];
   for (const leaf of hierarchical) {
@@ -790,23 +854,118 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
   //     Collect every unique account name (metadata rows filtered, report totals
   //     are detected by AI not by regex), then call classifyAccountsWithAI once
   //     for the entire version in batched Gemini prompts.
+  // const uniqueAccounts = collectUniqueAccountNames(glRows, bsRows);
+  // let pnl = new Map();
+  // let bs = new Map();
+
+  // // Create a Set of normalized account names from balance sheet for fast lookup
+  // const bsAccountNames = new Set();
+  // for (const row of bsRows || []) {
+  //   if (row.account_name) {
+  //     bsAccountNames.add(normName(row.account_name));
+  //   }
+  // }
+
+  // // Iterate through GL accounts and categorize them as BS or P&L
+  // for (const account of uniqueAccounts) {
+  //   if (bsAccountNames.has(account.key)) {
+  //     // Account exists in balance sheet
+  //     bs.set(account.key, account);
+  //     console.log(`[ChartOfAccounts] BS Account: "${account.accountName}" (${account.accountNumber || 'N/A'}) - Section: ${account.bsSection || 'N/A'}`);
+  //   } else {
+  //     // Account only exists in GL (P&L account)
+  //     pnl.set(account.key, account);
+  //     console.log(`[ChartOfAccounts] P&L Account: "${account.accountName}" (${account.accountNumber || 'N/A'})`);
+  //   }
+  // }
+
+  // console.log(`[ChartOfAccounts] Account Categorization Summary - BS: ${bs.size}, P&L: ${pnl.size}, Total: ${uniqueAccounts.length}`);
+
+  // let aiResults = new Map();
+  // try {
+  //   aiResults = await classifyAccountsWithAI(uniqueAccounts, { companyId });
+  // } catch (err) {
+  //   console.warn(`[ChartOfAccounts] AI pre-pass failed — accounts will be flagged for review: ${err.message}`);
+  // }
+
   const uniqueAccounts = collectUniqueAccountNames(glRows, bsRows);
+  let pnl = new Map();
+  let bs = new Map();
+
+  const bsAccountNames = new Set();
+  for (const row of bsRows || []) {
+    if (row.account_name) bsAccountNames.add(normName(row.account_name));
+  }
+  for (const account of uniqueAccounts) {
+    if (bsAccountNames.has(account.key)) bs.set(account.key, account);
+    else pnl.set(account.key, account);
+  }
+  // console.log(`[ChartOfAccounts] Account Categorization Summary - BS: ${bs.size}, P&L: ${pnl.size}, Total: ${uniqueAccounts.length}`);
+
+  // Step 6: existing COA lookup (company-wide) for reuse.
+  const existingCoaLookup = await fetchExistingCoaLookup(companyId);
+
+  // Steps 7 & 8: for each list, split into "found in COA" (reuse levels) vs
+  // "not found" (needs AI classification).
+  const reusedLeaves = [];
+  const needsAi = new Map(); // key → descriptor, deduped across bs+pnl
+
+  const partition = (map, source) => {
+    for (const [key, descriptor] of map) {
+      const existingRow =
+        existingCoaLookup.get(accountKey(descriptor.accountNumber, descriptor.accountName)) ||
+        existingCoaLookup.get(accountKey(null, descriptor.accountName)); // fallback: name-only match
+      if (existingRow) {
+        reusedLeaves.push(buildReusedLeaf(descriptor, existingRow, source)); // 7.1 / 8.1
+      } else if (!needsAi.has(key)) {
+        needsAi.set(key, descriptor); // 7.2 / 8.2
+      }
+    }
+  };
+  partition(bs, "balance_sheet");   // Step 7
+  partition(pnl, "general_ledger"); // Step 8
+
+  console.log("Printing reused leaves:", reusedLeaves);
+
+  // console.log(
+  //   `[ChartOfAccounts] COA reuse — matched ${reusedLeaves.length} existing account(s), ` +
+  //   `${needsAi.size} need AI classification (BS: ${bs.size}, P&L: ${pnl.size}).`,
+  // );
 
   let aiResults = new Map();
-  try {
-    aiResults = await classifyAccountsWithAI(uniqueAccounts, { companyId });
-  } catch (err) {
-    console.warn(`[ChartOfAccounts] AI pre-pass failed — accounts will be flagged for review: ${err.message}`);
+  if (needsAi.size) {
+    try {
+      aiResults = await classifyAccountsWithAI(Array.from(needsAi.values()), { companyId });
+    } catch (err) {
+      console.warn(`[ChartOfAccounts] AI pre-pass failed — accounts will be flagged for review: ${err.message}`);
+    }
   }
 
-  const { leaves } = buildCoaModel(glRows, bsRows, [], aiResults);
-  if (!leaves.length) {
-    // Nothing to build — clear derived rows so stale accounts don't linger.
+  // const { leaves } = buildCoaModel(glRows, bsRows, [], aiResults);
+  // if (!leaves.length) {
+  //   // Nothing to build — clear derived rows so stale accounts don't linger.
+  //   await supabase.from(TABLE_COA).delete().eq("version_id", versionId);
+  //   return { accountCount: 0, leafCount: 0 };
+  // }
+
+  // const hierarchical = buildLeafHierarchies(leaves);
+  const { leaves: aiLeavesRaw } = buildCoaModel(glRows, bsRows, [], aiResults);
+  const reusedKeys = new Set(reusedLeaves.map((l) => accountKey(l.accountNumber, l.accountName)));
+  const aiLeaves = aiLeavesRaw.filter((l) => !reusedKeys.has(accountKey(l.accountNumber, l.accountName)));
+  const hierarchicalAiLeaves = buildLeafHierarchies(aiLeaves);
+
+  // Merge: reused leaves already carry final levels; AI leaves went through
+  // the standard hierarchy assembly. Reused wins on key collision (it reflects
+  // a previously-approved classification).
+  const mergedByKey = new Map();
+  for (const leaf of hierarchicalAiLeaves) mergedByKey.set(accountKey(leaf.accountNumber, leaf.accountName), leaf);
+  for (const leaf of reusedLeaves) mergedByKey.set(accountKey(leaf.accountNumber, leaf.accountName), leaf);
+  const hierarchical = Array.from(mergedByKey.values());
+
+  if (!hierarchical.length) {
     await supabase.from(TABLE_COA).delete().eq("version_id", versionId);
     return { accountCount: 0, leafCount: 0 };
   }
-
-  const hierarchical = buildLeafHierarchies(leaves);
   const validationIssues = validateHierarchyConsistency(hierarchical);
 
   // 2) Load existing rows so we can preserve ids, originals, and adjustments.
@@ -869,12 +1028,12 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
     if (seenKeys.has(key)) continue;
     seenKeys.add(key);
 
-    const aiLevels   = leaf.levels;
+    const aiLevels = leaf.levels;
     const aiSnapshot = hierarchySnapshot(aiLevels, leaf.accountType, leaf.statementType, leaf.baseAccount);
     const accountIdName = leaf.accountNumber ? `${leaf.accountNumber} — ${leaf.accountName}` : leaf.accountName;
     // Prefer AI-provided normal balance; fall back to the type-based default.
     const normalBal = leaf.aiNormalBalance || normalBalanceFor(leaf.accountType);
-    const baseMeta  = {
+    const baseMeta = {
       is_group: false,
       sources: Array.from(leaf.sources),
       fiscal_years: Array.from(leaf.fiscalYears).sort((a, b) => a - b),
@@ -883,8 +1042,8 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
       needs_review: leaf.needsReview || false,
     };
     sortCounter += 1;
-    const existing        = existingByKey.get(key);
-    const systemId        = systemIdByKey.get(key) || null;
+    const existing = existingByKey.get(key);
+    const systemId = systemIdByKey.get(key) || null;
     // Only set parent_account_id if the parent category actually exists in catIdByPath.
     // If a parent is referenced that doesn't exist, set it to null to avoid FK violation.
     const leafCatKey = leafCategoryKey(leaf.levels);
@@ -1051,6 +1210,7 @@ function mapRow(row) {
     baseAccount: row.base_account,
     hierarchyPath: row.hierarchy_path,
     classificationMethod: row.classification_method,
+    classificationSource: row.metadata?.classification_source || null,
     modified: Boolean(modified),
     isGroup: Boolean(row.metadata?.is_group),
     metadata: row.metadata || {},
@@ -1146,7 +1306,23 @@ async function getChartOfAccounts(versionId) {
   // the UI grid + tree are built from the real leaf accounts.
   const rows = (data || []).filter((r) => !r.metadata?.is_group).map(mapRow);
   const tree = buildTree(rows);
-  return { versionId, flat: rows, tree, accountCount: rows.length };
+
+  // Reused leaves: accounts whose hierarchy was reused verbatim from a prior COA
+  // (classification_source === "reused_from_coa"). Surfaced so the UI can show
+  // them in a separate table below the Chart of Accounts.
+  const reusedLeaves = rows
+    .filter((r) => r.classificationSource === "reused_from_coa")
+    .map((r) => ({
+      id: r.id,
+      accountNumber: r.accountNumber,
+      accountName: r.accountName,
+      accountType: r.accountType,
+      statementType: r.statementType,
+      hierarchyPath: r.hierarchyPath,
+      classificationMethod: r.classificationMethod,
+    }));
+
+  return { versionId, flat: rows, tree, accountCount: rows.length, reusedLeaves };
 }
 
 // ── Editing (rename / move / reclassify / save / reset) ──────────────────────
@@ -1356,20 +1532,20 @@ async function validateChartOfAccounts(companyId, versionId) {
     .eq("version_id", versionId);
   if (error) throw error;
 
-  const all    = coaData || [];
+  const all = coaData || [];
   const allIds = new Set(all.map((r) => r.id));
   const leaves = all.filter((r) => !r.metadata?.is_group);
 
-  const nullType    = leaves.filter((r) => !r.account_type).map((r) => r.account_name);
+  const nullType = leaves.filter((r) => !r.account_type).map((r) => r.account_name);
   // Software-metadata rows that slipped through (should be extremely rare with AI filtering).
   const invalidRows = leaves.filter((r) => isMetadataRow(r.account_name)).map((r) => r.account_name);
   // Accounts the AI flagged for human review (low confidence or no AI result).
   const needsReviewList = leaves.filter((r) => r.metadata?.needs_review).map((r) => r.account_name);
-  const noLevel     = leaves.filter((r) => !r.level_1).map((r) => r.account_name);
-  const noBase      = leaves.filter((r) => !r.base_account).map((r) => r.account_name);
-  const noSystemId  = leaves.filter((r) => !r.system_id).map((r) => r.account_name);
-  const noPath      = leaves.filter((r) => !r.hierarchy_path).map((r) => r.account_name);
-  const badParent   = leaves
+  const noLevel = leaves.filter((r) => !r.level_1).map((r) => r.account_name);
+  const noBase = leaves.filter((r) => !r.base_account).map((r) => r.account_name);
+  const noSystemId = leaves.filter((r) => !r.system_id).map((r) => r.account_name);
+  const noPath = leaves.filter((r) => !r.hierarchy_path).map((r) => r.account_name);
+  const badParent = leaves
     .filter((r) => r.parent_account_id && !allIds.has(r.parent_account_id))
     .map((r) => r.account_name);
 
@@ -1404,11 +1580,11 @@ async function validateChartOfAccounts(companyId, versionId) {
   let worst = "success";
 
   const errorChecks = [
-    [nullType,      (a) => `${a.length} account(s) missing a category: ${sample(a)}`],
-    [invalidRows,   (a) => `${a.length} metadata row(s) found in the Chart of Accounts (should not appear): ${sample(a)}`],
+    [nullType, (a) => `${a.length} account(s) missing a category: ${sample(a)}`],
+    [invalidRows, (a) => `${a.length} metadata row(s) found in the Chart of Accounts (should not appear): ${sample(a)}`],
     [multiCategory, (a) => `${a.length} account(s) classified into more than one category: ${sample(a)}`],
-    [noLevel,       (a) => `${a.length} account(s) missing a hierarchy (no Level 1): ${sample(a)}`],
-    [badParent,     (a) => `${a.length} account(s) have a parent_account_id that does not resolve to a row in this version: ${sample(a)}`],
+    [noLevel, (a) => `${a.length} account(s) missing a hierarchy (no Level 1): ${sample(a)}`],
+    [badParent, (a) => `${a.length} account(s) have a parent_account_id that does not resolve to a row in this version: ${sample(a)}`],
   ];
   for (const [arr, msg] of errorChecks) {
     if (arr.length) {
@@ -1419,10 +1595,10 @@ async function validateChartOfAccounts(companyId, versionId) {
 
   const warnChecks = [
     [needsReviewList, (a) => `${a.length} account(s) flagged for manual review (low AI confidence): ${sample(a)}`],
-    [duplicates,      (a) => `${a.length} duplicate account name(s): ${sample(a)}`],
-    [noBase,          (a) => `${a.length} account(s) missing a base account: ${sample(a)}`],
-    [noSystemId,      (a) => `${a.length} account(s) missing a System ID: ${sample(a)}`],
-    [noPath,          (a) => `${a.length} account(s) missing a hierarchy path: ${sample(a)}`],
+    [duplicates, (a) => `${a.length} duplicate account name(s): ${sample(a)}`],
+    [noBase, (a) => `${a.length} account(s) missing a base account: ${sample(a)}`],
+    [noSystemId, (a) => `${a.length} account(s) missing a System ID: ${sample(a)}`],
+    [noPath, (a) => `${a.length} account(s) missing a hierarchy path: ${sample(a)}`],
   ];
   for (const [arr, msg] of warnChecks) {
     if (arr.length) {
@@ -1499,7 +1675,7 @@ async function ensureCoaComplete(companyId, versionId) {
   const existingSet = new Set();
   for (const row of (existingRows || [])) {
     if (row.account_name) existingSet.add(normName(row.account_name));
-    if (row.base_account)  existingSet.add(normName(row.base_account));
+    if (row.base_account) existingSet.add(normName(row.base_account));
     if (row.adjusted_name) existingSet.add(normName(row.adjusted_name));
   }
 
@@ -1532,26 +1708,28 @@ async function ensureCoaComplete(companyId, versionId) {
       return !aiResult?.isReportRow; // exclude AI-detected report rows
     })
     .map((rawName) => {
-      const key      = normName(rawName);
+      const key = normName(rawName);
       const aiResult = aiResults.get(key);
-      const type     = aiResult?.accountType || "expense";
-      const section  = aiResult?.section     || "";
-      const deeper   = aiResult?.deeperLevels || [];
-      const confidence  = aiResult?.confidence ?? null;
+      const type = aiResult?.accountType || "expense";
+      const section = aiResult?.section || "";
+      const deeper = aiResult?.deeperLevels || [];
+      const confidence = aiResult?.confidence ?? null;
       const needsReview = !aiResult || (confidence !== null && confidence < AI_NEEDS_REVIEW_THRESHOLD);
       const displayName = aiResult?.normalizedName || rawName;
-      const normalBal   = aiResult?.normalBalance || normalBalanceFor(type);
-      const stmtType    = statementTypeFor(type);
-      const stdLabels   = aiSectionToStandardLevels(section, type);
-      const stdArr      = labelsToLevelArray(stdLabels);
-      const stdPathSet  = new Set(stdLabels.map((l) => l.toLowerCase()));
+      const normalBal = aiResult?.normalBalance || normalBalanceFor(type);
+      const stmtType = statementTypeFor(type);
+      const stdLabels = aiSectionToStandardLevels(section, type);
+      const stdArr = labelsToLevelArray(stdLabels);
+      const stdPathSet = new Set(stdLabels.map((l) => l.toLowerCase()));
       const filteredDeeper = deeper.filter((l) => l && !stdPathSet.has(l.toLowerCase()));
       const { levels: finalLevels, hierarchyPath } = buildLevelsFromPath(
         stdArr, stdLabels.length, filteredDeeper, displayName,
       );
       const classificationMethod = !aiResult ? "unclassified" : needsReview ? "ai_low_confidence" : "gemini";
-      return { rawName, displayName, type, stmtType, finalLevels, hierarchyPath,
-               normalBal, confidence, needsReview, classificationMethod };
+      return {
+        rawName, displayName, type, stmtType, finalLevels, hierarchyPath,
+        normalBal, confidence, needsReview, classificationMethod
+      };
     });
 
   if (classifiedLeaves.length === 0) return { added: 0, skipped: unlinkedNames.size };
@@ -1592,31 +1770,31 @@ async function ensureCoaComplete(companyId, versionId) {
 
   // 7. Build insert payload.
   const insertRows = classifiedLeaves.map((leaf) => {
-    const prefix          = systemIdPrefix(leaf.type);
-    const systemId        = `${prefix}-${String(prefixCounters[prefix]++).padStart(3, "0")}`;
-    const snapshot        = hierarchySnapshot(leaf.finalLevels, leaf.type, leaf.stmtType, leaf.rawName);
+    const prefix = systemIdPrefix(leaf.type);
+    const systemId = `${prefix}-${String(prefixCounters[prefix]++).padStart(3, "0")}`;
+    const snapshot = hierarchySnapshot(leaf.finalLevels, leaf.type, leaf.stmtType, leaf.rawName);
     const parentAccountId = catIdByPath.get(leafCategoryKey(leaf.finalLevels)) || null;
     return {
-      version_id:            versionId,
-      company_id:            companyId,
-      system_id:             systemId,
-      account_number:        null,
-      account_name:          leaf.rawName,
-      account_id_name:       leaf.rawName,
-      parent_account_id:     parentAccountId,
-      account_type:          leaf.type,
-      statement_type:        leaf.stmtType,
-      normal_balance:        leaf.normalBal,
-      is_active:             true,
-      sort_order:            sortCounter++,
+      version_id: versionId,
+      company_id: companyId,
+      system_id: systemId,
+      account_number: null,
+      account_name: leaf.rawName,
+      account_id_name: leaf.rawName,
+      parent_account_id: parentAccountId,
+      account_type: leaf.type,
+      statement_type: leaf.stmtType,
+      normal_balance: leaf.normalBal,
+      is_active: true,
+      sort_order: sortCounter++,
       ...levelsToColumns(leaf.finalLevels),
-      base_account:          leaf.rawName,
-      hierarchy_path:        leaf.hierarchyPath,
+      base_account: leaf.rawName,
+      hierarchy_path: leaf.hierarchyPath,
       classification_method: leaf.classificationMethod,
-      original_name:         leaf.displayName,
-      original_hierarchy:    snapshot,
-      adjusted_name:         leaf.displayName,
-      adjusted_hierarchy:    snapshot,
+      original_name: leaf.displayName,
+      original_hierarchy: snapshot,
+      adjusted_name: leaf.displayName,
+      adjusted_hierarchy: snapshot,
       metadata: {
         is_group: false, sources: ["completion"], fiscal_years: [],
         user_modified: false, ai_confidence: leaf.confidence, needs_review: leaf.needsReview,

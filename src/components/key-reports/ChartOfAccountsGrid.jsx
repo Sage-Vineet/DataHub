@@ -52,6 +52,7 @@ const TOTAL_COLS = 5 + MAX_LEVELS + 4;
 
 export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }) {
   const [flat, setFlat]               = useState([]);
+  const [reusedLeaves, setReusedLeaves] = useState([]);
   const [loading, setLoading]         = useState(false);
   const [regenerating, setRegenerating] = useState(false);
   const [resettingAll, setResettingAll] = useState(false);
@@ -61,14 +62,16 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
 
   // ── Data loading ─────────────────────────────────────────────────────────
   const load = useCallback(async () => {
-    if (!versionId) { setFlat([]); return; }
+    if (!versionId) { setFlat([]); setReusedLeaves([]); return; }
     setLoading(true);
     try {
       const res = await getChartOfAccounts(versionId);
       setFlat(res?.flat || []);
+      setReusedLeaves(res?.reusedLeaves || []);
     } catch (e) {
       notify?.(e.message || "Failed to load Chart of Accounts.", "error");
       setFlat([]);
+      setReusedLeaves([]);
     } finally {
       setLoading(false);
     }
@@ -83,6 +86,7 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
     try {
       const res = await regenerateChartOfAccounts(versionId);
       setFlat(res?.flat || []);
+      setReusedLeaves(res?.reusedLeaves || []);
       notify?.("Chart of Accounts regenerated from the latest data.", "success");
     } catch (e) {
       notify?.(e.message || "Failed to regenerate Chart of Accounts.", "error");
@@ -508,6 +512,74 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
           </table>
         </div>
       )}
+
+      {/* ── Reused Leaves ─────────────────────────────────────────────────────
+          Accounts whose hierarchy was reused verbatim from a prior Chart of
+          Accounts (classification_source === "reused_from_coa"). */}
+      <div className="border-t border-border px-4 py-4">
+        <div className="mb-2 flex items-center gap-2">
+          <Table2 size={16} className="text-primary" />
+          <h3 className="text-sm font-bold text-text-primary">Reused Leaves</h3>
+          <span className="rounded-full bg-bg-page px-2 py-0.5 text-xs text-text-muted">
+            {reusedLeaves.length} account{reusedLeaves.length === 1 ? "" : "s"}
+          </span>
+        </div>
+        {reusedLeaves.length === 0 ? (
+          <p className="py-4 text-center text-xs text-text-muted">
+            No reused accounts — every account was freshly classified this run.
+          </p>
+        ) : (
+          <div className="overflow-x-auto rounded-xl border border-border">
+            <table className="min-w-max w-full border-collapse text-sm">
+              <thead>
+                <tr className="text-left text-[11px] font-bold uppercase tracking-wider text-white"
+                    style={{ backgroundColor: "#1B3A5C" }}>
+                  <th className="whitespace-nowrap px-3 py-2.5 border-r border-white/10">Account Number</th>
+                  <th className="whitespace-nowrap px-3 py-2.5 border-r border-white/10 min-w-[180px]">Account Name</th>
+                  <th className="whitespace-nowrap px-3 py-2.5 border-r border-white/10">Type</th>
+                  <th className="whitespace-nowrap px-3 py-2.5 border-r border-white/10">Statement</th>
+                  <th className="whitespace-nowrap px-3 py-2.5 border-r border-white/10 min-w-[240px]">Hierarchy Path</th>
+                  <th className="whitespace-nowrap px-3 py-2.5">Method</th>
+                </tr>
+              </thead>
+              <tbody>
+                {reusedLeaves.map((acct) => (
+                  <tr key={acct.id} className="border-b border-border/40 bg-white hover:bg-gray-50">
+                    <td className="whitespace-nowrap px-3 py-1.5 font-mono text-xs text-text-muted border-r border-border/30">
+                      {acct.accountNumber || "—"}
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-1.5 text-[13px] text-text-primary border-r border-border/30">
+                      {acct.accountName}
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-1.5 text-xs capitalize text-text-muted border-r border-border/30">
+                      {acct.accountType || "—"}
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-1.5 border-r border-border/30">
+                      <span
+                        className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                          acct.statementType === "profit_loss"
+                            ? "bg-amber-200 text-amber-900"
+                            : "bg-blue-200 text-blue-900"
+                        }`}
+                      >
+                        {STATEMENT_LABELS[acct.statementType] || acct.statementType || "—"}
+                      </span>
+                    </td>
+                    <td className="px-3 py-1.5 text-xs text-text-muted border-r border-border/30" title={acct.hierarchyPath}>
+                      <span className="block max-w-[320px] truncate">{acct.hierarchyPath || "—"}</span>
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-1.5">
+                      <span className="rounded border border-border/40 bg-white/70 px-1.5 py-0.5 text-[10px] text-text-muted">
+                        {METHOD_LABELS[acct.classificationMethod] || acct.classificationMethod || "reused"}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
