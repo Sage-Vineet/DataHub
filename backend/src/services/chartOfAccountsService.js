@@ -35,6 +35,16 @@ const PAGE_SIZE = 1000;
 // informative than a blind default.
 const AI_NEEDS_REVIEW_THRESHOLD = 0.70;
 
+// Classification methods produced by the current pipeline. On regeneration an
+// existing account is "reused" (its stored classification carried forward without
+// re-running AI) only when its method is one of these — or the row was user-edited.
+// A row carrying a legacy/unknown method (e.g. a pre-AI "non_ai" from a defunct
+// pipeline) is treated as unclassified and re-sent to the AI classifier so it gets
+// a real classification + correct hierarchy instead of being pinned in place forever.
+const REUSABLE_METHODS = new Set([
+  "gemini", "ai_low_confidence", "unclassified", "rule", "manual", "reused",
+]);
+
 // Audit history (classification snapshots + per-edit adjustments) is stored
 // INLINE on each chart_of_accounts row in the `audit_log` jsonb array, rather
 // than in the former coa_account_mappings / coa_account_adjustments /
@@ -110,6 +120,33 @@ const BALANCE_SHEET_TYPES = new Set(["asset", "liability", "equity"]);
 
 function statementTypeFor(accountType) {
   return BALANCE_SHEET_TYPES.has(accountType) ? "balance_sheet" : "profit_loss";
+}
+
+// Deterministically bucket a Balance-Sheet-sourced account into asset / liability
+// / equity from its section header. Records that appear in the uploaded Balance
+// Sheet are ALWAYS balance sheet accounts — AI never moves them to the P&L — so
+// when the section header is missing/unrecognized we keep an existing BS type or
+// default to asset. Returns { accountType, aiSection }, where aiSection is a
+// sensible default sub-section the hierarchy builder can use.
+function balanceSheetBucket(bsSection, currentType, currentSection) {
+  const normSec = String(bsSection || "").toLowerCase().trim();
+  const keepAssetSub = currentSection && currentSection.toLowerCase().includes("asset");
+  const keepLiabSub  = currentSection && currentSection.toLowerCase().includes("liabilit");
+  if (normSec.includes("asset")) {
+    return { accountType: "asset", aiSection: keepAssetSub ? currentSection : "Current Assets" };
+  }
+  if (normSec.includes("liab")) {
+    return { accountType: "liability", aiSection: keepLiabSub ? currentSection : "Current Liabilities" };
+  }
+  if (normSec.includes("equity") || normSec.includes("capital") || normSec.includes("owner") || normSec.includes("member")) {
+    return { accountType: "equity", aiSection: "Equity" };
+  }
+  // Section header missing/unrecognized: stay in the Balance Sheet using the
+  // existing BS type when we already have one, otherwise default to asset —
+  // never the P&L.
+  if (currentType === "liability") return { accountType: "liability", aiSection: keepLiabSub ? currentSection : "Current Liabilities" };
+  if (currentType === "equity")    return { accountType: "equity",    aiSection: "Equity" };
+  return { accountType: "asset", aiSection: keepAssetSub ? currentSection : "Current Assets" };
 }
 
 function normName(accountName) {
@@ -321,62 +358,61 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map()) {
     if (fiscalYear) leaf.fiscalYears.add(Number(fiscalYear));
     if (!leaf.accountNumber && number) leaf.accountNumber = number;
     if (bsSection && !leaf.bsSection) leaf.bsSection = bsSection;
-    if (bsSection) {
-      const normSec = String(bsSection).toLowerCase().trim();
-      if (normSec.includes("asset")) {
-        leaf.accountType = "asset";
-        leaf.statementType = "balance_sheet";
-        if (!leaf.aiSection || !leaf.aiSection.toLowerCase().includes("asset")) leaf.aiSection = "Current Assets";
-      } else if (normSec.includes("liab")) {
-        leaf.accountType = "liability";
-        leaf.statementType = "balance_sheet";
-        if (!leaf.aiSection || !leaf.aiSection.toLowerCase().includes("liabilit")) leaf.aiSection = "Current Liabilities";
-      } else if (normSec.includes("equity") || normSec.includes("capital") || normSec.includes("owner") || normSec.includes("member")) {
-        leaf.accountType = "equity";
-        leaf.statementType = "balance_sheet";
-        leaf.aiSection = "Equity";
-      }
+    // A record that also appears in the uploaded Balance Sheet is always a
+    // balance sheet account — reclassify the merged leaf accordingly, regardless
+    // of what AI (or an earlier GL row) decided. AI never overrides this.
+    if (source === "balance_sheet") {
+      const bs = balanceSheetBucket(bsSection, leaf.accountType, leaf.aiSection);
+      leaf.accountType = bs.accountType;
+      leaf.statementType = "balance_sheet";
+      leaf.aiSection = bs.aiSection;
     }
   };
 
   const addLeaf = (accountName, accountNumber, source, fiscalYear, bsSection) => {
     const name = String(accountName || "").trim();
     // isMetadataRow catches only ERP noise (date lines, "Accrual Basis", etc.).
-    // Report totals / section headers are excluded by AI isReportRow detection below.
     if (!name || isMetadataRow(name)) return;
     const number = accountNumber ? String(accountNumber).trim() : null;
     const key = normName(name);
 
     const aiResult = aiResults.get(key);
 
-    // AI identified this as a calculated/header row — exclude from COA entirely.
-    if (aiResult?.isReportRow) return;
+    // Accounts sourced from the uploaded Balance Sheet are DEFINITIVELY balance
+    // sheet accounts — their section is fixed by a deterministic rule, not by AI.
+    const isBsSource = source === "balance_sheet";
 
-    // AI result drives the classification.  Low or absent confidence → needsReview.
+    // AI identified this as a calculated/header row — exclude from COA entirely.
+    // NOT applied to balance-sheet records: the deterministic is_total flag has
+    // already removed real totals/subtotals upstream, so every remaining BS
+    // record must appear in the COA (AI never drops one).
+    if (!isBsSource && aiResult?.isReportRow) return;
+
+    // AI result drives the classification for P&L / GL accounts.  For balance
+    // sheet accounts the section is forced into asset/liability/equity — AI can
+    // neither drop them nor move them to the P&L; it still supplies deeper levels.
     let accountType = aiResult?.accountType || "expense";
     let aiSection = aiResult?.section || "";
-    if (bsSection) {
-      const normSec = String(bsSection).toLowerCase().trim();
-      if (normSec.includes("asset")) {
-        accountType = "asset";
-        if (!aiSection || !aiSection.toLowerCase().includes("asset")) aiSection = "Current Assets";
-      } else if (normSec.includes("liab")) {
-        accountType = "liability";
-        if (!aiSection || !aiSection.toLowerCase().includes("liabilit")) aiSection = "Current Liabilities";
-      } else if (normSec.includes("equity") || normSec.includes("capital") || normSec.includes("owner") || normSec.includes("member")) {
-        accountType = "equity";
-        aiSection = "Equity";
-      }
+    if (isBsSource) {
+      const bs = balanceSheetBucket(bsSection, accountType, aiSection);
+      accountType = bs.accountType;
+      aiSection = bs.aiSection;
     }
     const aiDeeperLevels = aiResult?.deeperLevels || [];
     const aiNormalizedName = aiResult?.normalizedName || null;
     const aiNormalBalance = aiResult?.normalBalance || null;
     const confidence = aiResult?.confidence ?? null;
-    const needsReview = !aiResult || (confidence !== null && confidence < AI_NEEDS_REVIEW_THRESHOLD);
-    const classificationMethod =
-      !aiResult ? "unclassified" :
+    // Balance-sheet accounts are placed by a deterministic rule → never flagged
+    // for review; marked "rule" when AI added nothing (else "gemini", since AI
+    // still refined the levels/name).
+    const needsReview = isBsSource
+      ? false
+      : (!aiResult || (confidence !== null && confidence < AI_NEEDS_REVIEW_THRESHOLD));
+    const classificationMethod = isBsSource
+      ? (aiResult ? "gemini" : "rule")
+      : (!aiResult ? "unclassified" :
         needsReview ? "ai_low_confidence" :
-          "gemini";
+          "gemini");
     const resolvedSource =
       !aiResult ? "no_ai_result" :
         confidence !== null ? `ai_${confidence.toFixed(2)}` :
@@ -915,7 +951,23 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
       const existingRow =
         existingCoaLookup.get(accountKey(descriptor.accountNumber, descriptor.accountName)) ||
         existingCoaLookup.get(accountKey(null, descriptor.accountName)); // fallback: name-only match
-      if (existingRow) {
+      // Reuse a stored classification only when it came from the current pipeline
+      // (or a user edit). A row carrying a legacy/unknown method — e.g. a pre-AI
+      // "non_ai" — is routed to the AI classifier instead of being reused (and
+      // thus pinned) forever, so it gets a real classification + correct hierarchy.
+      const reusable = existingRow && (
+        existingRow.metadata?.user_modified ||
+        REUSABLE_METHODS.has(existingRow.classification_method)
+      );
+      // A balance-sheet-sourced account whose stored classification is NOT a
+      // balance sheet one is re-classified rather than reused, so it is forced
+      // into the Balance Sheet instead of keeping a stale P&L classification.
+      // (User edits are still respected — a deliberate manual move wins.)
+      const bsMismatch = source === "balance_sheet"
+        && existingRow
+        && existingRow.statement_type !== "balance_sheet"
+        && !existingRow.metadata?.user_modified;
+      if (reusable && !bsMismatch) {
         reusedLeaves.push(buildReusedLeaf(descriptor, existingRow, source)); // 7.1 / 8.1
       } else if (!needsAi.has(key)) {
         needsAi.set(key, descriptor); // 7.2 / 8.2
@@ -1109,10 +1161,31 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
         patch.parent_account_id = null;
       }
     } else {
-      // If we are preserving existing classification, we should also preserve existing levels and parent relationships.
-      // Only set them if the existing account did not have them set.
+      // Non-user-modified account. When this run produced a *confident* AI
+      // classification, take the fresh AI result — otherwise re-generation is a
+      // no-op for accounts that already have levels, which pins stale/legacy data
+      // (e.g. a pre-AI "non_ai" method or a wrong "Total Liabilities and Equity"
+      // path) in place. Fall back to preserving the existing data only when the AI
+      // could not confidently classify this account this run, so a low-confidence
+      // / failed re-run never regresses good existing data.
+      const aiClassifiedNow = leaf.classificationMethod === "gemini" && aiLevels.some(Boolean);
       const hasExistingLevels = columnsToLevels(existing).some(Boolean);
-      if (hasExistingLevels) {
+      if (aiClassifiedNow) {
+        // Take the AI type/statement/normal-balance too, so the whole row stays
+        // internally consistent (new levels on the old, wrong type would misplace
+        // the account between P&L and Balance Sheet in the reports).
+        patch.account_type = leaf.accountType;
+        patch.statement_type = leaf.statementType;
+        patch.normal_balance = normalBal;
+        Object.assign(patch, levelsToColumns(aiLevels), {
+          parent_account_id: parentAccountId,
+          base_account: leaf.baseAccount,
+          hierarchy_path: leaf.hierarchyPath,
+          classification_method: leaf.classificationMethod,
+          adjusted_name: existing.adjusted_name || leaf.displayName,
+          adjusted_hierarchy: aiSnapshot,
+        });
+      } else if (hasExistingLevels) {
         // Preserve existing levels and hierarchy
         const existingLevels = columnsToLevels(existing);
         // Validate that the existing parent_account_id still exists
