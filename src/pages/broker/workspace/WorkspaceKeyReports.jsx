@@ -47,7 +47,6 @@ import {
   setKeyReportPopupPreference,
   setSelectedReportSource,
   exportKeyReportData,
-  exportKeyReportData,
 } from "../../../lib/api";
 import {
   subscribeGeneration,

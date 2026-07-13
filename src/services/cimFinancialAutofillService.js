@@ -22,6 +22,7 @@ import {
   getCimBankReconciliationRequest,
   getCimTaxReconciliationRequest,
   getManualStageFilterOptions,
+  getReportSources,
   listManualGlDatasetVersions,
 } from "../lib/api";
 import {
@@ -1585,6 +1586,50 @@ function normalizeTaxReconciliationSnapshot(payload = {}) {
     rowsByYear[year] = Array.isArray(value) ? value : value.data || value.rows || [];
   });
   return { hasData: periods.some((year) => rowsByYear[year]?.length), periods, rowsByYear };
+}
+
+// Fixed priority tier for auto-selecting a financial data source when the
+// broker hasn't already picked one via the "Auto-fill Financials" modal
+// (used by the custom-template upload flow). Key Reports is ranked first
+// since it's the platform-wide default source (see reportSourceStore.js);
+// Manual GL / QuickBooks / Manual Upload follow in descending order of how
+// complete/authoritative their data tends to be for CIM financial mapping.
+const FINANCIAL_SOURCE_PRIORITY = [
+  REPORT_SOURCE_KEYS.KEY_REPORTS,
+  REPORT_SOURCE_KEYS.MANUAL_GL,
+  REPORT_SOURCE_KEYS.QUICKBOOKS,
+  REPORT_SOURCE_KEYS.MANUAL_UPLOAD,
+  REPORT_SOURCE_KEYS.QUICKBOOKS_MANUAL,
+];
+
+export async function selectBestFinancialSource({ clientId } = {}) {
+  if (!clientId) return null;
+
+  const [reportVersionsResult, reportSourcesResult] = await Promise.all([
+    getKeyReportVersions().catch(() => null),
+    getReportSources({ clientId }).catch(() => null),
+  ]);
+
+  const reportVersions = reportVersionsResult?.versions || [];
+  const sources = Array.isArray(reportSourcesResult?.sources) ? reportSourcesResult.sources : [];
+  const sourceByKey = new Map(
+    sources.map((source) => [normalizeReportSourceKey(source.sourceKey), source]),
+  );
+
+  const isAvailable = (key) => {
+    if (key === REPORT_SOURCE_KEYS.KEY_REPORTS) return reportVersions.length > 0;
+    return Boolean(sourceByKey.get(key)?.isAvailable);
+  };
+
+  const sourceKey = FINANCIAL_SOURCE_PRIORITY.find(isAvailable) || null;
+  if (!sourceKey) return null;
+
+  if (sourceKey === REPORT_SOURCE_KEYS.KEY_REPORTS) {
+    const activeVersion = reportVersions.find((version) => version.isActive) || reportVersions[0];
+    return { sourceKey, reportVersionId: activeVersion?.id || "", datasetVersion: "" };
+  }
+
+  return { sourceKey, reportVersionId: "", datasetVersion: "" };
 }
 
 export async function loadCimFinancialAutofillSnapshot({

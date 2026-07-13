@@ -19,7 +19,6 @@ import {
   getManualCashFlowPeriods,
   listManualGlDatasetVersions,
   getFinancialStatements,
-  getFinancialStatements,
 } from "../../../lib/api";
 import {
   transformKeyReportFinancials,
@@ -483,7 +482,6 @@ export default function WorkspaceReports() {
   const [filtersCollapsed, setFiltersCollapsed] = useState(false);
   // Period granularity: "Month" (monthly columns) | "Year" (annual columns).
   const [reportPeriod, setReportPeriod] = useState(storedState?.reportPeriod || "Month");
-  const [reportPeriod, setReportPeriod] = useState(storedState?.reportPeriod || "Month");
   // Year range selectors — shown when reportPeriod === "Year".
   const [yearRangeStart, setYearRangeStart] = useState(null);
   const [yearRangeEnd, setYearRangeEnd] = useState(null);
@@ -650,14 +648,7 @@ export default function WorkspaceReports() {
   // endpoint — regardless of which document categories are linked — so every
   // tab is always selectable. (The report body shows its own empty state if a
   // given period has no data.) Legacy sources keep all tabs enabled too.
-  // In Key Reports mode all three statements (Profit & Loss, Balance Sheet,
-  // Cash Flow) are produced together by the /reports/financial-statements
-  // endpoint — regardless of which document categories are linked — so every
-  // tab is always selectable. (The report body shows its own empty state if a
-  // given period has no data.) Legacy sources keep all tabs enabled too.
   const reportTabAvailability = useCallback(
-    () => ({ enabled: true }),
-    [],
     () => ({ enabled: true }),
     [],
   );
@@ -691,10 +682,6 @@ export default function WorkspaceReports() {
   // ("<tab>|<reportType>"); the generate effect skips the network call when the
   // signature is unchanged. A ref (not state) avoids extra re-renders.
   const reportSignaturesRef = useRef({});
-  // Cache the raw Key Reports financial-statements response per version so that
-  // switching tabs / period (Month↔Year) doesn't refetch — the response already
-  // carries P&L, Balance Sheet and Cash Flow for every period.
-  const krFinancialsCacheRef = useRef({ versionId: null, data: null });
   // Cache the raw Key Reports financial-statements response per version so that
   // switching tabs / period (Month↔Year) doesn't refetch — the response already
   // carries P&L, Balance Sheet and Cash Flow for every period.
@@ -956,7 +943,6 @@ export default function WorkspaceReports() {
     saveStoredReportsState(clientId, {
       selectedTab,
       reportType,
-      reportPeriod,
       reportPeriod,
       dateRange,
       customRange,
