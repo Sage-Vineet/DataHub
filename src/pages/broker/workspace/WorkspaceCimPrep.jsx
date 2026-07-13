@@ -4205,8 +4205,16 @@ function buildCimFinancialAutofillValues(fieldsBySlide, snapshot) {
   const taxDataRows = SLIDE_30_TAX_ROW_DEFS.map(({ label, matchKeys }) => {
     const values = taxYears.map((year) => {
       const row = matchKeys.map((key) => taxRowsByYearLower[year]?.get(key)).find(Boolean);
-      const value = row ? Number(row.taxReturn ?? row.tax_return ?? row.amount ?? 0) : null;
-      return value === null || !Number.isFinite(value) ? "-" : formatAutoFillMillions(value);
+      if (!row) return "-";
+      // The tax-return figure only exists once a return PDF is linked in Key Reports.
+      // Fall back to the QuickBooks book (P&L) figure for the same line item when it
+      // isn't — otherwise this slide renders completely blank for any QuickBooks-connected
+      // company that hasn't linked a return yet, even though the book data is available
+      // (and already shown in the Tax Reconciliation report's own "P&L" column).
+      const taxReturnValue = Number(row.taxReturn ?? row.tax_return ?? row.amount ?? 0);
+      const bookValue = Number(row.pl ?? row.book ?? 0);
+      const value = taxReturnValue || bookValue;
+      return value ? formatAutoFillMillions(value) : "-";
     });
     return [label, ...values, "-"].join(" | ");
   });

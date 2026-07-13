@@ -265,6 +265,21 @@ export function getCimTaxReconciliationRequest({ clientId, sourceKey, datasetVer
   return request(`${isQuickBooks ? '/tax-data' : '/manual-report-uploads/tax-data'}?${params}`);
 }
 
+// QuickBooks P&L ("book") figures for a fiscal year — same endpoint and label set the
+// Tax Reconciliation report page uses for its "P&L" column. The CIM tax-reconciliation
+// autofill uses this as a fallback when no tax return PDF is linked, so slide 30 isn't
+// left blank just because "taxReturn" data doesn't exist yet.
+export function getQuickbooksProfitLossRequest({ clientId, year, accountingMethod = 'Cash' } = {}) {
+  const params = new URLSearchParams();
+  if (clientId) params.append('clientId', clientId);
+  if (year) {
+    params.append('start_date', `${year}-01-01`);
+    params.append('end_date', `${year}-12-31`);
+  }
+  if (accountingMethod) params.append('accounting_method', accountingMethod);
+  return request(`/quickbooks-pl?${params}`);
+}
+
 export function brokerSignupRequest(payload) {
   return fetch(buildUrl('/auth/broker/signup'), {
     method: 'POST',

@@ -21,6 +21,7 @@ import {
   getKeyReportVersions,
   getCimBankReconciliationRequest,
   getCimTaxReconciliationRequest,
+  getQuickbooksProfitLossRequest,
   getManualStageFilterOptions,
   listManualGlDatasetVersions,
 } from "../lib/api";
@@ -1791,17 +1792,40 @@ export async function loadCimFinancialAutofillSnapshot({
       keyReportVersionId: selectedReportVersionId,
     }).catch(() => null),
     normalizedSource === REPORT_SOURCE_KEYS.QUICKBOOKS
-      ? Promise.all(sortedAscending.map((year) => getCimTaxReconciliationRequest({
-        clientId,
-        sourceKey: normalizedSource,
-        datasetVersion,
-        keyReportVersionId: selectedReportVersionId,
-        year,
-      }).catch(() => null))).then((responses) => ({
-        years: Object.fromEntries(responses
-          .filter((response) => response?.year)
-          .map((response) => [response.year, { data: response.data || [] }])),
-      }))
+      ? Promise.all(sortedAscending.map((year) => Promise.all([
+        getCimTaxReconciliationRequest({
+          clientId,
+          sourceKey: normalizedSource,
+          datasetVersion,
+          keyReportVersionId: selectedReportVersionId,
+          year,
+        }).catch(() => null),
+        // The tax-return side only exists once a return PDF is linked in Key Reports;
+        // the book side is available straight from QuickBooks regardless. Merge both
+        // so slide 30 can still show the QuickBooks figures even when no return has
+        // been linked yet, matching what the Tax Reconciliation report page already
+        // shows in its "P&L" column for the exact same years.
+        getQuickbooksProfitLossRequest({ clientId, year }).catch(() => null),
+      ]).then(([taxResponse, plResponse]) => ({ year, taxResponse, plResponse }))))
+        .then((results) => ({
+          years: Object.fromEntries(results
+            .filter(({ taxResponse, plResponse }) => taxResponse?.year || plResponse?.success)
+            .map(({ year, taxResponse, plResponse }) => {
+              const mergedByLabel = new Map();
+              (plResponse?.data || []).forEach((item) => {
+                if (!item?.label) return;
+                mergedByLabel.set(item.label, { label: item.label, pl: Number(item.pl || 0), taxReturn: 0, isReconcilingItem: false });
+              });
+              (taxResponse?.data || []).forEach((item) => {
+                if (!item?.label) return;
+                const row = mergedByLabel.get(item.label) || { label: item.label, pl: 0, taxReturn: 0, isReconcilingItem: false };
+                row.taxReturn = Number(item.taxReturn || 0);
+                if (item.isReconcilingItem) row.isReconcilingItem = true;
+                mergedByLabel.set(item.label, row);
+              });
+              return [taxResponse?.year || year, { data: Array.from(mergedByLabel.values()) }];
+            })),
+        }))
       : getCimTaxReconciliationRequest({
         clientId,
         sourceKey: normalizedSource,
