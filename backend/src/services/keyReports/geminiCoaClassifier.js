@@ -365,4 +365,4 @@ async function classifyAccountsWithAI(accounts, opts = {}) {
   return out;
 }
 
-module.exports = { classifyAccountsWithAI };
+module.exports = { classifyAccountsWithAI, callGeminiText, parseJsonFromText };

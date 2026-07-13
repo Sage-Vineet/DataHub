@@ -12,7 +12,7 @@ import {
 } from "../../lib/api";
 
 const STATEMENT_LABELS = { balance_sheet: "Balance Sheet", profit_loss: "P&L" };
-const METHOD_LABELS = { rule: "Rule", gemini: "AI", hybrid: "AI+Rules", manual: "Manual" };
+const METHOD_LABELS = { rule: "Rule", gemini: "AI", hybrid: "AI+Rules", manual: "Manual", gemini_category: "AI (category match)" };
 const MAX_LEVELS = 15;
 const LEVEL_INDEXES = Array.from({ length: MAX_LEVELS }, (_, i) => i);
 
@@ -148,9 +148,18 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
     const byPath = new Map(); // "A > B > C" -> ["A","B","C"]
     for (const row of flat) {
       if (row.metadata?.needs_mapping) continue;
-      const nonNull = (row.levels || []).filter(Boolean);
-      if (nonNull.length < 2) continue; // need at least one ancestor above the base account
-      const categoryLevels = nonNull.slice(0, -1);
+      const raw = (row.levels || []).filter(Boolean);
+      if (raw.length < 2) continue;
+      // Collapse consecutive duplicate levels — the imported client workbook
+      // sometimes repeats a label across trailing levels to fill all 15
+      // columns, which would otherwise leave that repetition inside the
+      // derived category instead of stopping at the real ancestor chain.
+      const deduped = [];
+      for (const level of raw) {
+        if (!deduped.length || deduped[deduped.length - 1] !== level) deduped.push(level);
+      }
+      if (deduped.length < 2) continue; // need at least one ancestor above the base account
+      const categoryLevels = deduped.slice(0, -1);
       const key = categoryLevels.join(" > ");
       if (!byPath.has(key)) byPath.set(key, categoryLevels);
     }
@@ -273,6 +282,11 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
         (n, sg) => n + (groupedData[sg.key] || []).length, 0,
       );
       if (search && sectionCount === 0) continue;
+      // Needs Mapping only earns a place in the grid when there's actually
+      // something in it — no empty-state clutter when everything's mapped.
+      // It still appears the moment any account can't be mapped, so nothing
+      // silently vanishes the way it did before this section existed.
+      if (section.key === NEEDS_MAPPING_KEY && sectionCount === 0) continue;
 
       items.push({ kind: "section", section, count: sectionCount });
 

@@ -25,6 +25,7 @@ const { classifyAccountsWithAI } = require("./keyReports/geminiCoaClassifier");
 const { classifyCfCategory } = require("./keyReports/cfCategoryRules");
 const { classifyReportTag } = require("./keyReports/reportTagRules");
 const { createCoaMapper } = require("./keyReports/coaMappingService");
+const { selectCategoryForAccounts } = require("./keyReports/coaCategorySelector");
 
 const MAX_LEVELS = 15;
 
@@ -406,6 +407,70 @@ function matchAnyName(mapper, names, accountNumber) {
 }
 
 /**
+ * Derive an account's category (everything above its own base-account name)
+ * from a raw level_1..15 array. Collapses consecutive duplicate levels first
+ * — both chart_of_accounts (copied from a match) and client_chart_of_accounts
+ * (imported verbatim from the client's workbook) can carry a label repeated
+ * across several trailing levels to fill all 15 columns (e.g. the same
+ * base-account name appearing 10 times in a row); stripping only the single
+ * last entry would leave that repetition INSIDE the derived category, handing
+ * the AI selector a malformed "category" it correctly refuses to match against.
+ *
+ * @returns {string[]|null} category levels, or null if there's no real ancestor
+ */
+function categoryLevelsFromRaw(levels) {
+  const raw = levels.filter(Boolean);
+  if (raw.length < 2) return null;
+  const deduped = [];
+  for (const level of raw) {
+    if (!deduped.length || deduped[deduped.length - 1] !== level) deduped.push(level);
+  }
+  if (deduped.length < 2) return null; // need at least one real ancestor above the base account
+  return deduped.slice(0, -1);
+}
+
+/**
+ * Every distinct category path already established, from two sources:
+ *   1. chart_of_accounts — real, previously-matched/approved accounts across
+ *      every company/version.
+ *   2. client_chart_of_accounts — the imported master reference, which is
+ *      stable and complete regardless of how much any one company's own data
+ *      has been processed yet (source #1 alone bootstraps thin: a category
+ *      like "Bank Accounts" only appears there once SOME company's bank
+ *      account has actually been matched and persisted).
+ * Never invented — this is the CLOSED list coaCategorySelector
+ * .selectCategoryForAccounts is allowed to choose from for an account that
+ * failed name/number matching (e.g. "AMEX" when "Visa Credit Card" already
+ * exists under Credit Cards) — the mechanism that lets the system scale
+ * across companies without a keyword/regex rule for every vendor or brand name.
+ *
+ * @returns {Array<{path: string, levels: string[]}>}
+ */
+async function loadKnownCategoryPaths() {
+  const levelCols = Array.from({ length: MAX_LEVELS }, (_, i) => `level_${i + 1}`);
+  const [coaRows, clientRows] = await Promise.all([
+    fetchAllRows(() => supabase.from(TABLE_COA).select(["metadata", ...levelCols].join(", ")).eq("is_active", true)),
+    fetchAllRows(() => supabase.from("client_chart_of_accounts").select(levelCols.join(", "))),
+  ]);
+
+  const byPath = new Map();
+  for (const row of coaRows) {
+    if (row.metadata?.is_group || row.metadata?.needs_mapping) continue;
+    const categoryLevels = categoryLevelsFromRaw(columnsToLevels(row));
+    if (!categoryLevels) continue;
+    const path = categoryLevels.join(" > ");
+    if (!byPath.has(path)) byPath.set(path, categoryLevels);
+  }
+  for (const row of clientRows) {
+    const categoryLevels = categoryLevelsFromRaw(columnsToLevels(row));
+    if (!categoryLevels) continue;
+    const path = categoryLevels.join(" > ");
+    if (!byPath.has(path)) byPath.set(path, categoryLevels);
+  }
+  return Array.from(byPath.entries()).map(([path, levels]) => ({ path, levels }));
+}
+
+/**
  * Enrich each leaf with its full 15-level hierarchy.
  *
  * Hierarchy is no longer computed — it's looked up directly against
@@ -435,12 +500,18 @@ function matchAnyName(mapper, names, accountNumber) {
  * hierarchy, classification_method becomes "manual" and this same row is
  * trusted unconditionally as a match candidate for every future import.
  *
+ * A true miss from BOTH the name/number match above AND the category
+ * selector below gets no hierarchy: level_1-15 and hierarchy_path stay
+ * null/empty and needsMapping is set.
+ *
  * @param {Array} leaves — output of buildCoaModel
  * @param {{map: Function}} mapper — coaMappingService.createCoaMapper() result
- * @returns {Array} leaves augmented with { levels, hierarchyPath, baseAccount, displayName, needsMapping, matchTier, sortOrder }
+ * @param {Array<{path: string, levels: string[]}>} categoryPaths — loadKnownCategoryPaths() result
+ * @returns {Promise<Array>} leaves augmented with { levels, hierarchyPath, baseAccount, displayName, needsMapping, matchTier, sortOrder }
  */
-function buildLeafHierarchies(leaves, mapper) {
-  return leaves.map((leaf) => {
+async function buildLeafHierarchies(leaves, mapper, categoryPaths = []) {
+  // Pass 1: copy-only matching against client_chart_of_accounts.
+  const resolved = leaves.map((leaf) => {
     const displayName = leaf.aiNormalizedName || leaf.accountName;
     const rawMatch = matchAnyName(mapper, [displayName, leaf.accountName], leaf.accountNumber);
 
@@ -487,16 +558,73 @@ function buildLeafHierarchies(leaves, mapper) {
       };
     }
 
-    // No match in client_chart_of_accounts (the master reference imported
-    // from the client's own workbook — clientCoaImportService.js). No
-    // fallback taxonomy is applied here: hierarchy comes only from that
-    // table now, never generated. The account is flagged for manual mapping.
+    // No copy-only match — provisional; pass 2 may still resolve it via the
+    // category selector before this becomes needs_mapping.
+    return { ...leaf, displayName, __pending: true };
+  });
+
+  // Pass 2: for accounts with no direct name/number match, ask Gemini to pick
+  // the best-fit EXISTING category (never invent one) — this is what lets
+  // "AMEX" land under the same "Credit Cards" category "Visa Credit Card"
+  // already established, without any keyword/regex rule for card issuers.
+  // Track indices into `resolved` explicitly — pending is a filtered COPY of
+  // the array, so writing into pending[i] would never be seen by the final
+  // resolved.map() below; every update here must go through resolved[idx].
+  const pendingIndices = [];
+  resolved.forEach((r, idx) => { if (r.__pending) pendingIndices.push(idx); });
+
+  if (pendingIndices.length && categoryPaths.length) {
+    const categoryLevelsByPath = new Map(categoryPaths.map((c) => [c.path, c.levels]));
+    const batchInput = pendingIndices.map((idx, i) => {
+      const r = resolved[idx];
+      return { key: String(i), accountName: r.displayName, accountType: r.accountType || undefined };
+    });
+    const placements = await selectCategoryForAccounts(batchInput, categoryPaths.map((c) => c.path));
+
+    for (let i = 0; i < pendingIndices.length; i++) {
+      const placement = placements.get(String(i));
+      if (!placement) continue;
+      const categoryLevels = categoryLevelsByPath.get(placement.category);
+      if (!categoryLevels) continue; // defensive — selectCategoryForAccounts already validates this
+
+      const idx = pendingIndices[i];
+      const leaf = resolved[idx];
+      const baseAccount = leaf.accountName || leaf.displayName;
+      const path = [...categoryLevels, baseAccount];
+      const levels = new Array(MAX_LEVELS).fill(null);
+      path.forEach((label, li) => { if (li < MAX_LEVELS) levels[li] = label; });
+
+      resolved[idx] = {
+        ...leaf,
+        levels,
+        hierarchyPath: path.join(" > "),
+        baseAccount,
+        needsMapping: false,
+        // Visible for optional human confirmation but not blocking — this is
+        // an AI category pick, not a copy from an authoritative source or a
+        // human decision, so it stays reviewable without excluding the
+        // account from reports (see chartOfAccountsService's report-consuming
+        // callers, which only ever gate on needsMapping, not needsReview).
+        needsReview: true,
+        classificationMethod: "gemini_category",
+        matchTier: "gemini_category",
+        matchConfidence: placement.confidence,
+      };
+    }
+  }
+
+  // Anything still pending after both passes is a genuinely new accounting
+  // concept (or the category selector was unavailable/found no fit) —
+  // flagged for manual mapping, never given an invented hierarchy.
+  return resolved.map((r) => {
+    if (!r.__pending) return r;
+    const { __pending, ...leaf } = r;
+    if (leaf.levels) return leaf; // resolved by pass 2 above
     return {
       ...leaf,
       levels: new Array(MAX_LEVELS).fill(null),
       hierarchyPath: "",
-      baseAccount: leaf.accountName || displayName,
-      displayName,
+      baseAccount: leaf.accountName || leaf.displayName,
       needsMapping: true,
       matchTier: null,
       matchConfidence: null,
@@ -827,8 +955,13 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
   }
 
   const mapper = await createCoaMapper();
-  const hierarchical = buildLeafHierarchies(leaves, mapper);
+  const categoryPaths = await loadKnownCategoryPaths();
+  const hierarchical = await buildLeafHierarchies(leaves, mapper, categoryPaths);
   const unmappedCount = hierarchical.filter((l) => l.needsMapping).length;
+  const aiCategorizedCount = hierarchical.filter((l) => l.matchTier === "gemini_category").length;
+  if (aiCategorizedCount) {
+    console.log(`[ChartOfAccounts] ${aiCategorizedCount} account(s) auto-placed into an existing category by AI selection (no name/number match, no new category invented) — flagged needs_review for optional confirmation.`);
+  }
   if (unmappedCount) {
     console.log(`[ChartOfAccounts] ${unmappedCount} account(s) did not match an existing Chart of Accounts hierarchy. Marked needs_mapping=true. Excluded from reports until manually mapped.`);
   }
@@ -1660,7 +1793,10 @@ async function ensureCoaComplete(companyId, versionId) {
   //    only; hierarchy is looked up against other chart_of_accounts rows (same
   //    as generateChartOfAccounts — see buildLeafHierarchies).
   const coaMapper = await createCoaMapper();
-  const classifiedLeaves = missingRaw
+  const categoryPaths = await loadKnownCategoryPaths();
+  const categoryLevelsByPath = new Map(categoryPaths.map((c) => [c.path, c.levels]));
+
+  const preliminary = missingRaw
     .filter((rawName) => {
       const aiResult = aiResults.get(normName(rawName));
       return !aiResult?.isReportRow; // exclude AI-detected report rows
@@ -1704,21 +1840,53 @@ async function ensureCoaComplete(companyId, versionId) {
       const sortOrder = match.matched ? (match.sortOrder ?? null) : null;
       const clientAccountId = match.matched ? (match.clientAccountId ?? null) : null;
 
-      let finalLevels, hierarchyPath, needsMapping, matchTier, resolvedMethod = classificationMethod;
       if (match.matched) {
-        finalLevels = match.levels; hierarchyPath = match.hierarchyPath;
-        needsMapping = false; matchTier = match.matchTier || null;
-      } else {
-        // No match in client_chart_of_accounts — no fallback taxonomy. Flagged
-        // for manual mapping; hierarchy comes only from the master table now.
-        finalLevels = new Array(MAX_LEVELS).fill(null); hierarchyPath = "";
-        needsMapping = true; matchTier = null;
+        return { rawName, displayName, type, stmtType, sortOrder, clientAccountId, normalBal,
+                 confidence, needsReview, classificationMethod, finalLevels: match.levels,
+                 hierarchyPath: match.hierarchyPath, needsMapping: false, matchTier: match.matchTier || null };
       }
-
-      return { rawName, displayName, type, stmtType, finalLevels, hierarchyPath, sortOrder,
-               clientAccountId, normalBal, confidence, needsReview, classificationMethod: resolvedMethod,
-               needsMapping, matchTier };
+      // No copy-only match — provisional; the category selector below may
+      // still resolve it before this becomes needs_mapping.
+      return { rawName, displayName, type, stmtType, sortOrder, clientAccountId, normalBal,
+               confidence, needsReview, classificationMethod, __pending: true };
     });
+
+  // Second pass: same scalable category-reuse fallback as buildLeafHierarchies
+  // — ask Gemini to pick the best-fit EXISTING category for accounts with no
+  // direct name/number match, never inventing a new one.
+  const pendingIndices = [];
+  preliminary.forEach((r, idx) => { if (r.__pending) pendingIndices.push(idx); });
+  if (pendingIndices.length && categoryPaths.length) {
+    const batchInput = pendingIndices.map((idx, i) => {
+      const r = preliminary[idx];
+      return { key: String(i), accountName: r.displayName, accountType: r.type || undefined };
+    });
+    const placements = await selectCategoryForAccounts(batchInput, categoryPaths.map((c) => c.path));
+    for (let i = 0; i < pendingIndices.length; i++) {
+      const placement = placements.get(String(i));
+      if (!placement) continue;
+      const categoryLevels = categoryLevelsByPath.get(placement.category);
+      if (!categoryLevels) continue;
+
+      const idx = pendingIndices[i];
+      const leaf = preliminary[idx];
+      const path = [...categoryLevels, leaf.rawName];
+      const finalLevels = new Array(MAX_LEVELS).fill(null);
+      path.forEach((label, li) => { if (li < MAX_LEVELS) finalLevels[li] = label; });
+
+      preliminary[idx] = {
+        ...leaf, finalLevels, hierarchyPath: path.join(" > "), needsMapping: false,
+        needsReview: true, classificationMethod: "gemini_category", matchTier: "gemini_category",
+      };
+    }
+  }
+
+  const classifiedLeaves = preliminary.map((r) => {
+    if (!r.__pending) return r;
+    const { __pending, ...leaf } = r;
+    if (leaf.finalLevels) return leaf; // resolved by the category selector above
+    return { ...leaf, finalLevels: new Array(MAX_LEVELS).fill(null), hierarchyPath: "", needsMapping: true, matchTier: null };
+  });
 
   if (classifiedLeaves.length === 0) return { added: 0, skipped: unlinkedNames.size };
 
