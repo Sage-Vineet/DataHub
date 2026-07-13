@@ -1,21 +1,23 @@
 // ============================================================================
-// Chart of Accounts — AI classification engine (Key Reports redesign)
+// Chart of Accounts — AI account recognition (Key Reports redesign)
 //
 // classifyAccountsWithAI(accounts)
-//   Single batched Gemini call that classifies every unique GL account into:
-//     • accountType  — 6-type model (asset | liability | equity | income | cogs | expense)
-//     • section      — accounting section within the financial statement
-//                      (e.g. "Current Assets", "Operating Expenses")
-//     • deeperLevels — 0–2 company-specific sub-category labels below section
-//     • normalBalance — "debit" or "credit"
+//   Single batched Gemini call that recognizes every unique GL account and
+//   returns ONLY:
+//     • accountType    — 6-type model (asset | liability | equity | income | cogs | expense)
 //     • normalizedName — clean display name
-//     • confidence   — 0–1 score; below AI_NEEDS_REVIEW_THRESHOLD the account is
-//                      flagged for manual review rather than forced into a type
-//     • isReportRow  — true for calculated totals / headers (Total Assets,
-//                      Net Income, etc.) — these must NOT be inserted into the COA
+//     • confidence     — 0–1 score; below AI_NEEDS_REVIEW_THRESHOLD the account is
+//                        flagged for manual review rather than forced into a type
+//     • isReportRow    — true for calculated totals / headers (Total Assets,
+//                        Net Income, etc.) — these must NOT be inserted into the COA
 //
-// All keyword / regex / hardcoded classification logic has been removed.
-// The AI is solely responsible for all accounting decisions.
+// Gemini performs account RECOGNITION ONLY. It does not return section,
+// deeperLevels, hierarchy levels, hierarchy_path, or sort_order — hierarchy
+// placement is looked up by coaMappingService directly against other
+// chart_of_accounts rows (the only hierarchy table in the system), keyed on
+// accountType + normalizedName/accountNumber (Account Number > Exact Name >
+// Normalized Name > Fuzzy Match > Manual Review). No keyword / regex /
+// hardcoded classification logic remains.
 //
 // This function is NON-FATAL: any failure (no API key, quota, malformed JSON,
 // timeout) resolves to an empty Map, and the caller marks affected accounts
@@ -43,7 +45,7 @@ const MAX_ACCOUNTS = 600;
 // accounts are intentionally NOT cached so they are re-attempted and continue to
 // surface in Review & Adjust. Bump CLASSIFIER_CACHE_VERSION to invalidate all
 // cached classifications after any change to the prompt or output handling.
-const CLASSIFIER_CACHE_VERSION = "v2";
+const CLASSIFIER_CACHE_VERSION = "v3";
 const CACHE_MIN_CONFIDENCE = 0.85;
 
 function coaCacheEnabled() {
@@ -116,29 +118,9 @@ async function writeClassificationCache(companyId, entries) {
   }
 }
 
-// The exact section strings the AI is instructed to return.
-// Must stay in sync with SECTION_STANDARD_LEVELS in coaHierarchyRules.js.
-const VALID_SECTIONS = new Set([
-  "Current Assets", "Fixed Assets", "Other Assets",
-  "Current Liabilities", "Long-Term Liabilities", "Equity",
-  "Revenue", "Cost of Goods Sold", "Operating Expenses",
-  "Other Income", "Other Expense",
-]);
-
 // Valid 6-type accountType values.
 const VALID_ACCOUNT_TYPES = new Set([
   "asset", "liability", "equity", "income", "cogs", "expense",
-]);
-
-// Standard hierarchy labels that the AI must NOT echo into deeperLevels.
-// They are already placed by aiSectionToStandardLevels before the base account.
-const EXCLUDED_DEEPER_LABELS = new Set([
-  "income statement", "balance sheet",
-  "net income", "pretax income", "operating income",
-  "gross profit", "total revenue", "total expenses",
-  "total assets", "total liabilities", "total equity",
-  "income", "expenses",
-  "net loss", "total liabilities and equity",
 ]);
 
 function parseJsonFromText(text = "") {
@@ -200,7 +182,9 @@ function buildClassifyPrompt(batch) {
 
   return `You are a Certified Public Accountant (CPA) with deep knowledge of GAAP, IFRS, and every major ERP system (QuickBooks, Xero, Sage, NetSuite, Dynamics, SAP).
 
-Classify each General Ledger account below purely from its semantic meaning.
+Recognize each General Ledger account below purely from its semantic meaning.
+You are performing ACCOUNT RECOGNITION ONLY — do not think about where this
+account sits in a reporting hierarchy; that is handled elsewhere.
 
 ──────────────────────────────────────────────────────────────────────────────
 ACCOUNT TYPE — choose exactly one of these six values:
@@ -212,37 +196,27 @@ ACCOUNT TYPE — choose exactly one of these six values:
   cogs        Cost of goods sold, direct materials, direct labor, direct costs
   expense     Operating expenses (debit-normal P&L): salaries, rent, insurance, utilities, repairs
 
-SECTION — choose exactly one of these values (must match the accountType):
-  For asset:     "Current Assets"  |  "Fixed Assets"  |  "Other Assets"
-  For liability: "Current Liabilities"  |  "Long-Term Liabilities"
-  For equity:    "Equity"
-  For income:    "Revenue"  |  "Other Income"
-  For cogs:      "Cost of Goods Sold"
-  For expense:   "Operating Expenses"  |  "Other Expense"
-
 CRITICAL ACCOUNTING RULES:
-  • Bank/checking/savings ACCOUNT → asset, "Current Assets"
-  • Bank FEE / CHARGE / SERVICE   → expense, "Operating Expenses"
-  • Credit card ACCOUNT (Visa, AMEX, MC, Discover, store card) → liability, "Current Liabilities"
-  • Credit card BILL / credit card bill account / credit card payment → expense, "Operating Expenses" (do NOT classify as liability)
-  • Credit card FEE / INTEREST    → expense, "Operating Expenses"
-  • Vehicle/fleet OWNERSHIP (motor vehicles, company trucks, fleet) → asset, "Fixed Assets"
-  • Fuel, repairs, mileage, car & truck expenses → expense, "Operating Expenses"
-  • Insurance PREMIUMS PAID → expense, "Operating Expenses"
-  • Insurance RECEIVABLE / DEPOSIT → asset, "Current Assets"
-  • Owner draws / distributions / dividends paid → equity, "Equity"
-  • Prepaid X → asset, "Current Assets"
-  • Accrued X → liability, "Current Liabilities"
+  • Bank/checking/savings ACCOUNT → asset
+  • Bank FEE / CHARGE / SERVICE   → expense
+  • Credit card ACCOUNT (Visa, AMEX, MC, Discover, store card) → liability
+  • Credit card BILL / credit card bill account / credit card payment → expense (do NOT classify as liability)
+  • Credit card FEE / INTEREST    → expense
+  • Vehicle/fleet OWNERSHIP (motor vehicles, company trucks, fleet) → asset
+  • Fuel, repairs, mileage, car & truck expenses → expense
+  • Insurance PREMIUMS PAID → expense
+  • Insurance RECEIVABLE / DEPOSIT → asset
+  • Owner draws / distributions / dividends paid → equity
+  • Prepaid X → asset
+  • Accrued X → liability
   • X Receivable / Due From → asset
   • X Payable / Due To → liability
   • Loans TO others (you are the lender) → asset
   • Loans FROM others (you are the borrower) → liability
-  • Long-term loans / mortgages with "long-term" signal → liability, "Long-Term Liabilities"
-  • SBA / EIDL / PPP loans → liability, "Long-Term Liabilities"
-  • Accumulated Depreciation → asset, "Fixed Assets"  (contra-asset)
-  • Goodwill, intangibles, deposits, notes receivable, Other Long-term Assets (or Other Long Term Assets) → asset, "Other Assets"
+  • Accumulated Depreciation → asset (contra-asset)
+  • Goodwill, intangibles, deposits, notes receivable, Other Long-term Assets → asset
   • Refunds / Discounts / Returns / Allowances GIVEN to customers (e.g. "Refunds to Customers",
-    "Discounts/Refunds Given", "Sales Returns and Allowances") → income, "Revenue"
+    "Discounts/Refunds Given", "Sales Returns and Allowances") → income
     (contra-revenue: it reduces total revenue, it is NOT an operating expense, even though
     money is flowing out — classify by what it nets against, not by cash direction)
   • If [BS section] is provided it is authoritative — use it to confirm the correct accountType
@@ -258,32 +232,6 @@ that are not real accounts. These must NEVER be inserted into the Chart of Accou
     "Subtotal", "Less:", "Cost of Goods Sold" (when it appears as a section header),
     date lines ("As of Dec 31 2024"), metadata ("Accrual Basis", "Cash Basis"),
     any line that is clearly a report subtotal and not a posting account
-
-DEEPER LEVELS — 0 to 2 short sub-category labels that sit between the section and the
-base account in the hierarchy.  Return [] when none are needed.
-  Do NOT include any of: Income Statement, Balance Sheet, Net Income, Pretax Income,
-    Operating Income, Gross Profit, Total Revenue, Total Expenses, Total Assets,
-    Total Liabilities, Total Equity, Expenses, Income, Net Loss.
-  Useful examples by type:
-    checking / savings account    → ["Bank Accounts"]
-    credit card account           → ["Credit Cards"]
-    vehicle owned                 → ["Vehicles"]
-    equipment owned               → ["Machinery & Equipment"]
-    accounts receivable           → ["Accounts Receivable"]
-    inventory                     → ["Inventory"]
-    prepaid expenses              → ["Prepaid Expenses"]
-    accounts payable              → ["Accounts Payable"]
-    payroll / wages               → ["Payroll and Labor"]
-    insurance expense             → ["Insurance"]
-    repairs / maintenance         → ["Repairs and Maintenance"]
-    rent / utilities              → ["Occupancy"]
-    officer/owner loans payable   → ["Long-Term Loans"]
-    generic sales revenue         → []
-    owner equity account          → []
-
-NORMAL BALANCE:
-  debit  → asset, expense, cogs
-  credit → liability, equity, income
 
 NORMALIZED NAME — clean title-case version of the account name.
   Strip leading numeric codes (e.g. "1000 - " or "10200 "). Fix casing.
@@ -302,9 +250,6 @@ Return STRICT JSON only — no markdown, no prose, no commentary:
       "key": "<echo key exactly>",
       "isReportRow": false,
       "accountType": "<one of: asset|liability|equity|income|cogs|expense>",
-      "section": "<one of the section values above>",
-      "deeperLevels": [],
-      "normalBalance": "<debit|credit>",
       "normalizedName": "<clean display name>",
       "confidence": 0.95
     }
@@ -319,8 +264,11 @@ ${lines.join("\n")}`;
  * AI-driven account type + hierarchy classification.
  *
  * Classifies unique GL account names into the 6-type model, detects report
- * rows (isReportRow), returns the accounting section and deeper hierarchy
- * hints, and provides a normalized display name and confidence score.
+ * rows (isReportRow), and provides a normalized display name and confidence
+ * score. Account recognition only — no section, hierarchy levels, or
+ * normal_balance; hierarchy placement is coaMappingService's job, and normal
+ * balance is a fixed function of accountType (see chartOfAccountsService's
+ * normalBalanceFor).
  *
  * Non-fatal: any failure returns an empty Map so the caller can mark affected
  * accounts as needsReview rather than applying incorrect hardcoded fallbacks.
@@ -332,9 +280,6 @@ ${lines.join("\n")}`;
  *   bsSection   — optional BS section label (authoritative when present)
  * @returns {Promise<Map<string, {
  *   accountType: string,
- *   section: string,
- *   deeperLevels: string[],
- *   normalBalance: string,
  *   normalizedName: string|null,
  *   confidence: number,
  *   isReportRow: boolean
@@ -383,7 +328,7 @@ async function classifyAccountsWithAI(accounts, opts = {}) {
 
         const isReportRow = Boolean(r.isReportRow);
         if (isReportRow) {
-          const value = { isReportRow: true, accountType: "", section: "", deeperLevels: [], normalBalance: "", normalizedName: null, confidence: 1 };
+          const value = { isReportRow: true, accountType: "", normalizedName: null, confidence: 1 };
           out.set(key, value);
           if (isCacheableClassification(value) && cacheableKeys.has(key)) toStore.push({ key, classification: value });
           continue;
@@ -391,19 +336,10 @@ async function classifyAccountsWithAI(accounts, opts = {}) {
 
         const rawType    = normalizeAccountType(r.accountType);
         const accountType = VALID_ACCOUNT_TYPES.has(rawType) ? rawType : "";
-        const section    = VALID_SECTIONS.has(String(r.section || "")) ? String(r.section) : "";
         const confidence = Math.min(1, Math.max(0, Number(r.confidence) || 0));
         const normalizedName = r.normalizedName ? String(r.normalizedName).trim() : null;
-        const normalBalance  = String(r.normalBalance || "").toLowerCase() === "credit" ? "credit" : "debit";
 
-        const deeperLevels = Array.isArray(r.deeperLevels)
-          ? r.deeperLevels
-              .map((x) => String(x || "").trim())
-              .filter((x) => x && !EXCLUDED_DEEPER_LABELS.has(x.toLowerCase()))
-              .slice(0, 3)
-          : [];
-
-        const value = { isReportRow: false, accountType, section, deeperLevels, normalBalance, normalizedName, confidence };
+        const value = { isReportRow: false, accountType, normalizedName, confidence };
         out.set(key, value);
         if (isCacheableClassification(value) && cacheableKeys.has(key)) toStore.push({ key, classification: value });
       }

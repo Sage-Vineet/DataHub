@@ -57,7 +57,13 @@ function findCol(headers, aliases) {
   return -1;
 }
 
-/** Detect section (Assets / Liabilities / Equity) from preceding header rows */
+/**
+ * Recognize a bare section-HEADER line (literal text like "ASSETS",
+ * "LIABILITIES", "Owner's Equity" printed on the document with no amount).
+ * This reads what the document itself says, not a guess — it must NEVER be
+ * used to classify an ordinary account line from its own name (that would be
+ * a hardcoded keyword guess); see the two call sites below.
+ */
 function inferSection(accountName) {
   const n = lc(accountName);
   if (/asset/.test(n)) return 'assets';
@@ -131,7 +137,9 @@ class BalanceSheetExtractionService extends ExtractionServiceBase {
 
     const rows = flatNodes.map((node) => ({
       account_name: node.name,
-      section: node._section || inferSection(node.name),
+      // Only Gemini's own structural read of the document — never guessed
+      // from the account's own name (see inferSection's doc comment).
+      section: node._section || null,
       amount: node.amount || 0,
       as_of_date: asOfDate,
       fiscal_year: fiscalYear,
@@ -237,7 +245,10 @@ class BalanceSheetExtractionService extends ExtractionServiceBase {
       rows.push({
         account_name: accountName,
         account_number: null,
-        section: currentSection ? inferSection(currentSection) : inferSection(accountName),
+        // Section comes from the last section-HEADER line actually seen above
+        // this row in the document — never guessed from this row's own account
+        // name when no header has appeared yet (see inferSection's doc comment).
+        section: currentSection ? inferSection(currentSection) : null,
         amount,
         as_of_date: asOfDate,
         fiscal_year: fiscalYear,
@@ -276,7 +287,11 @@ class BalanceSheetExtractionService extends ExtractionServiceBase {
 
       account_name: row.account_name.trim(),
       account_number: row.account_number?.trim() || null,
-      account_type: row.section || null,
+      // account_type is never set at extraction time — it previously aliased
+      // `section` directly (e.g. "assets", a plural section id, not a real
+      // "asset" account_type value), which downstream code had to work around.
+      // The only authoritative source of account_type is Gemini/COA classification.
+      account_type: null,
       section: row.section || null,
 
       amount: Number(row.amount) || 0,

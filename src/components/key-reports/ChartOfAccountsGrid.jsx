@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import * as XLSX from "xlsx";
 import {
-  RefreshCw, Loader2, Table2, Check, X, Pencil, RotateCcw, Search, Undo2, Download,
+  RefreshCw, Loader2, Table2, Check, X, Pencil, RotateCcw, Search, Undo2, Download, FolderInput,
 } from "lucide-react";
 import {
   getChartOfAccounts,
@@ -46,6 +46,17 @@ for (const sec of SECTION_DEFS) {
   }
 }
 
+// An account with no recognized accountType (needs_mapping — Gemini returned
+// nothing and no chart_of_accounts match was found; never guessed/defaulted)
+// must still surface here rather than silently vanish from TYPE_MAP lookups —
+// this section is exactly the "Chart of Accounts Review" queue.
+const NEEDS_MAPPING_KEY = "needs_mapping";
+const NEEDS_MAPPING_SECTION = {
+  key: NEEDS_MAPPING_KEY,
+  label: "NEEDS MAPPING",
+  subGroups: [{ key: NEEDS_MAPPING_KEY, label: "Unclassified / Awaiting Review", types: new Set() }],
+};
+
 // Total column count (must stay in sync with the <thead> below)
 // systemId + acctNum + acctName + acctIdName + stmt + 15 levels + path + method + adjustedName + actions
 const TOTAL_COLS = 5 + MAX_LEVELS + 4;
@@ -58,6 +69,10 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
   const [editingId, setEditingId]     = useState(null);
   const [editName, setEditName]       = useState("");
   const [search, setSearch]           = useState("");
+  const [mappingId, setMappingId]           = useState(null);
+  const [mappingCategoryKey, setMappingCategoryKey] = useState("");
+  const [mappingBaseName, setMappingBaseName]       = useState("");
+  const [mappingSaving, setMappingSaving]           = useState(false);
 
   // ── Data loading ─────────────────────────────────────────────────────────
   const load = useCallback(async () => {
@@ -122,6 +137,48 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
   };
 
   const modifiedCount = useMemo(() => flat.filter((r) => r.modified).length, [flat]);
+  const needsMappingCount = useMemo(() => flat.filter((r) => r.metadata?.needs_mapping).length, [flat]);
+
+  // ── Manual mapping for a needs_mapping account ────────────────────────────
+  // Every already-mapped account's own levels already describe a real
+  // category path (everything except its own base-account name, which is the
+  // last non-null level) — offering those as pickable targets uses hierarchy
+  // that already exists in this version, rather than inventing anything new.
+  const categoryOptions = useMemo(() => {
+    const byPath = new Map(); // "A > B > C" -> ["A","B","C"]
+    for (const row of flat) {
+      if (row.metadata?.needs_mapping) continue;
+      const nonNull = (row.levels || []).filter(Boolean);
+      if (nonNull.length < 2) continue; // need at least one ancestor above the base account
+      const categoryLevels = nonNull.slice(0, -1);
+      const key = categoryLevels.join(" > ");
+      if (!byPath.has(key)) byPath.set(key, categoryLevels);
+    }
+    return Array.from(byPath.entries())
+      .map(([path, levels]) => ({ path, levels }))
+      .sort((a, b) => a.path.localeCompare(b.path));
+  }, [flat]);
+
+  const startMapping = (row) => {
+    setMappingId(row.id);
+    setMappingCategoryKey(categoryOptions[0]?.path || "");
+    setMappingBaseName(row.adjustedName || row.sourceName || "");
+  };
+  const cancelMapping = () => { setMappingId(null); setMappingCategoryKey(""); setMappingBaseName(""); };
+  const saveMapping = async (row) => {
+    const category = categoryOptions.find((c) => c.path === mappingCategoryKey);
+    const baseName = mappingBaseName.trim();
+    if (!category || !baseName) { notify?.("Pick a category and a name first.", "error"); return; }
+    setMappingSaving(true);
+    try {
+      await updateChartOfAccount(row.id, { levels: [...category.levels, baseName] });
+      cancelMapping();
+      await load();
+      notify?.("Account mapped.", "success");
+    } catch (e) {
+      notify?.(e.message || "Failed to map account.", "error");
+    } finally { setMappingSaving(false); }
+  };
 
   // ── Excel export — always exports ALL accounts regardless of current search ─
   const handleExport = () => {
@@ -132,9 +189,11 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
     for (const sec of SECTION_DEFS)
       for (const sg of sec.subGroups)
         allGrouped[sg.key] = [];
+    allGrouped[NEEDS_MAPPING_KEY] = [];
     for (const row of flat) {
-      const sgKey = TYPE_MAP[row.accountType]?.subGroupKey;
-      if (sgKey && allGrouped[sgKey]) allGrouped[sgKey].push(row);
+      // No recognized type → Needs Mapping, never silently dropped from the export.
+      const sgKey = TYPE_MAP[row.accountType]?.subGroupKey || NEEDS_MAPPING_KEY;
+      allGrouped[sgKey].push(row);
     }
 
     const sheetRows = [];
@@ -148,7 +207,7 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
     ]);
 
     // Section → sub-section → account rows
-    for (const section of SECTION_DEFS) {
+    for (const section of [...SECTION_DEFS, NEEDS_MAPPING_SECTION]) {
       sheetRows.push([section.label]);
       for (const sg of section.subGroups) {
         sheetRows.push([sg.label]);
@@ -192,11 +251,13 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
     for (const sec of SECTION_DEFS)
       for (const sg of sec.subGroups)
         out[sg.key] = [];
+    out[NEEDS_MAPPING_KEY] = [];
 
     for (const row of filteredFlat) {
       const mapping = TYPE_MAP[row.accountType];
-      const sgKey   = mapping?.subGroupKey || "other";
-      if (out[sgKey]) out[sgKey].push(row);
+      // No recognized type → the Needs Mapping review queue, never dropped.
+      const sgKey = mapping?.subGroupKey || NEEDS_MAPPING_KEY;
+      out[sgKey].push(row);
     }
     return out;
   }, [filteredFlat]);
@@ -205,7 +266,9 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
   // (avoids React Fragment key issues when mapping over nested structures)
   const tableRows = useMemo(() => {
     const items = [];
-    for (const section of SECTION_DEFS) {
+    // Needs Mapping is a real section too (not part of SECTION_DEFS/TYPE_MAP,
+    // since it has no recognized accountType) — same rendering rules apply.
+    for (const section of [...SECTION_DEFS, NEEDS_MAPPING_SECTION]) {
       const sectionCount = section.subGroups.reduce(
         (n, sg) => n + (groupedData[sg.key] || []).length, 0,
       );
@@ -244,6 +307,11 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
           {modifiedCount > 0 && (
             <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700">
               {modifiedCount} modified
+            </span>
+          )}
+          {needsMappingCount > 0 && (
+            <span className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700">
+              {needsMappingCount} need{needsMappingCount === 1 ? "s" : ""} mapping
             </span>
           )}
         </div>
@@ -378,8 +446,8 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
                 const levels    = row.levels || [];
 
                 return (
+                  <Fragment key={row.id}>
                   <tr
-                    key={row.id}
                     className={`border-b border-border/40 bg-white transition-colors hover:bg-gray-50 ${row.isActive === false ? "opacity-50" : ""}`}
                   >
                     {/* System ID */}
@@ -482,6 +550,15 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
                     <td className="whitespace-nowrap px-3 py-1.5">
                       {!isEditing && (
                         <div className="flex items-center justify-end gap-1">
+                          {row.metadata?.needs_mapping && (
+                            <button
+                              onClick={() => (mappingId === row.id ? cancelMapping() : startMapping(row))}
+                              title="Map to an existing category"
+                              className="rounded p-1 text-red-600 hover:bg-white/60"
+                            >
+                              <FolderInput size={12} />
+                            </button>
+                          )}
                           <button
                             onClick={() => startEdit(row)}
                             title="Rename (adjusted name)"
@@ -502,6 +579,58 @@ export default function ChartOfAccountsGrid({ versionId, hasSyncedData, notify }
                       )}
                     </td>
                   </tr>
+                  {mappingId === row.id && (
+                    <tr key={`map-${row.id}`} className="bg-red-50/60 border-b border-border/40">
+                      <td colSpan={TOTAL_COLS} className="px-4 py-3">
+                        <div className="flex flex-wrap items-end gap-3">
+                          <div className="flex flex-col gap-1">
+                            <label className="text-[10px] font-semibold uppercase tracking-wide text-text-muted">
+                              Place under existing category
+                            </label>
+                            <select
+                              value={mappingCategoryKey}
+                              onChange={(e) => setMappingCategoryKey(e.target.value)}
+                              className="w-[420px] rounded border border-border px-2 py-1.5 text-xs"
+                            >
+                              {categoryOptions.length === 0 && <option value="">No existing categories yet</option>}
+                              {categoryOptions.map((c) => (
+                                <option key={c.path} value={c.path}>{c.path}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <label className="text-[10px] font-semibold uppercase tracking-wide text-text-muted">
+                              Account name (final level)
+                            </label>
+                            <input
+                              value={mappingBaseName}
+                              onChange={(e) => setMappingBaseName(e.target.value)}
+                              className="w-56 rounded border border-border px-2 py-1.5 text-xs"
+                            />
+                          </div>
+                          <button
+                            onClick={() => saveMapping(row)}
+                            disabled={mappingSaving || !categoryOptions.length}
+                            className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                          >
+                            {mappingSaving ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
+                            Save mapping
+                          </button>
+                          <button
+                            onClick={cancelMapping}
+                            className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-xs font-semibold text-text-primary hover:bg-white"
+                          >
+                            <X size={13} /> Cancel
+                          </button>
+                        </div>
+                        <p className="mt-2 text-[11px] text-text-muted">
+                          This places the account as a leaf under the selected category's existing hierarchy path
+                          — no new hierarchy is invented, only reused from what's already mapped in this Chart of Accounts.
+                        </p>
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
                 );
               })}
             </tbody>

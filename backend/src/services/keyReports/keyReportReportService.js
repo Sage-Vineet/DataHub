@@ -59,49 +59,6 @@ function auditReport(versionId, sourceType, fiscalYear, rowsRead, opts = {}) {
   });
 }
 
-// Balance-Sheet integrity check (spec #15): Assets = Liabilities + Equity.
-// Logs the difference for every generated/rendered year; never throws — a report
-// that is slightly out of balance must still render, but the imbalance is auditable.
-function validateBalanceSheet(versionId, fiscalYear, sectionTotals, opts = {}) {
-  const assets = safeNum(sectionTotals.assets);
-  const liabilities = safeNum(sectionTotals.liabilities);
-  const equity = safeNum(sectionTotals.equity);
-  const liabilitiesPlusEquity = Math.round((liabilities + equity) * 100) / 100;
-  const difference = Math.round((assets - liabilitiesPlusEquity) * 100) / 100;
-  const balanced = Math.abs(difference) < 0.5; // tolerate sub-dollar rounding
-  console.log('[KEY_REPORTS_VALIDATION]', {
-    versionId,
-    fiscalYear: fiscalYear ?? null,
-    totalAssets: assets,
-    totalLiabilities: liabilities,
-    totalEquity: equity,
-    liabilitiesPlusEquity,
-    difference,
-    balanced,
-  });
-  if (!balanced) {
-    console.warn(
-      `[KEY_REPORTS_VALIDATION] Balance Sheet OUT OF BALANCE version=${versionId} FY${fiscalYear}: ` +
-      `Assets=${assets} Liabilities=${liabilities} Equity=${equity} L+E=${liabilitiesPlusEquity} diff=${difference}`,
-    );
-    if (opts.unclassified && opts.unclassified.length) {
-      console.warn('[KEY_REPORTS_VALIDATION] Unclassified GL accounts excluded from this year:',
-        opts.unclassified.map(u =>
-          `  "${u.account_name}" split="${u.split_account}" amt=${u.amount} rb=${u.running_balance} date=${u.transaction_date}`
-        ).join('\n')
-      );
-    }
-    if (opts.bsMap) {
-      const top = Array.from(opts.bsMap.entries())
-        .map(([name, acc]) => ({ name, type: acc.type, net: Math.round(acc.net * 100) / 100 }))
-        .sort((a, b) => Math.abs(b.net) - Math.abs(a.net))
-        .slice(0, 10);
-      console.warn('[KEY_REPORTS_VALIDATION] Top GL movements by account (this year):', top);
-    }
-  }
-  return { assets, liabilities, equity, difference, balanced };
-}
-
 /** Distinct fiscal years present in any entry table for this version. */
 async function getDistinctYears(table, versionId, yearCol, isDateCol = false) {
   let data;
@@ -183,68 +140,20 @@ async function hasExtractedRows(table, versionId, year) {
 
 // ─── GL account classification (self-contained — no Manual GL dependency) ──────
 //
-// general_ledger_entries has no account_type column, so we classify by the
-// distribution_account name keyword. This keeps Key Reports COMPLETELY isolated
-// from manualGlMultiYearService.
+// general_ledger_entries has no account_type column, so every account's type is
+// resolved from the Chart of Accounts (the single classification authority —
+// see chartOfAccountsService). There is no keyword/name-based fallback: an
+// account not found in the COA resolves to 'unknown' and is surfaced via the
+// unclassified/console.warn tracking already in aggregateGLByAccount /
+// aggregateGLForBS below, not silently guessed.
 
-const ASSET_KW = [
-  'cash', 'bank', 'checking', 'savings', 'receivable', 'a/r', 'inventory', 'prepaid', 'deposit',
-  'money market', 'equipment', 'furniture', 'vehicle', 'building', 'land', 'property', 'fixed asset',
-  'accumulated depreciation', 'goodwill', 'intangible', 'investment', 'due from', 'asset',
-];
-const LIABILITY_KW = [
-  'payable', 'a/p', 'accrued', 'credit card', 'loan', 'note payable', 'line of credit',
-  'deferred', 'unearned', 'tax payable', 'payroll liab', 'liability', 'mortgage',
-];
-const EQUITY_KW = [
-  'equity', 'capital', 'retained earnings', 'owner', 'member', 'shareholder',
-  'stockholder', 'distribution', 'draw', 'common stock', 'opening balance',
-];
-// 'service' removed — too broad, falsely matches expense accounts like "Legal & Professional Services".
-// Revenue accounts with "service" in the name typically also carry "income" or "revenue".
-const REVENUE_KW = [
-  'revenue', 'income', 'sales', 'fees earned', 'interest income', 'gross receipts',
-  'discounts/refunds given', 'gain on sale', 'refunds to customers',
-];
-// 'depreciation expense' expanded to 'depreciation' alone so "Depreciation" (without the word "expense")
-// is still caught. "accumulated depreciation" is in ASSET_KW and wins because ASSET is checked first.
-const EXPENSE_KW = [
-  'expense', 'cost of goods', 'cogs', 'cost of sales', 'salaries', 'wages', 'rent', 'utilities',
-  'insurance', 'depreciation', 'amortization', 'payroll', 'supplies', 'advertising', 'marketing',
-  'fees', 'interest expense', 'interest paid', 'tax expense',
-  'legal', 'alarm', 'charitable', 'education', 'employee benefits',
-  'meals', 'repairs', 'maintenance', 'rubbish', 'subscription',
-  'telephone', 'travel', 'water', 'worker', 'car & truck', 'real estate', 'licenses',
-];
-
-// Specific expense phrases that contain liability or asset substrings and must be classified
-// as expense before the broader LIABILITY_KW / ASSET_KW checks run.
-// "Credit Card Charges/Fees" contains "credit card" (liability keyword).
-// "Bank Charges & Fees" contains "bank" (asset keyword).
-const PRIORITY_EXPENSE_KW = ['credit card charges', 'credit card fees', 'bank charges', 'bank fees'];
-// "Loans to MTP" and similar receivable-style entries contain "loan" (a LIABILITY keyword)
-// but represent money owed TO the company — check these before the broader LIABILITY sweep.
-const PRIORITY_ASSET_KW = ['loans to', 'loan to'];
-
-function classifyGLAccountFallback(name, accountType) {
+function resolveReportTypeFromCoaType(accountType) {
   const t = String(accountType || '').toLowerCase();
-  if (t) {
-    if (/asset/.test(t)) return 'asset';
-    if (/liab/.test(t)) return 'liability';
-    if (/equity|capital/.test(t)) return 'equity';
-    if (/income|revenue/.test(t)) return 'revenue';
-    if (/expense|cogs|cost/.test(t)) return 'expense';
-  }
-  const n = String(name || '').toLowerCase();
-  const hit = (kws) => kws.some((k) => n.includes(k));
-  if (hit(PRIORITY_EXPENSE_KW)) return 'expense';
-  if (hit(REVENUE_KW))          return 'revenue';
-  // Receivable-style loans ("Loans to X") must be assets; check before LIABILITY_KW ("loan").
-  if (hit(PRIORITY_ASSET_KW))   return 'asset';
-  if (hit(LIABILITY_KW))        return 'liability';
-  if (hit(ASSET_KW))            return 'asset';
-  if (hit(EXPENSE_KW))          return 'expense';
-  if (hit(EQUITY_KW))           return 'equity';
+  if (/asset/.test(t)) return 'asset';
+  if (/liab/.test(t)) return 'liability';
+  if (/equity|capital/.test(t)) return 'equity';
+  if (/income|revenue/.test(t)) return 'revenue';
+  if (/expense|cogs|cost/.test(t)) return 'expense';
   return 'unknown';
 }
 
@@ -283,7 +192,7 @@ function classifyAccountFromLookup(lookup, name, accountNumber = null) {
   if (!name) return 'unknown';
   const rawType = lookup.get(coaLookupKey(name, accountNumber))
     || lookup.get(coaLookupKey(name, null));
-  return classifyGLAccountFallback(name, rawType);
+  return resolveReportTypeFromCoaType(rawType);
 }
 
 // QB GL uses natural-balance convention: increases in any account's natural
@@ -562,9 +471,10 @@ function buildPLFromGL(accounts, year) {
   const revenue = [];
   const expense = [];
   for (const acc of accounts.values()) {
-    const reportType = classifyGLAccountFallback(acc.name, acc.type);
-    if (reportType === 'revenue') revenue.push({ name: acc.name, amount: acc.net });
-    else if (reportType === 'expense') expense.push({ name: acc.name, amount: acc.net });
+    // acc.type was already resolved from the COA by aggregateGLByAccount — no
+    // second classification pass needed.
+    if (acc.type === 'revenue') revenue.push({ name: acc.name, amount: acc.net });
+    else if (acc.type === 'expense') expense.push({ name: acc.name, amount: acc.net });
   }
   const totalIncome = revenue.reduce((s, a) => s + a.amount, 0);
   const totalExpense = expense.reduce((s, a) => s + a.amount, 0);
@@ -797,15 +707,6 @@ function buildBSFromBalances(balances, year) {
   return { hierarchicalRows, sectionTotals };
 }
 
-/** Read section totals (assets/liabilities/equity) for one year out of a BS tree. */
-function sectionTotalsFromTree(tree, year) {
-  const col = `y${year}`;
-  const get = (id) => {
-    const node = tree.find((r) => r.id === id);
-    return node ? safeNum(node.amounts?.[col] ?? node.amount) : 0;
-  };
-  return { assets: get('assets'), liabilities: get('liabilities'), equity: get('equity') };
-}
 
 // ─── Month-view aggregation (spec #9) ─────────────────────────────────────────
 
@@ -892,77 +793,6 @@ function buildPLFromGLMonthly(agg, year) {
     node('total', 'Net Income', 'total', netIncome),
   ];
   return { hierarchicalRows, yearCols: cols };
-}
-
-/** Single-year monthly Balance Sheet tree from GL — cumulative closing per month end. */
-function buildBSFromGLMonthly(agg, year, openingBalances) {
-  const cols = monthCols(year, agg.monthsPresent);
-  const lastKey = cols.length ? cols[cols.length - 1].key : `m${year}_12`;
-
-  // Seed every account with its opening (prior-year closing) balance, natural sign.
-  const balances = new Map();
-  for (const [, v] of openingBalances) addBalance(balances, v.name, v.balance, v.type);
-  for (const acc of agg.byAccount.values()) {
-    if (!balances.has(acc.name)) balances.set(acc.name, { name: acc.name, balance: 0, type: acc.type });
-  }
-
-  // Cumulative running balance per account at each month end.
-  const running = new Map(); // name → current cumulative balance
-  for (const [name, v] of balances) running.set(name, v.balance);
-  const perMonthBalances = {}; // colKey → Map(name→{balance,type})
-
-  let retained = openingBalances.get('Retained Earnings')?.balance || 0;
-  for (const c of cols) {
-    let monthNet = 0;
-    for (const acc of agg.byAccount.values()) {
-      const delta = acc.months.get(c.month) || 0;
-      if (acc.type === 'asset') running.set(acc.name, (running.get(acc.name) || 0) + delta);
-      else if (acc.type === 'liability') running.set(acc.name, (running.get(acc.name) || 0) + delta);
-      else if (acc.type === 'equity') running.set(acc.name, (running.get(acc.name) || 0) + delta);
-      else if (acc.type === 'revenue') monthNet += delta;
-      else if (acc.type === 'expense') monthNet += -delta;
-    }
-    retained += monthNet;
-    const snapshot = new Map();
-    for (const [name, v] of balances) {
-      snapshot.set(name, { name, balance: running.get(name) || 0, type: v.type });
-    }
-    if (Math.abs(retained) > 0.005) snapshot.set('Retained Earnings', { name: 'Retained Earnings', balance: retained, type: 'equity' });
-    perMonthBalances[c.key] = snapshot;
-  }
-
-  // Build hierarchical tree where each node carries amounts per month column.
-  const sections = { assets: new Map(), liabilities: new Map(), equity: new Map() };
-  for (const c of cols) {
-    for (const [name, v] of perMonthBalances[c.key]) {
-      const sec = v.type === 'asset' ? 'assets' : v.type === 'liability' ? 'liabilities' : v.type === 'equity' ? 'equity' : null;
-      if (!sec) continue;
-      if (!sections[sec].has(name)) sections[sec].set(name, { name, amounts: {} });
-      sections[sec].get(name).amounts[c.key] = v.balance;
-    }
-  }
-
-  const hierarchicalRows = [];
-  const lastTotals = { assets: 0, liabilities: 0, equity: 0 };
-  for (const section of BS_SECTION_ORDER) {
-    const accts = Array.from(sections[section].values()).filter((a) => cols.some((c) => Math.abs(a.amounts[c.key] || 0) >= 0.005));
-    if (!accts.length) continue;
-    const totalAmounts = {};
-    for (const c of cols) totalAmounts[c.key] = accts.reduce((s, a) => s + (a.amounts[c.key] || 0), 0);
-    lastTotals[section] = safeNum(totalAmounts[lastKey]);
-    const children = accts.map((a) => ({ id: `bs-${section}-${slug(a.name)}`, name: a.name, type: 'data', amount: safeNum(a.amounts[lastKey]), amounts: a.amounts }));
-    children.push({ id: `bs-${section}-total`, name: `Total ${BS_SECTION_LABELS[section]}`, type: 'total', amount: safeNum(totalAmounts[lastKey]), amounts: totalAmounts });
-    hierarchicalRows.push({ id: section, name: BS_SECTION_LABELS[section], type: 'header', amount: safeNum(totalAmounts[lastKey]), amounts: totalAmounts, children });
-  }
-  const leAmounts = {};
-  for (const c of cols) {
-    const liab = sections.liabilities.size ? Array.from(sections.liabilities.values()).reduce((s, a) => s + (a.amounts[c.key] || 0), 0) : 0;
-    const eq = sections.equity.size ? Array.from(sections.equity.values()).reduce((s, a) => s + (a.amounts[c.key] || 0), 0) : 0;
-    leAmounts[c.key] = liab + eq;
-  }
-  hierarchicalRows.push({ id: 'total-le', name: 'Total Liabilities and Equity', type: 'total', amount: safeNum(leAmounts[lastKey]), amounts: leAmounts });
-
-  return { hierarchicalRows, yearCols: cols, sectionTotals: lastTotals };
 }
 
 // ─── P&L Summary ─────────────────────────────────────────────────────────────
@@ -1067,6 +897,155 @@ function buildPLHierarchicalRows(entriesByYear, years) {
   return { hierarchicalRows: result, yearCols };
 }
 
+// ─── P&L year-view adapter (COA-tree engine → hierarchicalRows) ───────────────
+//
+// Converts financialStatementService's per-year `statement` object (the same
+// COA parent_account_id-tree computation used by /reports/financial-statements,
+// QoE, and KPI) into the generic hierarchicalRows tree the P&L tab already
+// renders. This replaces the standalone GL-keyword-classified builder
+// (buildPLFromGL) for the year view, so there is exactly one engine computing
+// P&L numbers. The Chart of Accounts is the same for every year within a
+// version, so multi-year columns are built by matching each account's stable
+// systemId (falling back to name) across years — no separate merge pass needed.
+
+function plRowSlug(s) {
+  return String(s || '').toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
+}
+
+function plAmountsAcrossYears(years, byYear, pick) {
+  const amounts = {};
+  for (const y of years) amounts[`y${y}`] = safeNum(pick(byYear.get(y)));
+  return amounts;
+}
+
+function plFlatSection(id, label, years, byYear, getAccounts, getTotal) {
+  const lastYear = years[years.length - 1];
+  const lastAccounts = getAccounts(byYear.get(lastYear)) || [];
+  const children = lastAccounts.map((a) => {
+    const key = a.systemId || a.name;
+    return {
+      id: `entry-${plRowSlug(key)}`,
+      name: a.adjustedName || a.name,
+      type: 'data',
+      amount: safeNum(a.amount),
+      amounts: plAmountsAcrossYears(years, byYear, (stmt) => {
+        const match = (getAccounts(stmt) || []).find((x) => (x.systemId || x.name) === key);
+        return match ? match.amount : 0;
+      }),
+    };
+  });
+  const total = {
+    id: `total-${plRowSlug(id)}`,
+    name: `Total ${label}`,
+    type: 'total',
+    amount: safeNum(getTotal(byYear.get(lastYear))),
+    amounts: plAmountsAcrossYears(years, byYear, getTotal),
+  };
+  return {
+    id: `section-${plRowSlug(id)}`,
+    name: label,
+    type: 'header',
+    amount: total.amount,
+    amounts: total.amounts,
+    children: [...children, total],
+  };
+}
+
+function plGroupedSection(id, label, years, byYear, getGroups, getTotal) {
+  const lastYear = years[years.length - 1];
+  const lastGroups = getGroups(byYear.get(lastYear)) || {};
+  const groupNodes = Object.keys(lastGroups).map((glabel) => {
+    const lastGroup = lastGroups[glabel];
+    const children = (lastGroup.accounts || []).map((a) => {
+      const key = a.systemId || a.name;
+      return {
+        id: `entry-${plRowSlug(key)}`,
+        name: a.adjustedName || a.name,
+        type: 'data',
+        amount: safeNum(a.amount),
+        amounts: plAmountsAcrossYears(years, byYear, (stmt) => {
+          const grp = (getGroups(stmt) || {})[glabel];
+          const match = (grp?.accounts || []).find((x) => (x.systemId || x.name) === key);
+          return match ? match.amount : 0;
+        }),
+      };
+    });
+    const groupTotal = {
+      id: `total-${plRowSlug(glabel)}`,
+      name: `Total ${glabel}`,
+      type: 'total',
+      amount: safeNum(lastGroup.total),
+      amounts: plAmountsAcrossYears(years, byYear, (stmt) => (getGroups(stmt) || {})[glabel]?.total),
+    };
+    return {
+      id: `section-${plRowSlug(glabel)}`,
+      name: glabel,
+      type: 'header',
+      amount: groupTotal.amount,
+      amounts: groupTotal.amounts,
+      children: [...children, groupTotal],
+    };
+  });
+  const overallTotal = {
+    id: `total-${plRowSlug(id)}`,
+    name: `Total ${label}`,
+    type: 'total',
+    amount: safeNum(getTotal(byYear.get(lastYear))),
+    amounts: plAmountsAcrossYears(years, byYear, getTotal),
+  };
+  return {
+    id: `section-${plRowSlug(id)}`,
+    name: label,
+    type: 'header',
+    amount: overallTotal.amount,
+    amounts: overallTotal.amounts,
+    children: [...groupNodes, overallTotal],
+  };
+}
+
+function plTotalRow(id, name, years, byYear, getValue) {
+  const lastYear = years[years.length - 1];
+  return {
+    id: `total-${plRowSlug(id)}`,
+    name,
+    type: 'total',
+    amount: safeNum(getValue(byYear.get(lastYear))),
+    amounts: plAmountsAcrossYears(years, byYear, getValue),
+  };
+}
+
+/**
+ * @param {{year:string, statement:object}[]} plYearly financialStatementService's
+ *   reports.profitAndLoss.yearly, filtered to the requested years.
+ */
+function plYearlyToRows(plYearly) {
+  if (!plYearly?.length) return { hierarchicalRows: [], yearCols: [] };
+  const years = plYearly.map((e) => Number(e.year)).sort((a, b) => a - b);
+  const yearCols = years.map((y) => ({ key: `y${y}`, label: `FY ${y}` }));
+  const byYear = new Map(plYearly.map((e) => [Number(e.year), e.statement]));
+  const lastStmt = byYear.get(years[years.length - 1]);
+
+  // Fixed section titles — stmt.revenue.label / stmt.costOfSales.label /
+  // stmt.operatingExpenses.label hold a deep hierarchy rollup label (e.g.
+  // "Gross Profit"), not a section title; they're meant for a different
+  // consumer and must not be used as header names here.
+  const rows = [
+    plFlatSection('income', 'Income', years, byYear,
+      (s) => s.revenue.accounts, (s) => s.revenue.total),
+  ];
+  if ((lastStmt.costOfSales.accounts || []).length) {
+    rows.push(plFlatSection('cogs', 'Cost of Sales', years, byYear,
+      (s) => s.costOfSales.accounts, (s) => s.costOfSales.total));
+  }
+  rows.push(plTotalRow('gross-profit', 'Gross Profit', years, byYear, (s) => s.grossProfit));
+  rows.push(plGroupedSection('operating-expenses', 'Operating Expenses', years, byYear,
+    (s) => s.operatingExpenses.groups, (s) => s.operatingExpenses.total));
+  rows.push(plTotalRow('operating-income', 'Net Operating Income', years, byYear, (s) => s.operatingIncome));
+  rows.push(plTotalRow('net-income', 'Net Income', years, byYear, (s) => s.netIncome));
+
+  return { hierarchicalRows: rows, yearCols };
+}
+
 /**
  * GET /key-reports/versions/:versionId/reports/profit-loss
  *
@@ -1125,20 +1104,19 @@ async function getProfitLossReport(versionId, {
   }
 
   // Per year: Profit & Loss is generated ENTIRELY from general_ledger_entries
-  // (client requirement — there is no profit_loss_entries table).
-  const treesByYear = {};
-  let anyGenerated = false;
-  for (const y of years) {
-    const { accounts, rowsRead } = await aggregateGLByAccount(versionId, y);
-    treesByYear[y] = buildPLFromGL(accounts, y);
-    anyGenerated = true;
-    auditReport(versionId, 'profit_loss', y, rowsRead, { generatedFromGL: true });
-  }
+  // (client requirement — there is no profit_loss_entries table), via the same
+  // COA parent_account_id-tree engine that /reports/financial-statements, QoE,
+  // and KPI use (financialStatementService) — a single P&L computation, no
+  // separate keyword-classified builder for this view.
+  const { generateFinancialStatements } = require('./financialStatementService');
+  const fs = await generateFinancialStatements(versionId, {});
+  const plYearly = (fs?.reports?.profitAndLoss?.yearly || []).filter((e) => years.includes(Number(e.year)));
+  const anyGenerated = plYearly.length > 0;
+  for (const y of years) auditReport(versionId, 'profit_loss', y, 0, { generatedFromGL: true, engine: 'financialStatementService' });
 
-  const yearCols = years.map((y) => ({ key: `y${y}`, label: `FY ${y}` }));
-  const hierarchicalRows = years.length === 1
-    ? treesByYear[years[0]]
-    : mergeCfByYear(treesByYear, years);
+  const { hierarchicalRows, yearCols } = plYearlyToRows(plYearly);
+  const treesByYear = {};
+  for (const e of plYearly) treesByYear[e.year] = plYearlyToRows([e]).hierarchicalRows;
 
   console.log(`[KeyReports][PL] versionId=${versionId} hierarchicalRows=${hierarchicalRows.length} generatedFromGL=${anyGenerated}`);
 
@@ -1338,138 +1316,6 @@ function buildBSHierarchicalRows(entriesByYear, years) {
   }
 
   return { hierarchicalRows, yearCols, asOfDate: latestAsOfDate };
-}
-
-/**
- * GET /key-reports/versions/:versionId/reports/balance-sheet
- */
-async function getBalanceSheetReport(versionId, { year, startDate, endDate, period } = {}) {
-  if (!versionId) throw new Error('versionId is required');
-
-  const years = await resolveYears(versionId, { year, startDate, endDate });
-  console.log(`[KeyReports][BS] versionId=${versionId} years=[${years.join(',')}] range=${startDate || '-'}..${endDate || '-'} period=${period || 'year'}`);
-
-  if (!years.length) {
-    console.warn(`[KeyReports][BS] versionId=${versionId} NO DATA — run Sync first`);
-    return {
-      source: 'key_reports_entry_tables',
-      hierarchicalRows: [],
-      rows: [],
-      years: [],
-      yearCols: [],
-      asOfDate: null,
-      columns: { yearCols: [], changeCols: [], currentMonth: '' },
-    };
-  }
-
-  // Month view (spec #9): for a single fiscal year with GL transactions, show the
-  // cumulative closing balance at each month end (Jan…Dec). Opening balances are
-  // the prior-year closing (carry-forward chain, spec #7).
-  if (period === 'month' && years.length === 1) {
-    const y = years[0];
-    const agg = await aggregateGLByAccountMonth(versionId, y);
-    if (agg.monthsPresent.size) {
-      const prior = await bsBalancesForYear(versionId, y - 1);
-      const { hierarchicalRows, yearCols, sectionTotals } = buildBSFromGLMonthly(agg, y, prior.balances);
-      validateBalanceSheet(versionId, y, sectionTotals);
-      auditReport(versionId, 'balance_sheet', y, agg.rowsRead + prior.rowsRead, { generatedFromGL: true });
-      console.log(`[KeyReports][BS] versionId=${versionId} FY${y} MONTH view cols=${yearCols.length}`);
-      const changeCols = [];
-      for (let i = 1; i < yearCols.length; i++) {
-        changeCols.push({ key: `c${i}`, label: `${yearCols[i].label} CHANGE`, from: yearCols[i - 1].key, to: yearCols[i].key });
-      }
-      return {
-        source: 'key_reports_entry_tables',
-        hierarchicalRows,
-        rows: hierarchicalRows,
-        years: [y],
-        yearCols,
-        asOfDate: `${y}-12-31`,
-        columns: { yearCols, changeCols, currentMonth: yearCols[yearCols.length - 1]?.label || '' },
-      };
-    }
-  }
-
-  // Per year: render directly from balance_sheet_entries when present (spec #5);
-  // otherwise generate from GL using the carry-forward chain BS(y)=BS(y-1)+GL(y)
-  // (spec #6, #7). Each year is built as its own single-year tree, then merged
-  // into multi-year comparative columns.
-  const treesByYear = {};
-  let latestAsOfDate = null;
-  let anyGenerated = false;
-
-  for (const y of years) {
-    // Phase 4: the generated monthly snapshot (latest month-end) is the
-    // authoritative Balance Sheet. Prefer it over uploaded entries.
-    const generated = await latestGeneratedBsForYear(versionId, y);
-    if (generated) {
-      treesByYear[y] = buildBSFromBalances(generated.balances, y).hierarchicalRows;
-      anyGenerated = true;
-      if (generated.asOfDate && (!latestAsOfDate || generated.asOfDate > latestAsOfDate)) latestAsOfDate = generated.asOfDate;
-      auditReport(versionId, 'balance_sheet', y, generated.rowsRead, { generatedFromGL: true });
-      validateBalanceSheet(versionId, y, sectionTotalsFromTree(treesByYear[y], y));
-      continue;
-    }
-    if (await hasExtractedRows('balance_sheet_entries', versionId, y)) {
-      const { data, error } = await supabase
-        .from('balance_sheet_entries')
-        .select('account_name, account_type, section, amount, hierarchy_level, is_total, sort_order, fiscal_year, as_of_date')
-        .eq('version_id', versionId)
-        .eq('fiscal_year', y)
-        .or('is_generated.is.null,is_generated.eq.false')
-        .order('sort_order', { ascending: true, nullsFirst: false })
-        .order('id', { ascending: true });
-      if (error) throw error;
-      const entries = data || [];
-      const built = buildBSHierarchicalRows({ [y]: entries }, [y]);
-      treesByYear[y] = built.hierarchicalRows;
-      if (built.asOfDate && (!latestAsOfDate || built.asOfDate > latestAsOfDate)) latestAsOfDate = built.asOfDate;
-      auditReport(versionId, 'balance_sheet', y, entries.length, { generatedFromExtractedReport: true });
-    } else {
-      const { balances, rowsRead, asOfDate, bsMap, unclassified } = await bsBalancesForYear(versionId, y);
-      treesByYear[y] = buildBSFromBalances(balances, y).hierarchicalRows;
-      anyGenerated = true;
-      if (asOfDate && (!latestAsOfDate || asOfDate > latestAsOfDate)) latestAsOfDate = asOfDate;
-      auditReport(versionId, 'balance_sheet', y, rowsRead, { generatedFromGL: true });
-      // Balance integrity check per year (spec #15) — pass GL details for imbalance diagnosis.
-      validateBalanceSheet(versionId, y, sectionTotalsFromTree(treesByYear[y], y), { bsMap, unclassified });
-      continue;
-    }
-
-    // Balance integrity check for extracted years.
-    validateBalanceSheet(versionId, y, sectionTotalsFromTree(treesByYear[y], y));
-  }
-
-  const yearCols = years.map((y, i) => ({ key: `y${y}`, label: `FY ${y}`, isCurrent: i === years.length - 1 }));
-  const hierarchicalRows = years.length === 1
-    ? treesByYear[years[0]]
-    : mergeCfByYear(treesByYear, years);
-
-  console.log(`[KeyReports][BS] versionId=${versionId} hierarchicalRows=${hierarchicalRows.length} asOfDate=${latestAsOfDate} generatedFromGL=${anyGenerated}`);
-
-  const changeCols = [];
-  for (let i = 1; i < yearCols.length; i++) {
-    changeCols.push({
-      key: `c${i}`,
-      label: `'${String(years[i]).slice(-2)} CHANGE`,
-      from: yearCols[i - 1].key,
-      to: yearCols[i].key,
-    });
-  }
-
-  return {
-    source: 'key_reports_entry_tables',
-    hierarchicalRows,
-    rows: hierarchicalRows,
-    years,
-    yearCols,
-    asOfDate: latestAsOfDate,
-    columns: {
-      yearCols,
-      changeCols,
-      currentMonth: yearCols[yearCols.length - 1]?.label || '',
-    },
-  };
 }
 
 // ─── General Ledger ───────────────────────────────────────────────────────────
@@ -1773,38 +1619,100 @@ async function getCashflowReport(versionId, {
   return result;
 }
 
+const TB_LEVEL_KEYS = Array.from({ length: 15 }, (_, i) => `level_${i + 1}`);
+
+/**
+ * Chart-of-accounts hierarchy lookup keyed by normalized account name, for
+ * attaching level_1..level_15 / hierarchy_path / sort_order / normal_balance /
+ * statement_type to entry-table rows at report-serving time. The COA itself
+ * remains the only place hierarchy is assigned — this never derives or
+ * regenerates any hierarchy value, it only reads what's already stored.
+ */
+async function loadCoaHierarchyMap(versionId) {
+  const cols = ["account_name", "adjusted_name", "base_account", "account_type",
+    "statement_type", "normal_balance", "sort_order", "hierarchy_path", "metadata",
+    ...TB_LEVEL_KEYS].join(", ");
+  const { data } = await supabase
+    .from("chart_of_accounts")
+    .select(cols)
+    .eq("version_id", versionId);
+
+  const map = new Map();
+  for (const r of data || []) {
+    if (r.metadata?.is_group) continue;
+    const entry = {
+      accountType: r.account_type || null,
+      statementType: r.statement_type || null,
+      normalBalance: r.normal_balance || null,
+      sortOrder: r.sort_order ?? null,
+      hierarchyPath: r.hierarchy_path || null,
+      levels: TB_LEVEL_KEYS.map((k) => r[k] || null),
+    };
+    for (const n of [r.account_name, r.adjusted_name, r.base_account]) {
+      const k = String(n || "").trim().toLowerCase();
+      if (k && !map.has(k)) map.set(k, entry);
+    }
+  }
+  return map;
+}
+
 /**
  * GET /key-reports/versions/:versionId/reports/trial-balance
  *
  * Returns the Trial Balance generated from the General Ledger and stored in
  * trial_balance_entries by the Phase-3 engine (keyReportAccountingService
- * .generateTrialBalance). Read-only — never recomputed here.
+ * .generateTrialBalance). Read-only — never recomputed here. Hierarchy and
+ * normal_balance are attached from chart_of_accounts (the single source of
+ * truth for both), never derived here.
  */
 async function getTrialBalanceReport(versionId, { year } = {}) {
   if (!versionId) throw new Error('versionId is required');
 
-  const data = await fetchAllRows(() => {
-    let q = supabase
-      .from('trial_balance_entries')
-      .select('fiscal_year, account_name, account_number, account_type, total_debits, total_credits, net_balance, opening_balance, closing_balance')
-      .eq('version_id', versionId)
-      .order('fiscal_year', { ascending: true })
-      .order('account_name', { ascending: true });
-    if (year) q = q.eq('fiscal_year', parseInt(String(year), 10));
-    return q;
+  const [data, coaMap] = await Promise.all([
+    fetchAllRows(() => {
+      let q = supabase
+        .from('trial_balance_entries')
+        .select('fiscal_year, account_name, account_number, account_type, total_debits, total_credits, net_balance, opening_balance, closing_balance')
+        .eq('version_id', versionId)
+        .order('fiscal_year', { ascending: true })
+        .order('account_name', { ascending: true });
+      if (year) q = q.eq('fiscal_year', parseInt(String(year), 10));
+      return q;
+    }),
+    loadCoaHierarchyMap(versionId),
+  ]);
+
+  const rows = (data || []).map((r) => {
+    const coa = coaMap.get(String(r.account_name || '').trim().toLowerCase()) || null;
+    return {
+      fiscalYear: r.fiscal_year,
+      account: r.account_name,
+      accountNumber: r.account_number,
+      accountType: coa?.accountType || r.account_type,
+      statementType: coa?.statementType || null,
+      normalBalance: coa?.normalBalance || null,
+      levels: coa?.levels || null,
+      hierarchyPath: coa?.hierarchyPath || null,
+      sortOrder: coa?.sortOrder ?? null,
+      totalDebits: safeNum(r.total_debits),
+      totalCredits: safeNum(r.total_credits),
+      netBalance: safeNum(r.net_balance),
+      openingBalance: safeNum(r.opening_balance),
+      closingBalance: safeNum(r.closing_balance),
+    };
   });
 
-  const rows = (data || []).map((r) => ({
-    fiscalYear: r.fiscal_year,
-    account: r.account_name,
-    accountNumber: r.account_number,
-    accountType: r.account_type,
-    totalDebits: safeNum(r.total_debits),
-    totalCredits: safeNum(r.total_credits),
-    netBalance: safeNum(r.net_balance),
-    openingBalance: safeNum(r.opening_balance),
-    closingBalance: safeNum(r.closing_balance),
-  }));
+  // Sort by COA sort_order (falling back to alphabetical for anything not yet
+  // mapped in the COA) instead of raw insertion/alphabetical order, so the
+  // Trial Balance presents accounts in the same order as every other report.
+  rows.sort((a, b) => {
+    if (a.fiscalYear !== b.fiscalYear) return a.fiscalYear - b.fiscalYear;
+    const ao = a.sortOrder, bo = b.sortOrder;
+    if (ao != null && bo != null && ao !== bo) return ao - bo;
+    if (ao != null && bo == null) return -1;
+    if (ao == null && bo != null) return 1;
+    return String(a.account).localeCompare(String(b.account));
+  });
 
   const years = Array.from(new Set(rows.map((r) => r.fiscalYear))).sort((a, b) => a - b);
   const totals = rows.reduce(
@@ -1915,13 +1823,14 @@ async function getQoeReport(versionId, { year } = {}) {
   }
   const adjustments = ebitdaResult.adjustments || [];
 
-  // Helper: scan expense groups for D&A / Interest / Tax by keyword
-  function sumExpenseGroupsByKeyword(groups, ...keywords) {
+  // D&A / Interest / Tax expense accounts are tagged once at COA classification
+  // time (reportTagRules) — sum by that stored tag instead of scanning group or
+  // account names by keyword here.
+  function sumExpenseAccountsByTag(groups, tag) {
     let total = 0;
-    for (const [label, grp] of Object.entries(groups || {})) {
-      const lbl = label.toLowerCase();
-      if (keywords.some(kw => lbl.includes(kw))) {
-        total += safeNum(grp.total);
+    for (const grp of Object.values(groups || {})) {
+      for (const acc of (grp.accounts || [])) {
+        if (acc.reportTag === tag) total += safeNum(acc.amount);
       }
     }
     return total;
@@ -1940,17 +1849,10 @@ async function getQoeReport(versionId, { year } = {}) {
     const opExp = safeNum(stmt.operatingExpenses?.total);
     const expGroups = stmt.operatingExpenses?.groups || {};
 
-    // D&A — look for depreciation/amortization group inside operating expenses
-    const da = sumExpenseGroupsByKeyword(expGroups,
-      'depreciation', 'amortization', 'depr', 'amort');
-
-    // Interest expense
-    const interest = sumExpenseGroupsByKeyword(expGroups,
-      'interest');
-
-    // Taxes (income tax)
-    const taxes = sumExpenseGroupsByKeyword(expGroups,
-      'income tax', 'tax expense', 'provision for tax');
+    // D&A / Interest / Taxes — accounts tagged once at COA classification time
+    const da       = sumExpenseAccountsByTag(expGroups, 'depreciation_amortization');
+    const interest = sumExpenseAccountsByTag(expGroups, 'interest_expense');
+    const taxes    = sumExpenseAccountsByTag(expGroups, 'income_tax');
 
     const ebitda = safeNum(ni + da + interest + taxes);
 
@@ -2037,20 +1939,22 @@ async function getKpiReport(versionId, { year } = {}) {
   // Index BS by year for fast lookup
   const bsByYear = new Map(bsYearly.map(bs => [Number(bs.year), bs]));
 
-  // Helper: safely scan account lists/groups for named buckets
-  function sumGroupsByKeyword(groups, ...keywords) {
+  // Spot accounts (cash, A/R, inventory, A/P, D&A, interest, tax) are tagged
+  // once at COA classification time (reportTagRules) — sum by that stored tag
+  // instead of scanning account/group names by keyword here.
+  function sumExpenseAccountsByTag(groups, tag) {
     let total = 0;
-    for (const [label, grp] of Object.entries(groups || {})) {
-      const lbl = label.toLowerCase();
-      if (keywords.some(kw => lbl.includes(kw))) total += safeNum(grp.total);
+    for (const grp of Object.values(groups || {})) {
+      for (const acc of (grp.accounts || [])) {
+        if (acc.reportTag === tag) total += safeNum(acc.amount);
+      }
     }
     return total;
   }
-  function sumAccountsByKeyword(accounts, ...keywords) {
+  function sumAccountsByTag(accounts, tag) {
     let total = 0;
     for (const acc of accounts || []) {
-      const nm = String(acc.name || '').toLowerCase();
-      if (keywords.some(kw => nm.includes(kw))) total += safeNum(acc.amount);
+      if (acc.reportTag === tag) total += safeNum(acc.amount);
     }
     return total;
   }
@@ -2070,9 +1974,9 @@ async function getKpiReport(versionId, { year } = {}) {
     const netIncome   = safeNum(stmt.netIncome);
     const opExpenses  = safeNum(stmt.operatingExpenses?.total);
     const ebitGroups  = stmt.operatingExpenses?.groups || {};
-    const da          = sumGroupsByKeyword(ebitGroups, 'depreciation', 'amortization', 'depr', 'amort');
-    const interest    = sumGroupsByKeyword(ebitGroups, 'interest');
-    const taxes       = sumGroupsByKeyword(ebitGroups, 'income tax', 'tax expense', 'provision for tax');
+    const da          = sumExpenseAccountsByTag(ebitGroups, 'depreciation_amortization');
+    const interest    = sumExpenseAccountsByTag(ebitGroups, 'interest_expense');
+    const taxes       = sumExpenseAccountsByTag(ebitGroups, 'income_tax');
     const ebitda      = safeNum(netIncome + da + interest + taxes);
 
     // ── Balance Sheet metrics ─────────────────────────────────────────────────
@@ -2092,15 +1996,15 @@ async function getKpiReport(versionId, { year } = {}) {
       ...Object.values(bss.assets?.currentAssets?.groups || {}).flatMap(g => g.accounts || []),
       ...Object.values(bss.assets?.otherAssets?.groups  || {}).flatMap(g => g.accounts || []),
     ];
-    const cashAndBank        = sumAccountsByKeyword(curAssetAccounts, 'cash', 'bank', 'checking', 'savings');
-    const accountsReceivable = sumAccountsByKeyword(curAssetAccounts, 'receivable');
-    const inventory          = sumAccountsByKeyword(curAssetAccounts, 'inventory');
+    const cashAndBank        = sumAccountsByTag(curAssetAccounts, 'cash');
+    const accountsReceivable = sumAccountsByTag(curAssetAccounts, 'accounts_receivable');
+    const inventory          = sumAccountsByTag(curAssetAccounts, 'inventory');
 
     const curLiabAccounts = Object.values(bss.liabilities?.currentLiabilities?.groups  || {}).flatMap(g => g.accounts || []);
     const ltLiabAccounts  = Object.values(bss.liabilities?.longTermLiabilities?.groups || {}).flatMap(g => g.accounts || []);
-    const accountsPayable = sumAccountsByKeyword(curLiabAccounts, 'payable');
+    const accountsPayable = sumAccountsByTag(curLiabAccounts, 'accounts_payable');
     const longTermDebt    = safeNum(longTermLiabilities) ||
-      sumAccountsByKeyword(ltLiabAccounts, 'loan', 'note', 'mortgage', 'debt', 'borrowing');
+      sumAccountsByTag(ltLiabAccounts, 'long_term_debt');
 
     // ── Computed ratios ───────────────────────────────────────────────────────
     const pct = (v) => v !== null ? Math.round(v * 10000) / 100 : null; // to %
@@ -2168,7 +2072,6 @@ async function getKpiReport(versionId, { year } = {}) {
 
 module.exports = {
   getProfitLossReport,
-  getBalanceSheetReport,
   getTrialBalanceReport,
   getReconciliationReport,
   getGeneralLedgerReport,
@@ -2190,5 +2093,4 @@ module.exports = {
   aggregateGLByAccount,
   naturalBalanceMovement,
   netIncomeMovement,
-  classifyGLAccountFallback,
 };
