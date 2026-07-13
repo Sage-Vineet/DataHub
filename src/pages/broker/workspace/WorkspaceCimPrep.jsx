@@ -42,6 +42,22 @@ import {
 } from "../../../lib/api";
 import { exportCimPptx } from "../../../lib/cimPptxExport";
 import {
+  TEMPLATE_MAPPING_CONFIDENCE_THRESHOLD,
+  TEMPLATE_SELECTION_MODES,
+  analyzeCustomPptxTemplate,
+  buildTemplateQuestionnaireItems,
+  createEmptyTemplateIntelligenceState,
+  createTemplateValidationReport,
+  downloadTemplateSchemaJson,
+  generateCustomTemplatePptx,
+  getTemplateAnalysisSummary,
+  loadTemplateLearning,
+  mapTemplatePlaceholders,
+  saveApprovedTemplateMappings,
+  serializeTemplateIntelligenceState,
+  updateMappingValue,
+} from "../../../lib/cimTemplateIntelligence";
+import {
   DEFAULT_CIM_STYLE_PROFILE,
   DEFAULT_CIM_STYLE_PROFILE_ID,
   applyCimTemplateStyleProfile,
@@ -90,6 +106,14 @@ export const BASIC_DETAILS_SECTION = {
   title: "Basic Details",
   type: "basic",
   slides: [1, 2, 3],
+};
+
+const CUSTOM_TEMPLATE_SECTION = {
+  id: "custom-template",
+  number: "CT",
+  title: "Custom Template",
+  type: "custom",
+  slides: [],
 };
 
 const SLIDE_25_BRIDGE_FIELD = Object.freeze({
@@ -7450,6 +7474,8 @@ export default function WorkspaceCimPrep() {
   const [questionnaireState, setQuestionnaireState] = useState(() => normalizeQuestionnaireState());
   const [reviewState, setReviewState] = useState(() => normalizeCimReviewState());
   const [styleProfilesState, setStyleProfilesState] = useState(() => normalizeCimStyleProfilesState());
+  const [templateMode, setTemplateMode] = useState(TEMPLATE_SELECTION_MODES.DEFAULT);
+  const [customTemplateState, setCustomTemplateState] = useState(() => createEmptyTemplateIntelligenceState());
   const [activeStyleProfileId, setActiveStyleProfileId] = useState(DEFAULT_CIM_STYLE_PROFILE_ID);
   const [companyUsers, setCompanyUsers] = useState([]);
   const [financialAutofillState, setFinancialAutofillState] = useState({
@@ -7704,6 +7730,14 @@ export default function WorkspaceCimPrep() {
       setFieldValues(data.fieldValues || {});
       setAssetValues(data.assetValues || {});
       setChartValues(data.chartValues || {});
+      setTemplateMode(data.templateMode === TEMPLATE_SELECTION_MODES.CUSTOM
+        ? TEMPLATE_SELECTION_MODES.CUSTOM
+        : TEMPLATE_SELECTION_MODES.DEFAULT);
+      setCustomTemplateState({
+        ...createEmptyTemplateIntelligenceState(),
+        ...(data.templateIntelligence || {}),
+        status: data.templateIntelligence?.analysis ? "ready" : "idle",
+      });
       setFinancialAutofillState((previous) => ({
         ...previous,
         validation: data.financialValidation || null,
@@ -8348,6 +8382,262 @@ export default function WorkspaceCimPrep() {
     void persistQuestionnaireState(nextState, toastOptions);
   }, [persistQuestionnaireState, questionnaireState]);
 
+  const refreshCustomTemplateValidation = useCallback((analysis, mappings, financialSnapshot = null) => {
+    return createTemplateValidationReport({
+      analysis,
+      mappings,
+      financialSnapshot: financialSnapshot || customTemplateState.financialSnapshot || {},
+    });
+  }, [customTemplateState.financialSnapshot]);
+
+  const upsertCustomTemplateQuestionnaireItems = useCallback((mappings) => {
+    const generatedItems = buildTemplateQuestionnaireItems({ mappings, user });
+    const generatedIds = new Set(generatedItems.map((item) => item.id));
+    updateQuestionnaireState((previous) => {
+      const nextItems = { ...(previous.items || {}) };
+      Object.entries(nextItems).forEach(([itemId, item]) => {
+        if (!item?.customTemplate) return;
+        if (generatedIds.has(itemId)) return;
+        nextItems[itemId] = {
+          ...item,
+          archived: true,
+          status: item.clientNote ? "answered" : "resolved",
+          updatedAt: new Date().toISOString(),
+        };
+      });
+      generatedItems.forEach((item) => {
+        const existing = nextItems[item.id];
+        nextItems[item.id] = {
+          ...item,
+          ...(existing || {}),
+          prompt: existing?.prompt || item.prompt,
+          status: existing?.clientNote ? "answered" : existing?.status || item.status,
+          archived: false,
+          updatedAt: new Date().toISOString(),
+        };
+      });
+      return { ...previous, items: nextItems, updatedAt: new Date().toISOString() };
+    }, generatedItems.length > 0 ? {
+      local: "Template Questions Saved Locally",
+    } : null);
+    return generatedItems;
+  }, [updateQuestionnaireState, user]);
+
+  const loadCustomTemplateFinancialSnapshot = useCallback(async (onProgress = null) => {
+    if (!clientId) throw new Error("Open this from a company workspace before analyzing a custom template.");
+    if (!isValidFinancialAutofillRange(financialAutofillRange)) {
+      throw new Error("Choose a valid financial range before analyzing a custom template.");
+    }
+
+    const effectiveReportVersionId = isKeyReportsSource
+      ? financialAutofillReportVersionId ||
+        selectedReportVersionId ||
+        reportVersions.find((version) => version.isActive)?.id ||
+        reportVersions[0]?.id ||
+        ""
+      : "";
+    if (isKeyReportsSource && !effectiveReportVersionId) {
+      throw new Error("Choose a Key Reports version before analyzing a custom template.");
+    }
+
+    const reportVersion = isKeyReportsSource
+      ? reportVersions.find((version) => version.id === effectiveReportVersionId) || null
+      : null;
+    const selectedReportSource = reportVersion
+      ? (reportVersion.resolvedBatchId ? REPORT_SOURCE_KEYS.MANUAL_GL : REPORT_SOURCE_KEYS.MANUAL_UPLOAD)
+      : reportSource;
+    const reportDatasetVersion = selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_GL
+      ? String(
+        reportVersion?.resolvedDatasetVersion ||
+        financialAutofillDatasetVersion ||
+        selectedDatasetVersion ||
+        activeManualGlDatasetVersion?.value ||
+        activeManualGlDatasetVersion?.dataset_version ||
+        "",
+      )
+      : "";
+
+    return loadCimFinancialAutofillSnapshot({
+      clientId,
+      sourceKey: selectedReportSource,
+      selectedDatasetVersion: reportDatasetVersion,
+      selectedReportVersionId: effectiveReportVersionId,
+      dateRange: financialAutofillRange,
+      onProgress,
+    });
+  }, [
+    activeManualGlDatasetVersion,
+    clientId,
+    financialAutofillDatasetVersion,
+    financialAutofillRange,
+    financialAutofillReportVersionId,
+    isKeyReportsSource,
+    reportSource,
+    reportVersions,
+    selectedDatasetVersion,
+    selectedReportVersionId,
+  ]);
+
+  const handleCustomTemplateUpload = useCallback(async (file) => {
+    if (!file) return;
+    setTemplateMode(TEMPLATE_SELECTION_MODES.CUSTOM);
+    setCustomTemplateState({
+      ...createEmptyTemplateIntelligenceState(),
+      status: "analyzing",
+      fileMeta: { name: file.name, size: file.size, lastModified: file.lastModified },
+      progressMessage: "Parsing PowerPoint template",
+      updatedAt: new Date().toISOString(),
+    });
+
+    try {
+      const analysis = await analyzeCustomPptxTemplate(file);
+      setCustomTemplateState((previous) => ({
+        ...previous,
+        analysis,
+        status: "analyzing",
+        progressMessage: "Mapping placeholders to financial data",
+      }));
+
+      let financialSnapshot = {};
+      let snapshotWarning = "";
+      try {
+        financialSnapshot = await loadCustomTemplateFinancialSnapshot(({ message }) => {
+          setCustomTemplateState((previous) => ({
+            ...previous,
+            status: "analyzing",
+            progressMessage: message || "Reading financial source data",
+          }));
+        });
+      } catch (error) {
+        snapshotWarning = error?.message || "Financial source data could not be loaded.";
+      }
+
+      const learning = loadTemplateLearning(clientId || "default");
+      const mappings = mapTemplatePlaceholders({
+        analysis,
+        financialSnapshot,
+        globalDetails: effectiveGlobalDetails,
+        company,
+        learning,
+      });
+      const validationReport = createTemplateValidationReport({ analysis, mappings, financialSnapshot });
+      const nextState = {
+        ...createEmptyTemplateIntelligenceState(),
+        status: "ready",
+        fileMeta: { name: file.name, size: file.size, lastModified: file.lastModified },
+        analysis,
+        financialSnapshot,
+        mappings,
+        validationReport,
+        progressMessage: snapshotWarning || "Template analysis complete",
+        error: snapshotWarning,
+        updatedAt: new Date().toISOString(),
+      };
+      setCustomTemplateState(nextState);
+      const generatedItems = upsertCustomTemplateQuestionnaireItems(mappings);
+      showToast({
+        type: snapshotWarning ? "info" : "success",
+        title: "Template Analyzed",
+        message: `${analysis.template.placeholderCount} placeholder${analysis.template.placeholderCount === 1 ? "" : "s"} detected; ${validationReport.summary.autoFilled} auto-filled and ${generatedItems.length} sent to questionnaire draft.`,
+      });
+    } catch (error) {
+      setCustomTemplateState((previous) => ({
+        ...previous,
+        status: "error",
+        error: error?.message || "Template analysis failed.",
+        progressMessage: "",
+        updatedAt: new Date().toISOString(),
+      }));
+      showToast({
+        type: "error",
+        title: "Template Analysis Failed",
+        message: error?.message || "The PowerPoint template could not be analyzed.",
+      });
+    }
+  }, [
+    clientId,
+    company,
+    effectiveGlobalDetails,
+    loadCustomTemplateFinancialSnapshot,
+    showToast,
+    upsertCustomTemplateQuestionnaireItems,
+  ]);
+
+  const handleCustomTemplateMappingChange = useCallback((placeholderId, value) => {
+    setCustomTemplateState((previous) => {
+      const mappings = updateMappingValue(previous.mappings || {}, placeholderId, value, {
+        approved: false,
+        mappingConfidence: Math.max(Number(previous.mappings?.[placeholderId]?.mappingConfidence || 0), 0.84),
+      });
+      const validationReport = refreshCustomTemplateValidation(previous.analysis, mappings, previous.financialSnapshot);
+      window.queueMicrotask(() => upsertCustomTemplateQuestionnaireItems(mappings));
+      return { ...previous, mappings, validationReport, updatedAt: new Date().toISOString() };
+    });
+  }, [refreshCustomTemplateValidation, upsertCustomTemplateQuestionnaireItems]);
+
+  const handleCustomTemplateApprove = useCallback((placeholderId) => {
+    const current = customTemplateState.mappings?.[placeholderId];
+    if (!current) return;
+    const mappings = updateMappingValue(customTemplateState.mappings || {}, placeholderId, current.value, {
+      approved: true,
+      ignored: false,
+      status: normalizeText(current.value) ? current.status === "auto_filled" ? "auto_filled" : "manual" : "needs_review",
+      mappingConfidence: Math.max(Number(current.mappingConfidence || 0), 0.9),
+    });
+    const validationReport = refreshCustomTemplateValidation(customTemplateState.analysis, mappings, customTemplateState.financialSnapshot);
+    saveApprovedTemplateMappings({ companyId: clientId || "default", analysis: customTemplateState.analysis, mappings });
+    setCustomTemplateState((previous) => ({ ...previous, mappings, validationReport, updatedAt: new Date().toISOString() }));
+    upsertCustomTemplateQuestionnaireItems(mappings);
+    showToast({
+      type: "success",
+      title: "Mapping Approved",
+      message: "This template pattern will be recognized more confidently next time.",
+    });
+  }, [
+    clientId,
+    customTemplateState.analysis,
+    customTemplateState.financialSnapshot,
+    customTemplateState.mappings,
+    refreshCustomTemplateValidation,
+    showToast,
+    upsertCustomTemplateQuestionnaireItems,
+  ]);
+
+  const handleCustomTemplateIgnore = useCallback((placeholderId) => {
+    const current = customTemplateState.mappings?.[placeholderId];
+    if (!current) return;
+    const mappings = {
+      ...(customTemplateState.mappings || {}),
+      [placeholderId]: {
+        ...current,
+        ignored: true,
+        approved: false,
+        status: "ignored",
+        updatedAt: new Date().toISOString(),
+      },
+    };
+    const validationReport = refreshCustomTemplateValidation(customTemplateState.analysis, mappings, customTemplateState.financialSnapshot);
+    setCustomTemplateState((previous) => ({ ...previous, mappings, validationReport, updatedAt: new Date().toISOString() }));
+    upsertCustomTemplateQuestionnaireItems(mappings);
+  }, [
+    customTemplateState.analysis,
+    customTemplateState.financialSnapshot,
+    customTemplateState.mappings,
+    refreshCustomTemplateValidation,
+    upsertCustomTemplateQuestionnaireItems,
+  ]);
+
+  const handleCustomTemplateDownloadSchema = useCallback(() => {
+    if (!customTemplateState.analysis) return;
+    const baseName = sanitizeFileName(customTemplateState.analysis.template?.fileName || "custom-template");
+    downloadTemplateSchemaJson({
+      analysis: customTemplateState.analysis,
+      mappings: customTemplateState.mappings,
+      validationReport: customTemplateState.validationReport,
+      filename: `${baseName}-schema.json`,
+    });
+  }, [customTemplateState.analysis, customTemplateState.mappings, customTemplateState.validationReport]);
+
   const handleQuestionnaireToggle = useCallback((field) => {
     updateQuestionnaireState((previous) => {
       const current = previous.items[field.id];
@@ -8427,6 +8717,40 @@ export default function WorkspaceCimPrep() {
 
   const handleUseClientNote = useCallback((item) => {
     if (!normalizeText(item.clientNote)) return;
+    if (String(item.fieldId || "").startsWith("custom-template:")) {
+      const placeholderId = String(item.fieldId).slice("custom-template:".length);
+      const mappings = updateMappingValue(customTemplateState.mappings || {}, placeholderId, item.clientNote, {
+        approved: true,
+        ignored: false,
+        status: "manual",
+        mappingConfidence: 0.92,
+      });
+      const validationReport = refreshCustomTemplateValidation(
+        customTemplateState.analysis,
+        mappings,
+        customTemplateState.financialSnapshot,
+      );
+      saveApprovedTemplateMappings({ companyId: clientId || "default", analysis: customTemplateState.analysis, mappings });
+      setCustomTemplateState((previous) => ({ ...previous, mappings, validationReport, updatedAt: new Date().toISOString() }));
+      updateQuestionnaireState((previous) => ({
+        ...previous,
+        items: {
+          ...previous.items,
+          [item.id]: {
+            ...item,
+            status: "resolved",
+            archived: true,
+            updatedAt: new Date().toISOString(),
+          },
+        },
+      }));
+      showToast({
+        type: "success",
+        title: "Template Value Added",
+        message: "The client response was applied to the custom template placeholder.",
+      });
+      return;
+    }
     if (String(item.fieldId || "").startsWith("basic:")) {
       const key = String(item.fieldId).slice("basic:".length);
       handleGlobalChange(key, item.clientNote);
@@ -8450,7 +8774,16 @@ export default function WorkspaceCimPrep() {
       title: "Client Note Added",
       message: "The note was placed into the CIM field. Review and save your CIM changes.",
     });
-  }, [handleGlobalChange, showToast]);
+  }, [
+    clientId,
+    customTemplateState.analysis,
+    customTemplateState.financialSnapshot,
+    customTemplateState.mappings,
+    handleGlobalChange,
+    refreshCustomTemplateValidation,
+    showToast,
+    updateQuestionnaireState,
+  ]);
 
   const handleUseClientAsset = useCallback((item) => {
     const asset = item.clientAsset;
@@ -8513,6 +8846,8 @@ export default function WorkspaceCimPrep() {
       fieldValues,
       assetValues,
       chartValues,
+      templateMode,
+      templateIntelligence: serializeTemplateIntelligenceState(customTemplateState),
       financialValidation: financialAutofillState.validation,
       financialAutofillRange,
       financialAutofillReportVersionId,
@@ -8555,6 +8890,8 @@ export default function WorkspaceCimPrep() {
     activeStyleProfileId,
     effectiveGlobalDetails,
     fieldValues,
+    templateMode,
+    customTemplateState,
     financialAutofillRange,
     financialAutofillDatasetVersion,
     financialAutofillReportVersionId,
@@ -8564,6 +8901,56 @@ export default function WorkspaceCimPrep() {
   ]);
 
   const handleExport = useCallback(() => {
+    if (templateMode === TEMPLATE_SELECTION_MODES.CUSTOM) {
+      if (!customTemplateState.analysis) {
+        showToast({
+          type: "error",
+          title: "Upload Template",
+          message: "Upload and analyze a custom PowerPoint template before exporting.",
+        });
+        return;
+      }
+      const validationReport = refreshCustomTemplateValidation(
+        customTemplateState.analysis,
+        customTemplateState.mappings,
+        customTemplateState.financialSnapshot,
+      );
+      setCustomTemplateState((previous) => ({ ...previous, validationReport, updatedAt: new Date().toISOString() }));
+      if (validationReport.summary.unresolved > 0) {
+        upsertCustomTemplateQuestionnaireItems(customTemplateState.mappings);
+        setQuestionnaireOpen(true);
+        showToast({
+          type: "error",
+          title: "Resolve Template Placeholders",
+          message: `${validationReport.summary.unresolved} custom placeholder${validationReport.summary.unresolved === 1 ? "" : "s"} need review before export.`,
+        });
+        return;
+      }
+
+      const baseName = sanitizeFileName(
+        effectiveGlobalDetails.projectName || effectiveGlobalDetails.companyLegalName || company?.name || "custom-cim",
+      );
+      try {
+        generateCustomTemplatePptx({
+          analysis: customTemplateState.analysis,
+          mappings: customTemplateState.mappings,
+          filename: `${baseName}-Custom-CIM.pptx`,
+        });
+        showToast({
+          type: "success",
+          title: "Custom PPT Export Started",
+          message: "Your custom-template CIM PowerPoint is downloading.",
+        });
+      } catch (error) {
+        showToast({
+          type: "error",
+          title: "Custom Export Failed",
+          message: error?.message || "Re-upload the custom template and try again.",
+        });
+      }
+      return;
+    }
+
     const missingSlides = PREVIEW_SLIDES.filter((slideNumber) => !styledLayouts[slideNumber]);
     if (missingSlides.length > 0) {
       showToast({
@@ -8592,12 +8979,18 @@ export default function WorkspaceCimPrep() {
     });
   }, [
     company?.name,
+    customTemplateState.analysis,
+    customTemplateState.financialSnapshot,
+    customTemplateState.mappings,
     effectiveGlobalDetails,
     fieldValues,
     getExportElementContent,
     activeStyleProfile,
+    refreshCustomTemplateValidation,
     styledLayouts,
+    templateMode,
     showToast,
+    upsertCustomTemplateQuestionnaireItems,
   ]);
 
   const isBasicSection = activeSection.type === "basic";
@@ -8612,6 +9005,20 @@ export default function WorkspaceCimPrep() {
     : countFieldsWithData(sectionEditableFields, fieldValues, assetValues, chartValues);
   const sectionFieldTotal = (isBasicSection ? BASIC_DETAIL_FIELDS.length : 0) + sectionEditableFields.length;
   const questionnaireCounts = getQuestionnaireCounts(questionnaireState);
+  const hasCustomTemplateQuestions = useMemo(
+    () => Object.values(questionnaireState.items || {}).some((item) => item?.sectionId === CUSTOM_TEMPLATE_SECTION.id && !item.archived),
+    [questionnaireState.items],
+  );
+  const questionnaireSections = useMemo(
+    () => (templateMode === TEMPLATE_SELECTION_MODES.CUSTOM || hasCustomTemplateQuestions
+      ? [...NAV_SECTIONS, CUSTOM_TEMPLATE_SECTION]
+      : NAV_SECTIONS),
+    [hasCustomTemplateQuestions, templateMode],
+  );
+  const customTemplateSummary = useMemo(
+    () => getTemplateAnalysisSummary(customTemplateState),
+    [customTemplateState],
+  );
 
   return (
     <div className="min-h-screen bg-bg-page p-4 text-text-primary lg:p-6">
