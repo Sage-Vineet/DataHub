@@ -26,19 +26,24 @@ import {
   Upload,
   Save,
   ShieldCheck,
+  Sparkles,
   X,
 } from "lucide-react";
 import {
+  fetchProtectedFileBlob,
+  getCimCustomTemplateRequest,
   getCimQuestionnaireRequest,
   getCimReviewRequest,
   getCimStyleProfilesRequest,
   getCompanyRequest,
   getWorkspacePageStateRequest,
   listUsersRequest,
+  saveCimCustomTemplateRequest,
   saveCimQuestionnaireRequest,
   saveCimReviewRequest,
   saveCimStyleProfilesRequest,
   saveWorkspacePageStateRequest,
+  uploadFile,
 } from "../../../lib/api";
 import { exportCimPptx } from "../../../lib/cimPptxExport";
 import {
@@ -53,6 +58,7 @@ import {
   getTemplateAnalysisSummary,
   loadTemplateLearning,
   mapTemplatePlaceholders,
+  rehydrateArchiveFromBytes,
   saveApprovedTemplateMappings,
   serializeTemplateIntelligenceState,
   updateMappingValue,
@@ -71,12 +77,14 @@ import { useDataSource } from "../../../context/DataSourceContext";
 import { useToast } from "../../../context/ToastContext";
 import { CLIENT_SUB_ROLES } from "../../../lib/roles";
 import { REPORT_SOURCE_KEYS, getReportSourceLabel, normalizeReportSourceKey } from "../../../lib/report-source";
-import { loadCimFinancialAutofillSnapshot } from "../../../services/cimFinancialAutofillService";
+import { loadCimFinancialAutofillSnapshot, selectBestFinancialSource } from "../../../services/cimFinancialAutofillService";
 import { useDatasetVersionStore } from "../../../store/useDatasetVersionStore";
 import { useKeyReportContextStore } from "../../../store/useKeyReportContextStore";
 import Modal from "../../../components/common/Modal";
 import CimFieldNoteThread from "../../../components/cim/CimFieldNoteThread";
 import CimTemplateStyleEditor from "../../../components/cim/CimTemplateStyleEditor";
+import TemplateSelectionModal from "../../../components/cim/TemplateSelectionModal";
+import CustomTemplateIntelligenceModal from "../../../components/cim/CustomTemplateIntelligenceModal";
 
 const SLIDE_WIDTH = 1280;
 const PAGE_KEY = "cim-prep";
@@ -7500,6 +7508,8 @@ export default function WorkspaceCimPrep() {
   const [reviewModalOpen, setReviewModalOpen] = useState(false);
   const [styleEditorOpen, setStyleEditorOpen] = useState(false);
   const [styleProfilesSaving, setStyleProfilesSaving] = useState(false);
+  const [templateSelectionModalOpen, setTemplateSelectionModalOpen] = useState(false);
+  const [customTemplateModalOpen, setCustomTemplateModalOpen] = useState(false);
   const [financialAutofillModalOpen, setFinancialAutofillModalOpen] = useState(false);
   const [financialAutofillRange, setFinancialAutofillRange] = useState(() => getDefaultFinancialAutofillRange());
   const [financialAutofillReportVersionId, setFinancialAutofillReportVersionId] = useState("");
@@ -8229,6 +8239,10 @@ export default function WorkspaceCimPrep() {
   ]);
 
   const handleSectionSelect = useCallback((sectionId) => {
+    if (sectionId === CUSTOM_TEMPLATE_SECTION.id) {
+      setCustomTemplateModalOpen(true);
+      return;
+    }
     const nextSection = NAV_SECTIONS.find((section) => section.id === sectionId) || BASIC_DETAILS_SECTION;
     setActiveSectionId(sectionId);
     setActiveSlide(nextSection.slides[0] || null);
@@ -8396,23 +8410,35 @@ export default function WorkspaceCimPrep() {
       throw new Error("Choose a valid financial range before analyzing a custom template.");
     }
 
-    const effectiveReportVersionId = isKeyReportsSource
+    let effectiveReportSource = reportSource;
+    let effectiveReportVersionId = isKeyReportsSource
       ? financialAutofillReportVersionId ||
       selectedReportVersionId ||
       reportVersions.find((version) => version.isActive)?.id ||
       reportVersions[0]?.id ||
       ""
       : "";
+
     if (isKeyReportsSource && !effectiveReportVersionId) {
-      throw new Error("Choose a Key Reports version before analyzing a custom template.");
+      // The broker hasn't run "Auto-fill Financials" and picked a Key
+      // Reports version yet. Rather than blocking the upload, automatically
+      // rank + pick the most reliable available source (Key Reports >
+      // Manual GL > QuickBooks > Manual Upload) instead of hard-failing.
+      const best = await selectBestFinancialSource({ clientId });
+      if (!best) {
+        throw new Error("Connect a data source (QuickBooks, Manual GL, or Key Reports) before analyzing a custom template.");
+      }
+      effectiveReportSource = best.sourceKey;
+      effectiveReportVersionId = best.sourceKey === REPORT_SOURCE_KEYS.KEY_REPORTS ? best.reportVersionId : "";
     }
 
-    const reportVersion = isKeyReportsSource
+    const isEffectiveKeyReportsSource = effectiveReportSource === REPORT_SOURCE_KEYS.KEY_REPORTS;
+    const reportVersion = isEffectiveKeyReportsSource
       ? reportVersions.find((version) => version.id === effectiveReportVersionId) || null
       : null;
     const selectedReportSource = reportVersion
       ? (reportVersion.resolvedBatchId ? REPORT_SOURCE_KEYS.MANUAL_GL : REPORT_SOURCE_KEYS.MANUAL_UPLOAD)
-      : reportSource;
+      : effectiveReportSource;
     const reportDatasetVersion = selectedReportSource === REPORT_SOURCE_KEYS.MANUAL_GL
       ? String(
         reportVersion?.resolvedDatasetVersion ||
@@ -8462,6 +8488,33 @@ export default function WorkspaceCimPrep() {
         ...previous,
         analysis,
         status: "analyzing",
+        progressMessage: "Uploading template",
+      }));
+
+      // Persist the raw .pptx bytes + parsed schema server-side so the
+      // template survives a page reload (analysis.archiveEntries/sourceBytes
+      // are stripped before workspace-page-state is saved).
+      if (clientId) {
+        try {
+          const uploaded = await uploadFile(file, { prefix: "cim-custom-templates" });
+          analysis.template.uploadId = uploaded?.id || null;
+          await saveCimCustomTemplateRequest({
+            companyId: clientId,
+            uploadId: uploaded?.id,
+            fileName: analysis.template.fileName,
+            fileSize: analysis.template.fileSize,
+            signature: analysis.template.id,
+            schema: analysis.schema,
+          });
+        } catch (error) {
+          console.warn("[Template Intelligence] Failed to persist custom template to server.", error);
+        }
+      }
+
+      setCustomTemplateState((previous) => ({
+        ...previous,
+        analysis,
+        status: "analyzing",
         progressMessage: "Mapping placeholders to financial data",
       }));
 
@@ -8479,7 +8532,7 @@ export default function WorkspaceCimPrep() {
         snapshotWarning = error?.message || "Financial source data could not be loaded.";
       }
 
-      const learning = loadTemplateLearning(clientId || "default");
+      const learning = await loadTemplateLearning(clientId || "default");
       const mappings = mapTemplatePlaceholders({
         analysis,
         financialSnapshot,
@@ -8552,7 +8605,7 @@ export default function WorkspaceCimPrep() {
       mappingConfidence: Math.max(Number(current.mappingConfidence || 0), 0.9),
     });
     const validationReport = refreshCustomTemplateValidation(customTemplateState.analysis, mappings, customTemplateState.financialSnapshot);
-    saveApprovedTemplateMappings({ companyId: clientId || "default", analysis: customTemplateState.analysis, mappings });
+    void saveApprovedTemplateMappings({ companyId: clientId || "default", mappings });
     setCustomTemplateState((previous) => ({ ...previous, mappings, validationReport, updatedAt: new Date().toISOString() }));
     upsertCustomTemplateQuestionnaireItems(mappings);
     showToast({
@@ -8697,7 +8750,7 @@ export default function WorkspaceCimPrep() {
         mappings,
         customTemplateState.financialSnapshot,
       );
-      saveApprovedTemplateMappings({ companyId: clientId || "default", analysis: customTemplateState.analysis, mappings });
+      void saveApprovedTemplateMappings({ companyId: clientId || "default", mappings });
       setCustomTemplateState((previous) => ({ ...previous, mappings, validationReport, updatedAt: new Date().toISOString() }));
       updateQuestionnaireState((previous) => ({
         ...previous,
@@ -8867,7 +8920,24 @@ export default function WorkspaceCimPrep() {
     styleProfilesState,
   ]);
 
-  const handleExport = useCallback(() => {
+  const ensureCustomTemplateArchive = useCallback(async () => {
+    if (customTemplateState.analysis?.archiveEntries) return customTemplateState.analysis;
+    if (!clientId) {
+      throw new Error("Open this from a company workspace to regenerate the custom template.");
+    }
+    const { template } = await getCimCustomTemplateRequest(clientId);
+    if (!template?.fileUrl) {
+      throw new Error("Re-upload the custom template before generating the final PowerPoint.");
+    }
+    const blob = await fetchProtectedFileBlob(template.fileUrl, { clientId });
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    const { archiveEntries, sourceBytes } = rehydrateArchiveFromBytes(bytes);
+    const mergedAnalysis = { ...(customTemplateState.analysis || {}), archiveEntries, sourceBytes };
+    setCustomTemplateState((previous) => ({ ...previous, analysis: mergedAnalysis, updatedAt: new Date().toISOString() }));
+    return mergedAnalysis;
+  }, [clientId, customTemplateState.analysis]);
+
+  const handleExport = useCallback(async () => {
     if (templateMode === TEMPLATE_SELECTION_MODES.CUSTOM) {
       if (!customTemplateState.analysis) {
         showToast({
@@ -8898,8 +8968,9 @@ export default function WorkspaceCimPrep() {
         effectiveGlobalDetails.projectName || effectiveGlobalDetails.companyLegalName || company?.name || "custom-cim",
       );
       try {
+        const analysisForExport = await ensureCustomTemplateArchive();
         generateCustomTemplatePptx({
-          analysis: customTemplateState.analysis,
+          analysis: analysisForExport,
           mappings: customTemplateState.mappings,
           filename: `${baseName}-Custom-CIM.pptx`,
         });
@@ -8950,6 +9021,7 @@ export default function WorkspaceCimPrep() {
     customTemplateState.financialSnapshot,
     customTemplateState.mappings,
     effectiveGlobalDetails,
+    ensureCustomTemplateArchive,
     fieldValues,
     getExportElementContent,
     activeStyleProfile,
@@ -9018,6 +9090,27 @@ export default function WorkspaceCimPrep() {
           >
             {financialAutofillState.loading ? <Loader2 size={16} className="animate-spin" /> : <RefreshCw size={16} />}
             Auto-fill Financials
+          </button>
+          <button
+            onClick={() => {
+              if (templateMode === TEMPLATE_SELECTION_MODES.CUSTOM) {
+                setCustomTemplateModalOpen(true);
+              } else {
+                setTemplateSelectionModalOpen(true);
+              }
+            }}
+            className="group relative flex h-10 w-10 items-center justify-center rounded-md border border-border bg-white text-[#6D6E71] transition hover:border-[#8BC53D] hover:bg-[#EEF6E0] hover:text-[#476E2C]"
+            aria-label="Template"
+          >
+            <Sparkles size={16} />
+            {templateMode === TEMPLATE_SELECTION_MODES.CUSTOM && customTemplateSummary.unresolved > 0 && (
+              <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full border-2 border-white bg-amber-500 px-1 text-[10px] font-bold leading-none text-white">
+                {customTemplateSummary.unresolved}
+              </span>
+            )}
+            <span className="pointer-events-none absolute right-0 top-full z-50 mt-2 whitespace-nowrap rounded-md bg-[#050505] px-2 py-1 text-xs font-semibold text-white opacity-0 shadow-lg transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+              {templateMode === TEMPLATE_SELECTION_MODES.CUSTOM ? "Custom Template" : "Template"}
+            </span>
           </button>
           <button
             onClick={() => setQuestionnaireOpen(true)}
@@ -9111,7 +9204,7 @@ export default function WorkspaceCimPrep() {
 
       <div className="grid gap-4 xl:grid-cols-[230px_minmax(0,1fr)_310px]">
         <SectionDrawer
-          sections={NAV_SECTIONS}
+          sections={questionnaireSections}
           activeSectionId={activeSectionId}
           fieldValues={fieldValues}
           assetValues={assetValues}
@@ -9232,7 +9325,7 @@ export default function WorkspaceCimPrep() {
       {questionnaireOpen && (
         <QuestionnaireReviewModal
           onClose={() => setQuestionnaireOpen(false)}
-          sections={NAV_SECTIONS}
+          sections={questionnaireSections}
           fieldsBySlide={fieldsBySlide}
           globalDetails={effectiveGlobalDetails}
           questionnaireState={questionnaireState}
@@ -9309,6 +9402,34 @@ export default function WorkspaceCimPrep() {
           )}
         />
       ) : null}
+
+      <TemplateSelectionModal
+        isOpen={templateSelectionModalOpen}
+        onClose={() => setTemplateSelectionModalOpen(false)}
+        onSelectDefault={() => {
+          setTemplateMode(TEMPLATE_SELECTION_MODES.DEFAULT);
+          setTemplateSelectionModalOpen(false);
+        }}
+        onUploadFile={(file) => {
+          setTemplateSelectionModalOpen(false);
+          setCustomTemplateModalOpen(true);
+          void handleCustomTemplateUpload(file);
+        }}
+        uploading={customTemplateState.status === "analyzing"}
+        progressMessage={customTemplateState.progressMessage}
+      />
+
+      <CustomTemplateIntelligenceModal
+        isOpen={customTemplateModalOpen}
+        onClose={() => setCustomTemplateModalOpen(false)}
+        state={customTemplateState}
+        summary={customTemplateSummary}
+        onMappingChange={handleCustomTemplateMappingChange}
+        onApprove={handleCustomTemplateApprove}
+        onIgnore={handleCustomTemplateIgnore}
+        onDownloadSchema={handleCustomTemplateDownloadSchema}
+        onReplaceTemplate={(file) => void handleCustomTemplateUpload(file)}
+      />
 
       <FinancialAutofillProgressOverlay state={financialAutofillState} />
 

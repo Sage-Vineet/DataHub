@@ -1,4 +1,5 @@
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
+import { getCimTemplateLearningRequest, saveCimTemplateLearningRequest } from "./api";
 
 export const TEMPLATE_SELECTION_MODES = Object.freeze({
   DEFAULT: "default",
@@ -11,7 +12,6 @@ export const TEMPLATE_MAPPING_CONFIDENCE_THRESHOLD = 0.76;
 const EMU_PER_PX = 9525;
 const REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 const PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
-const LEARNING_STORAGE_KEY = "datahub:cim-template-intelligence-learning";
 
 const PLACEHOLDER_REGEX = /\[([^\][\r\n]{1,120})\]/g;
 
@@ -1498,26 +1498,17 @@ function buildQuestionPrompt(mapping) {
   return `Confirm the value for ${mapping.placeholderText} on slide ${mapping.slideNumber || "template"} (${mapping.semanticMeaning || "unresolved placeholder"}).${source}${confidence}`;
 }
 
-function loadAllLearning() {
-  if (typeof window === "undefined") return {};
+export async function loadTemplateLearning(companyId = "default") {
   try {
-    return JSON.parse(window.localStorage.getItem(LEARNING_STORAGE_KEY) || "{}") || {};
-  } catch {
-    return {};
+    const response = await getCimTemplateLearningRequest(companyId === "default" ? null : companyId);
+    return {
+      global: response?.global || {},
+      company: response?.company || {},
+    };
+  } catch (error) {
+    console.warn("[Template Intelligence] Failed to load learned mappings from server.", error);
+    return { global: {}, company: {} };
   }
-}
-
-function saveAllLearning(store) {
-  if (typeof window === "undefined") return;
-  window.localStorage.setItem(LEARNING_STORAGE_KEY, JSON.stringify(store || {}));
-}
-
-export function loadTemplateLearning(companyId = "default") {
-  const store = loadAllLearning();
-  return {
-    global: store.global || {},
-    company: store.companies?.[companyId] || {},
-  };
 }
 
 function findLearnedMapping(placeholder, learning = {}) {
@@ -1526,33 +1517,35 @@ function findLearnedMapping(placeholder, learning = {}) {
   return learning.company?.[signature] || learning.global?.[signature] || null;
 }
 
-export function saveApprovedTemplateMappings({ companyId = "default", analysis, mappings = {} } = {}) {
+export async function saveApprovedTemplateMappings({ companyId = "default", mappings = {} } = {}) {
   const approved = Object.values(mappings || {}).filter((mapping) => mapping.approved && mapping.contextSignature && mapping.metricKey);
   if (!approved.length) return loadTemplateLearning(companyId);
 
-  const store = loadAllLearning();
-  const companies = { ...(store.companies || {}) };
-  const companyLearning = { ...(companies[companyId] || {}) };
-  const globalLearning = { ...(store.global || {}) };
+  const entries = approved.map((mapping) => ({
+    contextSignature: mapping.contextSignature,
+    semanticMeaning: mapping.semanticMeaning,
+    metricKey: mapping.metricKey,
+    expectedDataType: mapping.expectedDataType,
+    selectedDataSource: mapping.selectedDataSource,
+    confidence: Math.max(TEMPLATE_MAPPING_CONFIDENCE_THRESHOLD, Number(mapping.mappingConfidence || 0)),
+    formattingRules: mapping.formattingRules || [],
+  }));
 
-  approved.forEach((mapping) => {
-    const entry = {
-      templateId: analysis?.template?.id || "",
-      semanticMeaning: mapping.semanticMeaning,
-      metricKey: mapping.metricKey,
-      expectedDataType: mapping.expectedDataType,
-      selectedDataSource: mapping.selectedDataSource,
-      confidence: Math.max(TEMPLATE_MAPPING_CONFIDENCE_THRESHOLD, Number(mapping.mappingConfidence || 0)),
-      formattingRules: mapping.formattingRules || [],
-      approvedAt: new Date().toISOString(),
-    };
-    companyLearning[mapping.contextSignature] = entry;
-    globalLearning[mapping.contextSignature] = entry;
-  });
-
-  companies[companyId] = companyLearning;
-  saveAllLearning({ ...store, global: globalLearning, companies });
+  try {
+    await saveCimTemplateLearningRequest({
+      companyId: companyId === "default" ? null : companyId,
+      entries,
+    });
+  } catch (error) {
+    console.warn("[Template Intelligence] Failed to save learned mappings to server.", error);
+  }
   return loadTemplateLearning(companyId);
+}
+
+export function rehydrateArchiveFromBytes(bytes) {
+  const sourceBytes = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  const archiveEntries = unzipSync(sourceBytes);
+  return { archiveEntries, sourceBytes };
 }
 
 export function updateMappingValue(mappings = {}, placeholderId, value, patch = {}) {
