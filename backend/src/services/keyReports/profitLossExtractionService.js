@@ -28,6 +28,26 @@ const AMOUNT_ALIASES   = ['total', 'amount', 'balance', 'value', 'net', 'ytd', '
 const YEAR_PATTERN     = /\b(20\d{2}|19\d{2})\b/;
 const PERIOD_LABEL_RE  = /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|q[1-4]|total|ytd|annual|20\d{2}|19\d{2})\b/i;
 
+// Recognizes the document's OWN bare section-header labels (a row with a label
+// but no amount in any column) — the same literal-header-text approach as
+// balanceSheetExtractionService's inferSection. This is universal P&L statement
+// vocabulary, never an account-name keyword rule, and is used only to tag which
+// section a row falls under for validation/reporting — never to build hierarchy.
+const SECTION_HEADER_PATTERNS = [
+  { key: 'revenue', re: /^(income|revenue|sales|total income|total revenue)$/i },
+  { key: 'cost_of_sales', re: /^(cost of goods sold|cost of sales|cogs|total cost of goods sold|total cost of sales)$/i },
+  { key: 'operating_expenses', re: /^(expenses|expense|operating expenses|total expenses|total operating expenses)$/i },
+];
+
+function matchSectionHeader(label) {
+  const norm = String(label || '').trim();
+  if (!norm) return null;
+  for (const { key, re } of SECTION_HEADER_PATTERNS) {
+    if (re.test(norm)) return key;
+  }
+  return null;
+}
+
 function lc(v) { return String(v || '').toLowerCase().trim(); }
 
 function parseAmount(v) {
@@ -215,15 +235,30 @@ class ProfitLossExtractionService extends ExtractionServiceBase {
 
     const rows = [];
     let rowsDetected = 0, rowsRejected = 0;
+    // Tracks which bare section header (Revenue / Cost of Sales / Operating
+    // Expenses) we're currently under, per the document's OWN structure — used
+    // only to tag rows for later validation, never to build hierarchy.
+    let currentSection = null;
 
     for (let i = headerIdx + 1; i < raw.length; i++) {
       const row = raw[i];
       const rawName = String(row[acctIdx] || '').trim();
       if (!rawName) continue; // blank label → skip
 
-      rowsDetected++;
       const accountName = rawName.replace(/^\s+/, ''); // strip indent spaces
       const isTotal = /^total\b/i.test(accountName) || /\btotal$/i.test(accountName) || /\bnet income\b/i.test(accountName);
+
+      // A bare section-header row has a label but no amount in ANY column and
+      // isn't itself a total line — e.g. "Income", "Cost of Goods Sold".
+      const hasAnyAmount = yearCols.length > 0
+        ? yearCols.some(({ colIdx }) => parseAmount(row[colIdx]) !== null)
+        : row.slice(acctIdx + 1).some((v) => parseAmount(v) !== null);
+      if (!hasAnyAmount && !isTotal) {
+        const headerKey = matchSectionHeader(accountName);
+        if (headerKey) { currentSection = headerKey; continue; }
+      }
+
+      rowsDetected++;
 
       if (yearCols.length > 0) {
         // Multi-year: emit one row per year column
@@ -233,6 +268,7 @@ class ProfitLossExtractionService extends ExtractionServiceBase {
           rows.push({
             account_name: accountName,
             account_type: null,
+            section: currentSection,
             amount: amount ?? 0,
             fiscal_year: year,
             is_total: isTotal,
@@ -254,6 +290,7 @@ class ProfitLossExtractionService extends ExtractionServiceBase {
         rows.push({
           account_name: accountName,
           account_type: null,
+          section: currentSection,
           amount,
           fiscal_year: year,
           is_total: isTotal,

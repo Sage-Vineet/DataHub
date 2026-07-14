@@ -12,18 +12,61 @@
 
 "use strict";
 
+// A trailing "(deleted)" / "- Deleted" / "[Deleted]" marks a bank/GL account
+// the source system flagged inactive — the underlying real-world account is
+// unchanged, so it must still match its live counterpart's hierarchy. Applied
+// before anything else so the rest of the pipeline never sees the suffix.
+const DELETED_SUFFIX_RE = /[\s\-\(\[]*deleted[\s\)\]]*$/i;
+function stripDeletedSuffix(s) {
+  return String(s || "").replace(DELETED_SUFFIX_RE, "").trim();
+}
+
+// A small, fixed set of universal (not company-specific) accounting
+// abbreviations, expanded so e.g. "A/R" and "Accounts Receivable" normalize to
+// the same key. Matched as whole words only — never a substring — to avoid
+// corrupting an unrelated name. This is name-equivalence normalization for
+// matching, not a hierarchy/keyword rule: it never assigns a type or section.
+const ABBREVIATION_MAP = [
+  [/\ba\s*\/\s*r\b/g, "accounts receivable"],
+  [/\ba\s*\/\s*p\b/g, "accounts payable"],
+  [/\bcogs\b/g, "cost of goods sold"],
+  [/\bp\s*&\s*l\b/g, "profit and loss"],
+  [/\bcapex\b/g, "capital expenditure"],
+  [/\bopex\b/g, "operating expense"],
+];
+function expandAbbreviations(s) {
+  let out = s;
+  for (const [re, expansion] of ABBREVIATION_MAP) out = out.replace(re, expansion);
+  return out;
+}
+
 /**
  * Primary normalization applied to BOTH sides of every name lookup.
  */
-const norm = (s) =>
-  String(s || "")
-    .toLowerCase()
-    .replace(/&/g, "and")
-    .replace(/[^a-z0-9\s]/g, "")
+const norm = (s) => {
+  let out = stripDeletedSuffix(s).toLowerCase();
+  out = out.replace(/'/g, ""); // "Sam's" -> "Sams" (removed, not spaced) so it matches a raw "Sams" spelling of the same name
+  out = out.replace(/&/g, " and ");
+  out = expandAbbreviations(out);
+  return out
+    .replace(/[^a-z0-9\s]/g, " ") // dashes/parentheses/other punctuation → space, not deleted — "Non-Current" stays two words, not "noncurrent"
     .replace(/\s+/g, " ")
     .trim();
+};
 
 const normStrict = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+
+// Conservative singular/plural folding for the FUZZY word-overlap tier only —
+// never applied to the exact/strict tiers, so it can only help two already-
+// similar names match a little more often, never merge two different exact
+// names. "ies" -> "y" (categories -> category), trailing "s" dropped only for
+// words long enough that stripping it can't invert the word's meaning (e.g.
+// never touches "gas", "sales" stays "sale" only because len > 4).
+function singularize(word) {
+  if (word.length > 4 && word.endsWith("ies")) return word.slice(0, -3) + "y";
+  if (word.length > 4 && word.endsWith("s") && !word.endsWith("ss")) return word.slice(0, -1);
+  return word;
+}
 
 // ─── Accounting modifier words ─────────────────────────────────────────────────
 // Words/phrases that change an account's accounting meaning rather than just its
@@ -121,13 +164,16 @@ function fuzzyMatch(lookup, name, accountNumber) {
   // Hard gate: a candidate whose accounting-modifier set differs from the query's
   // (Accrued / Prepaid / Payable / Current / …) is never a fuzzy candidate — those
   // words change the account's meaning, not just its spelling. See extractModifiers.
+  // singularize() only affects word-overlap scoring here — never the
+  // exact/strict tiers above — so it can only help two already-similar names
+  // match a little more often (e.g. "Rent Expenses" vs "Rent Expense").
   const queryModifiers = extractModifiers(k1);
-  const words1 = new Set(k1.split(" ").filter(w => w.length > 1));
+  const words1 = new Set(k1.split(" ").filter(w => w.length > 1).map(singularize));
   const arr1   = [...words1];
   let bestId = null, bestScore = 0;
   for (const [k, id] of lookup.exact) {
     if (!sameModifiers(queryModifiers, extractModifiers(k))) continue;
-    const words2 = new Set(k.split(" ").filter(w => w.length > 1));
+    const words2 = new Set(k.split(" ").filter(w => w.length > 1).map(singularize));
     if (!words2.size || !words1.size) continue;
     const inter = arr1.filter(w => words2.has(w)).length;
     const union = new Set([...arr1, ...words2]).size;
@@ -151,4 +197,8 @@ module.exports = {
   buildMappings,
   buildFuzzyLookup,
   fuzzyMatch,
+  // exported for unit testing
+  stripDeletedSuffix,
+  expandAbbreviations,
+  singularize,
 };

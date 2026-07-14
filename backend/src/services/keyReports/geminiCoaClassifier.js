@@ -45,7 +45,7 @@ const MAX_ACCOUNTS = 600;
 // accounts are intentionally NOT cached so they are re-attempted and continue to
 // surface in Review & Adjust. Bump CLASSIFIER_CACHE_VERSION to invalidate all
 // cached classifications after any change to the prompt or output handling.
-const CLASSIFIER_CACHE_VERSION = "v3";
+const CLASSIFIER_CACHE_VERSION = "v4";
 const CACHE_MIN_CONFIDENCE = 0.85;
 
 function coaCacheEnabled() {
@@ -220,6 +220,33 @@ CRITICAL ACCOUNTING RULES:
     (contra-revenue: it reduces total revenue, it is NOT an operating expense, even though
     money is flowing out — classify by what it nets against, not by cash direction)
   • If [BS section] is provided it is authoritative — use it to confirm the correct accountType
+
+REASONING PRINCIPLES — apply these when a name doesn't match a rule above verbatim.
+Do not pattern-match on a single leading word in isolation; read the whole compound name.
+  • Asset word + operational/consumable word = expense, not asset. The cost of USING,
+    fueling, servicing, repairing, or renting an asset is an expense even though the asset
+    itself is a name component (e.g. an asset-category noun followed by "Fuel", "Repairs",
+    "Maintenance", "Rental", "Supplies" for a specific job/vehicle/site describes ongoing
+    consumption, not something owned). Classify by what is being consumed or paid for, not
+    by the asset word alone. Only classify as asset when the name refers to ACQUIRING or
+    OWNING the item itself, not to the cost of operating it.
+  • "Supplies" is context-dependent: supplies consumed for a specific job, project, vehicle,
+    or site are an expense (they get used up and posted to the P&L); supplies held in a
+    general inventory/stockroom awaiting future use or resale are an asset. Read the full
+    phrase to tell which one applies.
+  • A recognizable financial institution, bank, or card-network name in an account title
+    (a lender, credit card issuer, or bank the company holds an account or debt with) always
+    signals a real-world financial account — a liability if it represents a card or loan
+    balance owed, or an asset if it represents a deposit/checking account held there. Judge
+    by economic substance (what the account represents), never by superficial overlap
+    between part of an institution's name and unrelated accounting terminology (e.g. a
+    brand name that happens to contain a word like "capital" is not automatically equity —
+    equity requires the account to represent the OWNER'S stake in the business, not a
+    third-party institution's brand).
+  • When genuinely torn between two of the six types for a compound or unfamiliar name,
+    prefer the interpretation that matches how the cost/value flows through the business
+    (consumed → expense; owned → asset; owed → liability; owner's stake → equity) over a
+    surface-level word match, and lower your confidence accordingly rather than guessing.
 
 IS REPORT ROW — set isReportRow: true ONLY for calculated totals, subtotals, or section headers
 that are not real accounts. These must NEVER be inserted into the Chart of Accounts.

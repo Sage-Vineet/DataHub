@@ -12,7 +12,7 @@ import {
 } from "../../lib/api";
 
 const STATEMENT_LABELS = { balance_sheet: "Balance Sheet", profit_loss: "P&L" };
-const METHOD_LABELS = { rule: "Rule", gemini: "AI", hybrid: "AI+Rules", manual: "Manual", gemini_category: "AI (category match)" };
+const METHOD_LABELS = { rule: "Rule", gemini: "AI", hybrid: "AI+Rules", manual: "Manual", gemini_category: "AI (category match)", bs_section: "Balance Sheet section" };
 const MAX_LEVELS = 15;
 const LEVEL_INDEXES = Array.from({ length: MAX_LEVELS }, (_, i) => i);
 

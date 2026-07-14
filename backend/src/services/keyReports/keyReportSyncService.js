@@ -21,6 +21,20 @@ const bankStatementExtractionService = require('./bankStatementExtractionService
 const balanceSheetExtractionService = require('./balanceSheetExtractionService');
 const generalLedgerExtractionService = require('./generalLedgerExtractionService');
 const clientCoaExtractionService = require('./clientCoaExtractionService');
+// NOT registered in serviceByCategory/extractionOrder below — deliberately kept
+// out of the generic persisting extraction dispatcher. Used only for the
+// ephemeral, validation-only P&L reconciliation step (Step 7b): parsed in
+// memory, compared against the GL-derived Net Income, then discarded. Never
+// written to a table (see migration 056 — client requirement).
+const profitLossExtractionService = require('./profitLossExtractionService');
+// Reused only for the P&L validation report's "AI classification" column
+// (Step 7b) — same recognition-only call already used by COA generation,
+// never repurposed to build hierarchy here.
+const { classifyAccountsWithAI } = require('./geminiCoaClassifier');
+
+function normName(accountName) {
+  return String(accountName || '').trim().toLowerCase();
+}
 
 const { generateChartOfAccounts, validateChartOfAccounts, ensureCoaComplete } = require('../chartOfAccountsService');
 const { replaceValidationResults } = require('./keyReportValidationService');
@@ -354,6 +368,18 @@ async function generateFinancialTables(version, opts = {}) {
   for (const [cat, items] of Object.entries(mappingsByCategory)) {
     if (items.length) logger.log(`  ${cat}: ${items.length} file(s) → ${items.map((m) => m.fileName || m.documentId).join(', ')}`);
   }
+  // profit_loss is a valid link category (users may still attach a P&L file),
+  // but it is deliberately excluded from extractionOrder below — flag it
+  // explicitly here instead of letting it silently vanish from the run.
+  if ((mappingsByCategory.profit_loss || []).length) {
+    logger.log(
+      `  profit_loss: ${mappingsByCategory.profit_loss.length} file(s) linked but NOT extracted — ` +
+      `by design, per client requirement (see migration 056): P&L is generated entirely from the ` +
+      `General Ledger, there is no profit_loss_entries table.`,
+    );
+  } else {
+    logger.log('  profit_loss: no file linked (not required — P&L is generated from the General Ledger)');
+  }
 
   const extractionResults = {
     tax_return: { success: 0, failed: 0, rowsExtracted: 0 },
@@ -480,12 +506,67 @@ async function generateFinancialTables(version, opts = {}) {
     };
   }
 
-  // Step 6: Chart of Accounts (from general_ledger_entries + balance_sheet_entries)
+  // Step 5b: Parse uploaded Profit & Loss — ephemeral, never persisted (no
+  // profit_loss_entries table, per client requirement — migration 056). Parsed
+  // once here so both COA generation (Step 6, a shallow Income-Statement-only
+  // grouping hint) and the later reconciliation/validation steps reuse the
+  // same parse instead of re-reading the file three times. Parse failures are
+  // non-fatal here — they surface as an explicit validation row later.
+  logger.log('--- Step 5b: Parse uploaded Profit & Loss (ephemeral) ---');
+  const plMappings = mappingsByCategory.profit_loss || [];
+  const plParsedByFile = []; // [{ fileName, validRows, error }]
+  for (const mapping of plMappings) {
+    const fileName = mapping.fileName || mapping.documentId;
+    try {
+      const { data: document, error: docErr } = await supabase
+        .from('documents')
+        .select('id, name, upload_id, file_url')
+        .eq('id', mapping.documentId)
+        .maybeSingle();
+      if (docErr || !document) throw new Error('Document not found');
+
+      const buffer = await loadDocumentBuffer(document);
+      if (!buffer?.length) throw new Error('No file data found for document');
+
+      const { rows: plRows } = await profitLossExtractionService.extract({ fileName, fileBuffer: buffer });
+      const validRows = await profitLossExtractionService.validateRows(plRows);
+      plParsedByFile.push({ fileName, validRows, error: null });
+    } catch (err) {
+      logger.warn(`  ${fileName}: Profit & Loss parsing failed — ${err.message}`);
+      plParsedByFile.push({ fileName, validRows: [], error: err.message });
+    }
+  }
+  // Account rows only (no totals/headers) — this is what feeds hierarchy
+  // grouping and the GL-vs-P&L comparison; Net Income totals are read
+  // separately from validRows further below.
+  const plAccountRows = plParsedByFile.flatMap((f) => f.validRows.filter((r) => !r.is_total && !r.is_header));
+  if (plMappings.length) {
+    logger.log(`  Parsed ${plMappings.length} P&L file(s): ${plAccountRows.length} account row(s) available for hierarchy grouping + validation.`);
+  } else {
+    logger.log('  No Profit & Loss file linked.');
+  }
+
+  // Step 6: Chart of Accounts. Hierarchy source priority: uploaded Chart of
+  // Accounts (company-scoped, then global reference) → this version's own
+  // uploaded Balance Sheet section → this version's own uploaded Profit & Loss
+  // section (Revenue/COGS/Operating Expenses — a shallow Income-Statement-only
+  // grouping hint, never used for Balance Sheet accounts, never inventing
+  // deeper hierarchy) → AI selection among existing categories → needs_mapping.
   logger.log('--- Step 6: Chart of Accounts ---');
   let coaSummary = null;
   try {
-    coaSummary = await generateChartOfAccounts(companyId, versionId, null);
+    coaSummary = await generateChartOfAccounts(companyId, versionId, null, { plRows: plAccountRows });
     logger.log(`  ✓ Chart of Accounts: ${coaSummary.leafCount || 0} accounts classified (${coaSummary.inserted || 0} new, ${coaSummary.updated || 0} updated, ${coaSummary.deleted || 0} removed)`);
+    if (coaSummary.sourceCounts) {
+      const sc = coaSummary.sourceCounts;
+      logger.log(
+        `    ${sc.coaReference} matched from uploaded Chart of Accounts, ` +
+        `${sc.bsSection} matched from uploaded Balance Sheet section, ` +
+        `${sc.plSection} matched from uploaded Profit & Loss section, ` +
+        `${sc.aiCategory} AI-placed into an existing category, ` +
+        `${sc.needsMapping} needs_mapping`,
+      );
+    }
   } catch (coaErr) {
     logger.warn(`  Chart of Accounts generation failed: ${coaErr.message}`);
     coaSummary = { error: coaErr.message, accountCount: 0 };
@@ -644,6 +725,160 @@ async function generateFinancialTables(version, opts = {}) {
     );
   } catch (vErr) {
     logger.warn(`  COA validation failed: ${vErr.message}`);
+  }
+
+  // Step 7b: Profit & Loss reconciliation — validation-only, never persisted,
+  // never a hierarchy source beyond the shallow Priority-3 grouping applied in
+  // Step 6. The General Ledger remains the sole transactional source of truth
+  // (client requirement, migration 056); reuses the Step 5b parse to cross-check
+  // each file's own stated Net Income against the GL-derived Net Income
+  // (aggregateGLForBS) — nothing is written to any table.
+  if (plMappings.length) {
+    logger.log(`--- Step 7b: Profit & Loss reconciliation (${plMappings.length} file(s), validation-only) ---`);
+    for (const { fileName, validRows, error } of plParsedByFile) {
+      if (error) {
+        validationRows.push({
+          dataType: 'profit_loss_reconciliation', year: null, status: 'error', severity: 'error',
+          message: `Uploaded Profit & Loss "${fileName}" could not be parsed: ${error}`,
+          metadata: { fileName, error },
+        });
+        continue;
+      }
+
+      // Read the document's OWN explicitly labeled "Net Income" total line(s) —
+      // no section/account-type classification is performed, so this never
+      // touches hierarchy or account grouping. A monthly-column P&L emits one
+      // "Net Income" total row per month (all sharing the same fiscal_year, no
+      // separate period field survives extraction) rather than one annual row,
+      // so sum every occurrence for a year to get the annual total.
+      const uploadedNetIncomeByYear = new Map();
+      for (const row of validRows) {
+        if (row.is_total && /\bnet income\b/i.test(row.account_name)) {
+          const prev = uploadedNetIncomeByYear.get(row.fiscal_year) || 0;
+          uploadedNetIncomeByYear.set(row.fiscal_year, prev + (Number(row.amount) || 0));
+        }
+      }
+
+      if (!uploadedNetIncomeByYear.size) {
+        logger.warn(`  ${fileName}: parsed ${validRows.length} row(s) but found no "Net Income" total line — reconciliation skipped for this file.`);
+        validationRows.push({
+          dataType: 'profit_loss_reconciliation', year: null, status: 'warning', severity: 'warning',
+          message: `Uploaded Profit & Loss "${fileName}" parsed but no Net Income total line was found — reconciliation skipped.`,
+          metadata: { fileName, rowsParsed: validRows.length },
+        });
+        continue;
+      }
+
+      for (const [year, uploadedNI] of uploadedNetIncomeByYear) {
+        const { netIncome: glNetIncome } = await keyReportReportService.aggregateGLForBS(versionId, year);
+        const diff = Math.round((uploadedNI - glNetIncome) * 100) / 100;
+        const matches = Math.abs(diff) < 1.0;
+        logger.log(`  ${fileName} FY${year}: uploaded Net Income=${uploadedNI}, GL-derived=${glNetIncome.toFixed(2)}, diff=${diff} → ${matches ? 'MATCH' : 'MISMATCH'}`);
+        validationRows.push({
+          dataType: 'profit_loss_reconciliation', year, status: matches ? 'success' : 'warning', severity: matches ? 'success' : 'warning',
+          message: matches
+            ? `Uploaded Profit & Loss Net Income for ${year} matches the GL-derived Net Income (${uploadedNI.toLocaleString()}).`
+            : `Uploaded Profit & Loss Net Income for ${year} (${uploadedNI.toLocaleString()}) differs from the GL-derived Net Income (${glNetIncome.toLocaleString()}) by ${Math.abs(diff).toLocaleString()}.`,
+          metadata: { fileName, uploadedNetIncome: uploadedNI, glDerivedNetIncome: glNetIncome, diff },
+        });
+      }
+    }
+  } else {
+    logger.log('  Step 7b: no Profit & Loss file linked — reconciliation skipped (not required).');
+  }
+
+  // Step 7c: GL-vs-uploaded-P&L account validation report. Compares the AI's
+  // OWN account_type (recognition-only, same call already used by COA
+  // generation) against the section the uploaded P&L places an account under
+  // — purely to flag disagreements for review. Never writes hierarchy, never
+  // overrides a chart_of_accounts row: client_chart_of_accounts and uploaded
+  // Balance Sheet section remain the only hierarchy sources.
+  if (plAccountRows.length) {
+    const plByNormName = new Map();
+    for (const row of plAccountRows) {
+      const key = normName(row.account_name);
+      if (!plByNormName.has(key)) plByNormName.set(key, { rawName: row.account_name, section: row.section || null });
+      else if (!plByNormName.get(key).section && row.section) plByNormName.get(key).section = row.section;
+    }
+
+    const { data: coaLeaves } = await supabase
+      .from('chart_of_accounts')
+      .select('account_name, account_type, classification_method, metadata')
+      .eq('version_id', versionId);
+    const glByNormName = new Map();
+    for (const row of (coaLeaves || [])) {
+      if (row.metadata?.is_group) continue;
+      glByNormName.set(normName(row.account_name), { rawName: row.account_name, accountType: row.account_type });
+    }
+
+    const plNames = [...plByNormName.keys()];
+    const glNames = [...glByNormName.keys()];
+    const accountsOnlyInPL = plNames.filter((n) => !glByNormName.has(n));
+    const accountsOnlyInGL = glNames.filter((n) => !plByNormName.has(n));
+    const compared = plNames.filter((n) => glByNormName.has(n));
+
+    const sample = (arr, n = 15) => arr.slice(0, n);
+    logger.log(
+      `--- Step 7c: GL-vs-P&L account validation --- GL=${glNames.length}, P&L=${plNames.length}, ` +
+      `compared=${compared.length}, onlyInGL=${accountsOnlyInGL.length}, onlyInPL=${accountsOnlyInPL.length}`,
+    );
+
+    const disagreements = [];
+    if (compared.length) {
+      const aiInput = compared.map((key) => ({
+        key, accountName: plByNormName.get(key).rawName, accountNumber: null, bsSection: null,
+      }));
+      const aiResults = await classifyAccountsWithAI(aiInput, { companyId });
+
+      // "revenue" and "income" are synonyms in this system's type vocabulary
+      // (see chartOfAccountsService.js normalBalanceFor, which treats both as
+      // credit-normal) — matched as a set here so that isn't flagged as a
+      // false disagreement.
+      const REVENUE_TYPES = new Set(['revenue', 'income']);
+      const matchesSection = (section, accountType) => {
+        if (section === 'revenue') return REVENUE_TYPES.has(accountType);
+        if (section === 'cost_of_sales' || section === 'operating_expenses') return accountType === 'expense';
+        return null; // no expectation for this section
+      };
+
+      for (const key of compared) {
+        const plEntry = plByNormName.get(key);
+        const aiEntry = aiResults.get(key);
+        const matches = matchesSection(plEntry.section, aiEntry?.accountType);
+        if (matches === null || !aiEntry?.accountType) continue; // nothing to compare
+        if (!matches) {
+          disagreements.push({
+            accountName: plEntry.rawName, plSection: plEntry.section,
+            aiClassification: aiEntry.accountType, finalAccountType: glByNormName.get(key).accountType,
+          });
+        }
+      }
+      if (disagreements.length) {
+        logger.warn(
+          `  ${disagreements.length} account(s) disagree between AI classification and uploaded P&L section: ` +
+          disagreements.map((d) => `"${d.accountName}" (AI=${d.aiClassification}, P&L section=${d.plSection})`).join('; '),
+        );
+      } else {
+        logger.log(`  ✓ All ${compared.length} compared account(s) agree between AI classification and uploaded P&L section.`);
+      }
+    }
+
+    validationRows.push({
+      dataType: 'profit_loss_account_validation',
+      year: null,
+      status: disagreements.length ? 'warning' : 'success',
+      severity: disagreements.length ? 'warning' : 'success',
+      message: disagreements.length
+        ? `${disagreements.length} account(s) disagree between AI classification and the uploaded Profit & Loss section (validation only — hierarchy unchanged).`
+        : `Uploaded Profit & Loss accounts agree with AI classification (${compared.length} compared).`,
+      metadata: {
+        accountsOnlyInGL: { count: accountsOnlyInGL.length, sample: sample(accountsOnlyInGL) },
+        accountsOnlyInPL: { count: accountsOnlyInPL.length, sample: sample(accountsOnlyInPL) },
+        compared: compared.length,
+        agreements: compared.length - disagreements.length,
+        disagreements: sample(disagreements, 20),
+      },
+    });
   }
 
   await replaceValidationResults(versionId, companyId, validationRows);

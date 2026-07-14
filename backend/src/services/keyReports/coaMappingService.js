@@ -171,6 +171,17 @@ async function createCoaMapper(companyId = null) {
 
   const companyMapper = companyEntries.length ? buildSingleMapper(companyEntries) : null;
   const globalMapper = buildSingleMapper(globalEntries);
+  // Visibility for a recurring issue this session: client_chart_of_accounts has
+  // unexpectedly gone empty (both company-scoped and global rows) more than
+  // once, with the cause still unconfirmed. Logging counts on every mapper
+  // build means the next occurrence shows up directly in sync logs instead of
+  // requiring an ad hoc DB query to notice.
+  console.log(
+    `[CoaMapping] client_chart_of_accounts: ${companyEntries.length} company-scoped row(s)` +
+    (companyId ? ` (company=${companyId})` : '') +
+    `, ${globalEntries.length} global row(s).` +
+    (companyEntries.length === 0 && globalEntries.length === 0 ? ' WARNING: table is empty — no COA-reference hierarchy source available for this run.' : ''),
+  );
 
   return {
     /**

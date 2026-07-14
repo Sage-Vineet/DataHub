@@ -59,22 +59,68 @@ function findCol(headers, aliases) {
 
 /**
  * Recognize a bare section-HEADER line (literal text like "ASSETS",
- * "LIABILITIES", "Owner's Equity" printed on the document with no amount).
- * This reads what the document itself says, not a guess — it must NEVER be
- * used to classify an ordinary account line from its own name (that would be
- * a hardcoded keyword guess); see the two call sites below.
+ * "Current Liabilities", "Liabilities and Equity", "Owner's Equity" printed
+ * on the document with no amount). This reads what the document itself says,
+ * not a guess — it must NEVER be used to classify an ordinary account line
+ * from its own name (that would be a hardcoded keyword guess); see the two
+ * call sites below.
+ *
+ * A line matches ONLY if EVERY word in it is drawn from a small closed
+ * header-vocabulary set — not a substring test on the whole string (that
+ * previously matched "capital" inside "Capital One Credit Card", a real
+ * account, misfiring it as an equity header and corrupting the section
+ * context for every account after it), and not a single fixed phrase either
+ * (too narrow — real documents use "Current Liabilities", "Liabilities and
+ * Equity", etc., not just "Liabilities" alone).
  */
+const HEADER_WORDS = new Set([
+  'total', 'current', 'fixed', 'long', 'term', 'other', 'and',
+  'asset', 'assets', 'liability', 'liabilities',
+]);
+const EQUITY_WORDS = new Set([
+  'equity', 'capital', 'owner', 'owners', 'member', 'members', 'stockholder', 'stockholders', 'partner', 'partners',
+]);
+for (const w of EQUITY_WORDS) HEADER_WORDS.add(w);
+
 function inferSection(accountName) {
-  const n = lc(accountName);
-  if (/asset/.test(n)) return 'assets';
-  if (/liabilit/.test(n)) return 'liabilities';
-  if (/equity|capital|owner/.test(n)) return 'equity';
+  const n = lc(accountName).replace(/'/g, '').trim();
+  if (!n) return null;
+  const words = n.replace(/[^a-z\s]/g, ' ').split(/\s+/).filter(Boolean);
+  if (!words.length || !words.every((w) => HEADER_WORDS.has(w))) return null;
+
+  const hasAsset = words.some((w) => w === 'asset' || w === 'assets');
+  const hasLiability = words.some((w) => w === 'liability' || w === 'liabilities');
+  const hasEquity = words.some((w) => EQUITY_WORDS.has(w));
+
+  if (hasAsset) return 'assets';
+  if (hasLiability && hasEquity) {
+    // Combined "Liabilities and Equity" style header — resolve by which
+    // marker word appears first; liabilities-first is the overwhelmingly
+    // common convention, but this handles either order.
+    const liabIdx = n.indexOf('liabilit');
+    let equityIdx = Infinity;
+    for (const w of EQUITY_WORDS) {
+      const i = n.indexOf(w);
+      if (i !== -1 && i < equityIdx) equityIdx = i;
+    }
+    return equityIdx < liabIdx ? 'equity' : 'liabilities';
+  }
+  if (hasLiability) return 'liabilities';
+  if (hasEquity) return 'equity';
   return null;
 }
 
 class BalanceSheetExtractionService extends ExtractionServiceBase {
   constructor() {
     super('balance_sheet', 'balance_sheet_entries');
+    // inferSection()'s header-detection logic changed (whole-word-set
+    // classifier replacing an unanchored substring test that misfired on
+    // "Capital One Credit Card" and similar real accounts) — bump this
+    // service's own parser_version so the extraction cache is invalidated
+    // and every previously-cached Balance Sheet gets re-parsed with the
+    // fixed logic on the next sync, instead of silently reusing stale rows
+    // extracted before the fix (which is what was still happening).
+    this.parserVersion = 'v2';
   }
 
   async extract({ fileName, fileBuffer }) {
