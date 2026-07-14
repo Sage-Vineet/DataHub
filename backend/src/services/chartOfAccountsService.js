@@ -954,7 +954,7 @@ async function generateChartOfAccounts(companyId, versionId, batchId) {
     return { accountCount: 0, leafCount: 0 };
   }
 
-  const mapper = await createCoaMapper();
+  const mapper = await createCoaMapper(companyId);
   const categoryPaths = await loadKnownCategoryPaths();
   const hierarchical = await buildLeafHierarchies(leaves, mapper, categoryPaths);
   const unmappedCount = hierarchical.filter((l) => l.needsMapping).length;
@@ -1792,7 +1792,7 @@ async function ensureCoaComplete(companyId, versionId) {
   // 4. Build leaf descriptors. Gemini supplies accountType/normalizedName/confidence
   //    only; hierarchy is looked up against other chart_of_accounts rows (same
   //    as generateChartOfAccounts — see buildLeafHierarchies).
-  const coaMapper = await createCoaMapper();
+  const coaMapper = await createCoaMapper(companyId);
   const categoryPaths = await loadKnownCategoryPaths();
   const categoryLevelsByPath = new Map(categoryPaths.map((c) => [c.path, c.levels]));
 

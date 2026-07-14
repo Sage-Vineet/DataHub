@@ -67,11 +67,12 @@ import { cn } from "../../../lib/utils";
 
 // ── Document category definitions ────────────────────────────────────────────
 const CATEGORIES = [
-  { key: "profit_loss",    label: "Profit & Loss",     required: true,  icon: BookOpen },
-  { key: "balance_sheet",  label: "Balance Sheet",     required: true,  icon: LayoutDashboard },
-  { key: "general_ledger", label: "General Ledger",    required: false, icon: FileText },
-  { key: "bank_statement", label: "Bank Statements",   required: false, icon: FileText },
-  { key: "tax_return",     label: "Tax Returns",       required: false, icon: FileText },
+  { key: "profit_loss",       label: "Profit & Loss",             required: true,  icon: BookOpen },
+  { key: "balance_sheet",     label: "Balance Sheet",             required: true,  icon: LayoutDashboard },
+  { key: "general_ledger",   label: "General Ledger",             required: false, icon: FileText },
+  { key: "chart_of_accounts", label: "Chart of Accounts (Optional)", required: false, icon: FileText },
+  { key: "bank_statement",   label: "Bank Statements",            required: false, icon: FileText },
+  { key: "tax_return",       label: "Tax Returns",                required: false, icon: FileText },
 ];
 
 // ── Selected-version persistence (per client, survives navigation) ────────────

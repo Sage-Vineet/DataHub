@@ -20,6 +20,7 @@ const taxReturnExtractionService = require('./taxReturnExtractionService');
 const bankStatementExtractionService = require('./bankStatementExtractionService');
 const balanceSheetExtractionService = require('./balanceSheetExtractionService');
 const generalLedgerExtractionService = require('./generalLedgerExtractionService');
+const clientCoaExtractionService = require('./clientCoaExtractionService');
 
 const { generateChartOfAccounts, validateChartOfAccounts, ensureCoaComplete } = require('../chartOfAccountsService');
 const { replaceValidationResults } = require('./keyReportValidationService');
@@ -357,6 +358,7 @@ async function generateFinancialTables(version, opts = {}) {
   const extractionResults = {
     tax_return: { success: 0, failed: 0, rowsExtracted: 0 },
     bank_statement: { success: 0, failed: 0, rowsExtracted: 0 },
+    chart_of_accounts: { success: 0, failed: 0, rowsExtracted: 0 },
     balance_sheet: { success: 0, failed: 0, rowsExtracted: 0 },
     general_ledger: { success: 0, failed: 0, rowsExtracted: 0 },
   };
@@ -376,10 +378,14 @@ async function generateFinancialTables(version, opts = {}) {
   const serviceByCategory = {
     tax_return: taxReturnExtractionService,
     bank_statement: bankStatementExtractionService,
+    chart_of_accounts: clientCoaExtractionService,
     balance_sheet: balanceSheetExtractionService,
     general_ledger: generalLedgerExtractionService,
   };
-  const extractionOrder = ['tax_return', 'bank_statement', 'balance_sheet', 'general_ledger'];
+  // chart_of_accounts runs first: it's the highest-priority hierarchy source
+  // (see coaMappingService.createCoaMapper), so later phases that read
+  // client_chart_of_accounts always see this run's own upload already in place.
+  const extractionOrder = ['chart_of_accounts', 'tax_return', 'bank_statement', 'balance_sheet', 'general_ledger'];
 
   const extractionTasks = [];
   for (const category of extractionOrder) {

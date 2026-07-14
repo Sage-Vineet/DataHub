@@ -37,13 +37,19 @@ const TABLE = "client_chart_of_accounts";
 // .buildLeafHierarchies' TRUSTED_MATCH_METHODS check).
 const CLIENT_WORKBOOK_METHOD = "client_workbook";
 
-/** Every row imported from the client's COA workbook — the full candidate pool. */
-async function loadCandidateAccounts() {
+/**
+ * Rows imported from a COA workbook — either one company's own upload
+ * (migration 072) or the shared global reference (companyId null).
+ */
+async function loadCandidateAccounts(companyId) {
   const cols = [
     "id", "system_id", "account_name", "adjusted_name", "account_number",
     "account_id_name", "statement_type", "hierarchy_path", ...LEVEL_KEYS,
   ].join(", ");
-  return fetchAllRows(() => supabase.from(TABLE).select(cols));
+  return fetchAllRows(() => {
+    const q = supabase.from(TABLE).select(cols);
+    return companyId ? q.eq("company_id", companyId) : q.is("company_id", null);
+  });
 }
 
 /**
@@ -114,24 +120,12 @@ function resultFromEntry(entry, matchTier, confidence) {
   };
 }
 
-/**
- * Build a reusable mapper for one classification run — loads the master COA
- * once and builds the fuzzy lookup once, same pattern as
- * keyReportReportService.loadCoaAccountTypeLookup.
- */
-async function createCoaMapper() {
-  const entries = await loadCandidateAccounts();
+/** One name/number lookup over a fixed set of candidate rows. */
+function buildSingleMapper(entries) {
   const byId = new Map(entries.map((e) => [e.id, e]));
   const fuzzyLookup = buildFuzzyLookup(entries);
 
   return {
-    /**
-     * @param {{normalizedName: string, accountNumber?: string|null}} account
-     * @returns {{matched: false} | {matched: true, matchTier: string, confidence: number,
-     *   accountType: null, statementType: string, normalBalance: null, systemId: string,
-     *   hierarchyPath: string, levels: (string|null)[], clientAccountId: string,
-     *   classificationMethod: string}}
-     */
     map({ normalizedName, accountNumber }) {
       // 1. Exact account number.
       if (accountNumber) {
@@ -155,6 +149,45 @@ async function createCoaMapper() {
       return resultFromEntry(entry, matchTier, match.confidence);
     },
     entryCount: entries.length,
+  };
+}
+
+/**
+ * Build a reusable mapper for one classification run.
+ *
+ * When companyId is given and that company has its own uploaded COA
+ * (migration 072), it is searched FIRST and wins on any match, full stop —
+ * a company's own uploaded workbook is the highest-priority hierarchy source
+ * by definition. The shared global reference is always the fallback, so
+ * companies without their own upload keep working exactly as before.
+ *
+ * @param {string|null} [companyId]
+ */
+async function createCoaMapper(companyId = null) {
+  const [companyEntries, globalEntries] = await Promise.all([
+    companyId ? loadCandidateAccounts(companyId) : Promise.resolve([]),
+    loadCandidateAccounts(null),
+  ]);
+
+  const companyMapper = companyEntries.length ? buildSingleMapper(companyEntries) : null;
+  const globalMapper = buildSingleMapper(globalEntries);
+
+  return {
+    /**
+     * @param {{normalizedName: string, accountNumber?: string|null}} account
+     * @returns {{matched: false} | {matched: true, matchTier: string, confidence: number,
+     *   accountType: null, statementType: string, normalBalance: null, systemId: string,
+     *   hierarchyPath: string, levels: (string|null)[], clientAccountId: string,
+     *   classificationMethod: string}}
+     */
+    map(account) {
+      if (companyMapper) {
+        const result = companyMapper.map(account);
+        if (result.matched) return result;
+      }
+      return globalMapper.map(account);
+    },
+    entryCount: companyEntries.length + globalEntries.length,
   };
 }
 

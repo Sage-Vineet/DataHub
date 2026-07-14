@@ -85,22 +85,28 @@ function parseClientCoaWorkbook(fileBuffer, fileName) {
 
 /**
  * Import a client COA workbook into client_chart_of_accounts, replacing
- * whatever was there before. This table holds exactly one imported reference
- * at a time — re-running the import is how you refresh it from a newer
- * version of the same source workbook, not how you merge multiple sources.
+ * whatever was there before FOR THE SAME SCOPE ONLY.
+ *
+ *   - companyId omitted/null: the single shared GLOBAL reference (the
+ *     original chart_of_accounts_SEC.xlsx import) — replaces every
+ *     company_id IS NULL row, never touches any company's own upload.
+ *   - companyId set: THAT company's own uploaded COA (migration 072) —
+ *     replaces only that company_id's rows, highest-priority hierarchy
+ *     source for that company alone (see coaMappingService.createCoaMapper).
+ *     Re-uploading is how a company refreshes its own COA from a newer
+ *     version of the same workbook.
  *
  * @param {Buffer} fileBuffer
  * @param {string} fileName
- * @returns {Promise<{inserted: number, sourceFile: string}>}
+ * @param {string|null} [companyId]
+ * @returns {Promise<{inserted: number, sourceFile: string, companyId: string|null}>}
  */
-async function importClientCoaWorkbook(fileBuffer, fileName) {
-  const records = parseClientCoaWorkbook(fileBuffer, fileName);
+async function importClientCoaWorkbook(fileBuffer, fileName, companyId = null) {
+  const records = parseClientCoaWorkbook(fileBuffer, fileName).map((r) => ({ ...r, company_id: companyId }));
   if (!records.length) throw new Error(`No account rows found in "${fileName}"`);
 
-  const { error: delErr } = await supabase
-    .from(TABLE)
-    .delete()
-    .not("id", "is", null);
+  const delQuery = supabase.from(TABLE).delete();
+  const { error: delErr } = await (companyId ? delQuery.eq("company_id", companyId) : delQuery.is("company_id", null));
   if (delErr) throw delErr;
 
   const CHUNK = 500;
@@ -111,7 +117,7 @@ async function importClientCoaWorkbook(fileBuffer, fileName) {
     if (error) throw error;
     inserted += chunk.length;
   }
-  return { inserted, sourceFile: fileName };
+  return { inserted, sourceFile: fileName, companyId };
 }
 
 module.exports = { parseClientCoaWorkbook, importClientCoaWorkbook };
