@@ -47,6 +47,30 @@ function sanitizePalette(value) {
   return normalized.length ? normalized : ["#8BC53D", "#476E2C", "#A5A5A5", "#6D6E71", "#243F18"];
 }
 
+// Per-textbox local formatting set via the style editor's "click a text box on
+// the preview, then tweak just its color/size" flow — keyed by slide number
+// then element id. Mirrors src/lib/cimTemplateStyleProfiles.js normalization.
+function sanitizeElementOverrides(input) {
+  const result = {};
+  if (!input || typeof input !== "object") return result;
+  Object.entries(input).forEach(([slideKey, elementMap]) => {
+    const slideNumber = Number(slideKey);
+    if (!Number.isFinite(slideNumber) || slideNumber <= 0 || !elementMap || typeof elementMap !== "object") return;
+    const normalizedElements = {};
+    Object.entries(elementMap).forEach(([elementId, override]) => {
+      if (!elementId || !override || typeof override !== "object") return;
+      const normalizedOverride = {};
+      const color = normalizeHex(override.color, "");
+      if (color) normalizedOverride.color = color;
+      const fontSize = Number(override.fontSize);
+      if (Number.isFinite(fontSize) && fontSize > 0) normalizedOverride.fontSize = clamp(fontSize, 4, 200, fontSize);
+      if (Object.keys(normalizedOverride).length) normalizedElements[String(elementId)] = normalizedOverride;
+    });
+    if (Object.keys(normalizedElements).length) result[String(slideNumber)] = normalizedElements;
+  });
+  return result;
+}
+
 function sanitizeProfile(profile = {}) {
   const isDefault = profile.isDefault || profile.id === "default-cim-template";
   const colors = profile.colors || {};
@@ -158,6 +182,7 @@ function sanitizeProfile(profile = {}) {
       alignObjects: Boolean(profile.layout?.alignObjects),
     },
     transition: ["none", "fade", "push-left", "wipe-right"].includes(profile.transition) ? profile.transition : "none",
+    elementOverrides: sanitizeElementOverrides(profile.elementOverrides),
     audit: Array.isArray(profile.audit) ? profile.audit.slice(-30) : [],
     updatedAt: profile.updatedAt || null,
   };

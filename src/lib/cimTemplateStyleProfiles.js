@@ -149,6 +149,10 @@ export const DEFAULT_CIM_STYLE_PROFILE = Object.freeze({
     alignObjects: false,
   },
   transition: "none",
+  // Per-textbox local formatting, keyed by slide number then element id — mirrors
+  // PowerPoint's "select this text and change just it" direct formatting, layered
+  // on top of the role-based typography rather than replacing it.
+  elementOverrides: {},
   audit: [],
   updatedAt: null,
 });
@@ -171,6 +175,11 @@ const COLOR_ROLE_BY_HEX = Object.freeze({
 const SECTION_DIVIDER_SLIDES = new Set([3, 4, 7, 11, 14, 16, 19, 22, 31, 34, 36, 38]);
 const COVER_AND_CLOSING_SLIDES = new Set([1, 38]);
 const TEMPLATE_BRAND_GREEN_KEYS = new Set(["476E2C", "8BC53D", "243F18"]);
+// The cover/closing slides fill the untouched half of their canvas with this
+// hardcoded slide-level background (not a styleable element), so it never
+// picked up a custom theme's primary color unless the user separately turned
+// on the generic "Apply background" override.
+const TEMPLATE_COVER_BACKGROUND_KEY = "2A3F1A";
 
 function clamp(value, min, max, fallback) {
   const numeric = Number(value);
@@ -263,6 +272,32 @@ function normalizePalette(palette, fallback = DEFAULT_CIM_STYLE_PROFILE.charts.p
   return normalized.length ? normalized : fallback;
 }
 
+function normalizeElementOverride(override = {}) {
+  const normalized = {};
+  const color = normalizeCimHexColor(override?.color, "");
+  if (color) normalized.color = color;
+  const fontSize = Number(override?.fontSize);
+  if (Number.isFinite(fontSize) && fontSize > 0) normalized.fontSize = clamp(fontSize, 4, 200, fontSize);
+  return normalized;
+}
+
+function normalizeElementOverrides(input) {
+  const result = {};
+  if (!input || typeof input !== "object") return result;
+  Object.entries(input).forEach(([slideKey, elementMap]) => {
+    const slideNumber = Number(slideKey);
+    if (!Number.isFinite(slideNumber) || slideNumber <= 0 || !elementMap || typeof elementMap !== "object") return;
+    const normalizedElements = {};
+    Object.entries(elementMap).forEach(([elementId, override]) => {
+      if (!elementId) return;
+      const normalizedOverride = normalizeElementOverride(override);
+      if (Object.keys(normalizedOverride).length) normalizedElements[String(elementId)] = normalizedOverride;
+    });
+    if (Object.keys(normalizedElements).length) result[String(slideNumber)] = normalizedElements;
+  });
+  return result;
+}
+
 export function normalizeCimStyleProfile(input = {}) {
   if (!input || typeof input !== "object") return DEFAULT_CIM_STYLE_PROFILE;
   const isDefault = input.isDefault || input.id === DEFAULT_CIM_STYLE_PROFILE_ID;
@@ -346,6 +381,7 @@ export function normalizeCimStyleProfile(input = {}) {
     transition: CIM_STYLE_TRANSITION_OPTIONS.some((option) => option.value === input.transition)
       ? input.transition
       : "none",
+    elementOverrides: normalizeElementOverrides(input.elementOverrides),
     audit: Array.isArray(input.audit) ? input.audit.slice(-30) : [],
     updatedAt: input.updatedAt || null,
   };
@@ -479,7 +515,7 @@ function transformText(value, capitalization) {
   return text;
 }
 
-function applyTypographyToRuns(paragraphs = [], roleKey, profile, colorFallbackRole) {
+function applyTypographyToRuns(paragraphs = [], roleKey, profile, colorFallbackRole, override = null) {
   const role = profile.typography.roles[roleKey] || profile.typography.roles.body;
   return paragraphs.map((paragraph) => ({
     ...paragraph,
@@ -495,9 +531,9 @@ function applyTypographyToRuns(paragraphs = [], roleKey, profile, colorFallbackR
       return {
         ...run,
         text: transformText(run.text, role.capitalization),
-        fontSize: nextSize,
+        fontSize: override?.fontSize || nextSize,
         typeface: role.fontFamily,
-        color: colorForRole(run.color, profile, colorFallbackRole),
+        color: override?.color || colorForRole(run.color, profile, colorFallbackRole),
         bold: role.bold || role.weight >= 600 || Boolean(run.bold),
         italic: role.italic || Boolean(run.italic),
         underline: role.underline || Boolean(run.underline),
@@ -506,6 +542,13 @@ function applyTypographyToRuns(paragraphs = [], roleKey, profile, colorFallbackR
       };
     }),
   }));
+}
+
+// Reads back the local per-textbox override set via the style editor's
+// "click a text box on the preview, then tweak just its color/size" flow.
+export function getCimStyleElementOverride(profile, slideNumber, elementId) {
+  if (!elementId) return null;
+  return profile?.elementOverrides?.[String(slideNumber)]?.[String(elementId)] || null;
 }
 
 function isImplicitTextBoxFill(element, slide = {}) {
@@ -536,10 +579,11 @@ function applyTextElementStyle(slideNumber, element, profile, slide = {}) {
     roleKey === "caption" ? "muted" :
     "body";
   const role = profile.typography.roles[roleKey] || profile.typography.roles.body;
+  const override = getCimStyleElementOverride(profile, slideNumber, element.id);
   const next = {
     ...element,
     text: transformText(element.text, role.capitalization),
-    paragraphs: applyTypographyToRuns(element.paragraphs || [], roleKey, profile, colorRole),
+    paragraphs: applyTypographyToRuns(element.paragraphs || [], roleKey, profile, colorRole, override),
     resolvedTextStyle: {
       ...(element.resolvedTextStyle || {}),
       ...(role.alignment !== "inherit" ? { alignment: role.alignment } : {}),
@@ -758,6 +802,13 @@ export function applyCimTemplateStyleProfile(slideNumber, layout, profile) {
     ...(layout.slide || {}),
     transition: normalized.transition,
   };
+
+  if (
+    COVER_AND_CLOSING_SLIDES.has(Number(slideNumber)) &&
+    hexKey(layout.slide?.backgroundColor) === TEMPLATE_COVER_BACKGROUND_KEY
+  ) {
+    slide.backgroundColor = normalized.colors.primary;
+  }
 
   if (shouldApplyBackground(slideNumber, normalized)) {
     if (normalized.background.mode === "solid") {

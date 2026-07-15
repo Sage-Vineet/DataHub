@@ -21,6 +21,7 @@ import {
   SUPPORTED_CIM_STYLE_FONTS,
   createCimStyleProfile,
   exportCimStyleProfileJson,
+  getCimStyleElementOverride,
   importCimStyleProfileJson,
   normalizeCimStyleProfile,
   normalizeCimStyleProfilesState,
@@ -167,13 +168,13 @@ function ColorInput({
   return (
     <div className="block">
       <ControlLabel>{label}</ControlLabel>
-      <div className="rounded-md border border-border bg-white p-2.5">
-        <div className="grid grid-cols-[40px_minmax(0,1fr)] gap-2">
+      <div className="rounded-md border border-border bg-white p-1.5">
+        <div className="flex items-center gap-1.5">
           <input
             type="color"
             value={hex}
             onChange={(event) => commitColor(event.target.value)}
-            className="h-9 w-full cursor-pointer rounded border border-border bg-transparent p-1"
+            className="h-7 w-7 shrink-0 cursor-pointer rounded border border-border bg-transparent p-0.5"
             title={`${label} color`}
             aria-label={`${label} color`}
           />
@@ -187,13 +188,13 @@ function ColorInput({
                 event.currentTarget.blur();
               }
             }}
-            className="h-9 min-w-0 rounded-md border border-border px-2 text-xs font-semibold uppercase text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20"
+            className="h-7 min-w-0 flex-1 rounded-md border border-border px-1.5 text-center text-[11px] font-semibold uppercase text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20"
             aria-label={`${label} HEX`}
           />
         </div>
         {onOpacityChange ? (
-          <label className="mt-2 block">
-            <span className="mb-1 flex items-center justify-between text-[9px] font-bold uppercase text-[#8A8F98]">
+          <label className="mt-1.5 block">
+            <span className="mb-0.5 flex items-center justify-between text-[9px] font-bold uppercase text-[#8A8F98]">
               <span>{opacityLabel}</span>
               <span>{Math.round(Number(opacity ?? 1) * 100)}%</span>
             </span>
@@ -209,15 +210,15 @@ function ColorInput({
           </label>
         ) : null}
         {presets.length ? (
-          <div className="mt-2">
-            <span className="mb-1 block text-[9px] font-bold uppercase text-[#8A8F98]">Suggested</span>
-            <div className="flex flex-wrap gap-1.5">
+          <div className="mt-1.5">
+            <span className="mb-0.5 block text-[9px] font-bold uppercase text-[#8A8F98]">Suggested</span>
+            <div className="flex flex-wrap gap-1">
               {presets.map((color) => (
                 <button
                   key={color}
                   type="button"
                   onClick={() => commitColor(color)}
-                  className={`h-6 w-6 rounded border ${color === hex ? "border-[#050505] ring-2 ring-[#8BC53D]/30" : "border-border"}`}
+                  className={`h-4 w-4 rounded border ${color === hex ? "border-[#050505] ring-2 ring-[#8BC53D]/30" : "border-border"}`}
                   style={{ backgroundColor: color }}
                   title={color}
                   aria-label={`Use ${color}`}
@@ -227,15 +228,15 @@ function ColorInput({
           </div>
         ) : null}
         {recents.length ? (
-          <div className="mt-2">
-            <span className="mb-1 block text-[9px] font-bold uppercase text-[#8A8F98]">Recent</span>
-            <div className="flex flex-wrap gap-1.5">
+          <div className="mt-1.5">
+            <span className="mb-0.5 block text-[9px] font-bold uppercase text-[#8A8F98]">Recent</span>
+            <div className="flex flex-wrap gap-1">
               {recents.map((color) => (
                 <button
                   key={color}
                   type="button"
                   onClick={() => commitColor(color)}
-                  className="h-6 w-6 rounded border border-border"
+                  className="h-4 w-4 rounded border border-border"
                   style={{ backgroundColor: color }}
                   title={color}
                   aria-label={`Use recent ${color}`}
@@ -437,19 +438,19 @@ function ColorsTab({ profile, updateProfile, colorPickerProps }) {
   const advancedFields = CIM_STYLE_COLOR_FIELDS.filter(({ key }) => !CORE_COLOR_FIELDS.has(key) && !TEXT_COLOR_FIELDS.has(key));
 
   return (
-    <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 gap-2">
         {coreFields.map(renderColor)}
       </div>
-      <details className="rounded-md border border-border bg-white p-3">
+      <details className="rounded-md border border-border bg-white p-2.5">
         <summary className="cursor-pointer text-xs font-bold text-[#476E2C]">More text colors</summary>
-        <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        <div className="mt-2 grid grid-cols-2 gap-2">
           {textFields.map(renderColor)}
         </div>
       </details>
-      <details className="rounded-md border border-border bg-white p-3">
+      <details className="rounded-md border border-border bg-white p-2.5">
         <summary className="cursor-pointer text-xs font-bold text-[#476E2C]">Table, chart, and divider colors</summary>
-        <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        <div className="mt-2 grid grid-cols-2 gap-2">
           {advancedFields.map(renderColor)}
         </div>
       </details>
@@ -464,58 +465,68 @@ const TEXT_STYLE_GROUPS = [
   { key: "tables", label: "Tables", roles: ["table"] },
 ];
 
-const TEXT_STYLE_SIZE_PRESETS = {
-  compact: {
-    title: 0.92,
-    heading: 0.94,
-    subheading: 0.95,
-    body: 0.95,
-    caption: 0.94,
-    footer: 0.94,
-    table: 0.94,
-  },
-  standard: {
-    title: 1,
-    heading: 1,
-    subheading: 1,
-    body: 1,
-    caption: 1,
-    footer: 1,
-    table: 1,
-  },
-  large: {
-    title: 1.08,
-    heading: 1.07,
-    subheading: 1.06,
-    body: 1.05,
-    caption: 1.03,
-    footer: 1.03,
-    table: 1.04,
-  },
+// Reference point size for each group's first (anchor) role, used to translate
+// the abstract sizeScale multiplier into a concrete number the user can type,
+// mirroring PowerPoint's font-size box (free-typed pt value + common presets).
+const TEXT_STYLE_REFERENCE_SIZES = {
+  titles: 32,
+  body: 12,
+  small: 9,
+  tables: 10,
 };
+
+const COMMON_FONT_SIZES = [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 40, 44, 48, 54, 60, 66, 72, 80, 88, 96];
 
 function getSharedRoleValue(profile, roles, key, fallback) {
   const values = roles.map((roleKey) => profile.typography.roles[roleKey]?.[key]).filter((value) => value !== undefined);
   return values.length && values.every((value) => value === values[0]) ? values[0] : fallback;
 }
 
-function getTextStyleSizePreset(profile, roles) {
-  const scales = roles.map((roleKey) => Number(profile.typography.roles[roleKey]?.sizeScale || 1));
-  const average = scales.reduce((sum, value) => sum + value, 0) / Math.max(scales.length, 1);
-  if (average <= 0.97) return "compact";
-  if (average >= 1.04) return "large";
-  return "standard";
+function getGroupFontSize(profile, group) {
+  const referenceSize = TEXT_STYLE_REFERENCE_SIZES[group.key] || 12;
+  const anchorScale = Number(profile.typography.roles[group.roles[0]]?.sizeScale || 1);
+  return Math.round(referenceSize * anchorScale);
+}
+
+function FontSizeInput({ id, value, min, max, onChange }) {
+  return (
+    <>
+      <input
+        type="number"
+        inputMode="numeric"
+        list={id}
+        min={min}
+        max={max}
+        step={1}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="h-9 w-full rounded-md border border-border bg-white px-2.5 text-xs font-semibold text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20"
+        aria-label="Font size in points"
+      />
+      <datalist id={id}>
+        {COMMON_FONT_SIZES.map((size) => <option key={size} value={size} />)}
+      </datalist>
+    </>
+  );
 }
 
 function FontsTab({ profile, updateProfile }) {
   const updateRoleGroup = (roles, property, value) => {
     roles.forEach((roleKey) => updateProfile(["typography", "roles", roleKey, property], value));
   };
-  const updateTextStyleSizePreset = (roles, presetKey) => {
-    const preset = TEXT_STYLE_SIZE_PRESETS[presetKey] || TEXT_STYLE_SIZE_PRESETS.standard;
-    roles.forEach((roleKey) => {
-      const sizeScale = preset[roleKey] || 1;
-      updateProfile(["typography", "roles", roleKey, "sizeScale"], sizeScale);
+  // Applies the typed point size to the group's anchor role, then carries the
+  // same ratio of change over to the group's other roles so their relative
+  // proportions (e.g. title vs. subheading) are preserved rather than flattened.
+  const updateGroupFontSize = (group, rawValue) => {
+    const parsed = Number(rawValue);
+    if (!Number.isFinite(parsed) || parsed <= 0) return;
+    const referenceSize = TEXT_STYLE_REFERENCE_SIZES[group.key] || 12;
+    const anchorRole = group.roles[0];
+    const currentAnchorScale = Number(profile.typography.roles[anchorRole]?.sizeScale || 1) || 1;
+    const ratio = (parsed / referenceSize) / currentAnchorScale;
+    group.roles.forEach((roleKey) => {
+      const currentScale = Number(profile.typography.roles[roleKey]?.sizeScale || 1);
+      updateProfile(["typography", "roles", roleKey, "sizeScale"], currentScale * ratio);
       updateProfile(["typography", "roles", roleKey, "sizeDelta"], 0);
     });
   };
@@ -557,15 +568,14 @@ function FontsTab({ profile, updateProfile }) {
                 </SelectInput>
               </label>
               <label>
-                <ControlLabel>Size</ControlLabel>
-                <SelectInput
-                  value={getTextStyleSizePreset(profile, group.roles)}
-                  onChange={(value) => updateTextStyleSizePreset(group.roles, value)}
-                >
-                  <option value="compact">Compact</option>
-                  <option value="standard">Standard</option>
-                  <option value="large">Large</option>
-                </SelectInput>
+                <ControlLabel>Size (pt)</ControlLabel>
+                <FontSizeInput
+                  id={`font-size-options-${group.key}`}
+                  value={getGroupFontSize(profile, group)}
+                  min={Math.round((TEXT_STYLE_REFERENCE_SIZES[group.key] || 12) * 0.72)}
+                  max={Math.round((TEXT_STYLE_REFERENCE_SIZES[group.key] || 12) * 1.45)}
+                  onChange={(value) => updateGroupFontSize(group, value)}
+                />
               </label>
               <label>
                 <ControlLabel>Weight</ControlLabel>
@@ -660,7 +670,7 @@ function BackgroundTab({ profile, updateProfile, reportError, colorPickerProps }
           </SelectInput>
         </label>
       </div>
-      <div className="grid gap-3 md:grid-cols-3">
+      <div className="grid grid-cols-2 gap-2">
         <ColorInput label="Solid Color" value={profile.background.color} onChange={(value) => updateProfile(["background", "color"], value)} {...colorPickerProps} />
         <ColorInput label="Gradient From" value={profile.background.gradientFrom} onChange={(value) => updateProfile(["background", "gradientFrom"], value)} {...colorPickerProps} />
         <ColorInput label="Gradient To" value={profile.background.gradientTo} onChange={(value) => updateProfile(["background", "gradientTo"], value)} {...colorPickerProps} />
@@ -688,7 +698,7 @@ function BackgroundTab({ profile, updateProfile, reportError, colorPickerProps }
 function TablesTab({ profile, updateProfile, colorPickerProps }) {
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 md:grid-cols-3">
+      <div className="grid grid-cols-2 gap-2">
         <ColorInput label="Header" value={profile.tables.headerColor} onChange={(value) => updateProfile(["tables", "headerColor"], value)} {...colorPickerProps} />
         <ColorInput label="Header Text" value={profile.tables.headerTextColor} onChange={(value) => updateProfile(["tables", "headerTextColor"], value)} {...colorPickerProps} />
         <ColorInput label="Border" value={profile.tables.borderColor} onChange={(value) => updateProfile(["tables", "borderColor"], value)} {...colorPickerProps} />
@@ -716,7 +726,7 @@ function TablesTab({ profile, updateProfile, colorPickerProps }) {
 function ChartsTab({ profile, updateProfile, colorPickerProps }) {
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 md:grid-cols-4">
+      <div className="grid grid-cols-2 gap-2">
         {profile.charts.palette.map((color, index) => (
           <ColorInput
             key={index}
@@ -731,7 +741,7 @@ function ChartsTab({ profile, updateProfile, colorPickerProps }) {
           />
         ))}
       </div>
-      <div className="grid gap-3 md:grid-cols-3">
+      <div className="grid grid-cols-2 gap-2">
         <ColorInput label="Chart Background" value={profile.charts.backgroundColor} onChange={(value) => updateProfile(["charts", "backgroundColor"], value)} {...colorPickerProps} />
         <ColorInput label="Grid" value={profile.charts.gridColor} onChange={(value) => updateProfile(["charts", "gridColor"], value)} {...colorPickerProps} />
         <ColorInput label="Labels" value={profile.charts.labelColor} onChange={(value) => updateProfile(["charts", "labelColor"], value)} {...colorPickerProps} />
@@ -758,7 +768,7 @@ function ChartsTab({ profile, updateProfile, colorPickerProps }) {
 function BrandingTab({ profile, updateProfile, reportError, colorPickerProps }) {
   return (
     <div className="space-y-4">
-      <div className="grid gap-3 md:grid-cols-3">
+      <div className="grid grid-cols-2 gap-2">
         <label>
           <ControlLabel>Page Numbers</ControlLabel>
           <ToggleInput checked={profile.footer.pageNumbers} onChange={(value) => updateProfile(["footer", "pageNumbers"], value)} label="Visible" />
@@ -810,7 +820,7 @@ function BrandingTab({ profile, updateProfile, reportError, colorPickerProps }) 
         onChange={(value) => updateProfile(["watermark", "image"], value)}
         onError={reportError}
       />
-      <div className="grid gap-3 md:grid-cols-4">
+      <div className="grid grid-cols-2 gap-2">
         <label>
           <ControlLabel>Image Radius</ControlLabel>
           <NumberInput value={profile.images.cornerRadius} min={0} max={36} onChange={(value) => updateProfile(["images", "cornerRadius"], value)} />
@@ -853,6 +863,12 @@ export default function CimTemplateStyleEditor({
   const [recentColors, setRecentColors] = useState([]);
   const [error, setError] = useState("");
   const [warnings, setWarnings] = useState([]);
+  const [selectedElement, setSelectedElement] = useState(null);
+
+  const changePreviewSlide = (slideNumber) => {
+    setPreviewSlide(slideNumber);
+    setSelectedElement(null);
+  };
 
   const selectedProfile = useMemo(() => {
     return draftState.profiles.find((profile) => profile.id === selectedProfileId) || draftState.profiles[0];
@@ -1048,7 +1064,7 @@ export default function CimTemplateStyleEditor({
 
   return (
     <div className="fixed inset-0 z-[99999] bg-[#111827]/70 p-3 text-[#050505] backdrop-blur-sm lg:p-5">
-      <div className="mx-auto grid h-full max-w-[1560px] overflow-hidden rounded-lg bg-white shadow-2xl lg:grid-cols-[240px_minmax(0,1fr)]">
+      <div className="mx-auto grid h-full max-w-[1760px] overflow-hidden rounded-lg bg-white shadow-2xl lg:grid-cols-[240px_minmax(0,1fr)]">
         <ProfileList
           state={draftState}
           selectedProfileId={selectedProfileId}
@@ -1087,7 +1103,7 @@ export default function CimTemplateStyleEditor({
             </div>
           </header>
 
-          <div className="grid min-h-0 lg:grid-cols-[minmax(0,1fr)_520px]">
+          <div className="grid min-h-0 lg:grid-cols-[420px_minmax(0,1fr)]">
             <div className="min-h-0 overflow-y-auto border-r border-border bg-[#F7F8FA] p-4">
               <div className="mb-4 rounded-lg border border-border bg-white p-3">
                 <ControlLabel>Profile Name</ControlLabel>
@@ -1134,12 +1150,95 @@ export default function CimTemplateStyleEditor({
                   Slide {previewSlide}
                 </span>
               </div>
-              <div className="rounded-lg border border-border bg-[#F7F8FA] p-2">
-                {renderPreview?.({ profile: normalizedSelected, slideNumber: previewSlide })}
+              {!normalizedSelected.locked ? (
+                <p className="mb-2 text-[11px] font-semibold text-[#8A8F98]">
+                  Click any text on the slide to restyle just that text — like formatting a selection in PowerPoint.
+                </p>
+              ) : null}
+              <div className="mx-auto max-w-3xl rounded-lg border border-border bg-[#F7F8FA] p-3">
+                {renderPreview?.({
+                  profile: normalizedSelected,
+                  slideNumber: previewSlide,
+                  selection: normalizedSelected.locked ? null : {
+                    selectedElementId: selectedElement?.elementId || null,
+                    onSelectElement: setSelectedElement,
+                  },
+                })}
               </div>
+              {selectedElement ? (
+                <div className="mt-3 rounded-lg border border-[#8BC53D] bg-[#F8FCF3] p-3">
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <span className="min-w-0 truncate text-xs font-bold text-[#476E2C]" title={selectedElement.label}>
+                      Selected text: “{selectedElement.label}”
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedElement(null)}
+                      className="shrink-0 rounded p-1 text-[#6D6E71] transition hover:bg-white hover:text-[#050505]"
+                      aria-label="Deselect text"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                  <div className="space-y-2">
+                    <ColorInput
+                      label="Color"
+                      value={
+                        getCimStyleElementOverride(normalizedSelected, previewSlide, selectedElement.elementId)?.color
+                        || selectedElement.currentColor
+                      }
+                      onChange={(value) => updateProfile(
+                        ["elementOverrides", String(previewSlide), String(selectedElement.elementId), "color"],
+                        value,
+                      )}
+                      {...colorPickerProps}
+                    />
+                    <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-2">
+                      <label className="block">
+                        <ControlLabel>Size (pt)</ControlLabel>
+                        <input
+                          type="number"
+                          inputMode="numeric"
+                          min={4}
+                          max={200}
+                          step={1}
+                          value={Math.round(
+                            getCimStyleElementOverride(normalizedSelected, previewSlide, selectedElement.elementId)?.fontSize
+                            || selectedElement.currentFontSize
+                            || 12,
+                          )}
+                          onChange={(event) => {
+                            const value = Number(event.target.value);
+                            if (Number.isFinite(value) && value > 0) {
+                              updateProfile(
+                                ["elementOverrides", String(previewSlide), String(selectedElement.elementId), "fontSize"],
+                                value,
+                              );
+                            }
+                          }}
+                          className="h-9 w-full rounded-md border border-border bg-white px-2.5 text-xs font-semibold text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20"
+                          aria-label="Selected text size in points"
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => updateProfile(
+                          ["elementOverrides", String(previewSlide), String(selectedElement.elementId)],
+                          {},
+                        )}
+                        className="inline-flex h-9 shrink-0 items-center gap-1 rounded-md border border-border bg-white px-2.5 text-[11px] font-bold text-[#6D6E71] transition hover:border-[#8BC53D] hover:text-[#476E2C]"
+                        title="Reset this text to the theme's styling"
+                      >
+                        <RefreshCcw size={13} />
+                        Reset
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
               <label className="mt-4 block rounded-md border border-border bg-white p-3">
                 <ControlLabel>Preview Slide</ControlLabel>
-                <SelectInput value={previewSlide} onChange={(value) => setPreviewSlide(Number(value))}>
+                <SelectInput value={previewSlide} onChange={(value) => changePreviewSlide(Number(value))}>
                   {groupedSlides.map((group) => (
                     <optgroup key={group.id} label={`${group.number ? `${group.number} ` : ""}${group.title}`}>
                       {group.slides.map((slideNumber) => (
