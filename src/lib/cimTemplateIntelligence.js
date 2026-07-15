@@ -810,6 +810,17 @@ function classifyPart(path = "") {
   return "";
 }
 
+function getSlideSizePx(archive) {
+  const doc = parseXml(readArchiveText(archive, "ppt/presentation.xml"));
+  const sldSz = doc ? firstDescendantByLocalName(doc, "sldSz") : null;
+  const width = Math.round(toPx(sldSz?.getAttribute("cx")));
+  const height = Math.round(toPx(sldSz?.getAttribute("cy")));
+  return {
+    width: width > 0 ? width : 1280,
+    height: height > 0 ? height : 720,
+  };
+}
+
 function buildTemplateSignature({ file, slideCount, placeholders }) {
   return hashString([
     file?.name || "",
@@ -876,6 +887,7 @@ export async function analyzeCustomPptxTemplate(file) {
   }));
 
   const signature = buildTemplateSignature({ file, slideCount: slides.length, placeholders });
+  const slideSize = getSlideSizePx(archiveEntries);
   const schema = {
     version: TEMPLATE_INTELLIGENCE_VERSION,
     generatedAt: new Date().toISOString(),
@@ -927,6 +939,8 @@ export async function analyzeCustomPptxTemplate(file) {
       groupedObjectCount: slides.reduce((sum, slide) => sum + (slide.elements?.groupedObjects?.length || 0), 0),
       smartArtCount: slides.reduce((sum, slide) => sum + (slide.elements?.smartArt?.length || 0), 0),
       placeholderCount: placeholders.length,
+      slideWidthPx: slideSize.width,
+      slideHeightPx: slideSize.height,
     },
     slides,
     relatedParts,
@@ -1578,6 +1592,35 @@ export function getTemplateAnalysisSummary(state = {}) {
     warnings: summary.warnings || 0,
     confidenceScore: summary.confidenceScore || 0,
   };
+}
+
+function deriveSlideSectionLabel(slide) {
+  const title = normalizeText(slide?.title || "");
+  if (!title) return `Slide ${slide?.slideNumber ?? ""}`.trim();
+  // Many CIM decks header every slide as "Company Name | SECTION NAME" (see
+  // the placeholder-detection example in the spec) — use the part after the
+  // last "|" as the section label so consecutive slides sharing a section
+  // group together, same as the fixed template's SECTION_SLIDES map.
+  const pipeIndex = title.lastIndexOf("|");
+  if (pipeIndex >= 0) {
+    const after = normalizeText(title.slice(pipeIndex + 1));
+    if (after) return after;
+  }
+  return title;
+}
+
+export function groupSlidesIntoSections(slides = []) {
+  const sections = [];
+  slides.forEach((slide) => {
+    const label = deriveSlideSectionLabel(slide);
+    const last = sections[sections.length - 1];
+    if (last && last.title === label) {
+      last.slideNumbers.push(slide.slideNumber);
+    } else {
+      sections.push({ id: `custom-section-${sections.length + 1}`, title: label, slideNumbers: [slide.slideNumber] });
+    }
+  });
+  return sections.map((section, index) => ({ ...section, number: String(index + 1).padStart(2, "0") }));
 }
 
 export const TemplateParser = Object.freeze({
