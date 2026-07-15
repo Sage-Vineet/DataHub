@@ -409,19 +409,14 @@ export default function WorkspaceKeyReports() {
     }
   };
 
-  // ── Export data ────────────────────────────────────────────────────────────
-  const handleExportData = async () => {
-    if (!selectedVersionId) return;
-    setExporting(true);
+  const handleUnlink = async (mappingId) => {
     try {
       await removeKeyReportMapping(mappingId);
       clearGeneration(clientId, selectedVersionId);
       await loadDetail(selectedVersionId);
       notify("File unlinked.", "success");
     } catch (e) {
-      notify(e.message || "Failed to export data.", "error");
-    } finally {
-      setExporting(false);
+      notify(e.message || "Failed to unlink file.", "error");
     }
   };
 
