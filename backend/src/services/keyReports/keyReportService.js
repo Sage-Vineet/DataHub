@@ -26,6 +26,11 @@ const REPORT_CATEGORIES = {
   GENERAL_LEDGER: "general_ledger",
   BANK_STATEMENT: "bank_statement",
   TAX_RETURN: "tax_return",
+  // Optional: a company's own Chart of Accounts workbook (migration 072).
+  // When linked, it becomes that company's highest-priority hierarchy source
+  // (see coaMappingService.createCoaMapper) — above the shared global
+  // reference and above AI category selection.
+  CHART_OF_ACCOUNTS: "chart_of_accounts",
 };
 const VALID_CATEGORIES = new Set(Object.values(REPORT_CATEGORIES));
 
@@ -33,7 +38,10 @@ const VALID_CATEGORIES = new Set(Object.values(REPORT_CATEGORIES));
 // source_file_id). Mirrors each extraction service's `tableName` — kept here
 // too so removeMapping can clean up without loading the extraction services.
 // profit_loss has no entry table (dropped by migration 056; P&L is generated
-// from the General Ledger).
+// from the General Ledger). chart_of_accounts also has none here on purpose:
+// client_chart_of_accounts is scoped by company_id, not version_id/
+// source_file_id, so unlinking the document doesn't revoke the company's
+// parsed reference — only a fresh upload replaces it (clientCoaImportService).
 const ENTRY_TABLE_BY_CATEGORY = {
   [REPORT_CATEGORIES.GENERAL_LEDGER]: "general_ledger_entries",
   [REPORT_CATEGORIES.BALANCE_SHEET]: "balance_sheet_entries",

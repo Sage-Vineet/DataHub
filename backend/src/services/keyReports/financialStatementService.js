@@ -22,8 +22,9 @@
 "use strict";
 
 const { supabase } = require("../../db");
-const { getCashflowReport, bsBalancesForYear, aggregateGLForBSByMonth } = require("./keyReportReportService");
+const { bsBalancesForYear, aggregateGLForBSByMonth } = require("./keyReportReportService");
 const { fetchAllRows } = require("./pagedFetch");
+const { norm, normStrict, buildMappings, buildFuzzyLookup, fuzzyMatch } = require("./accountNameMatching");
 // ensureAccountExistsInCoa intentionally not imported — COA must be complete
 // before report generation begins (ensureCoaComplete runs in Phase 2c).
 
@@ -38,65 +39,15 @@ const MONTH_NAMES = [
 ];
 const LEVEL_KEYS = Array.from({ length: 15 }, (_, i) => `level_${i + 1}`);
 
-/**
- * Primary normalization applied to BOTH sides of every name lookup.
- * Must be identical to the fallback normalization in coa_account_mappings.
- */
-const norm = (s) =>
-  String(s || "")
-    .toLowerCase()
-    .replace(/&/g, "and")
-    .replace(/[^a-z0-9\s]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-
-const normStrict = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
-
 const displayName = (acc) => acc.adjusted_name || acc.base_account || acc.account_name;
 
-// ─── Unmapped BS entry classification ────────────────────────────────────────
-// When a balance_sheet_entries row can't be matched to a COA leaf, classify it
-// by keyword so it still appears on the correct side of the Balance Sheet.
-// Mirrors classifyGLAccount in keyReportReportService but scoped to BS types.
-
-const _BS_PRIORITY_ASSET_KW = ['loans to', 'loan to'];
-const _BS_LIABILITY_KW      = ['payable', 'accrued', 'credit card', 'loan', 'liability', 'mortgage', 'deferred', 'unearned'];
-const _BS_ASSET_KW          = ['cash', 'bank', 'checking', 'savings', 'receivable', 'inventory', 'prepaid', 'deposit', 'money market', 'equipment', 'furniture', 'vehicle', 'building', 'land', 'property', 'accumulated depreciation', 'goodwill', 'intangible', 'investment', 'due from', 'asset'];
-const _BS_EQUITY_KW         = ['equity', 'capital', 'retained earnings', 'owner', 'member', 'distribution', 'draw', 'net income', 'net loss'];
-
-// P&L keyword lists for COA suggestion in unmapped account report (Issue 5)
-const _PL_PRIORITY_EXPENSE_KW = ['credit card charges', 'credit card fees', 'bank charges', 'bank fees'];
-const _PL_REVENUE_KW = ['revenue', 'income', 'sales', 'fees earned', 'interest income', 'gross receipts', 'gain on sale', 'refunds to customers', 'discounts'];
-const _PL_EXPENSE_KW = ['expense', 'cost of goods', 'cogs', 'cost of sales', 'salaries', 'wages', 'rent', 'utilities', 'insurance', 'depreciation', 'amortization', 'payroll', 'supplies', 'advertising', 'marketing', 'fees', 'interest paid', 'legal', 'alarm', 'charitable', 'education', 'meals', 'repairs', 'maintenance', 'subscription', 'telephone', 'travel', 'water', 'worker', 'licenses'];
-
-/**
- * Issue 5: Return a suggested COA type for an account name that could not be
- * matched to a COA leaf. Uses priority-ordered keyword lists. Result is
- * advisory only — always include the confidence score in the UI.
- */
-function suggestCoaType(normName) {
-  const n = String(normName || '').toLowerCase();
-  const hitKw = (kws) => { for (const k of kws) { if (n.includes(k)) return k; } return null; };
-  let kw;
-  if ((kw = hitKw(_BS_PRIORITY_ASSET_KW)))   return { suggestedType: 'asset',     confidence: 0.90, reason: `keyword match: "${kw}"` };
-  if ((kw = hitKw(_PL_PRIORITY_EXPENSE_KW))) return { suggestedType: 'expense',   confidence: 0.90, reason: `keyword match: "${kw}"` };
-  if ((kw = hitKw(_PL_REVENUE_KW)))          return { suggestedType: 'revenue',   confidence: 0.85, reason: `keyword match: "${kw}"` };
-  if ((kw = hitKw(_BS_LIABILITY_KW)))        return { suggestedType: 'liability', confidence: 0.80, reason: `keyword match: "${kw}"` };
-  if ((kw = hitKw(_BS_ASSET_KW)))            return { suggestedType: 'asset',     confidence: 0.80, reason: `keyword match: "${kw}"` };
-  if ((kw = hitKw(_PL_EXPENSE_KW)))          return { suggestedType: 'expense',   confidence: 0.75, reason: `keyword match: "${kw}"` };
-  if ((kw = hitKw(_BS_EQUITY_KW)))           return { suggestedType: 'equity',    confidence: 0.75, reason: `keyword match: "${kw}"` };
-  return { suggestedType: 'unknown', confidence: 0, reason: 'no keyword match — manual classification required' };
-}
-
-function classifyUnmappedBSAccount(name) {
-  const n = String(name || '').toLowerCase();
-  const hit = (kws) => kws.some(k => n.includes(k));
-  if (hit(_BS_PRIORITY_ASSET_KW)) return 'asset';
-  if (hit(_BS_LIABILITY_KW))      return 'liability';
-  if (hit(_BS_ASSET_KW))          return 'asset';
-  if (hit(_BS_EQUITY_KW))         return 'equity';
-  return null;
-}
+// NOTE: the former keyword-based classifier for unmapped Balance-Sheet entries
+// (classifyUnmappedBSAccount + _BS_*_KW arrays) has been removed. Hierarchy /
+// account-type is never inferred from account-name keywords anywhere in the
+// Key Reports pipeline. A balance_sheet_entries row that cannot be matched to
+// an existing chart_of_accounts leaf is tracked in unmappedSet and excluded
+// from the statement until a human maps it (needs_mapping) — see the
+// generateMonthlyBs* miss handling below.
 
 
 
@@ -151,7 +102,7 @@ async function loadCoa(versionId) {
   const cols = [
     "id", "system_id", "account_name", "account_number",
     "account_type", "statement_type", "adjusted_name", "base_account",
-    "parent_account_id", "metadata",
+    "parent_account_id", "metadata", "cf_category",
     ...LEVEL_KEYS, "hierarchy_path", "is_active", "sort_order",
   ].join(", ");
 
@@ -163,10 +114,30 @@ async function loadCoa(versionId) {
     .order("sort_order", { ascending: true });
 
   if (error) throw new Error(`COA load: ${error.message}`);
-  const accounts = data || [];
+  const all = data || [];
+  // needs_mapping accounts (coaMappingService found no match against any other
+  // chart_of_accounts row, not even fuzzy — see
+  // chartOfAccountsService.buildLeafHierarchies) have no hierarchy and no
+  // parent_account_id. Excluding them here means their GL/BS amounts fall
+  // through to the existing "couldn't match any COA leaf" unmappedSet
+  // tracking (same path as a name that isn't in the COA at all) instead of
+  // silently counting toward a total under an incomplete/missing hierarchy.
+  const unmapped = [];
+  const accounts = all.filter((a) => {
+    if (a.metadata?.needs_mapping) { unmapped.push(a); return false; }
+    return true;
+  });
+  if (unmapped.length) {
+    console.log(`[FinStmt][COA] ${unmapped.length} account(s) did not match an existing Chart of Accounts hierarchy. Marked needs_mapping=true. Excluded from reports until manually mapped: ${unmapped.map(a => a.account_name).join(", ")}`);
+  }
   const leaves = accounts.filter(a => !a.metadata?.is_group);
   const groups = accounts.filter(a =>  a.metadata?.is_group);
   console.log(`[FinStmt][COA] ${accounts.length} accounts (${leaves.length} leaves, ${groups.length} groups)`);
+  // Carried as extra properties (not a shape change) so existing callers that
+  // treat this as a plain array keep working; callers that care about the
+  // unmapped count (e.g. validation reporting) can read them.
+  accounts.unmappedCount = unmapped.length;
+  accounts.unmappedNames = unmapped.map((a) => a.account_name);
   return accounts;
 }
 
@@ -214,122 +185,8 @@ function buildTree(coaAccounts) {
 // precomputed copy of exactly this — it has been removed; we build it in-memory
 // from the COA leaves, which is both authoritative and always in sync.)
 
-function buildMappings(leaves) {
-  const map = new Map(); // norm(name) → account_id[]   (+ __num__<n> keys)
-  for (const acc of leaves || []) {
-    const names = [acc.adjusted_name, acc.account_name, acc.base_account].filter(Boolean);
-    for (const name of names) {
-      const key = norm(name);
-      if (!key) continue;
-      if (!map.has(key)) map.set(key, []);
-      if (!map.get(key).includes(acc.id)) map.get(key).push(acc.id);
-    }
-    if (acc.account_number) {
-      const numKey = `__num__${String(acc.account_number).trim()}`;
-      if (!map.has(numKey)) map.set(numKey, []);
-      if (!map.get(numKey).includes(acc.id)) map.get(numKey).push(acc.id);
-    }
-  }
-  return map;
-}
-
-// ─── Accounting modifier words ─────────────────────────────────────────────────
-// Words/phrases that change an account's accounting meaning rather than just its
-// spelling. "Meal Tax" and "Accrued Meal Tax" are different accounts with different
-// balances — fuzzy matching must never bridge a query and a candidate that disagree
-// on which of these modifiers they carry, no matter how similar the remaining words
-// are. This list is generic accounting vocabulary, not tied to any specific account.
-const MODIFIER_PHRASES = ["non current", "long term", "short term"];
-const MODIFIER_WORDS = [
-  "accrued", "deferred", "prepaid", "prepayment", "provision", "allowance",
-  "reserve", "unearned", "payable", "receivable", "amortization", "amortized",
-  "depreciation", "accumulated", "restricted", "current", "impairment",
-  "valuation", "clearing", "suspense", "estimated", "contra",
-];
-
-/** Set of accounting-modifier phrases/words present in a norm()-ed account name. */
-function extractModifiers(normalized) {
-  let s = ` ${normalized} `;
-  const found = new Set();
-  for (const phrase of MODIFIER_PHRASES) {
-    const re = new RegExp(`\\b${phrase.replace(" ", "\\s+")}\\b`);
-    if (re.test(s)) { found.add(phrase); s = s.replace(re, " "); }
-  }
-  for (const word of MODIFIER_WORDS) {
-    if (new RegExp(`\\b${word}\\b`).test(s)) found.add(word);
-  }
-  return found;
-}
-
-/** True only when both names carry exactly the same set of accounting modifiers. */
-function sameModifiers(a, b) {
-  if (a.size !== b.size) return false;
-  for (const m of a) if (!b.has(m)) return false;
-  return true;
-}
-
-// ─── Multi-strategy fuzzy fallback matcher ────────────────────────────────────
-
-function buildFuzzyLookup(leaves) {
-  const exact  = new Map();
-  const strict = new Map();
-  const byNum  = new Map();
-  for (const acc of leaves) {
-    const names = [acc.adjusted_name, acc.account_name, acc.base_account].filter(Boolean);
-    for (const name of names) {
-      const k1 = norm(name);
-      if (k1 && !exact.has(k1))  exact.set(k1, acc.id);
-      const k2 = normStrict(name);
-      if (k2 && !strict.has(k2)) strict.set(k2, acc.id);
-    }
-    if (acc.account_number) {
-      const nk = String(acc.account_number).trim();
-      if (nk && !byNum.has(nk)) byNum.set(nk, acc.id);
-    }
-  }
-  return { exact, strict, byNum };
-}
-
-function fuzzyMatch(lookup, name, accountNumber) {
-  const k1 = norm(name);
-  if (lookup.exact.has(k1)) return { id: lookup.exact.get(k1), confidence: 1.0 };
-
-  if (accountNumber) {
-    const nk = String(accountNumber).trim();
-    if (lookup.byNum.has(nk)) return { id: lookup.byNum.get(nk), confidence: 1.0 };
-  }
-
-  const k2 = normStrict(name);
-  if (k2 && lookup.strict.has(k2)) return { id: lookup.strict.get(k2), confidence: 0.95 };
-
-  // Word-set Jaccard similarity with a lowered threshold of 0.50 to catch more valid
-  // accounts (e.g. "Cost of Goods Sold" vs "Cost of Sales", "Rent Expense" vs "Rent").
-  // Also bonuses for: containment (substring), shared first word, shared last word.
-  //
-  // Hard gate: a candidate whose accounting-modifier set differs from the query's
-  // (Accrued / Prepaid / Payable / Current / …) is never a fuzzy candidate — those
-  // words change the account's meaning, not just its spelling. See extractModifiers.
-  const queryModifiers = extractModifiers(k1);
-  const words1 = new Set(k1.split(" ").filter(w => w.length > 1));
-  const arr1   = [...words1];
-  let bestId = null, bestScore = 0;
-  for (const [k, id] of lookup.exact) {
-    if (!sameModifiers(queryModifiers, extractModifiers(k))) continue;
-    const words2 = new Set(k.split(" ").filter(w => w.length > 1));
-    if (!words2.size || !words1.size) continue;
-    const inter = arr1.filter(w => words2.has(w)).length;
-    const union = new Set([...arr1, ...words2]).size;
-    const jaccard = union > 0 ? inter / union : 0;
-    const containsBonus  = (k1.includes(k) || k.includes(k1)) ? 0.10 : 0;
-    const firstWordBonus = (arr1[0] && arr1[0] === [...words2][0]) ? 0.05 : 0;
-    const lastWordBonus  = (arr1[arr1.length - 1] && arr1[arr1.length - 1] === [...words2][words2.size - 1]) ? 0.05 : 0;
-    const total = Math.min(jaccard + containsBonus + firstWordBonus + lastWordBonus, 1.0);
-    if (total > bestScore && total >= 0.50) { bestScore = total; bestId = id; }
-  }
-  if (bestId) return { id: bestId, confidence: bestScore };
-
-  return null;
-}
+// buildMappings / buildFuzzyLookup / fuzzyMatch now live in accountNameMatching.js
+// (shared with coaMappingService — see the top-of-file import).
 
 // ─── Amount loading for leaf accounts ─────────────────────────────────────────
 
@@ -435,7 +292,11 @@ function rollupNode(node, leafAmountById) {
   if (!node.isGroup) {
     // Leaf: raw amount (always positive from entries) × sign
     const raw  = safeNum(leafAmountById.get(node.id) || 0);
-    const sign = ROLLUP_SIGN[node.account_type] ?? 1;
+    // No fallback sign for an unrecognized/null account_type — every leaf that
+    // reaches here should already carry one of the 6 known types; a missing one
+    // means classification is incomplete, and it must contribute nothing rather
+    // than be silently guessed as asset-like.
+    const sign = ROLLUP_SIGN[node.account_type] ?? 0;
     node.leafAmount    = raw;
     node.signedAmount  = raw * sign;
     node.displayAmount = raw; // always positive for individual account display
@@ -449,22 +310,30 @@ function rollupNode(node, leafAmountById) {
 
 // ─── Statement builders ───────────────────────────────────────────────────────
 
+const PL_ROOT_ANCHOR_RE = /^(total\s+expenses?|expenses?|total\s+cost|cost\s+of\s+sales)$/i;
+
 /**
- * Determine the display label for an expense/COGS group.
- * Priority: direct parent node name → level_8 → level_7 → fallback.
+ * Determine the display label for an expense/COGS group: the direct parent
+ * node's name when it's a real category (not a root rollup anchor like
+ * "Total Expenses"), else the deepest real category in the leaf's OWN copied
+ * hierarchy (level_1..level_15) — never a fixed level index, since depth is
+ * no longer guaranteed once hierarchy comes from the client's own COA rather
+ * than a fixed taxonomy.
  */
 function groupLabelFor(node, byId) {
   if (node.parent_account_id) {
     const parent = byId.get(node.parent_account_id);
     if (parent) {
       const parentName = displayName(parent);
-      // Skip top-level section names — they're not useful as group labels
-      if (parentName && !/^(total\s+expenses?|expenses?|total\s+cost|cost\s+of\s+sales)$/i.test(parentName.trim())) {
+      if (parentName && !PL_ROOT_ANCHOR_RE.test(parentName.trim())) {
         return parentName;
       }
     }
   }
-  return node.level_8 || node.level_7 || "General and Administrative";
+  const own = displayName(node);
+  const ancestry = BS_LEVEL_KEYS.map((k) => node[k]).filter(Boolean);
+  if (ancestry.length && ancestry[ancestry.length - 1] === own) ancestry.pop();
+  return [...ancestry].reverse().find((l) => !PL_ROOT_ANCHOR_RE.test(l) && !ROOT_ANCHOR_RE.test(l)) || "Other";
 }
 
 /**
@@ -487,6 +356,9 @@ function buildPlStatement(leaves, byId) {
     adjustedName:  n.adjusted_name  || null,
     hierarchyPath: n.hierarchy_path || null,
     amount:        safeNum(n.displayAmount),
+    // Assigned once at COA classification time (reportTagRules) — QoE/KPI read
+    // this instead of scanning account/group names by keyword.
+    reportTag:     n.metadata?.report_tag || null,
   });
 
   // Revenue — flat list, total = sum of income leaves.
@@ -544,10 +416,29 @@ function buildPlStatement(leaves, byId) {
   };
 }
 
+const BS_LEVEL_KEYS = Array.from({ length: 15 }, (_, i) => `level_${i + 1}`);
+
+// The universal current/non-current bifurcation every Balance Sheet ratio
+// (Current Ratio, Quick Ratio — see getKpiReport) needs, regardless of what
+// the client calls their own categories. This is the one place a bounded
+// keyword match is unavoidable: it only ever classifies a label ALREADY
+// copied onto this row from chart_of_accounts — it never invents one.
+const FIXED_ASSET_RE    = /fixed|property|equipment|\bppe\b/i;
+const OTHER_ASSET_RE    = /^other|long.?term asset|noncurrent asset|non.current asset/i;
+const LONG_TERM_LIAB_RE = /long.?term|noncurrent|non.current/i;
+// Root rollup anchors are never a useful "group" label for an account that
+// sits directly under them with no real category in between.
+const ROOT_ANCHOR_RE = /^total\s+(assets?|liabilit(?:y|ies)|liabilities\s+and\s+equity|equity)$/i;
+
 /**
  * Build Balance Sheet statement from the rolled-up tree.
- * Sections (Current/Fixed/Other Assets, Current/Long-Term Liabilities) come from
- * direct parent category node names or level_2/level_3 as fallback.
+ * Section (Current/Fixed/Other Assets, Current/Long-Term Liabilities) and
+ * group (the account's own client-defined category, e.g. "Vehicles", "Credit
+ * Cards", "Benefits - 401k") both come directly from the leaf's own copied
+ * hierarchy (level_1..level_15) — never from walking ancestor node display
+ * names, which can disagree with the leaf's own stored levels whenever
+ * category-node materialization collapses or skips a level (chartOfAccounts
+ * Service.buildDesiredCategories/syncCategoryNodes).
  */
 function buildBsStatement(leaves, byId) {
   const assets      = leaves.filter(n => n.account_type === "asset");
@@ -562,47 +453,30 @@ function buildBsStatement(leaves, byId) {
     adjustedName:  n.adjusted_name  || null,
     hierarchyPath: n.hierarchy_path || null,
     amount:        safeNum(n.displayAmount),
+    // Assigned once at COA classification time (reportTagRules) — QoE/KPI read
+    // this instead of scanning account/group names by keyword.
+    reportTag:     n.metadata?.report_tag || null,
   });
 
-  // Patterns that mark a label as a top-level aggregate rather than a useful
-  // section (e.g. "Total Assets", "Balance Sheet").  When a grandNode has such
-  // a label we fall through to the level columns to find a real section name.
-  const AGGREGATE_LABEL_RE = /^(total\s+(assets?|liabilit|equity|liabilities\s+and|balance\s+sheet)|balance\s+sheet)\s*$/i;
-
   function resolveSecGrp(n) {
-    const parentNode = n.parent_account_id ? byId.get(n.parent_account_id) : null;
-    const grandNode  = parentNode?.parent_account_id ? byId.get(parentNode.parent_account_id) : null;
+    const own = displayName(n);
+    const ancestry = BS_LEVEL_KEYS.map((k) => n[k]).filter(Boolean);
+    if (ancestry.length && ancestry[ancestry.length - 1] === own) ancestry.pop();
 
-    let grpLabel = parentNode ? displayName(parentNode) : null;
-    let secLabel = grandNode  ? displayName(grandNode)  : null;
+    // Group: the deepest real category in the leaf's OWN hierarchy — skip
+    // root rollup anchors ("Total Assets" etc.), which aren't a useful group.
+    const grpLabel = [...ancestry].reverse().find((l) => !ROOT_ANCHOR_RE.test(l)) || "Other";
 
-    // When the grandNode is an unhelpful aggregate (e.g. "Total Assets") or
-    // doesn't exist, fall back to the leaf's level columns which always carry
-    // the standardised section names ("Current Assets", "Current Liabilities", …).
-    if (!secLabel || AGGREGATE_LABEL_RE.test(secLabel)) {
-      // Scan level_3 … level_2 for a meaningful section name
-      for (let i = 4; i >= 2; i--) {
-        const lvl = n[`level_${i}`];
-        if (lvl && !AGGREGATE_LABEL_RE.test(lvl) && lvl !== displayName(n)) {
-          secLabel = lvl;
-          break;
-        }
-      }
+    let secLabel;
+    if (n.account_type === "liability") {
+      secLabel = ancestry.some((l) => LONG_TERM_LIAB_RE.test(l)) ? "Long-Term Liabilities" : "Current Liabilities";
+    } else if (ancestry.some((l) => FIXED_ASSET_RE.test(l))) {
+      secLabel = "Fixed Assets";
+    } else if (ancestry.some((l) => OTHER_ASSET_RE.test(l))) {
+      secLabel = "Other Assets";
+    } else {
+      secLabel = "Current Assets";
     }
-    // Same guard for grpLabel (parent may also be a top-level aggregate)
-    if (!grpLabel || AGGREGATE_LABEL_RE.test(grpLabel)) {
-      for (let i = 5; i >= 3; i--) {
-        const lvl = n[`level_${i}`];
-        if (lvl && !AGGREGATE_LABEL_RE.test(lvl) && lvl !== displayName(n) && lvl !== secLabel) {
-          grpLabel = lvl;
-          break;
-        }
-      }
-    }
-
-    // Ultimate fallbacks
-    grpLabel = grpLabel || n.level_4 || n.level_3 || "Other";
-    secLabel = secLabel || grpLabel;
     return { secLabel, grpLabel };
   }
 
@@ -630,37 +504,14 @@ function buildBsStatement(leaves, byId) {
   const totalLE          = safeNum(totalLiabilities + totalEquity);
   const difference       = safeNum(totalAssets - totalLE);
 
-  const findSection = (sections, patterns) =>
-    Object.entries(sections).find(([label]) =>
-      patterns.some(p => new RegExp(p, "i").test(label))
-    )?.[1];
+  // resolveSecGrp always returns one of exactly these canonical bucket names,
+  // so no further pattern-matching/merge step is needed to place a section.
+  const currentAssets = assetSections["Current Assets"] || { label: "Current Assets", groups: {}, total: 0 };
+  const fixedAssets   = assetSections["Fixed Assets"]   || { label: "Fixed Assets",   groups: {}, total: 0 };
+  const otherAssets   = assetSections["Other Assets"]   || { label: "Other Assets",   groups: {}, total: 0 };
 
-  // Merge any sections not explicitly claimed into a default bucket.
-  // This prevents amounts from "falling through" when section labels don't
-  // exactly match the expected patterns (e.g. a flat "Assets" section).
-  function mergeSurplus(sections, claimed, defaultBucket) {
-    const claimedLabels = new Set(claimed.filter(Boolean).map(s => s.label));
-    for (const [label, sec] of Object.entries(sections)) {
-      if (claimedLabels.has(label)) continue;
-      for (const [grpLabel, grp] of Object.entries(sec.groups)) {
-        if (!defaultBucket.groups[grpLabel])
-          defaultBucket.groups[grpLabel] = { label: grpLabel, accounts: [], total: 0 };
-        defaultBucket.groups[grpLabel].accounts.push(...grp.accounts);
-        defaultBucket.groups[grpLabel].total = safeNum(defaultBucket.groups[grpLabel].total + grp.total);
-      }
-      defaultBucket.total = safeNum(defaultBucket.total + sec.total);
-    }
-  }
-
-  // Map tree sections to canonical frontend keys (pattern-match on section label).
-  const currentAssets = findSection(assetSections, ["current"])            || { label: "Current Assets",        groups: {}, total: 0 };
-  const fixedAssets   = findSection(assetSections, ["fixed", "property"])  || { label: "Fixed Assets",           groups: {}, total: 0 };
-  const otherAssets   = findSection(assetSections, ["other", "long.?term asset", "noncurrent asset"]) || { label: "Other Assets", groups: {}, total: 0 };
-  mergeSurplus(assetSections, [currentAssets, fixedAssets, otherAssets], currentAssets);
-
-  const currentLiab  = findSection(liabSections, ["current"])              || { label: "Current Liabilities",   groups: {}, total: 0 };
-  const longTermLiab = findSection(liabSections, ["long", "noncurrent liabilit", "non.current liabilit"]) || { label: "Long-Term Liabilities", groups: {}, total: 0 };
-  mergeSurplus(liabSections, [currentLiab, longTermLiab], currentLiab);
+  const currentLiab  = liabSections["Current Liabilities"]   || { label: "Current Liabilities",   groups: {}, total: 0 };
+  const longTermLiab = liabSections["Long-Term Liabilities"] || { label: "Long-Term Liabilities", groups: {}, total: 0 };
 
   return {
     assets: {
@@ -831,12 +682,10 @@ function isBsAccount(acc) {
     (acc.statement_type == null && BS_TYPES.has(acc.account_type));
 }
 
-// ensureAccountMapped removed — dynamic COA insertion during report generation
-// violates the client's required workflow.  All GL accounts must be in the COA
-// before Phase 3 (ensureCoaComplete in Phase 2c guarantees this).
-// Kept as a no-op so callers can be removed incrementally without breaking
-// the build during the transition.
-async function ensureAccountMapped() { return null; }
+// Dynamic COA insertion during report generation has been fully removed — it
+// violated the client's required workflow. All GL accounts are placed in the
+// COA before Phase 3 (ensureCoaComplete in Phase 2c); anything still unmatched
+// at report time is tracked in unmappedSet and excluded, never auto-inserted.
 
 // ─── Distinct years ───────────────────────────────────────────────────────────
 
@@ -1648,22 +1497,12 @@ async function generateMonthlyBs(companyId, versionId, year, allCoa, unmappedSet
         if (match?.id && leafAmounts.has(match.id)) {
           leafAmounts.set(match.id, (leafAmounts.get(match.id) || 0) + amount);
         } else {
-          // Dynamic COA insert fallback
-          const acType = classifyUnmappedBSAccount(rawName);
-          const insertedId = await ensureAccountMapped(companyId, versionId, rawName, accountNumber, acType, allCoa, bsLeaves, isBsAccount);
-          if (insertedId) {
-            if (!leafAmounts.has(insertedId)) leafAmounts.set(insertedId, 0);
-            leafAmounts.set(insertedId, (leafAmounts.get(insertedId) || 0) + amount);
-            const refreshedMappings = buildMappings(bsLeaves);
-            const refreshedFuzzyLookup = buildFuzzyLookup(bsLeaves);
-            bsMappings.clear();
-            for (const [k, v] of refreshedMappings) bsMappings.set(k, v);
-            fuzzyLookup.exact = refreshedFuzzyLookup.exact;
-            fuzzyLookup.strict = refreshedFuzzyLookup.strict;
-            fuzzyLookup.byNum = refreshedFuzzyLookup.byNum;
-          } else {
-            unmappedSet.add(normKey);
-          }
+          // No COA match (account number / exact / normalized / fuzzy all
+          // missed). Per the client workflow, an unmapped account is NEVER
+          // given an invented hierarchy or keyword-guessed type mid-report —
+          // it is tracked here and excluded from the statement until a human
+          // maps it in the Chart of Accounts (needs_mapping).
+          unmappedSet.add(normKey);
         }
       }
     }
@@ -1687,41 +1526,86 @@ async function generateMonthlyBs(companyId, versionId, year, allCoa, unmappedSet
 
 // ─── Cash Flow ────────────────────────────────────────────────────────────────
 
-function convertCfRow(row) {
-  return { name: row.name, amount: safeNum(row.amount || 0), isTotal: row.type === "total", children: (row.children || []).map(convertCfRow) };
-}
-
-function convertCfTree(rows) {
-  const find  = (id) => rows.find(r => r.id === id || r.id?.includes(id));
-  const op    = find("operating");
-  const inv   = find("investing");
-  const fin   = find("financing");
-  const net   = rows.find(r => /net.*(cash|change)/i.test(r.name) && r.type === "total");
-  const open  = rows.find(r => /opening|beginning/i.test(r.name));
-  const close = rows.find(r => /ending/i.test(r.name));
+function emptyCfStatement() {
   return {
-    operatingActivities:  { label: "Operating Activities",  items: (op?.children  || []).map(convertCfRow), total: safeNum(op?.amount  || 0) },
-    investingActivities:  { label: "Investing Activities",  items: (inv?.children || []).map(convertCfRow), total: safeNum(inv?.amount || 0) },
-    financingActivities:  { label: "Financing Activities",  items: (fin?.children || []).map(convertCfRow), total: safeNum(fin?.amount || 0) },
-    netCashIncrease: safeNum(net?.amount  || 0),
-    openingCash:     safeNum(open?.amount || 0),
-    endingCash:      safeNum(close?.amount || 0),
+    operatingActivities: { label: "Operating Activities", items: [], total: 0 },
+    investingActivities: { label: "Investing Activities", items: [], total: 0 },
+    financingActivities: { label: "Financing Activities", items: [], total: 0 },
+    netCashIncrease: 0, openingCash: 0, endingCash: 0,
   };
 }
 
-async function generateYearlyCf(versionId, year) {
+/**
+ * Aggregate a year's monthly Cash Flow statements (generateMonthlyCf — the
+ * COA-driven cf_category engine, below) into one annual statement. Summing 12
+ * monthly deltas is mathematically equivalent to the single year-over-year
+ * delta (telescoping sum), so the yearly view reuses the exact same account
+ * classification as the monthly view instead of a second, independently
+ * classified engine — previously this called the legacy keyReportReportService
+ * .getCashflowReport (buildBSFromBalances/buildPLFromGL + the shared
+ * manualCashFlowService.buildCashFlow classifier), which could disagree with
+ * the monthly total since it classified accounts differently.
+ */
+function aggregateMonthlyCfToYearly(monthlyEntries) {
+  if (!monthlyEntries?.length) return emptyCfStatement();
+
+  const sumItems = (key) => {
+    const order = [];
+    const byName = new Map();
+    for (const m of monthlyEntries) {
+      for (const item of m.statement[key].items) {
+        if (!byName.has(item.name)) { order.push(item.name); byName.set(item.name, 0); }
+        byName.set(item.name, byName.get(item.name) + safeNum(item.amount));
+      }
+    }
+    return order.map((name) => ({ name, amount: round2(byName.get(name)) }));
+  };
+  const sumTotal = (key) => round2(monthlyEntries.reduce((s, m) => s + safeNum(m.statement[key].total), 0));
+
+  return {
+    operatingActivities: { label: "Operating Activities", items: sumItems("operatingActivities"), total: sumTotal("operatingActivities") },
+    investingActivities: { label: "Investing Activities", items: sumItems("investingActivities"), total: sumTotal("investingActivities") },
+    financingActivities: { label: "Financing Activities", items: sumItems("financingActivities"), total: sumTotal("financingActivities") },
+    netCashIncrease: round2(monthlyEntries.reduce((s, m) => s + safeNum(m.statement.netCashIncrease), 0)),
+    openingCash: safeNum(monthlyEntries[0].statement.openingCash),
+    endingCash: safeNum(monthlyEntries[monthlyEntries.length - 1].statement.endingCash),
+  };
+}
+
+async function generateYearlyCf(versionId, year, allCoa) {
   try {
-    const cf = await getCashflowReport(versionId, { year });
-    return { year: String(year), periodLabel: `FY ${year}`, statement: convertCfTree(cf.rows || cf.hierarchicalRows || []) };
+    const monthly = await generateMonthlyCf(versionId, year, allCoa);
+    return { year: String(year), periodLabel: `FY ${year}`, statement: aggregateMonthlyCfToYearly(monthly) };
   } catch (err) {
     console.warn(`[FinStmt][CF][${year}] ${err.message}`);
-    return { year: String(year), periodLabel: `FY ${year}`, statement: { operatingActivities: { label: "Operating Activities", items: [], total: 0 }, investingActivities: { label: "Investing Activities", items: [], total: 0 }, financingActivities: { label: "Financing Activities", items: [], total: 0 }, netCashIncrease: 0, openingCash: 0, endingCash: 0 } };
+    return { year: String(year), periodLabel: `FY ${year}`, statement: emptyCfStatement() };
   }
+}
+
+/**
+ * Name → {cfCategory, accountType} lookup built from the already-loaded COA
+ * leaves, keyed by the same normalization used for every other name/entry
+ * match in this file. cf_category is assigned once at COA classification time
+ * (chartOfAccountsService + cfCategoryRules) — this never re-derives it.
+ * accountType rides along so callers can pick the correct sign convention
+ * within the "operating" bucket (current-asset deltas consume cash, current-
+ * liability deltas free it up — cf_category alone doesn't distinguish them).
+ */
+function buildCfCategoryMap(allCoa) {
+  const map = new Map();
+  for (const a of allCoa || []) {
+    if (a.metadata?.is_group) continue;
+    for (const n of [a.account_name, a.adjusted_name, a.base_account]) {
+      const k = norm(n);
+      if (k && !map.has(k)) map.set(k, { cfCategory: a.cf_category || null, accountType: a.account_type || null });
+    }
+  }
+  return map;
 }
 
 // Fallback when GL has no transaction_date: derive monthly CF from period-over-period
 // balance_sheet_entries deltas (same data source that makes BS monthly work).
-async function generateMonthlyCfFromBSDeltas(versionId, year) {
+async function generateMonthlyCfFromBSDeltas(versionId, year, allCoa) {
   const hasGen = await hasGeneratedRows("balance_sheet_entries", versionId, year);
   const genFilter = (q) => hasGen
     ? q.eq("is_generated", true)
@@ -1761,13 +1645,11 @@ async function generateMonthlyCfFromBSDeltas(versionId, year) {
   const sortedDates = Array.from(byDate.keys()).sort();
   if (sortedDates.length < 2) return [];
 
-  const CASH_KW         = /cash|checking|savings|petty/i;
-  const NI_KW           = /net.*(income|loss)/i;
-  const WC_ASSET_KW     = /receivable|inventory|prepaid|deposit|due from/i;
-  const WC_LIAB_KW      = /payable|accrued|credit card|unearned|deferred revenue/i;
-  const INVEST_KW       = /equipment|property|building|land|vehicle|furniture|ppe|intangible|invest/i;
-  const FINANCE_LIAB_KW = /loan|mortgage|bond|note payable|line of credit|long.term/i;
-  const EQUITY_KW       = /equity|retained|owner|capital/i;
+  // "Net Income" is a specific named equity line QB's Balance Sheet always
+  // carries (see extractedBalancesMap) — finding it by name identifies a
+  // known row, it is not a 3-way accounting classification decision.
+  const NI_RE = /net.*(income|loss)/i;
+  const cfCategoryMap = buildCfCategoryMap(allCoa);
 
   let runningCash = 0;
   const result    = [];
@@ -1785,23 +1667,23 @@ async function generateMonthlyCfFromBSDeltas(versionId, year) {
     for (const k of allKeys) {
       const name  = (currMap.get(k) || prevMap.get(k)).name;
       const delta = safeNum(currMap.get(k)?.amount) - safeNum(prevMap.get(k)?.amount);
-      if (!delta || CASH_KW.test(name)) continue;
+      if (!delta) continue;
+      const entry = cfCategoryMap.get(k);
+      if (!entry?.cfCategory) continue; // cash account, or not yet classified in the COA
 
-      if (NI_KW.test(name)) {
+      if (NI_RE.test(name)) {
         operatingBase += delta;
-      } else if (WC_ASSET_KW.test(name)) {
-        wcAdj -= delta;
-        opAdjItems.push({ name, amount: round2(-delta) });
-      } else if (WC_LIAB_KW.test(name)) {
-        wcAdj += delta;
-        opAdjItems.push({ name, amount: round2(delta) });
-      } else if (INVEST_KW.test(name)) {
+      } else if (entry.cfCategory === "operating") {
+        // Sign convention: current-asset increases consume cash, current-liability
+        // increases free it up. cf_category alone doesn't distinguish the two —
+        // accountType (carried alongside it from the COA) does.
+        const isAssetSide = entry.accountType !== "liability";
+        wcAdj += isAssetSide ? -delta : delta;
+        opAdjItems.push({ name, amount: round2(isAssetSide ? -delta : delta) });
+      } else if (entry.cfCategory === "investing") {
         investingTotal -= delta;
         invItems.push({ name, amount: round2(-delta) });
-      } else if (FINANCE_LIAB_KW.test(name)) {
-        financingTotal += delta;
-        finItems.push({ name, amount: round2(delta) });
-      } else if (EQUITY_KW.test(name)) {
+      } else if (entry.cfCategory === "financing") {
         financingTotal += delta;
         finItems.push({ name, amount: round2(delta) });
       }
@@ -1837,20 +1719,15 @@ async function generateMonthlyCfFromBSDeltas(versionId, year) {
   return result;
 }
 
-async function generateMonthlyCf(versionId, year) {
+async function generateMonthlyCf(versionId, year, allCoa) {
   try {
     const glByMonth = await aggregateGLForBSByMonth(versionId, year);
     if (!glByMonth) {
       // GL has no transaction_date — derive CF from period-over-period BS entry deltas
-      return generateMonthlyCfFromBSDeltas(versionId, year);
+      return generateMonthlyCfFromBSDeltas(versionId, year, allCoa);
     }
 
-    const CASH_KW          = /cash|checking|savings|petty/i;
-    const WC_ASSET_KW      = /receivable|inventory|prepaid|deposit|due from/i;
-    const WC_LIAB_KW       = /payable|accrued|credit card|unearned|deferred revenue/i;
-    const INVEST_KW        = /equipment|property|building|land|vehicle|furniture|ppe|intangible|invest/i;
-    const FINANCE_LIAB_KW  = /loan|mortgage|bond|note payable|line of credit|long.term/i;
-
+    const cfCategoryMap = buildCfCategoryMap(allCoa);
     const months = Array.from(glByMonth.keys()).sort((a, b) => a - b);
     let runningCash = 0;
 
@@ -1862,21 +1739,19 @@ async function generateMonthlyCf(versionId, year) {
 
       for (const [name, { net, type }] of mData.bsMap) {
         const amt = safeNum(net);
-        if (!amt || CASH_KW.test(name)) continue;
+        if (!amt) continue;
+        const cfCategory = cfCategoryMap.get(norm(name))?.cfCategory;
+        if (!cfCategory) continue; // cash account, or not yet classified in the COA
 
-        if (type === "asset" && WC_ASSET_KW.test(name)) {
-          wcAdj -= amt;
-          opAdjItems.push({ name, amount: round2(-amt) });
-        } else if (type === "liability" && WC_LIAB_KW.test(name)) {
-          wcAdj += amt;
-          opAdjItems.push({ name, amount: round2(amt) });
-        } else if (type === "asset" && INVEST_KW.test(name)) {
+        if (cfCategory === "operating") {
+          // Current-asset increases consume cash, current-liability increases free it up.
+          const isAssetSide = type !== "liability";
+          wcAdj += isAssetSide ? -amt : amt;
+          opAdjItems.push({ name, amount: round2(isAssetSide ? -amt : amt) });
+        } else if (cfCategory === "investing") {
           investingTotal -= amt;
           invItems.push({ name, amount: round2(-amt) });
-        } else if (type === "liability" && FINANCE_LIAB_KW.test(name)) {
-          financingTotal += amt;
-          finItems.push({ name, amount: round2(amt) });
-        } else if (type === "equity") {
+        } else if (cfCategory === "financing") {
           financingTotal += amt;
           finItems.push({ name, amount: round2(amt) });
         }
@@ -2035,8 +1910,8 @@ async function _generateFinancialStatementsImpl(versionId, options = {}) {
   // Monthly P&L, yearly CF, and monthly CF are year-independent — run concurrently.
   const [plMonthly, cfYearly, cfMonthly] = await Promise.all([
     Promise.all(filteredYears.map((y, i) => generateMonthlyPl(companyId, versionId, y, allCoa, unmappedSet, plYearly[i]?.statement))),
-    Promise.all(filteredYears.map(y => generateYearlyCf(versionId, y))),
-    Promise.all(filteredYears.map(y => generateMonthlyCf(versionId, y))),
+    Promise.all(filteredYears.map(y => generateYearlyCf(versionId, y, allCoa))),
+    Promise.all(filteredYears.map(y => generateMonthlyCf(versionId, y, allCoa))),
   ]);
 
   // Balance Sheet has a carry-forward chain: BS(year) = BS(year-1 close) + GL(year).
@@ -2066,6 +1941,18 @@ async function _generateFinancialStatementsImpl(versionId, options = {}) {
   }
 
   const validation       = validateAll(plYearly, bsYearly);
+  // Accounts with no Chart of Accounts hierarchy match (needs_mapping, excluded
+  // from loadCoa) and any GL/BS name that couldn't be matched to a COA leaf at all
+  // (unmappedSet, accumulated across every generate*/aggregate* call above) —
+  // both are excluded from every total above, not silently guessed. Surface
+  // them so that exclusion is visible rather than a silent Balance Sheet
+  // imbalance with no explanation.
+  if (allCoa.unmappedCount) {
+    validation.push(`${allCoa.unmappedCount} account(s) need manual mapping (no Chart of Accounts match): ${allCoa.unmappedNames.join(", ")}. Excluded from all totals until reviewed.`);
+  }
+  if (unmappedSet.size) {
+    validation.push(`${unmappedSet.size} GL/BS line(s) could not be matched to any Chart of Accounts account: ${[...unmappedSet].join(", ")}. Excluded from all totals.`);
+  }
   console.log(
     `[FinStmt] v=${versionId} years=[${filteredYears.join(",")}]`,
     `| pl=${plYearly.length} bs=${bsYearly.length} cf=${cfYearly.length}`,

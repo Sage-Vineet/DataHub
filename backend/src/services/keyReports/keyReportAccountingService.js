@@ -270,7 +270,10 @@ function snapshotRows({ versionId, companyId, year, asOfDate, running, cumulativ
   let sort = sortStart;
   const push = (name, amount, type) => {
     if (Math.abs(round2(amount)) < 0.005) return;
-    const section = SECTION_BY_TYPE[type] || "equity";
+    // No blind default: an unrecognized/"unknown" type (never classified by
+    // Gemini or matched to an existing chart_of_accounts row) must not be
+    // silently binned into "equity" — it stays unsectioned instead.
+    const section = SECTION_BY_TYPE[type] || null;
     rows.push({
       version_id: versionId,
       company_id: companyId,

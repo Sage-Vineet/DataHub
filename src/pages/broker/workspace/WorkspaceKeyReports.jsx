@@ -67,11 +67,12 @@ import { cn } from "../../../lib/utils";
 
 // ── Document category definitions ────────────────────────────────────────────
 const CATEGORIES = [
-  { key: "profit_loss",    label: "Profit & Loss",     required: true,  icon: BookOpen },
-  { key: "balance_sheet",  label: "Balance Sheet",     required: true,  icon: LayoutDashboard },
-  { key: "general_ledger", label: "General Ledger",    required: false, icon: FileText },
-  { key: "bank_statement", label: "Bank Statements",   required: false, icon: FileText },
-  { key: "tax_return",     label: "Tax Returns",       required: false, icon: FileText },
+  { key: "profit_loss",       label: "Profit & Loss",             required: true,  icon: BookOpen },
+  { key: "balance_sheet",     label: "Balance Sheet",             required: true,  icon: LayoutDashboard },
+  { key: "general_ledger",   label: "General Ledger",             required: true,  icon: FileText },
+  { key: "chart_of_accounts", label: "Chart of Accounts (Optional)", required: false, icon: FileText },
+  { key: "bank_statement",   label: "Bank Statements",            required: false, icon: FileText },
+  { key: "tax_return",       label: "Tax Returns",                required: false, icon: FileText },
 ];
 
 // ── Selected-version persistence (per client, survives navigation) ────────────
@@ -302,7 +303,7 @@ export default function WorkspaceKeyReports() {
 
   // ── Derived data ──────────────────────────────────────────────────────────
   const version           = detail?.version;
-  const mappingsByCategory = detail?.mappingsByCategory || {};
+  const mappingsByCategory = useMemo(() => detail?.mappingsByCategory || {}, [detail]);
   const hasSyncedData     = Boolean(version?.lastSyncedAt) && !generating;
 
   const linkedDocumentIds = useMemo(() => {
@@ -314,6 +315,19 @@ export default function WorkspaceKeyReports() {
   }, [detail]);
 
   const linkedDocumentCount = linkedDocumentIds.length;
+
+  // Required categories (Balance Sheet, Profit & Loss, General Ledger) that have
+  // no linked file yet. Drives a SOFT, non-blocking warning before Generate — the
+  // workflow still runs on whatever is linked, but reports may be incomplete or
+  // internally halted (see the backend accounting gate, which requires the
+  // General Ledger + an opening Balance Sheet) until these are linked.
+  const missingRequiredCategories = useMemo(
+    () =>
+      CATEGORIES.filter(
+        (c) => c.required && (mappingsByCategory[c.key] || []).length === 0
+      ),
+    [mappingsByCategory]
+  );
 
   // Merge in-flight generate results with persisted validation results so the
   // Validation Dashboard shows data after a full-page reload too.
@@ -642,11 +656,19 @@ export default function WorkspaceKeyReports() {
                     {isDone || hasSyncedData
                       ? "Re-run AI Processing, COA, and all Financial Reports with the latest linked documents."
                       : "Run AI Processing, build Chart of Accounts, and generate all Financial Reports in one step."}
-                    {linkedDocumentCount === 0 && (
+                    {linkedDocumentCount === 0 ? (
                       <span className="ml-1 font-medium text-amber-600">
                         Link at least one document first.
                       </span>
-                    )}
+                    ) : missingRequiredCategories.length > 0 ? (
+                      <span className="ml-1 font-medium text-amber-600">
+                        Missing required document
+                        {missingRequiredCategories.length > 1 ? "s" : ""}:{" "}
+                        {missingRequiredCategories.map((c) => c.label).join(", ")}.
+                        You can still generate, but reports may be incomplete until
+                        these are linked.
+                      </span>
+                    ) : null}
                   </p>
                 </div>
 
