@@ -41,6 +41,7 @@ import {
 import BalanceSheetReport from "../../../components/reports/balance-sheet/BalanceSheetReport";
 import ProfitAndLossReport from "../../../components/reports/profit-loss/ProfitAndLossReport";
 import CashflowReport from "../../../components/reports/cashflow/CashflowReport";
+import FinancialStatementsView from "../../../components/key-reports/FinancialStatementsView";
 import {
   normalizeAccountingMethod,
   sanitizeDateRange,
@@ -56,7 +57,6 @@ import { exportReportToExcel, exportReportToPdf } from "../../../lib/reportExpor
 import {
   useKeyReportContextStore,
   selectKeyReportContext,
-  maskKeyReportContext,
 } from "../../../store/useKeyReportContextStore";
 import { useShallow } from "zustand/react/shallow";
 import KeyReportVersionSelector from "../../../components/key-reports/KeyReportVersionSelector";
@@ -414,17 +414,11 @@ export default function WorkspaceReports() {
   const [isLoading, setIsLoading] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [company, setCompany] = useState(null);
-  // Key Reports is a selectable 5th data source, NOT an automatic override.
-  // It drives this page ONLY when the active data source is "key_reports"
-  // (activated from the Key Reports page). For the 4 connection modes
-  // (QuickBooks / Manual GL / Manual Upload / QB Manual) the Connections-page
-  // selection is authoritative and the KR context is masked inactive.
-  const krSelected = useMemo(
-    () => normalizeReportSourceKey(contextActiveSource) === REPORT_SOURCE_KEYS.KEY_REPORTS,
-    [contextActiveSource],
-  );
-  const rawKr = useKeyReportContextStore(useShallow(selectKeyReportContext));
-  const kr = useMemo(() => maskKeyReportContext(rawKr, krSelected), [rawKr, krSelected]);
+  // Key Reports is the single source of truth: when the company has a selected
+  // Key Report Version, the report source is derived from that Version's flow —
+  // NOT from the Connections-page active data source. Falls back to the legacy
+  // DataSourceContext behavior only when no Key Report versions exist.
+  const kr = useKeyReportContextStore(useShallow(selectKeyReportContext));
   const krFetchVersions = useKeyReportContextStore((s) => s.fetchVersions);
 
   // Ensure the Key Reports store starts loading for this company as early as
@@ -442,7 +436,6 @@ export default function WorkspaceReports() {
   // and we proceed immediately.
   const krReady = useMemo(() => {
     if (!clientId) return false;
-    if (!krSelected) return true; // 4 connection modes never wait on the KR store
     if (kr.loading || kr.loadingDetail) return false; // a KR fetch is in flight
     if (kr.error) return true; // KR unavailable → don't block reports (legacy path)
     if (kr.loadedCompanyId !== clientId) return false; // store not loaded for this company yet
@@ -451,7 +444,6 @@ export default function WorkspaceReports() {
     return true;
   }, [
     clientId,
-    krSelected,
     kr.loading,
     kr.loadingDetail,
     kr.error,
@@ -2389,7 +2381,7 @@ export default function WorkspaceReports() {
               ) : null
             )}
 
-            {krSelected && <KeyReportVersionSelector clientId={clientId} variant="filter" />}
+            <KeyReportVersionSelector clientId={clientId} variant="filter" />
 
             {selectedSourceMode === "manual" ? (
               <>
@@ -2511,10 +2503,33 @@ export default function WorkspaceReports() {
 
           <div className="flex-1 animate-in fade-in slide-in-from-bottom-2 duration-500">
             {/* ── COA-driven reports (Key Reports version active) ───────────────
-                Key Reports uses the stored report endpoints. The outer tabs remain
-                the navigation and render finalized accounting payloads directly.
+                When a Key Reports version is selected the Chart of Accounts is the
+                single source of truth. FinancialStatementsView reads from
+                chart_of_accounts → coa_account_mappings → entry tables.
+                The outer tabs (Balance Sheet / P&L / Cash Flow) remain the
+                navigation; activeReport keeps them in sync with the inner view.
             ──────────────────────────────────────────────────────────────────── */}
-            {isLoading ? (
+            {kr.krActive && kr.selectedVersionId ? (
+              <div id="report-content">
+                <FinancialStatementsView
+                  versionId={kr.selectedVersionId}
+                  hasSyncedData={Boolean(kr.version?.lastSyncedAt)}
+                  notify={null}
+                  activeReport={
+                    selectedTab === "Balance Sheet" ? "bs"
+                      : selectedTab === "Profit & Loss" ? "pl"
+                        : "cf"
+                  }
+                  onActiveReportChange={(r) =>
+                    setSelectedTab(
+                      r === "bs" ? "Balance Sheet"
+                        : r === "pl" ? "Profit & Loss"
+                          : "Cashflow"
+                    )
+                  }
+                />
+              </div>
+            ) : isLoading ? (
               <div className="flex flex-1 flex-col items-center justify-center py-20">
                 <div className="mb-6 h-12 w-12 animate-spin rounded-full border-4 border-border border-t-primary" />
                 <p className="animate-pulse text-[14px] font-medium text-text-muted">

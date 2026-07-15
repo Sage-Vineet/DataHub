@@ -41,6 +41,7 @@ import {
   createKeyReportVersion,
   getKeyReportVersion,
   duplicateKeyReportVersion,
+  activateKeyReportVersion,
   addKeyReportMapping,
   removeKeyReportMapping,
   getKeyReportPopupPreference,
@@ -56,8 +57,6 @@ import {
   reconcileGeneration,
 } from "../../../lib/keyReportGeneration";
 import { useToast } from "../../../context/ToastContext";
-import { emitWorkspaceDataSourceUpdated } from "../../../lib/dataSourceEvents";
-import { REPORT_SOURCE_KEYS } from "../../../lib/report-source";
 import DataRoomFilePicker from "../../../components/key-reports/DataRoomFilePicker";
 import KeyReportsEducationPopup from "../../../components/key-reports/KeyReportsEducationPopup";
 import KeyReportSyncDashboard from "../../../components/key-reports/KeyReportSyncDashboard";
@@ -67,11 +66,11 @@ import { cn } from "../../../lib/utils";
 
 // ── Document category definitions ────────────────────────────────────────────
 const CATEGORIES = [
-  { key: "profit_loss",    label: "Profit & Loss",     required: true,  icon: BookOpen },
-  { key: "balance_sheet",  label: "Balance Sheet",     required: true,  icon: LayoutDashboard },
-  { key: "general_ledger", label: "General Ledger",    required: false, icon: FileText },
-  { key: "bank_statement", label: "Bank Statements",   required: false, icon: FileText },
-  { key: "tax_return",     label: "Tax Returns",       required: false, icon: FileText },
+  { key: "profit_loss", label: "Profit & Loss", required: true, icon: BookOpen },
+  { key: "balance_sheet", label: "Balance Sheet", required: true, icon: LayoutDashboard },
+  { key: "general_ledger", label: "General Ledger", required: false, icon: FileText },
+  { key: "bank_statement", label: "Bank Statements", required: false, icon: FileText },
+  { key: "tax_return", label: "Tax Returns", required: false, icon: FileText },
 ];
 
 // ── Selected-version persistence (per client, survives navigation) ────────────
@@ -190,15 +189,15 @@ function CategoryCard({ cat, items, generating, onLinkClick, onUnlink }) {
 // ── Main page component ───────────────────────────────────────────────────────
 export default function WorkspaceKeyReports() {
   const { clientId } = useParams();
-  const navigate     = useNavigate();
-  const toast        = useToast();
+  const navigate = useNavigate();
+  const toast = useToast();
 
   // ── Version / detail state ────────────────────────────────────────────────
-  const [versions,          setVersions]          = useState([]);
+  const [versions, setVersions] = useState([]);
   const [selectedVersionId, setSelectedVersionId] = useState(() => readStoredVersionId(clientId));
-  const [detail,            setDetail]            = useState(null);
-  const [loading,           setLoading]           = useState(false);
-  const [busy,              setBusy]              = useState(false);
+  const [detail, setDetail] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
 
   // ── Generate workflow state ───────────────────────────────────────────────
   // Generation state is owned by the module-level manager (survives navigation
@@ -236,7 +235,7 @@ export default function WorkspaceKeyReports() {
     let cancelled = false;
     getKeyReportPopupPreference()
       .then((res) => { if (!cancelled && res && !res.dismissed) setShowPopup(true); })
-      .catch(() => {});
+      .catch(() => { });
     return () => { cancelled = true; };
   }, []);
 
@@ -244,8 +243,8 @@ export default function WorkspaceKeyReports() {
   const loadVersions = useCallback(async () => {
     setLoading(true);
     try {
-      const res    = await getKeyReportVersions();
-      const list   = res?.versions || [];
+      const res = await getKeyReportVersions();
+      const list = res?.versions || [];
       const filtered = list.filter((v) => !v.versionName?.includes("PERF-TEST"));
       setVersions(filtered);
       setSelectedVersionId((prev) => {
@@ -301,9 +300,9 @@ export default function WorkspaceKeyReports() {
   }, [clientId, selectedVersionId, detail]);
 
   // ── Derived data ──────────────────────────────────────────────────────────
-  const version           = detail?.version;
+  const version = detail?.version;
   const mappingsByCategory = detail?.mappingsByCategory || {};
-  const hasSyncedData     = Boolean(version?.lastSyncedAt) && !generating;
+  const hasSyncedData = Boolean(version?.lastSyncedAt) && !generating;
 
   const linkedDocumentIds = useMemo(() => {
     if (!detail?.mappingsByCategory) return [];
@@ -323,17 +322,17 @@ export default function WorkspaceKeyReports() {
 
   const displaySyncState = useMemo(() => {
     const base = {
-      status:          generateState.status === "generating" ? "processing"
-                     : generateState.status === "done"       ? "validation"
-                     : generateState.status === "error"      ? "error"
-                     : generateState.validationResults?.length > 0 ||
-                       persistedValidationResults.length > 0 ? "validation"
-                     : "idle",
-      startedAt:       generateState.startedAt,
-      finishedAt:      generateState.finishedAt,
-      summary:         generateState.summary,
-      warnings:        generateState.warnings,
-      error:           generateState.error,
+      status: generateState.status === "generating" ? "processing"
+        : generateState.status === "done" ? "validation"
+          : generateState.status === "error" ? "error"
+            : generateState.validationResults?.length > 0 ||
+              persistedValidationResults.length > 0 ? "validation"
+              : "idle",
+      startedAt: generateState.startedAt,
+      finishedAt: generateState.finishedAt,
+      summary: generateState.summary,
+      warnings: generateState.warnings,
+      error: generateState.error,
     };
     return {
       ...base,
@@ -453,11 +452,11 @@ export default function WorkspaceKeyReports() {
   };
 
   const handleGenerateClick = () => void runGenerate();
-  const handleRetry         = () => void runGenerate();
+  const handleRetry = () => void runGenerate();
 
   // ── Education popup ───────────────────────────────────────────────────────
   const dismissPopupForever = () => {
-    setKeyReportPopupPreference(true).catch(() => {});
+    setKeyReportPopupPreference(true).catch(() => { });
   };
 
   // ── Export data ────────────────────────────────────────────────────────────
@@ -475,7 +474,7 @@ export default function WorkspaceKeyReports() {
   };
 
   // ── Render states ─────────────────────────────────────────────────────────
-  const isDone  = generateState.status === "done";
+  const isDone = generateState.status === "done";
   const isError = generateState.status === "error";
 
   // Show the validation dashboard if:
@@ -635,8 +634,8 @@ export default function WorkspaceKeyReports() {
                     {isDone
                       ? "Re-Generate"
                       : hasSyncedData
-                      ? "Re-Generate Reports"
-                      : "Generate Reports"}
+                        ? "Re-Generate Reports"
+                        : "Generate Reports"}
                   </p>
                   <p className="mt-0.5 text-sm text-text-secondary">
                     {isDone || hasSyncedData
