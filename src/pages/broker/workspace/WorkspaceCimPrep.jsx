@@ -56,6 +56,7 @@ import {
   downloadTemplateSchemaJson,
   generateCustomTemplatePptx,
   getTemplateAnalysisSummary,
+  groupSlidesIntoSections,
   loadTemplateLearning,
   mapTemplatePlaceholders,
   rehydrateArchiveFromBytes,
@@ -85,6 +86,9 @@ import CimFieldNoteThread from "../../../components/cim/CimFieldNoteThread";
 import CimTemplateStyleEditor from "../../../components/cim/CimTemplateStyleEditor";
 import TemplateSelectionModal from "../../../components/cim/TemplateSelectionModal";
 import CustomTemplateIntelligenceModal from "../../../components/cim/CustomTemplateIntelligenceModal";
+import CustomTemplateSectionDrawer from "../../../components/cim/CustomTemplateSectionDrawer";
+import CustomTemplateSlideCanvas from "../../../components/cim/CustomTemplateSlideCanvas";
+import CustomTemplateFieldPanel from "../../../components/cim/CustomTemplateFieldPanel";
 
 const SLIDE_WIDTH = 1280;
 const PAGE_KEY = "cim-prep";
@@ -7510,6 +7514,9 @@ export default function WorkspaceCimPrep() {
   const [styleProfilesSaving, setStyleProfilesSaving] = useState(false);
   const [templateSelectionModalOpen, setTemplateSelectionModalOpen] = useState(false);
   const [customTemplateModalOpen, setCustomTemplateModalOpen] = useState(false);
+  const [customActiveSectionId, setCustomActiveSectionId] = useState("");
+  const [customActiveSlideNumber, setCustomActiveSlideNumber] = useState(null);
+  const [customActiveFieldId, setCustomActiveFieldId] = useState("");
   const [financialAutofillModalOpen, setFinancialAutofillModalOpen] = useState(false);
   const [financialAutofillRange, setFinancialAutofillRange] = useState(() => getDefaultFinancialAutofillRange());
   const [financialAutofillReportVersionId, setFinancialAutofillReportVersionId] = useState("");
@@ -7885,6 +7892,46 @@ export default function WorkspaceCimPrep() {
       cancelled = true;
     };
   }, [clientId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    // Style profiles are a per-broker preference (not scoped to this company), so this
+    // only needs to load once on mount.
+    async function loadStyleProfiles() {
+      try {
+        const payload = await getCimStyleProfilesRequest();
+        if (cancelled) return;
+        const state = normalizeCimStyleProfilesState(payload?.state || {});
+        setStyleProfilesState(state);
+        setActiveStyleProfileId(state.activeProfileId || DEFAULT_CIM_STYLE_PROFILE_ID);
+      } catch {
+        // Keep the default template style if saved profiles can't be loaded.
+      }
+    }
+
+    loadStyleProfiles();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleSaveStyleProfiles = useCallback(async (nextState) => {
+    setStyleProfilesSaving(true);
+    try {
+      const payload = await saveCimStyleProfilesRequest(nextState);
+      const savedState = normalizeCimStyleProfilesState(payload?.state || nextState);
+      setStyleProfilesState(savedState);
+      setActiveStyleProfileId(savedState.activeProfileId || DEFAULT_CIM_STYLE_PROFILE_ID);
+      showToast({
+        type: "success",
+        title: "Template Style Saved",
+        message: "Your CIM template style was saved.",
+      });
+    } finally {
+      setStyleProfilesSaving(false);
+    }
+  }, [showToast]);
 
   const persistCimReviewState = useCallback(async (nextState, toastOptions = null) => {
     const state = normalizeCimReviewState(nextState);
@@ -9059,6 +9106,45 @@ export default function WorkspaceCimPrep() {
     [customTemplateState],
   );
 
+  const customTemplateSections = useMemo(
+    () => groupSlidesIntoSections(customTemplateState.analysis?.slides || []),
+    [customTemplateState.analysis?.slides],
+  );
+
+  useEffect(() => {
+    if (!customTemplateSections.length) return;
+    setCustomActiveSectionId((previous) => (
+      customTemplateSections.some((section) => section.id === previous) ? previous : customTemplateSections[0].id
+    ));
+  }, [customTemplateSections]);
+
+  const customActiveSection = useMemo(
+    () => customTemplateSections.find((section) => section.id === customActiveSectionId) || customTemplateSections[0] || null,
+    [customTemplateSections, customActiveSectionId],
+  );
+
+  useEffect(() => {
+    if (!customActiveSection) return;
+    setCustomActiveSlideNumber((previous) => (
+      customActiveSection.slideNumbers.includes(previous) ? previous : customActiveSection.slideNumbers[0]
+    ));
+  }, [customActiveSection]);
+
+  const customActiveSlide = useMemo(
+    () => (customTemplateState.analysis?.slides || []).find((slide) => slide.slideNumber === customActiveSlideNumber) || null,
+    [customTemplateState.analysis?.slides, customActiveSlideNumber],
+  );
+
+  const customActiveMapping = customActiveFieldId ? customTemplateState.mappings?.[customActiveFieldId] || null : null;
+
+  const handleCustomSectionSelect = useCallback((sectionId) => {
+    const section = customTemplateSections.find((item) => item.id === sectionId);
+    if (!section) return;
+    setCustomActiveSectionId(sectionId);
+    setCustomActiveSlideNumber(section.slideNumbers[0]);
+    setCustomActiveFieldId("");
+  }, [customTemplateSections]);
+
   return (
     <div className="min-h-screen bg-bg-page p-4 text-text-primary lg:p-6">
       <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -9202,125 +9288,206 @@ export default function WorkspaceCimPrep() {
 
       <FinancialValidationBanner validation={financialAutofillState.validation} />
 
-      <div className="grid gap-4 xl:grid-cols-[230px_minmax(0,1fr)_310px]">
-        <SectionDrawer
-          sections={questionnaireSections}
-          activeSectionId={activeSectionId}
-          fieldValues={fieldValues}
-          assetValues={assetValues}
-          chartValues={chartValues}
-          fieldsBySlide={fieldsBySlide}
-          globalDetails={effectiveGlobalDetails}
-          onSelectSection={handleSectionSelect}
-        />
+      {templateMode === TEMPLATE_SELECTION_MODES.CUSTOM ? (
+        <div className="grid gap-4 xl:grid-cols-[230px_minmax(0,1fr)_310px]">
+          <CustomTemplateSectionDrawer
+            sections={customTemplateSections}
+            activeSectionId={customActiveSection?.id}
+            slides={customTemplateState.analysis?.slides || []}
+            mappings={customTemplateState.mappings}
+            onSelectSection={handleCustomSectionSelect}
+          />
 
-        <section className="min-w-0 space-y-3">
-          <div className="rounded-lg border border-border bg-white p-4 shadow-card">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-              <div>
-                <p className="text-xs font-bold uppercase tracking-[0.08em] text-[#8BC53D]">
-                  {isBasicSection ? "Setup" : `Section ${activeSection.number}`}
-                </p>
-                <h2 className="mt-1 text-xl font-bold text-[#050505]">
-                  {activeSection.title}
-                </h2>
-                <p className="mt-1 text-sm text-[#6D6E71]">
-                  {sectionCompleted}/{sectionFieldTotal} fields completed
-                </p>
-              </div>
-
-              {activeSectionSlideRefs.length > 0 && (
-                <div className="flex gap-2 overflow-x-auto pb-1">
-                  {activeSectionSlideRefs.map((slideRef) => {
-                    const slideNumber = slideRef.sourceSlideNumber;
-                    const instanceIndex = slideRef.instanceIndex || 0;
-                    const selected = activeSlide === slideNumber && activeSlideInstance === instanceIndex;
-                    return (
-                      <button
-                        key={`${slideNumber}-${instanceIndex}`}
-                        onClick={() => {
-                          setActiveSlide(slideNumber);
-                          setActiveSlideInstance(instanceIndex);
-                          setActiveFieldId("");
-                        }}
-                        className={`shrink-0 rounded-md border px-3 py-2 text-xs font-bold transition ${selected
-                          ? "border-[#8BC53D] bg-[#EEF6E0] text-[#476E2C]"
-                          : "border-border bg-white text-[#6D6E71] hover:border-[#8BC53D]/60"
-                          }`}
-                      >
-                        Slide {slideNumber}{instanceIndex > 0 ? `.${instanceIndex + 1}` : ""}
-                        {instanceIndex > 0 ? (
-                          <span className="ml-1 rounded bg-[#476E2C] px-1 py-0.5 text-[9px] text-white">CONT.</span>
-                        ) : null}
-                      </button>
-                    );
-                  })}
+          <section className="min-w-0 space-y-3">
+            <div className="rounded-lg border border-border bg-white p-4 shadow-card">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-[0.08em] text-[#8BC53D]">
+                    {customActiveSection ? `Section ${customActiveSection.number}` : "Custom Template"}
+                  </p>
+                  <h2 className="mt-1 text-xl font-bold text-[#050505]">
+                    {customActiveSection?.title || customTemplateState.analysis?.template?.fileName || "Custom Template"}
+                  </h2>
+                  <p className="mt-1 text-sm text-[#6D6E71]">
+                    {customTemplateSummary.autoFilled}/{customTemplateSummary.placeholderCount} fields auto-filled
+                    {customTemplateSummary.unresolved > 0 ? ` · ${customTemplateSummary.unresolved} need review` : ""}
+                  </p>
                 </div>
+
+                {(customActiveSection?.slideNumbers?.length || 0) > 0 && (
+                  <div className="flex gap-2 overflow-x-auto pb-1">
+                    {customActiveSection.slideNumbers.map((slideNumber) => {
+                      const selected = customActiveSlideNumber === slideNumber;
+                      return (
+                        <button
+                          key={slideNumber}
+                          onClick={() => {
+                            setCustomActiveSlideNumber(slideNumber);
+                            setCustomActiveFieldId("");
+                          }}
+                          className={`shrink-0 rounded-md border px-3 py-2 text-xs font-bold transition ${selected
+                            ? "border-[#8BC53D] bg-[#EEF6E0] text-[#476E2C]"
+                            : "border-border bg-white text-[#6D6E71] hover:border-[#8BC53D]/60"
+                            }`}
+                        >
+                          Slide {slideNumber}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-border bg-white p-2 shadow-card">
+              {customTemplateState.status === "analyzing" ? (
+                <div className="flex aspect-video items-center justify-center text-sm font-semibold text-[#6D6E71]">
+                  <Loader2 size={18} className="mr-2 animate-spin text-[#8BC53D]" />
+                  {customTemplateState.progressMessage || "Analyzing custom template"}
+                </div>
+              ) : (
+                <CustomTemplateSlideCanvas
+                  slide={customActiveSlide}
+                  slideWidthPx={customTemplateState.analysis?.template?.slideWidthPx}
+                  slideHeightPx={customTemplateState.analysis?.template?.slideHeightPx}
+                  mappings={customTemplateState.mappings}
+                  activeFieldId={customActiveFieldId}
+                  onFieldFocus={setCustomActiveFieldId}
+                />
               )}
             </div>
-          </div>
+          </section>
 
-          <div className="rounded-lg border border-border bg-white p-2 shadow-card">
-            {loading ? (
-              <div className="flex aspect-video items-center justify-center text-sm font-semibold text-[#6D6E71]">
-                <Loader2 size={18} className="mr-2 animate-spin text-[#8BC53D]" />
-                Loading CIM template
-              </div>
-            ) : (
-              <SlideCanvas
-                slideNumber={activeSlide}
-                displaySlideNumber={activeSlideInstance > 0 ? `${activeSlide}.${activeSlideInstance + 1}` : activeSlide}
-                layout={styledLayouts[activeSlide]}
-                fields={activeFields}
-                fieldValues={activeCanvasFieldValues}
-                assetValues={assetValues}
-                chartValues={chartValues}
-                globalDetails={effectiveGlobalDetails}
-                styleProfile={activeStyleProfile}
-                activeFieldId={activeFieldId}
-                onFieldFocus={setActiveFieldId}
-                onFieldChange={handleFieldChange}
-              />
-            )}
-          </div>
-        </section>
-
-        <aside className="sticky top-6 max-h-[calc(100vh-3rem)] space-y-4 overflow-y-auto">
-          {isBasicSection && (
-            <GlobalDetailsPanel
-              activeSlide={activeSlide}
-              globalDetails={effectiveGlobalDetails}
-              onChange={handleGlobalChange}
-              compact
+          <aside className="sticky top-6 max-h-[calc(100vh-3rem)] space-y-4 overflow-y-auto">
+            <CustomTemplateFieldPanel
+              mapping={customActiveMapping}
+              onChange={handleCustomTemplateMappingChange}
+              onApprove={handleCustomTemplateApprove}
+              onIgnore={handleCustomTemplateIgnore}
             />
-          )}
-          <FieldPanel
-            activeSlide={activeSlide}
-            activeSlideInstance={activeSlideInstance}
-            fields={activeFields}
+          </aside>
+        </div>
+      ) : (
+        <div className="grid gap-4 xl:grid-cols-[230px_minmax(0,1fr)_310px]">
+          <SectionDrawer
+            sections={questionnaireSections}
+            activeSectionId={activeSectionId}
             fieldValues={fieldValues}
             assetValues={assetValues}
             chartValues={chartValues}
-            styleProfile={activeStyleProfile}
-            questionnaireState={questionnaireState}
-            reviewState={reviewState}
+            fieldsBySlide={fieldsBySlide}
             globalDetails={effectiveGlobalDetails}
-            financialAutofillRange={financialAutofillRange}
-            activeFieldId={activeFieldId}
-            onFieldFocus={setActiveFieldId}
-            onFieldChange={handleFieldChange}
-            onRepeatablePageChange={handleRepeatablePageChange}
-            onAssetUpload={handleAssetUpload}
-            onAssetRemove={handleAssetRemove}
-            onChartChange={handleChartChange}
-            onQuestionnaireToggle={handleQuestionnaireToggle}
-            onQuestionPromptChange={handleQuestionPromptChange}
-            onReviewAddNote={handleAddCimReviewNote}
-            onReviewResolve={handleResolveCimReviewItem}
-            onReviewReopen={handleReopenCimReviewItem}
+            onSelectSection={handleSectionSelect}
           />
-        </aside>
-      </div>
+
+          <section className="min-w-0 space-y-3">
+            <div className="rounded-lg border border-border bg-white p-4 shadow-card">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-[0.08em] text-[#8BC53D]">
+                    {isBasicSection ? "Setup" : `Section ${activeSection.number}`}
+                  </p>
+                  <h2 className="mt-1 text-xl font-bold text-[#050505]">
+                    {activeSection.title}
+                  </h2>
+                  <p className="mt-1 text-sm text-[#6D6E71]">
+                    {sectionCompleted}/{sectionFieldTotal} fields completed
+                  </p>
+                </div>
+
+                {activeSectionSlideRefs.length > 0 && (
+                  <div className="flex gap-2 overflow-x-auto pb-1">
+                    {activeSectionSlideRefs.map((slideRef) => {
+                      const slideNumber = slideRef.sourceSlideNumber;
+                      const instanceIndex = slideRef.instanceIndex || 0;
+                      const selected = activeSlide === slideNumber && activeSlideInstance === instanceIndex;
+                      return (
+                        <button
+                          key={`${slideNumber}-${instanceIndex}`}
+                          onClick={() => {
+                            setActiveSlide(slideNumber);
+                            setActiveSlideInstance(instanceIndex);
+                            setActiveFieldId("");
+                          }}
+                          className={`shrink-0 rounded-md border px-3 py-2 text-xs font-bold transition ${selected
+                            ? "border-[#8BC53D] bg-[#EEF6E0] text-[#476E2C]"
+                            : "border-border bg-white text-[#6D6E71] hover:border-[#8BC53D]/60"
+                            }`}
+                        >
+                          Slide {slideNumber}{instanceIndex > 0 ? `.${instanceIndex + 1}` : ""}
+                          {instanceIndex > 0 ? (
+                            <span className="ml-1 rounded bg-[#476E2C] px-1 py-0.5 text-[9px] text-white">CONT.</span>
+                          ) : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-border bg-white p-2 shadow-card">
+              {loading ? (
+                <div className="flex aspect-video items-center justify-center text-sm font-semibold text-[#6D6E71]">
+                  <Loader2 size={18} className="mr-2 animate-spin text-[#8BC53D]" />
+                  Loading CIM template
+                </div>
+              ) : (
+                <SlideCanvas
+                  slideNumber={activeSlide}
+                  displaySlideNumber={activeSlideInstance > 0 ? `${activeSlide}.${activeSlideInstance + 1}` : activeSlide}
+                  layout={styledLayouts[activeSlide]}
+                  fields={activeFields}
+                  fieldValues={activeCanvasFieldValues}
+                  assetValues={assetValues}
+                  chartValues={chartValues}
+                  globalDetails={effectiveGlobalDetails}
+                  styleProfile={activeStyleProfile}
+                  activeFieldId={activeFieldId}
+                  onFieldFocus={setActiveFieldId}
+                  onFieldChange={handleFieldChange}
+                />
+              )}
+            </div>
+          </section>
+
+          <aside className="sticky top-6 max-h-[calc(100vh-3rem)] space-y-4 overflow-y-auto">
+            {isBasicSection && (
+              <GlobalDetailsPanel
+                activeSlide={activeSlide}
+                globalDetails={effectiveGlobalDetails}
+                onChange={handleGlobalChange}
+                compact
+              />
+            )}
+            <FieldPanel
+              activeSlide={activeSlide}
+              activeSlideInstance={activeSlideInstance}
+              fields={activeFields}
+              fieldValues={fieldValues}
+              assetValues={assetValues}
+              chartValues={chartValues}
+              styleProfile={activeStyleProfile}
+              questionnaireState={questionnaireState}
+              reviewState={reviewState}
+              globalDetails={effectiveGlobalDetails}
+              financialAutofillRange={financialAutofillRange}
+              activeFieldId={activeFieldId}
+              onFieldFocus={setActiveFieldId}
+              onFieldChange={handleFieldChange}
+              onRepeatablePageChange={handleRepeatablePageChange}
+              onAssetUpload={handleAssetUpload}
+              onAssetRemove={handleAssetRemove}
+              onChartChange={handleChartChange}
+              onQuestionnaireToggle={handleQuestionnaireToggle}
+              onQuestionPromptChange={handleQuestionPromptChange}
+              onReviewAddNote={handleAddCimReviewNote}
+              onReviewResolve={handleResolveCimReviewItem}
+              onReviewReopen={handleReopenCimReviewItem}
+            />
+          </aside>
+        </div>
+      )}
 
       {questionnaireOpen && (
         <QuestionnaireReviewModal
@@ -9410,10 +9577,14 @@ export default function WorkspaceCimPrep() {
           setTemplateMode(TEMPLATE_SELECTION_MODES.DEFAULT);
           setTemplateSelectionModalOpen(false);
         }}
-        onUploadFile={(file) => {
+        onUploadFile={async (file) => {
           setTemplateSelectionModalOpen(false);
           setCustomTemplateModalOpen(true);
-          void handleCustomTemplateUpload(file);
+          await handleCustomTemplateUpload(file);
+          // Analysis finished (or failed) -- close the progress overlay so the
+          // section-wise slide preview underneath (the actual review surface)
+          // is visible right away instead of requiring an extra click.
+          setCustomTemplateModalOpen(false);
         }}
         uploading={customTemplateState.status === "analyzing"}
         progressMessage={customTemplateState.progressMessage}
@@ -9428,7 +9599,11 @@ export default function WorkspaceCimPrep() {
         onApprove={handleCustomTemplateApprove}
         onIgnore={handleCustomTemplateIgnore}
         onDownloadSchema={handleCustomTemplateDownloadSchema}
-        onReplaceTemplate={(file) => void handleCustomTemplateUpload(file)}
+        onReplaceTemplate={async (file) => {
+          setCustomTemplateModalOpen(true);
+          await handleCustomTemplateUpload(file);
+          setCustomTemplateModalOpen(false);
+        }}
       />
 
       <FinancialAutofillProgressOverlay state={financialAutofillState} />

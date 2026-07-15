@@ -9,6 +9,7 @@ import {
   RefreshCw,
 } from "lucide-react";
 import Modal from "../common/Modal";
+import { validateMappingValue } from "./customTemplateUiUtils";
 
 const STATUS_META = {
   auto_filled: { label: "Auto-filled", className: "bg-emerald-50 text-emerald-700" },
@@ -24,20 +25,6 @@ function StatusPill({ status }) {
       {meta.label}
     </span>
   );
-}
-
-function validateMappingValue(mapping) {
-  const value = mapping.value;
-  if (!value) return "";
-  const rules = mapping.validationRules || [];
-  if (!rules.some((rule) => rule.kind === "numeric")) return "";
-  const numeric = Number(String(value).replace(/[$,%()]/g, ""));
-  if (!Number.isFinite(numeric)) return "Expected a numeric value.";
-  const range = rules.find((rule) => rule.kind === "numeric" && (rule.min !== undefined || rule.max !== undefined));
-  if (range && ((range.min !== undefined && numeric < range.min) || (range.max !== undefined && numeric > range.max))) {
-    return `Value should be between ${range.min ?? "-∞"} and ${range.max ?? "∞"}.`;
-  }
-  return "";
 }
 
 function MappingRow({ mapping, onChange, onApprove, onIgnore }) {
