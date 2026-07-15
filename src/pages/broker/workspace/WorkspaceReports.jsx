@@ -124,7 +124,6 @@ function saveStoredReportsState(clientId, state) {
 }
 
 
-
 const MANUAL_DATE_RANGE_OPTIONS = [
   "All Dates",
   "Custom dates",
@@ -556,7 +555,6 @@ export default function WorkspaceReports() {
       setSelectedTab(nextState.selectedTab || "Balance Sheet");
       setReportType(nextState.reportType || "Summary");
       setReportPeriod(nextState.reportPeriod || "Month");
-      setReportPeriod(nextState.reportPeriod || "Month");
       setDateRange(nextState.dateRange || "This Month");
       setCustomRange({
         start: nextState.customRange?.start || defaultCustomStart,
@@ -970,7 +968,6 @@ export default function WorkspaceReports() {
     customRange,
     dateRange,
     reportType,
-    reportPeriod,
     reportPeriod,
     reportsData,
     selectedReportSource,
@@ -2440,36 +2437,7 @@ export default function WorkspaceReports() {
                       className="h-9 min-w-[150px] rounded-md border border-border-input bg-bg-card px-3 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
                     />
                   </div>
-              // Date-range filters for non-manual sources. Hidden in Year mode
-                  // (the From Year / To Year selectors drive the range instead).
-                  reportPeriod !== "Year" && (
-                  <>
-                    <div className="flex flex-col gap-1.5">
-                      <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
-                        Date From
-                      </label>
-                      <input
-                        type="date"
-                        value={manualFilters.fromDate || ""}
-                        onChange={(e) => handleDateFromChange(e.target.value)}
-                        className="h-9 min-w-[150px] rounded-md border border-border-input bg-bg-card px-3 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-                      />
-                    </div>
-
-                    <div className="flex flex-col gap-1.5">
-                      <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
-                        Date To
-                      </label>
-                      <input
-                        type="date"
-                        value={manualFilters.toDate || ""}
-                        onChange={(e) => handleDateToChange(e.target.value)}
-                        className="h-9 min-w-[150px] rounded-md border border-border-input bg-bg-card px-3 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-                      />
-                    </div>
-                  </>
-                  )
-                  <div className="flex flex-col gap-1.5">
+                  < div className="flex flex-col gap-1.5" >
                     <label className="text-[12px] font-medium uppercase tracking-wider text-text-muted">
                       Date To
                     </label>
@@ -2479,10 +2447,11 @@ export default function WorkspaceReports() {
                       onChange={(e) => handleDateToChange(e.target.value)}
                       className="h-9 min-w-[150px] rounded-md border border-border-input bg-bg-card px-3 text-[13px] text-text-primary transition-all focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
                     />
-                  </div>
+                  </div >
                 </>
               )
-            )}
+            )
+            }
 
 
 
@@ -2538,7 +2507,7 @@ export default function WorkspaceReports() {
                 )}
               </div>
             </div>
-          </div>
+          </div >
 
           <div className="flex-1 animate-in fade-in slide-in-from-bottom-2 duration-500">
             {/* ── COA-driven reports (Key Reports version active) ───────────────
@@ -2620,7 +2589,7 @@ export default function WorkspaceReports() {
               </>
             )}
           </div>
-        </div>
+        </div >
       </div >
 
     </div >

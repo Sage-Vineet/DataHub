@@ -195,7 +195,7 @@ export default function WorkspaceKeyReports() {
 
   // ── Version / detail state ────────────────────────────────────────────────
   const [versions, setVersions] = useState([]);
-  const [selectedVersionId, setSelectedVersionId] = useState(null);
+  const [selectedVersionId, setSelectedVersionId] = useState(() => readStoredVersionId(clientId));
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -409,14 +409,19 @@ export default function WorkspaceKeyReports() {
     }
   };
 
-  const handleUnlink = async (mappingId) => {
+  // ── Export data ────────────────────────────────────────────────────────────
+  const handleExportData = async () => {
+    if (!selectedVersionId) return;
+    setExporting(true);
     try {
       await removeKeyReportMapping(mappingId);
       clearGeneration(clientId, selectedVersionId);
       await loadDetail(selectedVersionId);
       notify("File unlinked.", "success");
     } catch (e) {
-      notify(e.message || "Failed to unlink file.", "error");
+      notify(e.message || "Failed to export data.", "error");
+    } finally {
+      setExporting(false);
     }
   };
 
@@ -436,51 +441,19 @@ export default function WorkspaceKeyReports() {
       return;
     }
 
-    const startedAt = new Date().toISOString();
-    setGenerateState({
-      ...createInitialGenerateState(),
-      status: "generating",
-      startedAt,
-    });
+    const versionId = selectedVersionId;
+    const versionMeta = versions.find((v) => v.id === versionId);
+    const versionLabel =
+      versionMeta?.versionName || `Version ${versionMeta?.versionNumber ?? ""}`.trim();
     setShowCoa(false); // collapse COA editor during generation
 
-    try {
-      const res = await generateKeyReportVersion(selectedVersionId);
+    const result = await startGeneration(clientId, versionId, versionLabel);
 
-      setGenerateState({
-        status: "done",
-        startedAt,
-        finishedAt: new Date().toISOString(),
-        summary: res?.result?.summary || null,
-        warnings: Array.isArray(res?.warnings) ? res.warnings : [],
-        validationResults: Array.isArray(res?.validationResults) ? res.validationResults : [],
-        error: null,
-        errorStage: null,
-      });
-
-      await Promise.all([loadDetail(selectedVersionId), loadVersions()]);
+    if (result?.ok) {
+      await Promise.all([loadDetail(versionId), loadVersions()]);
       // Switch the active data source to Key Reports so Reports pages
       // immediately serve from the newly generated data.
       await switchToKeyReportsSource();
-
-      const warnCount = res?.warnings?.length || 0;
-      notify(
-        `Generation complete${warnCount ? ` (${warnCount} warning${warnCount === 1 ? "" : "s"})` : ""}. Reports are ready.`,
-        "success"
-      );
-    } catch (e) {
-      const message = e.message || "Generation failed.";
-      setGenerateState({
-        status: "error",
-        startedAt,
-        finishedAt: new Date().toISOString(),
-        summary: null,
-        warnings: [],
-        validationResults: [],
-        error: message,
-        errorStage: inferErrorStage(message),
-      });
-      notify(message, "error");
     }
   };
 
@@ -551,256 +524,254 @@ export default function WorkspaceKeyReports() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-            {/* Version selector */}
-            <select
-              value={selectedVersionId || ""}
-              onChange={(e) => setSelectedVersionId(e.target.value)}
-              disabled={generating}
-              className="rounded-xl border border-border bg-white px-3 py-2 text-sm text-text-primary disabled:opacity-50"
-            >
-              {versions.length === 0 && <option value="">No versions</option>}
-              {versions.map((v) => (
-                <option key={v.id} value={v.id}>
-                  {v.versionName || `Version ${v.versionNumber}`}
-                  {v.isActive ? " ✦ (official)" : ""}
-                </option>
-              ))}
-            </select>
+          {/* Version selector */}
+          <select
+            value={selectedVersionId || ""}
+            onChange={(e) => setSelectedVersionId(e.target.value)}
+            disabled={generating}
+            className="rounded-xl border border-border bg-white px-3 py-2 text-sm text-text-primary disabled:opacity-50"
+          >
+            {versions.length === 0 && <option value="">No versions</option>}
+            {versions.map((v) => (
+              <option key={v.id} value={v.id}>
+                {v.versionName || `Version ${v.versionNumber}`}
+                {v.isActive ? " ✦ (official)" : ""}
+              </option>
+            ))}
+          </select>
 
+          <button
+            onClick={handleCreateVersion}
+            disabled={busy || generating}
+            className="flex items-center gap-1.5 rounded-xl border border-border bg-white px-3 py-2 text-sm font-semibold text-text-primary hover:bg-bg-page disabled:opacity-50"
+          >
+            <Plus size={15} /> New
+          </button>
 
-            <button
-              onClick={handleCreateVersion}
-              disabled={busy || generating}
-              className="flex items-center gap-1.5 rounded-xl border border-border bg-white px-3 py-2 text-sm font-semibold text-text-primary hover:bg-bg-page disabled:opacity-50"
-            >
-              <Plus size={15} /> New
-            </button>
+          <button
+            onClick={handleDuplicate}
+            disabled={busy || generating || !selectedVersionId}
+            className="flex items-center gap-1.5 rounded-xl border border-border bg-white px-3 py-2 text-sm font-semibold text-text-primary hover:bg-bg-page disabled:opacity-50"
+          >
+            <Copy size={15} /> Duplicate
+          </button>
+        </div>
+      </div>
 
-
-            <button
-              onClick={handleDuplicate}
-              disabled={busy || generating || !selectedVersionId}
-              className="flex items-center gap-1.5 rounded-xl border border-border bg-white px-3 py-2 text-sm font-semibold text-text-primary hover:bg-bg-page disabled:opacity-50"
-            >
-              <Copy size={15} /> Duplicate
-            </button>
-          </div>
+      {/* ── Loading state ──────────────────────────────────────────────── */}
+      {loading ? (
+        <div className="flex items-center gap-2 py-16 text-sm text-text-muted">
+          <Loader2 size={16} className="animate-spin" /> Loading…
         </div>
 
-        {/* ── Loading state ──────────────────────────────────────────────── */}
-        {loading ? (
-          <div className="flex items-center gap-2 py-16 text-sm text-text-muted">
-            <Loader2 size={16} className="animate-spin" /> Loading…
-          </div>
+      ) : versions.length === 0 ? (
+        /* ── Empty state ──────────────────────────────────────────────── */
+        <div className="rounded-2xl border border-dashed border-border bg-white p-10 text-center">
+          <FileText size={28} className="mx-auto text-text-muted" />
+          <p className="mt-3 text-sm font-medium text-text-primary">No Key Report versions yet</p>
+          <p className="mt-1 text-sm text-text-secondary">
+            Create your first version to start linking financial documents.
+          </p>
+          <button
+            onClick={handleCreateVersion}
+            disabled={busy}
+            className="mx-auto mt-4 flex items-center gap-1.5 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+          >
+            <Plus size={15} /> Create Version 1
+          </button>
+        </div>
 
+      ) : (
+        <div className="space-y-6">
 
-        ) : versions.length === 0 ? (
-          /* ── Empty state ──────────────────────────────────────────────── */
-          <div className="rounded-2xl border border-dashed border-border bg-white p-10 text-center">
-            <FileText size={28} className="mx-auto text-text-muted" />
-            <p className="mt-3 text-sm font-medium text-text-primary">No Key Report versions yet</p>
-            <p className="mt-1 text-sm text-text-secondary">
-              Create your first version to start linking financial documents.
-            </p>
-            <button
-              onClick={handleCreateVersion}
-              disabled={busy}
-              className="mx-auto mt-4 flex items-center gap-1.5 rounded-xl bg-primary px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
-            >
-              <Plus size={15} /> Create Version 1
-            </button>
-          </div>
-
-        ) : (
-          <div className="space-y-6">
-            {/* ══ STAGE 1: Link Documents ════════════════════════════════════ */}
-            <section>
-              <div className="mb-4 flex items-center gap-2">
-                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-xs font-bold text-white">
-                  1
+          {/* ══ STAGE 1: Link Documents ════════════════════════════════════ */}
+          <section>
+            <div className="mb-4 flex items-center gap-2">
+              <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-xs font-bold text-white">
+                1
+              </span>
+              <h2 className="text-base font-bold text-text-primary">Link Documents</h2>
+              {linkedDocumentCount > 0 && (
+                <span className="ml-auto flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
+                  <CheckCircle2 size={12} />
+                  {linkedDocumentCount} document{linkedDocumentCount !== 1 ? "s" : ""} linked
                 </span>
-                <h2 className="text-base font-bold text-text-primary">Link Documents</h2>
-                {linkedDocumentCount > 0 && (
-                  <span className="ml-auto flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
-                    <CheckCircle2 size={12} />
-                    {linkedDocumentCount} document{linkedDocumentCount !== 1 ? "s" : ""} linked
-                  </span>
-                )}
-              </div>
-
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                {CATEGORIES.map((cat) => (
-                  <CategoryCard
-                    key={cat.key}
-                    cat={cat}
-                    items={mappingsByCategory[cat.key] || []}
-                    generating={generating}
-                    onLinkClick={(key) => setPickerCategory(key)}
-                    onUnlink={handleUnlink}
-                  />
-                ))}
-              </div>
-            </section>
-
-            {/* ══ STAGE 2: Generate ══════════════════════════════════════════ */}
-            <section>
-              <div className="mb-4 flex items-center gap-2">
-                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-xs font-bold text-white">
-                  2
-                </span>
-                <h2 className="text-base font-bold text-text-primary">Generate</h2>
-                {isDone && (
-                  <span className="ml-auto flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
-                    <CheckCircle2 size={12} /> Reports ready
-                  </span>
-                )}
-                {isError && (
-                  <span className="ml-auto flex items-center gap-1.5 rounded-full bg-red-50 px-3 py-1 text-xs font-semibold text-red-700">
-                    <AlertCircle size={12} /> Generation failed
-                  </span>
-                )}
-              </div>
-
-              {/* ── Generate button row (only shown when not actively running) ── */}
-              {!generating && (
-                <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border bg-white px-5 py-4">
-                  <div>
-                    <p className="text-sm font-bold text-text-primary">
-                      {isDone
-                        ? "Re-Generate"
-                        : hasSyncedData
-                          ? "Re-Generate Reports"
-                          : "Generate Reports"}
-                    </p>
-                    <p className="mt-0.5 text-sm text-text-secondary">
-                      {isDone || hasSyncedData
-                        ? "Re-run AI Processing, COA, and all Financial Reports with the latest linked documents."
-                        : "Run AI Processing, build Chart of Accounts, and generate all Financial Reports in one step."}
-                      {linkedDocumentCount === 0 && (
-                        <span className="ml-1 font-medium text-amber-600">
-                          Link at least one document first.
-                        </span>
-                      )}
-                    </p>
-                  </div>
-
-                  <button
-                    id="btn-generate-key-reports"
-                    onClick={handleGenerateClick}
-                    disabled={!selectedVersionId || linkedDocumentCount === 0}
-                    className="flex items-center gap-2 rounded-xl bg-primary px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:opacity-90 disabled:opacity-40"
-                  >
-                    <Zap size={15} />
-                    {isDone || hasSyncedData ? "Re-Generate" : "Generate"}
-                  </button>
-                </div>
               )}
+            </div>
 
-              {/* ── Progress panel (during / after generation) ─────────────── */}
-              {generateState.status !== "idle" && (
-                <GenerateProgressPanel
-                  key={generateState.startedAt || "idle"}
-                  status={generateState.status}
-                  startedAt={generateState.startedAt}
-                  finishedAt={generateState.finishedAt}
-                  errorStage={generateState.errorStage}
-                  errorMessage={generateState.error}
-                  onRetry={handleRetry}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {CATEGORIES.map((cat) => (
+                <CategoryCard
+                  key={cat.key}
+                  cat={cat}
+                  items={mappingsByCategory[cat.key] || []}
+                  generating={generating}
+                  onLinkClick={(key) => setPickerCategory(key)}
+                  onUnlink={handleUnlink}
                 />
-              )}
+              ))}
+            </div>
+          </section>
 
-              {/* ── Validation Dashboard (after done OR from persisted data) ── */}
-              {showValidationDashboard && !generating && (
-                <div className={cn(generateState.status !== "idle" && "mt-4")}>
-                  <KeyReportSyncDashboard
-                    version={version}
-                    syncState={displaySyncState}
-                    hasLinkedDocuments={linkedDocumentCount > 0}
-                  />
+          {/* ══ STAGE 2: Generate ══════════════════════════════════════════ */}
+          <section>
+            <div className="mb-4 flex items-center gap-2">
+              <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary text-xs font-bold text-white">
+                2
+              </span>
+              <h2 className="text-base font-bold text-text-primary">Generate</h2>
+              {isDone && (
+                <span className="ml-auto flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">
+                  <CheckCircle2 size={12} /> Reports ready
+                </span>
+              )}
+              {isError && (
+                <span className="ml-auto flex items-center gap-1.5 rounded-full bg-red-50 px-3 py-1 text-xs font-semibold text-red-700">
+                  <AlertCircle size={12} /> Generation failed
+                </span>
+              )}
+            </div>
+
+            {/* ── Generate button row (only shown when not actively running) ── */}
+            {!generating && (
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-border bg-white px-5 py-4">
+                <div>
+                  <p className="text-sm font-bold text-text-primary">
+                    {isDone
+                      ? "Re-Generate"
+                      : hasSyncedData
+                        ? "Re-Generate Reports"
+                        : "Generate Reports"}
+                  </p>
+                  <p className="mt-0.5 text-sm text-text-secondary">
+                    {isDone || hasSyncedData
+                      ? "Re-run AI Processing, COA, and all Financial Reports with the latest linked documents."
+                      : "Run AI Processing, build Chart of Accounts, and generate all Financial Reports in one step."}
+                    {linkedDocumentCount === 0 && (
+                      <span className="ml-1 font-medium text-amber-600">
+                        Link at least one document first.
+                      </span>
+                    )}
+                  </p>
                 </div>
-              )}
 
-              {/* ── Open Reports button ────────────────────────────────────── */}
-              {(isDone || hasSyncedData) && !generating && (
-                <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-emerald-200 bg-emerald-50/60 px-5 py-4">
-                  <div>
-                    <p className="text-sm font-bold text-emerald-800">
-                      Reports are ready
-                    </p>
-                    <p className="mt-0.5 text-sm text-emerald-700">
-                      P&L, Balance Sheet, Cash Flow and EBITDA are all populated
-                      from the generated data.
-                    </p>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      id="btn-export-data"
-                      onClick={handleExportData}
-                      disabled={exporting}
-                      className="flex items-center gap-2 rounded-xl border border-emerald-600 bg-white px-4 py-2.5 text-sm font-semibold text-emerald-600 hover:bg-emerald-50 disabled:opacity-50"
-                    >
-                      {exporting ? (
-                        <>
-                          <Loader2 size={14} className="animate-spin" />
-                          Exporting…
-                        </>
-                      ) : (
-                        <>
-                          <FileText size={14} />
-                          Export Data
-                        </>
-                      )}
-                    </button>
-                    <button
-                      id="btn-open-reports"
-                      onClick={() =>
-                        navigate(`/broker/client/${clientId}/reports`)
-                      }
-                      className="flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700"
-                    >
-                      Open Reports <ExternalLink size={14} />
-                    </button>
-                  </div>
+                <button
+                  id="btn-generate-key-reports"
+                  onClick={handleGenerateClick}
+                  disabled={!selectedVersionId || linkedDocumentCount === 0}
+                  className="flex items-center gap-2 rounded-xl bg-primary px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:opacity-90 disabled:opacity-40"
+                >
+                  <Zap size={15} />
+                  {isDone || hasSyncedData ? "Re-Generate" : "Generate"}
+                </button>
+              </div>
+            )}
+
+            {/* ── Progress panel (during / after generation) ─────────────── */}
+            {generateState.status !== "idle" && (
+              <GenerateProgressPanel
+                key={generateState.startedAt || "idle"}
+                status={generateState.status}
+                startedAt={generateState.startedAt}
+                finishedAt={generateState.finishedAt}
+                errorStage={generateState.errorStage}
+                errorMessage={generateState.error}
+                onRetry={handleRetry}
+              />
+            )}
+
+            {/* ── Validation Dashboard (after done OR from persisted data) ── */}
+            {showValidationDashboard && !generating && (
+              <div className={cn(generateState.status !== "idle" && "mt-4")}>
+                <KeyReportSyncDashboard
+                  version={version}
+                  syncState={displaySyncState}
+                  hasLinkedDocuments={linkedDocumentCount > 0}
+                />
+              </div>
+            )}
+
+            {/* ── Open Reports button ────────────────────────────────────── */}
+            {(isDone || hasSyncedData) && !generating && (
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-emerald-200 bg-emerald-50/60 px-5 py-4">
+                <div>
+                  <p className="text-sm font-bold text-emerald-800">
+                    Reports are ready
+                  </p>
+                  <p className="mt-0.5 text-sm text-emerald-700">
+                    P&L, Balance Sheet, Cash Flow and EBITDA are all populated
+                    from the generated data.
+                  </p>
                 </div>
-              )}
-
-              {/* ── Collapsible COA editor ─────────────────────────────────── */}
-              {hasSyncedData && !generating && (
-                <div className="mt-4">
+                <div className="flex flex-wrap items-center gap-2">
                   <button
-                    onClick={() => setShowCoa((v) => !v)}
-                    className="flex w-full items-center justify-between rounded-2xl border border-border bg-white px-5 py-3.5 text-left transition hover:bg-bg-page"
+                    id="btn-export-data"
+                    onClick={handleExportData}
+                    disabled={exporting}
+                    className="flex items-center gap-2 rounded-xl border border-emerald-600 bg-white px-4 py-2.5 text-sm font-semibold text-emerald-600 hover:bg-emerald-50 disabled:opacity-50"
                   >
-                    <div className="flex items-center gap-2">
-                      <ArrowRight size={14} className="text-primary" />
-                      <span className="text-sm font-semibold text-text-primary">
-                        Edit Chart of Accounts
-                      </span>
-                      <span className="text-xs text-text-muted">
-                        — optional: review and adjust account classifications
-                      </span>
-                    </div>
-                    {showCoa ? (
-                      <ChevronUp size={16} className="text-text-muted" />
+                    {exporting ? (
+                      <>
+                        <Loader2 size={14} className="animate-spin" />
+                        Exporting…
+                      </>
                     ) : (
-                      <ChevronDown size={16} className="text-text-muted" />
+                      <>
+                        <FileText size={14} />
+                        Export Data
+                      </>
                     )}
                   </button>
-
-                  {showCoa && (
-                    <div className="mt-2">
-                      <ChartOfAccountsGrid
-                        versionId={selectedVersionId}
-                        hasSyncedData={hasSyncedData}
-                        notify={notify}
-                      />
-                    </div>
-                  )}
+                  <button
+                    id="btn-open-reports"
+                    onClick={() =>
+                      navigate(`/broker/client/${clientId}/reports`)
+                    }
+                    className="flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700"
+                  >
+                    Open Reports <ExternalLink size={14} />
+                  </button>
                 </div>
-              )}
-            </section>
-          </div>
-        )}
-      </div>
-    );
+              </div>
+            )}
+
+            {/* ── Collapsible COA editor ─────────────────────────────────── */}
+            {hasSyncedData && !generating && (
+              <div className="mt-4">
+                <button
+                  onClick={() => setShowCoa((v) => !v)}
+                  className="flex w-full items-center justify-between rounded-2xl border border-border bg-white px-5 py-3.5 text-left transition hover:bg-bg-page"
+                >
+                  <div className="flex items-center gap-2">
+                    <ArrowRight size={14} className="text-primary" />
+                    <span className="text-sm font-semibold text-text-primary">
+                      Edit Chart of Accounts
+                    </span>
+                    <span className="text-xs text-text-muted">
+                      — optional: review and adjust account classifications
+                    </span>
+                  </div>
+                  {showCoa ? (
+                    <ChevronUp size={16} className="text-text-muted" />
+                  ) : (
+                    <ChevronDown size={16} className="text-text-muted" />
+                  )}
+                </button>
+
+                {showCoa && (
+                  <div className="mt-2">
+                    <ChartOfAccountsGrid
+                      versionId={selectedVersionId}
+                      hasSyncedData={hasSyncedData}
+                      notify={notify}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
+        </div>
+      )}
+    </div>
+  );
 }

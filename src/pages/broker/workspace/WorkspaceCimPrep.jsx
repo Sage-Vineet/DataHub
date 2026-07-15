@@ -8747,124 +8747,124 @@ export default function WorkspaceCimPrep() {
       <FinancialValidationBanner validation={financialAutofillState.validation} />
 
       <div className="grid gap-4 xl:grid-cols-[230px_minmax(0,1fr)_310px]">
-          <SectionDrawer
-            sections={questionnaireSections}
-            activeSectionId={activeSectionId}
+        <SectionDrawer
+          sections={questionnaireSections}
+          activeSectionId={activeSectionId}
+          fieldValues={fieldValues}
+          assetValues={assetValues}
+          chartValues={chartValues}
+          fieldsBySlide={fieldsBySlide}
+          globalDetails={effectiveGlobalDetails}
+          onSelectSection={handleSectionSelect}
+        />
+
+        <section className="min-w-0 space-y-3">
+          <div className="rounded-lg border border-border bg-white p-4 shadow-card">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <p className="text-xs font-bold uppercase tracking-[0.08em] text-[#8BC53D]">
+                  {isBasicSection ? "Setup" : `Section ${activeSection.number}`}
+                </p>
+                <h2 className="mt-1 text-xl font-bold text-[#050505]">
+                  {activeSection.title}
+                </h2>
+                <p className="mt-1 text-sm text-[#6D6E71]">
+                  {sectionCompleted}/{sectionFieldTotal} fields completed
+                </p>
+              </div>
+
+              {activeSectionSlideRefs.length > 0 && (
+                <div className="flex gap-2 overflow-x-auto pb-1">
+                  {activeSectionSlideRefs.map((slideRef) => {
+                    const slideNumber = slideRef.sourceSlideNumber;
+                    const instanceIndex = slideRef.instanceIndex || 0;
+                    const selected = activeSlide === slideNumber && activeSlideInstance === instanceIndex;
+                    return (
+                      <button
+                        key={`${slideNumber}-${instanceIndex}`}
+                        onClick={() => {
+                          setActiveSlide(slideNumber);
+                          setActiveSlideInstance(instanceIndex);
+                          setActiveFieldId("");
+                        }}
+                        className={`shrink-0 rounded-md border px-3 py-2 text-xs font-bold transition ${selected
+                          ? "border-[#8BC53D] bg-[#EEF6E0] text-[#476E2C]"
+                          : "border-border bg-white text-[#6D6E71] hover:border-[#8BC53D]/60"
+                          }`}
+                      >
+                        Slide {slideNumber}{instanceIndex > 0 ? `.${instanceIndex + 1}` : ""}
+                        {instanceIndex > 0 ? (
+                          <span className="ml-1 rounded bg-[#476E2C] px-1 py-0.5 text-[9px] text-white">CONT.</span>
+                        ) : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-border bg-white p-2 shadow-card">
+            {loading ? (
+              <div className="flex aspect-video items-center justify-center text-sm font-semibold text-[#6D6E71]">
+                <Loader2 size={18} className="mr-2 animate-spin text-[#8BC53D]" />
+                Loading CIM template
+              </div>
+            ) : (
+              <SlideCanvas
+                slideNumber={activeSlide}
+                displaySlideNumber={activeSlideInstance > 0 ? `${activeSlide}.${activeSlideInstance + 1}` : activeSlide}
+                layout={styledLayouts[activeSlide]}
+                fields={activeFields}
+                fieldValues={activeCanvasFieldValues}
+                assetValues={assetValues}
+                chartValues={chartValues}
+                globalDetails={effectiveGlobalDetails}
+                styleProfile={activeStyleProfile}
+                activeFieldId={activeFieldId}
+                onFieldFocus={setActiveFieldId}
+                onFieldChange={handleFieldChange}
+              />
+            )}
+          </div>
+        </section>
+
+        <aside className="sticky top-6 max-h-[calc(100vh-3rem)] space-y-4 overflow-y-auto">
+          {isBasicSection && (
+            <GlobalDetailsPanel
+              activeSlide={activeSlide}
+              globalDetails={effectiveGlobalDetails}
+              onChange={handleGlobalChange}
+              compact
+            />
+          )}
+          <FieldPanel
+            activeSlide={activeSlide}
+            activeSlideInstance={activeSlideInstance}
+            fields={activeFields}
             fieldValues={fieldValues}
             assetValues={assetValues}
             chartValues={chartValues}
-            fieldsBySlide={fieldsBySlide}
+            styleProfile={activeStyleProfile}
+            questionnaireState={questionnaireState}
+            reviewState={reviewState}
             globalDetails={effectiveGlobalDetails}
-            onSelectSection={handleSectionSelect}
+            financialAutofillRange={financialAutofillRange}
+            activeFieldId={activeFieldId}
+            onFieldFocus={setActiveFieldId}
+            onFieldChange={handleFieldChange}
+            onRepeatablePageChange={handleRepeatablePageChange}
+            onAssetUpload={handleAssetUpload}
+            onAssetRemove={handleAssetRemove}
+            onChartChange={handleChartChange}
+            onQuestionnaireToggle={handleQuestionnaireToggle}
+            onQuestionPromptChange={handleQuestionPromptChange}
+            onReviewAddNote={handleAddCimReviewNote}
+            onReviewResolve={handleResolveCimReviewItem}
+            onReviewReopen={handleReopenCimReviewItem}
           />
-
-          <section className="min-w-0 space-y-3">
-            <div className="rounded-lg border border-border bg-white p-4 shadow-card">
-              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                <div>
-                  <p className="text-xs font-bold uppercase tracking-[0.08em] text-[#8BC53D]">
-                    {isBasicSection ? "Setup" : `Section ${activeSection.number}`}
-                  </p>
-                  <h2 className="mt-1 text-xl font-bold text-[#050505]">
-                    {activeSection.title}
-                  </h2>
-                  <p className="mt-1 text-sm text-[#6D6E71]">
-                    {sectionCompleted}/{sectionFieldTotal} fields completed
-                  </p>
-                </div>
-
-                {activeSectionSlideRefs.length > 0 && (
-                  <div className="flex gap-2 overflow-x-auto pb-1">
-                    {activeSectionSlideRefs.map((slideRef) => {
-                      const slideNumber = slideRef.sourceSlideNumber;
-                      const instanceIndex = slideRef.instanceIndex || 0;
-                      const selected = activeSlide === slideNumber && activeSlideInstance === instanceIndex;
-                      return (
-                        <button
-                          key={`${slideNumber}-${instanceIndex}`}
-                          onClick={() => {
-                            setActiveSlide(slideNumber);
-                            setActiveSlideInstance(instanceIndex);
-                            setActiveFieldId("");
-                          }}
-                          className={`shrink-0 rounded-md border px-3 py-2 text-xs font-bold transition ${selected
-                            ? "border-[#8BC53D] bg-[#EEF6E0] text-[#476E2C]"
-                            : "border-border bg-white text-[#6D6E71] hover:border-[#8BC53D]/60"
-                            }`}
-                        >
-                          Slide {slideNumber}{instanceIndex > 0 ? `.${instanceIndex + 1}` : ""}
-                          {instanceIndex > 0 ? (
-                            <span className="ml-1 rounded bg-[#476E2C] px-1 py-0.5 text-[9px] text-white">CONT.</span>
-                          ) : null}
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <div className="rounded-lg border border-border bg-white p-2 shadow-card">
-              {loading ? (
-                <div className="flex aspect-video items-center justify-center text-sm font-semibold text-[#6D6E71]">
-                  <Loader2 size={18} className="mr-2 animate-spin text-[#8BC53D]" />
-                  Loading CIM template
-                </div>
-              ) : (
-                <SlideCanvas
-                  slideNumber={activeSlide}
-                  displaySlideNumber={activeSlideInstance > 0 ? `${activeSlide}.${activeSlideInstance + 1}` : activeSlide}
-                  layout={styledLayouts[activeSlide]}
-                  fields={activeFields}
-                  fieldValues={activeCanvasFieldValues}
-                  assetValues={assetValues}
-                  chartValues={chartValues}
-                  globalDetails={effectiveGlobalDetails}
-                  styleProfile={activeStyleProfile}
-                  activeFieldId={activeFieldId}
-                  onFieldFocus={setActiveFieldId}
-                  onFieldChange={handleFieldChange}
-                />
-              )}
-            </div>
-          </section>
-
-          <aside className="sticky top-6 max-h-[calc(100vh-3rem)] space-y-4 overflow-y-auto">
-            {isBasicSection && (
-              <GlobalDetailsPanel
-                activeSlide={activeSlide}
-                globalDetails={effectiveGlobalDetails}
-                onChange={handleGlobalChange}
-                compact
-              />
-            )}
-            <FieldPanel
-              activeSlide={activeSlide}
-              activeSlideInstance={activeSlideInstance}
-              fields={activeFields}
-              fieldValues={fieldValues}
-              assetValues={assetValues}
-              chartValues={chartValues}
-              styleProfile={activeStyleProfile}
-              questionnaireState={questionnaireState}
-              reviewState={reviewState}
-              globalDetails={effectiveGlobalDetails}
-              financialAutofillRange={financialAutofillRange}
-              activeFieldId={activeFieldId}
-              onFieldFocus={setActiveFieldId}
-              onFieldChange={handleFieldChange}
-              onRepeatablePageChange={handleRepeatablePageChange}
-              onAssetUpload={handleAssetUpload}
-              onAssetRemove={handleAssetRemove}
-              onChartChange={handleChartChange}
-              onQuestionnaireToggle={handleQuestionnaireToggle}
-              onQuestionPromptChange={handleQuestionPromptChange}
-              onReviewAddNote={handleAddCimReviewNote}
-              onReviewResolve={handleResolveCimReviewItem}
-              onReviewReopen={handleReopenCimReviewItem}
-            />
-          </aside>
-        </div>
+        </aside>
+      </div>
 
       {questionnaireOpen && (
         <QuestionnaireReviewModal
