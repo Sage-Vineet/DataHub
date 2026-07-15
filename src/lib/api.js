@@ -540,32 +540,6 @@ export function getCimReviewContentRequest(options = {}) {
   return request(`/cim-review/content${query}`, options);
 }
 
-export function saveCimCustomTemplateRequest(payload, options = {}) {
-  return request('/cim-custom-templates', {
-    ...options,
-    method: 'POST',
-    body: payload,
-  });
-}
-
-export function getCimCustomTemplateRequest(companyId, options = {}) {
-  if (!companyId) return Promise.resolve({ template: null });
-  return request(`/cim-custom-templates/${encodeURIComponent(companyId)}`, options);
-}
-
-export function getCimTemplateLearningRequest(companyId, options = {}) {
-  const query = companyId ? `?companyId=${encodeURIComponent(companyId)}` : "";
-  return request(`/cim-template-learning${query}`, options);
-}
-
-export function saveCimTemplateLearningRequest(payload, options = {}) {
-  return request('/cim-template-learning', {
-    ...options,
-    method: 'POST',
-    body: payload,
-  });
-}
-
 export async function uploadFile(file, options = {}) {
   if (!file) {
     throw new Error('Missing file for upload');
