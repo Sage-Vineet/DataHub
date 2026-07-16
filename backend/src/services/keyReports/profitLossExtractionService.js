@@ -37,6 +37,19 @@ const SECTION_HEADER_PATTERNS = [
   { key: 'revenue', re: /^(income|revenue|sales|total income|total revenue)$/i },
   { key: 'cost_of_sales', re: /^(cost of goods sold|cost of sales|cogs|total cost of goods sold|total cost of sales)$/i },
   { key: 'operating_expenses', re: /^(expenses|expense|operating expenses|total expenses|total operating expenses)$/i },
+  // Root Cause 2 fix: these were previously unrecognized, so a row under one of
+  // these real headers silently inherited whatever section came before it
+  // (typically "Operating Expenses") — confirmed live: "Rental Income" and
+  // "Interest Earned" both landed in operating_expenses and were later typed
+  // as expense instead of income.
+  {
+    key: 'other_income',
+    re: /^(other income|other revenue|interest income|interest earned|financial income|extraordinary income|total other income|total other revenue|net other income)$/i,
+  },
+  {
+    key: 'other_expense',
+    re: /^(other expense|other expenses|financial expense|financial expenses|extraordinary expense|extraordinary expenses|total other expense|total other expenses)$/i,
+  },
 ];
 
 function matchSectionHeader(label) {
@@ -111,6 +124,11 @@ function extractYearsFromHeaderRow(headerRow) {
 class ProfitLossExtractionService extends ExtractionServiceBase {
   constructor() {
     super('profit_loss', 'profit_loss_entries');
+    // Bump whenever SECTION_HEADER_PATTERNS or row-classification logic changes —
+    // otherwise already-cached extractions (keyed by parser_version) keep serving
+    // pre-fix section assignments forever. Bumped for Root Cause 2 (Other
+    // Income/Other Expense section recognition).
+    this.parserVersion = 'v2';
   }
 
   async extract({ fileName, fileBuffer }) {

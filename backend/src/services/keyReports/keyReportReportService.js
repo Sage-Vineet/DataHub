@@ -195,6 +195,56 @@ function classifyAccountFromLookup(lookup, name, accountNumber = null) {
   return resolveReportTypeFromCoaType(rawType);
 }
 
+// ─── Root Cause 8: temporary per-account diagnostic logging ───────────────────
+// Off by default (zero cost — no extra query, no console output) since a real
+// GL can have hundreds of accounts per year. Enable with
+// KEY_REPORT_DIAGNOSTIC_LOG=on to print, for every GL account touched during
+// report generation, exactly which Chart of Accounts row it resolved to and
+// why — so a future reconciliation mismatch can be traced without re-running
+// a one-off investigation script.
+function diagnosticLogEnabled() {
+  return String(process.env.KEY_REPORT_DIAGNOSTIC_LOG || '').toLowerCase() === 'on';
+}
+
+async function loadCoaDiagnosticLookup(versionId) {
+  const lookup = new Map();
+  if (!diagnosticLogEnabled()) return lookup;
+  const { data, error } = await supabase
+    .from('chart_of_accounts')
+    .select('account_name, adjusted_name, base_account, account_number, account_type, hierarchy_path, classification_method, match_source, metadata')
+    .eq('version_id', versionId);
+  if (error || !data) return lookup;
+  for (const row of data) {
+    if (row.metadata?.is_group) continue;
+    for (const name of [row.account_name, row.adjusted_name, row.base_account]) {
+      if (!String(name || '').trim()) continue;
+      const key = coaLookupKey(name, row.account_number);
+      const nameOnlyKey = coaLookupKey(name, null);
+      if (!lookup.has(key)) lookup.set(key, row);
+      if (!lookup.has(nameOnlyKey)) lookup.set(nameOnlyKey, row);
+    }
+  }
+  return lookup;
+}
+
+/**
+ * Print one diagnostic line per GL account: name, resolved COA type/hierarchy,
+ * classification provenance, AI confidence, whether it feeds Net Income, and
+ * its final aggregated amount for the year. `includedInNi` / `reason` are
+ * supplied by the caller since only it knows how the amount was actually used
+ * (e.g. aggregateGLForBS's unknown-account override vs. a normal revenue/expense line).
+ */
+function logGlAccountDiagnostic(versionId, year, name, accountNumber, coaDiagLookup, finalAmount, includedInNi, reason) {
+  if (!diagnosticLogEnabled()) return;
+  const coaRow = coaDiagLookup.get(coaLookupKey(name, accountNumber)) || coaDiagLookup.get(coaLookupKey(name, null));
+  console.log(
+    `[KeyReports][Diagnostic] v=${versionId} FY${year} | Account="${name}" | COA Type=${coaRow?.account_type ?? 'MISSING'} | ` +
+    `Hierarchy=${coaRow?.hierarchy_path ?? 'n/a'} | Classification Source=${coaRow?.classification_method ?? 'none'}/${coaRow?.match_source ?? 'none'} | ` +
+    `AI Confidence=${coaRow?.metadata?.ai_confidence ?? 'n/a'} | Needs Review=${Boolean(coaRow?.metadata?.needs_review)} | ` +
+    `Included in Net Income=${includedInNi} | Reason=${reason} | Final Amount=${Number(finalAmount || 0).toFixed(2)}`
+  );
+}
+
 // QB GL uses natural-balance convention: increases in any account's natural
 // direction are stored as positive amounts (asset debits positive, liability/
 // equity/revenue credits positive, expense debits positive). No sign flip needed.
@@ -262,6 +312,7 @@ async function aggregateGLByAccount(versionId, year) {
   );
 
   const coaTypes = await loadCoaAccountTypeLookup(versionId);
+  const coaDiagLookup = await loadCoaDiagnosticLookup(versionId);
 
   // Accounts that already post their own account_name row this year — the
   // split_account fallback below only fires for revenue/expense accounts that
@@ -307,6 +358,17 @@ async function aggregateGLByAccount(versionId, year) {
   if (unclassified.length) {
     console.warn(`[KeyReports][GL] versionId=${versionId} FY${year}: ${unclassified.length} unclassified GL accounts:`,
       unclassified.map(u => `${u.account_name} (split:${u.split_account}) amt=${u.amount} rb=${u.running_balance}`).join(' | '));
+  }
+  if (diagnosticLogEnabled()) {
+    for (const acc of accounts.values()) {
+      const includedInNi = acc.type === 'revenue' || acc.type === 'expense';
+      const reason = acc.type === 'revenue' ? 'revenue account — adds to Net Income'
+        : acc.type === 'expense' ? 'expense account — reduces Net Income'
+        : acc.type === 'cogs' ? 'cogs account — reduces Net Income'
+        : acc.type === 'unknown' ? 'no Chart of Accounts match — excluded from this per-account P&L view (see aggregateGLForBS for the Net Income override)'
+        : `${acc.type} account — Balance Sheet item, not part of Net Income`;
+      logGlAccountDiagnostic(versionId, year, acc.name, null, coaDiagLookup, acc.net, includedInNi, reason);
+    }
   }
   return { accounts, rowsRead: rows.length };
 }
@@ -371,6 +433,7 @@ async function aggregateGLForBS(versionId, year) {
   );
 
   const coaTypes = await loadCoaAccountTypeLookup(versionId);
+  const coaDiagLookup = await loadCoaDiagnosticLookup(versionId);
 
   const plDistSeen = new Set();
   for (const row of rows) {
@@ -383,6 +446,7 @@ async function aggregateGLForBS(versionId, year) {
   const bsMap = new Map();
   let netIncome = 0;
   const unclassified = [];
+  const unclassifiedNetByName = new Map(); // diagnostic-only accumulator, see below
 
   for (const row of rows) {
     const distName = (row.account_name && String(row.account_name).trim()) || '';
@@ -409,6 +473,17 @@ async function aggregateGLForBS(versionId, year) {
       // Expense debits are positive → subtract from NI.
       netIncome += netIncomeMovement(distType, amount);
     } else {
+      // Root Cause 5 fix: an account absent from chart_of_accounts (not
+      // classified as asset/liability/equity/revenue/expense) must still
+      // contribute to Net Income — money must never silently disappear.
+      // Confirmed live: "Augusta Rule", 20 real transactions across 3 fiscal
+      // years, previously entirely excluded from Net Income. Defaults to the
+      // same natural-balance treatment as expense (debit-positive reduces
+      // NI) — empirically verified correct for this exact case; a genuinely
+      // revenue-like unclassified account would show as an unusually large
+      // negative contribution here, which is still visible in `unclassified`
+      // below for manual review, never silently gone.
+      netIncome += netIncomeMovement('expense', amount);
       unclassified.push({
         transaction_date: row.transaction_date,
         account_name: row.account_name,
@@ -416,6 +491,9 @@ async function aggregateGLForBS(versionId, year) {
         amount: row.amount,
         running_balance: row.running_balance,
       });
+      if (diagnosticLogEnabled()) {
+        unclassifiedNetByName.set(distName, (unclassifiedNetByName.get(distName) || 0) + netIncomeMovement('expense', amount));
+      }
     }
 
     // ── split_account ──────────────────────────────────────────────────────
@@ -432,11 +510,22 @@ async function aggregateGLForBS(versionId, year) {
 
   if (unclassified.length) {
     console.warn(
-      `[KeyReports][BS][GL] versionId=${versionId} FY${year}: ${unclassified.length} unclassified account_name(s) — these rows are EXCLUDED from the Balance Sheet and may cause an imbalance:`,
+      `[KeyReports][BS][GL] versionId=${versionId} FY${year}: ${unclassified.length} unclassified account_name(s) — ` +
+      `included in Net Income (treated as expense-like, natural-balance) but EXCLUDED from the Balance Sheet (no known asset/liability/equity type) — flagged for manual review:`,
       unclassified.map(u =>
         `  account_name="${u.account_name}" split_account="${u.split_account}" amount=${u.amount} running_balance=${u.running_balance} transaction_date=${u.transaction_date}`
       ).join('\n')
     );
+  }
+
+  if (diagnosticLogEnabled()) {
+    for (const [name, acc] of bsMap) {
+      logGlAccountDiagnostic(versionId, year, name, null, coaDiagLookup, acc.net, false, `${acc.type} account — Balance Sheet item, not part of Net Income`);
+    }
+    for (const [name, netAmount] of unclassifiedNetByName) {
+      logGlAccountDiagnostic(versionId, year, name, null, coaDiagLookup, netAmount, true,
+        'no Chart of Accounts match — Root Cause 5 override: included in Net Income (treated as expense-like, natural-balance), excluded from Balance Sheet, flagged for manual review');
+    }
   }
 
   return { bsMap, netIncome, unclassified, rowsRead: rows.length };

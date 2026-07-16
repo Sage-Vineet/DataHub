@@ -195,7 +195,7 @@ function glRowYear(row) {
 async function collectBsAccountsFromEntries(companyId, versionId) {
   return fetchAllRows(() =>
     supabase.from("balance_sheet_entries")
-      .select("account_name, account_number, section, is_total, hierarchy_level, fiscal_year")
+      .select("account_name, account_number, section, sub_section, is_total, hierarchy_level, fiscal_year")
       .eq("company_id", companyId).eq("version_id", versionId)
       .or("is_total.eq.false,is_total.is.null").order("id", { ascending: true }),
   );
@@ -286,21 +286,48 @@ function collectUniqueAccountNames(glRows, bsRows) {
 function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map()) {
   const leavesByName = new Map();
 
-  // plSection values are the 3 canonical labels profitLossExtractionService's
-  // header detection recognizes: revenue | cost_of_sales | operating_expenses.
+  // A GL posting is, by definition, a real transaction — never a calculated
+  // report/header row. If Gemini says isReportRow=true for a name that ALSO
+  // has real GL activity, that's a misclassification (confirmed live: "Augusta
+  // Rule" — 20 real transactions, isReportRow=true at confidence 1.0). GL
+  // activity must never silently disappear because of it (root-cause fix —
+  // previously this returned early with no COA row and no trace at all).
+  const namesWithGlActivity = new Set();
+  for (const r of glRows || []) {
+    const n1 = r.account_name || r.account_section || "";
+    if (n1) namesWithGlActivity.add(normName(n1));
+    if (r.split_account) namesWithGlActivity.add(normName(r.split_account));
+  }
+
+  // High AI confidence must not be silently overwritten by a lower-priority
+  // structural inference (see below) — only a missing or low-confidence AI
+  // result may be filled in by bsSection/plSection. This does NOT weaken the
+  // "Capital One Credit Card → equity" fix from earlier this session: that
+  // was a STALE cache entry (already fixed separately via classifier cache
+  // versioning), not a genuinely confident-and-correct AI answer being
+  // second-guessed. A client_chart_of_accounts match (Pass 1, downstream of
+  // this function) still always wins regardless of AI confidence.
+  const AI_OVERRIDE_CONFIDENCE_FLOOR = 0.95;
+
+  // plSection values are the canonical labels profitLossExtractionService's
+  // header detection recognizes: revenue | cost_of_sales | operating_expenses
+  // | other_income | other_expense.
   const typeFromPlSection = (plSection) => {
-    if (plSection === "revenue") return "income";
+    if (plSection === "revenue" || plSection === "other_income") return "income";
     if (plSection === "cost_of_sales") return "cogs";
-    if (plSection === "operating_expenses") return "expense";
+    if (plSection === "operating_expenses" || plSection === "other_expense") return "expense";
     return null;
   };
 
-  const mergeInto = (leaf, source, fiscalYear, number, bsSection, plSection) => {
+  const mergeInto = (leaf, source, fiscalYear, number, bsSection, plSection, bsSubSection) => {
     leaf.sources.add(source);
     if (fiscalYear) leaf.fiscalYears.add(Number(fiscalYear));
     if (!leaf.accountNumber && number) leaf.accountNumber = number;
     if (bsSection && !leaf.bsSection) leaf.bsSection = bsSection;
     if (plSection && !leaf.plSection) leaf.plSection = plSection;
+    if (bsSubSection && !leaf.bsSubSection) leaf.bsSubSection = bsSubSection;
+    const aiConfident = leaf.confidence != null && leaf.confidence >= AI_OVERRIDE_CONFIDENCE_FLOOR && leaf.accountType;
+    if (aiConfident) return; // keep the confident AI classification — section evidence only fills gaps
     if (bsSection) {
       const normSec = String(bsSection).toLowerCase().trim();
       if (normSec.includes("asset")) {
@@ -324,7 +351,7 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map()) {
     }
   };
 
-  const addLeaf = (accountName, accountNumber, source, fiscalYear, bsSection, plSection) => {
+  const addLeaf = (accountName, accountNumber, source, fiscalYear, bsSection, plSection, bsSubSection) => {
     const name = String(accountName || "").trim();
     // isMetadataRow catches only ERP noise (date lines, "Accrual Basis", etc.).
     // Report totals / section headers are excluded by AI isReportRow detection below.
@@ -334,35 +361,47 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map()) {
 
     const aiResult = aiResults.get(key);
 
-    // AI identified this as a calculated/header row — exclude from COA entirely.
-    if (aiResult?.isReportRow) return;
+    // AI identified this as a calculated/header row — exclude from COA,
+    // UNLESS real GL transactions exist under this exact name, in which case
+    // money would silently vanish from Net Income/Balance Sheet. Never
+    // discard real GL activity — insert it, flagged for manual review.
+    const isReportRowOverride = Boolean(aiResult?.isReportRow) && namesWithGlActivity.has(key);
+    if (aiResult?.isReportRow && !isReportRowOverride) return;
 
     // AI result drives the type classification.  Low or absent confidence → needsReview.
     // bsSection (a structural field from the extraction itself, not AI/keyword-derived
-    // from the account name) can still override accountType when present. plSection is
-    // the same idea for the Income Statement side (Priority 3 — below client COA and
-    // the uploaded Balance Sheet, above AI) and never applies when bsSection is present.
+    // from the account name) can still override accountType when present — but ONLY
+    // when the AI result is missing or below AI_OVERRIDE_CONFIDENCE_FLOOR; a
+    // confident AI answer is never second-guessed by a lower-priority structural
+    // inference. plSection is the same idea for the Income Statement side
+    // (Priority 3 — below client COA and the uploaded Balance Sheet, above AI)
+    // and never applies when bsSection is present.
     // No fallback default: an account with no AI result and no section override
     // has an unknown type — never guessed (was `|| "expense"`). It surfaces as
     // needsReview/needsMapping until a human classifies it.
-    let accountType = aiResult?.accountType || null;
-    if (bsSection) {
-      const normSec = String(bsSection).toLowerCase().trim();
-      if (normSec.includes("asset")) accountType = "asset";
-      else if (normSec.includes("liab")) accountType = "liability";
-      else if (normSec.includes("equity") || normSec.includes("capital") || normSec.includes("owner") || normSec.includes("member")) accountType = "equity";
-    } else if (plSection) {
-      const plType = typeFromPlSection(plSection);
-      if (plType) accountType = plType;
+    let accountType = isReportRowOverride ? null : (aiResult?.accountType || null);
+    const aiConfident = !isReportRowOverride && aiResult && Number(aiResult.confidence) >= AI_OVERRIDE_CONFIDENCE_FLOOR && accountType;
+    if (!aiConfident) {
+      if (bsSection) {
+        const normSec = String(bsSection).toLowerCase().trim();
+        if (normSec.includes("asset")) accountType = "asset";
+        else if (normSec.includes("liab")) accountType = "liability";
+        else if (normSec.includes("equity") || normSec.includes("capital") || normSec.includes("owner") || normSec.includes("member")) accountType = "equity";
+      } else if (plSection) {
+        const plType = typeFromPlSection(plSection);
+        if (plType) accountType = plType;
+      }
     }
     const aiNormalizedName   = aiResult?.normalizedName  || null;
     const confidence         = aiResult?.confidence      ?? null;
-    const needsReview        = !aiResult || (confidence !== null && confidence < AI_NEEDS_REVIEW_THRESHOLD);
+    const needsReview        = isReportRowOverride || !aiResult || (confidence !== null && confidence < AI_NEEDS_REVIEW_THRESHOLD);
     const classificationMethod =
+      isReportRowOverride  ? "AI_REPORT_ROW_OVERRIDE" :
       !aiResult            ? "unclassified"         :
       needsReview          ? "ai_low_confidence"    :
                              "gemini";
     const resolvedSource     =
+      isReportRowOverride  ? "AI_REPORT_ROW_OVERRIDE" : // Root Cause 1 spec: classification_source literal
       !aiResult            ? "no_ai_result"         :
       confidence !== null  ? `ai_${confidence.toFixed(2)}` :
                              "gemini";
@@ -373,7 +412,7 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map()) {
       return true;
     });
     if (target) {
-      mergeInto(target, source, fiscalYear, number, bsSection, plSection);
+      mergeInto(target, source, fiscalYear, number, bsSection, plSection, bsSubSection);
       return;
     }
 
@@ -391,13 +430,14 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map()) {
       fiscalYears: new Set(fiscalYear ? [Number(fiscalYear)] : []),
       bsSection: bsSection || null,
       plSection: bsSection ? null : (plSection || null),
+      bsSubSection: bsSection ? (bsSubSection || null) : null,
     };
     bucket.push(leaf);
     leavesByName.set(key, bucket);
   };
 
   for (const r of bsRows || []) {
-    addLeaf(r.account_name, r.account_number || null, "balance_sheet", r.fiscal_year, r.section, null);
+    addLeaf(r.account_name, r.account_number || null, "balance_sheet", r.fiscal_year, r.section, null, r.sub_section);
   }
   for (const r of plRows || []) {
     addLeaf(r.account_name, r.account_number || null, "profit_loss", r.fiscal_year, null, r.section);
@@ -548,11 +588,28 @@ async function loadKnownCategoryPaths() {
  * call) for every account it resolves. The income/cogs/expense branches are
  * Priority 3 (uploaded Profit & Loss) — grouping only, never deeper than one
  * level, never applied to a Balance Sheet account.
+ *
+ * `subSection` (asset/liability only — from balance_sheet_entries.sub_section,
+ * migration 075) adds ONE more real level when the document's own sub-header
+ * distinguished it (Current vs. Fixed Assets, Current vs. Long-Term
+ * Liabilities) — still evidence-gated the same way as `section`, never
+ * invented when the document only shows the bare top-level header.
  */
-function shallowLevelsFromSectionEvidence(section, accountType) {
+const ASSET_SUB_LABELS = { current: "Current Assets", fixed: "Fixed Assets", other: "Other Assets" };
+const LIABILITY_SUB_LABELS = { current: "Current Liabilities", long_term: "Long-Term Liabilities", other: "Other Liabilities" };
+
+function shallowLevelsFromSectionEvidence(section, accountType, subSection) {
   if (!section) return null; // no document evidence — never guess
-  if (accountType === "asset") return ["Total Assets"];
-  if (accountType === "liability") return ["Total Liabilities and Equity", "Total Liabilities"];
+  if (accountType === "asset") {
+    const sub = subSection && ASSET_SUB_LABELS[subSection];
+    return sub ? ["Total Assets", sub] : ["Total Assets"];
+  }
+  if (accountType === "liability") {
+    const sub = subSection && LIABILITY_SUB_LABELS[subSection];
+    return sub
+      ? ["Total Liabilities and Equity", "Total Liabilities", sub]
+      : ["Total Liabilities and Equity", "Total Liabilities"];
+  }
   if (accountType === "equity") return ["Total Liabilities and Equity", "Total Equity"];
   if (accountType === "income") return ["Total Income"];
   if (accountType === "cogs") return ["Total Cost of Goods Sold"];
@@ -699,7 +756,7 @@ async function buildLeafHierarchies(leaves, mapper, categoryPaths = [], existing
   for (const idx of pendingIndices) {
     const leaf = resolved[idx];
     const sectionEvidence = leaf.bsSection || leaf.plSection;
-    const shallowLevels = shallowLevelsFromSectionEvidence(sectionEvidence, leaf.accountType);
+    const shallowLevels = shallowLevelsFromSectionEvidence(sectionEvidence, leaf.accountType, leaf.bsSubSection);
     if (!shallowLevels) continue;
     const tier = leaf.bsSection ? "bs_section" : "pl_section";
 

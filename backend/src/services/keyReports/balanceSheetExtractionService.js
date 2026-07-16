@@ -110,6 +110,27 @@ function inferSection(accountName) {
   return null;
 }
 
+/**
+ * A second, additive qualifier read from the SAME bare header line as
+ * inferSection — current | fixed | long_term | other | null. Stored
+ * separately (balance_sheet_entries.sub_section, migration 075) rather than
+ * folded into section's own values, since other services do exact-string
+ * checks against section === "assets"/"liabilities"/"equity" for real
+ * Balance Sheet / Cash Flow generation logic. Only ever called on the same
+ * already-confirmed header line inferSection matched — never on an account's
+ * own name.
+ */
+function inferSubSection(accountName) {
+  const n = lc(accountName).replace(/'/g, '').trim();
+  if (!n) return null;
+  const words = n.replace(/[^a-z\s]/g, ' ').split(/\s+/).filter(Boolean);
+  if (words.some((w) => w === 'current')) return 'current';
+  if (words.some((w) => w === 'fixed')) return 'fixed';
+  if (words.some((w) => w === 'long') && words.some((w) => w === 'term')) return 'long_term';
+  if (words.some((w) => w === 'other')) return 'other';
+  return null;
+}
+
 class BalanceSheetExtractionService extends ExtractionServiceBase {
   constructor() {
     super('balance_sheet', 'balance_sheet_entries');
@@ -120,7 +141,10 @@ class BalanceSheetExtractionService extends ExtractionServiceBase {
     // and every previously-cached Balance Sheet gets re-parsed with the
     // fixed logic on the next sync, instead of silently reusing stale rows
     // extracted before the fix (which is what was still happening).
-    this.parserVersion = 'v2';
+    // v3: added sub_section (current/fixed/long_term/other) alongside section
+    // — bump again so previously-cached rows (which lack this field) get
+    // re-extracted rather than silently missing it forever.
+    this.parserVersion = 'v3';
   }
 
   async extract({ fileName, fileBuffer }) {
@@ -267,6 +291,7 @@ class BalanceSheetExtractionService extends ExtractionServiceBase {
         rows.push({
           account_name: rawName,
           section: sectionMatch,
+          sub_section: inferSubSection(rawName),
           amount: 0,
           as_of_date: asOfDate,
           fiscal_year: fiscalYear,
@@ -295,6 +320,7 @@ class BalanceSheetExtractionService extends ExtractionServiceBase {
         // this row in the document — never guessed from this row's own account
         // name when no header has appeared yet (see inferSection's doc comment).
         section: currentSection ? inferSection(currentSection) : null,
+        sub_section: currentSection ? inferSubSection(currentSection) : null,
         amount,
         as_of_date: asOfDate,
         fiscal_year: fiscalYear,
@@ -339,6 +365,7 @@ class BalanceSheetExtractionService extends ExtractionServiceBase {
       // The only authoritative source of account_type is Gemini/COA classification.
       account_type: null,
       section: row.section || null,
+      sub_section: row.sub_section || null,
 
       amount: Number(row.amount) || 0,
 

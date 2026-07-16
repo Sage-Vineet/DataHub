@@ -36,6 +36,67 @@ function normName(accountName) {
   return String(accountName || '').trim().toLowerCase();
 }
 
+// Subtotal/section-total labels that profitLossExtractionService's own is_total
+// regex (only matches labels containing the literal word "total") does not
+// catch, so without this exclusion they would appear as phantom "accounts"
+// when diffed against the GL's per-account map (found during the root-cause
+// investigation's diagnostic tooling — same fix applied here).
+const KNOWN_SUBTOTAL_LABELS = new Set([
+  'gross profit',
+  'net operating income',
+  'net other income',
+  'net income',
+]);
+
+// Root Cause 6: attribute a Net-Income mismatch to the specific account(s)
+// responsible instead of reporting only the aggregate difference. Reuses the
+// exact methodology validated in the manual root-cause investigation:
+// per-account GL amounts (aggregateGLByAccount) vs. per-account uploaded P&L
+// amounts (the same validRows already parsed for this file in Step 7b),
+// matched by normalized account name.
+async function accountLevelReconciliationDiff(versionId, year, validRows) {
+  const { accounts: glAccounts } = await keyReportReportService.aggregateGLByAccount(versionId, year);
+
+  const uploadedByName = new Map();
+  for (const row of validRows) {
+    if (row.fiscal_year !== year) continue;
+    if (row.is_total || row.is_header) continue;
+    const key = normName(row.account_name);
+    if (!key || KNOWN_SUBTOTAL_LABELS.has(key)) continue;
+    uploadedByName.set(key, {
+      accountName: row.account_name,
+      amount: (uploadedByName.get(key)?.amount || 0) + (Number(row.amount) || 0),
+    });
+  }
+
+  const glByName = new Map();
+  for (const [name, acc] of glAccounts) {
+    if (acc.type !== 'revenue' && acc.type !== 'expense' && acc.type !== 'unknown') continue;
+    const key = normName(name);
+    glByName.set(key, { accountName: name, amount: acc.net });
+  }
+
+  const allKeys = new Set([...uploadedByName.keys(), ...glByName.keys()]);
+  const diffs = [];
+  for (const key of allKeys) {
+    const uploaded = uploadedByName.get(key);
+    const gl = glByName.get(key);
+    const uploadedAmount = uploaded?.amount || 0;
+    const glAmount = gl?.amount || 0;
+    const diff = Math.round((uploadedAmount - glAmount) * 100) / 100;
+    if (Math.abs(diff) < 1.0) continue;
+    diffs.push({
+      accountName: uploaded?.accountName || gl?.accountName || key,
+      uploadedAmount,
+      glAmount,
+      diff,
+    });
+  }
+
+  diffs.sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
+  return diffs; // full set — caller decides how many to surface, never silently drops the rest
+}
+
 const { generateChartOfAccounts, validateChartOfAccounts, ensureCoaComplete } = require('../chartOfAccountsService');
 const { replaceValidationResults } = require('./keyReportValidationService');
 const { classifyWorkflowDocuments, generateTrialBalance, generateMonthlyBalanceSheets, generateReconciliation, linkGlToCoa } = require('./keyReportAccountingService');
@@ -773,13 +834,39 @@ async function generateFinancialTables(version, opts = {}) {
         const { netIncome: glNetIncome } = await keyReportReportService.aggregateGLForBS(versionId, year);
         const diff = Math.round((uploadedNI - glNetIncome) * 100) / 100;
         const matches = Math.abs(diff) < 1.0;
+
+        // Root Cause 6: don't just report the total difference — attribute it
+        // to the specific account(s) responsible, the same way the manual
+        // root-cause investigation did, so a future mismatch is immediately
+        // explainable from the reconciliation screen instead of requiring a
+        // fresh manual investigation each time.
+        let accountsResponsible = [];
+        let accountsResponsibleTotal = 0;
+        if (!matches) {
+          try {
+            const allDiffs = await accountLevelReconciliationDiff(versionId, year, validRows);
+            accountsResponsibleTotal = allDiffs.length;
+            accountsResponsible = allDiffs.slice(0, 15); // top contributors — enough to explain without flooding the UI; total kept in metadata, never silently hidden
+          } catch (diffErr) {
+            logger.warn(`  ${fileName} FY${year}: account-level diff attribution failed: ${diffErr.message}`);
+          }
+        }
+
         logger.log(`  ${fileName} FY${year}: uploaded Net Income=${uploadedNI}, GL-derived=${glNetIncome.toFixed(2)}, diff=${diff} → ${matches ? 'MATCH' : 'MISMATCH'}`);
+        if (accountsResponsible.length) {
+          logger.log(`    Accounts responsible (${accountsResponsibleTotal} total, showing top ${accountsResponsible.length}): ` +
+            accountsResponsible.map((a) => `"${a.accountName}" (${a.diff >= 0 ? '+' : ''}${a.diff.toFixed(2)})`).join(', '));
+        }
         validationRows.push({
           dataType: 'profit_loss_reconciliation', year, status: matches ? 'success' : 'warning', severity: matches ? 'success' : 'warning',
           message: matches
             ? `Uploaded Profit & Loss Net Income for ${year} matches the GL-derived Net Income (${uploadedNI.toLocaleString()}).`
-            : `Uploaded Profit & Loss Net Income for ${year} (${uploadedNI.toLocaleString()}) differs from the GL-derived Net Income (${glNetIncome.toLocaleString()}) by ${Math.abs(diff).toLocaleString()}.`,
-          metadata: { fileName, uploadedNetIncome: uploadedNI, glDerivedNetIncome: glNetIncome, diff },
+            : `Uploaded Profit & Loss Net Income for ${year} (${uploadedNI.toLocaleString()}) differs from the GL-derived Net Income (${glNetIncome.toLocaleString()}) by ${Math.abs(diff).toLocaleString()}.` +
+              (accountsResponsible.length
+                ? ` Accounts responsible: ${accountsResponsible.map((a) => `${a.accountName} (${a.diff >= 0 ? '+' : ''}${a.diff.toFixed(2)})`).join(', ')}` +
+                  (accountsResponsibleTotal > accountsResponsible.length ? ` (+${accountsResponsibleTotal - accountsResponsible.length} more)` : '') + '.'
+                : ''),
+          metadata: { fileName, uploadedNetIncome: uploadedNI, glDerivedNetIncome: glNetIncome, diff, accountsResponsible, accountsResponsibleTotal },
         });
       }
     }
