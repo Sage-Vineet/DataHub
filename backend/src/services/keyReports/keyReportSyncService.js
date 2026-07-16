@@ -99,7 +99,7 @@ async function accountLevelReconciliationDiff(versionId, year, validRows) {
 
 const { generateChartOfAccounts, validateChartOfAccounts, ensureCoaComplete } = require('../chartOfAccountsService');
 const { replaceValidationResults } = require('./keyReportValidationService');
-const { classifyWorkflowDocuments, generateTrialBalance, generateMonthlyBalanceSheets, generateReconciliation, linkGlToCoa } = require('./keyReportAccountingService');
+const { classifyWorkflowDocuments, generateTrialBalance, generateMonthlyBalanceSheets, generateMonthlyBalanceSheetsReverse, generateReconciliation, linkGlToCoa } = require('./keyReportAccountingService');
 const keyReportService = require('./keyReportService');
 const keyReportReportService = require('./keyReportReportService');
 const { performance } = require('perf_hooks');
@@ -521,16 +521,24 @@ async function generateFinancialTables(version, opts = {}) {
   logger.log(`Total rows inserted across all entry tables: ${totalRows}`);
 
   // ── PHASE 1: Validate available documents (the accounting gate) ────────────
-  // General Ledger is the source of truth. With no GL the accounting workflow
-  // is halted — Chart of Accounts and all generated reports are skipped and a
-  // validation error is surfaced. Opening BS missing ⇒ warning (not a halt).
+  // Validation order: GL required → at least one Balance Sheet (Opening OR
+  // Ending) required → at least one Profit & Loss required → continue. With
+  // any of these missing the accounting workflow is halted — Chart of
+  // Accounts and all generated reports are skipped and a validation error is
+  // surfaced instead.
   logger.log('--- Phase 1: Document validation gate ---');
   const gate = await classifyWorkflowDocuments(companyId, versionId);
+  const GENERATION_MODE_LOG_LABEL = { forward: 'Forward', reverse: 'Backward', dual: 'Dual Verification' };
   logger.log(
     `  GL=${gate.hasGL ? `yes (${gate.glRowCount} rows, FY ${gate.glStartYear}–${gate.glEndYear})` : 'NO'}, ` +
-    `OpeningBS=${gate.hasOpeningBs ? 'yes' : 'no'}, EndingBS=${gate.hasEndingBs ? 'yes' : 'no'}, ` +
+    `OpeningBS=${gate.hasOpeningBs ? `yes (${gate.openingBsMode}, FY${gate.openingBs?.fiscal_year})` : 'no'}, ` +
+    `EndingBS=${gate.hasEndingBs ? 'yes' : 'no'}, ` +
+    `ProfitLoss=${gate.hasProfitLoss ? 'yes' : 'no'}, ` +
     `canGenerate=${gate.canGenerate}`,
   );
+  if (gate.canGenerate) {
+    logger.log(`  ✓ Validation passed. Generation mode: ${GENERATION_MODE_LOG_LABEL[gate.balanceSheetMode] || gate.balanceSheetMode} (${gate.balanceSheetMode}).`);
+  }
   mark('document_gate');
 
   if (!gate.canGenerate) {
@@ -679,15 +687,27 @@ async function generateFinancialTables(version, opts = {}) {
   mark('trial_balance');
 
   // ── PHASE 4: Monthly Balance Sheet engine ──────────────────────────────────
-  // Opening Balance Sheet + monthly GL activity → STORED monthly balances
-  // (balance_sheet_entries, is_generated=true). These generated month-end
-  // snapshots are the authoritative Balance Sheet records; uploaded balance
-  // sheets are the opening seed + (ending) reconciliation input only.
-  logger.log('--- Phase 4: Monthly Balance Sheets ---');
+  // gate.balanceSheetMode picks the engine: 'forward' (Starting BS — opening
+  // + monthly GL activity, unchanged), 'reverse' (Ending BS only — reconstruct
+  // backward from the ending balance, new), or 'dual' (both present — forward
+  // remains authoritative/persisted for now; the reverse engine + comparison
+  // for 'dual' is a follow-up, not yet wired in here). Either engine STORES
+  // the same balance_sheet_entries shape (is_generated=true) — these generated
+  // month-end snapshots are the authoritative Balance Sheet records; uploaded
+  // balance sheets are the opening/ending seed + reconciliation input only.
+  logger.log(`--- Phase 4: Monthly Balance Sheets (${GENERATION_MODE_LOG_LABEL[gate.balanceSheetMode] || gate.balanceSheetMode} generation) ---`);
   let monthlyBsSummary = null;
   try {
-    monthlyBsSummary = await generateMonthlyBalanceSheets(companyId, versionId, gate);
-    logger.log(`  ✓ Monthly Balance Sheets: ${monthlyBsSummary.stored} row(s) across ${monthlyBsSummary.months} month-end snapshot(s) for FY [${monthlyBsSummary.years.join(', ')}]`);
+    monthlyBsSummary = gate.balanceSheetMode === 'reverse'
+      ? await generateMonthlyBalanceSheetsReverse(companyId, versionId, gate)
+      : await generateMonthlyBalanceSheets(companyId, versionId, gate);
+    if (monthlyBsSummary.warning) {
+      logger.warn(`  ⚠ Monthly Balance Sheets: ${monthlyBsSummary.warning} — no rows generated. ` +
+        `The uploaded Ending Balance Sheet's date does not match the General Ledger's last active month; ` +
+        `reconstructing historical balances from it would be unreliable, so generation was skipped rather than guessed.`);
+    } else {
+      logger.log(`  ✓ Monthly Balance Sheets: ${monthlyBsSummary.stored} row(s) across ${monthlyBsSummary.months} month-end snapshot(s) for FY [${monthlyBsSummary.years.join(', ')}]`);
+    }
   } catch (mbsErr) {
     logger.warn(`  Monthly Balance Sheet generation failed: ${mbsErr.message}`);
     monthlyBsSummary = { error: mbsErr.message, stored: 0, months: 0, years: [] };

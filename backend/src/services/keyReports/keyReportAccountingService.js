@@ -79,18 +79,72 @@ async function glRowCount(companyId, versionId) {
   return count || 0;
 }
 
+// Profit & Loss has no entry table (generated entirely from the GL, per
+// migration 056) — its presence is a LINKED-DOCUMENT check, not an
+// extracted-data check, so this reads key_report_file_mappings directly
+// rather than joining against GL/BS bounds logic above.
+async function profitLossMappingCount(versionId) {
+  const { count } = await supabase
+    .from("key_report_file_mappings")
+    .select("id", { count: "exact", head: true })
+    .eq("version_id", versionId)
+    .eq("report_category", "profit_loss");
+  return count || 0;
+}
+
+const BALANCE_SHEET_MODE_LABEL = Object.freeze({
+  forward: "Opening Balance Sheet",
+  reverse: "Ending Balance Sheet",
+  dual: "Opening + Ending Balance Sheet",
+});
+
 /**
  * PHASE 1 — Validate available documents.
  *
  * Determines which accounting documents are usable and whether the accounting
  * workflow may proceed. Pure read; never throws on missing data.
  *
- * Rules (client Data Table WF):
+ * Validation order (client requirement):
+ *   if (!gl)                        stop — MISSING_GENERAL_LEDGER
+ *   if (!openingBS && !endingBS)    stop — MISSING_BALANCE_SHEET
+ *   if (!profitLoss)                stop — MISSING_PROFIT_LOSS
+ *   continue
+ *
  *   - General Ledger REQUIRED. Absent ⇒ canGenerate = false (halt downstream).
- *   - Opening Balance Sheet REQUIRED for the roll-forward. Absent ⇒
- *     canGenerate = false (halt downstream) — without it every generated
- *     balance would start from a fabricated zero opening position.
- *   - Ending Balance Sheet OPTIONAL — used only for reconciliation.
+ *   - EITHER a Starting Balance Sheet OR an Ending Balance Sheet is REQUIRED
+ *     (or both). Absent both ⇒ canGenerate = false — without at least one of
+ *     them there is no known balance at any point in time to roll from.
+ *   - At least one Profit & Loss file REQUIRED (linked-document check, not an
+ *     extracted-data check — P&L has no entry table; see profitLossMappingCount).
+ *
+ *   `balanceSheetMode` tells the caller which engine(s) to run — also the
+ *   "Generation mode" surfaced in the validation-passed message and in sync
+ *   logs (BALANCE_SHEET_MODE_LABEL):
+ *       - 'forward' — Starting BS only. generateMonthlyBalanceSheets (unchanged).
+ *       - 'reverse' — Ending BS only. generateMonthlyBalanceSheetsReverse:
+ *         reconstructs monthly balances backward from the Ending BS.
+ *       - 'dual'    — both present. Forward remains authoritative/persisted;
+ *         the reverse engine + comparison are a follow-up (not yet wired into
+ *         the sync orchestration — see docs/KEY_REPORTS plan).
+ *
+ * Balance Sheet role detection deliberately does NOT assume "Opening BS =
+ * earliest GL year − 1" — different accounting systems export differently.
+ * It is derived from the statement's own as_of_date/fiscal_year relative to
+ * the GL's actual date range (see priorYearClosing/firstYearOpening below),
+ * never from fiscal-year-label pattern matching.
+ *
+ * Starting Balance Sheet — two equally valid forms are accepted and
+ * normalized to the SAME opening-balance object (see openingBs.fiscal_year,
+ * consumed by generateMonthlyBalanceSheets):
+ *   (a) "prior_year_closing"  — a closing snapshot for any year before the
+ *       GL's first fiscal year (e.g. a 2022 Closing Balance Sheet for a GL
+ *       that starts in 2023). This is the historical/default expectation.
+ *   (b) "first_year_opening"  — a snapshot dated at/before the GL's very
+ *       first transaction but filed under the GL's OWN first fiscal year
+ *       (e.g. an "Opening Balance Sheet as of 1/1/2023" for that same 2023
+ *       GL). Many clients only have this form, not a separate prior-year
+ *       report — both represent the exact same point in time (the instant
+ *       before the GL's first transaction), just labeled differently.
  *
  * @returns {Promise<{
  *   hasGL: boolean,
@@ -100,9 +154,12 @@ async function glRowCount(companyId, versionId) {
  *   glStartDate: string|null,
  *   glEndDate: string|null,
  *   openingBs: {as_of_date: string, fiscal_year: number}|null,
+ *   openingBsMode: 'prior_year_closing'|'first_year_opening'|null,
  *   endingBs: {as_of_date: string, fiscal_year: number}|null,
  *   hasOpeningBs: boolean,
  *   hasEndingBs: boolean,
+ *   hasProfitLoss: boolean,
+ *   balanceSheetMode: 'forward'|'reverse'|'dual'|null,
  *   canGenerate: boolean,
  *   rows: Array<object>,   // validation rows (key_report_validation_results shape)
  * }>}
@@ -112,8 +169,8 @@ async function classifyWorkflowDocuments(companyId, versionId) {
   if (!companyId || !versionId) {
     return {
       hasGL: false, glRowCount: 0, glStartYear: null, glEndYear: null,
-      glStartDate: null, glEndDate: null, openingBs: null, endingBs: null,
-      hasOpeningBs: false, hasEndingBs: false, canGenerate: false, rows,
+      glStartDate: null, glEndDate: null, openingBs: null, openingBsMode: null, endingBs: null,
+      hasOpeningBs: false, hasEndingBs: false, hasProfitLoss: false, balanceSheetMode: null, canGenerate: false, rows,
       haltReason: "general_ledger_required",
       haltMessage: "Sync completed, but the accounting workflow was halted: no General Ledger data was found. Link a General Ledger file and re-sync.",
     };
@@ -128,26 +185,25 @@ async function classifyWorkflowDocuments(companyId, versionId) {
       year: null,
       status: "error",
       severity: "error",
-      message:
-        "Upload a General Ledger before generating Key Reports. " +
-        "No General Ledger data was found — the accounting workflow is halted. " +
-        "Link a General Ledger file and re-sync.",
-      metadata: { gate: "gl_required", canGenerate: false },
+      message: "General Ledger is required.",
+      metadata: { gate: "gl_required", code: "MISSING_GENERAL_LEDGER", canGenerate: false },
     });
     return {
       hasGL: false, glRowCount: 0, glStartYear: null, glEndYear: null,
-      glStartDate: null, glEndDate: null, openingBs: null, endingBs: null,
-      hasOpeningBs: false, hasEndingBs: false, canGenerate: false, rows,
+      glStartDate: null, glEndDate: null, openingBs: null, openingBsMode: null, endingBs: null,
+      hasOpeningBs: false, hasEndingBs: false, hasProfitLoss: false, balanceSheetMode: null, canGenerate: false, rows,
       haltReason: "general_ledger_required",
-      haltMessage: "Sync completed, but the accounting workflow was halted: no General Ledger data was found. Link a General Ledger file and re-sync.",
+      haltMessage: "Sync completed, but the accounting workflow was halted: General Ledger is required. Link a General Ledger file and re-sync.",
     };
   }
 
-  const [{ minDate, maxDate }, { earliest, latest }] =
+  const [{ minDate, maxDate }, { earliest, latest }, plMappingCount] =
     await Promise.all([
       glDateRange(companyId, versionId),
       extractedBsBounds(companyId, versionId),
+      profitLossMappingCount(versionId),
     ]);
+  const hasProfitLoss = plMappingCount > 0;
 
   // First/last GL year, derived purely from transaction_date (migration 069 —
   // fiscal_year no longer exists; every row is guaranteed a real date, so
@@ -162,13 +218,18 @@ async function classifyWorkflowDocuments(companyId, versionId) {
   const glStartDate = minDate || (minYear ? `${minYear}-01-01` : null);
   const glEndDate = maxDate || (maxYear ? `${maxYear}-12-31` : null);
 
-  // Opening BS = an extracted snapshot at/before the GL start (typically the
-  // prior year-end), or whose fiscal year precedes the first GL year.
-  const hasOpeningBs = Boolean(
-    earliest &&
-      ((glStartDate && earliest.as_of_date && earliest.as_of_date <= glStartDate) ||
-        (minYear && Number(earliest.fiscal_year) < minYear)),
+  // See the two accepted forms documented above. Both are detected here and
+  // normalized into the same `openingBs` object — the fiscal year it actually
+  // carries (minYear-or-earlier vs. minYear itself) is what
+  // generateMonthlyBalanceSheets uses to seed the roll-forward, so no
+  // generation logic needs to know which form the client uploaded.
+  const priorYearClosing = Boolean(earliest && minYear && Number(earliest.fiscal_year) < minYear);
+  const firstYearOpening = Boolean(
+    earliest && minYear && Number(earliest.fiscal_year) === minYear &&
+      glStartDate && earliest.as_of_date && earliest.as_of_date <= glStartDate,
   );
+  const hasOpeningBs = priorYearClosing || firstYearOpening;
+  const openingBsMode = priorYearClosing ? "prior_year_closing" : firstYearOpening ? "first_year_opening" : null;
 
   // Ending BS = an extracted snapshot for (or after) the last GL year — the one
   // reconciliation compares the generated ending balances against.
@@ -176,17 +237,23 @@ async function classifyWorkflowDocuments(companyId, versionId) {
     latest && maxYear && Number(latest.fiscal_year) >= maxYear,
   );
 
-  if (!hasOpeningBs) {
+  // A Balance Sheet is required for the roll-forward/back — EITHER a Starting
+  // BS (forward engine, unchanged) OR an Ending BS (reverse engine) satisfies
+  // this; only having neither halts the workflow.
+  if (!hasOpeningBs && !hasEndingBs) {
+    const priorYear = minYear ? minYear - 1 : null;
     rows.push({
       dataType: "balance_sheet",
       year: minYear || null,
       status: "error",
       severity: "error",
       message:
-        "An Opening Balance Sheet is required to generate financial statements. " +
-        "Please upload and link an Opening Balance Sheet (a snapshot at or " +
-        "before the General Ledger's start date) and re-sync.",
-      metadata: { gate: "opening_bs_required", canGenerate: false, glStartDate },
+        "At least one Balance Sheet (Opening or Ending) is required. " +
+        `Upload either a Starting Balance Sheet (the previous fiscal year's Closing Balance Sheet${priorYear ? ` — e.g., ${priorYear}` : ''}, ` +
+        `or the Opening Balance Sheet for the first General Ledger fiscal year${minYear ? ` — e.g., ${minYear}` : ''}) ` +
+        `or an Ending Balance Sheet${maxYear ? ` (e.g., as of the end of ${maxYear})` : ''}, which will be used to reconstruct historical balances. ` +
+        "Then re-sync.",
+      metadata: { gate: "balance_sheet_required", code: "MISSING_BALANCE_SHEET", canGenerate: false, glStartDate, glEndDate },
     });
     return {
       hasGL: true,
@@ -196,15 +263,61 @@ async function classifyWorkflowDocuments(companyId, versionId) {
       glStartDate,
       glEndDate,
       openingBs: null,
-      endingBs: hasEndingBs ? latest : null,
+      openingBsMode: null,
+      endingBs: null,
       hasOpeningBs: false,
-      hasEndingBs,
+      hasEndingBs: false,
+      hasProfitLoss,
+      balanceSheetMode: null,
       canGenerate: false,
       rows,
-      haltReason: "opening_balance_sheet_required",
-      haltMessage: "Sync completed, but the accounting workflow was halted: no Opening Balance Sheet was found. Link an Opening Balance Sheet and re-sync.",
+      haltReason: "balance_sheet_required",
+      haltMessage: "Sync completed, but the accounting workflow was halted: at least one Balance Sheet (Opening or Ending) is required. Link one and re-sync.",
     };
   }
+
+  // balanceSheetMode tells the sync orchestrator which engine(s) to run —
+  // computed once here so no downstream code re-derives this decision.
+  const balanceSheetMode = hasOpeningBs && hasEndingBs ? "dual" : hasOpeningBs ? "forward" : "reverse";
+
+  if (!hasProfitLoss) {
+    rows.push({
+      dataType: "profit_loss",
+      year: null,
+      status: "error",
+      severity: "error",
+      message: "At least one Profit & Loss statement is required.",
+      metadata: { gate: "profit_loss_required", code: "MISSING_PROFIT_LOSS", canGenerate: false },
+    });
+    return {
+      hasGL: true,
+      glRowCount: glCount,
+      glStartYear: minYear,
+      glEndYear: maxYear,
+      glStartDate,
+      glEndDate,
+      openingBs: hasOpeningBs ? earliest : null,
+      openingBsMode,
+      endingBs: hasEndingBs ? latest : null,
+      hasOpeningBs,
+      hasEndingBs,
+      hasProfitLoss: false,
+      balanceSheetMode,
+      canGenerate: false,
+      rows,
+      haltReason: "profit_loss_required",
+      haltMessage: "Sync completed, but the accounting workflow was halted: at least one Profit & Loss statement is required. Link one and re-sync.",
+    };
+  }
+
+  rows.push({
+    dataType: "validation_summary",
+    year: null,
+    status: "success",
+    severity: "success",
+    message: `Validation passed. Generation mode: ${BALANCE_SHEET_MODE_LABEL[balanceSheetMode]}.`,
+    metadata: { gate: "validation_passed", balanceSheetMode, canGenerate: true },
+  });
 
   return {
     hasGL: true,
@@ -214,9 +327,12 @@ async function classifyWorkflowDocuments(companyId, versionId) {
     glStartDate,
     glEndDate,
     openingBs: hasOpeningBs ? earliest : null,
+    openingBsMode,
     endingBs: hasEndingBs ? latest : null,
     hasOpeningBs,
     hasEndingBs,
+    hasProfitLoss,
+    balanceSheetMode,
     canGenerate: true,
     rows,
   };
@@ -332,12 +448,19 @@ async function generateMonthlyBalanceSheets(companyId, versionId, gate) {
     .eq("version_id", versionId)
     .eq("is_generated", true);
 
-  // Opening position = close of the year BEFORE the first GL year. bsBalancesForYear
-  // reads the uploaded opening (prior period-end) BS when present, else carries
-  // forward from earlier GL. Close its Net Income line into Retained Earnings.
+  // Opening position: seed from whichever fiscal year the uploaded Starting
+  // Balance Sheet actually resolved to during validation (gate.openingBs) —
+  // either the prior year's closing (startYear - 1, the historical default)
+  // or the GL's own first fiscal year's opening snapshot (startYear itself,
+  // when the client only has an "Opening Balance Sheet as of 1/1/<startYear>").
+  // Both are the exact same point in time (instant before the GL's first
+  // transaction), so reusing whichever year the gate already validated —
+  // instead of re-deriving one here — makes the two forms behave identically
+  // without any change to bsBalancesForYear or the GL engines themselves.
+  const openingYear = gate?.openingBs?.fiscal_year ?? (startYear - 1);
   const running = new Map();
   try {
-    const opening = await bsBalancesForYear(versionId, startYear - 1);
+    const opening = await bsBalancesForYear(versionId, openingYear);
     if (opening?.balances?.size) {
       for (const v of opening.balances.values()) {
         if (/^net\s+income$/i.test(String(v.name).trim())) addRun(running, "Retained Earnings", v.balance, "equity");
@@ -350,6 +473,27 @@ async function generateMonthlyBalanceSheets(companyId, versionId, gate) {
   let sort = 0;
   const monthEndCutoff = gate?.glEndDate || monthEndDate(endYear, 12);
   const yearsStored = [];
+
+  // Cash-Flow gap fix: when the opening seed came from the GL's OWN first
+  // fiscal year ("first_year_opening" — e.g. an "Opening Balance Sheet as of
+  // 1/1/<startYear>"), nothing is ever stored under fiscal_year = startYear-1.
+  // getCashflowReport/generateMonthlyCf look up Beginning Cash via
+  // bsBalancesForYear(versionId, year-1) unconditionally, so without this they
+  // would silently see zero Beginning Cash for the first year. Persisting the
+  // just-loaded opening position as a synthetic startYear-1 Dec-31 snapshot
+  // makes it discoverable by that same existing lookup — zero changes needed
+  // to Cash Flow code. A real uploaded BS is never overwritten by this: this
+  // synthetic row is is_generated=true, so bsBalancesForYear's own
+  // extracted-rows-first check (hasExtractedRows) always prefers a genuine
+  // upload if one exists.
+  if (openingYear === startYear && running.size) {
+    const { rows: seedRows, nextSort } = snapshotRows({
+      versionId, companyId, year: startYear - 1, asOfDate: `${startYear - 1}-12-31`,
+      running, cumulativeNetIncome: 0, sortStart: sort,
+    });
+    allRows.push(...seedRows);
+    sort = nextSort;
+  }
 
   for (let year = startYear; year <= endYear; year++) {
     let cumulativeNetIncome = 0;
@@ -400,6 +544,203 @@ async function generateMonthlyBalanceSheets(companyId, versionId, gate) {
 
   const monthsStored = new Set(allRows.map((r) => r.as_of_date)).size;
   return { stored: allRows.length, months: monthsStored, years: yearsStored };
+}
+
+// ============================================================================
+// PHASE 4 (reverse) — Reverse Balance Sheet Engine
+//
+// For clients who only have an ENDING Balance Sheet (no Starting BS at all),
+// reconstruct every monthly snapshot BACKWARD instead of forward:
+//
+//   Ending Balance
+//     − December GL activity  = November-end Balance   (store November)
+//     − November GL activity  = October-end Balance     (store October)
+//     … repeated back to the first GL month.
+//
+// Reuses the exact same building blocks as the forward engine above —
+// aggregateGLForBSByMonth (per-month deltas), aggregateGLForBS (no-date-data
+// fallback), addRun/snapshotRows/monthEndDate/chunkedInsert — just walked in
+// the opposite direction (subtract instead of add, latest month first). No
+// GL aggregation logic is duplicated; only the traversal direction differs.
+//
+// Retained Earnings needs no special "unclose" step going backward: it only
+// ever changes via the explicit year-end close (never via GL deltas), so
+// subtracting a year's months never has to touch it — by the time the walk
+// reaches a new (earlier) year's December, `running`'s RE already correctly
+// reflects every year before that one, and cumulativeNetIncome is simply
+// reset to that year's own full-year total (computed from the same byMonth
+// map already being iterated) so it renders as a separate line exactly like
+// the forward engine presents an as-yet-unclosed year.
+// ============================================================================
+
+/**
+ * PHASE 4 (reverse) — Generate monthly Balance Sheets backward from an
+ * uploaded Ending Balance Sheet. Mirrors generateMonthlyBalanceSheets's
+ * contract exactly (same balance_sheet_entries shape, is_generated=true) so
+ * every downstream consumer (Trial Balance is independent; P&L, Cash Flow,
+ * financialStatementService, generateReconciliation) needs no changes.
+ *
+ * @param {object} opts
+ * @param {boolean} [opts.persist=true]  When false, computed rows are
+ *   returned instead of written — used by the (future) dual-validation shadow
+ *   run so the forward engine's persisted rows are never overwritten.
+ * @returns {Promise<{stored:number, months:number, years:number[], rows?:object[], warning?:string}>}
+ */
+async function generateMonthlyBalanceSheetsReverse(companyId, versionId, gate, opts = {}) {
+  const { persist = true } = opts;
+  // Lazy require to avoid any load-order coupling (same pattern as the forward engine).
+  const { aggregateGLForBSByMonth, aggregateGLForBS } = require("./keyReportReportService");
+
+  const startYear = gate?.glStartYear;
+  const endYear = gate?.glEndYear;
+  if (!startYear || !endYear) return { stored: 0, months: 0, years: [] };
+
+  // Guard: the uploaded Ending BS must actually correspond to the GL's last
+  // active month. A mid-year Ending BS (e.g. dated June while GL activity
+  // continues through December) would make every subsequent month's
+  // reconstruction silently wrong — refuse rather than guess (per the
+  // "never silently ignore differences" requirement); a future pass can add
+  // forward-fill from the Ending BS's own date to the true GL end.
+  const endingAsOf = gate?.endingBs?.as_of_date || null;
+  const glEndMonth = String(gate?.glEndDate || "").slice(0, 7);
+  const endingMonth = String(endingAsOf || "").slice(0, 7);
+  if (!endingAsOf || endingMonth !== glEndMonth) {
+    return {
+      stored: 0, months: 0, years: [],
+      warning: "ending_bs_date_mismatch",
+    };
+  }
+
+  if (persist) {
+    await supabase
+      .from("balance_sheet_entries")
+      .delete()
+      .eq("version_id", versionId)
+      .eq("is_generated", true);
+  }
+
+  // Seed = the uploaded (non-generated) Ending BS for endYear — reuses the
+  // existing Phase 5 helper below, which already picks the single latest
+  // as_of_date snapshot for a year.
+  const endingMap = await bsBalancesAtLatest(companyId, versionId, endYear, false);
+  if (!endingMap.size) return { stored: 0, months: 0, years: [] };
+
+  const running = new Map();
+  let cumulativeNetIncome = 0;
+  for (const [, v] of endingMap) {
+    if (/^net\s*(income|loss)/i.test(String(v.name).trim())) { cumulativeNetIncome += v.amount; continue; }
+    addRun(running, v.name, v.amount, v.type);
+  }
+
+  const allRows = [];
+  let sort = 0;
+  const yearsStored = [];
+  // Upper bound only — mirrors the forward engine's monthEndCutoff exactly,
+  // so a month after the GL's last real activity is never fabricated (this
+  // matters for endYear when the Ending BS's date equals the last GL month,
+  // which the guard above already enforces).
+  const monthEndCutoff = gate?.glEndDate || monthEndDate(endYear, 12);
+
+  for (let year = endYear; year >= startYear; year--) {
+    const byMonth = await aggregateGLForBSByMonth(versionId, year);
+
+    // This year's FULL net income total — used as the starting NI line for
+    // its own snapshots. For endYear, the uploaded Ending BS already gave us
+    // this value (ground truth); for every earlier year it's computed from
+    // the same byMonth map about to be walked (no extra query).
+    let yearFullNetIncome;
+    if (year === endYear) {
+      yearFullNetIncome = cumulativeNetIncome;
+    } else if (byMonth && byMonth.size) {
+      yearFullNetIncome = 0;
+      for (const mData of byMonth.values()) yearFullNetIncome += mData.netIncome;
+      cumulativeNetIncome = yearFullNetIncome;
+    } else {
+      let agg = null;
+      try { agg = await aggregateGLForBS(versionId, year); } catch (_e) { /* leave running unchanged */ }
+      yearFullNetIncome = agg?.netIncome || 0;
+      cumulativeNetIncome = yearFullNetIncome;
+    }
+
+    // "Un-close" — the exact inverse of the forward engine's year-end close.
+    // Forward closes year Y's NI into RE only AFTER Y's own months (so the
+    // updated RE becomes the base seen throughout year Y+1). Walking
+    // backward, `running`'s RE was seeded at the value used throughout
+    // endYear (= base carried from endYear-1's close). So BEFORE processing
+    // any year *other than* endYear, RE must first be rolled back by THAT
+    // year's own NI — not the year just finished — to reach the base that
+    // was actually in effect during its months. Applying this at the top
+    // (not bottom) of the loop, keyed off the CURRENT year, achieves exactly
+    // that: it fires once per year-boundary crossing, using the year now
+    // being entered.
+    if (year !== endYear && Math.abs(round2(yearFullNetIncome)) >= 0.005) {
+      addRun(running, "Retained Earnings", -yearFullNetIncome, "equity");
+    }
+
+    if (byMonth && byMonth.size) {
+      // Walk every month 12→1 (not just months with activity) so this engine
+      // produces the same one-snapshot-per-month granularity as the forward
+      // engine — a month with no GL rows simply carries the balance through
+      // unchanged, exactly like the forward loop's `if (mData) {...}` no-op.
+      for (let m = 12; m >= 1; m--) {
+        const asOf = monthEndDate(year, m);
+        if (asOf > monthEndCutoff) continue; // never fabricate past the last real GL activity
+        // `running` + `cumulativeNetIncome` right now represent END of month m
+        // — snapshot BEFORE subtracting.
+        const { rows, nextSort } = snapshotRows({
+          versionId, companyId, year, asOfDate: asOf, running, cumulativeNetIncome, sortStart: sort,
+        });
+        allRows.push(...rows);
+        sort = nextSort;
+
+        // Undo month m's GL activity (if any) to step back to END of the PRIOR month.
+        const mData = byMonth.get(m);
+        if (mData) {
+          for (const [name, acc] of mData.bsMap) addRun(running, name, -acc.net, acc.type);
+          cumulativeNetIncome -= mData.netIncome;
+        }
+      }
+    } else {
+      // No usable transaction_date this year — mirror the forward engine's
+      // fallback, just subtracting instead of adding.
+      let agg = null;
+      try { agg = await aggregateGLForBS(versionId, year); } catch (_e) { /* leave running unchanged */ }
+      const asOf = monthEndDate(year, 12);
+      if (asOf <= monthEndCutoff) {
+        const { rows, nextSort } = snapshotRows({
+          versionId, companyId, year, asOfDate: asOf, running, cumulativeNetIncome, sortStart: sort,
+        });
+        allRows.push(...rows);
+        sort = nextSort;
+      }
+      if (agg?.bsMap) for (const [name, acc] of agg.bsMap) addRun(running, name, -acc.net, acc.type);
+    }
+
+    cumulativeNetIncome = 0;
+    yearsStored.unshift(year);
+  }
+
+  // `running` now represents the reconstructed position immediately BEFORE
+  // the GL's first transaction — persist it as a synthetic prior-year
+  // snapshot so bsBalancesForYear(versionId, startYear-1) finds it exactly
+  // like an uploaded Starting BS would (same Cash-Flow-gap technique as the
+  // forward engine above — fixes Beginning Cash for year 1 with zero changes
+  // to Cash Flow code).
+  {
+    const { rows: seedRows, nextSort } = snapshotRows({
+      versionId, companyId, year: startYear - 1, asOfDate: `${startYear - 1}-12-31`,
+      running, cumulativeNetIncome: 0, sortStart: sort,
+    });
+    allRows.push(...seedRows);
+    sort = nextSort;
+  }
+
+  if (persist && allRows.length) await chunkedInsert("balance_sheet_entries", allRows);
+
+  const monthsStored = new Set(allRows.map((r) => r.as_of_date)).size;
+  return persist
+    ? { stored: allRows.length, months: monthsStored, years: yearsStored }
+    : { stored: 0, months: monthsStored, years: yearsStored, rows: allRows };
 }
 
 // ============================================================================
@@ -768,6 +1109,7 @@ module.exports = {
   classifyWorkflowDocuments,
   generateTrialBalance,
   generateMonthlyBalanceSheets,
+  generateMonthlyBalanceSheetsReverse,
   generateReconciliation,
   linkGlToCoa,
   glDateRange,
