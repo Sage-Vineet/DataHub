@@ -530,27 +530,35 @@ function categoryLevelsFromRaw(levels) {
 }
 
 /**
- * Every distinct category path already established, from two sources:
- *   1. chart_of_accounts — real, previously-matched/approved accounts across
- *      every company/version.
- *   2. client_chart_of_accounts — the imported master reference, which is
- *      stable and complete regardless of how much any one company's own data
- *      has been processed yet (source #1 alone bootstraps thin: a category
- *      like "Bank Accounts" only appears there once SOME company's bank
- *      account has actually been matched and persisted).
+ * Every distinct category path already established, from two sources —
+ * STRICTLY scoped to this one company/version. No cross-company or
+ * cross-version reuse: the client has explicitly required that Company A's
+ * COA never influence Company B's, so this is the closed list of category
+ * paths ALREADY assigned earlier in THIS SAME generateChartOfAccounts run
+ * (Passes 1/1.5/1.75, before this function's caller — Pass 2 — runs for the
+ * accounts still unresolved), plus this company's own uploaded COA reference
+ * (client_chart_of_accounts, scoped by company_id — never another company's
+ * upload, never a shared/global template).
+ *   1. chart_of_accounts — this version's own already-matched/approved accounts.
+ *   2. client_chart_of_accounts — this company's own uploaded COA reference, if any.
  * Never invented — this is the CLOSED list coaCategorySelector
  * .selectCategoryForAccounts is allowed to choose from for an account that
  * failed name/number matching (e.g. "AMEX" when "Visa Credit Card" already
- * exists under Credit Cards) — the mechanism that lets the system scale
- * across companies without a keyword/regex rule for every vendor or brand name.
+ * exists under Credit Cards, both within the SAME company/version) — it lets
+ * an already-placed category be reused for a differently-named account of
+ * the same kind, without a keyword/regex rule for every vendor or brand name,
+ * while never reaching outside this one company's own data.
  *
+ * @param {string} companyId
+ * @param {string} versionId
  * @returns {Array<{path: string, levels: string[]}>}
  */
-async function loadKnownCategoryPaths() {
+async function loadKnownCategoryPaths(companyId, versionId) {
   const levelCols = Array.from({ length: MAX_LEVELS }, (_, i) => `level_${i + 1}`);
   const [coaRows, clientRows] = await Promise.all([
-    fetchAllRows(() => supabase.from(TABLE_COA).select(["metadata", ...levelCols].join(", ")).eq("is_active", true)),
-    fetchAllRows(() => supabase.from("client_chart_of_accounts").select(levelCols.join(", "))),
+    fetchAllRows(() => supabase.from(TABLE_COA).select(["metadata", ...levelCols].join(", "))
+      .eq("is_active", true).eq("company_id", companyId).eq("version_id", versionId)),
+    fetchAllRows(() => supabase.from("client_chart_of_accounts").select(levelCols.join(", ")).eq("company_id", companyId)),
   ]);
 
   const byPath = new Map();
@@ -621,9 +629,10 @@ function shallowLevelsFromSectionEvidence(section, accountType, subSection) {
  * Enrich each leaf with its full 15-level hierarchy.
  *
  * Hierarchy is no longer computed — it's looked up directly against
- * chart_of_accounts itself via coaMappingService (Account Number > Exact Name >
- * Normalized Name > Fuzzy Match > Manual Review), searching every other
- * already-classified account across every company/version.
+ * client_chart_of_accounts via coaMappingService (Account Number > Exact Name >
+ * Normalized Name > Fuzzy Match > Manual Review), strictly scoped to THIS
+ * company's own uploaded COA reference only (coaMappingService.createCoaMapper
+ * — no cross-company or global fallback; see that file's header comment).
  *
  * A match's accountType/statementType/hierarchy are trusted over a fresh
  * Gemini call ONLY when the match itself is human-reviewed (classification_
@@ -653,7 +662,7 @@ function shallowLevelsFromSectionEvidence(section, accountType, subSection) {
  *
  * @param {Array} leaves — output of buildCoaModel
  * @param {{map: Function}} mapper — coaMappingService.createCoaMapper() result
- * @param {Array<{path: string, levels: string[]}>} categoryPaths — loadKnownCategoryPaths() result
+ * @param {Array<{path: string, levels: string[]}>} categoryPaths — loadKnownCategoryPaths(companyId, versionId) result, strictly scoped to this one company/version
  * @param {Map} [existingByKey] — accountKey → existing chart_of_accounts row for
  *   this version (from a prior regenerate). Consulted in Pass 1.75, AFTER
  *   client_chart_of_accounts/BS/PL section matching and BEFORE the AI category
@@ -1247,7 +1256,7 @@ async function generateChartOfAccounts(companyId, versionId, batchId, opts = {})
   }
 
   const mapper = await createCoaMapper(companyId);
-  const categoryPaths = await loadKnownCategoryPaths();
+  const categoryPaths = await loadKnownCategoryPaths(companyId, versionId);
   const hierarchical = await buildLeafHierarchies(leaves, mapper, categoryPaths, existingByKey);
   const unmappedCount = hierarchical.filter((l) => l.needsMapping).length;
   const aiCategorizedCount = hierarchical.filter((l) => l.matchTier === "gemini_category").length;
@@ -1282,7 +1291,7 @@ async function generateChartOfAccounts(companyId, versionId, batchId, opts = {})
   // ever wiped and re-imported (a fresh import assigns new row ids) — blindly
   // preserving it below would violate the FK. Load the current valid id set once
   // so a dangling reference gets dropped instead of crashing the whole regenerate.
-  const { data: validClientAccountRows } = await supabase.from("client_chart_of_accounts").select("id");
+  const { data: validClientAccountRows } = await supabase.from("client_chart_of_accounts").select("id").eq("company_id", companyId);
   const validClientAccountIds = new Set((validClientAccountRows || []).map((r) => r.id));
 
   // 2a) Materialize the category-node tree (parent_account_id) + assign system ids.
@@ -2107,7 +2116,7 @@ async function ensureCoaComplete(companyId, versionId) {
   //    only; hierarchy is looked up against other chart_of_accounts rows (same
   //    as generateChartOfAccounts — see buildLeafHierarchies).
   const coaMapper = await createCoaMapper(companyId);
-  const categoryPaths = await loadKnownCategoryPaths();
+  const categoryPaths = await loadKnownCategoryPaths(companyId, versionId);
   const categoryLevelsByPath = new Map(categoryPaths.map((c) => [c.path, c.levels]));
 
   const preliminary = missingRaw
@@ -2322,4 +2331,5 @@ module.exports = {
   buildLeafHierarchies,
   buildTree,
   isMetadataRow,
+  loadKnownCategoryPaths,
 };

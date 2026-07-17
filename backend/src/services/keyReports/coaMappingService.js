@@ -38,18 +38,18 @@ const TABLE = "client_chart_of_accounts";
 const CLIENT_WORKBOOK_METHOD = "client_workbook";
 
 /**
- * Rows imported from a COA workbook — either one company's own upload
- * (migration 072) or the shared global reference (companyId null).
+ * Rows imported from a COA workbook for THIS company only (migration 072).
+ * No global/shared reference — the client has explicitly required that no
+ * company's COA generation ever reads another company's (or a company-
+ * independent) reference data. Every query against client_chart_of_accounts
+ * must be scoped by company_id; there is no unscoped fallback.
  */
 async function loadCandidateAccounts(companyId) {
   const cols = [
     "id", "system_id", "account_name", "adjusted_name", "account_number",
     "account_id_name", "statement_type", "hierarchy_path", ...LEVEL_KEYS,
   ].join(", ");
-  return fetchAllRows(() => {
-    const q = supabase.from(TABLE).select(cols);
-    return companyId ? q.eq("company_id", companyId) : q.is("company_id", null);
-  });
+  return fetchAllRows(() => supabase.from(TABLE).select(cols).eq("company_id", companyId));
 }
 
 /**
@@ -153,34 +153,26 @@ function buildSingleMapper(entries) {
 }
 
 /**
- * Build a reusable mapper for one classification run.
+ * Build a reusable mapper for one classification run — strictly this
+ * company's own uploaded COA (migration 072), if any. No cross-company or
+ * global fallback: a company with no uploaded COA of its own simply gets no
+ * match here, and falls through to the next classification priority
+ * (Balance Sheet/P&L section evidence, GL analysis, the accounting rule
+ * engine, then AI) — never another company's data, per the client's explicit
+ * multi-tenant isolation requirement.
  *
- * When companyId is given and that company has its own uploaded COA
- * (migration 072), it is searched FIRST and wins on any match, full stop —
- * a company's own uploaded workbook is the highest-priority hierarchy source
- * by definition. The shared global reference is always the fallback, so
- * companies without their own upload keep working exactly as before.
- *
- * @param {string|null} [companyId]
+ * @param {string} companyId
  */
-async function createCoaMapper(companyId = null) {
-  const [companyEntries, globalEntries] = await Promise.all([
-    companyId ? loadCandidateAccounts(companyId) : Promise.resolve([]),
-    loadCandidateAccounts(null),
-  ]);
-
+async function createCoaMapper(companyId) {
+  const companyEntries = companyId ? await loadCandidateAccounts(companyId) : [];
   const companyMapper = companyEntries.length ? buildSingleMapper(companyEntries) : null;
-  const globalMapper = buildSingleMapper(globalEntries);
   // Visibility for a recurring issue this session: client_chart_of_accounts has
-  // unexpectedly gone empty (both company-scoped and global rows) more than
-  // once, with the cause still unconfirmed. Logging counts on every mapper
-  // build means the next occurrence shows up directly in sync logs instead of
-  // requiring an ad hoc DB query to notice.
+  // unexpectedly gone empty more than once, with the cause still unconfirmed.
+  // Logging the count on every mapper build means the next occurrence shows up
+  // directly in sync logs instead of requiring an ad hoc DB query to notice.
   console.log(
-    `[CoaMapping] client_chart_of_accounts: ${companyEntries.length} company-scoped row(s)` +
-    (companyId ? ` (company=${companyId})` : '') +
-    `, ${globalEntries.length} global row(s).` +
-    (companyEntries.length === 0 && globalEntries.length === 0 ? ' WARNING: table is empty — no COA-reference hierarchy source available for this run.' : ''),
+    `[CoaMapping] client_chart_of_accounts: ${companyEntries.length} row(s) for company=${companyId}.` +
+    (companyEntries.length === 0 ? ' No uploaded Chart of Accounts for this company — falling through to Balance Sheet/P&L/GL/rules/AI classification.' : ''),
   );
 
   return {
@@ -192,13 +184,10 @@ async function createCoaMapper(companyId = null) {
      *   classificationMethod: string}}
      */
     map(account) {
-      if (companyMapper) {
-        const result = companyMapper.map(account);
-        if (result.matched) return result;
-      }
-      return globalMapper.map(account);
+      if (!companyMapper) return { matched: false };
+      return companyMapper.map(account);
     },
-    entryCount: companyEntries.length + globalEntries.length,
+    entryCount: companyEntries.length,
   };
 }
 

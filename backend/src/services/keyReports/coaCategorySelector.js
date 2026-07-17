@@ -1,24 +1,27 @@
 // ============================================================================
-// COA Category Selector — scalable cross-company hierarchy reuse
+// COA Category Selector — same-company category reuse (STRICTLY tenant-isolated)
 //
 // Closes the one gap plain name-matching can never close on its own: a
 // brand-new posting account (a different bank's credit card, a different
 // vendor, a new utility provider) that shares no words with anything already
-// mapped, but is clearly the same KIND of account as something that already
-// has an approved place in the Chart of Accounts. "Visa Credit Card" and
-// "AMEX" share zero characters — no fuzzy-matching algorithm can conclude
-// they're the same category from the text alone; recognizing that requires
-// understanding what a credit card IS, which is what this call is for.
+// mapped THIS SAME COMPANY, but is clearly the same KIND of account as
+// something that already has an approved place in THIS SAME COMPANY's Chart
+// of Accounts. "Visa Credit Card" and "AMEX" share zero characters — no
+// fuzzy-matching algorithm can conclude they're the same category from the
+// text alone; recognizing that requires understanding what a credit card IS,
+// which is what this call is for.
 //
 // This is NOT hierarchy generation and it NEVER invents a category. It is
-// given a CLOSED list of category paths that already exist somewhere in
-// chart_of_accounts (built from real, previously matched/approved accounts —
-// see chartOfAccountsService.loadKnownCategoryPaths) and picks the single
-// best fit, or says none fit. Any answer not verbatim on that list, or below
-// the confidence floor, is discarded — the account falls through to
-// needs_mapping exactly as if this call had never run. Runs only as a
-// second-line fallback, after coaMappingService's copy-only name/number
-// matching has already failed to find anything.
+// given a CLOSED list of category paths that already exist within THIS ONE
+// company's own current-version chart_of_accounts and its own uploaded COA
+// reference (see chartOfAccountsService.loadKnownCategoryPaths(companyId,
+// versionId) — strictly scoped, no other company's or version's data ever
+// enters this list) and picks the single best fit, or says none fit. Any
+// answer not verbatim on that list, or below the confidence floor, is
+// discarded — the account falls through to needs_mapping exactly as if this
+// call had never run. Runs only as a second-line fallback, after
+// coaMappingService's copy-only name/number matching has already failed to
+// find anything.
 // ============================================================================
 
 "use strict";

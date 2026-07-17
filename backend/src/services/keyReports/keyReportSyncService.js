@@ -48,12 +48,50 @@ const KNOWN_SUBTOTAL_LABELS = new Set([
   'net income',
 ]);
 
+// Reason codes for a P&L reconciliation difference — never just "Difference
+// exists", always explain why, using ONLY data already available to this
+// function (no speculative distinction invented without a way to verify it):
+//   missing_in_gl        — uploaded has this account, no GL account matches it at all this year.
+//   classification_mismatch — a GL account DOES match by name, but COA typed it
+//                           as a Balance Sheet type (asset/liability/equity),
+//                           not revenue/expense — a P&L account misclassified.
+//   unknown_account       — GL has it, but COA never resolved a type for it
+//                           (needs_review/needs_mapping territory).
+//   sign_issue            — both sides have it, same magnitude, opposite sign
+//                           (a common QBO/Xero export/sign-convention quirk).
+//   missing_in_uploaded   — GL has real revenue/expense activity, the client's
+//                           own uploaded P&L has no line for it.
+//   amount_difference     — default: both sides classified consistently, a
+//                           genuine dollar variance.
+// "Missing COA"/"Manual Mapping" (also named in the spec) are intentionally
+// NOT emitted as distinct reasons here — this function has no reliable way to
+// tell "no COA row exists" apart from "COA row exists but unresolved" (both
+// surface as classifyAccountFromLookup returning 'unknown'), and fabricating
+// that distinction without a live COA join would be exactly the kind of
+// speculative code path this pass is avoiding.
+// `hasGlAny` = a GL account with this name exists at all this year, regardless
+// of its resolved type. `hasGlReportable` = that account's type is one that
+// contributes a P&L amount (revenue/expense/unknown) — a Balance-Sheet-typed
+// match (asset/liability/equity) is a real GL account, just the WRONG type,
+// which is exactly classification_mismatch, not "missing". Checking
+// classification first is what makes that distinction actually fire.
+function classifyReconciliationReason(uploadedAmount, hasUploaded, glAmount, hasGlAny, hasGlReportable, glType) {
+  if (glType && glType !== 'revenue' && glType !== 'expense' && glType !== 'unknown') return 'classification_mismatch';
+  if (hasUploaded && !hasGlAny) return 'missing_in_gl';
+  if (glType === 'unknown') return 'unknown_account';
+  if (!hasUploaded && hasGlReportable) return 'missing_in_uploaded';
+  const sameMagnitude = Math.abs(Math.abs(uploadedAmount) - Math.abs(glAmount)) < 1.0;
+  if (sameMagnitude && uploadedAmount !== 0 && Math.sign(uploadedAmount) !== Math.sign(glAmount)) return 'sign_issue';
+  return 'amount_difference';
+}
+
 // Root Cause 6: attribute a Net-Income mismatch to the specific account(s)
 // responsible instead of reporting only the aggregate difference. Reuses the
 // exact methodology validated in the manual root-cause investigation:
 // per-account GL amounts (aggregateGLByAccount) vs. per-account uploaded P&L
 // amounts (the same validRows already parsed for this file in Step 7b),
-// matched by normalized account name.
+// matched by normalized account name. Each diff also carries a `reason` (see
+// classifyReconciliationReason) — never just a raw dollar difference.
 async function accountLevelReconciliationDiff(versionId, year, validRows) {
   const { accounts: glAccounts } = await keyReportReportService.aggregateGLByAccount(versionId, year);
 
@@ -69,27 +107,41 @@ async function accountLevelReconciliationDiff(versionId, year, validRows) {
     });
   }
 
-  const glByName = new Map();
+  // Unfiltered — every GL account for the year regardless of resolved type,
+  // so a P&L account that COA misclassified as a Balance Sheet type is still
+  // findable (needed for the classification_mismatch reason).
+  const glAllByName = new Map();
   for (const [name, acc] of glAccounts) {
-    if (acc.type !== 'revenue' && acc.type !== 'expense' && acc.type !== 'unknown') continue;
-    const key = normName(name);
-    glByName.set(key, { accountName: name, amount: acc.net });
+    glAllByName.set(normName(name), { accountName: name, amount: acc.net, type: acc.type });
+  }
+  // Revenue/expense/unknown only — same filter as before, used for the
+  // reportable amount (a Balance-Sheet-typed account never contributes a P&L amount).
+  const glByName = new Map();
+  for (const [key, acc] of glAllByName) {
+    if (acc.type === 'revenue' || acc.type === 'expense' || acc.type === 'unknown') glByName.set(key, acc);
   }
 
-  const allKeys = new Set([...uploadedByName.keys(), ...glByName.keys()]);
+  const allKeys = new Set([...uploadedByName.keys(), ...glAllByName.keys()]);
   const diffs = [];
   for (const key of allKeys) {
     const uploaded = uploadedByName.get(key);
-    const gl = glByName.get(key);
+    const glReportable = glByName.get(key);
+    const glAny = glAllByName.get(key);
     const uploadedAmount = uploaded?.amount || 0;
-    const glAmount = gl?.amount || 0;
+    const glAmount = glReportable?.amount || 0;
     const diff = Math.round((uploadedAmount - glAmount) * 100) / 100;
-    if (Math.abs(diff) < 1.0) continue;
+    const reason = classifyReconciliationReason(uploadedAmount, Boolean(uploaded), glAmount, Boolean(glAny), Boolean(glReportable), glAny?.type || null);
+    // A classification_mismatch/missing_in_gl is worth surfacing even at $0
+    // apparent "diff" (the reportable glAmount is 0 precisely because the
+    // account was excluded from the P&L side) — only skip when it's a
+    // genuine, immaterial amount_difference.
+    if (Math.abs(diff) < 1.0 && reason === 'amount_difference') continue;
     diffs.push({
-      accountName: uploaded?.accountName || gl?.accountName || key,
+      accountName: uploaded?.accountName || glAny?.accountName || key,
       uploadedAmount,
       glAmount,
       diff,
+      reason,
     });
   }
 
@@ -682,9 +734,66 @@ async function generateFinancialTables(version, opts = {}) {
     logger.log(`  ✓ Trial Balance: ${trialBalanceSummary.stored} account-year row(s) for FY [${trialBalanceSummary.years.join(', ')}]`);
   } catch (tbErr) {
     logger.warn(`  Trial Balance generation failed: ${tbErr.message}`);
-    trialBalanceSummary = { error: tbErr.message, stored: 0, years: [] };
+    trialBalanceSummary = { error: tbErr.message, stored: 0, years: [], imbalancedYears: [] };
   }
   mark('trial_balance');
+
+  // Accounting-equation invariant: ΔAssets = ΔLiabilities + ΔEquity + Net
+  // Income for the year (see generateTrialBalance's doc comment for why this
+  // — not a literal debit/credit sum — is the correct check for this
+  // natural-balance sign convention). A real imbalance almost always means a
+  // GL parsing bug or a misclassified account — never propagate a broken
+  // Trial Balance into Monthly Balance Sheets/P&L/Cash Flow silently; stop
+  // the pipeline here, the same way a missing-document gate halt does.
+  if (trialBalanceSummary.imbalancedYears?.length) {
+    for (const iy of trialBalanceSummary.imbalancedYears) {
+      logger.warn(
+        `  ✗ Trial Balance FY${iy.year} does not balance: ΔAssets=${iy.assetMovement} ΔLiabilities+Equity=${iy.liabilitiesPlusEquityMovement} ` +
+        `NetIncome=${iy.netIncome} imbalance=${iy.imbalance} — top accounts by movement: ${iy.topAccounts.map((a) => a.accountName).join(', ')}` +
+        (iy.unclassifiedAccounts.length ? ` — unclassified (excluded from equation): ${iy.unclassifiedAccounts.join(', ')}` : ''),
+      );
+    }
+    const haltRows = await buildValidationResultsFromEntryTables(versionId, mappingsByCategory, years, logger);
+    haltRows.push(...trialBalanceSummary.imbalancedYears.map((iy) => ({
+      dataType: 'trial_balance',
+      year: iy.year,
+      status: 'error',
+      severity: 'error',
+      message:
+        `Trial Balance for ${iy.year} does not balance — the change in Assets (${iy.assetMovement.toLocaleString()}) does not equal ` +
+        `the change in Liabilities + Equity plus Net Income (${(iy.liabilitiesPlusEquityMovement + iy.netIncome).toLocaleString()}), ` +
+        `a difference of ${Math.abs(iy.imbalance).toLocaleString()}. ` +
+        `This usually indicates a General Ledger parsing issue (a missing offsetting entry, a sign error, a skipped row, or a misclassified account). ` +
+        `Accounts with the largest movement that year: ${iy.topAccounts.map((a) => a.accountName).join(', ')}.` +
+        (iy.unclassifiedAccounts.length ? ` Unclassified accounts excluded from this equation: ${iy.unclassifiedAccounts.join(', ')}.` : ''),
+      metadata: { gate: 'trial_balance_imbalance', code: 'TRIAL_BALANCE_IMBALANCE', ...iy },
+    })));
+    await replaceValidationResults(versionId, companyId, haltRows);
+    logger.log(`  ✓ ${haltRows.length} validation rows stored (workflow halted — Trial Balance imbalance)`);
+    return {
+      success: true,
+      halted: true,
+      batchId: null,
+      datasetVersion: null,
+      years,
+      extractionResults,
+      coaSummary,
+      errors: extractionErrors.length > 0 ? extractionErrors : null,
+      summary: {
+        generated: false,
+        halted: true,
+        haltReason: 'trial_balance_imbalance',
+        years,
+        totalRowsInserted: totalRows,
+        extractionResults,
+        documents: gate,
+        documentProcessing: docStats,
+        timings,
+        message: `Sync halted: Trial Balance does not balance for FY [${trialBalanceSummary.imbalancedYears.map((iy) => iy.year).join(', ')}]. Review the accounts listed and re-sync.`,
+      },
+      message: `Sync halted: Trial Balance does not balance for FY [${trialBalanceSummary.imbalancedYears.map((iy) => iy.year).join(', ')}]. Review the accounts listed and re-sync.`,
+    };
+  }
 
   // ── PHASE 4: Monthly Balance Sheet engine ──────────────────────────────────
   // gate.balanceSheetMode picks the engine: 'forward' (Starting BS — opening
@@ -792,6 +901,29 @@ async function generateFinancialTables(version, opts = {}) {
   // Phase 1 gate rows (e.g. opening-balance-sheet-missing warning) carry through.
   if (gate.rows.length) validationRows.push(...gate.rows);
 
+  // Monthly Balance Sheet A=L+E check (Phase 4, both engines) — the month is
+  // always stored (removing it would break later months' carry-forward), but
+  // an imbalance must never be silently invisible: surface every failed month
+  // as its own error-severity validation row, with the exact imbalance amount
+  // and the accounts involved.
+  if (monthlyBsSummary?.failedMonths?.length) {
+    logger.warn(`  ✗ Monthly Balance Sheet: ${monthlyBsSummary.failedMonths.length} month(s) failed to balance (Assets != Liabilities+Equity)`);
+    for (const fm of monthlyBsSummary.failedMonths) {
+      logger.warn(`    ${fm.asOfDate}: assets=${fm.assets} liabilities+equity=${fm.liabilitiesAndEquity} imbalance=${fm.imbalance}`);
+      validationRows.push({
+        dataType: 'monthly_balance_sheet',
+        year: fm.year,
+        status: 'error',
+        severity: 'error',
+        message:
+          `Balance Sheet for ${fm.asOfDate} does not balance — Assets (${fm.assets.toLocaleString()}) do not equal ` +
+          `Liabilities + Equity (${fm.liabilitiesAndEquity.toLocaleString()}), a difference of ${Math.abs(fm.imbalance).toLocaleString()}.` +
+          (fm.unclassifiedAccounts.length ? ` Unclassified accounts excluded from this equation: ${fm.unclassifiedAccounts.join(', ')}.` : ''),
+        metadata: { gate: 'monthly_bs_imbalance', code: 'MONTHLY_BS_IMBALANCE', ...fm },
+      });
+    }
+  }
+
   // Chart of Accounts validation (null type / invalid rows / duplicates / unmapped
   // GL / multi-category). Non-fatal: a validation failure must not fail the sync.
   let coaValidation = null;
@@ -872,10 +1004,18 @@ async function generateFinancialTables(version, opts = {}) {
           }
         }
 
+        const REASON_LABEL = {
+          missing_in_gl: 'missing in GL',
+          missing_in_uploaded: 'missing in uploaded P&L',
+          classification_mismatch: 'wrong classification',
+          unknown_account: 'unknown account',
+          sign_issue: 'sign issue',
+          amount_difference: 'amount difference',
+        };
         logger.log(`  ${fileName} FY${year}: uploaded Net Income=${uploadedNI}, GL-derived=${glNetIncome.toFixed(2)}, diff=${diff} → ${matches ? 'MATCH' : 'MISMATCH'}`);
         if (accountsResponsible.length) {
           logger.log(`    Accounts responsible (${accountsResponsibleTotal} total, showing top ${accountsResponsible.length}): ` +
-            accountsResponsible.map((a) => `"${a.accountName}" (${a.diff >= 0 ? '+' : ''}${a.diff.toFixed(2)})`).join(', '));
+            accountsResponsible.map((a) => `"${a.accountName}" (${a.diff >= 0 ? '+' : ''}${a.diff.toFixed(2)}, ${REASON_LABEL[a.reason] || a.reason})`).join(', '));
         }
         validationRows.push({
           dataType: 'profit_loss_reconciliation', year, status: matches ? 'success' : 'warning', severity: matches ? 'success' : 'warning',
@@ -883,7 +1023,7 @@ async function generateFinancialTables(version, opts = {}) {
             ? `Uploaded Profit & Loss Net Income for ${year} matches the GL-derived Net Income (${uploadedNI.toLocaleString()}).`
             : `Uploaded Profit & Loss Net Income for ${year} (${uploadedNI.toLocaleString()}) differs from the GL-derived Net Income (${glNetIncome.toLocaleString()}) by ${Math.abs(diff).toLocaleString()}.` +
               (accountsResponsible.length
-                ? ` Accounts responsible: ${accountsResponsible.map((a) => `${a.accountName} (${a.diff >= 0 ? '+' : ''}${a.diff.toFixed(2)})`).join(', ')}` +
+                ? ` Accounts responsible: ${accountsResponsible.map((a) => `${a.accountName} (${a.diff >= 0 ? '+' : ''}${a.diff.toFixed(2)} — ${REASON_LABEL[a.reason] || a.reason})`).join(', ')}` +
                   (accountsResponsibleTotal > accountsResponsible.length ? ` (+${accountsResponsibleTotal - accountsResponsible.length} more)` : '') + '.'
                 : ''),
           metadata: { fileName, uploadedNetIncome: uploadedNI, glDerivedNetIncome: glNetIncome, diff, accountsResponsible, accountsResponsibleTotal },
@@ -1034,4 +1174,4 @@ async function generateFinancialTables(version, opts = {}) {
   };
 }
 
-module.exports = { generateFinancialTables };
+module.exports = { generateFinancialTables, accountLevelReconciliationDiff };

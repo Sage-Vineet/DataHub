@@ -415,6 +415,45 @@ function snapshotRows({ versionId, companyId, year, asOfDate, running, cumulativ
   return { rows, nextSort: sort };
 }
 
+// Validates the fundamental accounting equation — Assets = Liabilities +
+// Equity — for one month's just-built snapshot rows (before they're pushed
+// into allRows). Shared by BOTH the forward and reverse engines so this
+// invariant is checked identically regardless of generation direction.
+// Returns null when balanced (within BALANCE_TOLERANCE); otherwise a record
+// describing exactly what didn't balance, for the caller to surface as a
+// validation row — the month is still stored (removing it would break the
+// carry-forward chain for every later month), but the imbalance is never
+// silently invisible.
+function assertMonthBalances(rows, year, asOfDate) {
+  let assets = 0;
+  let liabilitiesAndEquity = 0;
+  const accounts = [];
+  const unclassifiedAccounts = [];
+  for (const r of rows) {
+    if (r.account_type === "asset") {
+      assets += r.amount;
+      accounts.push({ accountName: r.account_name, accountType: r.account_type, amount: r.amount });
+    } else if (r.account_type === "liability" || r.account_type === "equity") {
+      liabilitiesAndEquity += r.amount;
+      accounts.push({ accountName: r.account_name, accountType: r.account_type, amount: r.amount });
+    } else {
+      // A BS-line account with no resolved type sits outside the equation
+      // entirely (never guessed into a section) — very often the actual
+      // root cause of an apparent imbalance, so called out separately.
+      unclassifiedAccounts.push(r.account_name);
+    }
+  }
+  const imbalance = round2(assets - liabilitiesAndEquity);
+  if (Math.abs(imbalance) <= BALANCE_TOLERANCE) return null;
+  return {
+    year, asOfDate, imbalance,
+    assets: round2(assets),
+    liabilitiesAndEquity: round2(liabilitiesAndEquity),
+    accounts,
+    unclassifiedAccounts,
+  };
+}
+
 async function chunkedInsert(table, rows, chunk = 500) {
   for (let i = 0; i < rows.length; i += chunk) {
     const { error } = await supabase.from(table).insert(rows.slice(i, i + chunk));
@@ -429,7 +468,9 @@ async function chunkedInsert(table, rows, chunk = 500) {
  *   - aggregateGLForBSByMonth (per-month BS deltas + monthly net income)
  *   - aggregateGLForBS (full-year fallback when GL has no usable transaction_date)
  *
- * @returns {Promise<{stored:number, months:number, years:number[]}>}
+ * @returns {Promise<{stored:number, months:number, years:number[], failedMonths:Array<object>}>}
+ *   failedMonths — one entry per month where Assets != Liabilities+Equity
+ *   (see assertMonthBalances); the month is still stored, never silently.
  */
 async function generateMonthlyBalanceSheets(companyId, versionId, gate) {
   // Lazy require to avoid any load-order coupling.
@@ -438,7 +479,7 @@ async function generateMonthlyBalanceSheets(companyId, versionId, gate) {
 
   const startYear = gate?.glStartYear;
   const endYear = gate?.glEndYear;
-  if (!startYear || !endYear) return { stored: 0, months: 0, years: [] };
+  if (!startYear || !endYear) return { stored: 0, months: 0, years: [], failedMonths: [] };
 
   // Clear any previously generated rows (sync also does this at its start; repeat
   // here so a standalone regeneration is safe + idempotent).
@@ -473,6 +514,7 @@ async function generateMonthlyBalanceSheets(companyId, versionId, gate) {
   let sort = 0;
   const monthEndCutoff = gate?.glEndDate || monthEndDate(endYear, 12);
   const yearsStored = [];
+  const failedMonths = [];
 
   // Cash-Flow gap fix: when the opening seed came from the GL's OWN first
   // fiscal year ("first_year_opening" — e.g. an "Opening Balance Sheet as of
@@ -513,6 +555,8 @@ async function generateMonthlyBalanceSheets(companyId, versionId, gate) {
         });
         allRows.push(...rows);
         sort = nextSort;
+        const failure = assertMonthBalances(rows, year, asOf);
+        if (failure) failedMonths.push(failure);
       }
     } else {
       // No usable transaction_date → store a single year-end snapshot from the
@@ -531,6 +575,8 @@ async function generateMonthlyBalanceSheets(companyId, versionId, gate) {
         });
         allRows.push(...rows);
         sort = nextSort;
+        const failure = assertMonthBalances(rows, year, asOf);
+        if (failure) failedMonths.push(failure);
       }
     }
 
@@ -543,7 +589,7 @@ async function generateMonthlyBalanceSheets(companyId, versionId, gate) {
   if (allRows.length) await chunkedInsert("balance_sheet_entries", allRows);
 
   const monthsStored = new Set(allRows.map((r) => r.as_of_date)).size;
-  return { stored: allRows.length, months: monthsStored, years: yearsStored };
+  return { stored: allRows.length, months: monthsStored, years: yearsStored, failedMonths };
 }
 
 // ============================================================================
@@ -584,7 +630,7 @@ async function generateMonthlyBalanceSheets(companyId, versionId, gate) {
  * @param {boolean} [opts.persist=true]  When false, computed rows are
  *   returned instead of written — used by the (future) dual-validation shadow
  *   run so the forward engine's persisted rows are never overwritten.
- * @returns {Promise<{stored:number, months:number, years:number[], rows?:object[], warning?:string}>}
+ * @returns {Promise<{stored:number, months:number, years:number[], failedMonths:Array<object>, rows?:object[], warning?:string}>}
  */
 async function generateMonthlyBalanceSheetsReverse(companyId, versionId, gate, opts = {}) {
   const { persist = true } = opts;
@@ -593,7 +639,7 @@ async function generateMonthlyBalanceSheetsReverse(companyId, versionId, gate, o
 
   const startYear = gate?.glStartYear;
   const endYear = gate?.glEndYear;
-  if (!startYear || !endYear) return { stored: 0, months: 0, years: [] };
+  if (!startYear || !endYear) return { stored: 0, months: 0, years: [], failedMonths: [] };
 
   // Guard: the uploaded Ending BS must actually correspond to the GL's last
   // active month. A mid-year Ending BS (e.g. dated June while GL activity
@@ -606,7 +652,7 @@ async function generateMonthlyBalanceSheetsReverse(companyId, versionId, gate, o
   const endingMonth = String(endingAsOf || "").slice(0, 7);
   if (!endingAsOf || endingMonth !== glEndMonth) {
     return {
-      stored: 0, months: 0, years: [],
+      stored: 0, months: 0, years: [], failedMonths: [],
       warning: "ending_bs_date_mismatch",
     };
   }
@@ -623,7 +669,7 @@ async function generateMonthlyBalanceSheetsReverse(companyId, versionId, gate, o
   // existing Phase 5 helper below, which already picks the single latest
   // as_of_date snapshot for a year.
   const endingMap = await bsBalancesAtLatest(companyId, versionId, endYear, false);
-  if (!endingMap.size) return { stored: 0, months: 0, years: [] };
+  if (!endingMap.size) return { stored: 0, months: 0, years: [], failedMonths: [] };
 
   const running = new Map();
   let cumulativeNetIncome = 0;
@@ -635,6 +681,7 @@ async function generateMonthlyBalanceSheetsReverse(companyId, versionId, gate, o
   const allRows = [];
   let sort = 0;
   const yearsStored = [];
+  const failedMonths = [];
   // Upper bound only — mirrors the forward engine's monthEndCutoff exactly,
   // so a month after the GL's last real activity is never fabricated (this
   // matters for endYear when the Ending BS's date equals the last GL month,
@@ -692,6 +739,8 @@ async function generateMonthlyBalanceSheetsReverse(companyId, versionId, gate, o
         });
         allRows.push(...rows);
         sort = nextSort;
+        const failure = assertMonthBalances(rows, year, asOf);
+        if (failure) failedMonths.push(failure);
 
         // Undo month m's GL activity (if any) to step back to END of the PRIOR month.
         const mData = byMonth.get(m);
@@ -712,6 +761,8 @@ async function generateMonthlyBalanceSheetsReverse(companyId, versionId, gate, o
         });
         allRows.push(...rows);
         sort = nextSort;
+        const failure = assertMonthBalances(rows, year, asOf);
+        if (failure) failedMonths.push(failure);
       }
       if (agg?.bsMap) for (const [name, acc] of agg.bsMap) addRun(running, name, -acc.net, acc.type);
     }
@@ -739,8 +790,8 @@ async function generateMonthlyBalanceSheetsReverse(companyId, versionId, gate, o
 
   const monthsStored = new Set(allRows.map((r) => r.as_of_date)).size;
   return persist
-    ? { stored: allRows.length, months: monthsStored, years: yearsStored }
-    : { stored: 0, months: monthsStored, years: yearsStored, rows: allRows };
+    ? { stored: allRows.length, months: monthsStored, years: yearsStored, failedMonths }
+    : { stored: 0, months: monthsStored, years: yearsStored, failedMonths, rows: allRows };
 }
 
 // ============================================================================
@@ -810,18 +861,50 @@ async function fetchGlRowsForYear(companyId, versionId, year) {
   return out;
 }
 
+// Shared imbalance tolerance for every "does this actually balance" check in
+// this module (Trial Balance debit=credit, Monthly BS A=L+E, BS reconciliation
+// variance) — one constant so every check agrees on what counts as noise vs.
+// a real problem.
+const BALANCE_TOLERANCE = 0.5;
+
 /**
  * PHASE 3 — Generate and STORE the Trial Balance for a version (GL only).
- * @returns {Promise<{stored:number, years:number[]}>}
+ *
+ * Validates the fundamental accounting invariant — ΔAssets = ΔLiabilities +
+ * ΔEquity + Net Income — for each fiscal year, after building the rows,
+ * before they are trusted by anything downstream.
+ *
+ * IMPORTANT: this is NOT a literal "sum of positive amounts = sum of negative
+ * amounts" check. `general_ledger_entries.amount` uses NATURAL-BALANCE sign
+ * convention (every account's own natural increase is stored as positive —
+ * confirmed elsewhere in this codebase, e.g. aggregateGLForBS's comments), not
+ * traditional debit-positive/credit-negative journal signs. A naive global
+ * positive-vs-negative sum was tried and verified LIVE against a real,
+ * already-reconciled company: it reported a multi-million-dollar "imbalance"
+ * on every fiscal year of genuinely correct data (e.g. a Revenue account's
+ * entire activity landing on the "debit" side simply because revenue
+ * increases are stored positive) — that check would have false-positive
+ * halted every real client's sync. The economically correct invariant for
+ * this sign convention is the accounting equation itself, computed from the
+ * SAME per-account `net_balance`/`account_type` this function already builds
+ * — no new query, no new sign assumption.
+ *
+ * @returns {Promise<{stored:number, years:number[], imbalancedYears:Array<{
+ *   year:number, assetMovement:number, liabilitiesPlusEquityMovement:number,
+ *   netIncome:number, imbalance:number,
+ *   topAccounts:Array<{accountName:string, accountType:string, netBalance:number}>,
+ *   unclassifiedAccounts:string[],
+ * }>}>}
  */
 async function generateTrialBalance(companyId, versionId, gate) {
   const startYear = gate?.glStartYear;
   const endYear = gate?.glEndYear;
-  if (!startYear || !endYear) return { stored: 0, years: [] };
+  if (!startYear || !endYear) return { stored: 0, years: [], imbalancedYears: [] };
 
   const typeMap = await coaTypeMap(versionId);
   const rowsToInsert = [];
   const yearsStored = [];
+  const imbalancedYears = [];
 
   for (let year = startYear; year <= endYear; year += 1) {
     const glRows = await fetchGlRowsForYear(companyId, versionId, year);
@@ -853,9 +936,10 @@ async function generateTrialBalance(companyId, versionId, gate) {
       // ACCOUNT_HEADER / TOTAL_ROW are ignored.
     }
 
+    const yearRows = [];
     for (const [name, a] of acc) {
       if (Math.abs(a.debits) < 0.005 && Math.abs(a.credits) < 0.005 && !a.hasOpening) continue;
-      rowsToInsert.push({
+      yearRows.push({
         version_id: versionId,
         company_id: companyId,
         fiscal_year: year,
@@ -869,14 +953,53 @@ async function generateTrialBalance(companyId, versionId, gate) {
         closing_balance: round2(a.opening + a.net),
       });
     }
+    rowsToInsert.push(...yearRows);
     yearsStored.push(year);
+
+    // Accounting-equation check (see doc comment above for why this replaces
+    // a naive debit/credit sum): ΔAssets = ΔLiabilities + ΔEquity + Net Income,
+    // using each account's own natural-balance net_balance movement for the year.
+    let assetMovement = 0;
+    let liabilitiesPlusEquityMovement = 0;
+    let netIncome = 0;
+    const unclassifiedAccounts = [];
+    for (const r of yearRows) {
+      const t = r.account_type;
+      if (t === "asset") assetMovement += r.net_balance;
+      else if (t === "liability" || t === "equity") liabilitiesPlusEquityMovement += r.net_balance;
+      else if (t === "income" || t === "revenue") netIncome += r.net_balance;
+      else if (t === "expense" || t === "cogs") netIncome -= r.net_balance;
+      else unclassifiedAccounts.push(r.account_name);
+    }
+    const imbalance = round2(assetMovement - liabilitiesPlusEquityMovement - netIncome);
+    if (Math.abs(imbalance) > BALANCE_TOLERANCE) {
+      // Not a precise "which account is wrong" (an imbalance is systemic —
+      // a missing offsetting entry, a misclassified account, or a genuine
+      // GL parsing bug) — surface the accounts with the largest movement
+      // that year as the starting point for manual review, never a false
+      // claim of exact attribution.
+      const topAccounts = yearRows
+        .slice()
+        .sort((a, b) => Math.abs(b.net_balance) - Math.abs(a.net_balance))
+        .slice(0, 10)
+        .map((r) => ({ accountName: r.account_name, accountType: r.account_type, netBalance: r.net_balance }));
+      imbalancedYears.push({
+        year,
+        assetMovement: round2(assetMovement),
+        liabilitiesPlusEquityMovement: round2(liabilitiesPlusEquityMovement),
+        netIncome: round2(netIncome),
+        imbalance,
+        topAccounts,
+        unclassifiedAccounts,
+      });
+    }
   }
 
   // Replace prior trial balance for this version.
   await supabase.from("trial_balance_entries").delete().eq("version_id", versionId);
   if (rowsToInsert.length) await chunkedInsert("trial_balance_entries", rowsToInsert);
 
-  return { stored: rowsToInsert.length, years: yearsStored };
+  return { stored: rowsToInsert.length, years: yearsStored, imbalancedYears };
 }
 
 // ============================================================================
@@ -888,7 +1011,7 @@ async function generateTrialBalance(companyId, versionId, gate) {
 // variance amounts. NEVER overwrites generated balances.
 // ============================================================================
 
-const RECON_TOLERANCE = 0.5;
+const RECON_TOLERANCE = BALANCE_TOLERANCE; // alias — kept for readability at existing call sites
 
 // Latest-as-of balances for a year filtered by is_generated. Returns
 // Map<normName, { name, amount, type, section }>.
