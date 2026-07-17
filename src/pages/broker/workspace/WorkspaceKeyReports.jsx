@@ -672,6 +672,7 @@ export default function WorkspaceKeyReports() {
                 finishedAt={generateState.finishedAt}
                 errorStage={generateState.errorStage}
                 errorMessage={generateState.error}
+                progress={generateState.progress}
                 onRetry={handleRetry}
               />
             )}

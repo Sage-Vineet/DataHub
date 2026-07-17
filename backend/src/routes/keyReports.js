@@ -6,6 +6,7 @@ const fileReferenceService = require("../services/fileReferenceService");
 const userPreferenceService = require("../services/userPreferenceService");
 const chartOfAccountsService = require("../services/chartOfAccountsService");
 const keyReportReportService = require("../services/keyReports/keyReportReportService");
+const keyReportProgressStore = require("../services/keyReports/keyReportProgressStore");
 const { generateFinancialStatements } = require("../services/keyReports/financialStatementService");
 const { exportKeyReportData } = require("../services/keyReports/keyReportExportService");
 const { normalizeError, isConnectionError } = require("../utils/dbErrorHandler");
@@ -348,6 +349,22 @@ router.get("/key-reports/versions/:versionId/extracted-data", async (req, res) =
     return res.json({ success: true, ...result });
   } catch (error) {
     return handleError(res, error, "GET extracted-data");
+  }
+});
+
+// Live generation progress for the in-flight /generate run of this version.
+// Backed by an in-memory store the sync pipeline updates phase-by-phase (from
+// "=== Sync started ===" to "=== Sync complete ==="). Returns { progress: null }
+// when no run is (or was recently) tracked — the frontend then falls back to its
+// own handling. Lightweight by design: polled every ~1.5s while generating.
+router.get("/key-reports/versions/:versionId/generate-progress", async (req, res) => {
+  try {
+    const version = await loadVersionWithAccess(req, res);
+    if (!version) return;
+    const progress = keyReportProgressStore.getProgress(version.id);
+    return res.json({ success: true, progress: progress || null });
+  } catch (error) {
+    return handleError(res, error, "GET generate-progress");
   }
 });
 

@@ -6,12 +6,19 @@
  * single synchronous request today) — structured so swapping the ticker for
  * real SSE / WebSocket events requires no further component changes.
  *
+ * When a `progress` prop with a numeric `pct` is supplied (real backend progress
+ * polled from the /generate-progress endpoint), the bar and active stage are
+ * driven by that REAL pipeline position. When it is absent (older backend, a
+ * lost/restarted run, or before the first poll lands) the component falls back
+ * to the time-based ticker so it still animates.
+ *
  * Props
  *   status        "idle" | "generating" | "done" | "error"
  *   startedAt     ISO string — when generation was kicked off
  *   finishedAt    ISO string — set on completion / error
  *   errorStage    string | null — stage key that failed (e.g. "ai_processing")
  *   errorMessage  string | null
+ *   progress      { stageKey, stageLabel, pct, message } | null — live backend progress
  *   onRetry       () => void — called when the user clicks Retry
  */
 
@@ -113,6 +120,11 @@ function computeStageIndex(pct) {
   return 0;
 }
 
+function stageIndexOfKey(stageKey) {
+  const idx = STAGES.findIndex((s) => s.key === stageKey);
+  return idx >= 0 ? idx : -1;
+}
+
 function formatTs(iso) {
   if (!iso) return null;
   const d = new Date(iso);
@@ -120,8 +132,10 @@ function formatTs(iso) {
 }
 
 // ── StageRow ─────────────────────────────────────────────────────────────────
-function StageRow({ stage, stageStatus, errorMessage }) {
+function StageRow({ stage, stageStatus, errorMessage, liveMessage }) {
   const { label, desc, Icon } = stage;
+  // Prefer the live backend message on the active row when one is available.
+  const activeDesc = liveMessage || desc;
 
   const iconBg =
     stageStatus === "done"
@@ -182,7 +196,7 @@ function StageRow({ stage, stageStatus, errorMessage }) {
               stageStatus === "error" ? "text-red-600" : "text-text-secondary"
             )}
           >
-            {stageStatus === "error" && errorMessage ? errorMessage : desc}
+            {stageStatus === "error" && errorMessage ? errorMessage : activeDesc}
           </p>
         )}
       </div>
@@ -197,22 +211,46 @@ export default function GenerateProgressPanel({
   finishedAt = null,
   errorStage = null,
   errorMessage = null,
+  progress = null,
   onRetry,
 }) {
+  // Single monotonic percentage source. The interval below advances it — either
+  // following the real backend target (when available) or simulating progress as
+  // a fallback — and never lets it move backward. Resets on remount, which the
+  // parent forces per run via `key={startedAt}`.
   const [pct, setPct] = useState(0);
   const tickerRef = useRef(null);
   const pctRef = useRef(0);
 
+  // Real backend progress takes precedence over the simulated ticker whenever a
+  // numeric percentage is available for an in-flight run.
+  const hasRealProgress =
+    status === "generating" && progress && Number.isFinite(progress.pct);
+
+  // Mirror the latest real target into a ref so the interval callback reads the
+  // freshest value without needing to be torn down and recreated on every poll.
+  const realPctRef = useRef(null);
+  useEffect(() => {
+    realPctRef.current = hasRealProgress ? progress.pct : null;
+  }, [hasRealProgress, progress]);
+
   useEffect(() => {
     if (status === "generating") {
-      pctRef.current = 0;
       tickerRef.current = setInterval(() => {
-        const next = Math.min(STALL_AT, pctRef.current + (PCT_PER_SEC * TICK_MS) / 1000);
+        const realTarget = realPctRef.current;
+        let next;
+        if (realTarget != null) {
+          // Follow the real backend progress; never move backward, never exceed it.
+          next = Math.max(pctRef.current, Math.min(STALL_AT, realTarget));
+        } else {
+          // Fallback: simulate progress until real data (or completion) arrives.
+          next = Math.min(STALL_AT, pctRef.current + (PCT_PER_SEC * TICK_MS) / 1000);
+        }
         pctRef.current = next;
         setPct(next);
       }, TICK_MS);
-    } else {
-      if (tickerRef.current) clearInterval(tickerRef.current);
+    } else if (tickerRef.current) {
+      clearInterval(tickerRef.current);
     }
     return () => {
       if (tickerRef.current) clearInterval(tickerRef.current);
@@ -224,7 +262,9 @@ export default function GenerateProgressPanel({
   const isError = status === "error";
 
   const currentStageIdx = isGenerating
-    ? computeStageIndex(pct)
+    ? hasRealProgress && stageIndexOfKey(progress.stageKey) >= 0
+      ? stageIndexOfKey(progress.stageKey)
+      : computeStageIndex(pct)
     : isDone
     ? STAGES.length - 1
     : isError
@@ -368,6 +408,11 @@ export default function GenerateProgressPanel({
                 stage={stage}
                 stageStatus={stageStatusOf(i)}
                 errorMessage={i === currentStageIdx && isError ? errorMessage : null}
+                liveMessage={
+                  i === currentStageIdx && isGenerating && hasRealProgress
+                    ? progress.message
+                    : null
+                }
               />
             ))}
           </div>

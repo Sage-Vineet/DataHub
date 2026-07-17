@@ -1502,6 +1502,17 @@ export function getKeyReportSyncLogs(versionId) {
 }
 
 /**
+ * Live progress of an in-flight /generate run for a version. Returns
+ * { success, progress } where `progress` is
+ * { status, stageKey, stageLabel, pct, message, startedAt, updatedAt } or null
+ * when nothing is currently tracked. Polled while generation is running so the
+ * progress bar reflects the real backend pipeline position.
+ */
+export function getKeyReportGenerateProgress(versionId) {
+  return request(`/key-reports/versions/${versionId}/generate-progress`);
+}
+
+/**
  * Fetch a financial report directly from Key Reports entry tables.
  *
  * reportType: 'profit-loss' | 'balance-sheet' | 'general-ledger' |

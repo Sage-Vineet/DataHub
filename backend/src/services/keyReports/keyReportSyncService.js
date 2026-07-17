@@ -15,6 +15,7 @@
 
 const { supabase } = require('../../db');
 const { fetchAllRows } = require('./pagedFetch');
+const progressStore = require('./keyReportProgressStore');
 
 const taxReturnExtractionService = require('./taxReturnExtractionService');
 const bankStatementExtractionService = require('./bankStatementExtractionService');
@@ -396,7 +397,19 @@ async function generateFinancialTables(version, opts = {}) {
     error: (msg) => console.error(`[KeyReportSync v${version.versionNumber || versionId}] ERROR: ${msg}`),
   };
 
+  // Publish real, phase-by-phase progress to the in-memory store so the frontend
+  // progress bar tracks the actual pipeline position (from "=== Sync started ==="
+  // to "=== Sync complete ===") instead of a time-based guess. Stage keys mirror
+  // the frontend STAGES (GenerateProgressPanel.jsx). Never throws — a progress
+  // publish failure must not affect the sync itself.
+  const reportProgress = (stageKey, stageLabel, pct, message) => {
+    try {
+      progressStore.updateProgress(versionId, { stageKey, stageLabel, pct, message });
+    } catch (_e) { /* progress is best-effort */ }
+  };
+
   logger.log('=== Sync started ===');
+  reportProgress('preparing', 'Preparing Data', 5, 'Validating linked files…');
 
   // High-resolution phase instrumentation. `mark(label)` records the elapsed ms
   // since the previous mark; the structured summary is logged at the end and
@@ -485,11 +498,27 @@ async function generateFinancialTables(version, opts = {}) {
   logger.log(`--- Extraction: ${extractionTasks.length} document(s), concurrency ${EXTRACTION_CONCURRENCY} ---`);
   const docStats = { total: extractionTasks.length, cached: 0, processed: 0, failed: 0 };
 
+  // Extraction (download + parse + Gemini AI) is the dominant cost. Advance the
+  // bar across a dedicated band as each document completes so the longest phase
+  // shows genuine, per-document movement instead of a frozen stall.
+  reportProgress('reading_gl', 'Reading GL', 12, 'Loading linked documents…');
+  const AI_BAND_START = 15;
+  const AI_BAND_END = 45;
+  const extractionTotal = extractionTasks.length || 1;
+  let extractionDone = 0;
+
   const extractionOutcomes = await mapWithConcurrency(
     extractionTasks,
     EXTRACTION_CONCURRENCY,
     async ({ category, mapping, service }) => {
       const result = await extractDocument(companyId, versionId, mapping, service, logger);
+      extractionDone += 1;
+      reportProgress(
+        'ai_processing',
+        'Processing AI',
+        Math.round(AI_BAND_START + (AI_BAND_END - AI_BAND_START) * (extractionDone / extractionTotal)),
+        `Extracting financial data… (${extractionDone}/${extractionTotal} document${extractionTotal === 1 ? '' : 's'})`,
+      );
       return { category, result };
     },
   );
@@ -546,6 +575,7 @@ async function generateFinancialTables(version, opts = {}) {
     const haltMessage = gate.haltMessage ||
       'Sync completed, but the accounting workflow was halted: required accounting data was not found. Re-sync after linking the missing file.';
     logger.warn(`  ✗ Accounting workflow halted: ${haltReason}.`);
+    try { progressStore.failProgress(versionId, haltMessage, 'preparing'); } catch (_e) { /* best-effort */ }
     const haltRows = await buildValidationResultsFromEntryTables(versionId, mappingsByCategory, years, logger);
     haltRows.push(...gate.rows);
     await replaceValidationResults(versionId, companyId, haltRows);
@@ -622,6 +652,7 @@ async function generateFinancialTables(version, opts = {}) {
   // grouping hint, never used for Balance Sheet accounts, never inventing
   // deeper hierarchy) → AI selection among existing categories → needs_mapping.
   logger.log('--- Step 6: Chart of Accounts ---');
+  reportProgress('coa', 'Generating Chart of Accounts', 55, 'Classifying accounts and building hierarchy…');
   let coaSummary = null;
   try {
     coaSummary = await generateChartOfAccounts(companyId, versionId, null, { plRows: plAccountRows });
@@ -676,6 +707,7 @@ async function generateFinancialTables(version, opts = {}) {
 
   // ── PHASE 3: Trial Balance (generated directly from the General Ledger) ─────
   logger.log('--- Phase 3: Trial Balance ---');
+  reportProgress('financial_reports', 'Generating Financial Reports', 70, 'Building Trial Balance and Balance Sheets…');
   let trialBalanceSummary = null;
   try {
     trialBalanceSummary = await generateTrialBalance(companyId, versionId, gate);
@@ -738,6 +770,7 @@ async function generateFinancialTables(version, opts = {}) {
   // Sheets exist, then persisted as render-ready JSON. They are not accounting
   // source tables and opening a report never mutates COA or re-runs this pipeline.
   logger.log('--- Phase 6: Materialize P&L and Cash Flow snapshots ---');
+  reportProgress('snapshots', 'Creating Snapshots', 88, 'Persisting P&L and Cash Flow snapshots…');
   let generatedReportSummary = { profitLoss: 0, profitLossYears: [], cashFlow: 0 };
   try {
     const pl = await keyReportReportService.getProfitLossReport(versionId, {
@@ -763,6 +796,7 @@ async function generateFinancialTables(version, opts = {}) {
 
   // Step 7: Validation Results (from entry table row counts + COA spec checks)
   logger.log('--- Step 7: Validation Results ---');
+  reportProgress('validation', 'Validation', 96, 'Running data quality checks…');
   logger.log(`  Building validation rows for years=[${years.join(', ')}]`);
   const validationRows = await buildValidationResultsFromEntryTables(versionId, mappingsByCategory, years, logger);
 

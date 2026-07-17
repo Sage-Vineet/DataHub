@@ -11,8 +11,12 @@
 // State is keyed per (clientId, versionId) so each version's syncing status is
 // independent and restored when the user comes back to that version.
 
-import { generateKeyReportVersion } from "./api";
+import { generateKeyReportVersion, getKeyReportGenerateProgress } from "./api";
 import { clearCachedFinancials } from "./keyReportFinancials";
+
+// How often to poll the backend for live generation progress while a run is
+// in-flight. The pipeline runs for minutes, so a modest cadence is plenty.
+const PROGRESS_POLL_MS = 1500;
 
 const STORAGE_PREFIX = "keyReports.generateState";
 
@@ -108,9 +112,31 @@ export function startGeneration(clientId, versionId, versionLabel = "") {
     validationResults: [],
     error: null,
     errorStage: null,
+    progress: null,
     notified: false,
   });
   emit();
+
+  // Poll the backend for real, phase-by-phase progress while the run is
+  // in-flight, merging it into the persisted state so the progress bar reflects
+  // the actual pipeline position. Fully best-effort: any poll failure is ignored
+  // (the panel falls back to its own animation), and the interval is always
+  // cleared when the request settles.
+  const pollTimer = setInterval(async () => {
+    try {
+      const res = await getKeyReportGenerateProgress(versionId);
+      const progress = res?.progress || null;
+      if (!progress) return;
+      const current = readState(clientId, versionId);
+      // Only apply while THIS run is still generating — never overwrite a
+      // terminal state the request handler has already written.
+      if (!current || current.status !== "generating" || current.startedAt !== startedAt) return;
+      writeState(clientId, versionId, { ...current, progress });
+      emit();
+    } catch {
+      /* progress polling is best-effort */
+    }
+  }, PROGRESS_POLL_MS);
 
   const promise = (async () => {
     try {
@@ -172,6 +198,7 @@ export function startGeneration(clientId, versionId, versionLabel = "") {
       });
       return { ok: false, error: message };
     } finally {
+      clearInterval(pollTimer);
       inFlight.delete(key);
       emit();
     }

@@ -13,6 +13,7 @@
 const { supabase } = require("../../db");
 const fileReferenceService = require("../fileReferenceService");
 const documentService = require("../documentService");
+const progressStore = require("./keyReportProgressStore");
 const { normalizeError, isConnectionError } = require("../../utils/dbErrorHandler");
 const {
   listValidationResults,
@@ -432,6 +433,10 @@ async function _syncVersionInner(versionId, userId = null, opts = {}) {
   if (logErr) throw logErr;
   const logId = logRow.id;
 
+  // Begin publishing live progress for this run (consumed by the frontend
+  // progress bar via GET /generate-progress). Best-effort — never fail the sync.
+  try { progressStore.startProgress(versionId); } catch (_e) { /* best-effort */ }
+
   try {
     const validation = await validateVersion(versionId);
 
@@ -474,6 +479,18 @@ async function _syncVersionInner(versionId, userId = null, opts = {}) {
     // Fetch the validation results persisted by the sync service for the response.
     const validationResults = await listValidationResults(versionId);
 
+    // Publish the terminal progress state. A HALTED run (required accounting data
+    // missing) is not a success from the user's perspective — the frontend treats
+    // it as an error — so mark progress failed with the halt message. The sync
+    // service already called failProgress on halt, but this guarantees it.
+    try {
+      if (result?.halted) {
+        progressStore.failProgress(versionId, result?.message || "Generation halted.", "preparing");
+      } else {
+        progressStore.completeProgress(versionId);
+      }
+    } catch (_e) { /* best-effort */ }
+
     return {
       success: true,
       version: await getVersion(versionId),
@@ -487,6 +504,8 @@ async function _syncVersionInner(versionId, userId = null, opts = {}) {
       normalizedError.status = 503;
       normalizedError.retryable = true;
     }
+
+    try { progressStore.failProgress(versionId, normalizedError.message || String(err)); } catch (_e) { /* best-effort */ }
 
     try {
       await supabase
