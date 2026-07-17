@@ -120,6 +120,24 @@ function findNextTransactionYear(raw, fromIndex, dateColIdx) {
   return null;
 }
 
+// Guard a value destined for a money column (general_ledger_entries stores
+// amount / debit_amount / credit_amount / running_balance as numeric(15,2) —
+// max 13 integer digits, ~1e13). A single out-of-range value (e.g. a long
+// check/reference "Num" like 1000000000147337 or an ACH id that an extractor
+// mis-routed into a numeric field) otherwise triggers a Postgres "numeric field
+// overflow" that fails the whole insert batch and silently drops thousands of
+// rows for the file. Clamp such garbage (and NaN/Infinity) to null so the batch
+// always inserts; real money values (well under 1e13 for these companies) pass
+// through untouched.
+const NUMERIC_15_2_ABS_LIMIT = 1e13;
+function safeNumeric(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  if (!Number.isFinite(n)) return null;
+  if (Math.abs(n) >= NUMERIC_15_2_ABS_LIMIT) return null;
+  return n;
+}
+
 /** Score a row as a potential header row */
 function headerScore(row) {
   let score = 0;
@@ -446,10 +464,13 @@ class GeneralLedgerExtractionService extends ExtractionServiceBase {
         vendor:      row.vendor   || row.transaction_name || row.name || null,
         customer:    row.customer || null,
         entity_type: row.entity_type || (row.vendor || row.transaction_name || row.name ? 'vendor' : (row.customer ? 'customer' : null)),
-        amount:             row.amount        != null ? Number(row.amount)        : null,
-        debit_amount:       row.debit         != null ? Number(row.debit)         : (row.debit_amount != null ? Number(row.debit_amount) : 0),
-        credit_amount:      row.credit        != null ? Number(row.credit)        : (row.credit_amount != null ? Number(row.credit_amount) : 0),
-        running_balance:    row.running_balance != null ? Number(row.running_balance) : null,
+        // safeNumeric clamps out-of-range garbage (e.g. a long reference "Num"
+        // an extractor mis-routed here) to null so it can never trigger a
+        // "numeric field overflow" that fails the batch and drops the whole file.
+        amount:             safeNumeric(row.amount),
+        debit_amount:       safeNumeric(row.debit != null ? row.debit : row.debit_amount) ?? 0,
+        credit_amount:      safeNumeric(row.credit != null ? row.credit : row.credit_amount) ?? 0,
+        running_balance:    safeNumeric(row.running_balance),
         raw_row_json:       row.raw_row_json  || null,
 
         extracted_at: new Date().toISOString(),

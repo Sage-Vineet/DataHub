@@ -599,7 +599,14 @@ export default function WorkspaceTaxReconciliation() {
             fetch(`${API_BASE_URL}/manual-report-uploads/tax-data?clientId=${clientId || ""}${forceParam}${krVersionParam}`, { headers })
               .then((r) => r.json()).catch(() => ({ success: false })),
           ]);
-          const plEntries = selectedYears.map((y) => {
+          // Derive P&L years from what the financial statements ACTUALLY contain
+          // (every GL/BS year the version produced), not the selectedYears window
+          // — that window defaults to the last three calendar years and silently
+          // dropped earlier years (e.g. FY2023) that have a full P&L.
+          const fsYears = (fsResp?.reports?.profitAndLoss?.yearly || [])
+            .map((e) => Number(e?.year))
+            .filter((y) => Number.isInteger(y) && y >= 1990 && y <= 2100);
+          const plEntries = fsYears.map((y) => {
             const data = extractTaxRowsFromManualPL(financialsToPLRows(fsResp, y));
             // Skip years with no P&L so empty years don't create blank columns.
             return data.some((d) => Number(d.pl) !== 0) ? [y, { year: y, data }] : null;

@@ -215,6 +215,24 @@ function glAccountName(row) {
   return (row.account_name && String(row.account_name).trim()) || '';
 }
 
+// Canonical identity for a GL account. QuickBooks emits the SAME account under
+// two different name forms depending on the field: `account_name` is the short
+// "NNNN Leaf" form (e.g. "4010 Shipping and Handling Income") while
+// `split_account` is the full-path form "NNNN PARENT:Child:Leaf" (e.g.
+// "4010 INCOME - REVENUE:Shipping and Handling Income"). The leading account
+// number is the strongest identity; without one, fall back to the normalized
+// leaf segment. Used to dedupe the split-account P&L fallback so an account that
+// already posts its own rows is never ALSO counted via its differently-formatted
+// split_account (which produced duplicate P&L lines and an inflated Net Income).
+function canonicalAccountKey(rawName) {
+  const s = String(rawName || '').trim();
+  if (!s) return '';
+  const num = s.match(/^(\d{3,7})[\s\-.:]/);
+  if (num) return 'num:' + num[1];
+  const leaf = s.replace(/^\d{3,7}[\s\-.:]+/, '').split(':').pop().replace(/\s+/g, ' ').trim().toLowerCase();
+  return 'nm:' + (leaf || s.toLowerCase());
+}
+
 /** Signed movement (debit − credit) for a GL transaction row. */
 function glNetMovement(row) {
   return safeNum(row.amount); // amount is the signed movement
@@ -272,7 +290,7 @@ async function aggregateGLByAccount(versionId, year) {
     const n = glAccountName(row);
     if (!n) continue;
     const t = classifyAccountFromLookup(coaTypes, n, row.account_number);
-    if (t === 'revenue' || t === 'expense') plDistSeen.add(n);
+    if (t === 'revenue' || t === 'expense') plDistSeen.add(canonicalAccountKey(n));
   }
 
   const accounts = new Map();
@@ -299,7 +317,7 @@ async function aggregateGLByAccount(versionId, year) {
     const splitName = (row.split_account && String(row.split_account).trim()) || '';
     if (!splitName) continue;
     const splitType = classifyAccountFromLookup(coaTypes, splitName, null);
-    if ((splitType === 'revenue' || splitType === 'expense') && !plDistSeen.has(splitName)) {
+    if ((splitType === 'revenue' || splitType === 'expense') && !plDistSeen.has(canonicalAccountKey(splitName))) {
       if (!accounts.has(splitName)) accounts.set(splitName, { name: splitName, net: 0, type: splitType });
       accounts.get(splitName).net += safeNum(row.amount);
     }
@@ -328,7 +346,7 @@ async function aggregateGLForBSByMonth(versionId, year) {
     const n = (row.account_name && String(row.account_name).trim()) || '';
     if (!n) continue;
     const t = classifyAccountFromLookup(coaTypes, n, row.account_number);
-    if (t === 'revenue' || t === 'expense') plDistSeen.add(n);
+    if (t === 'revenue' || t === 'expense') plDistSeen.add(canonicalAccountKey(n));
   }
 
   const byMonth = new Map();
@@ -356,7 +374,7 @@ async function aggregateGLForBSByMonth(versionId, year) {
     }
 
     // P&L split fallback
-    if (splitName && (splitType === 'revenue' || splitType === 'expense') && !plDistSeen.has(splitName)) {
+    if (splitName && (splitType === 'revenue' || splitType === 'expense') && !plDistSeen.has(canonicalAccountKey(splitName))) {
       mData.netIncome += amount;
     }
   }
@@ -377,7 +395,7 @@ async function aggregateGLForBS(versionId, year) {
     const n = (row.account_name && String(row.account_name).trim()) || '';
     if (!n) continue;
     const t = classifyAccountFromLookup(coaTypes, n, row.account_number);
-    if (t === 'revenue' || t === 'expense') plDistSeen.add(n);
+    if (t === 'revenue' || t === 'expense') plDistSeen.add(canonicalAccountKey(n));
   }
 
   const bsMap = new Map();
@@ -424,7 +442,7 @@ async function aggregateGLForBS(versionId, year) {
     // P&L: contribute to Net Income only as a fallback for P&L accounts that
     // have no account_name row in this year's GL (e.g. partial exports).
     if (!splitName) continue;
-    if ((splitType === 'revenue' || splitType === 'expense') && !plDistSeen.has(splitName)) {
+    if ((splitType === 'revenue' || splitType === 'expense') && !plDistSeen.has(canonicalAccountKey(splitName))) {
       // splitAmount = -amount; netIncome += -(splitAmount) = amount
       netIncome += amount;
     }
