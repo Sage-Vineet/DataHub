@@ -35,6 +35,16 @@ function parseAmount(v) {
   return isNaN(n) ? null : n;
 }
 
+// balance_sheet_entries.amount is numeric(18,2). A mis-parsed cell (e.g. a
+// reference number) beyond this range would fail the whole insert with
+// "numeric field overflow" and blank the Balance Sheet — clamp implausible
+// values to 0 so one bad cell can never sink the statement.
+const MAX_BS_NUMERIC = 9_999_999_999_999_999.99;
+function safeAmount(n) {
+  const x = Number(n);
+  return Number.isFinite(x) && Math.abs(x) <= MAX_BS_NUMERIC ? x : 0;
+}
+
 function parseAsOfDate(text) {
   const t = String(text || '');
   const m = t.match(AS_OF_PATTERN);
@@ -367,7 +377,7 @@ class BalanceSheetExtractionService extends ExtractionServiceBase {
       section: row.section || null,
       sub_section: row.sub_section || null,
 
-      amount: Number(row.amount) || 0,
+      amount: safeAmount(row.amount),
 
       hierarchy_level: row.is_section_header ? 0 : 1,
       sort_order: idx,

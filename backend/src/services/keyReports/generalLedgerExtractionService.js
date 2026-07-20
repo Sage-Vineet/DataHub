@@ -46,6 +46,27 @@ const BALANCE_ALIASES = ['balance', 'running balance', 'closing balance', 'ledge
 
 function lc(v) { return String(v || '').toLowerCase().trim(); }
 
+// Largest magnitude any monetary column can hold. The narrowest numeric column
+// in general_ledger_entries is numeric(15,2) (debit_amount/credit_amount —
+// migration 060), whose max is 9,999,999,999,999.99. A value beyond this is
+// never a real SMB financial amount — it is a mis-parse (e.g. a check/ACH
+// reference number like "990000243388191" landing in an amount column). Left
+// unchecked, ONE such value makes its whole chunk INSERT fail with
+// "numeric field overflow", which drops the entire file — and therefore a whole
+// fiscal year — from every report, leaving the Reports page blank. Sanitize
+// instead so a single bad cell can never sink a year's data.
+const MAX_GL_NUMERIC = 9_999_999_999_999.99;
+
+// Coerce a cell to a DB-safe number. Returns `fallback` for null/blank,
+// non-finite (NaN/Infinity), or out-of-range values so the row still inserts
+// (the authoritative signed `amount` is preserved whenever it is itself valid).
+function safeNumeric(v, fallback = null) {
+  if (v === '' || v == null) return fallback;
+  const n = Number(v);
+  if (!Number.isFinite(n) || Math.abs(n) > MAX_GL_NUMERIC) return fallback;
+  return n;
+}
+
 function parseAmount(v) {
   if (v === '' || v == null) return 0;
   const s = String(v).replace(/[$,\s]/g, '');
@@ -149,7 +170,12 @@ class GeneralLedgerExtractionService extends ExtractionServiceBase {
     // v1 cached rows may contain transaction dates shifted back by one day by
     // the former timezone-sensitive JS parser. Force a fresh extraction so a
     // re-sync cannot delete rows and then reinsert the stale shifted dates.
-    this.parserVersion = 'v2-date-only';
+    // v3-sanitized-numeric: earlier cached extractions (v2) contain mis-parsed
+    // numeric values (a reference/check number landing in credit_amount, e.g.
+    // 990000243388191) that overflow numeric(15,2) and fail the whole file's
+    // insert — dropping an entire fiscal year. Bump so those stale rows are
+    // re-parsed with the current logic, alongside the safeNumeric() guard.
+    this.parserVersion = 'v3-sanitized-numeric';
   }
 
   async extract({ fileName, fileBuffer }) {
@@ -446,10 +472,13 @@ class GeneralLedgerExtractionService extends ExtractionServiceBase {
         vendor:      row.vendor   || row.transaction_name || row.name || null,
         customer:    row.customer || null,
         entity_type: row.entity_type || (row.vendor || row.transaction_name || row.name ? 'vendor' : (row.customer ? 'customer' : null)),
-        amount:             row.amount        != null ? Number(row.amount)        : null,
-        debit_amount:       row.debit         != null ? Number(row.debit)         : (row.debit_amount != null ? Number(row.debit_amount) : 0),
-        credit_amount:      row.credit        != null ? Number(row.credit)        : (row.credit_amount != null ? Number(row.credit_amount) : 0),
-        running_balance:    row.running_balance != null ? Number(row.running_balance) : null,
+        // Sanitized so a single mis-parsed cell (e.g. a reference number parsed
+        // into an amount column) can never overflow numeric(15,2)/(18,2) and
+        // fail the whole file's insert — which would silently drop a fiscal year.
+        amount:             safeNumeric(row.amount, null),
+        debit_amount:       safeNumeric(row.debit != null ? row.debit : row.debit_amount, 0),
+        credit_amount:      safeNumeric(row.credit != null ? row.credit : row.credit_amount, 0),
+        running_balance:    safeNumeric(row.running_balance, null),
         raw_row_json:       row.raw_row_json  || null,
 
         extracted_at: new Date().toISOString(),

@@ -45,7 +45,7 @@ const MAX_ACCOUNTS = 600;
 // accounts are intentionally NOT cached so they are re-attempted and continue to
 // surface in Review & Adjust. Bump CLASSIFIER_CACHE_VERSION to invalidate all
 // cached classifications after any change to the prompt or output handling.
-const CLASSIFIER_CACHE_VERSION = "v4";
+const CLASSIFIER_CACHE_VERSION = "v5";
 const CACHE_MIN_CONFIDENCE = 0.85;
 
 function coaCacheEnabled() {
@@ -195,6 +195,17 @@ ACCOUNT TYPE — choose exactly one of these six values:
               plus contra-revenue: refunds/discounts/returns GIVEN to customers
   cogs        Cost of goods sold, direct materials, direct labor, direct costs
   expense     Operating expenses (debit-normal P&L): salaries, rent, insurance, utilities, repairs
+
+ACCOUNT NUMBER — when an account shows a numeric code as [#NNNN], that code is a
+STRONG signal of its type under the near-universal accounting-chart convention:
+  1xxx → asset   2xxx → liability   3xxx → equity
+  4xxx → income  5xxx → cogs        6xxx/7xxx → expense   8xxx → other income
+  This matters most when the NAME alone is misleading: a revenue account is often
+  named after the PRODUCT it sells (e.g. "Furniture", "Cast Bronze", "Sheet
+  Aluminum", "Resin Core") and reads like a material cost — but a 4xxx code means
+  it is INCOME, not COGS. Trust the number range for the income/cogs/expense
+  decision unless the NAME unambiguously denotes a balance-sheet concept
+  (e.g. a 4xxx "Customer Deposits" is still a liability).
 
 CRITICAL ACCOUNTING RULES:
   • Bank/checking/savings ACCOUNT → asset

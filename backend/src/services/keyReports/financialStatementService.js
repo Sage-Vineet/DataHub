@@ -41,6 +41,29 @@ const LEVEL_KEYS = Array.from({ length: 15 }, (_, i) => `level_${i + 1}`);
 
 const displayName = (acc) => acc.adjusted_name || acc.base_account || acc.account_name;
 
+// Leading account code embedded in a GL account name ("4035 Cast Bronze" → "4035",
+// "4035 INCOME - REVENUE:Cast Bronze" → "4035"). It is the one key shared by both
+// the leaf and full-hierarchy-path spellings of the same account, used to dedup
+// the split_account fallback in loadGlAmountsYearly.
+function glLeadingCode(name) {
+  const m = String(name || "").trim().match(/^(\d{3,7})\b/);
+  return m ? m[1] : null;
+}
+
+// Canonical identity keys for a GL account name — matches the same account
+// across its leaf ("4035 Cast Bronze") and full-hierarchy-path
+// ("4035 INCOME - REVENUE:Cast Bronze") spellings, and numbered vs unnumbered
+// forms, via the leading account code AND the number/path-stripped leaf name.
+function glAcctKeys(name) {
+  const s = String(name || "").trim();
+  const keys = [];
+  const code = glLeadingCode(s);
+  if (code) keys.push("c:" + code);
+  const leaf = s.split(":").pop().replace(/^\d{3,7}[\s\-.]+/, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  if (leaf) keys.push("l:" + leaf);
+  return keys;
+}
+
 // NOTE: the former keyword-based classifier for unmapped Balance-Sheet entries
 // (classifyUnmappedBSAccount + _BS_*_KW arrays) has been removed. Hierarchy /
 // account-type is never inferred from account-name keywords anywhere in the
@@ -1040,11 +1063,13 @@ async function loadGlAmountsYearly(versionId, year) {
   // norm(name) → { rawName, accountNumber, total }
   const byAccount = new Map();
   const namesWithOwnRow = new Set();
+  const keysWithOwnRow = new Set();   // canonical identity keys of posting accounts
   for (const row of data) {
     const rawName = String(row.account_name || "").trim();
     if (!rawName || isSummaryRow(rawName)) continue;
     const key = norm(rawName);
     namesWithOwnRow.add(key);
+    for (const k of glAcctKeys(rawName)) keysWithOwnRow.add(k);
     if (!byAccount.has(key)) {
       byAccount.set(key, { rawName, accountNumber: row.account_number, total: 0 });
     }
@@ -1055,13 +1080,22 @@ async function loadGlAmountsYearly(versionId, year) {
   // plDistSeen rule: pick up an account that only ever appears via split_account
   // this year (e.g. a partial GL export), attributed under its own name, but only
   // if it doesn't already have its own account_name row (avoids double-counting).
-  // Kept identical in intent to the Balance Sheet/Cash Flow aggregator so P&L and
-  // Financial Statements agree on Net Income for the same version+year.
+  //
+  // CRITICAL: in a QuickBooks "by-account" General Ledger every account already
+  // has its own posting section, so this fallback must NOT fire — doing so counts
+  // every revenue/expense account twice (its own section + the offsetting split
+  // rows in every other account's section), massively overstating Revenue/COGS
+  // and throwing the Balance Sheet out of balance. The plain norm() guard missed
+  // this because the posting side is a leaf name ("4035 Cast Bronze") while the
+  // split side is the full hierarchy path ("4035 INCOME - REVENUE:Cast Bronze") —
+  // different normalized keys for the SAME account. Both forms share the leading
+  // account code, so dedup on that too.
   for (const row of data) {
     const splitName = String(row.split_account || "").trim();
     if (!splitName || isSummaryRow(splitName)) continue;
     const key = norm(splitName);
     if (namesWithOwnRow.has(key)) continue;
+    if (glAcctKeys(splitName).some((k) => keysWithOwnRow.has(k))) continue; // same account, path/leaf/number form
     if (!byAccount.has(key)) {
       byAccount.set(key, { rawName: splitName, accountNumber: null, total: 0 });
     }

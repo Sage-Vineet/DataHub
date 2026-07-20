@@ -216,6 +216,80 @@ function normalizeForGemini(rawName) {
   return cleaned || String(rawName || '').trim();
 }
 
+// ── Standard account-number classification ────────────────────────────────────
+//
+// GL account names from QuickBooks/Xero/Sage/NetSuite carry a leading account
+// code ("4005 Furniture", "5021 Recycled Lumber COGS", "6100 Rent"). The first
+// digit of that code is a deterministic, near-universal classification signal:
+//
+//     1xxx = asset   2xxx = liability   3xxx = equity
+//     4xxx = income  5xxx = COGS        6xxx = expense
+//
+// This is the ONE signal that reliably separates a product-named REVENUE
+// account ("Furniture", "Cast Bronze", "Sheet Aluminum") from a genuine
+// material COST — the AI classifier reads those names as costs and files them
+// under COGS/expense, sinking real revenue and inflating COGS (the exact defect
+// this fixes). The code is stripped before the account name reaches the AI
+// (normalizeForGemini) and was previously discarded entirely, so the AI never
+// saw it. We recover it here and use it as an authoritative correction.
+//
+// Only the six universal ranges (1–6) are mapped. 7xxx/8xxx/9xxx (other
+// income / other expense / payroll in various charts) genuinely vary between
+// charts, so those are left to AI/name recognition rather than risk a wrong
+// deterministic guess.
+
+// Extract the leading account code (3–7 digits + separator) from a raw account
+// name, or null when the name carries no code.
+function parseLeadingAccountCode(rawName) {
+  const m = String(rawName || "").trim().match(/^(\d{3,7})[\s\-.]+/);
+  return m ? m[1] : null;
+}
+
+// Map an account code (or a raw account_number string) to one of the six types
+// via its first digit, restricted to the universal 1–6 ranges. Returns null for
+// codes shorter than 3 digits or outside the 1–6 first-digit convention.
+function accountTypeFromNumber(code) {
+  const digits = String(code || "").replace(/\D/g, "");
+  if (digits.length < 3) return null;
+  switch (digits[0]) {
+    case "1": return "asset";
+    case "2": return "liability";
+    case "3": return "equity";
+    case "4": return "income";
+    case "5": return "cogs";
+    case "6": return "expense";
+    default:  return null; // 7/8/9 → left to AI/name recognition
+  }
+}
+
+const PL_TYPES = new Set(["income", "cogs", "expense"]);
+const BS_TYPES_SET = new Set(["asset", "liability", "equity"]);
+
+// True when two account types sit on opposite sides of the P&L / Balance-Sheet
+// divide (one is income/cogs/expense, the other asset/liability/equity).
+function typesOnOppositeSides(a, b) {
+  if (!a || !b) return false;
+  return (PL_TYPES.has(a) && BS_TYPES_SET.has(b)) || (BS_TYPES_SET.has(a) && PL_TYPES.has(b));
+}
+
+// Reconcile a classification against the account's standard number range.
+// The number range is authoritative EXCEPT when a stronger, cross-side signal
+// disagrees — a section read from the actual documents, or a confident AI
+// answer — which indicates a genuinely mis-numbered account (e.g. a 4xxx
+// "Customer Deposits" that is really a liability). In that case the trusted
+// cross-side signal wins; otherwise the number range decides the type.
+//
+//   currentType   — the type resolved so far (AI + section fallbacks)
+//   number        — the account code (leading digits), if any
+//   trustedType   — a high-trust type to defend against the number when it sits
+//                   on the opposite P&L/BS side (bsSection type, or confident AI)
+function reconcileTypeWithNumber(currentType, number, trustedType) {
+  const numType = accountTypeFromNumber(number);
+  if (!numType) return currentType;
+  if (trustedType && typesOnOppositeSides(numType, trustedType)) return trustedType;
+  return numType;
+}
+
 /**
  * Collect the set of unique account names from GL + BS rows to send to the AI
  * classification pre-pass.
@@ -243,7 +317,9 @@ function collectUniqueAccountNames(glRows, bsRows) {
     seen.set(key, {
       key,
       accountName: normalizeForGemini(name),
-      accountNumber: accountNumber ? String(accountNumber).trim() : null,
+      // Fall back to the code embedded in the name so the AI still receives the
+      // account number ([#4005]) even when there is no separate number column.
+      accountNumber: (accountNumber ? String(accountNumber).trim() : null) || parseLeadingAccountCode(name),
       bsSection: bsSection || null,
     });
   };
@@ -322,22 +398,20 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map()) {
   const mergeInto = (leaf, source, fiscalYear, number, bsSection, plSection, bsSubSection) => {
     leaf.sources.add(source);
     if (fiscalYear) leaf.fiscalYears.add(Number(fiscalYear));
-    if (!leaf.accountNumber && number) leaf.accountNumber = number;
+    if (!leaf.accountNumber) leaf.accountNumber = number || parseLeadingAccountCode(leaf.accountName);
     if (bsSection && !leaf.bsSection) leaf.bsSection = bsSection;
     if (plSection && !leaf.plSection) leaf.plSection = plSection;
     if (bsSubSection && !leaf.bsSubSection) leaf.bsSubSection = bsSubSection;
     const aiConfident = leaf.confidence != null && leaf.confidence >= AI_OVERRIDE_CONFIDENCE_FLOOR && leaf.accountType;
     if (aiConfident) return; // keep the confident AI classification — section evidence only fills gaps
+    let mergedBsType = null;
     if (bsSection) {
       const normSec = String(bsSection).toLowerCase().trim();
-      if (normSec.includes("asset")) {
-        leaf.accountType = "asset";
-        leaf.statementType = "balance_sheet";
-      } else if (normSec.includes("liab")) {
-        leaf.accountType = "liability";
-        leaf.statementType = "balance_sheet";
-      } else if (normSec.includes("equity") || normSec.includes("capital") || normSec.includes("owner") || normSec.includes("member")) {
-        leaf.accountType = "equity";
+      if (normSec.includes("asset")) mergedBsType = "asset";
+      else if (normSec.includes("liab")) mergedBsType = "liability";
+      else if (normSec.includes("equity") || normSec.includes("capital") || normSec.includes("owner") || normSec.includes("member")) mergedBsType = "equity";
+      if (mergedBsType) {
+        leaf.accountType = mergedBsType;
         leaf.statementType = "balance_sheet";
       }
     } else if (plSection && !leaf.bsSection) {
@@ -349,6 +423,14 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map()) {
         leaf.statementType = "profit_loss";
       }
     }
+    // Keep the standard account-number range authoritative after any section
+    // fill (same rule as addLeaf) so a later merge can't sink a number-typed
+    // account — a document section on the opposite P&L/BS side still wins.
+    const reconciled = reconcileTypeWithNumber(leaf.accountType, leaf.accountNumber, mergedBsType);
+    if (reconciled && reconciled !== leaf.accountType) {
+      leaf.accountType = reconciled;
+      leaf.statementType = statementTypeFor(reconciled);
+    }
   };
 
   const addLeaf = (accountName, accountNumber, source, fiscalYear, bsSection, plSection, bsSubSection) => {
@@ -356,7 +438,11 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map()) {
     // isMetadataRow catches only ERP noise (date lines, "Accrual Basis", etc.).
     // Report totals / section headers are excluded by AI isReportRow detection below.
     if (!name || isMetadataRow(name)) return;
-    const number = accountNumber ? String(accountNumber).trim() : null;
+    // Prefer an explicit account_number column, otherwise recover the leading
+    // code embedded in the name ("4005 Furniture" → "4005"). GL rows carry no
+    // separate number column, so without this the standard-range signal — the
+    // only reliable way to tell product-named revenue from a cost — is lost.
+    const number = (accountNumber ? String(accountNumber).trim() : null) || parseLeadingAccountCode(name);
     const key = normName(name);
 
     const aiResult = aiResults.get(key);
@@ -380,28 +466,52 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map()) {
     // has an unknown type — never guessed (was `|| "expense"`). It surfaces as
     // needsReview/needsMapping until a human classifies it.
     let accountType = isReportRowOverride ? null : (aiResult?.accountType || null);
+    const aiType = accountType;
     const aiConfident = !isReportRowOverride && aiResult && Number(aiResult.confidence) >= AI_OVERRIDE_CONFIDENCE_FLOOR && accountType;
+    let bsSectionType = null;
+    if (bsSection) {
+      const normSec = String(bsSection).toLowerCase().trim();
+      if (normSec.includes("asset")) bsSectionType = "asset";
+      else if (normSec.includes("liab")) bsSectionType = "liability";
+      else if (normSec.includes("equity") || normSec.includes("capital") || normSec.includes("owner") || normSec.includes("member")) bsSectionType = "equity";
+    }
     if (!aiConfident) {
-      if (bsSection) {
-        const normSec = String(bsSection).toLowerCase().trim();
-        if (normSec.includes("asset")) accountType = "asset";
-        else if (normSec.includes("liab")) accountType = "liability";
-        else if (normSec.includes("equity") || normSec.includes("capital") || normSec.includes("owner") || normSec.includes("member")) accountType = "equity";
+      if (bsSectionType) {
+        accountType = bsSectionType;
       } else if (plSection) {
         const plType = typeFromPlSection(plSection);
         if (plType) accountType = plType;
       }
     }
+    // ── Standard account-number range (authoritative correction) ─────────────
+    // The leading GL code is the deterministic signal the AI never sees. It
+    // overrides the AI/name guess EXCEPT when a cross-side signal we trust more
+    // disagrees: a section from the actual documents, or a confident AI answer
+    // on the opposite P&L/BS side (a genuinely mis-numbered account). This is
+    // what pulls product-named revenue ("4005 Furniture", "4035 Cast Bronze")
+    // back into income instead of COGS/expense.
+    const trustedType = bsSectionType || (aiConfident ? aiType : null);
+    const typeBeforeNumber = accountType;
+    accountType = reconcileTypeWithNumber(accountType, number, trustedType);
+    const numberDecided = accountType !== typeBeforeNumber
+      || (accountTypeFromNumber(number) && accountType === accountTypeFromNumber(number) && !aiConfident && !bsSectionType);
+
     const aiNormalizedName   = aiResult?.normalizedName  || null;
     const confidence         = aiResult?.confidence      ?? null;
-    const needsReview        = isReportRowOverride || !aiResult || (confidence !== null && confidence < AI_NEEDS_REVIEW_THRESHOLD);
+    // A type set from the standard account-number range is reliable, not a
+    // low-confidence guess — don't flag it for review on the AI's behalf.
+    const needsReview        = numberDecided
+      ? false
+      : (isReportRowOverride || !aiResult || (confidence !== null && confidence < AI_NEEDS_REVIEW_THRESHOLD));
     const classificationMethod =
       isReportRowOverride  ? "AI_REPORT_ROW_OVERRIDE" :
+      numberDecided        ? "account_number_range"  :
       !aiResult            ? "unclassified"         :
       needsReview          ? "ai_low_confidence"    :
                              "gemini";
     const resolvedSource     =
       isReportRowOverride  ? "AI_REPORT_ROW_OVERRIDE" : // Root Cause 1 spec: classification_source literal
+      numberDecided        ? "account_number_range" :
       !aiResult            ? "no_ai_result"         :
       confidence !== null  ? `ai_${confidence.toFixed(2)}` :
                              "gemini";
@@ -2093,7 +2203,7 @@ async function ensureCoaComplete(companyId, versionId) {
   const accountsForAI = missingRaw.map((rawName) => ({
     key: normName(rawName),
     accountName: normalizeForGemini(rawName),
-    accountNumber: null,
+    accountNumber: parseLeadingAccountCode(rawName),
     bsSection: null,
   }));
   let aiResults = new Map();
@@ -2144,6 +2254,16 @@ async function ensureCoaComplete(companyId, versionId) {
       let type = match.matched ? (match.accountType || aiType) : aiType;
       if (match.matched && match.statementType === "profit_loss" && BALANCE_SHEET_TYPES.has(type)) {
         type = "expense";
+      }
+      // Standard account-number range correction (same rule as buildCoaModel):
+      // authoritative over an AI/name guess so product-named revenue lands in
+      // income, but never over a trusted client-COA match, and never flips a
+      // confident cross-side signal (a genuinely mis-numbered account).
+      const isTrustedMatch = match.matched && TRUSTED_MATCH_METHODS.has(match.classificationMethod);
+      if (!isTrustedMatch) {
+        const aiConfident = aiResult && confidence !== null && confidence >= 0.95 && aiType;
+        const reconciled = reconcileTypeWithNumber(type, parseLeadingAccountCode(rawName), aiConfident ? aiType : null);
+        if (reconciled) type = reconciled;
       }
       // statementTypeFor/normalBalanceFor are deterministic accounting facts of a
       // KNOWN type (asset is always debit/balance_sheet) — never invoked to invent
@@ -2322,4 +2442,7 @@ module.exports = {
   buildLeafHierarchies,
   buildTree,
   isMetadataRow,
+  parseLeadingAccountCode,
+  accountTypeFromNumber,
+  reconcileTypeWithNumber,
 };

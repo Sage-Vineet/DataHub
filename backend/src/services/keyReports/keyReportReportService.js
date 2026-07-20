@@ -17,6 +17,38 @@ function safeNum(v) {
   return Number.isFinite(n) ? n : 0;
 }
 
+// Leading account code in a GL account name ("4035 Cast Bronze" → "4035",
+// "4035 INCOME - REVENUE:Cast Bronze" → "4035"). It is the one key shared by
+// both the leaf and full-hierarchy-path spellings of the same account. The
+// split_account fallbacks below dedup on it so a QuickBooks "by-account" GL
+// (where every account has its own posting section, addressed by its leaf name,
+// while split_account carries the full path) does not count each revenue/expense
+// account twice — once from its own section and again from the offsetting split
+// rows — which otherwise doubles Net Income and unbalances the Balance Sheet.
+function glLeadingCode(name) {
+  const m = String(name || "").trim().match(/^(\d{3,7})\b/);
+  return m ? m[1] : null;
+}
+
+// Canonical identity keys for a GL account name, robust to the leaf-vs-full-path
+// and numbered-vs-unnumbered spelling differences between the posting
+// (account_name) and offsetting (split_account) sides of the same account:
+//   "4035 Cast Bronze"                  → code "4035", leaf "cast bronze"
+//   "4035 INCOME - REVENUE:Cast Bronze" → code "4035", leaf "cast bronze"
+//   "RV Sign Income" / "4200 RV Sign Income" → leaf "rv sign income" (+ code)
+// The split_account fallbacks skip any split that shares ANY key with an account
+// already posting its own section, so a full "by-account" GL is never
+// double-counted.
+function glAcctKeys(name) {
+  const s = String(name || "").trim();
+  const keys = [];
+  const code = glLeadingCode(s);
+  if (code) keys.push("c:" + code);
+  const leaf = s.split(":").pop().replace(/^\d{3,7}[\s\-.]+/, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  if (leaf) keys.push("l:" + leaf);
+  return keys;
+}
+
 // A persisted generated_report_snapshots row (P&L / Cash Flow) is only refreshed
 // by a full Sync (forceGenerate+persist). Chart of Accounts reclassification
 // (regenerate / manual edit / reset — see routes/keyReports.js) writes directly to
@@ -319,11 +351,15 @@ async function aggregateGLByAccount(versionId, year) {
   // don't. Mirrors aggregateGLForBS's plDistSeen rule exactly so the P&L total
   // and the Balance Sheet/Cash Flow Net Income agree for the same version+year.
   const plDistSeen = new Set();
+  const plDistKeys = new Set();
   for (const row of rows) {
     const n = glAccountName(row);
     if (!n) continue;
     const t = classifyAccountFromLookup(coaTypes, n, row.account_number);
-    if (t === 'revenue' || t === 'expense') plDistSeen.add(n);
+    if (t === 'revenue' || t === 'expense') {
+      plDistSeen.add(n);
+      for (const k of glAcctKeys(n)) plDistKeys.add(k);
+    }
   }
 
   const accounts = new Map();
@@ -350,7 +386,10 @@ async function aggregateGLByAccount(versionId, year) {
     const splitName = (row.split_account && String(row.split_account).trim()) || '';
     if (!splitName) continue;
     const splitType = classifyAccountFromLookup(coaTypes, splitName, null);
-    if ((splitType === 'revenue' || splitType === 'expense') && !plDistSeen.has(splitName)) {
+    const splitKeys = glAcctKeys(splitName);
+    if ((splitType === 'revenue' || splitType === 'expense')
+        && !plDistSeen.has(splitName)
+        && !splitKeys.some((k) => plDistKeys.has(k))) {
       if (!accounts.has(splitName)) accounts.set(splitName, { name: splitName, net: 0, type: splitType });
       accounts.get(splitName).net += safeNum(row.amount);
     }
@@ -386,11 +425,15 @@ async function aggregateGLForBSByMonth(versionId, year) {
   const coaTypes = await loadCoaAccountTypeLookup(versionId);
 
   const plDistSeen = new Set();
+  const plDistKeys = new Set();
   for (const row of rows) {
     const n = (row.account_name && String(row.account_name).trim()) || '';
     if (!n) continue;
     const t = classifyAccountFromLookup(coaTypes, n, row.account_number);
-    if (t === 'revenue' || t === 'expense') plDistSeen.add(n);
+    if (t === 'revenue' || t === 'expense') {
+      plDistSeen.add(n);
+      for (const k of glAcctKeys(n)) plDistKeys.add(k);
+    }
   }
 
   const byMonth = new Map();
@@ -418,7 +461,10 @@ async function aggregateGLForBSByMonth(versionId, year) {
     }
 
     // P&L split fallback
-    if (splitName && (splitType === 'revenue' || splitType === 'expense') && !plDistSeen.has(splitName)) {
+    const splitKeys = glAcctKeys(splitName);
+    if (splitName && (splitType === 'revenue' || splitType === 'expense')
+        && !plDistSeen.has(splitName)
+        && !splitKeys.some((k) => plDistKeys.has(k))) {
       mData.netIncome += amount;
     }
   }
@@ -436,11 +482,15 @@ async function aggregateGLForBS(versionId, year) {
   const coaDiagLookup = await loadCoaDiagnosticLookup(versionId);
 
   const plDistSeen = new Set();
+  const plDistKeys = new Set();
   for (const row of rows) {
     const n = (row.account_name && String(row.account_name).trim()) || '';
     if (!n) continue;
     const t = classifyAccountFromLookup(coaTypes, n, row.account_number);
-    if (t === 'revenue' || t === 'expense') plDistSeen.add(n);
+    if (t === 'revenue' || t === 'expense') {
+      plDistSeen.add(n);
+      for (const k of glAcctKeys(n)) plDistKeys.add(k);
+    }
   }
 
   const bsMap = new Map();
@@ -502,7 +552,10 @@ async function aggregateGLForBS(versionId, year) {
     // P&L: contribute to Net Income only as a fallback for P&L accounts that
     // have no account_name row in this year's GL (e.g. partial exports).
     if (!splitName) continue;
-    if ((splitType === 'revenue' || splitType === 'expense') && !plDistSeen.has(splitName)) {
+    const splitKeys = glAcctKeys(splitName);
+    if ((splitType === 'revenue' || splitType === 'expense')
+        && !plDistSeen.has(splitName)
+        && !splitKeys.some((k) => plDistKeys.has(k))) {
       // splitAmount = -amount; netIncome += -(splitAmount) = amount
       netIncome += amount;
     }
