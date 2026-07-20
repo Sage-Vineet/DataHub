@@ -245,6 +245,22 @@ function parseLeadingAccountCode(rawName) {
   return m ? m[1] : null;
 }
 
+// Canonical identity keys for a GL account name, robust to the leaf-vs-full-path
+// spelling difference between an account's own posting rows and its appearance
+// as another row's split_account: "6600 Banking Fees" (own section) vs
+// "6600 EXPENSES:Banking Fees" (the same account as seen from the OTHER side of
+// someone else's transaction) share the leading code and, once the code and
+// hierarchy path are stripped, the same leaf words.
+function glAcctKeys(name) {
+  const s = String(name || "").trim();
+  const keys = [];
+  const code = parseLeadingAccountCode(s);
+  if (code) keys.push("c:" + code);
+  const leaf = s.split(":").pop().replace(/^\d{3,7}[\s\-.]+/, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  if (leaf) keys.push("l:" + leaf);
+  return keys;
+}
+
 // Map an account code (or a raw account_number string) to one of the six types
 // via its first digit, restricted to the universal 1–6 ranges. Returns null for
 // codes shorter than 3 digits or outside the 1–6 first-digit convention.
@@ -323,12 +339,28 @@ function collectUniqueAccountNames(glRows, bsRows) {
       bsSection: bsSection || null,
     });
   };
+  // A GL "by account" export lists both sides of every transaction as separate
+  // account sections, so split_account is (almost always) just the OTHER
+  // account's own name spelled as a full hierarchy path — it already has its
+  // own entry from its own posting rows. Classifying it a second time under a
+  // different spelling wastes an AI call and, more importantly, is what let
+  // buildCoaModel create a phantom duplicate Chart-of-Accounts leaf for the
+  // same real account (see the analogous guard there).
+  const postedKeys = new Set();
+  for (const r of bsRows || []) if (r.account_name) for (const k of glAcctKeys(r.account_name)) postedKeys.add(k);
+  for (const r of glRows || []) {
+    const n = r.account_name || r.account_section || "";
+    if (n) for (const k of glAcctKeys(n)) postedKeys.add(k);
+  }
+
   for (const r of bsRows || []) {
     if (r.account_name) add(r.account_name, r.account_number, r.section);
   }
   for (const r of glRows || []) {
     if (r.account_name) add(r.account_name, r.account_number, r.account_section);
-    if (r.split_account) add(r.split_account, null, null);
+    if (r.split_account && !glAcctKeys(r.split_account).some((k) => postedKeys.has(k))) {
+      add(r.split_account, null, null);
+    }
   }
   return Array.from(seen.values());
 }
@@ -546,6 +578,29 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map()) {
     leavesByName.set(key, bucket);
   };
 
+  // A GL "by account" export lists BOTH sides of every transaction as separate
+  // account sections: e.g. Checking's own rows show split_account =
+  // "6600 EXPENSES:Banking Fees" for a fee transaction, while Banking Fees
+  // ALSO has its own section elsewhere in the same file with all of its own
+  // transactions, spelled "6600 Banking Fees". split_account is never a new
+  // account in that case — it is the SAME account the other side already
+  // covers. Blindly adding it as its own leaf here creates a phantom duplicate
+  // COA entry (confirmed live: "6600 EXPENSES:Banking Fees" alongside the real
+  // "6600 Banking Fees", "6011 Insurance:Work Comp Insurance" alongside
+  // "6011 Work Comp Insurance", etc.) that shows up as a second, wrong line
+  // item — often with a mismatched/mirrored amount — in every generated
+  // report. Precompute which accounts already post their own account_name/
+  // account_section row (by leading code + hierarchy-stripped leaf name, since
+  // the two spellings rarely match as plain strings) and only fall back to
+  // split_account for a genuinely missing account (e.g. a partial GL export).
+  const postedKeys = new Set();
+  for (const r of bsRows || []) if (r.account_name) for (const k of glAcctKeys(r.account_name)) postedKeys.add(k);
+  for (const r of plRows || []) if (r.account_name) for (const k of glAcctKeys(r.account_name)) postedKeys.add(k);
+  for (const r of glRows || []) {
+    const n = r.account_name || r.account_section || "";
+    if (n) for (const k of glAcctKeys(n)) postedKeys.add(k);
+  }
+
   for (const r of bsRows || []) {
     addLeaf(r.account_name, r.account_number || null, "balance_sheet", r.fiscal_year, r.section, null, r.sub_section);
   }
@@ -556,7 +611,9 @@ function buildCoaModel(glRows, bsRows, plRows, aiResults = new Map()) {
     const glYear = glRowYear(r);
     const name = r.account_name || r.account_section || "";
     if (name) addLeaf(name, r.account_number || null, "general_ledger", glYear, null);
-    if (r.split_account) addLeaf(r.split_account, null, "general_ledger", glYear, null);
+    if (r.split_account && !glAcctKeys(r.split_account).some((k) => postedKeys.has(k))) {
+      addLeaf(r.split_account, null, "general_ledger", glYear, null);
+    }
   }
 
   // Inject synthetic equity closing lines.  "Net Income" and "Retained Earnings"

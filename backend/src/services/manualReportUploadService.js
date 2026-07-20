@@ -14,8 +14,11 @@ const {
   extractBankStatementsFromExcelBuffer,
   buildBankResponseShape,
 } = require("./bankStatementExtractor");
-const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { getGeminiModels } = require("../config/geminiModels");
+// Centralized retry/backoff/model-failover/timeout executor — see
+// geminiClient.js. Every Gemini call in this file goes through it instead of
+// a hand-rolled retry loop.
+const { generateContentResilient } = require("./geminiClient");
 
 const PDF_WORKER_PATH = path.join(__dirname, "../workers/pdfParser.js");
 const PDF_PARSE_TIMEOUT_MS = 30000;
@@ -71,7 +74,6 @@ function _clearManualUploadProgress(companyId) {
 // default fallback order used when no override is configured.
 const TAX_GEMINI_MODELS = getGeminiModels(["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash"]);
 const _taxExtractCache = new Map();
-const _taxExtractSleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const TAX_EXTRACTION_PROMPT = `
 You are extracting data from a US Business Income Tax Return.
@@ -348,50 +350,43 @@ async function extractTaxDataFromBuffer(pdfBuffer, cacheKey) {
     const pdfBase64 = pdfBuffer.toString("base64");
     let lastError = null;
 
+    // Model failover loop: retries-with-backoff for each individual model are
+    // handled inside generateContentResilient (geminiClient.js) — this loop
+    // keeps the original domain policy that a model whose RESPONSE fails to
+    // parse as the expected JSON (not just an API-level failure) is also
+    // treated as a miss, moving on to the next model in the chain.
     for (const modelName of TAX_GEMINI_MODELS) {
-      let retries = 3;
-      let delay = 5000;
-      while (retries > 0) {
-        try {
-          console.log(`[TaxExtract] model=${modelName} key=${cacheKey}`);
-          const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-          const model = genAI.getGenerativeModel({ model: modelName });
-          const result = await model.generateContent([
+      try {
+        console.log(`[TaxExtract] model=${modelName} key=${cacheKey}`);
+        const { text: raw } = await generateContentResilient({
+          models: [modelName],
+          contents: [
             { inlineData: { mimeType: "application/pdf", data: pdfBase64 } },
             { text: TAX_EXTRACTION_PROMPT },
-          ]);
-          let text = result.response.text().trim();
-          text = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
-          const parsed = JSON.parse(text);
-          ["year", "totalRevenue", "totalCostOfGoodsSold", "grossProfit", "officerWages",
-            "depreciation", "amortization", "interestExpense", "allOtherExpenses", "netIncome"]
-            .forEach((f) => { parsed[f] = Number(parsed[f]) || 0; });
-          if (!parsed.formType) parsed.formType = "1120-S";
-          if (!Array.isArray(parsed.reconcilingItems)) parsed.reconcilingItems = [];
-          parsed.reconcilingItems = parsed.reconcilingItems
-            .map((i) => ({ label: String(i.label || "").trim(), value: Number(i.value) || 0 }))
-            .filter((i) => i.label && i.value !== 0);
-          console.log(`[TaxExtract] formType=${parsed.formType} year=${parsed.year} via ${modelName}`);
-          return parsed;
-        } catch (err) {
-          lastError = err;
-          const msg = String(err.message || err);
-          if (msg.includes("404") || msg.toLowerCase().includes("not found")) break;
-          if ((msg.includes("429") || msg.toLowerCase().includes("quota")) && retries > 1) {
-            await _taxExtractSleep(delay);
-            delay *= 2;
-            retries--;
-          } else {
-            break;
-          }
-        }
+          ],
+          logTag: `TaxExtract:${cacheKey}`,
+        });
+        let text = raw.trim();
+        text = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+        const parsed = JSON.parse(text);
+        ["year", "totalRevenue", "totalCostOfGoodsSold", "grossProfit", "officerWages",
+          "depreciation", "amortization", "interestExpense", "allOtherExpenses", "netIncome"]
+          .forEach((f) => { parsed[f] = Number(parsed[f]) || 0; });
+        if (!parsed.formType) parsed.formType = "1120-S";
+        if (!Array.isArray(parsed.reconcilingItems)) parsed.reconcilingItems = [];
+        parsed.reconcilingItems = parsed.reconcilingItems
+          .map((i) => ({ label: String(i.label || "").trim(), value: Number(i.value) || 0 }))
+          .filter((i) => i.label && i.value !== 0);
+        console.log(`[TaxExtract] formType=${parsed.formType} year=${parsed.year} via ${modelName}`);
+        return parsed;
+      } catch (err) {
+        lastError = err;
+        console.warn(`[TaxExtract] model=${modelName} failed: ${err.message}`);
       }
     }
-    const lastMsg = String(lastError?.message || "");
-    if (lastMsg.includes("429") || lastMsg.toLowerCase().includes("quota")) {
-      throw new Error("Gemini API quota exceeded — enable billing at ai.google.dev or wait for daily reset");
-    }
-    throw new Error(`Gemini extraction failed: ${lastMsg || "unknown error"}`);
+    // lastError is already safe to surface (GeminiUnavailableError carries a
+    // generic message; any other error here is our own JSON-parsing failure).
+    throw lastError;
   })();
 
   promise.catch(() => _taxExtractCache.delete(cacheKey));
@@ -516,15 +511,23 @@ async function extractTaxDataWithVerification(pdfBuffer, cacheKey) {
   const pdfBase64 = pdfBuffer.toString("base64");
   const verificationPrompt = buildTaxVerificationPrompt(extracted, issues);
 
+  // Model failover loop: retries-with-backoff for each individual model are
+  // handled inside generateContentResilient (geminiClient.js) — this loop
+  // keeps the original domain policy that a model whose response fails to
+  // parse as the expected JSON is also treated as a miss, moving on to the
+  // next model. This second pass is inherently best-effort — if every model
+  // is exhausted, we fall through to the "Needs Review" result below.
   for (const modelName of TAX_GEMINI_MODELS) {
     try {
-      const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-      const model = genAI.getGenerativeModel({ model: modelName });
-      const result = await model.generateContent([
-        { inlineData: { mimeType: "application/pdf", data: pdfBase64 } },
-        { text: verificationPrompt },
-      ]);
-      let text = result.response.text().trim()
+      const { text: raw } = await generateContentResilient({
+        models: [modelName],
+        contents: [
+          { inlineData: { mimeType: "application/pdf", data: pdfBase64 } },
+          { text: verificationPrompt },
+        ],
+        logTag: `TaxVerify:${cacheKey}`,
+      });
+      let text = raw.trim()
         .replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
       const corrected = JSON.parse(text);
 

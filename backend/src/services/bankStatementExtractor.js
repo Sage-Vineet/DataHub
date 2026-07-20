@@ -1,13 +1,17 @@
-const { GoogleGenerativeAI } = require("@google/generative-ai");
 const pdfParse = require("pdf-parse");
 const XLSX = require("xlsx");
 const { getGeminiModels } = require("../config/geminiModels");
+// Centralized retry/backoff/timeout executor — see geminiClient.js. Each
+// call site below keeps its OWN model-failover loop and its own "what to do
+// on an empty/error result" policy (those differ between call sites and are
+// domain logic, not retry mechanics) — only the single-model retry-with-
+// backoff-on-transient-error part is now delegated here.
+const { generateContentResilient } = require("./geminiClient");
 
 // Dynamically selected via GEMINI_MODELS / GEMINI_MODEL env; this array is the
 // default fallback order (stronger "flash" first for scanned statements) used
 // when no override is configured.
 const GEMINI_MODELS = getGeminiModels(["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash"]);
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const MONTH_ABBR = {
   jan: "01", feb: "02", mar: "03", apr: "04", may: "05", jun: "06",
@@ -587,10 +591,17 @@ function normalizeGeminiStatement(s) {
 }
 
 async function callGeminiWithContent(contents, modelName, fileName) {
-  const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-  const model = genAI.getGenerativeModel({ model: modelName });
-  const result = await model.generateContent(contents);
-  let text = result.response.text().trim()
+  // Single-model attempt — retries with exponential backoff + jitter and a
+  // configurable timeout are handled centrally by geminiClient.js. Callers of
+  // this function keep their own outer loop over GEMINI_MODELS for FAILOVER
+  // and their own domain-specific policy on what an empty/error result means
+  // (that varies per call site and is preserved exactly as before).
+  const { text: raw } = await generateContentResilient({
+    models: [modelName],
+    contents,
+    logTag: `BankPDF:${fileName}`,
+  });
+  let text = raw.trim()
     .replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
   const parsed = JSON.parse(text);
   if (!Array.isArray(parsed)) throw new Error("Gemini did not return an array");
@@ -805,38 +816,35 @@ async function verifyAccountNumbers(statements, contentPrefix, fileName, modelNa
 async function extractViaGemini(pdfBase64, fileName) {
   let lastError = null;
 
+  // Model failover loop. Retries-with-backoff for each individual model are
+  // now handled inside callGeminiWithContent (geminiClient.js) — this loop
+  // keeps only the domain-specific policy: a model that throws OR returns an
+  // empty array is not good enough on its own — move on to the next model
+  // rather than giving up (an empty result doesn't necessarily mean "no bank
+  // statement"; it may just be an unlucky read from that particular model).
   for (const modelName of GEMINI_MODELS) {
-    let retries = 2;
-    let delay = 4000;
-    while (retries > 0) {
-      try {
-        console.log(`[BankPDF] Gemini PDF ${modelName} for "${fileName}"...`);
-        const parsed = await callGeminiWithContent([
-          { inlineData: { mimeType: "application/pdf", data: pdfBase64 } },
-          { text: GEMINI_PROMPT },
-        ], modelName, fileName);
+    try {
+      console.log(`[BankPDF] Gemini PDF ${modelName} for "${fileName}"...`);
+      const parsed = await callGeminiWithContent([
+        { inlineData: { mimeType: "application/pdf", data: pdfBase64 } },
+        { text: GEMINI_PROMPT },
+      ], modelName, fileName);
 
-        if (parsed.length === 0) {
-          // Don't return early — next model may succeed
-          console.warn(`[BankPDF] ${modelName} returned [] for "${fileName}", trying next model`);
-          break;
-        }
-        const stamped = parsed.map(normalizeGeminiStatement);
-        console.log(`[BankPDF] Gemini PDF extracted ${stamped.length} statement(s) from "${fileName}"`);
-        const pdfContent = [{ inlineData: { mimeType: "application/pdf", data: pdfBase64 } }];
-        // AI self-correction pass for any statement that failed the balance check.
-        const rechecked = await recheckNeedsReview(stamped, pdfContent, fileName, modelName);
-        // Double-verify each account number before returning.
-        return await verifyAccountNumbers(rechecked, pdfContent, fileName, modelName);
-      } catch (err) {
-        lastError = err;
-        const msg = err.message || String(err);
-        console.warn(`[BankPDF] Gemini ${modelName} attempt failed: ${msg}`);
-        if (msg.includes("404") || msg.toLowerCase().includes("not found")) break;
-        if ((msg.includes("429") || msg.toLowerCase().includes("quota")) && retries > 1) {
-          await sleep(delay); delay *= 2; retries--;
-        } else break;
+      if (parsed.length === 0) {
+        // Don't return early — next model may succeed
+        console.warn(`[BankPDF] ${modelName} returned [] for "${fileName}", trying next model`);
+        continue;
       }
+      const stamped = parsed.map(normalizeGeminiStatement);
+      console.log(`[BankPDF] Gemini PDF extracted ${stamped.length} statement(s) from "${fileName}"`);
+      const pdfContent = [{ inlineData: { mimeType: "application/pdf", data: pdfBase64 } }];
+      // AI self-correction pass for any statement that failed the balance check.
+      const rechecked = await recheckNeedsReview(stamped, pdfContent, fileName, modelName);
+      // Double-verify each account number before returning.
+      return await verifyAccountNumbers(rechecked, pdfContent, fileName, modelName);
+    } catch (err) {
+      lastError = err;
+      console.warn(`[BankPDF] Gemini ${modelName} attempt failed: ${err.message}`);
     }
   }
 
@@ -846,11 +854,10 @@ async function extractViaGemini(pdfBase64, fileName) {
     return [];
   }
 
-  const lastMsg = String(lastError.message || "");
-  if (lastMsg.includes("429") || lastMsg.toLowerCase().includes("quota")) {
-    throw new Error("Gemini quota exceeded — enable billing at ai.google.dev or wait for daily reset");
-  }
-  throw new Error(`Gemini extraction failed: ${lastMsg}`);
+  // lastError is already safe to surface (GeminiUnavailableError from
+  // geminiClient carries a generic message; any other error here is our own
+  // "did not return an array" check) — no raw Google error text to strip.
+  throw lastError;
 }
 
 // Text-based Gemini fallback — sends extracted plain text when PDF vision fails

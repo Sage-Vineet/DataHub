@@ -3,8 +3,11 @@
  * Uses inline PDF data (base64) sent directly to the Gemini multimodal API.
  * Falls back gracefully — callers should catch and fall back to text extraction.
  */
-const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { getGeminiModels } = require("../config/geminiModels");
+// Centralized retry/backoff/model-failover/timeout executor — see
+// geminiClient.js for the full strategy explanation. Every Gemini call in
+// this file goes through this single utility instead of hand-rolled retries.
+const { generateContentResilient, GeminiUnavailableError } = require("./geminiClient");
 
 // Dynamically selected via GEMINI_MODELS / GEMINI_MODEL env; this array is the
 // default fallback order used when no override is configured.
@@ -13,8 +16,6 @@ const GEMINI_MODELS = getGeminiModels([
   "gemini-2.5-flash",
   "gemini-2.0-flash",
 ]);
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // ---------------------------------------------------------------------------
 // Prompts
@@ -317,51 +318,21 @@ function normalizeGeminiResult(raw) {
 // Core API call with model fallback + retry on quota
 // ---------------------------------------------------------------------------
 
-async function callGemini(base64Pdf, prompt) {
-  if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY not set");
-
-  let lastError = null;
-
-  for (const modelName of GEMINI_MODELS) {
-    let retries = 2;
-    const retryDelay = 3000; // fixed 3 s — avoid exponential backoff that causes 10-min hangs
-
-    while (retries > 0) {
-      try {
-        const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-        const model = genAI.getGenerativeModel({ model: modelName });
-
-        const result = await model.generateContent([
-          { inlineData: { mimeType: "application/pdf", data: base64Pdf } },
-          { text: prompt },
-        ]);
-
-        return result.response.text();
-      } catch (err) {
-        lastError = err;
-        const msg = String(err?.message || err);
-        const isQuota = msg.includes("429") || msg.toLowerCase().includes("quota");
-        const isNotFound = msg.includes("404") || msg.toLowerCase().includes("not found");
-
-        console.warn(`[GeminiParser] Model ${modelName} failed: ${msg}`);
-
-        if (isNotFound) break;
-        if (isQuota && retries > 1) {
-          console.log(`[GeminiParser] Rate limited on ${modelName}, waiting ${retryDelay}ms…`);
-          await sleep(retryDelay);
-          retries--;
-        } else {
-          break;
-        }
-      }
-    }
-  }
-
-  const lastMsg = String(lastError?.message || "");
-  if (lastMsg.includes("429") || lastMsg.toLowerCase().includes("quota")) {
-    throw new Error("Gemini API quota exceeded — enable billing at ai.google.dev or wait for daily reset");
-  }
-  throw new Error(`Gemini extraction failed: ${lastMsg || "unknown error"}`);
+async function callGemini(base64Pdf, prompt, signal) {
+  // Retries (with exponential backoff + jitter), per-model timeout, and
+  // model failover are all handled centrally — see geminiClient.js. On total
+  // failure this throws GeminiUnavailableError, whose message is already
+  // safe to surface to a caller/end user (never a raw Google error).
+  const { text } = await generateContentResilient({
+    models: GEMINI_MODELS,
+    contents: [
+      { inlineData: { mimeType: "application/pdf", data: base64Pdf } },
+      { text: prompt },
+    ],
+    logTag: "GeminiParser",
+    signal,
+  });
+  return text;
 }
 
 // ---------------------------------------------------------------------------
@@ -397,26 +368,14 @@ async function parsePdfWithGemini(buffer, fileName = "") {
 // Text-only Gemini call (for Excel/CSV content)
 // ---------------------------------------------------------------------------
 
-async function callGeminiText(fullPrompt) {
-  if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY not set");
-  let lastError = null;
-
-  for (const modelName of GEMINI_MODELS) {
-    try {
-      const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-      const model = genAI.getGenerativeModel({ model: modelName });
-      const result = await model.generateContent([{ text: fullPrompt }]);
-      return result.response.text();
-    } catch (err) {
-      lastError = err;
-      console.warn(`[GeminiParser] Text model ${modelName} failed: ${err?.message || err}`);
-    }
-  }
-  const msg = String(lastError?.message || "");
-  if (msg.includes("429") || msg.toLowerCase().includes("quota")) {
-    throw new Error("Gemini API quota exceeded — enable billing at ai.google.dev or wait for daily reset");
-  }
-  throw new Error(`Gemini text extraction failed: ${msg || "unknown error"}`);
+async function callGeminiText(fullPrompt, signal) {
+  const { text } = await generateContentResilient({
+    models: GEMINI_MODELS,
+    contents: [{ text: fullPrompt }],
+    logTag: "GeminiParser:Text",
+    signal,
+  });
+  return text;
 }
 
 // ---------------------------------------------------------------------------
@@ -599,4 +558,9 @@ module.exports = {
   flattenGeminiRows,
   extractBsBankBalancesWithGemini,
   extractBsBankBalancesFromExcelText,
+  // Re-exported so callers can, if useful, distinguish "AI temporarily
+  // unavailable" from other failures (e.g. to retry at a higher level or
+  // choose a different fallback path) without needing to import geminiClient
+  // directly.
+  GeminiUnavailableError,
 };

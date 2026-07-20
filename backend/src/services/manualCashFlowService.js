@@ -1,9 +1,12 @@
 "use strict";
 
 const { supabase } = require("../db");
-const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { getAllManualUploadedReports } = require("./manualReportUploadService");
 const { getGeminiModels } = require("../config/geminiModels");
+// Centralized retry/backoff/model-failover/timeout executor — see
+// geminiClient.js. Every Gemini call in this file goes through it instead of
+// a hand-rolled retry loop.
+const { generateContentResilient } = require("./geminiClient");
 
 const CF_GENERATED_SOURCE = "manual_upload_generated";
 const CF_REPORT_TYPE = "cash_flow";
@@ -844,7 +847,6 @@ function generatedCfToRows(cf) {
 // Dynamically selected via GEMINI_MODELS / GEMINI_MODEL env; this array is the
 // default fallback order used when no override is configured.
 const GEMINI_CF_MODELS = getGeminiModels(["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash"]);
-const GEMINI_CF_SLEEP = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function serializeFinancialRows(nodes, indent = 0) {
   const lines = [];
@@ -1064,29 +1066,16 @@ Use numeric values only — never formatted currency strings.
 }
 
 async function _callGemini(prompt, tag) {
-  if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY not set");
-  let lastError = null;
-  for (const modelName of GEMINI_CF_MODELS) {
-    let retries = 2;
-    while (retries > 0) {
-      try {
-        const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-        const model = genAI.getGenerativeModel({ model: modelName });
-        const result = await model.generateContent(prompt);
-        return result.response.text();
-      } catch (err) {
-        lastError = err;
-        const msg = String(err?.message || err);
-        const isQuota = msg.includes("429") || msg.toLowerCase().includes("quota");
-        const isNotFound = msg.includes("404") || msg.toLowerCase().includes("not found");
-        console.warn(`[ManualCashFlow][${tag}] Gemini model ${modelName} error: ${msg}`);
-        if (isNotFound) break;
-        if (isQuota && retries > 1) { await GEMINI_CF_SLEEP(3000); retries--; }
-        else break;
-      }
-    }
-  }
-  throw new Error(`Gemini ${tag} failed: ${lastError?.message || "unknown"}`);
+  // Retries (exponential backoff + jitter), per-model timeout, and model
+  // failover are all handled centrally by geminiClient.js. On total failure
+  // this throws GeminiUnavailableError, whose message is already safe to
+  // surface to a caller (never a raw Google error).
+  const { text } = await generateContentResilient({
+    models: GEMINI_CF_MODELS,
+    contents: prompt,
+    logTag: `ManualCashFlow:${tag}`,
+  });
+  return text;
 }
 
 const callGeminiForCashFlow = (prompt) => _callGemini(prompt, "CF-generation");

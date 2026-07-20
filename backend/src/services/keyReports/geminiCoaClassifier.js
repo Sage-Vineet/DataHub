@@ -26,12 +26,14 @@
 // Reuses Gemini client conventions from geminiFinancialParser.js.
 // ============================================================================
 
-const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { getGeminiModels } = require("../../config/geminiModels");
 const { supabase } = require("../../db");
+// Centralized retry/backoff/model-failover/timeout executor — see
+// geminiClient.js. Every Gemini call in this file goes through it instead of
+// a hand-rolled retry loop.
+const { generateContentResilient } = require("../geminiClient");
 
 const GEMINI_MODELS = getGeminiModels(["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.0-flash"]);
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Maximum accounts per Gemini prompt.  Keeps token usage bounded.
 const CLASSIFY_BATCH_SIZE = 45;
@@ -133,28 +135,17 @@ function parseJsonFromText(text = "") {
 }
 
 async function callGeminiText(prompt) {
-  if (!process.env.GEMINI_API_KEY) throw new Error("GEMINI_API_KEY not set");
-  let lastError = null;
-  for (const modelName of GEMINI_MODELS) {
-    let retries = 2;
-    while (retries > 0) {
-      try {
-        const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-        const model = genAI.getGenerativeModel({ model: modelName });
-        const result = await model.generateContent([{ text: prompt }]);
-        return result.response.text();
-      } catch (err) {
-        lastError = err;
-        const msg = String(err?.message || err);
-        const isQuota = msg.includes("429") || msg.toLowerCase().includes("quota");
-        const isNotFound = msg.includes("404") || msg.toLowerCase().includes("not found");
-        console.warn(`[CoaClassifier] Model ${modelName} failed: ${msg}`);
-        if (isNotFound) break;
-        if (isQuota && retries > 1) { await sleep(3000); retries -= 1; } else break;
-      }
-    }
-  }
-  throw new Error(`Gemini COA classification failed: ${String(lastError?.message || "unknown")}`);
+  // Retries (exponential backoff + jitter), per-model timeout, and model
+  // failover are all handled centrally by geminiClient.js. On total failure
+  // this throws GeminiUnavailableError — classifyAccountsWithAI's caller
+  // already treats any callGeminiText failure as non-fatal (see its own
+  // try/catch below), so no change to that behavior is needed here.
+  const { text } = await generateContentResilient({
+    models: GEMINI_MODELS,
+    contents: [{ text: prompt }],
+    logTag: "CoaClassifier",
+  });
+  return text;
 }
 
 function normalizeAccountType(raw) {

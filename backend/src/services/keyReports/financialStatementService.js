@@ -134,7 +134,18 @@ async function loadCoa(versionId) {
     .select(cols)
     .eq("version_id", versionId)
     .eq("is_active", true)
-    .order("sort_order", { ascending: true });
+    // Many leaves share the same (often null/default) sort_order, so ordering
+    // by it alone gives Postgres no tiebreaker — repeated identical queries can
+    // return those rows in a different relative order each time. That reorders
+    // the fuzzy-match candidate list built from this array (buildFuzzyLookup/
+    // buildMappings), and fuzzyMatch's tie-break ("first candidate at the best
+    // score wins") then attributes a GL account's amount to a DIFFERENT COA
+    // leaf from one report generation to the next — confirmed live: identical
+    // code and DB state produced P&L totals differing by hundreds of
+    // thousands of dollars between consecutive calls. `id` is a stable,
+    // always-unique tiebreaker.
+    .order("sort_order", { ascending: true })
+    .order("id", { ascending: true });
 
   if (error) throw new Error(`COA load: ${error.message}`);
   const all = data || [];
