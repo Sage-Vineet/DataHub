@@ -287,7 +287,7 @@ function shapeXml(element, index, text) {
       </p:sp>`;
 }
 
-function tableXml(element, index, text, content = {}, shapeTag = null) {
+function tableXml(element, index, text, content = {}) {
   const rows = Number(element.rows || 0);
   const cols = Number(element.cols || 0);
   const matrix = content.tableMatrix || parseTableText(text || element.text, rows, cols);
@@ -332,13 +332,7 @@ function tableXml(element, index, text, content = {}, shapeTag = null) {
       ],
       aid: `${element.aid || element.id}/cell-${cell.index || cellIndex}`,
       id: `${element.id || index}-${cell.index || cellIndex}`,
-      // Tagged with the table's shapeTag prefix (rather than a per-cell unique
-      // name) so a downstream Aspose splice step can find and remove every
-      // cell belonging to this table by prefix match before inserting a
-      // native replacement at the same position.
-      name: shapeTag
-        ? `${shapeTag}::cell::${cell.index || cellIndex}`
-        : `${element.name || "Table"} Cell ${cell.index || cellIndex + 1}`,
+      name: `${element.name || "Table"} Cell ${cell.index || cellIndex + 1}`,
       geometry: "rect",
       lineColor: cell.lineColor || "#FFFFFF",
       lineWidth: cell.lineWidth ?? 0.7,
@@ -348,17 +342,44 @@ function tableXml(element, index, text, content = {}, shapeTag = null) {
   }).join("");
 }
 
-function getContainedImageBox(element, media = {}) {
+function getImagePlacement(element, media = {}) {
   const [rawLeft = 0, rawTop = 0, rawWidth = 0, rawHeight = 0] = element.bbox || [];
   const imageWidth = Number(media.width || 0);
   const imageHeight = Number(media.height || 0);
+  const imageFit = element.imageFit || element.fit || "contain";
 
   if (rawWidth <= 0 || rawHeight <= 0 || imageWidth <= 0 || imageHeight <= 0) {
     return { left: rawLeft, top: rawTop, width: rawWidth, height: rawHeight };
   }
 
+  if (imageFit === "stretch" || imageFit === "fill") {
+    return { left: rawLeft, top: rawTop, width: rawWidth, height: rawHeight };
+  }
+
   const boxAspect = rawWidth / rawHeight;
   const imageAspect = imageWidth / imageHeight;
+
+  if (imageFit === "cover") {
+    if (imageAspect > boxAspect) {
+      const crop = Math.round(((1 - boxAspect / imageAspect) / 2) * 100000);
+      return {
+        left: rawLeft,
+        top: rawTop,
+        width: rawWidth,
+        height: rawHeight,
+        sourceRect: { left: crop, right: crop, top: 0, bottom: 0 },
+      };
+    }
+
+    const crop = Math.round(((1 - imageAspect / boxAspect) / 2) * 100000);
+    return {
+      left: rawLeft,
+      top: rawTop,
+      width: rawWidth,
+      height: rawHeight,
+      sourceRect: { left: 0, right: 0, top: crop, bottom: crop },
+    };
+  }
 
   if (imageAspect > boxAspect) {
     const height = rawWidth / imageAspect;
@@ -380,9 +401,12 @@ function getContainedImageBox(element, media = {}) {
 }
 
 function pictureXml(element, index, media, name = "Image") {
-  const { left, top, width, height } = getContainedImageBox(element, media);
+  const { left, top, width, height, sourceRect } = getImagePlacement(element, media);
   const opacity = Math.max(0, Math.min(1, Number(element.opacity ?? element.imageOpacity ?? 1)));
   const alphaXml = opacity < 0.999 ? `<a:alphaModFix amt="${Math.round(opacity * 100000)}"/>` : "";
+  const sourceRectXml = sourceRect
+    ? `<a:srcRect l="${sourceRect.left}" r="${sourceRect.right}" t="${sourceRect.top}" b="${sourceRect.bottom}"/>`
+    : "";
   const geometry = Number(element.imageCornerRadius || 0) > 0 ? "roundRect" : "rect";
   const rotation = Number(element.rotation || 0);
   const rotationAttr = rotation ? ` rot="${Math.round(rotation * 60000)}"` : "";
@@ -399,6 +423,7 @@ function pictureXml(element, index, media, name = "Image") {
         </p:nvPicPr>
         <p:blipFill>
           <a:blip r:embed="${media.relationshipId}">${alphaXml}</a:blip>
+          ${sourceRectXml}
           <a:stretch><a:fillRect/></a:stretch>
         </p:blipFill>
         <p:spPr>
@@ -492,14 +517,14 @@ function shouldSkipLogoPlaceholderShape(elements, index, slideRef, getElementCon
 
 function slideXml(layout, slideRef, displaySlideNumber, getElementContent, mediaAllocator) {
   const elements = layout?.elements || [];
-  const sourceSlideNumber = typeof slideRef === "object" ? slideRef.sourceSlideNumber : slideRef;
   const backgroundImage = layout?.slide?.backgroundImage?.dataUrl
     ? mediaAllocator(layout.slide.backgroundImage.dataUrl)
     : null;
   const backgroundPicture = backgroundImage
-    ? pictureXml({
+      ? pictureXml({
         bbox: [0, 0, SLIDE_WIDTH_PX, SLIDE_HEIGHT_PX],
         opacity: layout.slide.backgroundImageOpacity,
+        imageFit: "cover",
       }, 9000, backgroundImage, "Slide background")
     : "";
   const shapes = elements
@@ -513,19 +538,13 @@ function slideXml(layout, slideRef, displaySlideNumber, getElementContent, media
         : normalizeContent(getElementContent(slideRef, element));
       if (content.kind === "hidden") return "";
       if (element.kind === "table" && Array.isArray(element.cells)) {
-        // Tag matches buildNativeSpliceManifest()'s shapeTag derivation exactly
-        // (physical slide position + source slide number + element order) so a
-        // downstream Aspose splice pass can locate and replace this table.
-        const tableTag = `__cim_table__${displaySlideNumber}_${sourceSlideNumber}_${element.order}`;
-        return tableXml(element, index, content.text ?? element.text ?? "", content, tableTag);
+        return tableXml(element, index, content.text ?? element.text ?? "", content);
       }
       const effectiveElement = content.bbox ? { ...element, bbox: content.bbox } : element;
       if ((content.kind === "image" || content.kind === "chart") && content.dataUrl) {
         const media = mediaAllocator(content.dataUrl);
         if (media) {
-          const shapeName = content.kind === "chart"
-            ? `__cim_chart__${displaySlideNumber}_${sourceSlideNumber}_${element.order}`
-            : (content.name || content.alt || content.kind);
+          const shapeName = content.name || content.alt || content.kind;
           return pictureXml(effectiveElement, index, media, shapeName);
         }
       }

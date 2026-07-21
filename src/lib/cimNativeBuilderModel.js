@@ -14,6 +14,14 @@ export function createBlankBuilderPage(overrides = {}) {
   };
 }
 
+export function normalizeBuilderImageSource(element = {}) {
+  if (!element || typeof element !== "object") return "";
+  const direct = element.src || element.dataUrl || element.url || element.href;
+  if (direct) return String(direct);
+  const nested = element.image || element.asset || element.media || {};
+  return String(nested.dataUrl || nested.src || nested.url || "");
+}
+
 export function createBuilderElement(type, overrides = {}) {
   const base = {
     id: makeBuilderId(type),
@@ -24,7 +32,7 @@ export function createBuilderElement(type, overrides = {}) {
     height: type === "line" ? 0 : 90,
     rotation: 0,
     opacity: 1,
-    zIndex: Date.now(),
+    zIndex: 1,
   };
 
   if (type === "text") {
@@ -56,6 +64,7 @@ export function createBuilderElement(type, overrides = {}) {
       src: "",
       name: "Image",
       fit: "contain",
+      objectPosition: "center center",
       stroke: "transparent",
       strokeWidth: 0,
       ...overrides,
