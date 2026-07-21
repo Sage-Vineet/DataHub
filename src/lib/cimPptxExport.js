@@ -285,7 +285,7 @@ function shapeXml(element, index, text) {
       </p:sp>`;
 }
 
-function tableXml(element, index, text, content = {}) {
+function tableXml(element, index, text, content = {}, shapeTag = null) {
   const rows = Number(element.rows || 0);
   const cols = Number(element.cols || 0);
   const matrix = content.tableMatrix || parseTableText(text || element.text, rows, cols);
@@ -330,7 +330,13 @@ function tableXml(element, index, text, content = {}) {
       ],
       aid: `${element.aid || element.id}/cell-${cell.index || cellIndex}`,
       id: `${element.id || index}-${cell.index || cellIndex}`,
-      name: `${element.name || "Table"} Cell ${cell.index || cellIndex + 1}`,
+      // Tagged with the table's shapeTag prefix (rather than a per-cell unique
+      // name) so a downstream Aspose splice step can find and remove every
+      // cell belonging to this table by prefix match before inserting a
+      // native replacement at the same position.
+      name: shapeTag
+        ? `${shapeTag}::cell::${cell.index || cellIndex}`
+        : `${element.name || "Table"} Cell ${cell.index || cellIndex + 1}`,
       geometry: "rect",
       lineColor: cell.lineColor || "#FFFFFF",
       lineWidth: cell.lineWidth ?? 0.7,
@@ -482,6 +488,7 @@ function shouldSkipLogoPlaceholderShape(elements, index, slideRef, getElementCon
 
 function slideXml(layout, slideRef, displaySlideNumber, getElementContent, mediaAllocator) {
   const elements = layout?.elements || [];
+  const sourceSlideNumber = typeof slideRef === "object" ? slideRef.sourceSlideNumber : slideRef;
   const backgroundImage = layout?.slide?.backgroundImage?.dataUrl
     ? mediaAllocator(layout.slide.backgroundImage.dataUrl)
     : null;
@@ -502,13 +509,20 @@ function slideXml(layout, slideRef, displaySlideNumber, getElementContent, media
         : normalizeContent(getElementContent(slideRef, element));
       if (content.kind === "hidden") return "";
       if (element.kind === "table" && Array.isArray(element.cells)) {
-        return tableXml(element, index, content.text ?? element.text ?? "", content);
+        // Tag matches buildNativeSpliceManifest()'s shapeTag derivation exactly
+        // (physical slide position + source slide number + element order) so a
+        // downstream Aspose splice pass can locate and replace this table.
+        const tableTag = `__cim_table__${displaySlideNumber}_${sourceSlideNumber}_${element.order}`;
+        return tableXml(element, index, content.text ?? element.text ?? "", content, tableTag);
       }
       const effectiveElement = content.bbox ? { ...element, bbox: content.bbox } : element;
       if ((content.kind === "image" || content.kind === "chart") && content.dataUrl) {
         const media = mediaAllocator(content.dataUrl);
         if (media) {
-          return pictureXml(effectiveElement, index, media, content.name || content.alt || content.kind);
+          const shapeName = content.kind === "chart"
+            ? `__cim_chart__${displaySlideNumber}_${sourceSlideNumber}_${element.order}`
+            : (content.name || content.alt || content.kind);
+          return pictureXml(effectiveElement, index, media, shapeName);
         }
       }
       return shapeXml(effectiveElement, index, content.text ?? "");

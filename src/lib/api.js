@@ -502,6 +502,65 @@ export function saveCimStyleProfilesRequest(state, options = {}) {
   });
 }
 
+// Bypasses the shared request() helper (which always calls response.json())
+// since this endpoint returns a binary .pptx on success.
+export function exportCimPptxViaAsposePoc(payload, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const token = options.token ?? getStoredToken();
+  return fetch(buildUrl('/cim-prep/aspose-poc-export'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-store',
+      ...(clientId ? { 'X-Client-Id': clientId } : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(payload),
+    cache: 'no-store',
+    credentials: 'omit',
+  }).then(async (response) => {
+    if (!response.ok) {
+      const data = await response.json().catch(() => null);
+      const error = new Error(data?.error || 'Aspose POC export failed');
+      error.status = response.status;
+      error.payload = data;
+      throw error;
+    }
+    return response.blob();
+  });
+}
+
+// Multipart request: `basePptxBlob` is the legacy-exporter's own output,
+// `manifest` describes which tagged shapes to replace with native
+// tables/charts. Also bypasses request() since the response is binary.
+export function exportCimPptxViaAsposeSplice(basePptxBlob, manifest, options = {}) {
+  const clientId = options.clientId ?? resolveClientIdFromLocation();
+  const token = options.token ?? getStoredToken();
+  const formData = new FormData();
+  formData.append('file', basePptxBlob, 'base.pptx');
+  formData.append('manifest', JSON.stringify(manifest));
+  return fetch(buildUrl('/cim-prep/aspose-export'), {
+    method: 'POST',
+    headers: {
+      'Cache-Control': 'no-store',
+      ...(clientId ? { 'X-Client-Id': clientId } : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: formData,
+    cache: 'no-store',
+    credentials: 'omit',
+  }).then(async (response) => {
+    if (!response.ok) {
+      const data = await response.json().catch(() => null);
+      const error = new Error(data?.error || 'Aspose export failed');
+      error.status = response.status;
+      error.payload = data;
+      throw error;
+    }
+    return response.blob();
+  });
+}
+
 export function getCimQuestionnaireRequest(options = {}) {
   const clientId = options.clientId ?? resolveClientIdFromLocation();
   const query = clientId ? `?clientId=${encodeURIComponent(clientId)}` : "";
