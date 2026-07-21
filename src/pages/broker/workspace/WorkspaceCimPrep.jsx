@@ -29,6 +29,8 @@ import {
   X,
 } from "lucide-react";
 import {
+  exportCimPptxViaAsposePoc,
+  exportCimPptxViaAsposeSplice,
   getCimQuestionnaireRequest,
   getCimReviewRequest,
   getCimStyleProfilesRequest,
@@ -40,7 +42,7 @@ import {
   saveCimStyleProfilesRequest,
   saveWorkspacePageStateRequest,
 } from "../../../lib/api";
-import { exportCimPptx } from "../../../lib/cimPptxExport";
+import { buildCimPptxBlob, exportCimPptx } from "../../../lib/cimPptxExport";
 import {
   DEFAULT_CIM_STYLE_PROFILE,
   DEFAULT_CIM_STYLE_PROFILE_ID,
@@ -61,6 +63,8 @@ import { useKeyReportContextStore } from "../../../store/useKeyReportContextStor
 import Modal from "../../../components/common/Modal";
 import CimFieldNoteThread from "../../../components/cim/CimFieldNoteThread";
 import CimTemplateStyleEditor from "../../../components/cim/CimTemplateStyleEditor";
+import CimPolotnoCanvas from "../../../components/cim/CimPolotnoCanvas";
+import CimKonvaCanvas from "../../../components/cim/CimKonvaCanvas";
 
 const SLIDE_WIDTH = 1280;
 const PAGE_KEY = "cim-prep";
@@ -1583,6 +1587,11 @@ function containsTemplateToken(text) {
   return /\[[^\]]+\]/.test(String(text || ""));
 }
 
+function hasEditableTextBounds(element) {
+  const [left = 0, top = 0, width = 0, height = 0] = element?.bbox || [];
+  return width > 12 && height > 8 && left >= 0 && top >= 0;
+}
+
 function cssColor(value, fallback = "#333333") {
   if (!value || value === "tx1") return fallback;
   if (String(value).startsWith("rgba(")) return value;
@@ -2058,6 +2067,10 @@ function makeTokenFieldId(slideNumber, element, tokenInfo) {
   return `${makeFieldId(slideNumber, element)}:token:${tokenInfo.index}:${tokenInfo.key}`;
 }
 
+function makePptTextFieldId(slideNumber, element) {
+  return `${makeFieldId(slideNumber, element)}:ppt-text`;
+}
+
 function makeRepeatableFieldId(slideNumber, key) {
   return `${slideNumber}:repeatable:${key}`;
 }
@@ -2115,14 +2128,41 @@ function getStructuredRepeatableBinding(slideNumber, element) {
   return null;
 }
 
+function isPptTextEditableElement(element) {
+  return Boolean(
+    element?.text &&
+    normalizeText(element.text) &&
+    element.kind !== "table" &&
+    hasEditableTextBounds(element) &&
+    !isTopRightSlideNumberElement(element),
+  );
+}
+
+function buildPptTextField(slideNumber, element, baseField) {
+  const cleanText = normalizeText(element.text);
+  return {
+    ...baseField,
+    id: makePptTextFieldId(slideNumber, element),
+    text: element.text,
+    label: cleanText.length > 72 ? `${cleanText.slice(0, 69)}...` : cleanText || "PPT text",
+    fieldKind: "text",
+    pptOnly: true,
+    fullText: true,
+    excludeFromQuestionnaire: true,
+  };
+}
+
+function isPptTextField(field) {
+  return Boolean(field?.pptOnly && field?.fullText);
+}
+
 export function extractTemplateFields(slideNumber, layout) {
   const elements = layout?.elements || [];
 
   return elements
     .filter((element) => {
-      if (!element.text || !containsTemplateToken(element.text)) return false;
-      const [left, top, width, height] = element.bbox || [];
-      return width > 12 && height > 8 && left >= 0 && top >= 0;
+      if (!element.text || !hasEditableTextBounds(element)) return false;
+      return containsTemplateToken(element.text) || isPptTextEditableElement(element);
     })
     .flatMap((element) => {
       const fieldKind = getFieldKind(element.text);
@@ -2135,6 +2175,11 @@ export function extractTemplateFields(slideNumber, layout) {
         style: getElementStyle(element),
         sourceText: element.text,
       };
+      const pptTextField = fieldKind === "text" && isPptTextEditableElement(element)
+        ? [buildPptTextField(slideNumber, element, baseField)]
+        : [];
+
+      if (!containsTemplateToken(element.text)) return pptTextField;
 
       const repeatableVisible = getRepeatableOverrideByVisibleOrder(slideNumber, element);
       const repeatableTimeline = getRepeatableOverrideForTimelineElement(slideNumber, element);
@@ -2171,7 +2216,7 @@ export function extractTemplateFields(slideNumber, layout) {
           prompt: override.prompt,
           fieldKind: override.fieldKind,
           repeatableConfig: override,
-        }, structuredField];
+        }, structuredField, ...pptTextField];
       }
 
       if (repeatableChart) {
@@ -2307,10 +2352,12 @@ export function extractTemplateFields(slideNumber, layout) {
             };
           });
 
-        return [mergedField, ...remainingTokenFields];
+        return [...pptTextField, mergedField, ...remainingTokenFields];
       }
 
-      return getTemplateTokens(element.text)
+      return [
+        ...pptTextField,
+        ...getTemplateTokens(element.text)
         .filter((tokenInfo) => !tokenValue(tokenInfo.token, GLOBAL_DETAIL_SENTINELS, element.text))
         .map((tokenInfo) => {
           const override = getFieldLabelOverride(slideNumber, element, tokenInfo);
@@ -2343,7 +2390,8 @@ export function extractTemplateFields(slideNumber, layout) {
             hidden: Boolean(mirror?.hidden ?? mirror),
             maxLength: override?.maxLength || getTokenMaxLength(tokenInfo.token),
           };
-        });
+        }),
+      ];
     });
 }
 
@@ -2533,6 +2581,7 @@ function getKnownGlobalTokens(text) {
 }
 
 function isHandledByGlobalDetails(field) {
+  if (isPptTextField(field)) return false;
   if (!field?.text || isMediaField(field)) return false;
   const tokens = getTemplateTokens(field.text).map((item) => item.token);
   return tokens.length > 0 && tokens.length === getKnownGlobalTokens(field.text).length;
@@ -2547,6 +2596,7 @@ function getFieldValue(field, fieldValues, globalDetails) {
 }
 
 function isResolvedByGlobalDetails(field, globalDetails) {
+  if (isPptTextField(field)) return false;
   if (field?.token) return Boolean(tokenValue(field.token, globalDetails, field.sourceText || field.text));
   return isHandledByGlobalDetails(field) || !containsTemplateToken(applyGlobalDetails(field.text, globalDetails));
 }
@@ -2575,6 +2625,11 @@ function getElementFields(slideNumber, element, fieldsById) {
   const fieldId = getElementFieldId(slideNumber, element);
   if (!fieldId) return [];
   return Object.values(fieldsById || {}).filter((field) => (field.parentId || field.id) === fieldId);
+}
+
+function hasStoredFieldValue(field, fieldValues = {}) {
+  const key = field?.valueFieldId || field?.id;
+  return Boolean(key && Object.prototype.hasOwnProperty.call(fieldValues || {}, key));
 }
 
 function getStoredFieldValue(field, fieldValues) {
@@ -3157,6 +3212,210 @@ function getChartConfig(field, chartValues) {
   };
 }
 
+// Chart kinds with no native PowerPoint chart equivalent (bespoke SVG diagrams,
+// e.g. a positioning quadrant) -- fields of this kind are left on the legacy
+// flattened-image export path rather than attempted natively.
+function isNativeChartSupported(field) {
+  return field.chartKind !== "positioningMatrix";
+}
+
+// Walks the already-prepared/styled layouts and the same exportSlides sequence
+// handleExport already uses, and produces a slide-agnostic manifest describing
+// every native-table and native-chart-eligible element in the deck. Consumes
+// styledLayouts/getExportElementContent as inputs only -- never calls
+// prepareCimLayout/applyCimTemplateStyleProfile/getElementContent itself, so
+// there is exactly one place that owns layout prep and theming.
+function buildAsposeSpliceManifest({ exportSlides, styledLayouts, getExportElementContent, fieldsBySlide, chartValues }) {
+  const slides = exportSlides
+    .map((slideRef, index) => {
+      const sourceSlideNumber = typeof slideRef === "object" ? slideRef.sourceSlideNumber : slideRef;
+      const displaySlideNumber = index + 1;
+      const layout = styledLayouts[sourceSlideNumber];
+      const elements = layout?.elements || [];
+      const fieldsForSlide = fieldsBySlide[sourceSlideNumber] || [];
+      const fieldsById = Object.fromEntries(fieldsForSlide.map((field) => [field.id, field]));
+
+      const tables = [];
+      const charts = [];
+
+      elements.forEach((element) => {
+        if (element.kind === "table" && Array.isArray(element.cells)) {
+          const content = getExportElementContent(slideRef, element);
+          if (content.kind === "hidden") return;
+          tables.push({
+            shapeTag: `__cim_table__${displaySlideNumber}_${sourceSlideNumber}_${element.order}`,
+            bbox: content.bbox || element.bbox,
+            rows: element.rows,
+            cols: element.cols,
+            matrix: content.tableMatrix || [],
+          });
+          return;
+        }
+
+        const elementFields = getElementFields(sourceSlideNumber, element, fieldsById);
+        const chartField = elementFields.find((field) => isChartField(field) && isNativeChartSupported(field));
+        if (!chartField) return;
+
+        const chartConfig = getChartConfig(chartField, chartValues);
+        const rows = parseChartData(chartConfig.dataText, getDefaultChartData(chartField, chartConfig.type));
+        if (!rows.length) return;
+
+        const seriesCount = Math.max(1, ...rows.map((row) => row.values.length));
+        // No series-name source exists anywhere upstream in the data model
+        // (chartValues only ever stores "label,val1,val2..." rows, never
+        // series names) -- generic names are used, same as PowerPoint's own
+        // default naming, and are user-editable after export via Edit Data.
+        const series = Array.from({ length: seriesCount }, (_, seriesIndex) => ({
+          name: `Series ${seriesIndex + 1}`,
+          values: rows.map((row) => row.values[seriesIndex] ?? row.values[0] ?? 0),
+        }));
+
+        charts.push({
+          shapeTag: `__cim_chart__${displaySlideNumber}_${sourceSlideNumber}_${element.order}`,
+          bbox: element.bbox,
+          type: chartConfig.type,
+          title: chartField.label || "",
+          categories: rows.map((row) => row.label),
+          series,
+        });
+      });
+
+      return { slideIndex: displaySlideNumber, tables, charts };
+    })
+    .filter((slide) => slide.tables.length || slide.charts.length);
+
+  return { slides };
+}
+
+// Polotno visual-editor POC: builds a flat list of element specs for one
+// slide, consumed by CimPolotnoCanvas via page.addElement(...) per spec.
+// Mirrors buildAsposeSpliceManifest's approach -- walks layout.elements the
+// same way SlideCanvas does (same shouldHideUnusedRepeatableSlot/
+// shouldHideLogoPlaceholderShape gating, same getElementContent call) and
+// never re-derives field/token resolution itself.
+//
+// Scope (matches the approved POC plan): tables are decomposed into
+// non-field-bound text/rect specs (today's SlideCanvas already renders table
+// cells as plain non-editable spans, so this loses no existing capability);
+// charts render as a static image using the same flattened SVG data URL
+// already produced today. Only plain text and image/logo fields carry a
+// `cimFieldId`/`cimAssetKey` anchor and round-trip back to fieldValues/
+// assetValues -- see applyPolotnoElementsToFieldValues below.
+export function buildPolotnoElementSpecs(slideNumber, layout, fields, fieldValues, assetValues, chartValues, globalDetails, styleProfile) {
+  const elements = layout?.elements || [];
+  const resolvedAssetValues = assetValues || {};
+  const resolvedChartValues = chartValues || {};
+  const fieldsById = Object.fromEntries((fields || []).map((field) => [field.id, field]));
+  const fieldsByElement = groupFieldsByElement(fields || []);
+  const specs = [];
+
+  elements.forEach((element, elementIndex) => {
+    if (shouldHideUnusedRepeatableSlot(slideNumber, element, fieldValues)) return;
+    if (shouldHideLogoPlaceholderShape(elements, elementIndex, resolvedAssetValues)) return;
+
+    const content = getElementContent(
+      slideNumber, element, fieldsById, fieldValues, resolvedAssetValues, resolvedChartValues, globalDetails, styleProfile,
+    );
+    if (content.kind === "hidden") return;
+
+    const [left = 0, top = 0, width = 0, height = 0] = content.bbox || element.bbox || [];
+    const fieldId = getElementFieldId(slideNumber, element);
+    const elementFields = fieldId ? (fieldsByElement[fieldId] || []) : [];
+    const mediaField = elementFields.find((candidate) => isAssetField(candidate) || isChartField(candidate));
+    const editableElementFields = elementFields.filter((candidate) => !candidate.hidden && candidate.fieldKind === "text");
+    const pptTextField = editableElementFields.find(isPptTextField);
+    const inlineTextField = !mediaField
+      ? pptTextField || (
+        editableElementFields.length === 1 && isWholeElementToken(element, editableElementFields[0])
+          ? editableElementFields[0]
+          : null
+      )
+      : null;
+
+    if (element.kind === "table" && Array.isArray(element.cells)) {
+      const matrix = content.tableMatrix || [];
+      (element.cells || []).forEach((cell) => {
+        const [cellLeft = 0, cellTop = 0, cellWidth = 0, cellHeight = 0] = cell.bbox || [];
+        const rowIndex = Number(cell.row || 1) - 1;
+        const colIndex = Number(cell.column || 1) - 1;
+        const cellText = matrix[rowIndex]?.[colIndex] ?? cell.text ?? "";
+        const cellStyle = getElementStyle(cell);
+        if (cell.fillColor) {
+          specs.push({
+            cimKind: "tableRect", x: cellLeft, y: cellTop, width: cellWidth, height: cellHeight,
+            fill: cssColor(cell.fillColor, "transparent"),
+          });
+        }
+        specs.push({
+          cimKind: "tableCell", x: cellLeft, y: cellTop, width: cellWidth, height: cellHeight,
+          text: cellText, fontFamily: cellStyle.fontFamily, fontSize: cellStyle.fontSize,
+          fill: cellStyle.color, align: cellStyle.textAlign,
+        });
+      });
+      return;
+    }
+
+    if ((content.kind === "image" || content.kind === "chart") && content.dataUrl) {
+      specs.push({
+        cimKind: content.kind,
+        cimAssetKey: content.kind === "image" && mediaField ? getAssetKey(mediaField) : null,
+        x: left, y: top, width, height,
+        src: content.dataUrl,
+      });
+      return;
+    }
+
+    // Decorative shapes (background bars, dividers, theme-colored panels) --
+    // same condition SlideCanvas uses at its bare-<div> branch. These already
+    // carry theme-resolved colors by the time this runs (applyCimTemplateStyleProfile
+    // rewrites fillColor/lineColor before layout reaches either renderer).
+    if (!element.text && content.kind !== "image" && content.kind !== "chart") {
+      const isRule = width === 0 || height === 0;
+      specs.push({
+        cimKind: "shape",
+        x: left, y: top, width, height,
+        fill: cssColor(isRule ? (element.lineColor || element.fillColor) : element.fillColor, "transparent"),
+        stroke: element.lineColor ? cssColor(element.lineColor, "transparent") : "transparent",
+        strokeWidth: element.lineColor ? Math.max(Number(element.lineWidth || 0), 0) : 0,
+        isEllipse: element.geometry === "ellipse",
+      });
+      return;
+    }
+
+    const displayText = content.text ?? element.text ?? "";
+    if (!normalizeText(displayText) && !inlineTextField) return;
+    const style = elementFields[0]?.style || getElementStyle(element);
+    specs.push({
+      cimKind: "text",
+      cimFieldId: inlineTextField?.id || null,
+      x: left, y: top, width, height,
+      text: displayText,
+      fontFamily: style.fontFamily,
+      fontSize: style.fontSize,
+      fill: style.color,
+      align: style.textAlign,
+      fontWeight: style.fontWeight,
+      fontStyle: style.fontStyle,
+    });
+  });
+
+  return specs;
+}
+
+// Inverse of buildPolotnoElementSpecs: walks a Polotno store's live element
+// list (store.toJSON().pages[i].children) back into a {fieldValues} delta,
+// keyed by each element's custom.cimFieldId anchor. Only text elements
+// carry an editable field anchor in this POC's scope.
+export function applyPolotnoElementsToFieldValues(polotnoElements = []) {
+  const fieldValues = {};
+  (polotnoElements || []).forEach((element) => {
+    const cimFieldId = element?.custom?.cimFieldId;
+    if (!cimFieldId) return;
+    if (element.type === "text") fieldValues[cimFieldId] = element.text ?? "";
+  });
+  return fieldValues;
+}
+
 function getChartDataUrl(field, chartValues, fieldValues = {}, styleProfile = null) {
   if (field.chartKind === "ownershipPie" || field.chartKind === "positioningMatrix") {
     const entries = parseRepeatableEntries(fieldValues[field.structuredSourceId]);
@@ -3486,6 +3745,7 @@ function getEditableTemplateFields(fields = [], globalDetails) {
   const includesSlide27 = fields.some((field) => field.slideNumber === 27);
   const editableFields = fields.filter(
     (field) => !(
+      field.pptOnly ||
       (field.slideNumber === 25 && [8, 10].includes(field.order)) ||
       (field.slideNumber === 27 && field.order === 7)
     ),
@@ -4679,9 +4939,8 @@ function useElementWidth(ref) {
 }
 
 function getElementFieldId(slideNumber, element) {
-  if (!element?.text || !containsTemplateToken(element.text)) return null;
-  const [left, top, width, height] = element.bbox || [];
-  if (!(width > 12 && height > 8 && left >= 0 && top >= 0)) return null;
+  if (!element?.text || !hasEditableTextBounds(element) || isTopRightSlideNumberElement(element)) return null;
+  if (!containsTemplateToken(element.text) && !isPptTextEditableElement(element)) return null;
   return makeFieldId(slideNumber, element);
 }
 
@@ -4691,6 +4950,10 @@ function getElementDisplayText(slideNumber, element, fieldsById, fieldValues, gl
   const elementOverride = fieldValues?.[getElementAutofillKey("element_override", slideNumber, element.order)];
   if (normalizeText(elementOverride)) return elementOverride;
   const elementFields = getElementFields(slideNumber, element, fieldsById);
+  const pptTextField = elementFields.find(isPptTextField);
+  if (pptTextField && hasStoredFieldValue(pptTextField, fieldValues)) {
+    return String(getStoredFieldValue(pptTextField, fieldValues) ?? "");
+  }
 
   if (containsTemplateToken(element.text)) {
     const value = applyFieldValues(element.text, elementFields, fieldValues, globalDetails);
@@ -4778,8 +5041,13 @@ export function SlideCanvas({
         const elementFields = fieldId ? fieldsByElement[fieldId] || [] : [];
         const mediaField = elementFields.find((candidate) => isAssetField(candidate) || isChartField(candidate));
         const editableElementFields = elementFields.filter((candidate) => !candidate.hidden && candidate.fieldKind === "text");
-        const inlineTextField = editableElementFields.length === 1 && !mediaField && isWholeElementToken(element, editableElementFields[0])
-          ? editableElementFields[0]
+        const pptTextField = editableElementFields.find(isPptTextField);
+        const inlineTextField = !mediaField
+          ? pptTextField || (
+            editableElementFields.length === 1 && isWholeElementToken(element, editableElementFields[0])
+              ? editableElementFields[0]
+              : null
+          )
           : null;
         const field = mediaField || inlineTextField;
         const isEditable = inlineTextField && !previewMode && !isResolvedByGlobalDetails(inlineTextField, globalDetails);
@@ -5033,7 +5301,10 @@ export function SlideCanvas({
           );
         }
 
-        const userValue = fieldValues[field.id] || "";
+        const isPptTextEditor = isPptTextField(field);
+        const userValue = isPptTextEditor
+          ? (hasStoredFieldValue(field, fieldValues) ? String(getStoredFieldValue(field, fieldValues) ?? "") : displayText)
+          : fieldValues[field.id] || "";
 
         return (
           <textarea
@@ -5046,12 +5317,16 @@ export function SlideCanvas({
             maxLength={field.maxLength || undefined}
             className={`absolute resize-none overflow-hidden rounded-[2px] border px-1 py-0.5 outline-none transition ${activeFieldId === field.id
               ? "border-[#8BC53D] ring-2 ring-[#8BC53D]/30"
-              : "border-[#8BC53D]/45 hover:border-[#8BC53D]"
+              : isPptTextEditor
+                ? "border-transparent hover:border-[#8BC53D]/55 focus:border-[#8BC53D]/70"
+                : "border-[#8BC53D]/45 hover:border-[#8BC53D]"
               }`}
             style={{
               ...textStyle,
               display: "block",
-              backgroundColor: fillColor === "transparent" ? "rgba(255,255,255,0.76)" : fillColor,
+              backgroundColor: isPptTextEditor
+                ? (fillColor === "transparent" ? "transparent" : fillColor)
+                : (fillColor === "transparent" ? "rgba(255,255,255,0.76)" : fillColor),
             }}
             placeholder={displayText}
             spellCheck={false}
@@ -7560,6 +7835,12 @@ export default function WorkspaceCimPrep() {
   const [reviewModalOpen, setReviewModalOpen] = useState(false);
   const [styleEditorOpen, setStyleEditorOpen] = useState(false);
   const [styleProfilesSaving, setStyleProfilesSaving] = useState(false);
+  // Proof-of-concept only: dev-only toggles swapping the main editing canvas
+  // to a visual-editor prototype (Polotno SDK, or a vanilla-Konva.js
+  // alternative). Every other SlideCanvas call site (previews/thumbnails/
+  // client viewer/style-editor) is untouched. Mutually exclusive.
+  const [usePolotnoCanvasPoc, setUsePolotnoCanvasPoc] = useState(false);
+  const [useKonvaCanvasPoc, setUseKonvaCanvasPoc] = useState(false);
   const [financialAutofillModalOpen, setFinancialAutofillModalOpen] = useState(false);
   const [financialAutofillRange, setFinancialAutofillRange] = useState(() => getDefaultFinancialAutofillRange());
   const [financialAutofillReportVersionId, setFinancialAutofillReportVersionId] = useState("");
@@ -8347,6 +8628,17 @@ export default function WorkspaceCimPrep() {
     setFieldValues((previous) => ({ ...previous, [fieldId]: value }));
   }, []);
 
+  // POC-only: reverse-sync callback for CimPolotnoCanvas -- see
+  // applyPolotnoElementsToFieldValues for the extraction logic.
+  const handlePolotnoElementsChange = useCallback((children) => {
+    const updates = applyPolotnoElementsToFieldValues(children);
+    Object.entries(updates).forEach(([fieldId, value]) => {
+      setFieldValues((previous) => (
+        previous[fieldId] === value ? previous : { ...previous, [fieldId]: value }
+      ));
+    });
+  }, []);
+
   const handleAssetUpload = useCallback(async (field, file) => {
     if (!file.type || !["image/png", "image/jpeg"].includes(file.type)) {
       showToast({
@@ -8708,8 +9000,142 @@ export default function WorkspaceCimPrep() {
     showToast,
   ]);
 
+  // Proof-of-concept only: exports slides 4 (text), 24 (table), 6 (chart)
+  // through the new Aspose.Slides backend service to validate real PowerPoint
+  // editability (native table/chart objects) before any wider rollout. Fully
+  // additive -- does not touch handleExport/exportCimPptx above.
+  const handleExportAsposePoc = useCallback(async () => {
+    try {
+      const slide4Layout = styledLayouts[4];
+      const slide4Elements = (slide4Layout?.elements || [])
+        .map((element) => {
+          const content = getExportElementContent(4, element);
+          if (content.kind === "hidden" || content.kind === "table") return null;
+          const text = content.text ?? element.text ?? "";
+          if (!normalizeText(text)) return null;
+          return { bbox: content.bbox || element.bbox, text };
+        })
+        .filter(Boolean);
+
+      const slide24Layout = styledLayouts[24];
+      const tableElement = (slide24Layout?.elements || []).find((element) => element.kind === "table");
+      if (!tableElement) throw new Error("Slide 24 table element not found.");
+      const tableContent = getExportElementContent(24, tableElement);
+
+      const chartField = (fieldsBySlide[6] || []).find((field) => field.order === 28 && isChartField(field));
+      if (!chartField) throw new Error("Slide 6 chart field not found.");
+      const chartConfig = getChartConfig(chartField, chartValues);
+      const chartRows = parseChartData(chartConfig.dataText, getDefaultChartData(chartField, chartConfig.type));
+      const chartElement = (styledLayouts[6]?.elements || []).find((element) => element.order === 28);
+
+      const payload = {
+        slide4: { elements: slide4Elements },
+        slide24: {
+          rows: tableElement.rows,
+          cols: tableElement.cols,
+          bbox: tableElement.bbox,
+          matrix: tableContent.tableMatrix || [],
+        },
+        slide6: {
+          bbox: chartElement?.bbox,
+          title: "Revenue & EBITDA Trend",
+          categories: chartRows.map((row) => row.label),
+          // Hardcoded order matches the fixed valueKeys used by
+          // getAutoFillChartData for this specific slide/field -- not a
+          // general pattern for other chart slides.
+          series: [
+            { name: "Revenue", values: chartRows.map((row) => row.values[0] || 0) },
+            { name: "Adjusted EBITDA", values: chartRows.map((row) => row.values[1] || 0) },
+          ],
+        },
+      };
+
+      const blob = await exportCimPptxViaAsposePoc(payload, { clientId });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "cim-aspose-poc.pptx";
+      a.click();
+      URL.revokeObjectURL(url);
+      showToast({
+        type: "success",
+        title: "Aspose POC Export",
+        message: "Downloaded a 3-slide POC PPTX (slides 4, 6, 24) generated via Aspose.Slides.",
+      });
+    } catch (error) {
+      showToast({
+        type: "error",
+        title: "Aspose POC Export Failed",
+        message: error?.message || "Unknown error.",
+      });
+    }
+  }, [chartValues, clientId, fieldsBySlide, getExportElementContent, showToast, styledLayouts]);
+
+  // Generalizes the Aspose POC to every table/chart in the full deck via the
+  // splice architecture: the legacy exporter builds the whole presentation as
+  // it does today, then the backend surgically replaces just the tagged
+  // table/chart shapes with native equivalents. Fully additive -- does not
+  // touch handleExport or handleExportAsposePoc above.
+  const handleExportAsposeFull = useCallback(async () => {
+    try {
+      const missingSlides = PREVIEW_SLIDES.filter((slideNumber) => !styledLayouts[slideNumber]);
+      if (missingSlides.length > 0) {
+        showToast({
+          type: "error",
+          title: "Export Not Ready",
+          message: "The CIM template is still loading. Please try again in a moment.",
+        });
+        return;
+      }
+
+      const exportSlides = buildCimExportSlides(fieldValues);
+      const baseBlob = buildCimPptxBlob({
+        layouts: styledLayouts,
+        slideNumbers: exportSlides,
+        getElementContent: getExportElementContent,
+        styleProfile: isDefaultCimStyleProfile(activeStyleProfile) ? null : activeStyleProfile,
+      });
+      const manifest = buildAsposeSpliceManifest({
+        exportSlides,
+        styledLayouts,
+        getExportElementContent,
+        fieldsBySlide,
+        chartValues,
+      });
+
+      const blob = await exportCimPptxViaAsposeSplice(baseBlob, manifest, { clientId });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "cim-aspose-export.pptx";
+      a.click();
+      URL.revokeObjectURL(url);
+      showToast({
+        type: "success",
+        title: "Aspose Export",
+        message: `Downloaded the full CIM with ${manifest.slides.length} slide(s) of native tables/charts.`,
+      });
+    } catch (error) {
+      showToast({
+        type: "error",
+        title: "Aspose Export Failed",
+        message: error?.message || "Unknown error.",
+      });
+    }
+  }, [activeStyleProfile, chartValues, clientId, fieldValues, fieldsBySlide, getExportElementContent, showToast, styledLayouts]);
+
   const isBasicSection = activeSection.type === "basic";
   const activeFields = activeSlide ? fieldsBySlide[activeSlide] || [] : [];
+  const polotnoElementSpecs = useMemo(() => {
+    if (!usePolotnoCanvasPoc && !useKonvaCanvasPoc) return [];
+    return buildPolotnoElementSpecs(
+      activeSlide, styledLayouts[activeSlide], activeFields, activeCanvasFieldValues,
+      assetValues, chartValues, effectiveGlobalDetails, activeStyleProfile,
+    );
+  }, [
+    usePolotnoCanvasPoc, useKonvaCanvasPoc, activeSlide, styledLayouts, activeFields, activeCanvasFieldValues,
+    assetValues, chartValues, effectiveGlobalDetails, activeStyleProfile,
+  ]);
   const sectionEditableFields = getEditableTemplateFields(
     activeSection.slides.flatMap((slideNumber) => fieldsBySlide[slideNumber] || []),
     effectiveGlobalDetails,
@@ -8831,6 +9257,64 @@ export default function WorkspaceCimPrep() {
               Export PPT
             </span>
           </button>
+          {import.meta.env.DEV && (
+            <button
+              onClick={handleExportAsposePoc}
+              className="inline-flex h-10 items-center gap-1.5 rounded-md border border-dashed border-[#8BC53D] bg-white px-3 text-xs font-semibold text-[#476E2C] transition hover:bg-[#EEF6E0]"
+              aria-label="Export via Aspose (Beta)"
+              title="Proof-of-concept: exports slides 4/6/24 via Aspose.Slides"
+            >
+              <Download size={14} />
+              Aspose POC
+            </button>
+          )}
+          {import.meta.env.DEV && (
+            <button
+              onClick={handleExportAsposeFull}
+              className="inline-flex h-10 items-center gap-1.5 rounded-md border border-dashed border-[#8BC53D] bg-white px-3 text-xs font-semibold text-[#476E2C] transition hover:bg-[#EEF6E0]"
+              aria-label="Export via Aspose, full deck (Beta)"
+              title="Full deck: native tables/charts spliced into the legacy export for every slide"
+            >
+              <Download size={14} />
+              Aspose Full
+            </button>
+          )}
+          {import.meta.env.DEV && (
+            <button
+              onClick={() => {
+                setUsePolotnoCanvasPoc((previous) => !previous);
+                setUseKonvaCanvasPoc(false);
+              }}
+              className={`inline-flex h-10 items-center gap-1.5 rounded-md border border-dashed px-3 text-xs font-semibold transition ${
+                usePolotnoCanvasPoc
+                  ? "border-[#476E2C] bg-[#EEF6E0] text-[#476E2C]"
+                  : "border-[#8BC53D] bg-white text-[#476E2C] hover:bg-[#EEF6E0]"
+              }`}
+              aria-label="Toggle Polotno visual editor (Beta)"
+              title="Proof-of-concept: swaps the main canvas for a Polotno visual editor"
+            >
+              <Palette size={14} />
+              {usePolotnoCanvasPoc ? "Polotno: On" : "Polotno POC"}
+            </button>
+          )}
+          {import.meta.env.DEV && (
+            <button
+              onClick={() => {
+                setUseKonvaCanvasPoc((previous) => !previous);
+                setUsePolotnoCanvasPoc(false);
+              }}
+              className={`inline-flex h-10 items-center gap-1.5 rounded-md border border-dashed px-3 text-xs font-semibold transition ${
+                useKonvaCanvasPoc
+                  ? "border-[#476E2C] bg-[#EEF6E0] text-[#476E2C]"
+                  : "border-[#8BC53D] bg-white text-[#476E2C] hover:bg-[#EEF6E0]"
+              }`}
+              aria-label="Toggle Konva visual editor (Beta)"
+              title="Proof-of-concept: swaps the main canvas for a free/MIT vanilla Konva.js visual editor (with theme backgrounds)"
+            >
+              <Palette size={14} />
+              {useKonvaCanvasPoc ? "Konva: On" : "Konva POC"}
+            </button>
+          )}
           <button
             onClick={handleSave}
             disabled={saving}
@@ -8908,6 +9392,18 @@ export default function WorkspaceCimPrep() {
                 <Loader2 size={18} className="mr-2 animate-spin text-[#8BC53D]" />
                 Loading CIM template
               </div>
+            ) : usePolotnoCanvasPoc ? (
+              <CimPolotnoCanvas
+                slideKey={`${activeSlide}-${activeSlideInstance}`}
+                elementSpecs={polotnoElementSpecs}
+                onElementsChange={handlePolotnoElementsChange}
+              />
+            ) : useKonvaCanvasPoc ? (
+              <CimKonvaCanvas
+                slideKey={`${activeSlide}-${activeSlideInstance}`}
+                elementSpecs={polotnoElementSpecs}
+                onElementsChange={handlePolotnoElementsChange}
+              />
             ) : (
               <SlideCanvas
                 slideNumber={activeSlide}
