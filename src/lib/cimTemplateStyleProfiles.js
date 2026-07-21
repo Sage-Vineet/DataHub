@@ -3,6 +3,7 @@ export const DEFAULT_CIM_STYLE_PROFILE_ID = "default-cim-template";
 
 export const SUPPORTED_CIM_STYLE_FONTS = Object.freeze([
   "Calibri",
+  "Calibri Light",
   "Aptos",
   "Arial",
   "Helvetica",
