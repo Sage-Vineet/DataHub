@@ -249,6 +249,8 @@ function shapeXml(element, index, text) {
   const geometry = element.geometry === "ellipse" ? "ellipse" : "rect";
   const hasText = typeof text === "string" && text.length > 0;
   const insets = style.insets || {};
+  const rotation = Number(element.rotation || 0);
+  const rotationAttr = rotation ? ` rot="${Math.round(rotation * 60000)}"` : "";
   // Match the browser preview's text model exactly: a fixed-size box rendered at the
   // element's literal font size, with overflow clipped rather than auto-shrunk. The
   // previous universal normAutofit(65%) had no relationship to actual content length,
@@ -273,7 +275,7 @@ function shapeXml(element, index, text) {
           <p:nvPr/>
         </p:nvSpPr>
         <p:spPr>
-          <a:xfrm>
+          <a:xfrm${rotationAttr}>
             <a:off x="${left}" y="${top}"/>
             <a:ext cx="${Math.max(width, EMU_PER_PX)}" cy="${Math.max(height, EMU_PER_PX)}"/>
           </a:xfrm>
@@ -382,6 +384,8 @@ function pictureXml(element, index, media, name = "Image") {
   const opacity = Math.max(0, Math.min(1, Number(element.opacity ?? element.imageOpacity ?? 1)));
   const alphaXml = opacity < 0.999 ? `<a:alphaModFix amt="${Math.round(opacity * 100000)}"/>` : "";
   const geometry = Number(element.imageCornerRadius || 0) > 0 ? "roundRect" : "rect";
+  const rotation = Number(element.rotation || 0);
+  const rotationAttr = rotation ? ` rot="${Math.round(rotation * 60000)}"` : "";
   const shadowXml = element.imageShadow
     ? `<a:effectLst><a:outerShdw blurRad="38100" dist="19050" dir="5400000" algn="ctr" rotWithShape="0"><a:srgbClr val="000000"><a:alpha val="18000"/></a:srgbClr></a:outerShdw></a:effectLst>`
     : "";
@@ -398,7 +402,7 @@ function pictureXml(element, index, media, name = "Image") {
           <a:stretch><a:fillRect/></a:stretch>
         </p:blipFill>
         <p:spPr>
-          <a:xfrm>
+          <a:xfrm${rotationAttr}>
             <a:off x="${toEmu(left)}" y="${toEmu(top)}"/>
             <a:ext cx="${Math.max(toEmu(width), EMU_PER_PX)}" cy="${Math.max(toEmu(height), EMU_PER_PX)}"/>
           </a:xfrm>
@@ -702,7 +706,9 @@ function themeXml(styleProfile) {
     tableAltRow: "#F7F8FA",
     hyperlink: "#0563C1",
   };
-  const titleFont = profile?.typography?.roles?.title?.fontFamily || "Calibri Light";
+  const titleFont = profile?.isDefault
+    ? "Calibri Light"
+    : profile?.typography?.roles?.title?.fontFamily || "Calibri Light";
   const bodyFont = profile?.typography?.roles?.body?.fontFamily || "Calibri";
 
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>

@@ -63,10 +63,13 @@ import { useKeyReportContextStore } from "../../../store/useKeyReportContextStor
 import Modal from "../../../components/common/Modal";
 import CimFieldNoteThread from "../../../components/cim/CimFieldNoteThread";
 import CimTemplateStyleEditor from "../../../components/cim/CimTemplateStyleEditor";
-import CimPolotnoCanvas from "../../../components/cim/CimPolotnoCanvas";
-import CimKonvaCanvas from "../../../components/cim/CimKonvaCanvas";
+import CimNativeBuilderCanvas, {
+  CimBuilderPagePreview,
+} from "../../../components/cim/CimNativeBuilderCanvas";
+import { createBlankBuilderPage } from "../../../lib/cimNativeBuilderModel";
 
 const SLIDE_WIDTH = 1280;
+const SLIDE_HEIGHT = 720;
 const PAGE_KEY = "cim-prep";
 const SLIDE_25_BRIDGE_FIELD_ID = "25:structured:ebitda-bridge";
 const SLIDE_27_CASHFLOW_FIELD_ID = "27:structured:cashflow-statement";
@@ -3287,27 +3290,33 @@ function buildAsposeSpliceManifest({ exportSlides, styledLayouts, getExportEleme
   return { slides };
 }
 
-// Polotno visual-editor POC: builds a flat list of element specs for one
-// slide, consumed by CimPolotnoCanvas via page.addElement(...) per spec.
+function getCimBuilderTemplateElementId(slideNumber, element, suffix = "") {
+  const base = element?.id || element?.aid || element?.order || "element";
+  return `template:${slideNumber}:${base}${suffix ? `:${suffix}` : ""}`;
+}
+
+// Native CIM Builder: builds a flat, editable element model for one slide.
 // Mirrors buildAsposeSpliceManifest's approach -- walks layout.elements the
 // same way SlideCanvas does (same shouldHideUnusedRepeatableSlot/
 // shouldHideLogoPlaceholderShape gating, same getElementContent call) and
 // never re-derives field/token resolution itself.
-//
-// Scope (matches the approved POC plan): tables are decomposed into
-// non-field-bound text/rect specs (today's SlideCanvas already renders table
-// cells as plain non-editable spans, so this loses no existing capability);
-// charts render as a static image using the same flattened SVG data URL
-// already produced today. Only plain text and image/logo fields carry a
-// `cimFieldId`/`cimAssetKey` anchor and round-trip back to fieldValues/
-// assetValues -- see applyPolotnoElementsToFieldValues below.
-export function buildPolotnoElementSpecs(slideNumber, layout, fields, fieldValues, assetValues, chartValues, globalDetails, styleProfile) {
+export function buildCimBuilderElementSpecs(slideNumber, layout, fields, fieldValues, assetValues, chartValues, globalDetails, styleProfile) {
   const elements = layout?.elements || [];
   const resolvedAssetValues = assetValues || {};
   const resolvedChartValues = chartValues || {};
   const fieldsById = Object.fromEntries((fields || []).map((field) => [field.id, field]));
   const fieldsByElement = groupFieldsByElement(fields || []);
-  const specs = [];
+  const specs = [{
+    cimKind: "background",
+    x: 0,
+    y: 0,
+    width: SLIDE_WIDTH,
+    height: SLIDE_HEIGHT,
+    fill: cssColor(layout?.slide?.backgroundColor, "#FFFFFF"),
+    stroke: "transparent",
+    strokeWidth: 0,
+    editable: false,
+  }];
 
   elements.forEach((element, elementIndex) => {
     if (shouldHideUnusedRepeatableSlot(slideNumber, element, fieldValues)) return;
@@ -3334,22 +3343,91 @@ export function buildPolotnoElementSpecs(slideNumber, layout, fields, fieldValue
 
     if (element.kind === "table" && Array.isArray(element.cells)) {
       const matrix = content.tableMatrix || [];
-      (element.cells || []).forEach((cell) => {
+      const visibleRows = content.visibleTableRows || Array.from(
+        { length: Number(element.rows || 0) },
+        (_, index) => index + 1,
+      );
+      const visibleColumns = content.visibleTableColumns || Array.from(
+        { length: Number(element.cols || 0) },
+        (_, index) => index + 1,
+      );
+      const sourceTableLeft = Number(element.bbox?.[0] || 0);
+      const targetLeft = Number(left || sourceTableLeft);
+      const targetTop = Number(top || element.bbox?.[1] || 0);
+      const tableScaleX = Number(content.tableScaleX || 1);
+      const sourceLabelWidth = Number(
+        element.cells.find((cell) => Number(cell.column || 1) === 1)?.bbox?.[2] || 0,
+      );
+      const compactValueWidth = visibleColumns.length > 1
+        ? (Number(element.bbox?.[2] || 0) - sourceLabelWidth) / (visibleColumns.length - 1)
+        : 0;
+
+      (element.cells || []).filter((cell) => (
+        visibleRows.includes(Number(cell.row || 1)) &&
+        visibleColumns.includes(Number(cell.column || 1))
+      )).forEach((cell) => {
         const [cellLeft = 0, cellTop = 0, cellWidth = 0, cellHeight = 0] = cell.bbox || [];
         const rowIndex = Number(cell.row || 1) - 1;
         const colIndex = Number(cell.column || 1) - 1;
-        const cellText = matrix[rowIndex]?.[colIndex] ?? cell.text ?? "";
+        const compactRowIndex = visibleRows.indexOf(Number(cell.row || 1));
+        const compactColumnIndex = visibleColumns.indexOf(Number(cell.column || 1));
+        const effectiveCellLeft = content.compactTableColumns
+          ? targetLeft + (compactColumnIndex === 0
+            ? 0
+            : sourceLabelWidth + (compactColumnIndex - 1) * compactValueWidth)
+          : targetLeft + (cellLeft - sourceTableLeft) * tableScaleX;
+        const effectiveCellTop = content.compactTableRows
+          ? targetTop + compactRowIndex * cellHeight
+          : cellTop;
+        const effectiveCellWidth = content.compactTableColumns
+          ? (compactColumnIndex === 0 ? sourceLabelWidth : compactValueWidth)
+          : cellWidth * tableScaleX;
+        const matrixValue = matrix[rowIndex]?.[colIndex];
+        const cellText = content.suppressTemplateFallback
+          ? (matrixValue ?? "")
+          : (matrixValue || applyGlobalDetails(cell.text, globalDetails));
         const cellStyle = getElementStyle(cell);
-        if (cell.fillColor) {
-          specs.push({
-            cimKind: "tableRect", x: cellLeft, y: cellTop, width: cellWidth, height: cellHeight,
-            fill: cssColor(cell.fillColor, "transparent"),
-          });
-        }
+        const cellInsets = cellStyle.insets || {};
         specs.push({
-          cimKind: "tableCell", x: cellLeft, y: cellTop, width: cellWidth, height: cellHeight,
+          id: getCimBuilderTemplateElementId(slideNumber, element, `cell-bg-${cell.index || `${cell.row}-${cell.column}`}`),
+          type: "shape",
+          subType: "rect",
+          cimKind: "tableRect",
+          x: effectiveCellLeft,
+          y: effectiveCellTop,
+          width: effectiveCellWidth,
+          height: cellHeight,
+          fill: cssColor(cell.fillColor, "transparent"),
+          stroke: cssColor(cell.lineColor, "transparent"),
+          strokeWidth: Math.max(Number(cell.lineWidth || 0), 0),
+          zIndex: Number(element.order || 1) * 100 + Number(cell.index || 0),
+          editable: false,
+        });
+        specs.push({
+          id: getCimBuilderTemplateElementId(slideNumber, element, `cell-text-${cell.index || `${cell.row}-${cell.column}`}`),
+          type: "text",
+          cimKind: "tableCell",
+          x: effectiveCellLeft,
+          y: effectiveCellTop,
+          width: effectiveCellWidth,
+          height: cellHeight,
           text: cellText, fontFamily: cellStyle.fontFamily, fontSize: cellStyle.fontSize,
           fill: cellStyle.color, align: cellStyle.textAlign,
+          fontWeight: cellStyle.fontWeight,
+          fontStyle: cellStyle.fontStyle,
+          textDecoration: cellStyle.textDecoration,
+          verticalAlign: cellStyle.verticalAlignment,
+          lineHeight: cellStyle.lineHeight,
+          letterSpacing: cellStyle.letterSpacing,
+          wrap: cellStyle.wrap,
+          insets: {
+            top: Number(cellInsets.top || 0),
+            right: Number(cellInsets.right || 0),
+            bottom: Number(cellInsets.bottom || 0),
+            left: Number(cellInsets.left || 0),
+          },
+          zIndex: Number(element.order || 1) * 100 + Number(cell.index || 0) + 1,
+          editable: false,
         });
       });
       return;
@@ -3357,10 +3435,13 @@ export function buildPolotnoElementSpecs(slideNumber, layout, fields, fieldValue
 
     if ((content.kind === "image" || content.kind === "chart") && content.dataUrl) {
       specs.push({
+        id: getCimBuilderTemplateElementId(slideNumber, element),
+        type: "image",
         cimKind: content.kind,
         cimAssetKey: content.kind === "image" && mediaField ? getAssetKey(mediaField) : null,
         x: left, y: top, width, height,
         src: content.dataUrl,
+        zIndex: Number(element.order || 1),
       });
       return;
     }
@@ -3372,12 +3453,17 @@ export function buildPolotnoElementSpecs(slideNumber, layout, fields, fieldValue
     if (!element.text && content.kind !== "image" && content.kind !== "chart") {
       const isRule = width === 0 || height === 0;
       specs.push({
+        id: getCimBuilderTemplateElementId(slideNumber, element),
+        type: isRule ? "line" : "shape",
+        subType: element.geometry === "ellipse" ? "ellipse" : "rect",
         cimKind: "shape",
         x: left, y: top, width, height,
         fill: cssColor(isRule ? (element.lineColor || element.fillColor) : element.fillColor, "transparent"),
         stroke: element.lineColor ? cssColor(element.lineColor, "transparent") : "transparent",
         strokeWidth: element.lineColor ? Math.max(Number(element.lineWidth || 0), 0) : 0,
         isEllipse: element.geometry === "ellipse",
+        zIndex: Number(element.order || 1),
+        editable: false,
       });
       return;
     }
@@ -3385,7 +3471,11 @@ export function buildPolotnoElementSpecs(slideNumber, layout, fields, fieldValue
     const displayText = content.text ?? element.text ?? "";
     if (!normalizeText(displayText) && !inlineTextField) return;
     const style = elementFields[0]?.style || getElementStyle(element);
+    const insets = style.insets || {};
+    const isRule = width === 0 || height === 0;
     specs.push({
+      id: getCimBuilderTemplateElementId(slideNumber, element),
+      type: "text",
       cimKind: "text",
       cimFieldId: inlineTextField?.id || null,
       x: left, y: top, width, height,
@@ -3396,20 +3486,33 @@ export function buildPolotnoElementSpecs(slideNumber, layout, fields, fieldValue
       align: style.textAlign,
       fontWeight: style.fontWeight,
       fontStyle: style.fontStyle,
+      textDecoration: style.textDecoration,
+      verticalAlign: style.verticalAlignment,
+      lineHeight: style.lineHeight,
+      letterSpacing: style.letterSpacing,
+      wrap: style.wrap,
+      insets: {
+        top: Number(insets.top || 0),
+        right: Number(insets.right || 0),
+        bottom: Number(insets.bottom || 0),
+        left: Number(insets.left || 0),
+      },
+      backgroundFill: isRule ? "transparent" : cssColor(element.fillColor, "transparent"),
+      stroke: element.lineColor ? cssColor(element.lineColor, "transparent") : "transparent",
+      strokeWidth: element.lineColor ? Math.max(Number(element.lineWidth || 0), 0) : 0,
+      zIndex: Number(element.order || 1),
+      editable: Boolean(inlineTextField),
     });
   });
 
   return specs;
 }
 
-// Inverse of buildPolotnoElementSpecs: walks a Polotno store's live element
-// list (store.toJSON().pages[i].children) back into a {fieldValues} delta,
-// keyed by each element's custom.cimFieldId anchor. Only text elements
-// carry an editable field anchor in this POC's scope.
-export function applyPolotnoElementsToFieldValues(polotnoElements = []) {
+// Inverse of buildCimBuilderElementSpecs for field-bound text.
+export function applyCimBuilderElementsToFieldValues(builderElements = []) {
   const fieldValues = {};
-  (polotnoElements || []).forEach((element) => {
-    const cimFieldId = element?.custom?.cimFieldId;
+  (builderElements || []).forEach((element) => {
+    const cimFieldId = element?.cimFieldId;
     if (!cimFieldId) return;
     if (element.type === "text") fieldValues[cimFieldId] = element.text ?? "";
   });
@@ -5347,47 +5450,81 @@ function SectionDrawer({
   globalDetails,
   onSelectSection,
 }) {
-  return (
-    <aside className="sticky top-6 max-h-[calc(100vh-3rem)] overflow-y-auto rounded-lg border border-border bg-white p-3 shadow-card">
-      <div className="mb-3 flex items-center gap-2 px-1 text-xs font-bold uppercase tracking-[0.08em] text-[#6D6E71]">
-        <PanelLeft size={14} />
-        CIM Sections
-      </div>
-      <nav className="space-y-1">
-        {sections.map((section) => {
-          const isBasic = section.type === "basic";
-          const sectionFields = section.slides.flatMap((slide) => fieldsBySlide[slide] || []);
-          const editableFields = getEditableTemplateFields(sectionFields, globalDetails);
-          const basicCompleted = BASIC_DETAIL_FIELDS.filter(([key]) => normalizeText(globalDetails[key])).length;
-          const completed = isBasic
-            ? basicCompleted + countFieldsWithData(editableFields, fieldValues, assetValues, chartValues)
-            : countFieldsWithData(editableFields, fieldValues, assetValues, chartValues);
-          const total = (isBasic ? BASIC_DETAIL_FIELDS.length : 0) + editableFields.length;
-          const isActive = activeSectionId === section.id;
+  const getSectionProgress = (section) => {
+    const isBasic = section.type === "basic";
+    const sectionFields = section.slides.flatMap((slide) => fieldsBySlide[slide] || []);
+    const editableFields = getEditableTemplateFields(sectionFields, globalDetails);
+    const basicCompleted = BASIC_DETAIL_FIELDS.filter(([key]) => normalizeText(globalDetails[key])).length;
+    const completed = isBasic
+      ? basicCompleted + countFieldsWithData(editableFields, fieldValues, assetValues, chartValues)
+      : countFieldsWithData(editableFields, fieldValues, assetValues, chartValues);
+    const total = (isBasic ? BASIC_DETAIL_FIELDS.length : 0) + editableFields.length;
+    return { completed, total };
+  };
 
-          return (
-            <button
-              key={section.id}
-              onClick={() => onSelectSection(section.id)}
-              className={`flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left transition ${isActive
-                ? "bg-[#EEF6E0] text-[#476E2C]"
-                : "text-[#6D6E71] hover:bg-[#F0F7E6] hover:text-[#1A1A2E]"
-                }`}
-            >
-              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[#476E2C] text-xs font-bold text-white">
+  return (
+    <aside className="group sticky top-4 z-40 w-14 overflow-visible">
+      <div className="rounded-lg border border-border bg-white p-1.5 shadow-card">
+        <div className="mb-1 flex h-9 items-center justify-center rounded-md bg-[#F7F8FA] text-[#6D6E71]">
+          <PanelLeft size={15} />
+        </div>
+        <nav className="space-y-1">
+          {sections.map((section) => {
+            const isActive = activeSectionId === section.id;
+            return (
+              <button
+                key={section.id}
+                type="button"
+                onClick={() => onSelectSection(section.id)}
+                title={section.title}
+                className={`flex h-10 w-full items-center justify-center rounded-md text-[11px] font-bold transition ${isActive
+                  ? "bg-[#476E2C] text-white"
+                  : "text-[#6D6E71] hover:bg-[#EEF6E0] hover:text-[#476E2C]"
+                  }`}
+              >
                 {section.number}
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm font-semibold">{section.title}</span>
-                <span className="block text-[11px] text-[#A5A5A5]">
-                  {completed}/{total} fields
-                </span>
-              </span>
-              <ChevronRight size={14} className={isActive ? "text-[#8BC53D]" : "text-[#A5A5A5]"} />
-            </button>
-          );
-        })}
-      </nav>
+              </button>
+            );
+          })}
+        </nav>
+      </div>
+
+      <div className="invisible pointer-events-none absolute left-0 top-0 z-50 w-72 opacity-0 shadow-2xl transition duration-150 group-hover:visible group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:visible group-focus-within:pointer-events-auto group-focus-within:opacity-100">
+        <div className="max-h-[calc(100vh-2rem)] overflow-y-auto rounded-lg border border-border bg-white p-3">
+          <div className="mb-3 flex items-center gap-2 px-1 text-xs font-bold uppercase tracking-[0.08em] text-[#6D6E71]">
+            <PanelLeft size={14} />
+            CIM Sections
+          </div>
+          <nav className="space-y-1">
+            {sections.map((section) => {
+              const isActive = activeSectionId === section.id;
+              const { completed, total } = getSectionProgress(section);
+              return (
+                <button
+                  key={section.id}
+                  type="button"
+                  onClick={() => onSelectSection(section.id)}
+                  className={`flex w-full items-center gap-3 rounded-md px-3 py-2 text-left transition ${isActive
+                    ? "bg-[#EEF6E0] text-[#476E2C]"
+                    : "text-[#6D6E71] hover:bg-[#F0F7E6] hover:text-[#1A1A2E]"
+                    }`}
+                >
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[#476E2C] text-xs font-bold text-white">
+                    {section.number}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-semibold">{section.title}</span>
+                    <span className="block text-[11px] text-[#A5A5A5]">
+                      {completed}/{total} fields
+                    </span>
+                  </span>
+                  <ChevronRight size={14} className={isActive ? "text-[#8BC53D]" : "text-[#A5A5A5]"} />
+                </button>
+              );
+            })}
+          </nav>
+        </div>
+      </div>
     </aside>
   );
 }
@@ -7163,11 +7300,421 @@ function FinancialValidationBanner({ validation }) {
   );
 }
 
+const CIM_BUILDER_EXTRA_PREVIEW_KIND = "cim-builder-added-page";
+
+function getCimBuilderSlideKey(slideNumber, instanceIndex = 0) {
+  return `${Number(slideNumber || 1)}:${Number(instanceIndex || 0)}`;
+}
+
+function sanitizeCimBuilderElement(element = {}) {
+  if (!element || typeof element !== "object" || !element.type) return null;
+  const type = element.type === "rect" || element.type === "ellipse" ? "shape" : element.type;
+  const sanitized = {
+    id: String(element.id || `element-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`),
+    type,
+    subType: element.subType || (element.type === "ellipse" ? "ellipse" : "rect"),
+    cimKind: element.cimKind || type,
+    cimFieldId: element.cimFieldId || null,
+    cimAssetKey: element.cimAssetKey || null,
+    x: Number(element.x || 0),
+    y: Number(element.y || 0),
+    width: Math.max(Number(element.width || 1), 1),
+    height: Number(element.height ?? (type === "line" ? 0 : 1)),
+    rotation: Number(element.rotation || 0),
+    opacity: Number(element.opacity ?? 1),
+    zIndex: Number(element.zIndex || 1),
+  };
+
+  if (type === "text") {
+    return {
+      ...sanitized,
+      text: String(element.text ?? ""),
+      fontFamily: element.fontFamily || "Calibri, Aptos, Arial, sans-serif",
+      fontSize: Number(element.fontSize || 12),
+      fill: element.fill || "#111827",
+      align: element.align || "left",
+      verticalAlign: element.verticalAlign || "top",
+      lineHeight: Number(element.lineHeight || 1.08),
+      letterSpacing: Number(element.letterSpacing || 0),
+      fontWeight: element.fontWeight || 400,
+      fontStyle: element.fontStyle || "normal",
+      textDecoration: element.textDecoration || "none",
+      backgroundFill: element.backgroundFill || "transparent",
+      stroke: element.stroke || "transparent",
+      strokeWidth: Number(element.strokeWidth || 0),
+      padding: Number(element.padding || 0),
+    };
+  }
+
+  if (type === "image") {
+    return {
+      ...sanitized,
+      src: element.src || element.dataUrl || "",
+      name: element.name || "Image",
+      fit: element.fit || "contain",
+      stroke: element.stroke || "transparent",
+      strokeWidth: Number(element.strokeWidth || 0),
+    };
+  }
+
+  return {
+    ...sanitized,
+    fill: element.fill || (type === "line" ? "transparent" : "#FFFFFF"),
+    stroke: element.stroke || element.fill || "#111827",
+    strokeWidth: Number(element.strokeWidth || (type === "line" ? 2 : 0)),
+    cornerRadius: Number(element.cornerRadius || 0),
+  };
+}
+
+function sanitizeCimBuilderPage(page = {}) {
+  return {
+    id: String(page.id || `page-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`),
+    name: page.name || "Added page",
+    backgroundColor: page.backgroundColor || page.background || "#FFFFFF",
+    backgroundImage: page.backgroundImage || "",
+    backgroundImageOpacity: Number(page.backgroundImageOpacity ?? 1),
+    deleted: Boolean(page.deleted),
+    elements: (page.elements || page.children || []).map(sanitizeCimBuilderElement).filter(Boolean),
+  };
+}
+
+function normalizeCimBuilderPageState(pageState = {}) {
+  if (!pageState || typeof pageState !== "object") {
+    return {
+      hiddenElementIds: [],
+      elementOverrides: {},
+      addedElements: [],
+      backgroundColor: "",
+      backgroundImage: "",
+      backgroundImageOpacity: 1,
+      deleted: false,
+    };
+  }
+
+  const elementOverrides = Object.fromEntries(
+    Object.entries(pageState.elementOverrides || {})
+      .map(([id, element]) => [id, sanitizeCimBuilderElement({ ...element, id })])
+      .filter(([, element]) => Boolean(element)),
+  );
+
+  return {
+    hiddenElementIds: Array.from(new Set(pageState.hiddenElementIds || [])).map(String),
+    elementOverrides,
+    addedElements: (pageState.addedElements || []).map(sanitizeCimBuilderElement).filter(Boolean),
+    backgroundColor: pageState.backgroundColor || "",
+    backgroundImage: pageState.backgroundImage || "",
+    backgroundImageOpacity: Number(pageState.backgroundImageOpacity ?? 1),
+    deleted: Boolean(pageState.deleted),
+  };
+}
+
+function convertLegacyPolotnoElementToBuilderElement(element = {}) {
+  if (!element || typeof element !== "object") return null;
+  if (element.type === "figure") {
+    return sanitizeCimBuilderElement({
+      ...element,
+      type: "shape",
+      subType: element.subType === "circle" ? "ellipse" : "rect",
+      fill: element.fill,
+      stroke: element.stroke,
+    });
+  }
+  if (element.type === "text") {
+    return sanitizeCimBuilderElement({
+      ...element,
+      cimFieldId: element.custom?.cimFieldId || element.cimFieldId || null,
+    });
+  }
+  if (element.type === "image" || element.type === "svg") {
+    return sanitizeCimBuilderElement({
+      ...element,
+      type: "image",
+      cimAssetKey: element.custom?.cimAssetKey || element.cimAssetKey || null,
+    });
+  }
+  if (element.type === "line") return sanitizeCimBuilderElement(element);
+  return null;
+}
+
+function migrateLegacyPolotnoPagesToBuilderState(input = {}) {
+  if (!input || typeof input !== "object") return {};
+  const extraPagesByKey = Object.fromEntries(
+    Object.entries(input)
+      .map(([key, pages]) => [
+        key,
+        (Array.isArray(pages) ? pages : []).map((page) => sanitizeCimBuilderPage({
+          id: page.id,
+          name: page.name || "Added page",
+          backgroundColor: page.background || "#FFFFFF",
+          elements: (page.children || []).map(convertLegacyPolotnoElementToBuilderElement).filter(Boolean),
+        })).filter(Boolean),
+      ])
+      .filter(([, pages]) => pages.length > 0),
+  );
+  return { version: 1, pagesByKey: {}, extraPagesByKey };
+}
+
+function normalizeCimBuilderState(input = {}) {
+  if (!input || typeof input !== "object") {
+    return { version: 1, pagesByKey: {}, extraPagesByKey: {} };
+  }
+
+  const pagesByKey = Object.fromEntries(
+    Object.entries(input.pagesByKey || {})
+      .map(([key, pageState]) => [key, normalizeCimBuilderPageState(pageState)])
+      .filter(([key]) => Boolean(key)),
+  );
+  const extraPagesByKey = Object.fromEntries(
+    Object.entries(input.extraPagesByKey || {})
+      .map(([key, pages]) => [
+        key,
+        (Array.isArray(pages) ? pages : []).map(sanitizeCimBuilderPage).filter(Boolean),
+      ])
+      .filter(([, pages]) => pages.length > 0),
+  );
+
+  return { version: 1, pagesByKey, extraPagesByKey };
+}
+
+function getCimBuilderTemplateBackground(layout) {
+  return cssColor(layout?.slide?.backgroundColor, "#FFFFFF");
+}
+
+function getComparableCimBuilderElement(element = {}) {
+  const comparable = sanitizeCimBuilderElement(element);
+  if (!comparable) return null;
+  if (comparable.cimFieldId) delete comparable.text;
+  return comparable;
+}
+
+function buildCimBuilderPage(baseElements = [], pageState = {}, fallbackBackground = "#FFFFFF") {
+  const normalizedState = normalizeCimBuilderPageState(pageState);
+  const hiddenIds = new Set(normalizedState.hiddenElementIds || []);
+  const elements = [
+    ...baseElements
+      .map(sanitizeCimBuilderElement)
+      .filter(Boolean)
+      .filter((element) => element.cimKind !== "background" && !hiddenIds.has(element.id))
+      .map((element) => {
+        const override = normalizedState.elementOverrides[element.id] || null;
+        if (!override) return element;
+        const safeOverride = { ...override };
+        if (element.cimFieldId) delete safeOverride.text;
+        return sanitizeCimBuilderElement({ ...element, ...safeOverride, id: element.id, type: element.type });
+      }),
+    ...normalizedState.addedElements,
+  ].filter(Boolean);
+
+  return sanitizeCimBuilderPage({
+    id: "template-page",
+    name: "Template page",
+    backgroundColor: normalizedState.backgroundColor || fallbackBackground || "#FFFFFF",
+    backgroundImage: normalizedState.backgroundImage || "",
+    backgroundImageOpacity: normalizedState.backgroundImageOpacity,
+    deleted: normalizedState.deleted,
+    elements,
+  });
+}
+
+function extractCimBuilderPageState(baseElements = [], page = {}) {
+  const baseMap = new Map(
+    baseElements
+      .map(sanitizeCimBuilderElement)
+      .filter(Boolean)
+      .filter((element) => element.cimKind !== "background")
+      .map((element) => [element.id, element]),
+  );
+  const nextElements = (page.elements || []).map(sanitizeCimBuilderElement).filter(Boolean);
+  const nextById = new Map(nextElements.map((element) => [element.id, element]));
+  const hiddenElementIds = Array.from(baseMap.keys()).filter((id) => !nextById.has(id));
+  const elementOverrides = {};
+  const addedElements = [];
+
+  nextElements.forEach((element) => {
+    const base = baseMap.get(element.id);
+    if (!base) {
+      addedElements.push(element);
+      return;
+    }
+
+    const comparableBase = getComparableCimBuilderElement(base);
+    const comparableNext = getComparableCimBuilderElement(element);
+    if (JSON.stringify(comparableBase) !== JSON.stringify(comparableNext)) {
+      const override = sanitizeCimBuilderElement(element);
+      if (override?.cimFieldId) delete override.text;
+      elementOverrides[element.id] = override;
+    }
+  });
+
+  return normalizeCimBuilderPageState({
+    hiddenElementIds,
+    elementOverrides,
+    addedElements,
+    backgroundColor: page.backgroundColor || "",
+    backgroundImage: page.backgroundImage || "",
+    backgroundImageOpacity: Number(page.backgroundImageOpacity ?? 1),
+    deleted: Boolean(page.deleted),
+  });
+}
+
+function buildPreviewSlidesWithBuilderPages(fieldValues = {}, builderState = {}) {
+  const normalizedState = normalizeCimBuilderState(builderState);
+  return buildCimExportSlides(fieldValues).flatMap((slideRef) => {
+    const key = getCimBuilderSlideKey(slideRef.sourceSlideNumber, slideRef.instanceIndex);
+    const pageState = normalizedState.pagesByKey[key] || {};
+    const extraPages = normalizedState.extraPagesByKey[key] || [];
+    return [
+      ...(pageState.deleted ? [] : [slideRef]),
+      ...extraPages.map((page, index) => ({
+        kind: CIM_BUILDER_EXTRA_PREVIEW_KIND,
+        sourceSlideNumber: slideRef.sourceSlideNumber,
+        instanceIndex: slideRef.instanceIndex || 0,
+        builderPageIndex: index,
+        page,
+      })),
+    ];
+  });
+}
+
+function isCimBuilderExtraPreviewSlide(slideRef) {
+  return slideRef?.kind === CIM_BUILDER_EXTRA_PREVIEW_KIND;
+}
+
+function getCimBuilderFirstFontFamily(fontFamily = "Calibri") {
+  return String(fontFamily || "Calibri").split(",")[0].replace(/["']/g, "").trim() || "Calibri";
+}
+
+function buildCimBuilderExportTextElement(element, index) {
+  const text = String(element.text || "");
+  const typeface = getCimBuilderFirstFontFamily(element.fontFamily);
+  const color = element.fill || "#111827";
+  const padding = Number(element.padding || 0);
+  return {
+    id: element.id,
+    name: element.name || `Builder Text ${index + 1}`,
+    kind: "shape",
+    builderKind: "text",
+    order: index + 1,
+    bbox: [element.x, element.y, element.width, element.height],
+    rotation: element.rotation || 0,
+    text,
+    fillColor: element.backgroundFill === "transparent" ? null : element.backgroundFill,
+    lineColor: element.stroke === "transparent" ? null : element.stroke,
+    lineWidth: element.strokeWidth || 0,
+    resolvedFontSize: element.fontSize || 12,
+    resolvedTextStyle: {
+      typeface,
+      alignment: element.align || "left",
+      verticalAlignment: element.verticalAlign || "top",
+      lineSpacing: element.lineHeight || 1.08,
+      insets: { top: padding, right: padding, bottom: padding, left: padding },
+      wrap: true,
+    },
+    paragraphs: [{
+      resolvedTextStyle: { alignment: element.align || "left", lineSpacing: element.lineHeight || 1.08 },
+      runs: [{
+        text,
+        fontSize: element.fontSize || 12,
+        typeface,
+        bold: Number(element.fontWeight || 400) >= 600,
+        italic: element.fontStyle === "italic",
+        underline: element.textDecoration === "underline",
+        color,
+        letterSpacing: element.letterSpacing || 0,
+      }],
+    }],
+  };
+}
+
+function buildCimBuilderExportLayoutElement(element, index) {
+  if (element.type === "text") return buildCimBuilderExportTextElement(element, index);
+  if (element.type === "image") {
+    return {
+      id: element.id,
+      name: element.name || `Builder Image ${index + 1}`,
+      kind: "shape",
+      builderKind: "image",
+      order: index + 1,
+      bbox: [element.x, element.y, element.width, element.height],
+      rotation: element.rotation || 0,
+      dataUrl: element.src,
+      opacity: element.opacity,
+      imageBorderColor: element.stroke,
+      imageBorderWidth: element.strokeWidth || 0,
+    };
+  }
+  return {
+    id: element.id,
+    name: `Builder Shape ${index + 1}`,
+    kind: "shape",
+    builderKind: element.type,
+    order: index + 1,
+    bbox: [element.x, element.y, element.width, element.height],
+    rotation: element.rotation || 0,
+    text: "",
+    fillColor: element.type === "line" ? element.stroke : element.fill,
+    lineColor: element.stroke,
+    lineWidth: element.strokeWidth || 0,
+    geometry: element.subType === "ellipse" ? "ellipse" : "rect",
+    opacity: element.opacity,
+  };
+}
+
+function buildCimBuilderExportLayout(page = {}) {
+  const safePage = sanitizeCimBuilderPage(page);
+  return {
+    slide: {
+      backgroundColor: safePage.backgroundColor || "#FFFFFF",
+      backgroundImage: safePage.backgroundImage ? { dataUrl: safePage.backgroundImage } : null,
+      backgroundImageOpacity: safePage.backgroundImageOpacity,
+    },
+    elements: safePage.elements.map(buildCimBuilderExportLayoutElement),
+  };
+}
+
+function getCimBuilderExportElementContent(_slideRef, element = {}) {
+  if (element.builderKind === "image") return { kind: "image", dataUrl: element.dataUrl, name: element.name };
+  return { kind: "text", text: element.text || "" };
+}
+
+function resolveCimBuilderPreviewPage(slideRef, {
+  layouts,
+  fieldsBySlide,
+  fieldValues,
+  assetValues,
+  chartValues,
+  globalDetails,
+  styleProfile,
+  builderState,
+}) {
+  if (isCimBuilderExtraPreviewSlide(slideRef)) return sanitizeCimBuilderPage(slideRef.page);
+
+  const slideNumber = slideRef?.sourceSlideNumber || slideRef;
+  const scopedFieldValues = getFieldValuesForExportSlide(fieldValues, slideRef);
+  const baseElements = buildCimBuilderElementSpecs(
+    slideNumber,
+    layouts[slideNumber],
+    fieldsBySlide[slideNumber] || [],
+    scopedFieldValues,
+    assetValues,
+    chartValues,
+    globalDetails,
+    styleProfile,
+  );
+  const key = getCimBuilderSlideKey(slideNumber, slideRef?.instanceIndex || 0);
+  return buildCimBuilderPage(
+    baseElements,
+    normalizeCimBuilderState(builderState).pagesByKey[key],
+    getCimBuilderTemplateBackground(layouts[slideNumber]),
+  );
+}
+
 function PreviewModal({
   open,
   previewSlideIndex,
   onClose,
   onSlideIndexChange,
+  builderState,
   layouts,
   fieldsBySlide,
   fieldValues,
@@ -7178,10 +7725,18 @@ function PreviewModal({
 }) {
   if (!open) return null;
 
-  const previewSlides = buildCimExportSlides(fieldValues);
+  const previewSlides = buildPreviewSlidesWithBuilderPages(fieldValues, builderState);
   const activeSlideRef = previewSlides[previewSlideIndex] || previewSlides[0];
-  const activeSlide = activeSlideRef?.sourceSlideNumber || 1;
-  const activeFieldValues = getFieldValuesForExportSlide(fieldValues, activeSlideRef);
+  const activePage = activeSlideRef ? resolveCimBuilderPreviewPage(activeSlideRef, {
+    layouts,
+    fieldsBySlide,
+    fieldValues,
+    assetValues,
+    chartValues,
+    globalDetails,
+    styleProfile,
+    builderState,
+  }) : null;
   const prevDisabled = previewSlideIndex <= 0;
   const nextDisabled = previewSlideIndex >= previewSlides.length - 1;
 
@@ -7211,10 +7766,22 @@ function PreviewModal({
             <div className="space-y-2">
               {previewSlides.map((slideRef, index) => {
                 const slideNumber = slideRef.sourceSlideNumber;
-                const scopedFieldValues = getFieldValuesForExportSlide(fieldValues, slideRef);
+                const isAddedPage = isCimBuilderExtraPreviewSlide(slideRef);
+                const previewPage = resolveCimBuilderPreviewPage(slideRef, {
+                  layouts,
+                  fieldsBySlide,
+                  fieldValues,
+                  assetValues,
+                  chartValues,
+                  globalDetails,
+                  styleProfile,
+                  builderState,
+                });
                 return (
                   <button
-                    key={`${slideNumber}-${slideRef.instanceIndex}`}
+                    key={isAddedPage
+                      ? `${slideNumber}-${slideRef.instanceIndex}-builder-${slideRef.builderPageIndex}`
+                      : `${slideNumber}-${slideRef.instanceIndex}`}
                     onClick={() => onSlideIndexChange(index)}
                     className={`block w-full overflow-hidden rounded-md border text-left transition ${index === previewSlideIndex
                       ? "border-[#8BC53D] ring-2 ring-[#8BC53D]/25"
@@ -7222,19 +7789,13 @@ function PreviewModal({
                       }`}
                   >
                     <div className="pointer-events-none">
-                      <SlideCanvas
-                        slideNumber={slideNumber}
-                        displaySlideNumber={index + 1}
-                        layout={layouts[slideNumber]}
-                        fields={fieldsBySlide[slideNumber] || []}
-                        fieldValues={scopedFieldValues}
-                        assetValues={assetValues}
-                        chartValues={chartValues}
-                        globalDetails={globalDetails}
-                        styleProfile={styleProfile}
-                        previewMode
-                      />
+                      <CimBuilderPagePreview page={previewPage} />
                     </div>
+                    {isAddedPage ? (
+                      <div className="border-t border-border bg-[#F8FCF3] px-2 py-1 text-[10px] font-bold uppercase tracking-[0.06em] text-[#476E2C]">
+                        Added page
+                      </div>
+                    ) : null}
                   </button>
                 );
               })}
@@ -7243,18 +7804,7 @@ function PreviewModal({
 
           <div className="flex min-h-0 flex-col">
             <div className="min-h-0 flex-1 overflow-auto">
-              <SlideCanvas
-                slideNumber={activeSlide}
-                displaySlideNumber={previewSlideIndex + 1}
-                layout={layouts[activeSlide]}
-                fields={fieldsBySlide[activeSlide] || []}
-                fieldValues={activeFieldValues}
-                assetValues={assetValues}
-                chartValues={chartValues}
-                globalDetails={globalDetails}
-                styleProfile={styleProfile}
-                previewMode
-              />
+              {activePage ? <CimBuilderPagePreview page={activePage} /> : null}
             </div>
             <div className="mt-3 flex items-center justify-center gap-2">
               <button
@@ -7808,6 +8358,7 @@ export default function WorkspaceCimPrep() {
   const [fieldValues, setFieldValues] = useState({});
   const [assetValues, setAssetValues] = useState({});
   const [chartValues, setChartValues] = useState({});
+  const [cimBuilderState, setCimBuilderState] = useState(() => normalizeCimBuilderState());
   const [questionnaireState, setQuestionnaireState] = useState(() => normalizeQuestionnaireState());
   const [reviewState, setReviewState] = useState(() => normalizeCimReviewState());
   const [styleProfilesState, setStyleProfilesState] = useState(() => normalizeCimStyleProfilesState());
@@ -7835,12 +8386,7 @@ export default function WorkspaceCimPrep() {
   const [reviewModalOpen, setReviewModalOpen] = useState(false);
   const [styleEditorOpen, setStyleEditorOpen] = useState(false);
   const [styleProfilesSaving, setStyleProfilesSaving] = useState(false);
-  // Proof-of-concept only: dev-only toggles swapping the main editing canvas
-  // to a visual-editor prototype (Polotno SDK, or a vanilla-Konva.js
-  // alternative). Every other SlideCanvas call site (previews/thumbnails/
-  // client viewer/style-editor) is untouched. Mutually exclusive.
-  const [usePolotnoCanvasPoc, setUsePolotnoCanvasPoc] = useState(false);
-  const [useKonvaCanvasPoc, setUseKonvaCanvasPoc] = useState(false);
+  const [activeBuilderPageIndex, setActiveBuilderPageIndex] = useState(0);
   const [financialAutofillModalOpen, setFinancialAutofillModalOpen] = useState(false);
   const [financialAutofillRange, setFinancialAutofillRange] = useState(() => getDefaultFinancialAutofillRange());
   const [financialAutofillReportVersionId, setFinancialAutofillReportVersionId] = useState("");
@@ -8071,6 +8617,9 @@ export default function WorkspaceCimPrep() {
       setFieldValues(data.fieldValues || {});
       setAssetValues(data.assetValues || {});
       setChartValues(data.chartValues || {});
+      setCimBuilderState(normalizeCimBuilderState(
+        data.cimBuilderState || migrateLegacyPolotnoPagesToBuilderState(data.polotnoPagesBySlideKey),
+      ));
       setFinancialAutofillState((previous) => ({
         ...previous,
         validation: data.financialValidation || null,
@@ -8628,16 +9177,140 @@ export default function WorkspaceCimPrep() {
     setFieldValues((previous) => ({ ...previous, [fieldId]: value }));
   }, []);
 
-  // POC-only: reverse-sync callback for CimPolotnoCanvas -- see
-  // applyPolotnoElementsToFieldValues for the extraction logic.
-  const handlePolotnoElementsChange = useCallback((children) => {
-    const updates = applyPolotnoElementsToFieldValues(children);
+  const syncBuilderFieldValues = useCallback((elements = []) => {
+    const updates = applyCimBuilderElementsToFieldValues(elements);
     Object.entries(updates).forEach(([fieldId, value]) => {
       setFieldValues((previous) => (
         previous[fieldId] === value ? previous : { ...previous, [fieldId]: value }
       ));
     });
   }, []);
+
+  const buildActiveBuilderBaseElements = useCallback(() => buildCimBuilderElementSpecs(
+    activeSlide,
+    styledLayouts[activeSlide],
+    fieldsBySlide[activeSlide] || [],
+    activeCanvasFieldValues,
+    assetValues,
+    chartValues,
+    effectiveGlobalDetails,
+    activeStyleProfile,
+  ), [
+    activeCanvasFieldValues,
+    activeSlide,
+    activeStyleProfile,
+    assetValues,
+    chartValues,
+    effectiveGlobalDetails,
+    fieldsBySlide,
+    styledLayouts,
+  ]);
+
+  const handleBuilderPageChange = useCallback((nextPage) => {
+    const key = getCimBuilderSlideKey(activeSlide, activeSlideInstance);
+    const safePage = sanitizeCimBuilderPage(nextPage);
+    syncBuilderFieldValues(safePage.elements);
+
+    setCimBuilderState((previous) => {
+      const normalized = normalizeCimBuilderState(previous);
+      if (activeBuilderPageIndex === 0) {
+        const baseElements = buildActiveBuilderBaseElements();
+        const pageState = extractCimBuilderPageState(baseElements, safePage);
+        return {
+          ...normalized,
+          pagesByKey: {
+            ...normalized.pagesByKey,
+            [key]: pageState,
+          },
+        };
+      }
+
+      const currentPages = normalized.extraPagesByKey[key] || [];
+      const nextPages = [...currentPages];
+      nextPages[activeBuilderPageIndex - 1] = safePage;
+      return {
+        ...normalized,
+        extraPagesByKey: {
+          ...normalized.extraPagesByKey,
+          [key]: nextPages.filter(Boolean),
+        },
+      };
+    });
+  }, [
+    activeBuilderPageIndex,
+    activeSlide,
+    activeSlideInstance,
+    buildActiveBuilderBaseElements,
+    syncBuilderFieldValues,
+  ]);
+
+  const handleAddBuilderPage = useCallback(() => {
+    const key = getCimBuilderSlideKey(activeSlide, activeSlideInstance);
+    const normalized = normalizeCimBuilderState(cimBuilderState);
+    const currentPages = normalized.extraPagesByKey[key] || [];
+    const nextPage = createBlankBuilderPage({ name: `Added page ${currentPages.length + 1}` });
+    setCimBuilderState({
+      ...normalized,
+      extraPagesByKey: {
+        ...normalized.extraPagesByKey,
+        [key]: [...currentPages, nextPage],
+      },
+    });
+    setActiveBuilderPageIndex(currentPages.length + 1);
+  }, [activeSlide, activeSlideInstance, cimBuilderState]);
+
+  const handleDeleteBuilderPage = useCallback(() => {
+    const key = getCimBuilderSlideKey(activeSlide, activeSlideInstance);
+    const normalized = normalizeCimBuilderState(cimBuilderState);
+    if (activeBuilderPageIndex === 0) {
+      const pageState = normalizeCimBuilderPageState(normalized.pagesByKey[key]);
+      setCimBuilderState({
+        ...normalized,
+        pagesByKey: {
+          ...normalized.pagesByKey,
+          [key]: { ...pageState, deleted: true },
+        },
+      });
+      return;
+    }
+
+    const currentPages = normalized.extraPagesByKey[key] || [];
+    const nextPages = currentPages.filter((_, index) => index !== activeBuilderPageIndex - 1);
+    setActiveBuilderPageIndex(Math.max(0, activeBuilderPageIndex - 1));
+    if (!nextPages.length) {
+      const nextExtraPagesByKey = { ...normalized.extraPagesByKey };
+      delete nextExtraPagesByKey[key];
+      setCimBuilderState({ ...normalized, extraPagesByKey: nextExtraPagesByKey });
+      return;
+    }
+    setCimBuilderState({
+      ...normalized,
+      extraPagesByKey: {
+        ...normalized.extraPagesByKey,
+        [key]: nextPages,
+      },
+    });
+  }, [activeBuilderPageIndex, activeSlide, activeSlideInstance, cimBuilderState]);
+
+  const handleRestoreBuilderPage = useCallback(() => {
+    const key = getCimBuilderSlideKey(activeSlide, activeSlideInstance);
+    setCimBuilderState((previous) => {
+      const normalized = normalizeCimBuilderState(previous);
+      const pageState = normalizeCimBuilderPageState(normalized.pagesByKey[key]);
+      return {
+        ...normalized,
+        pagesByKey: {
+          ...normalized.pagesByKey,
+          [key]: { ...pageState, deleted: false },
+        },
+      };
+    });
+  }, [activeSlide, activeSlideInstance]);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => setActiveBuilderPageIndex(0));
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeSlide, activeSlideInstance]);
 
   const handleAssetUpload = useCallback(async (field, file) => {
     if (!file.type || !["image/png", "image/jpeg"].includes(file.type)) {
@@ -8887,6 +9560,7 @@ export default function WorkspaceCimPrep() {
 
   const getExportElementContent = useCallback((slideRef, element) => {
     const slideNumber = slideRef?.sourceSlideNumber || slideRef;
+    if (element?.builderKind) return getCimBuilderExportElementContent(slideRef, element);
     const fieldsForSlide = fieldsBySlide[slideNumber] || [];
     const fieldsById = Object.fromEntries(fieldsForSlide.map((field) => [field.id, field]));
     const exportFieldValues = getFieldValuesForExportSlide(fieldValues, slideRef);
@@ -8905,6 +9579,37 @@ export default function WorkspaceCimPrep() {
     );
   }, [activeStyleProfile, assetValues, chartValues, effectiveGlobalDetails, fieldValues, fieldsBySlide]);
 
+  const buildNativeBuilderExportDeck = useCallback(() => {
+    const previewSlides = buildPreviewSlidesWithBuilderPages(fieldValues, cimBuilderState);
+    const exportLayouts = {};
+    const exportSlideRefs = previewSlides.map((slideRef, index) => {
+      const exportKey = `builder-${index + 1}`;
+      const page = resolveCimBuilderPreviewPage(slideRef, {
+        layouts: styledLayouts,
+        fieldsBySlide,
+        fieldValues,
+        assetValues,
+        chartValues,
+        globalDetails: effectiveGlobalDetails,
+        styleProfile: activeStyleProfile,
+        builderState: cimBuilderState,
+      });
+      exportLayouts[exportKey] = buildCimBuilderExportLayout(page);
+      return { sourceSlideNumber: exportKey, instanceIndex: 0 };
+    });
+
+    return { exportLayouts, exportSlideRefs };
+  }, [
+    activeStyleProfile,
+    assetValues,
+    chartValues,
+    cimBuilderState,
+    effectiveGlobalDetails,
+    fieldValues,
+    fieldsBySlide,
+    styledLayouts,
+  ]);
+
   const handleSave = useCallback(async () => {
     setSaving(true);
     const state = {
@@ -8913,6 +9618,7 @@ export default function WorkspaceCimPrep() {
       fieldValues,
       assetValues,
       chartValues,
+      cimBuilderState: normalizeCimBuilderState(cimBuilderState),
       financialValidation: financialAutofillState.validation,
       financialAutofillRange,
       financialAutofillReportVersionId,
@@ -8959,6 +9665,7 @@ export default function WorkspaceCimPrep() {
     financialAutofillDatasetVersion,
     financialAutofillReportVersionId,
     financialAutofillState.validation,
+    cimBuilderState,
     showToast,
     styleProfilesState,
   ]);
@@ -8977,11 +9684,19 @@ export default function WorkspaceCimPrep() {
     const baseName = sanitizeFileName(
       effectiveGlobalDetails.projectName || effectiveGlobalDetails.companyLegalName || company?.name || "cim-prep",
     );
-    const exportSlides = buildCimExportSlides(fieldValues);
+    const { exportLayouts, exportSlideRefs } = buildNativeBuilderExportDeck();
+    if (!exportSlideRefs.length) {
+      showToast({
+        type: "error",
+        title: "Export Not Ready",
+        message: "All pages are removed. Restore or add at least one page before exporting.",
+      });
+      return;
+    }
     exportCimPptx({
-      layouts: styledLayouts,
-      slideNumbers: exportSlides,
-      getElementContent: getExportElementContent,
+      layouts: exportLayouts,
+      slideNumbers: exportSlideRefs,
+      getElementContent: getCimBuilderExportElementContent,
       filename: `${baseName}-CIM.pptx`,
       styleProfile: isDefaultCimStyleProfile(activeStyleProfile) ? null : activeStyleProfile,
     });
@@ -8992,9 +9707,8 @@ export default function WorkspaceCimPrep() {
     });
   }, [
     company?.name,
+    buildNativeBuilderExportDeck,
     effectiveGlobalDetails,
-    fieldValues,
-    getExportElementContent,
     activeStyleProfile,
     styledLayouts,
     showToast,
@@ -9126,16 +9840,34 @@ export default function WorkspaceCimPrep() {
 
   const isBasicSection = activeSection.type === "basic";
   const activeFields = activeSlide ? fieldsBySlide[activeSlide] || [] : [];
-  const polotnoElementSpecs = useMemo(() => {
-    if (!usePolotnoCanvasPoc && !useKonvaCanvasPoc) return [];
-    return buildPolotnoElementSpecs(
-      activeSlide, styledLayouts[activeSlide], activeFields, activeCanvasFieldValues,
-      assetValues, chartValues, effectiveGlobalDetails, activeStyleProfile,
-    );
-  }, [
-    usePolotnoCanvasPoc, useKonvaCanvasPoc, activeSlide, styledLayouts, activeFields, activeCanvasFieldValues,
+  const activeBuilderSlideKey = getCimBuilderSlideKey(activeSlide, activeSlideInstance);
+  const normalizedBuilderState = useMemo(() => normalizeCimBuilderState(cimBuilderState), [cimBuilderState]);
+  const activeBuilderBaseElements = useMemo(() => buildCimBuilderElementSpecs(
+    activeSlide, styledLayouts[activeSlide], activeFields, activeCanvasFieldValues,
     assetValues, chartValues, effectiveGlobalDetails, activeStyleProfile,
+  ), [
+    activeCanvasFieldValues,
+    activeFields,
+    activeSlide,
+    activeStyleProfile,
+    assetValues,
+    chartValues,
+    effectiveGlobalDetails,
+    styledLayouts,
   ]);
+  const activeBuilderExtraPages = normalizedBuilderState.extraPagesByKey[activeBuilderSlideKey] || [];
+  const activeBuilderPageState = normalizedBuilderState.pagesByKey[activeBuilderSlideKey] || {};
+  const activeBuilderPage = activeBuilderPageIndex === 0
+    ? buildCimBuilderPage(
+        activeBuilderBaseElements,
+        activeBuilderPageState,
+        getCimBuilderTemplateBackground(styledLayouts[activeSlide]),
+      )
+    : sanitizeCimBuilderPage(activeBuilderExtraPages[activeBuilderPageIndex - 1] || createBlankBuilderPage());
+  const activeBuilderPageTabs = [
+    { index: 0, label: activeBuilderPageState.deleted ? "Removed" : "Template" },
+    ...activeBuilderExtraPages.map((page, index) => ({ index: index + 1, label: page.name || `Page ${index + 2}` })),
+  ];
   const sectionEditableFields = getEditableTemplateFields(
     activeSection.slides.flatMap((slideNumber) => fieldsBySlide[slideNumber] || []),
     effectiveGlobalDetails,
@@ -9235,7 +9967,15 @@ export default function WorkspaceCimPrep() {
           </button>
           <button
             onClick={() => {
-              const index = PREVIEW_SLIDES.indexOf(activeSlide);
+              const previewSlides = buildPreviewSlidesWithBuilderPages(fieldValues, cimBuilderState);
+              const index = previewSlides.findIndex((slideRef) => {
+                const sameSlide = Number(slideRef.sourceSlideNumber) === Number(activeSlide) &&
+                  Number(slideRef.instanceIndex || 0) === Number(activeSlideInstance || 0);
+                if (!sameSlide) return false;
+                if (activeBuilderPageIndex === 0) return !isCimBuilderExtraPreviewSlide(slideRef);
+                return isCimBuilderExtraPreviewSlide(slideRef) &&
+                  Number(slideRef.builderPageIndex || 0) === activeBuilderPageIndex - 1;
+              });
               setPreviewSlideIndex(index >= 0 ? index : 0);
               setPreviewOpen(true);
             }}
@@ -9279,42 +10019,6 @@ export default function WorkspaceCimPrep() {
               Aspose Full
             </button>
           )}
-          {import.meta.env.DEV && (
-            <button
-              onClick={() => {
-                setUsePolotnoCanvasPoc((previous) => !previous);
-                setUseKonvaCanvasPoc(false);
-              }}
-              className={`inline-flex h-10 items-center gap-1.5 rounded-md border border-dashed px-3 text-xs font-semibold transition ${
-                usePolotnoCanvasPoc
-                  ? "border-[#476E2C] bg-[#EEF6E0] text-[#476E2C]"
-                  : "border-[#8BC53D] bg-white text-[#476E2C] hover:bg-[#EEF6E0]"
-              }`}
-              aria-label="Toggle Polotno visual editor (Beta)"
-              title="Proof-of-concept: swaps the main canvas for a Polotno visual editor"
-            >
-              <Palette size={14} />
-              {usePolotnoCanvasPoc ? "Polotno: On" : "Polotno POC"}
-            </button>
-          )}
-          {import.meta.env.DEV && (
-            <button
-              onClick={() => {
-                setUseKonvaCanvasPoc((previous) => !previous);
-                setUsePolotnoCanvasPoc(false);
-              }}
-              className={`inline-flex h-10 items-center gap-1.5 rounded-md border border-dashed px-3 text-xs font-semibold transition ${
-                useKonvaCanvasPoc
-                  ? "border-[#476E2C] bg-[#EEF6E0] text-[#476E2C]"
-                  : "border-[#8BC53D] bg-white text-[#476E2C] hover:bg-[#EEF6E0]"
-              }`}
-              aria-label="Toggle Konva visual editor (Beta)"
-              title="Proof-of-concept: swaps the main canvas for a free/MIT vanilla Konva.js visual editor (with theme backgrounds)"
-            >
-              <Palette size={14} />
-              {useKonvaCanvasPoc ? "Konva: On" : "Konva POC"}
-            </button>
-          )}
           <button
             onClick={handleSave}
             disabled={saving}
@@ -9328,7 +10032,7 @@ export default function WorkspaceCimPrep() {
 
       <FinancialValidationBanner validation={financialAutofillState.validation} />
 
-      <div className="grid gap-4 xl:grid-cols-[230px_minmax(0,1fr)_310px]">
+      <div className="grid gap-3 xl:grid-cols-[58px_minmax(0,1fr)_288px]">
         <SectionDrawer
           sections={questionnaireSections}
           activeSectionId={activeSectionId}
@@ -9340,23 +10044,25 @@ export default function WorkspaceCimPrep() {
           onSelectSection={handleSectionSelect}
         />
 
-        <section className="min-w-0 space-y-3">
-          <div className="rounded-lg border border-border bg-white p-4 shadow-card">
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-              <div>
-                <p className="text-xs font-bold uppercase tracking-[0.08em] text-[#8BC53D]">
-                  {isBasicSection ? "Setup" : `Section ${activeSection.number}`}
-                </p>
-                <h2 className="mt-1 text-xl font-bold text-[#050505]">
-                  {activeSection.title}
-                </h2>
-                <p className="mt-1 text-sm text-[#6D6E71]">
-                  {sectionCompleted}/{sectionFieldTotal} fields completed
-                </p>
+        <section className="min-w-0 space-y-2">
+          <div className="rounded-lg border border-border bg-white px-3 py-2 shadow-card">
+            <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex min-w-0 items-center gap-3">
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-[#EEF6E0] text-xs font-bold text-[#476E2C]">
+                  {isBasicSection ? "BD" : activeSection.number}
+                </span>
+                <div className="min-w-0">
+                  <h2 className="truncate text-sm font-bold text-[#050505]">
+                    {activeSection.title}
+                  </h2>
+                  <p className="text-xs text-[#6D6E71]">
+                    {sectionCompleted}/{sectionFieldTotal} fields completed
+                  </p>
+                </div>
               </div>
 
               {activeSectionSlideRefs.length > 0 && (
-                <div className="flex gap-2 overflow-x-auto pb-1">
+                <div className="flex gap-1.5 overflow-x-auto pb-0.5">
                   {activeSectionSlideRefs.map((slideRef) => {
                     const slideNumber = slideRef.sourceSlideNumber;
                     const instanceIndex = slideRef.instanceIndex || 0;
@@ -9369,7 +10075,7 @@ export default function WorkspaceCimPrep() {
                           setActiveSlideInstance(instanceIndex);
                           setActiveFieldId("");
                         }}
-                        className={`shrink-0 rounded-md border px-3 py-2 text-xs font-bold transition ${selected
+                        className={`h-8 shrink-0 rounded-md border px-2.5 text-xs font-bold transition ${selected
                           ? "border-[#8BC53D] bg-[#EEF6E0] text-[#476E2C]"
                           : "border-border bg-white text-[#6D6E71] hover:border-[#8BC53D]/60"
                           }`}
@@ -9386,38 +10092,23 @@ export default function WorkspaceCimPrep() {
             </div>
           </div>
 
-          <div className="rounded-lg border border-border bg-white p-2 shadow-card">
+          <div className="rounded-lg border border-border bg-white p-1.5 shadow-card">
             {loading ? (
               <div className="flex aspect-video items-center justify-center text-sm font-semibold text-[#6D6E71]">
                 <Loader2 size={18} className="mr-2 animate-spin text-[#8BC53D]" />
                 Loading CIM template
               </div>
-            ) : usePolotnoCanvasPoc ? (
-              <CimPolotnoCanvas
-                slideKey={`${activeSlide}-${activeSlideInstance}`}
-                elementSpecs={polotnoElementSpecs}
-                onElementsChange={handlePolotnoElementsChange}
-              />
-            ) : useKonvaCanvasPoc ? (
-              <CimKonvaCanvas
-                slideKey={`${activeSlide}-${activeSlideInstance}`}
-                elementSpecs={polotnoElementSpecs}
-                onElementsChange={handlePolotnoElementsChange}
-              />
             ) : (
-              <SlideCanvas
-                slideNumber={activeSlide}
-                displaySlideNumber={activeSlideInstance > 0 ? `${activeSlide}.${activeSlideInstance + 1}` : activeSlide}
-                layout={styledLayouts[activeSlide]}
-                fields={activeFields}
-                fieldValues={activeCanvasFieldValues}
-                assetValues={assetValues}
-                chartValues={chartValues}
-                globalDetails={effectiveGlobalDetails}
-                styleProfile={activeStyleProfile}
-                activeFieldId={activeFieldId}
-                onFieldFocus={setActiveFieldId}
-                onFieldChange={handleFieldChange}
+              <CimNativeBuilderCanvas
+                slideKey={`${activeSlide}-${activeSlideInstance}`}
+                page={activeBuilderPage}
+                pageTabs={activeBuilderPageTabs}
+                activePageIndex={activeBuilderPageIndex}
+                onSelectPage={setActiveBuilderPageIndex}
+                onAddPage={handleAddBuilderPage}
+                onDeletePage={handleDeleteBuilderPage}
+                onRestorePage={handleRestoreBuilderPage}
+                onChange={handleBuilderPageChange}
               />
             )}
           </div>
@@ -9551,6 +10242,7 @@ export default function WorkspaceCimPrep() {
         previewSlideIndex={previewSlideIndex}
         onClose={() => setPreviewOpen(false)}
         onSlideIndexChange={setPreviewSlideIndex}
+        builderState={cimBuilderState}
         layouts={styledLayouts}
         fieldsBySlide={fieldsBySlide}
         fieldValues={fieldValues}
