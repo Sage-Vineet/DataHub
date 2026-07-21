@@ -29,8 +29,6 @@ import {
   X,
 } from "lucide-react";
 import {
-  exportCimPptxViaAsposePoc,
-  exportCimPptxViaAsposeSplice,
   getCimQuestionnaireRequest,
   getCimReviewRequest,
   getCimStyleProfilesRequest,
@@ -42,7 +40,7 @@ import {
   saveCimStyleProfilesRequest,
   saveWorkspacePageStateRequest,
 } from "../../../lib/api";
-import { buildCimPptxBlob, exportCimPptx } from "../../../lib/cimPptxExport";
+import { exportCimPptx } from "../../../lib/cimPptxExport";
 import {
   DEFAULT_CIM_STYLE_PROFILE,
   DEFAULT_CIM_STYLE_PROFILE_ID,
@@ -66,7 +64,7 @@ import CimTemplateStyleEditor from "../../../components/cim/CimTemplateStyleEdit
 import CimNativeBuilderCanvas, {
   CimBuilderPagePreview,
 } from "../../../components/cim/CimNativeBuilderCanvas";
-import { createBlankBuilderPage } from "../../../lib/cimNativeBuilderModel";
+import { createBlankBuilderPage, normalizeBuilderImageSource } from "../../../lib/cimNativeBuilderModel";
 
 const SLIDE_WIDTH = 1280;
 const SLIDE_HEIGHT = 720;
@@ -1263,10 +1261,6 @@ function getLocalStorageKey(clientId) {
 
 function getQuestionnaireLocalStorageKey(clientId) {
   return `datahub:cim-questionnaire:${clientId || "default"}`;
-}
-
-function getStyleProfilesLocalStorageKey() {
-  return "datahub:cim-style-profiles";
 }
 
 function sanitizeFileName(value) {
@@ -2631,12 +2625,17 @@ function getElementFields(slideNumber, element, fieldsById) {
 }
 
 function hasStoredFieldValue(field, fieldValues = {}) {
-  const key = field?.valueFieldId || field?.id;
+  const key = getFieldValueKey(field);
   return Boolean(key && Object.prototype.hasOwnProperty.call(fieldValues || {}, key));
 }
 
+function getFieldValueKey(field) {
+  return field?.valueFieldId || field?.id || "";
+}
+
 function getStoredFieldValue(field, fieldValues) {
-  return fieldValues[field.valueFieldId || field.id];
+  const key = getFieldValueKey(field);
+  return key ? fieldValues[key] : undefined;
 }
 
 function parseRepeatableEntries(value, _config = null) {
@@ -3215,91 +3214,15 @@ function getChartConfig(field, chartValues) {
   };
 }
 
-// Chart kinds with no native PowerPoint chart equivalent (bespoke SVG diagrams,
-// e.g. a positioning quadrant) -- fields of this kind are left on the legacy
-// flattened-image export path rather than attempted natively.
-function isNativeChartSupported(field) {
-  return field.chartKind !== "positioningMatrix";
-}
-
-// Walks the already-prepared/styled layouts and the same exportSlides sequence
-// handleExport already uses, and produces a slide-agnostic manifest describing
-// every native-table and native-chart-eligible element in the deck. Consumes
-// styledLayouts/getExportElementContent as inputs only -- never calls
-// prepareCimLayout/applyCimTemplateStyleProfile/getElementContent itself, so
-// there is exactly one place that owns layout prep and theming.
-function buildAsposeSpliceManifest({ exportSlides, styledLayouts, getExportElementContent, fieldsBySlide, chartValues }) {
-  const slides = exportSlides
-    .map((slideRef, index) => {
-      const sourceSlideNumber = typeof slideRef === "object" ? slideRef.sourceSlideNumber : slideRef;
-      const displaySlideNumber = index + 1;
-      const layout = styledLayouts[sourceSlideNumber];
-      const elements = layout?.elements || [];
-      const fieldsForSlide = fieldsBySlide[sourceSlideNumber] || [];
-      const fieldsById = Object.fromEntries(fieldsForSlide.map((field) => [field.id, field]));
-
-      const tables = [];
-      const charts = [];
-
-      elements.forEach((element) => {
-        if (element.kind === "table" && Array.isArray(element.cells)) {
-          const content = getExportElementContent(slideRef, element);
-          if (content.kind === "hidden") return;
-          tables.push({
-            shapeTag: `__cim_table__${displaySlideNumber}_${sourceSlideNumber}_${element.order}`,
-            bbox: content.bbox || element.bbox,
-            rows: element.rows,
-            cols: element.cols,
-            matrix: content.tableMatrix || [],
-          });
-          return;
-        }
-
-        const elementFields = getElementFields(sourceSlideNumber, element, fieldsById);
-        const chartField = elementFields.find((field) => isChartField(field) && isNativeChartSupported(field));
-        if (!chartField) return;
-
-        const chartConfig = getChartConfig(chartField, chartValues);
-        const rows = parseChartData(chartConfig.dataText, getDefaultChartData(chartField, chartConfig.type));
-        if (!rows.length) return;
-
-        const seriesCount = Math.max(1, ...rows.map((row) => row.values.length));
-        // No series-name source exists anywhere upstream in the data model
-        // (chartValues only ever stores "label,val1,val2..." rows, never
-        // series names) -- generic names are used, same as PowerPoint's own
-        // default naming, and are user-editable after export via Edit Data.
-        const series = Array.from({ length: seriesCount }, (_, seriesIndex) => ({
-          name: `Series ${seriesIndex + 1}`,
-          values: rows.map((row) => row.values[seriesIndex] ?? row.values[0] ?? 0),
-        }));
-
-        charts.push({
-          shapeTag: `__cim_chart__${displaySlideNumber}_${sourceSlideNumber}_${element.order}`,
-          bbox: element.bbox,
-          type: chartConfig.type,
-          title: chartField.label || "",
-          categories: rows.map((row) => row.label),
-          series,
-        });
-      });
-
-      return { slideIndex: displaySlideNumber, tables, charts };
-    })
-    .filter((slide) => slide.tables.length || slide.charts.length);
-
-  return { slides };
-}
-
 function getCimBuilderTemplateElementId(slideNumber, element, suffix = "") {
   const base = element?.id || element?.aid || element?.order || "element";
   return `template:${slideNumber}:${base}${suffix ? `:${suffix}` : ""}`;
 }
 
 // Native CIM Builder: builds a flat, editable element model for one slide.
-// Mirrors buildAsposeSpliceManifest's approach -- walks layout.elements the
-// same way SlideCanvas does (same shouldHideUnusedRepeatableSlot/
-// shouldHideLogoPlaceholderShape gating, same getElementContent call) and
-// never re-derives field/token resolution itself.
+// Walks layout.elements the same way SlideCanvas does, so filtering, asset
+// resolution, chart images, repeatable slots, and token resolution share one
+// source of truth.
 export function buildCimBuilderElementSpecs(slideNumber, layout, fields, fieldValues, assetValues, chartValues, globalDetails, styleProfile) {
   const elements = layout?.elements || [];
   const resolvedAssetValues = assetValues || {};
@@ -3312,7 +3235,7 @@ export function buildCimBuilderElementSpecs(slideNumber, layout, fields, fieldVa
     y: 0,
     width: SLIDE_WIDTH,
     height: SLIDE_HEIGHT,
-    fill: cssColor(layout?.slide?.backgroundColor, "#FFFFFF"),
+    fill: "#FFFFFF",
     stroke: "transparent",
     strokeWidth: 0,
     editable: false,
@@ -3332,17 +3255,20 @@ export function buildCimBuilderElementSpecs(slideNumber, layout, fields, fieldVa
     const elementFields = fieldId ? (fieldsByElement[fieldId] || []) : [];
     const mediaField = elementFields.find((candidate) => isAssetField(candidate) || isChartField(candidate));
     const editableElementFields = elementFields.filter((candidate) => !candidate.hidden && candidate.fieldKind === "text");
+    const linkedElementFields = elementFields.filter((candidate) => (
+      candidate.fieldKind === "text" && !isPptTextField(candidate)
+    ));
+    const editableLinkedElementFields = linkedElementFields.filter((candidate) => !candidate.hidden);
     const pptTextField = editableElementFields.find(isPptTextField);
+    const inlineTokenField = editableLinkedElementFields.length === 1 && isWholeElementToken(element, editableLinkedElementFields[0])
+      ? editableLinkedElementFields[0]
+      : null;
     const inlineTextField = !mediaField
-      ? pptTextField || (
-        editableElementFields.length === 1 && isWholeElementToken(element, editableElementFields[0])
-          ? editableElementFields[0]
-          : null
-      )
+      ? inlineTokenField || (linkedElementFields.length === 0 ? pptTextField : null)
       : null;
 
     if (element.kind === "table" && Array.isArray(element.cells)) {
-      const matrix = content.tableMatrix || [];
+      const matrix = content.tableMatrix || parseTableText(content.text ?? "", element.rows, element.cols);
       const visibleRows = content.visibleTableRows || Array.from(
         { length: Number(element.rows || 0) },
         (_, index) => index + 1,
@@ -3407,6 +3333,7 @@ export function buildCimBuilderElementSpecs(slideNumber, layout, fields, fieldVa
           id: getCimBuilderTemplateElementId(slideNumber, element, `cell-text-${cell.index || `${cell.row}-${cell.column}`}`),
           type: "text",
           cimKind: "tableCell",
+          cimLinkedFieldIds: linkedElementFields.map(getFieldValueKey).filter(Boolean),
           x: effectiveCellLeft,
           y: effectiveCellTop,
           width: effectiveCellWidth,
@@ -3441,6 +3368,8 @@ export function buildCimBuilderElementSpecs(slideNumber, layout, fields, fieldVa
         cimAssetKey: content.kind === "image" && mediaField ? getAssetKey(mediaField) : null,
         x: left, y: top, width, height,
         src: content.dataUrl,
+        fit: content.fit || element.imageFit || element.fit || "contain",
+        objectPosition: content.objectPosition || element.objectPosition || "center center",
         zIndex: Number(element.order || 1),
       });
       return;
@@ -3477,7 +3406,8 @@ export function buildCimBuilderElementSpecs(slideNumber, layout, fields, fieldVa
       id: getCimBuilderTemplateElementId(slideNumber, element),
       type: "text",
       cimKind: "text",
-      cimFieldId: inlineTextField?.id || null,
+      cimFieldId: inlineTextField ? getFieldValueKey(inlineTextField) : null,
+      cimLinkedFieldIds: linkedElementFields.map(getFieldValueKey).filter(Boolean),
       x: left, y: top, width, height,
       text: displayText,
       fontFamily: style.fontFamily,
@@ -3823,6 +3753,9 @@ function getElementContent(slideNumber, element, fieldsById, fieldValues, assetV
     content.visibleTableColumns = Array.from({ length: columnCount }, (_, index) => index + 1);
     content.compactTableColumns = true;
     content.suppressTemplateFallback = true;
+  }
+  if (element.kind === "table" && Array.isArray(element.cells) && !content.tableMatrix) {
+    content.tableMatrix = parseTableText(content.text ?? "", element.rows, element.cols);
   }
   return withElementLayout(slideNumber, element, content);
 }
@@ -5144,13 +5077,16 @@ export function SlideCanvas({
         const elementFields = fieldId ? fieldsByElement[fieldId] || [] : [];
         const mediaField = elementFields.find((candidate) => isAssetField(candidate) || isChartField(candidate));
         const editableElementFields = elementFields.filter((candidate) => !candidate.hidden && candidate.fieldKind === "text");
+        const linkedElementFields = elementFields.filter((candidate) => (
+          candidate.fieldKind === "text" && !isPptTextField(candidate)
+        ));
+        const editableLinkedElementFields = linkedElementFields.filter((candidate) => !candidate.hidden);
         const pptTextField = editableElementFields.find(isPptTextField);
+        const inlineTokenField = editableLinkedElementFields.length === 1 && isWholeElementToken(element, editableLinkedElementFields[0])
+          ? editableLinkedElementFields[0]
+          : null;
         const inlineTextField = !mediaField
-          ? pptTextField || (
-            editableElementFields.length === 1 && isWholeElementToken(element, editableElementFields[0])
-              ? editableElementFields[0]
-              : null
-          )
+          ? inlineTokenField || (linkedElementFields.length === 0 ? pptTextField : null)
           : null;
         const field = mediaField || inlineTextField;
         const isEditable = inlineTextField && !previewMode && !isResolvedByGlobalDetails(inlineTextField, globalDetails);
@@ -5360,8 +5296,8 @@ export function SlideCanvas({
             <button
               key={`${slideNumber}-${element.order}-${element.id}`}
               type="button"
-              onClick={() => onFieldFocus(field.id)}
-              className={`absolute overflow-hidden rounded-[2px] border border-dashed outline-none transition ${activeFieldId === field.id
+            onClick={() => onFieldFocus(getFieldValueKey(field) || field.id)}
+            className={`absolute overflow-hidden rounded-[2px] border border-dashed outline-none transition ${[field.id, getFieldValueKey(field)].includes(activeFieldId)
                 ? "border-[#8BC53D] ring-2 ring-[#8BC53D]/30"
                 : "border-[#8BC53D]/60 hover:border-[#8BC53D]"
                 }`}
@@ -5405,20 +5341,22 @@ export function SlideCanvas({
         }
 
         const isPptTextEditor = isPptTextField(field);
+        const fieldValueKey = getFieldValueKey(field) || field.id;
+        const fieldIsActive = [field.id, fieldValueKey].includes(activeFieldId);
         const userValue = isPptTextEditor
           ? (hasStoredFieldValue(field, fieldValues) ? String(getStoredFieldValue(field, fieldValues) ?? "") : displayText)
-          : fieldValues[field.id] || "";
+          : getStoredFieldValue(field, fieldValues) || "";
 
         return (
           <textarea
             key={`${slideNumber}-${element.order}-${element.id}`}
             aria-label={field.label}
             value={userValue}
-            onFocus={() => onFieldFocus(field.id)}
-            onClick={() => onFieldFocus(field.id)}
-            onChange={(event) => onFieldChange(field.id, event.target.value)}
+            onFocus={() => onFieldFocus(fieldValueKey)}
+            onClick={() => onFieldFocus(fieldValueKey)}
+            onChange={(event) => onFieldChange(fieldValueKey, event.target.value)}
             maxLength={field.maxLength || undefined}
-            className={`absolute resize-none overflow-hidden rounded-[2px] border px-1 py-0.5 outline-none transition ${activeFieldId === field.id
+            className={`absolute resize-none overflow-hidden rounded-[2px] border px-1 py-0.5 outline-none transition ${fieldIsActive
               ? "border-[#8BC53D] ring-2 ring-[#8BC53D]/30"
               : isPptTextEditor
                 ? "border-transparent hover:border-[#8BC53D]/55 focus:border-[#8BC53D]/70"
@@ -6127,6 +6065,18 @@ function Slide24YearCards({ fields, fieldValues, range, activeFieldId, onFieldFo
   const fieldByTokenIndex = new Map(fields.map((field) => [getFieldTokenIndex(field), field]));
   const startYear = Number(String(range?.startDate || "").slice(0, 4));
   const periodType = range?.periodType || "calendar";
+  const cardActive = fields.some((field) => (
+    field.id === activeFieldId || getFieldValueKey(field) === activeFieldId
+  ));
+  const getCardValue = (field) => getStoredFieldValue(field, fieldValues) || "";
+  const focusCardField = (field) => {
+    const key = getFieldValueKey(field);
+    if (key) onFieldFocus(key);
+  };
+  const changeCardField = (field, value) => {
+    const key = getFieldValueKey(field);
+    if (key) onFieldChange(key, value);
+  };
 
   const getDefaultPeriodLabel = (column) => {
     if (column === 5) return "LTM";
@@ -6136,7 +6086,7 @@ function Slide24YearCards({ fields, fieldValues, range, activeFieldId, onFieldFo
   };
 
   return (
-    <div className={fieldCardClass(fields.some((field) => field.id === activeFieldId))}>
+    <div className={fieldCardClass(cardActive)}>
       <div className="mb-3">
         <span className="block text-[11px] font-bold uppercase tracking-[0.06em] text-[#6D6E71]">
           Historical income statement by period
@@ -6149,7 +6099,7 @@ function Slide24YearCards({ fields, fieldValues, range, activeFieldId, onFieldFo
       <div className="space-y-2">
         {columns.map((column, cardIndex) => {
           const periodField = fieldByTokenIndex.get(column);
-          const storedPeriod = periodField ? normalizeText(fieldValues[periodField.id]) : "";
+          const storedPeriod = periodField ? normalizeText(getCardValue(periodField)) : "";
           const periodLabel = column === 5
             ? `LTM${storedPeriod ? ` · ${storedPeriod}` : ""}`
             : storedPeriod || getDefaultPeriodLabel(column);
@@ -6158,7 +6108,7 @@ function Slide24YearCards({ fields, fieldValues, range, activeFieldId, onFieldFo
             const metricField = fieldByTokenIndex.get(metric.start + column);
             return metricField ? [{ ...metric, field: metricField }] : [];
           });
-          const populatedCount = metricFields.filter(({ field }) => normalizeText(fieldValues[field.id])).length;
+          const populatedCount = metricFields.filter(({ field }) => normalizeText(getCardValue(field))).length;
           const expanded = expandedColumn === column;
 
           return (
@@ -6196,9 +6146,9 @@ function Slide24YearCards({ fields, fieldValues, range, activeFieldId, onFieldFo
                         {column === 5 ? "LTM end date" : "Financial year heading"}
                       </span>
                       <input
-                        value={fieldValues[periodField.id] || ""}
-                        onFocus={() => onFieldFocus(periodField.id)}
-                        onChange={(event) => onFieldChange(periodField.id, event.target.value)}
+                        value={getCardValue(periodField)}
+                        onFocus={() => focusCardField(periodField)}
+                        onChange={(event) => changeCardField(periodField, event.target.value)}
                         className="h-10 w-full rounded-md border border-border bg-white px-3 text-[12px] text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20"
                       />
                     </label>
@@ -6211,9 +6161,9 @@ function Slide24YearCards({ fields, fieldValues, range, activeFieldId, onFieldFo
                           {label}
                         </span>
                         <input
-                          value={fieldValues[field.id] || ""}
-                          onFocus={() => onFieldFocus(field.id)}
-                          onChange={(event) => onFieldChange(field.id, event.target.value)}
+                          value={getCardValue(field)}
+                          onFocus={() => focusCardField(field)}
+                          onChange={(event) => changeCardField(field, event.target.value)}
                           className="h-10 w-full rounded-md border border-border bg-white px-3 text-[12px] text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20"
                         />
                       </label>
@@ -6235,6 +6185,18 @@ function Slide26YearCards({ fields, fieldValues, range, activeFieldId, onFieldFo
   const [expandedColumn, setExpandedColumn] = useState(columns[0] ?? 0);
   const fieldByTokenIndex = new Map(fields.map((field) => [getFieldTokenIndex(field), field]));
   const startYear = Number(String(range?.startDate || "").slice(0, 4));
+  const cardActive = fields.some((field) => (
+    field.id === activeFieldId || getFieldValueKey(field) === activeFieldId
+  ));
+  const getCardValue = (field) => getStoredFieldValue(field, fieldValues) || "";
+  const focusCardField = (field) => {
+    const key = getFieldValueKey(field);
+    if (key) onFieldFocus(key);
+  };
+  const changeCardField = (field, value) => {
+    const key = getFieldValueKey(field);
+    if (key) onFieldChange(key, value);
+  };
 
   const getDefaultPeriodLabel = (column) => {
     if (column === 5) return "LTM";
@@ -6243,7 +6205,7 @@ function Slide26YearCards({ fields, fieldValues, range, activeFieldId, onFieldFo
   };
 
   return (
-    <div className={fieldCardClass(fields.some((field) => field.id === activeFieldId))}>
+    <div className={fieldCardClass(cardActive)}>
       <div className="mb-3">
         <span className="block text-[11px] font-bold uppercase tracking-[0.06em] text-[#6D6E71]">
           Balance sheet by period
@@ -6256,7 +6218,7 @@ function Slide26YearCards({ fields, fieldValues, range, activeFieldId, onFieldFo
       <div className="space-y-2">
         {columns.map((column, cardIndex) => {
           const periodField = fieldByTokenIndex.get(column);
-          const storedPeriod = periodField ? normalizeText(fieldValues[periodField.id]) : "";
+          const storedPeriod = periodField ? normalizeText(getCardValue(periodField)) : "";
           const periodLabel = column === 5
             ? `LTM${storedPeriod ? ` · ${storedPeriod}` : ""}`
             : storedPeriod || getDefaultPeriodLabel(column);
@@ -6265,7 +6227,7 @@ function Slide26YearCards({ fields, fieldValues, range, activeFieldId, onFieldFo
             const metricField = fieldByTokenIndex.get(metric.start + column);
             return metricField ? [{ ...metric, field: metricField }] : [];
           });
-          const populatedCount = metricFields.filter(({ field }) => normalizeText(fieldValues[field.id])).length;
+          const populatedCount = metricFields.filter(({ field }) => normalizeText(getCardValue(field))).length;
           const expanded = expandedColumn === column;
 
           return (
@@ -6303,9 +6265,9 @@ function Slide26YearCards({ fields, fieldValues, range, activeFieldId, onFieldFo
                         {column === 5 ? "LTM end date" : "Year heading"}
                       </span>
                       <input
-                        value={fieldValues[periodField.id] || ""}
-                        onFocus={() => onFieldFocus(periodField.id)}
-                        onChange={(event) => onFieldChange(periodField.id, event.target.value)}
+                        value={getCardValue(periodField)}
+                        onFocus={() => focusCardField(periodField)}
+                        onChange={(event) => changeCardField(periodField, event.target.value)}
                         className="h-10 w-full rounded-md border border-border bg-white px-3 text-[12px] text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20"
                       />
                     </label>
@@ -6318,9 +6280,9 @@ function Slide26YearCards({ fields, fieldValues, range, activeFieldId, onFieldFo
                           {label}
                         </span>
                         <input
-                          value={fieldValues[field.id] || ""}
-                          onFocus={() => onFieldFocus(field.id)}
-                          onChange={(event) => onFieldChange(field.id, event.target.value)}
+                          value={getCardValue(field)}
+                          onFocus={() => focusCardField(field)}
+                          onChange={(event) => changeCardField(field, event.target.value)}
                           className="h-10 w-full rounded-md border border-border bg-white px-3 text-[12px] text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20"
                         />
                       </label>
@@ -6826,6 +6788,9 @@ function FieldPanel({
         ) : null}
         {editableFields.length > 0 ? (
           editableFields.map((field) => {
+            const fieldValueKey = getFieldValueKey(field) || field.id;
+            const fieldValue = getStoredFieldValue(field, fieldValues) || "";
+            const fieldActive = activeFieldId === field.id || activeFieldId === fieldValueKey;
             const questionnaireItem = questionnaireState?.items?.[field.id];
             const reviewItem = reviewState?.items?.[field.id];
             if (field.fieldKind === "ebitdaBridge") {
@@ -6919,16 +6884,16 @@ function FieldPanel({
             return (
               <label
                 key={field.id}
-                className={fieldCardClass(activeFieldId === field.id)}
-                onFocus={() => onFieldFocus(field.id)}
+                className={fieldCardClass(fieldActive)}
+                onFocus={() => onFieldFocus(fieldValueKey)}
               >
                 <span className="mb-1 block text-[11px] font-bold uppercase tracking-[0.06em] text-[#6D6E71]">
                   {field.label}
                 </span>
                 {field.inputType === "select" ? (
                   <select
-                    value={fieldValues[field.id] || ""}
-                    onChange={(event) => onFieldChange(field.id, event.target.value)}
+                    value={fieldValue}
+                    onChange={(event) => onFieldChange(fieldValueKey, event.target.value)}
                     className="h-10 w-full rounded-md border border-border bg-white px-3 text-[13px] font-semibold text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20"
                   >
                     <option value="">Select one</option>
@@ -6940,8 +6905,8 @@ function FieldPanel({
                   </select>
                 ) : (
                   <textarea
-                    value={fieldValues[field.id] || ""}
-                    onChange={(event) => onFieldChange(field.id, event.target.value)}
+                    value={fieldValue}
+                    onChange={(event) => onFieldChange(fieldValueKey, event.target.value)}
                     placeholder={getFieldValue(field, fieldValues, globalDetails) || field.label}
                     maxLength={field.maxLength || undefined}
                     className="min-h-[86px] w-full resize-y rounded-md border border-border bg-white px-3 py-2 text-[13px] leading-snug text-[#050505] outline-none transition focus:border-[#8BC53D] focus:ring-2 focus:ring-[#8BC53D]/20"
@@ -7271,15 +7236,6 @@ function FinancialAutofillProgressOverlay({ state }) {
   );
 }
 
-function formatValidationFigure(value) {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric)) return "-";
-  return new Intl.NumberFormat("en-US", {
-    notation: "compact",
-    maximumFractionDigits: 2,
-  }).format(numeric);
-}
-
 function FinancialValidationBanner({ validation }) {
   if (!validation || validation.status !== "verified") return null;
   const summary = validation.summary || {};
@@ -7315,6 +7271,7 @@ function sanitizeCimBuilderElement(element = {}) {
     subType: element.subType || (element.type === "ellipse" ? "ellipse" : "rect"),
     cimKind: element.cimKind || type,
     cimFieldId: element.cimFieldId || null,
+    cimLinkedFieldIds: Array.from(new Set(element.cimLinkedFieldIds || [])).filter(Boolean).map(String),
     cimAssetKey: element.cimAssetKey || null,
     x: Number(element.x || 0),
     y: Number(element.y || 0),
@@ -7349,9 +7306,10 @@ function sanitizeCimBuilderElement(element = {}) {
   if (type === "image") {
     return {
       ...sanitized,
-      src: element.src || element.dataUrl || "",
+      src: normalizeBuilderImageSource(element),
       name: element.name || "Image",
       fit: element.fit || "contain",
+      objectPosition: element.objectPosition || "center center",
       stroke: element.stroke || "transparent",
       strokeWidth: Number(element.strokeWidth || 0),
     };
@@ -7476,15 +7434,19 @@ function normalizeCimBuilderState(input = {}) {
   return { version: 1, pagesByKey, extraPagesByKey };
 }
 
-function getCimBuilderTemplateBackground(layout) {
-  return cssColor(layout?.slide?.backgroundColor, "#FFFFFF");
+function getCimBuilderTemplateBackground() {
+  return "#FFFFFF";
 }
 
 function getComparableCimBuilderElement(element = {}) {
   const comparable = sanitizeCimBuilderElement(element);
   if (!comparable) return null;
-  if (comparable.cimFieldId) delete comparable.text;
+  if (isCimBuilderTextLinked(comparable)) delete comparable.text;
   return comparable;
+}
+
+function isCimBuilderTextLinked(element = {}) {
+  return Boolean(element.cimFieldId || (Array.isArray(element.cimLinkedFieldIds) && element.cimLinkedFieldIds.length));
 }
 
 function buildCimBuilderPage(baseElements = [], pageState = {}, fallbackBackground = "#FFFFFF") {
@@ -7499,7 +7461,7 @@ function buildCimBuilderPage(baseElements = [], pageState = {}, fallbackBackgrou
         const override = normalizedState.elementOverrides[element.id] || null;
         if (!override) return element;
         const safeOverride = { ...override };
-        if (element.cimFieldId) delete safeOverride.text;
+        if (isCimBuilderTextLinked(element)) delete safeOverride.text;
         return sanitizeCimBuilderElement({ ...element, ...safeOverride, id: element.id, type: element.type });
       }),
     ...normalizedState.addedElements,
@@ -7541,7 +7503,7 @@ function extractCimBuilderPageState(baseElements = [], page = {}) {
     const comparableNext = getComparableCimBuilderElement(element);
     if (JSON.stringify(comparableBase) !== JSON.stringify(comparableNext)) {
       const override = sanitizeCimBuilderElement(element);
-      if (override?.cimFieldId) delete override.text;
+      if (isCimBuilderTextLinked(override)) delete override.text;
       elementOverrides[element.id] = override;
     }
   });
@@ -7637,8 +7599,9 @@ function buildCimBuilderExportLayoutElement(element, index) {
       order: index + 1,
       bbox: [element.x, element.y, element.width, element.height],
       rotation: element.rotation || 0,
-      dataUrl: element.src,
+      dataUrl: normalizeBuilderImageSource(element),
       opacity: element.opacity,
+      imageFit: element.fit || "contain",
       imageBorderColor: element.stroke,
       imageBorderWidth: element.strokeWidth || 0,
     };
@@ -9558,27 +9521,6 @@ export default function WorkspaceCimPrep() {
     });
   }, [showToast]);
 
-  const getExportElementContent = useCallback((slideRef, element) => {
-    const slideNumber = slideRef?.sourceSlideNumber || slideRef;
-    if (element?.builderKind) return getCimBuilderExportElementContent(slideRef, element);
-    const fieldsForSlide = fieldsBySlide[slideNumber] || [];
-    const fieldsById = Object.fromEntries(fieldsForSlide.map((field) => [field.id, field]));
-    const exportFieldValues = getFieldValuesForExportSlide(fieldValues, slideRef);
-    if (shouldHideUnusedRepeatableSlot(slideNumber, element, exportFieldValues)) {
-      return { kind: "hidden" };
-    }
-    return getElementContent(
-      slideNumber,
-      element,
-      fieldsById,
-      exportFieldValues,
-      assetValues,
-      chartValues,
-      effectiveGlobalDetails,
-      activeStyleProfile,
-    );
-  }, [activeStyleProfile, assetValues, chartValues, effectiveGlobalDetails, fieldValues, fieldsBySlide]);
-
   const buildNativeBuilderExportDeck = useCallback(() => {
     const previewSlides = buildPreviewSlidesWithBuilderPages(fieldValues, cimBuilderState);
     const exportLayouts = {};
@@ -9713,130 +9655,6 @@ export default function WorkspaceCimPrep() {
     styledLayouts,
     showToast,
   ]);
-
-  // Proof-of-concept only: exports slides 4 (text), 24 (table), 6 (chart)
-  // through the new Aspose.Slides backend service to validate real PowerPoint
-  // editability (native table/chart objects) before any wider rollout. Fully
-  // additive -- does not touch handleExport/exportCimPptx above.
-  const handleExportAsposePoc = useCallback(async () => {
-    try {
-      const slide4Layout = styledLayouts[4];
-      const slide4Elements = (slide4Layout?.elements || [])
-        .map((element) => {
-          const content = getExportElementContent(4, element);
-          if (content.kind === "hidden" || content.kind === "table") return null;
-          const text = content.text ?? element.text ?? "";
-          if (!normalizeText(text)) return null;
-          return { bbox: content.bbox || element.bbox, text };
-        })
-        .filter(Boolean);
-
-      const slide24Layout = styledLayouts[24];
-      const tableElement = (slide24Layout?.elements || []).find((element) => element.kind === "table");
-      if (!tableElement) throw new Error("Slide 24 table element not found.");
-      const tableContent = getExportElementContent(24, tableElement);
-
-      const chartField = (fieldsBySlide[6] || []).find((field) => field.order === 28 && isChartField(field));
-      if (!chartField) throw new Error("Slide 6 chart field not found.");
-      const chartConfig = getChartConfig(chartField, chartValues);
-      const chartRows = parseChartData(chartConfig.dataText, getDefaultChartData(chartField, chartConfig.type));
-      const chartElement = (styledLayouts[6]?.elements || []).find((element) => element.order === 28);
-
-      const payload = {
-        slide4: { elements: slide4Elements },
-        slide24: {
-          rows: tableElement.rows,
-          cols: tableElement.cols,
-          bbox: tableElement.bbox,
-          matrix: tableContent.tableMatrix || [],
-        },
-        slide6: {
-          bbox: chartElement?.bbox,
-          title: "Revenue & EBITDA Trend",
-          categories: chartRows.map((row) => row.label),
-          // Hardcoded order matches the fixed valueKeys used by
-          // getAutoFillChartData for this specific slide/field -- not a
-          // general pattern for other chart slides.
-          series: [
-            { name: "Revenue", values: chartRows.map((row) => row.values[0] || 0) },
-            { name: "Adjusted EBITDA", values: chartRows.map((row) => row.values[1] || 0) },
-          ],
-        },
-      };
-
-      const blob = await exportCimPptxViaAsposePoc(payload, { clientId });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "cim-aspose-poc.pptx";
-      a.click();
-      URL.revokeObjectURL(url);
-      showToast({
-        type: "success",
-        title: "Aspose POC Export",
-        message: "Downloaded a 3-slide POC PPTX (slides 4, 6, 24) generated via Aspose.Slides.",
-      });
-    } catch (error) {
-      showToast({
-        type: "error",
-        title: "Aspose POC Export Failed",
-        message: error?.message || "Unknown error.",
-      });
-    }
-  }, [chartValues, clientId, fieldsBySlide, getExportElementContent, showToast, styledLayouts]);
-
-  // Generalizes the Aspose POC to every table/chart in the full deck via the
-  // splice architecture: the legacy exporter builds the whole presentation as
-  // it does today, then the backend surgically replaces just the tagged
-  // table/chart shapes with native equivalents. Fully additive -- does not
-  // touch handleExport or handleExportAsposePoc above.
-  const handleExportAsposeFull = useCallback(async () => {
-    try {
-      const missingSlides = PREVIEW_SLIDES.filter((slideNumber) => !styledLayouts[slideNumber]);
-      if (missingSlides.length > 0) {
-        showToast({
-          type: "error",
-          title: "Export Not Ready",
-          message: "The CIM template is still loading. Please try again in a moment.",
-        });
-        return;
-      }
-
-      const exportSlides = buildCimExportSlides(fieldValues);
-      const baseBlob = buildCimPptxBlob({
-        layouts: styledLayouts,
-        slideNumbers: exportSlides,
-        getElementContent: getExportElementContent,
-        styleProfile: isDefaultCimStyleProfile(activeStyleProfile) ? null : activeStyleProfile,
-      });
-      const manifest = buildAsposeSpliceManifest({
-        exportSlides,
-        styledLayouts,
-        getExportElementContent,
-        fieldsBySlide,
-        chartValues,
-      });
-
-      const blob = await exportCimPptxViaAsposeSplice(baseBlob, manifest, { clientId });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "cim-aspose-export.pptx";
-      a.click();
-      URL.revokeObjectURL(url);
-      showToast({
-        type: "success",
-        title: "Aspose Export",
-        message: `Downloaded the full CIM with ${manifest.slides.length} slide(s) of native tables/charts.`,
-      });
-    } catch (error) {
-      showToast({
-        type: "error",
-        title: "Aspose Export Failed",
-        message: error?.message || "Unknown error.",
-      });
-    }
-  }, [activeStyleProfile, chartValues, clientId, fieldValues, fieldsBySlide, getExportElementContent, showToast, styledLayouts]);
 
   const isBasicSection = activeSection.type === "basic";
   const activeFields = activeSlide ? fieldsBySlide[activeSlide] || [] : [];
@@ -9997,28 +9815,6 @@ export default function WorkspaceCimPrep() {
               Export PPT
             </span>
           </button>
-          {import.meta.env.DEV && (
-            <button
-              onClick={handleExportAsposePoc}
-              className="inline-flex h-10 items-center gap-1.5 rounded-md border border-dashed border-[#8BC53D] bg-white px-3 text-xs font-semibold text-[#476E2C] transition hover:bg-[#EEF6E0]"
-              aria-label="Export via Aspose (Beta)"
-              title="Proof-of-concept: exports slides 4/6/24 via Aspose.Slides"
-            >
-              <Download size={14} />
-              Aspose POC
-            </button>
-          )}
-          {import.meta.env.DEV && (
-            <button
-              onClick={handleExportAsposeFull}
-              className="inline-flex h-10 items-center gap-1.5 rounded-md border border-dashed border-[#8BC53D] bg-white px-3 text-xs font-semibold text-[#476E2C] transition hover:bg-[#EEF6E0]"
-              aria-label="Export via Aspose, full deck (Beta)"
-              title="Full deck: native tables/charts spliced into the legacy export for every slide"
-            >
-              <Download size={14} />
-              Aspose Full
-            </button>
-          )}
           <button
             onClick={handleSave}
             disabled={saving}
